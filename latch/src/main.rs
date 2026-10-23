@@ -286,7 +286,30 @@ async fn run(
             Ok(Printed(String::new()))
         }
         Command::Rules(args) => json(pretty, gate::client::run(&state, args).await?),
-        Command::Plugins(args) => json(pretty, plugins::client::run(&state, args).await?),
+        Command::Plugins(args)
+            if matches!(
+                args.command,
+                cli::PluginsCommand::Enable { events: true, .. }
+            ) =>
+        {
+            // As `login --events`: `hello`, any `link` lines, then one
+            // `result` or `error`, unless the caller stopped the wait.
+            login::event(stream::hello());
+            match plugins::client::run(&state, args).await {
+                Ok(Value::Null) => {}
+                Ok(result) => login::event(json!({"type": "result", "result": result})),
+                Err(failure) => {
+                    login::event(json!({"type": "error", "error": failure.error()}));
+                    return Err(failure);
+                }
+            }
+            Ok(Printed(String::new()))
+        }
+        Command::Plugins(args) => match plugins::client::run(&state, args).await? {
+            // A wait stopped at the caller's request: nothing to say.
+            Value::Null => Ok(Printed(String::new())),
+            result => json(pretty, result),
+        },
         Command::Update(args) => json(pretty, update::run(&state, args).await?),
         Command::Audit(cli::AuditArgs {
             action: Some(action),

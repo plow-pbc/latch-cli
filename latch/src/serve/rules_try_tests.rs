@@ -109,7 +109,7 @@ async fn an_agent_cannot_preview() {
 }
 
 #[tokio::test]
-async fn from_judges_as_that_agent_with_its_rules_and_chat() {
+async fn from_judges_as_that_agent_by_its_rules_alone() {
     let t = start(chat_with(covered_after_a_yes)).await;
     let device = t.caller("device").await;
     for set in [
@@ -134,15 +134,16 @@ async fn from_judges_as_that_agent_with_its_rules_and_chat() {
         json!({"agent_uid": AGENT, "agent_name": "Juno"})
     );
     assert_eq!(tried["gate"]["caller"], "agent");
-    assert_eq!(tried["gate"]["chat"], "chat_a");
-    assert_eq!(tried["gate"]["source"], "chat_and_rules");
+    assert_eq!(tried["gate"]["chat"], Value::Null);
+    assert_eq!(tried["gate"]["source"], "rules");
+    assert_eq!(t.judged(), 1);
     let asked = t.plow.world.lock().unwrap().asked.last().unwrap().clone();
     assert_eq!(
         asked["owner_rules"],
         json!({"rules for every agent on this host": "Never send email.",
                "rules for this agent": "Builds are fine."})
     );
-    assert_eq!(asked["conversation"][0]["text"], "please build the site");
+    assert_eq!(asked["conversation"], "(no chat)", "its chat is not read");
     // Only the two rules commands were audited and shown.
     let rules = vec!["rules".to_string(), "rules".to_string()];
     assert_eq!(traces(&t), (rules.clone(), rules));
@@ -253,7 +254,7 @@ async fn the_hosts_own_refusals_are_previewed_without_the_judge() {
 }
 
 #[tokio::test]
-async fn an_agent_with_several_chats_needs_one_named() {
+async fn an_agent_is_previewed_without_any_of_its_chats() {
     let mut world = chat_with(always_covered);
     world.add(
         "chat_b",
@@ -263,6 +264,7 @@ async fn an_agent_with_several_chats_needs_one_named() {
     let t = start(world).await;
     let device = t.caller("device").await;
     let exec = || json!({"argv": ["npm", "run", "build"]});
+    // Several chats, none named: no chat is needed, so none is chosen.
     let (response, _) = t
         .call(
             &device,
@@ -270,10 +272,14 @@ async fn an_agent_with_several_chats_needs_one_named() {
             try_args("exec", exec(), Some("Juno"), None),
         )
         .await;
-    let (exit, code, _) = refusal(&response);
-    assert_eq!((exit, code), (Exit::Usage, "which_chat"));
-    assert_eq!(t.judged(), 0);
+    let tried = answer(response);
+    assert_eq!(tried["verdict"], "allow");
+    assert_eq!(tried["gate"]["chat"], Value::Null);
+    let asked = t.plow.world.lock().unwrap().asked.last().unwrap().clone();
+    assert_eq!(asked["conversation"], "(no chat)");
+    assert_eq!(t.judged(), 1);
 
+    // Naming one is refused: a preview judges the rules alone.
     let (response, _) = t
         .call(
             &device,
@@ -281,11 +287,9 @@ async fn an_agent_with_several_chats_needs_one_named() {
             try_args("exec", exec(), Some("Juno"), Some("chat_b")),
         )
         .await;
-    let tried = answer(response);
-    assert_eq!(tried["verdict"], "allow");
-    assert_eq!(tried["gate"]["chat"], "chat_b");
-    let asked = t.plow.world.lock().unwrap().asked.last().unwrap().clone();
-    assert_eq!(asked["conversation"][0]["text"], "yes, build it");
+    let (exit, code, _) = refusal(&response);
+    assert_eq!((exit, code), (Exit::Usage, "plow_chat_not_supported"));
+    assert_eq!(t.judged(), 1);
 }
 
 #[tokio::test]
@@ -554,7 +558,7 @@ async fn a_draft_is_judged_in_place_of_the_saved_rules_and_never_saved() {
     assert!(asked["owner_rules"].to_string().contains(draft), "{asked}");
     assert!(!asked["owner_rules"].to_string().contains("Builds are fine"));
 
-    // A blank draft is no rules, and a new agent has nothing else.
+    // A blank draft is no rules: the built-in policy alone judges.
     let tried = answer(
         t.call(
             &device,
@@ -564,7 +568,8 @@ async fn a_draft_is_judged_in_place_of_the_saved_rules_and_never_saved() {
         .await
         .0,
     );
-    assert_eq!(tried["verdict"], "no_intent");
+    assert_eq!(tried["verdict"], "not_covered");
+    assert_eq!(tried["gate"]["source"], "defaults");
 
     // The owner previews a draft too, as themselves.
     let mut mine = try_args("exec", build(), None, None);

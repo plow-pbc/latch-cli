@@ -235,7 +235,6 @@ private struct Lane: View {
             case "allow": "Allowed"
             case "owner_said_no": "You said no"
             case "host_refused": "Refused by this Mac"
-            case "no_intent": "No instructions yet"
             default: "Not in your rules"
             }
         }

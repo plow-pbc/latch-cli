@@ -12,6 +12,7 @@ nonisolated struct FakeLatchClient: LatchClient {
 
     func localStatus() async throws -> LocalStatus { try Fixtures.decode(status) }
     func accountStatus() async throws -> AccountStatus { try Fixtures.decode(account) }
+    func hostStatus(_ host: String) async throws -> LocalStatus { try Fixtures.decode(Fixtures.piStatus) }
     func login(name: String?, replace: Bool) -> AsyncThrowingStream<LoginEvent, Error> { AsyncThrowingStream { $0.finish() } }
     func rulesShow(host: String?) async throws -> RulesShow {
         try Fixtures.decode(rules.map { #"{"agents":[],"every_agent":{"revision":"r1","text":"\#($0)"},"host":"studio"}"# }
@@ -19,7 +20,9 @@ nonisolated struct FakeLatchClient: LatchClient {
     }
     func rulesSet(_ text: String) async throws {}
     var connectorsOn: [String] = []
-    func setupStatus() async throws -> SetupStatus { try Fixtures.decode(Fixtures.setup(on: connectorsOn)) }
+    /// Google's step in `setup --status`, when not the default.
+    var google: String?
+    func setupStatus() async throws -> SetupStatus { try Fixtures.decode(Fixtures.setup(on: connectorsOn, google: google)) }
     func pluginsList(host: String?) async throws -> PluginsList {
         throw LatchError.failed(LatchFailure(code: "serve_required", message: "this machine needs a live receiver; start `latch serve` on this state folder, then retry"))
     }
@@ -82,6 +85,14 @@ nonisolated struct FakeLatchClient: LatchClient {
 nonisolated struct ImportPreviewFixture: Decodable { var preview: ImportPreview }
 
 nonisolated enum Fixtures {
+    /// Google's step in `latch setup --status` on local Plow: no account
+    /// connected; one connected (through Plow's OAuth stand-in) after an
+    /// enable that found none; turned on; and Plow not answering.
+    static let googleNotConnected = #"{"step":"google","state":"needed","reason":"Google is not connected in Plow: connect it at http://localhost:3000/connections, then run `latch plugins enable google`.","args":null,"enabled":false,"ready":false,"accounts":[],"connect_url":"http://localhost:3000/connections"}"#
+    static let googleConnectedOff = #"{"step":"google","state":"needed","reason":"Google is connected in Plow (testuser@plow.test); the Google connector needs setup: Plow has no Google account this host can use; connect one at http://localhost:3000/connections, then run `latch plugins enable google` again","args":["plugins","enable","google"],"enabled":false,"ready":false,"accounts":["testuser@plow.test"]}"#
+    static let googleOn = #"{"step":"google","state":"done","reason":"Google is connected in Plow (testuser@plow.test); the Google connector is on; agents can use it once latch is running.","args":null,"enabled":true,"ready":false,"accounts":["testuser@plow.test"]}"#
+    static let googleUnreachable = #"{"step":"google","state":"blocked","reason":"Plow could not say whether Google is connected: could not reach Plow at http://127.0.0.1:9: error sending request for url (http://127.0.0.1:9/v1/connectors)","args":null,"enabled":true,"ready":false}"#
+
     /// `latch setup --status` on a logged-in Mac whose host is stopped,
     /// with these connectors on.
     static func setup(on: [String], google: String? = nil, access: String? = nil,
@@ -96,6 +107,12 @@ nonisolated enum Fixtures {
         return #"{"steps":[{"step":"login","state":"done","reason":"Logged in as studio.","args":null},"#
             + connectors.joined(separator: ",")
             + "," + host + "]}"
+    }
+
+    /// `setup --status`'s Google step with these accounts connected in Plow
+    /// (the plugin off here).
+    static func googleConnected(_ accounts: [String]) -> String {
+        #"{"step":"google","state":"needed","reason":"Google is connected in Plow (\#(accounts.joined(separator: ", "))); the Google connector is off.","args":["plugins","enable","google"],"enabled":false,"ready":false,"accounts":[\#(accounts.map { "\"\($0)\"" }.joined(separator: ","))]}"#
     }
 
     static let serving = #"{"state_dir":"/Users/me/.latch","version":"0.1.0","protocol":2,"peer":{"name":"studio","key":"6b55a78f","kind":"device"},"serve":{"running":true,"ready":true,"configuring":false,"managed":true,"attached":false,"state":"serving","pid":32250,"blocked":null},"last_error":null,"update":{"available":false,"build":null,"checked_at":null}}"#
@@ -115,6 +132,10 @@ nonisolated enum Fixtures {
     static let studioRules = #"{"agents":[{"agent_name":"scout","agent_uid":"0432eb0ee1e99e24c40c54fc2bada229","note":"no latch registered when set","revision":"8be9ed94de19f40ae8a8f06b98bb6ee54da22900b8191b70dd2f2486edf1a1f0","text":"scout may run builds and tests in ~/Projects/latch-demo with --write there, and may use the network for package downloads."}],"audit_id":"81c7dce2aa3758db17a746b2284596fcfb4e2773a99d34cc49cee9e6071b2e3f","every_agent":{"revision":"9b1e8ee3911c42472937f948983a24e6c087c4f70d5bc5b924b84c799f0bff05","text":"Agents may read and summarize anything in ~/Projects. Ask me before sending any email or deleting files. Never touch ~/Finance."},"host":"studio","warning":"Freeform rules are judged, not guaranteed. --deny-exec is enforced in code."}"#
     static let studioVault = #"{"audit_id":"bcaf28dedfe777a60303c3ccd802a8a2380237b6f02988bc33dabb307431e0a6","items":[{"fields":[{"alias":false,"custom":false,"hidden":false,"label":"username"},{"alias":false,"custom":false,"hidden":true,"label":"password"}],"item":"v1","kind":"login","revision":1,"sites":["shop.example"],"title":"Shop (test)","totp":false,"username":"ada"},{"fields":[{"alias":false,"custom":false,"hidden":false,"label":"username"},{"alias":false,"custom":false,"hidden":true,"label":"password"}],"item":"v2","kind":"login","other_top_sites":["grocer-login.example"],"revision":1,"sites":["grocer.example"],"title":"Grocer (test)","totp":false,"username":"ada@example.com"},{"fields":[],"item":"v3","kind":"note","revision":1,"sites":[],"title":"Building notes (test)","totp":false},{"fields":[{"alias":false,"custom":false,"hidden":true,"label":"number"},{"alias":false,"custom":false,"hidden":true,"label":"code"},{"alias":false,"custom":false,"hidden":false,"label":"cardholder name"}],"item":"v4","kind":"card","revision":1,"sites":["shop.example"],"title":"Visa (test)","totp":false}]}"#
     static let studioPlugins = #"{"audit_id":"4bb10df4087e3d779901b77fecce312db061776f1f5fffa1716f6d193bb298cd","plugins":[{"enable":"latch plugins enable google","name":"google","reason":"its owner has not enabled it on this host","state":"disabled"},{"enable":"latch plugins enable messages","name":"messages","reason":"its owner has not enabled it on this host","state":"disabled"},{"enable":"latch plugins enable contacts","name":"contacts","reason":"its owner has not enabled it on this host","state":"disabled"}]}"#
+    /// studio's after turning Google on, with Messages lacking Full Disk Access.
+    static let studioPluginsSetUp = #"{"audit_id":"5cc20df4087e3d779901b77fecce312db061776f1f5fffa1716f6d193bb298cd","plugins":[{"enable":null,"name":"google","reason":"enabled; agents can use it once latch is running","state":"enabled"},{"enable":"latch plugins enable messages","name":"messages","reason":"this host has no Full Disk Access; turn it on for /Applications/Plow Latch.app in System Settings (x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles), then run `latch plugins enable messages` again","state":"needs_setup"},{"enable":"latch plugins enable contacts","name":"contacts","reason":"its owner has not enabled it on this host","state":"disabled"}]}"#
+    /// pi-kitchen's own `status --local`, as `status --host pi-kitchen` gives it.
+    static let piStatus = #"{"state_dir":"/home/pi/.latch","version":"0.1.0 (138): commit 4c1e0a2b9, built 2026-10-22 18:04 UTC, standalone, protocol plow/latch/4","protocol":4,"peer":{"name":"pi-kitchen","key":"78d8cd12e343e28d70b1da3ac8a0bb8c37593b5f8d535a58b716b776a91f2edc","kind":"device"},"serve":{"running":true,"ready":true,"configuring":false,"managed":true,"attached":false,"state":"serving","pid":811,"blocked":null},"last_error":null,"update":{"available":false,"build":138,"checked_at":"2026-10-23T08:00:00Z"}}"#
     static let piRules = #"{"agents":[],"audit_id":"c57f1209db34c3767c262960f596b34ec61e8b932a2b3011b3677db297f74bea","every_agent":{"revision":"8419fd077d6e4e3adc59789beedadb9864635746da5e22ae63b727c9b42c8715","text":"This Pi runs the kitchen display. Agents may read ~/recipes and write only to ~/recipes/drafts."},"host":"pi-kitchen","warning":"Freeform rules are judged, not guaranteed. --deny-exec is enforced in code."}"#
     static let piPlugins = #"{"audit_id":"9727a671710eb349e52bc36fc65f7958273c76056619f26705bee57f164b7a5e","plugins":[{"enable":"latch plugins enable google","name":"google","reason":"its owner has not enabled it on this host","state":"disabled"},{"enable":"latch plugins enable messages","name":"messages","reason":"its owner has not enabled it on this host","state":"disabled"},{"enable":"latch plugins enable contacts","name":"contacts","reason":"its owner has not enabled it on this host","state":"disabled"}]}"#
     static let piVault = #"{"audit_id":"1e059a4e60011ac425fc08b23c8c43e6de7a4db7a571fe8fcce7881388c9f00e","items":[]}"#
@@ -214,7 +235,15 @@ nonisolated enum Fixtures {
 /// light and dark, on the fake latch: `swift run Snapshots OUTPUT_DIR`.
 /// Each view draws its own layers, so no screen-recording permission.
 package enum SnapshotRunner {
-    package static func run(into output: URL) async throws {
+    /// Name prefixes of the stills to draw; empty draws them all.
+    private static var only: [String] = []
+
+    private static func wanted(_ file: URL) -> Bool {
+        only.isEmpty || only.contains { file.lastPathComponent.hasPrefix($0) }
+    }
+
+    package static func run(into output: URL, only: [String] = []) async throws {
+        self.only = only
         try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
         let code: LoginCode = try Fixtures.decode(Fixtures.code)
         let rules = "Agents may read and summarize anything in ~/Projects. Ask me before sending any email or deleting files. Never touch ~/Finance."
@@ -223,7 +252,7 @@ package enum SnapshotRunner {
         let full = Progress(passed: [.welcome: .continued, .login: .continued, .privacy: .continued, .rules: .continued,
                                      .google: .continued, .access: .continued, .start: .continued])
 
-        typealias Stage = (Onboarding) -> Void
+        typealias Stage = (Onboarding) async -> Void
         let states: [(String, Step, String, Progress, Stage)] = [
             ("01-welcome", .welcome, Fixtures.loggedOut, Progress(), { _ in }),
             ("02-login-starting", .login, Fixtures.loggedOut, Progress(), { $0.login = .starting }),
@@ -260,25 +289,18 @@ package enum SnapshotRunner {
                 $0.draftRules = rules
                 $0.rulesError = "rules are at most 8 KB together; shorten them, then save again"
             }),
-            ("05-google-not-checked", .google, Fixtures.stopped, Progress(), { $0.google = .unknown }),
-            ("05-google-not-connected", .google, Fixtures.stopped, Progress(), {
-                $0.google = .needed("Plow has no Google account this host can use; connect one in Plow, then run `latch plugins enable google` again")
+            ("05-google-checking", .google, Fixtures.stopped, Progress(), { _ in }),
+            ("05-google-not-connected", .google, Fixtures.stopped, Progress(), { await $0.checkGoogle() }),
+            ("05-google-waiting", .google, Fixtures.stopped, Progress(), {
+                await $0.checkGoogle(); $0.google = .waiting
             }),
-            ("05-google-not-connected-with-link", .google, Fixtures.stopped, Progress(), {
-                $0.google = .needed("connect a Google account in Plow"); $0.googleConnectURL = URL(string: "https://plow.co/connect/google")
+            ("05-google-wait-ended", .google, Fixtures.stopped, Progress(), {
+                await $0.checkGoogle(); $0.googleWaitEnded = true
             }),
-            ("05-google-off-connected-in-plow", .google, Fixtures.stopped, Progress(), {
-                $0.google = .unknown; $0.googleAccounts = ["owner@example.com"]
-            }),
-            ("05-google-connected", .google, Fixtures.stopped, Progress(), {
-                $0.google = .done; $0.googleAccounts = ["owner@example.com"]
-            }),
-            ("05-google-rerun-connected", .google, Fixtures.serving, Progress(rerun: true), {
-                $0.google = .done; $0.googleAccounts = ["owner@example.com", "work@example.com"]
-            }),
-            ("05-google-error", .google, Fixtures.stopped, Progress(), {
-                $0.google = .failed("Plow couldn't be reached at http://127.0.0.1:18934; check your connection, then try again")
-            }),
+            ("05-google-connected-turned-on", .google, Fixtures.stopped, Progress(), { await $0.checkGoogle() }),
+            ("05-google-rerun-connected", .google, Fixtures.serving, Progress(rerun: true), { await $0.checkGoogle() }),
+            ("05-google-plow-unreachable", .google, Fixtures.stopped, Progress(), { await $0.checkGoogle() }),
+            ("05-google-tools-missing", .google, Fixtures.stopped, Progress(), { $0.google = .failed(Onboarding.toolsMissing) }),
             ("06-access-not-checked", .access, Fixtures.stopped, Progress(), { _ in }),
             ("06-access-waiting", .access, Fixtures.stopped, Progress(), {
                 $0.messages = .needed("Waiting for access"); $0.contacts = .needed("Waiting for access"); $0.waitingForAccess = true
@@ -310,6 +332,10 @@ package enum SnapshotRunner {
             ("08-done-all-set", .done, Fixtures.serving, full, {
                 $0.app.stage(rulesSaved: true, setup: try! Fixtures.decode(Fixtures.setup(on: ["google", "messages", "contacts"])))
             }),
+            ("08-done-google-skipped", .done, Fixtures.serving,
+             Progress(passed: full.passed.merging([.google: .skipped]) { $1 }), {
+                $0.app.stage(rulesSaved: true, setup: try! Fixtures.decode(Fixtures.setup(on: ["messages", "contacts"], google: Fixtures.googleNotConnected)))
+            }),
             ("08-done-with-skips", .done, Fixtures.serving, skipped, {
                 $0.app.stage(rulesSaved: false, setup: try! Fixtures.decode(Fixtures.setup(on: [])))
             }),
@@ -320,10 +346,10 @@ package enum SnapshotRunner {
 
         for dark in [false, true] {
             for (name, step, status, progress, stage) in states {
-                let app = AppModel(client: FakeLatchClient(status: status), still: true)
+                let app = AppModel(client: FakeLatchClient(status: status, google: Self.google[name]), still: true)
                 app.stage(status: try Fixtures.decode(status))
                 let flow = app.stage(step, progress: progress)
-                stage(flow)
+                await stage(flow)
                 try await render(OnboardingView(entranceTime: step == .welcome ? 10 : nil).environment(app),
                                  size: Brand.windowSize, dark: dark, file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
             }
@@ -537,20 +563,57 @@ package enum SnapshotRunner {
                 ("19-settings-remote-offline", Fixtures.serving, piOffline, "pi-kitchen", false),
                 ("19-settings-viewer-only", Fixtures.laptop, Fixtures.laptopHosts, nil, false),
             ]
-            for (name, status, account, chosen, checked) in screens {
+            func settingsApp(status: String, account: String, chosen: String?, checked: Bool, plugins: String = Fixtures.studioPlugins,
+                             google: String = Fixtures.googleNotConnected) throws -> AppModel {
                 let app = AppModel(client: FakeLatchClient(), still: true)
                 app.stage(status: try Fixtures.decode(status))
                 app.stage(account: try Fixtures.decode(account))
                 app.stage(agents: try Fixtures.decode(Fixtures.agents), standings: [:])
                 app.stage(summary: HostSummary(rules: .success(try Fixtures.decode(Fixtures.rulesStudio)),
-                                               plugins: .success(try Fixtures.decode(Fixtures.studioPlugins))), for: "studio")
-                app.stage(summary: HostSummary(rules: .success(try Fixtures.decode(Fixtures.rulesKitchen)),
+                                               plugins: .success(try Fixtures.decode(plugins))), for: "studio")
+                app.stage(summary: HostSummary(status: .success(try Fixtures.decode(Fixtures.piStatus)),
+                                               rules: .success(try Fixtures.decode(Fixtures.rulesKitchen)),
                                                plugins: .success(try Fixtures.decode(Fixtures.piPlugins))), for: "pi-kitchen")
                 app.stage(devices: try Fixtures.decode(Fixtures.devices), update: checked ? try Fixtures.decode(Fixtures.updateCheck) : nil)
+                app.stage(connections: Connections(try Fixtures.decode(Fixtures.setup(on: [], google: google)) as SetupStatus))
                 app.chosenHost = chosen
                 app.section = .settings
                 _ = app.stage(.done, progress: full)
+                return app
+            }
+            for (name, status, account, chosen, checked) in screens {
+                let app = try settingsApp(status: status, account: account, chosen: chosen, checked: checked)
                 try await renderWindow(MainView().environment(app), size: CGSize(width: 900, height: 900), dark: dark,
+                                       file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
+            }
+            // This Mac with Google on and Messages needing Full Disk Access.
+            let setUp = try settingsApp(status: Fixtures.serving, account: Fixtures.studioHosts, chosen: nil, checked: false,
+                                        plugins: Fixtures.studioPluginsSetUp)
+            try await renderWindow(MainView().environment(setUp), size: CGSize(width: 900, height: 900), dark: dark,
+                                   file: output.appending(path: "19-settings-this-mac-plugins-\(dark ? "dark" : "light").png"))
+            // Your account › Connections: no Google account, one, two, Plow
+            // out of reach; and where a plugin's Manage Accounts… lands.
+            let connections: [(String, String)] = [
+                ("21-connections-none", Fixtures.googleNotConnected),
+                ("21-connections-one", Fixtures.googleConnected(["ada@example.com"])),
+                ("21-connections-two", Fixtures.googleConnected(["ada@example.com", "ada.work@example.com"])),
+                ("21-connections-unknown", Fixtures.googleUnreachable),
+            ]
+            for (name, google) in connections {
+                let app = try settingsApp(status: Fixtures.serving, account: Fixtures.studioHosts, chosen: nil, checked: false, google: google)
+                app.section = .connections
+                try await renderWindow(MainView().environment(app), size: CGSize(width: 900, height: 700), dark: dark,
+                                       file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
+            }
+            let managing = try settingsApp(status: Fixtures.serving, account: Fixtures.studioHosts, chosen: "pi-kitchen", checked: false,
+                                           google: Fixtures.googleConnected(["ada@example.com"]))
+            managing.manageAccounts()
+            try await renderWindow(MainView().environment(managing), size: CGSize(width: 900, height: 700), dark: dark,
+                                   file: output.appending(path: "21-connections-from-manage-accounts-\(dark ? "dark" : "light").png"))
+            // The Settings window: up to date, and a build available.
+            for (name, status, checked) in [("22-app-settings", Fixtures.serving, true), ("22-app-settings-update", Fixtures.stopped, false)] {
+                let app = try settingsApp(status: status, account: Fixtures.studioHosts, chosen: nil, checked: checked)
+                try await renderWindow(AppSettingsView().environment(app), size: CGSize(width: 520, height: 300), dark: dark,
                                        file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
             }
             let app = AppModel(client: FakeLatchClient(), still: true)
@@ -586,6 +649,16 @@ package enum SnapshotRunner {
 
     private static let mainSize = CGSize(width: 860, height: 560)
 
+    /// What `setup --status` says of Google for each Connect Google still.
+    private static let google: [String: String] = [
+        "05-google-not-connected": Fixtures.googleNotConnected,
+        "05-google-waiting": Fixtures.googleNotConnected,
+        "05-google-wait-ended": Fixtures.googleNotConnected,
+        "05-google-connected-turned-on": Fixtures.googleConnectedOff,
+        "05-google-rerun-connected": Fixtures.googleOn,
+        "05-google-plow-unreachable": Fixtures.googleUnreachable,
+    ]
+
     /// Each host's activity as `latch audit` printed it.
     private static func stageActivity(_ app: AppModel) {
         for host in app.hosts where host.name == "studio" || host.name == "pi-kitchen" {
@@ -593,9 +666,11 @@ package enum SnapshotRunner {
         }
     }
 
-    /// The main window as the window server shows it (sidebar materials and
-    /// toolbar included), drawn off screen.
+    /// The main window, title bar included, drawn off every display from its
+    /// own views: the window server composites nothing there, so it has no
+    /// image of it (nor of the sidebar's materials) to give.
     private static func renderWindow(_ view: some View, size: CGSize, dark: Bool, file: URL) async throws {
+        guard wanted(file) else { return }
         let window = NSWindow(contentRect: CGRect(origin: CGPoint(x: -4000, y: -4000), size: size),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                               backing: .buffered, defer: false)
@@ -604,21 +679,23 @@ package enum SnapshotRunner {
         window.setFrame(CGRect(origin: CGPoint(x: -4000, y: -4000), size: size), display: true)
         window.orderFrontRegardless()
         try await Task.sleep(for: .milliseconds(600))
-        try Render.window(window, to: file)
+        try Render.frame(window, to: file)
         window.orderOut(nil)
         print(file.path)
     }
 
     private static func render(_ view: some View, size: CGSize, dark: Bool, background: Bool = true, file: URL) async throws {
+        guard wanted(file) else { return }
         let host = NSHostingView(rootView: view)
         // The panel is sized as the helper sizes it, not to its content.
         if !background { host.sizingOptions = [] }
         // A floating panel has no title bar, nor its minimum height.
-        let window = NSWindow(contentRect: CGRect(origin: .zero, size: size), styleMask: background ? [.titled, .fullSizeContentView] : [.borderless],
+        // Off every display: nothing shows, and no click lands on it.
+        let window = NSWindow(contentRect: CGRect(origin: CGPoint(x: -4000, y: -4000), size: size),
+                              styleMask: background ? [.titled, .fullSizeContentView] : [.borderless],
                               backing: .buffered, defer: false)
         window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
         window.contentView = host
-        window.alphaValue = 0.01
         window.orderFrontRegardless()
         try await Task.sleep(for: .milliseconds(400))
         try Render.png(host, to: file, background: background)

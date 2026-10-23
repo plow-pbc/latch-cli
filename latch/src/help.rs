@@ -1104,7 +1104,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "rules.try",
         runs_on: |_| RunsOn::Either,
-        output: "`verdict`: allow, not_covered, owner_said_no, no_intent, or host_refused (a refusal the host makes without asking the judge, named in `refused`); `as` (owner, new_agent, or the agent), `request` (the operation, and the action as the judge was shown it: secret values and an exec's stdin masked) and `gate` (the judgment's details: probabilities, source, chat window, rule revisions, model, latency, cost). A refusal is a preview that worked: exit 0. This machine's previews are judged by the calling latch, so they need no running host; another host's go to it. `--draft` judges against draft rules for every agent, never saved; `--new-agent` judges by the rules alone, as a new agent with no chat and no rules of its own, whatever connectors and --deny-exec the host has.",
+        output: "`verdict`: allow, not_covered, owner_said_no, or host_refused (a refusal the host makes without asking the judge, named in `refused`); `as` (owner, new_agent, or the agent), `request` (the operation, and the action as the judge was shown it: secret values and an exec's stdin masked) and `gate` (the judgment's details: probabilities, source, rule revisions, model, latency, cost). An agent's preview is its rules layer: the built-in policy (everyday work allowed, anything riskier needing a rule) and the rules, with no chat; a real call also judges its chat, which may add an OK or a no. A refusal is a preview that worked: exit 0. This machine's previews are judged by the calling latch, so they need no running host; another host's go to it. `--draft` judges against draft rules for every agent, never saved; `--new-agent` judges as a new agent, with no rules of its own, whatever connectors and --deny-exec the host has.",
         effect: Repeatable(
             "asks the gatekeeper, billed to your Plow balance like a real judgment (about $0.0001); the request itself never runs, the draft is never saved, and the preview is not audited",
         ),
@@ -1157,13 +1157,23 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "plugins.enable",
         runs_on: |_| RunsOn::Local,
-        output: "The connector's `state`, enabled, and what its setup found. A setup that fails leaves it needs_setup and says what to do.",
+        output: "The connector's `state`, enabled, and what its setup found. A setup that fails leaves it needs_setup and says what to do. When no Google account is connected in Plow, `enable google` gets a single-use sign-in link from Plow, `sign_in_url` with its `expires_at` (a credential until used: latch never logs or audits it; `connect_url` is Plow's public Connections page). At a terminal it shows the link and a QR code and waits up to 5 minutes for an account Plow did not have, renewing the link if it expires unopened, then enables Google; otherwise it fails with google_not_connected carrying the link: sign in, then run it again. --add-account does the same with Google already connected: it enables Google, then offers a link to add another account; without a terminal or --events the answer is the enable result plus `sign_in_url`, which confirms the enable and the link, not that another account was added. --events (any connector): JSON lines `hello`, a `link` (`url`, `expires_at`) for each link, then one `result` or `error`, with the same wait. sign_in_timeout (exit 1): no new account was seen in time; the person may still be signing in or chose an account Plow already had, and the enable before an add may already have succeeded. Closing stdin (a pipe), Ctrl-C or SIGTERM stops the wait cleanly with no last line: only a `result` confirms it. The enable after the wait is a fresh one, so a `plugins disable google` made during the wait does not hold.",
         effect: Repeatable(
             "runs the connector's setup and, if it succeeds, turns it on for this host",
         ),
         owner_only: true,
         connector: None,
-        examples: &[ex("Turn Google on here", &["plugins", "enable", "google"])],
+        examples: &[
+            ex("Turn Google on here", &["plugins", "enable", "google"]),
+            ex(
+                "From an app: get the sign-in link as a line, then the result",
+                &["plugins", "enable", "google", "--events"],
+            ),
+            ex(
+                "Add another Google account",
+                &["plugins", "enable", "google", "--add-account"],
+            ),
+        ],
     },
     Entry {
         id: "plugins.disable",

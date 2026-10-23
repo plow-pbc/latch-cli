@@ -117,6 +117,16 @@ impl Connectors {
     }
 }
 
+/// `POST /v1/connectors/gmail/connect-code`: a single-use link that signs
+/// a Google account in to the owner's Plow account. The link carries a
+/// credential until it is used or expires, so this is never logged
+/// (no `Debug`); Plow's `code` is in the link and not kept apart.
+#[derive(Deserialize)]
+pub struct ConnectLink {
+    pub url: String,
+    pub expires_at: String,
+}
+
 #[derive(Deserialize, Debug)]
 pub struct Connection {
     pub connected: bool,
@@ -397,6 +407,16 @@ impl Plow {
     pub async fn agent(&self, agent_uid: &str) -> Result<Agent, Failure> {
         let url = format!("{}/v1/agents/{agent_uid}", self.api_url);
         let response = self.send(self.http.get(url)).await?;
+        response.json().await.map_err(|_| bad_answer())
+    }
+
+    /// A fresh Google sign-in link for the owner, as Plow wrote it: a link
+    /// latch built would put the code where agent runtimes redact it.
+    pub async fn google_connect_link(&self) -> Result<ConnectLink, Failure> {
+        let url = format!("{}/v1/connectors/gmail/connect-code", self.api_url);
+        let response = self
+            .send(self.http.post(url).json(&serde_json::json!({})))
+            .await?;
         response.json().await.map_err(|_| bad_answer())
     }
 

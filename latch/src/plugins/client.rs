@@ -25,6 +25,14 @@ use crate::wire::Request;
 const HOLD_WITHIN: Duration = Duration::from_secs(60);
 
 pub async fn run(state: &StateDir, args: PluginsArgs) -> Result<Value, Failure> {
+    let events = matches!(args.command, PluginsCommand::Enable { events: true, .. });
+    let adding = matches!(
+        args.command,
+        PluginsCommand::Enable {
+            add_account: true,
+            ..
+        }
+    );
     let (host, args) = match args.command {
         PluginsCommand::List { host } if hosts::local_target(state, host.as_deref())? => {
             return super::list_saved(state);
@@ -33,10 +41,18 @@ pub async fn run(state: &StateDir, args: PluginsArgs) -> Result<Value, Failure> 
             hosts::resolve(state, host).await?,
             json!({"command": "list"}),
         ),
-        PluginsCommand::Enable { name } => (
-            this_host(state)?,
-            json!({"command": "enable", "name": name}),
-        ),
+        PluginsCommand::Enable {
+            name, add_account, ..
+        } => {
+            if add_account && Connector::named(&name)? != Connector::Google {
+                let message = "only Google takes --add-account".to_string();
+                return Err(Failure::new(code::usage, message));
+            }
+            (
+                this_host(state)?,
+                json!({"command": "enable", "name": name}),
+            )
+        }
         PluginsCommand::Disable { name } => (
             this_host(state)?,
             json!({"command": "disable", "name": name}),
@@ -47,12 +63,28 @@ pub async fn run(state: &StateDir, args: PluginsArgs) -> Result<Value, Failure> 
         args,
         chat: None,
     };
-    match dial::call(state, &host, &request, ANSWER_WITHIN).await {
-        Err(failure) if failure.code == "serve_required" && request.args["name"].is_string() => {
-            without_a_host(state, &request.args).await
+    let send = || async {
+        match dial::call(state, &host, &request, ANSWER_WITHIN).await {
+            Err(failure)
+                if failure.code == "serve_required" && request.args["name"].is_string() =>
+            {
+                without_a_host(state, &request.args).await
+            }
+            answer => answer,
         }
-        answer => answer,
-    }
+    };
+    // Signing in waits here, outside any host call or hold on the state
+    // folder; a stop asked for meanwhile answers null, for nothing to print.
+    let signed_in = match send().await {
+        Err(failure) if failure.code == "google_not_connected" => {
+            super::connect::google(state, Some(failure), None, events, send).await
+        }
+        Ok(result) if adding => {
+            super::connect::google(state, None, Some(result), events, send).await
+        }
+        answer => return answer,
+    };
+    signed_in.map(Option::unwrap_or_default)
 }
 
 /// `enable` or `disable` with no host running: the host's own setup and

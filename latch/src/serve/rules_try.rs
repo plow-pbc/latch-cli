@@ -4,18 +4,19 @@
 //! one meets (`super::check`: the host's own refusals, then the
 //! gatekeeper) and stops there. Owner devices only, like `rules`.
 //!
-//! A `draft` stands in for the saved rules for every agent, and is never
-//! saved. With `new_agent`, the request is judged by the rules alone: as
-//! a new agent, with no chat and no rules of its own, whatever the host's
-//! connectors and `--deny-exec` would refuse. On this machine the preview
-//! is judged in the previewing process (`preview_here`), so it needs no
-//! running host.
+//! An agent is previewed by its rules layer alone (`Caller::RulesLayer`):
+//! the built-in policy and the rules, with no chat. A `draft` stands in
+//! for the saved rules for every agent, and is never saved. With
+//! `new_agent`, the request is judged as a new agent's, with no rules of
+//! its own, whatever the host's connectors and `--deny-exec` would refuse.
+//! On this machine the preview is judged in the previewing process
+//! (`preview_here`), so it needs no running host.
 //!
 //! A refusal is a verdict, not an error: `not_covered`, `owner_said_no`,
-//! `no_intent`, or `host_refused` for a refusal the host makes without
-//! asking the judge (`--deny-exec`, a connector that is off, a path it
-//! never lets a worker use). A preview runs nothing, so it is not audited
-//! and not shown on the dashboard.
+//! or `host_refused` for a refusal the host makes without asking the judge
+//! (`--deny-exec`, a connector that is off, a path it never lets a worker
+//! use). A preview runs nothing, so it is not audited and not shown on the
+//! dashboard.
 
 use serde_json::{Value, json};
 
@@ -135,26 +136,31 @@ async fn preview(
     let chat = request.chat.clone();
     let none_denied = DenyExec::default();
     let rules_alone;
-    let (host, gate) = match new_agent {
-        false => (host, host.gate(judged_as, judged_local, chat.as_deref())),
+    let host = match new_agent {
+        false => host,
         true => {
             rules_alone = Checks {
                 deny_exec: &none_denied,
                 plugins: None,
                 ..*host
             };
-            let gate = match chat {
-                Some(_) => Err(Failure::new(
-                    code::plow_chat_not_supported,
-                    "A new agent has no Plow chat yet; omit --plow-chat and LATCH_PLOW_CHAT".into(),
-                )),
-                None => Ok(Gate {
-                    keeper: host.gatekeeper,
-                    caller: Caller::NewAgent,
-                }),
-            };
-            (&rules_alone, gate)
+            &rules_alone
         }
+    };
+    // An agent, named or new, is previewed by its rules layer alone: what
+    // it may do whatever its chat says.
+    let gate = match (new_agent || args["from"].is_string(), &chat) {
+        (false, _) => host.gate(judged_as, judged_local, chat.as_deref()),
+        (true, Some(_)) => Err(Failure::new(
+            code::plow_chat_not_supported,
+            "A preview judges an agent by its rules alone, with no Plow chat; omit --plow-chat and LATCH_PLOW_CHAT".into(),
+        )),
+        (true, None) => Ok(Gate {
+            keeper: host.gatekeeper,
+            caller: Caller::RulesLayer {
+                agent: judged_as.agent_uid.as_deref(),
+            },
+        }),
     };
     let drafted;
     let gate = match (gate, draft) {

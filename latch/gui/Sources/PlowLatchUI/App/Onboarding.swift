@@ -28,6 +28,22 @@ final class Onboarding {
         var isNeeded: Bool { if case .needed = self { true } else { false } }
     }
 
+    /// Connect Google, as the screen shows it.
+    enum Google: Equatable {
+        /// Asking latch: on arrival, on coming back, or Try again.
+        case checking
+        /// No Google account connected in Plow yet.
+        case notConnected
+        /// The person went to sign in; the screen checks every few seconds.
+        case waiting
+        /// On here, with an account connected in Plow.
+        case connected
+        /// Plow didn't answer, so nobody can say whether Google is connected.
+        case unreachable
+        /// Latch couldn't check or turn Google on: why, in the app's words.
+        case failed(String)
+    }
+
     enum Preview: Equatable {
         case notChecked
         case checking
@@ -116,12 +132,17 @@ final class Onboarding {
     /// Which examples show their request and verdict.
     var openExamples: Set<String> = []
     // Connect Google.
-    var google: Check = .unknown
+    var google: Google = .checking
     var googleAccounts: [String] = []
     /// Where latch says to connect Google, once it has said.
     var googleConnectURL: URL?
-    /// The person went to Plow to connect Google: coming back checks again.
-    private var connectingGoogle = false
+    /// The last wait for a sign-in ended with no account in Plow.
+    var googleWaitEnded = false
+    private var googleTask: Task<Void, Never>?
+    /// Try again's or a return's check, which leaving the screen stops.
+    private var googleCheck: Task<Void, Never>?
+    /// One look at a time: a return to the app during a check adds none.
+    private var lookingAtGoogle = false
     // Contacts & Messages.
     var messages: Check = .unknown
     var contacts: Check = .unknown
@@ -211,6 +232,11 @@ final class Onboarding {
         reviewTask?.cancel()
         reviewTask = nil
         reviewing = false
+        googleTask?.cancel()
+        googleTask = nil
+        googleCheck?.cancel()
+        googleCheck = nil
+        if google == .waiting { google = .notConnected }
         accessTask?.cancel()
         accessTask = nil
         grantGuide?.stop()
@@ -225,7 +251,7 @@ final class Onboarding {
         case .welcome: "Get started"
         case .login, .privacy: "Continue"
         case .rules: savingRules ? "Saving…" : rulesChanged ? "Save rules" : "Continue"
-        case .google: google != .unknown ? "Continue" : googleAccounts.isEmpty ? "Check connection" : "Turn on"
+        case .google: "Continue"
         case .access: accessDone || accessFailed ? "Continue" : accessGranted ? "Turn on" : "Open System Settings"
         case .start: starting ? "Starting…" : runInBackground && app.status?.serve.ready != true ? "Start Latch" : "Continue"
         case .done: "Open Latch"
@@ -236,7 +262,8 @@ final class Onboarding {
         switch step {
         case .login: verified
         case .rules: !savingRules
-        case .google: google != .checking
+        // Continue never skips: until Google is on, Skip for now does that.
+        case .google: google == .connected
         case .access: accessDone || !waitingForAccess
         case .start: !starting
         default: true
@@ -248,8 +275,7 @@ final class Onboarding {
         switch step {
         case .welcome, .login, .privacy: next()
         case .rules: Task { await saveRules() }
-        case .google:
-            if google == .done { next() } else if google == .unknown { Task { await checkGoogle() } } else { skip() }
+        case .google: next()
         case .access:
             if accessDone { next() } else if accessFailed { skip() } else if accessGranted { checkAccess() } else { requestAccess() }
         case .start: Task { await startLatch() }
@@ -270,7 +296,7 @@ final class Onboarding {
     var stepDone: Bool {
         switch step {
         case .rules: !(savedRules ?? "").isEmpty && !rulesChanged
-        case .google: google == .done
+        case .google: google == .connected
         case .access: accessDone
         default: false
         }
@@ -280,7 +306,6 @@ final class Onboarding {
     /// the same thing twice.
     var primarySkips: Bool {
         switch step {
-        case .google: google.isNeeded || { if case .failed = google { true } else { false } }()
         case .access: !accessDone && accessFailed
         default: false
         }
@@ -457,51 +482,99 @@ final class Onboarding {
 
     // MARK: Connect Google
 
-    /// `latch plugins enable google`: connected, or Google isn't connected
-    /// in Plow yet.
+    /// How often the screen checks while the person signs in, and for how
+    /// long, as `latch plugins enable google` waits at a terminal.
+    var googleRecheck: Duration = .seconds(3)
+    var googleWaitLimit: Duration = .seconds(300)
+
+    /// What latch says of Google now: on arrival, on every return to the
+    /// app, and on Try again. An account connected in Plow turns Google on
+    /// here, with no press.
     func checkGoogle() async {
-        google = .checking
-        do {
-            googleAccounts = try await client.enable("google")?.accounts ?? []
-            google = .done
-        } catch let LatchError.failed(failure) where failure.code == "google_not_connected" {
-            google = .needed(failure.message)
-            googleConnectURL = failure.connectUrl
-        } catch {
-            google = .failed((error as? LatchError)?.message ?? error.localizedDescription)
-        }
+        guard !lookingAtGoogle else { return }
+        lookingAtGoogle = true
+        defer { lookingAtGoogle = false }
+        // Waiting, or already on, the screen keeps saying so until latch answers.
+        if google != .waiting, google != .connected { google = .checking }
+        if let seen = await lookAtGoogle() { google = seen }
     }
 
-    /// "Connect Google in Plow": the page latch names; only ever on a click.
-    func connectGoogleInPlow() {
+    /// Try again, or the app back in front: a check that leaving the
+    /// screen stops. One already under way stands for it.
+    func recheckGoogle() {
+        guard step == .google, !lookingAtGoogle else { return }
+        googleCheck = Task { await checkGoogle() }
+    }
+
+    /// "Connect Google": the page latch names opens in the browser, and the
+    /// screen waits for an account, checking every few seconds while it
+    /// shows; only ever on a click.
+    func connectGoogle() {
         guard let url = googleConnectURL else { return }
-        connectingGoogle = true
+        googleWaitEnded = false
+        google = .waiting
         app.open(url)
-    }
-
-    /// Arriving at Google: what latch and Plow say of it. On; connected in
-    /// Plow but off, which Turn on changes; not connected in Plow, with
-    /// where to connect it. Looking never turns it on.
-    func googleAppeared() async {
-        guard google == .unknown, let setup = try? await client.setupStatus(), let step = setup.step("google") else { return }
-        googleAccounts = step.accounts ?? []
-        if step.state == "done" {
-            google = .done
-        } else if let url = step.connectUrl {
-            googleConnectURL = url
-            google = .needed(step.reason)
+        googleTask?.cancel()
+        googleTask = Task {
+            let deadline = ContinuousClock.now + googleWaitLimit
+            while !Task.isCancelled, ContinuousClock.now < deadline {
+                try? await Task.sleep(for: googleRecheck)
+                guard !Task.isCancelled, google == .waiting else { return }
+                await checkGoogle()
+            }
+            if !Task.isCancelled, google == .waiting {
+                google = .notConnected
+                googleWaitEnded = true
+            }
         }
     }
 
-    /// Back in the app: from connecting Google in Plow, checks again;
-    /// otherwise only reads what latch says.
-    func returnedToApp() async {
-        guard step == .google, google != .done, google != .checking else { return }
-        if connectingGoogle {
-            connectingGoogle = false
-            await checkGoogle()
-        } else {
-            await googleAppeared()
+    /// One look: `setup --status` reads what Plow says without changing
+    /// anything; an account there and Google off here runs `plugins enable
+    /// google`. Nil when the screen went meanwhile.
+    private func lookAtGoogle() async -> Google? {
+        let setup: SetupStatus
+        do {
+            setup = try await client.setupStatus()
+        } catch {
+            return Task.isCancelled ? nil : Self.googleProblem(error)
+        }
+        guard !Task.isCancelled else { return nil }
+        guard setup.step("login")?.state == "done" else { return .failed(Self.notLoggedIn) }
+        guard let step = setup.step("google") else { return .failed(Self.couldNotCheck) }
+        // Logged in as the owner, Google's step lacks accounts only when
+        // Plow couldn't be asked.
+        guard let accounts = step.accounts else { return .unreachable }
+        googleAccounts = accounts
+        if step.state == "done" { return .connected }
+        guard !accounts.isEmpty else {
+            googleConnectURL = step.connectUrl
+            if google == .waiting { return .waiting }
+            return step.connectUrl == nil ? .failed(Self.couldNotCheck) : .notConnected
+        }
+        // Turning Google on is this screen's alone: not once it was left.
+        guard !Task.isCancelled, self.step == .google else { return nil }
+        do {
+            googleAccounts = try await client.enable("google")?.accounts ?? accounts
+            googleTask?.cancel()
+            return .connected
+        } catch {
+            return Task.isCancelled ? nil : Self.googleProblem(error)
+        }
+    }
+
+    static let notLoggedIn = "This Mac isn't logged in to Plow. Go back to log in, then try again."
+    static let couldNotCheck = "Latch couldn't check Google just now. Try again."
+    static let toolsMissing = "Latch's Google tools are missing from this Mac. Install Latch again, then try again."
+
+    /// latch's refusal, said plainly: decided on its code, never shown.
+    private static func googleProblem(_ error: Error) -> Google {
+        switch (error as? LatchError)?.code {
+        case "plow_unreachable": .unreachable
+        case "not_logged_in": .failed(notLoggedIn)
+        case "plow_error": .failed("Plow couldn't answer just now. Try again in a moment.")
+        case "gog_not_configured": .failed(toolsMissing)
+        default: .failed(couldNotCheck)
         }
     }
 

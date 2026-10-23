@@ -175,7 +175,9 @@ No Homebrew tap is included.
 - Connectors are off until you turn them on, per host: on the host, with
   or without its `latch serve` running, `latch plugins enable google` (on
   macOS also `messages` and `contacts`) runs the connector's setup and
-  enables it only if that succeeds. `latch plugins disable NAME` refuses new calls at once
+  enables it only if that succeeds; with no Google account in Plow yet,
+  `enable google` signs you in with Google first (a link and QR code at
+  a terminal; `--events` for an app). `latch plugins disable NAME` refuses new calls at once
   and returns once running ones finish. `latch plugins list` shows each
   one's state, this machine's with or without a host running; agents may
   list, never enable or disable. A call to a

@@ -292,9 +292,29 @@ impl TestHost {
         (first, last)
     }
 
+    /// How many judgments the decision route was asked for.
     pub(super) fn judged(&self) -> usize {
-        self.plow.saw("POST /v1/decisions")
+        self.judgments().len()
     }
+
+    /// The state of each judgment, in order: an owner's call, or an
+    /// agent's rules layer, which every agent judgment has. An agent's chat
+    /// layer is asked beside it, in either order.
+    pub(super) fn judgments(&self) -> Vec<Value> {
+        let world = self.plow.world.lock().unwrap();
+        world
+            .asked
+            .iter()
+            .filter(|s| !chat_layer(s))
+            .cloned()
+            .collect()
+    }
+}
+
+/// Whether `state` is an agent's chat layer: a chat that is neither
+/// absent nor the owner's own request.
+pub(super) fn chat_layer(state: &Value) -> bool {
+    state["conversation"] != "(no chat)" && state["conversation"][0]["id"] != "request"
 }
 
 fn exec(script: &str) -> Value {
@@ -458,8 +478,14 @@ async fn the_owners_reply_lets_the_retry_through_and_every_call_is_judged() {
     assert_eq!(gate["owner_messages"], json!(["m1", "m4"]));
     assert_eq!(gate["window"]["count"], 4);
     assert_eq!(gate["model"], gate::MODEL);
-    assert_eq!(gate["model_request"], "req_fake");
-    assert_eq!(gate["cost"], 0.0001);
+    assert_eq!(gate["cost"], 0.0002, "both layers' calls");
+    // The owner's yes is in the chat: the chat layer allowed it.
+    assert_eq!(gate["decided_by"], "chat");
+    assert_eq!(gate["layers"]["chat"]["says"], "allow");
+    assert_eq!(gate["layers"]["rules"]["says"], "neither");
+    for layer in ["rules", "chat"] {
+        assert_eq!(gate["layers"][layer]["model_request"], "req_fake");
+    }
     assert!(gate["p"]["COVERED"].as_f64().unwrap() >= 0.5);
     assert_eq!(records[2]["args"]["argv"][2], "echo tidied >> made");
 
@@ -475,6 +501,10 @@ pub(super) fn always_covered(_: &Value) -> Option<[f64; 3]> {
 
 fn replace_the_judged_write_folder(state: &Value) -> Option<[f64; 3]> {
     let path = Path::new(state["proposed_action"]["writes"][0].as_str().unwrap());
+    // Asked once for each layer: the folder is swapped at the first.
+    if path.is_symlink() {
+        return always_covered(state);
+    }
     std::fs::rename(path, path.with_file_name("approved-before-swap")).unwrap();
     let home = path.parent().unwrap().parent().unwrap();
     std::os::unix::fs::symlink(home.join("outside-write"), path).unwrap();
@@ -545,7 +575,7 @@ async fn a_repeated_google_change_is_judged_afresh_with_no_history() {
     for args in [&search, &send, &send] {
         t.call(&agent, "google", args.clone()).await;
     }
-    let asked = t.plow.world.lock().unwrap().asked.clone();
+    let asked = t.judgments();
     assert_eq!(asked.len(), 3, "each one judged");
     for state in &asked {
         assert!(state.get("already_done_by_agent").is_none(), "{state}");
@@ -567,7 +597,7 @@ async fn a_put_is_judged_at_its_resolved_path_and_a_short_one_changes_nothing() 
     let (_, last) = t.put(&agent, "area", 2, b"hi").await;
     assert!(matches!(last, Some(Response::Ok(_))), "{last:?}");
     assert_eq!(std::fs::read(t.area.join("upload.txt")).unwrap(), b"hi");
-    let asked = t.plow.world.lock().unwrap().asked.clone();
+    let asked = t.judgments();
     let shown = t.area.join("upload.txt").display().to_string();
     assert!(asked[0].to_string().contains(&shown), "{}", asked[0]);
     // An upload that breaks off leaves the old file and nothing beside it.
@@ -597,7 +627,7 @@ async fn a_get_reads_any_readable_path_in_home_and_never_a_hidden_one() {
         .await;
     assert!(matches!(answer, Response::Ok(_)), "{answer:?}");
     assert!(bytes.starts_with(b"Host example"), "{bytes:?}");
-    let asked = t.plow.world.lock().unwrap().asked.clone();
+    let asked = t.judgments();
     let shown = home.join(".ssh/config").display().to_string();
     assert!(asked[0].to_string().contains(&shown), "{}", asked[0]);
     // The host's state, and a link into it, are refused before judging.
@@ -1080,7 +1110,7 @@ async fn the_owners_own_devices_are_judged_as_the_owner() {
     std::fs::write(rules.join("host.txt"), "Never send email.").unwrap();
     t.call(&device, "exec", exec("true")).await;
     t.call(&agent, "exec", exec("true")).await;
-    let asked = t.plow.world.lock().unwrap().asked.clone();
+    let asked = t.judgments();
     let [.., owners, agents] = &asked[..] else {
         panic!("{asked:?}");
     };
@@ -1147,7 +1177,7 @@ async fn an_agent_plow_gives_no_uid_runs_nothing() {
 }
 
 #[tokio::test]
-async fn an_agent_with_no_chat_and_no_rules_has_no_intent() {
+async fn an_agent_with_no_chat_and_no_rules_is_judged_by_the_built_in_policy() {
     let world = World {
         decide: Some(covered_after_a_yes),
         ..World::default()
@@ -1155,11 +1185,18 @@ async fn an_agent_with_no_chat_and_no_rules_has_no_intent() {
     let t = start(world).await;
     let agent = t.caller("agent").await;
     let (answer, _) = t.call(&agent, "exec", exec("touch made")).await;
-    assert_eq!(refusal(&answer).0, Exit::Denied);
-    assert_eq!(refusal(&answer).1, "no_intent");
+    assert_eq!(refusal(&answer).2["reason"], "not_covered");
     assert!(!t.area.join("made").exists());
-    assert_eq!(t.judged(), 0, "nothing to judge, so no model call");
-    assert_eq!(t.audit()[0]["gate"]["verdict"], "no_intent");
+    let asked = t.judgments();
+    assert_eq!(asked.len(), 1);
+    assert_eq!(
+        (&asked[0]["conversation"], &asked[0]["owner_rules"]),
+        (&json!("(no chat)"), &json!("(none)"))
+    );
+    let gate = &t.audit()[0]["gate"];
+    assert_eq!(gate["source"], "defaults");
+    assert_eq!(gate["verdict"], "not_covered");
+    assert!(gate["layers"].get("chat").is_none());
 }
 
 /// The owner's `latch rules` commands over a real connection, as the
@@ -1274,9 +1311,9 @@ async fn the_owners_rules_commands_work_over_the_connection_and_never_for_an_age
 }
 
 /// Rules alone, judged by the real judge: an agent with neither chat nor
-/// rules has no intent; with rules allowing only tests, `pytest` is allowed
-/// every time, repeats included, and `curl` never. `just gatekeeper` runs
-/// it.
+/// rules may do everyday work; with rules allowing only tests, `pytest` is
+/// allowed every time, repeats included, and `curl` never. `just
+/// gatekeeper` runs it.
 #[cfg(feature = "live-model")]
 #[tokio::test]
 async fn live_rules_alone_allow_tests_and_nothing_else() {
@@ -1284,8 +1321,12 @@ async fn live_rules_alone_allow_tests_and_nothing_else() {
 
     let t = start_with(fake::serve(World::default()), provider, DenyExec::default()).await;
     let agent = t.caller("agent").await;
+    // Neither chat nor rules: making a file in the owner's folder is
+    // everyday work, which the built-in policy allows.
     let (answer, _) = t.call(&agent, "exec", exec("touch made")).await;
-    assert_eq!(refusal(&answer).1, "no_intent", "neither chat nor rules");
+    assert!(matches!(answer, Response::Ok(_)), "{answer:?}");
+    assert!(t.area.join("made").exists());
+    assert_eq!(t.audit()[0]["gate"]["source"], "defaults");
 
     // The owner sets the rules as `latch rules set --agent Juno` sends
     // them; the shared folder stands in for ~/work.
@@ -1652,7 +1693,7 @@ async fn messages_and_contacts_reads_are_judged_and_audited_without_a_row() {
 
     // Each call was judged, on its effective request.
     assert_eq!(t.judged(), 3);
-    let asked = t.plow.world.lock().unwrap().asked.clone();
+    let asked = t.judgments();
     assert_eq!(
         asked[0]["proposed_action"],
         json!({"operation": "messages.search", "arguments":
@@ -1824,7 +1865,7 @@ async fn a_later_page_is_judged_on_the_filters_its_cursor_carries() {
     };
     assert_eq!(second["messages"][0]["id"], 301);
     // The judge saw the page's whole request, not an opaque token.
-    let asked = t.plow.world.lock().unwrap().asked.clone();
+    let asked = t.judgments();
     let page = &asked[1]["proposed_action"]["arguments"];
     assert_eq!(page["from"], json!(["+15550000001"]), "{page}");
     assert_eq!(page["after"]["id"], 103, "{page}");

@@ -743,8 +743,23 @@ pub enum PluginsCommand {
         host: Option<String>,
     },
     /// Run NAME's setup for this machine's host, running or not; NAME is
-    /// enabled only if it succeeds (owner only)
-    Enable { name: String },
+    /// enabled only if it succeeds (owner only). When no Google account is
+    /// connected in Plow, `enable google` gets a single-use sign-in link
+    /// from Plow: at a terminal it shows the link and a QR code and waits
+    /// up to 5 minutes for the account; otherwise the error carries it as
+    /// `sign_in_url`
+    Enable {
+        name: String,
+        /// For an app: report as JSON lines on stdout (hello, link, then
+        /// result or error), waiting for a Google sign-in as at a terminal
+        #[arg(long)]
+        events: bool,
+        /// Google only: enable it, then offer a link to sign in another
+        /// Google account, even when one is connected. Without a terminal
+        /// or --events, the answer is the result plus `sign_in_url`
+        #[arg(long)]
+        add_account: bool,
+    },
     /// Turn NAME off on this machine's host: a running one refuses new calls
     /// at once, and this returns once its running ones have finished (owner only)
     Disable { name: String },
@@ -786,11 +801,13 @@ pub enum RulesCommand {
         scope: RulesScope,
     },
     /// Preview the verdict the gatekeeper would give a request right now,
-    /// without running it: as the agent --agent names, or as you. The verdict
-    /// is the gatekeeper's judgment at this moment, so a close call can come
-    /// out differently next time; the answer's `gate.p` shows how sure it
-    /// was. Each preview is billed to your Plow balance like a real
-    /// judgment, about $0.0001
+    /// without running it: as the agent --agent names, or as you. An agent
+    /// is judged by the built-in policy and the rules alone, with no chat:
+    /// what it may do whatever its chat says, though a real call's chat may
+    /// add an OK or a no. The verdict is the gatekeeper's judgment at this
+    /// moment, so a close call can come out differently next time; the
+    /// answer's `gate.p` shows how sure it was. Each preview is billed to
+    /// your Plow balance like a real judgment, about $0.0001
     Try {
         /// The host to preview on [default: this machine's own host]
         #[arg(long)]
@@ -799,9 +816,8 @@ pub enum RulesCommand {
         /// latch it calls from, or its agent uid [default: you]
         #[arg(long, value_name = "NAME")]
         agent: Option<String>,
-        /// Judge by the rules alone, as a new agent would be judged: no Plow
-        /// chat and no rules of its own, whatever connectors and
-        /// --deny-exec the host has
+        /// Judge as a new agent: no rules of its own, whatever connectors
+        /// and --deny-exec the host has
         #[arg(long, conflicts_with = "agent")]
         new_agent: bool,
         /// Judge against draft rules for every agent instead of the saved

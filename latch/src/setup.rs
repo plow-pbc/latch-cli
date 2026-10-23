@@ -176,11 +176,19 @@ impl Setup {
             return;
         }
         step("Connect Google", "latch plugins enable google");
-        let enabled = self.latch(&["plugins", "enable", "google"]);
-        if enabled.ok {
+        // At this terminal, so a Google sign-in shows its link and waits for
+        // the account; a failure says why there itself. Its exit decides.
+        let enabled = self
+            .command(&["plugins", "enable", "google"])
+            .stdin(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .stdout(Stdio::piped())
+            .output();
+        // A stopped wait also exits 0, with nothing on stdout.
+        if enabled.is_ok_and(|output| output.status.success() && !output.stdout.is_empty()) {
             done("Google is connected.");
         } else {
-            failed(&enabled.json, "latch plugins enable google");
+            eprintln!("✗ Google is not on yet.\n  Try again later: latch plugins enable google");
         }
     }
 
@@ -292,15 +300,8 @@ pub fn no_terminal(status: &Status) -> Failure {
         .steps
         .iter()
         .filter(|step| step.state != StepState::Done)
-        .find_map(|step| match (&step.args, &step.connect_url) {
-            (Some(args), _) => Some(format!("latch {}", args.join(" "))),
-            (None, Some(url)) => Some(format!(
-                "connect {} at {url}, then latch plugins enable {}",
-                title(step.step),
-                step.step
-            )),
-            (None, None) => None,
-        })
+        .find_map(|step| step.args.as_ref())
+        .map(|args| format!("latch {}", args.join(" ")))
         .unwrap_or_else(|| "latch status".to_string());
     let message = "latch setup asks questions, so it needs a terminal".to_string();
     let mut failure = Failure::new(code::no_terminal, message);
@@ -346,8 +347,7 @@ pub struct Step {
 #[serde(rename_all = "snake_case")]
 pub enum StepState {
     Done,
-    /// Running `args` does it; for Google with no account in Plow,
-    /// connecting one at `connect_url` comes first.
+    /// Running `args` does it.
     Needed,
     /// Something else comes first: an earlier step, or what `reason` says.
     Blocked,
@@ -501,10 +501,11 @@ fn google_in_plow(step: &mut Step, plow: &Result<crate::plow::Connectors, Failur
         let page = connectors.connections_page();
         step.state = Needed;
         step.reason = format!(
-            "Google is not connected in Plow: connect it at {page}, then run \
-             `latch plugins enable google`."
+            "Google is not connected in Plow: `latch plugins enable google` signs you in, \
+             or connect it at {page} first."
         );
-        step.args = None;
+        // Signs in and waits, reporting as JSON lines; asking mints nothing.
+        step.args = Some(vec!["plugins", "enable", "google", "--events"]);
         step.connect_url = Some(page);
     } else {
         // The connector's own state stands; Plow adds who is connected, and

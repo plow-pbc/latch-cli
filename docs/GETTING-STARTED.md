@@ -213,8 +213,8 @@ See `latch browser --help` for `do`, `fill`, tabs and handoff, and
 
 An agent gets **its own login, with its own Plow agent credential, in its own
 state folder**. The host then judges each of the agent's calls (its
-*gatekeeper*) against what you asked that agent in your Plow chat with it and
-against your rules on that host.
+*gatekeeper*) against your rules on that host and, separately, against what
+you've told that agent in your Plow chat with it.
 
 > **Never copy a device login (a machine's state folder, or its
 > `plow-token`) to an agent.** That login is you: the host sees one of your
@@ -280,17 +280,17 @@ first, made on one of your free lines.
    every command the agent runs; latch does not copy the credential into the
    state folder.
 
-**What the agent gets.** With no chat and no rules, every call the
-gatekeeper judges is refused:
-
-```sh
-latch --state-dir ~/latch-agent exec --host my-mac -- uname -a
-# exit 4 {"error":{"code":"no_intent","message":"The owner has given this agent no instructions: no Plow chat and no rules on this host."}}
-```
-
-Tell it what it may do, either in your Plow chat with the agent ("yes, run
-uname -a on my-mac"), or as standing rules on the host. Rules are owner only,
-run on the host itself or from one of your machines with `--host`:
+**What the agent gets.** Your agents can look things up in your calendar,
+email, messages and files, and create or edit ordinary files, without waiting
+for another request; what they read goes back to the agent. Riskier actions
+(sending, buying, deleting, changing calendars or shared systems, giving a
+program internet access, accessing secrets or sending data elsewhere) need
+permission in your rules or your Plow chat with the agent ("yes, email Jordan
+the update"). The gatekeeper checks your rules on their own, and separately
+what you've told the agent in chat. Your rules remain in force when you ask in
+chat, and they can restrict everyday work too ("Do not read or search this
+Mac's Messages"). Rules are owner only, run on the host itself or from one of
+your machines with `--host`:
 
 ```sh
 latch rules edit                          # opens $EDITOR; on the host itself
