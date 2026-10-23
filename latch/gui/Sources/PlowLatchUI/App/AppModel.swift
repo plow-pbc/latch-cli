@@ -53,9 +53,10 @@ final class AppModel {
         setup = try? await client.setupStatus()
     }
 
-    /// Whether latch says a connector is on; nil before it has said.
+    /// Whether latch says a connector is set up: on, and for Google still
+    /// connected in Plow; nil before it has said.
     func connectorOn(_ name: String) -> Bool? {
-        setup.map { $0.step(name)?.enabled == true }
+        setup.map { $0.step(name)?.state == "done" }
     }
 
     /// For snapshots: what latch said is set up.

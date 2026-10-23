@@ -409,7 +409,7 @@ final class Onboarding {
     func googleAppeared() async {
         guard google == .unknown, let setup = try? await client.setupStatus(), let step = setup.step("google") else { return }
         googleAccounts = step.accounts ?? []
-        if step.enabled == true {
+        if step.state == "done" {
             google = .done
         } else if let url = step.connectUrl {
             googleConnectURL = url
@@ -466,7 +466,7 @@ final class Onboarding {
     /// click.
     func accessAppeared() async {
         guard let setup = try? await client.setupStatus() else { return }
-        for plugin in ["messages", "contacts"] where setup.step(plugin)?.enabled == true {
+        for plugin in ["messages", "contacts"] where setup.step(plugin)?.state == "done" {
             set(plugin, .done)
         }
     }

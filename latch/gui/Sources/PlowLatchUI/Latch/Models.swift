@@ -44,7 +44,7 @@ nonisolated struct LoginCode: Decodable, Equatable {
     var expiresAt: Date?
 }
 
-/// One line of `latch login --events`.
+/// An event of `latch login --events`.
 nonisolated enum LoginEvent: Equatable {
     case code(LoginCode)
     case waiting
@@ -53,33 +53,21 @@ nonisolated enum LoginEvent: Equatable {
     case error(LatchFailure)
 }
 
-nonisolated extension LoginEvent: Decodable {
-    private enum Keys: String, CodingKey { case type, peer, error }
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: Keys.self)
-        switch try c.decode(String.self, forKey: .type) {
-        case "code": self = .code(try LoginCode(from: decoder))
-        case "waiting": self = .waiting
-        case "verified": self = .verified(name: try c.decode(LocalStatus.Peer.self, forKey: .peer).name)
-        case "expired": self = .expired
-        case "error": self = .error(try c.decode(LatchFailure.self, forKey: .error))
-        case let other:
-            throw DecodingError.dataCorruptedError(forKey: .type, in: c, debugDescription: "unknown login event \(other)")
-        }
-    }
-}
-
 /// A line of `latch login --events`: its event, or nil for a line the app
 /// doesn't act on, the opening `hello` and any type a newer latch adds.
 nonisolated struct LoginLine: Decodable {
     var event: LoginEvent?
 
-    private enum Keys: String, CodingKey { case type }
+    private enum Keys: String, CodingKey { case type, peer, error }
 
     init(from decoder: Decoder) throws {
-        switch try decoder.container(keyedBy: Keys.self).decode(String.self, forKey: .type) {
-        case "code", "waiting", "verified", "expired", "error": event = try LoginEvent(from: decoder)
+        let c = try decoder.container(keyedBy: Keys.self)
+        switch try c.decode(String.self, forKey: .type) {
+        case "code": event = .code(try LoginCode(from: decoder))
+        case "waiting": event = .waiting
+        case "verified": event = .verified(name: try c.decode(LocalStatus.Peer.self, forKey: .peer).name)
+        case "expired": event = .expired
+        case "error": event = .error(try c.decode(LatchFailure.self, forKey: .error))
         default: event = nil
         }
     }

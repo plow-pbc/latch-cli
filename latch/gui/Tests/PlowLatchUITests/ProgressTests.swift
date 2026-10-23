@@ -55,15 +55,15 @@ struct ResumeTests {
 
 struct DecodingTests {
     @Test func loginEventsDecodeAsLatchPrintsThem() throws {
-        let code: LoginEvent = try Fixtures.decode(Fixtures.code)
-        guard case let .code(login) = code else { Issue.record("not a code"); return }
+        let code: LoginLine = try Fixtures.decode(Fixtures.code)
+        guard case let .code(login) = code.event else { Issue.record("not a code"); return }
         #expect(login.code == "JFO3S")
         #expect(login.smsto == "SMSTO:+15550000001:JFO3S")
         #expect(login.expiresAt == nil)
-        let verified: LoginEvent = try Fixtures.decode(#"{"type":"verified","peer":{"name":"studio","key":"d9438ef1","kind":"device"}}"#)
-        #expect(verified == .verified(name: "studio"))
-        let error: LoginEvent = try Fixtures.decode(#"{"type":"error","error":{"code":"code_expired","message":"the code expired"}}"#)
-        #expect(error == .error(LatchFailure(code: "code_expired", message: "the code expired")))
+        let verified: LoginLine = try Fixtures.decode(#"{"type":"verified","peer":{"name":"studio","key":"d9438ef1","kind":"device"}}"#)
+        #expect(verified.event == .verified(name: "studio"))
+        let error: LoginLine = try Fixtures.decode(#"{"type":"error","error":{"code":"code_expired","message":"the code expired"}}"#)
+        #expect(error.event == .error(LatchFailure(code: "code_expired", message: "the code expired")))
     }
 
     @Test func aLoginSkipsHelloAndEventsItDoesNotKnow() async throws {
@@ -385,22 +385,6 @@ struct ClosingTests {
         #expect(client.stopped == 0)
     }
 
-    @Test func setUpAgainShowsGoogleAsItIs() async {
-        let client = ScriptedClient { _ in GoogleEnabled(accounts: ["owner@example.com"]) }
-        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
-        client.connectorsOn = ["google"]
-        let flow = app.stage(.google, progress: Progress(rerun: true))
-        await flow.googleAppeared()
-        #expect(flow.google == .done)
-        #expect(flow.stepDone)
-        // Looking never turns it on: a Google that's off waits for the person.
-        client.connectorsOn = []
-        let first = app.stage(.google)
-        await first.googleAppeared()
-        #expect(first.google == .unknown)
-        #expect(client.enabled.isEmpty)
-    }
-
     @Test func googleNotConnectedContinuesWithoutIt() async {
         let notConnected = LatchFailure(code: "google_not_connected", message: "connect Google in Plow")
         let client = ScriptedClient { _ in throw LatchError.failed(notConnected) }
@@ -444,10 +428,20 @@ struct ClosingTests {
         #expect(client.enabled == ["google"])
 
         client.google = #"{"step":"google","state":"done","reason":"Google is connected in Plow (me@example.com); the Google connector is on.","args":null,"enabled":true,"ready":true,"accounts":["me@example.com"]}"#
-        let on = app.stage(.google)
+        let on = app.stage(.google, progress: Progress(rerun: true))
         await on.googleAppeared()
         #expect(on.google == .done)
+        #expect(on.stepDone)
         #expect(on.googleAccounts == ["me@example.com"])
+
+        // Turned on once, then disconnected in Plow: not connected, whatever
+        // was turned on here.
+        client.google = #"{"step":"google","state":"needed","reason":"Google is not connected in Plow: connect it at http://127.0.0.1:18934/connections, then run `latch plugins enable google`.","args":null,"enabled":true,"ready":false,"accounts":[],"connect_url":"http://127.0.0.1:18934/connections"}"#
+        let disconnected = app.stage(.google, progress: Progress(rerun: true))
+        await disconnected.googleAppeared()
+        #expect(disconnected.google.isNeeded)
+        app.stage(rulesSaved: true, setup: try? await client.setupStatus())
+        #expect(Summary.rows(app: app, flow: nil).first { $0.title == "Google" }?.state == "Not set up")
     }
 
     @Test func arrivingAtAccessOnlyReadsWhatsOn() async throws {
