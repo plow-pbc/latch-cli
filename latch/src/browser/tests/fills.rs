@@ -2126,7 +2126,11 @@ async fn no_secret_goes_into_a_form_sent_by_get(engine: &str) {
         LOGIN,
         "Shop",
         &["shop.example"],
-        &[("username", "ada@shop.example"), ("password", PASSWORD)],
+        &[
+            ("username", "ada@shop.example"),
+            ("password", PASSWORD),
+            ("totp", KEY),
+        ],
     );
     // A hidden custom field: a secret, with a line break.
     shop.raw.fields.push(crate::vault::item::Custom {
@@ -2157,17 +2161,20 @@ async fn no_secret_goes_into_a_form_sent_by_get(engine: &str) {
         vec![(local.clone(), "https://login.shop.example".into())],
     ));
     let mut h = Harness::start(browsers, engine).await;
+    // Every form's elements, the last ones below the fold included.
     let open = async |h: &mut Harness| {
         h.call("open", json!({"url": format!("{local}/get-login.html")}))
             .await
-            .unwrap()
+            .unwrap();
+        h.call("observe", json!({"all": true})).await.unwrap()
     };
     // A form that says GET, one whose button says so, one that says
-    // nothing (a GET too), a secret's line breaks, sent as CRLF, and a
-    // password whose field dropped its line break.
+    // nothing (a GET too), a secret's line breaks, sent as CRLF, a code
+    // its field formats as "123 456", and a password whose field dropped
+    // its line break.
     // The item, its fields and their names, and the button.
     type Row<'a> = (&'a str, &'a [(&'a str, &'a str)], &'a str);
-    let rows: [Row; 5] = [
+    let rows: [Row; 6] = [
         (
             &login.item,
             &[("username", "Email"), ("password", "Password")],
@@ -2184,6 +2191,7 @@ async fn no_secret_goes_into_a_form_sent_by_get(engine: &str) {
             "Sign in elsewhere",
         ),
         (&login.item, &[("memo", "Memo")], "Send memo"),
+        (&login.item, &[("otp", "Code")], "Verify by address"),
         (
             &broken.item,
             &[("username", "Email"), ("password", "Password")],

@@ -133,7 +133,8 @@ Both the field's frame and the top-level page must be HTTPS with a real
 host: `http`, IP addresses, local hosts, a page without an address and
 opaque (sandboxed) frames are refused (`origin_mismatch`). While a filled
 secret may be on a page, the browser stops every GET request whose address
-carries it as a query parameter, as a form sent by GET would; the press, or
+carries it as a query parameter (as its field formats it too, "123 456"),
+as a form sent by GET would; the press, or
 the agent's own click, then fails `get_form`, and nothing was sent. A
 username is no secret: an email-first sign-in may carry it to the password
 page in the address.

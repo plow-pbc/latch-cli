@@ -81,16 +81,21 @@ let nextFrame = 0;
 let nextDocument = 0;
 // Filled vault values no GET request may carry as a query parameter
 // (`guard`); the session's `stopped` says one was stopped. Line breaks
-// count alike however written: a form sends a field's as CRLF.
+// count alike however written: a form sends a field's as CRLF. So does a
+// value as a field formats it ("123 456"): the same once the separators a
+// field may add (`reader.js`'s `keeps`) are left out of both.
 const oneNewline = (text) => text.replace(/\r\n?/g, "\n");
+const bare = (text) => text.replace(/[\s\-/.()+]/g, "");
+const same = (guarded, param) =>
+  oneNewline(guarded) === oneNewline(param) || (bare(guarded) !== "" && bare(guarded) === bare(param));
 const guarding = () => Boolean(session?.guard?.length);
 const guardRoute = (route, request) => {
   if (request.method() === "GET") {
     let params = [];
     try {
-      params = [...new URL(request.url()).searchParams.values()].map(oneNewline);
+      params = [...new URL(request.url()).searchParams.values()];
     } catch {}
-    if (session?.guard?.some((v) => params.includes(oneNewline(v)))) {
+    if (session?.guard?.some((v) => params.some((param) => same(v, param)))) {
       session.stopped = true;
       // Aborted, so no error page keeps the address as the tab's.
       return route.abort("aborted");

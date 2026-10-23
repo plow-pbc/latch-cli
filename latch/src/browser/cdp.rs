@@ -21,12 +21,23 @@ pub const OFF_THE_WEB: &[&str] = &["file", "filesystem", "chrome", "devtools", "
 
 /// Whether `url` has a query parameter equal to one of `values`. Line
 /// breaks count alike however they are written: a form sends a field's
-/// as CRLF.
+/// as CRLF. So does a value as a field formats it (a code as "123 456"),
+/// which a fill takes as held: the two are the same once the separators
+/// a field may add (`reader.js`'s `keeps`) are left out of both.
 pub fn carries(url: &str, values: &[String]) -> bool {
     let lines = |text: &str| text.replace("\r\n", "\n").replace('\r', "\n");
+    let bare = |text: &str| -> String {
+        text.chars()
+            .filter(|c| !c.is_whitespace() && !"-/.()+".contains(*c))
+            .collect()
+    };
     url::Url::parse(url).is_ok_and(|url| {
-        url.query_pairs()
-            .any(|(_, value)| values.iter().any(|guarded| lines(guarded) == lines(&value)))
+        url.query_pairs().any(|(_, value)| {
+            values.iter().any(|guarded| {
+                lines(guarded) == lines(&value)
+                    || !bare(guarded).is_empty() && bare(guarded) == bare(&value)
+            })
+        })
     })
 }
 
@@ -423,6 +434,11 @@ mod tests {
             "https://a.example/w?note=line+one%0D%0Aline+two",
             &lines
         ));
+        // A code as its field formats it, but not another number.
+        let code = vec!["123456".to_string()];
+        assert!(carries("https://a.example/w?otp=123+456", &code));
+        assert!(carries("https://a.example/w?otp=123-456", &code));
+        assert!(!carries("https://a.example/w?otp=123+457", &code));
     }
 
     /// While a guard stands, Chrome pauses every request: a GET carrying a
