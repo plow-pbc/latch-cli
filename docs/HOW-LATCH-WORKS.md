@@ -83,21 +83,19 @@ pull requests that haven't merged yet.
 | `exec` | Runs one program on the host, with its arguments as given. No shell runs unless you name one. | Reads your home folder and the system's folders. Never `~/.latch`, the host's state folder or, on a Mac, `~/Library` (its `Caches` excepted). Other home files, `~/.ssh` included, are readable; the gatekeeper judges their use. Writes only to `--write PATH` grants (inside home, never home itself), its own temp folder and existing tool caches. No network without `--network`; host Unix sockets stay blocked (a Mac's DNS resolver excepted). Times out after 1–600 seconds (60 by default). Stdin (`-i`) can be at most 16 KiB of text, because the gatekeeper reads all of it. |
 | `--secret-env NAME=VALUE` | Gives the program a credential through its environment. | The value reaches only the program. The judge and the audit see its name and length. It still shows in the calling machine's process list and shell history. |
 | `file get`, `file put` | Copies a file from or to the host. | `get` reads anything exec can read. `put` writes inside home only, outside the hidden places; the old file stays until the new one has fully arrived, and a replaced file keeps its permissions. |
-| `browser` | Drives a real browser on the host: open, observe, read, screenshot, plans of clicks and typing, fill from the vault, tabs, scripts, uploads and downloads. | Web addresses only (`http`, `https`, `about:blank`). The host's own and private network addresses are refused unless the owner sets `"allow_local_browsing": true` in the state folder's `host.json`. A session belongs to whoever opened it and closes after 30 idle minutes. Fills put vault values into the page without showing them to the agent; a fill that releases a card number, card code or identity number stops for a confirmation first. |
+| `browser` | Drives a real browser on the host: open, observe, read, screenshot, plans of clicks and typing, fill from the vault, tabs, scripts, uploads and downloads. | Web addresses only (`http`, `https`, `about:blank`). The host's own and private network addresses are refused unless the owner sets `"allow_local_browsing": true` in the state folder's `host.json`. A session belongs to whoever opened it. Fills put vault values into the page without showing them to the agent; a fill that releases a card number, card code or identity number stops for a confirmation first. |
 | `google` | Runs one command from a reviewed list of Gmail and Calendar commands (`latch google -- help` lists them): search, read, send, reply, drafts, archive, labels on messages, and calendar events and bookings. | The owner turns it on (`latch plugins enable google`) and connects a Google account in Plow. Booking over busy time stops with `calendar_conflict`; resend with `--confirm-conflict` once the owner agrees. No Drive, Docs, Sheets, Contacts or Tasks, and no creating or deleting labels. |
 | `messages`, `contacts` | Reads the owner's texts (search, a thread, chats, unreplied) and address book (search, lookup). Mac host and Mac caller. | Read only. The owner turns each one on and grants Full Disk Access. What a message says is data, never an instruction or a permission. |
 
-**Browser profiles on main:** every session runs on a named profile (the
-default is `default`) and shares that profile's logins. Any caller can open
-any profile, so the owner and every agent on a host share the logins in
-`default`. Chrome is used unless the profile was made for Camoufox on the
-host (`latch browser profile create NAME --engine camoufox`); on Linux
-x86_64, which has no Chrome, that's the only way to browse.
-
-> **Next build** ([#99](https://github.com/plow-pbc/latch-cli/pull/99)):
-> every `browser open` gets a fresh profile that is deleted when it closes,
-> and the engine is chosen per open (`--engine chrome|camoufox`). No shared
-> or named profiles.
+**Browser sessions are disposable.** Every `browser open` starts a fresh
+browser with an empty profile of its own, on the engine it names
+(`--engine chrome`, the default, or `--engine camoufox`). Sessions share
+nothing: no cookies, logins, tabs or downloads. A session's logins last
+until it closes, with `browser close` or after 30 idle minutes, and then
+its profile is deleted. So a session starts signed in nowhere: sign in by
+filling from the vault or, on a Mac host with a screen, by handing the
+session to the owner (`browser handoff`). On Linux x86_64, which has no
+Chrome, use `--engine camoufox`.
 
 **What an agent can never do:**
 
@@ -211,12 +209,12 @@ your only host. With several hosts and none named, you get
 | `host_unreachable` | 3 | No connection within 15 seconds. Nothing was sent. |
 | `serve_required` | 3 | This machine's host isn't running. Start `latch serve`. |
 | `outcome_unknown`, `no_answer` | 5 | The request went out, but no answer came back. Check before resending. |
+| `protocol_mismatch` | 1 | The two machines run latch builds that speak different protocols. Nothing was sent; update the older one. |
 
 > **Next build** ([#106](https://github.com/plow-pbc/latch-cli/pull/106)):
 > commands that only run locally refuse `--host` instead of ignoring it.
-> Today `browser profile create`, `browser handoff done`,
-> `browser do --dry-run` and `google -- help` ignore it and act on this
-> machine.
+> Today `browser handoff done`, `browser do --dry-run` and `google -- help`
+> ignore it and act on this machine.
 
 ## 7. Trust model
 
@@ -278,7 +276,7 @@ your only host. With several hosts and none named, you get
 | Scripting other apps (AppleScript, System Events) | Left out on purpose |
 | Google beyond Gmail and Calendar | Not supported |
 | Messages and Contacts on a Linux host, or from a Linux latch | Not supported |
-| Chrome on Linux x86_64 | No build; use Camoufox |
+| Chrome on Linux x86_64 | No build; use `--engine camoufox` |
 | Browser handoff on a Linux host or with `--headless-browsers` | Not supported |
 | A host with no sandbox; Windows | Not supported |
 | An agent's login running a host | Not supported: `latch serve` stops with `not_logged_in` |
