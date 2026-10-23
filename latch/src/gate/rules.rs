@@ -33,6 +33,13 @@ pub trait RulesSource: Send + Sync {
     fn rules(&self, agent: &str) -> Result<Rules, String>;
 }
 
+/// The same rules whoever asks: a draft's, fixed for one preview.
+impl RulesSource for Rules {
+    fn rules(&self, _agent: &str) -> Result<Rules, String> {
+        Ok(self.clone())
+    }
+}
+
 /// The most the rules for one agent may come to: every agent's and its own.
 pub const MAX_RULES: u64 = 8 * 1024;
 

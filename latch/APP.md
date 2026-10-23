@@ -37,7 +37,7 @@ works offline and before login. Not being logged in, or not serving, is a
 normal answer, not an error.
 
 ```
-{"state_dir":"/Users/me/.latch","version":"0.1.0 (commit 85469a3b2, built 2026-10-21 04:43 UTC, local build, protocol plow/latch/3)","protocol":3,
+{"state_dir":"/Users/me/.latch","version":"0.1.0 (commit 85469a3b2, built 2026-10-21 04:43 UTC, local build, protocol plow/latch/4)","protocol":4,
  "peer":{"name":"studio","key":"d9438ef1…","kind":"device"},
  "serve":{"running":true,"ready":true,"configuring":false,"managed":true,"state":"serving","pid":63632},
  "last_error":null}
@@ -73,55 +73,77 @@ Quote leading `~` to expand it on the host. Program argv stays literal. The
 remote judge and sealed audit see argv, workdir, writes and network; keep
 credentials out of argv.
 
-## `latch events [--follow] [--after CURSOR] [--lifecycle-only]`
+## `latch status --local --follow`
 
-This reports what the host on this state folder is doing.
+This prints `{"type":"hello","schema":1}`, then `{"type":"status","status":{…}}`
+with what `latch status --local` says, and again whenever that changes: the
+host starting, serving, stopping or failing, a login, an update found. It
+sleeps when nothing changes, never opens the audit, and works before login
+and with the host stopped. When stdin is a pipe, it exits once that pipe
+closes, so an app that dies leaves nothing behind.
 
-It always starts with a snapshot: the host's state and its recent activity,
-oldest first (up to 50 records). With `--follow`, it then prints each change
-as it happens. It sleeps when nothing changes: no polling, no timers. When
-stdin is a pipe, it exits once that pipe closes, so an app that dies leaves
-no `events` behind.
+## `latch audit`
 
 ```
-{"type":"snapshot","cursor":"64617-1792557851878:2:27ff057f18f54d04","host":{"state":"serving"},"activity":[…]}
-{"type":"host","cursor":"…","state":"stopped"}
-{"type":"activity","cursor":"…","entry":{"id":"27ff057f…","time":"2026-10-21T04:44:15.488378Z","caller":"b735f084…","caller_name":null,"agent":null,"op":"exec","decision":"allow","outcome":"ok"}}
+latch audit [--last N | --all] [--before ID]
+latch audit --follow [--after ID | --last N | --all]
 ```
 
-Activity entries:
+This reads the host's audit log, as JSON lines, every form alike:
 
-- Each entry is a verified audit record, without its arguments. Connections are recorded too, as `op: "connect"`.
-- The audit log is sealed on disk; `latch events` opens each record with the state folder's key, so the app never holds the key.
-- An entry's `id` is the record's hash, which is the `audit_id` the caller got back. It is stable across replays.
+```
+{"type":"hello","schema":1}
+{"type":"snapshot","cursor":"<id before the first record shown>","has_older":true}
+{"type":"record","cursor":"27ff057f…","record":{"id":"27ff057f…","time":"2026-10-21T04:44:15.488378Z","caller":"b735f084…","caller_name":"laptop","agent":null,"op":"exec","decision":"allow","outcome":"ok","details":{"started":"…","args":{"argv":["echo","hi"],…},"gate":null}}}
+{"type":"caught_up","cursor":"27ff057f…","has_older":true}
+```
 
-Host lines:
+- It shows the newest 50 records, oldest first; `--last N` shows N, `--all` every one.
+- "Load earlier" is `--before` the first record's id: the page before it, which `has_older` says exists.
+- With `--follow`, each new record follows `caught_up` as it is written. To pick up where you left off, `--follow --after` the last `cursor` you got: every record after it, then the new ones. Nothing is missed or repeated, across host restarts too.
+- `caller_name` is the caller's name as it was when it called: an agent's name in Plow, else its machine's (null on records from before latch kept it).
+- A record's id is the `audit_id` its caller got back. The cursor before the first record is 64 zeros.
+- Don't treat a page as complete before `caught_up`.
+- Without `--follow` it ignores stdin and always prints the whole page. With `--follow`, it exits once stdin (a pipe) closes, at any point, even in the middle of the opening.
+- Each record is opened with the state folder's key on the host, so the app never holds the key. Its `details.args` hide credential-looking values, as the dashboard does: best effort, some can slip through.
 
-- A host line in the `error` state also carries `error` (a message) and `error_code`.
+Errors:
 
-Cursors:
+- `cursor_expired` (exit 2): `--after` or `--before` names a record the log doesn't hold. Read it again without them.
+- `usage` (exit 2): flags that don't go together, `--last` below 1, or an id that isn't one (64 hex characters).
+- `no_host_here` (exit 2): this machine has never served, so it keeps no audit; read a host's with `--host NAME`.
+- `audit_broken` (exit 1): the log fails its checks, or no longer begins with what a follower was sent.
+- A stream can end with one error on stderr after valid lines. Keep the last `cursor` you got.
 
-- Treat a cursor as opaque.
-- `--after CURSOR` picks up right after that line. The snapshot then holds exactly the records since it: none missed, none repeated.
-- A cursor that can't be honoured gets `{"type":"reset"}` and then a fresh snapshot. The app replaces what it holds instead of merging. Three cases:
-  - the host restarted since the cursor;
-  - the audit log no longer matches it;
-  - it is more than 1000 records behind.
+`latch audit verify` (the chain, checked without the key) and `latch audit
+rotate-key` are upkeep, on this machine only.
 
-A follower that stays connected while the host restarts gets the same
-`reset` and a fresh snapshot. Every record is checked the way the host
-checks its log (each record's own hash, and the chain from the first). A
-record that fails those checks is never sent: the stream starts over if the
-log was replaced by a sound one, and otherwise stops with `audit_broken`.
+## Another host: `--host NAME`
 
-`--lifecycle-only` leaves the activity out. That is the menu bar's subscription.
+`latch status --host NAME [--follow]` and `latch audit --host NAME [...]`
+read another of the owner's hosts over latch's connection and print exactly
+what that host's own `status --local [--follow]` and `audit` print there. Only the owner's own devices may
+read them; an agent's login gets exit 4 `owner_only`. Naming this machine
+reads it here.
+
+- An offline host gives exit 3 `host_offline` at once; nothing is shown from
+  elsewhere.
+- Each read is recorded in that host's audit, as `status` or `audit`, when
+  it ends.
+- Each line travels in a frame of its own. A record too large for one (16 MiB)
+  ends the read with exit 1 `record_too_large`, its `id`, `size` and `limit`
+  in the error; it is never left out.
+- A followed stream ends when stdin (a pipe) closes, on Ctrl-C or SIGTERM,
+  closing the connection so the host stops reading too. If that host stops,
+  it ends with exit 3 `host_stopped`; a dropped connection with exit 3
+  `host_unreachable`. Either way, run it again (with `--after` for the audit).
 
 ## Calling this machine's receiver
 
 Run ordinary `latch exec`, `latch file`, `latch browser` and `latch google` commands on the
 host's state folder. A saved host resolves locally, even while Plow is
 unreachable; explicitly naming this machine with `--host` also resolves
-locally. The CLI connects to `<state-dir>/serve-v3.sock`, inside the private
+locally. The CLI connects to `<state-dir>/serve-v4.sock`, inside the private
 state folder, mode 0600. It never dials its own iroh key.
 
 The socket accepts the same length-prefixed `Request` and `Response`

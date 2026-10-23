@@ -109,12 +109,25 @@ impl World {
             return (200, identity.clone());
         }
         if method == "GET" && path == "/v1/connectors" {
-            return (200, json!({"web_base_url": "https://app.example.com/"}));
+            let accounts: Vec<Value> = self
+                .google_accounts
+                .iter()
+                .map(|account| json!({"account": account}))
+                .collect();
+            return (
+                200,
+                json!({"gmail": {"connected": !accounts.is_empty(), "accounts": accounts},
+                       "web_base_url": "https://app.example.com/"}),
+            );
         }
         if path == "/v1/agents" {
             return (
                 200,
-                json!([{"uid": AGENT, "name": "Juno", "provider": "exe"}]),
+                json!([{"uid": AGENT, "name": "Juno", "provider": "exe:juno",
+                        "line": {"uid": LINE, "provider_type": "imessage",
+                                 "provider_key": "+14155550100", "display_name": null},
+                        "created_at": "2026-10-20T10:00:00Z", "status": "running",
+                        "failure_code": null, "credential": null}]),
             );
         }
         if path == "/v1/latch/peers" {

@@ -120,6 +120,104 @@ const ENTRIES: &[Entry] = &[
         ],
     },
     Entry {
+        id: "agents",
+        runs_on: |_| RunsOn::Either,
+        output: "`host` (with --host: its `name` and whether it is `online`; else null) and `agents`, in Plow's order: each one's `uid`, `name`, `kind` (cloud or own), `cloud_kind`, `line` (`number`, `name`), `created_at`, `status` (a cloud agent's phase in Plow; null for own agents), `failure_code`, `last_seen_at` (its credential's last use, not proof it runs) and `standing` on the host (`own_rules`, `exec_blocked`; null without --host).",
+        effect: ReadOnly,
+        owner_only: true,
+        connector: None,
+        examples: &[
+            ex("List the agents", &["agents"]),
+            ex(
+                "And their standing on the host studio",
+                &["agents", "--host", "studio"],
+            ),
+        ],
+    },
+    Entry {
+        id: "agents.show",
+        runs_on: |_| RunsOn::Local,
+        output: "`agent`: the agent, as `agents` lists it (its `standing` null). A failed or teardown agent is still an answer.",
+        effect: ReadOnly,
+        owner_only: true,
+        connector: None,
+        examples: &[ex("One agent, by its name", &["agents", "show", "Scout"])],
+    },
+    Entry {
+        id: "agents.catalog",
+        runs_on: |_| RunsOn::Local,
+        output: "`kinds`: each kind of cloud agent Plow can run, its `id` (for `agents new --cloud`) and `name`.",
+        effect: ReadOnly,
+        owner_only: true,
+        connector: None,
+        examples: &[ex("The kinds of cloud agent", &["agents", "catalog"])],
+    },
+    Entry {
+        id: "agents.lines",
+        runs_on: |_| RunsOn::Local,
+        output: "`lines`: each phone line's `uid`, `number`, `name`, whether it is `available` for a new agent and the `agent_uid` that holds it.",
+        effect: ReadOnly,
+        owner_only: true,
+        connector: None,
+        examples: &[ex(
+            "The phone lines, and which are free",
+            &["agents", "lines"],
+        )],
+    },
+    Entry {
+        id: "agents.new",
+        runs_on: |_| RunsOn::Local,
+        output: "`agent` (as `agents show` gives it; a cloud agent's `status` starts as provisioning), `token_file` (an own agent's credential file, by its absolute path; never the credential) and `api_url` (the Plow an own agent logs in to; null for a cloud agent).",
+        effect: Once(
+            "creates an agent in the account on the phone line given; an own agent's credential is written to a new private file",
+        ),
+        owner_only: true,
+        connector: None,
+        examples: &[
+            ex(
+                "An agent you run yourself",
+                &[
+                    "agents",
+                    "new",
+                    "--own",
+                    "--token-file",
+                    "scout.token",
+                    "--name",
+                    "Scout",
+                    "--line",
+                    "+15550000002",
+                ],
+            ),
+            ex(
+                "A cloud agent Plow runs",
+                &[
+                    "agents",
+                    "new",
+                    "--cloud",
+                    "exe:hermes",
+                    "--name",
+                    "Hermes",
+                    "--line",
+                    "+15550000003",
+                ],
+            ),
+        ],
+    },
+    Entry {
+        id: "agents.remove",
+        runs_on: |_| RunsOn::Local,
+        output: "`removed`: the agent as it was.",
+        effect: Once(
+            "removes the agent from Plow: its credential stops working, its line is freed and its chats are closed",
+        ),
+        owner_only: true,
+        connector: None,
+        examples: &[ex(
+            "Remove an agent without asking",
+            &["agents", "remove", "Scout", "--yes"],
+        )],
+    },
+    Entry {
         id: "devices",
         runs_on: |_| RunsOn::Local,
         output: "`devices`: the account's machines, online or not.",
@@ -142,14 +240,19 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "status",
-        runs_on: |_| RunsOn::Local,
-        output: "This peer, its Plow and the hosts it can reach; with --pretty, a card for a person; with --local, only this machine's own latch, asking no one, its `serve.deny_exec` (`every_agent`, `agent_uids`) as the host runs or last ran, null if its saved flags are unreadable.",
+        runs_on: |_| RunsOn::Either,
+        output: "This peer, its Plow and the hosts it can reach; with --pretty, a card for a person; with --local, only this machine's own latch, asking no one, its `serve.deny_exec` (`every_agent`, `agent_uids`) as the host runs or last ran, null if its saved flags are unreadable; with --host, that host's own `status --local` (owner devices only); with --follow too, JSON lines: `hello`, then a `status` line, again each time it changes.",
         effect: ReadOnly,
         owner_only: false,
         connector: None,
         examples: &[
             ex("Which hosts can I reach?", &["status"]),
             ex("This machine's own latch, offline", &["status", "--local"]),
+            ex("Another host's own latch", &["status", "--host", "studio"]),
+            ex(
+                "Watch this machine's latch",
+                &["status", "--local", "--follow"],
+            ),
         ],
     },
     Entry {
@@ -783,29 +886,59 @@ const ENTRIES: &[Entry] = &[
         examples: &[ex("List the items", &["vault", "--host", "mac", "list"])],
     },
     Entry {
+        id: "vault.show",
+        runs_on: |_| RunsOn::Either,
+        output: "`item` (its metadata, as `list` shows it: its `fields` by label, each marked secret or not) and `values`: the value of each field that is not secret, by label. A secret field's value is never shown.",
+        effect: ReadOnly,
+        owner_only: true,
+        connector: None,
+        examples: &[ex(
+            "Show an item",
+            &["vault", "--host", "mac", "show", "v3"],
+        )],
+    },
+    Entry {
         id: "vault.add",
         runs_on: |_| RunsOn::Either,
         output: "The item added.",
         effect: Once("adds an item to the host's vault"),
         owner_only: true,
         connector: None,
-        examples: &[ex(
-            "Add a login; its password is asked for",
-            &[
-                "vault",
-                "--host",
-                "mac",
-                "add",
-                "--kind",
-                "login",
-                "--title",
-                "Shop",
-                "--site",
-                "shop.example",
-                "--field",
-                "username=ada",
-            ],
-        )],
+        examples: &[
+            ex(
+                "Add a login with its password as JSON on stdin",
+                &[
+                    "vault",
+                    "add",
+                    "--kind",
+                    "login",
+                    "--title",
+                    "Shop",
+                    "--site",
+                    "shop.example",
+                    "--field",
+                    "username=ada",
+                    "--stdin",
+                ],
+            ),
+            ex(
+                "Add a login; its password is asked for",
+                &[
+                    "vault",
+                    "--host",
+                    "mac",
+                    "add",
+                    "--kind",
+                    "login",
+                    "--title",
+                    "Shop",
+                    "--site",
+                    "shop.example",
+                    "--field",
+                    "username=ada",
+                ],
+            ),
+        ],
     },
     Entry {
         id: "vault.edit",
@@ -814,20 +947,26 @@ const ENTRIES: &[Entry] = &[
         effect: Once("changes the item"),
         owner_only: true,
         connector: None,
-        examples: &[ex(
-            "Rename an item",
-            &[
-                "vault",
-                "--host",
-                "mac",
-                "edit",
-                "v1",
-                "--revision",
-                "2",
-                "--title",
-                "Shop (old)",
-            ],
-        )],
+        examples: &[
+            ex(
+                "Change a login's password, given as JSON on stdin",
+                &["vault", "edit", "v1", "--revision", "2", "--stdin"],
+            ),
+            ex(
+                "Rename an item",
+                &[
+                    "vault",
+                    "--host",
+                    "mac",
+                    "edit",
+                    "v1",
+                    "--revision",
+                    "2",
+                    "--title",
+                    "Shop (old)",
+                ],
+            ),
+        ],
     },
     Entry {
         id: "vault.link",
@@ -867,14 +1006,26 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "vault.import",
         runs_on: |_| RunsOn::Either,
-        output: "The items imported.",
-        effect: Once("adds the rows picked at the prompt"),
+        output: "How many rows were `saved`, `updated` (a changed password or authenticator key), left as `duplicates`, and which `failed` and why, with the `source` and the rows `picked`. With --preview, only `preview`: its `source` and `items`, each row's `pick` number, kind, title, username and site, whether it holds a password or authenticator key, whether the vault already holds it or it would update one, and the rows set aside; never a secret.",
+        effect: Once(
+            "adds the rows picked at the prompt or with --pick; --preview adds nothing and is not audited",
+        ),
         owner_only: true,
         connector: None,
-        examples: &[ex(
-            "Import a 1Password export",
-            &["vault", "--host", "mac", "import", "export.1pux"],
-        )],
+        examples: &[
+            ex(
+                "Import a 1Password export",
+                &["vault", "--host", "mac", "import", "export.1pux"],
+            ),
+            ex(
+                "See what an export holds, as JSON",
+                &["vault", "import", "export.csv", "--preview"],
+            ),
+            ex(
+                "Then import rows 1 and 3 to 5",
+                &["vault", "import", "export.csv", "--pick", "1,3-5"],
+            ),
+        ],
     },
     Entry {
         id: "rules.set",
@@ -901,7 +1052,7 @@ const ENTRIES: &[Entry] = &[
         connector: None,
         examples: &[ex(
             "Edit one agent's rules",
-            &["rules", "edit", "--from", "ada"],
+            &["rules", "edit", "--agent", "ada"],
         )],
     },
     Entry {
@@ -924,10 +1075,10 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "rules.try",
-        runs_on: |_| RunsOn::Host,
-        output: "`verdict`: allow, not_covered, owner_said_no, no_intent, or host_refused (a refusal the host makes without asking the judge, named in `refused`); `as` (owner, or the agent), `request` (the operation, and the action as the judge was shown it: secret values and an exec's stdin masked) and `gate` (the judgment's details: probabilities, source, chat window, rule revisions, model, latency, cost). A refusal is a preview that worked: exit 0.",
+        runs_on: |_| RunsOn::Either,
+        output: "`verdict`: allow, not_covered, owner_said_no, no_intent, or host_refused (a refusal the host makes without asking the judge, named in `refused`); `as` (owner, new_agent, or the agent), `request` (the operation, and the action as the judge was shown it: secret values and an exec's stdin masked) and `gate` (the judgment's details: probabilities, source, chat window, rule revisions, model, latency, cost). A refusal is a preview that worked: exit 0. This machine's previews are judged by the calling latch, so they need no running host; another host's go to it. `--draft` judges against draft rules for every agent, never saved; `--new-agent` judges by the rules alone, as a new agent with no chat and no rules of its own, whatever connectors and --deny-exec the host has.",
         effect: Repeatable(
-            "asks the gatekeeper, billed to your Plow balance like a real judgment (about $0.0001); the request itself never runs, and the preview is not audited",
+            "asks the gatekeeper, billed to your Plow balance like a real judgment (about $0.0001); the request itself never runs, the draft is never saved, and the preview is not audited",
         ),
         owner_only: true,
         connector: None,
@@ -935,8 +1086,26 @@ const ENTRIES: &[Entry] = &[
             ex(
                 "Would Penny be allowed to build the site?",
                 &[
-                    "rules", "try", "--from", "Penny", "--", "exec", "--write", "~/site", "--",
+                    "rules", "try", "--agent", "Penny", "--", "exec", "--write", "~/site", "--",
                     "npm", "run", "build",
+                ],
+            ),
+            ex(
+                "Would a new agent be allowed to build the site under draft rules read from stdin?",
+                &[
+                    "rules",
+                    "try",
+                    "--new-agent",
+                    "--draft",
+                    "-",
+                    "--",
+                    "exec",
+                    "--write",
+                    "~/site",
+                    "--",
+                    "npm",
+                    "run",
+                    "build",
                 ],
             ),
             ex(
@@ -981,18 +1150,24 @@ const ENTRIES: &[Entry] = &[
         )],
     },
     Entry {
-        id: "audit.show",
-        runs_on: |_| RunsOn::Local,
-        output: "`records`: every record of this machine's host, opened with the key, each with its `id`; with --follow, one record per line, then each new one.",
+        id: "audit",
+        runs_on: |_| RunsOn::Either,
+        output: "JSON lines: `hello`; a `snapshot` (`cursor`, the id before the first record shown, and `has_older`); a `record` line each (`cursor`, its id, and `record`: id, time, caller, caller_name, agent, op, decision, outcome, and `details` with started, args and gate, credential-looking values hidden, best effort); then `caught_up` (the last `cursor`, `has_older`). With --follow, then each new record. The newest 50 unless --last N or --all; --before ID reads the page before. With --host, another host's, the same lines.",
         effect: ReadOnly,
         owner_only: true,
         connector: None,
         examples: &[
-            ex("Read the audit", &["audit", "show"]),
+            ex("Read the newest records", &["audit"]),
             ex(
-                "Watch the audit as it grows",
-                &["audit", "show", "--follow"],
+                "Read the page before a record",
+                &["audit", "--before", "ID"],
             ),
+            ex("Watch the audit as it grows", &["audit", "--follow"]),
+            ex(
+                "Pick up after the last record you saw",
+                &["audit", "--follow", "--after", "ID"],
+            ),
+            ex("Read another host's audit", &["audit", "--host", "studio"]),
         ],
     },
     Entry {
@@ -1015,15 +1190,6 @@ const ENTRIES: &[Entry] = &[
             "Seal new records under a new key",
             &["audit", "rotate-key"],
         )],
-    },
-    Entry {
-        id: "events",
-        runs_on: |_| RunsOn::Local,
-        output: "JSON lines: a snapshot of the host, then with --follow each change.",
-        effect: ReadOnly,
-        owner_only: true,
-        connector: None,
-        examples: &[ex("Watch this machine's host", &["events", "--follow"])],
     },
     Entry {
         id: "serve",
@@ -1099,7 +1265,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "setup",
         runs_on: |_| RunsOn::Local,
-        output: "At a terminal, each step and the latch command it ran; skipped steps say so. With --status, `steps`: each step's `step` (login, each connector, host), `state` (done, needed or blocked), `reason`, `args` (the words after `latch` that do it, null once done, or while something else must happen first) and, for a connector, `enabled` and `ready` (enabled and served by a running host).",
+        output: "At a terminal, each step and the latch command it ran; skipped steps say so. With --status, `steps`: each step's `step` (login, each connector, host), `state` (done, needed or blocked), `reason`, `args` (the words after `latch` that do it, null once done, or while something else must happen first) and, for a connector, `enabled` and `ready` (enabled and served by a running host). For the owner, the Google step asks Plow (read only) whether Google is connected there: it adds `accounts`, and `connect_url` (where to connect one) while none is; it is blocked when Plow cannot be asked.",
         effect: Repeatable(
             "logs in and enables connectors with no host running, then starts the host if the owner says so; done steps are skipped. --status changes nothing",
         ),
@@ -1123,8 +1289,11 @@ const ENTRIES: &[Entry] = &[
 
 /// The top-level fields of the answers that are plain structs, checked
 /// against those structs by the tests.
-const OUTPUT_FIELDS: &[(&str, &[&str])] =
-    &[("devices", &["devices"]), ("devices.remove", &["removed"])];
+const OUTPUT_FIELDS: &[(&str, &[&str])] = &[
+    ("agents", &["host", "agents"]),
+    ("devices", &["devices"]),
+    ("devices.remove", &["removed"]),
+];
 
 /// The guide for agents, versioned with the binary.
 const SKILL: &str = include_str!("../SKILL.md");
@@ -1694,6 +1863,13 @@ mod tests {
             this_machine: false,
         };
         let answers = [
+            (
+                "agents",
+                serde_json::to_value(crate::agents::AgentsOutput {
+                    host: None,
+                    agents: vec![],
+                }),
+            ),
             (
                 "devices",
                 serde_json::to_value(crate::devices::DevicesOutput { devices: vec![] }),

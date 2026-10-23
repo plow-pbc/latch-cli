@@ -3,6 +3,8 @@
 A command-line peer that lets an agent reach the files, programs and browser
 on a machine its owner trusts, over Plow's directory.
 
+How it fits together, and what it does and doesn't support: [docs/HOW-LATCH-WORKS.md](docs/HOW-LATCH-WORKS.md).
+
 ## Install
 
 This installs the newest release from `releases.plow.co`:
@@ -95,7 +97,9 @@ No Homebrew tap is included.
   end when it has a terminal (`--non-interactive` skips it); on macOS 26
   or later it opens Plow Latch.app instead, whose window takes the same
   steps. `latch setup --status` lists the same steps as JSON, each done,
-  needed or blocked with the command that does it, changing nothing.
+  needed or blocked with the command that does it, changing nothing. Its
+  Google step asks Plow whether Google is connected there, and if not,
+  where to connect it.
 - `latch serve` starts this machine's host as a service of yours (a
   launchd agent on macOS, running the `latch` in `Plow Latch.app`; a systemd
   user service on Linux) and shows its dashboard: Ctrl-C there, or closing
@@ -104,7 +108,7 @@ No Homebrew tap is included.
   stops it, and nothing starts it again until the next `latch serve`.
   `latch dashboard` views a running host (`q` or Ctrl-C closes only the
   view), `latch logs [-f]` shows its log (`serve.log`) and `latch audit
-  show [-f]` its audit.
+  [-f]` its audit.
 - The dashboard lists what callers asked for and how it went: Done,
   Running, Refused (the gatekeeper or your settings), Stopped (a browser
   safety check) or Failed. A browser session's calls, and a plan's steps,
@@ -124,6 +128,17 @@ No Homebrew tap is included.
   also deletes the vault and audit keys and the state folder itself. If Plow
   can't be reached, logout still deletes locally and says the machine is
   still listed: `latch devices remove` from another machine takes it out.
+- `latch agents` lists your account's agents (line, Plow status, when each
+  last used its credential), from one of your own machines. `latch agents
+  --host NAME` adds each one's standing on that host: whether it has rules
+  of its own there and whether the host refuses it `exec`. Audit records
+  name each caller as it was then (`caller_name`). `latch agents catalog`
+  and `latch agents lines` list the cloud agents Plow runs and its phone
+  lines; `latch agents new --line LINE --name NAME` creates one, either
+  `--cloud KIND` or `--own --token-file FILE` (the credential goes only to
+  that new file, mode 600; its program logs in with
+  `PLOW_TOKEN_FILE=FILE latch login`); `latch agents show AGENT` follows a
+  cloud agent's start, and `latch agents remove AGENT` removes one.
 - Exec and file calls need no shared-folder setup. They read home and the
   system's files (programs, libraries, developer tools and certificates),
   except `~/.latch`, this host's state directory, and on macOS `~/Library`
@@ -161,16 +176,18 @@ No Homebrew tap is included.
   list, never enable or disable. A call to a
   connector that is off gets `not_enabled` (exit 4) with the enable command.
 - The host's audit log is sealed: each record is encrypted with the host's
-  audit key, kept with its other secrets. `latch audit show` prints every
-  record in full, each command as it ran; `latch audit verify` checks the
-  chain without the key; `latch audit rotate-key` starts a new key and keeps
-  the old ones (a running `latch serve` uses it from its next record). The serve
-  dashboard and `serve.log` hide credential-looking values in commands, best
-  effort: some can slip through. The sealed log is
+  audit key, kept with its other secrets. `latch audit` prints its newest
+  records as JSON lines (`--before ID` for earlier ones, `--all`, `--follow`);
+  `latch audit verify` checks the chain without the key; `latch audit
+  rotate-key` starts a new key and keeps the old ones (a running `latch
+  serve` uses it from its next record). `latch audit`, the serve dashboard
+  and `serve.log` hide credential-looking values in commands, best effort:
+  some can slip through. The sealed log is
   `audit.sealed.ndjson`; a plaintext `audit.ndjson` from an older latch is
   never read, and latch says it can be deleted.
-- `latch status --local`, `latch events --follow` and `latch login --events`
-  are for an app: see [latch/APP.md](latch/APP.md).
+- `latch status --local [--follow]`, `latch audit` and `latch login --events`
+  are for an app: see [latch/APP.md](latch/APP.md). With `--host NAME`,
+  `status` and `audit` read another of the owner's hosts.
 
 ## On the host itself
 

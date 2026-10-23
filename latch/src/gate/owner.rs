@@ -4,7 +4,7 @@
 //! connection with `--host`, and runs it on this machine's own host state
 //! without.
 //!
-//! `--from NAME` is resolved here, once, to an agent uid: an agent's name,
+//! `--agent NAME` is resolved here, once, to an agent uid: an agent's name,
 //! the peer name of the latch it calls from, or the uid itself. The audit
 //! gets the scope, the uid and the revisions before and after; never text.
 
@@ -28,7 +28,7 @@ pub async fn run(state_dir: &Path, plow: &Plow, host: &str, kind: &str, args: &V
     let command = args["command"].as_str().unwrap_or_default();
     let mut audit = Map::new();
     audit.insert("command".into(), json!(command));
-    let result = match owner_only(kind) {
+    let result = match owner_only(kind, "the rules") {
         Ok(()) => {
             let dir = RulesDir::new(state_dir);
             let from = args["from"].as_str();
@@ -47,19 +47,20 @@ pub async fn run(state_dir: &Path, plow: &Plow, host: &str, kind: &str, args: &V
     crate::vault::host::done(result, audit)
 }
 
-/// Only the owner's own devices may read or change the rules.
-pub(crate) fn owner_only(kind: &str) -> Result<(), Failure> {
+/// Only the owner's own devices may use `what` (the rules, a host's
+/// audit): an agent's key gets exit 4.
+pub(crate) fn owner_only(kind: &str, what: &str) -> Result<(), Failure> {
     if kind == "device" {
         return Ok(());
     }
     Err(Failure::new(
         Exit::Denied,
         "owner_only",
-        "the rules take commands from the owner's own devices only".into(),
+        format!("only the owner's own devices may use {what}"),
     ))
 }
 
-/// The agent `from` names, resolved as `--from` is for every rules
+/// The agent `from` names, resolved as `--agent` is for every rules
 /// command: its uid, and its current name in Plow.
 pub async fn agent(plow: &Plow, from: &str) -> Result<(String, Option<String>), Failure> {
     let account = Account::read(plow).await?;
@@ -154,7 +155,7 @@ async fn show(
             if account.name(&uid).is_none() {
                 shown["deleted"] = json!(true);
                 shown["note"] = json!(
-                    "this agent no longer exists in Plow (re-provisioned or deleted): set its rules again with --from its new name, and clear these with --from its old uid"
+                    "this agent no longer exists in Plow (re-provisioned or deleted): set its rules again with --agent its new name, and clear these with --agent its old uid"
                 );
             } else if text.is_some() {
                 match (dir.peer(&uid)?, account.peer_key(&uid)) {
@@ -204,7 +205,7 @@ fn note_change(audit: &mut Map<String, Value>, change: &Change) {
     audit.insert("after".into(), json!(change.after));
 }
 
-/// The account as `--from` is resolved against: its agents, its peers, and
+/// The account as `--agent` is resolved against: its agents, its peers, and
 /// the agent each agent peer belongs to.
 struct Account {
     agents: Vec<NamedAgent>,
@@ -257,7 +258,7 @@ impl Account {
                 Err(Failure::usage(
                     "not_an_agent",
                     format!(
-                        "{name:?} is a device: `--from` names an agent, and a device is judged on the rules for every agent"
+                        "{name:?} is a device: `--agent` names an agent, and a device is judged on the rules for every agent"
                     ),
                 ))
             }
@@ -270,7 +271,7 @@ impl Account {
                 let mut refused = Failure::usage(
                     "ambiguous_agent",
                     format!(
-                        "{} agents go by {name:?}: {}; name one by its uid with --from",
+                        "{} agents go by {name:?}: {}; name one by its uid with --agent",
                         many.len(),
                         many.join(", ")
                     ),
@@ -726,7 +727,7 @@ mod tests {
         );
         assert_eq!(cy["text"], "Read only.");
 
-        // `--from` shows one agent's beside every agent's, and a deleted
+        // `--agent` shows one agent's beside every agent's, and a deleted
         // agent's rules are shown and cleared by its uid.
         let one = host
             .owner(json!({"command": "show", "from": "3".repeat(32)}))

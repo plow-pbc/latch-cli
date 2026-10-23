@@ -1146,7 +1146,7 @@ fn status_shows_this_machine_once_as_plow_lists_it() {
 }
 
 #[test]
-fn exec_stdin_that_is_too_big_or_never_ends_runs_nothing() {
+fn exec_stdin_that_is_not_judgeable_or_never_ends_runs_nothing() {
     use std::process::Stdio;
     let dir = test_dir();
     let state = dir.path().join("none");
@@ -1171,15 +1171,23 @@ fn exec_stdin_that_is_too_big_or_never_ends_runs_nothing() {
             .stderr(Stdio::piped());
         command.spawn().unwrap()
     };
-    // More than 256 KiB: refused as soon as the 256 KiB + 1st byte arrives.
-    let mut big = run("60");
-    let mut pipe = big.stdin.take().unwrap();
-    let _ = pipe.write_all(&vec![b'x'; 300 * 1024]);
-    let output = big.wait_with_output().unwrap();
-    drop(pipe);
-    assert_eq!(output.status.code(), Some(2), "{output:?}");
-    let error: Value = serde_json::from_slice(&output.stderr).unwrap();
-    assert_eq!(error["error"]["code"], "stdin_too_big");
+    // Valid text reaches the login check; unjudgeable input is refused first.
+    for (bytes, expected) in [
+        (vec![b'x'; 16 * 1024], "not_logged_in"),
+        ("é".repeat(8 * 1024).into_bytes(), "not_logged_in"),
+        (vec![b'x'; 16 * 1024 + 1], "stdin_not_judgeable"),
+        (vec![0xff], "stdin_not_judgeable"),
+        (vec![b'x'; 300 * 1024], "stdin_not_judgeable"),
+    ] {
+        let mut child = run("60");
+        let mut pipe = child.stdin.take().unwrap();
+        let _ = pipe.write_all(&bytes);
+        drop(pipe);
+        let output = child.wait_with_output().unwrap();
+        assert_eq!(output.status.code(), Some(2), "{output:?}");
+        let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(error["error"]["code"], expected, "{output:?}");
+    }
 
     // A pipe left open: refused once --timeout passes, not run on what came.
     let started = std::time::Instant::now();
@@ -1223,13 +1231,32 @@ fn owner_host() -> (tempfile::TempDir, PathBuf, String) {
     (dir, state, key)
 }
 
-/// The audit records of the host on `state`, opened with its key
-/// (`latch audit show`).
+/// Every audit record of the host on `state`, as `latch audit --all`
+/// shows them, each with its `details` (args, gate, started) beside the
+/// rest, as the tests read them. A folder that keeps no audit yet
+/// (`no_host_here`) has none.
 fn audit_records(state: &Path) -> Vec<Value> {
-    let shown = latch(state, &["audit", "show"], &[]);
+    let shown = latch(state, &["audit", "--all"], &[]);
+    if String::from_utf8_lossy(&shown.stderr).contains("no_host_here") {
+        return Vec::new();
+    }
     assert_eq!(shown.status.code(), Some(0), "{shown:?}");
-    let shown: Value = serde_json::from_slice(&shown.stdout).unwrap();
-    shown["records"].as_array().cloned().unwrap_or_default()
+    records_in(&event_lines(&shown))
+}
+
+/// The records among `latch audit` lines, each with its `details` beside
+/// the rest.
+fn records_in(lines: &[Value]) -> Vec<Value> {
+    lines
+        .iter()
+        .filter(|line| line["type"] == "record")
+        .map(|line| {
+            let mut record = line["record"].clone();
+            let details = record["details"].as_object().unwrap().clone();
+            record.as_object_mut().unwrap().extend(details);
+            record
+        })
+        .collect()
 }
 
 /// Points `state`'s later Plow calls at `url`.
@@ -1257,7 +1284,7 @@ fn rules_on_this_machines_own_host_state_are_set_edited_shown_and_audited() {
         ),
     ];
     let (dir, state, key) = owner_host();
-    // `--from`, and the two shows (edit's and the last), each read the account.
+    // `--agent`, and the two shows (edit's and the last), each read the account.
     let (url, server) = fake_plow([account.clone(), account.clone(), account].concat());
     use_plow(&state, &url);
 
@@ -1273,7 +1300,7 @@ fn rules_on_this_machines_own_host_state_are_set_edited_shown_and_audited() {
     let file = rules_file.to_str().unwrap();
     let agent = latch(
         &state,
-        &["rules", "set", "--from", "ada-latch", "--file", file],
+        &["rules", "set", "--agent", "ada-latch", "--file", file],
         &[],
     );
     assert_eq!(agent.status.code(), Some(0), "{agent:?}");
@@ -1684,6 +1711,21 @@ impl LivePlow {
             }
         }
         match (method, path) {
+            // Which accounts are connected, as Plow says, and where it connects them.
+            ("GET", "/v1/connectors") if kind == "device" => {
+                let accounts: Vec<Value> = state
+                    .google
+                    .iter()
+                    .map(|_| json!({"account": "owner@example.com", "is_default": true}))
+                    .collect();
+                (
+                    200,
+                    json!({"gmail": {"connected": !accounts.is_empty(), "connector": "gmail",
+                                     "account": null, "accounts": accounts},
+                           "slack": {"connected": false, "connector": "slack", "accounts": []},
+                           "web_base_url": "https://app.example.com"}),
+                )
+            }
             // Plow's answer with no Google account connected.
             ("POST", "/v1/connectors/gmail/access-token") if state.google.is_none() => {
                 (412, json!({"detail": "No Gmail account connected."}))
@@ -1724,9 +1766,67 @@ impl LivePlow {
                     .collect();
                 (200, json!({"data": listed}))
             }
-            ("GET", "/v1/agents") if kind == "device" => {
-                (200, json!([{"uid": AGENT_UID, "name": "Research bot"}]))
+            // Plow's catalog, its own kind among the cloud ones.
+            ("GET", "/v1/agents/providers") if kind == "device" => (
+                200,
+                json!([{"id": "exe:hermes", "name": "Hermes", "image": "img", "settings": {}},
+                       {"id": "self_hosted", "name": "Self-hosted", "image": null, "settings": {}}]),
+            ),
+            // Plow's lines: one free, one held, one whose create is lost, and a mailbox.
+            ("GET", "/v1/lines") if kind == "device" => {
+                let line = |uid: &str, kind: &str, key: &str, available: bool| {
+                    json!({"uid": uid, "object": "line", "provider_type": kind, "provider_key": key,
+                           "display_name": null, "available": available, "agent_uid": null})
+                };
+                (
+                    200,
+                    json!({"object": "list", "has_more": false, "data": [
+                        line("ln_free", "imessage", "+15550000002", true),
+                        line("ln_taken", "imessage", "+15550000003", false),
+                        line("ln_lost", "imessage", "+15550000004", true),
+                        line("ln_mail", "email", "agent@example.com", true)]}),
+                )
             }
+            ("POST", "/v1/agents") if kind == "device" => {
+                let sent: Value = serde_json::from_slice(&request.body).unwrap();
+                match sent["line_uid"].as_str().unwrap() {
+                    "ln_taken" => (409, json!({"detail": {"code": "AGENT_EXISTS",
+                        "agent_uid": AGENT_UID, "message": "Delete the existing agent before creating another."}})),
+                    "ln_lost" => (500, json!({})),
+                    line => {
+                        let own = sent["provider"] == "self_hosted";
+                        let agent = json!({"uid": "fedcba9876543210fedcba9876543210",
+                            "name": sent["name"], "provider": sent["provider"],
+                            "line": {"uid": line, "object": "line", "provider_type": "imessage",
+                                     "provider_key": "+15550000002", "display_name": null},
+                            "created_at": "2026-10-23T10:00:00Z",
+                            "status": if own { Value::Null } else { json!("provisioning") },
+                            "failure_code": null, "credential": null});
+                        let token = if own { json!("made-up-agent-credential") } else { Value::Null };
+                        (201, json!({"agent": agent, "token": token}))
+                    }
+                }
+            }
+            ("DELETE", path) if kind == "device" && path == format!("/v1/agents/{AGENT_UID}") => (
+                200,
+                json!({"uid": AGENT_UID, "name": "Research bot", "provider": "self_hosted",
+                       "line": {"uid": "line_agent", "object": "line", "provider_type": "imessage",
+                                "provider_key": "+14155550123", "display_name": "Research line"},
+                       "created_at": "2026-10-20T10:00:00Z", "status": null,
+                       "failure_code": null, "credential": null}),
+            ),
+            // As Plow lists them: one agent its owner runs.
+            ("GET", "/v1/agents") if kind == "device" => (
+                200,
+                json!([{"uid": AGENT_UID, "name": "Research bot", "provider": "self_hosted",
+                        "line": {"uid": "line_agent", "object": "line", "provider_type": "imessage",
+                                 "provider_key": "+14155550123", "display_name": "Research line"},
+                        "mailbox": null, "created_at": "2026-10-20T10:00:00Z", "url": null,
+                        "image": null, "status": null, "failure_code": null, "settings": {},
+                        "credential": {"id": 7, "name": null, "scopes": [], "connected": false,
+                                       "created_at": "2026-10-20T10:00:00Z",
+                                       "last_seen_at": "2026-10-22T09:00:00Z"}}]),
+            ),
             ("GET", "/v1/agents/me") if kind == "agent" => (
                 200,
                 json!({"agent": {"uid": AGENT_UID, "name": "Research bot"}}),
@@ -2114,11 +2214,8 @@ fn the_audit_verifies_without_its_key_reads_with_it_and_survives_a_rotation() {
     assert_eq!(rotated["keys"], json!(["k1", "k2"]));
     let show = latch(&state, &["rules", "show"], &[]);
     assert_eq!(show.status.code(), Some(0), "{show:?}");
-    let (code, shown) = run(&["audit", "show"]);
-    assert_eq!(code, Some(0), "{shown}");
-    let commands: Vec<&str> = shown["records"]
-        .as_array()
-        .unwrap()
+    let records = audit_records(&state);
+    let commands: Vec<&str> = records
         .iter()
         .map(|record| record["args"]["command"].as_str().unwrap())
         .collect();
@@ -2130,7 +2227,7 @@ fn the_audit_verifies_without_its_key_reads_with_it_and_survives_a_rotation() {
     assert_eq!(code, Some(0), "{verified}");
     assert_eq!(verified["records"], 2);
     assert_eq!(verified["checked_without_the_key"], true);
-    let (code, refused) = run(&["audit", "show"]);
+    let (code, refused) = run(&["audit"]);
     assert_eq!(code, Some(1), "{refused}");
     assert_eq!(refused["error"]["code"], "audit_key");
 }
@@ -2148,7 +2245,7 @@ fn serve_log_says_its_commands_hide_credentials_only_best_effort() {
         .find(|line| line.contains("commands in this log:"))
         .expect("serve.log says how it shows commands");
     assert!(
-        note.contains("best effort") && note.contains("latch audit show"),
+        note.contains("best effort") && note.contains("some can slip through"),
         "{note}"
     );
 }
@@ -2341,6 +2438,270 @@ fn a_latch_trace_that_is_not_a_filter_is_a_usage_error() {
     assert!(out.stdout.is_empty());
 }
 
+/// `latch agents` lists the account's agents as Plow does, for the owner
+/// only; with --host naming this machine, each one's standing here, from
+/// its rules and the flags its host last ran with.
+#[test]
+fn agents_are_listed_for_the_owner_with_their_standing_on_a_host() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let listed = latch(&host, &["agents"], &[]);
+    assert_eq!(listed.status.code(), Some(0), "{listed:?}");
+    let listed: Value = serde_json::from_slice(&listed.stdout).unwrap();
+    assert_eq!(
+        listed,
+        json!({"host": null, "agents": [{"uid": AGENT_UID, "name": "Research bot", "kind": "own",
+               "cloud_kind": null, "line": {"number": "+14155550123", "name": "Research line"},
+               "created_at": "2026-10-20T10:00:00Z", "status": null, "failure_code": null,
+               "last_seen_at": "2026-10-22T09:00:00Z", "standing": null}]})
+    );
+
+    // The host last ran refusing this agent exec; no rules of its own.
+    fs::write(
+        host.join("serve-args.json"),
+        format!(r#"["--deny-exec={AGENT_UID}"]"#),
+    )
+    .unwrap();
+    let before = audit_records(&host).len();
+    let here = latch(&host, &["agents", "--host", "host"], &[]);
+    assert_eq!(here.status.code(), Some(0), "{here:?}");
+    let here: Value = serde_json::from_slice(&here.stdout).unwrap();
+    assert_eq!(here["host"], json!({"name": "host", "online": false}));
+    assert_eq!(
+        here["agents"][0]["standing"],
+        json!({"own_rules": false, "exec_blocked": true})
+    );
+    assert_eq!(audit_records(&host).len(), before, "a list is not audited");
+
+    // An agent's login gets owner_only before anything is asked of Plow.
+    let agent_token = dir.path().join("agent.token");
+    fs::write(&agent_token, "agent-credential\n").unwrap();
+    let agent = dir.path().join("agent");
+    let agent_env = [("PLOW_TOKEN_FILE", agent_token.as_path())];
+    let login = latch(&agent, &["login", "--api-url", &plow.url], &agent_env);
+    assert_eq!(login.status.code(), Some(0), "{login:?}");
+    let seen = plow.seen().len();
+    let refused = latch(&agent, &["agents"], &agent_env);
+    assert_eq!(refused.status.code(), Some(4), "{refused:?}");
+    let error: Value = serde_json::from_slice(&refused.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "owner_only");
+    assert_eq!(plow.seen().len(), seen);
+}
+
+/// The owner reads Plow's catalog and lines, creates an own agent whose
+/// credential goes only to a new private file, and removes an agent once
+/// told to; latch never resends a create whose answer was lost.
+#[test]
+fn agents_are_shown_created_and_removed_by_their_owner() {
+    use std::os::unix::fs::PermissionsExt;
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let run = |args: &[&str]| {
+        let output = latch(&host, args, &[]);
+        let printed = if output.status.success() {
+            &output.stdout
+        } else {
+            &output.stderr
+        };
+        let json: Value = serde_json::from_slice(printed).unwrap_or(Value::Null);
+        (output.status.code(), json, output)
+    };
+    let posts = || {
+        plow.seen()
+            .iter()
+            .filter(|(line, _)| line.starts_with("POST /v1/agents "))
+            .count()
+    };
+
+    let (code, catalog, _) = run(&["agents", "catalog"]);
+    assert_eq!(code, Some(0), "{catalog}");
+    assert_eq!(
+        catalog,
+        json!({"kinds": [{"id": "exe:hermes", "name": "Hermes"}]})
+    );
+    let (_, lines, _) = run(&["agents", "lines"]);
+    let numbers: Vec<&Value> = lines["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| &l["number"])
+        .collect();
+    assert_eq!(
+        numbers,
+        ["+15550000002", "+15550000003", "+15550000004"],
+        "no mailbox"
+    );
+    assert_eq!(lines["lines"][1]["available"], false);
+
+    let (code, shown, _) = run(&["agents", "show", "Research bot"]);
+    assert_eq!(code, Some(0), "{shown}");
+    assert_eq!(shown["agent"]["uid"], AGENT_UID);
+    let (_, by_uid, _) = run(&["agents", "show", AGENT_UID]);
+    assert_eq!(by_uid, shown);
+    let (code, missing, _) = run(&["agents", "show", "Nobody"]);
+    assert_eq!(
+        (code, &missing["error"]["code"]),
+        (Some(2), &json!("no_such_agent"))
+    );
+
+    // An own agent: its credential only in the new file, mode 600.
+    let token_file = dir.path().join("scout.token");
+    let path = token_file.to_str().unwrap();
+    let new_own = [
+        "agents",
+        "new",
+        "--own",
+        "--token-file",
+        path,
+        "--name",
+        " Scout ",
+        "--line",
+        "+15550000002",
+    ];
+    let (code, made, output) = run(&new_own);
+    assert_eq!(code, Some(0), "{made}");
+    assert_eq!(made["agent"]["name"], "Scout");
+    assert_eq!(made["agent"]["kind"], "own");
+    assert_eq!(made["token_file"], path);
+    assert_eq!(made["api_url"], plow.url.as_str());
+    assert_eq!(
+        fs::read_to_string(&token_file).unwrap(),
+        "made-up-agent-credential\n"
+    );
+    assert_eq!(
+        fs::metadata(&token_file).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("made-up-agent-credential"));
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("made-up-agent-credential"));
+
+    // The same file again: refused before Plow is asked, the file untouched.
+    let before = posts();
+    let (code, error, _) = run(&new_own);
+    assert_eq!(
+        (code, &error["error"]["code"]),
+        (Some(2), &json!("token_file_exists"))
+    );
+    assert_eq!(posts(), before);
+    let (code, error, _) = run(&[
+        "agents",
+        "new",
+        "--own",
+        "--token-file",
+        "-",
+        "--name",
+        "S",
+        "--line",
+        "ln_free",
+    ]);
+    assert_eq!((code, &error["error"]["code"]), (Some(2), &json!("usage")));
+
+    // A held line, then a lost answer: the reserved file goes, and the lost
+    // create is reported, never resent.
+    let taken = dir.path().join("taken.token");
+    let (code, error, _) = run(&[
+        "agents",
+        "new",
+        "--own",
+        "--token-file",
+        taken.to_str().unwrap(),
+        "--name",
+        "Two",
+        "--line",
+        "ln_taken",
+    ]);
+    assert_eq!(
+        (code, &error["error"]["code"]),
+        (Some(2), &json!("line_taken")),
+        "{error}"
+    );
+    assert!(!taken.exists());
+    let before = posts();
+    let (code, error, _) = run(&[
+        "agents",
+        "new",
+        "--cloud",
+        "exe:hermes",
+        "--name",
+        "H",
+        "--line",
+        "ln_lost",
+    ]);
+    assert_eq!(
+        (code, &error["error"]["code"]),
+        (Some(5), &json!("outcome_unknown")),
+        "{error}"
+    );
+    assert_eq!(posts(), before + 1, "sent once");
+    let (code, error, _) = run(&[
+        "agents",
+        "new",
+        "--cloud",
+        "self_hosted",
+        "--name",
+        "H",
+        "--line",
+        "ln_free",
+    ]);
+    assert_eq!(
+        (code, &error["error"]["code"]),
+        (Some(2), &json!("unknown_cloud_kind"))
+    );
+    let (code, error, _) = run(&[
+        "agents",
+        "new",
+        "--cloud",
+        "exe:hermes",
+        "--name",
+        "H",
+        "--line",
+        "+1999",
+    ]);
+    assert_eq!(
+        (code, &error["error"]["code"]),
+        (Some(2), &json!("no_such_line"))
+    );
+    let (code, cloud, _) = run(&[
+        "agents",
+        "new",
+        "--cloud",
+        "exe:hermes",
+        "--name",
+        "Hermes",
+        "--line",
+        "ln_free",
+    ]);
+    assert_eq!(code, Some(0), "{cloud}");
+    assert_eq!(
+        (
+            &cloud["agent"]["status"],
+            &cloud["token_file"],
+            &cloud["api_url"]
+        ),
+        (&json!("provisioning"), &Value::Null, &Value::Null)
+    );
+
+    // Removing asks first; with no one to ask, --yes.
+    let deletes = || {
+        plow.seen()
+            .iter()
+            .filter(|(line, _)| line.starts_with("DELETE "))
+            .count()
+    };
+    let (code, error, _) = run(&["agents", "remove", "Research bot"]);
+    assert_eq!(
+        (code, &error["error"]["code"]),
+        (Some(2), &json!("confirmation_required"))
+    );
+    assert_eq!(deletes(), 0);
+    let (code, removed, _) = run(&["agents", "remove", "Research bot", "--yes"]);
+    assert_eq!(code, Some(0), "{removed}");
+    assert_eq!(removed["removed"]["uid"], AGENT_UID);
+    assert_eq!(deletes(), 1);
+}
+
 #[test]
 fn the_owners_rules_commands_reach_a_host_and_an_agents_never_do() {
     let plow = LivePlow::start();
@@ -2384,7 +2745,7 @@ fn the_owners_rules_commands_reach_a_host_and_an_agents_never_do() {
                 "set",
                 "--host",
                 "host",
-                "--from",
+                "--agent",
                 "Research bot",
                 "--file",
                 file,
@@ -2393,16 +2754,25 @@ fn the_owners_rules_commands_reach_a_host_and_an_agents_never_do() {
         ),
         run(
             &owner,
-            &["rules", "edit", "--host", "host", "--from", "Research bot"],
+            &["rules", "edit", "--host", "host", "--agent", "Research bot"],
             &[("EDITOR", editor.as_path())],
         ),
         run(&owner, &["rules", "show", "--host", "host"], &[]),
     ];
+    // The agent has rules of its own there; the host refuses no one exec.
+    let listed = run(&owner, &["agents", "--host", "host"], &[]);
     let agent_runs: Vec<_> = [
         &["rules", "show", "--host", "host"][..],
         &["rules", "set", "--host", "host", "Anything goes."],
         &["rules", "edit", "--host", "host"],
-        &["rules", "clear", "--host", "host", "--from", "Research bot"],
+        &[
+            "rules",
+            "clear",
+            "--host",
+            "host",
+            "--agent",
+            "Research bot",
+        ],
     ]
     .iter()
     .map(|args| run(&agent, args, &[("EDITOR", editor.as_path()), agent_env[0]]))
@@ -2410,7 +2780,14 @@ fn the_owners_rules_commands_reach_a_host_and_an_agents_never_do() {
     let rules_after_agent = fs::read_to_string(host.join(format!("rules/{AGENT_UID}.txt")));
     let cleared = run(
         &owner,
-        &["rules", "clear", "--host", "host", "--from", "Research bot"],
+        &[
+            "rules",
+            "clear",
+            "--host",
+            "host",
+            "--agent",
+            "Research bot",
+        ],
         &[],
     );
 
@@ -2431,6 +2808,12 @@ fn the_owners_rules_commands_reach_a_host_and_an_agents_never_do() {
     assert_eq!(shown["every_agent"]["text"], "Never send email.");
     assert_eq!(shown["agents"][0]["text"], edited_text);
     assert_eq!(shown["agents"][0]["agent_name"], "Research bot");
+    assert_eq!(listed.0, Some(0), "{}", listed.1);
+    assert_eq!(listed.1["host"], json!({"name": "host", "online": true}));
+    assert_eq!(
+        listed.1["agents"][0]["standing"],
+        json!({"own_rules": true, "exec_blocked": false})
+    );
     for (code, json) in &agent_runs {
         assert_eq!(*code, Some(4), "{json}");
         assert_eq!(json["error"]["code"], "owner_only", "{json}");
@@ -2446,11 +2829,43 @@ fn the_owners_rules_commands_reach_a_host_and_an_agents_never_do() {
     // Nothing was written on the machines the commands came from.
     assert!(!owner.join("rules").exists() && !agent.join("rules").exists());
 
-    // The host audited every command by revision, never by text.
+    // Connections are named as their calls are: the owner's machine at once.
+    let connects: Vec<Value> = audit_records(&host)
+        .into_iter()
+        .filter(|record| record["op"] == "connect" && record["agent"].is_null())
+        .map(|record| record["caller_name"].clone())
+        .collect();
+    assert!(
+        !connects.is_empty() && connects.iter().all(|name| name == "owner-mac"),
+        "{connects:?}"
+    );
+    // The host audited every command by revision, never by text, and
+    // named each caller: a machine by its name, the agent by its name in
+    // Plow once the host has looked it up (never waiting to, so not on its
+    // first call).
     let records: Vec<Value> = audit_records(&host)
         .into_iter()
         .filter(|record| record["op"] == "rules")
         .collect();
+    let names: Vec<&Value> = records
+        .iter()
+        .map(|record| &record["caller_name"])
+        .collect();
+    assert_eq!(names[0], "owner-mac");
+    let agents: Vec<&Value> = records
+        .iter()
+        .filter(|record| record["decision"] == "deny")
+        .map(|record| &record["caller_name"])
+        .collect();
+    assert_eq!(
+        agents,
+        [
+            &Value::Null,
+            &json!("Research bot"),
+            &json!("Research bot"),
+            &json!("Research bot")
+        ]
+    );
     let log = Value::from(records.clone()).to_string();
     let decisions: Vec<(&str, &str)> = records
         .iter()
@@ -2468,6 +2883,8 @@ fn the_owners_rules_commands_reach_a_host_and_an_agents_never_do() {
             ("set", "allow"),
             ("show", "allow"),
             ("edit", "allow"),
+            ("show", "allow"),
+            // `agents --host`, reading the rules there.
             ("show", "allow"),
             ("show", "deny"),
             ("set", "deny"),
@@ -2520,7 +2937,7 @@ fn local_status_says_login_serving_and_how_the_host_ended_without_asking_plow() 
     let before = local(&never);
     assert!(!never.exists(), "status --local made the state folder");
     assert_eq!(before["peer"], Value::Null);
-    assert_eq!(before["protocol"], 3);
+    assert_eq!(before["protocol"], 4);
     assert_eq!(
         before["serve"],
         json!({"running": false, "ready": false, "configuring": false, "managed": false, "attached": false,
@@ -2564,15 +2981,16 @@ fn local_status_says_login_serving_and_how_the_host_ended_without_asking_plow() 
     assert_eq!(statuses, 0, "{:?}", plow.seen());
 }
 
-/// A running `latch events`, its lines read as they come.
-struct Events {
+/// A running stream of lines (`latch audit --follow`, `latch status
+/// --local --follow`), read as they come.
+struct Lines {
     child: std::process::Child,
     lines: std::sync::mpsc::Receiver<Value>,
 }
 
-impl Events {
-    fn start(state: &Path, args: &[&str]) -> Events {
-        let mut child = latch_command(state, &[&["events"], args].concat(), &[])
+impl Lines {
+    fn start(state: &Path, args: &[&str]) -> Lines {
+        let mut child = latch_command(state, args, &[])
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .spawn()
@@ -2584,21 +3002,43 @@ impl Events {
                 let _ = send.send(serde_json::from_str(&line.unwrap()).unwrap());
             }
         });
-        Events { child, lines }
+        Lines { child, lines }
     }
 
     fn next(&self) -> Value {
         self.lines
             .recv_timeout(std::time::Duration::from_secs(20))
-            .expect("no event within 20 s")
+            .expect("no line within 20 s")
     }
 
-    /// The next line that is not a host step or a connection's record.
-    fn next_activity(&self) -> Value {
+    /// The lines up to and including `caught_up`.
+    fn opening(&self) -> Vec<Value> {
+        let mut lines = vec![self.next()];
+        while lines.last().unwrap()["type"] != "caught_up" {
+            lines.push(self.next());
+        }
+        lines
+    }
+
+    /// The next record that is not a connection's.
+    fn next_record(&self) -> Value {
         loop {
             let line = self.next();
-            if line["type"] != "host" && line["entry"]["op"] != "connect" {
+            assert_eq!(line["type"], "record", "{line}");
+            if line["record"]["op"] != "connect" {
                 return line;
+            }
+        }
+    }
+
+    /// The next status whose host is in `state`, skipping the steps on
+    /// the way.
+    fn status_in(&self, state: &str) -> Value {
+        loop {
+            let line = self.next();
+            assert_eq!(line["type"], "status", "{line}");
+            if line["status"]["serve"]["state"] == state {
+                return line["status"].clone();
             }
         }
     }
@@ -2613,7 +3053,7 @@ impl Events {
             }
             assert!(
                 std::time::Instant::now() < deadline,
-                "events outlived its stdin"
+                "the stream outlived its stdin"
             );
             thread::sleep(std::time::Duration::from_millis(20));
         }
@@ -2621,7 +3061,7 @@ impl Events {
 }
 
 #[test]
-fn events_follow_the_host_and_its_activity_resume_exactly_and_reset_after_a_restart() {
+fn audit_follows_its_records_and_resumes_after_one_exactly_across_a_host_restart() {
     let plow = LivePlow::start();
     let (_relay, relay) = local_relay();
     let dir = test_dir();
@@ -2648,70 +3088,78 @@ fn events_follow_the_host_and_its_activity_resume_exactly_and_reset_after_a_rest
         serde_json::from_slice::<Value>(&output.stdout).unwrap()["audit_id"].clone()
     };
 
-    let events = Events::start(&host, &["--follow"]);
-    let snapshot = events.next();
-    assert_eq!(snapshot["type"], "snapshot");
-    assert_eq!(snapshot["host"], json!({"state": "stopped"}));
-    assert_eq!(snapshot["activity"], json!([]));
-
     let serve = serving(&host, &relay);
-    let mut step = events.next();
-    while step["state"] != "serving" {
-        assert_eq!(step["type"], "host", "{step}");
-        step = events.next();
-    }
+    let audit = Lines::start(&host, &["audit", "--follow"]);
+    let opening = audit.opening();
+    assert_eq!(opening[0], json!({"type": "hello", "schema": 1}));
+    assert_eq!(opening[1]["has_older"], false, "{opening:?}");
     let first = exec("one");
-    let activity = events.next_activity();
-    assert_eq!(activity["type"], "activity");
-    assert_eq!(activity["entry"]["id"], first);
-    assert_eq!(activity["entry"]["op"], "exec");
-    assert_eq!(activity["entry"]["decision"], "allow");
-    let cursor = activity["cursor"].as_str().unwrap().to_string();
-    assert!(events.close().success());
+    let line = audit.next_record();
+    assert_eq!(line["cursor"], first);
+    let record = &line["record"];
+    assert_eq!(record["id"], first);
+    assert_eq!(
+        (record["op"].as_str(), record["decision"].as_str()),
+        (Some("exec"), Some("allow"))
+    );
+    assert_eq!(record["details"]["args"]["argv"], json!(["echo", "one"]));
+    let cursor = first.as_str().unwrap().to_string();
+    assert!(audit.close().success());
 
     // Missed while no one followed: picked up exactly, nothing twice.
     let missed: Vec<Value> = ["two", "three", "four"]
         .iter()
         .map(|word| exec(word))
         .collect();
-    let resumed = Events::start(&host, &["--follow", "--after", &cursor]);
-    let snapshot = resumed.next();
-    assert_eq!(snapshot["type"], "snapshot", "{snapshot}");
-    assert_eq!(snapshot["host"]["state"], "serving");
-    let ids: Vec<Value> = snapshot["activity"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|entry| entry["op"] != "connect")
-        .map(|entry| entry["id"].clone())
+    let resumed = Lines::start(&host, &["audit", "--follow", "--after", &cursor]);
+    let opening = resumed.opening();
+    assert_eq!(opening[1]["cursor"], cursor.as_str());
+    let ids: Vec<Value> = records_in(&opening)
+        .into_iter()
+        .filter(|record| record["op"] != "connect")
+        .map(|record| record["id"].clone())
         .collect();
     assert_eq!(ids, missed);
     let fifth = exec("five");
-    assert_eq!(resumed.next_activity()["entry"]["id"], fifth);
+    assert_eq!(resumed.next_record()["cursor"], fifth);
     assert!(resumed.close().success());
 
-    // The host restarted: the old cursor gets a reset and a fresh snapshot.
+    // A restart keeps the log, and so every id.
     drop(serve);
     let _serve = serving(&host, &relay);
-    let after_restart = Events::start(&host, &["--follow", "--after", &cursor]);
-    assert_eq!(after_restart.next(), json!({"type": "reset"}));
-    let fresh = after_restart.next();
-    assert_eq!(fresh["type"], "snapshot");
-    assert_eq!(fresh["host"]["state"], "serving");
-    let replayed = fresh["activity"].as_array().unwrap();
-    assert!(replayed.iter().any(|entry| entry["id"] == fifth), "{fresh}");
+    let after_restart = Lines::start(&host, &["audit", "--follow", "--after", &cursor]);
+    let replayed = records_in(&after_restart.opening());
+    assert!(replayed.iter().any(|record| record["id"] == fifth));
     assert!(after_restart.close().success());
 
-    let lifecycle = Events::start(&host, &["--follow", "--lifecycle-only"]);
-    assert_eq!(lifecycle.next()["activity"], json!([]));
-    exec("six");
-    drop(_serve);
-    let stopped = lifecycle.next();
-    assert_eq!(
-        (stopped["type"].clone(), stopped["state"].clone()),
-        (json!("host"), json!("stopped"))
+    let expired = latch(
+        &host,
+        &["audit", "--follow", "--after", &"f".repeat(64)],
+        &[],
     );
-    assert!(lifecycle.close().success());
+    assert_eq!(expired.status.code(), Some(2), "{expired:?}");
+    assert!(String::from_utf8_lossy(&expired.stderr).contains("cursor_expired"));
+}
+
+#[test]
+fn status_follow_says_each_change_of_the_host_through_a_restart() {
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+
+    let status = Lines::start(&host, &["status", "--local", "--follow"]);
+    assert_eq!(status.next(), json!({"type": "hello", "schema": 1}));
+    assert_eq!(status.status_in("stopped")["serve"]["running"], false);
+    let serve = serving(&host, &relay);
+    let first = status.status_in("serving");
+    assert_eq!(first["serve"]["ready"], true);
+    drop(serve);
+    status.status_in("stopped");
+    let _serve = serving(&host, &relay);
+    let again = status.status_in("serving");
+    assert_ne!(again["serve"]["pid"], first["serve"]["pid"]);
+    assert!(status.close().success());
 }
 
 fn event_lines(output: &Output) -> Vec<Value> {
@@ -2878,51 +3326,6 @@ fn shutdown_exec_cases() {
 }
 
 #[test]
-fn a_follower_that_stays_through_a_host_restart_gets_a_reset_and_a_fresh_snapshot() {
-    let plow = LivePlow::start();
-    let (_relay, relay) = local_relay();
-    let dir = test_dir();
-    let host = owner_host_on(&plow, dir.path());
-
-    let serve = serving(&host, &relay);
-    let events = Events::start(&host, &["--follow"]);
-    let first = events.next();
-    assert_eq!(first["host"]["state"], "serving", "{first}");
-    let run = |cursor: &Value| {
-        cursor
-            .as_str()
-            .unwrap()
-            .split(':')
-            .next()
-            .unwrap()
-            .to_string()
-    };
-    let old_run = run(&first["cursor"]);
-
-    drop(serve);
-    let stopped = events.next();
-    assert_eq!(
-        (stopped["type"].clone(), stopped["state"].clone()),
-        (json!("host"), json!("stopped"))
-    );
-    let _serve = serving(&host, &relay);
-    assert_eq!(events.next(), json!({"type": "reset"}));
-    let fresh = events.next();
-    assert_eq!(fresh["type"], "snapshot", "{fresh}");
-    assert_ne!(run(&fresh["cursor"]), old_run);
-    // Nothing from the new run arrives as a mere host step before the reset,
-    // and the stream goes on: serving, if the snapshot caught it starting.
-    if fresh["host"]["state"] != "serving" {
-        let step = events.next();
-        assert_eq!(
-            (step["type"].clone(), step["state"].clone()),
-            (json!("host"), json!("serving"))
-        );
-    }
-    assert!(events.close().success());
-}
-
-#[test]
 fn vault_management_and_self_rules_are_local_without_serve() {
     let plow = LivePlow::start();
     let dir = test_dir();
@@ -3011,6 +3414,194 @@ fn vault_management_and_self_rules_are_local_without_serve() {
 }
 
 #[test]
+fn vault_takes_secrets_as_json_on_stdin_and_shows_only_what_is_not_secret() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let secrets = [
+        "made-up-pass-7c1a",
+        "JBSWY3DPEHPK3PXP",
+        "made-up-pass-new-2b9e",
+    ];
+    // `latch ARGS`, given `input` on stdin: its exit and its JSON.
+    let run = |args: &[&str], input: &str| {
+        assert!(secrets.iter().all(|s| !args.join(" ").contains(s)));
+        let mut child = latch_command(&host, args, &[])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(input.as_bytes())
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        let printed = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        for secret in secrets {
+            assert!(!printed.contains(secret), "{secret} shown: {printed}");
+        }
+        answered(&output)
+    };
+
+    let (code, added) = run(
+        &[
+            "vault",
+            "add",
+            "--kind",
+            "login",
+            "--title",
+            "Shop",
+            "--site",
+            "shop.example",
+            "--field",
+            "username=ada",
+            "--stdin",
+        ],
+        r#"{"password": "made-up-pass-7c1a", "totp": "JBSWY3DPEHPK3PXP"}"#,
+    );
+    assert_eq!(code, Some(0), "{added}");
+    assert_eq!(added["item"]["totp"], true);
+
+    // Its non-secret values, and its secret fields by label only.
+    let (code, shown) = run(&["vault", "show", "v1"], "");
+    assert_eq!(code, Some(0), "{shown}");
+    assert_eq!(shown["values"], json!({"username": "ada"}));
+    let hidden: Vec<&Value> = shown["item"]["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|field| field["hidden"] == true)
+        .map(|field| &field["label"])
+        .collect();
+    assert_eq!(hidden, [&json!("password"), &json!("totp")]);
+
+    let (code, edited) = run(
+        &["vault", "edit", "v1", "--revision", "1", "--stdin"],
+        r#"{"password": "made-up-pass-new-2b9e", "totp": ""}"#,
+    );
+    assert_eq!(code, Some(0), "{edited}");
+    assert_eq!(edited["changed"], json!(["password", "totp"]));
+    assert_eq!(edited["item"]["totp"], false);
+
+    // A field given twice, or a value that is not a string, is refused
+    // without echoing anything read.
+    let (code, error) = run(
+        &[
+            "vault",
+            "edit",
+            "v1",
+            "--revision",
+            "2",
+            "--field",
+            "username=bo",
+            "--stdin",
+        ],
+        r#"{"username": "made-up-pass-7c1a"}"#,
+    );
+    assert_eq!(
+        (code, &error["error"]["code"]),
+        (Some(2), &json!("bad_arguments"))
+    );
+    let (code, error) = run(
+        &["vault", "edit", "v1", "--revision", "2", "--stdin"],
+        r#"{"password": ["made-up-pass-7c1a"]}"#,
+    );
+    assert_eq!(
+        (code, &error["error"]["code"]),
+        (Some(2), &json!("bad_values"))
+    );
+
+    // An import's preview, then the rows picked: no prompt, no secret.
+    let export = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/import/chrome.csv"
+    );
+    let (code, previewed) = run(&["vault", "import", export, "--preview"], "");
+    assert_eq!(code, Some(0), "{previewed}");
+    let rows = previewed["preview"]["items"].as_array().unwrap();
+    assert!(rows.len() >= 2, "{previewed}");
+    assert!(!previewed.to_string().contains("made-up-pass-chrome"));
+    assert_eq!(rows[0]["pick"], 1);
+    assert_eq!(rows[0]["has_password"], true);
+    let listed = |host: &Path| {
+        let (_, listed) = answered(&latch(host, &["vault", "list"], &[]));
+        listed["items"].as_array().unwrap().len()
+    };
+    assert_eq!(listed(&host), 1, "a preview imports nothing");
+    let (code, imported) = run(&["vault", "import", export, "--pick", "1"], "");
+    assert_eq!(code, Some(0), "{imported}");
+    assert_eq!(imported["saved"], 1);
+    assert_eq!(imported["picked"], json!([1]));
+    assert!(!imported.to_string().contains("made-up-pass-chrome"));
+    assert_eq!(listed(&host), 2);
+
+    // A preview is not audited; the import is. The audit names fields,
+    // never a value.
+    let audited = audit_records(&host);
+    let imports = audited
+        .iter()
+        .filter(|r| r["args"]["command"] == "import")
+        .count();
+    assert_eq!(imports, 1);
+    let records = serde_json::to_string(&audited).unwrap();
+    for secret in secrets.iter().chain(&["made-up-pass-chrome"]) {
+        assert!(!records.contains(secret), "{secret} audited");
+    }
+}
+
+#[test]
+fn vault_stdin_left_open_is_cut_off_and_saves_nothing() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let args = [
+        "vault",
+        "add",
+        "--kind",
+        "login",
+        "--title",
+        "Shop",
+        "--site",
+        "shop.example",
+        "--stdin",
+    ];
+    let mut child = latch_command(&host, &args, &[])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    // The JSON is all there, but the pipe is never closed, as some tool
+    // runners leave it.
+    let mut input = child.stdin.take().unwrap();
+    input
+        .write_all(br#"{"password": "made-up-pass-open-1"}"#)
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while child.try_wait().unwrap().is_none() {
+        assert!(std::time::Instant::now() < deadline, "latch waited forever");
+        thread::sleep(std::time::Duration::from_millis(200));
+    }
+    let output = child.wait_with_output().unwrap();
+    drop(input);
+    let (code, error) = answered(&output);
+    assert_eq!(
+        (code, &error["error"]["code"]),
+        (Some(2), &json!("stdin_timeout"))
+    );
+    assert!(!error.to_string().contains("made-up-pass-open-1"));
+    let (_, listed) = answered(&latch(&host, &["vault", "list"], &[]));
+    assert_eq!(listed["items"], json!([]));
+}
+
+#[test]
 fn local_vault_edits_are_visible_to_serve_and_phone_links_stay_live() {
     let plow = LivePlow::start();
     let (runtime, relay) = local_relay();
@@ -3020,7 +3611,7 @@ fn local_vault_edits_are_visible_to_serve_and_phone_links_stay_live() {
     fs::create_dir(&share).unwrap();
     let _serve = serving(&host, &relay);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while !host.join("serve-v3.sock").exists() {
+    while !host.join("serve-v4.sock").exists() {
         assert!(
             std::time::Instant::now() < deadline,
             "no local link receiver"
@@ -3158,6 +3749,28 @@ fn local_vault_edits_are_visible_to_serve_and_phone_links_stay_live() {
         7,
         "local and remote writes must share one verified audit chain"
     );
+
+    // Another machine previews an export on the host, then imports a row
+    // of it: only the import is audited.
+    let export = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/import/chrome.csv"
+    );
+    let previewed = remote(&["vault", "import", "--host", "host", export, "--preview"]);
+    assert_eq!(previewed["preview"]["items"][0]["pick"], 1, "{previewed}");
+    assert!(!previewed.to_string().contains("made-up-pass-chrome"));
+    let imported = remote(&["vault", "import", "--host", "host", export, "--pick", "1"]);
+    assert_eq!(imported["saved"], 1, "{imported}");
+    let imports = audit_records(&host)
+        .iter()
+        .filter(|r| {
+            r["op"] == "vault"
+                && ["import", "preview"]
+                    .contains(&r["args"]["command"].as_str().unwrap_or_default())
+        })
+        .map(|r| r["args"]["command"].clone())
+        .collect::<Vec<_>>();
+    assert_eq!(imports, [json!("import")]);
 }
 
 #[test]
@@ -3207,7 +3820,7 @@ fn a_local_agent_cannot_manage_a_vault() {
 
 /// The Mac app can send the same operation frames without a second CLI path.
 fn local_operation(host: &Path, op: &str, args: Value) -> Value {
-    let mut socket = std::os::unix::net::UnixStream::connect(host.join("serve-v3.sock")).unwrap();
+    let mut socket = std::os::unix::net::UnixStream::connect(host.join("serve-v4.sock")).unwrap();
     socket
         .set_read_timeout(Some(std::time::Duration::from_secs(10)))
         .unwrap();
@@ -3236,7 +3849,7 @@ fn local_socket_judges_exec_files_google_and_allows_owner_commands() {
     plow.state.lock().unwrap().google = Some("google-token".into());
     let _serve = serving(&host, &relay);
     assert_eq!(
-        fs::metadata(host.join("serve-v3.sock"))
+        fs::metadata(host.join("serve-v4.sock"))
             .unwrap()
             .permissions()
             .mode()
@@ -4155,6 +4768,62 @@ fn setup_sets_up_every_connector_with_no_host_running() {
     );
 }
 
+/// `setup --status` asks Plow, read only, whether Google is connected
+/// there: none connected says where to connect one; connected, the
+/// connector is the step; enabled, it is done. The state folder is not
+/// changed and no credential is asked for.
+#[test]
+fn setup_status_says_whether_google_is_connected_in_plow() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let google = || {
+        let output = latch(&host, &["setup", "--status"], &[]);
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        let status: Value = serde_json::from_slice(&output.stdout).unwrap();
+        status["steps"][1].clone()
+    };
+    let files = || {
+        let mut names: Vec<_> = fs::read_dir(&host)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        names.sort();
+        names
+    };
+    let before = files();
+
+    let none = google();
+    assert_eq!(none["step"], "google");
+    assert_eq!(none["state"], "needed");
+    assert_eq!(none["connect_url"], "https://app.example.com/connections");
+    assert_eq!(none["accounts"], json!([]));
+    assert_eq!(none["args"], Value::Null);
+
+    plow.state.lock().unwrap().google = Some("google-token".into());
+    let off = google();
+    assert_eq!(off["state"], "needed");
+    assert_eq!(off["accounts"], json!(["owner@example.com"]));
+    assert_eq!(off["args"], json!(["plugins", "enable", "google"]));
+    assert!(off.get("connect_url").is_none(), "{off}");
+    assert_eq!(files(), before, "nothing written");
+
+    fs::write(
+        host.join("plugins.json"),
+        r#"{"google":{"state":"enabled"}}"#,
+    )
+    .unwrap();
+    let on = google();
+    assert_eq!(on["state"], "done");
+    assert_eq!(on["accounts"], json!(["owner@example.com"]));
+    assert_eq!(on["args"], Value::Null);
+    let asked: Vec<String> = plow.seen().into_iter().map(|(line, _)| line).collect();
+    assert!(
+        !asked.iter().any(|line| line.contains("access-token")),
+        "{asked:?}"
+    );
+}
+
 /// A `latch serve` that holds the state folder but answers no socket this
 /// latch knows (another latch version, still running) is named as the
 /// problem, and its connectors are not changed behind its back.
@@ -4505,7 +5174,7 @@ fn stop_gives_up_on_a_host_that_never_answers() {
     let mut lock = fs::File::create(state.join("serve.lock")).unwrap();
     write!(lock, "latch serve (pid {}, latch)", std::process::id()).unwrap();
     lock.lock().unwrap();
-    let listener = std::os::unix::net::UnixListener::bind(state.join("serve-v3.sock")).unwrap();
+    let listener = std::os::unix::net::UnixListener::bind(state.join("serve-v4.sock")).unwrap();
     thread::spawn(move || {
         let mut held = Vec::new();
         for connection in listener.incoming() {
@@ -4600,38 +5269,31 @@ fn stop_gives_up_waiting_behind_a_start_that_never_finishes() {
 }
 
 #[test]
-fn audit_show_follows_the_log_and_refuses_one_whose_last_record_was_cut_short() {
+fn audit_follows_the_log_and_refuses_one_whose_last_record_was_cut_short() {
     let (_dir, state, _) = owner_host();
     let rules = |text: &str| {
         let set = latch(&state, &["rules", "set", text], &[]);
         assert_eq!(set.status.code(), Some(0), "{set:?}");
     };
     rules("Never send email.");
-    let shown = latch(&state, &["audit", "show"], &[]);
-    let shown: Value = serde_json::from_slice(&shown.stdout).unwrap();
-    assert_eq!(shown["records"].as_array().unwrap().len(), 1, "{shown}");
+    let shown = audit_records(&state);
+    assert_eq!(shown.len(), 1, "{shown:?}");
 
     // --follow: what is there, then each record as it is written, one per line.
-    let mut follow = latch_command(&state, &["audit", "show", "--follow"], &[])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut lines = BufReader::new(follow.stdout.take().unwrap()).lines();
-    let first: Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
-    assert_eq!(first["id"], shown["records"][0]["id"]);
+    let follow = Lines::start(&state, &["audit", "--follow"]);
+    let opening = records_in(&follow.opening());
+    assert_eq!(opening[0]["id"], shown[0]["id"]);
     rules("Ask before paying.");
-    let second: Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
-    assert_eq!(second["op"], first["op"], "{second}");
-    assert_ne!(second["id"], first["id"]);
-    drop(follow.stdin.take());
-    assert!(follow.wait().unwrap().success(), "it ends with its stdin");
+    let second = follow.next_record()["record"].clone();
+    assert_eq!(second["op"], shown[0]["op"], "{second}");
+    assert_ne!(second["id"], shown[0]["id"]);
+    assert!(follow.close().success(), "it ends with its stdin");
 
     // The last record loses its end, as a crash mid-write would leave it.
     let path = state.join("audit.sealed.ndjson");
     let log = fs::read_to_string(&path).unwrap();
     fs::write(&path, &log[..log.len() - 20]).unwrap();
-    let cut = latch(&state, &["audit", "show"], &[]);
+    let cut = latch(&state, &["audit"], &[]);
     assert_eq!(cut.status.code(), Some(1), "{cut:?}");
     let stderr = String::from_utf8_lossy(&cut.stderr);
     assert!(
@@ -4641,21 +5303,99 @@ fn audit_show_follows_the_log_and_refuses_one_whose_last_record_was_cut_short() 
     assert!(cut.stdout.is_empty(), "nothing of a broken log is shown");
 }
 
+#[test]
+fn only_a_follow_ends_with_stdin_even_while_its_opening_is_stuck_in_a_write() {
+    let (_dir, state, _) = owner_host();
+    // More records than a pipe holds: about 400 bytes a line.
+    for _ in 0..250 {
+        let shown = latch(&state, &["rules", "show"], &[]);
+        assert_eq!(shown.status.code(), Some(0), "{shown:?}");
+    }
+    // A read that ends by itself ignores stdin, closed from the start, and
+    // prints every line.
+    let mut read = latch_command(&state, &["audit", "--all"], &[])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    drop(read.stdin.take());
+    let output = read.wait_with_output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let lines = event_lines(&output);
+    assert_eq!(lines.last().unwrap()["type"], "caught_up");
+    assert_eq!(records_in(&lines).len(), 250);
+
+    // A follow whose reader never reads ends once its stdin closes, though
+    // its opening is stuck in a write.
+    let mut follow = latch_command(&state, &["audit", "--follow", "--all"], &[])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let _unread = follow.stdout.take();
+    thread::sleep(std::time::Duration::from_secs(1));
+    drop(follow.stdin.take());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while follow.try_wait().unwrap().is_none() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the follow outlived its stdin"
+        );
+        thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(follow.wait().unwrap().success());
+}
+
+#[test]
+fn audit_says_why_it_cannot_read() {
+    let (_dir, state, _) = owner_host();
+    let refused = |args: &[&str]| -> Value {
+        let output = latch(&state, args, &[]);
+        assert_eq!(output.status.code(), Some(2), "{output:?}");
+        assert!(output.stdout.is_empty(), "{output:?}");
+        serde_json::from_slice::<Value>(&output.stderr).unwrap()["error"].clone()
+    };
+    // Logged in, never served: no audit here.
+    let none = refused(&["audit"]);
+    assert_eq!(none["code"], "no_host_here", "{none}");
+    assert!(
+        none["message"].as_str().unwrap().contains("--host"),
+        "{none}"
+    );
+
+    let set = latch(&state, &["rules", "set", "Never send email."], &[]);
+    assert_eq!(set.status.code(), Some(0), "{set:?}");
+    let malformed = refused(&["audit", "--before", "nothex"]);
+    assert_eq!(malformed["code"], "usage", "{malformed}");
+    assert!(
+        malformed["message"]
+            .as_str()
+            .unwrap()
+            .contains("64 hex characters")
+    );
+    for zero in ["0", "-1", "abc"] {
+        let last = refused(&["audit", "--last", zero]);
+        let message = last["message"].as_str().unwrap();
+        assert!(message.contains("1 or more, such as 50"), "{message}");
+        assert!(!message.contains("18446744073709551615"), "{message}");
+    }
+}
+
 /// A follower sleeps while the log is quiet: its own reads (under the audit
 /// lock) must not wake its watch of the folder.
 #[cfg(target_os = "linux")]
 #[test]
-fn audit_show_follow_sleeps_while_the_log_is_quiet() {
+fn audit_follow_sleeps_while_the_log_is_quiet() {
     let (_dir, state, _) = owner_host();
     let set = latch(&state, &["rules", "set", "Never send email."], &[]);
     assert_eq!(set.status.code(), Some(0), "{set:?}");
-    let mut follow = latch_command(&state, &["audit", "show", "--follow"], &[])
+    let mut follow = latch_command(&state, &["audit", "--follow"], &[])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .spawn()
         .unwrap();
     let mut lines = BufReader::new(follow.stdout.take().unwrap()).lines();
-    lines.next().unwrap().unwrap();
+    while !lines.next().unwrap().unwrap().contains("caught_up") {}
     // CPU time used (user + system, in clock ticks) while nothing happens.
     let ticks = || {
         let stat = fs::read_to_string(format!("/proc/{}/stat", follow.id())).unwrap();
@@ -5396,11 +6136,8 @@ mod lifecycle {
         assert_eq!(log.matches("exec: refused to every agent").count(), 2);
         let logs = latch(&host, &["logs"], &[]);
         assert_eq!(String::from_utf8_lossy(&logs.stdout), log);
-        let audit = latch(&host, &["audit", "show"], &[]);
-        let audit: Value = serde_json::from_slice(&audit.stdout).unwrap();
-        let exec = audit["records"]
-            .as_array()
-            .unwrap()
+        let records = audit_records(&host);
+        let exec = records
             .iter()
             .find(|record| record["op"] == "exec")
             .unwrap();
@@ -5482,7 +6219,7 @@ mod lifecycle {
         let env = [("LATCH_TEST_RELAY_URL", Path::new(&relay))];
 
         let (mut serve, mut terminal, shown) = at_its_own_terminal(&host, &["serve"], &env);
-        shows(&shown, "Ctrl-C stop host");
+        let mut output = shows(&shown, "Ctrl-C stop host");
         // The attached serve's cleanup waits for the start/stop lock, held
         // here while its host stops and another takes the folder over.
         let launching = fs::File::open(host.join("launch.lock")).unwrap();
@@ -5491,7 +6228,12 @@ mod lifecycle {
         assert!(eventually(45, || local_serve(&host)["running"] == false));
         let replacement = serving(&host, &relay);
         drop(launching);
-        assert!(exits_within(&mut serve, 45).success());
+        let status = exits_within(&mut serve, 45);
+        output.extend(shown.iter());
+        assert!(
+            status.success(),
+            "attached serve exited {status:?}; PTY output:\n{output}"
+        );
         let hello = local_operation(&host, "host_hello", json!({}));
         assert_eq!(hello["ok"]["pid"], replacement.0.id(), "{hello}");
         // And a stop meant for another host is refused by this one.
@@ -5540,7 +6282,7 @@ mod lifecycle {
     fn a_stale_socket_of_this_version_is_never_taken_for_its_host() {
         let (_dir, state, _) = owner_host();
         let (_old, _socket, said) = old_host(&state);
-        let current = state.join("serve-v3.sock");
+        let current = state.join("serve-v4.sock");
         // A socket no one listens on any more, then a plain file.
         drop(std::os::unix::net::UnixListener::bind(&current).unwrap());
         let serve = local_serve(&state);
@@ -6019,7 +6761,7 @@ fn rules_try_previews_a_verdict_and_runs_nothing() {
     };
 
     // From the owner's other machine, as the agent: allowed, and nothing ran.
-    let (code, tried) = previewed(&owner, &["--host", "host", "--from", "Research bot"]);
+    let (code, tried) = previewed(&owner, &["--host", "host", "--agent", "Research bot"]);
     assert_eq!(code, Some(0), "{tried}");
     assert_eq!(tried["verdict"], "allow");
     assert_eq!(tried["host"], "host");
@@ -6039,15 +6781,16 @@ fn rules_try_previews_a_verdict_and_runs_nothing() {
     assert_eq!(tried["as"], "owner");
     assert_eq!(tried["gate"]["source"], "owner_request");
 
-    // Without --host, the owner's other machine previews on its own host,
-    // which does not serve: never on the account's one host.
-    let (code, error) = previewed(&owner, &[]);
-    assert_eq!(code, Some(3), "{error}");
-    assert_eq!(error["error"]["code"], "serve_required");
+    // Without --host, the owner's other machine previews on itself, never
+    // on the account's one host: judged here, though it does not serve.
+    let (code, tried) = previewed(&owner, &[]);
+    assert_eq!(code, Some(0), "{tried}");
+    assert_eq!(tried["host"], "owner-mac");
+    assert_eq!(tried["gate"]["caller"], "owner_on_host");
 
     // A refusal is a preview that worked.
     plow.state.lock().unwrap().forbidden = true;
-    let (code, tried) = previewed(&owner, &["--host", "host", "--from", "Research bot"]);
+    let (code, tried) = previewed(&owner, &["--host", "host", "--agent", "Research bot"]);
     assert_eq!(code, Some(0), "{tried}");
     assert_eq!(tried["verdict"], "owner_said_no");
 
@@ -6070,7 +6813,7 @@ fn rules_try_previews_a_verdict_and_runs_nothing() {
     );
     plow.state.lock().unwrap().out_of_credits = false;
 
-    let (code, error) = previewed(&owner, &["--host", "host", "--from", "Nobody"]);
+    let (code, error) = previewed(&owner, &["--host", "host", "--agent", "Nobody"]);
     assert_eq!(
         (code, &error["error"]["code"]),
         (Some(2), &json!("no_such_agent"))
@@ -6090,8 +6833,45 @@ fn rules_try_previews_a_verdict_and_runs_nothing() {
         (Some(2), &json!("not_previewable"))
     );
 
-    // Previews are not audited: the host's audit has no preview and no exec.
+    // With its host stopped, the host's machine still previews on itself:
+    // here as a new agent, against draft rules read from stdin.
     drop(serve);
+    plow.state.lock().unwrap().forbidden = false;
+    let words: Vec<&str> = [
+        &["rules", "try", "--new-agent", "--draft", "-", "--"][..],
+        &build,
+    ]
+    .concat();
+    let mut child = latch_command(&host, &words, &[])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let draft = "Builds of the site are fine.";
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(draft.as_bytes())
+        .unwrap();
+    let (code, tried) = answered(&child.wait_with_output().unwrap());
+    assert_eq!(code, Some(0), "{tried}");
+    assert_eq!(tried["verdict"], "allow");
+    assert_eq!(tried["host"], "host");
+    assert_eq!(tried["as"], "new_agent");
+    assert_eq!(tried["gate"]["source"], "rules");
+    // Another host that is offline is still only reached where it runs.
+    for (peer, _) in plow.state.lock().unwrap().peers.iter_mut() {
+        if peer["name"] == "host" {
+            peer["online"] = json!(false);
+        }
+    }
+    let (code, error) = previewed(&owner, &["--host", "host"]);
+    assert_eq!(code, Some(3), "{error}");
+    assert_eq!(error["error"]["code"], "host_offline");
+
+    // Previews are not audited: the host's audit has no preview and no exec.
     let records = audit_records(&host);
     let ops: Vec<&str> = records
         .iter()
@@ -6100,6 +6880,9 @@ fn rules_try_previews_a_verdict_and_runs_nothing() {
         .collect();
     assert!(ops.is_empty(), "{records:?}");
     assert!(!home.join("out").exists());
+    // The draft was never saved.
+    let (_, shown) = answered(&latch(&host, &["rules", "show"], &[]));
+    assert_eq!(shown["every_agent"]["text"], Value::Null, "{shown}");
 }
 
 #[test]
@@ -6142,6 +6925,14 @@ fn rules_try_says_what_is_missing_before_reaching_a_host() {
         let message = error["error"]["message"].as_str().unwrap();
         assert!(message.contains("latch rules try --host NAME"), "{message}");
     }
+    // A draft on stdin, and a request that reads stdin too.
+    let both = [
+        "rules", "try", "--draft", "-", "--", "exec", "--stdin", "--", "cat",
+    ];
+    let (code, error) = answered(&latch(&fresh, &both, &[]));
+    assert_eq!((code, &error["error"]["code"]), (Some(2), &json!("usage")));
+    let message = error["error"]["message"].as_str().unwrap();
+    assert!(message.contains("--draft F"), "{message}");
     let settings = ["rules", "try", "--", "vault", "list"];
     let (code, error) = answered(&latch(&fresh, &settings, &[]));
     assert_eq!(

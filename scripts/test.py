@@ -415,34 +415,6 @@ def run(args):
     return 1 if failed else 0
 
 
-def container_seccomp():
-    """latch's container seccomp profile (docker/seccomp.json) with what the
-    engines' own sandboxes need inside their user namespace, in a container
-    with no capabilities: chroot (else Chrome aborts, `sys_chroot(...) ==
-    0`), clone with new PID, network, IPC or mount namespaces but no new
-    user namespace (else Chrome's zygote cannot fork and nothing answers
-    `Page.enable`), and unshare of those with a user namespace (Firefox's
-    content sandbox). The kernel still refuses them outside a user
-    namespace. Never --no-sandbox."""
-    profile = json.loads((LATCH / "docker/seccomp.json").read_text())
-    for rule in profile["syscalls"]:
-        if rule.get("names") == ["chroot"]:
-            rule.pop("includes", None)
-    # CLONE_NEWUSER | CLONE_NEWUTS | CLONE_NEWCGROUP all clear.
-    profile["syscalls"].append({"names": ["clone"], "action": "SCMP_ACT_ALLOW", "args": [
-        {"index": 0, "value": 0x16000000, "valueTwo": 0, "op": "SCMP_CMP_MASKED_EQ"}],
-        "includes": {"arches": ["amd64", "arm64"]}})
-    # Firefox's content sandbox unshares a user namespace with new PID,
-    # network and IPC ones; with only CLONE_NEWUSER allowed, its content runs
-    # in the browser's namespace. CLONE_NEWUTS | CLONE_NEWCGROUP clear.
-    profile["syscalls"].append({"names": ["unshare"], "action": "SCMP_ACT_ALLOW", "args": [
-        {"index": 0, "value": 0x06000000, "valueTwo": 0, "op": "SCMP_CMP_MASKED_EQ"}]})
-    path = DEV / "seccomp-test.json"
-    DEV.mkdir(exist_ok=True)
-    path.write_text(json.dumps(profile))
-    return path
-
-
 def in_container(args):
     """--linux: this same plan, in the Linux test container."""
     docker = LATCH / "docker"
@@ -468,7 +440,7 @@ def in_container(args):
     command = ["docker", "run", "--rm", "--init", "--platform", "linux/arm64", *apparmor, "--user", f"{os.getuid()}:{os.getgid()}",
                "--cap-drop=ALL", "--security-opt=no-new-privileges=true",
                "--security-opt=systempaths=unconfined",
-               f"--security-opt=seccomp={container_seccomp()}",
+               f"--security-opt=seccomp={docker / 'seccomp.json'}",
                "--shm-size=1g", "-v", f"{ROOT}:/repo", "-w", "/repo",
                "-e", "HOME=/tmp", "-e", "LATCH_TEST_CONTAINER=1", "-e", "RUSTUP_HOME=/usr/local/rustup",
                "-e", "CARGO_HOME=/repo/latch/target/cargo-home",

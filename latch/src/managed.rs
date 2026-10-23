@@ -145,7 +145,7 @@ pub async fn attach(state: &StateDir, args: &ServeArgs) -> Result<Attached, Fail
 pub async fn dashboard(state: &StateDir) -> Result<(), Failure> {
     if !term::stdout_is_terminal() {
         let message = "the dashboard needs a terminal; `latch status --local` and \
-                       `latch events` say what the host is doing as JSON"
+                       `latch audit` say what the host is doing as JSON"
             .to_string();
         return Err(Failure::usage("no_terminal", message));
     }
@@ -449,11 +449,13 @@ async fn show(
             crate::cli::version()
         )
     });
+    // Install every handler before the first frame advertises Ctrl-C.
+    let mut interrupt = signal(SignalKind::interrupt()).expect("an interrupt handler");
     let mut hangup = signal(SignalKind::hangup()).expect("a hangup handler");
     let mut terminate = signal(SignalKind::terminate()).expect("a terminate handler");
     let until = async move {
         tokio::select! {
-            _ = tokio::signal::ctrl_c() => {}
+            _ = interrupt.recv() => {}
             _ = hangup.recv() => {}
             _ = terminate.recv() => {}
         }

@@ -1,18 +1,20 @@
 //! Waiting, without polling, until something in a state folder may have
 //! changed: a file in it was written, created, renamed or removed, a
-//! process (the host) exited, or our stdin closed. The kernel wakes us
+//! process (the host) exited, or a descriptor given as the watch's hang-up
+//! (our stdin, or a pipe's read end) closed. The kernel wakes us
 //! (kqueue on macOS, inotify and a pidfd on Linux); with nothing happening
 //! the process sleeps. A wake says only "look again": callers re-read
 //! what they follow and compare. So nothing slips between a look and the
 //! wait, a caller arms the watch, then looks, then waits.
 
 use std::io;
+use std::os::fd::RawFd;
 use std::path::{Path, PathBuf};
 
 pub enum Woke {
     Changed,
-    /// Our stdin was a pipe and its writer closed it: whoever started us is gone.
-    StdinClosed,
+    /// The hang-up descriptor's writer closed it: whoever started us is gone.
+    HungUp,
 }
 
 /// Whether stdin is a pipe or socket, so its closing means the parent went
@@ -30,6 +32,14 @@ pub fn stdin_is_a_pipe() -> bool {
     kind == libc::S_IFIFO || kind == libc::S_IFSOCK
 }
 
+/// Blocks until stdin is closed, dropping what it reads. On a thread of
+/// its own, which never keeps the process from exiting.
+pub fn wait_for_stdin_to_close() {
+    let mut buffer = [0u8; 512];
+    let mut stdin = std::io::stdin();
+    while matches!(io::Read::read(&mut stdin, &mut buffer), Ok(read) if read > 0) {}
+}
+
 fn check(result: libc::c_int) -> io::Result<libc::c_int> {
     if result < 0 {
         Err(io::Error::last_os_error())
@@ -38,13 +48,13 @@ fn check(result: libc::c_int) -> io::Result<libc::c_int> {
     }
 }
 
-/// Reads and drops what stdin has; true once it is closed.
-fn stdin_closed() -> bool {
+/// Reads and drops what `fd` has; true once it is closed.
+fn closed(fd: RawFd) -> bool {
     let mut buffer = [0u8; 512];
     // SAFETY: use the same unbuffered fd watched by kqueue/poll, rather than
     // std's buffered stdin. `buffer` is writable for the supplied length, and
-    // the OS checks fd 0; no pointer escapes this call.
-    let read = unsafe { libc::read(0, buffer.as_mut_ptr().cast(), buffer.len()) };
+    // the OS checks `fd`; no pointer escapes this call.
+    let read = unsafe { libc::read(fd, buffer.as_mut_ptr().cast(), buffer.len()) };
     read == 0 || (read < 0 && io::Error::last_os_error().kind() != io::ErrorKind::Interrupted)
 }
 
@@ -61,7 +71,7 @@ mod macos {
     use std::os::unix::ffi::OsStrExt;
 
     /// A kqueue: the folder itself (an entry added, renamed or removed),
-    /// each of `files` (written to), the host process, and stdin.
+    /// each of `files` (written to), the host process, and the hang-up.
     pub struct Watch {
         queue: libc::c_int,
         dir: PathBuf,
@@ -69,13 +79,14 @@ mod macos {
         /// Open descriptors for the folder and the files; closing one drops
         /// its events, so each wait opens them afresh.
         open: Vec<libc::c_int>,
+        hangup: Option<RawFd>,
         process: Option<u32>,
         /// A change seen while arming (the process was already gone).
         pending: bool,
     }
 
     impl Watch {
-        pub fn new(dir: &Path, files: &[PathBuf], stdin: bool) -> io::Result<Watch> {
+        pub fn new(dir: &Path, files: &[PathBuf], hangup: Option<RawFd>) -> io::Result<Watch> {
             // SAFETY: std has no kqueue API. This no-argument call accesses no
             // Rust memory; check rejects errors before we store the descriptor.
             let queue = check(unsafe { libc::kqueue() })?;
@@ -84,11 +95,12 @@ mod macos {
                 dir: dir.to_path_buf(),
                 files: files.to_vec(),
                 open: Vec::new(),
+                hangup,
                 process: None,
                 pending: false,
             };
-            if stdin {
-                watch.add(0, libc::EVFILT_READ, 0, libc::EV_ADD)?;
+            if let Some(fd) = hangup {
+                watch.add(fd as usize, libc::EVFILT_READ, 0, libc::EV_ADD)?;
             }
             Ok(watch)
         }
@@ -140,9 +152,12 @@ mod macos {
                     }
                     return Err(err);
                 }
-                if event.filter == libc::EVFILT_READ && event.ident == 0 {
-                    if event.flags & libc::EV_EOF != 0 || stdin_closed() {
-                        return Ok(Woke::StdinClosed);
+                if let Some(fd) = self.hangup
+                    && event.filter == libc::EVFILT_READ
+                    && event.ident == fd as usize
+                {
+                    if event.flags & libc::EV_EOF != 0 || closed(fd) {
+                        return Ok(Woke::HungUp);
                     }
                     continue;
                 }
@@ -238,18 +253,18 @@ mod linux {
     use std::os::unix::ffi::OsStrExt;
 
     /// inotify on the folder (which reports writes to the files in it too),
-    /// a pidfd for the host process, and stdin, all waited on with poll.
+    /// a pidfd for the host process, and the hang-up, all waited on with poll.
     pub struct Watch {
         inotify: libc::c_int,
         pidfd: Option<libc::c_int>,
         process: Option<u32>,
-        stdin: bool,
+        hangup: Option<RawFd>,
         pending: bool,
     }
 
     impl Watch {
         /// `files` live in `dir`, so the folder's watch covers them.
-        pub fn new(dir: &Path, _files: &[PathBuf], stdin: bool) -> io::Result<Watch> {
+        pub fn new(dir: &Path, _files: &[PathBuf], hangup: Option<RawFd>) -> io::Result<Watch> {
             // SAFETY: std has no inotify API. The documented CLOEXEC flag is
             // scalar, no Rust memory is accessed, and check rejects errors.
             let inotify = check(unsafe { libc::inotify_init1(libc::IN_CLOEXEC) })?;
@@ -268,7 +283,7 @@ mod linux {
                 inotify,
                 pidfd: None,
                 process: None,
-                stdin,
+                hangup,
                 pending: false,
             })
         }
@@ -319,9 +334,9 @@ mod linux {
                         revents: 0,
                     });
                 }
-                if self.stdin {
+                if let Some(fd) = self.hangup {
                     fds.push(libc::pollfd {
-                        fd: 0,
+                        fd,
                         events: libc::POLLIN,
                         revents: 0,
                     });
@@ -338,8 +353,11 @@ mod linux {
                     return Err(err);
                 }
                 let ready = |fd: libc::c_int| fds.iter().any(|p| p.fd == fd && p.revents != 0);
-                if self.stdin && ready(0) && stdin_closed() {
-                    return Ok(Woke::StdinClosed);
+                if let Some(fd) = self.hangup
+                    && ready(fd)
+                    && closed(fd)
+                {
+                    return Ok(Woke::HungUp);
                 }
                 let mut changed = false;
                 if ready(self.inotify) {

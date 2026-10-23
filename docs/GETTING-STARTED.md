@@ -63,7 +63,7 @@ Check it:
 
 ```sh
 latch --version
-# latch 0.1.0 (1327): commit …, built …, standalone tag v0.1.0-1327, protocol plow/latch/3
+# latch 0.1.0 (1327): commit …, built …, standalone tag v0.1.0-1327, protocol plow/latch/4
 ```
 
 **Linux:** a host sandboxes what it runs with bubblewrap. The installer
@@ -289,7 +289,7 @@ run on the host itself or from one of your machines with `--host`:
 ```sh
 latch rules edit                          # opens $EDITOR; on the host itself
 latch rules edit --host my-mac            # from another of your machines
-latch rules edit --from my-agent          # rules for one agent only
+latch rules edit --agent my-agent         # rules for one agent only
 latch rules show
 ```
 
