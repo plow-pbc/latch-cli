@@ -1499,7 +1499,7 @@ fn overview(
     size: (u16, u16),
 ) -> (String, std::time::Duration) {
     let started = std::time::Instant::now();
-    let (mut child, _terminal, shown) = at_a_terminal_of(state, &[], env, size);
+    let (mut child, _terminal, shown) = at_a_terminal(state, &[], env, size, false);
     let status = exits_within(&mut child, 10);
     let took = started.elapsed();
     let mut all = String::new();
@@ -2121,6 +2121,8 @@ struct LiveState {
     google: Option<String>,
     /// Google accounts added after that one, listed by `GET /v1/connectors`.
     added_google: Vec<String>,
+    /// Connected accounts Google wants signed in again: minted no token.
+    google_reauth: Vec<String>,
     /// How long a Google sign-in link lasts, in seconds (Plow's is 120).
     sign_in_for: i64,
     /// Plow refuses this login a Google sign-in link.
@@ -2151,6 +2153,7 @@ impl LivePlow {
                 seen: Vec::new(),
                 google: None,
                 added_google: Vec::new(),
+                google_reauth: Vec::new(),
                 sign_in_for: 120,
                 sign_in_refused: false,
                 sign_in_slow: std::time::Duration::ZERO,
@@ -2292,17 +2295,37 @@ impl LivePlow {
                 (412, json!({"detail": "No Gmail account connected."}))
             }
             ("POST", "/v1/connectors/gmail/access-token") => {
-                let accounts: Vec<Value> = state
-                    .google
+                let token = state.google.clone().unwrap_or_default();
+                let connected: Vec<String> = std::iter::once("owner@example.com".to_string())
+                    .chain(state.added_google.iter().cloned())
+                    .collect();
+                let (again, working): (Vec<String>, Vec<String>) = connected
+                    .into_iter()
+                    .partition(|account| state.google_reauth.contains(account));
+                if working.is_empty() {
+                    return (
+                        401,
+                        json!({"detail": {"reason": "needs_reauth", "accounts": again,
+                                          "message": "Reconnect to grant access again."}}),
+                    );
+                }
+                let accounts: Vec<Value> = working
                     .iter()
-                    .map(|token| {
-                        json!({"account": "owner@example.com", "access_token": token,
-                               "is_default": true,
+                    .map(|account| {
+                        json!({"account": account, "access_token": token,
+                               "is_default": account == "owner@example.com",
                                "capabilities": {"mail_read": true, "mail_write": true,
                                                 "calendar_read": true, "calendar_write": true}})
                     })
                     .collect();
-                (200, json!({"data": {"accounts": accounts}}))
+                let degraded: Vec<Value> = again
+                    .iter()
+                    .map(|account| json!({"account": account, "reason": "needs_reauth"}))
+                    .collect();
+                (
+                    200,
+                    json!({"data": {"accounts": accounts, "degraded": degraded}}),
+                )
             }
             ("POST", "/v1/latch/peers") => {
                 let sent: Value = serde_json::from_slice(&request.body).unwrap();
@@ -5531,12 +5554,7 @@ fn setup_sets_up_every_connector_with_no_host_running() {
     #[cfg(any(target_os = "macos", feature = "systemd-tests"))]
     let _managed = Managed(host.clone());
     plow.state.lock().unwrap().google = Some("google-token".into());
-    let pin: Value = serde_json::from_str(include_str!("../src/google/pin.json")).unwrap();
-    let gog = host
-        .join("plugins/gog")
-        .join(pin["version"].as_str().unwrap());
-    fs::create_dir_all(&gog).unwrap();
-    fs::copy(env!("CARGO_BIN_EXE_latch"), gog.join("gog")).unwrap();
+    install_fake_gog(&host);
 
     let env = [("LATCH_TEST_ACCESS", Path::new("granted"))];
     let (mut setup, mut typing, shown) = at_its_own_terminal(&host, &["setup"], &env);
@@ -5584,7 +5602,8 @@ fn setup_sets_up_every_connector_with_no_host_running() {
 /// `setup --status` asks Plow, read only, whether Google is connected
 /// there: none connected says where to connect one; connected, the
 /// connector is the step; enabled, it is done. The state folder is not
-/// changed and no credential is asked for.
+/// changed, no sign-in link is made, and credentials are asked for only
+/// once an account is connected (to learn which need signing in again).
 #[test]
 fn setup_status_says_whether_google_is_connected_in_plow() {
     let plow = LivePlow::start();
@@ -5607,6 +5626,13 @@ fn setup_status_says_whether_google_is_connected_in_plow() {
     let before = files();
 
     let none = google();
+    let credentials = || {
+        plow.seen()
+            .iter()
+            .filter(|(line, _)| line.contains("access-token"))
+            .count()
+    };
+    assert_eq!(credentials(), 0, "none connected: no credentials asked for");
     assert_eq!(none["step"], "google");
     assert_eq!(none["state"], "needed");
     assert_eq!(none["connect_url"], "https://app.example.com/connections");
@@ -5635,9 +5661,7 @@ fn setup_status_says_whether_google_is_connected_in_plow() {
     assert_eq!(on["args"], Value::Null);
     let asked: Vec<String> = plow.seen().into_iter().map(|(line, _)| line).collect();
     assert!(
-        !asked
-            .iter()
-            .any(|line| line.contains("access-token") || line.contains("connect-code")),
+        !asked.iter().any(|line| line.contains("connect-code")),
         "{asked:?}"
     );
 }
@@ -5659,12 +5683,7 @@ fn enabling_google_offers_a_sign_in_link_and_waits_for_the_account() {
     let plow = LivePlow::start();
     let dir = test_dir();
     let host = owner_host_on(&plow, dir.path());
-    let pin: Value = serde_json::from_str(include_str!("../src/google/pin.json")).unwrap();
-    let gog = host
-        .join("plugins/gog")
-        .join(pin["version"].as_str().unwrap());
-    fs::create_dir_all(&gog).unwrap();
-    fs::copy(env!("CARGO_BIN_EXE_latch"), gog.join("gog")).unwrap();
+    install_fake_gog(&host);
     let minted = || {
         plow.seen()
             .iter()
@@ -5881,12 +5900,7 @@ fn a_slow_sign_in_link_neither_outlasts_the_wait_nor_a_stop() {
     let plow = LivePlow::start();
     let dir = test_dir();
     let host = owner_host_on(&plow, dir.path());
-    let pin: Value = serde_json::from_str(include_str!("../src/google/pin.json")).unwrap();
-    let gog = host
-        .join("plugins/gog")
-        .join(pin["version"].as_str().unwrap());
-    fs::create_dir_all(&gog).unwrap();
-    fs::copy(env!("CARGO_BIN_EXE_latch"), gog.join("gog")).unwrap();
+    install_fake_gog(&host);
     plow.state.lock().unwrap().sign_in_slow = std::time::Duration::from_secs(20);
     let events = ["plugins", "enable", "google", "--events"];
 
@@ -5935,6 +5949,146 @@ fn a_slow_sign_in_link_neither_outlasts_the_wait_nor_a_stop() {
     assert!(!shown.contains("\"link\""), "{shown}");
 }
 
+/// Google wanting the owner to sign in again: with no account working,
+/// `plugins enable google` says `google_needs_sign_in` with the accounts and
+/// a sign-in link, and waits (`--events`) until they work again; with some
+/// working it enables and names the rest. `setup --status` says the same.
+#[cfg(all(
+    feature = "fake-gog",
+    any(target_os = "macos", feature = "systemd-tests")
+))]
+#[test]
+fn signing_in_again_is_offered_and_waited_for() {
+    use std::io::BufRead;
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    install_fake_gog(&host);
+    {
+        let mut state = plow.state.lock().unwrap();
+        state.google = Some("google-token".into());
+        state.google_reauth = vec!["owner@example.com".into()];
+    }
+    let google_step = || {
+        let output = latch(&host, &["setup", "--status"], &[]);
+        let status: Value = serde_json::from_slice(&output.stdout).unwrap();
+        status["steps"][1].clone()
+    };
+
+    // No account works: the error names it and carries the sign-in link.
+    let output = latch(&host, &["plugins", "enable", "google"], &[]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+    let error = &error["error"];
+    assert_eq!(error["code"], "google_needs_sign_in", "{error}");
+    assert_eq!(error["accounts"], json!(["owner@example.com"]));
+    assert!(error["sign_in_url"].is_string(), "{error}");
+    assert_eq!(error["connect_url"], "https://app.example.com/connections");
+    let step = google_step();
+    assert_eq!(step["state"], "needed", "{step}");
+    assert_eq!(step["needs_sign_in"], json!(["owner@example.com"]));
+    assert_eq!(
+        step["args"],
+        json!(["plugins", "enable", "google", "--events"])
+    );
+
+    // `--events` waits until the account works again, then enables.
+    let mut child = latch_command(&host, &["plugins", "enable", "google", "--events"], &[])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut out = std::io::BufReader::new(child.stdout.take().unwrap()).lines();
+    let mut next = || -> Value { serde_json::from_str(&out.next().unwrap().unwrap()).unwrap() };
+    assert_eq!(next()["type"], "hello");
+    assert_eq!(next()["type"], "link");
+    plow.state.lock().unwrap().google_reauth.clear();
+    let result = next();
+    assert_eq!(result["type"], "result", "{result}");
+    assert_eq!(result["result"]["accounts"], json!(["owner@example.com"]));
+    assert!(child.wait().unwrap().success());
+
+    // One works, one doesn't: enabled, the other named.
+    {
+        let mut state = plow.state.lock().unwrap();
+        state.added_google = vec!["second@example.com".into()];
+        state.google_reauth = vec!["second@example.com".into()];
+    }
+    let output = latch(&host, &["plugins", "enable", "google"], &[]);
+    assert!(output.status.success(), "{output:?}");
+    let enabled: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(enabled["accounts"], json!(["owner@example.com"]));
+    assert_eq!(enabled["needs_sign_in"], json!(["second@example.com"]));
+    let step = google_step();
+    assert_eq!(step["state"], "done", "{step}");
+    assert_eq!(step["needs_sign_in"], json!(["second@example.com"]));
+}
+
+/// A caller whose stdout reader leaves cancels a Google sign-in wait at
+/// once, even while Plow is still answering: with `--events` while a link
+/// is slow to come (google_connect_cancelled, not a later sign_in_timeout),
+/// and at a terminal whose output was piped, before any enable runs.
+#[cfg(all(
+    feature = "fake-gog",
+    any(target_os = "macos", feature = "systemd-tests")
+))]
+#[test]
+fn a_reader_that_leaves_cancels_the_sign_in_wait() {
+    use std::io::{BufRead, Read};
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    install_fake_gog(&host);
+
+    // `--events`, Plow slow to give the link: the reader leaves after hello.
+    plow.state.lock().unwrap().sign_in_slow = std::time::Duration::from_secs(20);
+    let within = [("LATCH_TEST_CONNECT_WITHIN", Path::new("8"))];
+    let mut child = latch_command(&host, &["plugins", "enable", "google", "--events"], &within)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut out = std::io::BufReader::new(child.stdout.take().unwrap());
+    let mut hello = String::new();
+    out.read_line(&mut hello).unwrap();
+    assert!(hello.contains("hello"), "{hello}");
+    let started = std::time::Instant::now();
+    drop(out);
+    let mut said = String::new();
+    child
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut said)
+        .unwrap();
+    assert_eq!(child.wait().unwrap().code(), Some(1), "{said}");
+    assert!(said.contains("google_connect_cancelled"), "{said}");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(6),
+        "{said}"
+    );
+    plow.state.lock().unwrap().sign_in_slow = std::time::Duration::ZERO;
+
+    // At a terminal with stdout piped: its reader leaves, then the account
+    // appears; nothing is enabled for no one.
+    let (mut child, _typing, shown) = at_a_terminal(
+        &host,
+        &["plugins", "enable", "google"],
+        &[],
+        (120, 30),
+        true,
+    );
+    shows(&shown, "Waiting for the account");
+    drop(child.stdout.take());
+    plow.state.lock().unwrap().google = Some("google-token".into());
+    let all = shows(&shown, "Stopped waiting for Google sign-in");
+    assert_eq!(child.wait().unwrap().code(), Some(1), "{all}");
+    let saved = fs::read_to_string(host.join("plugins.json")).unwrap_or_default();
+    assert!(!saved.contains("\"enabled\""), "{saved}");
+}
+
 /// The end of a Google sign-in wait: an account that appears in its last
 /// second is still enabled (one last look at the deadline), and a stop
 /// after the final enable was sent can no longer say what it did
@@ -5949,12 +6103,7 @@ fn a_last_second_sign_in_counts_and_a_stop_during_the_enable_is_unknown() {
     let plow = LivePlow::start();
     let dir = test_dir();
     let host = owner_host_on(&plow, dir.path());
-    let pin: Value = serde_json::from_str(include_str!("../src/google/pin.json")).unwrap();
-    let gog = host
-        .join("plugins/gog")
-        .join(pin["version"].as_str().unwrap());
-    fs::create_dir_all(&gog).unwrap();
-    fs::copy(env!("CARGO_BIN_EXE_latch"), gog.join("gog")).unwrap();
+    install_fake_gog(&host);
     let events = ["plugins", "enable", "google", "--events"];
     let spawned = |env: &[(&str, &Path)]| {
         let mut child = latch_command(&host, &events, env)
@@ -6042,6 +6191,17 @@ fn a_last_second_sign_in_counts_and_a_stop_during_the_enable_is_unknown() {
         assert!(started.elapsed() < std::time::Duration::from_secs(10));
     }
     plow.state.lock().unwrap().tokens_slow = std::time::Duration::ZERO;
+}
+
+/// This test build as the host's pinned gog (feature `fake-gog`).
+#[cfg(feature = "fake-gog")]
+fn install_fake_gog(host: &Path) {
+    let pin: Value = serde_json::from_str(include_str!("../src/google/pin.json")).unwrap();
+    let folder = host
+        .join("plugins/gog")
+        .join(pin["version"].as_str().unwrap());
+    fs::create_dir_all(&folder).unwrap();
+    fs::copy(env!("CARGO_BIN_EXE_latch"), folder.join("gog")).unwrap();
 }
 
 /// A `latch serve` that holds the state folder but answers no socket this
@@ -6266,15 +6426,19 @@ fn at_its_own_terminal(
     fs::File,
     std::sync::mpsc::Receiver<String>,
 ) {
-    at_a_terminal_of(state, args, env, (120, 30))
+    at_a_terminal(state, args, env, (120, 30), false)
 }
 
-/// `at_its_own_terminal`, on a terminal `columns` wide and `rows` high.
-fn at_a_terminal_of(
+/// As `at_its_own_terminal`, on a terminal `columns` wide and `rows` high,
+/// and with stdout a pipe when `pipe_stdout` (the child's `stdout` is the
+/// test's to read): a person at the terminal whose command's output goes
+/// elsewhere.
+fn at_a_terminal(
     state: &Path,
     args: &[&str],
     env: &[(&str, &Path)],
     (columns, rows): (u16, u16),
+    pipe_stdout: bool,
 ) -> (
     std::process::Child,
     fs::File,
@@ -6313,8 +6477,12 @@ fn at_a_terminal_of(
     let mut command = latch_command(state, args, env);
     command
         .stdin(side.try_clone().unwrap())
-        .stdout(side.try_clone().unwrap())
         .stderr(side.try_clone().unwrap());
+    if pipe_stdout {
+        command.stdout(std::process::Stdio::piped());
+    } else {
+        command.stdout(side.try_clone().unwrap());
+    }
     // SAFETY: setsid and the ioctl only change this child's session and
     // terminal, between fork and exec.
     unsafe {

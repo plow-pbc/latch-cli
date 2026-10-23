@@ -23,6 +23,25 @@ struct LiveTests {
         try await recordArrives(latch: latch, state: state, feedHost: nil, host: try #require(host))
     }
 
+    /// The app killed outright while it watches its host: its streams'
+    /// latches end, and the host it started keeps serving.
+    @Test func killingTheAppEndsItsStreamsAndLeavesTheHost() async throws {
+        let latch = URL(filePath: try Self.input("LATCH_LIVE_LATCH"))
+        let state = try Self.input("LATCH_LIVE_STATE")
+        let client = LiveLatchClient(executable: latch, stateDir: state)
+        let before = try await client.localStatus().thisMachine.hosting
+        try #require(before.ready, "LATCH_LIVE_STATE's host must be serving")
+        let app = try HeldStreams(latch: latch, state: state, ["status", "audit"])
+        defer { app.stop() }
+        func streams() -> Int { latchRuns(on: state, doing: "status --local --follow") + latchRuns(on: state, doing: "audit --follow") }
+        await waitUntil { streams() == 2 }
+        app.killApp()
+        await waitUntil { streams() == 0 }
+        #expect(streams() == 0)
+        let after = try await client.localStatus().thisMachine.hosting
+        #expect(after.ready && after.pid == before.pid)
+    }
+
     /// The caller's machine reads the remote host's audit.
     @Test func aRemoteRecordArrivesWhileWatchedAndLatchStopsAfter() async throws {
         let latch = URL(filePath: try Self.input("LATCH_LIVE_LATCH"))

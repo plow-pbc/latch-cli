@@ -46,6 +46,7 @@ enum TestHooks {
             opened.append("login item \(on ? "on" : "off")")
         }
         app.loginItemIsOn = { loginItem }
+        app.openLoginItems = { opened.append("login items settings") }
         if headless {
             Task { await app.resumeOnboarding() }
         }

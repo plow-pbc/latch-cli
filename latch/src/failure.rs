@@ -104,6 +104,9 @@ pub struct PlowSaid {
     /// The code Plow put in a refusal's `detail` (`AGENT_EXISTS`), if it
     /// did: a fixed word, never Plow's text.
     pub code: Option<Box<str>>,
+    /// The Google accounts Plow said need signing in again (its
+    /// `needs_reauth` refusal), if it said so.
+    pub needs_sign_in: Option<Vec<String>>,
 }
 
 impl Failure {
@@ -290,6 +293,7 @@ codes! {
     gone: Failed,
     google_failed: Failed,
     google_connect_cancelled: Failed,
+    google_needs_sign_in: Failed,
     google_not_connected: Failed,
     google_timeout: Failed,
     google_worker_failed: Failed,

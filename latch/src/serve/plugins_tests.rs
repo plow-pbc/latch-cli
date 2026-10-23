@@ -451,4 +451,63 @@ mod pinned {
             "not_enabled"
         );
     }
+
+    /// Google wanting the owner to sign in again is said as
+    /// `google_needs_sign_in`, naming the accounts: for an enable when no
+    /// account works, and for an agent's call either way. When some still
+    /// work, the enable succeeds and names the rest in `needs_sign_in`.
+    #[tokio::test]
+    async fn an_account_google_wants_signed_in_again_is_named() {
+        let t = start(covered()).await;
+        ok(plugins(&t, "disable", "google").await);
+        install_pinned_gog(&t);
+        {
+            let mut world = t.plow.world.lock().unwrap();
+            world.google_accounts = vec!["me@example.com".into()];
+            world.google_reauth = vec!["me@example.com".into()];
+        }
+        let answer = plugins(&t, "enable", "google").await;
+        let (exit, code, details) = refusal(&answer);
+        assert_eq!((exit, code), (Exit::Failed, "google_needs_sign_in"));
+        assert_eq!(details["accounts"], json!(["me@example.com"]));
+        let Response::Error { next, .. } = &answer else {
+            unreachable!()
+        };
+        assert_eq!(next.as_deref(), Some("latch plugins enable google"));
+        assert_eq!(state_of(&t, "google").await["state"], "needs_setup");
+
+        {
+            let mut world = t.plow.world.lock().unwrap();
+            world.google_accounts = vec!["me@example.com".into(), "work@example.com".into()];
+            world.google_reauth = vec!["work@example.com".into()];
+        }
+        let enabled = ok(plugins(&t, "enable", "google").await);
+        assert_eq!(enabled["accounts"], json!(["me@example.com"]));
+        assert_eq!(enabled["needs_sign_in"], json!(["work@example.com"]));
+        let on_work = json!({"gog_args": ["gmail", "search", "invoice"],
+                             "account": ["work@example.com"], "confirm_conflict": false,
+                             "inputs": []});
+        // An agent's call on that account: ready, then the refusal.
+        let agent = t.caller("agent").await;
+        let (ready, rest) = t.call(&agent, "google", on_work).await;
+        assert_eq!(ok(ready), json!({"ready": true}));
+        let size = u32::from_be_bytes(rest[..4].try_into().unwrap()) as usize;
+        let refused: Response = serde_json::from_slice(&rest[4..4 + size]).unwrap();
+        let (_, code, details) = refusal(&refused);
+        assert_eq!(code, "google_needs_sign_in", "{details}");
+        assert_eq!(details["accounts"], json!(["work@example.com"]));
+        // Another account works, so an enable would sign nothing in.
+        let Response::Error { next, .. } = &refused else {
+            unreachable!()
+        };
+        assert_eq!(
+            next.as_deref(),
+            Some("reconnect these accounts on Plow's Connections page")
+        );
+
+        t.plow.world.lock().unwrap().google_reauth =
+            vec!["me@example.com".into(), "work@example.com".into()];
+        let (refused, _) = t.call(&agent, "google", accounts()).await;
+        assert_eq!(refusal(&refused).1, "google_needs_sign_in");
+    }
 }

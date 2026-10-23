@@ -26,6 +26,12 @@ unopened, then turns Google on; otherwise it fails with
 wait as JSON lines for an app: `hello`, a `link` for each link, then one
 `result` or `error` (`sign_in_timeout` when no new account was seen).
 `--add-account` turns Google on and offers a link for another account.
+When Google wants the owner to sign in again with a connected account
+(Plow can no longer get it credentials), that is `google_needs_sign_in`,
+naming the accounts: an enable with none working offers the same link and
+waits until they all work again; with some working it turns Google on and
+names the rest in `needs_sign_in`, as `setup --status` does. An agent's
+call on such an account gets the same code.
 The link is a credential until used: latch never writes it to the audit,
 saved state or a log, and `connect_url` stays Plow's public Connections
 page. Until then every Google call gets `not_enabled`. `latch plugins disable google`

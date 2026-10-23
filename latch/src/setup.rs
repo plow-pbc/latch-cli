@@ -339,6 +339,10 @@ pub struct Step {
     /// Google's, when none is connected: where the owner connects one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub connect_url: Option<String>,
+    /// Google's: the connected accounts Google wants the owner to sign in
+    /// with again, when there are any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub needs_sign_in: Option<Vec<String>>,
     /// Messages' and Contacts', with `--check-access`: whether Plow Latch
     /// has Full Disk Access (`granted`, `not_granted` or `unknown`).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -371,13 +375,22 @@ pub async fn status(state: &StateDir, check_access: bool) -> Result<Status, Fail
         .login
         .as_ref()
         .is_some_and(|login| login.kind == "device");
-    let plow = if owner {
-        Some(match crate::plow::Plow::from_state(state) {
-            Ok(plow) => plow.connectors().await,
-            Err(failure) => Err(failure),
-        })
+    let (plow, sign_in_again) = if owner {
+        match crate::plow::Plow::from_state(state) {
+            Ok(plow) => {
+                let connectors = plow.connectors().await;
+                let connected = connectors.as_ref().is_ok_and(|c| c.gmail.connected);
+                let again = if connected {
+                    sign_in_again(&plow).await
+                } else {
+                    None
+                };
+                (Some(connectors), again)
+            }
+            Err(failure) => (Some(Err(failure)), None),
+        }
     } else {
-        None
+        (None, None)
     };
     let name = local.this_machine.name.as_deref().unwrap_or_default();
     let mut steps = vec![match &local.login {
@@ -425,7 +438,7 @@ pub async fn status(state: &StateDir, check_access: bool) -> Result<Status, Fail
         if connector == Connector::Google
             && let Some(plow) = &plow
         {
-            google_in_plow(&mut step, plow);
+            google_in_plow(&mut step, plow, sign_in_again.as_deref());
         }
         if connector != Connector::Google {
             step.access = access;
@@ -483,7 +496,28 @@ async fn full_disk_access(_state: &StateDir) -> Option<&'static str> {
 /// The Google step for the owner, by what Plow says: none connected
 /// (connect one first), connected (then the connector), or Plow could not
 /// say, which is never taken for either.
-fn google_in_plow(step: &mut Step, plow: &Result<crate::plow::Connectors, Failure>) {
+/// The connected Google accounts Google wants the owner to sign in with
+/// again. Only getting their credentials tells, so this does, within
+/// `SIGN_IN_CHECK_WITHIN`; none when Plow could not say in time.
+async fn sign_in_again(plow: &crate::plow::Plow) -> Option<Vec<String>> {
+    match tokio::time::timeout(SIGN_IN_CHECK_WITHIN, plow.google_tokens()).await {
+        Ok(Ok(tokens)) => Some(tokens.needs_sign_in()),
+        Ok(Err(failure)) if failure.code == "google_needs_sign_in" => {
+            Some(crate::google::sign_in_accounts(&failure.details))
+        }
+        _ => None,
+    }
+}
+
+/// How long `setup --status` waits to learn whether Google wants a sign-in
+/// again: it stays quick, and says nothing of it past this.
+const SIGN_IN_CHECK_WITHIN: std::time::Duration = std::time::Duration::from_secs(5);
+
+fn google_in_plow(
+    step: &mut Step,
+    plow: &Result<crate::plow::Connectors, Failure>,
+    sign_in_again: Option<&[String]>,
+) {
     use StepState::{Blocked, Needed};
     let connectors = match plow {
         Ok(connectors) => connectors,
@@ -527,6 +561,19 @@ fn google_in_plow(step: &mut Step, plow: &Result<crate::plow::Connectors, Failur
         if step.state == Blocked {
             step.state = Needed;
         }
+        if let Some(again) = sign_in_again.filter(|again| !again.is_empty()) {
+            // None of them works: signing in again is the step.
+            if accounts.iter().all(|account| again.contains(account)) {
+                step.state = Needed;
+                step.reason = format!(
+                    "Google needs you to sign in again with {}: `latch plugins enable google` \
+                     signs you in.",
+                    again.join(", ")
+                );
+                step.args = Some(vec!["plugins", "enable", "google", "--events"]);
+            }
+            step.needs_sign_in = Some(again.to_vec());
+        }
     }
     step.accounts = Some(accounts);
 }
@@ -547,6 +594,7 @@ impl Step {
             ready: None,
             accounts: None,
             connect_url: None,
+            needs_sign_in: None,
             access: None,
         }
     }

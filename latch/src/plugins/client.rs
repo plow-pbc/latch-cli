@@ -76,7 +76,9 @@ pub async fn run(state: &StateDir, args: PluginsArgs) -> Result<Value, Failure> 
     // Signing in waits here, outside any host call or hold on the state
     // folder.
     match send().await {
-        Err(failure) if failure.code == "google_not_connected" => {
+        Err(failure)
+            if failure.code == "google_not_connected" || failure.code == "google_needs_sign_in" =>
+        {
             super::connect::google(state, Some(failure), None, events, send).await
         }
         Ok(result) if adding => {
