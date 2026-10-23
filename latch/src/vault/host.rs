@@ -101,6 +101,7 @@ pub(super) fn manage(
 ) -> Result<Value, Failure> {
     match args["command"].as_str().unwrap_or_default() {
         "list" => vault.with(|store| Ok(json!({"items": store.list()}))),
+        "show" => show(vault, args, audit),
         "add" => add(vault, args, audit),
         "edit" => edit(vault, args, audit),
         "remove" => remove(vault, args, audit),
@@ -249,6 +250,30 @@ pub fn edit(vault: &Vault, args: &Value, audit: &mut Map<String, Value>) -> Resu
     audit.insert("changed".into(), json!(changed));
     audit.insert("revision".into(), json!(meta.revision));
     Ok(json!({"item": meta, "changed": changed}))
+}
+
+/// One item's metadata and the values of its fields the classifier does
+/// not hold secret, by label; a secret field is in the metadata's
+/// `fields`, never here.
+fn show(vault: &Vault, args: &Value, audit: &mut Map<String, Value>) -> Result<Value, Failure> {
+    let id = args["item"].as_str().unwrap_or_default();
+    audit.insert("item".into(), json!(id));
+    let item = vault.with(|store| {
+        store
+            .item(id)
+            .ok_or_else(|| Failure::usage("no_such_item", format!("there is no item {id}")))
+    })?;
+    let meta = item.meta();
+    let values: Map<String, Value> = meta
+        .fields
+        .iter()
+        .filter(|field| !field.hidden)
+        .filter_map(|field| {
+            let value = super::classify::read(&item.raw, &field.label)?;
+            Some((field.label.clone(), json!(value)))
+        })
+        .collect();
+    Ok(json!({"item": meta, "values": values}))
 }
 
 fn remove(vault: &Vault, args: &Value, audit: &mut Map<String, Value>) -> Result<Value, Failure> {

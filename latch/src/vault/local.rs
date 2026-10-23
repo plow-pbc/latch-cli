@@ -44,7 +44,11 @@ pub(super) fn call(state: &StateDir, args: Value) -> Result<Value, Failure> {
     })
 }
 
-pub(super) fn import(state: &StateDir, path: &Path) -> Result<Value, Failure> {
+pub(super) fn import(
+    state: &StateDir,
+    path: &Path,
+    picking: &client::Picking,
+) -> Result<Value, Failure> {
     audited(state, "import", |vault, audit| {
         let io = |err| Failure::usage("local_file", format!("{}: {err}", path.display()));
         let mut bytes = Vec::new();
@@ -63,17 +67,14 @@ pub(super) fn import(state: &StateDir, path: &Path) -> Result<Value, Failure> {
         drop(bytes);
         vault.with(|store| import::mark_against(store, &mut parsed))?;
         let preview = import::preview(&parsed);
-        let picks = client::choose(&preview)?;
+        let picks = client::choose(&preview, picking)?;
         // No lock is held while the owner chooses. Commit checks current revisions.
         let outcome = vault.with(|store| Ok(import::commit(store, &parsed, &picks)))?;
         audit.insert("source".into(), json!(parsed.source));
         audit.insert("rows".into(), json!(parsed.items.len()));
         audit.insert("picked".into(), json!(picks.len()));
         audit.insert("result".into(), json!({"saved": outcome.saved, "updated": outcome.updated, "duplicates": outcome.duplicates, "failed": outcome.failed.len()}));
-        let mut result = json!(outcome);
-        result["source"] = preview["source"].clone();
-        result["picked"] = json!(picks);
-        Ok(result)
+        Ok(picking.answer(&preview, json!(outcome), &picks))
     })
 }
 
