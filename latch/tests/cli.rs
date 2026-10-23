@@ -122,6 +122,7 @@ fn latch_command(state: &Path, args: &[&str], env: &[(&str, &Path)]) -> Command 
         .env_remove("PLOW_API_BASE")
         .env_remove("PLOW_AGENT_TOKEN")
         .env_remove("LATCH_HOST")
+        .env_remove("LATCH_PLOW_CHAT")
         .env_remove("LATCH_TRACE")
         .arg("--state-dir")
         .arg(state)
@@ -133,7 +134,7 @@ fn latch_command(state: &Path, args: &[&str], env: &[(&str, &Path)]) -> Command 
 }
 
 #[test]
-fn local_commands_refuse_a_host_before_touching_local_state() {
+fn local_commands_refuse_unused_selectors_before_touching_local_state() {
     for args in [
         &["browser", "handoff", "done"][..],
         &["browser", "do", "click e1", "--dry-run"],
@@ -142,26 +143,69 @@ fn local_commands_refuse_a_host_before_touching_local_state() {
         &["google", "--", "--help"],
         &["google", "--", "-h"],
     ] {
+        for (flag, env, code) in [
+            ("--host", "LATCH_HOST", "host_not_supported"),
+            ("--plow-chat", "LATCH_PLOW_CHAT", "plow_chat_not_supported"),
+        ] {
+            for from_env in [false, true] {
+                let dir = test_dir();
+                let state = dir.path().join("state");
+                let mut argv = args.to_vec();
+                if !from_env {
+                    argv.splice(1..1, [flag, "routing-probe"]);
+                }
+                let mut command = latch_command(&state, &argv, &[]);
+                if from_env {
+                    command.env(env, "routing-probe");
+                }
+                let output = command.output().unwrap();
+                println!("{args:?}, {flag} from env={from_env}: {output:?}");
+                assert_eq!(output.status.code(), Some(2), "{output:?}");
+                assert!(output.stdout.is_empty(), "{output:?}");
+                let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+                assert_eq!(error["error"]["code"], code);
+                assert!(!state.exists(), "{args:?} touched local state");
+            }
+        }
+    }
+}
+
+#[test]
+fn owner_calls_refuse_a_plow_chat() {
+    let plow = LivePlow::start();
+    let (_runtime, relay) = local_relay();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let _serve = serving(&host, &relay);
+    for args in [
+        &["exec", "--", "echo", "must-not-run"][..],
+        &["browser", "sessions"],
+        &["google", "--", "gmail", "search", "invoice"],
+    ] {
         for from_env in [false, true] {
-            let dir = test_dir();
-            let state = dir.path().join("state");
             let mut argv = args.to_vec();
             if !from_env {
-                argv.splice(1..1, ["--host", "rpi5ld"]);
+                argv.splice(1..1, ["--plow-chat", "chat_a"]);
             }
-            let mut command = latch_command(&state, &argv, &[]);
+            let mut command = latch_command(&host, &argv, &[]);
             if from_env {
-                command.env("LATCH_HOST", "rpi5ld");
+                command.env("LATCH_PLOW_CHAT", "chat_a");
             }
             let output = command.output().unwrap();
-            println!("{args:?}, host from env={from_env}: {output:?}");
+            println!("{args:?}, plow chat from env={from_env}: {output:?}");
             assert_eq!(output.status.code(), Some(2), "{output:?}");
             assert!(output.stdout.is_empty(), "{output:?}");
             let error: Value = serde_json::from_slice(&output.stderr).unwrap();
-            assert_eq!(error["error"]["code"], "host_not_supported");
-            assert!(!state.exists(), "{args:?} touched local state");
+            assert_eq!(error["error"]["code"], "plow_chat_not_supported");
+            assert!(
+                error["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("--plow-chat")
+            );
         }
     }
+    assert!(plow.state.lock().unwrap().decisions.is_empty());
 }
 
 /// Runs latch with its stdin and stderr on a terminal (a pty) with `typed`

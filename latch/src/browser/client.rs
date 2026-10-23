@@ -51,7 +51,6 @@ pub async fn run(state: &StateDir, args: BrowserArgs) -> Result<Value, Failure> 
     let mut request = json!({
         "session": args.session,
         "ppid": std::os::unix::process::parent_id(),
-        "turn": args.turn,
     });
     // Where bytes go: a screenshot or download into a file here, an
     // upload's out of one.
@@ -157,7 +156,7 @@ pub async fn run(state: &StateDir, args: BrowserArgs) -> Result<Value, Failure> 
     let request = Request {
         op: "browser".to_string(),
         args: request,
-        chat: args.chat,
+        chat: args.plow_chat,
     };
     let id = request.args["request"].clone();
     match transfer {

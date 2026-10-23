@@ -68,7 +68,7 @@ pub async fn run(state: &StateDir, args: GoogleArgs) -> Result<Value, Failure> {
         confirm_conflict: args.confirm_conflict || lifted.confirm_conflict,
         inputs,
     };
-    let chat = args.host.chat;
+    let chat = args.host.plow_chat;
     let result = exchange(&link.connection, chat, request, files, plan.as_ref()).await;
     link.close();
     result

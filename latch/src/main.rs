@@ -86,7 +86,7 @@ fn main() -> ExitCode {
         Ok(matches) => matches,
         Err(err) => return usage_error(err),
     };
-    if let Err(failure) = help::check_host(&matches) {
+    if let Err(failure) = help::check_selectors(&matches) {
         report(&failure);
         return failure.exit.into();
     }
@@ -229,7 +229,7 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
             host,
         }) => {
             let peer = hosts::resolve(&state, host.host).await?;
-            to_json(transfer::get(&state, &peer, host.chat, &remote_path, local_dest).await?)
+            to_json(transfer::get(&state, &peer, host.plow_chat, &remote_path, local_dest).await?)
         }
         Command::File(FileCommand::Put {
             local_path,
@@ -237,7 +237,7 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
             host,
         }) => {
             let peer = hosts::resolve(&state, host.host).await?;
-            to_json(transfer::put(&state, &peer, host.chat, &local_path, &remote_path).await?)
+            to_json(transfer::put(&state, &peer, host.plow_chat, &local_path, &remote_path).await?)
         }
         Command::Google(args) => to_json(google::client::run(&state, args).await?),
         Command::Browser(args) => {
@@ -383,7 +383,7 @@ async fn call_host(
     let request = Request {
         op: op.to_string(),
         args,
-        chat: host.chat,
+        chat: host.plow_chat,
     };
     dial::call(state, &peer, &request, answer_within).await
 }
