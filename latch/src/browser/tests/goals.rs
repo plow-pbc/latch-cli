@@ -275,11 +275,12 @@ fn sent(answer: &Value) -> usize {
 
 #[tokio::test]
 async fn instruction_steps_offer_only_what_is_possible_and_stop_in_order() {
-    let (_dir, state, _area) = test_state("cft", &["default"]);
+    let (_dir, state, _area) = test_state("cft");
     let site = serve_shop();
     let told = Arc::new(Told::default());
     let mut h = Harness::start_with(
         &state,
+        "cft",
         Some(told.clone()),
         vec![(site.clone(), "https://shop.example".into())],
     )
@@ -866,7 +867,7 @@ async fn instruction_steps_offer_only_what_is_possible_and_stop_in_order() {
     args["request"] = json!("r-output-1");
     args["output"] = json!(true);
     let mut audit = serde_json::Map::new();
-    let (result, _) = crate::browser::host::call(
+    let (result, _) = super::host_call(
         &h.browsers,
         super::CALLER.into(),
         "do",
@@ -886,7 +887,7 @@ async fn instruction_steps_offer_only_what_is_possible_and_stop_in_order() {
     assert!(png.starts_with(b"\x89PNG"));
     told.tell(|_| choose("stuck", None));
     args["request"] = json!("r-output-2");
-    let failure = crate::browser::host::call(
+    let failure = super::host_call(
         &h.browsers,
         super::CALLER.into(),
         "do",
@@ -910,9 +911,9 @@ async fn instruction_steps_offer_only_what_is_possible_and_stop_in_order() {
 }
 
 async fn with_no_model_an_instruction_step_sends_nothing(engine: &str) {
-    let (_dir, state, _area) = test_state(engine, &["default"]);
+    let (_dir, state, _area) = test_state(engine);
     let site = serve_shop();
-    let mut h = Harness::start(&state, None).await;
+    let mut h = Harness::start(&state, engine, None).await;
     h.open(&format!("{site}/index.html")).await;
     let failure = h
         .send(plan(&["open the Drinks category"], &site, &[], &[]))
@@ -930,11 +931,12 @@ async fn fills_inside_plans_take_latchs_suggestions_or_stop() {
     const PASSWORD: &str = "greenleaf-made-up-41";
     const KEY: &str = "JBSWY3DPEHPK3PXP";
     const NUMBER: &str = "4242424242424242";
-    let (_dir, state, _area) = test_state("cft", &["default"]);
+    let (_dir, state, _area) = test_state("cft");
     let site = serve_shop();
     let told = Arc::new(Told::default());
     let mut h = Harness::start_with(
         &state,
+        "cft",
         Some(told.clone()),
         vec![(site.clone(), "https://shop.example".into())],
     )
@@ -1284,10 +1286,10 @@ async fn fills_inside_plans_take_latchs_suggestions_or_stop() {
 /// there, in the session's own tab.
 #[tokio::test]
 async fn a_popup_a_step_opens_is_followed() {
-    let (_dir, state, _area) = test_state("cft", &["default"]);
+    let (_dir, state, _area) = test_state("cft");
     let site = serve_shop();
     let told = Arc::new(Told::default());
-    let mut h = Harness::start(&state, Some(told.clone())).await;
+    let mut h = Harness::start(&state, "cft", Some(told.clone())).await;
     h.open(&format!("{site}/recipes.html")).await;
     told.tell(|_| choose("click", Some("Open the Greek Salad recipe")));
     let went = h
@@ -1328,10 +1330,10 @@ async fn a_popup_a_step_opens_is_followed() {
 #[tokio::test]
 async fn a_plan_stopped_for_the_owner_goes_on_after_the_handoff() {
     use crate::browser::handoff;
-    let (_dir, state, _area) = test_state("cft", &["default"]);
+    let (_dir, state, _area) = test_state("cft");
     let site = serve_shop();
     let told = Arc::new(Told::default());
-    let mut h = Harness::start(&state, Some(told.clone())).await;
+    let mut h = Harness::start(&state, "cft", Some(told.clone())).await;
     h.open(&format!(
         "{site}/reset.html?user=testuser@example.com&cart=greek:Regular&captcha=1"
     ))
@@ -1349,7 +1351,7 @@ async fn a_plan_stopped_for_the_owner_goes_on_after_the_handoff() {
         let (browsers, id) = (h.browsers.clone(), h.id.clone());
         tokio::spawn(async move {
             let mut audit = serde_json::Map::new();
-            crate::browser::host::call(
+            super::host_call(
                 &browsers,
                 super::CALLER.into(),
                 "handoff",

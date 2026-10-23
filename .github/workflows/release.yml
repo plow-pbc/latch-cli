@@ -195,11 +195,17 @@ jobs:
           entitlements=$(codesign -d --entitlements - --xml "$app" 2>/dev/null | plutil -convert xml1 -o - -)
           echo "$entitlements"
           grep -F "<string>$LATCH_TEAM_ID.co.plow.latch</string>" <<< "$entitlements"
-          for program in "$app" "unpacked/$NAME/latch-messages"; do
-            assessment=$(spctl --assess -vvv --type execute "$program" 2>&1)
+          notarized() {
+            local assessment
+            # Printed whatever spctl answers; the source line decides.
+            assessment=$(spctl --assess -vvv "$@" 2>&1) || true
             echo "$assessment"
             grep -Fx 'source=Notarized Developer ID' <<< "$assessment"
-          done
+          }
+          notarized --type execute "$app"
+          # Gatekeeper rejects any bare program as "not an app" under
+          # --type execute, so the reader is assessed by its own signature.
+          notarized --type open --context context:primary-signature "unpacked/$NAME/latch-messages"
           "unpacked/$NAME/latch" --version
           tar -czf "dist/$NAME.tar.gz" -C unpacked "$NAME"
       - uses: actions/upload-artifact@v4

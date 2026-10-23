@@ -14,7 +14,8 @@ use serde_json::value::RawValue;
 use serde_json::{Map, Value, json};
 
 use super::{CALLER, Calm, HEADLESS, act, find, latch, test_state};
-use crate::browser::host::{self, Browsers, Caller};
+use crate::browser::engine::named;
+use crate::browser::host::{Browsers, Caller};
 use crate::failure::{Exit, Failure};
 use crate::gate::rules::{Rules, RulesSource};
 use crate::gate::{Gate, Gatekeeper};
@@ -332,7 +333,7 @@ impl Host {
         input: Option<&[u8]>,
     ) -> (Result<Value, Failure>, Map<String, Value>) {
         let mut audit = Map::new();
-        let result = host::call(
+        let result = super::host_call(
             &self.browsers,
             caller,
             command,
@@ -390,7 +391,7 @@ fn two_clicks(link: &str) -> Value {
 }
 
 async fn a_refused_command_sends_nothing_to_the_page(engine: &str) {
-    let (_dir, state, _area) = test_state(engine, &["default"]);
+    let (_dir, state, _area) = test_state(engine);
     let (site, hits) = serve_site();
     let chat = vec![
         message(
@@ -408,7 +409,7 @@ async fn a_refused_command_sends_nothing_to_the_page(engine: &str) {
     // A judge that can't answer runs nothing: no session starts.
     judge.down.store(true, std::sync::atomic::Ordering::SeqCst);
     let (unjudged, audit) = host
-        .agent("open", "default", json!({"url": files}), None)
+        .agent("open", named(engine), json!({"url": files}), None)
         .await;
     let failure = unjudged.unwrap_err();
     assert_eq!(
@@ -420,7 +421,7 @@ async fn a_refused_command_sends_nothing_to_the_page(engine: &str) {
 
     // A refused open starts no session and loads nothing.
     let opened = host
-        .agent("open", "default", json!({"url": files}), None)
+        .agent("open", named(engine), json!({"url": files}), None)
         .await;
     refused(&opened, "not_covered", &chat);
     assert_eq!(
@@ -440,7 +441,7 @@ async fn a_refused_command_sends_nothing_to_the_page(engine: &str) {
         _ => NOT_COVERED,
     });
     let (page, audit) = host
-        .agent("open", "default", json!({"url": files}), None)
+        .agent("open", named(engine), json!({"url": files}), None)
         .await;
     let page = page.unwrap();
     assert_eq!(audit["gate"]["verdict"], "allow");
@@ -691,7 +692,7 @@ async fn a_refused_command_sends_nothing_to_the_page(engine: &str) {
 }
 
 async fn a_one_step_do_plan_is_judged_and_act_is_not(engine: &str) {
-    let (_dir, state, _area) = test_state(engine, &["default"]);
+    let (_dir, state, _area) = test_state(engine);
     let (site, hits) = serve_site();
     let chat = vec![message("m1", true, "have a look at my test site", 10)];
     // The site may open; no plan is covered.
@@ -703,7 +704,7 @@ async fn a_one_step_do_plan_is_judged_and_act_is_not(engine: &str) {
     let (page, _) = host
         .agent(
             "open",
-            "default",
+            named(engine),
             json!({"url": format!("{site}/files.html")}),
             None,
         )
@@ -742,7 +743,7 @@ async fn a_one_step_do_plan_is_judged_and_act_is_not(engine: &str) {
 }
 
 async fn clicks_and_reads_in_an_allowed_session_ask_the_judge_nothing(engine: &str) {
-    let (_dir, state, _area) = test_state(engine, &["default"]);
+    let (_dir, state, _area) = test_state(engine);
     let (site, _hits) = serve_site();
     let chat = vec![message(
         "m1",
@@ -755,7 +756,7 @@ async fn clicks_and_reads_in_an_allowed_session_ask_the_judge_nothing(engine: &s
     let (page, _) = host
         .agent(
             "open",
-            "default",
+            named(engine),
             json!({"url": format!("{site}/files.html")}),
             None,
         )
@@ -791,7 +792,7 @@ async fn clicks_and_reads_in_an_allowed_session_ask_the_judge_nothing(engine: &s
 }
 
 async fn an_owner_stop_refuses_the_next_plan(engine: &str) {
-    let (_dir, state, _area) = test_state(engine, &["default"]);
+    let (_dir, state, _area) = test_state(engine);
     let (site, hits) = serve_site();
     let chat = vec![message(
         "m1",
@@ -817,7 +818,7 @@ async fn an_owner_stop_refuses_the_next_plan(engine: &str) {
     let (page, _) = host
         .agent(
             "open",
-            "default",
+            named(engine),
             json!({"url": format!("{site}/files.html")}),
             None,
         )
@@ -850,7 +851,7 @@ async fn an_owner_stop_refuses_the_next_plan(engine: &str) {
 }
 
 async fn a_fill_inside_a_plan_is_judged_as_a_fill(engine: &str) {
-    let (_dir, state, _area) = test_state(engine, &["default"]);
+    let (_dir, state, _area) = test_state(engine);
     let (site, hits) = serve_site();
     let chat = vec![message("m1", true, "sign in to my test site", 10)];
     // Plans and sites are covered; a vault fill is not.
@@ -862,7 +863,7 @@ async fn a_fill_inside_a_plan_is_judged_as_a_fill(engine: &str) {
     let (page, _) = host
         .agent(
             "open",
-            "default",
+            named(engine),
             json!({"url": format!("{site}/login.html")}),
             None,
         )
@@ -963,7 +964,7 @@ async fn a_gated_shopping_task_on_the_decision_model() {
         .join(Timestamp::now().strftime("%Y%m%dT%H%M%SZ").to_string());
     std::fs::create_dir_all(&out).unwrap();
     let host_state = Path::new(&host_state);
-    let (_dir, state, _area) = test_state("cft", &["default"]);
+    let (_dir, state, _area) = test_state("cft");
     let site = super::shop::serve_shop();
     let chat = vec![
         message(
@@ -1080,7 +1081,7 @@ async fn a_gated_shopping_task_on_the_decision_model() {
     let reset = host
         .look(
             "open",
-            "default",
+            "chrome",
             json!({"url": format!("{site}/reset.html")}),
         )
         .await;
@@ -1088,7 +1089,7 @@ async fn a_gated_shopping_task_on_the_decision_model() {
     host.look("close", reset, json!({})).await;
     let opened = agent(
         "open",
-        "default",
+        "chrome",
         json!({"url": format!("{site}/index.html")}),
     )
     .await
@@ -1304,7 +1305,7 @@ fn decisions_answering(status: u16) -> String {
 /// an agent's command, and a device's click can't get its risk decision.
 /// Both fail closed, and both say the host's account owner must add credits.
 async fn a_host_out_of_plow_credits_says_its_account_owner_must_add_them(engine: &str) {
-    let (_dir, state, _area) = test_state(engine, &["default"]);
+    let (_dir, state, _area) = test_state(engine);
     let (site, hits) = serve_site();
     let route: Arc<dyn Provider> = Arc::new(crate::model::Plow::new(
         &decisions_answering(402),
@@ -1333,7 +1334,9 @@ async fn a_host_out_of_plow_credits_says_its_account_owner_must_add_them(engine:
     };
 
     let url = format!("{site}/order.html");
-    let (opened, _) = h.agent("open", "default", json!({"url": url}), None).await;
+    let (opened, _) = h
+        .agent("open", named(engine), json!({"url": url}), None)
+        .await;
     let failure = opened.unwrap_err();
     shown(&failure);
     assert_eq!(
@@ -1343,7 +1346,7 @@ async fn a_host_out_of_plow_credits_says_its_account_owner_must_add_them(engine:
     assert!(failure.message.contains(owner_adds), "{}", failure.message);
     assert!(fetched(&hits).is_empty(), "nothing was opened");
 
-    let page = h.look("open", "default", json!({"url": url})).await;
+    let page = h.look("open", named(engine), json!({"url": url})).await;
     let id = page["session"].as_str().unwrap().to_string();
     let place = find(&page, "button", "Place order");
     let (clicked, _) = h
@@ -1371,7 +1374,7 @@ async fn a_host_out_of_plow_credits_says_its_account_owner_must_add_them(engine:
 /// for, nothing more is asked; on another, the judge is asked first, as
 /// for `tab new` there, and a refusal loads nothing.
 async fn goto_on_a_new_site_is_judged_as_a_tab_there_is(engine: &str) {
-    let (_dir, state, _area) = test_state(engine, &["default"]);
+    let (_dir, state, _area) = test_state(engine);
     let (site, _hits) = serve_site();
     let (other, other_hits) = serve_site();
     let other = other.replace("127.0.0.1", "localhost");
@@ -1396,7 +1399,7 @@ async fn goto_on_a_new_site_is_judged_as_a_tab_there_is(engine: &str) {
     let (page, _) = host
         .agent(
             "open",
-            "default",
+            named(engine),
             json!({"url": format!("{site}/files.html")}),
             None,
         )
@@ -1460,7 +1463,7 @@ async fn goto_on_a_new_site_is_judged_as_a_tab_there_is(engine: &str) {
     for (command, name, url) in [
         ("goto", id.as_str(), "file:///etc/hosts"),
         ("tab", id.as_str(), "chrome://version"),
-        ("open", "default", "file:///etc/hosts"),
+        ("open", named(engine), "file:///etc/hosts"),
     ] {
         let args = json!({"action": "new", "url": url});
         let (refusal, audit) = host.agent(command, name, args, None).await;
@@ -1472,7 +1475,7 @@ async fn goto_on_a_new_site_is_judged_as_a_tab_there_is(engine: &str) {
 }
 
 async fn the_owners_devices_are_judged_as_the_owner(engine: &str) {
-    let (_dir, state, _area) = test_state(engine, &["default"]);
+    let (_dir, state, _area) = test_state(engine);
     let (site, hits) = serve_site();
     // The owner's own request is covered; an agent with no chat is not.
     let judge = Judge::new(|state| {
@@ -1484,7 +1487,9 @@ async fn the_owners_devices_are_judged_as_the_owner(engine: &str) {
     let host = Host::start(&state, &site, &judge, Vec::new());
     let files = format!("{site}/files.html");
 
-    let (page, audit) = host.device("open", "default", json!({"url": files})).await;
+    let (page, audit) = host
+        .device("open", named(engine), json!({"url": files}))
+        .await;
     let page = page.unwrap();
     assert_eq!(judge.calls(), 1, "the owner's open is judged");
     assert_eq!(audit["gate"]["caller"], "owner_device");
@@ -1508,7 +1513,7 @@ async fn the_owners_devices_are_judged_as_the_owner(engine: &str) {
     // An agent on the same host is still judged as an agent.
     let loaded = fetched(&hits).len();
     let (opened, audit) = host
-        .agent("open", "default", json!({"url": files}), None)
+        .agent("open", named(engine), json!({"url": files}), None)
         .await;
     assert_eq!(opened.unwrap_err().code, "gatekeeper_denied");
     assert_eq!(audit["gate"]["caller"], "agent");
@@ -1520,7 +1525,7 @@ async fn the_owners_devices_are_judged_as_the_owner(engine: &str) {
 }
 
 async fn a_local_address_is_refused_before_the_judge_or_an_engine(engine: &str) {
-    let (_dir, state, _area) = test_state(engine, &["default"]);
+    let (_dir, state, _area) = test_state(engine);
     // The owner has not allowed local browsing: the default.
     std::fs::remove_file(state.join("host.json")).unwrap();
     let (site, hits) = serve_site();
@@ -1530,7 +1535,7 @@ async fn a_local_address_is_refused_before_the_judge_or_an_engine(engine: &str) 
     let (refusal, audit) = host
         .agent(
             "open",
-            "default",
+            named(engine),
             json!({"url": format!("{site}/files.html")}),
             None,
         )

@@ -313,6 +313,21 @@ impl Plow {
         response.json().await.map_err(|_| bad_answer())
     }
 
+    /// The page in Plow where the owner connects accounts such as Google.
+    pub async fn connections_page(&self) -> Result<String, Failure> {
+        #[derive(Deserialize)]
+        struct Connectors {
+            web_base_url: String,
+        }
+        let url = format!("{}/v1/connectors", self.api_url);
+        let response = self.send(self.http.get(url)).await?;
+        let connectors: Connectors = response.json().await.map_err(|_| bad_answer())?;
+        Ok(format!(
+            "{}/connections",
+            connectors.web_base_url.trim_end_matches('/')
+        ))
+    }
+
     /// Every live agent in the account. Owner logins only.
     pub async fn agents(&self) -> Result<Vec<NamedAgent>, Failure> {
         let url = format!("{}/v1/agents", self.api_url);
@@ -408,6 +423,13 @@ impl Plow {
                 "invalid_request",
                 "Plow rejected the request's fields",
             ),
+            // Plow's answer when the account lacks what the request needs,
+            // such as a connected Google account.
+            412 => (
+                Exit::Failed,
+                "precondition_failed",
+                "Plow needs something set up first",
+            ),
             429 => (Exit::Failed, "rate_limited", "Plow asked us to slow down"),
             400..=499 => (Exit::Failed, "plow_rejected", "Plow refused the request"),
             _ => (Exit::Failed, "plow_error", "Plow could not answer"),
@@ -428,7 +450,13 @@ impl Plow {
 pub fn refused(failure: &Failure) -> bool {
     matches!(
         failure.code.as_str(),
-        "plow_denied" | "conflict" | "not_found" | "expired" | "invalid_request" | "plow_rejected"
+        "plow_denied"
+            | "conflict"
+            | "not_found"
+            | "expired"
+            | "invalid_request"
+            | "precondition_failed"
+            | "plow_rejected"
     )
 }
 

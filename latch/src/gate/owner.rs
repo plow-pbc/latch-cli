@@ -33,7 +33,7 @@ pub async fn run(state_dir: &Path, plow: &Plow, host: &str, kind: &str, args: &V
             let dir = RulesDir::new(state_dir);
             let from = args["from"].as_str();
             match command {
-                "show" => show(&dir, plow, host, from).await,
+                "show" => show(state_dir, &dir, plow, host, from).await,
                 "set" | "edit" => set(&dir, plow, host, command, args, &mut audit).await,
                 "clear" => clear(&dir, plow, host, from, &mut audit).await,
                 _ => Err(Failure::usage(
@@ -48,7 +48,7 @@ pub async fn run(state_dir: &Path, plow: &Plow, host: &str, kind: &str, args: &V
 }
 
 /// Only the owner's own devices may read or change the rules.
-fn owner_only(kind: &str) -> Result<(), Failure> {
+pub(crate) fn owner_only(kind: &str) -> Result<(), Failure> {
     if kind == "device" {
         return Ok(());
     }
@@ -57,6 +57,15 @@ fn owner_only(kind: &str) -> Result<(), Failure> {
         "owner_only",
         "the rules take commands from the owner's own devices only".into(),
     ))
+}
+
+/// The agent `from` names, resolved as `--from` is for every rules
+/// command: its uid, and its current name in Plow.
+pub async fn agent(plow: &Plow, from: &str) -> Result<(String, Option<String>), Failure> {
+    let account = Account::read(plow).await?;
+    let uid = account.resolve(from, false)?;
+    let name = account.name(&uid);
+    Ok((uid, name))
 }
 
 async fn set(
@@ -118,8 +127,10 @@ async fn clear(
 
 /// The rules for every agent and each agent's own (or only `from`'s),
 /// with each agent's current name, a mark on rules whose agent no longer
-/// exists, and a note when its latch moved machines since they were set.
+/// exists, and a note when its latch moved machines since they were set;
+/// and the agents `--deny-exec` refuses exec here.
 async fn show(
+    state_dir: &Path,
     dir: &RulesDir,
     plow: &Plow,
     host: &str,
@@ -164,6 +175,7 @@ async fn show(
         "host": host,
         "every_agent": every.as_deref().map(|text| json!({"text": text, "revision": revision(text)})),
         "agents": agents,
+        "deny_exec": crate::managed::saved_deny_exec(state_dir),
         "warning": WARNING,
     }))
 }

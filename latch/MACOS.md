@@ -125,8 +125,10 @@ build` and the tests. `just app` wraps that latch, with the window, in
 (`co.plow.latch.dev`), so it never shares the installed app's grants,
 preferences or windows; `open` it to see the window. Such a latch keeps its secrets as files, and Full Disk
 Access is granted to the binary itself. `install-binary.sh` given a bare
-binary on macOS copies it into the bin folder as it does on Linux; `just
-cft` and the macOS CI tests install that way. CI builds the bundle, with
-the window built for Apple silicon and Intel on macOS 26's Xcode, in
-`mac-tests.yml` (its `app` job: ad hoc signed, to check it is valid) and
-`keychain.yml` (Developer ID signed, to test the Keychain).
+binary on macOS copies it into the bin folder as it does on Linux; the
+macOS gate's browser tests install that way. The bundle, with the window
+built for Apple silicon and Intel (Xcode 26 or later), is built by `just
+test`'s installer suite on macOS (`scripts/test-app-bundle.sh`: ad hoc
+signed, to check it is valid; with the window's Swift tests), which
+`mac-tests.yml` runs on macOS 26, and by `keychain.yml` (Developer ID
+signed, to test the Keychain).

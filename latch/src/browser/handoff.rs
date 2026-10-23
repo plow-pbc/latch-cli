@@ -5,7 +5,7 @@
 //! The agent's `handoff` call waits until then, at most `--within` seconds
 //! (600 by default). Meanwhile:
 //! - that session is paused: every other call on it is answered
-//!   `session_paused`, while the runtime's other sessions go on;
+//!   `session_paused`, while other sessions go on;
 //! - its window alone comes to the front: the one thing in latch that
 //!   activates the browser;
 //! - the pending handoff is a file in `browser/handoff/`, named by the
@@ -126,8 +126,8 @@ pub(super) async fn run(
     let waited = outcome?;
     audit.insert("waited_s".into(), json!(waited.as_secs()));
     let mut out = json!({"handed_back": true, "reason": reason, "waited_s": waited.as_secs()});
-    // The page now, when it can be read: another session's fill may hold
-    // the browser, and then the agent observes once it is free.
+    // The page now, when it can be read: a fill may hold the browser, and
+    // then the agent observes once it is free.
     match worker(entry, json!({"op": "glance"}), audit).await {
         Ok((page, _)) => out["page"] = page,
         Err(failure) => out["page_unread"] = json!(failure.code),

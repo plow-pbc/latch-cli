@@ -61,9 +61,9 @@ struct Host {
     /// `serve/control.rs`).
     lifetime: Lifetime,
     workers: WorkerSetup,
-    /// Open browser sessions, one per profile.
+    /// Open browser sessions, each in a browser of its own.
     browsers: crate::browser::host::Browsers,
-    /// The host's vault, shared by every engine and profile.
+    /// The host's vault, shared by every session.
     vault: std::sync::Arc<crate::vault::host::Vault>,
     /// Our own endpoint and name, which a phone link points at.
     endpoint: Endpoint,
@@ -94,9 +94,10 @@ enum Stopping {
 
 /// `--deny-exec`: which agents may not run `exec` here, by verified agent
 /// uid, never by name. It only ever refuses; devices are never refused.
-#[derive(Default, Debug)]
+#[derive(Default, Debug, serde::Serialize)]
 pub struct DenyExec {
     every_agent: bool,
+    #[serde(rename = "agent_uids")]
     agents: Vec<String>,
 }
 
@@ -161,12 +162,9 @@ const ONLINE_TIMEOUT: Duration = Duration::from_secs(15);
 /// every browser session runs with no window. An `attached` host stops
 /// when the `latch serve` that started it goes away (see
 /// `serve/control.rs`).
-pub async fn run(
-    state: &StateDir,
-    headless_browsers: bool,
-    deny_exec: DenyExec,
-    attached: bool,
-) -> Result<(), Failure> {
+pub async fn run(state: &StateDir, args: &crate::cli::ServeArgs) -> Result<(), Failure> {
+    let (headless_browsers, attached) = (args.headless_browsers, args.attached);
+    let deny_exec = DenyExec::from_flags(&args.deny_exec);
     // A host that could not sandbox its workers would refuse every call;
     // say so once, now, instead of starting. The quick check names a
     // missing kernel feature; the probe worker then installs the sandbox
@@ -184,6 +182,9 @@ pub async fn run(
     };
     // Held until this process ends, however it ends.
     let _lock = lock_state(&state_dir)?;
+    // Only the host holding the folder saves its flags, so they are the
+    // running host's, or the last one's (`managed::saved_deny_exec`).
+    crate::managed::save_given(&state.path, &crate::managed::given_now(args))?;
     // From here on, other processes see this host's steps (`lifecycle.rs`).
     lifecycle::record(&state.path, Phase::Starting, attached, None)?;
     let result = run_locked(state, headless_browsers, deny_exec, attached, state_dir).await;
@@ -357,6 +358,7 @@ async fn run_host(
         stopping: watch::Sender::new(Stopping::No),
     });
     watch_binary(&host, BINARY_CHECK_EVERY);
+    sweep_browsers(&host);
     crate::update::watch(&state.path, &host.dashboard);
     let local_socket = crate::transport::LocalSocket::bind(&state.path)?;
     lifecycle::record(
@@ -587,6 +589,21 @@ fn watch_binary(host: &Arc<Host>, every: Duration) {
     });
 }
 
+/// Every minute, lets go of the browser sessions that ended or idled out,
+/// and with them their profiles, for as long as the host runs.
+fn sweep_browsers(host: &Arc<Host>) {
+    let host = Arc::downgrade(host);
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            let Some(host) = host.upgrade() else {
+                return;
+            };
+            host.browsers.sweep().await;
+        }
+    });
+}
+
 /// `latch was updated; restart to use build 1327`, from what the new
 /// latch's `--version` said (`latch 0.1.0 (1327): commit …`).
 fn updated_to(version: &str) -> String {
@@ -599,6 +616,17 @@ fn updated_to(version: &str) -> String {
         Some(number) => format!("latch was updated; restart to use build {number}"),
         None => "latch was updated; restart to use the new build".to_string(),
     }
+}
+
+/// An exec this host's owner refuses to the caller (`latch serve --deny-exec`).
+fn exec_denied() -> Failure {
+    Failure::new(
+        crate::failure::Exit::Denied,
+        "exec_denied",
+        "this host's owner does not let this agent run exec here \
+         (latch serve --deny-exec); asking again will not help"
+            .to_string(),
+    )
 }
 
 /// What every operation gets once the host's binary was replaced.
@@ -843,9 +871,8 @@ async fn serve_request(
     mut recv: crate::transport::RecvStream,
     cut_off: impl std::future::Future<Output = &'static str>,
 ) {
-    // A file's host path is resolved before anything is judged.
-    let unplaced = files::resolve(&request.op, &mut request.args, &host.workers);
-    let op = request.op.as_str();
+    let op = request.op.clone();
+    let op = op.as_str();
     let exec_permissions = (op == "exec").then(|| {
         json!({
             "writes": request.args.get("writes").cloned().unwrap_or_else(|| json!([])),
@@ -882,6 +909,16 @@ async fn serve_request(
                 message: denial.message,
             }
         }
+        // A preview runs nothing, so it is neither audited nor on the board.
+        Ok(identity) if op == "rules_try" => {
+            let response = rules_try::run(host, &identity, local, &request.args).await;
+            let outcome = match &response {
+                Response::Ok(answer) => answer["verdict"].as_str().unwrap_or_default(),
+                Response::Error { code, .. } => code,
+            };
+            log(&format!("{op}: {caller}: {outcome}"));
+            response
+        }
         Ok(identity) => {
             // On the board, running, from now until it is audited.
             let asked = request.args.clone();
@@ -892,125 +929,23 @@ async fn serve_request(
                 dashboard::session(op, &asked),
                 begun,
             );
-            // Any caller's exec, file or Google operation runs only if the
-            // gatekeeper allows it.
-            let gate = if local {
-                Ok(Gate {
-                    keeper: &host.gatekeeper,
-                    caller: Caller::OwnerOnHost,
-                })
-            } else {
-                host.gate(&identity, request.chat.as_deref())
-            };
-            // An exec this host's owner denies is refused without asking.
-            let denied_exec = op == "exec" && host.deny_exec.refuses(&identity);
-            // A worker started now would run the new latch under this old
-            // host: nothing runs, and nothing is judged.
-            let upgraded = host.binary.replaced();
-            let (prepared_exec, exec_failure) = if op == "exec" && !denied_exec && !upgraded {
-                match exec::normalize(&host.workers, &request.args) {
-                    Ok(args) => {
-                        request.args =
-                            serde_json::to_value(&args).expect("prepared exec serializes");
-                        (Some(args), None)
-                    }
-                    Err(failure) => (None, Some(failure)),
-                }
-            } else {
-                (None, None)
-            };
-            // Nor for a connector its owner has not enabled. One that is
-            // counts as running until its answer is audited, so `disable`
-            // waits for it.
-            let running =
-                crate::plugins::Connector::of_op(op).map(|connector| host.plugins.start(connector));
-            let not_enabled = matches!(running, Some(Err(_)));
-            // A messages call reads the address book for names only while
-            // Contacts is enabled too, held the same way.
-            let names = (op == "messages")
-                .then(|| crate::plugins::Connector::of_op("contacts"))
-                .flatten()
-                .and_then(|contacts| host.plugins.start(contacts).ok());
-            // A messages or contacts call is judged, and then run, as one
-            // effective request: the reader's reading of the caller's words
-            // and any cursor's filters. One the reader refuses is not judged.
-            let mut unplanned = None;
-            if (op == "messages" || op == "contacts") && !upgraded && !not_enabled && gate.is_ok() {
-                match crate::messages::host::plan(&host.workers, op, &request.args).await {
-                    Ok(planned) => request.args = planned,
-                    Err(done) => unplanned = Some(*done),
-                }
-            }
-            let gated = gate::gated(op, &request.args).filter(|_| {
-                !denied_exec
-                    && !upgraded
-                    && !not_enabled
-                    && exec_failure.is_none()
-                    && unplanned.is_none()
-                    && unplaced.is_none()
-            });
-            let unjudgeable = match (&gate, &gated) {
-                (Ok(_), Some(gated)) => gated.unjudgeable.as_ref(),
-                _ => None,
-            };
-            let judgment = match (&gate, &gated) {
-                (Ok(gate), Some(gated)) if unjudgeable.is_none() => {
-                    Some(gate.judge(&gated.action).await)
-                }
-                _ => None,
-            };
-            let refusal = match (&gate, &judgment) {
-                (Err(failure), _) => Some(failure),
-                _ if unjudgeable.is_some() => unjudgeable,
-                (_, Some(judgment)) => judgment.verdict.as_ref().err(),
-                _ => None,
-            };
-            let refused = gated.as_ref().zip(refusal).map(|(gated, failure)| Done {
-                response: Response::error(failure),
-                audit_args: gated.audit.clone(),
-                outcome: failure.code.clone(),
-            });
-            let done = if upgraded {
-                let failure = host_upgraded();
-                Done::failed(&failure.code, failure.message, Value::Null)
-            } else if let Some(failure) = exec_failure {
-                Done {
-                    response: Response::error(&failure),
-                    audit_args: Value::Null,
-                    outcome: failure.code,
-                }
-            } else if let Some(Err(failure)) = &running {
-                Done {
-                    response: Response::error(failure),
-                    audit_args: Value::Null,
-                    outcome: failure.code.clone(),
-                }
-            } else if let Some(unplanned) = unplanned {
-                unplanned
-            } else if let Some(refused) = refused {
-                refused
-            } else if let Some(unplaced) = unplaced {
-                unplaced
+            let chat = request.chat.clone();
+            let Checked {
+                gate,
+                prepared_exec,
+                running,
+                names,
+                judgment,
+                stop,
+            } = check(host, &identity, local, chat.as_deref(), &mut request).await;
+            let done = if let Some(stop) = stop {
+                stop.done()
             } else {
                 match op {
                     "file_get" => files::get(&host.workers, &request.args, &mut send).await,
                     "file_put" => {
                         files::put(&host.workers, &request.args, &mut send, &mut recv).await
                     }
-                    "exec" if denied_exec => Done {
-                        response: Response::Error {
-                            exit: crate::failure::Exit::Denied,
-                            details: Value::Null,
-                            code: "exec_denied".to_string(),
-                            message: "this host's owner does not let this agent run exec here \
-                                      (latch serve --deny-exec); asking again will not help"
-                                .to_string(),
-                        },
-                        // As a refused judgment keeps it: no stdin.
-                        audit_args: gate::gated(op, &request.args)
-                            .map_or(Value::Null, |gated| gated.audit),
-                        outcome: "exec_denied".to_string(),
-                    },
                     "exec" => {
                         exec::run(
                             &host.workers,
@@ -1157,6 +1092,165 @@ async fn serve_request(
         details["network"] = permissions["network"].clone();
     }
     answer(&mut send, &response).await;
+}
+
+/// Everything a request meets before it runs, in order: its file path
+/// resolved, the caller's gate, the host's own refusals (`--deny-exec`, a
+/// connector that is off, a replaced binary), an exec's paths checked, a
+/// messages read planned, then the gatekeeper's judgment. Nothing the
+/// request asks for runs here; `rules_try` stops after it.
+struct Checked<'a> {
+    gate: Result<Gate<'a>, Failure>,
+    prepared_exec: Option<exec::PreparedExec>,
+    /// The connectors it uses, counted as running until it is audited.
+    running: Option<crate::plugins::Running<'a>>,
+    names: Option<crate::plugins::Running<'a>>,
+    judgment: Option<gate::Judgment>,
+    /// Why it does not run, if it does not: the first refusal it met.
+    stop: Option<Stop>,
+}
+
+/// Why a checked request does not run, as its caller is answered.
+enum Stop {
+    /// The host's own refusal, made without asking the judge: an exec its
+    /// owner turned off (`--deny-exec`), a connector that is off.
+    Host(Done),
+    /// Any other: a replaced binary, a bad request, the gatekeeper's no.
+    Refused(Done),
+}
+
+impl Stop {
+    fn done(self) -> Done {
+        match self {
+            Stop::Host(done) | Stop::Refused(done) => done,
+        }
+    }
+}
+
+async fn check<'a>(
+    host: &'a Host,
+    identity: &'a Identity,
+    local: bool,
+    chat: Option<&'a str>,
+    request: &mut Request,
+) -> Checked<'a> {
+    // A file's host path is resolved before anything is judged.
+    let unplaced = files::resolve(&request.op, &mut request.args, &host.workers);
+    let op = request.op.clone();
+    let op = op.as_str();
+    // Any caller's exec, file or Google operation runs only if the
+    // gatekeeper allows it.
+    let gate = host.gate(identity, local, chat);
+    // An exec this host's owner denies is refused without asking.
+    let denied_exec = op == "exec" && host.deny_exec.refuses(identity);
+    // A worker started now would run the new latch under this old
+    // host: nothing runs, and nothing is judged.
+    let upgraded = host.binary.replaced();
+    let (prepared_exec, exec_failure) = if op == "exec" && !denied_exec && !upgraded {
+        match exec::normalize(&host.workers, &request.args) {
+            Ok(args) => {
+                request.args = serde_json::to_value(&args).expect("prepared exec serializes");
+                (Some(args), None)
+            }
+            Err(failure) => (None, Some(failure)),
+        }
+    } else {
+        (None, None)
+    };
+    // Nor for a connector its owner has not enabled. One that is
+    // counts as running until its answer is audited, so `disable`
+    // waits for it.
+    let (running, not_enabled) =
+        match crate::plugins::Connector::of_op(op).map(|connector| host.plugins.start(connector)) {
+            Some(Ok(running)) => (Some(running), None),
+            Some(Err(failure)) => (None, Some(failure)),
+            None => (None, None),
+        };
+    // A messages call reads the address book for names only while
+    // Contacts is enabled too, held the same way.
+    let names = (op == "messages")
+        .then(|| crate::plugins::Connector::of_op("contacts"))
+        .flatten()
+        .and_then(|contacts| host.plugins.start(contacts).ok());
+    // A messages or contacts call is judged, and then run, as one
+    // effective request: the reader's reading of the caller's words
+    // and any cursor's filters. One the reader refuses is not judged.
+    let mut unplanned = None;
+    if (op == "messages" || op == "contacts") && !upgraded && not_enabled.is_none() && gate.is_ok()
+    {
+        match crate::messages::host::plan(&host.workers, op, &request.args).await {
+            Ok(planned) => request.args = planned,
+            Err(done) => unplanned = Some(*done),
+        }
+    }
+    let gated = gate::gated(op, &request.args).filter(|_| {
+        !denied_exec
+            && !upgraded
+            && not_enabled.is_none()
+            && exec_failure.is_none()
+            && unplanned.is_none()
+            && unplaced.is_none()
+    });
+    let unjudgeable = match (&gate, &gated) {
+        (Ok(_), Some(gated)) => gated.unjudgeable.as_ref(),
+        _ => None,
+    };
+    let judgment = match (&gate, &gated) {
+        (Ok(gate), Some(gated)) if unjudgeable.is_none() => Some(gate.judge(&gated.action).await),
+        _ => None,
+    };
+    let refusal = match (&gate, &judgment) {
+        (Err(failure), _) => Some(failure),
+        _ if unjudgeable.is_some() => unjudgeable,
+        (_, Some(judgment)) => judgment.verdict.as_ref().err(),
+        _ => None,
+    };
+    let refused = gated.as_ref().zip(refusal).map(|(gated, failure)| Done {
+        response: Response::error(failure),
+        audit_args: gated.audit.clone(),
+        outcome: failure.code.clone(),
+    });
+    let refused_now = |failure: Failure, audit_args: Value| Done {
+        response: Response::error(&failure),
+        audit_args,
+        outcome: failure.code,
+    };
+    // A chat named where none can be is refused before anything else.
+    let stop = if chat.is_some()
+        && let Err(failure) = &gate
+    {
+        Some(Stop::Refused(Done {
+            response: Response::error(failure),
+            audit_args: Value::Null,
+            outcome: failure.code.clone(),
+        }))
+    } else if upgraded {
+        Some(Stop::Refused(refused_now(host_upgraded(), Value::Null)))
+    } else if let Some(failure) = exec_failure {
+        Some(Stop::Refused(refused_now(failure, Value::Null)))
+    } else if let Some(failure) = not_enabled {
+        Some(Stop::Host(refused_now(failure, Value::Null)))
+    } else if let Some(unplanned) = unplanned {
+        Some(Stop::Refused(unplanned))
+    } else if let Some(refused) = refused {
+        Some(Stop::Refused(refused))
+    } else if let Some(unplaced) = unplaced {
+        Some(Stop::Refused(unplaced))
+    } else if denied_exec {
+        // As a refused judgment keeps it: no stdin.
+        let audit = gate::gated(op, &request.args).map_or(Value::Null, |gated| gated.audit);
+        Some(Stop::Host(refused_now(exec_denied(), audit)))
+    } else {
+        None
+    };
+    Checked {
+        gate,
+        prepared_exec,
+        running,
+        names,
+        judgment,
+        stop,
+    }
 }
 
 /// Local callers are trusted by the private socket, never by a request field.
@@ -1346,12 +1440,23 @@ impl Host {
     fn gate<'a>(
         &'a self,
         identity: &'a Identity,
+        local: bool,
         chat: Option<&'a str>,
     ) -> Result<Gate<'a>, Failure> {
-        if identity.kind == "device" {
+        if local || identity.kind == "device" {
+            if chat.is_some() {
+                return Err(Failure::usage(
+                    "plow_chat_not_supported",
+                    "--plow-chat and LATCH_PLOW_CHAT select an agent's Plow chat; omit them on owner calls".into(),
+                ));
+            }
             return Ok(Gate {
                 keeper: &self.gatekeeper,
-                caller: Caller::Owner,
+                caller: if local {
+                    Caller::OwnerOnHost
+                } else {
+                    Caller::Owner
+                },
             });
         }
         match identity.agent_uid.as_deref() {
@@ -1483,6 +1588,10 @@ mod control;
 mod gated_tests;
 #[cfg(test)]
 mod plugins_tests;
+mod rules_try;
+pub(crate) use rules_try::not_previewable;
+#[cfg(test)]
+mod rules_try_tests;
 
 #[cfg(test)]
 mod tests {

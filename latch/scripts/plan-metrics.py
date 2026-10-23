@@ -10,7 +10,7 @@ model calls, the model's total time and the cost, confirmations, the stop),
 and over all of them the plan share, confirmations and how they were
 answered, what followed each stop, escapes to `eval`, agent turns and
 actions per turn, stops by code, and model calls and time per plan and per
-action. Turns are the caller's `--turn` / `LATCH_TURN`, else its parent pid.
+action. Turns group calls by the caller's parent process id.
 
 Cost is an estimate: the decision route reports no price per call, so it
 is the call count times PRICE_PER_CALL, Plow's stated price for one call.
@@ -38,8 +38,6 @@ def browser_records(path, since):
 
 
 def turn_of(args):
-    if args.get("turn"):
-        return str(args["turn"])
     if args.get("ppid") is not None:
         return f"ppid:{args['ppid']}"
     return "unknown"

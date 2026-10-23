@@ -1,22 +1,17 @@
 //! The host's side of `latch browser`: the `browser` operation.
 //!
-//! Each `open` makes a new session in its profile's runtime: one browser
-//! and worker per profile (`runtime.rs`), started by the first session
-//! that needs it and closed when its last session has. Sessions share the
-//! profile's logins, never each other's tabs, downloads or dialogs.
+//! Each `open` starts a new session in a runtime of its own (`runtime.rs`):
+//! a browser and worker on the engine `open` names, on a fresh profile that
+//! lasts as long as the session and is removed with it, on `close`, idle
+//! expiry, a failed launch or the host stopping. Sessions share nothing:
+//! no cookies, logins, tabs, downloads or dialogs.
 //!
 //! A session is reachable only with its id, which `open` returns once (128
-//! random bits, never derived from the profile), and only by the caller
-//! that opened it: an id this caller has no session for is
-//! `no_such_session`, another caller's is `not_owner`, and nothing reaches
-//! the session either way. `sessions` lists the caller's sessions without
-//! their ids. The audit holds a short hash of an id, never the id.
-//!
-//! Two sessions on one profile share each site's account state. While
-//! another session acted on a site in the last 15 minutes, an answer on
-//! that site carries `shared_site`; a session opened with `--reserve-site`
-//! holds its site until it closes, and another session's action there is
-//! refused with `site_busy` before anything is sent.
+//! random bits), and only by the caller that opened it: an id this caller
+//! has no session for is `no_such_session`, another caller's is
+//! `not_owner`, and nothing reaches the session either way. `sessions`
+//! lists the caller's sessions without their ids. The audit holds a short
+//! hash of an id, never the id.
 //!
 //! The audit record of each call holds what the worker reports (tab,
 //! origin and path, snapshot, target ref and role, how it was resolved),
@@ -37,7 +32,7 @@ use tokio::sync::Mutex;
 
 use super::judged;
 use super::plan::Op;
-use super::runtime::{IDLE, Runtime};
+use super::runtime::Runtime;
 use super::session::Session;
 use super::tags;
 use crate::failure::{Exit, Failure};
@@ -48,8 +43,6 @@ use crate::vault::host::Vault;
 use crate::vault::sites;
 use crate::wire::{self, Response};
 
-/// The profile `open` uses when it names none.
-pub const DEFAULT_PROFILE: &str = "default";
 /// The most of an `eval` script the audit keeps, as with `exec` argv.
 const MAX_SCRIPT_AUDIT: usize = 4096;
 /// The largest file `upload` takes.
@@ -66,10 +59,11 @@ pub struct Browsers {
     /// Tests only: whether the host has a screen, in place of the check.
     #[cfg(test)]
     pub(super) screen: Option<bool>,
-    /// Each profile's running runtime.
-    runtimes: Mutex<HashMap<String, Arc<Runtime>>>,
     /// Open sessions, by id.
     sessions: Mutex<HashMap<String, Arc<Entry>>>,
+    /// Browsers closing after their sessions ended, which nothing waits on
+    /// but a host that is stopping.
+    closing: std::sync::Mutex<tokio::task::JoinSet<()>>,
     pub(super) vault: Arc<Vault>,
     /// Plan requests under way, as `session/request`: a journal with no
     /// end reads as running while its request is here, else interrupted.
@@ -107,11 +101,13 @@ impl<'a> From<&'a str> for Caller<'a> {
 
 /// One open session, and what the host knows about it between calls.
 pub(super) struct Entry {
-    /// Held for the whole of each request: a session's requests take turns.
+    /// Held for each worker call: a session's calls take turns.
     pub(super) session: Mutex<Session>,
+    /// Held, shared, for the whole of each request, however many worker
+    /// calls it makes (a `wait`, a plan): a close takes it whole, and so
+    /// closes the browser only once every request under way has ended.
+    calls: tokio::sync::RwLock<()>,
     pub(super) runtime: Arc<Runtime>,
-    /// The worker's name for the session.
-    key: String,
     /// The key of the caller that opened the session.
     owner: String,
     /// A short hash of the session's id: what the audit records.
@@ -133,13 +129,13 @@ pub(super) struct Entry {
 
 impl Entry {
     /// The session's part of a call's audit record: its id hash, its task
-    /// label and its profile.
+    /// label and its engine.
     fn note(&self, audit: &mut Map<String, Value>) {
         audit.insert("session".into(), json!(self.hash));
         if let Some(task) = &self.task {
             audit.insert("task".into(), json!(task));
         }
-        audit.insert("profile".into(), json!(self.runtime.profile));
+        audit.insert("engine".into(), self.runtime.ready["engine"].clone());
     }
 
     /// The session's worker for one agent call: refused while the owner has
@@ -169,24 +165,21 @@ impl Entry {
     pub(super) fn owner_hint(&self) -> String {
         self.owner.chars().take(12).collect()
     }
-
-    fn idle(&self) -> bool {
-        self.seen.lock().expect("seen lock").0.elapsed() >= IDLE
-    }
 }
 
 impl Browsers {
     pub fn new(state_dir: PathBuf, vault: Arc<Vault>, headless: bool) -> Self {
-        // Handoffs end with the host: none is pending in a new one.
+        // Handoffs and sessions end with the host: none is left in a new one.
         let _ = std::fs::remove_dir_all(super::handoff::folder(&state_dir));
+        super::profile::reap(&state_dir);
         Browsers {
             state_dir,
             headless,
             dashboard: Default::default(),
             #[cfg(test)]
             screen: None,
-            runtimes: Mutex::new(HashMap::new()),
             sessions: Mutex::new(HashMap::new()),
+            closing: Default::default(),
             vault,
             running: Default::default(),
             #[cfg(test)]
@@ -270,13 +263,12 @@ impl Browsers {
     }
 
     /// The live session `id`, if there is one. A session whose runtime
-    /// ended, or that sat idle too long (its worker ended it), is forgotten.
+    /// ended (its worker ends it once it sat idle too long) is forgotten.
     async fn get(&self, id: &str) -> Option<Arc<Entry>> {
         let mut sessions = self.sessions.lock().await;
         let entry = sessions.get(id)?.clone();
-        if !entry.runtime.alive() || entry.idle() {
+        if !entry.runtime.alive() {
             sessions.remove(id);
-            entry.runtime.forget(&entry.key, &entry.hash);
             return None;
         }
         Some(entry)
@@ -298,47 +290,19 @@ impl Browsers {
         Ok(entry)
     }
 
-    /// A new session on `profile` for `caller`, in the profile's runtime,
-    /// started if none is running. Answers the session's id, its only copy
-    /// outside this map, and the session.
+    /// A new session on `engine` (`cft` or `camoufox`) for `caller`, in a
+    /// runtime of its own. Answers the session's id, its only copy outside
+    /// this map, and the session.
     pub(super) async fn open(
         &self,
-        profile: &str,
+        engine: &str,
         caller: &str,
         task: Option<&str>,
     ) -> Result<(String, Arc<Entry>), Failure> {
-        // Held until the session is in the map, so the runtime can't close
-        // for want of sessions while this one starts.
-        let mut runtimes = self.runtimes.lock().await;
-        let mut started = None;
-        // A runtime that idled out just now is replaced, once.
-        for _ in 0..2 {
-            let runtime = match runtimes.get(profile) {
-                Some(runtime) if runtime.alive() => runtime.clone(),
-                _ => {
-                    let runtime = Arc::new(self.start(profile).await?);
-                    runtimes.insert(profile.to_string(), runtime.clone());
-                    runtime
-                }
-            };
-            if runtime.filling.load(Ordering::SeqCst) {
-                return Err(paused());
-            }
-            match Session::begin(&runtime).await {
-                Err(failure) if failure.code == "browser_gone" => {
-                    runtimes.remove(profile);
-                }
-                begun => {
-                    started = Some((runtime, begun?));
-                    break;
-                }
-            }
-        }
-        let (runtime, session) = started
-            .ok_or_else(|| Failure::failed("browser_gone", "the browser worker stopped".into()))?;
+        let runtime = Arc::new(self.start(engine).await?);
+        let session = Session::new(runtime.clone());
         let id = format!("s{}", letters(&rand::random::<[u8; 16]>()));
         let entry = Arc::new(Entry {
-            key: session.key().to_string(),
             session: Mutex::new(session),
             runtime,
             owner: caller.to_string(),
@@ -346,6 +310,7 @@ impl Browsers {
             task: task.map(str::to_string),
             seen: std::sync::Mutex::new((Instant::now(), None)),
             serial: Mutex::new(()),
+            calls: Default::default(),
             confirmations: Default::default(),
             handing: Default::default(),
             judged_sites: Default::default(),
@@ -354,28 +319,47 @@ impl Browsers {
         Ok((id, entry))
     }
 
-    async fn start(&self, profile: &str) -> Result<Runtime, Failure> {
+    async fn start(&self, engine: &str) -> Result<Runtime, Failure> {
+        // Checked here first, outside the worker's sandbox, so that a full
+        // hash leaves its receipt and the worker's own check is quick.
+        let (state_dir, name) = (self.state_dir.clone(), engine.to_string());
+        tokio::task::spawn_blocking(move || super::engine::verify(&state_dir, &name))
+            .await
+            .expect("the engine check does not panic")?;
         #[cfg(test)]
         if let Some((latch, _)) = &self.test {
-            return Runtime::start_with(latch, &self.state_dir, profile, IDLE, self.headless).await;
+            return Runtime::start_with(
+                latch,
+                &self.state_dir,
+                engine,
+                super::runtime::IDLE,
+                self.headless,
+            )
+            .await;
         }
-        Runtime::start(&self.state_dir, profile, self.headless).await
+        Runtime::start(&self.state_dir, engine, self.headless).await
+    }
+
+    /// Forgets the sessions whose runtime ended or that sat idle too long:
+    /// their profiles go with them.
+    pub async fn sweep(&self) {
+        let ids: Vec<String> = self.sessions.lock().await.keys().cloned().collect();
+        for id in ids {
+            self.get(&id).await;
+        }
     }
 
     /// Closes every runtime at once, for a host that is stopping.
     pub async fn close_all(&self) {
-        self.sessions.lock().await.clear();
-        let mut closing = tokio::task::JoinSet::new();
-        for (_, runtime) in self.runtimes.lock().await.drain() {
-            closing.spawn(async move {
-                let _ = tokio::time::timeout(CLOSING, runtime.close()).await;
-            });
+        for (_, entry) in self.sessions.lock().await.drain() {
+            self.end(entry);
         }
+        let closing = std::mem::take(&mut *self.closing.lock().expect("closing lock"));
         closing.join_all().await;
     }
 
     /// The sessions `caller` opened, without their ids: task label,
-    /// profile, the site it was last on, its state and how long since its
+    /// engine, the site it was last on, its state and how long since its
     /// last call. No worker is asked.
     pub(super) async fn list(&self, caller: &str) -> Value {
         let ids: Vec<String> = self.sessions.lock().await.keys().cloned().collect();
@@ -397,7 +381,7 @@ impl Browsers {
             };
             listed.push(json!({
                 "task": entry.task,
-                "profile": entry.runtime.profile,
+                "engine": super::engine::named(entry.runtime.ready["engine"].as_str().unwrap_or_default()),
                 "site": site,
                 "state": state,
                 "idle_s": seen.elapsed().as_secs(),
@@ -416,7 +400,7 @@ impl Browsers {
             }
             sessions.remove(id).expect("found above")
         };
-        self.end(&entry).await
+        Ok(self.end(entry))
     }
 
     /// Ends the session whose id hashes to `hash`, whoever opened it: how
@@ -437,40 +421,29 @@ impl Browsers {
         };
         entry.note(audit);
         audit.insert("by_owner_device".into(), json!(true));
-        Some(self.end(&entry).await)
+        Some(Ok(self.end(entry)))
     }
 
-    /// A session the map no longer has: its windows close, and with its
-    /// runtime's last session, the runtime. Its site is free again.
-    async fn end(&self, entry: &Entry) -> Result<Value, Failure> {
-        entry.runtime.forget(&entry.key, &entry.hash);
-        let ended = entry.session.lock().await.end().await;
-        let mut runtimes = self.runtimes.lock().await;
-        let others = self
-            .sessions
-            .lock()
-            .await
-            .values()
-            .any(|other| Arc::ptr_eq(&other.runtime, &entry.runtime));
-        if !others {
-            let profile = &entry.runtime.profile;
-            if runtimes
-                .get(profile)
-                .is_some_and(|runtime| Arc::ptr_eq(runtime, &entry.runtime))
-            {
-                runtimes.remove(profile);
-            }
-            drop(runtimes);
+    /// Tests only: until every browser closing now has closed.
+    #[cfg(test)]
+    pub(super) async fn settled(&self) {
+        let closing = std::mem::take(&mut *self.closing.lock().expect("closing lock"));
+        closing.join_all().await;
+    }
+
+    /// A session the map no longer has: its browser closes once every
+    /// request under way in it has answered (a `wait` or a plan, not only
+    /// the worker call in flight), and its profile goes with it. Neither
+    /// waits: the answer is at once.
+    fn end(&self, entry: Arc<Entry>) -> Value {
+        let mut closing = self.closing.lock().expect("closing lock");
+        while closing.try_join_next().is_some() {}
+        closing.spawn(async move {
+            let _all = entry.calls.write().await;
+            let _turn = entry.session.lock().await;
             let _ = tokio::time::timeout(CLOSING, entry.runtime.close()).await;
-        }
-        ended.map(|_| json!({"closed": true}))
-    }
-
-    /// Forgets session `id` after its worker said it has ended.
-    async fn forget(&self, id: &str) {
-        if let Some(entry) = self.sessions.lock().await.remove(id) {
-            entry.runtime.forget(&entry.key, &entry.hash);
-        }
+        });
+        json!({"closed": true})
     }
 }
 
@@ -485,19 +458,17 @@ pub async fn run(
     recv: &mut RecvStream,
 ) -> Done {
     let command = args["command"].as_str().unwrap_or_default().to_string();
-    // `open` names a profile; every other session command, a session id.
+    // `open` names an engine; every other session command, a session id.
     let name = if command == "open" {
-        args["profile"].as_str().unwrap_or(DEFAULT_PROFILE)
+        args["engine"].as_str().unwrap_or("chrome")
     } else {
         args["session"].as_str().unwrap_or_default()
     }
     .to_string();
     let mut audit = Map::new();
     audit.insert("command".into(), json!(command));
-    for key in ["ppid", "turn"] {
-        if !args[key].is_null() {
-            audit.insert(key.into(), args[key].clone());
-        }
+    if !args["ppid"].is_null() {
+        audit.insert("ppid".into(), args["ppid"].clone());
     }
     if command == "eval" {
         eval_audit(args["script"].as_str().unwrap_or_default(), &mut audit);
@@ -637,7 +608,7 @@ pub(super) async fn call(
     answered
 }
 
-/// One command for `caller`: `open` on profile `name`, `sessions`, or a
+/// One command for `caller`: `open` on engine `name`, `sessions`, or a
 /// command on session `name` (its id). An owner device may also `close`
 /// any session by its hash.
 async fn answer(
@@ -682,6 +653,12 @@ async fn answer(
     }
     let entry = browsers.session(name, key).await?;
     entry.note(audit);
+    // Under way until it answers, so a close waits for it; a handoff waits
+    // on the owner, not the browser, and a close ends it.
+    let _under_way = match command {
+        "close" | "handoff" => None,
+        _ => Some(entry.calls.read().await),
+    };
     // While the owner has the session, only `close` reaches it.
     if entry.handing.load(Ordering::SeqCst) && command != "close" {
         return Err(super::handoff::handed_off());
@@ -726,18 +703,10 @@ async fn answer(
             .expect("judged sites lock")
             .insert(site);
     }
-    match result {
-        Ok((mut result, bytes)) => {
-            shared_site(&entry, &mut result, audit);
-            Ok((result, bytes))
-        }
-        Err(failure) => {
-            if failure.code == "no_such_session" {
-                browsers.forget(name).await;
-            }
-            Err(failure)
-        }
+    if result.is_ok() {
+        last_site(&entry, audit);
     }
+    result
 }
 
 /// What the gatekeeper judges of a session command before it runs, if
@@ -836,16 +805,23 @@ async fn off_web(browsers: &Browsers, url: &str) -> Result<(), Failure> {
         .expect("the address check does not panic")
 }
 
-/// `open`: a new session on `profile`, its page loaded. The answer carries
-/// the session's id; a session that could not load its page is ended. An
-/// agent's site is judged before any session starts.
+/// `open`: a new session on engine `name` (`chrome` or `camoufox`), its
+/// page loaded. The answer carries the session's id and its engine; a
+/// session that could not load its page is ended. An agent's site is
+/// judged before any session starts.
 async fn open(
     browsers: &Browsers,
     caller: Caller<'_>,
-    profile: &str,
+    name: &str,
     args: &Value,
     audit: &mut Map<String, Value>,
 ) -> Result<(Value, Option<Vec<u8>>), Failure> {
+    let engine = super::engine::unnamed(name).ok_or_else(|| {
+        Failure::usage(
+            "bad_arguments",
+            format!("no browser engine {name:?}: use chrome or camoufox"),
+        )
+    })?;
     let url = args["url"].as_str();
     if let Some(url) = url {
         off_web(browsers, url).await?;
@@ -854,46 +830,22 @@ async fn open(
         let action = judged::open_site(browsers, url);
         judged::judge(caller.gate, action, audit).await?;
     }
-    open_judged(browsers, caller.key, profile, args, audit).await
+    open_judged(browsers, caller.key, engine, args, audit).await
 }
 
 async fn open_judged(
     browsers: &Browsers,
     caller: &str,
-    profile: &str,
+    engine: &str,
     args: &Value,
     audit: &mut Map<String, Value>,
 ) -> Result<(Value, Option<Vec<u8>>), Failure> {
-    let reserve = match (args["reserve_site"] == true, args["url"].as_str()) {
-        (false, _) => None,
-        (true, Some(url)) => Some(sites::site_of(url).ok_or_else(|| {
-            Failure::usage("bad_arguments", format!("{url} has no site to reserve"))
-        })?),
-        (true, None) => {
-            return Err(Failure::usage(
-                "bad_arguments",
-                "--reserve-site reserves the site you open: give its URL".into(),
-            ));
-        }
-    };
-    let (id, entry) = browsers
-        .open(profile, caller, args["task"].as_str())
-        .await?;
+    let (id, entry) = browsers.open(engine, caller, args["task"].as_str()).await?;
     entry.note(audit);
-    let mut opened = Ok(());
-    if let Some(site) = &reserve {
-        audit.insert("reserved_site".into(), json!(site));
-        if !entry.runtime.reserve(site, &entry.key) {
-            opened = Err(site_busy(site));
-        }
-    }
-    let loaded = match opened {
-        Ok(()) => worker(browsers, &entry, "open", args, None, audit).await,
-        Err(failure) => Err(failure),
-    };
+    let loaded = worker(browsers, &entry, "open", args, None, audit).await;
     match loaded {
         Ok((mut result, bytes)) => {
-            shared_site(&entry, &mut result, audit);
+            last_site(&entry, audit);
             if let Some(site) = args["url"].as_str().and_then(sites::site_of) {
                 entry
                     .judged_sites
@@ -903,6 +855,7 @@ async fn open_judged(
             }
             if let Some(object) = result.as_object_mut() {
                 object.insert("session".into(), json!(id));
+                object.insert("engine".into(), json!(super::engine::named(engine)));
                 if crate::sandbox::page_isolation_off() {
                     object.insert(
                         "page_isolation".into(),
@@ -915,7 +868,7 @@ async fn open_judged(
         Err(failure) => {
             let opened = browsers.sessions.lock().await.remove(&id);
             if let Some(entry) = opened {
-                let _ = browsers.end(&entry).await;
+                browsers.end(entry);
             }
             Err(failure)
         }
@@ -936,7 +889,6 @@ async fn worker(
         return Err(paused());
     }
     let mut session = entry.agent_session().await?;
-    audit.insert("engine".into(), session.ready["engine"].clone());
     let reply = match session.call_with(call, input).await {
         Ok(reply) => {
             if let Some(worker) = reply.audit.as_object() {
@@ -949,8 +901,8 @@ async fn worker(
             Err(failure)
         }
     };
-    // Agent code was sent to this page's site: it is noted with the
-    // profile, refused or not, for every later fill there.
+    // Agent code was sent to this page's site: it is noted, refused or
+    // not, for every later fill there in this session.
     if command == "eval"
         && let Some(site) = audit
             .get("origin")
@@ -970,35 +922,14 @@ async fn worker(
     Ok((result, reply.bytes))
 }
 
-/// The page the call answered on: note its site as the session's own, and
-/// warn of other sessions on this profile that acted there lately.
-fn shared_site(entry: &Entry, result: &mut Value, audit: &mut Map<String, Value>) {
-    let Some(site) = audit
+/// The page the call answered on: its site, for `sessions`.
+fn last_site(entry: &Entry, audit: &Map<String, Value>) {
+    if let Some(site) = audit
         .get("origin")
         .and_then(Value::as_str)
         .and_then(sites::site_of)
-    else {
-        return;
-    };
-    entry.seen.lock().expect("seen lock").1 = Some(site.clone());
-    let others = entry.runtime.acted(&site, &entry.hash);
-    if others.is_empty() {
-        return;
-    }
-    audit.insert(
-        "shared_site".into(),
-        json!(others.iter().map(|(hash, _)| hash).collect::<Vec<_>>()),
-    );
-    if let Some(object) = result.as_object_mut() {
-        object.insert(
-            "shared_site".into(),
-            json!(
-                others
-                    .iter()
-                    .map(|(hash, ago)| json!({"session": hash, "acted_s_ago": ago}))
-                    .collect::<Vec<_>>()
-            ),
-        );
+    {
+        entry.seen.lock().expect("seen lock").1 = Some(site);
     }
 }
 
@@ -1149,15 +1080,6 @@ fn no_such_session() -> Failure {
          `latch browser open` starts one and answers its id"
             .into(),
     )
-}
-
-fn site_busy(site: &str) -> Failure {
-    let mut failure = Failure::failed(
-        "site_busy",
-        format!("another session on this profile has reserved {site}; nothing was sent"),
-    );
-    failure.details = json!({"site": site});
-    failure
 }
 
 #[cfg(test)]

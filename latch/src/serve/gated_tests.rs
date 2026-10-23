@@ -13,7 +13,7 @@ use crate::gate::fake::{self, AGENT, FakePlow, World, agent_self, message, owner
 use crate::model;
 
 /// The owner's yes covers an operation; anything else does not.
-fn covered_after_a_yes(state: &Value) -> Option<[f64; 3]> {
+pub(super) fn covered_after_a_yes(state: &Value) -> Option<[f64; 3]> {
     let said_yes = state["conversation"].as_array().is_some_and(|messages| {
         messages
             .iter()
@@ -47,7 +47,7 @@ fn a_chat(decide: fake::Decide) -> World {
 pub(super) struct TestHost {
     pub(super) host: Arc<Host>,
     pub(super) plow: FakePlow,
-    area: PathBuf,
+    pub(super) area: PathBuf,
     pub(super) state: PathBuf,
     /// The owner's home folder, as `messages` and `contacts` read it (macOS).
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -69,7 +69,7 @@ pub(super) async fn start(world: World) -> TestHost {
 }
 
 /// A host whose owner denies exec as `deny_exec` says.
-async fn start_denying(world: World, deny_exec: DenyExec) -> TestHost {
+pub(super) async fn start_denying(world: World, deny_exec: DenyExec) -> TestHost {
     let fake = fake::serve(world);
     let provider = model::Plow::new(&fake.url, "made-up-login".into()).with_model(gate::MODEL);
     start_with(fake, Arc::new(provider), deny_exec).await
@@ -189,16 +189,23 @@ impl TestHost {
         op: &str,
         args: Value,
     ) -> (Response, Vec<u8>) {
+        self.request(
+            client,
+            Request {
+                op: op.into(),
+                args,
+                chat: None,
+            },
+        )
+        .await
+    }
+
+    async fn request(&self, client: &Endpoint, request: Request) -> (Response, Vec<u8>) {
         let connection = client
             .connect(self.host.endpoint.addr(), wire::ALPN)
             .await
             .unwrap();
         let (mut send, mut recv) = connection.open_bi().await.unwrap();
-        let request = Request {
-            op: op.into(),
-            args,
-            chat: None,
-        };
         wire::write_frame(&mut send, &serde_json::to_vec(&request).unwrap())
             .await
             .unwrap();
@@ -211,14 +218,18 @@ impl TestHost {
     /// Sends one operation over the host's private socket, as the owner at
     /// the host does, and returns its answer.
     pub(super) async fn local_call(&self, op: &str, args: Value) -> Response {
-        let (mine, hosts) = tokio::net::UnixStream::pair().unwrap();
-        tokio::spawn(serve_local(self.host.clone(), hosts));
-        let (mut recv, mut send) = mine.into_split();
-        let request = Request {
+        self.local_request(Request {
             op: op.into(),
             args,
             chat: None,
-        };
+        })
+        .await
+    }
+
+    async fn local_request(&self, request: Request) -> Response {
+        let (mine, hosts) = tokio::net::UnixStream::pair().unwrap();
+        tokio::spawn(serve_local(self.host.clone(), hosts));
+        let (mut recv, mut send) = mine.into_split();
         wire::write_frame(&mut send, &serde_json::to_vec(&request).unwrap())
             .await
             .unwrap();
@@ -977,6 +988,28 @@ fn the_owners_request(state: &Value) -> Option<[f64; 3]> {
 }
 
 #[tokio::test]
+async fn owners_cannot_select_an_agents_plow_chat() {
+    let t = start(a_chat(the_owners_request)).await;
+    let device = t.caller("device").await;
+    for local in [false, true] {
+        let request = Request {
+            op: "browser".into(),
+            args: json!({"command": "sessions"}),
+            chat: Some("chat_a".into()),
+        };
+        let answer = if local {
+            t.local_request(request).await
+        } else {
+            t.request(&device, request).await.0
+        };
+        let (exit, code, _) = refusal(&answer);
+        assert_eq!(exit, Exit::Usage, "{answer:?}");
+        assert_eq!(code, "plow_chat_not_supported", "{answer:?}");
+    }
+    assert_eq!(t.judged(), 0);
+}
+
+#[tokio::test]
 async fn the_owners_own_devices_are_judged_as_the_owner() {
     let t = start(a_chat(the_owners_request)).await;
     let device = t.caller("device").await;
@@ -998,7 +1031,7 @@ async fn the_owners_own_devices_are_judged_as_the_owner() {
     t.call(&device, "google", google).await;
     assert_eq!(t.judged(), 4, "exec, file get, file put and google");
     // A browser open is judged too, before any engine starts.
-    let open = json!({"command": "open", "profile": "default", "url": "https://example.com/"});
+    let open = json!({"command": "open", "url": "https://example.com/"});
     t.call(&device, "browser", open).await;
     assert_eq!(t.judged(), 5, "and the browser's open");
     let browsed = t.audit().pop().unwrap();

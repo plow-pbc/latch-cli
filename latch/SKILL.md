@@ -102,6 +102,13 @@ shell-expanded arguments are visible in the trusted host's process list.
 
 The host's gatekeeper checks what you ask for against what the owner
 asked for, in their Plow chat with you and in their rules on the host.
+An agent whose line has several Plow chats selects the one it acts for
+with `--plow-chat C` or `LATCH_PLOW_CHAT` on exec, file, Google, Messages,
+Contacts and browser session calls. Exit 2, `which_chat`, lists the choices;
+only chats on that agent's line can be selected. Owner calls and local modes
+(such as `browser setup`) refuse the selector. `messages --chat-id` names an
+iMessage conversation, separately.
+
 Exit 4 is a refusal, and its code says what you may do:
 
 - `gatekeeper_denied` with reason `not_covered`: ask the owner in your
@@ -119,8 +126,8 @@ fixes it.
 
 ## Browsing
 
-- A profile keeps the owner's logins: `observe` whether the site is
-  already signed in before signing in again.
+- Each `open` starts signed in nowhere, and its logins last until it
+  closes: do the whole task in one session.
 - A site that blocks you outright ("Access denied", nothing to click or
   type) will not let a retry or a wait through: stop and tell the owner.
   A challenge you can't do yourself is `handoff`'s.

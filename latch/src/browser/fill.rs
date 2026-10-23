@@ -10,8 +10,8 @@
 //!    card or identity secret is also confirmed by the agent before any
 //!    value is released (`steps.rs`, [`releases_secret`]); this runs once
 //!    it is.
-//! 2. **Pause and prepare.** The browser is held: every other call, in
-//!    any session on the profile, gets `session_paused`. The worker
+//! 2. **Pause and prepare.** The browser is held: every other call in the
+//!    session gets `session_paused`. The worker
 //!    reports what the page's markup says of each mapped element.
 //! 3. **Check.** Each element must take its item field (`suggest::check`):
 //!    what the markup contradicts is refused `bad_target`, before any value
@@ -34,7 +34,7 @@
 //! field's outcome. The audit records the item, its revision, the mapping
 //! by ref, where it came from (a suggestion's id, or the agent), the
 //! stages, the origins, any `hint_mismatch`, whether agent code ever ran on
-//! those sites in the profile (`agent_code_before_fill`), and the outcome:
+//! those sites in the session (`agent_code_before_fill`), and the outcome:
 //! never a value.
 
 use std::sync::atomic::Ordering;

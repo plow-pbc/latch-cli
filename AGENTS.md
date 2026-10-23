@@ -28,7 +28,7 @@ Before making meaningful changes, read:
 ## Dev State
 
 - All dev and test state lives under the gitignored `.dev/` at the repo root, passed with `--state-dir`. Tests make their throwaway folders in `.dev/tests/`.
-- `just cft` (run by `just test` on macOS) installs the pinned Chrome for Testing into `.dev/cft-state`, where the browser tests look for it.
+- `just test browser` (and the gate, `just test`) installs the pinned browser engines into `.dev/cft-state` first, where the browser tests look for them.
 - `just build` builds the checkout for hand testing into `.dev/bin/latch`, with `.dev/state` and the local Plow stack (see Local Plow For Development) baked in as its defaults, so it never touches `~/.latch`, an installed latch or production Plow (`just build api=https://api.plow.co` targets it, for the chef's release smoke only). `just dev-login` logs `.dev/state` in to the local stack; `just gatekeeper` asks the real decision model on that login.
 - A binary built with `LATCH_BUILD_STATE_DIR` set has that state folder as its default. Running hosts and clients may depend on it: do not move, copy, or delete another peer's state folder, and do not stop or restart a running `latch serve`, unless asked.
 - Never print a token, key, or vault value. Credentials stay in their files with mode 600.
@@ -108,7 +108,7 @@ Important:
 A skipped test is a lie — it tells you the suite is green when it is not. Skipping accumulates quietly until the suite is meaningless.
 
 - **Do not skip tests because credentials or keys are missing.** Get them. If you don't have them, ask the user — do not `#[ignore]` your way past the failure.
-- **Do not skip tests because the environment is not set up.** Set up the environment: install Chrome for Testing (`just cft`), start Docker for the Linux gate. The test is telling you what needs to be true — make it true.
+- **Do not skip tests because the environment is not set up.** Set up the environment: install the engines (`just test browser` does), start Docker for `just test --linux`. The test is telling you what needs to be true — make it true.
 - **Do not comment out failing assertions.** That is the same as deleting the test but pretending you didn't.
 - **Do not weaken assertions to make tests pass.** The fix is in the code, not in the assertion.
 
@@ -128,28 +128,20 @@ When you encounter a failing test:
 
 ## Validation
 
-The gates are fmt, clippy with `-D warnings`, and the tests, on macOS and on Linux.
-
-macOS, from `latch/`:
+The gate is fmt, clippy with `-D warnings`, and the tests, on macOS and on Linux. From the repo root:
 
 ```bash
-just test    # just cft, cargo fmt --check, cargo clippy --locked --all-targets -- -D warnings, cargo test --locked
+just test             # the gate for this machine's OS
+just test --linux     # the Linux gate, in the Linux test container (Docker)
+just test core        # one suite: the quick loop
+just test --only NAME # just the tests with NAME in their names, in whichever suites hold them
+just test-list        # the suites: what each covers and needs, and where it runs
+just test-plan ...    # what `just test ...` would run, without running it
 ```
 
-Linux, from the repo root, in the sandbox latch runs under (the image includes the compiler, bubblewrap and test programs):
+A suite that cannot run where you asked fails and says why; nothing is skipped. CI runs these same commands. The Rust suites run on [cargo-nextest](https://nexte.st) (CI pins 0.9.148), with `latch/.config/nextest.toml`.
 
-```bash
-docker build --platform linux/arm64 -t latch-linux-gates:local -f latch/docker/Dockerfile.gates latch/docker
-docker run --rm --platform linux/arm64 --user $(id -u):$(id -g) --cap-drop=ALL \
-  --security-opt=no-new-privileges=true --security-opt=systempaths=unconfined \
-  --security-opt seccomp=$PWD/latch/docker/seccomp.json \
-  -v $PWD:/repo -w /repo/latch -e HOME=/tmp -e RUSTUP_HOME=/usr/local/rustup \
-  -e CARGO_HOME=/repo/latch/target/cargo-home -e CARGO_TARGET_DIR=/repo/latch/target/linux-check \
-  latch-linux-gates:local \
-  sh -c 'cargo fmt --check && cargo clippy --locked --all-targets -- -D warnings && cargo test --locked'
-```
-
-`just gatekeeper` runs the checks that ask the decision model for real, through Plow on the login of `.dev/state`.
+`just gatekeeper` runs the checks that ask the decision model for real, through Plow on the login of `.dev/state` (not tests).
 
 Rules:
 
