@@ -107,10 +107,22 @@ async fn a_disabled_connector_is_refused_before_it_is_judged_or_given_a_credenti
         .filter(|r| r["op"] == "google")
         .collect();
     assert_eq!(google.len(), 2);
-    for record in google {
+    for record in &google {
         assert_eq!(record["decision"], "deny");
         assert_eq!(record["outcome"], "not_enabled");
     }
+    // Each keeps its command's grammar words, never the query.
+    let commands: Vec<String> = google
+        .into_iter()
+        .map(|record| {
+            let record: crate::audit::Record = serde_json::from_value(record).unwrap();
+            dashboard::recorded_command(&record).unwrap()
+        })
+        .collect();
+    assert_eq!(
+        commands,
+        ["latch google gmail search", "latch google accounts"]
+    );
     let shown = state_of(&t, "google").await;
     assert_eq!(shown["state"], "disabled");
     assert_eq!(shown["enable"], "latch plugins enable google");
