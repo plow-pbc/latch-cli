@@ -82,9 +82,9 @@ pub struct Failure {
     pub exit: Exit,
     pub code: String,
     pub message: String,
-    /// How long Plow asked us to wait (its `Retry-After` header), if it did.
-    /// Only the host's heartbeat uses it; it is not printed.
-    pub retry_after: Option<Duration>,
+    /// What Plow's answer said besides its status, when it said any. Not
+    /// printed. (Boxed, so every `Result<_, Failure>` stays small.)
+    pub plow: Option<Box<PlowSaid>>,
     /// The one command or action that fixes it, when there is one. (Boxed,
     /// so every `Result<_, Failure>` stays small.)
     pub next: Option<Box<str>>,
@@ -94,13 +94,23 @@ pub struct Failure {
     pub details: Value,
 }
 
+#[derive(Debug, Default)]
+pub struct PlowSaid {
+    /// How long Plow asked us to wait (its `Retry-After` header), if it did.
+    /// Only the host's heartbeat uses it.
+    pub retry_after: Option<Duration>,
+    /// The code Plow put in a refusal's `detail` (`AGENT_EXISTS`), if it
+    /// did: a fixed word, never Plow's text.
+    pub code: Option<Box<str>>,
+}
+
 impl Failure {
     pub fn new(exit: Exit, code: &str, message: String) -> Failure {
         Failure {
             exit,
             code: code.to_string(),
             message,
-            retry_after: None,
+            plow: None,
             next: None,
             said: false,
             details: Value::Null,
@@ -113,6 +123,11 @@ impl Failure {
 
     pub fn usage(code: &str, message: String) -> Failure {
         Failure::new(Exit::Usage, code, message)
+    }
+
+    /// How long Plow asked us to wait, if it did.
+    pub fn retry_after(&self) -> Option<Duration> {
+        self.plow.as_ref().and_then(|plow| plow.retry_after)
     }
 
     /// For a human command that fails once it has talked to the person:
@@ -172,6 +187,7 @@ pub const CODES: &[(&str, Exit)] = &[
     ("bad_item", Exit::Failed),
     ("bad_item", Exit::Usage),
     ("bad_key", Exit::Usage),
+    ("bad_name", Exit::Usage),
     ("bad_path", Exit::Denied),
     ("bad_path", Exit::Failed),
     ("bad_pick", Exit::Usage),
@@ -191,6 +207,7 @@ pub const CODES: &[(&str, Exit)] = &[
     ("bad_target", Exit::Usage),
     ("bad_test_access", Exit::Usage),
     ("bad_trace", Exit::Usage),
+    ("bad_values", Exit::Usage),
     ("browser_gone", Exit::Failed),
     ("calendar_conflict", Exit::Denied),
     ("caller_denied", Exit::Denied),
@@ -257,6 +274,7 @@ pub const CODES: &[(&str, Exit)] = &[
     ("keychain_failed", Exit::Failed),
     ("last_tab", Exit::Usage),
     ("launch_busy", Exit::Failed),
+    ("line_taken", Exit::Usage),
     ("local_build", Exit::Failed),
     ("local_file", Exit::Failed),
     ("local_file", Exit::Usage),
@@ -281,6 +299,7 @@ pub const CODES: &[(&str, Exit)] = &[
     ("no_credential", Exit::Usage),
     ("no_dialog", Exit::Failed),
     ("no_file_name", Exit::Usage),
+    ("no_free_line", Exit::Failed),
     ("no_handoff", Exit::Failed),
     ("no_history", Exit::Failed),
     ("no_host", Exit::Usage),
@@ -292,6 +311,7 @@ pub const CODES: &[(&str, Exit)] = &[
     ("no_such_download", Exit::Usage),
     ("no_such_field", Exit::Usage),
     ("no_such_item", Exit::Usage),
+    ("no_such_line", Exit::Usage),
     ("no_such_release", Exit::Failed),
     ("no_such_request", Exit::Usage),
     ("no_such_session", Exit::Failed),
@@ -373,11 +393,15 @@ pub const CODES: &[(&str, Exit)] = &[
     ("timed_out", Exit::Failed),
     ("timeout", Exit::Failed),
     ("tmpdir_failed", Exit::Failed),
+    ("token_file_exists", Exit::Usage),
+    ("token_file_unwritable", Exit::Usage),
+    ("token_not_saved", Exit::Failed),
     ("tool_failed", Exit::Failed),
     ("transfer_failed", Exit::Failed),
     ("transfer_failed", Exit::Unknown),
     ("transfer_incomplete", Exit::Failed),
     ("unknown_account", Exit::Usage),
+    ("unknown_cloud_kind", Exit::Usage),
     ("unknown_command", Exit::Usage),
     ("unknown_host", Exit::Usage),
     ("unknown_plugin", Exit::Usage),

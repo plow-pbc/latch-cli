@@ -1,12 +1,14 @@
 //! `latch vault …`: local owner management, or calls to another host.
 //! Phone links always use a running host's receiver.
 //!
-//! Secrets are typed at a prompt without echo, never taken from argv or the
-//! environment. An import shows what the export holds, values reduced to
-//! whether they are there, and imports only the rows the owner picks;
-//! nothing is picked by default.
+//! Secrets are typed at a prompt without echo, or read as JSON on stdin,
+//! never taken from argv or the environment. An import shows what the
+//! export holds, values reduced to whether they are there, and imports only
+//! the rows the owner picks, at a prompt or with `--pick`; nothing is
+//! picked by default.
 
 use std::path::Path;
+use std::time::Duration;
 
 use serde_json::{Map, Value, json};
 use tokio::fs::File;
@@ -34,6 +36,11 @@ pub async fn run(state: &StateDir, args: VaultArgs) -> Result<Value, Failure> {
     };
     match args.command {
         VaultCommand::List => target.call(call(json!({"command": "list"}))).await,
+        VaultCommand::Show { item } => {
+            target
+                .call(call(json!({"command": "show", "item": item})))
+                .await
+        }
         VaultCommand::Remove { item, revision } => {
             let request = call(json!({"command": "remove", "item": item, "revision": revision}));
             target.call(request).await
@@ -46,8 +53,12 @@ pub async fn run(state: &StateDir, args: VaultArgs) -> Result<Value, Failure> {
             field,
             ask,
             totp,
+            stdin,
         } => {
-            let values = values(&kind, &field, &ask, totp)?;
+            let values = match stdin {
+                true => with_stdin(&kind, &field)?,
+                false => values(&kind, &field, &ask, totp)?,
+            };
             let request = call(json!({
                 "command": "add",
                 "kind": kind,
@@ -68,6 +79,7 @@ pub async fn run(state: &StateDir, args: VaultArgs) -> Result<Value, Failure> {
             no_other_top_sites,
             field,
             ask,
+            stdin,
         } => {
             let sites = replaced(site, no_sites);
             let other_top_sites = replaced(other_top_site, no_other_top_sites);
@@ -76,11 +88,12 @@ pub async fn run(state: &StateDir, args: VaultArgs) -> Result<Value, Failure> {
                 && other_top_sites.is_none()
                 && field.is_empty()
                 && ask.is_empty()
+                && !stdin
             {
                 return Err(Failure::usage(
                     "bad_arguments",
                     "say what to change: --title, --site, --no-sites, --other-top-site, \
-                     --no-other-top-sites, --field or --ask"
+                     --no-other-top-sites, --field, --ask or --stdin"
                         .into(),
                 ));
             }
@@ -94,7 +107,10 @@ pub async fn run(state: &StateDir, args: VaultArgs) -> Result<Value, Failure> {
                 .and_then(|meta| meta["kind"].as_str())
                 .ok_or_else(|| Failure::usage("no_such_item", format!("there is no item {item}")))?
                 .to_string();
-            let values = edits(&kind, &field, &ask)?;
+            let values = match stdin {
+                true => with_stdin(&kind, &field)?,
+                false => edits(&kind, &field, &ask)?,
+            };
             let mut request = json!({
                 "command": "edit",
                 "item": item,
@@ -137,12 +153,34 @@ pub async fn run(state: &StateDir, args: VaultArgs) -> Result<Value, Failure> {
             }
             Ok(json!({"url": url, "link": opened["link"], "expires_in": opened["expires_in"]}))
         }
-        VaultCommand::Import { file } => {
+        VaultCommand::Import {
+            file,
+            preview,
+            pick,
+        } => {
+            // Rows are picked at a prompt only by a person who can see it.
+            if !preview && pick.is_none() && !term::interactive() {
+                let mut failure = Failure::usage(
+                    "no_terminal",
+                    "the rows to import are picked at a prompt, and there is no terminal".into(),
+                );
+                failure.next = Some(
+                    format!(
+                        "latch vault import {} --preview, then --pick ROWS",
+                        file.display()
+                    )
+                    .into(),
+                );
+                return Err(failure);
+            }
             let Some(host) = &target.host else {
-                return super::local::import(state, &file);
+                return match preview {
+                    true => super::local::preview(state, &file),
+                    false => super::local::import(state, &file, pick.as_deref()),
+                };
             };
             let link = dial::connect(state, host).await?;
-            let result = import(&link.connection, &file).await;
+            let result = import(&link.connection, &file, preview, pick.as_deref()).await;
             link.close();
             result
         }
@@ -240,11 +278,60 @@ fn given(kind: &str, fields: &[String]) -> Result<Map<String, Value>, Failure> {
             return Err(Failure::usage(
                 "secret_in_argv",
                 format!(
-                    "{label} is secret: it is asked for at a prompt, never given on the command line"
+                    "{label} is secret: it is asked for at a prompt or read with --stdin, never given on the command line"
                 ),
             ));
         }
         values.insert(label.to_string(), json!(value));
+    }
+    Ok(values)
+}
+
+/// `--field` values and `--stdin` ones, which are never prompted for.
+fn with_stdin(kind: &str, fields: &[String]) -> Result<Map<String, Value>, Failure> {
+    let mut values = given(kind, fields)?;
+    // A pipe left open is cut off, as for every --stdin.
+    let bytes = crate::input::read_all(Duration::from_secs(30), MAX_STDIN_VALUES)?;
+    if bytes.len() > MAX_STDIN_VALUES {
+        let message = "stdin is over 1 MiB; nothing was saved";
+        return Err(Failure::usage("stdin_too_big", message.into()));
+    }
+    let read = read_values(&bytes, kind)?;
+    for (label, value) in read {
+        if values.contains_key(&label) {
+            return Err(Failure::usage(
+                "bad_arguments",
+                format!("{label} is given twice: in --field and on stdin"),
+            ));
+        }
+        values.insert(label, value);
+    }
+    Ok(values)
+}
+
+/// The most `--stdin` reads: far more than any item's values.
+const MAX_STDIN_VALUES: usize = 1 << 20;
+
+/// `--stdin`'s values: one JSON object of strings by the kind's labels. An
+/// error never repeats what was read.
+fn read_values(input: &[u8], kind: &str) -> Result<Map<String, Value>, Failure> {
+    let bad = || {
+        let message = "--stdin takes one JSON object of field values by label, each a string, \
+                       e.g. {\"password\": \"…\"}";
+        Failure::usage("bad_values", message.into())
+    };
+    let values: Map<String, Value> = serde_json::from_slice(input).map_err(|_| bad())?;
+    let labels = labels(kind)?;
+    for (label, value) in &values {
+        if !value.is_string() {
+            return Err(bad());
+        }
+        if known(&labels, kind, label).is_none() {
+            return Err(Failure::usage(
+                "bad_item",
+                format!("a {kind} has no field {label:?}"),
+            ));
+        }
     }
     Ok(values)
 }
@@ -263,21 +350,19 @@ fn prompted(kind: &str, asked: &[String], required: bool) -> Result<Map<String, 
     }
     let mut values = Map::new();
     // Never a prompt nobody sees: without a terminal, the secrets come
-    // from stdin, a line each, in the order asked, or not at all.
-    let person = term::interactive();
-    if !person && !asked.is_empty() && !term::stdin_has_data() {
+    // with --stdin or not at all.
+    if !term::interactive() && !asked.is_empty() {
         let message = format!(
             "{} asked for at a prompt, and there is no terminal",
             asked.join(", ")
         );
+        let example: Vec<String> = asked
+            .iter()
+            .map(|label| format!("{label:?}: \"…\""))
+            .collect();
         let mut failure = Failure::usage("no_terminal", message);
-        failure.next = Some(
-            format!(
-                "pipe the secrets on stdin, a line each: {}",
-                asked.join(", ")
-            )
-            .into(),
-        );
+        failure.next =
+            Some(format!("pipe them as JSON with --stdin: {{{}}}", example.join(", ")).into());
         return Err(failure);
     }
     for label in asked {
@@ -286,11 +371,7 @@ fn prompted(kind: &str, asked: &[String], required: bool) -> Result<Map<String, 
         } else {
             label.as_str()
         };
-        let value = term::ask_secret(&if person {
-            format!("{prompt}: ")
-        } else {
-            String::new()
-        });
+        let value = term::ask_secret(&format!("{prompt}: "));
         if value.is_empty() {
             if required {
                 return Err(Failure::usage(
@@ -314,16 +395,22 @@ fn link_url(page: &str, opened: &Value) -> String {
     format!("{page}#h={}&r={relay}&c={}", part("host"), part("code"))
 }
 
-/// Sends the export, shows the preview, asks which rows to import, and
-/// commits only those.
-async fn import(connection: &crate::transport::Connection, path: &Path) -> Result<Value, Failure> {
+/// Sends the export and gets the preview; with `preview` that is the
+/// answer, and the host keeps nothing. Otherwise picks rows (`pick`, or at
+/// a prompt) and commits only those.
+async fn import(
+    connection: &crate::transport::Connection,
+    path: &Path,
+    preview: bool,
+    pick: Option<&str>,
+) -> Result<Value, Failure> {
     let local =
         |err: std::io::Error| Failure::usage("local_file", format!("{}: {err}", path.display()));
     let mut file = File::open(path).await.map_err(local)?;
     let size = file.metadata().await.map_err(local)?.len();
     let request = Request {
         op: "vault".to_string(),
-        args: json!({"command": "import", "size": size}),
+        args: json!({"command": if preview { "preview" } else { "import" }, "size": size}),
         chat: None,
     };
     // One stream: the go-ahead, the bytes, the preview, the picks, the
@@ -333,9 +420,13 @@ async fn import(connection: &crate::transport::Connection, path: &Path) -> Resul
     wire::copy(&mut file, &mut send, size)
         .await
         .map_err(|_| dial::lost(connection, true))?;
+    if preview {
+        send.finish().map_err(|_| dial::lost(connection, true))?;
+        return dial::answer(connection, &mut recv, ANSWER_WITHIN).await;
+    }
     let previewed = dial::answer(connection, &mut recv, ANSWER_WITHIN).await?;
     let preview = &previewed["preview"];
-    let picks = choose(preview)?;
+    let picks = choose(preview, pick)?;
     let picked = serde_json::to_vec(&json!({"picks": picks})).expect("serializes");
     wire::write_frame(&mut send, &picked)
         .await
@@ -344,31 +435,26 @@ async fn import(connection: &crate::transport::Connection, path: &Path) -> Resul
     let mut outcome = dial::answer(connection, &mut recv, ANSWER_WITHIN).await?;
     outcome["source"] = preview["source"].clone();
     outcome["picked"] = json!(picks);
-    outcome["preview"] = preview.clone();
     Ok(outcome)
 }
 
-/// The rows to import, as a line on stdin (`1,3-5`, `all`, or nothing for
-/// none). At a terminal the owner sees the preview and a question first;
-/// a program reads the preview in the result and is asked nothing.
-pub(super) fn choose(preview: &Value) -> Result<Vec<usize>, Failure> {
-    let person = term::interactive();
-    if person {
-        show(preview);
-    }
+/// The rows `given` names (`--pick`), or those picked at a prompt.
+pub(super) fn choose(preview: &Value, given: Option<&str>) -> Result<Vec<usize>, Failure> {
     let rows = preview["items"].as_array().map_or(0, Vec::len);
+    if let Some(given) = given {
+        return pick(given, rows);
+    }
+    show(preview);
     if rows == 0 {
         return Ok(Vec::new());
     }
-    let question = match person {
-        true => "Import which? Numbers or ranges (1,3-5), \"all\", or nothing to import none: ",
-        false => "",
-    };
-    pick(&term::ask(question), rows)
+    pick(
+        &term::ask("Import which? Numbers or ranges (1,3-5), \"all\", or nothing to import none: "),
+        rows,
+    )
 }
 
-/// The preview, for the owner picking at a terminal, on stderr: stdout
-/// stays the command's JSON.
+/// The preview, for the owner, on stderr: stdout stays the command's JSON.
 fn show(preview: &Value) {
     eprintln!("{} export:", preview["source"].as_str().unwrap_or("this"));
     for row in preview["items"].as_array().into_iter().flatten() {
@@ -500,6 +586,26 @@ mod tests {
                 .code,
             "bad_item"
         );
+    }
+
+    #[test]
+    fn stdin_values_are_strings_by_the_kinds_labels_and_never_echoed() {
+        let read = |text: &str, kind: &str| read_values(text.as_bytes(), kind);
+        let values = read(r#"{"password": "made-up-9f3k", "totp": ""}"#, "login").unwrap();
+        assert_eq!(values["password"], "made-up-9f3k");
+        assert_eq!(values["totp"], "");
+        assert_eq!(read(r#"{"cvv": "737"}"#, "card").unwrap()["cvv"], "737");
+        for (text, code) in [
+            (r#"{"password": 41551}"#, "bad_values"),
+            (r#"["made-up-9f3k"]"#, "bad_values"),
+            (r#"{"password": "made-up-9f3k""#, "bad_values"),
+            (r#"{"pin": "made-up-9f3k"}"#, "bad_item"),
+        ] {
+            let refused = read(text, "login").unwrap_err();
+            assert_eq!(refused.code, code, "{text}");
+            assert!(!refused.message.contains("made-up-9f3k"), "{text}");
+            assert!(!refused.message.contains("41551"), "{text}");
+        }
     }
 
     #[test]

@@ -95,7 +95,9 @@ fn main() -> ExitCode {
     let command = match cli.command {
         Command::Worker(args) => return worker::run(args),
         // At a terminal, running other latch commands; no runtime of its own.
-        Command::Setup(args) if !args.status => return setup::run(cli.state_dir),
+        Command::Setup(args) if !args.status && term::interactive() => {
+            return setup::run(cli.state_dir);
+        }
         // A browser worker drives its engine on plain threads, no runtime.
         Command::BrowserWorker(args) => {
             return match StateDir::new(cli.state_dir) {
@@ -216,7 +218,10 @@ async fn run(
         },
         Command::Status(args) if args.local => json(pretty, status::local(&state)?),
         Command::Status(_) => json(pretty, status::run(&state).await?),
-        Command::Setup(_) => json(pretty, setup::status(&state)?),
+        Command::Setup(args) if !args.status => {
+            Err(setup::no_terminal(&setup::status(&state).await?))
+        }
+        Command::Setup(_) => json(pretty, setup::status(&state).await?),
         Command::File(FileCommand::Get {
             remote_path,
             local_dest,

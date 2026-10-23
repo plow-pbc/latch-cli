@@ -1969,6 +1969,7 @@ async fn local_vault_edits_reach_a_running_hosts_release_path() {
             "the owner",
             "--site",
             "example.com",
+            "--stdin",
         ])
         .env_remove("LATCH_HOST")
         .stdin(std::process::Stdio::piped())
@@ -1980,7 +1981,7 @@ async fn local_vault_edits_reach_a_running_hosts_release_path() {
         .stdin
         .take()
         .unwrap()
-        .write_all(b"synthetic-fill-value\n")
+        .write_all(br#"{"password": "synthetic-fill-value"}"#)
         .await
         .unwrap();
     let output = child.wait_with_output().await.unwrap();

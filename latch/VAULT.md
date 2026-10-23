@@ -35,6 +35,7 @@ latch vault add --kind login --title Shop --site shop.example \
 latch vault add --kind card --title Visa \
   --field "cardholder name=the owner" --field "expiry month=4" --field "expiry year=2031"
 latch vault list                                      # metadata only
+latch vault show v3                                   # and its non-secret values
 latch vault edit v3 --revision 2 --title "Shop (work)" \
   --field username=owner@work.example --ask password    # asks for the new password
 latch vault remove v3 --revision 2
@@ -45,6 +46,21 @@ latch vault list --host other-mac                     # another host's vault
 Secrets are typed at a prompt without echo, never taken from the command
 line or the environment. `--ask LABEL` asks for another field the same way;
 `--totp` asks for a login's authenticator key.
+
+Without a terminal (an app, a script), `add` and `edit` take `--stdin`
+instead: one JSON object of field values by label, secrets included, read
+from stdin and never echoed, even in an error. Nothing is asked for, and a
+label given with `--field` too is refused.
+
+```sh
+printf '{"password": "…", "totp": "…"}' | latch vault add --kind login \
+  --title Shop --site shop.example --field username=owner@shop.example --stdin
+printf '{"password": "…"}' | latch vault edit v3 --revision 2 --stdin
+```
+
+`show ITEM` returns the item's metadata, as `list` does (each field by
+label, marked secret or not), and the values of the fields that are not
+secret. A secret value is never shown.
 
 `edit` changes an item at the revision `list` shows: `--title`, `--site`
 and `--other-top-site` (each list given replaces the old one; `--no-sites` and
@@ -58,7 +74,10 @@ and the new revision, never a value.
 CSV, Chrome's CSV and Bitwarden's CSV and unencrypted JSON. It shows every
 row (values reduced to whether they are there), marks rows the vault
 already holds or that would update a changed password, and imports only
-the rows you pick; nothing is picked by default. For a remote import,
+the rows you pick; nothing is picked by default. Without a prompt,
+`--preview` returns that preview as JSON, imports nothing and, like a
+rules preview, is not audited; and `--pick
+1,3-5` (or `all`) imports those rows of it. For a remote import,
 the uploaded copy stays on the host only while the command runs: if you
 quit, the connection drops, or you pick nothing within 15 minutes, it is
 dropped and nothing is saved. A local import reads the file in place;

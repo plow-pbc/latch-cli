@@ -959,8 +959,8 @@ fn a_failed_rules_edit_says_why_in_a_plain_line() {
     assert!(!shown.contains("{\"error\""), "{shown}");
 }
 
-/// Without a terminal, `vault add` never prompts for a secret: it reads
-/// them from stdin, a line each, or fails naming that way.
+/// Without a terminal, `vault add` never prompts for a secret: they come
+/// with --stdin, or it fails naming that way.
 #[test]
 fn vault_secrets_without_a_terminal_come_from_stdin_or_not_at_all() {
     let (_dir, state, _) = owner_host();
@@ -979,13 +979,13 @@ fn vault_secrets_without_a_terminal_come_from_stdin_or_not_at_all() {
     assert_eq!(error["error"]["code"], "no_terminal", "{error}");
     assert_eq!(
         error["error"]["next"],
-        "pipe the secrets on stdin, a line each: password"
+        "pipe them as JSON with --stdin: {\"password\": \"…\"}"
     );
     let listed: Value =
         serde_json::from_slice(&latch(&state, &["vault", "list"], &[]).stdout).unwrap();
     assert_eq!(listed["items"], json!([]), "nothing was added: {listed}");
 
-    let mut piped = latch_command(&state, &args, &[])
+    let mut piped = latch_command(&state, &[&args[..], &["--stdin"]].concat(), &[])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -995,7 +995,7 @@ fn vault_secrets_without_a_terminal_come_from_stdin_or_not_at_all() {
         .stdin
         .take()
         .unwrap()
-        .write_all(b"made-up-pass\n")
+        .write_all(br#"{"password": "made-up-pass"}"#)
         .unwrap();
     let piped = piped.wait_with_output().unwrap();
     assert_eq!(piped.status.code(), Some(0), "{piped:?}");
@@ -1378,7 +1378,7 @@ fn status_shows_this_machine_once_as_plow_lists_it() {
 }
 
 #[test]
-fn exec_stdin_that_is_too_big_or_never_ends_runs_nothing() {
+fn exec_stdin_that_is_not_judgeable_or_never_ends_runs_nothing() {
     use std::process::Stdio;
     let dir = test_dir();
     let state = dir.path().join("none");
@@ -1403,15 +1403,23 @@ fn exec_stdin_that_is_too_big_or_never_ends_runs_nothing() {
             .stderr(Stdio::piped());
         command.spawn().unwrap()
     };
-    // More than 256 KiB: refused as soon as the 256 KiB + 1st byte arrives.
-    let mut big = run("60");
-    let mut pipe = big.stdin.take().unwrap();
-    let _ = pipe.write_all(&vec![b'x'; 300 * 1024]);
-    let output = big.wait_with_output().unwrap();
-    drop(pipe);
-    assert_eq!(output.status.code(), Some(2), "{output:?}");
-    let error: Value = serde_json::from_slice(&output.stderr).unwrap();
-    assert_eq!(error["error"]["code"], "stdin_too_big");
+    // Valid text reaches the login check; unjudgeable input is refused first.
+    for (bytes, expected) in [
+        (vec![b'x'; 16 * 1024], "not_logged_in"),
+        ("é".repeat(8 * 1024).into_bytes(), "not_logged_in"),
+        (vec![b'x'; 16 * 1024 + 1], "stdin_not_judgeable"),
+        (vec![0xff], "stdin_not_judgeable"),
+        (vec![b'x'; 300 * 1024], "stdin_not_judgeable"),
+    ] {
+        let mut child = run("60");
+        let mut pipe = child.stdin.take().unwrap();
+        let _ = pipe.write_all(&bytes);
+        drop(pipe);
+        let output = child.wait_with_output().unwrap();
+        assert_eq!(output.status.code(), Some(2), "{output:?}");
+        let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(error["error"]["code"], expected, "{output:?}");
+    }
 
     // A pipe left open: refused once --timeout passes, not run on what came.
     let started = std::time::Instant::now();
@@ -1918,6 +1926,21 @@ impl LivePlow {
             }
         }
         match (method, path) {
+            // Which accounts are connected, as Plow says, and where it connects them.
+            ("GET", "/v1/connectors") if kind == "device" => {
+                let accounts: Vec<Value> = state
+                    .google
+                    .iter()
+                    .map(|_| json!({"account": "owner@example.com", "is_default": true}))
+                    .collect();
+                (
+                    200,
+                    json!({"gmail": {"connected": !accounts.is_empty(), "connector": "gmail",
+                                     "account": null, "accounts": accounts},
+                           "slack": {"connected": false, "connector": "slack", "accounts": []},
+                           "web_base_url": "https://app.example.com"}),
+                )
+            }
             // Plow's answer with no Google account connected.
             ("POST", "/v1/connectors/gmail/access-token") if state.google.is_none() => {
                 (412, json!({"detail": "No Gmail account connected."}))
@@ -1958,6 +1981,55 @@ impl LivePlow {
                     .collect();
                 (200, json!({"data": listed}))
             }
+            // Plow's catalog, its own kind among the cloud ones.
+            ("GET", "/v1/agents/providers") if kind == "device" => (
+                200,
+                json!([{"id": "exe:hermes", "name": "Hermes", "image": "img", "settings": {}},
+                       {"id": "self_hosted", "name": "Self-hosted", "image": null, "settings": {}}]),
+            ),
+            // Plow's lines: one free, one held, one whose create is lost, and a mailbox.
+            ("GET", "/v1/lines") if kind == "device" => {
+                let line = |uid: &str, kind: &str, key: &str, available: bool| {
+                    json!({"uid": uid, "object": "line", "provider_type": kind, "provider_key": key,
+                           "display_name": null, "available": available, "agent_uid": null})
+                };
+                (
+                    200,
+                    json!({"object": "list", "has_more": false, "data": [
+                        line("ln_free", "imessage", "+15550000002", true),
+                        line("ln_taken", "imessage", "+15550000003", false),
+                        line("ln_lost", "imessage", "+15550000004", true),
+                        line("ln_mail", "email", "agent@example.com", true)]}),
+                )
+            }
+            ("POST", "/v1/agents") if kind == "device" => {
+                let sent: Value = serde_json::from_slice(&request.body).unwrap();
+                match sent["line_uid"].as_str().unwrap() {
+                    "ln_taken" => (409, json!({"detail": {"code": "AGENT_EXISTS",
+                        "agent_uid": AGENT_UID, "message": "Delete the existing agent before creating another."}})),
+                    "ln_lost" => (500, json!({})),
+                    line => {
+                        let own = sent["provider"] == "self_hosted";
+                        let agent = json!({"uid": "fedcba9876543210fedcba9876543210",
+                            "name": sent["name"], "provider": sent["provider"],
+                            "line": {"uid": line, "object": "line", "provider_type": "imessage",
+                                     "provider_key": "+15550000002", "display_name": null},
+                            "created_at": "2026-10-23T10:00:00Z",
+                            "status": if own { Value::Null } else { json!("provisioning") },
+                            "failure_code": null, "credential": null});
+                        let token = if own { json!("made-up-agent-credential") } else { Value::Null };
+                        (201, json!({"agent": agent, "token": token}))
+                    }
+                }
+            }
+            ("DELETE", path) if kind == "device" && path == format!("/v1/agents/{AGENT_UID}") => (
+                200,
+                json!({"uid": AGENT_UID, "name": "Research bot", "provider": "self_hosted",
+                       "line": {"uid": "line_agent", "object": "line", "provider_type": "imessage",
+                                "provider_key": "+14155550123", "display_name": "Research line"},
+                       "created_at": "2026-10-20T10:00:00Z", "status": null,
+                       "failure_code": null, "credential": null}),
+            ),
             // As Plow lists them: one agent its owner runs.
             ("GET", "/v1/agents") if kind == "device" => (
                 200,
@@ -2650,6 +2722,219 @@ fn agents_are_listed_for_the_owner_with_their_standing_on_a_host() {
     let error: Value = serde_json::from_slice(&refused.stderr).unwrap();
     assert_eq!(error["error"]["code"], "owner_only");
     assert_eq!(plow.seen().len(), seen);
+}
+
+/// The owner reads Plow's catalog and lines, creates an own agent whose
+/// credential goes only to a new private file, and removes an agent once
+/// told to; latch never resends a create whose answer was lost.
+#[test]
+fn agents_are_shown_created_and_removed_by_their_owner() {
+    use std::os::unix::fs::PermissionsExt;
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let run = |args: &[&str]| {
+        let output = latch(&host, args, &[]);
+        let printed = if output.status.success() {
+            &output.stdout
+        } else {
+            &output.stderr
+        };
+        let json: Value = serde_json::from_slice(printed).unwrap_or(Value::Null);
+        (output.status.code(), json, output)
+    };
+    let posts = || {
+        plow.seen()
+            .iter()
+            .filter(|(line, _)| line.starts_with("POST /v1/agents "))
+            .count()
+    };
+
+    let (code, catalog, _) = run(&["agents", "catalog"]);
+    assert_eq!(code, Some(0), "{catalog}");
+    assert_eq!(
+        catalog,
+        json!({"kinds": [{"id": "exe:hermes", "name": "Hermes"}]})
+    );
+    let (_, lines, _) = run(&["agents", "lines"]);
+    let numbers: Vec<&Value> = lines["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| &l["number"])
+        .collect();
+    assert_eq!(
+        numbers,
+        ["+15550000002", "+15550000003", "+15550000004"],
+        "no mailbox"
+    );
+    assert_eq!(lines["lines"][1]["available"], false);
+
+    let (code, shown, _) = run(&["agents", "show", "Research bot"]);
+    assert_eq!(code, Some(0), "{shown}");
+    assert_eq!(shown["agent"]["uid"], AGENT_UID);
+    let (_, by_uid, _) = run(&["agents", "show", AGENT_UID]);
+    assert_eq!(by_uid, shown);
+    let (code, missing, _) = run(&["agents", "show", "Nobody"]);
+    assert_eq!(
+        (code, &missing["error"]["code"]),
+        (Some(2), &json!("no_such_agent"))
+    );
+
+    // An own agent: its credential only in the new file, mode 600.
+    let token_file = dir.path().join("scout.token");
+    let path = token_file.to_str().unwrap();
+    let new_own = [
+        "agents",
+        "new",
+        "--own",
+        "--token-file",
+        path,
+        "--name",
+        " Scout ",
+        "--line",
+        "+15550000002",
+    ];
+    let (code, made, output) = run(&new_own);
+    assert_eq!(code, Some(0), "{made}");
+    assert_eq!(made["agent"]["name"], "Scout");
+    assert_eq!(made["agent"]["kind"], "own");
+    assert_eq!(made["token_file"], path);
+    assert_eq!(made["api_url"], plow.url.as_str());
+    assert_eq!(
+        fs::read_to_string(&token_file).unwrap(),
+        "made-up-agent-credential\n"
+    );
+    assert_eq!(
+        fs::metadata(&token_file).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("made-up-agent-credential"));
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("made-up-agent-credential"));
+
+    // The same file again: refused before Plow is asked, the file untouched.
+    let before = posts();
+    let (code, error, _) = run(&new_own);
+    assert_eq!(
+        (code, &error["error"]["code"]),
+        (Some(2), &json!("token_file_exists"))
+    );
+    assert_eq!(posts(), before);
+    let (code, error, _) = run(&[
+        "agents",
+        "new",
+        "--own",
+        "--token-file",
+        "-",
+        "--name",
+        "S",
+        "--line",
+        "ln_free",
+    ]);
+    assert_eq!((code, &error["error"]["code"]), (Some(2), &json!("usage")));
+
+    // A held line, then a lost answer: the reserved file goes, and the lost
+    // create is reported, never resent.
+    let taken = dir.path().join("taken.token");
+    let (code, error, _) = run(&[
+        "agents",
+        "new",
+        "--own",
+        "--token-file",
+        taken.to_str().unwrap(),
+        "--name",
+        "Two",
+        "--line",
+        "ln_taken",
+    ]);
+    assert_eq!(
+        (code, &error["error"]["code"]),
+        (Some(2), &json!("line_taken")),
+        "{error}"
+    );
+    assert!(!taken.exists());
+    let before = posts();
+    let (code, error, _) = run(&[
+        "agents",
+        "new",
+        "--cloud",
+        "exe:hermes",
+        "--name",
+        "H",
+        "--line",
+        "ln_lost",
+    ]);
+    assert_eq!(
+        (code, &error["error"]["code"]),
+        (Some(5), &json!("outcome_unknown")),
+        "{error}"
+    );
+    assert_eq!(posts(), before + 1, "sent once");
+    let (code, error, _) = run(&[
+        "agents",
+        "new",
+        "--cloud",
+        "self_hosted",
+        "--name",
+        "H",
+        "--line",
+        "ln_free",
+    ]);
+    assert_eq!(
+        (code, &error["error"]["code"]),
+        (Some(2), &json!("unknown_cloud_kind"))
+    );
+    let (code, error, _) = run(&[
+        "agents",
+        "new",
+        "--cloud",
+        "exe:hermes",
+        "--name",
+        "H",
+        "--line",
+        "+1999",
+    ]);
+    assert_eq!(
+        (code, &error["error"]["code"]),
+        (Some(2), &json!("no_such_line"))
+    );
+    let (code, cloud, _) = run(&[
+        "agents",
+        "new",
+        "--cloud",
+        "exe:hermes",
+        "--name",
+        "Hermes",
+        "--line",
+        "ln_free",
+    ]);
+    assert_eq!(code, Some(0), "{cloud}");
+    assert_eq!(
+        (
+            &cloud["agent"]["status"],
+            &cloud["token_file"],
+            &cloud["api_url"]
+        ),
+        (&json!("provisioning"), &Value::Null, &Value::Null)
+    );
+
+    // Removing asks first; with no one to ask, --yes.
+    let deletes = || {
+        plow.seen()
+            .iter()
+            .filter(|(line, _)| line.starts_with("DELETE "))
+            .count()
+    };
+    let (code, error, _) = run(&["agents", "remove", "Research bot"]);
+    assert_eq!(
+        (code, &error["error"]["code"]),
+        (Some(2), &json!("confirmation_required"))
+    );
+    assert_eq!(deletes(), 0);
+    let (code, removed, _) = run(&["agents", "remove", "Research bot", "--yes"]);
+    assert_eq!(code, Some(0), "{removed}");
+    assert_eq!(removed["removed"]["uid"], AGENT_UID);
+    assert_eq!(deletes(), 1);
 }
 
 #[test]
@@ -3545,6 +3830,194 @@ fn vault_management_and_self_rules_are_local_without_serve() {
 }
 
 #[test]
+fn vault_takes_secrets_as_json_on_stdin_and_shows_only_what_is_not_secret() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let secrets = [
+        "made-up-pass-7c1a",
+        "JBSWY3DPEHPK3PXP",
+        "made-up-pass-new-2b9e",
+    ];
+    // `latch ARGS`, given `input` on stdin: its exit and its JSON.
+    let run = |args: &[&str], input: &str| {
+        assert!(secrets.iter().all(|s| !args.join(" ").contains(s)));
+        let mut child = latch_command(&host, args, &[])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(input.as_bytes())
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        let printed = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        for secret in secrets {
+            assert!(!printed.contains(secret), "{secret} shown: {printed}");
+        }
+        answered(&output)
+    };
+
+    let (code, added) = run(
+        &[
+            "vault",
+            "add",
+            "--kind",
+            "login",
+            "--title",
+            "Shop",
+            "--site",
+            "shop.example",
+            "--field",
+            "username=ada",
+            "--stdin",
+        ],
+        r#"{"password": "made-up-pass-7c1a", "totp": "JBSWY3DPEHPK3PXP"}"#,
+    );
+    assert_eq!(code, Some(0), "{added}");
+    assert_eq!(added["item"]["totp"], true);
+
+    // Its non-secret values, and its secret fields by label only.
+    let (code, shown) = run(&["vault", "show", "v1"], "");
+    assert_eq!(code, Some(0), "{shown}");
+    assert_eq!(shown["values"], json!({"username": "ada"}));
+    let hidden: Vec<&Value> = shown["item"]["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|field| field["hidden"] == true)
+        .map(|field| &field["label"])
+        .collect();
+    assert_eq!(hidden, [&json!("password"), &json!("totp")]);
+
+    let (code, edited) = run(
+        &["vault", "edit", "v1", "--revision", "1", "--stdin"],
+        r#"{"password": "made-up-pass-new-2b9e", "totp": ""}"#,
+    );
+    assert_eq!(code, Some(0), "{edited}");
+    assert_eq!(edited["changed"], json!(["password", "totp"]));
+    assert_eq!(edited["item"]["totp"], false);
+
+    // A field given twice, or a value that is not a string, is refused
+    // without echoing anything read.
+    let (code, error) = run(
+        &[
+            "vault",
+            "edit",
+            "v1",
+            "--revision",
+            "2",
+            "--field",
+            "username=bo",
+            "--stdin",
+        ],
+        r#"{"username": "made-up-pass-7c1a"}"#,
+    );
+    assert_eq!(
+        (code, &error["error"]["code"]),
+        (Some(2), &json!("bad_arguments"))
+    );
+    let (code, error) = run(
+        &["vault", "edit", "v1", "--revision", "2", "--stdin"],
+        r#"{"password": ["made-up-pass-7c1a"]}"#,
+    );
+    assert_eq!(
+        (code, &error["error"]["code"]),
+        (Some(2), &json!("bad_values"))
+    );
+
+    // An import's preview, then the rows picked: no prompt, no secret.
+    let export = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/import/chrome.csv"
+    );
+    let (code, previewed) = run(&["vault", "import", export, "--preview"], "");
+    assert_eq!(code, Some(0), "{previewed}");
+    let rows = previewed["preview"]["items"].as_array().unwrap();
+    assert!(rows.len() >= 2, "{previewed}");
+    assert!(!previewed.to_string().contains("made-up-pass-chrome"));
+    assert_eq!(rows[0]["pick"], 1);
+    assert_eq!(rows[0]["has_password"], true);
+    let listed = |host: &Path| {
+        let (_, listed) = answered(&latch(host, &["vault", "list"], &[]));
+        listed["items"].as_array().unwrap().len()
+    };
+    assert_eq!(listed(&host), 1, "a preview imports nothing");
+    let (code, imported) = run(&["vault", "import", export, "--pick", "1"], "");
+    assert_eq!(code, Some(0), "{imported}");
+    assert_eq!(imported["saved"], 1);
+    assert_eq!(imported["picked"], json!([1]));
+    assert!(!imported.to_string().contains("made-up-pass-chrome"));
+    assert_eq!(listed(&host), 2);
+
+    // A preview is not audited; the import is. The audit names fields,
+    // never a value.
+    let audited = audit_records(&host);
+    let imports = audited
+        .iter()
+        .filter(|r| r["args"]["command"] == "import")
+        .count();
+    assert_eq!(imports, 1);
+    let records = serde_json::to_string(&audited).unwrap();
+    for secret in secrets.iter().chain(&["made-up-pass-chrome"]) {
+        assert!(!records.contains(secret), "{secret} audited");
+    }
+}
+
+#[test]
+fn vault_stdin_left_open_is_cut_off_and_saves_nothing() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let args = [
+        "vault",
+        "add",
+        "--kind",
+        "login",
+        "--title",
+        "Shop",
+        "--site",
+        "shop.example",
+        "--stdin",
+    ];
+    let mut child = latch_command(&host, &args, &[])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    // The JSON is all there, but the pipe is never closed, as some tool
+    // runners leave it.
+    let mut input = child.stdin.take().unwrap();
+    input
+        .write_all(br#"{"password": "made-up-pass-open-1"}"#)
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while child.try_wait().unwrap().is_none() {
+        assert!(std::time::Instant::now() < deadline, "latch waited forever");
+        thread::sleep(std::time::Duration::from_millis(200));
+    }
+    let output = child.wait_with_output().unwrap();
+    drop(input);
+    let (code, error) = answered(&output);
+    assert_eq!(
+        (code, &error["error"]["code"]),
+        (Some(2), &json!("stdin_timeout"))
+    );
+    assert!(!error.to_string().contains("made-up-pass-open-1"));
+    let (_, listed) = answered(&latch(&host, &["vault", "list"], &[]));
+    assert_eq!(listed["items"], json!([]));
+}
+
+#[test]
 fn local_vault_edits_are_visible_to_serve_and_phone_links_stay_live() {
     let plow = LivePlow::start();
     let (runtime, relay) = local_relay();
@@ -3692,6 +4165,28 @@ fn local_vault_edits_are_visible_to_serve_and_phone_links_stay_live() {
         7,
         "local and remote writes must share one verified audit chain"
     );
+
+    // Another machine previews an export on the host, then imports a row
+    // of it: only the import is audited.
+    let export = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/import/chrome.csv"
+    );
+    let previewed = remote(&["vault", "import", "--host", "host", export, "--preview"]);
+    assert_eq!(previewed["preview"]["items"][0]["pick"], 1, "{previewed}");
+    assert!(!previewed.to_string().contains("made-up-pass-chrome"));
+    let imported = remote(&["vault", "import", "--host", "host", export, "--pick", "1"]);
+    assert_eq!(imported["saved"], 1, "{imported}");
+    let imports = audit_records(&host)
+        .iter()
+        .filter(|r| {
+            r["op"] == "vault"
+                && ["import", "preview"]
+                    .contains(&r["args"]["command"].as_str().unwrap_or_default())
+        })
+        .map(|r| r["args"]["command"].clone())
+        .collect::<Vec<_>>();
+    assert_eq!(imports, [json!("import")]);
 }
 
 #[test]
@@ -3706,24 +4201,20 @@ fn a_local_vault_import_saves_only_picked_rows_without_serve() {
     )
     .unwrap();
     let before = plow.seen().len();
-    let mut command = latch_command(&host, &["vault", "import", file.to_str().unwrap()], &[]);
-    let mut child = command
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
-    child.stdin.take().unwrap().write_all(b"all\n").unwrap();
-    let output = child.wait_with_output().unwrap();
+    let file = file.to_str().unwrap();
+    // A program is asked nothing: without --pick it is told how to pick.
+    let refused = latch(&host, &["vault", "import", file], &[]);
+    let error = one_error_line(&String::from_utf8_lossy(&refused.stderr), Some(2));
+    assert_eq!(error["error"]["code"], "no_terminal", "{error}");
+    assert_eq!(
+        error["error"]["next"],
+        format!("latch vault import {file} --preview, then --pick ROWS")
+    );
+    let output = latch(&host, &["vault", "import", file, "--pick", "all"], &[]);
     assert!(output.status.success(), "{output:?}");
-    // A program is asked nothing: the preview is in the result.
     assert!(output.stderr.is_empty(), "{output:?}");
     let result: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(result["saved"], 1);
-    assert_eq!(
-        result["preview"]["items"][0]["title"], "Imported",
-        "{result}"
-    );
     assert_eq!(plow.seen().len(), before);
 }
 
@@ -4022,7 +4513,7 @@ fn secret_files_in(state: &Path) -> Vec<&'static str> {
         .collect()
 }
 
-/// `latch vault add` a login titled `title`, its password typed in.
+/// `latch vault add` a login titled `title`, its password given on stdin.
 fn vault_add(owner: &Path, title: &str) {
     let mut add = latch_command(
         owner,
@@ -4039,6 +4530,7 @@ fn vault_add(owner: &Path, title: &str) {
             "shop.example",
             "--field",
             "username=ada",
+            "--stdin",
         ],
         &[],
     )
@@ -4050,7 +4542,7 @@ fn vault_add(owner: &Path, title: &str) {
     add.stdin
         .take()
         .unwrap()
-        .write_all(b"made-up-pass-5521\n")
+        .write_all(br#"{"password": "made-up-pass-5521"}"#)
         .unwrap();
     let added = add.wait_with_output().unwrap();
     assert_eq!(added.status.code(), Some(0), "{added:?}");
@@ -4731,6 +5223,62 @@ fn setup_sets_up_every_connector_with_no_host_running() {
     );
 }
 
+/// `setup --status` asks Plow, read only, whether Google is connected
+/// there: none connected says where to connect one; connected, the
+/// connector is the step; enabled, it is done. The state folder is not
+/// changed and no credential is asked for.
+#[test]
+fn setup_status_says_whether_google_is_connected_in_plow() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let google = || {
+        let output = latch(&host, &["setup", "--status"], &[]);
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        let status: Value = serde_json::from_slice(&output.stdout).unwrap();
+        status["steps"][1].clone()
+    };
+    let files = || {
+        let mut names: Vec<_> = fs::read_dir(&host)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        names.sort();
+        names
+    };
+    let before = files();
+
+    let none = google();
+    assert_eq!(none["step"], "google");
+    assert_eq!(none["state"], "needed");
+    assert_eq!(none["connect_url"], "https://app.example.com/connections");
+    assert_eq!(none["accounts"], json!([]));
+    assert_eq!(none["args"], Value::Null);
+
+    plow.state.lock().unwrap().google = Some("google-token".into());
+    let off = google();
+    assert_eq!(off["state"], "needed");
+    assert_eq!(off["accounts"], json!(["owner@example.com"]));
+    assert_eq!(off["args"], json!(["plugins", "enable", "google"]));
+    assert!(off.get("connect_url").is_none(), "{off}");
+    assert_eq!(files(), before, "nothing written");
+
+    fs::write(
+        host.join("plugins.json"),
+        r#"{"google":{"state":"enabled"}}"#,
+    )
+    .unwrap();
+    let on = google();
+    assert_eq!(on["state"], "done");
+    assert_eq!(on["accounts"], json!(["owner@example.com"]));
+    assert_eq!(on["args"], Value::Null);
+    let asked: Vec<String> = plow.seen().into_iter().map(|(line, _)| line).collect();
+    assert!(
+        !asked.iter().any(|line| line.contains("access-token")),
+        "{asked:?}"
+    );
+}
+
 /// A `latch serve` that holds the state folder but answers no socket this
 /// latch knows (another latch version, still running) is named as the
 /// problem, and its connectors are not changed behind its back.
@@ -5086,35 +5634,48 @@ fn setup_without_a_terminal_names_the_first_step_setup_status_lists() {
     )
     .unwrap();
     let mut nexts = Vec::new();
-    for state in [&fresh, &owner, &ready] {
+    // The owner without a Google account in Plow, then with one.
+    for (state, google) in [
+        (&fresh, false),
+        (&owner, false),
+        (&owner, true),
+        (&ready, true),
+    ] {
+        plow.state.lock().unwrap().google = google.then(|| "google-token".into());
         let listed = latch(state, &["setup", "--status"], &[]);
         let listed: Value = serde_json::from_slice(&listed.stdout).unwrap();
+        // The first step not done that says what does it: a command, or
+        // where to connect an account first.
         let first = listed["steps"]
             .as_array()
             .unwrap()
             .iter()
-            .find(|step| step["state"] != "done" && step["args"].is_array())
+            .find(|step| {
+                step["state"] != "done"
+                    && (step["args"].is_array() || step["connect_url"].is_string())
+            })
             .unwrap_or_else(|| panic!("{listed}"));
-        let words: Vec<&str> = first["args"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|w| w.as_str().unwrap())
-            .collect();
+        let expected = match first["args"].as_array() {
+            Some(words) => {
+                let words: Vec<&str> = words.iter().map(|w| w.as_str().unwrap()).collect();
+                format!("latch {}", words.join(" "))
+            }
+            None => format!(
+                "connect Google at {}, then latch plugins enable google",
+                first["connect_url"].as_str().unwrap()
+            ),
+        };
         let output = latch(state, &["setup"], &[]);
         let error = one_error_line(&String::from_utf8_lossy(&output.stderr), Some(2));
         assert_eq!(error["error"]["code"], "no_terminal", "{error}");
-        assert_eq!(
-            error["error"]["next"],
-            format!("latch {}", words.join(" ")),
-            "{listed}"
-        );
+        assert_eq!(error["error"]["next"], expected, "{listed}");
         nexts.push(error["error"]["next"].as_str().unwrap().to_string());
     }
     assert_eq!(
         nexts,
         [
             "latch login --events",
+            "connect Google at https://app.example.com/connections, then latch plugins enable google",
             "latch plugins enable google",
             "latch serve -d"
         ]

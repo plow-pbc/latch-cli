@@ -38,7 +38,18 @@ profile latch-bwrap flags=(attach_disconnected,mediate_deleted) {
   deny @{PROC}/* w,   # deny write for all files directly in /proc (not in a subdir)
   # deny write to files not in /proc/<number>/** or /proc/sys/**
   deny @{PROC}/{[^1-9/],[^1-9/][^0-9/],[^1-9s/][^0-9y/][^0-9s/],[^1-9/][^0-9/][^0-9/][^0-9/]*}/** w,
-  deny @{PROC}/sys/[^k]** w,  # deny /proc/sys except /proc/sys/k* (effectively /proc/sys/kernel)
+  # Keep /proc/sys writes denied except the existing kernel paths and the
+  # one userns limit bubblewrap lowers before entering a child user namespace.
+  # Explicit denies override allows, so exclude the exact name from the globs.
+  deny @{PROC}/sys/{[^ku]**,u,us,use,user,user/,u[^s]**,us[^e]**,use[^r]**,user[^/]**} w,
+  deny @{PROC}/sys/user/{m,ma,max,max_} w,
+  deny @{PROC}/sys/user/max_{u,us,use,user,user_} w,
+  deny @{PROC}/sys/user/max_user_{n,na,nam,name,names,namesp,namespa,namespac,namespace} w,
+  deny @{PROC}/sys/user/{[^m]**,m[^a]**,ma[^x]**,max[^_]**} w,
+  deny @{PROC}/sys/user/max_{[^u]**,u[^s]**,us[^e]**,use[^r]**,user[^_]**} w,
+  deny @{PROC}/sys/user/max_user_{[^n]**,n[^a]**,na[^m]**,nam[^e]**,name[^s]**} w,
+  deny @{PROC}/sys/user/max_user_names{[^p]**,p[^a]**,pa[^c]**,pac[^e]**,pace[^s]**} w,
+  deny @{PROC}/sys/user/max_user_namespaces{?**,/**} w,
   deny @{PROC}/sys/kernel/{?,??,[^s][^h][^m]**} w,  # deny everything except shm* in /proc/sys/kernel/
   deny @{PROC}/sysrq-trigger rwklx,
   deny @{PROC}/kcore rwklx,

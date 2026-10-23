@@ -281,7 +281,7 @@ async fn wait_for_text(
             // longer each time.
             Err(failure) => {
                 failures += 1;
-                heartbeat::backoff(failures, failure.retry_after).max(poll)
+                heartbeat::backoff(failures, failure.retry_after()).max(poll)
             }
         };
         let Some(wait) = before_giving_up(started.elapsed(), wait) else {

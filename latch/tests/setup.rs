@@ -569,10 +569,20 @@ fn status_reads_the_saved_connectors_and_serve_flags_and_changes_nothing() {
     let steps = status(&state);
     assert_eq!(steps["login"]["state"], "done");
     assert_eq!(steps["login"]["reason"], "Logged in as mac.");
-    // Enabled, but no host serves it yet.
-    assert_eq!(steps["google"]["state"], "done");
-    assert_eq!(steps["google"]["enabled"], true);
-    assert_eq!(steps["google"]["ready"], false);
+    // Enabled here, but Plow cannot be asked whether Google is still
+    // connected there: blocked, never guessed.
+    let google = &steps["google"];
+    assert_eq!(google["state"], "blocked");
+    assert_eq!(google["enabled"], true);
+    assert_eq!(google["ready"], false);
+    assert_eq!(google["args"], serde_json::Value::Null);
+    assert!(
+        google["reason"]
+            .as_str()
+            .unwrap()
+            .starts_with("Plow could not say whether Google is connected"),
+        "{google}"
+    );
     assert_eq!(
         steps["host"]["args"],
         serde_json::json!(["serve", "-d", "--again"])

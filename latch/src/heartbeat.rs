@@ -77,7 +77,7 @@ pub async fn run(
             Err(failure) => {
                 dashboard.directory(false);
                 failures += 1;
-                let wait = backoff(failures, failure.retry_after);
+                let wait = backoff(failures, failure.retry_after());
                 log(&format!(
                     "heartbeat: failed ({}: {}); retry {failures} in {:.1}s",
                     failure.code,

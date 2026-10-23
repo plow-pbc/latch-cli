@@ -60,17 +60,21 @@ bubblewrap sets up their sandbox. Browser workers retain nested namespaces
 for the engine's own sandbox.
 
 The profile is Moby's published Docker default at commit
-`4b8214fc4971e06172938a1f1554ccff6647ee80`, plus four allowance groups:
+`4b8214fc4971e06172938a1f1554ccff6647ee80`, plus these allowance groups:
 
-- `clone` with `CLONE_NEWUSER` (amd64/arm64; excludes new UTS/cgroup namespaces).
-- `unshare(CLONE_NEWUSER)`.
+- `clone` with or without `CLONE_NEWUSER` (amd64/arm64; excludes new UTS/cgroup namespaces).
+- `unshare` of user, PID, network, IPC and mount namespaces (excludes new UTS/cgroup namespaces).
+- `chroot`, for the browser engines' own sandboxes inside their user namespaces.
 - `mount` and `pivot_root`.
 - `umount2` with `MNT_DETACH`.
 
 Other default rules remain, including `clone3` returning ENOSYS. This is a pinned
 published baseline, not a claim that every Docker version embeds identical rules.
 The extra mount syscalls expose more kernel surface; kernel user-namespace and
-capability checks still apply. No host capabilities are granted.
+capability checks still apply. No host capabilities are granted. Exec, file and
+Google workers still drop all capabilities, disable further user namespaces and
+block `unshare` in their inner seccomp filter; these outer allowances do not
+let a worker regain privileges. The Linux test container uses this same profile.
 
 ## Compose
 
@@ -92,18 +96,22 @@ services:
     command: [latch, --state-dir, /state, serve, --foreground]
 ```
 
-## AppArmor hosts: unverified
+## AppArmor hosts
 
 On Ubuntu, Docker's `docker-default` AppArmor profile denies mounts independently
 of seccomp. An administrator must load and validate a suitable container profile
 before selecting `--security-opt=apparmor=latch-bwrap` (Compose:
-`apparmor=latch-bwrap` in `security_opt`). The candidate
-[`docker/latch-bwrap.apparmor`](docker/latch-bwrap.apparmor) is **untested on an
-AppArmor-enforcing host**; only its syntax was checked during research. It is
-derived from Moby's default, replacing the mount denial with mount, pivot and
-user-namespace allowances. Its broad mount allowance needs host-side review.
+`apparmor=latch-bwrap` in `security_opt`).
+[`docker/latch-bwrap.apparmor`](docker/latch-bwrap.apparmor) is derived from
+Moby's default, replacing the mount denial with mount, pivot and
+user-namespace allowances. It permits writing only `/proc/sys/user/max_user_namespaces`
+under `/proc/sys/user/`, which bubblewrap needs for `--disable-userns`; the limit
+is lowered in an ancestor user namespace so the worker cannot undo it. Other
+`/proc/sys` write denials remain. Its broad mount allowance needs host-side review.
 It does not replace the separate bare-host bwrap user-namespace profile installed
-by install.sh. AppArmor validation is outside this POC's acceptance.
+by install.sh. The restricted-Ubuntu CI job loads this container profile in
+enforce mode, checks its sysctl write rules and tests that exec workers still
+cannot create nested user namespaces.
 
 ## Kubernetes: untested
 

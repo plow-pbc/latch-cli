@@ -619,3 +619,39 @@ async fn a_new_agent_is_judged_whatever_connectors_and_deny_exec_say() {
     assert_eq!((exit, code), (Exit::Usage, "bad_request"));
     assert_eq!(t.judged(), 2);
 }
+
+#[tokio::test]
+async fn a_path_the_host_never_allows_is_the_hosts_refusal() {
+    let t = start(chat_with(always_covered)).await;
+    let device = t.caller("device").await;
+    let hidden = t.host.workers.state_dir.join("config.json");
+    for (op, args) in [
+        ("exec", json!({"argv": ["true"], "writes": ["/"]})),
+        ("exec", json!({"argv": ["true"], "writes": ["~"]})),
+        ("file_get", json!({"remote_path": hidden})),
+    ] {
+        let tried = answer(
+            t.call(
+                &device,
+                "rules_try",
+                try_args(op, args.clone(), Some("Juno"), None),
+            )
+            .await
+            .0,
+        );
+        assert_eq!(tried["verdict"], "host_refused", "{args}: {tried}");
+        assert_eq!(tried["refused"]["code"], "bad_path", "{args}");
+        assert_eq!(tried["gate"], Value::Null);
+    }
+    assert_eq!(t.judged(), 0);
+    // A malformed request is still an error, not a verdict.
+    let (response, _) = t
+        .call(
+            &device,
+            "rules_try",
+            try_args("exec", json!({"argv": []}), Some("Juno"), None),
+        )
+        .await;
+    assert_eq!(refusal(&response).1, "bad_request");
+    assert_eq!(traces(&t), untouched());
+}

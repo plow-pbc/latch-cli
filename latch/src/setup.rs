@@ -20,7 +20,6 @@ use serde_json::Value;
 
 use crate::failure::Failure;
 use crate::state::StateDir;
-use crate::term;
 
 /// How often, and how long, the Full Disk Access step checks again.
 #[cfg(target_os = "macos")]
@@ -34,13 +33,6 @@ pub fn run(state_dir: Option<PathBuf>) -> ExitCode {
         state_dir,
         input: None,
     };
-    if !term::interactive() {
-        let failure = StateDir::new(setup.state_dir.clone())
-            .and_then(|state| status(&state))
-            .map_or_else(|failure| failure, |status| no_terminal(&status));
-        eprintln!("{}", failure.to_json());
-        return failure.exit.into();
-    }
     say("Setting up latch. Each step runs a latch command; you can run it yourself later.");
     if setup.log_in() {
         setup.google();
@@ -292,17 +284,24 @@ fn start_args(state: &StateDir) -> Vec<&'static str> {
 }
 
 /// Without a terminal nobody answers setup's questions: `no_terminal`,
-/// whose `next` is the first step `setup --status` says is not done, or
-/// `latch status` once every step is.
-fn no_terminal(status: &Status) -> Failure {
+/// whose `next` is the first step `setup --status` says is not done (its
+/// command, or where to connect an account first), or `latch status` once
+/// every step is.
+pub fn no_terminal(status: &Status) -> Failure {
     let next = status
         .steps
         .iter()
         .filter(|step| step.state != StepState::Done)
-        .find_map(|step| step.args.as_ref())
-        .map_or("latch status".to_string(), |args| {
-            format!("latch {}", args.join(" "))
-        });
+        .find_map(|step| match (&step.args, &step.connect_url) {
+            (Some(args), _) => Some(format!("latch {}", args.join(" "))),
+            (None, Some(url)) => Some(format!(
+                "connect {} at {url}, then latch plugins enable {}",
+                title(step.step),
+                step.step
+            )),
+            (None, None) => None,
+        })
+        .unwrap_or_else(|| "latch status".to_string());
     let message = "latch setup asks questions, so it needs a terminal".to_string();
     let mut failure = Failure::usage("no_terminal", message);
     failure.next = Some(next.into());
@@ -310,7 +309,8 @@ fn no_terminal(status: &Status) -> Failure {
 }
 
 /// `latch setup --status`: each step of setup, read from the state folder
-/// alone, so it changes nothing and needs no host, terminal or network.
+/// and, for Google, from Plow (read only), so it changes nothing and needs no
+/// host or terminal.
 #[derive(Serialize)]
 pub struct Status {
     pub steps: Vec<Step>,
@@ -330,24 +330,41 @@ pub struct Step {
     /// A connector's: enabled, and a host is serving it now.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ready: Option<bool>,
+    /// Google's: the accounts connected in Plow, when Plow said.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub accounts: Option<Vec<String>>,
+    /// Google's, when none is connected: where the owner connects one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub connect_url: Option<String>,
 }
 
 #[derive(Serialize, Clone, Copy, PartialEq, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum StepState {
     Done,
-    /// Running `args` does it.
+    /// Running `args` does it; for Google with no account in Plow,
+    /// connecting one at `connect_url` comes first.
     Needed,
     /// Something else comes first: an earlier step, or what `reason` says.
     Blocked,
 }
 
-pub fn status(state: &StateDir) -> Result<Status, Failure> {
+pub async fn status(state: &StateDir) -> Result<Status, Failure> {
     use crate::plugins::{Connector, Setting};
     use StepState::{Blocked, Done, Needed};
     let local = crate::status::local(state)?;
     let saved = crate::plugins::saved(state)?;
     let serving = local.serve.ready;
+    // Whether Google is connected in Plow, asked only for the owner's login.
+    let owner = local.peer.as_ref().is_some_and(|me| me.kind == "device");
+    let plow = if owner {
+        Some(match crate::plow::Plow::from_state(state) {
+            Ok(plow) => plow.connectors().await,
+            Err(failure) => Err(failure),
+        })
+    } else {
+        None
+    };
     let mut steps = vec![match &local.peer {
         Some(me) => Step::new("login", Done, format!("Logged in as {}.", me.name), None),
         None => Step::new(
@@ -385,11 +402,17 @@ pub fn status(state: &StateDir) -> Result<Status, Failure> {
                 Some(vec!["plugins", "enable", name]),
             ),
         };
-        steps.push(Step {
+        let mut step = Step {
             enabled: Some(enabled),
             ready: Some(enabled && serving),
             ..Step::new(name, state, reason, args)
-        });
+        };
+        if connector == Connector::Google
+            && let Some(plow) = &plow
+        {
+            google_in_plow(&mut step, plow);
+        }
+        steps.push(step);
     }
     steps.push(match (&local.peer, &local.serve) {
         (None, _) => Step::new("host", Blocked, "latch needs a login first.".into(), None),
@@ -414,6 +437,56 @@ pub fn status(state: &StateDir) -> Result<Status, Failure> {
     Ok(Status { steps })
 }
 
+/// The Google step for the owner, by what Plow says: none connected
+/// (connect one first), connected (then the connector), or Plow could not
+/// say, which is never taken for either.
+fn google_in_plow(step: &mut Step, plow: &Result<crate::plow::Connectors, Failure>) {
+    use StepState::{Blocked, Needed};
+    let connectors = match plow {
+        Ok(connectors) => connectors,
+        Err(failure) => {
+            step.state = Blocked;
+            step.reason = format!(
+                "Plow could not say whether Google is connected: {}",
+                failure.message
+            );
+            step.args = None;
+            return;
+        }
+    };
+    let accounts: Vec<String> = connectors
+        .gmail
+        .accounts
+        .iter()
+        .map(|account| account.account.clone())
+        .collect();
+    if !connectors.gmail.connected {
+        let page = connectors.connections_page();
+        step.state = Needed;
+        step.reason = format!(
+            "Google is not connected in Plow: connect it at {page}, then run \
+             `latch plugins enable google`."
+        );
+        step.args = None;
+        step.connect_url = Some(page);
+    } else {
+        // The connector's own state stands; Plow adds who is connected, and
+        // a setup that failed is worth trying again now.
+        let mut reason = step.reason.chars();
+        let first = reason.next().map(|c| c.to_lowercase().collect::<String>());
+        step.reason = format!(
+            "Google is connected in Plow ({}); {}{}",
+            accounts.join(", "),
+            first.unwrap_or_default(),
+            reason.as_str()
+        );
+        if step.state == Blocked {
+            step.state = Needed;
+        }
+    }
+    step.accounts = Some(accounts);
+}
+
 impl Step {
     fn new(
         step: &'static str,
@@ -428,6 +501,8 @@ impl Step {
             args,
             enabled: None,
             ready: None,
+            accounts: None,
+            connect_url: None,
         }
     }
 }
