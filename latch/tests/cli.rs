@@ -474,9 +474,12 @@ fn an_agent_with_neither_a_token_a_file_nor_a_proxy_has_no_credential() {
     let login = latch(&dir.path().join("state"), &args, &env);
     assert_eq!(login.status.code(), Some(2), "{login:?}");
     let error: Value = serde_json::from_slice(&login.stderr).unwrap();
-    // All that is left is a login by text, which needs a person there.
-    assert_eq!(error["error"]["code"], "no_terminal");
-    assert_eq!(error["error"]["next"], "latch login --events");
+    // A credential, or a login by text, which needs a person there.
+    assert_eq!(error["error"]["code"], "no_credential");
+    assert_eq!(
+        error["error"]["next"],
+        "latch login --token-file PATH, or latch login --events"
+    );
 }
 
 #[test]
@@ -4869,20 +4872,38 @@ fn a_human_command_without_a_terminal_names_its_machine_equivalent() {
     let dir = test_dir();
     let owner = owner_host_on(&plow, dir.path());
     let fresh = dir.path().join("fresh");
-    for (state, args, next) in [
-        (&fresh, &["setup"][..], "latch login --events"),
+    // A login with no credential at all says so: a credential, or a
+    // login by text, which needs a person.
+    for (state, args, code, next) in [
+        (
+            &fresh,
+            &["setup"][..],
+            "no_terminal",
+            "latch login --events",
+        ),
         (
             &fresh,
             &["login", "--api-url", "http://127.0.0.1:9"],
-            "latch login --events",
+            "no_credential",
+            "latch login --token-file PATH, or latch login --events",
         ),
-        (&owner, &["serve"], "latch serve -d"),
-        (&owner, &["dashboard"], "latch events --follow"),
-        (&owner, &["rules", "edit"], "latch rules set TEXT"),
+        (&owner, &["serve"], "no_terminal", "latch serve -d"),
+        (
+            &owner,
+            &["dashboard"],
+            "no_terminal",
+            "latch events --follow",
+        ),
+        (
+            &owner,
+            &["rules", "edit"],
+            "no_terminal",
+            "latch rules set TEXT",
+        ),
     ] {
         let output = latch(state, args, &[]);
         let error = one_error_line(&String::from_utf8_lossy(&output.stderr), Some(2));
-        assert_eq!(error["error"]["code"], "no_terminal", "{args:?}: {error}");
+        assert_eq!(error["error"]["code"], code, "{args:?}: {error}");
         assert_eq!(error["error"]["next"], next, "{args:?}: {error}");
         assert!(output.stdout.is_empty(), "{args:?}");
     }

@@ -35,7 +35,13 @@ case "$*" in
       fi
     fi
     # A login by text ends in a person's line; one that asks no one
-    # (`json-login`) answers its JSON.
+    # (`json-login`) answers its JSON; one that fails (`login-fails`), its
+    # error line.
+    if [ -f "$STUB/login-fails" ]; then
+      echo 'Waiting for your text…' >&2
+      echo '{"error":{"code":"code_expired","exit":1,"message":"the code expired before it was texted"}}' >&2
+      exit 1
+    fi
     if [ -f "$STUB/json-login" ]; then echo '{"peer":{"name":"mac","key":"k","kind":"device"},"key_created":true}'
     else echo "Logged in as mac." >&2; fi
     touch "$STUB/peer" ;;
@@ -338,6 +344,26 @@ fn setup_without_a_terminal_names_the_first_step_not_done() {
         !calls.contains("login\n") && !calls.contains("enable") && !calls.contains("serve"),
         "it only looked: {calls}"
     );
+}
+
+/// A login that fails: what it showed stays on the terminal, and setup
+/// says its error in a line of its own, never as the JSON.
+#[test]
+fn a_failed_login_is_said_in_a_line_not_its_json() {
+    let stub = Stub::new();
+    stub.file("login-fails", "");
+    let (code, shown) = stub.setup("");
+    assert_eq!(code, Some(0), "{shown}");
+    assert!(shown.contains("Waiting for your text…"), "{shown}");
+    assert!(
+        shown.contains("✗ the code expired before it was texted"),
+        "{shown}"
+    );
+    assert!(
+        shown.contains("Not logged in, so the other steps wait"),
+        "{shown}"
+    );
+    assert!(!shown.contains("{\"error\""), "{shown}");
 }
 
 /// A login that asks no one answers JSON: setup reads it and says so in

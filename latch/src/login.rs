@@ -77,8 +77,8 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
         let message = "no Plow credential: pass --token-file FILE with the owner's Plow login, \
                        or run `latch login` at a terminal to log in by text"
             .to_string();
-        let mut failure = Failure::usage("no_terminal", message);
-        failure.next = Some("latch login --events".into());
+        let mut failure = Failure::usage("no_credential", message);
+        failure.next = Some("latch login --token-file PATH, or latch login --events".into());
         return Err(failure);
     };
     let owner = !matches!(source, Source::Agent(_));

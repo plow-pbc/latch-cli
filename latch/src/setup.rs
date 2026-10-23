@@ -6,7 +6,9 @@
 //! whether it is done already and then skips it, so setup can be run again
 //! at any time. Skipping or failing a step never stops the next one.
 
-use std::io::BufRead;
+use std::fs::File;
+use std::io::{BufRead, Read, Write};
+use std::os::fd::FromRawFd;
 use std::path::PathBuf;
 use std::process::{Command, ExitCode, Stdio};
 #[cfg(target_os = "macos")]
@@ -153,26 +155,51 @@ impl Setup {
             return true;
         }
         step("Log in", "latch login");
-        // Its questions, and a login by text's screen, are the person's at
-        // this terminal; the JSON of a login that asks nothing is read.
-        let login = self
-            .command(&["login"])
-            .stdin(Stdio::inherit())
-            .stderr(Stdio::inherit())
-            .output();
-        if let Ok(output) = login
-            && output.status.success()
-        {
-            let answer: Value = serde_json::from_slice(&output.stdout).unwrap_or(Value::Null);
-            if let Some(name) = answer["peer"]["name"].as_str() {
-                done(&format!("Logged in as {name}."));
+        match self.login() {
+            Ok(answer) => {
+                if let Some(name) = answer["peer"]["name"].as_str() {
+                    done(&format!("Logged in as {name}."));
+                }
+                return true;
             }
-            return true;
+            Err(error) => {
+                let message = error["error"]["message"].as_str().unwrap_or("it failed");
+                eprintln!("✗ {message}");
+            }
         }
         say(
             "Not logged in, so the other steps wait: run `latch setup` again once `latch login` works.",
         );
         false
+    }
+
+    /// `latch login`, at this terminal: its questions, and a login by
+    /// text's screen, are the person's. Its stderr is a terminal of setup's
+    /// own, passed on here as it comes, all but its error line, which setup
+    /// reads and says in its own words. Its JSON (a login that asked no one)
+    /// is read too, never shown.
+    fn login(&self) -> Result<Value, Value> {
+        let unread = |why: String| serde_json::json!({"error": {"message": why}});
+        let (main, side) = pty().map_err(|err| unread(format!("no terminal for login: {err}")))?;
+        let mut command = self.command(&["login"]);
+        command
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::from(side));
+        let child = command.spawn();
+        // Every copy of the terminal's other side closes with login, so
+        // passing it on ends when login does.
+        drop(command);
+        let child = child.map_err(|err| unread(err.to_string()))?;
+        let passing = std::thread::spawn(move || pass_on(main));
+        let output = child
+            .wait_with_output()
+            .map_err(|err| unread(err.to_string()))?;
+        let error = passing.join().unwrap_or(Value::Null);
+        if output.status.success() {
+            return Ok(serde_json::from_slice(&output.stdout).unwrap_or(Value::Null));
+        }
+        Err(error)
     }
 
     /// A connector's state: as the host lists it when it runs, else as it
@@ -377,6 +404,68 @@ impl Input {
             }
         }
     }
+}
+
+/// A new terminal (a pty) the size of this one: its two sides.
+fn pty() -> std::io::Result<(File, File)> {
+    // SAFETY: an all-zero winsize is a valid value of the C struct.
+    let mut size: libc::winsize = unsafe { std::mem::zeroed() };
+    // SAFETY: TIOCGWINSZ only writes this terminal's size into `size`; on
+    // failure it stays zero, which a terminal takes as unknown.
+    unsafe { libc::ioctl(2, libc::TIOCGWINSZ, &mut size) };
+    let (mut main, mut side) = (0, 0);
+    let none = std::ptr::null_mut();
+    // SAFETY: openpty writes two new descriptors, which are ours from here.
+    if unsafe { libc::openpty(&mut main, &mut side, none, std::ptr::null_mut(), &mut size) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: both are open descriptors no one else owns.
+    Ok(unsafe { (File::from_raw_fd(main), File::from_raw_fd(side)) })
+}
+
+/// Passes what login shows on its terminal on to this one as it comes,
+/// prompts with no line end included, all but its one JSON error line,
+/// which it returns.
+fn pass_on(mut from: File) -> Value {
+    let mut out = std::io::stderr();
+    let mut error = Value::Null;
+    // A line that begins with `{`, held until its end: the error line, or
+    // else shown after all.
+    let mut held: Option<Vec<u8>> = None;
+    let mut line_start = true;
+    let mut chunk = [0u8; 4096];
+    // Ends with an error (EIO) once login, the terminal's last user, exits.
+    while let Ok(read) = from.read(&mut chunk) {
+        if read == 0 {
+            break;
+        }
+        let mut shown = Vec::new();
+        for &byte in &chunk[..read] {
+            if let Some(line) = &mut held {
+                line.push(byte);
+                if byte == b'\n' {
+                    let line = held.take().expect("held");
+                    match serde_json::from_slice::<Value>(&line) {
+                        Ok(value) if value.get("error").is_some() => error = value,
+                        _ => shown.extend(line),
+                    }
+                    line_start = true;
+                }
+                continue;
+            }
+            if line_start && byte == b'{' {
+                held = Some(vec![byte]);
+                continue;
+            }
+            shown.push(byte);
+            line_start = byte == b'\n';
+        }
+        let _ = out.write_all(&shown).and_then(|()| out.flush());
+    }
+    if let Some(line) = held {
+        let _ = out.write_all(&line);
+    }
+    error
 }
 
 fn say(text: &str) {
