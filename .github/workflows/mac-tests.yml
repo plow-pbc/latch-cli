@@ -68,10 +68,11 @@ jobs:
       # The macOS gate, as on a laptop; shard 1 also lints and runs the
       # Swift, Python and app-bundle checks.
       - run: just test --shard ${{ matrix.shard }}/${{ inputs.shards == 1 && 1 || 2 }} --ci
-      # The live tests run only by hand; they still have to compile.
+      # The live tests and the scaling measurements run only by hand; they
+      # still have to compile.
       - if: matrix.shard == 1
         working-directory: latch/gui
-        run: LATCH_LIVE_TESTS=1 swift build --build-tests
+        run: LATCH_LIVE_TESTS=1 LATCH_SCALING=1 swift build --build-tests
       - uses: actions/upload-artifact@v4
         if: always()
         with:
