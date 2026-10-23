@@ -105,10 +105,12 @@ final class Onboarding {
     /// person picks one.
     var deck = Onboarding.decks[0]
     var previews: [String: Preview] = [:]
-    /// Why the examples show no verdicts, when they can't.
-    var previewNote: String?
     /// While latch is judging the examples (the beam scans).
     var reviewing = false
+    /// The draft the examples were last judged on, and which review is the
+    /// current one: an answer from an older one is dropped.
+    private var reviewed: String?
+    private var review = 0
     /// The Mac lights up briefly when a request is allowed through.
     var macLit = false
     /// Which examples show their request and verdict.
@@ -142,6 +144,7 @@ final class Onboarding {
 
     let app: AppModel
     private var loginTask: Task<Void, Never>?
+    private var reviewTask: Task<Void, Never>?
     private var accessTask: Task<Void, Never>?
 
     init(app: AppModel, step: Step, progress: Progress) {
@@ -203,6 +206,9 @@ final class Onboarding {
     func stopWork() {
         loginTask?.cancel()
         loginTask = nil
+        reviewTask?.cancel()
+        reviewTask = nil
+        reviewing = false
         accessTask?.cancel()
         accessTask = nil
         waitingForAccess = false
@@ -371,12 +377,54 @@ final class Onboarding {
         startReview()
     }
 
-    /// The examples show no verdicts yet: `rules try` judges the saved
-    /// rules as the owner, while this screen needs an unsaved draft judged
-    /// as a new agent would be, which comes with a later latch.
-    private func startReview() {
-        for example in deck.examples { previews[example.id] = .notChecked }
-        previewNote = "Previews arrive with the next Latch update."
+    /// The box changed: the examples show Checking… at once and are judged
+    /// a second after the person stops typing.
+    func draftChanged() {
+        guard draftRules.trimmingCharacters(in: .whitespacesAndNewlines) != reviewed else { return }
+        startReview(after: .seconds(1))
+    }
+
+    /// Judges each example against the draft as a new agent would be judged
+    /// (`rules try --new-agent --draft`), all at once, each verdict shown
+    /// as it comes. Nothing is saved. A newer review drops older answers.
+    private func startReview(after delay: Duration = .zero) {
+        let draft = draftRules.trimmingCharacters(in: .whitespacesAndNewlines)
+        reviewed = draft
+        review += 1
+        let current = review
+        let examples = deck.examples
+        for example in examples { previews[example.id] = .checking }
+        reviewing = true
+        macLit = false
+        reviewTask?.cancel()
+        reviewTask = Task {
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled else { return }
+            await withTaskGroup(of: (String, Preview).self) { group in
+                for example in examples {
+                    group.addTask { [client] in
+                        do {
+                            return (example.id, .verdict(try await client.rulesTry(draft: draft, request: example.request)))
+                        } catch {
+                            return (example.id, .failed((error as? LatchError)?.message ?? error.localizedDescription))
+                        }
+                    }
+                }
+                for await (id, preview) in group where current == review && !Task.isCancelled {
+                    previews[id] = preview
+                }
+            }
+            guard current == review, !Task.isCancelled else { return }
+            reviewing = false
+            // An allowed request reaches the Mac: it lights up briefly.
+            guard examples.contains(where: { if case let .verdict(answer)? = previews[$0.id] { answer.verdict == "allow" } else { false } })
+            else { return }
+            try? await Task.sleep(for: .milliseconds(420))
+            guard current == review, !Task.isCancelled else { return }
+            macLit = true
+            try? await Task.sleep(for: .milliseconds(260))
+            macLit = false
+        }
     }
 
     /// Continue: saves the rules only if the person changed them. An empty

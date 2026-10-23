@@ -41,14 +41,12 @@ struct RulesView: View {
             }
             Deck(flow: flow, reduceMotion: reduceMotion)
                 .padding(.top, 30)
-            if let note = flow.previewNote {
-                Text(note).font(.callout).foregroundStyle(Brand.muted).padding(.top, 10)
-            }
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 56)
         .padding(.top, 46)
         .task { if !flow.app.still { await flow.loadRules() } }
+        .onChange(of: flow.draftRules) { if !flow.app.still { flow.draftChanged() } }
     }
 
     private var field: some View {
@@ -196,7 +194,7 @@ private struct Lane: View {
         switch look {
         case .allowed: Text("✓").font(.system(size: 13.5, weight: .bold)).foregroundStyle(Brand.volt).transition(.scale(scale: 0.8).combined(with: .opacity))
         case .refused: Text("✕").font(.system(size: 13.5, weight: .bold)).foregroundStyle(Color(light: 0xA14A2B, dark: 0xD89478)).transition(.scale(scale: 0.8).combined(with: .opacity))
-        case .checking: Text("Checking…").font(.system(size: 12, weight: .medium)).foregroundStyle(Brand.muted)
+        case .checking: Shimmer(text: "Checking…", moving: !reduceMotion)
         default: EmptyView()
         }
     }
@@ -277,6 +275,26 @@ private struct Lane: View {
         if look == .refused {
             withAnimation(.easeOut(duration: 0.22).delay(0.45)) { bump = -4 }
             withAnimation(.easeOut(duration: 0.23).delay(0.67)) { bump = 0 }
+        }
+    }
+}
+
+/// Checking…, with a highlight sweeping through it while latch judges.
+private struct Shimmer: View {
+    var text: String
+    var moving: Bool
+
+    var body: some View {
+        let label = Text(text).font(.system(size: 12, weight: .medium))
+        if moving {
+            TimelineView(.animation) { context in
+                let t = context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.4) / 1.4
+                label.foregroundStyle(LinearGradient(stops: [.init(color: Brand.muted, location: t - 0.15), .init(color: Brand.text, location: t),
+                                                             .init(color: Brand.muted, location: t + 0.15)],
+                                                     startPoint: .leading, endPoint: .trailing))
+            }
+        } else {
+            label.foregroundStyle(Brand.muted)
         }
     }
 }
