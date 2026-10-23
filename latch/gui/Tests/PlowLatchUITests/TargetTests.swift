@@ -159,12 +159,12 @@ struct ActivityScopeTests {
         let (app, studio) = try app()
         let records = app.feed(for: studio).records
         let allowed = try #require(records.last { $0.agent == scout && $0.decision == "allow" && !$0.isBackground })
-        app.selectedRecord = allowed.id
-        #expect(app.selectedRecord(in: app.activityRows(records, on: studio)) == allowed)
+        app.selectedRecord = OnHost(host: "studio", id: allowed.id)
+        #expect(app.inspectedRecord(on: studio) == allowed)
         app.activityFilter = .refused
-        #expect(app.selectedRecord(in: app.activityRows(records, on: studio)) == nil)
+        #expect(app.inspectedRecord(on: studio) == nil)
         app.activityFilter = .all
-        #expect(app.selectedRecord(in: app.activityRows(records, on: studio)) == allowed)
+        #expect(app.inspectedRecord(on: studio) == allowed)
     }
 
     // Home's recent request opens in Activity even where a filter left
@@ -179,14 +179,14 @@ struct ActivityScopeTests {
         app.place = .host(.home)
         app.openRecord(other, on: studio)
         #expect(app.route == .host(.activity, studio))
-        #expect(app.selectedRecord(in: app.activityRows(records, on: studio)) == other)
+        #expect(app.inspectedRecord(on: studio) == other)
 
         let refused = try #require(records.last { $0.agent == scout && $0.isRefused && $0.command?.contains("Finance") == true })
         app.openActivity(studio, agent: scout)
         app.activityFilter = .refused
         app.openRecord(refused, on: studio)
         #expect(app.activityFilter == .refused && app.activityAgent(on: studio) == scout)
-        #expect(app.selectedRecord(in: app.activityRows(records, on: studio)) == refused)
+        #expect(app.inspectedRecord(on: studio) == refused)
     }
 
     @Test func showAllActivityShowsAllOfIt() throws {

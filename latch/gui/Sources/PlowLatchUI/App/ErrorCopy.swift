@@ -18,9 +18,9 @@ nonisolated enum ErrorCopy {
         case devices
     }
 
-    /// The app's sentence for `error`, naming `host` (the name the host
-    /// picker shows, or `thisMac`) where it matters; nil when the app has
-    /// none.
+    /// The app's sentence for `error`, naming `host` (its name as the
+    /// sidebar shows it, or `thisMac`) where it matters; nil when the app
+    /// has none.
     static func sentence(_ error: LatchError, host: String? = nil, place: Place = .anywhere) -> String? {
         let failure: LatchFailure
         switch error {

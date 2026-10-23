@@ -424,7 +424,7 @@ package enum SnapshotRunner {
                 try await renderWindow(MainView().environment(app), size: mainSize, dark: dark,
                                  file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
             }
-            // The main window's host tier: each kind of host, and switching.
+            // The main window's host workspace: each kind of host, and switching.
             let plowDown = LatchError.failed(LatchFailure(code: "plow_unreachable", message: "could not reach Plow at http://127.0.0.1:18934: error sending request for url (http://127.0.0.1:18934/v1/latch/peers)"))
             let homes: [(String, String, String?, String?, Place)] = [
                 ("10-home-this-mac-serving", Fixtures.serving, Fixtures.studioHosts, nil, .host(.home)),
@@ -506,12 +506,14 @@ package enum SnapshotRunner {
                 app.place = .host(.activity)
                 app.activityFilter = filter
                 stageActivity(app)
-                app.selectedRecord = app.host.flatMap { app.feed(for: $0).records.last(where: pick)?.id }
+                if let host = app.host, let record = app.feed(for: host).records.last(where: pick) {
+                    app.selectedRecord = OnHost(host: host.name, id: record.id)
+                }
                 _ = app.stage(.done, progress: full)
                 try await renderWindow(MainView().environment(app), size: CGSize(width: 1180, height: 640), dark: dark,
                                  file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
             }
-            // Activity's scope bar at the default and narrow sizes: an
+            // Activity's scope bar at the default and narrowest sizes: an
             // agent's link (its chip), no match in what's loaded, reading,
             // a host out of reach, and a read that failed.
             let scout = "a74f38668570a45ddc4b762ba0465d74"
@@ -529,8 +531,75 @@ package enum SnapshotRunner {
                 ("24-activity-unreachable", { app, studio in app.feed(for: studio).stage("", error: unreachable) }),
                 ("24-activity-read-failure", { app, studio in app.feed(for: studio).stage("", error: busy) }),
             ]
+            // The shell: a host's workspace with its inspector (a record
+            // selected, none selected, closed on Vault), and an account
+            // page, which has no host.
+            let shells: [(String, (AppModel, HostEntry) -> Void)] = [
+                ("25-shell-activity-inspector", { app, studio in
+                    app.feed(for: studio).stage(Fixtures.studioAudit)
+                    app.place = .host(.activity)
+                    if let record = app.feed(for: studio).records.last(where: { $0.callerName == "scout" && $0.op == "exec" }) {
+                        app.selectedRecord = OnHost(host: studio.name, id: record.id)
+                    }
+                }),
+                ("25-shell-activity-no-selection", { app, studio in
+                    app.feed(for: studio).stage(Fixtures.studioAudit)
+                    app.place = .host(.activity)
+                }),
+                ("25-shell-vault-inspector-closed", { app, studio in
+                    app.stage(summary: HostSummary(vault: .success(try! Fixtures.decode(Fixtures.vaultItems))), for: studio.name)
+                    app.place = .host(.vault)
+                    app.inspecting.remove(.vault)
+                }),
+                ("25-shell-account-connections", { app, _ in
+                    app.stage(connections: Connections(try! Fixtures.decode(Fixtures.setup(on: [])) as SetupStatus))
+                    app.stage(devices: try! Fixtures.decode(Fixtures.devices), update: nil)
+                    app.place = .account(.connections)
+                }),
+            ]
+            // The sidebar and the inspector on their own, which the window
+            // captures above leave out (the window server draws them):
+            // 3 and 8 hosts, and a record in the inspector.
+            let eight = Fixtures.studioHosts.replacingOccurrences(of: #"],"default_host""#, with: ","
+                + ["build-server-in-the-garage-closet", "nas", "mini", "travel-air", "lab-linux"].enumerated().map { index, name in
+                    #"{"name":"\#(name)","key":"k\#(index)","self":false,"online":\#(name == "nas" ? "null" : "true"),"last_seen_at":null}"#
+                }.joined(separator: ",") + #"],"default_host""#)
+            for (name, account) in [("25-shell-sidebar-3-hosts", Fixtures.studioHosts), ("25-shell-sidebar-8-hosts", eight)] {
+                let app = AppModel(client: FakeLatchClient(), still: true)
+                app.stage(status: try Fixtures.decode(Fixtures.serving))
+                app.stage(account: try Fixtures.decode(account))
+                app.showHost("pi-kitchen")
+                try await render(Sidebar().environment(app), size: CGSize(width: 230, height: 560), dark: dark,
+                                 file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
+            }
+            do {
+                let app = AppModel(client: FakeLatchClient(), still: true)
+                app.stage(status: try Fixtures.decode(Fixtures.serving))
+                app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
+                app.place = .host(.activity)
+                if let studio = app.host {
+                    app.feed(for: studio).stage(Fixtures.studioAudit)
+                    if let record = app.feed(for: studio).records.last(where: { $0.callerName == "scout" && $0.op == "exec" }) {
+                        app.selectedRecord = OnHost(host: studio.name, id: record.id)
+                    }
+                }
+                try await render(Inspector(route: app.route).environment(app), size: CGSize(width: 320, height: 600), dark: dark,
+                                 file: output.appending(path: "25-shell-inspector-record-\(dark ? "dark" : "light").png"))
+            }
+            for (name, stage) in shells {
+                for (label, size) in [("default", CGSize(width: 1120, height: 640)), ("narrow", narrowSize)] {
+                    let app = AppModel(client: FakeLatchClient(), still: true)
+                    app.stage(status: try Fixtures.decode(Fixtures.serving))
+                    app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
+                    guard let studio = app.host else { continue }
+                    stage(app, studio)
+                    _ = app.stage(.done, progress: full)
+                    try await renderWindow(MainView().environment(app), size: size, dark: dark,
+                                           file: output.appending(path: "\(name)-\(label)-\(dark ? "dark" : "light").png"))
+                }
+            }
             for (name, stage) in scopes {
-                for (label, size) in [("default", CGSize(width: 1120, height: 640)), ("narrow", CGSize(width: 900, height: 600))] {
+                for (label, size) in [("default", CGSize(width: 1120, height: 640)), ("narrow", narrowSize)] {
                     let app = AppModel(client: FakeLatchClient(), still: true)
                     app.stage(status: try Fixtures.decode(Fixtures.serving))
                     app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
@@ -631,7 +700,7 @@ package enum SnapshotRunner {
                 for show in shows { app.stage(vaultShow: try Fixtures.decode(show), on: chosen ?? "studio") }
                 app.chosenHost = chosen
                 app.place = .host(.vault)
-                app.selectedVaultItem = selected
+                app.selectedVaultItem = selected.map { OnHost(host: chosen ?? "studio", id: $0) }
                 if name.hasSuffix("remove-failed") {
                     app.vaultRemoveError = .failed(LatchFailure(code: "state_busy", message: "another latch is changing /Users/me/.latch; try again"))
                 }
@@ -784,6 +853,8 @@ package enum SnapshotRunner {
     }
 
     private static let mainSize = CGSize(width: 860, height: 560)
+    /// The main window at its narrowest (MainView's minimum width).
+    private static let narrowSize = CGSize(width: 1040, height: 600)
 
     /// What `setup --status` says of Google for each Connect Google still.
     private static let google: [String: String] = [

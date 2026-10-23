@@ -34,8 +34,6 @@ struct HostSettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .navigationTitle("Host Settings")
-        .navigationSubtitle(app.host?.name ?? "")
         .confirmationDialog("Stop Latch on this Mac?", isPresented: $stopping) {
             Button("Stop", role: .destructive) { Task { await app.stopHost() } }
         } message: {

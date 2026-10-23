@@ -22,8 +22,6 @@ struct HostRulesView: View {
                                        description: Text("Rules are kept on each host. Pick one in the sidebar."))
             }
         }
-        .navigationTitle("Rules")
-        .navigationSubtitle(app.host?.name ?? "")
     }
 }
 

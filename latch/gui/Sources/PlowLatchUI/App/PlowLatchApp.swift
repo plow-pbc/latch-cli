@@ -85,14 +85,34 @@ struct PlowLatchApp: App {
                 .installWindowActions(model)
         }
         .defaultSize(width: 1120, height: 700)
-        .restorationBehavior(.disabled)
+        // Its frame, place and host come back as macOS restores windows.
         .defaultLaunchBehavior(windowed && finished ? .presented : .suppressed)
-        // One Save: the rules editor with the keyboard focus.
-        .commands { RulesCommands() }
+        // One Save: the rules editor with the keyboard focus. The sidebar
+        // and inspector toggles, and a shortcut for each host screen.
+        .commands {
+            RulesCommands()
+            SidebarCommands()
+            InspectorCommands()
+            ScreenCommands(app: model)
+        }
 
         Settings {
             AppSettingsView()
                 .environment(model)
+        }
+    }
+}
+
+/// View › a host screen, ⌘1 to ⌘5: the selected host's workspace on it.
+private struct ScreenCommands: Commands {
+    var app: AppModel
+
+    var body: some Commands {
+        CommandGroup(after: .sidebar) {
+            ForEach(Array(HostScreen.allCases.enumerated()), id: \.element) { index, screen in
+                Button(screen.title) { app.place = .host(screen) }
+                    .keyboardShortcut(KeyEquivalent(Character(String(index + 1))), modifiers: .command)
+            }
         }
     }
 }

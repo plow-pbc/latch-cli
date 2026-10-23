@@ -26,6 +26,8 @@ enum HostScreen: String, CaseIterable, Identifiable {
     case home, activity, rules, vault, settings
 
     var id: String { rawValue }
+    /// The screens with an inspector.
+    static let inspected: Set<HostScreen> = [.activity, .vault]
 
     var title: String {
         switch self {
@@ -48,11 +50,25 @@ enum HostScreen: String, CaseIterable, Identifiable {
     }
 }
 
-/// The main window's place: an account page, or one of the host tier's
-/// screens.
-enum Place: Hashable {
+/// The main window's place: an account page, or one of the host
+/// workspace's screens. As text ("agents", "home"), it's what the window's
+/// scene state keeps.
+enum Place: Hashable, RawRepresentable {
     case account(AccountPage)
     case host(HostScreen)
+
+    init?(rawValue: String) {
+        if let page = AccountPage(rawValue: rawValue) { self = .account(page) }
+        else if let screen = HostScreen(rawValue: rawValue) { self = .host(screen) }
+        else { return nil }
+    }
+
+    var rawValue: String {
+        switch self {
+        case let .account(page): page.rawValue
+        case let .host(screen): screen.rawValue
+        }
+    }
 }
 
 /// What the main window shows: an account page, with no host, or a host's
@@ -75,7 +91,15 @@ struct AgentTarget: Equatable {
     var agent: String
 }
 
-/// A host the picker offers: this Mac, or another of the account's hosts.
+/// Something selected on one host (a record, a vault item): it's shown only
+/// while that host is.
+struct OnHost: Equatable {
+    var host: String
+    var id: String
+}
+
+/// One of the account's hosts, as the sidebar lists them: this Mac, or
+/// another.
 struct HostEntry: Equatable, Identifiable {
     var name: String
     var isThisMac: Bool
@@ -110,7 +134,7 @@ extension HostEntry {
     var spoken: String { isThisMac ? ErrorCopy.thisMac : name }
 }
 
-/// A host's state in a word or two, as the picker and Home show it.
+/// A host's state in a word or two, as the sidebar and Home show it.
 enum HostState: Equatable {
     case serving, notReady, starting, stopped, failed, blocked
     case online, offline, unknown
