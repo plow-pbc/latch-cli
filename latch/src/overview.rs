@@ -1,28 +1,31 @@
 //! A bare `latch` at a terminal: who this machine is signed in as, whether
 //! it hosts, the account's hosts, where commands go, its connectors and its
 //! update, with the Plow logo animating beside it (`logo.rs`) and one next
-//! step under it. What this machine knows draws at once; the account and
-//! its hosts fill in as Plow answers, which it has two seconds of wall time
-//! to do. Read-only: it registers, starts and saves nothing.
+//! step under it. What this machine knows from its files draws at once;
+//! what can wait (Plow's answer, and the host's state, which asks the
+//! service manager) is asked on threads of its own and fills in as it
+//! arrives, within two seconds of wall time. Read-only: it registers,
+//! starts and saves nothing.
 
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 use jiff::Zoned;
+use serde_json::Value;
 
 use crate::failure::{Failure, code};
 use crate::lifecycle::Phase;
 use crate::logo;
 use crate::paint::{self, AMBER, DIM, Rgb, VOLT};
 use crate::state::StateDir;
-use crate::status::{self, Directory, LocalStatus};
+use crate::status::{self, Directory, Hosted, Login};
 use crate::term;
 
-/// How long Plow has to answer, from when the overview starts asking (the
-/// credential's read included).
-const PLOW_WITHIN: Duration = Duration::from_secs(2);
+/// How long what can wait has to arrive, from when the overview starts
+/// asking (Plow's credential's read included).
+const WITHIN: Duration = Duration::from_secs(2);
 /// The width of a row's label: "Connectors" and a space.
 const LABEL: usize = 11;
 /// The facts' width beside the mark: 80 columns in all.
@@ -38,34 +41,49 @@ pub fn no_terminal() -> Failure {
     failure
 }
 
+/// What arrives from the threads that may wait.
+enum Arrived {
+    Plow(Result<Directory, Failure>),
+    Host(Hosted),
+}
+
 pub fn run(state: &StateDir) -> Result<(), Failure> {
     let color = !term::no_color();
     paint::set_color(color);
-    // Plow is asked first, on a thread of its own, so nothing here waits
-    // for it; it is left behind if it never answers.
-    let deadline = Instant::now() + PLOW_WITHIN;
+    // Each is asked on a thread of its own, so nothing here waits for it;
+    // one that never answers is left behind.
+    let deadline = Instant::now() + WITHIN;
     let config = state.load_config()?;
-    let (answered, answers) = mpsc::channel();
+    let (arrived, arrivals) = mpsc::channel();
+    let path = state.path.clone();
+    let host = arrived.clone();
+    std::thread::spawn(move || {
+        let _ = host.send(Arrived::Host(status::hosted(&StateDir { path })));
+    });
     if config.is_some() {
-        let state = StateDir {
-            path: state.path.clone(),
-        };
+        let path = state.path.clone();
         std::thread::spawn(move || {
             let asked = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .map_err(|err| Failure::new(code::plow_error, err.to_string()))
-                .and_then(|runtime| runtime.block_on(status::directory(&state)));
-            let _ = answered.send(asked);
+                .and_then(|runtime| runtime.block_on(status::directory(&StateDir { path })));
+            let _ = arrived.send(Arrived::Plow(asked));
         });
     }
     let asked = std::env::var("LATCH_HOST").ok();
     let mut facts = Facts {
+        login: config.as_ref().map(|config| Login {
+            kind: config.peer.kind.clone(),
+        }),
+        name: config.as_ref().map(|config| config.peer.name.clone()),
         here_default: config
             .as_ref()
             .filter(|config| crate::hosts::this_machine_chosen(state, config, asked.as_deref()))
             .map(|config| config.peer.name.clone()),
-        local: status::local(state)?,
+        plugins: crate::plugins::list_saved(state)?["plugins"].take(),
+        update: crate::update::status(&state.path),
+        state_dir: state.path.canonicalize().unwrap_or(state.path.clone()),
         suggested: crate::login::default_name(),
         api: config
             .as_ref()
@@ -76,11 +94,8 @@ pub fn run(state: &StateDir) -> Result<(), Failure> {
                     .map(str::to_string)
             }),
         serve: crate::setup::start_args(state),
-        plow: if config.is_some() {
-            Asked::Waiting
-        } else {
-            Asked::SignedOut
-        },
+        host: Pending::Waiting,
+        plow: config.is_some().then_some(Pending::Waiting),
         home: std::env::var_os("HOME").map(Into::into),
         now: Zoned::now(),
     };
@@ -103,8 +118,8 @@ pub fn run(state: &StateDir) -> Result<(), Failure> {
         if let Some((_, ms)) = &mark {
             next_frame += Duration::from_millis(*ms);
         }
-        // Until the next frame, or Plow's answer, or its deadline.
-        let waiting = matches!(facts.plow, Asked::Waiting);
+        // Until the next frame, or the next arrival, or the deadline.
+        let waiting = facts.waiting();
         let until = match (mark.is_some() && frames.len() > 0, waiting) {
             (true, true) => next_frame.min(deadline),
             (true, false) => next_frame,
@@ -112,13 +127,11 @@ pub fn run(state: &StateDir) -> Result<(), Failure> {
             (false, false) => break,
         };
         if waiting {
-            match answers.recv_timeout(until.saturating_duration_since(Instant::now())) {
-                Ok(answer) => facts.plow = Asked::from(answer),
-                Err(RecvTimeoutError::Timeout) if Instant::now() >= deadline => {
-                    facts.plow = Asked::NoAnswer
-                }
-                Err(RecvTimeoutError::Timeout) => {}
-                Err(RecvTimeoutError::Disconnected) => facts.plow = Asked::NoAnswer,
+            match arrivals.recv_timeout(until.saturating_duration_since(Instant::now())) {
+                Ok(Arrived::Plow(answer)) => facts.plow = Some(Pending::from(answer)),
+                Ok(Arrived::Host(hosted)) => facts.host = Pending::Got(hosted),
+                Err(RecvTimeoutError::Timeout) if Instant::now() < deadline => {}
+                Err(_) => facts.give_up(),
             }
         } else {
             std::thread::sleep(until.saturating_duration_since(Instant::now()));
@@ -133,7 +146,14 @@ pub fn run(state: &StateDir) -> Result<(), Failure> {
 
 /// What the overview knows, as it learns it.
 struct Facts {
-    local: LocalStatus,
+    /// `None` before login.
+    login: Option<Login>,
+    /// The name `serve` registers this machine with, once logged in.
+    name: Option<String>,
+    /// As `latch plugins list` says.
+    plugins: Value,
+    update: crate::update::Status,
+    state_dir: PathBuf,
     /// The name `latch login` would give this machine.
     suggested: Option<String>,
     /// The Plow this machine is signed in to, or would sign in to.
@@ -143,27 +163,51 @@ struct Facts {
     here_default: Option<String>,
     /// How `latch serve` starts the host again here.
     serve: Vec<&'static str>,
-    plow: Asked,
-    home: Option<std::path::PathBuf>,
+    host: Pending<Hosted>,
+    /// `None` before login: nothing to ask.
+    plow: Option<Pending<Directory>>,
+    home: Option<PathBuf>,
     now: Zoned,
 }
 
-/// Plow's answer, as far as it got.
-enum Asked {
-    /// Not logged in: nothing to ask.
-    SignedOut,
+/// An answer, as far as it got.
+enum Pending<T> {
     Waiting,
-    Answered(Directory),
-    /// Plow, or reading the login, said no: what went wrong.
+    Got(T),
+    /// What went wrong, as the answer said.
     Failed(String),
     NoAnswer,
 }
 
-impl From<Result<Directory, Failure>> for Asked {
-    fn from(answer: Result<Directory, Failure>) -> Asked {
+impl From<Result<Directory, Failure>> for Pending<Directory> {
+    fn from(answer: Result<Directory, Failure>) -> Pending<Directory> {
         match answer {
-            Ok(directory) => Asked::Answered(directory),
-            Err(failure) => Asked::Failed(failure.message),
+            Ok(directory) => Pending::Got(directory),
+            Err(failure) => Pending::Failed(failure.message),
+        }
+    }
+}
+
+impl Facts {
+    fn waiting(&self) -> bool {
+        matches!(self.host, Pending::Waiting) || matches!(self.plow, Some(Pending::Waiting))
+    }
+
+    /// The deadline: whatever has not arrived never will.
+    fn give_up(&mut self) {
+        if let Pending::Waiting = self.host {
+            self.host = Pending::NoAnswer;
+        }
+        if let Some(Pending::Waiting) = self.plow {
+            self.plow = Some(Pending::NoAnswer);
+        }
+    }
+
+    /// The host, once it is known.
+    fn hosting(&self) -> Option<&Hosted> {
+        match &self.host {
+            Pending::Got(hosted) => Some(hosted),
+            _ => None,
         }
     }
 }
@@ -201,17 +245,17 @@ impl Facts {
     /// The facts, a row each; `width` is what fits beside the mark.
     fn rows(&self, width: usize) -> Vec<Line> {
         let mut rows = vec![self.header(), vec![]];
-        let logged_in = self.local.login.as_ref();
+        let logged_in = self.login.as_ref();
         let account = match (&self.plow, logged_in) {
-            (_, None) => plain("not signed in"),
-            (Asked::Answered(directory), _) => plain(
+            (_, None) | (None, _) => plain("not signed in"),
+            (Some(Pending::Got(directory)), _) => plain(
                 directory
                     .account
                     .display_name
                     .clone()
                     .unwrap_or_else(|| directory.account.owner_uid.clone()),
             ),
-            (asked, _) => self.not_answered(asked, "Plow didn't answer"),
+            (Some(pending), _) => not_answered(pending, "Plow didn't answer", None),
         };
         rows.push(labeled("Account", vec![account]));
         if let Some(login) = logged_in {
@@ -225,15 +269,12 @@ impl Facts {
         }
         rows.push(vec![]);
         rows.extend(self.hosts());
-        if logged_in.is_some() {
-            rows.push(labeled("Commands", vec![self.commands()]));
+        if let Some(plow) = &self.plow {
+            rows.push(labeled("Commands", vec![self.commands(plow)]));
         }
         if self
-            .local
-            .this_machine
-            .hosting
-            .deny_exec
-            .as_ref()
+            .hosting()
+            .and_then(|hosted| hosted.hosting.deny_exec.as_ref())
             .is_some_and(|deny| deny.every_agent())
         {
             rows.push(labeled(
@@ -264,21 +305,11 @@ impl Facts {
         line
     }
 
-    /// A Plow row that has no answer (yet).
-    fn not_answered(&self, asked: &Asked, no_answer: &str) -> (String, Tone) {
-        match asked {
-            Asked::Waiting => toned("…", Tone::Warn),
-            Asked::Failed(message) => toned(term::one_line(message), Tone::Warn),
-            _ => toned(no_answer, Tone::Warn),
-        }
-    }
-
     /// This machine first, as it knows itself and then as Plow lists it,
     /// then the account's other hosts.
     fn hosts(&self) -> Vec<Line> {
-        let machine = &self.local.this_machine;
         let mut lines = vec![];
-        match &machine.name {
+        match &self.name {
             Some(name) => lines.push(vec![
                 toned(format!("this {}: ", here()), Tone::Dim),
                 plain(term::one_line(name)),
@@ -296,10 +327,10 @@ impl Facts {
                 }
             }
         }
-        lines.extend(self.hosting());
+        lines.extend(self.host_state());
         match &self.plow {
-            Asked::SignedOut => lines.push(vec![toned("sign in to see the others", Tone::Dim)]),
-            Asked::Answered(directory) => {
+            None => lines.push(vec![toned("sign in to see the others", Tone::Dim)]),
+            Some(Pending::Got(directory)) => {
                 let own = directory.hosts.iter().find(|host| host.this_machine);
                 lines.push(match own {
                     Some(host) => {
@@ -326,9 +357,9 @@ impl Facts {
                     )]);
                 }
             }
-            asked => lines.push(vec![
+            Some(pending) => lines.push(vec![
                 toned("Plow: ", Tone::Dim),
-                self.not_answered(asked, "didn't answer"),
+                not_answered(pending, "didn't answer", Some("refused (see Account)")),
             ]),
         }
         let mut lines = lines.into_iter();
@@ -336,9 +367,19 @@ impl Facts {
         std::iter::once(first).chain(lines.map(indented)).collect()
     }
 
-    /// What latch knows of its own host here.
-    fn hosting(&self) -> Vec<Line> {
-        let hosting = &self.local.this_machine.hosting;
+    /// What latch knows of its own host here, once it knows.
+    fn host_state(&self) -> Vec<Line> {
+        let Pending::Got(Hosted {
+            hosting,
+            last_error,
+        }) = &self.host
+        else {
+            return vec![vec![not_answered(
+                &self.host,
+                "latch didn't say in time",
+                None,
+            )]];
+        };
         // Only ever another latch version's host.
         if hosting.blocked.is_some() {
             let pid = hosting
@@ -366,7 +407,7 @@ impl Facts {
             Phase::Stopped => vec![vec![plain("stopped")]],
             Phase::Error => {
                 let mut lines = vec![vec![toned("stopped after an error", Tone::Warn)]];
-                if let Some(error) = &self.local.last_error {
+                if let Some(error) = last_error {
                     lines.push(vec![toned(term::one_line(&error.message), Tone::Dim)]);
                 }
                 lines
@@ -401,12 +442,16 @@ impl Facts {
         }
     }
 
-    fn commands(&self) -> (String, Tone) {
+    fn commands(&self, plow: &Pending<Directory>) -> (String, Tone) {
         if let Some(name) = &self.here_default {
             return plain(format!("go to {}", term::one_line(name)));
         }
-        let Asked::Answered(directory) = &self.plow else {
-            return self.not_answered(&self.plow, "Plow didn't answer");
+        let Pending::Got(directory) = plow else {
+            return not_answered(
+                plow,
+                "Plow didn't answer",
+                Some("Plow refused (see Account)"),
+            );
         };
         if let Some(name) = &directory.default_host {
             return plain(format!("go to {}", term::one_line(name)));
@@ -432,7 +477,6 @@ impl Facts {
     /// Each connector and its state, as many to a row as fit.
     fn connectors(&self, width: usize) -> Vec<Line> {
         let items: Vec<Line> = self
-            .local
             .plugins
             .as_array()
             .into_iter()
@@ -468,7 +512,7 @@ impl Facts {
     }
 
     fn update(&self) -> Line {
-        let update = &self.local.update;
+        let update = &self.update;
         match (update.available, update.build, update.checked_at) {
             (true, Some(build), _) => {
                 vec![toned(format!("build {build} is available"), Tone::Warn)]
@@ -483,7 +527,7 @@ impl Facts {
 
     /// The state folder, `~/…` under the home folder.
     fn folder(&self) -> String {
-        let dir = &self.local.state_dir;
+        let dir = &self.state_dir;
         let short = self
             .home
             .as_deref()
@@ -495,20 +539,19 @@ impl Facts {
     /// The one thing to do next, if there is one: a host that can't be
     /// used, no login, a connector needing setup, no host running, an update.
     fn next_step(&self) -> Option<Line> {
-        let hosting = &self.local.this_machine.hosting;
+        let hosting = self.hosting().map(|hosted| &hosted.hosting);
         let run = |what: String, command: String| {
             vec![plain(format!("{what} Run: ")), toned(command, Tone::Good)]
         };
-        if let Some(blocked) = &hosting.blocked {
+        if let Some(blocked) = hosting.and_then(|hosting| hosting.blocked.as_ref()) {
             return Some(vec![plain(term::one_line(&blocked.message))]);
         }
-        let Some(login) = &self.local.login else {
+        let Some(login) = &self.login else {
             let what = format!("This {} isn't signed in to Plow.", here());
             return Some(run(what, "latch setup".into()));
         };
         let owner = login.kind == "device";
         let needs_setup = self
-            .local
             .plugins
             .as_array()
             .into_iter()
@@ -519,11 +562,14 @@ impl Facts {
             let command = plugin["enable"].as_str().unwrap_or_default().to_string();
             return Some(run(format!("The {name} connector needs setup."), command));
         }
-        if owner && matches!(hosting.state, Phase::Stopped | Phase::Error) && !hosting.running {
+        let stopped = hosting.is_some_and(|hosting| {
+            matches!(hosting.state, Phase::Stopped | Phase::Error) && !hosting.running
+        });
+        if owner && stopped {
             let what = format!("Latch isn't running on this {}.", here());
             return Some(run(what, format!("latch {}", self.serve.join(" "))));
         }
-        let update = &self.local.update;
+        let update = &self.update;
         if let (true, Some(build)) = (update.available, update.build) {
             return Some(run(
                 format!("Build {build} is available."),
@@ -545,6 +591,22 @@ impl Facts {
     }
 }
 
+/// A row that has no answer (yet).
+/// What went wrong is said once, on the Account row; the other rows that
+/// needed the answer say `elsewhere`.
+fn not_answered<T>(
+    pending: &Pending<T>,
+    no_answer: &str,
+    elsewhere: Option<&str>,
+) -> (String, Tone) {
+    match (pending, elsewhere) {
+        (Pending::Waiting, _) => toned("…", Tone::Warn),
+        (Pending::Failed(message), None) => toned(term::one_line(message), Tone::Warn),
+        (Pending::Failed(_), Some(elsewhere)) => toned(elsewhere, Tone::Warn),
+        _ => toned(no_answer, Tone::Warn),
+    }
+}
+
 fn labeled(label: &str, rest: Line) -> Line {
     let mut line = vec![toned(format!("{label:<LABEL$}"), Tone::Dim)];
     line.extend(rest);
@@ -561,9 +623,11 @@ fn visible(line: &Line) -> usize {
     line.iter().map(|(text, _)| text.chars().count()).sum()
 }
 
-/// `line` cut to `width` columns, never wrapped, in its colors.
+/// `line` cut to `width` columns, never wrapped, in its colors; a cut
+/// line ends with `…`.
 fn painted(line: &Line, width: usize) -> String {
-    let mut left = width;
+    let long = visible(line) > width;
+    let mut left = if long { width.saturating_sub(1) } else { width };
     let mut out = String::new();
     for (text, tone) in line {
         if left == 0 {
@@ -578,6 +642,9 @@ fn painted(line: &Line, width: usize) -> String {
             Tone::Good => paint::fg(&cut, VOLT),
             Tone::Warn => paint::fg(&cut, AMBER),
         });
+    }
+    if long && width > 0 {
+        out.push('…');
     }
     out
 }

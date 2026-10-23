@@ -1,59 +1,59 @@
 use super::*;
 use crate::lifecycle::Problem;
-use crate::status::{Account, Host, Hosting, Login, ThisMachine};
+use crate::status::{Account, Host, Hosting};
 use serde_json::json;
 
 /// A Mac signed in as the owner, serving in the background, Google and
 /// Messages on, Contacts off, checked for updates this morning.
 fn facts() -> Facts {
     Facts {
-        local: LocalStatus {
-            login: Some(Login {
-                kind: "device".into(),
-            }),
-            this_machine: ThisMachine {
-                name: Some("studio".into()),
-                key: Some("k".into()),
-                hosting: Hosting {
-                    running: true,
-                    ready: true,
-                    configuring: false,
-                    managed: true,
-                    attached: false,
-                    state: Phase::Serving,
-                    pid: Some(4242),
-                    blocked: None,
-                    deny_exec: Some(crate::serve::DenyExec::from_flags(&[])),
-                },
-            },
-            plugins: json!([{"name": "google", "state": "enabled"},
-                            {"name": "messages", "state": "enabled"},
-                            {"name": "contacts", "state": "disabled",
-                             "enable": "latch plugins enable contacts"}]),
-            update: crate::update::Status {
-                available: false,
-                build: Some(140),
-                checked_at: Some("2026-10-23T15:58:00Z".parse().unwrap()),
-            },
-            last_error: None,
-            api_url: Some("https://api.plow.co".into()),
-            state_dir: "/Users/ada/.latch".into(),
-            version: "0.1.0",
-            protocol: 4,
-            old_audit_log: None,
-            page_isolation: None,
+        login: Some(Login {
+            kind: "device".into(),
+        }),
+        name: Some("studio".into()),
+        plugins: json!([{"name": "google", "state": "enabled"},
+                        {"name": "messages", "state": "enabled"},
+                        {"name": "contacts", "state": "disabled",
+                         "enable": "latch plugins enable contacts"}]),
+        update: crate::update::Status {
+            available: false,
+            build: Some(140),
+            checked_at: Some("2026-10-23T15:58:00Z".parse().unwrap()),
         },
+        state_dir: "/Users/ada/.latch".into(),
         suggested: Some("studio".into()),
         api: Some("https://api.plow.co".into()),
         here_default: Some("studio".into()),
         serve: vec!["serve", "-d", "--again"],
-        plow: Asked::Answered(directory(&[
+        host: Pending::Got(Hosted {
+            hosting: Hosting {
+                running: true,
+                ready: true,
+                configuring: false,
+                managed: true,
+                attached: false,
+                state: Phase::Serving,
+                pid: Some(4242),
+                blocked: None,
+                deny_exec: Some(crate::serve::DenyExec::from_flags(&[])),
+            },
+            last_error: None,
+        }),
+        plow: Some(Pending::Got(directory(&[
             ("studio", true, Some(true)),
             ("pi", false, Some(false)),
-        ])),
+        ]))),
         home: Some("/Users/ada".into()),
         now: "2026-10-23T18:00:00Z[UTC]".parse().unwrap(),
     }
+}
+
+/// The host's state, as the facts have it.
+fn hosted(facts: &mut Facts) -> &mut Hosted {
+    let Pending::Got(hosted) = &mut facts.host else {
+        panic!("the host is known");
+    };
+    hosted
 }
 
 /// Plow's answer: these hosts (name, this machine, online), the default
@@ -128,19 +128,14 @@ As JSON: latch status. Live activity: latch dashboard."
 #[test]
 fn before_login_it_suggests_a_name_and_says_to_set_up() {
     let mut facts = facts();
-    facts.local.login = None;
-    facts.local.this_machine.name = None;
-    facts.local.this_machine.hosting = Hosting {
-        running: false,
-        ready: false,
-        managed: false,
-        state: Phase::Stopped,
-        pid: None,
-        ..facts.local.this_machine.hosting
-    };
-    facts.local.update.checked_at = None;
+    facts.login = None;
+    facts.name = None;
+    let hosting = &mut hosted(&mut facts).hosting;
+    (hosting.running, hosting.ready, hosting.managed) = (false, false, false);
+    (hosting.state, hosting.pid) = (Phase::Stopped, None);
+    facts.update.checked_at = None;
     facts.here_default = None;
-    facts.plow = Asked::SignedOut;
+    facts.plow = None;
     let text = shown(&facts);
     for row in [
         "Account    not signed in",
@@ -158,14 +153,14 @@ fn before_login_it_suggests_a_name_and_says_to_set_up() {
 #[test]
 fn plow_rows_wait_then_say_plow_did_not_answer_never_logged_out_or_zero() {
     let mut facts = facts();
-    facts.plow = Asked::Waiting;
+    facts.plow = Some(Pending::Waiting);
     let waiting = shown(&facts);
     assert!(waiting.contains("Account    …"), "{waiting}");
     assert!(waiting.contains("Plow: …"), "{waiting}");
     // This machine has served: where commands go needs no Plow.
     assert!(waiting.contains("Commands   go to studio"), "{waiting}");
 
-    facts.plow = Asked::NoAnswer;
+    facts.plow = Some(Pending::NoAnswer);
     facts.here_default = None;
     let late = shown(&facts);
     assert!(late.contains("Account    Plow didn't answer"), "{late}");
@@ -176,11 +171,36 @@ fn plow_rows_wait_then_say_plow_did_not_answer_never_logged_out_or_zero() {
         "{late}"
     );
 
-    facts.plow = Asked::Failed("Plow answered HTTP 401: this credential may not do that".into());
+    facts.plow = Some(Pending::Failed(
+        "Plow answered HTTP 401: this credential may not do that".into(),
+    ));
     let refused = shown(&facts);
     assert!(
-        refused.contains("Account    Plow answered HTTP 401"),
+        refused.contains("Account    Plow answered HTTP 401: this crede…"),
         "{refused}"
+    );
+    // Said once: the other rows point to it.
+    assert_eq!(refused.matches("HTTP 401").count(), 1, "{refused}");
+    assert!(refused.contains("Plow: refused (see Account)"), "{refused}");
+    assert!(
+        refused.contains("Commands   Plow refused (see Account)"),
+        "{refused}"
+    );
+}
+
+#[test]
+fn the_host_row_waits_for_the_service_manager_and_never_guesses() {
+    let mut facts = facts();
+    facts.host = Pending::Waiting;
+    let waiting = shown(&facts);
+    assert!(waiting.contains(": studio\n           …\n"), "{waiting}");
+    facts.host = Pending::NoAnswer;
+    let late = shown(&facts);
+    assert!(late.contains("latch didn't say in time"), "{late}");
+    // Unknown is not stopped: no step to start it, and no Exec row.
+    assert!(
+        !late.contains("Run: latch serve") && !late.contains("Exec"),
+        "{late}"
     );
 }
 
@@ -188,13 +208,13 @@ fn plow_rows_wait_then_say_plow_did_not_answer_never_logged_out_or_zero() {
 fn several_hosts_and_never_served_needs_a_host_and_lists_three() {
     let mut facts = facts();
     facts.here_default = None;
-    facts.plow = Asked::Answered(directory(&[
+    facts.plow = Some(Pending::Got(directory(&[
         ("a", false, Some(true)),
         ("b", false, Some(true)),
         ("c", false, None),
         ("d", false, Some(true)),
         ("e", false, Some(true)),
-    ]));
+    ])));
     let text = shown(&facts);
     assert!(text.contains("Plow: not listed as a host"), "{text}");
     assert!(text.contains("           c: not online\n"), "{text}");
@@ -209,11 +229,11 @@ fn several_hosts_and_never_served_needs_a_host_and_lists_three() {
 #[test]
 fn an_agents_login_and_its_host() {
     let mut facts = facts();
-    facts.local.login = Some(Login {
+    facts.login = Some(Login {
         kind: "agent".into(),
     });
-    facts.local.this_machine.name = Some("research-bot".into());
-    facts.local.plugins = json!([{"name": "contacts", "state": "needs_setup",
+    facts.name = Some("research-bot".into());
+    facts.plugins = json!([{"name": "contacts", "state": "needs_setup",
                                   "enable": "latch plugins enable contacts"}]);
     let text = shown(&facts);
     assert!(text.contains("Login      agent\n"), "{text}");
@@ -225,17 +245,17 @@ fn an_agents_login_and_its_host() {
 #[test]
 fn the_next_step_is_the_first_thing_to_do() {
     let mut facts = facts();
-    facts.local.update.available = true;
-    facts.local.update.build = Some(142);
+    facts.update.available = true;
+    facts.update.build = Some(142);
     assert!(shown(&facts).contains("Build 142 is available. Run: latch update"));
     assert!(shown(&facts).contains("Update     build 142 is available"));
 
-    facts.local.this_machine.hosting.running = false;
-    facts.local.this_machine.hosting.state = Phase::Stopped;
+    hosted(&mut facts).hosting.running = false;
+    hosted(&mut facts).hosting.state = Phase::Stopped;
     assert!(shown(&facts).contains("isn't running on this"));
     assert!(shown(&facts).contains("Run: latch serve -d --again"));
 
-    facts.local.plugins = json!([{"name": "contacts", "state": "needs_setup",
+    facts.plugins = json!([{"name": "contacts", "state": "needs_setup",
                                   "reason": "no Full Disk Access",
                                   "enable": "latch plugins enable contacts"}]);
     let text = shown(&facts);
@@ -245,8 +265,8 @@ fn the_next_step_is_the_first_thing_to_do() {
         "{text}"
     );
 
-    facts.local.this_machine.hosting.running = true;
-    facts.local.this_machine.hosting.blocked = Some(Problem {
+    hosted(&mut facts).hosting.running = true;
+    hosted(&mut facts).hosting.blocked = Some(Problem {
         code: "other_version".into(),
         message: "a host from another latch version is running (pid 4242); stop it".into(),
     });
@@ -264,13 +284,13 @@ fn the_next_step_is_the_first_thing_to_do() {
 #[test]
 fn a_host_that_failed_says_why() {
     let mut facts = facts();
-    facts.local.this_machine.hosting.running = false;
-    facts.local.this_machine.hosting.state = Phase::Error;
-    facts.local.last_error = Some(Problem {
+    hosted(&mut facts).hosting.running = false;
+    hosted(&mut facts).hosting.state = Phase::Error;
+    hosted(&mut facts).last_error = Some(Problem {
         code: "serve_ended".into(),
         message: "latch serve ended without stopping: it was killed or crashed".into(),
     });
-    facts.local.this_machine.hosting.deny_exec =
+    hosted(&mut facts).hosting.deny_exec =
         Some(crate::serve::DenyExec::from_flags(&["*".to_string()]));
     let text = shown(&facts);
     assert!(
@@ -286,10 +306,10 @@ fn a_host_that_failed_says_why() {
 #[test]
 fn names_from_plow_cannot_drive_the_terminal() {
     let mut facts = facts();
-    facts.plow = Asked::Answered(directory(&[
+    facts.plow = Some(Pending::Got(directory(&[
         ("studio", true, Some(true)),
         ("evil\x1b[2J\nname", false, Some(true)),
-    ]));
+    ])));
     let text = shown(&facts);
     assert!(!text.contains('\x1b'), "{text:?}");
     assert!(text.contains("evil [2J⏎name: online"), "{text}");
@@ -298,12 +318,19 @@ fn names_from_plow_cannot_drive_the_terminal() {
 #[test]
 fn rows_are_cut_at_the_edge_never_wrapped() {
     let mut facts = facts();
-    facts.local.this_machine.name = Some("x".repeat(80));
-    let rows = facts.rows(BESIDE);
+    facts.name = Some("x".repeat(80));
+    let rows: Vec<String> = facts
+        .rows(BESIDE)
+        .iter()
+        .map(|row| painted(row, BESIDE))
+        .collect();
     assert!(
-        rows.iter()
-            .all(|row| painted(row, BESIDE).chars().count() <= BESIDE)
+        rows.iter().all(|row| row.chars().count() <= BESIDE),
+        "{rows:#?}"
     );
+    let long = rows.iter().find(|row| row.contains("xxx")).unwrap();
+    assert_eq!(long.chars().count(), BESIDE, "{long}");
+    assert!(long.ends_with("x…"), "{long}");
 }
 
 #[test]

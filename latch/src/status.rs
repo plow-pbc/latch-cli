@@ -196,17 +196,13 @@ pub struct Hosting {
 /// `status --local`: reads the state folder and asks no one, so it works
 /// offline and before login. Not logged in and not serving are answers.
 pub fn local(state: &StateDir) -> Result<LocalStatus, Failure> {
-    let host = lifecycle::now(&state.path);
-    let blocked = lifecycle::other_version(&state.path).map(|pid| {
-        let failure = lifecycle::other_version_running(pid);
-        Problem {
-            code: failure.code,
-            message: failure.message,
-        }
-    });
     let config = state.load_config()?;
     let mut plugins = crate::plugins::list_saved(state)?;
     let dir = state.path.canonicalize().unwrap_or(state.path.clone());
+    let Hosted {
+        hosting,
+        last_error,
+    } = hosted(state);
     Ok(LocalStatus {
         login: config.as_ref().map(|config| Login {
             kind: config.peer.kind.clone(),
@@ -214,21 +210,11 @@ pub fn local(state: &StateDir) -> Result<LocalStatus, Failure> {
         this_machine: ThisMachine {
             name: config.as_ref().map(|config| config.peer.name.clone()),
             key: config.as_ref().map(|config| config.peer.key.clone()),
-            hosting: Hosting {
-                running: host.running,
-                ready: host.state == Phase::Serving && blocked.is_none(),
-                configuring: host.configuring,
-                managed: host.running && crate::managed::Service::new(&dir).registered(),
-                attached: host.attached,
-                state: host.state,
-                pid: host.pid,
-                blocked,
-                deny_exec: crate::managed::saved_deny_exec(&dir),
-            },
+            hosting,
         },
         plugins: plugins["plugins"].take(),
         update: crate::update::status(&dir),
-        last_error: host.error,
+        last_error,
         api_url: config.map(|config| config.api_url),
         state_dir: dir.clone(),
         version: crate::cli::version(),
@@ -237,6 +223,42 @@ pub fn local(state: &StateDir) -> Result<LocalStatus, Failure> {
         page_isolation: crate::sandbox::page_isolation_off()
             .then_some(crate::sandbox::PAGE_ISOLATION_OFF),
     })
+}
+
+/// What latch knows of the host on a state folder, and why it last stopped
+/// when a failure stopped it.
+pub struct Hosted {
+    pub hosting: Hosting,
+    pub last_error: Option<Problem>,
+}
+
+/// The part of `--local` that can wait: on the service manager
+/// (`launchctl`, `systemctl`), and up to half a second on a running host's
+/// socket.
+pub fn hosted(state: &StateDir) -> Hosted {
+    let host = lifecycle::now(&state.path);
+    let blocked = lifecycle::other_version(&state.path).map(|pid| {
+        let failure = lifecycle::other_version_running(pid);
+        Problem {
+            code: failure.code,
+            message: failure.message,
+        }
+    });
+    let dir = state.path.canonicalize().unwrap_or(state.path.clone());
+    Hosted {
+        hosting: Hosting {
+            running: host.running,
+            ready: host.state == Phase::Serving && blocked.is_none(),
+            configuring: host.configuring,
+            managed: host.running && crate::managed::Service::new(&dir).registered(),
+            attached: host.attached,
+            state: host.state,
+            pid: host.pid,
+            blocked,
+            deny_exec: crate::managed::saved_deny_exec(&dir),
+        },
+        last_error: host.error,
+    }
 }
 
 /// `status --local --follow`: `hello`, then this machine's `status --local`

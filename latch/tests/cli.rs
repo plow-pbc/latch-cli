@@ -1518,8 +1518,10 @@ fn bare_latch_draws_what_it_knows_at_once_and_plow_as_it_answers() {
 
     let (shown, took) = overview(&host, &[], (100, 30));
     let first = &shown[..shown.find(FRAME_END).expect(&shown)];
-    // This machine's rows are there from the first frame; Plow's wait.
-    for row in ["this ", "host", "stopped", "Account", "…", "Folder"] {
+    // This machine's rows are there from the first frame; Plow's, and the
+    // host's state, wait.
+    assert!(shown.contains("stopped"), "{shown}");
+    for row in ["this ", "host", "Account", "…", "Folder"] {
         assert!(
             first.contains(row),
             "{row:?} not in the first frame: {first}"
@@ -1549,6 +1551,38 @@ fn bare_latch_draws_what_it_knows_at_once_and_plow_as_it_answers() {
     assert!(took >= std::time::Duration::from_secs(2), "{took:?}");
     assert!(took < std::time::Duration::from_secs(5), "{took:?}");
     println!("Plow silent: prompt back after {took:?}");
+}
+
+#[test]
+fn bare_latch_waits_on_a_stalled_service_manager_only_until_its_deadline() {
+    use std::os::unix::fs::PermissionsExt;
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let _serve = serving(&host, &relay);
+    // A service manager that never answers: asked whether the running host
+    // is its service, it hangs.
+    let bin = dir.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    for manager in ["launchctl", "systemctl"] {
+        fs::write(bin.join(manager), "#!/bin/sh\nexec sleep 8\n").unwrap();
+        fs::set_permissions(bin.join(manager), fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let path = std::env::join_paths(
+        std::iter::once(bin).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
+    let (shown, took) = overview(&host, &[("PATH", Path::new(&path))], (100, 30));
+    let first = &shown[..shown.find(FRAME_END).expect(&shown)];
+    assert!(first.contains("Folder") && first.contains("…"), "{first}");
+    assert!(!first.contains("serving"), "{first}");
+    let last = &shown[shown.rfind("\x1b[?2026h").unwrap()..];
+    assert!(last.contains("latch didn't say in time"), "{last}");
+    assert!(last.contains("Ada Example"), "{last}");
+    assert!(took >= std::time::Duration::from_secs(2), "{took:?}");
+    assert!(took < std::time::Duration::from_secs(5), "{took:?}");
+    println!("service manager stalled: prompt back after {took:?}");
 }
 
 #[test]
