@@ -53,10 +53,6 @@ struct GoogleSignInTests {
     let renewed = URL(string: "http://127.0.0.1:18934/v1/connectors/gmail/connect/RENEWEDsecretCODE")!
     let timeout = LatchError.failed(LatchFailure(code: "sign_in_timeout", message: "No new Google account was observed before the wait ended."))
 
-    private func until(_ done: () -> Bool) async {
-        for _ in 0..<300 where !done() { try? await Task.sleep(for: .milliseconds(10)) }
-    }
-
     private func app(_ client: SignInClient) -> (AppModel, ProgressStore.Memory, () -> [URL]) {
         let memory = ProgressStore.Memory()
         let app = AppModel(client: client, store: ProgressStore(memory: memory, stateDir: client.stateDir), still: true)
@@ -76,13 +72,13 @@ struct GoogleSignInTests {
         #expect(flow.google == .notConnected)
         flow.connectGoogle()
         #expect(flow.google == .waiting)
-        await until { client.events != nil }
+        await waitUntil { client.events != nil }
         #expect(client.signIns == [false])
         client.events?.yield(.link(first))
-        await until { !opened().isEmpty }
+        await waitUntil { !opened().isEmpty }
         #expect(opened() == [first])
         client.events?.yield(.link(renewed))
-        await until { flow.googleSignInLink == renewed }
+        await waitUntil { flow.googleSignInLink == renewed }
         #expect(opened() == [first])
         flow.openGoogleSignInAgain()
         #expect(opened() == [first, renewed])
@@ -90,7 +86,7 @@ struct GoogleSignInTests {
         flow.recheckGoogle()
         client.events?.yield(.enabled(GoogleEnabled(accounts: ["testuser@plow.test"])))
         client.events?.finish()
-        await until { flow.google == .connected }
+        await waitUntil { flow.google == .connected }
         #expect(flow.googleAccounts == ["testuser@plow.test"])
         #expect(client.enabled.isEmpty)
         #expect(flow.googleSignInLink == nil)
@@ -101,16 +97,16 @@ struct GoogleSignInTests {
         let (app, _, _) = app(client)
         let flow = app.stage(.google)
         flow.connectGoogle()
-        await until { client.events != nil }
+        await waitUntil { client.events != nil }
         client.events?.yield(.link(first))
         client.events?.finish(throwing: timeout)
-        await until { flow.google != .waiting }
+        await waitUntil { flow.google != .waiting }
         #expect(flow.google == .notConnected)
         #expect(flow.googleWaitEnded)
         #expect(!flow.primaryEnabled)
         flow.connectGoogle()
         #expect(flow.google == .waiting && !flow.googleWaitEnded)
-        await until { client.signIns.count == 2 }
+        await waitUntil { client.signIns.count == 2 }
         #expect(client.signIns == [false, false])
     }
 
@@ -122,16 +118,17 @@ struct GoogleSignInTests {
             let (app, _, _) = app(client)
             let flow = app.stage(.google)
             flow.connectGoogle()
-            await until { client.events != nil }
+            await waitUntil { client.events != nil }
             client.events?.yield(.link(first))
-            await until { flow.googleSignInLink != nil }
+            await waitUntil { flow.googleSignInLink != nil }
             leave(flow)
-            await until { client.stopped == 1 }
+            await waitUntil { client.stopped == 1 }
             #expect(client.stopped == 1)
             #expect(flow.google == .notConnected)
             #expect(flow.googleSignInLink == nil)
-            client.events?.yield(.enabled(GoogleEnabled(accounts: ["testuser@plow.test"])))
-            try? await Task.sleep(for: .milliseconds(50))
+            // A late answer has nowhere to go: the stream is over.
+            let late = client.events?.yield(.enabled(GoogleEnabled(accounts: ["testuser@plow.test"])))
+            #expect({ if case .terminated? = late { true } else { false } }())
             #expect(flow.google == .notConnected)
         }
     }
@@ -143,12 +140,12 @@ struct GoogleSignInTests {
         let (app, memory, opened) = app(client)
         let flow = app.stage(.google)
         flow.connectGoogle()
-        await until { client.events != nil }
+        await waitUntil { client.events != nil }
         client.events?.yield(.link(first))
-        await until { flow.googleSignInLink != nil }
+        await waitUntil { flow.googleSignInLink != nil }
         #expect(opened() == [first])
         client.events?.finish(throwing: timeout)
-        await until { flow.google != .waiting }
+        await waitUntil { flow.google != .waiting }
         #expect(flow.googleSignInLink == nil)
         flow.skip()
         #expect(!"\(memory.all)".contains("secretCODE"))
@@ -169,10 +166,10 @@ struct GoogleSignInTests {
         await app.refreshConnections()
         app.connectGoogle(adding: adding)
         #expect(app.googleSignIn == GoogleSignIn(adding: adding))
-        await until { client.events != nil }
+        await waitUntil { client.events != nil }
         #expect(client.signIns == [adding])
         client.events?.yield(.link(first))
-        await until { app.canOpenGoogleSignInAgain }
+        await waitUntil { app.canOpenGoogleSignInAgain }
         #expect(opened() == [first])
         let after = accounts + ["ada.work@example.com"]
         client.google = Fixtures.googleConnected(after)
@@ -181,7 +178,7 @@ struct GoogleSignInTests {
         func googleOn() -> Bool {
             (try? app.summaries["studio"]?.plugins?.get())?.plugins.first { $0.name == "google" }?.state == "enabled"
         }
-        await until { app.googleSignIn == nil && app.connections == .google(accounts: after) && googleOn() }
+        await waitUntil { app.googleSignIn == nil && app.connections == .google(accounts: after) && googleOn() }
         #expect(app.googleSignIn == nil)
         #expect(app.connections == .google(accounts: after))
         #expect(googleOn())
@@ -196,18 +193,18 @@ struct GoogleSignInTests {
         let (app, _, _) = app(client)
         await app.refreshConnections()
         app.connectGoogle(adding: true)
-        await until { client.events != nil }
+        await waitUntil { client.events != nil }
         client.events?.yield(.link(first))
-        await until { app.canOpenGoogleSignInAgain }
+        await waitUntil { app.canOpenGoogleSignInAgain }
         app.endGoogleSignIn()
-        await until { client.stopped == 1 }
+        await waitUntil { client.stopped == 1 }
         #expect(client.stopped == 1)
         #expect(app.googleSignIn == nil && !app.canOpenGoogleSignInAgain)
 
         app.connectGoogle(adding: true)
-        await until { client.signIns.count == 2 }
+        await waitUntil { client.signIns.count == 2 }
         client.events?.finish(throwing: timeout)
-        await until { app.googleSignIn?.failure != nil }
+        await waitUntil { app.googleSignIn?.failure != nil }
         #expect(app.googleSignIn?.failure == GoogleSignIn.problem(timeout, adding: true))
         let unreachable = LatchError.failed(LatchFailure(code: "plow_unreachable", message: "could not reach Plow at http://127.0.0.1:9"))
         for problem in [GoogleSignIn.problem(timeout, adding: true), GoogleSignIn.problem(timeout, adding: false),
@@ -224,15 +221,15 @@ struct GoogleSignInTests {
         let (app, _, _) = app(client)
         await app.refreshConnections()
         app.connectGoogle(adding: true)
-        await until { client.events != nil }
+        await waitUntil { client.events != nil }
         client.events?.finish(throwing: timeout)
-        await until { app.googleSignIn?.failure != nil }
+        await waitUntil { app.googleSignIn?.failure != nil }
         client.google = Fixtures.googleUnreachable
         await app.refreshConnections()
         #expect(app.connections == .unknown)
         // Try Again, as the sheet presses it.
         app.connectGoogle(adding: app.googleSignIn?.adding ?? false)
-        await until { client.signIns.count == 2 }
+        await waitUntil { client.signIns.count == 2 }
         #expect(client.signIns == [true, true])
         #expect(app.googleSignIn == GoogleSignIn(adding: true))
     }
@@ -274,7 +271,7 @@ struct GoogleSignInTests {
         let args = try String(contentsOf: folder.appending(path: "args"), encoding: .utf8)
         #expect(args == "--state-dir\n/s\nplugins\nenable\ngoogle\n--events\n--add-account\n")
         let pid = try #require(pid_t(try String(contentsOf: folder.appending(path: "pid"), encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)))
-        await until { kill(pid, 0) != 0 }
+        await waitUntil { kill(pid, 0) != 0 }
         #expect(kill(pid, 0) != 0)
     }
 }

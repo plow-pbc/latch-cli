@@ -140,7 +140,7 @@ final class Onboarding {
     private(set) var googleSignInLink: URL?
     private var googleTask: Task<Void, Never>?
     /// Try again's or a return's check, which leaving the screen stops.
-    private var googleCheck: Task<Void, Never>?
+    private(set) var googleCheck: Task<Void, Never>?
     /// One look at a time: a return to the app during a check adds none.
     private var lookingAtGoogle = false
     // Contacts & Messages.
@@ -165,8 +165,8 @@ final class Onboarding {
 
     let app: AppModel
     private var loginTask: Task<Void, Never>?
-    private var reviewTask: Task<Void, Never>?
-    private var accessTask: Task<Void, Never>?
+    private(set) var reviewTask: Task<Void, Never>?
+    private(set) var accessTask: Task<Void, Never>?
     /// The Full Disk Access helper, while it floats.
     private var grantGuide: (any GrantGuide)?
 
@@ -415,11 +415,13 @@ final class Onboarding {
     }
 
     /// The box changed: the examples show Checking… at once and are judged
-    /// a second after the person stops typing.
+    /// a second (`reviewDelay`) after the person stops typing.
     func draftChanged() {
         guard previewedRules != reviewed else { return }
-        startReview(after: .seconds(1))
+        startReview(after: reviewDelay)
     }
+
+    var reviewDelay: Duration = .seconds(1)
 
     /// Judges each example against the draft as a new agent would be judged
     /// (`rules try --new-agent --draft`), all at once, each verdict shown
@@ -594,8 +596,8 @@ final class Onboarding {
     // MARK: Contacts & Messages
 
     /// Opens System Settings at Full Disk Access with the helper floating
-    /// under it, then checks every 2 s for up to 3 minutes while this screen
-    /// shows, as `latch setup` does. The helper says when access lands, and
+    /// under it, then checks every 2 s (`accessRecheck`) for up to 3 minutes
+    /// while this screen shows, as `latch setup` does. The helper says when access lands, and
     /// goes when the checks stop.
     func requestAccess() {
         accessTask?.cancel()
@@ -628,10 +630,12 @@ final class Onboarding {
                 if messages == .done && contacts == .done { return }
                 if [messages, contacts].contains(where: { if case .failed = $0 { true } else { false } }) { return }
                 guard ContinuousClock.now < deadline else { return }
-                try? await Task.sleep(for: .seconds(2))
+                try? await Task.sleep(for: accessRecheck)
             }
         }
     }
+
+    var accessRecheck: Duration = .seconds(2)
 
     /// Arriving at Contacts & Messages: what latch says is on shows as on,
     /// and whether Full Disk Access is granted already. Looking never runs

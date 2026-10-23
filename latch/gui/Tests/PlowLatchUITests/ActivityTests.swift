@@ -60,7 +60,7 @@ struct ActivityTests {
     @Test func aFeedStreamsOnlyWhileWatched() async throws {
         let feed = ActivityFeed(client: FakeLatchClient(), host: "pi-kitchen")
         feed.start()
-        for _ in 0..<200 where !feed.caughtUp { try await Task.sleep(for: .milliseconds(5)) }
+        await waitUntil { feed.caughtUp }
         #expect(feed.caughtUp)
         #expect(feed.records.contains { $0.gate?.source == "defaults" })
         feed.stop()
@@ -103,20 +103,17 @@ struct LiveActivityTests {
             : try await LiveLatchClient(executable: latch, stateDir: state).localStatus().peer?.name
         let feed = ActivityFeed(client: LiveLatchClient(executable: latch, stateDir: state), host: remote ? host : nil)
         feed.start()
-        for _ in 0..<500 where !feed.caughtUp { try await Task.sleep(for: .milliseconds(10)) }
+        await waitUntil { feed.caughtUp }
         #expect(feed.caughtUp)
         let before = feed.records.count
         let marker = "live-\(UUID().uuidString.prefix(8))"
         _ = try await LatchProcess(executable: latch, arguments: ["--state-dir", caller, "exec", "--host", try #require(host),
                                                                    "--", "echo", marker]).output()
-        for _ in 0..<1000 where !feed.records.contains(where: { $0.args?.argv?.last == marker }) {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        await waitUntil { feed.records.contains { $0.args?.argv?.last == marker } }
         #expect(feed.records.count > before)
         #expect(feed.records.contains { $0.command?.hasSuffix(" echo \(marker)") == true && $0.status == .allowed(nil) })
         feed.stop()
-        try await Task.sleep(for: .milliseconds(500))
-        #expect(Self.followers(state) == 0)
+        await waitUntil { Self.followers(state) == 0 }
     }
 
     // `status --local --follow` works on any state folder, even one never
@@ -218,10 +215,6 @@ final class NeverServedClient: LatchClient, @unchecked Sendable {
 
 @MainActor
 struct NeverServedTests {
-    private func until(_ done: () -> Bool) async {
-        for _ in 0..<300 where !done() { try? await Task.sleep(for: .milliseconds(5)) }
-    }
-
     // This Mac learns it serves either from the status stream or, after
     // Start Latch, from Start Latch's own read (the stream may then never
     // show the change): either way, the activity follows.
@@ -232,10 +225,10 @@ struct NeverServedTests {
         app.stage(status: try Fixtures.decode(Fixtures.stopped))
         let feed = app.feed(for: try #require(app.host))
         feed.start()
-        await until { feed.error != nil }
+        await waitUntil { feed.error != nil }
         #expect(feed.error?.code == "no_host_here")
-        // Waiting alone doesn't ask again.
-        try await Task.sleep(for: .milliseconds(100))
+        // An error waiting won't fix ends the stream as it is recorded:
+        // nothing is asked again until this Mac hosts.
         #expect(client.follows == 1)
         if startViaApp {
             await app.startHosting()
@@ -243,7 +236,7 @@ struct NeverServedTests {
             client.hosting = true
             app.statusChanged(try Fixtures.decode(Fixtures.serving))
         }
-        await until { feed.caughtUp }
+        await waitUntil { feed.caughtUp }
         #expect(feed.caughtUp && feed.error == nil)
         #expect(client.follows == 2)
         feed.stop()
