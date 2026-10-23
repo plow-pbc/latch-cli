@@ -8,8 +8,13 @@ agents *call* it.
 This guide takes you from nothing to a Mac serving calls and a second
 machine calling it, in about 10 minutes.
 
-Every command prints one JSON object, except at a terminal, where
-`login` and `status --pretty` print for a person.
+Most commands print one JSON object on stdout on success and
+`{"error": …}` on stderr on failure. At a terminal an error prints its
+message and any details; `login` prints for a person when stdout is a
+terminal. `status --pretty` prints a card even to a pipe. Other output
+includes `help` and `skill` (text), `login --events`, `audit` and
+`status --local --follow` (JSON lines), `logs`, `serve` without `-d`,
+`dashboard`, interactive `setup`, and `browser text --raw`.
 
 Exit codes: 0 ok, 1 failed, 2 usage, 3 host unreachable, 4 denied,
 5 connection lost after sending.
@@ -38,7 +43,7 @@ it. Options after the tag (or alone) go to the installer: `--bin-dir DIR`,
 | Your machine's state: its key, Plow login, config, audit log | `~/.latch` (made by the installer, filled in by `latch login`) |
 | gog, the Google CLI a host runs for `latch google` | `~/.latch/plugins/gog/<version>/` |
 | Chrome for Testing, the browser a host runs for `latch browser` (macOS, Linux arm64; about 200 MB), unless `--no-browser` | `~/.latch/plugins/cft/<version>/` |
-| Camoufox, with `--browser camoufox` (macOS; about 1 GB) | `~/.latch/plugins/camoufox/<version>/` |
+| Camoufox, with `--browser camoufox` (macOS, Linux arm64 and x86_64; about 1 GB on macOS, 1.5 GB on Linux) | `~/.latch/plugins/camoufox/<version>/` |
 
 `latch browser setup --engine chrome|camoufox` installs an engine later, on
 the host.
@@ -74,10 +79,11 @@ also gets Xvfb and unzip for Chrome.
 ## 2. Log in
 
 ```sh
-latch login --api-url https://api.plow.co
+latch login
 ```
 
-`--api-url` is needed on the first login only; latch saves it. The machine is
+A release build logs in to `https://api.plow.co` by default; `--api-url
+URL` names another Plow, and latch saves it. The machine is
 named after its hostname; `--name NAME` picks another. Names are unique in your
 account. If another of your machines holds the name, latch asks:
 
@@ -146,7 +152,7 @@ phone**, so it joins the same Plow account. Give it its own name. Below, the
 host is `my-mac`; use the name your host logged in with.
 
 ```sh
-latch login --api-url https://api.plow.co --name my-laptop
+latch login --name my-laptop
 latch status    # "hosts":[{"name":"my-mac","online":true,…}]
 ```
 
@@ -185,8 +191,8 @@ echo "note from my laptop" > notes.txt
 latch file put --host my-mac notes.txt '~/Documents'   # as ~/Documents/notes.txt
 ```
 
-**Drive a browser on the host** (needs a build with the browser, on both
-machines; see 1). `open` answers a session id that every
+**Drive a browser on the host** (the host needs a browser engine; see 1).
+`open` answers a session id that every
 later command needs; `LATCH_BROWSER_SESSION` carries it. On a Mac the window
 opens behind yours and never takes focus.
 
@@ -275,7 +281,8 @@ first, made on one of your free lines.
    every command the agent runs; latch does not copy the credential into the
    state folder.
 
-**What the agent gets.** With no chat and no rules, every call is refused:
+**What the agent gets.** With no chat and no rules, every call the
+gatekeeper judges is refused:
 
 ```sh
 latch --state-dir ~/latch-agent exec --host my-mac -- uname -a
@@ -353,8 +360,9 @@ latch … reads only format 1".** That state folder was set up by a newer latch
 (update this one) or an older one (use that one). Nothing was read or
 changed. Don't edit `latch.json` by hand.
 
-**`not_configured` (exit 2) on the first login: "first login needs
---api-url"**. Pass `--api-url https://api.plow.co` (step 2).
+**`not_configured` (exit 2) on the first login: "latch doesn't know which
+Plow to use"**. A release build always knows; a latch built from a
+checkout may not. Pass `--api-url URL` (step 2).
 
 **`not_logged_in` (exit 2).** Run `latch login`, with the same `--state-dir`
 if you use one.

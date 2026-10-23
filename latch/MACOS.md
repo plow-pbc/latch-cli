@@ -15,8 +15,10 @@ Keychain, and it carries the app's window.
   library (`latch/gui/`, built universal by `gui/build.sh`, Xcode 26 or
   later);
 - `Contents/Info.plist`, written by the script: bundle id
-  `co.plow.latch.cli`, macOS 13 or later. `CFBundleVersion` is the
-  release's build number;
+  `co.plow.latch.cli`, macOS 13 or later. `CFBundleShortVersionString` is
+  the version (0.1.0) and `CFBundleVersion` a release's build number (1327
+  for `v0.1.0-1327`), so each build is distinct; a version with no build
+  number is used for both;
 - `Contents/Library/LaunchAgents/co.plow.latch.cli.login.plist`, the
   agent behind the window's "Start when you log in": registered with
   ServiceManagement, it runs the bundle's `latch serve -d --again` at login,
@@ -115,8 +117,8 @@ bundle, into the state folder (`~/.latch`, or `--state-dir`):
 - gog, `plugins/gog/<version>/`;
 - the Messages reader, `plugins/messages/<latch version>/latch-messages`: a
   separate Swift binary (`latch/messages-reader`) that latch runs only if
-  its sha256 is the one latch was built with. The release's reader is ad
-  hoc signed;
+  its sha256 is the one latch was built with. The release workflow signs
+  the reader with Plow's Developer ID and notarizes it with the app;
 - the browser engines, `plugins/cft/` and `plugins/camoufox/`.
 
 ## Dev and CI builds
