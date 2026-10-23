@@ -1937,6 +1937,7 @@ fn adding_proxy(upstream: &str, credential: &str) -> String {
             let Some(request) = Http::read(&mut reader) else {
                 continue;
             };
+            assert!(request.bearer().is_none(), "proxy caller sent a credential");
             let (line, rest) = request.head.split_once("\r\n").unwrap();
             let mut forwarded = std::net::TcpStream::connect(&upstream).unwrap();
             let head = format!("{line}\r\n{header}{rest}");
@@ -1975,6 +1976,47 @@ fn a_cloud_agent_logs_in_through_a_proxy_that_adds_its_credential() {
     for (line, bearer) in seen {
         assert_eq!(bearer.as_deref(), Some("agent-credential"), "{line}");
     }
+}
+
+#[test]
+fn a_proxy_host_judges_an_agents_request_without_a_saved_token() {
+    let plow = LivePlow::start();
+    let proxy = adding_proxy(&plow.url, "owner-login");
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let host = dir.path().join("host");
+    let env = [
+        ("PLOW_API_BASE", Path::new(&proxy)),
+        ("PLOW_TOKEN_FILE", &dir.path().join("none")),
+    ];
+    let login = latch(&host, &["login", "--name", "cloud"], &env);
+    assert_eq!(login.status.code(), Some(0), "{login:?}");
+    assert!(!host.join("plow-token").exists());
+    let (_serve, _) = serving_with_env(&host, &relay, &env);
+
+    let agent = dir.path().join("agent");
+    let token = dir.path().join("agent.token");
+    fs::write(&token, "agent-credential").unwrap();
+    let agent_env = [("PLOW_TOKEN_FILE", token.as_path())];
+    let login = latch(&agent, &["login", "--api-url", &plow.url], &agent_env);
+    assert_eq!(login.status.code(), Some(0), "{login:?}");
+    let output = latch(
+        &agent,
+        &[
+            "exec",
+            "--host",
+            "cloud",
+            "--",
+            "echo",
+            "judged through proxy",
+        ],
+        &agent_env,
+    );
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["stdout"], "judged through proxy\n");
+    assert!(!plow.state.lock().unwrap().decisions.is_empty());
+    assert!(!host.join("plow-token").exists());
 }
 
 /// An iroh relay on this machine, over plain HTTP, kept running by the
