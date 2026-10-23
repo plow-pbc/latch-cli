@@ -184,17 +184,14 @@ jobs:
           sudo apt-get install -y -q apparmor
           sudo apparmor_parser -r latch/docker/latch-bwrap.apparmor
           sudo python3 - <<'PYTHON'
-          import ctypes
-          lib = ctypes.CDLL("libapparmor.so.1", use_errno=True)
-          query = lib.aa_query_file_path
-          query.argtypes = [ctypes.c_uint32, ctypes.c_char_p, ctypes.c_char_p,
-                            ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int)]
-          query.restype = ctypes.c_int
           def check(path, expected):
-              allowed, audited = ctypes.c_int(), ctypes.c_int()
-              result = query(2, b"latch-bwrap", path.encode(), ctypes.byref(allowed), ctypes.byref(audited))
-              assert result == 0, (path, ctypes.get_errno())
-              assert bool(allowed.value) == expected, (path, allowed.value, expected)
+              # Label query, AA_CLASS_FILE (2), then the complete path.
+              request = b"label\0latch-bwrap\0\x02" + path.encode()
+              with open("/sys/kernel/security/apparmor/.access", "r+b", buffering=0) as access:
+                  assert access.write(request) == len(request)
+                  permissions = dict(line.split() for line in access.read(4096).decode().splitlines())
+              allowed = int(permissions["allow"], 16) & ~int(permissions["deny"], 16) & 2
+              assert bool(allowed) == expected, (path, permissions, expected)
           target = "/proc/sys/user/max_user_namespaces"
           check(target, True)
           for n in range(len("/proc/sys/u"), len(target)):
