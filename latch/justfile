@@ -8,10 +8,6 @@ set fallback := true
 # route to host"), and loopback needs no approval.
 set dotenv-filename := ".env.local"
 
-# The Messages reader, built and signed into messages-reader/dist/; prints its sha256.
-messages-reader:
-    messages-reader/build.sh
-
 # The real-engine browser tests again, headed: each session a real window,
 # behind the owner's. Their focus checks (the engine never becomes the
 # front app) mean something only here. Not part of the gate: windows appear.
@@ -23,16 +19,10 @@ test-headed: engines
 # tests look for them (`just test browser` installs them itself). HOME keeps
 # install-binary.sh's copy of latch out of the real ~/.local/bin.
 [macos]
+[private]
 engines:
     cargo build --locked
     HOME="$PWD/../.dev/cft-home" sh install-binary.sh --non-interactive --state-dir ../.dev/cft-state --browser chrome --browser camoufox "${CARGO_TARGET_DIR:-target}/debug/latch"
-
-# The return scenario, headless, with its transcript: an order found in a
-# made-up mailbox, returned item by item on the test shop, its judge a
-# stand-in (`just gatekeeper scenario` runs it on the real one).
-[macos]
-scenario-return: engines
-    cargo test --locked --features fake-gog --test cli scenario::the_owner_returns_items_from_an_emailed_order -- --exact --nocapture
 
 # Logs this checkout's ../.dev/state in to the local Plow stack, by text to
 # its Linq twin from a made-up phone (the same local account each time).
@@ -99,17 +89,29 @@ phone-e2e host: phone
     phone/e2e/run.sh {{host}}
 
 # This checkout, built for release into ../.dev/bin/latch for hand testing.
-# Its state folder, ../.dev/state, and Plow (`api`: the local stack unless
-# named, e.g. api=https://api.plow.co) are baked in, so it never touches
-# ~/.latch or an installed latch; flags still override them. A running serve
-# keeps its old binary until it is restarted.
+# Its state folder and Plow are baked in, so it never touches ~/.latch or an
+# installed latch; flags still override them. Plow (`api`) is the local stack
+# unless named, e.g. api=https://api.plow.co. Any other Plow gets its own
+# state folder, ../.dev/state-prod, so local and real logins never mix, and
+# logs in as <hostname>-dev, so it never asks to replace the installed
+# latch's machine. A running serve keeps its old binary until it is
+# restarted.
 build api="":
     #!/bin/sh
     set -eu
+    # `just build api=URL` hands the recipe "api=URL" as its value.
     api="{{api}}"
+    api="${api#api=}"
     [ -n "$api" ] || api="$(python3 scripts/dev_plow.py api)"
     root="$(cd .. && pwd)"
     state="$root/.dev/state"
+    suffix=""
+    case "$api" in
+    http://127.0.0.1 | http://127.0.0.1[:/]* | http://localhost | http://localhost[:/]* | "http://[::1]"*) ;;
+    *)
+        state="$root/.dev/state-prod"
+        suffix="-dev" ;;
+    esac
     # The host's socket lives in the state folder; macOS caps its path at 104 bytes.
     if [ "$(printf '%s' "$state/serve-v4.sock" | wc -c)" -ge 104 ]; then
         echo "$state is too deep for the host's socket; use a worktree with a shorter path" >&2
@@ -118,16 +120,18 @@ build api="":
     mkdir -p "$root/.dev/bin" "$state"
     chmod 700 "$state"
     target="${CARGO_TARGET_DIR:-target}/build"
-    LATCH_BUILD_STATE_DIR="$state" LATCH_BUILD_API_URL="$api" CARGO_TARGET_DIR="$target" cargo build --release --locked
+    LATCH_BUILD_STATE_DIR="$state" LATCH_BUILD_API_URL="$api" LATCH_BUILD_NAME_SUFFIX="$suffix" CARGO_TARGET_DIR="$target" cargo build --release --locked
     cp "$target/release/latch" "$root/.dev/bin/.latch.new"
     mv -f "$root/.dev/bin/.latch.new" "$root/.dev/bin/latch"
     "$root/.dev/bin/latch" --version
 
 # This checkout as a dev Mac app, ../.dev/app/Plow Latch Dev.app: `just
-# build`'s latch (../.dev/state, the local Plow) with the app's window
-# (gui/), under its own bundle id, co.plow.latch.dev, so it never shares the
-# installed app's Full Disk Access, preferences or windows. `open` it to see
-# the window; its latch is the CLI as well.
+# build`'s latch (its state folder and Plow) with the app's window (gui/),
+# under its own bundle id, co.plow.latch.dev, so it never shares the
+# installed app's Full Disk Access, preferences or windows. gog and the
+# Messages reader go into that state folder, as the installer puts them in
+# ~/.latch, so Google and Messages work. `open` it to see the window; its
+# latch is the CLI as well.
 [macos]
 app api="": (build api)
     #!/bin/sh
@@ -139,4 +143,11 @@ app api="": (build api)
     mkdir -p "$root/.dev/app"
     sh ../scripts/macos-app-bundle.sh --id co.plow.latch.dev --name "Plow Latch Dev" "$version" "$root/.dev/bin/latch" "$app"
     sh ../scripts/macos-sign-app.sh "$app"
+    # The installer finds the reader beside the latch it installs. Given the
+    # bare latch already in ../.dev/bin, it leaves that latch be and adds gog
+    # and the reader to the state folder that latch has baked in.
+    messages-reader/build.sh >/dev/null
+    cp messages-reader/dist/latch-messages "$root/.dev/bin/latch-messages"
+    state="$("$root/.dev/bin/latch" --version | sed -n 's/.*; state \([^,]*\), Plow.*/\1/p')"
+    sh install-binary.sh --non-interactive --no-browser --bin-dir "$root/.dev/bin" --state-dir "$state" "$root/.dev/bin/latch"
     echo "$app"
