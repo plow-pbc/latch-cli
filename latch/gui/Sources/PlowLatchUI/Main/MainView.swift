@@ -8,18 +8,19 @@ struct MainView: View {
 
     var body: some View {
         @Bindable var app = app
+        let route = app.route
         NavigationSplitView {
             Sidebar()
                 .navigationSplitViewColumnWidth(min: 210, ideal: 230, max: 320)
         } detail: {
-            switch app.section {
-            case .home: HomeView()
-            case .activity: ActivityView()
-            case .agents: AgentsView()
-            case .connections: ConnectionsView()
-            case .rules: HostRulesView()
-            case .vault: VaultView()
-            case .settings: HostSettingsView()
+            switch app.place {
+            case .account(.agents): AgentsView()
+            case .account(.connections): ConnectionsView()
+            case .host(.home): HomeView()
+            case .host(.activity): ActivityView()
+            case .host(.rules): HostRulesView()
+            case .host(.vault): VaultView()
+            case .host(.settings): HostSettingsView()
             }
         }
         .frame(minWidth: 680, minHeight: 440)
@@ -40,11 +41,11 @@ struct MainView: View {
             guard !app.still else { return }
             await app.refreshAccount()
         }
-        // Each screen's reads, decided by the model: a change of screen or
-        // host cancels the last one's.
-        .task(id: Entry(section: app.section, host: app.host?.id, online: app.host?.online)) {
+        // Each screen's reads, decided by the model, for the route that
+        // keyed them: a change of route cancels the last one's.
+        .task(id: Entry(route)) {
             guard !app.still else { return }
-            await app.enter(app.section, host: app.host)
+            await app.enter(route)
         }
         // Home and Activity share the selected host's feed: going between
         // them keeps it running.
@@ -57,11 +58,18 @@ struct MainView: View {
     }
 }
 
-/// What a screen's reads depend on.
+/// What a screen's reads depend on: an account page's, on no host.
 private struct Entry: Hashable {
-    var section: SidebarItem
+    var place: Place
     var host: String?
     var online: Bool?
+
+    init(_ route: Route) {
+        switch route {
+        case let .account(page): place = .account(page)
+        case let .host(screen, host): (place, self.host, online) = (.host(screen), host?.name, host?.online)
+        }
+    }
 }
 
 private struct Sidebar: View {
@@ -70,14 +78,14 @@ private struct Sidebar: View {
     var body: some View {
         List(selection: selection) {
             Section("Your account") {
-                ForEach(SidebarItem.account) { item in
-                    Label(item.title, systemImage: item.symbol).tag(item)
+                ForEach(AccountPage.allCases) { page in
+                    Label(page.title, systemImage: page.symbol).tag(Place.account(page))
                 }
             }
             Section("Host") {
                 HostPicker()
-                ForEach(SidebarItem.host) { item in
-                    Label(item.title, systemImage: item.symbol).tag(item)
+                ForEach(HostScreen.allCases) { screen in
+                    Label(screen.title, systemImage: screen.symbol).tag(Place.host(screen))
                 }
             }
         }
@@ -93,8 +101,8 @@ private struct Sidebar: View {
         }
     }
 
-    private var selection: Binding<SidebarItem?> {
-        Binding { app.section } set: { if let item = $0 { app.section = item } }
+    private var selection: Binding<Place?> {
+        Binding { app.place } set: { if let place = $0 { app.place = place } }
     }
 }
 

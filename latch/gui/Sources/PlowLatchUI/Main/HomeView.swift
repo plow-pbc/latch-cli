@@ -169,7 +169,7 @@ private struct ActivitySections: View {
                 ForEach(calls.suffix(5).reversed()) { record in
                     Button {
                         app.selectedRecord = record.id
-                        app.section = .activity
+                        app.place = .host(.activity)
                     } label: {
                         RecentRow(record: record, caller: record.callerLabel(hostKey: app.key(of: host), hostName: host.name,
                                                                             isThisMac: host.isThisMac))
@@ -181,7 +181,7 @@ private struct ActivitySections: View {
                 if calls.count < 5, feed.hasOlder, !feed.loadingOlder {
                     Button("Load Earlier") { Task { await feed.loadOlder() } }
                 }
-                Button("Show All Activity") { app.section = .activity }
+                Button("Show All Activity") { app.place = .host(.activity) }
             }
             // The newest page may be all connections and reads: reach back
             // for five requests, or to the start.
@@ -220,10 +220,10 @@ private struct OnHostSection: View {
     var body: some View {
         let summary = app.summaries[host.name]
         Section("On \(host.name)") {
-            SummaryRow(host: host.spoken, title: "Rules", value: summary?.rules?.map(Self.rules), open: "Open") { app.section = .rules }
-            SummaryRow(host: host.spoken, title: "Vault", value: summary?.vault?.map(Self.vault), open: "Open") { app.section = .vault }
+            SummaryRow(host: host.spoken, title: "Rules", value: summary?.rules?.map(Self.rules), open: "Open") { app.place = .host(.rules) }
+            SummaryRow(host: host.spoken, title: "Vault", value: summary?.vault?.map(Self.vault), open: "Open") { app.place = .host(.vault) }
             SummaryRow(host: host.spoken, title: "Plugins", value: summary?.plugins?.map(Self.plugins), open: "Host Settings") {
-                app.section = .settings
+                app.place = .host(.settings)
             }
             if host.isThisMac {
                 Button("Set up again…") { app.setUpAgain() }

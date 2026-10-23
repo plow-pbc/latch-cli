@@ -107,7 +107,10 @@ enum TestHooks {
         }
         // The main window's host picker and sidebar, as a click picks them.
         on("host") { name in app.chosenHost = name }
-        on("section") { item in if let item = item.flatMap(SidebarItem.init(rawValue:)) { app.section = item } }
+        on("section") { name in
+            if let screen = name.flatMap(HostScreen.init(rawValue:)) { app.place = .host(screen) }
+            if let page = name.flatMap(AccountPage.init(rawValue:)) { app.place = .account(page) }
+        }
         // Activity's selection and filter, as a click sets them.
         on("record") { id in app.selectedRecord = id }
         on("filter") { name in if let filter = name.flatMap(ActivityView.Filter.init(rawValue:)) { app.activityFilter = filter } }
@@ -120,14 +123,13 @@ enum TestHooks {
             app.trial.request = String(argument[argument.index(after: bar)...])
             Task { await app.trial.run(on: host, app: app) }
         }
-        on("focus") { uid in app.rulesFocus = uid }
+        on("focus") { uid in app.rulesFocus = app.host.flatMap { host in uid.map { AgentTarget(host: host.name, agent: $0) } } }
         on("agent") { uid in app.agentsPath = uid.map { [$0] } ?? [] }
         // A host pill's click: "HOST|UID".
         on("pill") { argument in
-            guard let parts = argument?.split(separator: "|"), parts.count == 2 else { return }
-            app.chosenHost = String(parts[0])
-            app.rulesFocus = String(parts[1])
-            app.section = .rules
+            guard let parts = argument?.split(separator: "|"), parts.count == 2,
+                  let host = app.hosts.first(where: { $0.name == parts[0] }) else { return }
+            app.openRules(host, agent: String(parts[1]))
         }
         // Saves "UID|TEXT" (UID empty: every agent's) on the selected host
         // as Save does, over the revision on screen.

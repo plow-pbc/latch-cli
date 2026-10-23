@@ -159,7 +159,7 @@ struct RulesScrollTests {
         app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
         let host = try #require(app.host)
         let scout = try #require(client.show.agents?.first?.agentUid)
-        app.rulesFocus = scout
+        app.rulesFocus = AgentTarget(host: host.name, agent: scout)
         #expect(app.rulesScrollTarget(on: host) == nil)
         await app.refreshRules(on: host)
         #expect(app.rulesScrollTarget(on: host) == nil)
@@ -176,8 +176,8 @@ struct RulesDraftTests {
         let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
         app.stage(status: try Fixtures.decode(Fixtures.serving))
         app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
-        app.section = .rules
-        await app.enter(.rules, host: app.host)
+        app.place = .host(.rules)
+        await app.enter(.host(.rules, app.host))
         return app
     }
 
@@ -187,10 +187,10 @@ struct RulesDraftTests {
         let key = AppModel.RulesKey(host: "studio", agent: nil)
         let saved = try #require(app.savedRules(key))
         app.rulesDrafts[key] = .init(text: saved.text + " Never touch ~/Taxes.", base: saved.revision)
-        for (section, host) in [(SidebarItem.home, "studio"), (.activity, "pi-kitchen"), (.rules, "pi-kitchen"), (.rules, "studio")] {
-            app.section = section
+        for (screen, host) in [(HostScreen.home, "studio"), (.activity, "pi-kitchen"), (.rules, "pi-kitchen"), (.rules, "studio")] {
+            app.place = .host(screen)
             app.chosenHost = host
-            await app.enter(section, host: app.host)
+            await app.enter(app.route)
         }
         #expect(app.rulesDrafts[key]?.text.hasSuffix(" Never touch ~/Taxes.") == true)
         #expect(app.rulesChanged(key))
