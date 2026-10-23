@@ -5,20 +5,19 @@
 //
 // where RUNTIME is the installed runtime folder (this package, with its
 // node_modules), and speaks one JSON line each way per operation on the
-// helper's standard streams: `{"id": N, "session": K, "op": "frames", ...}`
-// in, and `{"id": N, "ok": VALUE}` or `{"id": N, "error": {"code",
-// "message"}}` out, each answer also carrying whether a dialog blocks that
-// session (`dialog`) and its active tab (`active`), and `late` if a wait for
+// helper's standard streams: `{"id": N, "op": "frames", ...}` in, and
+// `{"id": N, "ok": VALUE}` or `{"id": N, "error": {"code", "message"}}`
+// out, each answer also carrying whether a dialog blocks the session
+// (`dialog`) and its active tab (`active`), and `late` if a wait for
 // the browser ran out, even one the operation went on without (a page's
 // title, a frame's document). The first operation is
 // `launch`; `close` closes the browser and ends the helper, as does the
 // end of stdin.
 //
-// One browser serves every session on its profile. `begin` starts session
-// K with a window of its own, `end` closes its tabs. Each session's share
-// is its windows and every tab opened from them (a page whose opener is no
-// session's tab is never adopted), its dialogs and its downloads, found
-// from the page that started them.
+// The browser is one session's: the page it starts with and every tab
+// opened from it (a page whose opener is not one of its tabs is never
+// adopted), its dialogs and its downloads, found from the page that
+// started them.
 //
 // Playwright drives Camoufox over its own private pipe (`-juggler-pipe`);
 // no port is ever opened. latch's page reader runs in Camoufox's isolated
@@ -63,16 +62,12 @@ const clip = (text, max) => (text.length <= max ? text : `${text.slice(0, max - 
 
 let context;
 let reader;
-/// Each session's share, by the worker's key for the session.
-const shares = new Map();
-/// The session the current operation acts for.
-let current = null;
+/// The session: its tabs, dialog, events and downloads, and its guard.
+let session = null;
 /// When the current operation must have answered (`within_ms`).
 let due = Infinity;
 /// A wait for the browser in the current operation ran out.
 let ranOut = false;
-/// The page the browser started with, until a session takes it.
-let spare = null;
 /// Pages latch itself is opening: they are not the page's new tabs.
 let opening = 0;
 /// New pages being taken in as tabs: `settle` waits for them.
@@ -85,20 +80,18 @@ const framesById = new Map();
 let nextFrame = 0;
 let nextDocument = 0;
 // Filled vault values no GET request may carry as a query parameter
-// (`guard`), by session; a session's `stopped` says one was stopped. Line
-// breaks count alike however written: a form sends a field's as CRLF.
+// (`guard`); the session's `stopped` says one was stopped. Line breaks
+// count alike however written: a form sends a field's as CRLF.
 const oneNewline = (text) => text.replace(/\r\n?/g, "\n");
-const guards = () => [...shares.values()];
-const guarding = () => guards().some((s) => s.guard?.length);
+const guarding = () => Boolean(session?.guard?.length);
 const guardRoute = (route, request) => {
   if (request.method() === "GET") {
     let params = [];
     try {
       params = [...new URL(request.url()).searchParams.values()].map(oneNewline);
     } catch {}
-    const carried = guards().filter((s) => s.guard?.some((v) => params.includes(oneNewline(v))));
-    if (carried.length) {
-      for (const s of carried) s.stopped = true;
+    if (session?.guard?.some((v) => params.includes(oneNewline(v)))) {
+      session.stopped = true;
       // Aborted, so no error page keeps the address as the tab's.
       return route.abort("aborted");
     }
@@ -106,7 +99,7 @@ const guardRoute = (route, request) => {
   return route.fallback();
 };
 let routed = false;
-/// Requests are routed through the guard while any session has one.
+/// Requests are routed through the guard while the session has one.
 async function routeForGuards() {
   if (guarding() && !routed) await guarded(context.route("**/*", guardRoute));
   if (!guarding() && routed) await guarded(context.unroute("**/*", guardRoute));
@@ -119,8 +112,7 @@ async function routeForGuards() {
 async function guarded(work, { ms = COMMAND, onDialog = "fail" } = {}) {
   work.catch(() => {});
   ms = Math.max(0, Math.min(ms, due - Date.now()));
-  // Only a dialog in this session's own tabs stops its work.
-  const mine = shares.get(current);
+  const mine = session;
   if (mine?.dialog && onDialog === "fail") throw dialogOpen();
   let wake;
   const opened = new Promise((resolve) => {
@@ -149,9 +141,8 @@ async function guarded(work, { ms = COMMAND, onDialog = "fail" } = {}) {
 }
 
 function share() {
-  const found = shares.get(current);
-  if (!found) throw new Failure("no_such_session", "that session has ended");
-  return found;
+  if (!session) throw new Failure("engine_error", "the browser has not started");
+  return session;
 }
 
 function tab(id) {
@@ -161,20 +152,14 @@ function tab(id) {
 }
 const activePage = () => tab(share().active).page;
 
-/// The session whose tab `page` is, and that tab.
-function ownerOf(page) {
-  for (const [key, each] of shares) {
-    const found = each.tabs.find((t) => t.page === page);
-    if (found) return { key, share: each, tab: found };
-  }
-  return null;
-}
+/// The session's tab `page` is, if it is one.
+const tabOf = (page) => session?.tabs.find((t) => t.page === page);
 
-/// Takes `page` in as a new tab of session `key`.
-function adopt(key, page, opener) {
-  const known = ownerOf(page);
-  if (known) return known.tab.id;
-  const owner = shares.get(key);
+/// Takes `page` in as a new tab of the session.
+function adopt(page, opener) {
+  const known = tabOf(page);
+  if (known) return known.id;
+  const owner = session;
   const state = {
     id: `t${++owner.nextTab}`,
     page,
@@ -322,24 +307,17 @@ const THROUGH_PROXY = {
 
 async function launch(params) {
   reader = params.reader;
-  // One fingerprint per profile, made on its first launch: a site sees the
-  // same device every time, as it would a person's.
-  const stored = path.join(params.profile, "camoufox.json");
-  let identity;
-  try {
-    identity = JSON.parse(fs.readFileSync(stored, "utf8"));
-  } catch {
-    const options = await launchOptions({
-      os: params.os,
-      headless: params.headless,
-      main_world_eval: true,
-      exclude_addons: ["UBO"],
-      geoip: false,
-      env: {},
-    });
-    identity = { env: options.env, prefs: options.firefoxUserPrefs };
-    fs.writeFileSync(stored, JSON.stringify(identity), { mode: 0o600 });
-  }
+  // One fingerprint for the session: a site sees the same device for the
+  // whole task, and a new one the next.
+  const options = await launchOptions({
+    os: params.os,
+    headless: params.headless,
+    main_world_eval: true,
+    exclude_addons: ["UBO"],
+    geoip: false,
+    env: {},
+  });
+  const identity = { env: options.env, prefs: options.firefoxUserPrefs };
   context = await firefox.launchPersistentContext(params.data, {
     executablePath: params.executable,
     headless: params.headless,
@@ -376,11 +354,11 @@ async function launch(params) {
     adopting += 1;
     try {
       const from = await page.opener().catch(() => null);
-      const owner = from && ownerOf(from);
-      // A page no session's tab opened is no session's.
-      if (!owner) return;
-      const id = adopt(owner.key, page, owner.tab.id);
-      owner.share.pending.push({ event: "new_tab", tab: id, url: page.url(), opener: owner.tab.id });
+      const opener = from && tabOf(from);
+      // A page none of the session's tabs opened is not the session's.
+      if (!opener) return;
+      const id = adopt(page, opener.id);
+      session.pending.push({ event: "new_tab", tab: id, url: page.url(), opener: opener.id });
     } finally {
       for (const request of openingPages) {
         try {
@@ -390,7 +368,18 @@ async function launch(params) {
       adopting -= 1;
     }
   });
-  spare = context.pages()[0] ?? null;
+  // The session takes the page the browser started with as its first tab.
+  session = { tabs: [], active: null, nextTab: 0, dialog: null, pending: [], downloads: [] };
+  let page = context.pages()[0];
+  if (!page || page.isClosed()) {
+    opening += 1;
+    try {
+      page = await guarded(context.newPage(), { onDialog: "ignore" });
+    } finally {
+      opening -= 1;
+    }
+  }
+  session.active = adopt(page);
   return {};
 }
 
@@ -404,40 +393,6 @@ async function title(page) {
 
 const ops = {
   launch,
-
-  /// Starts this session with a window of its own.
-  async begin() {
-    shares.set(current, { tabs: [], active: null, nextTab: 0, dialog: null, pending: [], downloads: [] });
-    let page = spare;
-    spare = null;
-    if (!page || page.isClosed()) {
-      opening += 1;
-      try {
-        page = await guarded(context.newPage(), { onDialog: "ignore" });
-      } catch (error) {
-        shares.delete(current);
-        throw error;
-      } finally {
-        opening -= 1;
-      }
-    }
-    share().active = adopt(current, page);
-    return {};
-  },
-
-  /// Ends this session: closes every tab it has. The others go on.
-  async end() {
-    const ending = shares.get(current);
-    // A session still holding a guard (its cleanup failed) keeps its
-    // pages: closing one lets it send what it holds as it goes, in a
-    // request the routing may not see. latch kills the browser instead.
-    if (ending?.guard?.length) return { guarded: true };
-    shares.delete(current);
-    for (const t of ending?.tabs ?? []) await t.page.close().catch(() => {});
-    await routeForGuards().catch(() => {});
-    for (const d of ending?.downloads ?? []) if (d.file) fs.rmSync(d.file, { force: true });
-    return {};
-  },
 
   async tabs() {
     const { tabs, active } = share();
@@ -462,7 +417,7 @@ const ops = {
     } finally {
       opening -= 1;
     }
-    share().active = adopt(current, page);
+    share().active = adopt(page);
     if (url) await ops.navigate({ url });
     return share().active;
   },
@@ -499,25 +454,6 @@ const ops = {
       throw new Failure("navigation_failed", clip(String(error?.message ?? error).split("\n")[0], 300));
     }
     return {};
-  },
-
-  /// The entry Back would load, read from the tab's own history through
-  /// the Navigation API. That API names only entries of the page's own
-  /// origin; when the one before is not among them (another origin's, or
-  /// none), where Back leads is not known.
-  async back_url() {
-    const before = await guarded(
-      activePage()
-        .mainFrame()
-        .evaluate(() => {
-          const index = navigation.currentEntry?.index ?? 0;
-          return index > 0 ? navigation.entries()[index - 1].url : null;
-        }),
-    );
-    if (before === null) {
-      throw new Failure("back_unknown", "the page before this one is of another origin, or there is none");
-    }
-    return before;
   },
 
   async back() {
@@ -717,7 +653,7 @@ const ops = {
     return { png: png.toString("base64"), css_width: width, css_height: height, scroll_x: scrollX, scroll_y: scrollY };
   },
 
-  /// This session's guard: until called again with none, every GET
+  /// The session's guard: until called again with none, every GET
   /// request, in any tab, whose address has a query parameter equal to one
   /// of `values` is stopped.
   async guard({ values }) {
@@ -726,7 +662,7 @@ const ops = {
     return {};
   },
 
-  /// Whether any session holds a guard: then the browser is killed, not
+  /// Whether the session holds a guard: then the browser is killed, not
   /// closed, as closing its pages lets them send what they hold.
   guarded() {
     return guarding();
@@ -744,9 +680,8 @@ const ops = {
   },
 };
 
-async function answer({ id, op, session, within_ms, ...params }) {
+async function answer({ id, op, within_ms, ...params }) {
   const reply = { id };
-  current = session ?? null;
   due = within_ms === undefined ? Infinity : Date.now() + within_ms;
   ranOut = false;
   try {
@@ -760,9 +695,8 @@ async function answer({ id, op, session, within_ms, ...params }) {
         ? { code: error.code, message: error.message }
         : { code: "engine_error", message: clip(String(error?.message ?? error), 300) };
   }
-  const mine = shares.get(current);
-  reply.dialog = Boolean(mine?.dialog);
-  reply.active = mine?.active ?? null;
+  reply.dialog = Boolean(session?.dialog);
+  reply.active = session?.active ?? null;
   if (ranOut) reply.late = true;
   send(reply);
   return op === "close";

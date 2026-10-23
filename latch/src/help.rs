@@ -325,8 +325,10 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "browser.open",
-        output: "The new session's id (shown only now: keep it) and the elements on screen.",
-        effect: Once("starts a browser session on the host and loads the page"),
+        output: "The new session's id (shown only now: keep it), its engine, and the elements on screen.",
+        effect: Once(
+            "starts a browser session, in a fresh browser of its own, on the host and loads the page",
+        ),
         owner_only: false,
         connector: None,
         examples: &[
@@ -335,17 +337,16 @@ const ENTRIES: &[Entry] = &[
                 &["browser", "--host", "mac", "open", "https://shop.example/"],
             ),
             ex(
-                "On the shop profile, holding the site for this session",
+                "On Camoufox, labelled for listings",
                 &[
                     "browser",
                     "--host",
                     "mac",
                     "open",
-                    "--profile",
-                    "shop",
+                    "--engine",
+                    "camoufox",
                     "--task",
                     "basket",
-                    "--reserve-site",
                     "https://shop.example/",
                 ],
             ),
@@ -675,25 +676,12 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "browser.close",
         output: "The session closed.",
-        effect: Repeatable("ends the session; its profile stays"),
+        effect: Repeatable("ends the session and deletes its cookies and logins"),
         owner_only: false,
         connector: None,
         examples: &[ex(
             "End this session",
             &["browser", "--host", "mac", "close"],
-        )],
-    },
-    Entry {
-        id: "browser.profile.create",
-        output: "The profile made, and its engine.",
-        effect: Once("makes a browser profile in this machine's state folder"),
-        owner_only: true,
-        connector: None,
-        examples: &[ex(
-            "A profile on Camoufox",
-            &[
-                "browser", "profile", "create", "shop", "--engine", "camoufox",
-            ],
         )],
     },
     Entry {
@@ -709,10 +697,7 @@ const ENTRIES: &[Entry] = &[
                 "Chrome for Testing, after install.sh --no-browser",
                 &["browser", "setup"],
             ),
-            ex(
-                "Camoufox (macOS)",
-                &["browser", "setup", "--engine", "camoufox"],
-            ),
+            ex("Camoufox", &["browser", "setup", "--engine", "camoufox"]),
         ],
     },
     Entry {
@@ -1451,15 +1436,7 @@ mod tests {
             .iter()
             .map(|input| input.name.as_str())
             .collect();
-        for name in [
-            "profile",
-            "task",
-            "reserve_site",
-            "url",
-            "host",
-            "session",
-            "state_dir",
-        ] {
+        for name in ["engine", "task", "url", "host", "session", "state_dir"] {
             assert!(names.contains(&name), "{name} missing from {names:?}");
         }
         let url = action

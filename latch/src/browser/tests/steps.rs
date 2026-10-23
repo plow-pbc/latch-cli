@@ -208,15 +208,17 @@ pub(super) struct Harness {
 impl Harness {
     pub(super) async fn start(
         state: &std::path::Path,
+        engine: &str,
         provider: Option<Arc<dyn Provider>>,
     ) -> Harness {
-        Harness::start_with(state, provider, Vec::new()).await
+        Harness::start_with(state, engine, provider, Vec::new()).await
     }
 
     /// A harness whose local origins the site rules read as the HTTPS
     /// sites they stand in for, `(local, site)` each.
     pub(super) async fn start_with(
         state: &std::path::Path,
+        engine: &str,
         provider: Option<Arc<dyn Provider>>,
         origins: Vec<(String, String)>,
     ) -> Harness {
@@ -227,7 +229,7 @@ impl Harness {
         browsers.screen = Some(true);
         browsers.provider = provider;
         let browsers = Arc::new(browsers);
-        let (id, entry) = browsers.open("default", CALLER, None).await.unwrap();
+        let (id, entry) = browsers.open(engine, CALLER, None).await.unwrap();
         Harness {
             browsers,
             entry,
@@ -238,32 +240,20 @@ impl Harness {
         }
     }
 
-    /// A command in the harness's session. An `open` starts a new session,
-    /// which takes the place of the one before.
+    /// A command in the harness's session.
     pub(super) async fn call(&mut self, command: &str, args: Value) -> Value {
         let mut audit = Map::new();
-        let name = if command == "open" {
-            "default"
-        } else {
-            &self.id
-        };
         let (result, _) = host::call(
             &self.browsers,
             CALLER.into(),
             command,
-            name,
+            &self.id,
             &args,
             None,
             &mut audit,
         )
         .await
         .unwrap();
-        if command == "open" {
-            let id = result["session"].as_str().unwrap().to_string();
-            self.entry = self.browsers.session(&id, CALLER).await.unwrap();
-            let before = std::mem::replace(&mut self.id, id);
-            self.browsers.close(&before, CALLER).await.unwrap();
-        }
         result
     }
 
@@ -272,8 +262,10 @@ impl Harness {
         self.browsers.close_all().await;
     }
 
+    /// Loads `url` in the harness's session, which keeps what earlier
+    /// pages left (a cart, a sign-in).
     pub(super) async fn open(&mut self, url: &str) -> Value {
-        self.call("open", json!({"url": url})).await
+        self.call("goto", json!({"url": url})).await
     }
 
     pub(super) async fn text(&mut self) -> String {
@@ -377,10 +369,10 @@ fn confirmation(failure: &Failure) -> Value {
 }
 
 async fn literal_steps_take_effect_and_their_checks_decide_the_outcome(engine: &str) {
-    let (_dir, state, _area) = test_state(engine, &["default"]);
+    let (_dir, state, _area) = test_state(engine);
     let site = site();
     let fake: Arc<dyn Provider> = Arc::new(Fake::default());
-    let mut h = Harness::start(&state, Some(fake)).await;
+    let mut h = Harness::start(&state, engine, Some(fake)).await;
     let page = h
         .open(&format!("{site}/expense-new.html?from=invoices"))
         .await;
@@ -545,11 +537,11 @@ async fn literal_steps_take_effect_and_their_checks_decide_the_outcome(engine: &
 }
 
 async fn consequential_actions_stop_for_a_confirmation_bound_to_what_was_reviewed(engine: &str) {
-    let (_dir, state, _area) = test_state(engine, &["default"]);
+    let (_dir, state, _area) = test_state(engine);
     let site = site();
     let slow = Arc::new(Fake::default());
     let fake: Arc<dyn Provider> = slow.clone();
-    let mut h = Harness::start(&state, Some(fake)).await;
+    let mut h = Harness::start(&state, engine, Some(fake)).await;
     let page = h.open(&format!("{site}/order.html")).await;
     let place = find(&page, "button", "Place order");
 
@@ -724,11 +716,11 @@ async fn consequential_actions_stop_for_a_confirmation_bound_to_what_was_reviewe
 }
 
 async fn with_no_model_clicks_and_enter_stop_and_issued_confirmations_still_dispatch(engine: &str) {
-    let (_dir, state, _area) = test_state(engine, &["default"]);
+    let (_dir, state, _area) = test_state(engine);
     let site = site();
     let fake = Arc::new(Fake::default());
     let provider: Arc<dyn Provider> = fake.clone();
-    let mut h = Harness::start(&state, Some(provider)).await;
+    let mut h = Harness::start(&state, engine, Some(provider)).await;
     let page = h.open(&format!("{site}/order.html")).await;
     let place = find(&page, "button", "Place order");
     let note = find(&page, "textbox", "Gift note");
@@ -780,7 +772,7 @@ async fn with_no_model_clicks_and_enter_stop_and_issued_confirmations_still_disp
 
     // With no model at all (a host not logged in to Plow), the same.
     h.close().await;
-    let mut bare = Harness::start(&state, None).await;
+    let mut bare = Harness::start(&state, engine, None).await;
     let page = bare.open(&format!("{site}/order.html")).await;
     let place = find(&page, "button", "Place order");
     let failure = bare
@@ -802,10 +794,10 @@ async fn with_no_model_clicks_and_enter_stop_and_issued_confirmations_still_disp
 }
 
 async fn a_key_on_an_element_that_cannot_take_the_focus_is_refused(engine: &str) {
-    let (_dir, state, _area) = test_state(engine, &["default"]);
+    let (_dir, state, _area) = test_state(engine);
     let site = site();
     let fake: Arc<dyn Provider> = Arc::new(Fake::default());
-    let mut h = Harness::start(&state, Some(fake)).await;
+    let mut h = Harness::start(&state, engine, Some(fake)).await;
     // The key would go to whatever had the focus before, here the search
     // field, and send its form.
     let page = h.open(&format!("{site}/disabled.html")).await;
@@ -831,10 +823,10 @@ async fn a_key_on_an_element_that_cannot_take_the_focus_is_refused(engine: &str)
 }
 
 async fn the_journal_outlives_a_host_restart_and_a_lost_reply_is_never_resent(engine: &str) {
-    let (_dir, state, _area) = test_state(engine, &["default"]);
+    let (_dir, state, _area) = test_state(engine);
     let site = site();
     let fake: Arc<dyn Provider> = Arc::new(Fake::default());
-    let mut h = Harness::start(&state, Some(fake.clone())).await;
+    let mut h = Harness::start(&state, engine, Some(fake.clone())).await;
     let page = h.open(&format!("{site}/counter.html")).await;
     let slowly = find(&page, "button", "Add one slowly");
 
@@ -864,7 +856,7 @@ async fn the_journal_outlives_a_host_restart_and_a_lost_reply_is_never_resent(en
 
     // A new host on the same state directory reads the journal, for the
     // crashed session's id.
-    let mut h = Harness::start(&state, Some(fake)).await;
+    let mut h = Harness::start(&state, engine, Some(fake)).await;
     let after = steps::history(&h.browsers, &crashed, CALLER, "r-crash").unwrap();
     evidence("b5-history-after-restart.json", &after);
     assert_eq!(after["status"], "interrupted");
@@ -901,14 +893,14 @@ async fn the_journal_outlives_a_host_restart_and_a_lost_reply_is_never_resent(en
 #[cfg(feature = "live-model")]
 #[tokio::test]
 async fn live_the_model_asks_for_a_confirmation_only_where_one_is_needed() {
-    let (_dir, state, _area) = test_state("cft", &["default"]);
+    let (_dir, state, _area) = test_state("cft");
     let provider = crate::model::host_provider(
         &crate::model::logged_in_for_tests(),
         crate::model::PLOW_MODEL,
     )
     .unwrap();
     let site = site();
-    let mut h = Harness::start(&state, Some(Arc::from(provider))).await;
+    let mut h = Harness::start(&state, "cft", Some(Arc::from(provider))).await;
     let page = h.open(&format!("{site}/order.html")).await;
     let back = find(&page, "link", "Back to basket");
     let place = find(&page, "button", "Place order");

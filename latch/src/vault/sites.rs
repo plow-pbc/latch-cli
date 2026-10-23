@@ -30,8 +30,8 @@ pub fn registrable(site: &str) -> Result<String, String> {
     domain_of(host).map_err(|why| format!("{site:?}: {why}"))
 }
 
-/// The site a page is on, for telling apart what sessions on one profile
-/// do: its registrable domain, or for a host without one (an IP address, a
+/// The site a page is on, for what a session did where: its registrable
+/// domain, or for a host without one (an IP address, a
 /// local host) the host itself. None for a page with no host.
 pub fn site_of(url: &str) -> Option<String> {
     let url = Url::parse(url).ok()?;

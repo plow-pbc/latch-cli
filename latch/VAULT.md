@@ -1,7 +1,7 @@
 # The vault
 
 One vault per latch install, on the host, shared by every browser engine
-and profile. `latch browser fill` puts values into pages itself, and no
+and session. `latch browser fill` puts values into pages itself, and no
 command returns a password or other secret field's value. A username is no
 secret: a page, or the address it goes to next, may show it.
 
@@ -13,7 +13,7 @@ are kept in Bitwarden's item shape, so field names and custom fields carry
 over. Each item has a title, its sites (a login needs one; a card or
 identity may list the only sites it fills on) and a revision: an edit or
 removal against an older revision is refused. Items are not tied to browser
-profiles: any session may use any item, wherever its kind's site rule lets
+sessions: any session may use any item, wherever its kind's site rule lets
 it fill.
 
 Which fields are **secret** follows the Latch app's classifier, ported with
@@ -183,17 +183,17 @@ frame a value goes into and the press button, and `latch browser do
 the item and the reviewed lines are as confirmed; otherwise it clears the
 values and answers `confirm_stale`.
 
-While a fill runs, every session on its profile is paused: every other
-call answers `session_paused`. Each value is set in one step after the
+While a fill runs, its session is paused: every other call in it answers
+`session_paused`. Each value is set in one step after the
 field's element, document and origin are checked again; latch then presses
 submit and waits until the values have left the page (clearing them itself
 if the page keeps them). A fill that stops part-way (a covered button, a
 refused field) is cleaned up the same way. If latch cannot confirm the
-values left the page, every session on the profile stays paused, through
+values left the page, the session stays paused, through
 any later fill too, until a cleanup confirms the page holds none or the
 session that filled is closed. Closing it never lets its pages send what
 they hold: on Chrome for Testing the guard stands until the browser exits;
-on Camoufox the browser is killed, ending every session on it. No reading is taken while a fill holds the
+on Camoufox the browser is killed. No reading is taken while a fill holds the
 browser, and an element list marks a field holding a filled value as
 `filled`, never showing the value. While a filled value may be on a page,
 in whichever of the session's tabs, `eval` and screenshots are refused
@@ -204,13 +204,12 @@ number of stages.
 The audit records the item, its revision, the mapping by ref, where it
 came from (a suggestion's id, or the agent), the stages, both origins, any
 `hint_mismatch`, whether
-agent code (`eval`) ever ran on those sites in the profile, in any session
+agent code (`eval`) ran on those sites earlier in the session
 (`agent_code_before_fill`), and the outcome: never a value. An agent script
 that ran on the site before a fill could read the value it puts on the
 page, through what it left behind (a service worker, stored script): an
-accepted risk for now, flagged on every such fill. The sites are kept with
-the profile (`agent-code.json`), so the flag outlives the session and the
-browser.
+accepted risk for now, flagged on every such fill. What a script left goes
+with the session's profile, so a new session starts unflagged.
 
 ## Storage
 

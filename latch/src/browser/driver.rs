@@ -8,13 +8,11 @@
 //! the engine's own ("trusted") mouse and keyboard, never a script's
 //! `element.click()`.
 
-use std::cell::{RefCell, RefMut};
 use std::path::PathBuf;
-use std::rc::Rc;
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use crate::failure::Failure;
 
@@ -120,9 +118,6 @@ pub trait Driver {
     fn navigate(&mut self, url: &str) -> Result<(), Failure>;
     /// One step back in the active tab's history; false if there is none.
     fn back(&mut self) -> Result<bool, Failure>;
-    /// The address `back` would load, if there is one; an error when the
-    /// engine can't tell (Camoufox, when that entry is another origin's).
-    fn back_url(&mut self) -> Result<Option<String>, Failure>;
 
     /// Every frame of the active tab, cross-site and sandboxed ones included.
     fn frames(&mut self) -> Result<Vec<Frame>, Failure>;
@@ -194,17 +189,8 @@ pub trait Driver {
     fn close(&mut self) -> Value;
 }
 
-/// One profile's browser, shared by the sessions on it: the driver
-/// contract acts for the selected session, on its own tabs, downloads and
-/// dialogs.
+/// A session's browser, as the worker drives it between calls.
 pub trait Runtime: Driver {
-    /// Starts session `key` with a window of its own, and selects it.
-    fn begin(&mut self, key: &str) -> Result<(), Failure>;
-    /// Ends session `key`: closes every tab it has, and forgets its
-    /// downloads (their files too). The others go on.
-    fn end(&mut self, key: &str);
-    /// Makes session `key` the one the driver contract acts for.
-    fn select(&mut self, key: &str);
     /// Whether the engine left a command unanswered in time since this
     /// was last asked.
     fn unanswered(&mut self) -> bool;
@@ -212,140 +198,5 @@ pub trait Runtime: Driver {
     /// next call. Answers whether it must be called again soon.
     fn tend(&mut self) -> bool {
         false
-    }
-}
-
-/// One session's view of a shared browser: the driver contract on that
-/// session's own tabs, downloads and dialogs. The worker keeps one per
-/// session, all on the one browser, and makes one call at a time.
-pub struct Seat<B> {
-    browser: Rc<RefCell<B>>,
-    key: String,
-}
-
-impl<B: Runtime> Seat<B> {
-    /// Starts session `key` in `browser`, with a window of its own.
-    pub fn begin(browser: &Rc<RefCell<B>>, key: &str) -> Result<Seat<B>, Failure> {
-        browser.borrow_mut().begin(key)?;
-        Ok(Seat {
-            browser: browser.clone(),
-            key: key.to_string(),
-        })
-    }
-
-    fn browser(&self) -> RefMut<'_, B> {
-        let mut browser = self.browser.borrow_mut();
-        browser.select(&self.key);
-        browser
-    }
-}
-
-impl<B: Runtime> Driver for Seat<B> {
-    fn limit(&mut self, deadline: Option<Instant>) {
-        self.browser.borrow_mut().limit(deadline);
-    }
-    fn tabs(&mut self) -> Result<Vec<Tab>, Failure> {
-        self.browser().tabs()
-    }
-    fn guard(&mut self, values: &[String]) -> Result<(), Failure> {
-        self.browser().guard(values)
-    }
-    fn guard_stopped(&mut self) -> bool {
-        self.browser().guard_stopped()
-    }
-    fn new_tab(&mut self, url: Option<&str>) -> Result<String, Failure> {
-        self.browser().new_tab(url)
-    }
-    fn switch_tab(&mut self, tab: &str) -> Result<(), Failure> {
-        self.browser().switch_tab(tab)
-    }
-    fn close_tab(&mut self, tab: &str) -> Result<(), Failure> {
-        self.browser().close_tab(tab)
-    }
-    fn front(&mut self) -> Result<(), Failure> {
-        self.browser().front()
-    }
-    fn active_tab(&self) -> String {
-        self.browser().active_tab()
-    }
-    fn navigate(&mut self, url: &str) -> Result<(), Failure> {
-        self.browser().navigate(url)
-    }
-    fn back(&mut self) -> Result<bool, Failure> {
-        self.browser().back()
-    }
-    fn back_url(&mut self) -> Result<Option<String>, Failure> {
-        self.browser().back_url()
-    }
-    fn frames(&mut self) -> Result<Vec<Frame>, Failure> {
-        self.browser().frames()
-    }
-    fn run(&mut self, frame: &Frame, expression: &str) -> Result<Value, Failure> {
-        self.browser().run(frame, expression)
-    }
-    fn call(&mut self, frame: &Frame, function: &str, args: Vec<Value>) -> Result<Value, Failure> {
-        self.browser().call(frame, function, args)
-    }
-    fn reaches(&mut self, frame: &Frame, x: f64, y: f64) -> Result<bool, Failure> {
-        self.browser().reaches(frame, x, y)
-    }
-    fn frame_offset(&mut self, frame: &Frame) -> Result<(f64, f64), Failure> {
-        self.browser().frame_offset(frame)
-    }
-    fn click(&mut self, x: f64, y: f64) -> Result<(), Failure> {
-        self.browser().click(x, y)
-    }
-    fn type_text(&mut self, text: &str) -> Result<(), Failure> {
-        self.browser().type_text(text)
-    }
-    fn select_all(&mut self) -> Result<(), Failure> {
-        self.browser().select_all()
-    }
-    fn press(&mut self, key: &str) -> Result<(), Failure> {
-        self.browser().press(key)
-    }
-    fn wheel(&mut self, x: f64, y: f64, delta_y: f64) -> Result<(), Failure> {
-        self.browser().wheel(x, y, delta_y)
-    }
-    fn settle(&mut self) -> Result<Vec<Event>, Failure> {
-        self.browser().settle()
-    }
-    fn dialog_open(&self) -> bool {
-        self.browser().dialog_open()
-    }
-    fn answer_dialog(&mut self, accept: bool, text: Option<&str>) -> Result<(), Failure> {
-        self.browser().answer_dialog(accept, text)
-    }
-    fn eval(&mut self, script: &str) -> Result<Value, Failure> {
-        self.browser().eval(script)
-    }
-    fn set_files(
-        &mut self,
-        frame: &Frame,
-        element: &str,
-        files: &[PathBuf],
-    ) -> Result<(), Failure> {
-        self.browser().set_files(frame, element, files)
-    }
-    fn upload_folder(&self) -> PathBuf {
-        self.browser().upload_folder()
-    }
-    fn downloads(&mut self) -> Result<Vec<Download>, Failure> {
-        self.browser().downloads()
-    }
-    fn download_file(&mut self, id: &str) -> Result<(Download, PathBuf), Failure> {
-        self.browser().download_file(id)
-    }
-    fn capabilities(&self) -> Vec<String> {
-        self.browser().capabilities()
-    }
-    fn screenshot(&mut self) -> Result<(Value, Vec<u8>), Failure> {
-        self.browser().screenshot()
-    }
-    /// Ends this session only: its tabs close, the browser and the other
-    /// sessions go on.
-    fn close(&mut self) -> Value {
-        self.browser.borrow_mut().end(&self.key);
-        json!({"closed": true})
     }
 }
