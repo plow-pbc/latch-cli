@@ -4,7 +4,7 @@
 //! host refuses it `exec`. The standing comes from `rules show`, on this
 //! machine's state or from the host named, never from anywhere else.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::cli::AgentsArgs;
@@ -75,10 +75,14 @@ pub async fn run(state: &StateDir, args: AgentsArgs) -> Result<AgentsOutput, Fai
             (Some(host), Some(rules))
         }
     };
+    let rules = match (&host, rules) {
+        (Some(host), Some(rules)) => Some(HostRules::read(&host.name, rules)?),
+        _ => None,
+    };
     let agents = listed
         .into_iter()
         .map(|agent| {
-            let standing = rules.as_ref().map(|rules| standing(rules, &agent.uid));
+            let standing = rules.as_ref().map(|rules| rules.standing(&agent.uid));
             shown(agent, standing)
         })
         .collect();
@@ -117,23 +121,69 @@ async fn rules_on(
     Ok((host, rules))
 }
 
-/// `uid`'s standing in a `rules show` answer.
-fn standing(rules: &Value, uid: &str) -> Standing {
-    let own_rules = rules["agents"].as_array().is_some_and(|agents| {
-        agents
-            .iter()
-            .any(|agent| agent["agent_uid"] == uid && agent["text"].is_string())
-    });
-    let deny = &rules["deny_exec"];
-    let exec_blocked = (!deny.is_null()).then(|| {
-        deny["every_agent"] == true
-            || deny["agent_uids"]
-                .as_array()
-                .is_some_and(|uids| uids.iter().any(|blocked| blocked == uid))
-    });
-    Standing {
-        own_rules,
-        exec_blocked,
+/// What a host's `rules show` answer says about each agent's standing,
+/// read strictly: an answer without a readable `deny_exec` is an error, and
+/// only the host's own `null` (it cannot tell) leaves `exec_blocked` unknown.
+#[derive(Debug, PartialEq)]
+struct HostRules {
+    /// The agents with rules of their own there.
+    own_rules: Vec<String>,
+    deny_exec: Option<DenyExecRead>,
+}
+
+#[derive(Deserialize, Debug, PartialEq)]
+struct DenyExecRead {
+    every_agent: bool,
+    agent_uids: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct RulesRead {
+    agents: Vec<AgentRulesRead>,
+}
+
+#[derive(Deserialize)]
+struct AgentRulesRead {
+    agent_uid: String,
+    text: Option<String>,
+}
+
+impl HostRules {
+    fn read(host: &str, rules: Value) -> Result<HostRules, Failure> {
+        let unreadable = |what: &str| {
+            let message = format!(
+                "{host}'s rules answer has no readable {what}, so its agents' standing is \
+                 unknown; it may run an older latch: `latch update` there"
+            );
+            Failure::failed("bad_host_answer", message)
+        };
+        let deny_exec = match rules.get("deny_exec") {
+            None => return Err(unreadable("deny_exec")),
+            Some(Value::Null) => None,
+            Some(deny) => {
+                Some(serde_json::from_value(deny.clone()).map_err(|_| unreadable("deny_exec"))?)
+            }
+        };
+        let read: RulesRead = serde_json::from_value(rules).map_err(|_| unreadable("agents"))?;
+        let own_rules = read
+            .agents
+            .into_iter()
+            .filter(|agent| agent.text.is_some())
+            .map(|agent| agent.agent_uid)
+            .collect();
+        Ok(HostRules {
+            own_rules,
+            deny_exec,
+        })
+    }
+
+    fn standing(&self, uid: &str) -> Standing {
+        Standing {
+            own_rules: self.own_rules.iter().any(|own| own == uid),
+            exec_blocked: self.deny_exec.as_ref().map(|deny| {
+                deny.every_agent || deny.agent_uids.iter().any(|blocked| blocked == uid)
+            }),
+        }
     }
 }
 
@@ -155,5 +205,54 @@ fn shown(agent: ListedAgent, standing: Option<Standing>) -> AgentShown {
             .credential
             .and_then(|credential| credential.last_seen_at),
         standing,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const UID: &str = "0123456789abcdef0123456789abcdef";
+
+    fn read(rules: Value) -> Result<HostRules, Failure> {
+        HostRules::read("studio", rules)
+    }
+
+    #[test]
+    fn standing_is_read_from_rules_and_deny_exec() {
+        let rules = read(
+            json!({"agents": [{"agent_uid": UID, "text": "Only tests."}],
+            "deny_exec": {"every_agent": false, "agent_uids": [UID]}}),
+        )
+        .unwrap();
+        let standing = rules.standing(UID);
+        assert_eq!(
+            (standing.own_rules, standing.exec_blocked),
+            (true, Some(true))
+        );
+        let other = rules.standing("fedcba9876543210fedcba9876543210");
+        assert_eq!((other.own_rules, other.exec_blocked), (false, Some(false)));
+    }
+
+    #[test]
+    fn exec_blocked_is_unknown_only_when_the_host_says_so() {
+        let rules = read(json!({"agents": [], "deny_exec": null})).unwrap();
+        assert_eq!(rules.standing(UID).exec_blocked, None);
+    }
+
+    #[test]
+    fn a_missing_or_malformed_deny_exec_is_an_error_never_false() {
+        for rules in [
+            json!({"agents": []}),
+            json!({"agents": [], "deny_exec": {}}),
+            json!({"agents": [], "deny_exec": {"every_agent": "yes", "agent_uids": []}}),
+            json!({"agents": [], "deny_exec": {"every_agent": false}}),
+            json!({"agents": [], "deny_exec": {"every_agent": false, "agent_uids": "all"}}),
+            json!({"deny_exec": {"every_agent": false, "agent_uids": []}}),
+        ] {
+            let error = read(rules.clone()).unwrap_err();
+            assert_eq!(error.code, "bad_host_answer", "{rules}");
+            assert!(error.message.contains("studio"), "{error:?}");
+        }
     }
 }
