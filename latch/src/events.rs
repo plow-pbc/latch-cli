@@ -39,17 +39,20 @@ pub fn run(state: &StateDir, args: EventsArgs) -> Result<(), Failure> {
     state.create()?;
     let mut out = std::io::stdout().lock();
     let stdin = watch::stdin_is_a_pipe().then_some(libc::STDIN_FILENO);
-    stream(&state.path, &args, stdin, |line| emit(&mut out, line))
+    stream(&state.path, &args, stdin, |lines| {
+        lines.iter().all(|line| emit(&mut out, line))
+    })
 }
 
-/// The lines of `latch events` for the host on `dir`, each given to `send`
-/// until it returns false, or `hangup` closes. A host streams them to its
-/// owner's `latch events --host` this way.
+/// The lines of `latch events` for the host on `dir`, given to `send` as
+/// they come until it returns false, or `hangup` closes: first the opening
+/// (a snapshot, perhaps after `reset`), then each batch of changes. A host
+/// streams them to its owner's `latch events --host` this way.
 pub fn stream(
     dir: &Path,
     args: &EventsArgs,
     hangup: Option<RawFd>,
-    mut send: impl FnMut(&Value) -> bool,
+    mut send: impl FnMut(&[Value]) -> bool,
 ) -> Result<(), Failure> {
     let audit = dir.join(audit::FILE);
     let watching =
@@ -72,10 +75,8 @@ pub fn stream(
             vec![follower.snapshot(entries)]
         }
     };
-    for line in opening {
-        if !send(&line) {
-            return Ok(());
-        }
+    if !send(&opening) {
+        return Ok(());
     }
     if !args.follow {
         return Ok(());
@@ -84,10 +85,9 @@ pub fn stream(
     // Arm, look, then wait: what changes after the look wakes the wait.
     loop {
         watch.arm().map_err(watching)?;
-        for line in follower.changes()? {
-            if !send(&line) {
-                return Ok(());
-            }
+        let lines = follower.changes()?;
+        if !lines.is_empty() && !send(&lines) {
+            return Ok(());
         }
         watch.process(follower.host.pid);
         match watch.wait().map_err(watching)? {

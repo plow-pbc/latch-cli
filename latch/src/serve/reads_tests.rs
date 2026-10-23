@@ -23,6 +23,7 @@ fn ok(response: Response) -> Value {
 struct Stream {
     connection: Connection,
     recv: iroh::endpoint::RecvStream,
+    pending: std::collections::VecDeque<Value>,
 }
 
 impl Stream {
@@ -41,7 +42,11 @@ impl Stream {
             .await
             .unwrap();
         send.finish().unwrap();
-        Stream { connection, recv }
+        Stream {
+            connection,
+            recv,
+            pending: Default::default(),
+        }
     }
 
     async fn next(&mut self) -> Response {
@@ -52,10 +57,21 @@ impl Stream {
         serde_json::from_slice(&frame).unwrap()
     }
 
+    /// The next batch of lines.
+    async fn lines(&mut self) -> Vec<Value> {
+        let answer = ok(self.next().await);
+        let lines = answer["lines"].as_array();
+        lines
+            .unwrap_or_else(|| panic!("not lines: {answer}"))
+            .clone()
+    }
+
+    /// The next line, from this batch or the next.
     async fn line(&mut self) -> Value {
-        let mut answer = ok(self.next().await);
-        assert!(answer.get("line").is_some(), "not a line: {answer}");
-        answer["line"].take()
+        while self.pending.is_empty() {
+            self.pending = self.lines().await.into();
+        }
+        self.pending.pop_front().unwrap()
     }
 }
 
@@ -68,8 +84,8 @@ fn events_here(t: &TestHost) -> Vec<Value> {
         host: None,
     };
     let mut lines = Vec::new();
-    crate::events::stream(&t.state, &args, None, |line| {
-        lines.push(line.clone());
+    crate::events::stream(&t.state, &args, None, |batch| {
+        lines.extend_from_slice(batch);
         true
     })
     .unwrap();
@@ -138,10 +154,12 @@ async fn the_owner_reads_the_same_status_audit_and_events_as_on_the_host() {
 
     // Without --follow: the snapshot, then the end.
     let mut stream = Stream::open(&t, &device, "events", json!({"follow": false})).await;
-    let snapshot = stream.line().await;
+    let opening = stream.lines().await;
+    assert_eq!(opening.len(), 1);
+    let snapshot = &opening[0];
     let end = ok(stream.next().await);
     assert!(
-        end.get("line").is_none() && end["audit_id"].is_string(),
+        end.get("lines").is_none() && end["audit_id"].is_string(),
         "{end}"
     );
     let here = events_here(&t);
@@ -206,4 +224,30 @@ async fn a_stopping_host_ends_a_followed_stream_and_says_so() {
     };
     let (exit, code, _) = refusal(&answer);
     assert_eq!((exit, code), (Exit::Unreachable, "host_stopped"));
+}
+
+#[tokio::test]
+async fn a_stopping_host_ends_a_stream_whose_caller_stopped_reading() {
+    let t = start(World::default()).await;
+    // Far more than the connection lets through to a caller not reading.
+    for _ in 0..15 {
+        let mut record = crate::audit::record("k1", None, "exec", "allow", "ok");
+        record.args = json!({"argv": ["echo", "x".repeat(200_000)]});
+        t.host.append(record).await.unwrap();
+    }
+    let device = t.caller("device").await;
+    let _stalled = Stream::open(&t, &device, "audit", json!({"follow": true})).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    t.host.stopping.send_replace(Stopping::Draining);
+    let started = Instant::now();
+    while !t.audit().iter().any(|record| record["op"] == "audit") {
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "the stream is stuck in a send"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let ended = t.audit().into_iter().find(|record| record["op"] == "audit");
+    assert_eq!(ended.unwrap()["outcome"], "host_stopped");
 }

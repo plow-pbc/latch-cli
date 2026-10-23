@@ -4,9 +4,10 @@
 //! itself. From the owner's own devices only; an agent's key gets exit 4
 //! `owner_only`.
 //!
-//! `audit` with `follow` and `events` stream: each line goes to the caller
-//! as its own `{"ok": {"line": LINE}}` frame, until the lines end, the
-//! caller leaves or this host stops; then the final answer (see `wire.rs`).
+//! `audit` with `follow` and `events` stream: each batch of lines, the
+//! opening first, goes to the caller as one `{"ok": {"lines": [...]}}`
+//! frame, until the lines end, the caller leaves or this host stops; then
+//! the final answer (see `wire.rs`).
 
 use std::future::Future;
 use std::os::fd::{AsRawFd, RawFd};
@@ -22,7 +23,8 @@ use crate::state::StateDir;
 use crate::transport::SendStream;
 use crate::wire::{self, Response};
 
-/// How many lines may wait for a slow caller before the reader waits too.
+/// How many batches of lines may wait for a slow caller before the reader
+/// waits too.
 const QUEUED: usize = 64;
 
 pub(super) async fn run(
@@ -69,8 +71,8 @@ async fn read(
         }
         "audit" => {
             stream(host, send, cut_off, move |hangup, lines| {
-                crate::audit::follow_lines(&dir, Some(hangup), |line| {
-                    lines.blocking_send(line.clone()).is_ok()
+                crate::audit::follow_lines(&dir, Some(hangup), |batch| {
+                    lines.blocking_send(batch.to_vec()).is_ok()
                 })
             })
             .await
@@ -83,8 +85,8 @@ async fn read(
                 host: None,
             };
             stream(host, send, cut_off, move |hangup, lines| {
-                crate::events::stream(&dir, &events, Some(hangup), |line| {
-                    lines.blocking_send(line.clone()).is_ok()
+                crate::events::stream(&dir, &events, Some(hangup), |batch| {
+                    lines.blocking_send(batch.to_vec()).is_ok()
                 })
             })
             .await
@@ -114,14 +116,15 @@ async fn blocking(
         .map_err(|err| Failure::failed("read_failed", err.to_string()))?
 }
 
-/// Sends the caller each line `lines` gives, as it gives it. It runs on a
-/// thread of its own, waiting on the folder, until it ends or the hang-up
-/// descriptor it is given closes: once the caller leaves or the host stops.
+/// Sends the caller each batch of lines `lines` gives, as it gives it. It
+/// runs on a thread of its own, waiting on the folder, until it ends or the
+/// hang-up descriptor it is given closes: once the caller leaves or the
+/// host stops, even while a caller that stopped reading holds up a send.
 async fn stream(
     host: &Host,
     send: &mut SendStream,
     cut_off: impl Future<Output = &'static str>,
-    lines: impl FnOnce(RawFd, mpsc::Sender<Value>) -> Result<(), Failure> + Send + 'static,
+    lines: impl FnOnce(RawFd, mpsc::Sender<Vec<Value>>) -> Result<(), Failure> + Send + 'static,
 ) -> Result<Value, Failure> {
     let (hangup, hold) =
         std::io::pipe().map_err(|err| Failure::failed("watch_failed", err.to_string()))?;
@@ -135,22 +138,20 @@ async fn stream(
             .await;
     };
     tokio::pin!(stopping);
-    let ended = loop {
-        tokio::select! {
-            line = queued.recv() => match line {
-                Some(line) => {
-                    let frame = Response::Ok(json!({"line": line}));
-                    let json = serde_json::to_vec(&frame).expect("a line serializes");
-                    if wire::write_frame(send, &json).await.is_err() {
-                        break Ok(());
-                    }
-                }
-                // The reader is done, and every line it gave was sent.
-                None => break Ok(()),
-            },
-            _ = &mut cut_off => break Ok(()),
-            () = &mut stopping => break Err(stopped(&host.name)),
+    let forward = async {
+        // Until the reader is done, and every line it gave was sent.
+        while let Some(lines) = queued.recv().await {
+            let frame = Response::Ok(json!({"lines": lines}));
+            let json = serde_json::to_vec(&frame).expect("lines serialize");
+            if wire::write_frame(send, &json).await.is_err() {
+                break;
+            }
         }
+    };
+    let ended = tokio::select! {
+        () = forward => Ok(()),
+        _ = &mut cut_off => Ok(()),
+        () = &mut stopping => Err(stopped(&host.name)),
     };
     // Closing the hang-up wakes a reader waiting on the folder; dropping
     // the queue frees one waiting to hand over a line.

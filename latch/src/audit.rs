@@ -406,18 +406,24 @@ pub fn follow(state: &StateDir) -> Result<(), Failure> {
     state.create()?;
     let mut out = std::io::stdout().lock();
     let stdin = crate::watch::stdin_is_a_pipe().then_some(libc::STDIN_FILENO);
-    follow_lines(&state.path, stdin, |line| {
-        writeln!(out, "{line}").and_then(|()| out.flush()).is_ok()
+    follow_lines(&state.path, stdin, |lines| {
+        lines
+            .iter()
+            .try_for_each(|line| writeln!(out, "{line}"))
+            .and_then(|()| out.flush())
+            .is_ok()
     })
 }
 
-/// The lines of `latch audit show --follow` for the log in `dir`, each
-/// given to `send` until it returns false, or `hangup` closes. A host
-/// streams them to its owner's `latch audit show --follow --host` this way.
+/// The lines of `latch audit show --follow` for the log in `dir`, given to
+/// `send` as they are read until it returns false, or `hangup` closes:
+/// first every record so far (perhaps none), then each batch of new ones.
+/// A host streams them to its owner's `latch audit show --follow --host`
+/// this way.
 pub fn follow_lines(
     dir: &Path,
     hangup: Option<std::os::fd::RawFd>,
-    mut send: impl FnMut(&Value) -> bool,
+    mut send: impl FnMut(&[Value]) -> bool,
 ) -> Result<(), Failure> {
     let path = dir.join(FILE);
     let watching =
@@ -425,6 +431,7 @@ pub fn follow_lines(
     let mut watch =
         crate::watch::Watch::new(dir, std::slice::from_ref(&path), hangup).map_err(watching)?;
     let mut printed: Option<(usize, String)> = None;
+    let mut opened = false;
     loop {
         watch.arm().map_err(watching)?;
         let records = read_all(&path)?;
@@ -435,11 +442,11 @@ pub fn follow_lines(
             }
             Some(_) => return Err(broken(&path, "it no longer begins with what was shown")),
         };
-        for record in &records[from..] {
-            if !send(&shown(record)) {
-                return Ok(());
-            }
+        let lines: Vec<Value> = records[from..].iter().map(shown).collect();
+        if (!opened || !lines.is_empty()) && !send(&lines) {
+            return Ok(());
         }
+        opened = true;
         if let Some(last) = records.last() {
             printed = Some((records.len(), last.hash.clone()));
         }
