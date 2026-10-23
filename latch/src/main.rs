@@ -278,12 +278,13 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
         }) => to_json(audit::run(&state, action)?),
         Command::Audit(args) => {
             let range = audit::Range {
-                last: args.last.map(|last| last as usize),
+                last: args.last,
                 all: args.all,
                 before: args.before,
                 after: args.after,
                 follow: args.follow,
             };
+            range.check()?;
             match remote::other_host(&state, args.host).await? {
                 Some(host) => {
                     let request = serde_json::to_value(&range).expect("a range serializes");
@@ -291,7 +292,13 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
                     streamed(remote::stream(&state, &host, "audit", request, follow).await)
                 }
                 None => {
-                    state.create()?;
+                    // A host's log begins when it first serves, or keeps an
+                    // owner command here.
+                    if !state.path.join(audit::FILE).exists() {
+                        let message = "this machine has never served, so it keeps no audit; \
+                                       read a host's with `latch audit --host NAME`";
+                        return Err(Failure::usage("no_host_here", message.into()));
+                    }
                     let whose = match state.load_config()? {
                         Some(config) => format!("{}'s", config.peer.name),
                         None => "this machine's".to_string(),

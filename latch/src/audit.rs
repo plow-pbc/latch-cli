@@ -409,10 +409,25 @@ const PAGE: usize = 50;
 const SCHEMA: u32 = 1;
 
 impl Range {
-    /// The same rules as the command's flags, for a range that came over
-    /// the wire.
-    fn check(&self) -> Result<(), Failure> {
+    /// The same rules as the command's flags, also for a range that came
+    /// over the wire, and that each id is one.
+    pub fn check(&self) -> Result<(), Failure> {
         let usage = |message: &str| Err(Failure::usage("usage", message.to_string()));
+        for (flag, id) in [("--before", &self.before), ("--after", &self.after)] {
+            let is_id = |id: &String| {
+                id.len() == 64
+                    && id
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            };
+            if let Some(id) = id
+                && !is_id(id)
+            {
+                return usage(&format!(
+                    "{flag} takes a record's id: 64 hex characters, a record line's `cursor`"
+                ));
+            }
+        }
         if self.last == Some(0) {
             return usage("--last takes a positive number");
         }

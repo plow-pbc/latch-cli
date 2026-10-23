@@ -182,6 +182,7 @@ pub enum Command {
     /// turns one on (running its setup) or off
     Plugins(PluginsArgs),
     /// This machine's host audit log (or another host's, with --host): its newest records as JSON lines, an earlier page, or with --follow each new one; its chain checked without the key, or a new key
+    #[command(after_help = AUDIT_HELP)]
     Audit(AuditArgs),
     /// Run this machine as a host, as a service of this user's: with its
     /// dashboard (Ctrl-C stops the host), or detached with -d
@@ -855,9 +856,9 @@ pub struct AuditArgs {
     #[command(subcommand)]
     pub action: Option<AuditAction>,
     /// How many of the newest records to read [default: 50]; with --before, how many before it
-    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u64).range(1..),
+    #[arg(long, value_name = "N", value_parser = positive, allow_hyphen_values = true,
           conflicts_with = "all")]
-    pub last: Option<u64>,
+    pub last: Option<usize>,
     /// Every record the log holds
     #[arg(long)]
     pub all: bool,
@@ -944,6 +945,37 @@ pub struct ServeArgs {
 }
 
 /// What `latch serve --help` adds after the options.
+/// `--last N`: a page of at least one record.
+fn positive(text: &str) -> Result<usize, String> {
+    match text.parse() {
+        Ok(count) if count > 0 => Ok(count),
+        _ => Err("--last takes a whole number of records, 1 or more, such as 50".into()),
+    }
+}
+
+/// What `latch audit --help` adds after the options.
+const AUDIT_HELP: &str = "\
+What it prints, as JSON lines, with or without --follow:
+  {\"type\":\"hello\",\"schema\":1}
+  {\"type\":\"snapshot\",\"cursor\":ID,\"has_older\":BOOL}
+      ID is the record just before the first one shown (64 zeros: none);
+      has_older says whether there are older records than this page.
+  {\"type\":\"record\",\"cursor\":ID,\"record\":{...}}, one line per record:
+      id, time, caller, caller_name, agent, op, decision, outcome, and
+      details: started, args, gate. A record's id is the audit_id its
+      caller got back.
+  {\"type\":\"caught_up\",\"cursor\":ID,\"has_older\":BOOL}
+      The page is complete here; ID is the last record shown.
+  With --follow, then one record line for each new record.
+For an earlier page, pass --before the first record's id. To resume a
+follow, pass --follow --after the last cursor you got: every record after
+it, then the new ones, across host restarts too.
+Masking: each record's args have credential-looking values (tokens,
+passwords, keys) hidden, as the serve dashboard hides them. This is best
+effort: some can slip through. The stored values are never printed.
+Without --follow it ignores stdin and prints the whole page; with
+--follow it ends once stdin, when it is a pipe, closes.";
+
 const SERVE_HELP: &str = "\
 What callers can reach (each exec and file call is judged):
   Read: your home folder and system files (programs, libraries, developer

@@ -2585,17 +2585,11 @@ fn audit_follows_its_records_and_resumes_after_one_exactly_across_a_host_restart
         serde_json::from_slice::<Value>(&output.stdout).unwrap()["audit_id"].clone()
     };
 
-    let audit = Lines::start(&host, &["audit", "--follow"]);
-    let genesis = "0".repeat(64);
-    assert_eq!(
-        audit.opening(),
-        [
-            json!({"type": "hello", "schema": 1}),
-            json!({"type": "snapshot", "cursor": genesis, "has_older": false}),
-            json!({"type": "caught_up", "cursor": genesis, "has_older": false}),
-        ]
-    );
     let serve = serving(&host, &relay);
+    let audit = Lines::start(&host, &["audit", "--follow"]);
+    let opening = audit.opening();
+    assert_eq!(opening[0], json!({"type": "hello", "schema": 1}));
+    assert_eq!(opening[1]["has_older"], false, "{opening:?}");
     let first = exec("one");
     let line = audit.next_record();
     assert_eq!(line["cursor"], first);
@@ -4574,6 +4568,41 @@ fn only_a_follow_ends_with_stdin_even_while_its_opening_is_stuck_in_a_write() {
         thread::sleep(std::time::Duration::from_millis(20));
     }
     assert!(follow.wait().unwrap().success());
+}
+
+#[test]
+fn audit_says_why_it_cannot_read() {
+    let (_dir, state, _) = owner_host();
+    let refused = |args: &[&str]| -> Value {
+        let output = latch(&state, args, &[]);
+        assert_eq!(output.status.code(), Some(2), "{output:?}");
+        assert!(output.stdout.is_empty(), "{output:?}");
+        serde_json::from_slice::<Value>(&output.stderr).unwrap()["error"].clone()
+    };
+    // Logged in, never served: no audit here.
+    let none = refused(&["audit"]);
+    assert_eq!(none["code"], "no_host_here", "{none}");
+    assert!(
+        none["message"].as_str().unwrap().contains("--host"),
+        "{none}"
+    );
+
+    let set = latch(&state, &["rules", "set", "Never send email."], &[]);
+    assert_eq!(set.status.code(), Some(0), "{set:?}");
+    let malformed = refused(&["audit", "--before", "nothex"]);
+    assert_eq!(malformed["code"], "usage", "{malformed}");
+    assert!(
+        malformed["message"]
+            .as_str()
+            .unwrap()
+            .contains("64 hex characters")
+    );
+    for zero in ["0", "-1", "abc"] {
+        let last = refused(&["audit", "--last", zero]);
+        let message = last["message"].as_str().unwrap();
+        assert!(message.contains("1 or more, such as 50"), "{message}");
+        assert!(!message.contains("18446744073709551615"), "{message}");
+    }
 }
 
 /// A follower sleeps while the log is quiet: its own reads (under the audit

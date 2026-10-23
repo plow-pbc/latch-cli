@@ -109,6 +109,8 @@ This reads the host's audit log, as JSON lines, every form alike:
 Errors:
 
 - `cursor_expired` (exit 2): `--after` or `--before` names a record the log doesn't hold. Read it again without them.
+- `usage` (exit 2): flags that don't go together, `--last` below 1, or an id that isn't one (64 hex characters).
+- `no_host_here` (exit 2): this machine has never served, so it keeps no audit; read a host's with `--host NAME`.
 - `audit_broken` (exit 1): the log fails its checks, or no longer begins with what a follower was sent.
 - A stream can end with one error on stderr after valid lines. Keep the last `cursor` you got.
 
