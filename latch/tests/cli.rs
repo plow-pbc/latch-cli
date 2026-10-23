@@ -5839,8 +5839,7 @@ fn enabling_google_offers_a_sign_in_link_and_waits_for_the_account() {
     // The enable before an --add-account wait turned it on.
     assert_eq!(
         stopped["error"]["message"],
-        "Stopped waiting for another Google account. Google is on for this host, from the \
-         enable before the wait.",
+        "Stopped waiting for another Google account. Google was enabled before the wait.",
         "{stopped}"
     );
     assert_eq!(child.wait().unwrap().code(), Some(1));

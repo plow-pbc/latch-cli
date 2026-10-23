@@ -216,13 +216,12 @@ fn timed_out(again: Option<&[String]>) -> Failure {
 }
 
 /// Stopped before the final enable was sent: the wait turned nothing on.
-/// With `--add-account`, the enable before the wait already turned Google
-/// on for this host. A sign-in already started in a browser is left to
+/// With `--add-account`, the enable before the wait turned Google on, but
+/// a disable may have followed it. A sign-in already started in a browser is left to
 /// finish or not.
 fn cancelled(adding: bool) -> Failure {
     let message = if adding {
-        "Stopped waiting for another Google account. Google is on for this host, from the \
-         enable before the wait."
+        "Stopped waiting for another Google account. Google was enabled before the wait."
     } else {
         "Stopped waiting for Google sign-in."
     };
