@@ -183,10 +183,11 @@ struct RecordFieldsTests {
 }
 
 /// A latch on a Mac that has never served: `audit --follow` refuses with
-/// `no_host_here` until its host starts, then streams.
+/// `no_host_here` (or `refusal`) until its host starts, then streams.
 final class NeverServedClient: LatchClient, @unchecked Sendable {
     let stateDir = "/s"
     var hosting = false
+    var refusal = LatchFailure(code: "no_host_here", message: "this machine has never served")
     private(set) var follows = 0
 
     func localStatus() async throws -> LocalStatus { try Fixtures.decode(hosting ? Fixtures.serving : Fixtures.stopped) }
@@ -204,9 +205,10 @@ final class NeverServedClient: LatchClient, @unchecked Sendable {
     func auditFollow(host: String?, after: String?) -> AsyncThrowingStream<AuditLine, Error> {
         follows += 1
         let hosting = hosting
+        let refusal = refusal
         return AsyncThrowingStream { continuation in
             guard hosting else {
-                return continuation.finish(throwing: LatchError.failed(LatchFailure(code: "no_host_here", message: "this machine has never served")))
+                return continuation.finish(throwing: LatchError.failed(refusal))
             }
             continuation.yield(.caughtUp(cursor: String(repeating: "0", count: 64), hasOlder: false))
         }
@@ -350,4 +352,21 @@ final class PagedClient: LatchClient, @unchecked Sendable {
     func auditFollow(host: String?, after: String?) -> AsyncThrowingStream<AuditLine, Error> { AsyncThrowingStream { _ in } }
     func perform(_ args: [String]) async throws {}
     func stop() async throws {}
+}
+
+@MainActor
+struct TooLargeRecordTests {
+    @Test func activityStopsAtARecordTooLargeToSendInsteadOfAskingForeverAgain() async throws {
+        let client = NeverServedClient()
+        client.refusal = LatchFailure(code: "record_too_large", message: "the record is too large")
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
+        app.stage(status: try Fixtures.decode(Fixtures.serving))
+        let feed = app.feed(for: try #require(app.host))
+        feed.start()
+        for _ in 0..<200 where feed.running { try await Task.sleep(for: .milliseconds(5)) }
+        #expect(!feed.running)
+        #expect(feed.error?.code == "record_too_large")
+        #expect(client.follows == 1)
+        feed.stop()
+    }
 }

@@ -276,7 +276,7 @@ package enum SnapshotRunner {
             ("02-login-waiting", .login, Fixtures.loggedOut, Progress(), { $0.login = .waiting(code) }),
             ("02-login-expired", .login, Fixtures.loggedOut, Progress(), { $0.login = .expired(code) }),
             ("02-login-error", .login, Fixtures.loggedOut, Progress(), {
-                $0.login = .failed("Plow couldn't be reached at http://127.0.0.1:18934; check your connection, then try again")
+                $0.login = .failed(LatchError.failed(LatchFailure(code: "plow_unreachable", message: "could not reach Plow at http://127.0.0.1:18934: error sending request for url (http://127.0.0.1:18934/v1/latch/login)")))
             }),
             ("02-login-name-taken", .login, Fixtures.loggedOut, Progress(), { $0.login = .nameTaken(existing: "studio", lastSeen: nil); $0.loginName = "studio-2" }),
             ("02-login-verified", .login, Fixtures.serving, Progress(), { $0.login = .verified(name: "studio") }),
@@ -301,9 +301,15 @@ package enum SnapshotRunner {
                 for (example, answer) in zip(deck.examples, Fixtures.executiveTries) { $0.previews[example.id] = .verdict(try! Fixtures.decode(answer)) }
                 $0.openExamples = [deck.examples[4].id]
             }),
+            ("04-rules-personal-host-refused-open", .rules, Fixtures.serving, Progress(), {
+                let deck = Onboarding.decks[0]
+                $0.deck = deck; $0.draftRules = deck.rules
+                for (example, answer) in zip(deck.examples, Fixtures.personalTries) { $0.previews[example.id] = .verdict(try! Fixtures.decode(answer)) }
+                $0.openExamples = [deck.examples[3].id]
+            }),
             ("04-rules-save-failed", .rules, Fixtures.stopped, Progress(), {
                 $0.draftRules = rules
-                $0.rulesError = "rules are at most 8 KB together; shorten them, then save again"
+                $0.rulesError = LatchError.failed(LatchFailure(code: "rules_too_long", message: "rules are at most 8 KB together; shorten them, then save again"))
             }),
             ("05-google-checking", .google, Fixtures.stopped, Progress(), { _ in }),
             ("05-google-not-connected", .google, Fixtures.stopped, Progress(), { await $0.checkGoogle() }),
@@ -329,13 +335,13 @@ package enum SnapshotRunner {
             }),
             ("06-access-restart-failed", .access, Fixtures.stopped, Progress(), {
                 $0.messages = .needed("Waiting for access"); $0.contacts = .needed("Waiting for access")
-                $0.restartError = "the host did not answer within 30 s; see /Users/me/.latch/serve.log"
+                $0.restartError = LatchError.failed(LatchFailure(code: "serve_failed", message: "the host did not answer within 30 seconds (`latch logs` has its log)"))
             }),
             ("06-access-terminal-host", .access, Fixtures.servingAttached, Progress(), {
                 $0.messages = .needed("Waiting for access"); $0.contacts = .needed("Waiting for access")
             }),
             ("06-access-unavailable", .access, Fixtures.stopped, Progress(), {
-                $0.messages = .failed("messages cannot be checked on this host: the Messages reader is missing; run install.sh again")
+                $0.messages = .failed(LatchError.failed(LatchFailure(code: "messages_not_installed", message: "the Messages reader is not installed at /Users/me/.latch/plugins/messages/0.1.0/latch-messages; run install.sh")))
                 $0.contacts = .done
             }),
             ("07-start", .start, Fixtures.stopped, Progress(), { _ in }),
@@ -343,7 +349,7 @@ package enum SnapshotRunner {
             ("07-start-already-running", .start, Fixtures.serving, Progress(), { _ in }),
             ("07-start-other-version", .start, Fixtures.otherVersion, Progress(), { _ in }),
             ("07-start-error", .start, Fixtures.stopped, Progress(), {
-                $0.startError = "the host did not answer within 30 s; see /Users/me/.latch/serve.log"
+                $0.startError = LatchError.failed(LatchFailure(code: "serve_failed", message: "the host did not answer within 30 seconds (`latch logs` has its log)"))
             }),
             ("08-done-all-set", .done, Fixtures.serving, full, {
                 $0.app.stage(rulesSaved: true, setup: try! Fixtures.decode(Fixtures.setup(on: ["google", "messages", "contacts"])))
@@ -378,7 +384,7 @@ package enum SnapshotRunner {
             for (name, status, progress, rulesSaved, on) in mains {
                 let app = AppModel(client: FakeLatchClient(), still: true)
                 app.stage(status: try status.map { try Fixtures.decode($0) },
-                          error: status == nil ? "Latch couldn't start: The file “latch” doesn't exist." : nil)
+                          error: status == nil ? .unreachable("Latch couldn't start.", detail: "The file “latch” doesn't exist.") : nil)
                 app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
                 app.stage(rulesSaved: rulesSaved, setup: try on.map { try Fixtures.decode(Fixtures.setup(on: $0)) })
                 _ = app.stage(.done, progress: progress)
@@ -417,6 +423,33 @@ package enum SnapshotRunner {
                 app.chosenHost = chosen
                 app.section = section
                 stageActivity(app)
+                _ = app.stage(.done, progress: full)
+                try await renderWindow(MainView().environment(app), size: mainSize, dark: dark,
+                                 file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
+            }
+            // latch's errors in the app's words, latch's own under Details:
+            // a host out of reach, one stopped while Activity follows it,
+            // and a code the app has no sentence for.
+            let unreachable = LatchError.failed(LatchFailure(code: "host_unreachable",
+                                                             message: #"could not connect to host "pi-kitchen"; nothing was sent"#))
+            let stopped = LatchError.failed(LatchFailure(code: "host_stopped", message: #"host "pi-kitchen" stopped serving"#))
+            let busy = LatchError.failed(LatchFailure(code: "state_busy", message: "another latch is changing /Users/me/.latch; try again"))
+            let errors: [(String, String?, SidebarItem, HostSummary)] = [
+                ("23-error-rules-pi-kitchen-unreachable", "pi-kitchen", .rules, HostSummary(rules: .failure(unreachable))),
+                ("23-error-activity-pi-kitchen-stopped", "pi-kitchen", .activity, HostSummary()),
+                ("23-error-rules-unknown-code", nil, .rules, HostSummary(rules: .failure(busy))),
+            ]
+            for (name, chosen, section, summary) in errors {
+                let app = AppModel(client: FakeLatchClient(), still: true)
+                app.stage(status: try Fixtures.decode(Fixtures.serving))
+                app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
+                app.stage(summary: summary, for: chosen ?? "studio")
+                app.chosenHost = chosen
+                app.section = section
+                stageActivity(app)
+                if let kitchen = app.hosts.first(where: { $0.name == "pi-kitchen" }) {
+                    app.feed(for: kitchen).stage("", error: stopped)
+                }
                 _ = app.stage(.done, progress: full)
                 try await renderWindow(MainView().environment(app), size: mainSize, dark: dark,
                                  file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
@@ -519,6 +552,7 @@ package enum SnapshotRunner {
                 ("17-vault-empty", nil, #"{"items":[]}"#, nil, Fixtures.studioHosts),
                 ("17-vault-remote-pi-kitchen", "pi-kitchen", Fixtures.remoteVaultItems, "v1", Fixtures.studioHosts),
                 ("17-vault-remote-offline", "pi-kitchen", #"{"items":[]}"#, nil, piOffline),
+                ("17-vault-remove-failed", nil, Fixtures.vaultItems, "v1", Fixtures.studioHosts),
             ]
             for (name, chosen, items, selected, account) in screens {
                 let app = AppModel(client: FakeLatchClient(), still: true)
@@ -530,6 +564,9 @@ package enum SnapshotRunner {
                 app.chosenHost = chosen
                 app.section = .vault
                 app.selectedVaultItem = selected
+                if name.hasSuffix("remove-failed") {
+                    app.vaultRemoveError = .failed(LatchFailure(code: "state_busy", message: "another latch is changing /Users/me/.latch; try again"))
+                }
                 _ = app.stage(.done, progress: full)
                 try await renderWindow(MainView().environment(app), size: CGSize(width: 1020, height: 620), dark: dark,
                                        file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
@@ -542,7 +579,7 @@ package enum SnapshotRunner {
             newLogin.title = "Grocer"; newLogin.sites = "grocer.example"; newLogin.values = ["username": "ada@example.com", "password": "secret"]
             let editCard = VaultEditor(editing: try Fixtures.decode(Fixtures.vaultShows["v3"]!), on: studio)
             let stale = VaultEditor(editing: try Fixtures.decode(Fixtures.vaultShows["v1"]!), on: studio)
-            stale.values["username"] = "ada2"; stale.error = AppModel.itemChangedElsewhere
+            stale.values["username"] = "ada2"; stale.error = .unreachable(AppModel.itemChangedElsewhere)
             let preview = (try Fixtures.decode(Fixtures.importPreview) as ImportPreviewFixture).preview
             let previewing = VaultImport(file: URL(filePath: "/Users/me/Downloads/Chrome Passwords.csv"), on: studio)
             previewing.stage(preview: preview)

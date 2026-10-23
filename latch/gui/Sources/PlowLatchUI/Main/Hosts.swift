@@ -129,6 +129,9 @@ extension HostEntry {
 struct PlowNotice: Equatable {
     var title: String
     var detail: String
+    /// What Plow or latch said, when the title doesn't: shown in the app's
+    /// words, with latch's under Details.
+    var error: LatchError?
 
     init(error: LatchError, listed: Bool) {
         let others = listed ? "Your other hosts are shown as Plow last listed them."
@@ -138,7 +141,8 @@ struct PlowNotice: Equatable {
             detail = "\(others) This Mac's own host works as usual."
         } else {
             title = "Couldn't list your hosts."
-            detail = "\(error.message)\n\(others)"
+            detail = others
+            self.error = error
         }
     }
 }

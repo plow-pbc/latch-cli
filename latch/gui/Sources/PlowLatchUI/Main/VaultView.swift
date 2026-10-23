@@ -17,7 +17,7 @@ struct VaultView: View {
                     ContentUnavailableView {
                         Label("\(host.name) is offline", systemImage: "wifi.slash")
                     } description: {
-                        Text("Its vault is kept on \(host.name). Start `latch serve` there to see and change it.")
+                        Text("Its vault is kept on \(host.name). Start Latch there to see and change it.")
                     }
                 } else {
                     HostVault(host: host, search: search, inspecting: $inspecting).id(host.id)
@@ -106,7 +106,7 @@ private struct HostVault: View {
                 ContentUnavailableView {
                     Label("Couldn't read the vault on \(host.name)", systemImage: "exclamationmark.triangle")
                 } description: {
-                    Text(error.message)
+                    ErrorText(error: error, host: host.name, titled: true)
                 } actions: {
                     Button("Try Again") { Task { await app.refreshVault(on: host) } }
                 }
@@ -148,10 +148,25 @@ private struct HostVault: View {
                 }
             }
         }
-        .alert("Couldn't remove the item", isPresented: removeErrorBinding) {
-            Button("OK") { app.vaultRemoveError = nil }
-        } message: {
-            Text(app.vaultRemoveError ?? "")
+        // Said above the list, where latch's reason can sit under Details
+        // (an alert has no room for it).
+        .safeAreaInset(edge: .top) {
+            if let error = app.vaultRemoveError {
+                HStack(alignment: .top) {
+                    Label {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Couldn't remove the item")
+                            ErrorText(error: error, host: host.name, titled: true).foregroundStyle(.secondary)
+                        }
+                    } icon: {
+                        Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange)
+                    }
+                    Spacer()
+                    Button("OK") { app.vaultRemoveError = nil }
+                }
+                .padding(10)
+                .background(.bar)
+            }
         }
         .confirmationDialog("Remove “\(removing?.title ?? "")” from \(host.name)?", isPresented: removingBinding, presenting: removing) { item in
             Button("Remove", role: .destructive) {
@@ -164,10 +179,6 @@ private struct HostVault: View {
             guard !app.still else { return }
             await app.refreshVault(on: host)
         }
-    }
-
-    private var removeErrorBinding: Binding<Bool> {
-        Binding { app.vaultRemoveError != nil } set: { if !$0 { app.vaultRemoveError = nil } }
     }
 
     private var removingBinding: Binding<Bool> {
@@ -258,7 +269,8 @@ struct VaultItemInspector: View {
                     Text("No fields").foregroundStyle(.secondary)
                 }
                 if case let .failure(error)? = show {
-                    Label(error.message, systemImage: "exclamationmark.triangle").foregroundStyle(.secondary)
+                    Label { ErrorText(error: error) } icon: { Image(systemName: "exclamationmark.triangle") }
+                        .foregroundStyle(.secondary)
                 }
                 ForEach(shownFields, id: \.label) { field in
                     LabeledContent(VaultKind.title(of: field.label)) {
@@ -393,7 +405,7 @@ final class VaultEditor {
     /// The item being changed, as `vault show` said; nil for a new one.
     let original: VaultShow?
     /// An item whose values couldn't be read: the sheet says so, nothing more.
-    let unreadable: (item: VaultList.Item, message: String)?
+    let unreadable: (item: VaultList.Item, error: LatchError)?
     var kind: VaultKind
     var title: String
     /// Sites as typed: separated by commas or spaces.
@@ -401,7 +413,7 @@ final class VaultEditor {
     var otherTopSites: String
     var values: [String: String]
     private(set) var saving = false
-    var error: String?
+    var error: LatchError?
 
     init(kind: VaultKind = .login, on host: HostEntry) {
         self.host = host
@@ -425,10 +437,10 @@ final class VaultEditor {
         values = show.values
     }
 
-    init(failed item: VaultList.Item, _ message: String, on host: HostEntry) {
+    init(failed item: VaultList.Item, _ error: LatchError, on host: HostEntry) {
         self.host = host
         original = nil
-        unreadable = (item, message)
+        unreadable = (item, error)
         kind = VaultKind(rawValue: item.kind) ?? .note
         title = item.title
         sites = ""
@@ -484,7 +496,7 @@ final class VaultEditor {
             error = nil
             return true
         } catch {
-            self.error = (error as? LatchError)?.message ?? error.localizedDescription
+            self.error = .from(error)
             return false
         }
     }
@@ -515,7 +527,7 @@ struct VaultItemSheet: View {
                 if let unreadable = editor.unreadable {
                     Section {
                         Label("Couldn't read “\(unreadable.item.title)”", systemImage: "exclamationmark.triangle")
-                        Text(unreadable.message).foregroundStyle(.secondary)
+                        ErrorText(error: unreadable.error, host: host.name, titled: true).foregroundStyle(.secondary)
                     }
                 } else {
                     Section {
@@ -557,7 +569,8 @@ struct VaultItemSheet: View {
             HStack {
                 // A refused save is said here, beside Save, never below the fold.
                 if let error = editor.error {
-                    Label(error, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.red)
+                    Label { ErrorText(error: error, host: host.name) } icon: { Image(systemName: "exclamationmark.triangle") }
+                        .font(.callout).foregroundStyle(.red)
                 } else {
                     Text("Secrets go straight to \(host.name)'s vault and are never shown again.")
                         .font(.callout).foregroundStyle(.secondary)
@@ -643,7 +656,7 @@ final class VaultImport {
             if case let .success(fresh)? = preview { picked = kept.intersection(fresh.items.map(\.pick)) }
             notice = Self.changedSincePreview
         } catch {
-            result = .failure(error as? LatchError ?? .unreachable(error.localizedDescription))
+            result = .failure(.from(error))
         }
     }
 
@@ -711,7 +724,7 @@ struct ImportSheet: View {
             ContentUnavailableView {
                 Label("Couldn't read this export", systemImage: "exclamationmark.triangle")
             } description: {
-                Text(error.message)
+                ErrorText(error: error, host: host.name, titled: true)
             }
         case let (_, .success(result)?):
             ContentUnavailableView {
@@ -723,7 +736,7 @@ struct ImportSheet: View {
             ContentUnavailableView {
                 Label("Couldn't confirm the import", systemImage: "exclamationmark.triangle")
             } description: {
-                Text(error.message)
+                ErrorText(error: error, host: host.name, titled: true)
             }
         case let (.success(preview)?, nil):
             List {

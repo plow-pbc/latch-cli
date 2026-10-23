@@ -23,7 +23,7 @@ struct AgentsView: View {
                     ContentUnavailableView {
                         Label("Couldn't list your agents", systemImage: "exclamationmark.triangle")
                     } description: {
-                        Text(error.message)
+                        ErrorText(error: error, titled: true)
                     } actions: {
                         Button("Try Again") { Task { await app.refreshAgents() } }
                     }
@@ -132,7 +132,7 @@ struct HostPill: View {
         var marks: [String] = []
         if offline { marks.append("\(host.name) is offline") }
         if standing?.ownRules == true { marks.append("\(agent.name) has rules of its own here") }
-        if standing?.execBlocked == true { marks.append("\(host.name) refuses \(agent.name) exec") }
+        if standing?.execBlocked == true { marks.append("\(agent.name) can't run programs on \(host.name)") }
         if !offline, standing == nil { marks.append("Its standing on \(host.name) isn't known yet") }
         if marks.isEmpty { marks.append("\(agent.name) follows the rules for every agent here") }
         return marks.joined(separator: ". ") + ". Click to open its rules on \(host.name)."
@@ -164,7 +164,11 @@ struct AgentPage: View {
                     HStack(spacing: 12) {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(host.isThisMac ? "\(host.name) (this Mac)" : host.name)
-                            Text(standingText(on: host)).font(.callout).foregroundStyle(.secondary)
+                            if case let .failure(error)? = app.standings[host.name], host.isThisMac || host.online != false {
+                                ErrorText(error: error, host: host.name).font(.callout).foregroundStyle(.secondary)
+                            } else {
+                                Text(standingText(on: host)).font(.callout).foregroundStyle(.secondary)
+                            }
                         }
                         Spacer()
                         Button("Rules on \(host.name)") {
@@ -191,11 +195,11 @@ struct AgentPage: View {
         if !host.isThisMac, host.online == false { return "Offline: its standing there can't be read" }
         switch app.standings[host.name] {
         case nil: return "Checking…"
-        case let .failure(error)?: return error.message
+        case let .failure(error)?: return ErrorCopy.said(error, host: host.name)
         case let .success(byAgent)?:
             let standing = byAgent[agent.uid]
             var words = [standing?.ownRules == true ? "Its own rules, and the rules for every agent" : "The rules for every agent"]
-            if standing?.execBlocked == true { words.append("exec refused") }
+            if standing?.execBlocked == true { words.append("can't run programs") }
             return words.joined(separator: " · ")
         }
     }

@@ -72,7 +72,7 @@ private struct HostSection: View {
                 }
                 .disabled(app.hostAction != nil)
                 if let error = app.hostActionError ?? app.startHostError {
-                    Text(error).foregroundStyle(.red)
+                    ErrorText(error: error).foregroundStyle(.red)
                 }
                 if let status = app.status {
                     if let version = status.version {
@@ -126,7 +126,7 @@ private struct ExecSection: View {
     }
 
     private func text(_ deny: RulesShow.DenyExec) -> String {
-        if deny.everyAgent == true { return "No: \(host.name) refuses every agent exec" }
+        if deny.everyAgent == true { return "No" }
         let uids = deny.agentUids ?? []
         guard !uids.isEmpty else { return "Yes, judged by your rules" }
         let names = uids.map { uid in app.agents?.first { $0.uid == uid }?.name ?? "Agent \(uid.prefix(8))" }
@@ -140,7 +140,7 @@ private struct PluginsSection: View {
     var host: HostEntry
     @Environment(AppModel.self) private var app
     @State private var changing: String?
-    @State private var error: String?
+    @State private var error: LatchError?
 
     var body: some View {
         Section {
@@ -177,7 +177,7 @@ private struct PluginsSection: View {
                         }
                     }
                 }
-                if let error { Text(error).foregroundStyle(.red) }
+                if let error { ErrorText(error: error, host: host.name).foregroundStyle(.red) }
             }
         } header: {
             Text("Plugins")
@@ -200,7 +200,7 @@ private struct PluginsSection: View {
                     try await app.setConnector(plugin.name, on: on, host: host)
                     error = nil
                 } catch {
-                    self.error = error.localizedDescription
+                    self.error = .from(error)
                 }
             }
         }

@@ -20,7 +20,7 @@ struct ActivityView: View {
                     ContentUnavailableView {
                         Label("\(host.name) is offline", systemImage: "wifi.slash")
                     } description: {
-                        Text("Its activity is kept on \(host.name). Start `latch serve` there to see it.")
+                        Text("Its activity is kept on \(host.name). Start Latch there to see it.")
                     }
                 } else {
                     Records(feed: app.feed(for: host), host: host, filter: app.activityFilter, showConnections: app.showConnections,
@@ -122,7 +122,7 @@ private struct Records: View {
             }
             Spacer()
             if let error = feed.error {
-                Label(error.message, systemImage: "exclamationmark.triangle").foregroundStyle(.secondary).lineLimit(1)
+                Label(ErrorCopy.short(error, host: host.name), systemImage: "exclamationmark.triangle").foregroundStyle(.secondary).lineLimit(1)
             } else {
                 Text("\(feed.records.count) records\(feed.caughtUp ? "" : " · reading…")").foregroundStyle(.secondary)
             }
@@ -154,7 +154,7 @@ private struct Records: View {
     }
 }
 
-/// Why a host's activity can't be shown, as latch said.
+/// Why a host's activity can't be shown, in the app's words.
 private struct Unavailable: View {
     var error: LatchError
     var host: HostEntry
@@ -168,13 +168,15 @@ private struct Unavailable: View {
             ContentUnavailableView {
                 Label("Can't reach \(host.name)", systemImage: "wifi.slash")
             } description: {
-                Text("\(error.message)\nLatch tries again on its own while this screen is open.")
+                ErrorText(error: error, said: [ErrorCopy.fact(error, host: host.name).flatMap { error.code == "host_unreachable" ? nil : $0 },
+                                               "Latch tries again on its own while this screen is open."]
+                    .compactMap { $0 }.joined(separator: "\n"))
             }
         default:
             ContentUnavailableView {
                 Label("Couldn't read the activity", systemImage: "exclamationmark.triangle")
             } description: {
-                Text(error.message)
+                ErrorText(error: error, host: host.name, titled: true)
             }
         }
     }

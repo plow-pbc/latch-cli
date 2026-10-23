@@ -14,7 +14,7 @@ final class AppModel {
             if status?.serve.state == "serving", let name = status?.peer?.name { feeds[name]?.retry() }
         }
     }
-    private(set) var statusError: String?
+    private(set) var statusError: LatchError?
     /// The onboarding flow, while the onboarding window is open.
     private(set) var onboarding: Onboarding?
     /// How the app hands a link to the system (Messages, System Settings);
@@ -87,7 +87,7 @@ final class AppModel {
             account = try await client.accountStatus()
             accountError = nil
         } catch {
-            accountError = error as? LatchError ?? .unreachable(error.localizedDescription)
+            accountError = .from(error)
         }
     }
 
@@ -140,7 +140,7 @@ final class AppModel {
         do {
             return .success(try await read())
         } catch {
-            return .failure(error as? LatchError ?? .unreachable(error.localizedDescription))
+            return .failure(.from(error))
         }
     }
 
@@ -173,7 +173,7 @@ final class AppModel {
         await showVaultItem(item.item, on: host)
         switch vaultShows[host.name]?[item.item] {
         case let .success(show)?: vaultSheet = .editor(VaultEditor(editing: show, on: host))
-        case let .failure(error)?: vaultSheet = .editor(VaultEditor(failed: item, error.message, on: host))
+        case let .failure(error)?: vaultSheet = .editor(VaultEditor(failed: item, error, on: host))
         case nil: break
         }
     }
@@ -192,7 +192,7 @@ final class AppModel {
     }
 
     /// Why the last removal from a vault failed, until it's dismissed.
-    var vaultRemoveError: String?
+    var vaultRemoveError: LatchError?
 
     /// Removes an item at the revision the person saw; a refusal is kept
     /// for the Vault screen to say.
@@ -203,7 +203,7 @@ final class AppModel {
             if selectedVaultItem == item.item { selectedVaultItem = nil }
             vaultShows[host.name]?[item.item] = nil
         } catch {
-            vaultRemoveError = (error as? LatchError)?.message ?? error.localizedDescription
+            vaultRemoveError = .from(error)
         }
     }
 
@@ -344,7 +344,7 @@ final class AppModel {
     private(set) var update: Result<UpdateCheck, LatchError>?
     private(set) var checkingUpdate = false
     private(set) var hostAction: HostAction?
-    private(set) var hostActionError: String?
+    private(set) var hostActionError: LatchError?
 
     enum HostAction { case stopping, restarting }
 
@@ -361,14 +361,14 @@ final class AppModel {
     }
 
     /// Why the last removal of a machine failed.
-    private(set) var deviceRemoveError: String?
+    private(set) var deviceRemoveError: LatchError?
 
     /// Removes a machine from the account; it's logged out there. A
     /// refusal is kept for Connections to say.
     func removeDevice(_ name: String) async {
         let removed = await Self.result { try await self.client.removeDevice(name) }
         await refreshDevices()
-        if case let .failure(error) = removed { deviceRemoveError = error.message } else { deviceRemoveError = nil }
+        if case let .failure(error) = removed { deviceRemoveError = error } else { deviceRemoveError = nil }
     }
 
     func checkForUpdate() async {
@@ -397,7 +397,7 @@ final class AppModel {
         do {
             try await run()
         } catch {
-            hostActionError = error.localizedDescription
+            hostActionError = .from(error)
         }
         await refreshStatus()
     }
@@ -409,7 +409,7 @@ final class AppModel {
             if on { _ = try await self.client.enable(name) } else { try await self.client.disable(name) }
         }
         summaries[host.name, default: HostSummary()].plugins = await Self.result { try await self.client.pluginsList(host: nil) }
-        if case let .failure(error) = changed { throw LatchError.unreachable(PluginCopy.refusal(error, plugin: name, on: on)) }
+        if case let .failure(error) = changed { throw LatchError.unreachable(PluginCopy.refusal(error, plugin: name, on: on), detail: error.details) }
     }
 
     /// While `latch logout` runs, and after it if Plow couldn't take this
@@ -480,7 +480,7 @@ final class AppModel {
             agents = try await client.agents(host: nil).agents
             agentsError = nil
         } catch {
-            agentsError = error as? LatchError ?? .unreachable(error.localizedDescription)
+            agentsError = .from(error)
         }
         // One host at a time: each is a read over latch's connection.
         for host in hosts where host.isThisMac || host.online != false {
@@ -577,7 +577,7 @@ final class AppModel {
             }
         } catch is CancellationError {
         } catch {
-            statusError = (error as? LatchError)?.message ?? error.localizedDescription
+            statusError = .from(error)
         }
     }
 
@@ -592,7 +592,7 @@ final class AppModel {
     /// start from the main window, while it runs and how it failed.
     var confirmingStartHosting = false
     private(set) var startingHost = false
-    private(set) var startHostError: String?
+    private(set) var startHostError: LatchError?
 
     /// Starts this Mac's host from the main window, then reads back what
     /// latch and Plow say.
@@ -603,7 +603,7 @@ final class AppModel {
         do {
             try await startHost()
         } catch {
-            startHostError = (error as? LatchError)?.message ?? error.localizedDescription
+            startHostError = .from(error)
         }
         await refreshStatus()
         await refreshAccount()
@@ -611,12 +611,13 @@ final class AppModel {
 
     /// Starts this Mac's host the way `setup --status` says (with the last
     /// serve's flags when there were any). Nothing to do when it isn't
-    /// needed. A host latch says can't start now throws latch's reason.
+    /// needed. A host latch says can't start now throws, with latch's reason
+    /// as detail.
     func startHost() async throws {
         guard let host = try await client.setupStatus().step("host") else { return }
         switch host.state {
         case "needed": if let args = host.args { try await client.perform(args) }
-        case "blocked": throw HostBlocked(reason: host.reason)
+        case "blocked": throw LatchError.unreachable("Latch can't start on this Mac right now.", detail: host.reason)
         default: break
         }
     }
@@ -626,7 +627,7 @@ final class AppModel {
             status = try await client.localStatus()
             statusError = nil
         } catch {
-            statusError = (error as? LatchError)?.message ?? error.localizedDescription
+            statusError = .from(error)
         }
     }
 
@@ -679,7 +680,7 @@ final class AppModel {
     }
 
     /// For snapshots: as `status --local` said.
-    func stage(status: LocalStatus?, error: String? = nil) {
+    func stage(status: LocalStatus?, error: LatchError? = nil) {
         self.status = status
         statusError = error
     }

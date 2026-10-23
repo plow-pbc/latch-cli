@@ -124,7 +124,7 @@ struct VaultTests {
         let editor = VaultEditor(editing: try Fixtures.decode(Fixtures.vaultShows["v1"]!), on: host)
         editor.values["username"] = "ada2"
         #expect(await editor.save(app: app) == false)
-        #expect(editor.error == AppModel.itemChangedElsewhere)
+        #expect(editor.error == .unreachable(AppModel.itemChangedElsewhere))
         #expect(client.lists == 1)
     }
 
@@ -143,7 +143,7 @@ struct VaultTests {
         let vault: VaultList = try Fixtures.decode(Fixtures.vaultItems)
         app.selectedVaultItem = vault.items[0].item
         await app.removeVaultItem(vault.items[0], on: studio)
-        #expect(app.vaultRemoveError == "not scripted")
+        #expect(app.vaultRemoveError == .unreachable("not scripted"))
         #expect(app.selectedVaultItem == vault.items[0].item)
     }
 

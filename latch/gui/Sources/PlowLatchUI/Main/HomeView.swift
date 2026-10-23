@@ -13,6 +13,7 @@ struct HomeView: View {
                     Label {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(notice.title)
+                            if let error = notice.error { ErrorText(error: error, titled: true).foregroundStyle(.secondary) }
                             Text(notice.detail).foregroundStyle(.secondary)
                         }
                     } icon: {
@@ -75,7 +76,7 @@ private struct ViewerSection: View {
                     Text("You're viewing your hosts. Your agents' work runs on them, not here.")
                         .foregroundStyle(.secondary)
                     if let error = app.startHostError {
-                        Text(error).foregroundStyle(.red)
+                        ErrorText(error: error).foregroundStyle(.red)
                     }
                 }
                 Spacer(minLength: 12)
@@ -98,8 +99,8 @@ private struct NeedsSection: View {
             }
             ForEach(needs, id: \.self) { need in
                 switch need {
-                case let .unchecked(error): Need(text: "Couldn't check this Mac.", detail: error)
-                case let .blocked(message): Need(text: "Latch can't run on this Mac right now.", detail: message)
+                case let .unchecked(error): Need(text: "Couldn't check this Mac.", error: error)
+                case let .blocked(problem): Need(text: "Latch can't run on this Mac right now.", error: problem)
                 case let .stopped(lastError): StartNeed(lastError: lastError)
                 case let .update(build):
                     Need(symbol: "arrow.down.circle", text: "A new version of Latch is available\(build.map { " (build \($0))" } ?? "").",
@@ -110,7 +111,7 @@ private struct NeedsSection: View {
     }
 
     private enum Needed: Hashable {
-        case unchecked(String), blocked(String), stopped(lastError: String?), update(build: Int?)
+        case unchecked(LatchError), blocked(LatchError), stopped(lastError: LatchError?), update(build: Int?)
     }
 
     /// What the person should act on, as latch reports it.
@@ -119,9 +120,9 @@ private struct NeedsSection: View {
         if let error = app.statusError { needs.append(.unchecked(error)) }
         guard let status = app.status else { return needs }
         if let blocked = status.serve.blocked {
-            needs.append(.blocked(blocked.message))
+            needs.append(.blocked(.failed(blocked)))
         } else if status.serve.state == "stopped" || status.serve.state == "error" {
-            needs.append(.stopped(lastError: status.lastError?.message))
+            needs.append(.stopped(lastError: status.lastError.map(LatchError.failed)))
         }
         if let update = status.update, update.available { needs.append(.update(build: update.build)) }
         return needs
@@ -141,8 +142,12 @@ private struct ActivitySections: View {
         let calls = feed.records.filter { !$0.isBackground }
         if calls.isEmpty, let error = feed.error {
             Section("Activity") {
-                Text(error.code == "no_host_here" ? "This Mac keeps no activity yet." : "Couldn't read the activity.")
-                Text(error.message).foregroundStyle(.secondary)
+                if error.code == "no_host_here" {
+                    Text("This Mac keeps no activity yet.")
+                } else {
+                    Text("Couldn't read the activity.")
+                    ErrorText(error: error, host: host.name, titled: true).foregroundStyle(.secondary)
+                }
             }
         } else if calls.isEmpty, !feed.caughtUp {
             Section("Today") {
@@ -215,9 +220,9 @@ private struct OnHostSection: View {
     var body: some View {
         let summary = app.summaries[host.name]
         Section("On \(host.name)") {
-            SummaryRow(title: "Rules", value: summary?.rules?.map(Self.rules), open: "Open") { app.section = .rules }
-            SummaryRow(title: "Vault", value: summary?.vault?.map(Self.vault), open: "Open") { app.section = .vault }
-            SummaryRow(title: "Plugins", value: summary?.plugins?.map(Self.plugins), open: "Host Settings") {
+            SummaryRow(host: host.name, title: "Rules", value: summary?.rules?.map(Self.rules), open: "Open") { app.section = .rules }
+            SummaryRow(host: host.name, title: "Vault", value: summary?.vault?.map(Self.vault), open: "Open") { app.section = .vault }
+            SummaryRow(host: host.name, title: "Plugins", value: summary?.plugins?.map(Self.plugins), open: "Host Settings") {
                 app.section = .settings
             }
             if host.isThisMac {
@@ -255,6 +260,7 @@ private struct OnHostSection: View {
 
 /// One line of a host's summary: what latch said, or why it couldn't.
 private struct SummaryRow: View {
+    var host: String
     var title: String
     /// nil until the host has answered.
     var value: Result<String, LatchError>?
@@ -268,7 +274,7 @@ private struct SummaryRow: View {
             } label: {
                 Text(title)
                 if case let .failure(error) = value {
-                    Text(error.message)
+                    ErrorText(error: error, host: host, titled: true)
                 }
             }
             Button(open, action: action).fixedSize()
@@ -287,13 +293,16 @@ private struct SummaryRow: View {
 private struct Need: View {
     var symbol = "exclamationmark.triangle"
     var text: String
-    var detail: String
+    var detail: String?
+    /// latch's reason, in the app's words with its own under Details.
+    var error: LatchError?
 
     var body: some View {
         Label {
             VStack(alignment: .leading, spacing: 2) {
                 Text(text)
-                Text(LocalizedStringKey(detail)).foregroundStyle(.secondary)
+                if let detail { Text(LocalizedStringKey(detail)).foregroundStyle(.secondary) }
+                if let error { ErrorText(error: error, titled: true).foregroundStyle(.secondary) }
             }
         } icon: {
             Image(systemName: symbol).foregroundStyle(.orange)
@@ -303,19 +312,19 @@ private struct Need: View {
 
 /// This Mac's host is stopped: say what that means, and start it.
 private struct StartNeed: View {
-    var lastError: String?
+    var lastError: LatchError?
     @Environment(AppModel.self) private var app
 
     var body: some View {
         HStack(alignment: .top) {
             Need(symbol: "pause.circle", text: "Latch isn't running on this Mac, so your agents can't reach it.",
-                 detail: lastError.map { "It stopped: \($0)" } ?? "Start it to let them in again.")
+                 detail: lastError == nil ? "Start it to let them in again." : nil, error: lastError)
             Spacer(minLength: 12)
             Button(app.startingHost ? "Starting…" : "Start Latch") { Task { await app.startHosting() } }
                 .disabled(app.startingHost)
         }
         if let error = app.startHostError {
-            Text(error).foregroundStyle(.red)
+            ErrorText(error: error).foregroundStyle(.red)
         }
     }
 }
@@ -329,7 +338,7 @@ private struct OfflineSection: View {
             ContentUnavailableView {
                 Label("\(host.name) is offline", systemImage: "wifi.slash")
             } description: {
-                Text("\(lastSeen)Start `latch serve` on \(host.name) to reach it again.")
+                Text("\(lastSeen)Start Latch on \(host.name) to reach it again.")
             }
         }
     }
