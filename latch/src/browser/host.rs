@@ -459,12 +459,14 @@ pub async fn run(
     recv: &mut RecvStream,
 ) -> Done {
     let command = args["command"].as_str().unwrap_or_default().to_string();
-    // `open` names an engine; every other session command, a session id.
+    // `open` names an engine (or none, for the host's default); every
+    // other session command, a session id.
     let name = if command == "open" {
-        args["engine"].as_str().unwrap_or("chrome")
+        args["engine"].as_str()
     } else {
-        args["session"].as_str().unwrap_or_default()
+        args["session"].as_str()
     }
+    .unwrap_or_default()
     .to_string();
     let mut audit = Map::new();
     audit.insert("command".into(), json!(command));
@@ -806,8 +808,8 @@ async fn off_web(browsers: &Browsers, url: &str) -> Result<(), Failure> {
         .expect("the address check does not panic")
 }
 
-/// `open`: a new session on engine `name` (`chrome` or `camoufox`), its
-/// page loaded. The answer carries the session's id and its engine; a
+/// `open`: a new session on engine `name` (`chrome` or `camoufox`; empty
+/// for `engine::default`'s), its page loaded. The answer carries the session's id and its engine; a
 /// session that could not load its page is ended. An agent's site is
 /// judged before any session starts.
 async fn open(
@@ -817,12 +819,19 @@ async fn open(
     args: &Value,
     audit: &mut Map<String, Value>,
 ) -> Result<(Value, Option<Vec<u8>>), Failure> {
-    let engine = super::engine::unnamed(name).ok_or_else(|| {
-        Failure::new(
-            code::bad_arguments,
-            format!("no browser engine {name:?}: use chrome or camoufox"),
-        )
-    })?;
+    let engine = if name.is_empty() {
+        let state_dir = browsers.state_dir.clone();
+        tokio::task::spawn_blocking(move || super::engine::default(&state_dir))
+            .await
+            .expect("the engine check does not panic")?
+    } else {
+        super::engine::unnamed(name).ok_or_else(|| {
+            Failure::new(
+                code::bad_arguments,
+                format!("no browser engine {name:?}: use chrome or camoufox"),
+            )
+        })?
+    };
     let url = args["url"].as_str();
     if let Some(url) = url {
         off_web(browsers, url).await?;

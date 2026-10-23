@@ -1827,6 +1827,16 @@ async fn with_no_engine_a_call_names_the_owners_setup_and_downloads_nothing() {
         fox.details["setup"],
         "latch browser setup --engine camoufox"
     );
+    // An open that names no engine says so too, and names the setup.
+    let unnamed = h
+        .call(CALLER, "open", "", json!({"url": "https://example.com/"}))
+        .await
+        .unwrap_err();
+    assert_eq!(unnamed.code, "engine_not_installed", "{unnamed:?}");
+    assert_eq!(
+        unnamed.details["setup"],
+        "latch browser setup --engine chrome"
+    );
     let other = h
         .call(CALLER, "open", "firefox", json!({}))
         .await

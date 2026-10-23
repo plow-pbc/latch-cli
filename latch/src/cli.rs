@@ -302,9 +302,10 @@ pub enum BrowserCommand {
     /// the elements on screen; answers the session's id, which every later
     /// command needs. Its cookies and logins last until it closes
     Open {
-        /// The browser engine the session runs on
-        #[arg(long, value_enum, default_value_t = EngineArg::Cft)]
-        engine: EngineArg,
+        /// The browser engine the session runs on [default: chrome if the
+        /// host has it, else camoufox]
+        #[arg(long, value_enum)]
+        engine: Option<EngineArg>,
         /// A label for the session, shown in listings and the audit
         #[arg(long)]
         task: Option<String>,
