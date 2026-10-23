@@ -1231,13 +1231,32 @@ fn owner_host() -> (tempfile::TempDir, PathBuf, String) {
     (dir, state, key)
 }
 
-/// The audit records of the host on `state`, opened with its key
-/// (`latch audit show`).
+/// Every audit record of the host on `state`, as `latch audit --all`
+/// shows them, each with its `details` (args, gate, started) beside the
+/// rest, as the tests read them. A folder that keeps no audit yet
+/// (`no_host_here`) has none.
 fn audit_records(state: &Path) -> Vec<Value> {
-    let shown = latch(state, &["audit", "show"], &[]);
+    let shown = latch(state, &["audit", "--all"], &[]);
+    if String::from_utf8_lossy(&shown.stderr).contains("no_host_here") {
+        return Vec::new();
+    }
     assert_eq!(shown.status.code(), Some(0), "{shown:?}");
-    let shown: Value = serde_json::from_slice(&shown.stdout).unwrap();
-    shown["records"].as_array().cloned().unwrap_or_default()
+    records_in(&event_lines(&shown))
+}
+
+/// The records among `latch audit` lines, each with its `details` beside
+/// the rest.
+fn records_in(lines: &[Value]) -> Vec<Value> {
+    lines
+        .iter()
+        .filter(|line| line["type"] == "record")
+        .map(|line| {
+            let mut record = line["record"].clone();
+            let details = record["details"].as_object().unwrap().clone();
+            record.as_object_mut().unwrap().extend(details);
+            record
+        })
+        .collect()
 }
 
 /// Points `state`'s later Plow calls at `url`.
@@ -2195,11 +2214,8 @@ fn the_audit_verifies_without_its_key_reads_with_it_and_survives_a_rotation() {
     assert_eq!(rotated["keys"], json!(["k1", "k2"]));
     let show = latch(&state, &["rules", "show"], &[]);
     assert_eq!(show.status.code(), Some(0), "{show:?}");
-    let (code, shown) = run(&["audit", "show"]);
-    assert_eq!(code, Some(0), "{shown}");
-    let commands: Vec<&str> = shown["records"]
-        .as_array()
-        .unwrap()
+    let records = audit_records(&state);
+    let commands: Vec<&str> = records
         .iter()
         .map(|record| record["args"]["command"].as_str().unwrap())
         .collect();
@@ -2211,7 +2227,7 @@ fn the_audit_verifies_without_its_key_reads_with_it_and_survives_a_rotation() {
     assert_eq!(code, Some(0), "{verified}");
     assert_eq!(verified["records"], 2);
     assert_eq!(verified["checked_without_the_key"], true);
-    let (code, refused) = run(&["audit", "show"]);
+    let (code, refused) = run(&["audit"]);
     assert_eq!(code, Some(1), "{refused}");
     assert_eq!(refused["error"]["code"], "audit_key");
 }
@@ -2229,7 +2245,7 @@ fn serve_log_says_its_commands_hide_credentials_only_best_effort() {
         .find(|line| line.contains("commands in this log:"))
         .expect("serve.log says how it shows commands");
     assert!(
-        note.contains("best effort") && note.contains("latch audit show"),
+        note.contains("best effort") && note.contains("some can slip through"),
         "{note}"
     );
 }
@@ -2965,15 +2981,16 @@ fn local_status_says_login_serving_and_how_the_host_ended_without_asking_plow() 
     assert_eq!(statuses, 0, "{:?}", plow.seen());
 }
 
-/// A running `latch events`, its lines read as they come.
-struct Events {
+/// A running stream of lines (`latch audit --follow`, `latch status
+/// --local --follow`), read as they come.
+struct Lines {
     child: std::process::Child,
     lines: std::sync::mpsc::Receiver<Value>,
 }
 
-impl Events {
-    fn start(state: &Path, args: &[&str]) -> Events {
-        let mut child = latch_command(state, &[&["events"], args].concat(), &[])
+impl Lines {
+    fn start(state: &Path, args: &[&str]) -> Lines {
+        let mut child = latch_command(state, args, &[])
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .spawn()
@@ -2985,21 +3002,43 @@ impl Events {
                 let _ = send.send(serde_json::from_str(&line.unwrap()).unwrap());
             }
         });
-        Events { child, lines }
+        Lines { child, lines }
     }
 
     fn next(&self) -> Value {
         self.lines
             .recv_timeout(std::time::Duration::from_secs(20))
-            .expect("no event within 20 s")
+            .expect("no line within 20 s")
     }
 
-    /// The next line that is not a host step or a connection's record.
-    fn next_activity(&self) -> Value {
+    /// The lines up to and including `caught_up`.
+    fn opening(&self) -> Vec<Value> {
+        let mut lines = vec![self.next()];
+        while lines.last().unwrap()["type"] != "caught_up" {
+            lines.push(self.next());
+        }
+        lines
+    }
+
+    /// The next record that is not a connection's.
+    fn next_record(&self) -> Value {
         loop {
             let line = self.next();
-            if line["type"] != "host" && line["entry"]["op"] != "connect" {
+            assert_eq!(line["type"], "record", "{line}");
+            if line["record"]["op"] != "connect" {
                 return line;
+            }
+        }
+    }
+
+    /// The next status whose host is in `state`, skipping the steps on
+    /// the way.
+    fn status_in(&self, state: &str) -> Value {
+        loop {
+            let line = self.next();
+            assert_eq!(line["type"], "status", "{line}");
+            if line["status"]["serve"]["state"] == state {
+                return line["status"].clone();
             }
         }
     }
@@ -3014,7 +3053,7 @@ impl Events {
             }
             assert!(
                 std::time::Instant::now() < deadline,
-                "events outlived its stdin"
+                "the stream outlived its stdin"
             );
             thread::sleep(std::time::Duration::from_millis(20));
         }
@@ -3022,7 +3061,7 @@ impl Events {
 }
 
 #[test]
-fn events_follow_the_host_and_its_activity_resume_exactly_and_reset_after_a_restart() {
+fn audit_follows_its_records_and_resumes_after_one_exactly_across_a_host_restart() {
     let plow = LivePlow::start();
     let (_relay, relay) = local_relay();
     let dir = test_dir();
@@ -3049,70 +3088,78 @@ fn events_follow_the_host_and_its_activity_resume_exactly_and_reset_after_a_rest
         serde_json::from_slice::<Value>(&output.stdout).unwrap()["audit_id"].clone()
     };
 
-    let events = Events::start(&host, &["--follow"]);
-    let snapshot = events.next();
-    assert_eq!(snapshot["type"], "snapshot");
-    assert_eq!(snapshot["host"], json!({"state": "stopped"}));
-    assert_eq!(snapshot["activity"], json!([]));
-
     let serve = serving(&host, &relay);
-    let mut step = events.next();
-    while step["state"] != "serving" {
-        assert_eq!(step["type"], "host", "{step}");
-        step = events.next();
-    }
+    let audit = Lines::start(&host, &["audit", "--follow"]);
+    let opening = audit.opening();
+    assert_eq!(opening[0], json!({"type": "hello", "schema": 1}));
+    assert_eq!(opening[1]["has_older"], false, "{opening:?}");
     let first = exec("one");
-    let activity = events.next_activity();
-    assert_eq!(activity["type"], "activity");
-    assert_eq!(activity["entry"]["id"], first);
-    assert_eq!(activity["entry"]["op"], "exec");
-    assert_eq!(activity["entry"]["decision"], "allow");
-    let cursor = activity["cursor"].as_str().unwrap().to_string();
-    assert!(events.close().success());
+    let line = audit.next_record();
+    assert_eq!(line["cursor"], first);
+    let record = &line["record"];
+    assert_eq!(record["id"], first);
+    assert_eq!(
+        (record["op"].as_str(), record["decision"].as_str()),
+        (Some("exec"), Some("allow"))
+    );
+    assert_eq!(record["details"]["args"]["argv"], json!(["echo", "one"]));
+    let cursor = first.as_str().unwrap().to_string();
+    assert!(audit.close().success());
 
     // Missed while no one followed: picked up exactly, nothing twice.
     let missed: Vec<Value> = ["two", "three", "four"]
         .iter()
         .map(|word| exec(word))
         .collect();
-    let resumed = Events::start(&host, &["--follow", "--after", &cursor]);
-    let snapshot = resumed.next();
-    assert_eq!(snapshot["type"], "snapshot", "{snapshot}");
-    assert_eq!(snapshot["host"]["state"], "serving");
-    let ids: Vec<Value> = snapshot["activity"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|entry| entry["op"] != "connect")
-        .map(|entry| entry["id"].clone())
+    let resumed = Lines::start(&host, &["audit", "--follow", "--after", &cursor]);
+    let opening = resumed.opening();
+    assert_eq!(opening[1]["cursor"], cursor.as_str());
+    let ids: Vec<Value> = records_in(&opening)
+        .into_iter()
+        .filter(|record| record["op"] != "connect")
+        .map(|record| record["id"].clone())
         .collect();
     assert_eq!(ids, missed);
     let fifth = exec("five");
-    assert_eq!(resumed.next_activity()["entry"]["id"], fifth);
+    assert_eq!(resumed.next_record()["cursor"], fifth);
     assert!(resumed.close().success());
 
-    // The host restarted: the old cursor gets a reset and a fresh snapshot.
+    // A restart keeps the log, and so every id.
     drop(serve);
     let _serve = serving(&host, &relay);
-    let after_restart = Events::start(&host, &["--follow", "--after", &cursor]);
-    assert_eq!(after_restart.next(), json!({"type": "reset"}));
-    let fresh = after_restart.next();
-    assert_eq!(fresh["type"], "snapshot");
-    assert_eq!(fresh["host"]["state"], "serving");
-    let replayed = fresh["activity"].as_array().unwrap();
-    assert!(replayed.iter().any(|entry| entry["id"] == fifth), "{fresh}");
+    let after_restart = Lines::start(&host, &["audit", "--follow", "--after", &cursor]);
+    let replayed = records_in(&after_restart.opening());
+    assert!(replayed.iter().any(|record| record["id"] == fifth));
     assert!(after_restart.close().success());
 
-    let lifecycle = Events::start(&host, &["--follow", "--lifecycle-only"]);
-    assert_eq!(lifecycle.next()["activity"], json!([]));
-    exec("six");
-    drop(_serve);
-    let stopped = lifecycle.next();
-    assert_eq!(
-        (stopped["type"].clone(), stopped["state"].clone()),
-        (json!("host"), json!("stopped"))
+    let expired = latch(
+        &host,
+        &["audit", "--follow", "--after", &"f".repeat(64)],
+        &[],
     );
-    assert!(lifecycle.close().success());
+    assert_eq!(expired.status.code(), Some(2), "{expired:?}");
+    assert!(String::from_utf8_lossy(&expired.stderr).contains("cursor_expired"));
+}
+
+#[test]
+fn status_follow_says_each_change_of_the_host_through_a_restart() {
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+
+    let status = Lines::start(&host, &["status", "--local", "--follow"]);
+    assert_eq!(status.next(), json!({"type": "hello", "schema": 1}));
+    assert_eq!(status.status_in("stopped")["serve"]["running"], false);
+    let serve = serving(&host, &relay);
+    let first = status.status_in("serving");
+    assert_eq!(first["serve"]["ready"], true);
+    drop(serve);
+    status.status_in("stopped");
+    let _serve = serving(&host, &relay);
+    let again = status.status_in("serving");
+    assert_ne!(again["serve"]["pid"], first["serve"]["pid"]);
+    assert!(status.close().success());
 }
 
 fn event_lines(output: &Output) -> Vec<Value> {
@@ -3276,51 +3323,6 @@ fn shutdown_exec_cases() {
             .expect("the exec is audited");
         assert_eq!(exec["outcome"], outcome, "{what}: {exec}");
     }
-}
-
-#[test]
-fn a_follower_that_stays_through_a_host_restart_gets_a_reset_and_a_fresh_snapshot() {
-    let plow = LivePlow::start();
-    let (_relay, relay) = local_relay();
-    let dir = test_dir();
-    let host = owner_host_on(&plow, dir.path());
-
-    let serve = serving(&host, &relay);
-    let events = Events::start(&host, &["--follow"]);
-    let first = events.next();
-    assert_eq!(first["host"]["state"], "serving", "{first}");
-    let run = |cursor: &Value| {
-        cursor
-            .as_str()
-            .unwrap()
-            .split(':')
-            .next()
-            .unwrap()
-            .to_string()
-    };
-    let old_run = run(&first["cursor"]);
-
-    drop(serve);
-    let stopped = events.next();
-    assert_eq!(
-        (stopped["type"].clone(), stopped["state"].clone()),
-        (json!("host"), json!("stopped"))
-    );
-    let _serve = serving(&host, &relay);
-    assert_eq!(events.next(), json!({"type": "reset"}));
-    let fresh = events.next();
-    assert_eq!(fresh["type"], "snapshot", "{fresh}");
-    assert_ne!(run(&fresh["cursor"]), old_run);
-    // Nothing from the new run arrives as a mere host step before the reset,
-    // and the stream goes on: serving, if the snapshot caught it starting.
-    if fresh["host"]["state"] != "serving" {
-        let step = events.next();
-        assert_eq!(
-            (step["type"].clone(), step["state"].clone()),
-            (json!("host"), json!("serving"))
-        );
-    }
-    assert!(events.close().success());
 }
 
 #[test]
@@ -5267,38 +5269,31 @@ fn stop_gives_up_waiting_behind_a_start_that_never_finishes() {
 }
 
 #[test]
-fn audit_show_follows_the_log_and_refuses_one_whose_last_record_was_cut_short() {
+fn audit_follows_the_log_and_refuses_one_whose_last_record_was_cut_short() {
     let (_dir, state, _) = owner_host();
     let rules = |text: &str| {
         let set = latch(&state, &["rules", "set", text], &[]);
         assert_eq!(set.status.code(), Some(0), "{set:?}");
     };
     rules("Never send email.");
-    let shown = latch(&state, &["audit", "show"], &[]);
-    let shown: Value = serde_json::from_slice(&shown.stdout).unwrap();
-    assert_eq!(shown["records"].as_array().unwrap().len(), 1, "{shown}");
+    let shown = audit_records(&state);
+    assert_eq!(shown.len(), 1, "{shown:?}");
 
     // --follow: what is there, then each record as it is written, one per line.
-    let mut follow = latch_command(&state, &["audit", "show", "--follow"], &[])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut lines = BufReader::new(follow.stdout.take().unwrap()).lines();
-    let first: Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
-    assert_eq!(first["id"], shown["records"][0]["id"]);
+    let follow = Lines::start(&state, &["audit", "--follow"]);
+    let opening = records_in(&follow.opening());
+    assert_eq!(opening[0]["id"], shown[0]["id"]);
     rules("Ask before paying.");
-    let second: Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
-    assert_eq!(second["op"], first["op"], "{second}");
-    assert_ne!(second["id"], first["id"]);
-    drop(follow.stdin.take());
-    assert!(follow.wait().unwrap().success(), "it ends with its stdin");
+    let second = follow.next_record()["record"].clone();
+    assert_eq!(second["op"], shown[0]["op"], "{second}");
+    assert_ne!(second["id"], shown[0]["id"]);
+    assert!(follow.close().success(), "it ends with its stdin");
 
     // The last record loses its end, as a crash mid-write would leave it.
     let path = state.join("audit.sealed.ndjson");
     let log = fs::read_to_string(&path).unwrap();
     fs::write(&path, &log[..log.len() - 20]).unwrap();
-    let cut = latch(&state, &["audit", "show"], &[]);
+    let cut = latch(&state, &["audit"], &[]);
     assert_eq!(cut.status.code(), Some(1), "{cut:?}");
     let stderr = String::from_utf8_lossy(&cut.stderr);
     assert!(
@@ -5308,21 +5303,99 @@ fn audit_show_follows_the_log_and_refuses_one_whose_last_record_was_cut_short() 
     assert!(cut.stdout.is_empty(), "nothing of a broken log is shown");
 }
 
+#[test]
+fn only_a_follow_ends_with_stdin_even_while_its_opening_is_stuck_in_a_write() {
+    let (_dir, state, _) = owner_host();
+    // More records than a pipe holds: about 400 bytes a line.
+    for _ in 0..250 {
+        let shown = latch(&state, &["rules", "show"], &[]);
+        assert_eq!(shown.status.code(), Some(0), "{shown:?}");
+    }
+    // A read that ends by itself ignores stdin, closed from the start, and
+    // prints every line.
+    let mut read = latch_command(&state, &["audit", "--all"], &[])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    drop(read.stdin.take());
+    let output = read.wait_with_output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let lines = event_lines(&output);
+    assert_eq!(lines.last().unwrap()["type"], "caught_up");
+    assert_eq!(records_in(&lines).len(), 250);
+
+    // A follow whose reader never reads ends once its stdin closes, though
+    // its opening is stuck in a write.
+    let mut follow = latch_command(&state, &["audit", "--follow", "--all"], &[])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let _unread = follow.stdout.take();
+    thread::sleep(std::time::Duration::from_secs(1));
+    drop(follow.stdin.take());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while follow.try_wait().unwrap().is_none() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the follow outlived its stdin"
+        );
+        thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(follow.wait().unwrap().success());
+}
+
+#[test]
+fn audit_says_why_it_cannot_read() {
+    let (_dir, state, _) = owner_host();
+    let refused = |args: &[&str]| -> Value {
+        let output = latch(&state, args, &[]);
+        assert_eq!(output.status.code(), Some(2), "{output:?}");
+        assert!(output.stdout.is_empty(), "{output:?}");
+        serde_json::from_slice::<Value>(&output.stderr).unwrap()["error"].clone()
+    };
+    // Logged in, never served: no audit here.
+    let none = refused(&["audit"]);
+    assert_eq!(none["code"], "no_host_here", "{none}");
+    assert!(
+        none["message"].as_str().unwrap().contains("--host"),
+        "{none}"
+    );
+
+    let set = latch(&state, &["rules", "set", "Never send email."], &[]);
+    assert_eq!(set.status.code(), Some(0), "{set:?}");
+    let malformed = refused(&["audit", "--before", "nothex"]);
+    assert_eq!(malformed["code"], "usage", "{malformed}");
+    assert!(
+        malformed["message"]
+            .as_str()
+            .unwrap()
+            .contains("64 hex characters")
+    );
+    for zero in ["0", "-1", "abc"] {
+        let last = refused(&["audit", "--last", zero]);
+        let message = last["message"].as_str().unwrap();
+        assert!(message.contains("1 or more, such as 50"), "{message}");
+        assert!(!message.contains("18446744073709551615"), "{message}");
+    }
+}
+
 /// A follower sleeps while the log is quiet: its own reads (under the audit
 /// lock) must not wake its watch of the folder.
 #[cfg(target_os = "linux")]
 #[test]
-fn audit_show_follow_sleeps_while_the_log_is_quiet() {
+fn audit_follow_sleeps_while_the_log_is_quiet() {
     let (_dir, state, _) = owner_host();
     let set = latch(&state, &["rules", "set", "Never send email."], &[]);
     assert_eq!(set.status.code(), Some(0), "{set:?}");
-    let mut follow = latch_command(&state, &["audit", "show", "--follow"], &[])
+    let mut follow = latch_command(&state, &["audit", "--follow"], &[])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .spawn()
         .unwrap();
     let mut lines = BufReader::new(follow.stdout.take().unwrap()).lines();
-    lines.next().unwrap().unwrap();
+    while !lines.next().unwrap().unwrap().contains("caught_up") {}
     // CPU time used (user + system, in clock ticks) while nothing happens.
     let ticks = || {
         let stat = fs::read_to_string(format!("/proc/{}/stat", follow.id())).unwrap();
@@ -6063,11 +6136,8 @@ mod lifecycle {
         assert_eq!(log.matches("exec: refused to every agent").count(), 2);
         let logs = latch(&host, &["logs"], &[]);
         assert_eq!(String::from_utf8_lossy(&logs.stdout), log);
-        let audit = latch(&host, &["audit", "show"], &[]);
-        let audit: Value = serde_json::from_slice(&audit.stdout).unwrap();
-        let exec = audit["records"]
-            .as_array()
-            .unwrap()
+        let records = audit_records(&host);
+        let exec = records
             .iter()
             .find(|record| record["op"] == "exec")
             .unwrap();

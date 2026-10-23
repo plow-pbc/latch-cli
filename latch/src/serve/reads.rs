@@ -1,0 +1,173 @@
+//! The `status` and `audit` operations: what this host's owner reads from
+//! another machine with `--host`, the same output as `latch status --local
+//! [--follow]` and `latch audit` give on the host itself. From the owner's
+//! own devices only; an agent's key gets exit 4 `owner_only`.
+//!
+//! `audit` and `status` with `follow` stream: each line goes to the caller
+//! as its own `{"ok": {"line": LINE}}` frame, until the lines end, the
+//! caller leaves or this host stops; then the final answer (see `wire.rs`).
+//! A line too large for a frame ends it with `record_too_large`, never a
+//! line left out.
+
+use std::future::Future;
+use std::os::fd::{AsRawFd, RawFd};
+
+use iroh::endpoint::VarInt;
+use serde_json::{Map, Value, json};
+use tokio::sync::mpsc;
+
+use super::Host;
+use crate::failure::{Exit, Failure};
+use crate::serve::Done;
+use crate::state::StateDir;
+use crate::transport::SendStream;
+use crate::wire::{self, Response};
+
+/// How many lines may wait for a slow caller before the reader waits too.
+const QUEUED: usize = 64;
+
+pub(super) async fn run(
+    host: &Host,
+    kind: &str,
+    op: &str,
+    args: &Value,
+    send: &mut SendStream,
+    cut_off: impl Future<Output = &'static str>,
+) -> Done {
+    let result = match crate::gate::owner::owner_only(kind, &format!("this host's {op}")) {
+        Ok(()) => read(host, op, args, send, cut_off).await,
+        Err(failure) => Err(failure),
+    };
+    crate::vault::host::done(result, Map::new())
+}
+
+async fn read(
+    host: &Host,
+    op: &str,
+    args: &Value,
+    send: &mut SendStream,
+    cut_off: impl Future<Output = &'static str>,
+) -> Result<Value, Failure> {
+    let dir = host.workers.state_dir.clone();
+    match op {
+        "status" if args["follow"] != true => {
+            blocking(move || {
+                let status = crate::status::local(&StateDir { path: dir })?;
+                Ok(serde_json::to_value(status).expect("a status serializes"))
+            })
+            .await
+        }
+        "status" => {
+            stream(host, send, cut_off, move |hangup, lines| {
+                crate::status::follow(&dir, Some(hangup), |line| {
+                    lines.blocking_send(line.clone()).is_ok()
+                })
+            })
+            .await
+        }
+        _ => {
+            let range: crate::audit::Range = serde_json::from_value(args.clone())
+                .map_err(|err| Failure::usage("usage", format!("not an audit range: {err}")))?;
+            let whose = format!("{}'s", host.name);
+            stream(host, send, cut_off, move |hangup, lines| {
+                crate::audit::read(&dir, &whose, &range, Some(hangup), |line| {
+                    lines.blocking_send(line.clone()).is_ok()
+                })
+            })
+            .await
+        }
+    }
+}
+
+/// Runs `read` off the runtime: it reads files and may ask the service
+/// manager, which blocks.
+async fn blocking(
+    read: impl FnOnce() -> Result<Value, Failure> + Send + 'static,
+) -> Result<Value, Failure> {
+    tokio::task::spawn_blocking(read)
+        .await
+        .map_err(|err| Failure::failed("read_failed", err.to_string()))?
+}
+
+/// Sends the caller each line `lines` gives, as it gives it. It
+/// runs on a thread of its own, waiting on the folder, until it ends or the
+/// hang-up descriptor it is given closes: once the caller leaves or the
+/// host stops, even while a caller that stopped reading holds up a send.
+async fn stream(
+    host: &Host,
+    send: &mut SendStream,
+    cut_off: impl Future<Output = &'static str>,
+    lines: impl FnOnce(RawFd, mpsc::Sender<Value>) -> Result<(), Failure> + Send + 'static,
+) -> Result<Value, Failure> {
+    let (hangup, hold) =
+        std::io::pipe().map_err(|err| Failure::failed("watch_failed", err.to_string()))?;
+    let (queue, mut queued) = mpsc::channel(QUEUED);
+    let reader = tokio::task::spawn_blocking(move || lines(hangup.as_raw_fd(), queue));
+    tokio::pin!(cut_off);
+    let mut stopping = host.stopping.subscribe();
+    let stopping = async move {
+        let _ = stopping
+            .wait_for(|stopping| *stopping != super::Stopping::No)
+            .await;
+    };
+    tokio::pin!(stopping);
+    let ended = loop {
+        let line = tokio::select! {
+            line = queued.recv() => line,
+            _ = &mut cut_off => break Ok(()),
+            () = &mut stopping => break Err(stopped(&host.name)),
+        };
+        // The reader is done, and every line it gave was sent.
+        let Some(line) = line else {
+            break Ok(());
+        };
+        let frame = Response::Ok(json!({"line": line}));
+        let json = serde_json::to_vec(&frame).expect("a line serializes");
+        if json.len() > wire::MAX_FRAME {
+            break Err(too_large(&line, json.len()));
+        }
+        // A frame cut off midway can't be followed by an answer: the
+        // stream is reset instead, so the caller never reads half of one.
+        let cut = tokio::select! {
+            sent = wire::write_frame(send, &json) => match sent {
+                Ok(()) => continue,
+                // The caller is gone.
+                Err(_) => break Ok(()),
+            },
+            _ = &mut cut_off => Ok(()),
+            () = &mut stopping => Err(stopped(&host.name)),
+        };
+        let _ = send.reset(VarInt::from_u32(0));
+        break cut;
+    };
+    // Closing the hang-up wakes a reader waiting on the folder; dropping
+    // the queue frees one waiting to hand over a line.
+    drop(hold);
+    drop(queued);
+    let read = reader
+        .await
+        .map_err(|err| Failure::failed("read_failed", err.to_string()))?;
+    ended.and(read).map(|()| json!({}))
+}
+
+/// A record whose line is larger than the wire carries in one frame.
+fn too_large(line: &Value, size: usize) -> Failure {
+    let id = &line["record"]["id"];
+    let mut failure = Failure::failed(
+        "record_too_large",
+        format!(
+            "the record {id} is {size} bytes, more than the {} one frame carries; read it on that host",
+            wire::MAX_FRAME
+        ),
+    );
+    failure.details = json!({"id": id, "size": size, "limit": wire::MAX_FRAME});
+    failure
+}
+
+fn stopped(name: &str) -> Failure {
+    Failure::new(
+        Exit::Unreachable,
+        "host_stopped",
+        format!("host {name:?} stopped serving; run this again once it serves"),
+    )
+}

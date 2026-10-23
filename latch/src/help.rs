@@ -240,14 +240,19 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "status",
-        runs_on: |_| RunsOn::Local,
-        output: "This peer, its Plow and the hosts it can reach; with --pretty, a card for a person; with --local, only this machine's own latch, asking no one, its `serve.deny_exec` (`every_agent`, `agent_uids`) as the host runs or last ran, null if its saved flags are unreadable.",
+        runs_on: |_| RunsOn::Either,
+        output: "This peer, its Plow and the hosts it can reach; with --pretty, a card for a person; with --local, only this machine's own latch, asking no one, its `serve.deny_exec` (`every_agent`, `agent_uids`) as the host runs or last ran, null if its saved flags are unreadable; with --host, that host's own `status --local` (owner devices only); with --follow too, JSON lines: `hello`, then a `status` line, again each time it changes.",
         effect: ReadOnly,
         owner_only: false,
         connector: None,
         examples: &[
             ex("Which hosts can I reach?", &["status"]),
             ex("This machine's own latch, offline", &["status", "--local"]),
+            ex("Another host's own latch", &["status", "--host", "studio"]),
+            ex(
+                "Watch this machine's latch",
+                &["status", "--local", "--follow"],
+            ),
         ],
     },
     Entry {
@@ -1145,18 +1150,24 @@ const ENTRIES: &[Entry] = &[
         )],
     },
     Entry {
-        id: "audit.show",
-        runs_on: |_| RunsOn::Local,
-        output: "`records`: every record of this machine's host, opened with the key, each with its `id`; with --follow, one record per line, then each new one.",
+        id: "audit",
+        runs_on: |_| RunsOn::Either,
+        output: "JSON lines: `hello`; a `snapshot` (`cursor`, the id before the first record shown, and `has_older`); a `record` line each (`cursor`, its id, and `record`: id, time, caller, caller_name, agent, op, decision, outcome, and `details` with started, args and gate, credential-looking values hidden, best effort); then `caught_up` (the last `cursor`, `has_older`). With --follow, then each new record. The newest 50 unless --last N or --all; --before ID reads the page before. With --host, another host's, the same lines.",
         effect: ReadOnly,
         owner_only: true,
         connector: None,
         examples: &[
-            ex("Read the audit", &["audit", "show"]),
+            ex("Read the newest records", &["audit"]),
             ex(
-                "Watch the audit as it grows",
-                &["audit", "show", "--follow"],
+                "Read the page before a record",
+                &["audit", "--before", "ID"],
             ),
+            ex("Watch the audit as it grows", &["audit", "--follow"]),
+            ex(
+                "Pick up after the last record you saw",
+                &["audit", "--follow", "--after", "ID"],
+            ),
+            ex("Read another host's audit", &["audit", "--host", "studio"]),
         ],
     },
     Entry {
@@ -1179,15 +1190,6 @@ const ENTRIES: &[Entry] = &[
             "Seal new records under a new key",
             &["audit", "rotate-key"],
         )],
-    },
-    Entry {
-        id: "events",
-        runs_on: |_| RunsOn::Local,
-        output: "JSON lines: a snapshot of the host, then with --follow each change.",
-        effect: ReadOnly,
-        owner_only: true,
-        connector: None,
-        examples: &[ex("Watch this machine's host", &["events", "--follow"])],
     },
     Entry {
         id: "serve",

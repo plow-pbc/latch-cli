@@ -145,7 +145,7 @@ pub async fn attach(state: &StateDir, args: &ServeArgs) -> Result<Attached, Fail
 pub async fn dashboard(state: &StateDir) -> Result<(), Failure> {
     if !term::stdout_is_terminal() {
         let message = "the dashboard needs a terminal; `latch status --local` and \
-                       `latch events` say what the host is doing as JSON"
+                       `latch audit` say what the host is doing as JSON"
             .to_string();
         return Err(Failure::usage("no_terminal", message));
     }
