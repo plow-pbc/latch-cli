@@ -73,7 +73,7 @@ browsers=""
 no_browser=""
 client_only=""
 non_interactive=""
-state_given=""
+state_given=${LATCH_STATE_DIR:+1}
 src="$(dirname "$0")/latch"
 given_src=""
 while [ $# -gt 0 ]; do
