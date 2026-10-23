@@ -6,7 +6,6 @@ import Testing
 /// A latch that counts every process the app would start, by command; a
 /// held command waits for its gate.
 final class CountingClient: LatchClient, @unchecked Sendable {
-    let stateDir = "/s"
     private let counted = Mutex<[String]>([])
     var held: [String: Gate] = [:]
     var calls: [String] { counted.withLock { $0 } }
@@ -16,13 +15,10 @@ final class CountingClient: LatchClient, @unchecked Sendable {
         await held[command]?.wait()
     }
 
-    func localStatus() async throws -> LocalStatus { try Fixtures.decode(Fixtures.serving) }
-    func accountStatus() async throws -> AccountStatus { try Fixtures.decode(Fixtures.studioHosts) }
     func hostStatus(_ host: String) async throws -> LocalStatus {
         await ran("status --host")
         return try Fixtures.decode(Fixtures.serving)
     }
-    func login(name: String?, replace: Bool) -> AsyncThrowingStream<LoginEvent, Error> { AsyncThrowingStream { $0.finish() } }
     func setupStatus() async throws -> SetupStatus {
         await ran("setup --status")
         return try Fixtures.decode(Fixtures.setup(on: []))
@@ -32,7 +28,6 @@ final class CountingClient: LatchClient, @unchecked Sendable {
         await ran("rules show")
         return try Fixtures.decode(Fixtures.studioRules)
     }
-    func rulesSet(_ text: String) async throws {}
     func agents(host: String?) async throws -> AgentsList {
         await ran(host == nil ? "agents" : "agents --host")
         return try Fixtures.decode(Fixtures.agents)
@@ -49,12 +44,6 @@ final class CountingClient: LatchClient, @unchecked Sendable {
         await ran("devices")
         return try Fixtures.decode(Fixtures.devices)
     }
-    func enable(_ plugin: String) async throws -> GoogleEnabled? { nil }
-    func statusFollow() -> AsyncThrowingStream<LocalStatus, Error> { AsyncThrowingStream { _ in } }
-    func audit(host: String?, before: String?) async throws -> AuditPage { AuditPage(records: [], hasOlder: false) }
-    func auditFollow(host: String?, after: String?) -> AsyncThrowingStream<AuditLine, Error> { AsyncThrowingStream { _ in } }
-    func perform(_ args: [String]) async throws {}
-    func stop() async throws {}
 }
 
 /// Each screen's reads are the model's: only what the screen uses, once.
@@ -128,6 +117,24 @@ struct EntryTests {
         #expect(failed == .failure(.unreachable("no")))
     }
 
+    // Leaving Agents while it reads each host's standing, then coming back:
+    // the hosts it didn't get to are read then, not left "Checking…".
+    @Test func comingBackToAgentsReadsTheStandingItDidntGet() async throws {
+        let client = CountingClient()
+        let gate = Gate()
+        client.held["agents --host"] = gate
+        let app = try app(client)
+        let entering = Task { await app.enter(.agents, host: app.host) }
+        await waitUntil { client.calls.contains("agents --host") }
+        entering.cancel()
+        gate.open()
+        await entering.value
+        await app.enter(.agents, host: app.host)
+        let reachable = app.hosts.filter { $0.isThisMac || $0.online != false }
+        #expect(!reachable.isEmpty)
+        #expect(reachable.allSatisfy { AppModel.held(app.standings[$0.name]) })
+    }
+
     @Test func homeAndActivityShareTheirHostsFeedAndOtherScreensHaveNone() throws {
         let app = try app(CountingClient())
         app.section = .home
@@ -148,7 +155,6 @@ struct EntryTests {
 struct FeedGraceTests {
     /// Streams one record and waits; counts each start and where it began.
     final class Following: LatchClient, @unchecked Sendable {
-        let stateDir = "/s"
         private let started = Mutex<[String?]>([])
         var afters: [String?] { started.withLock { $0 } }
 
@@ -159,20 +165,6 @@ struct FeedGraceTests {
                 continuation.yield(.caughtUp(cursor: String(format: "%064d", after == nil ? 1 : 2), hasOlder: false))
             }
         }
-        func localStatus() async throws -> LocalStatus { try Fixtures.decode(Fixtures.serving) }
-        func accountStatus() async throws -> AccountStatus { try Fixtures.decode(Fixtures.studioHosts) }
-        func login(name: String?, replace: Bool) -> AsyncThrowingStream<LoginEvent, Error> { AsyncThrowingStream { $0.finish() } }
-        func setupStatus() async throws -> SetupStatus { try Fixtures.decode(Fixtures.setup(on: [])) }
-        func setupStatusCheckingAccess() async throws -> SetupStatus { try await setupStatus() }
-        func rulesShow(host: String?) async throws -> RulesShow { try Fixtures.decode(#"{"agents":[],"every_agent":null}"#) }
-        func rulesSet(_ text: String) async throws {}
-        func pluginsList(host: String?) async throws -> PluginsList { try Fixtures.decode(#"{"plugins":[]}"#) }
-        func vaultList(host: String?) async throws -> VaultList { try Fixtures.decode(#"{"items":[]}"#) }
-        func enable(_ plugin: String) async throws -> GoogleEnabled? { nil }
-        func statusFollow() -> AsyncThrowingStream<LocalStatus, Error> { AsyncThrowingStream { _ in } }
-        func audit(host: String?, before: String?) async throws -> AuditPage { AuditPage(records: [], hasOlder: false) }
-        func perform(_ args: [String]) async throws {}
-        func stop() async throws {}
     }
 
     @Test func comingBackWithinTheGraceKeepsTheStreamAndAfterItPicksUpWhereItWas() async {
@@ -204,32 +196,21 @@ struct FeedGraceTests {
         #expect(!feed.running)
     }
 
+    // Leaving Home while it reaches back: the cancelled page is no failure
+    // to show on coming back.
+    @Test func aCancelledEarlierPageIsNoFailure() async {
+        let client = PagedClient()
+        client.olderFails = CancellationError()
+        let feed = ActivityFeed(client: client, host: nil)
+        feed.stage(client.newest)
+        await feed.loadOlder()
+        #expect(feed.error == nil)
+    }
+
     @Test func homeReachesBackOnlyAFewPagesOnItsOwn() async {
-        final class Background: LatchClient, @unchecked Sendable {
-            let stateDir = "/s"
-            private(set) var pages = 0
-            func audit(host: String?, before: String?) async throws -> AuditPage {
-                pages += 1
-                let n = 1000 - pages * 10
-                return try AuditPage.parse(Data((((n - 10)..<n).map { PagedClient.line($0, op: "connect") }
-                    + [#"{"type":"caught_up","cursor":"z","has_older":true}"#]).joined(separator: "\n").utf8))
-            }
-            func localStatus() async throws -> LocalStatus { try Fixtures.decode(Fixtures.serving) }
-            func accountStatus() async throws -> AccountStatus { try Fixtures.decode(Fixtures.studioHosts) }
-            func login(name: String?, replace: Bool) -> AsyncThrowingStream<LoginEvent, Error> { AsyncThrowingStream { $0.finish() } }
-            func setupStatus() async throws -> SetupStatus { try Fixtures.decode(Fixtures.setup(on: [])) }
-            func setupStatusCheckingAccess() async throws -> SetupStatus { try await setupStatus() }
-            func rulesShow(host: String?) async throws -> RulesShow { try Fixtures.decode(#"{"agents":[],"every_agent":null}"#) }
-            func rulesSet(_ text: String) async throws {}
-            func pluginsList(host: String?) async throws -> PluginsList { try Fixtures.decode(#"{"plugins":[]}"#) }
-            func vaultList(host: String?) async throws -> VaultList { try Fixtures.decode(#"{"items":[]}"#) }
-            func enable(_ plugin: String) async throws -> GoogleEnabled? { nil }
-            func statusFollow() -> AsyncThrowingStream<LocalStatus, Error> { AsyncThrowingStream { _ in } }
-            func auditFollow(host: String?, after: String?) -> AsyncThrowingStream<AuditLine, Error> { AsyncThrowingStream { _ in } }
-            func perform(_ args: [String]) async throws {}
-            func stop() async throws {}
-        }
-        let client = Background()
+        let client = PagedClient()
+        client.olderOp = "connect"
+        client.olderHasMore = true
         let feed = ActivityFeed(client: client, host: nil)
         feed.stage(PagedClient().newest)
         await feed.loadOlder(until: 5, pages: ActivityFeed.homePages)

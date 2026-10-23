@@ -42,7 +42,7 @@ struct HostsTests {
         app.stage(account: plowAnswered ? offline : nil, error: plowAnswered ? nil : unreachable)
         #expect(app.hosts.map(\.name) == (plowAnswered ? ["studio", "pi-kitchen", "sidecar"] : ["studio"]))
         #expect(app.host?.isThisMac == true && !app.viewerOnly)
-        await app.refreshSummary()
+        await app.enter(.home, host: app.host)
         #expect(app.summaries["studio"]?.rules != nil)
         #expect(app.summaries["studio"]?.vault != nil)
     }
@@ -128,13 +128,13 @@ struct HostSettingsTests {
         await app.refreshStatus()
         await app.refreshAccount()
         app.chosenHost = "pi-kitchen"
-        await app.refreshHostStatus()
+        await app.enter(.settings, host: app.host)
         #expect(try app.summaries["pi-kitchen"]?.status?.get().version?.hasPrefix("0.1.0 (138)") == true)
         app.chosenHost = "sidecar"
-        await app.refreshHostStatus()
+        await app.enter(.settings, host: app.host)
         #expect(app.summaries["sidecar"]?.status == nil)
         app.chosenHost = "studio"
-        await app.refreshHostStatus()
+        await app.enter(.settings, host: app.host)
         #expect(app.summaries["studio"]?.status == nil)
     }
 

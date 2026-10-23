@@ -151,6 +151,8 @@ final class ActivityFeed {
             records.insert(contentsOf: page.records.filter { !held.contains($0.id) }, at: 0)
             hasOlder = page.hasOlder
         } catch {
+            // Leaving the screen that asked is no failure to show.
+            guard !(error is CancellationError), !Task.isCancelled else { return }
             self.error = .from(error)
         }
     }

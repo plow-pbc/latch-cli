@@ -120,12 +120,6 @@ final class AppModel {
     /// name; Home shows the selected host's.
     private(set) var summaries: [String: HostSummary] = [:]
 
-    /// Reads the selected host's whole summary again.
-    func refreshSummary() async {
-        guard let host else { return }
-        await readSummary(of: host, vault: true, refresh: true)
-    }
-
     /// Reads a host's summary: this Mac's from its own state folder,
     /// another host's with `--host`. One read at a time (a remote read in
     /// parallel is no faster), each shown as it answers; only what isn't
@@ -150,11 +144,6 @@ final class AppModel {
 
     /// Another host's own status (Host Settings' version), asked only of a
     /// host Plow doesn't count offline.
-    func refreshHostStatus() async {
-        guard let host else { return }
-        await readHostStatus(of: host, refresh: true)
-    }
-
     private func readHostStatus(of host: HostEntry, refresh: Bool) async {
         guard !host.isThisMac, host.online != false, refresh || !Self.held(summaries[host.name]?.status) else { return }
         guard let status = await Self.result({ try await self.client.hostStatus(host.name) }) else { return }
@@ -184,7 +173,12 @@ final class AppModel {
             guard let host, host.isThisMac || host.online != false else { return }
             if refresh || !Self.held(summaries[host.name]?.vault) { await refreshVault(on: host) }
         case .agents:
-            if refresh || agents == nil { await refreshAgents() }
+            if refresh { await refreshAgents() } else {
+                if agents == nil, await !refreshAgentList() { return }
+                // Each host's standing it doesn't have yet, as when a visit
+                // was left before reading them all.
+                await readStandings(missing: true)
+            }
         case .connections:
             if refresh || connections == nil { await refreshConnections() }
             if refresh || !Self.held(devices) { await refreshDevices() }
@@ -569,9 +563,15 @@ final class AppModel {
 
     func refreshAgents() async {
         guard await refreshAgentList() else { return }
+        await readStandings(missing: false)
+    }
+
+    /// Each reachable host's standing, or only those not held yet.
+    private func readStandings(missing: Bool) async {
         // One host at a time: each is a read over latch's connection.
         for host in hosts where host.isThisMac || host.online != false {
             guard !Task.isCancelled else { return }
+            if missing, Self.held(standings[host.name]) { continue }
             await refreshStanding(on: host)
         }
     }

@@ -31,4 +31,21 @@ extension LatchClient {
     func agentShow(_ uid: String) async throws -> AgentsList.Agent { throw LatchError.unreachable("not scripted") }
     func vaultImportPreview(_ file: URL, host: String?) async throws -> ImportPreview { throw LatchError.unreachable("not scripted") }
     func vaultImport(_ file: URL, picks: [Int], expect: String, host: String?) async throws -> ImportResult { throw LatchError.unreachable("not scripted") }
+    // What a double that only follows or pages needs no script for.
+    nonisolated var stateDir: String { "/s" }
+    func localStatus() async throws -> LocalStatus { try Fixtures.decode(Fixtures.serving) }
+    func accountStatus() async throws -> AccountStatus { try Fixtures.decode(Fixtures.studioHosts) }
+    nonisolated func login(name: String?, replace: Bool) -> AsyncThrowingStream<LoginEvent, Error> { AsyncThrowingStream { $0.finish() } }
+    func setupStatus() async throws -> SetupStatus { try Fixtures.decode(Fixtures.setup(on: [])) }
+    func setupStatusCheckingAccess() async throws -> SetupStatus { try await setupStatus() }
+    func rulesShow(host: String?) async throws -> RulesShow { try Fixtures.decode(#"{"agents":[],"every_agent":null}"#) }
+    func rulesSet(_ text: String) async throws {}
+    func pluginsList(host: String?) async throws -> PluginsList { try Fixtures.decode(#"{"plugins":[]}"#) }
+    func vaultList(host: String?) async throws -> VaultList { try Fixtures.decode(#"{"items":[]}"#) }
+    func enable(_ plugin: String) async throws -> GoogleEnabled? { nil }
+    nonisolated func statusFollow() -> AsyncThrowingStream<LocalStatus, Error> { AsyncThrowingStream { _ in } }
+    func audit(host: String?, before: String?) async throws -> AuditPage { AuditPage(records: [], hasOlder: false) }
+    nonisolated func auditFollow(host: String?, after: String?) -> AsyncThrowingStream<AuditLine, Error> { AsyncThrowingStream { _ in } }
+    func perform(_ args: [String]) async throws {}
+    func stop() async throws {}
 }
