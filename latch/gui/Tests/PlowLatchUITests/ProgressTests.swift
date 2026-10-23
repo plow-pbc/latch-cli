@@ -55,22 +55,33 @@ struct ResumeTests {
 
 struct DecodingTests {
     @Test func loginEventsDecodeAsLatchPrintsThem() throws {
-        let code: LoginEvent = try Fixtures.decode(Fixtures.code)
-        guard case let .code(login) = code else { Issue.record("not a code"); return }
+        let code: LoginLine = try Fixtures.decode(Fixtures.code)
+        guard case let .code(login) = code.event else { Issue.record("not a code"); return }
         #expect(login.code == "JFO3S")
         #expect(login.smsto == "SMSTO:+15550000001:JFO3S")
         #expect(login.expiresAt == nil)
-        let verified: LoginEvent = try Fixtures.decode(#"{"type":"verified","peer":{"name":"studio","key":"d9438ef1","kind":"device"}}"#)
-        #expect(verified == .verified(name: "studio"))
-        let error: LoginEvent = try Fixtures.decode(#"{"type":"error","error":{"code":"code_expired","message":"the code expired"}}"#)
-        #expect(error == .error(LatchFailure(code: "code_expired", message: "the code expired")))
+        let verified: LoginLine = try Fixtures.decode(#"{"type":"verified","peer":{"name":"studio","key":"d9438ef1","kind":"device"}}"#)
+        #expect(verified.event == .verified(name: "studio"))
+        let error: LoginLine = try Fixtures.decode(#"{"type":"error","error":{"code":"code_expired","message":"the code expired"}}"#)
+        #expect(error.event == .error(LatchFailure(code: "code_expired", message: "the code expired")))
     }
 
-    @Test func loginEventsSkipHelloAndTypesTheyDoNotKnow() throws {
-        let hello: LoginEvent = try Fixtures.decode(#"{"type":"hello","schema":1}"#)
-        #expect(hello == .other("hello"))
-        let newer: LoginEvent = try Fixtures.decode(#"{"type":"reminder","at":"2026-10-23T08:00:00Z"}"#)
-        #expect(newer == .other("reminder"))
+    @Test func aLoginSkipsHelloAndEventsItDoesNotKnow() async throws {
+        let folder = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let latch = folder.appending(path: "latch")
+        let lines = [#"{"type":"hello","schema":1}"#, Fixtures.code, #"{"type":"progress","step":"texted"}"#,
+                     #"{"type":"verified","peer":{"name":"studio"}}"#]
+        try ("#!/bin/sh\ncat <<'EOF'\n" + lines.joined(separator: "\n") + "\nEOF\n").write(to: latch, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: latch.path)
+        var events: [LoginEvent] = []
+        for try await event in LiveLatchClient(executable: latch, stateDir: folder.path).login(name: nil) {
+            events.append(event)
+        }
+        #expect(events.count == 2)
+        guard case .code = events.first else { Issue.record("not a code first"); return }
+        #expect(events.last == .verified(name: "studio"))
     }
 
     @Test func localStatusDecodes() throws {
@@ -150,17 +161,17 @@ struct GatekeeperTests {
         app.stage(status: try? Fixtures.decode(Fixtures.serving))
         // Every screen continued, but latch says nothing is on.
         _ = app.stage(.done, progress: Progress(passed: [.rules: .continued, .google: .continued, .access: .continued]))
-        app.stage(rulesSaved: false, plugins: ["google": "disabled", "messages": "enabled", "contacts": "disabled"])
+        app.stage(rulesSaved: false, setup: try? Fixtures.decode(Fixtures.setup(on: ["messages"])))
         let states = Summary.rows(app: app, flow: nil).map(\.state)
         #expect(states == ["Logged in", "Not set up", "Not set up", "Not set up", "Running"])
-        app.stage(rulesSaved: true, plugins: ["google": "enabled", "messages": "enabled", "contacts": "enabled"])
+        app.stage(rulesSaved: true, setup: try? Fixtures.decode(Fixtures.setup(on: ["google", "messages", "contacts"])))
         #expect(Summary.rows(app: app, flow: nil).map(\.state) == ["Logged in", "Saved", "Connected", "On", "Running"])
     }
 
     @Test func aFailedStatusReadSaysSo() {
         let app = AppModel(client: FakeLatchClient(), store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
         app.stage(status: nil, error: "Latch returned an unreadable response.")
-        app.stage(rulesSaved: nil, plugins: nil)
+        app.stage(rulesSaved: nil, setup: nil)
         let states = Summary.rows(app: app, flow: nil).map(\.state)
         #expect(states == ["Couldn't check", "Couldn't check", "Couldn't check", "Couldn't check", "Couldn't check"])
     }
@@ -177,7 +188,14 @@ final class ScriptedClient: LatchClient, @unchecked Sendable {
     let stateDir = "/Users/me/.latch"
     var status = Fixtures.stopped
     private(set) var stopped = 0
-    private(set) var served: [Bool] = []
+    /// The setup steps run, as `setup --status` gave them.
+    private(set) var performed: [[String]] = []
+    /// Connectors `setup --status` says are on.
+    var connectorsOn: [String] = []
+    /// Names `login --events --name` was given.
+    private(set) var loginNames: [String?] = []
+    /// How `login --events` ends.
+    var loginEvents: [LoginEvent] = []
     let enableAnswer: @Sendable (String) throws -> GoogleEnabled?
     let pause: Duration
     private(set) var enabled: [String] = []
@@ -188,14 +206,26 @@ final class ScriptedClient: LatchClient, @unchecked Sendable {
     }
 
     func localStatus() async throws -> LocalStatus { try Fixtures.decode(status) }
-    func login() -> AsyncThrowingStream<LoginEvent, Error> { AsyncThrowingStream { $0.finish() } }
+    func login(name: String?) -> AsyncThrowingStream<LoginEvent, Error> {
+        loginNames.append(name)
+        let events = loginEvents
+        return AsyncThrowingStream { continuation in
+            for event in events { continuation.yield(event) }
+            continuation.finish()
+        }
+    }
+    /// The Google and host steps `setup --status` gives, when not the default.
+    var google: String?
+    var host: String?
+    func setupStatus() async throws -> SetupStatus {
+        try Fixtures.decode(host.map { Fixtures.setup(on: connectorsOn, google: google, host: $0) } ?? Fixtures.setup(on: connectorsOn, google: google))
+    }
     func rulesShow() async throws -> RulesShow { try Fixtures.decode(#"{"agents":[],"every_agent":null}"#) }
     func rulesSet(_ text: String) async throws { try await Task.sleep(for: pause) }
-    func pluginsList() async throws -> PluginsList { throw CancellationError() }
-    /// How `serve -d` fails, if it does.
+    /// How a setup step (`serve -d`) fails, if it does.
     var serveFailure: LatchFailure?
-    func serve(again: Bool) async throws {
-        served.append(again)
+    func perform(_ args: [String]) async throws {
+        performed.append(args)
         if let serveFailure { throw LatchError.failed(serveFailure) }
     }
     func stop() async throws {
@@ -291,24 +321,27 @@ struct ClosingTests {
         var opened: [URL] = []
         app.open = { opened.append($0) }
         let flow = app.stage(.google)
-        // Coming back to the app checks, even before any check.
+        // Coming back to the app only reads what latch says: no enable.
         await flow.returnedToApp()
-        #expect(client.enabled == ["google"])
+        #expect(client.enabled.isEmpty)
+        #expect(flow.google == .unknown)
+        await flow.checkGoogle()
         #expect(flow.google == .needed("connect a Google account in Plow"))
         #expect(flow.googleConnectURL == nil)
         flow.connectGoogleInPlow()
         #expect(opened.isEmpty)
+        // No page opened, so nothing to come back from.
         await flow.returnedToApp()
-        #expect(client.enabled == ["google", "google"])
+        #expect(client.enabled == ["google"])
     }
 
     @Test func notSetUpIsOnlyLatchsAnswer() {
         let app = AppModel(client: FakeLatchClient(), store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
         app.stage(status: try? Fixtures.decode(Fixtures.stopped))
         _ = app.stage(.done, progress: Progress(passed: [.google: .skipped, .access: .skipped, .rules: .skipped]))
-        app.stage(rulesSaved: true, plugins: nil)
-        // Skipped this time, but latch has rules; the host isn't running to say about connectors.
-        #expect(Summary.rows(app: app, flow: nil).map(\.state) == ["Logged in", "Saved", "Couldn't check", "Couldn't check", "Not running"])
+        app.stage(rulesSaved: true, setup: try? Fixtures.decode(Fixtures.setup(on: ["google"])))
+        // Skipped this time, but latch has rules and Google, with no host running.
+        #expect(Summary.rows(app: app, flow: nil).map(\.state) == ["Logged in", "Saved", "Connected", "Not set up", "Not running"])
     }
 
     /// Contacts & Messages refused for want of Full Disk Access, on a host
@@ -337,10 +370,10 @@ struct ClosingTests {
         #expect(flow.backgroundHostNeedsRestart)
         #expect(!flow.terminalHostNeedsRestart)
         // Never by itself: only the person's Restart Latch stops and starts it.
-        #expect(client.stopped == 0 && client.served.isEmpty)
+        #expect(client.stopped == 0 && client.performed.isEmpty)
         await flow.restartLatch()
         #expect(client.stopped == 1)
-        #expect(client.served == [true])
+        #expect(client.performed == [["serve", "-d", "--again"]])
         await until { client.enabled.count >= 4 }
         #expect(client.enabled == ["messages", "contacts", "messages", "contacts"])
     }
@@ -352,18 +385,117 @@ struct ClosingTests {
         #expect(client.stopped == 0)
     }
 
-    @Test func setUpAgainShowsGoogleAsItIs() async {
-        let client = ScriptedClient { _ in GoogleEnabled(accounts: ["owner@example.com"]) }
+    @Test func googleNotConnectedContinuesWithoutIt() async {
+        let notConnected = LatchFailure(code: "google_not_connected", message: "connect Google in Plow")
+        let client = ScriptedClient { _ in throw LatchError.failed(notConnected) }
         let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
-        let flow = app.stage(.google, progress: Progress(rerun: true))
-        await flow.googleAppeared()
-        #expect(flow.google == .done)
-        #expect(flow.googleAccounts == ["owner@example.com"])
-        #expect(flow.stepDone)
-        // A first run waits for the person.
-        let first = app.stage(.google)
-        await first.googleAppeared()
-        #expect(first.google == .unknown)
+        let flow = app.stage(.google)
+        #expect(flow.primaryTitle == "Check connection")
+        flow.primary()
+        await until { flow.google.isNeeded }
+        // Continue moves on; checking again is the screen's own button.
+        #expect(flow.primaryTitle == "Continue")
+        #expect(flow.primarySkips)
+        flow.primary()
+        #expect(flow.step == .access)
+        #expect(flow.progress.passed[.google] == .skipped)
+        #expect(client.enabled == ["google"])
+    }
+
+    @Test func arrivingAtGoogleReadsWhatPlowSays() async {
+        let client = ScriptedClient { _ in GoogleEnabled(accounts: ["me@example.com"]) }
+        client.google = #"{"step":"google","state":"needed","reason":"Google is not connected in Plow: connect it at http://127.0.0.1:18934/connections, then run `latch plugins enable google`.","args":null,"enabled":false,"ready":false,"accounts":[],"connect_url":"http://127.0.0.1:18934/connections"}"#
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
+        var opened: [URL] = []
+        app.open = { opened.append($0) }
+        let notConnected = app.stage(.google)
+        await notConnected.googleAppeared()
+        #expect(notConnected.google.isNeeded)
+        #expect(notConnected.primaryTitle == "Continue")
+        notConnected.connectGoogleInPlow()
+        #expect(opened == [URL(string: "http://127.0.0.1:18934/connections")!])
+
+        client.google = #"{"step":"google","state":"needed","reason":"Google is connected in Plow (me@example.com); the Google connector is off.","args":["plugins","enable","google"],"enabled":false,"ready":false,"accounts":["me@example.com"]}"#
+        let off = app.stage(.google)
+        await off.googleAppeared()
+        #expect(off.google == .unknown)
+        #expect(off.googleAccounts == ["me@example.com"])
+        #expect(off.primaryTitle == "Turn on")
+        // Looking turns nothing on; Turn on does.
+        #expect(client.enabled.isEmpty)
+        off.primary()
+        await until { off.google == .done }
+        #expect(client.enabled == ["google"])
+
+        client.google = #"{"step":"google","state":"done","reason":"Google is connected in Plow (me@example.com); the Google connector is on.","args":null,"enabled":true,"ready":true,"accounts":["me@example.com"]}"#
+        let on = app.stage(.google, progress: Progress(rerun: true))
+        await on.googleAppeared()
+        #expect(on.google == .done)
+        #expect(on.stepDone)
+        #expect(on.googleAccounts == ["me@example.com"])
+
+        // Turned on once, then disconnected in Plow: not connected, whatever
+        // was turned on here.
+        client.google = #"{"step":"google","state":"needed","reason":"Google is not connected in Plow: connect it at http://127.0.0.1:18934/connections, then run `latch plugins enable google`.","args":null,"enabled":true,"ready":false,"accounts":[],"connect_url":"http://127.0.0.1:18934/connections"}"#
+        let disconnected = app.stage(.google, progress: Progress(rerun: true))
+        await disconnected.googleAppeared()
+        #expect(disconnected.google.isNeeded)
+        app.stage(rulesSaved: true, setup: try? await client.setupStatus())
+        #expect(Summary.rows(app: app, flow: nil).first { $0.title == "Google" }?.state == "Not set up")
+    }
+
+    @Test func arrivingAtAccessOnlyReadsWhatsOn() async throws {
+        let client = ScriptedClient { _ in nil }
+        client.connectorsOn = ["messages"]
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
+        app.open = { Issue.record("opened \($0)") }
+        let flow = app.stage(.access)
+        await flow.accessAppeared()
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(flow.messages == .done)
+        #expect(flow.contacts == .unknown)
+        // Looking turns nothing on.
+        #expect(client.enabled.isEmpty)
+    }
+
+    @Test func aBlockedHostNeitherMovesOnNorSetsTheLoginItem() async {
+        let client = ScriptedClient { _ in nil }
+        client.host = #"{"step":"host","state":"blocked","reason":"a host from another latch version (pid 4242) holds this state folder; stop it with `kill 4242`, then start latch again","args":null}"#
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
+        var loginItem: [Bool] = []
+        app.setLoginItem = { loginItem.append($0) }
+        let flow = app.stage(.start)
+        await flow.startLatch()
+        #expect(flow.step == .start)
+        #expect(loginItem.isEmpty)
+        #expect(client.performed.isEmpty)
+        #expect(flow.startError?.hasPrefix("a host from another latch version (pid 4242)") == true)
+    }
+
+    @Test func aTakenNameAsksForAnother() async {
+        let client = ScriptedClient { _ in nil }
+        client.loginEvents = [.error(LatchFailure(code: "conflict", message: "a machine named \"studio\" already exists"))]
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
+        let flow = app.stage(.login)
+        flow.startLogin()
+        await until { flow.login == .nameTaken }
+        #expect(flow.login == .nameTaken)
+        client.loginEvents = [.verified(name: "studio-2")]
+        flow.loginName = " studio-2 "
+        flow.useAnotherName()
+        await until { flow.login == .verified(name: "studio-2") }
+        #expect(client.loginNames == [nil, "studio-2"])
+    }
+
+    @Test func aRelaunchWithNoArgumentsKeepsTheStateFolder() throws {
+        let defaults = try #require(UserDefaults(suiteName: "co.plow.latch.tests.\(UUID())"))
+        #expect(StateFolder.choose(given: "/Users/me/.latch", launched: .unnamed, defaults: defaults) == ("/Users/me/.latch", true))
+        #expect(StateFolder.choose(given: "/tmp/dev", launched: .other, defaults: defaults) == ("/tmp/dev", false))
+        // Quit & Reopen: no arguments, the same folder, and no login item.
+        #expect(StateFolder.choose(given: "/Users/me/.latch", launched: .unnamed, defaults: defaults) == ("/tmp/dev", false))
+        // Naming the default folder goes back to it for good.
+        #expect(StateFolder.choose(given: "/Users/me/.latch", launched: .defaultFolder, defaults: defaults) == ("/Users/me/.latch", true))
+        #expect(StateFolder.choose(given: "/Users/me/.latch", launched: .unnamed, defaults: defaults) == ("/Users/me/.latch", true))
     }
 
     @Test func aFailedRestartSaysTheHostIsStoppedAndWhyAndRetries() async {
@@ -376,7 +508,7 @@ struct ClosingTests {
         client.serveFailure = nil
         await flow.restartLatch()
         #expect(client.stopped == 1)
-        #expect(client.served == [true, true])
+        #expect(client.performed == [["serve", "-d", "--again"], ["serve", "-d", "--again"]])
         #expect(flow.restartError == nil)
     }
 
@@ -390,6 +522,6 @@ struct ClosingTests {
         flow.checkAccess()
         await until { flow.accessDone }
         #expect(flow.accessDone)
-        #expect(client.stopped == 0 && client.served.isEmpty)
+        #expect(client.stopped == 0 && client.performed.isEmpty)
     }
 }

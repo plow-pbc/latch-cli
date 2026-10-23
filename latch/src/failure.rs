@@ -342,7 +342,6 @@ codes! {
     no_credential: Usage,
     no_dialog: Failed,
     no_file_name: Usage,
-    no_free_line: Failed,
     no_handoff: Failed,
     no_history: Failed,
     no_host: Usage,

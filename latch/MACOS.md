@@ -22,8 +22,8 @@ Keychain, and it carries the app's window.
 - `Contents/Library/LaunchAgents/co.plow.latch.cli.login.plist`, the
   agent behind the window's "Start when you log in": registered with
   ServiceManagement, it runs the bundle's `latch serve -d --again` at login,
-  on latch's default state folder, so the window offers it only when it was
-  opened without `--state-dir`;
+  on latch's default state folder, so the window offers it only when it
+  runs on that folder;
 - `Contents/Resources/AppIcon.icns` (`latch/macos/`);
 - `Contents/embedded.provisionprofile`, the Developer ID profile that lets
   the signature claim latch's keychain group.
@@ -36,7 +36,10 @@ thread (`src/gui.rs`): a normal Dock app. The window needs macOS 26 or
 later; below that the app shows one alert pointing to `latch setup` and
 quits. Every other run of the same binary is the CLI and loads no AppKit or
 SwiftUI. The window gets everything it shows from this bundle's own latch,
-run with `--state-dir`.
+run with `--state-dir`. The window remembers a `--state-dir` it was opened
+with and goes back to it on a launch with no arguments, since macOS's Quit &
+Reopen (after Full Disk Access is granted) drops them; opening it with
+`--state-dir` naming latch's default folder forgets it.
 
 The window walks a new owner through setup (log in, rules, Google,
 Contacts & Messages, starting latch), each step a latch command
