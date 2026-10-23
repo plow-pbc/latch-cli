@@ -378,6 +378,7 @@ conformance!(
     a_late_popup_is_followed_before_the_next_step,
     one_sessions_wait_does_not_hold_the_browser_for_another,
     a_call_longer_than_the_idle_timeout_does_not_end_its_session,
+    close_answers_at_once_while_a_call_holds_the_session,
     a_browser_that_leaves_calls_unanswered_is_closed,
     a_dialog_that_opens_between_calls_is_refused_at_once,
     typing_that_opens_a_dialog_returns_without_waiting_on_the_page,
@@ -1221,6 +1222,44 @@ async fn frames_that_come_and_go_while_a_page_loads_break_no_call(engine: &str) 
     session.close().await.unwrap();
 }
 
+/// Closing a session never waits on it: with a call under way in it that
+/// takes seconds, `close` answers at once, the session is gone, and its
+/// browser closes once that call ends.
+async fn close_answers_at_once_while_a_call_holds_the_session(engine: &str) {
+    let (_dir, state, _area) = test_state(engine);
+    let mut h = Host::new(&state);
+    let (id, _) = h.open(CALLER, engine, json!({"url": local_page()})).await;
+    let slow = json!({"script": "new Promise(done => setTimeout(() => done(1), 5000))"});
+    let close = async {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let started = std::time::Instant::now();
+        let mut audit = serde_json::Map::new();
+        let closed = host::call(
+            &h.browsers,
+            CALLER.into(),
+            "close",
+            &id,
+            &json!({}),
+            None,
+            &mut audit,
+        )
+        .await
+        .unwrap()
+        .0;
+        (closed, started.elapsed())
+    };
+    let ((ended, _), (closed, took)) =
+        tokio::join!(run_as(&h.browsers, CALLER.into(), "eval", &id, slow), close);
+    println!("close during a 5 s eval: {closed} after {took:?}; the eval: {ended:?}");
+    assert_eq!(closed["closed"], true);
+    assert!(took < Duration::from_secs(1), "close took {took:?}");
+    let gone = run_as(&h.browsers, CALLER.into(), "observe", &id, json!({}))
+        .await
+        .0;
+    assert_eq!(gone.unwrap_err().code, "no_such_session");
+    h.browsers.settled().await;
+}
+
 async fn a_call_longer_than_the_idle_timeout_does_not_end_its_session(engine: &str) {
     let (_dir, state, _area) = test_state(engine);
     let mut session =
@@ -1782,9 +1821,31 @@ async fn with_no_engine_a_call_names_the_owners_setup_and_downloads_nothing() {
         .unwrap_err();
     assert_eq!(other.code, "bad_arguments");
     assert!(!state.join("plugins").exists());
-    let left = fs::read_dir(profile::root(&state)).unwrap().count();
-    println!("profiles left by the failed launches: {left}");
-    assert_eq!(left, 0);
+    // The engine is checked before a profile is made: no launch got that far.
+    println!(
+        "profiles folder after the failed launches: exists {}",
+        profile::root(&state).exists()
+    );
+    assert!(!profile::root(&state).exists());
+}
+
+/// `host::call`, and after a `close`, until the browser it closes is gone:
+/// a close answers at once, and a test that ended before its browser did
+/// would leave it running in the test's folder.
+pub(super) async fn host_call(
+    browsers: &Browsers,
+    caller: host::Caller<'_>,
+    command: &str,
+    name: &str,
+    args: &serde_json::Value,
+    input: Option<&[u8]>,
+    audit: &mut serde_json::Map<String, serde_json::Value>,
+) -> Result<(serde_json::Value, Option<Vec<u8>>), Failure> {
+    let result = host::call(browsers, caller, command, name, args, input, audit).await;
+    if command == "close" {
+        browsers.settled().await;
+    }
+    result
 }
 
 /// One command as the host runs it, and its audit record.
@@ -1796,7 +1857,7 @@ async fn run_as(
     args: serde_json::Value,
 ) -> (Result<serde_json::Value, Failure>, serde_json::Value) {
     let mut audit = serde_json::Map::new();
-    let result = host::call(browsers, caller, command, name, &args, None, &mut audit)
+    let result = host_call(browsers, caller, command, name, &args, None, &mut audit)
         .await
         .map(|(result, _)| result);
     (result, serde_json::Value::Object(audit))
@@ -2043,7 +2104,7 @@ async fn sessions_share_nothing_and_their_profiles_end_with_them(engine: &str) {
         (other, &b, "invoice-2026-09.csv"),
     ] {
         let mut audit = serde_json::Map::new();
-        let (got, bytes) = host::call(
+        let (got, bytes) = host_call(
             &h.browsers,
             caller.into(),
             "download_get",

@@ -243,7 +243,7 @@ impl Harness {
     /// A command in the harness's session.
     pub(super) async fn call(&mut self, command: &str, args: Value) -> Value {
         let mut audit = Map::new();
-        let (result, _) = host::call(
+        let (result, _) = super::host_call(
             &self.browsers,
             CALLER.into(),
             command,

@@ -867,7 +867,7 @@ async fn instruction_steps_offer_only_what_is_possible_and_stop_in_order() {
     args["request"] = json!("r-output-1");
     args["output"] = json!(true);
     let mut audit = serde_json::Map::new();
-    let (result, _) = crate::browser::host::call(
+    let (result, _) = super::host_call(
         &h.browsers,
         super::CALLER.into(),
         "do",
@@ -887,7 +887,7 @@ async fn instruction_steps_offer_only_what_is_possible_and_stop_in_order() {
     assert!(png.starts_with(b"\x89PNG"));
     told.tell(|_| choose("stuck", None));
     args["request"] = json!("r-output-2");
-    let failure = crate::browser::host::call(
+    let failure = super::host_call(
         &h.browsers,
         super::CALLER.into(),
         "do",
@@ -1351,7 +1351,7 @@ async fn a_plan_stopped_for_the_owner_goes_on_after_the_handoff() {
         let (browsers, id) = (h.browsers.clone(), h.id.clone());
         tokio::spawn(async move {
             let mut audit = serde_json::Map::new();
-            crate::browser::host::call(
+            super::host_call(
                 &browsers,
                 super::CALLER.into(),
                 "handoff",
