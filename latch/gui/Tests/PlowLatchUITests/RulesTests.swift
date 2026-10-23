@@ -164,3 +164,65 @@ struct RulesScrollTests {
         #expect(app.rulesScrollTarget(on: host) == scout)
     }
 }
+
+/// Rules being edited stay while the person goes elsewhere, and Save (⌘S)
+/// saves the focused editor's only.
+@MainActor
+struct RulesDraftTests {
+    private func app(_ client: RulesClient) async throws -> AppModel {
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
+        app.stage(status: try Fixtures.decode(Fixtures.serving))
+        app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
+        app.section = .rules
+        await app.enter(.rules, host: app.host)
+        return app
+    }
+
+    @Test func aDraftSurvivesGoingToAnotherScreenAndHostAndBack() async throws {
+        let client = RulesClient()
+        let app = try await app(client)
+        let key = AppModel.RulesKey(host: "studio", agent: nil)
+        let saved = try #require(app.savedRules(key))
+        app.rulesDrafts[key] = .init(text: saved.text + " Never touch ~/Taxes.", base: saved.revision)
+        for (section, host) in [(SidebarItem.home, "studio"), (.activity, "pi-kitchen"), (.rules, "pi-kitchen"), (.rules, "studio")] {
+            app.section = section
+            app.chosenHost = host
+            await app.enter(section, host: app.host)
+        }
+        #expect(app.rulesDrafts[key]?.text.hasSuffix(" Never touch ~/Taxes.") == true)
+        #expect(app.rulesChanged(key))
+        #expect(client.sets.isEmpty)
+    }
+
+    @Test func saveSavesTheFocusedEditorOnly() async throws {
+        let client = RulesClient()
+        let app = try await app(client)
+        let every = AppModel.RulesKey(host: "studio", agent: nil)
+        let scout = AppModel.RulesKey(host: "studio", agent: "ba3c0b3ad1eba7a9a1eb04b67c9db0dd")
+        let everySaved = app.savedRules(every), scoutSaved = app.savedRules(scout)
+        app.rulesDrafts[every] = .init(text: "Agents may read ~/Projects.", base: everySaved?.revision)
+        app.rulesDrafts[scout] = .init(text: "scout may run make test.", base: scoutSaved?.revision)
+        #expect(!app.canSaveFocusedRules)
+        await app.saveFocusedRules()
+        #expect(client.sets.isEmpty)
+        app.focusedRules = scout
+        #expect(app.canSaveFocusedRules)
+        await app.saveFocusedRules()
+        #expect(client.sets.map(\.agent) == [scout.agent])
+        #expect(app.rulesDrafts[scout] == nil)
+        #expect(app.rulesDrafts[every]?.text == "Agents may read ~/Projects.")
+    }
+
+    @Test func aDraftOverRulesChangedElsewhereStaysWithWhy() async throws {
+        let client = RulesClient()
+        let app = try await app(client)
+        let key = AppModel.RulesKey(host: "studio", agent: nil)
+        app.rulesDrafts[key] = .init(text: "Agents may read ~/Projects.", base: "an older revision")
+        await app.saveRulesDraft(key)
+        #expect(client.sets.isEmpty)
+        #expect(app.rulesDrafts[key] != nil)
+        #expect(app.rulesErrors[key]?.message == AppModel.changedElsewhere)
+        await app.revertRules(key)
+        #expect(app.rulesDrafts[key] == nil && app.rulesErrors[key] == nil)
+    }
+}

@@ -520,6 +520,11 @@ package enum SnapshotRunner {
                     app.trial.stage(try Fixtures.decode(Fixtures.tries["said-no"]!), request: "exec -- cat Finance/2026.csv",
                                     caller: .agent(scout), on: "studio")
                 }),
+                ("16-rules-studio-unsaved-draft", .rules, nil, [], { app in
+                    let key = AppModel.RulesKey(host: "studio", agent: nil)
+                    let saved = app.savedRules(key)
+                    app.rulesDrafts[key] = .init(text: (saved?.text ?? "") + "Never send email without asking me.", base: saved?.revision)
+                }),
                 ("16-rules-pi-kitchen-helper-exec-refused", .rules, "pi-kitchen", [], { app in
                     app.rulesFocus = helper
                     app.trial.stage(try Fixtures.decode(Fixtures.tries["host-refused"]!), request: "exec -- ls",

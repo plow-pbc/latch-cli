@@ -86,6 +86,14 @@ struct PlowLatchApp: App {
         .defaultSize(width: 1120, height: 700)
         .restorationBehavior(.disabled)
         .defaultLaunchBehavior(windowed && finished ? .presented : .suppressed)
+        .commands {
+            // One Save: the rules editor with the keyboard focus.
+            CommandGroup(replacing: .saveItem) {
+                Button("Save") { Task { await model.saveFocusedRules() } }
+                    .keyboardShortcut("s", modifiers: .command)
+                    .disabled(!model.canSaveFocusedRules)
+            }
+        }
 
         Settings {
             AppSettingsView()

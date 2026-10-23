@@ -93,45 +93,48 @@ private struct RulesEditor: View {
     var host: HostEntry
     var agent: AgentsList.Agent?
     @Environment(AppModel.self) private var app
-    @State private var text = ""
-    /// The revision the edit started from; nil when there were no rules.
-    @State private var base: String?
-    @State private var editing = false
-    @State private var saving = false
-    @State private var error: LatchError?
+    @FocusState private var focused: Bool
+
+    private var key: AppModel.RulesKey { .init(host: host.name, agent: agent?.uid) }
 
     var body: some View {
+        let draft = app.rulesDrafts[key]
+        let saving = app.savingRules.contains(key)
         Section {
-            if saved == nil, !editing {
+            if saved == nil, draft == nil {
                 HStack {
                     Text(agent == nil ? "None yet." : "None of its own: it follows the rules for every agent.")
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Button("Add Rules…") { begin() }
+                    Button("Add Rules…") {
+                        begin()
+                        focused = true
+                    }
                 }
             } else {
-                TextEditor(text: Binding { editing ? text : saved?.text ?? "" } set: { new in
-                    if !editing { begin() }
-                    text = new
+                TextEditor(text: Binding { app.rulesDrafts[key]?.text ?? saved?.text ?? "" } set: { new in
+                    if app.rulesDrafts[key] == nil { begin() }
+                    app.rulesDrafts[key]?.text = new
                 })
                 .font(.body)
                 // What's typed during a save couldn't be saved by it.
                 .disabled(saving)
                 .frame(minHeight: 70)
                 .accessibilityLabel(title)
-                if let error {
+                .focused($focused)
+                if let error = app.rulesErrors[key] {
                     Label { ErrorText(error: error, host: host.spoken) } icon: { Image(systemName: "exclamationmark.triangle") }
                         .foregroundStyle(.red)
                 }
-                if editing {
+                if draft != nil {
                     HStack {
                         Spacer()
-                        Button("Revert") { revert() }
+                        Button("Revert") { Task { await app.revertRules(key) } }
                             .disabled(saving)
-                        Button(saving ? "Saving…" : "Save") { Task { await save() } }
-                            .keyboardShortcut("s", modifiers: .command)
+                        // ⌘S is the menu's Save, for the focused editor.
+                        Button(saving ? "Saving…" : "Save") { Task { await app.saveRulesDraft(key) } }
                             .buttonStyle(.borderedProminent)
-                            .disabled(saving || !changed)
+                            .disabled(!app.canSaveRules(key))
                     }
                 }
             }
@@ -140,37 +143,19 @@ private struct RulesEditor: View {
         } footer: {
             Text(note).foregroundStyle(.secondary)
         }
-        .onChange(of: saved) { _, new in
-            // The saved rules changed under an unedited editor: show them.
-            if !editing { base = new?.revision }
+        .onChange(of: focused) { _, now in
+            if now {
+                app.focusedRules = key
+            } else if app.focusedRules == key {
+                app.focusedRules = nil
+            }
         }
     }
 
-    private var changed: Bool { text != (saved?.text ?? "") || base != saved?.revision }
-
+    /// Editing begins from the rules saved now.
     private func begin() {
-        text = saved?.text ?? ""
-        base = saved?.revision
-        editing = true
-        error = nil
-    }
-
-    private func revert() {
-        editing = false
-        error = nil
-        Task { await app.refreshRules(on: host) }
-    }
-
-    private func save() async {
-        saving = true
-        defer { saving = false }
-        do {
-            try await app.saveRules(text, on: host, agent: agent?.uid, revision: base)
-            editing = false
-            error = nil
-        } catch {
-            self.error = .from(error)
-        }
+        app.rulesDrafts[key] = .init(text: saved?.text ?? "", base: saved?.revision)
+        app.rulesErrors[key] = nil
     }
 }
 

@@ -618,6 +618,74 @@ final class AppModel {
         await refreshStanding(on: host)
     }
 
+    /// A rules editor's place: a host's rules for every agent (`agent`
+    /// nil), or one agent's own there.
+    struct RulesKey: Hashable {
+        var host: String
+        var agent: String?
+    }
+
+    /// Rules being edited and not yet saved: the text, and the revision the
+    /// edit started from (nil when there were none).
+    struct RulesDraft: Equatable {
+        var text: String
+        var base: String?
+    }
+
+    /// Unsaved rules, kept while the person goes to another screen or host
+    /// and back; a save or Revert ends one.
+    var rulesDrafts: [RulesKey: RulesDraft] = [:]
+    /// Why a draft's last save failed.
+    var rulesErrors: [RulesKey: LatchError] = [:]
+    private(set) var savingRules: Set<RulesKey> = []
+    /// The rules editor with the keyboard focus: the one Save (⌘S) saves.
+    var focusedRules: RulesKey?
+
+    /// The rules saved at a draft's place, as the host last said.
+    func savedRules(_ key: RulesKey) -> RulesShow.Text? {
+        guard case let .success(show)? = summaries[key.host]?.rules else { return nil }
+        guard let agent = key.agent else { return show.everyAgent }
+        return show.agent(agent).map { RulesShow.Text(text: $0.text ?? "", revision: $0.revision) }
+    }
+
+    /// A draft differs from what's saved, or was begun from older rules.
+    func rulesChanged(_ key: RulesKey) -> Bool {
+        guard let draft = rulesDrafts[key] else { return false }
+        let saved = savedRules(key)
+        return draft.text != (saved?.text ?? "") || draft.base != saved?.revision
+    }
+
+    func canSaveRules(_ key: RulesKey) -> Bool { rulesChanged(key) && !savingRules.contains(key) }
+
+    /// Saves a draft over what it began from; it ends once saved, and stays
+    /// with why when not.
+    func saveRulesDraft(_ key: RulesKey) async {
+        guard canSaveRules(key), let draft = rulesDrafts[key], let host = hosts.first(where: { $0.name == key.host }) else { return }
+        savingRules.insert(key)
+        defer { savingRules.remove(key) }
+        do {
+            try await saveRules(draft.text, on: host, agent: key.agent, revision: draft.base)
+            rulesDrafts[key] = nil
+            rulesErrors[key] = nil
+        } catch {
+            rulesErrors[key] = .from(error)
+        }
+    }
+
+    /// Save (⌘S): the focused editor's draft, and only that one.
+    var canSaveFocusedRules: Bool { focusedRules.map(canSaveRules) ?? false }
+
+    func saveFocusedRules() async {
+        if let key = focusedRules { await saveRulesDraft(key) }
+    }
+
+    /// Revert: the draft goes, and the saved rules are read again.
+    func revertRules(_ key: RulesKey) async {
+        rulesDrafts[key] = nil
+        rulesErrors[key] = nil
+        if let host = hosts.first(where: { $0.name == key.host }) { await refreshRules(on: host) }
+    }
+
     static let changedElsewhere = "These rules changed since you started editing. Revert to see the saved rules, then make your change again."
 
     /// `latch rules try` on a host.
