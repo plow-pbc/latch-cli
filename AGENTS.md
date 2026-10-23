@@ -134,7 +134,7 @@ The gate is fmt, clippy with `-D warnings`, and the tests, on macOS and on Linux
 just test             # the gate for this machine's OS
 just test --linux     # the Linux gate, in the Linux test container (Docker)
 just test core        # one suite: the quick loop
-just test --only NAME  # just the tests with NAME in their names, in whichever suites hold them
+just test --only NAME # just the tests with NAME in their names, in whichever suites hold them
 just test-list        # the suites: what each covers and needs, and where it runs
 just test-plan ...    # what `just test ...` would run, without running it
 ```
