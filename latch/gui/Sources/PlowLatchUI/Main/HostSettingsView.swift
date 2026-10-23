@@ -1,34 +1,26 @@
 import SwiftUI
 
-/// The selected host's settings: its state (and, for this Mac, restart and
-/// stop), what it refuses agents, its connectors (on and off only here,
-/// for this Mac), updates, and the account's logged-in machines.
+/// The selected host's settings, and only that host's: its state (and, for
+/// this Mac, restart and stop), its version (another host's as it says), what it refuses agents, and its
+/// plugins (on and off only here, for this Mac).
 struct HostSettingsView: View {
     @Environment(AppModel.self) private var app
     @State private var stopping = false
-    @State private var removingDevice: DeviceList.Device?
-    @State private var loggingOut = false
-    @State private var logOutError: String?
 
     var body: some View {
         Form {
-            if app.viewerOnly, let me = app.status?.peer {
-                Section("This Mac") {
-                    HStack {
-                        LabeledContent(me.name, value: "Not hosting")
-                        Button(app.startingHost ? "Starting…" : "Start Hosting on This Mac…") { app.confirmingStartHosting = true }
-                            .disabled(app.startingHost)
-                    }
-                    if let error = app.startHostError { Text(error).foregroundStyle(.red) }
-                }
-            }
             if let host = app.host {
                 HostSection(host: host, stopping: $stopping)
-                ExecSection(host: host)
-                ConnectorsSection(host: host)
-                UpdatesSection(host: host)
+                if !host.isThisMac && host.online == false {
+                    Section {
+                        Text("\(host.name) is offline. Its running programs and plugins show here once it's back online.")
+                            .foregroundStyle(.secondary)
+                    }
+                } else {
+                    ExecSection(host: host)
+                    PluginsSection(host: host)
+                }
             }
-            accountSection
         }
         .formStyle(.grouped)
         .navigationTitle("Host Settings")
@@ -36,98 +28,13 @@ struct HostSettingsView: View {
         .task(id: app.host?.id) {
             guard !app.still else { return }
             await app.refreshSummary()
-        }
-        .task {
-            guard !app.still else { return }
-            await app.refreshDevices()
+            await app.refreshHostStatus()
         }
         .confirmationDialog("Stop Latch on this Mac?", isPresented: $stopping) {
             Button("Stop", role: .destructive) { Task { await app.stopHost() } }
         } message: {
             Text("Your agents can't reach this Mac until you start it again.")
         }
-        .confirmationDialog("Remove “\(removingDevice?.name ?? "")” from your account?", isPresented: removingBinding,
-                            presenting: removingDevice) { device in
-            Button("Remove", role: .destructive) {
-                Task { await app.removeDevice(device.name) }
-            }
-        } message: { device in
-            Text("\(device.name) is logged out of Plow and can no longer send requests as you.")
-        }
-        .confirmationDialog("Log out this Mac?", isPresented: $loggingOut) {
-            Button("Log Out", role: .destructive) {
-                Task {
-                    do {
-                        try await app.logOut()
-                    } catch {
-                        logOutError = error.localizedDescription
-                    }
-                }
-            }
-        } message: {
-            Text("Latch stops here and this Mac leaves your Plow account. Its vault and activity stay, readable after you log in again.")
-        }
-        .alert("Still in your Plow account", isPresented: logOutWarningBinding) {
-            Button("OK") { app.acknowledgeLogOutWarning() }
-        } message: {
-            Text(app.logOutWarning ?? "")
-        }
-    }
-
-    @ViewBuilder
-    private var accountSection: some View {
-        Section {
-            switch app.devices {
-            case nil:
-                LabeledContent("Logged-in devices") { ProgressView().controlSize(.small) }
-            case let .failure(error)?:
-                LabeledContent("Logged-in devices") { Text(error.message).foregroundStyle(.secondary) }
-            case .success?:
-                let devices = app.loggedInDevices ?? []
-                if devices.isEmpty {
-                    LabeledContent("Logged-in devices", value: "None")
-                }
-                ForEach(devices) { device in
-                    let thisMac = device.key == app.status?.peer?.key
-                    HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(thisMac ? "\(device.name) (this Mac)" : device.name)
-                            Text(seen(device)).font(.callout).foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Button("Remove…") { removingDevice = device }
-                            .disabled(thisMac)
-                            .help(thisMac ? "Log out this Mac instead" : "Remove it from your account")
-                    }
-                }
-            }
-            if let error = app.deviceRemoveError { Text(error).foregroundStyle(.red) }
-            if let me = app.status?.peer {
-                HStack {
-                    LabeledContent("Logged in as", value: me.name)
-                    Button("Log Out…") { loggingOut = true }
-                }
-                if let logOutError { Text(logOutError).foregroundStyle(.red) }
-            }
-        } header: {
-            Text("Your account")
-        } footer: {
-            Text("Logged-in devices can send requests as you but don't host.").foregroundStyle(.secondary)
-        }
-    }
-
-    private var logOutWarningBinding: Binding<Bool> {
-        Binding { app.logOutWarning != nil } set: { if !$0 { app.acknowledgeLogOutWarning() } }
-    }
-
-    private var removingBinding: Binding<Bool> {
-        Binding { removingDevice != nil } set: { if !$0 { removingDevice = nil } }
-    }
-
-    private func seen(_ device: DeviceList.Device) -> String {
-        let state = device.online == true ? "Online" : "Offline"
-        guard let seen = device.lastSeenAt else { return state }
-        return "\(state) · seen \(seen.formatted(date: .abbreviated, time: .shortened))"
     }
 }
 
@@ -168,15 +75,25 @@ private struct HostSection: View {
                     Text(error).foregroundStyle(.red)
                 }
                 if let status = app.status {
+                    if let version = status.version {
+                        LabeledContent("Version") { Text(version).textSelection(.enabled).multilineTextAlignment(.trailing) }
+                    }
                     DisclosureGroup("Details") {
                         LabeledContent("Key") { Text(status.peer?.key ?? "—").font(.body.monospaced()).textSelection(.enabled) }
                         LabeledContent("State folder") { Text(app.client.stateDir).font(.body.monospaced()).textSelection(.enabled) }
-                        if let version = status.version {
-                            LabeledContent("Version") { Text(version).textSelection(.enabled).multilineTextAlignment(.trailing) }
-                        }
                     }
                 }
             } else {
+                if host.online != false {
+                    LabeledContent("Version") {
+                        switch app.summaries[host.name]?.status {
+                        case let .success(status)?:
+                            Text(status.version ?? "—").textSelection(.enabled).multilineTextAlignment(.trailing)
+                        case .failure?: Text("\(host.name) didn't say")
+                        case nil: ProgressView().controlSize(.small)
+                        }
+                    }
+                }
                 Text("Start, stop and update \(host.name) on \(host.name) itself.").foregroundStyle(.secondary)
             }
         }
@@ -217,9 +134,9 @@ private struct ExecSection: View {
     }
 }
 
-/// The host's connectors: on and off here for this Mac; another host's
-/// are turned on there.
-private struct ConnectorsSection: View {
+/// The host's plugins: on and off here for this Mac; another host's are
+/// turned on there. Google's accounts are the account's, in Connections.
+private struct PluginsSection: View {
     var host: HostEntry
     @Environment(AppModel.self) private var app
     @State private var changing: String?
@@ -230,47 +147,48 @@ private struct ConnectorsSection: View {
             switch app.summaries[host.name]?.plugins {
             case nil:
                 ProgressView().frame(maxWidth: .infinity)
-            case let .failure(failure)?:
-                Text(failure.message).foregroundStyle(.secondary)
+            case .failure?:
+                Text("\(host.name) couldn't list its plugins.").foregroundStyle(.secondary)
             case let .success(list)?:
                 ForEach(list.plugins, id: \.name) { plugin in
-                    let title = plugin.name.prefix(1).uppercased() + plugin.name.dropFirst()
-                    if host.isThisMac {
-                        Toggle(isOn: binding(plugin)) {
-                            Text(title)
-                            Text(reason(plugin))
-                        }
-                        .disabled(changing != nil)
-                    } else {
-                        LabeledContent {
-                            Text(plugin.state == "enabled" ? "On" : "Off")
-                        } label: {
-                            Text(title)
-                            if plugin.state != "enabled" {
-                                Text("Turn this on from \(host.name): `\(plugin.enable ?? "latch plugins enable \(plugin.name)")`")
-                            } else {
-                                Text(reason(plugin))
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(PluginCopy.title(plugin.name))
+                            Group {
+                                if host.isThisMac {
+                                    Text(PluginCopy.state(plugin))
+                                } else if plugin.state != "enabled" {
+                                    Text("Turn this on from \(host.name).")
+                                }
                             }
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if plugin.name == "google" {
+                            Button("Manage Accounts…") { app.manageAccounts() }
+                        }
+                        if host.isThisMac {
+                            Toggle(PluginCopy.title(plugin.name), isOn: binding(plugin))
+                                .labelsHidden()
+                                .disabled(changing != nil)
+                        } else {
+                            Text(plugin.state == "enabled" ? "On" : "Off").foregroundStyle(.secondary)
                         }
                     }
                 }
                 if let error { Text(error).foregroundStyle(.red) }
             }
         } header: {
-            Text("Connectors")
+            Text("Plugins")
         } footer: {
-            if let changing { Text("Turning \(changing) \(isOn(changing) ? "off" : "on")…").foregroundStyle(.secondary) }
+            if let changing { Text("Turning \(PluginCopy.title(changing)) \(isOn(changing) ? "off" : "on")…").foregroundStyle(.secondary) }
         }
     }
 
     private func isOn(_ name: String) -> Bool {
         guard case let .success(list)? = app.summaries[host.name]?.plugins else { return false }
         return list.plugins.first { $0.name == name }?.state == "enabled"
-    }
-
-    private func reason(_ plugin: PluginsList.Plugin) -> String {
-        guard let reason = plugin.reason, !reason.isEmpty else { return plugin.state == "enabled" ? "On" : "Off" }
-        return reason.prefix(1).uppercased() + reason.dropFirst() + "."
     }
 
     private func binding(_ plugin: PluginsList.Plugin) -> Binding<Bool> {
@@ -289,45 +207,35 @@ private struct ConnectorsSection: View {
     }
 }
 
-/// This Mac's Latch version and Check Now; another host updates itself.
-private struct UpdatesSection: View {
-    var host: HostEntry
-    @Environment(AppModel.self) private var app
+/// A plugin in the app's words: latch's reasons and refusals name commands
+/// and pages to visit, which the app has buttons for.
+enum PluginCopy {
+    static func title(_ name: String) -> String {
+        name.prefix(1).uppercased() + name.dropFirst()
+    }
 
-    var body: some View {
-        Section("Updates") {
-            if host.isThisMac {
-                HStack {
-                    LabeledContent("Latch", value: text)
-                    Button(app.checkingUpdate ? "Checking…" : "Check Now") { Task { await app.checkForUpdate() } }
-                        .disabled(app.checkingUpdate)
-                }
-                if case let .failure(error)? = app.update {
-                    Text(error.message).foregroundStyle(.red)
-                }
-                if available {
-                    Text("Run `latch update` in Terminal to install it; Latch restarts what was running.").foregroundStyle(.secondary)
-                }
-            } else {
-                Text("Run `latch update` on \(host.name) to update it.").foregroundStyle(.secondary)
-            }
+    /// Under its name: on, off, or what it needs first.
+    static func state(_ plugin: PluginsList.Plugin) -> String {
+        switch plugin.state {
+        case "enabled": "On"
+        case "needs_setup": needs(plugin.name)
+        default: "Off"
         }
     }
 
-    private var available: Bool {
-        if case let .success(check)? = app.update { return check.available }
-        return app.status?.update?.available == true
+    /// Why turning a plugin on or off failed.
+    static func refusal(_ error: LatchError, plugin: String, on: Bool) -> String {
+        switch error.code {
+        case "google_not_connected"?: "Connect a Google account first, in Connections."
+        case "needs_setup"?: needs(plugin) + "."
+        default: "Couldn't turn \(title(plugin)) \(on ? "on" : "off")."
+        }
     }
 
-    private var text: String {
-        switch app.update {
-        case let .success(check)?:
-            if check.available { return "Build \(check.latest?.build.map(String.init) ?? "?") is available" }
-            guard let current = check.current else { return "A local build · latest is \(check.latest?.tag ?? "unknown")" }
-            return "Up to date · build \(current)"
-        default:
-            if let update = app.status?.update, update.available { return "Build \(update.build.map(String.init) ?? "?") is available" }
-            return "Not checked yet"
+    private static func needs(_ plugin: String) -> String {
+        switch plugin {
+        case "messages", "contacts": "Needs Full Disk Access for Plow Latch, in System Settings"
+        default: "Needs setting up"
         }
     }
 }

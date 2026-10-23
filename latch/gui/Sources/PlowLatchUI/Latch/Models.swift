@@ -240,9 +240,6 @@ nonisolated struct LogoutResult: Decodable, Equatable {
     struct Device: Decodable, Equatable {
         var name: String
         var removed: Bool
-        var error: LatchFailure?
-        /// What finishes it, in latch's words.
-        var next: String?
     }
     /// Nil when there was nothing to take out of the account.
     var device: Device?

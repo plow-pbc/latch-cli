@@ -5,6 +5,8 @@ nonisolated protocol LatchClient: Sendable {
     /// The state folder every run is given.
     var stateDir: String { get }
     func localStatus() async throws -> LocalStatus
+    /// `latch status --host NAME`: another host's own `status --local`.
+    func hostStatus(_ host: String) async throws -> LocalStatus
     /// `latch status`: the account's hosts, from Plow.
     func accountStatus() async throws -> AccountStatus
     /// `latch login --events [--name NAME] [--replace]`: the code to text,
@@ -99,6 +101,10 @@ nonisolated struct LiveLatchClient: LatchClient {
 
     func accountStatus() async throws -> AccountStatus {
         try decode(AccountStatus.self, try await run(["status"]))
+    }
+
+    func hostStatus(_ host: String) async throws -> LocalStatus {
+        try decode(LocalStatus.self, try await run(["status", "--host", host]))
     }
 
     func login(name: String?, replace: Bool) -> AsyncThrowingStream<LoginEvent, Error> {

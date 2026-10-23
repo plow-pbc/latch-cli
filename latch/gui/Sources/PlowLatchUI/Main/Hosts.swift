@@ -1,17 +1,18 @@
 import Foundation
 
-/// The main window's sidebar: the account tier (Agents), then the selected
-/// host's screens.
+/// The main window's sidebar: the account tier (Agents, Connections), then
+/// the selected host's screens.
 enum SidebarItem: String, CaseIterable, Identifiable {
-    case agents, home, activity, rules, vault, settings
+    case agents, connections, home, activity, rules, vault, settings
 
     var id: String { rawValue }
-    static let account: [SidebarItem] = [.agents]
+    static let account: [SidebarItem] = [.agents, .connections]
     static let host: [SidebarItem] = [.home, .activity, .rules, .vault, .settings]
 
     var title: String {
         switch self {
         case .agents: "Agents"
+        case .connections: "Connections"
         case .home: "Home"
         case .activity: "Activity"
         case .rules: "Rules"
@@ -23,6 +24,7 @@ enum SidebarItem: String, CaseIterable, Identifiable {
     var symbol: String {
         switch self {
         case .agents: "person.2"
+        case .connections: "link"
         case .home: "house"
         case .activity: "waveform.path.ecg"
         case .rules: "list.bullet.rectangle"
@@ -144,6 +146,8 @@ struct PlowNotice: Equatable {
 /// What a host said of its rules, vault and connectors, each read on its
 /// own: one can fail while the others answer; nil until it has answered.
 struct HostSummary: Equatable {
+    /// Another host's own `status --local`; Host Settings reads it.
+    var status: Result<LocalStatus, LatchError>?
     var rules: Result<RulesShow, LatchError>?
     var vault: Result<VaultList, LatchError>?
     var plugins: Result<PluginsList, LatchError>?
