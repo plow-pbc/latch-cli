@@ -319,7 +319,7 @@ pub fn run(state: &StateDir, action: AuditAction) -> Result<Value, Failure> {
     let path = state.path.join(FILE);
     match action {
         AuditAction::Verify => {
-            let text = read_locked(&path)?;
+            let text = read_locked(&path, 0)?;
             let (records, last) = verify(&text).map_err(|problem| broken(&path, &problem))?;
             Ok(json!({"records": records, "last": last, "checked_without_the_key": true}))
         }
@@ -480,7 +480,8 @@ pub fn read(
     if let Some(watch) = &mut watch {
         watch.arm().map_err(watching)?;
     }
-    let records = read_all(&path)?;
+    let text = read_locked(&path, 0)?;
+    let records = open_text(&text, &path)?;
     let index = |id: &str| -> Result<usize, Failure> {
         if id == GENESIS {
             return Ok(0);
@@ -529,36 +530,48 @@ pub fn read(
     let Some(mut watch) = watch else {
         return Ok(());
     };
-    // What was sent ends here: each later look must still begin with it.
-    let mut sent = (
-        records.len(),
-        records.last().map(|record| record.hash.clone()),
-    );
+    // What was sent ends with the line `last_line`, at byte `at` of the
+    // log. Each later look reads only from there: that line must still be
+    // there, and only the lines after it are new.
+    let mut count = records.len();
+    let mut prev = records
+        .last()
+        .map_or(GENESIS.to_string(), |record| record.hash.clone());
+    let mut last_line = last_line_of(&text).to_string();
+    let mut at = (text.len() - last_line.len()) as u64;
     loop {
         match watch.wait().map_err(watching)? {
             crate::watch::Woke::HungUp => return Ok(()),
             crate::watch::Woke::Changed => {}
         }
         watch.arm().map_err(watching)?;
-        let records = read_all(&path)?;
-        let (count, last) = &sent;
-        let continues = match last {
-            None => true,
-            Some(hash) => records.get(count - 1).is_some_and(|r| &r.hash == hash),
-        };
-        if !continues || records.len() < *count {
+        let text = read_locked(&path, at)?;
+        let Some(new) = text.strip_prefix(last_line.as_str()) else {
             return Err(broken(&path, "it no longer begins with what was shown"));
+        };
+        if new.is_empty() {
+            continue;
         }
-        for record in &records[*count..] {
+        let keys = Keys::existing(dir)?.ok_or_else(|| no_key(&path))?;
+        let records = open_after(&keys, &prev, count, new, &path)?;
+        for record in &records {
             if !send(&record_line(record)) {
                 return Ok(());
             }
         }
-        sent = (
-            records.len(),
-            records.last().map(|record| record.hash.clone()),
-        );
+        count += records.len();
+        if let Some(record) = records.last() {
+            prev = record.hash.clone();
+        }
+        last_line = last_line_of(new).to_string();
+        at += (text.len() - last_line.len()) as u64;
     }
+}
+
+/// The last line of `text`, its newline kept; empty for no text.
+fn last_line_of(text: &str) -> &str {
+    let body = text.strip_suffix('\n').unwrap_or(text);
+    &text[body.rfind('\n').map_or(0, |at| at + 1)..]
 }
 
 /// One record as `latch audit` shows it, its arguments with
@@ -575,10 +588,11 @@ fn record_line(record: &Record) -> Value {
     json!({"type": "record", "cursor": record.hash, "record": shown})
 }
 
-/// The log's text, read under the audit lock, so a record being appended
-/// is read whole or not at all and what is read is the log as written: a
-/// last line cut short fails its checks. A log not started yet is empty.
-fn read_locked(path: &Path) -> Result<String, Failure> {
+/// The log's text from byte `from` on, read under the audit lock, so a
+/// record being appended is read whole or not at all and what is read is
+/// the log as written: a last line cut short fails its checks. A log not
+/// started yet is empty.
+fn read_locked(path: &Path, from: u64) -> Result<String, Failure> {
     if !path.exists() {
         return Ok(String::new());
     }
@@ -588,7 +602,12 @@ fn read_locked(path: &Path) -> Result<String, Failure> {
     let _lock = File::open(&lock)
         .and_then(|file| file.lock_shared().map(|()| file))
         .map_err(|err| io_failure(&lock, err))?;
-    match fs::read_to_string(path) {
+    let read = File::open(path).and_then(|mut file| {
+        file.seek(SeekFrom::Start(from))?;
+        let mut text = String::new();
+        file.read_to_string(&mut text).map(|_| text)
+    });
+    match read {
         Ok(text) => Ok(text),
         Err(err) if err.kind() == ErrorKind::NotFound => Ok(String::new()),
         Err(err) => Err(io_failure(path, err)),
@@ -596,23 +615,42 @@ fn read_locked(path: &Path) -> Result<String, Failure> {
 }
 
 /// Every record of the log at `path`: the chain checked, each record opened.
+#[cfg(test)]
 pub fn read_all(path: &Path) -> Result<Vec<Record>, Failure> {
-    let text = read_locked(path)?;
+    open_text(&read_locked(path, 0)?, path)
+}
+
+/// Every record of the log's whole `text`, read from `path`, opened with
+/// the keys beside it.
+fn open_text(text: &str, path: &Path) -> Result<Vec<Record>, Failure> {
     if text.is_empty() {
         return Ok(Vec::new());
     }
     let dir = path.parent().unwrap_or(Path::new("."));
     let keys = Keys::existing(dir)?.ok_or_else(|| no_key(path))?;
-    open_all(&keys, &text, path)
+    open_all(&keys, text, path)
 }
 
 /// Every record of the log `text` (at `path`, for messages), each line's
 /// chain checked and its record opened with `keys`.
 fn open_all(keys: &Keys, text: &str, path: &Path) -> Result<Vec<Record>, Failure> {
-    let mut prev = GENESIS.to_string();
+    open_after(keys, GENESIS, 0, text, path)
+}
+
+/// The records of `text`, the lines that follow line `number` (whose hash
+/// is `prev`) of the log at `path`: each line's chain checked and its
+/// record opened with `keys`.
+fn open_after(
+    keys: &Keys,
+    prev: &str,
+    number: usize,
+    text: &str,
+    path: &Path,
+) -> Result<Vec<Record>, Failure> {
+    let mut prev = prev.to_string();
     let mut records = Vec::new();
     for (index, line) in text.lines().enumerate() {
-        let record = read_next(keys, &prev, line.as_bytes(), index + 1)
+        let record = read_next(keys, &prev, line.as_bytes(), number + index + 1)
             .map_err(|problem| broken(path, &problem))?;
         prev = record.hash.clone();
         records.push(record);
@@ -1031,6 +1069,67 @@ mod tests {
             ..Range::default()
         };
         assert_eq!(lines(dir.path(), &bad).unwrap_err().code, "cursor_expired");
+    }
+
+    /// A follower of a long log reads only what is new on each wake, so a
+    /// new record reaches it far sooner than the whole log takes to open.
+    #[test]
+    fn a_follower_of_a_long_log_reads_only_the_new_records() {
+        let dir = test_dir();
+        let path = dir.path().join(FILE);
+        let mut log = AuditLog::open(path.clone()).unwrap();
+        let keys = Keys::existing(dir.path()).unwrap().unwrap();
+        let mut prev = GENESIS.to_string();
+        let mut text = String::new();
+        for _ in 0..10_000 {
+            let line = keys.seal(&exec_record("caller-one"), &prev);
+            prev = line.hash.clone();
+            text += &format!("{}\n", serde_json::to_string(&line).unwrap());
+        }
+        fs::write(&path, &text).unwrap();
+
+        let (hangup, closed) = std::io::pipe().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let started = std::time::Instant::now();
+        let follower = {
+            let dir = dir.path().to_path_buf();
+            std::thread::spawn(move || {
+                let fd = std::os::fd::AsRawFd::as_raw_fd(&hangup);
+                let range = Range {
+                    follow: true,
+                    ..Range::default()
+                };
+                read(&dir, "studio's", &range, Some(fd), |line| {
+                    tx.send(line.clone()).is_ok()
+                })
+            })
+        };
+        let next = |kind: &str| loop {
+            let line = rx.recv_timeout(std::time::Duration::from_secs(60)).unwrap();
+            if line["type"] == kind {
+                return line;
+            }
+        };
+        next("caught_up");
+        let opening = started.elapsed();
+
+        for caller in ["caller-two", "caller-three"] {
+            let appended = std::time::Instant::now();
+            let id = log.append(exec_record(caller)).unwrap();
+            let line = next("record");
+            let took = appended.elapsed();
+            assert_eq!(line["record"]["id"], id);
+            assert!(
+                took < opening / 10,
+                "a new record took {took:?}; the whole log opened in {opening:?}"
+            );
+        }
+
+        // A log cut back past what was shown stops the follower.
+        fs::write(&path, &text).unwrap();
+        let stopped = follower.join().unwrap().unwrap_err();
+        assert_eq!(stopped.code, "audit_broken", "{}", stopped.message);
+        drop(closed);
     }
 
     #[test]
