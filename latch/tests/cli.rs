@@ -6989,6 +6989,12 @@ fn a_linux_latch_asks_for_messages_and_a_linux_host_says_it_cannot_read_them() {
             "ask a macOS host with --host H; `latch status` lists your hosts"
         );
     }
+    // Its owner previews them as the host would answer: refused.
+    let previewed = latch(&host, &["rules", "try", "--", "messages", "chats"], &[]);
+    let (code, preview) = answered(&previewed);
+    assert_eq!(code, Some(0), "{preview}");
+    assert_eq!(preview["verdict"], "host_refused", "{preview}");
+    assert_eq!(preview["refused"]["code"], "unsupported_platform");
     assert_eq!(
         plow.state.lock().unwrap().decisions.len(),
         0,
