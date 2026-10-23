@@ -1948,6 +1948,8 @@ struct LiveState {
     sign_in_refused: bool,
     /// Plow takes this long to give a Google sign-in link.
     sign_in_slow: std::time::Duration,
+    /// Plow takes this long to give Google credentials.
+    tokens_slow: std::time::Duration,
     /// The real Plow decision route and the login to ask it with: its
     /// decisions go there instead (`real_judge`).
     judge: Option<(String, String)>,
@@ -1973,6 +1975,7 @@ impl LivePlow {
                 sign_in_for: 120,
                 sign_in_refused: false,
                 sign_in_slow: std::time::Duration::ZERO,
+                tokens_slow: std::time::Duration::ZERO,
                 judge: None,
             })),
         };
@@ -2022,16 +2025,23 @@ impl LivePlow {
 
     fn answer(&self, request: &Http) -> (u16, Value) {
         let mut state = self.state.lock().unwrap();
-        if request.line().contains("connect-code") && !state.sign_in_slow.is_zero() {
-            let slow = state.sign_in_slow;
-            drop(state);
-            thread::sleep(slow);
-            state = self.state.lock().unwrap();
-        }
         let bearer = request.bearer();
         state
             .seen
             .push((request.line().to_string(), bearer.clone()));
+        // Seen at once, answered late.
+        let slow = if request.line().contains("connect-code") {
+            state.sign_in_slow
+        } else if request.line().contains("access-token") {
+            state.tokens_slow
+        } else {
+            std::time::Duration::ZERO
+        };
+        if !slow.is_zero() {
+            drop(state);
+            thread::sleep(slow);
+            state = self.state.lock().unwrap();
+        }
         if request.line().starts_with("GET /socket-page ") {
             return (200, json!({"fixture": "Local socket browser page"}));
         }
@@ -5593,13 +5603,20 @@ fn enabling_google_offers_a_sign_in_link_and_waits_for_the_account() {
     let result = next(&mut out);
     assert_eq!(result["type"], "result", "{result}");
     assert!(child.wait().unwrap().success());
-    // The caller closing stdin, a pipe, stops the wait: no last line, exit 0.
+    // The caller closing stdin, a pipe, stops the wait before the enable:
+    // google_connect_cancelled, exit 1.
     let (mut child, mut out) = spawned(&add_events, std::process::Stdio::piped());
     assert_eq!(next(&mut out)["type"], "hello");
     assert_eq!(next(&mut out)["type"], "link");
     drop(child.stdin.take());
-    assert!(child.wait().unwrap().success());
-    assert!(out.next().is_none(), "nothing after the stop");
+    let stopped = next(&mut out);
+    assert_eq!(
+        stopped["error"]["code"], "google_connect_cancelled",
+        "{stopped}"
+    );
+    assert_eq!(stopped["error"]["exit"], 1, "{stopped}");
+    assert_eq!(child.wait().unwrap().code(), Some(1));
+    assert!(out.next().is_none(), "nothing after the error");
     // A reader that goes away stops the wait even with stdin /dev/null:
     // an account appearing afterwards turns nothing on for no one.
     plow.state.lock().unwrap().google = None;
@@ -5609,7 +5626,7 @@ fn enabling_google_offers_a_sign_in_link_and_waits_for_the_account() {
     assert_eq!(next(&mut out)["type"], "link");
     drop(out);
     plow.state.lock().unwrap().google = Some("google-token".into());
-    assert!(child.wait().unwrap().success());
+    assert_eq!(child.wait().unwrap().code(), Some(1));
     let saved = fs::read_to_string(host.join("plugins.json")).unwrap();
     assert!(!saved.contains("\"enabled\""), "{saved}");
     #[cfg(target_os = "macos")]
@@ -5710,12 +5727,94 @@ fn a_slow_sign_in_link_neither_outlasts_the_wait_nor_a_stop() {
         .unwrap()
         .read_to_string(&mut shown)
         .unwrap();
-    assert!(child.wait().unwrap().success(), "{shown}");
+    assert_eq!(child.wait().unwrap().code(), Some(1), "{shown}");
+    assert!(shown.contains("google_connect_cancelled"), "{shown}");
     assert!(
         started.elapsed() < std::time::Duration::from_secs(10),
         "{shown}"
     );
     assert!(!shown.contains("\"link\""), "{shown}");
+}
+
+/// The end of a Google sign-in wait: an account that appears in its last
+/// second is still enabled (one last look at the deadline), and a stop
+/// after the final enable was sent can no longer say what it did
+/// (`outcome_unknown`, exit 5).
+#[cfg(all(
+    feature = "fake-gog",
+    any(target_os = "macos", feature = "systemd-tests")
+))]
+#[test]
+fn a_last_second_sign_in_counts_and_a_stop_during_the_enable_is_unknown() {
+    use std::io::BufRead;
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let pin: Value = serde_json::from_str(include_str!("../src/google/pin.json")).unwrap();
+    let gog = host
+        .join("plugins/gog")
+        .join(pin["version"].as_str().unwrap());
+    fs::create_dir_all(&gog).unwrap();
+    fs::copy(env!("CARGO_BIN_EXE_latch"), gog.join("gog")).unwrap();
+    let events = ["plugins", "enable", "google", "--events"];
+    let spawned = |env: &[(&str, &Path)]| {
+        let mut child = latch_command(&host, &events, env)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let out = std::io::BufReader::new(child.stdout.take().unwrap()).lines();
+        (child, out)
+    };
+    let next = |out: &mut std::io::Lines<_>| -> Value {
+        serde_json::from_str(&out.next().unwrap().unwrap()).unwrap()
+    };
+
+    // A five-second wait looks at 3 s, then only at its deadline: the
+    // account arrives between the two.
+    let within = [("LATCH_TEST_CONNECT_WITHIN", Path::new("5"))];
+    let (mut child, mut out) = spawned(&within);
+    assert_eq!(next(&mut out)["type"], "hello");
+    assert_eq!(next(&mut out)["type"], "link");
+    thread::sleep(std::time::Duration::from_millis(3800));
+    plow.state.lock().unwrap().google = Some("google-token".into());
+    let last = next(&mut out);
+    assert_eq!(last["type"], "result", "{last}");
+    assert_eq!(last["result"]["state"], "enabled", "{last}");
+    assert_eq!(child.wait().unwrap().code(), Some(0));
+
+    // Stopped while the final enable waits on Plow: the result is unknown.
+    fs::remove_file(host.join("plugins.json")).unwrap();
+    plow.state.lock().unwrap().google = None;
+    let (mut child, mut out) = spawned(&[]);
+    assert_eq!(next(&mut out)["type"], "hello");
+    assert_eq!(next(&mut out)["type"], "link");
+    let asked = || {
+        plow.seen()
+            .iter()
+            .filter(|(line, _)| line.contains("access-token"))
+            .count()
+    };
+    let before = asked();
+    {
+        let mut state = plow.state.lock().unwrap();
+        state.tokens_slow = std::time::Duration::from_secs(20);
+        state.google = Some("google-token".into());
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while asked() == before {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the enable never asked Plow"
+        );
+        thread::sleep(std::time::Duration::from_millis(100));
+    }
+    drop(child.stdin.take());
+    let stopped = next(&mut out);
+    assert_eq!(stopped["error"]["code"], "outcome_unknown", "{stopped}");
+    assert_eq!(child.wait().unwrap().code(), Some(5));
+    plow.state.lock().unwrap().tokens_slow = std::time::Duration::ZERO;
 }
 
 /// A `latch serve` that holds the state folder but answers no socket this

@@ -13,6 +13,7 @@
 //! saved state, the audit or a log. `connect_url` stays Plow's public
 //! Connections page.
 
+use std::cell::RefCell;
 use std::future::Future;
 use std::io::Write;
 use std::time::{Duration, Instant};
@@ -28,20 +29,21 @@ use crate::term;
 /// long in all, as the Mac app before latch did.
 const POLL: Duration = Duration::from_secs(3);
 const GIVE_UP_AFTER: Duration = Duration::from_secs(5 * 60);
+/// How long the look at the deadline may take.
+const LAST_LOOK: Duration = Duration::from_secs(3);
 
 const ENABLE: &str = "latch plugins enable google";
 
 /// `refused` is a plain enable's `google_not_connected`; `enabled` is the
 /// result of one that succeeded before `--add-account` adds an account.
-/// `enable` runs the enable again once a new account is there. `Ok(None)`:
-/// the caller asked the wait to stop.
+/// `enable` runs the enable again once a new account is there.
 pub(super) async fn google<F, Fut>(
     state: &StateDir,
     refused: Option<Failure>,
     enabled: Option<Value>,
     events: bool,
     enable: F,
-) -> Result<Option<Value>, Failure>
+) -> Result<Value, Failure>
 where
     F: FnOnce() -> Fut,
     Fut: Future<Output = Result<Value, Failure>>,
@@ -54,69 +56,81 @@ where
         .as_ref()
         .and_then(|refused| refused.details["connect_url"].as_str())
         .map(String::from);
+    let plow = Plow::from_state(state).map_err(|failure| with_page(failure, &page))?;
+    // The accounts Plow had before, once it said.
+    let before: RefCell<Option<Vec<String>>> = RefCell::new(None);
     // Everything up to an account appearing, Plow's answers included,
     // within the one deadline.
     let connecting = async {
-        let plow = Plow::from_state(state)?;
         let connectors = plow.connectors().await?;
         page = Some(connectors.connections_page());
-        let before = accounts(&connectors);
+        let had = accounts(&connectors);
+        *before.borrow_mut() = Some(had.clone());
         let mut link = plow.google_connect_link().await?;
         if !events && !at_terminal {
             return Ok(Connecting::HandedOver(link));
         }
         if !offer(&link, events, at_terminal, adding, false) {
-            return Ok(Connecting::Stopped);
+            return Ok(Connecting::Cancelled);
         }
         loop {
             tokio::time::sleep(POLL.min(deadline.saturating_duration_since(Instant::now()))).await;
             if events && stdout_gone() {
-                return Ok(Connecting::Stopped);
+                return Ok(Connecting::Cancelled);
             }
             // A mint or a look that fails ends the wait with its own failure.
-            let now = plow.connectors().await?;
-            if Instant::now() >= deadline {
-                return Err(timed_out());
-            }
-            if accounts(&now)
-                .iter()
-                .any(|account| !before.contains(account))
-            {
+            if appeared(&plow.connectors().await?, &had) {
                 return Ok(Connecting::Appeared);
             }
             if expired(&link) {
                 link = plow.google_connect_link().await?;
                 if !offer(&link, events, at_terminal, adding, true) {
-                    return Ok(Connecting::Stopped);
+                    return Ok(Connecting::Cancelled);
                 }
             }
         }
     };
     let bounded = async {
-        tokio::time::timeout_at(deadline.into(), connecting)
-            .await
-            .unwrap_or_else(|_| Err(timed_out()))
+        match tokio::time::timeout_at(deadline.into(), connecting).await {
+            Ok(connected) => connected,
+            // The deadline: one last look, so a sign-in finished in its
+            // final second still counts; nothing is renewed or waited for.
+            Err(_) => {
+                let Some(had) = before.borrow().clone() else {
+                    return Err(timed_out());
+                };
+                match tokio::time::timeout(LAST_LOOK, plow.connectors()).await {
+                    Ok(Ok(now)) if appeared(&now, &had) => Ok(Connecting::Appeared),
+                    _ => Err(timed_out()),
+                }
+            }
+        }
     };
     // Only a wait can be stopped: a pipe's answer comes at once.
-    let connected = if events || at_terminal {
+    let waits = events || at_terminal;
+    let connected = if waits {
         tokio::select! {
             connected = bounded => connected,
-            () = crate::remote::stop_requested() => Ok(Connecting::Stopped),
+            () = crate::remote::stop_requested() => Ok(Connecting::Cancelled),
         }
     } else {
         bounded.await
     };
     match connected.map_err(|failure| with_page(failure, &page))? {
-        Connecting::Stopped => Ok(None),
+        Connecting::Cancelled => Err(cancelled(adding)),
         // Nobody reads the result any more: no enable on their behalf.
-        Connecting::Appeared if events && stdout_gone() => Ok(None),
-        Connecting::Appeared => enable().await.map(Some),
+        Connecting::Appeared if events && stdout_gone() => Err(cancelled(adding)),
+        // Once the enable is sent, a stop can no longer say what it did.
+        Connecting::Appeared => tokio::select! {
+            enabled = enable() => enabled,
+            () = crate::remote::stop_requested() => Err(unknown()),
+        },
         // No one here to wait with: the link is the answer.
         Connecting::HandedOver(link) => match enabled {
             Some(mut result) => {
                 result["sign_in_url"] = json!(link.url);
                 result["expires_at"] = json!(link.expires_at);
-                Ok(Some(result))
+                Ok(result)
             }
             None => {
                 let mut failure = Failure::new(
@@ -141,9 +155,14 @@ enum Connecting {
     /// An account Plow did not have before is there.
     Appeared,
     /// The caller asked the wait to stop, or stopped reading.
-    Stopped,
+    Cancelled,
     /// No one waits here: this link is the answer.
     HandedOver(ConnectLink),
+}
+
+/// Whether Plow now has an account it did not have before.
+fn appeared(now: &plow::Connectors, had: &[String]) -> bool {
+    accounts(now).iter().any(|account| !had.contains(account))
 }
 
 fn timed_out() -> Failure {
@@ -153,6 +172,28 @@ fn timed_out() -> Failure {
     );
     timeout.next = Some("latch setup --status".into());
     timeout
+}
+
+/// Stopped before the enable was sent: this run turned nothing on. A
+/// sign-in already started in a browser is left to finish or not.
+fn cancelled(adding: bool) -> Failure {
+    let mut cancelled = Failure::new(
+        code::google_connect_cancelled,
+        "Stopped waiting for Google sign-in.".into(),
+    );
+    let again = if adding { " --add-account" } else { "" };
+    cancelled.next = Some(format!("{ENABLE}{again}").into());
+    cancelled
+}
+
+/// Stopped after the enable was sent: whether it took is not known.
+fn unknown() -> Failure {
+    let mut unknown = Failure::new(
+        code::outcome_unknown,
+        "Stopped after Google's enable was sent; whether it is on for this host is unknown.".into(),
+    );
+    unknown.next = Some("latch plugins list".into());
+    unknown
 }
 
 /// `failure`, with the public Connections page as `connect_url` when known.
