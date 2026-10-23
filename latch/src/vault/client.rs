@@ -265,7 +265,7 @@ fn given(kind: &str, fields: &[String]) -> Result<Map<String, Value>, Failure> {
             return Err(Failure::usage(
                 "secret_in_argv",
                 format!(
-                    "{label} is secret: it is asked for at a prompt, never given on the command line"
+                    "{label} is secret: it is asked for at a prompt or read with --stdin, never given on the command line"
                 ),
             ));
         }
@@ -382,7 +382,12 @@ impl Picking {
     /// The answer: the preview itself, or the outcome with what was picked.
     pub(super) fn answer(&self, preview: &Value, mut outcome: Value, picks: &[usize]) -> Value {
         if let Picking::Preview = self {
-            return json!({"preview": preview});
+            // A host's own answer carries its audit id; keep it.
+            let mut answer = json!({"preview": preview});
+            if let Some(id) = outcome.get("audit_id") {
+                answer["audit_id"] = id.clone();
+            }
+            return answer;
         }
         outcome["source"] = preview["source"].clone();
         outcome["picked"] = json!(picks);
