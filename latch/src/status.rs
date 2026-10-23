@@ -51,11 +51,14 @@ pub struct Host {
     pub last_seen_at: Option<String>,
 }
 
+/// How long `status` waits for Plow's answer.
+const PLOW_WITHIN: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// `status`: `--local`'s answer, and what Plow says of the account. Before
 /// login it asks no one; after, a failed request fails the command.
 pub async fn run(state: &StateDir) -> Result<Status, Failure> {
     let local = local(state)?;
-    if state.load_config()?.is_none() {
+    let Some(config) = state.load_config()? else {
         return Ok(Status {
             account: None,
             local,
@@ -63,8 +66,11 @@ pub async fn run(state: &StateDir) -> Result<Status, Failure> {
             default_host: None,
             default_host_reason: Some(code::not_logged_in.name.to_string()),
         });
-    }
-    let directory = directory(state).await.map_err(|mut failure| {
+    };
+    let directory = tokio::time::timeout(PLOW_WITHIN, directory(state))
+        .await
+        .unwrap_or_else(|_| Err(crate::plow::no_answer(&config.api_url, PLOW_WITHIN)));
+    let directory = directory.map_err(|mut failure| {
         if failure.code == code::plow_unreachable.name {
             failure.next = Some("latch status --local".into());
         }

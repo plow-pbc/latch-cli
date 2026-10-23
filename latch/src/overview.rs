@@ -226,6 +226,12 @@ impl Facts {
         }
     }
 
+    fn agent(&self) -> bool {
+        self.login
+            .as_ref()
+            .is_some_and(|login| login.kind == "agent")
+    }
+
     /// The host, once it is known.
     fn hosting(&self) -> Option<&Hosted> {
         match &self.host {
@@ -311,7 +317,11 @@ impl Facts {
         }
         rows.extend(self.connectors(width));
         rows.push(labeled("Update", self.update()));
-        rows.push(labeled("Folder", vec![plain(self.folder())]));
+        let mut folder = folded(&self.folder(), width.saturating_sub(LABEL))
+            .into_iter()
+            .map(|piece| vec![plain(piece)]);
+        rows.push(labeled("Folder", folder.next().unwrap_or_default()));
+        rows.extend(folder.map(indented));
         rows
     }
 
@@ -365,6 +375,10 @@ impl Facts {
                         line.extend(self.seen(host));
                         line
                     }
+                    None if self.agent() => vec![
+                        toned("Plow says: ", Tone::Dim),
+                        plain("agent login, not a host"),
+                    ],
                     None => vec![
                         toned("Plow says: ", Tone::Dim),
                         plain("not listed as a host"),
@@ -439,6 +453,8 @@ impl Facts {
                 ]]
             }
             Phase::Starting => vec![vec![plain("starting")]],
+            // An agent's login calls hosts: not hosting is no news.
+            Phase::Stopped if self.agent() => vec![],
             Phase::Stopped => vec![vec![plain("stopped")]],
             Phase::Error => {
                 let mut lines = vec![vec![toned("stopped after an error", Tone::Warn)]];
@@ -571,22 +587,12 @@ impl Facts {
     /// used, no login, a connector needing setup, no host running, an update.
     fn next_step(&self) -> Option<Line> {
         let hosting = self.hosting().map(|hosted| &hosted.hosting);
-        let run = |what: String, command: String| {
-            vec![plain(format!("{what} Run: ")), toned(command, Tone::Good)]
-        };
         if let Some(hosting) = hosting.filter(|hosting| hosting.blocked.is_some()) {
-            let mut step = vec![plain(
-                "Another latch version is running. Ctrl-C in its terminal",
-            )];
-            if let Some(pid) = hosting.pid {
-                step.extend([plain(", or "), toned(format!("kill {pid}"), Tone::Good)]);
-            }
-            step.push(plain("."));
-            return Some(step);
+            return Some(blocked_step(hosting.pid));
         }
         let Some(login) = &self.login else {
             let what = format!("This {} isn't logged in to Plow.", here());
-            return Some(run(what, self.latch("setup")));
+            return Some(run_step(what, self.latch("setup")));
         };
         let owner = login.kind == "device";
         let needs_setup = self
@@ -599,23 +605,30 @@ impl Facts {
             let name = crate::setup::title(plugin["name"].as_str().unwrap_or_default());
             let enable = plugin["enable"].as_str().unwrap_or_default();
             let command = self.latch(enable.strip_prefix("latch ").unwrap_or(enable));
-            return Some(run(format!("The {name} connector needs setup."), command));
+            return Some(run_step(
+                format!("The {name} connector needs setup."),
+                command,
+            ));
         }
         let stopped = hosting.is_some_and(|hosting| {
             matches!(hosting.state, Phase::Stopped | Phase::Error) && !hosting.running
         });
         if owner && stopped {
-            let what = format!("Latch isn't running on this {}.", here());
-            return Some(run(what, self.latch(&self.serve.join(" "))));
+            return Some(self.stopped_step());
         }
         let update = &self.update;
         if let (true, Some(build)) = (update.available, update.build) {
-            return Some(run(
+            return Some(run_step(
                 format!("Build {build} is available."),
                 self.latch("update"),
             ));
         }
         None
+    }
+
+    fn stopped_step(&self) -> Line {
+        let what = format!("Latch isn't running on this {}.", here());
+        run_step(what, self.latch(&self.serve.join(" ")))
     }
 
     /// `latch WORDS` for this state folder.
@@ -626,16 +639,60 @@ impl Facts {
         )
     }
 
-    /// What goes under the facts: the next step, and where to look further.
-    fn closing(&self) -> Vec<Line> {
+    /// What goes under the facts, `columns` wide: the next step, and where
+    /// to look further.
+    fn closing(&self, columns: usize) -> Vec<Line> {
         let mut lines = vec![vec![]];
-        lines.extend(self.next_step());
-        lines.push(vec![toned(
-            "For agents (JSON): latch status. Live activity: latch dashboard.",
-            Tone::Dim,
-        )]);
+        lines.extend(
+            self.next_step()
+                .map(|step| wrapped(step, columns))
+                .into_iter()
+                .flatten(),
+        );
+        lines.extend(wrapped(footer(), columns));
         lines
     }
+
+    /// The most screen rows the closing can take at `columns`: with the step
+    /// it has now, or with one the host's state can bring when it arrives.
+    fn closing_rows(&self, columns: usize) -> usize {
+        let steps = [
+            self.next_step(),
+            Some(blocked_step(Some(u32::MAX))),
+            Some(self.stopped_step()),
+        ];
+        let step = steps
+            .into_iter()
+            .flatten()
+            .map(|step| screen_rows(&wrapped(step, columns), columns))
+            .max()
+            .unwrap_or(0);
+        1 + step + screen_rows(&wrapped(footer(), columns), columns)
+    }
+}
+
+/// `what`, and the command that does it.
+fn run_step(what: String, command: String) -> Line {
+    vec![plain(format!("{what} Run: ")), toned(command, Tone::Good)]
+}
+
+fn blocked_step(pid: Option<u32>) -> Line {
+    let mut step = vec![
+        plain("Another latch version is running."),
+        plain(" Ctrl-C in its terminal"),
+    ];
+    if let Some(pid) = pid {
+        step.extend([plain(", or "), toned(format!("kill {pid}"), Tone::Good)]);
+    }
+    step.push(plain("."));
+    step
+}
+
+fn footer() -> Line {
+    vec![
+        toned("For agents (JSON): latch status.", Tone::Dim),
+        toned(" Live activity: latch dashboard.", Tone::Dim),
+    ]
 }
 
 /// What a row that needed Plow's answer says when asking failed.
@@ -673,12 +730,65 @@ fn visible(line: &Line) -> usize {
     line.iter().map(|(text, _)| text.width()).sum()
 }
 
+/// The screen rows `lines` take at `columns`, a line wider than that
+/// wrapped by the terminal.
+fn screen_rows(lines: &[Line], columns: usize) -> usize {
+    lines
+        .iter()
+        .map(|line| visible(line).div_ceil(columns.max(1)).max(1))
+        .sum()
+}
+
+/// `line` on as many lines as it needs at `width` columns, broken only
+/// before a span that starts with a space or is a command. A span is never
+/// broken, so a command copies whole: one wider than the screen is left to
+/// the terminal to wrap.
+fn wrapped(line: Line, width: usize) -> Vec<Line> {
+    let mut lines: Vec<Line> = vec![vec![]];
+    for (text, tone) in line {
+        let last = lines.last_mut().expect("there is always a line");
+        let can_break = !last.is_empty() && (text.starts_with(' ') || tone == Tone::Good);
+        if can_break && visible(last) + text.width() > width {
+            lines.push(vec![(text.trim_start().to_string(), tone)]);
+        } else {
+            last.push((text, tone));
+        }
+    }
+    lines
+}
+
+/// `text` in pieces of at most `width` columns, each ending after a `/`
+/// when one falls in it.
+fn folded(text: &str, width: usize) -> Vec<String> {
+    let mut pieces = vec![];
+    let mut rest = text;
+    while rest.width() > width {
+        let mut end = 0;
+        let mut taken = 0;
+        for (at, ch) in rest.char_indices() {
+            taken += ch.width().unwrap_or(0);
+            if taken > width && end > 0 {
+                break;
+            }
+            end = at + ch.len_utf8();
+        }
+        let end = rest[..end]
+            .rfind('/')
+            .filter(|&slash| slash > 0)
+            .map_or(end, |slash| slash + 1);
+        pieces.push(rest[..end].to_string());
+        rest = &rest[end..];
+    }
+    pieces.push(rest.to_string());
+    pieces
+}
+
 /// `line` cut to `width` columns, never wrapped, in its colors; a cut
 /// line ends with `…`.
 fn painted(line: &Line, width: usize) -> String {
     let long = visible(line) > width;
     let mut left = if long { width.saturating_sub(1) } else { width };
-    let mut out = String::new();
+    let mut kept: Line = vec![];
     for (text, tone) in line {
         if left == 0 {
             break;
@@ -693,18 +803,26 @@ fn painted(line: &Line, width: usize) -> String {
             left -= columns;
             cut.push(ch);
         }
-        out.push_str(&match tone {
-            Tone::Plain => cut,
-            Tone::Bold => paint::bold(&cut, WHITE),
-            Tone::Dim => paint::fg(&cut, DIM),
-            Tone::Good => paint::fg(&cut, VOLT),
-            Tone::Warn => paint::fg(&cut, AMBER),
-        });
+        kept.push((cut, *tone));
     }
+    let mut out = colored(&kept);
     if long && width > 0 {
         out.push('…');
     }
     out
+}
+
+/// `line` whole, in its colors.
+fn colored(line: &Line) -> String {
+    line.iter()
+        .map(|(text, tone)| match tone {
+            Tone::Plain => text.clone(),
+            Tone::Bold => paint::bold(text, WHITE),
+            Tone::Dim => paint::fg(text, DIM),
+            Tone::Good => paint::fg(text, VOLT),
+            Tone::Warn => paint::fg(text, AMBER),
+        })
+        .collect()
 }
 
 const WHITE: Rgb = Rgb(240, 240, 232);
@@ -739,6 +857,7 @@ const ARRIVING_ROWS: usize = 6;
 
 impl Screen {
     fn new(columns: usize, rows: usize, color: bool, facts: &Facts) -> Screen {
+        let closing = facts.closing_rows(columns);
         let tall = |layout: &Layout| {
             let width = facts_width(columns, layout);
             let facts = facts.rows(width).len() + ARRIVING_ROWS;
@@ -746,7 +865,7 @@ impl Screen {
                 Layout::Beside => facts.max(logo::ROWS),
                 Layout::Above => logo::ROWS + 1 + facts,
             };
-            (block + facts_closing(), facts + facts_closing())
+            (block + closing, facts + closing)
         };
         let beside = columns >= logo::COLUMNS + GAP + BESIDE && tall(&Layout::Beside).0 < rows;
         let layout = if beside {
@@ -766,18 +885,20 @@ impl Screen {
         }
     }
 
-    /// The lines of one frame: the mark as `pixels` and the facts so far.
-    fn lines(&self, pixels: &logo::Pixels, facts: &Facts) -> Vec<String> {
+    /// The lines of one frame: the mark as `pixels` and the facts so far,
+    /// each with the columns it takes.
+    fn lines(&self, pixels: &logo::Pixels, facts: &Facts) -> Vec<(String, usize)> {
         let width = facts_width(self.columns, &self.layout);
-        let rows: Vec<String> = facts
+        let rows: Vec<(String, usize)> = facts
             .rows(width)
             .iter()
-            .map(|row| painted(row, width))
+            .map(|row| (painted(row, width), visible(row).min(width)))
             .collect();
+        // Never cut: wider than the screen, the terminal wraps it.
         let closing = facts
-            .closing()
+            .closing(self.columns)
             .into_iter()
-            .map(|row| painted(&row, self.columns));
+            .map(|row| (colored(&row), visible(&row)));
         let mark = logo::lines(pixels);
         let mut lines = vec![];
         match self.layout {
@@ -785,18 +906,21 @@ impl Screen {
                 let blank = " ".repeat(logo::COLUMNS);
                 for i in 0..rows.len().max(mark.len()) {
                     let left = mark.get(i).unwrap_or(&blank);
-                    let right = rows.get(i).map(String::as_str).unwrap_or_default();
-                    lines.push(
+                    let (right, columns) = rows
+                        .get(i)
+                        .map_or(("", 0), |(row, columns)| (row, *columns));
+                    lines.push((
                         format!("{left}{}{right}", " ".repeat(GAP))
                             .trim_end()
                             .to_string(),
-                    );
+                        logo::COLUMNS + GAP + columns,
+                    ));
                 }
             }
             Layout::Above => {
                 if !self.fixed {
-                    lines.extend(mark);
-                    lines.push(String::new());
+                    lines.extend(mark.into_iter().map(|line| (line, logo::COLUMNS)));
+                    lines.push((String::new(), 0));
                 }
                 lines.extend(rows);
             }
@@ -819,18 +943,27 @@ impl Screen {
             text.push_str(&term::up(self.drawn));
         }
         let lines = self.lines(pixels, facts);
-        for line in &lines {
+        let columns = self.columns.max(1);
+        for (line, width) in &lines {
             // Cleared first: after a full-width row the cursor still sits
             // on its last character, which clearing after would erase.
             text.push_str(term::CLEAR_LINE_END);
             text.push_str(line);
+            // A line the terminal wrapped is cleared after too, on its
+            // last row, unless it ends at the edge.
+            if *width > columns && width % columns != 0 {
+                text.push_str(term::CLEAR_LINE_END);
+            }
             text.push('\n');
         }
         text.push_str(term::CLEAR_BELOW);
         text.push_str(term::SYNC_END);
         let _ = out.write_all(text.as_bytes());
         let _ = out.flush();
-        self.drawn = lines.len();
+        self.drawn = lines
+            .iter()
+            .map(|(_, width)| width.div_ceil(columns).max(1))
+            .sum();
     }
 
     /// The last frame: the mark at rest and what Plow said, or didn't.
@@ -848,11 +981,6 @@ fn facts_width(columns: usize, layout: &Layout) -> usize {
         Layout::Beside => columns - logo::COLUMNS - GAP,
         Layout::Above => columns,
     }
-}
-
-/// A blank line, the next step and the pointer to `latch status`.
-fn facts_closing() -> usize {
-    3
 }
 
 #[cfg(test)]

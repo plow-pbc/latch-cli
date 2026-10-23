@@ -90,8 +90,10 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "login",
         runs_on: |_| RunsOn::Local,
-        output: "This peer (name, key, kind) and whether its key was created now; with --events, JSON lines (hello, code, waiting, verified, expired, error) instead.",
-        effect: Repeatable("creates this peer's key if missing and registers it with Plow"),
+        output: "This machine or agent as `peer` (name, key, kind), and whether its key was created now; with --events, JSON lines (hello, code, waiting, verified, expired, error) instead.",
+        effect: Repeatable(
+            "creates this machine's or agent's key if missing and registers it with Plow",
+        ),
         owner_only: false,
         connector: None,
         examples: &[

@@ -95,7 +95,7 @@ fn shown(facts: &Facts) -> String {
         .rows(BESIDE)
         .into_iter()
         .map(|row| painted(&row, BESIDE));
-    let closing = facts.closing().into_iter().map(|row| painted(&row, 80));
+    let closing = facts.closing(80).into_iter().map(|row| colored(&row));
     rows.chain(closing)
         .map(|line| line.trim_end().to_string())
         .collect::<Vec<_>>()
@@ -246,9 +246,21 @@ fn an_agents_login_and_its_host() {
     facts.name = Some("research-bot".into());
     facts.plugins = json!([{"name": "contacts", "state": "needs_setup",
                                   "enable": "latch plugins enable contacts"}]);
+    facts.here_default = None;
+    facts.plow = Some(Pending::Got(directory(&[
+        ("studio", false, Some(true)),
+        ("pi", false, Some(false)),
+    ])));
+    hosted(&mut facts).hosting.running = false;
+    hosted(&mut facts).hosting.state = Phase::Stopped;
     let text = shown(&facts);
     assert!(text.contains("Login      agent\n"), "{text}");
-    assert!(text.contains(": research-bot"), "{text}");
+    // Plow lists no host for it, and none should run: it calls hosts.
+    assert!(
+        text.contains(": research-bot\n           Plow says: agent login, not a host\n"),
+        "{text}"
+    );
+    assert!(!text.contains("stopped"), "{text}");
     // Connectors are the owner's to set up.
     assert!(!text.contains("Run: latch plugins"), "{text}");
 }
@@ -374,6 +386,55 @@ fn rows_are_cut_at_the_edge_by_the_columns_they_take() {
 }
 
 #[test]
+fn a_long_state_folder_never_cuts_the_command_the_folder_or_the_footer() {
+    let mut facts = facts();
+    let dir = "/Volumes/work/plow-pbc/latch-cli/qa-google/.dev/qa/a";
+    facts.state_dir = dir.into();
+    facts.state_flag = Some(format!(" --state-dir {dir}"));
+    hosted(&mut facts).hosting.running = false;
+    hosted(&mut facts).hosting.state = Phase::Stopped;
+    let command = format!("latch --state-dir {dir} serve -d --again");
+    for columns in [100, 60] {
+        let screen = Screen::new(columns, 50, false, &facts);
+        let lines: Vec<String> = screen
+            .lines(&logo::finished(), &facts)
+            .into_iter()
+            .map(|(line, _)| line)
+            .collect();
+        let text = lines.join("\n");
+        assert!(!text.contains('…'), "{columns}:\n{text}");
+        assert!(
+            lines.iter().any(|line| line == &command),
+            "{columns}:\n{text}"
+        );
+        assert!(
+            text.contains("For agents (JSON): latch status."),
+            "{columns}:\n{text}"
+        );
+        let width = facts_width(columns, &screen.layout);
+        let folder: String = facts
+            .rows(width)
+            .iter()
+            .map(|row| painted(row, width))
+            .skip_while(|row| !row.starts_with("Folder"))
+            .map(|row| row.trim_start_matches("Folder").trim().to_string())
+            .collect();
+        assert_eq!(folder, dir, "{columns}");
+    }
+}
+
+#[test]
+fn a_command_wider_than_the_screen_is_left_whole_and_counted_by_the_rows_it_takes() {
+    let step = vec![
+        plain("Latch isn't running on this Mac. Run: "),
+        toned("x".repeat(50), Tone::Good),
+    ];
+    let lines = wrapped(step, 40);
+    assert_eq!(visible(&lines[1]), 50, "{lines:?}");
+    assert_eq!(screen_rows(&lines, 40), 1 + 2);
+}
+
+#[test]
 fn room_is_kept_for_the_most_that_can_arrive_later() {
     let mut waiting = facts();
     waiting.here_default = None;
@@ -409,7 +470,11 @@ fn the_mark_sits_beside_the_facts_in_80_columns_and_above_them_when_narrower() {
     let facts = facts();
     let beside = Screen::new(80, 24, true, &facts);
     assert_eq!((&beside.layout, beside.animate), (&Layout::Beside, true));
-    let lines = beside.lines(&logo::finished(), &facts);
+    let lines: Vec<String> = beside
+        .lines(&logo::finished(), &facts)
+        .into_iter()
+        .map(|(line, _)| line)
+        .collect();
     assert!(
         lines.iter().all(|line| line.chars().count() <= 80),
         "{lines:#?}"
@@ -425,7 +490,11 @@ fn the_mark_sits_beside_the_facts_in_80_columns_and_above_them_when_narrower() {
         (&above.layout, above.animate, above.fixed),
         (&Layout::Above, true, false)
     );
-    let lines = above.lines(&logo::finished(), &facts);
+    let lines: Vec<String> = above
+        .lines(&logo::finished(), &facts)
+        .into_iter()
+        .map(|(line, _)| line)
+        .collect();
     assert!(
         lines[logo::ROWS + 1].starts_with("latch 0.1.0"),
         "{lines:#?}"
@@ -433,7 +502,7 @@ fn the_mark_sits_beside_the_facts_in_80_columns_and_above_them_when_narrower() {
 
     // Narrow and short: the still mark is drawn once, the facts under it
     // again as Plow answers.
-    let short = Screen::new(60, 24, true, &facts);
+    let short = Screen::new(60, 26, true, &facts);
     assert_eq!(
         (short.animate, short.fixed, short.at_end_only),
         (false, true, false)
