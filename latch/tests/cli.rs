@@ -3540,6 +3540,51 @@ fn vault_takes_secrets_as_json_on_stdin_and_shows_only_what_is_not_secret() {
 }
 
 #[test]
+fn vault_stdin_left_open_is_cut_off_and_saves_nothing() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let args = [
+        "vault",
+        "add",
+        "--kind",
+        "login",
+        "--title",
+        "Shop",
+        "--site",
+        "shop.example",
+        "--stdin",
+    ];
+    let mut child = latch_command(&host, &args, &[])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    // The JSON is all there, but the pipe is never closed, as some tool
+    // runners leave it.
+    let mut input = child.stdin.take().unwrap();
+    input
+        .write_all(br#"{"password": "made-up-pass-open-1"}"#)
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while child.try_wait().unwrap().is_none() {
+        assert!(std::time::Instant::now() < deadline, "latch waited forever");
+        thread::sleep(std::time::Duration::from_millis(200));
+    }
+    let output = child.wait_with_output().unwrap();
+    drop(input);
+    let (code, error) = answered(&output);
+    assert_eq!(
+        (code, &error["error"]["code"]),
+        (Some(2), &json!("stdin_timeout"))
+    );
+    assert!(!error.to_string().contains("made-up-pass-open-1"));
+    let (_, listed) = answered(&latch(&host, &["vault", "list"], &[]));
+    assert_eq!(listed["items"], json!([]));
+}
+
+#[test]
 fn local_vault_edits_are_visible_to_serve_and_phone_links_stay_live() {
     let plow = LivePlow::start();
     let (runtime, relay) = local_relay();

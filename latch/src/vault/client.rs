@@ -7,8 +7,8 @@
 //! the rows the owner picks, at a prompt or with `--pick`; nothing is
 //! picked by default.
 
-use std::io::{IsTerminal, Read};
 use std::path::Path;
+use std::time::Duration;
 
 use serde_json::{Map, Value, json};
 use tokio::fs::File;
@@ -275,12 +275,13 @@ fn given(kind: &str, fields: &[String]) -> Result<Map<String, Value>, Failure> {
 /// `--field` values and `--stdin` ones, which are never prompted for.
 fn with_stdin(kind: &str, fields: &[String]) -> Result<Map<String, Value>, Failure> {
     let mut values = given(kind, fields)?;
-    if std::io::stdin().is_terminal() {
-        let message = "--stdin reads a JSON object piped in, e.g. \
-                       `latch vault add … --stdin < values.json`; here stdin is a terminal";
-        return Err(Failure::usage("stdin_is_terminal", message.into()));
+    // A pipe left open is cut off, as for every --stdin.
+    let bytes = crate::input::read_all(Duration::from_secs(30), MAX_STDIN_VALUES)?;
+    if bytes.len() > MAX_STDIN_VALUES {
+        let message = "stdin is over 1 MiB; nothing was saved";
+        return Err(Failure::usage("stdin_too_big", message.into()));
     }
-    let read = read_values(std::io::stdin(), kind)?;
+    let read = read_values(&bytes, kind)?;
     for (label, value) in read {
         if values.contains_key(&label) {
             return Err(Failure::usage(
@@ -294,22 +295,17 @@ fn with_stdin(kind: &str, fields: &[String]) -> Result<Map<String, Value>, Failu
 }
 
 /// The most `--stdin` reads: far more than any item's values.
-const MAX_STDIN_VALUES: u64 = 1 << 20;
+const MAX_STDIN_VALUES: usize = 1 << 20;
 
 /// `--stdin`'s values: one JSON object of strings by the kind's labels. An
 /// error never repeats what was read.
-fn read_values(input: impl Read, kind: &str) -> Result<Map<String, Value>, Failure> {
+fn read_values(input: &[u8], kind: &str) -> Result<Map<String, Value>, Failure> {
     let bad = || {
         let message = "--stdin takes one JSON object of field values by label, each a string, \
                        e.g. {\"password\": \"…\"}";
         Failure::usage("bad_values", message.into())
     };
-    let mut text = String::new();
-    input
-        .take(MAX_STDIN_VALUES)
-        .read_to_string(&mut text)
-        .map_err(|_| bad())?;
-    let values: Map<String, Value> = serde_json::from_str(&text).map_err(|_| bad())?;
+    let values: Map<String, Value> = serde_json::from_slice(input).map_err(|_| bad())?;
     let labels = labels(kind)?;
     for (label, value) in &values {
         if !value.is_string() {
