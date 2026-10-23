@@ -5,7 +5,7 @@
 
 use serde::Serialize;
 
-use crate::failure::{Exit, Failure};
+use crate::failure::{Failure, code};
 use crate::plow::{Peer, Plow};
 use crate::state::StateDir;
 use crate::term;
@@ -32,15 +32,23 @@ pub async fn remove(state: &StateDir, name: &str, yes: bool) -> Result<RemoveOut
     let peers = plow.list_peers().await?;
     let Some(machine) = machines(peers).into_iter().find(|peer| peer.name == name) else {
         let message = format!("no machine named {name:?}; `latch devices` lists them");
-        return Err(Failure::failed("not_found", message));
+        return Err(Failure::new(code::not_found, message));
     };
     if machine.key == config.peer.key {
         return Err(own_machine(name));
     }
     if !yes {
         if !term::interactive() {
-            let message = format!("removing {name:?} signs that machine out; pass --yes to do it");
-            return Err(Failure::usage("confirmation_required", message));
+            let message = format!("removing {name:?} signs that machine out");
+            let mut failure = Failure::new(code::confirmation_required, message);
+            failure.next = Some(
+                format!(
+                    "latch devices remove {} --yes",
+                    crate::login::shell_quoted(name)
+                )
+                .into(),
+            );
+            return Err(failure);
         }
         let question = format!(
             "Remove {name}? This signs that machine out of Plow, and anything else using \
@@ -48,7 +56,7 @@ pub async fn remove(state: &StateDir, name: &str, yes: bool) -> Result<RemoveOut
         );
         if !term::confirm(&question) {
             let message = format!("kept the machine named {name:?}");
-            return Err(Failure::usage("not_removed", message));
+            return Err(Failure::new(code::not_removed, message));
         }
     }
     let removed = remove_from_plow(&plow, &machine).await?;
@@ -77,12 +85,12 @@ fn owner_only(me: &Peer) -> Result<(), Failure> {
         return Ok(());
     }
     let message = "only an owner's machine removes machines; this peer is an agent".to_string();
-    Err(Failure::new(Exit::Denied, "owner_only", message))
+    Err(Failure::new(code::owner_only, message))
 }
 
 fn own_machine(name: &str) -> Failure {
     let message = format!(
         "{name:?} is logged in with this machine's own login; removing it would sign you out"
     );
-    Failure::usage("own_machine", message)
+    Failure::new(code::own_machine, message)
 }

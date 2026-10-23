@@ -18,7 +18,7 @@ use iroh::{Endpoint, EndpointAddr, EndpointId, RelayMode, RelayUrl};
 use serde_json::Value;
 use tokio::task::JoinHandle;
 
-use crate::failure::{Exit, Failure};
+use crate::failure::{Failure, code};
 use crate::plow::Peer;
 use crate::state::StateDir;
 use crate::wire::{self, Request, Response};
@@ -73,7 +73,7 @@ pub async fn connect(state: &StateDir, host: &Peer) -> Result<Link, Failure> {
             "host {:?} is offline{seen}; nothing was sent. Start `latch serve` there",
             host.name
         );
-        return Err(Failure::new(Exit::Unreachable, "host_offline", message));
+        return Err(Failure::new(code::host_offline, message));
     }
     // This machine's own host is reached over its socket, with no secret:
     // the running host holds them.
@@ -94,7 +94,7 @@ pub async fn connect(state: &StateDir, host: &Peer) -> Result<Link, Failure> {
         .relay_mode(RelayMode::custom([relay.clone()]))
         .bind()
         .await
-        .map_err(|err| Failure::failed("iroh", format!("could not start iroh: {err}")))?;
+        .map_err(|err| Failure::new(code::iroh, format!("could not start iroh: {err}")))?;
     let address = EndpointAddr::new(id).with_relay_url(relay);
     match tokio::time::timeout(CONNECT_TIMEOUT, endpoint.connect(address, wire::ALPN)).await {
         Ok(Ok(connection)) => Ok(Link {
@@ -112,7 +112,7 @@ pub async fn connect(state: &StateDir, host: &Peer) -> Result<Link, Failure> {
                 String::from_utf8_lossy(wire::ALPN),
                 crate::cli::version(),
             );
-            Err(Failure::failed("protocol_mismatch", message))
+            Err(Failure::new(code::protocol_mismatch, message))
         }
         _ => {
             endpoint.close().await;
@@ -120,7 +120,7 @@ pub async fn connect(state: &StateDir, host: &Peer) -> Result<Link, Failure> {
                 "could not connect to host {:?}; nothing was sent",
                 host.name
             );
-            Err(Failure::new(Exit::Unreachable, "host_unreachable", message))
+            Err(Failure::new(code::host_unreachable, message))
         }
     }
 }
@@ -238,12 +238,12 @@ pub async fn answer(
                 "no answer within {}s; check before resending",
                 within.as_secs()
             );
-            return Err(Failure::new(Exit::Unknown, "no_answer", message));
+            return Err(Failure::new(code::no_answer, message));
         }
     };
     let response: Response = serde_json::from_slice(&json).map_err(|_| {
         let message = "the host's answer was not a valid response".to_string();
-        Failure::new(Exit::Unknown, "bad_response", message)
+        Failure::new(code::bad_response, message)
     })?;
     response.into_result()
 }
@@ -251,8 +251,8 @@ pub async fn answer(
 /// Where to dial: the host's key and relay, both from the Plow directory.
 fn host_address(host: &Peer) -> Result<(EndpointId, RelayUrl), Failure> {
     let bad = || {
-        Failure::failed(
-            "bad_directory",
+        Failure::new(
+            code::bad_directory,
             format!("Plow's entry for {:?} is not dialable", host.name),
         )
     };
@@ -273,14 +273,14 @@ pub fn lost(connection: &Connection, sent: bool) -> Failure {
         && close.error_code == VarInt::from_u32(wire::CLOSE_DENIED)
     {
         let message = String::from_utf8_lossy(&close.reason).to_string();
-        return Failure::new(Exit::Denied, "caller_denied", message);
+        return Failure::new(code::caller_denied, message);
     }
     if sent {
         let message = "the connection dropped after the request was sent; check before resending";
-        Failure::new(Exit::Unknown, "outcome_unknown", message.to_string())
+        Failure::new(code::outcome_unknown, message.to_string())
     } else {
         let message = "the connection dropped before the request was sent";
-        Failure::new(Exit::Unreachable, "host_unreachable", message.to_string())
+        Failure::new(code::host_unreachable, message.to_string())
     }
 }
 

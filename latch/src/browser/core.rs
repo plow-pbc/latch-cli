@@ -22,7 +22,7 @@ use super::driver::{Driver, Event, Frame};
 
 mod fill;
 mod look;
-use crate::failure::Failure;
+use crate::failure::{Failure, code};
 pub use look::{Condition, fingerprint};
 
 /// The most elements one snapshot lists, across all frames.
@@ -339,8 +339,8 @@ impl<D: Driver> Core<D> {
                 | Call::Tabs
         );
         if self.paused && !fill_step {
-            let mut failure = Failure::failed(
-                "session_paused",
+            let mut failure = Failure::new(
+                code::session_paused,
                 "a vault fill holds this session; nothing can be read or done until it finishes"
                     .into(),
             );
@@ -533,8 +533,8 @@ impl<D: Driver> Core<D> {
             return Ok(());
         }
         audit.insert("capability".into(), json!(capability));
-        let mut failure = Failure::failed(
-            "unsupported_capability",
+        let mut failure = Failure::new(
+            code::unsupported_capability,
             format!("this session's engine has no {capability}"),
         );
         failure.details = json!({"capability": capability});
@@ -549,8 +549,8 @@ impl<D: Driver> Core<D> {
         let value = self.driver.eval(script)?;
         let size = serde_json::to_vec(&value).map_or(0, |bytes| bytes.len());
         if size > MAX_EVAL_RESULT {
-            return Err(Failure::failed(
-                "output_too_large",
+            return Err(Failure::new(
+                code::output_too_large,
                 format!("the script's result is {size} bytes; the limit is {MAX_EVAL_RESULT}"),
             ));
         }
@@ -586,8 +586,8 @@ impl<D: Driver> Core<D> {
             return Err(stale());
         }
         if is_file != true {
-            return Err(Failure::usage(
-                "wrong_target",
+            return Err(Failure::new(
+                code::wrong_target,
                 "upload needs a file input".into(),
             ));
         }
@@ -596,13 +596,13 @@ impl<D: Driver> Core<D> {
             .file_name()
             .and_then(|n| n.to_str())
             .filter(|n| !n.is_empty())
-            .ok_or_else(|| Failure::usage("bad_arguments", "the file needs a name".into()))?
+            .ok_or_else(|| Failure::new(code::bad_arguments, "the file needs a name".into()))?
             .to_string();
         self.uploads += 1;
         let folder = self.driver.upload_folder().join(self.uploads.to_string());
         fs::create_dir_all(&folder)
             .and_then(|()| fs::write(folder.join(&name), &bytes))
-            .map_err(|err| Failure::failed("upload_failed", err.to_string()))?;
+            .map_err(|err| Failure::new(code::upload_failed, err.to_string()))?;
         self.driver.set_files(
             &frame,
             &format!("__latch.elementAt({snapshot:?}, {index})"),
@@ -634,7 +634,7 @@ impl<D: Driver> Core<D> {
         audit.insert("download_origin".into(), json!(origin));
         audit.insert("download_path".into(), json!(path_only));
         let bytes =
-            fs::read(&path).map_err(|err| Failure::failed("download_failed", err.to_string()))?;
+            fs::read(&path).map_err(|err| Failure::new(code::download_failed, err.to_string()))?;
         let result =
             json!({"download": download.download, "name": download.name, "size": bytes.len()});
         self.bytes = Some(bytes);
@@ -687,8 +687,8 @@ impl<D: Driver> Core<D> {
         match (action, target) {
             (Action::Back, _) => {
                 if !self.driver.back()? {
-                    return Err(Failure::failed(
-                        "no_history",
+                    return Err(Failure::new(
+                        code::no_history,
                         "this tab has nothing to go back to".into(),
                     ));
                 }
@@ -719,8 +719,8 @@ impl<D: Driver> Core<D> {
                 if let Some(guard) = guard {
                     let now = self.review(Some(&snapshot), target, guard.enter, &mut Map::new())?;
                     if fingerprint(&now) != guard.fingerprint {
-                        return Err(Failure::failed(
-                            "context_changed",
+                        return Err(Failure::new(
+                            code::context_changed,
                             "what this action acts on, or the lines around it, changed after latch judged it; nothing was sent".into(),
                         ));
                     }
@@ -728,8 +728,8 @@ impl<D: Driver> Core<D> {
                 self.dispatch(action, &snapshot, position, text)?;
             }
             _ => {
-                return Err(Failure::usage(
-                    "bad_target",
+                return Err(Failure::new(
+                    code::bad_target,
                     "act takes a ref (eN) from a page latch returned".into(),
                 ));
             }
@@ -793,8 +793,8 @@ impl<D: Driver> Core<D> {
                 let text = required(text, "type needs the text to type")?;
                 let at = self.locate(snapshot, position)?;
                 if at.kind != "text" {
-                    return Err(Failure::usage(
-                        "wrong_target",
+                    return Err(Failure::new(
+                        code::wrong_target,
                         "type needs a text field".into(),
                     ));
                 }
@@ -806,14 +806,14 @@ impl<D: Driver> Core<D> {
                 let choice = required(text, "select needs the option to choose")?;
                 let at = self.locate(snapshot, position)?;
                 if at.kind != "select" {
-                    return Err(Failure::usage(
-                        "wrong_target",
+                    return Err(Failure::new(
+                        code::wrong_target,
                         "select needs a drop-down (select)".into(),
                     ));
                 }
                 if !at.options.iter().any(|option| option == choice) {
-                    let mut failure = Failure::failed(
-                        "no_such_target",
+                    let mut failure = Failure::new(
+                        code::no_such_target,
                         format!("no option {choice:?} in that list"),
                     );
                     failure.details = json!({"options": at.options});
@@ -827,8 +827,8 @@ impl<D: Driver> Core<D> {
                     .driver
                     .run(&frame, &format!("__latch.selected({snapshot:?}, {index})"))?;
                 if selected != json!([choice]) {
-                    return Err(Failure::failed(
-                        "select_failed",
+                    return Err(Failure::new(
+                        code::select_failed,
                         format!("typing {choice:?} chose {selected}; pick it another way"),
                     ));
                 }
@@ -857,8 +857,8 @@ impl<D: Driver> Core<D> {
             return Err(stale());
         }
         if focused != true {
-            return Err(Failure::failed(
-                "not_focused",
+            return Err(Failure::new(
+                code::not_focused,
                 "that element did not take the focus (hidden, disabled or not focusable); nothing was pressed"
                     .into(),
             ));
@@ -875,8 +875,8 @@ impl<D: Driver> Core<D> {
         std::thread::sleep(std::time::Duration::from_millis(80));
         let second = self.driver.run(&frame, &expression)?;
         let refused = |reason: &str| {
-            let mut failure = Failure::failed(
-                "covered_target",
+            let mut failure = Failure::new(
+                code::covered_target,
                 format!("that element is {reason}; observe again"),
             );
             failure.details = json!({"reason": reason});
@@ -981,7 +981,7 @@ impl<D: Driver> Core<D> {
             .iter()
             .find(|tab| tab.active)
             .cloned()
-            .ok_or_else(|| Failure::failed("browser_gone", "the session has no tab".into()))?;
+            .ok_or_else(|| Failure::new(code::browser_gone, "the session has no tab".into()))?;
         audit.insert("tab".into(), json!(active.tab));
         let (origin, path) = origin_and_path(&active.url);
         audit.insert("origin".into(), json!(origin));
@@ -1003,7 +1003,7 @@ impl<D: Driver> Core<D> {
             .frames()?
             .into_iter()
             .next()
-            .ok_or_else(|| Failure::failed("browser_gone", "the tab has no frame".into()))
+            .ok_or_else(|| Failure::new(code::browser_gone, "the tab has no frame".into()))
     }
 
     /// Reads the active tab into a new snapshot: every frame, or only the
@@ -1050,7 +1050,7 @@ impl<D: Driver> Core<D> {
             if self.read_until.is_some_and(|end| Instant::now() >= end) {
                 truncated = true;
                 out_of_time.get_or_insert_with(|| {
-                    Failure::failed("timeout", "the page did not answer in time".into())
+                    Failure::new(code::timeout, "the page did not answer in time".into())
                 });
                 break;
             }
@@ -1140,8 +1140,8 @@ impl<D: Driver> Core<D> {
             .and_then(|n| n.parse::<usize>().ok())
             .filter(|n| *n > 0)
             .ok_or_else(|| {
-                Failure::usage(
-                    "bad_target",
+                Failure::new(
+                    code::bad_target,
                     format!("{target:?} is not a ref; refs look like e7"),
                 )
             })?;
@@ -1151,8 +1151,8 @@ impl<D: Driver> Core<D> {
             None => return Err(stale()),
         };
         let Some(entry) = snapshot.refs.get(number - 1) else {
-            return Err(Failure::failed(
-                "no_such_target",
+            return Err(Failure::new(
+                code::no_such_target,
                 format!("snapshot {} has no {target}", snapshot.id),
             ));
         };
@@ -1185,8 +1185,8 @@ impl<D: Driver> Core<D> {
 
     fn no_dialog(&self) -> Result<(), Failure> {
         if self.driver.dialog_open() {
-            return Err(Failure::failed(
-                "dialog_open",
+            return Err(Failure::new(
+                code::dialog_open,
                 "a dialog is open; answer it with `dialog accept|dismiss`".into(),
             ));
         }
@@ -1195,15 +1195,15 @@ impl<D: Driver> Core<D> {
 }
 
 fn required<'a>(text: Option<&'a str>, message: &str) -> Result<&'a str, Failure> {
-    text.ok_or_else(|| Failure::usage("bad_arguments", message.to_string()))
+    text.ok_or_else(|| Failure::new(code::bad_arguments, message.to_string()))
 }
 
 fn scroll_delta(text: Option<&str>) -> Result<f64, Failure> {
     match text {
         None | Some("down") => Ok(SCROLL),
         Some("up") => Ok(-SCROLL),
-        Some(other) => Err(Failure::usage(
-            "bad_arguments",
+        Some(other) => Err(Failure::new(
+            code::bad_arguments,
             format!("scroll goes up or down, not {other:?}"),
         )),
     }
@@ -1234,8 +1234,8 @@ fn document_key(frame: &Frame) -> String {
 }
 
 fn stale() -> Failure {
-    Failure::failed(
-        "stale_snapshot",
+    Failure::new(
+        code::stale_snapshot,
         "that ref is from a page that has changed; observe again".into(),
     )
 }

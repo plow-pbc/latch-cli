@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use serde_json::json;
 use tempfile::TempDir;
 
-use crate::failure::Failure;
+use crate::failure::{Failure, code};
 
 pub struct Profile {
     pub dir: PathBuf,
@@ -89,8 +89,8 @@ pub fn prepare(dir: &Path, engine: &str) -> Result<Profile, Failure> {
         io::Result::Ok(())
     })();
     made.map_err(|err| {
-        Failure::failed(
-            "profile_failed",
+        Failure::new(
+            code::profile_failed,
             format!("{}: {err}", profile.dir.display()),
         )
     })?;

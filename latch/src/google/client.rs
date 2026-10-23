@@ -7,7 +7,7 @@ use tokio::fs::File;
 use super::{Input, Request, policy, problem};
 use crate::cli::GoogleArgs;
 use crate::dial::{self, ANSWER_WITHIN};
-use crate::failure::{Exit, Failure};
+use crate::failure::{Failure, code};
 use crate::state::StateDir;
 use crate::wire;
 
@@ -62,18 +62,18 @@ pub async fn prepare(args: &GoogleArgs) -> Result<Prepared, Failure> {
         for input in &plan.inputs {
             let file = File::open(&input.path)
                 .await
-                .map_err(|err| Failure::usage("local_file", err.to_string()))?;
+                .map_err(|err| Failure::new(code::local_file, err.to_string()))?;
             let metadata = file
                 .metadata()
                 .await
-                .map_err(|err| Failure::usage("local_file", err.to_string()))?;
+                .map_err(|err| Failure::new(code::local_file, err.to_string()))?;
             if !metadata.is_file() {
-                return Err(problem(Exit::Usage, "not_a_file", json!({})));
+                return Err(problem(code::not_a_file, json!({})));
             }
             let name = Path::new(&input.path)
                 .file_name()
                 .and_then(|n| n.to_str())
-                .ok_or_else(|| problem(Exit::Usage, "local_file", json!({})))?;
+                .ok_or_else(|| problem(code::local_file, json!({})))?;
             inputs.push(Input {
                 index: input.index,
                 size: metadata.len(),
@@ -128,21 +128,21 @@ async fn exchange(
     send.finish().map_err(|_| dial::lost(connection, true))?;
     let header = dial::answer(connection, &mut recv, ANSWER_WITHIN).await?;
     let moved: Vec<super::File> = serde_json::from_value(header["files"].clone())
-        .map_err(|_| problem(Exit::Failed, "bad_response", json!({})))?;
+        .map_err(|_| problem(code::bad_response, json!({})))?;
     let mut local_files = Vec::new();
     for moved in moved {
         let path = plan.expect("plan").destination(&moved.path)?;
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent)
                 .await
-                .map_err(|err| Failure::failed("local_file", err.to_string()))?;
+                .map_err(|err| Failure::new(code::local_file, err.to_string()))?;
         }
         // As `file get` does: the bytes take the destination's place only
         // once they match.
         let staged = crate::transfer::Staged::beside(&path)?;
         let copied = wire::copy(&mut recv, &mut staged.file()?, moved.size).await;
         if copied.as_ref().ok() != Some(&moved.sha256) {
-            return Err(problem(Exit::Failed, "checksum_mismatch", json!({})));
+            return Err(problem(code::checksum_mismatch, json!({})));
         }
         staged.place(&path)?;
         local_files.push(json!({"path":path,"size":moved.size,"sha256":moved.sha256}));

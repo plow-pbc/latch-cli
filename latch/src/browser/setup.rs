@@ -8,14 +8,13 @@
 //! and refuses a state directory logged in as an agent: an agent's browser
 //! call never downloads an engine.
 
-use std::path::Path;
 use std::process::Command;
 
 use serde_json::{Value, json};
 
 use super::engine::{CAMOUFOX, CFT};
 use crate::cli::EngineArg;
-use crate::failure::{Exit, Failure};
+use crate::failure::{Failure, code};
 use crate::state::StateDir;
 
 /// What `browser-engines.sh` reads, at the paths it reads them from.
@@ -53,8 +52,7 @@ pub fn run(state: &StateDir, engine: EngineArg) -> Result<Value, Failure> {
         && config.peer.kind == "agent"
     {
         return Err(Failure::new(
-            Exit::Denied,
-            "owner_only",
+            code::owner_only,
             "only the host's owner installs a browser engine, on the host: this latch is \
              logged in as an agent"
                 .to_string(),
@@ -64,7 +62,7 @@ pub fn run(state: &StateDir, engine: EngineArg) -> Result<Value, Failure> {
         EngineArg::Cft => "chrome",
         EngineArg::Camoufox => "camoufox",
     };
-    install(&state.path, name)?;
+    install(state, name)?;
     let (version, folder) = match engine {
         EngineArg::Cft => {
             CFT.verified(&state.path)?;
@@ -78,10 +76,11 @@ pub fn run(state: &StateDir, engine: EngineArg) -> Result<Value, Failure> {
     Ok(json!({"engine": name, "version": version, "folder": folder}))
 }
 
-/// Runs the carried `browser-engines.sh` for `engine` into `state_dir`. Its
-/// messages go to stderr, so stdout keeps only latch's JSON.
-fn install(state_dir: &Path, engine: &str) -> Result<(), Failure> {
-    let local = |err: std::io::Error| Failure::failed("setup_failed", err.to_string());
+/// Runs the carried `browser-engines.sh` for `engine` into `state`. Its
+/// messages go to trace.log, so stdout keeps only latch's JSON and stderr
+/// only its error line.
+fn install(state: &StateDir, engine: &str) -> Result<(), Failure> {
+    let local = |err: std::io::Error| Failure::new(code::setup_failed, err.to_string());
     let files = tempfile::tempdir().map_err(local)?;
     for (path, bytes) in FILES {
         let path = files.path().join(path);
@@ -89,18 +88,23 @@ fn install(state_dir: &Path, engine: &str) -> Result<(), Failure> {
             .map_err(local)?;
         std::fs::write(&path, bytes).map_err(local)?;
     }
+    let (out, err) = crate::trace::output(&crate::trace::file(state)?)?;
     let status = Command::new("/bin/sh")
         .arg(files.path().join("browser-engines.sh"))
         .arg("--state-dir")
-        .arg(state_dir)
+        .arg(&state.path)
         .arg(engine)
-        .stdout(std::io::stderr())
+        .stdout(out)
+        .stderr(err)
         .status()
         .map_err(local)?;
     if !status.success() {
-        return Err(Failure::failed(
-            "setup_failed",
-            format!("installing {engine} failed ({status}); its messages are above"),
+        return Err(Failure::new(
+            code::setup_failed,
+            format!(
+                "installing {engine} failed ({status}); its messages are in {}",
+                state.path.join(crate::trace::FILE).display()
+            ),
         ));
     }
     Ok(())

@@ -17,7 +17,7 @@ use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use crate::failure::Failure;
+use crate::failure::{Failure, code};
 
 /// Whether a runtime's worker starts a private display: on Linux, for
 /// every headed runtime.
@@ -37,7 +37,7 @@ pub struct Display {
 impl Display {
     /// Starts Xvfb on a free display, and waits until it is ready.
     pub fn start() -> Result<Display, Failure> {
-        let failed = |why: String| Failure::failed("display_failed", why);
+        let failed = |why: String| Failure::new(code::display_failed, why);
         let mut fds = [0; 2];
         // SAFETY: `pipe` fills both fds, which are owned from here on.
         if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {

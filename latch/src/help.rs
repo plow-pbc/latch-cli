@@ -14,7 +14,7 @@ use clap::{ArgAction, ArgMatches, CommandFactory, FromArgMatches};
 use serde::Serialize;
 
 use crate::cli::{Cli, GoogleArgs, HandoffAction, HelpArgs};
-use crate::failure::{Exit, Failure};
+use crate::failure::{Exit, Failure, code};
 use crate::google::policy::{self, Allowed};
 
 /// What latch knows about a command beyond what its parser says.
@@ -90,7 +90,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "login",
         runs_on: |_| RunsOn::Local,
-        output: "This peer (name, key, kind) and whether its key was created now; with --events, JSON lines (code, waiting, verified, expired, error) instead.",
+        output: "This peer (name, key, kind) and whether its key was created now; with --events, JSON lines (hello, code, waiting, verified, expired, error) instead.",
         effect: Repeatable("creates this peer's key if missing and registers it with Plow"),
         owner_only: false,
         connector: None,
@@ -245,7 +245,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "status",
         runs_on: |_| RunsOn::Either,
-        output: "This peer, its Plow and the hosts it can reach; with --pretty, a card for a person; with --local, only this machine's own latch, asking no one, its `serve.deny_exec` (`every_agent`, `agent_uids`) as the host runs or last ran, null if its saved flags are unreadable; with --host, that host's own `status --local` (owner devices only); with --follow too, JSON lines: `hello`, then a `status` line, again each time it changes.",
+        output: "This peer, its Plow and the hosts it can reach; each key's art (`art`) to compare between machines; with --local, only this machine's own latch, asking no one, its `serve.deny_exec` (`every_agent`, `agent_uids`) as the host runs or last ran, null if its saved flags are unreadable; with --host, that host's own `status --local` (owner devices only); with --follow too, JSON lines: `hello`, then a `status` line, again each time it changes.",
         effect: ReadOnly,
         owner_only: false,
         connector: None,
@@ -422,7 +422,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "exec",
         runs_on: |_| RunsOn::Host,
-        output: "The program's `exit_code` (or `signal`, or `timed_out`), `stdout`, `stderr`, declared `writes` and `network` flag. Secret environment values are omitted from judgment and audit; program output is returned as-is.",
+        output: "The program's `exit_code` (or `signal`), `stdout`, `stderr`, declared `writes` and `network` flag. Secret environment values are omitted from judgment and audit; program output is returned as-is.",
         effect: Once(
             "runs the program on the host, inside its sandbox; its effects are the program's",
         ),
@@ -514,7 +514,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "browser.text",
         runs_on: |_| RunsOn::Host,
-        output: "The page's text, at most 20,000 characters (`truncated` when cut); with --raw, the text alone.",
+        output: "The page's text, at most 20,000 characters (`truncated` when cut).",
         effect: ReadOnly,
         owner_only: false,
         connector: None,
@@ -1068,7 +1068,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "rules.edit",
         runs_on: |_| RunsOn::Either,
-        output: "The rules saved, with their revision.",
+        output: "At a terminal, the person's editor, then a line when the rules are saved; without one, `no_terminal` (use `rules set`).",
         effect: Once("changes the rules"),
         owner_only: true,
         connector: None,
@@ -1245,7 +1245,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "update",
         runs_on: |_| RunsOn::Local,
-        output: "`updated` and the build installed (`to`), or with --check `current`, `latest` and `available`.",
+        output: "`updated` and the build installed (`to`), and when a host ran here, `host`: `running` again, or stopped with the `next` command that starts it; with --check, `current`, `latest` and `available`.",
         effect: Repeatable(
             "installs another latch build on this machine and restarts a `serve -d` host on it",
         ),
@@ -1269,7 +1269,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "dashboard",
         runs_on: |_| RunsOn::Local,
-        output: "The running host's dashboard, until Ctrl-C; needs a terminal.",
+        output: "The running host's dashboard, until Ctrl-C; without a terminal, `no_terminal` (use `audit --follow`).",
         effect: ReadOnly,
         owner_only: false,
         connector: None,
@@ -1278,7 +1278,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "logs",
         runs_on: |_| RunsOn::Local,
-        output: "The host's log (serve.log); with --follow, then what is added.",
+        output: "JSON lines: `hello`, then a `log` line per record of the host's log (serve.log); with --follow, then each one added.",
         effect: ReadOnly,
         owner_only: false,
         connector: None,
@@ -1303,7 +1303,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "setup",
         runs_on: |_| RunsOn::Local,
-        output: "At a terminal, each step and the latch command it ran; skipped steps say so. With --status, `steps`: each step's `step` (login, each connector, host), `state` (done, needed or blocked), `reason`, `args` (the words after `latch` that do it, null once done, or while something else must happen first) and, for a connector, `enabled` and `ready` (enabled and served by a running host). For the owner, the Google step asks Plow (read only) whether Google is connected there: it adds `accounts`, and `connect_url` (where to connect one) while none is; it is blocked when Plow cannot be asked. With --check-access, on a Mac, the Messages and Contacts steps add `access` (granted, not_granted or unknown): whether Plow Latch has Full Disk Access, checked once as the host would and saving nothing.",
+        output: "At a terminal, each step and the latch command it ran; skipped steps say so. Without one, `no_terminal`, whose `next` is the first step not done. With --status, at a terminal or not, `steps`: each step's `step` (login, each connector, host), `state` (done, needed or blocked), `reason`, `args` (the words after `latch` that do it, null once done, or while something else must happen first) and, for a connector, `enabled` and `ready` (enabled and served by a running host). For the owner, the Google step asks Plow (read only) whether Google is connected there: it adds `accounts`, and `connect_url` (where to connect one) while none is; it is blocked when Plow cannot be asked. With --check-access, on a Mac, the Messages and Contacts steps add `access` (granted, not_granted or unknown): whether Plow Latch has Full Disk Access, checked once as the host would and saving nothing.",
         effect: Repeatable(
             "logs in and enables connectors with no host running, then starts the host if the owner says so; done steps are skipped. --status changes nothing",
         ),
@@ -1351,9 +1351,10 @@ pub fn skill() -> String {
     format!("---\n{front}\nmetadata:\n  version: {version}\n---\n{body}")
 }
 
-/// `latch help [COMMAND…] [--examples | --json]`. Under `google`, the
-/// words after it name gog commands, from the grammar that validates them.
-pub fn run(args: HelpArgs) -> ExitCode {
+/// `latch help [COMMAND…] [--examples | --json]`, the JSON indented with
+/// `--pretty`. Under `google`, the words after it name gog commands, from
+/// the grammar that validates them.
+pub fn run(args: HelpArgs, pretty: bool) -> ExitCode {
     let mut root = Cli::command();
     root.build();
     let (path, gog_words) = match args.path.split_first() {
@@ -1375,7 +1376,7 @@ pub fn run(args: HelpArgs) -> ExitCode {
             "no command `latch {}`; `latch help` lists them",
             args.path.join(" ")
         );
-        eprintln!("{}", Failure::usage("unknown_command", message).to_json());
+        eprintln!("{}", Failure::new(code::unknown_command, message).to_json());
         return Exit::Usage.into();
     };
     if !args.examples && !args.json && gog_words.is_empty() {
@@ -1399,9 +1400,20 @@ pub fn run(args: HelpArgs) -> ExitCode {
                     meaning: exit.meaning(),
                 })
                 .collect(),
+            error_codes: crate::failure::CODES
+                .iter()
+                .map(|code| ErrorCodeHelp {
+                    code: code.name,
+                    exit: u8::from(code.exit),
+                })
+                .collect(),
             actions: listed,
         };
-        println!("{}", serde_json::to_string(&help).expect("help serializes"));
+        let help = match pretty {
+            true => serde_json::to_string_pretty(&help),
+            false => serde_json::to_string(&help),
+        };
+        println!("{}", help.expect("help serializes"));
     } else if args.examples {
         for action in &listed {
             println!("{}", action.usage);
@@ -1498,8 +1510,8 @@ pub fn check_selectors(matches: &ArgMatches) -> Result<(), Failure> {
         .find(|entry| entry.id == id)
         .map_or(RunsOn::Local, |entry| (entry.runs_on)(args));
     if has("host") && location == RunsOn::Local {
-        return Err(Failure::usage(
-            "host_not_supported",
+        return Err(Failure::new(
+            code::host_not_supported,
             format!(
                 "`latch {}` runs locally; omit --host and unset LATCH_HOST. Run it on the intended machine",
                 id.replace('.', " ")
@@ -1507,8 +1519,8 @@ pub fn check_selectors(matches: &ArgMatches) -> Result<(), Failure> {
         ));
     }
     if has("plow_chat") && location != RunsOn::Host {
-        return Err(Failure::usage(
-            "plow_chat_not_supported",
+        return Err(Failure::new(
+            code::plow_chat_not_supported,
             format!(
                 "`latch {}` does not use a Plow chat; omit --plow-chat and unset LATCH_PLOW_CHAT",
                 id.replace('.', " ")
@@ -1522,6 +1534,8 @@ pub fn check_selectors(matches: &ArgMatches) -> Result<(), Failure> {
 struct Help {
     version: &'static str,
     exit_codes: Vec<ExitCodeHelp>,
+    /// Every error code, with the exit it comes with.
+    error_codes: Vec<ErrorCodeHelp>,
     actions: Vec<Action>,
 }
 
@@ -1529,6 +1543,12 @@ struct Help {
 struct ExitCodeHelp {
     code: u8,
     meaning: &'static str,
+}
+
+#[derive(Serialize)]
+struct ErrorCodeHelp {
+    code: &'static str,
+    exit: u8,
 }
 
 #[derive(Serialize)]

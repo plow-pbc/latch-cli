@@ -21,7 +21,7 @@ pub mod process;
 
 use std::sync::LazyLock;
 
-use crate::failure::{Exit, Failure};
+use crate::failure::{Code, Failure, code};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -128,8 +128,8 @@ pub struct Output {
 
 /// A failure whose message is its code in words, with machine-readable
 /// `details` for the agent.
-pub fn problem(exit: Exit, code: &str, details: Value) -> Failure {
-    let mut failure = Failure::new(exit, code, code.replace('_', " "));
+pub fn problem(code: Code, details: Value) -> Failure {
+    let mut failure = Failure::new(code, code.name.replace('_', " "));
     failure.details = details;
     failure
 }
@@ -146,8 +146,7 @@ pub fn gog_failure(code: i32) -> Failure {
         _ => "operation_failed",
     };
     problem(
-        Exit::Failed,
-        "google_failed",
+        code::google_failed,
         json!({ "gog_exit_code": code, "reason": reason }),
     )
 }

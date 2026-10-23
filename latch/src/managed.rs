@@ -36,7 +36,7 @@ use tokio::net::unix::OwnedWriteHalf;
 
 use crate::cli::ServeArgs;
 use crate::dashboard::{self, Board};
-use crate::failure::{Exit, Failure};
+use crate::failure::{Failure, code};
 use crate::lifecycle::{self, Phase};
 use crate::serve::DETACH;
 use crate::state::{StateDir, to_hex};
@@ -107,10 +107,11 @@ pub enum Attached {
 
 pub async fn attach(state: &StateDir, args: &ServeArgs) -> Result<Attached, Failure> {
     if !term::stdout_is_terminal() || !term::interactive() {
-        let message = "`latch serve` shows the host's dashboard, so it needs a terminal; \
-                       `latch serve -d` starts the host detached"
-            .to_string();
-        return Err(Failure::usage("no_terminal", message));
+        let message =
+            "`latch serve` shows the host's dashboard, so it needs a terminal".to_string();
+        let mut failure = Failure::new(code::no_terminal, message);
+        failure.next = Some("latch serve -d".into());
+        return Err(failure);
     }
     let (dir, hello) = launch(state, args, true).await?;
     // Only this host is ours to stop: by the time this serve cleans up,
@@ -144,10 +145,10 @@ pub async fn attach(state: &StateDir, args: &ServeArgs) -> Result<Attached, Fail
 /// `latch dashboard`: watches the running host until Ctrl-C.
 pub async fn dashboard(state: &StateDir) -> Result<(), Failure> {
     if !term::stdout_is_terminal() {
-        let message = "the dashboard needs a terminal; `latch status --local` and \
-                       `latch audit` say what the host is doing as JSON"
-            .to_string();
-        return Err(Failure::usage("no_terminal", message));
+        let message = "the dashboard needs a terminal".to_string();
+        let mut failure = Failure::new(code::no_terminal, message);
+        failure.next = Some("latch audit --follow".into());
+        return Err(failure);
     }
     // The write side stays open while the view does: the host takes its
     // end as the viewer gone.
@@ -186,14 +187,14 @@ async fn launch(
     let Some(_launching) = launch_lock(&dir, within).await? else {
         let message =
             "another `latch serve` or `latch stop` on this state folder did not finish".to_string();
-        return Err(Failure::failed("launch_busy", message));
+        return Err(Failure::new(code::launch_busy, message));
     };
     let host = lifecycle::now(&dir);
     if host.configuring {
         let message = "a `latch plugins` or `latch logout` command is changing this state \
                        folder; start latch once it finishes"
             .to_string();
-        return Err(Failure::failed("state_busy", message));
+        return Err(Failure::new(code::state_busy, message));
     }
     if host.running {
         return Err(match lifecycle::other_version(&dir) {
@@ -209,7 +210,7 @@ async fn launch(
     };
     let program = std::env::current_exe()
         .and_then(|exe| exe.canonicalize())
-        .map_err(|err| Failure::failed("no_binary", format!("latch cannot find itself: {err}")))?;
+        .map_err(|err| Failure::new(code::no_binary, format!("latch cannot find itself: {err}")))?;
     let mut argv: Vec<OsString> = vec![
         program.into(),
         "--state-dir".into(),
@@ -266,7 +267,7 @@ fn given_before(dir: &Path) -> Result<Vec<String>, Failure> {
             let message = "no `latch serve` has run on this state folder to start again; \
                            `latch serve -d` starts one"
                 .to_string();
-            Err(Failure::usage("nothing_to_start_again", message))
+            Err(Failure::new(code::nothing_to_start_again, message))
         }
     }
 }
@@ -292,8 +293,8 @@ fn saved(dir: &Path) -> Result<Option<(Vec<String>, ServeArgs)>, Failure> {
         Err(err) => return Err(io_failure(&path, err)),
     };
     let invalid = || {
-        Failure::usage(
-            "bad_serve_args",
+        Failure::new(
+            code::bad_serve_args,
             "saved host flags are not supported; start once with `latch serve -d` plus any \
          `--deny-exec` or `--headless-browsers` flags you need"
                 .to_string(),
@@ -327,14 +328,14 @@ async fn ready(dir: &Path, before: Option<&str>) -> Result<Value, Failure> {
                 .error
                 .map_or("it stopped".to_string(), |error| error.message);
             let message = format!("the host did not start: {why} (`latch logs` has its log)");
-            return Err(Failure::failed("serve_failed", message));
+            return Err(Failure::new(code::serve_failed, message));
         }
         if started.elapsed() > READY_WITHIN {
             let message = format!(
                 "the host did not answer within {} seconds (`latch logs` has its log)",
                 READY_WITHIN.as_secs()
             );
-            return Err(Failure::failed("serve_failed", message));
+            return Err(Failure::new(code::serve_failed, message));
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
@@ -350,7 +351,7 @@ async fn stop_dir(dir: &Path, only: Option<u32>) -> Result<Value, Failure> {
             "another `latch serve` or `latch stop` on this state folder did not finish within {} seconds",
             STOP_WITHIN.as_secs()
         );
-        return Err(Failure::failed("stop_failed", message));
+        return Err(Failure::new(code::stop_failed, message));
     };
     let service = Service::new(dir);
     let host = lifecycle::now(dir);
@@ -399,7 +400,7 @@ async fn stop_dir(dir: &Path, only: Option<u32>) -> Result<Value, Failure> {
                 "the host (pid {pid}) did not stop within {} seconds",
                 STOP_WITHIN.as_secs()
             );
-            return Err(Failure::failed("stop_failed", message));
+            return Err(Failure::new(code::stop_failed, message));
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
@@ -419,7 +420,7 @@ async fn already_serving(dir: &Path) -> Failure {
         message = format!("{message} (pid {})", hello["pid"]);
         message.push_str(&mismatch(&hello));
     }
-    Failure::failed("already_serving", message)
+    Failure::new(code::already_serving, message)
 }
 
 /// What to say when the host runs another latch than this one.
@@ -508,7 +509,7 @@ async fn request(dir: &Path, op: &str, args: Value) -> Result<(Value, UnixStream
                 "the host did not answer within {} seconds",
                 ANSWER_WITHIN.as_secs()
             );
-            Err(Failure::new(Exit::Unreachable, "serve_required", message))
+            Err(Failure::new(code::serve_required, message))
         })
 }
 
@@ -521,8 +522,7 @@ async fn request_now(dir: &Path, op: &str, args: Value) -> Result<(Value, UnixSt
     };
     let lost = |err: std::io::Error| {
         Failure::new(
-            Exit::Unreachable,
-            "serve_required",
+            code::serve_required,
             format!("the host did not answer: {err}"),
         )
     };
@@ -530,7 +530,7 @@ async fn request_now(dir: &Path, op: &str, args: Value) -> Result<(Value, UnixSt
     wire::write_frame(&mut socket, &json).await.map_err(lost)?;
     let frame = wire::read_frame(&mut socket).await.map_err(lost)?;
     let response: Response = serde_json::from_slice(&frame)
-        .map_err(|_| Failure::failed("bad_response", "the host's answer is not valid".into()))?;
+        .map_err(|_| Failure::new(code::bad_response, "the host's answer is not valid".into()))?;
     Ok((response.into_result()?, socket))
 }
 
@@ -539,7 +539,7 @@ fn not_serving(failure: Failure) -> Failure {
         return failure;
     }
     let message = "no host serves this state folder; `latch serve` starts one".to_string();
-    Failure::new(Exit::Unreachable, "serve_required", message)
+    Failure::new(code::serve_required, message)
 }
 
 /// Held while a host is started or stopped on `dir`.
@@ -566,7 +566,7 @@ async fn launch_lock(dir: &Path, until: Instant) -> Result<Option<File>, Failure
 }
 
 fn io_failure(path: &Path, err: std::io::Error) -> Failure {
-    Failure::failed("state_io", format!("{}: {err}", path.display()))
+    Failure::new(code::state_io, format!("{}: {err}", path.display()))
 }
 
 /// The service that runs the host on one state folder, named after the
@@ -645,7 +645,7 @@ pub async fn run_as_app(
         }
         if Instant::now() > deadline {
             let message = format!("{name} did not answer within {} s", within.as_secs());
-            break Err(Failure::failed("no_answer", message));
+            break Err(Failure::new(code::no_answer, message));
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     };
@@ -657,13 +657,13 @@ pub async fn run_as_app(
 fn manager(command: &mut Command) -> Result<(), Failure> {
     let output = command
         .output()
-        .map_err(|err| Failure::failed("service_failed", format!("{command:?}: {err}")))?;
+        .map_err(|err| Failure::new(code::service_failed, format!("{command:?}: {err}")))?;
     if output.status.success() {
         return Ok(());
     }
     let said = String::from_utf8_lossy(&output.stderr).trim().to_string();
     let message = format!("{command:?} failed: {said}");
-    Err(Failure::failed("service_failed", message))
+    Err(Failure::new(code::service_failed, message))
 }
 
 #[cfg(target_os = "macos")]
@@ -674,7 +674,7 @@ mod platform {
     use std::process::Command;
 
     use super::{STOP_WITHIN, manager};
-    use crate::failure::Failure;
+    use crate::failure::{Failure, code};
 
     /// The logged-in user's session, where an agent may show windows.
     fn domain() -> String {
@@ -705,8 +705,9 @@ mod platform {
     ) -> Result<(), Failure> {
         let path = dir.join(format!("{name}.plist"));
         let plist = job(label, &dir.join(format!("{name}.log")), argv)?;
-        let io =
-            |err: std::io::Error| Failure::failed("state_io", format!("{}: {err}", path.display()));
+        let io = |err: std::io::Error| {
+            Failure::new(code::state_io, format!("{}: {err}", path.display()))
+        };
         // Mode 600: it holds the environment `latch serve` ran in.
         let mut file = std::fs::OpenOptions::new()
             .write(true)
@@ -734,7 +735,7 @@ mod platform {
         let text = |value: &std::ffi::OsStr| {
             value.to_str().map(escape).ok_or_else(|| {
                 let message = format!("{} is not valid UTF-8", value.display());
-                Failure::failed("service_failed", message)
+                Failure::new(code::service_failed, message)
             })
         };
         let mut arguments = String::new();

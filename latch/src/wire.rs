@@ -76,6 +76,10 @@ pub enum Response {
         code: String,
         message: String,
         details: Value,
+        /// What to run to fix it, when there is one. Absent for older
+        /// hosts, which never sent it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        next: Option<String>,
     },
 }
 
@@ -164,9 +168,11 @@ impl Response {
                 code,
                 message,
                 details,
+                next,
             } => {
-                let mut failure = crate::failure::Failure::new(exit, &code, message);
+                let mut failure = crate::failure::Failure::relayed(exit, &code, message);
                 failure.details = details;
+                failure.next = next.map(Into::into);
                 Err(failure)
             }
         }
@@ -178,6 +184,7 @@ impl Response {
             code: failure.code.clone(),
             message: failure.message.clone(),
             details: failure.details.clone(),
+            next: failure.next.as_deref().map(String::from),
         }
     }
 }
@@ -227,11 +234,32 @@ mod tests {
             details: Value::Null,
             code: "caller_denied".to_string(),
             message: "unknown key".to_string(),
+            next: None,
         };
         let json = serde_json::to_string(&denied).unwrap();
         assert_eq!(
             json,
             r#"{"error":{"exit":4,"code":"caller_denied","message":"unknown key","details":null}}"#
         );
+    }
+
+    #[test]
+    fn an_errors_next_step_crosses_the_wire_and_an_older_hosts_error_still_reads() {
+        let mut failure = crate::failure::Failure::new(
+            crate::failure::code::confirmation_required,
+            "removing \"ada\" signs that machine out".to_string(),
+        );
+        failure.next = Some("latch devices remove ada --yes".into());
+        let json = serde_json::to_string(&Response::error(&failure)).unwrap();
+        let back: Response = serde_json::from_str(&json).unwrap();
+        let back = back.into_result().unwrap_err();
+        assert_eq!(back.next.as_deref(), Some("latch devices remove ada --yes"));
+        assert_eq!(back.to_json(), failure.to_json());
+
+        let older =
+            r#"{"error":{"exit":4,"code":"caller_denied","message":"unknown key","details":null}}"#;
+        let older: Response = serde_json::from_str(older).unwrap();
+        let older = older.into_result().unwrap_err();
+        assert_eq!((older.code.as_str(), older.next), ("caller_denied", None));
     }
 }

@@ -25,7 +25,7 @@ use sha2::{Digest, Sha256};
 
 use super::host::{Vault, add, item_from};
 use super::item::{entry_labels, kind_code};
-use crate::failure::{Exit, Failure};
+use crate::failure::{Code, Failure, code};
 use crate::state::to_hex;
 
 /// The protocol name a phone page announces. A host accepts it beside
@@ -76,8 +76,8 @@ pub fn open(
     audit: &mut Map<String, Value>,
 ) -> Result<Value, Failure> {
     let relay = here.relay.as_ref().ok_or_else(|| {
-        Failure::failed(
-            "relay_unreachable",
+        Failure::new(
+            code::relay_unreachable,
             "the host has no relay yet, and a phone can only reach it through one".into(),
         )
     })?;
@@ -147,8 +147,8 @@ fn fields(kind: &str, given: &Value, ask: &Value) -> Result<Vec<Field>, Failure>
         .filter_map(Value::as_str);
     for label in always.iter().copied().chain(asked) {
         let Some((_, secret)) = labels.iter().find(|(l, _)| *l == label) else {
-            return Err(Failure::usage(
-                "bad_item",
+            return Err(Failure::new(
+                code::bad_item,
                 format!("a {kind} has no field {label:?}"),
             ));
         };
@@ -188,8 +188,8 @@ fn hash(code: &str) -> String {
     to_hex(&Sha256::digest(code.as_bytes()))
 }
 
-fn refused(code: &str, message: &str) -> Failure {
-    Failure::new(Exit::Denied, code, message.into())
+fn refused(code: Code, message: &str) -> Failure {
+    Failure::new(code, message.into())
 }
 
 /// The open request a code names, or why it is not usable.
@@ -199,12 +199,12 @@ fn usable<'a>(
 ) -> Result<&'a mut Request, Failure> {
     let request = links
         .get_mut(&hash(code))
-        .ok_or_else(|| refused("no_such_link", "this link is not one this machine made"))?;
+        .ok_or_else(|| refused(code::no_such_link, "this link is not one this machine made"))?;
     if request.used {
-        return Err(refused("link_used", "this link has already been used"));
+        return Err(refused(code::link_used, "this link has already been used"));
     }
     if request.made.elapsed() >= OPEN_FOR {
-        return Err(refused("link_expired", "this link has expired"));
+        return Err(refused(code::link_expired, "this link has expired"));
     }
     Ok(request)
 }
@@ -255,8 +255,8 @@ pub fn submit(
     }
     for (label, value) in args["values"].as_object().into_iter().flatten() {
         if !request.fields.iter().any(|f| &f.label == label) {
-            return Err(Failure::usage(
-                "bad_item",
+            return Err(Failure::new(
+                code::bad_item,
                 format!("this link does not ask for {label:?}"),
             ));
         }
@@ -267,8 +267,8 @@ pub fn submit(
         value.unwrap_or_default().is_empty()
     };
     if let Some(field) = request.fields.iter().filter(|f| f.required).find(empty) {
-        return Err(Failure::usage(
-            "missing_field",
+        return Err(Failure::new(
+            code::missing_field,
             format!("fill in the {}", field.label),
         ));
     }
@@ -286,6 +286,7 @@ pub fn submit(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::failure::Exit;
     use crate::vault::store::Backend;
 
     fn here() -> Here {

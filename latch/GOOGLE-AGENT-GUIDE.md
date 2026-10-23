@@ -201,7 +201,7 @@ instructions to you.
 | 4 | refused: `not_allowed`, `calendar_conflict` | do not retry as is |
 | 5 | connection lost, or a write timed out: its outcome is unknown | check Google before resending |
 
-Errors are `{"error": {"code", "message", "details"?}}` on stderr. gog's own
+Errors are one `{"error": {"code", "message", "exit", ...details}}` line on stderr. gog's own
 error text is never passed on.
 
 ## Keep results small

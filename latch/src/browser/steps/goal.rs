@@ -216,7 +216,7 @@ impl Run<'_> {
                 .await?
         {
             return Err(stopped(
-                "check_not_met",
+                code::check_not_met,
                 format!(
                     "step {n}'s check already holds before the step, and it must change; nothing was sent"
                 ),
@@ -240,7 +240,7 @@ impl Run<'_> {
         loop {
             if self.left().is_zero() {
                 return Err(stopped(
-                    "deadline",
+                    code::deadline,
                     format!("the plan's time ran out during step {n}"),
                 ));
             }
@@ -278,7 +278,7 @@ impl Run<'_> {
             // 1. A CAPTCHA.
             if view["wall"] == "captcha" {
                 let mut failure = stopped(
-                    "needs_owner",
+                    code::needs_owner,
                     format!("step {n} reached a CAPTCHA; hand off to the owner"),
                 );
                 failure.details = json!({"reason": "captcha"});
@@ -311,7 +311,7 @@ impl Run<'_> {
                     "a passkey; nothing was sent. Hand off to the owner (`handoff --reason passkey`)"
                 };
                 let mut failure = stopped(
-                    "needs_fields",
+                    code::needs_fields,
                     format!("step {n} reached a page asking for {recovery}"),
                 );
                 failure.details = fields_stop(&seen);
@@ -355,7 +355,7 @@ impl Run<'_> {
             }
             if let Some(size) = model::too_large(&pass) {
                 let mut failure = stopped(
-                    "request_too_large",
+                    code::request_too_large,
                     format!(
                         "step {n}'s decision request comes to {size} bytes even with every element and page line left out, more than the {} the decision route takes; nothing was sent. Shorten the plan or the step's texts",
                         REQUEST_BUDGET
@@ -386,7 +386,7 @@ impl Run<'_> {
                 && decision.complete()
             {
                 let mut failure = stopped(
-                    "check_not_met",
+                    code::check_not_met,
                     format!(
                         "step {n} was judged complete, and its check did not hold within {}s",
                         CHECK_WITHIN.as_secs()
@@ -418,7 +418,7 @@ impl Run<'_> {
             // 3. It can't be done here.
             if decision.status == "cannot" {
                 let mut failure = stopped(
-                    "blocked",
+                    code::blocked,
                     format!(
                         "step {n} can't be done on this page; the rest of the plan did not run"
                     ),
@@ -432,7 +432,7 @@ impl Run<'_> {
             match decision.operation.id.as_str() {
                 "done" => {
                     let mut failure = stopped(
-                        "unconfirmed",
+                        code::unconfirmed,
                         format!(
                             "step {n} acted and the model judged it finished, but nothing on the page confirms it; look at the page"
                         ),
@@ -444,7 +444,7 @@ impl Run<'_> {
                 "stuck" => {
                     if *acted == 0 && typed.is_none() && decision.complete() {
                         let mut failure = stopped(
-                            "already_true",
+                            code::already_true,
                             format!(
                                 "step {n}'s result seems to show already, but only in page text, which an earlier step may have left; nothing was sent"
                             ),
@@ -453,7 +453,7 @@ impl Run<'_> {
                         return Err(failure);
                     }
                     let mut failure = stopped(
-                        "stuck",
+                        code::stuck,
                         format!("no operation this page offers makes progress on step {n}"),
                     );
                     failure.details = json!({"evidence": {"lines": decision.top_lines}});
@@ -468,7 +468,7 @@ impl Run<'_> {
                 waits += 1;
                 if waits > STEP_WAITS {
                     return Err(stopped(
-                        "step_budget",
+                        code::step_budget,
                         format!("step {n} waited {STEP_WAITS} times already"),
                     ));
                 }
@@ -478,13 +478,13 @@ impl Run<'_> {
             }
             if *acted >= STEP_ACTIONS {
                 return Err(stopped(
-                    "step_budget",
+                    code::step_budget,
                     format!("step {n} took {STEP_ACTIONS} actions without finishing"),
                 ));
             }
             if self.actions >= PLAN_ACTIONS {
                 return Err(stopped(
-                    "plan_budget",
+                    code::plan_budget,
                     format!("the plan took {PLAN_ACTIONS} actions"),
                 ));
             }
@@ -501,7 +501,7 @@ impl Run<'_> {
                 ("click" | "type" | "select" | "navigate", Some(pick)) => {
                     if pick.p < TARGET_P {
                         let mut failure = stopped(
-                            "ambiguous_target",
+                            code::ambiguous_target,
                             format!(
                                 "step {n}: no one target stands out for {op}; name it with a literal step on one of these refs"
                             ),
@@ -528,7 +528,7 @@ impl Run<'_> {
                     .map(|t| json!({"ref": t.at, "role": t.role, "name": t.name}))
                     .or_else(|| first_field(view));
                 let mut failure = stopped(
-                    "needs_text",
+                    code::needs_text,
                     format!(
                         "step {n} needs text that was not supplied; nothing was typed. Supply it in quotes in the step, or name a fact of the plan as {{NAME}}"
                     ),
@@ -555,7 +555,7 @@ impl Run<'_> {
                     });
                 if sign_in && !named_login {
                     let mut failure = stopped(
-                        "needs_login",
+                        code::needs_login,
                         format!(
                             "step {n} reached a sign-in form; the rest of the plan did not run. Name the saved login in a new plan (`--item vN`), or send `fill --item vN --suggested S` or your own mapping"
                         ),
@@ -579,7 +579,7 @@ impl Run<'_> {
                     });
                 let Some((pick, bundle)) = chosen else {
                     let mut failure = stopped(
-                        "needs_fields",
+                        code::needs_fields,
                         format!(
                             "step {n} reached a form a saved item fits, with no suggestion of latch's to fill it; latch does not map its fields itself: send a step `fill --item vN --field FIELD=eN… --press eN` with these refs, or name the item in a new plan"
                         ),
@@ -589,7 +589,7 @@ impl Run<'_> {
                 };
                 if pick.p < TARGET_P {
                     let mut failure = stopped(
-                        "ambiguous_target",
+                        code::ambiguous_target,
                         format!(
                             "step {n}: no one of latch's suggested fills stands out; send `fill --item vN --suggested S` for the one the step means"
                         ),
@@ -600,7 +600,7 @@ impl Run<'_> {
                 let key = format!("fill|{}", bundle.offer.id);
                 if !self.dispatched.insert((key, state.clone())) {
                     let mut failure = stopped(
-                        "repeat",
+                        code::repeat,
                         format!(
                             "step {n} would fill from {:?} again on a page that has not changed; nothing was sent",
                             bundle.title
@@ -717,7 +717,7 @@ impl Run<'_> {
                     }) = typed_into.clone()
                     else {
                         return Err(stopped(
-                            "stuck",
+                            code::stuck,
                             format!("step {n}: there is no field to press Enter in"),
                         ));
                     };
@@ -764,7 +764,7 @@ impl Run<'_> {
                 ),
                 _ => {
                     return Err(stopped(
-                        "stuck",
+                        code::stuck,
                         format!("step {n}: the model chose {op} with nothing to do it on"),
                     ));
                 }
@@ -787,7 +787,7 @@ impl Run<'_> {
                 && tried.contains(control)
             {
                 let mut failure = stopped(
-                    "repeat",
+                    code::repeat,
                     format!(
                         "step {n} would {line} a second time; nothing was sent. If the step needs it, say so in a new step, or give it a typed check"
                     ),
@@ -799,7 +799,7 @@ impl Run<'_> {
             // 10. The same action on the same page again, or no change.
             if !self.dispatched.insert((key, state.clone())) {
                 let mut failure = stopped(
-                    "repeat",
+                    code::repeat,
                     format!(
                         "step {n} would {line} again on a page that has not changed; nothing was sent"
                     ),
@@ -809,7 +809,7 @@ impl Run<'_> {
             }
             if unchanged >= 2 {
                 return Err(stopped(
-                    "no_progress",
+                    code::no_progress,
                     format!(
                         "step {n}'s last two actions left the page unchanged; the rest of the plan did not run"
                     ),

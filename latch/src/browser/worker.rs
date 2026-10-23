@@ -57,7 +57,7 @@ use super::core::{Call, Core};
 use super::driver::Runtime;
 use super::egress;
 use super::engine::{CAMOUFOX, CFT};
-use crate::failure::Failure;
+use crate::failure::{Failure, code};
 use crate::wire::Response;
 
 /// Calls in a row that time out on a browser that did not answer before
@@ -85,7 +85,7 @@ pub fn started_group(leader: u32) {
 /// in its sandbox (see `Runtime::start_with`).
 #[cfg(target_os = "macos")]
 fn die_with_host() -> Result<(), Failure> {
-    let watch = crate::sandbox::watch_host().map_err(|why| Failure::failed("host_gone", why))?;
+    let watch = crate::sandbox::watch_host().map_err(|why| Failure::new(code::host_gone, why))?;
     std::thread::spawn(move || {
         if !crate::sandbox::wait_for_host(watch) {
             return;
@@ -117,7 +117,7 @@ fn confine(state_dir: &Path, engine: &str, profile: &Path, scratch: &Path) -> Re
         scratch: scratch.canonicalize().map_err(cft::io_failure)?,
         state_dir,
     };
-    crate::sandbox::confine_browser(&view).map_err(|why| Failure::failed("sandbox_failed", why))
+    crate::sandbox::confine_browser(&view).map_err(|why| Failure::new(code::sandbox_failed, why))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -202,8 +202,8 @@ pub fn run(
                 serve(ready, browser, idle, call_limit, local)
             }
             _ => {
-                return Err(Failure::usage(
-                    "bad_engine",
+                return Err(Failure::new(
+                    code::bad_engine,
                     format!("no browser engine {engine}"),
                 ));
             }
@@ -259,7 +259,7 @@ fn serve<B: Runtime>(
         let call = match serde_json::from_str::<Value>(&line).and_then(Call::deserialize) {
             Ok(call) => call,
             Err(err) => {
-                let failure = Failure::usage("bad_request", err.to_string());
+                let failure = Failure::new(code::bad_request, err.to_string());
                 answer(&mut stdout, Response::error(&failure), None);
                 continue;
             }
@@ -349,8 +349,8 @@ impl Unanswered {
 }
 
 fn stuck() -> Failure {
-    Failure::failed(
-        "browser_gone",
+    Failure::new(
+        code::browser_gone,
         format!(
             "the browser left {UNANSWERED_IN_A_ROW} calls in a row unanswered; latch closed it, and the next session starts a new one"
         ),

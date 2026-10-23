@@ -15,6 +15,7 @@ use serde_json::{Value, json};
 
 use place::{destination, source};
 
+use crate::failure::code;
 use crate::serve::Done;
 use crate::wire::{self, Response};
 use crate::worker::{WorkerError, WorkerSetup};
@@ -71,7 +72,11 @@ pub fn resolve(op: &str, args: &mut Value, workers: &WorkerSetup) -> Option<Done
     };
     let Some(path) = path.to_str() else {
         let message = format!("{} is not UTF-8", path.display());
-        return Some(Done::failed("bad_path", message, json!({ "path": remote })));
+        return Some(Done::failed(
+            code::bad_path,
+            message,
+            json!({ "path": remote }),
+        ));
     };
     args["remote_path"] = json!(path);
     None
@@ -91,12 +96,24 @@ pub async fn put(
     };
     let staging = match tempfile::Builder::new().prefix("latch-put-").tempdir() {
         Ok(staging) => staging,
-        Err(err) => return Done::failed("tmpdir_failed", err.to_string(), json!({ "path": path })),
+        Err(err) => {
+            return Done::failed(
+                code::tmpdir_failed,
+                err.to_string(),
+                json!({ "path": path }),
+            );
+        }
     };
     // Resolved, as the sandbox sees it (macOS's /var is /private/var).
     let staged = match staging.path().canonicalize() {
         Ok(dir) => dir.join("upload"),
-        Err(err) => return Done::failed("tmpdir_failed", err.to_string(), json!({ "path": path })),
+        Err(err) => {
+            return Done::failed(
+                code::tmpdir_failed,
+                err.to_string(),
+                json!({ "path": path }),
+            );
+        }
     };
     let (mut worker, first) = match workers.start_write(size, &staged).await {
         Ok(started) => started,
@@ -125,7 +142,7 @@ pub async fn put(
                 outcome: failure.code,
             },
         },
-        (_, Err(error)) => Done::failed(&error.code, error.message, json!({ "path": path })),
+        (_, Err(error)) => Done::worker(error, json!({ "path": path })),
         (Err(_), Ok(())) => lost(path),
     }
 }
@@ -140,35 +157,22 @@ fn moved(path: &str, size: u64, sha256: String) -> Done {
     }
 }
 
-/// The worker refused before any bytes moved. A sandbox refusal is a
-/// denial (exit 4); anything else is a failure (exit 1).
+/// The worker refused before any bytes moved: a sandbox refusal is a
+/// denial (exit 4), anything else a failure (exit 1), by its code.
 fn refused(path: &str, error: WorkerError) -> Done {
-    let audit_args = json!({ "path": path });
-    if error.code == "sandbox_denied" {
-        return Done {
-            response: Response::Error {
-                exit: crate::failure::Exit::Denied,
-                details: Value::Null,
-                code: error.code.clone(),
-                message: error.message,
-            },
-            audit_args,
-            outcome: error.code,
-        };
-    }
-    Done::failed(&error.code, error.message, audit_args)
+    Done::worker(error, json!({ "path": path }))
 }
 
 /// The worker failed after the size went out. The client is waiting for
 /// bytes, not an answer, so the stream is cut (the client reports exit 5).
 fn broken_off(send: &mut SendStream, path: &str, error: WorkerError) -> Done {
     let _ = send.reset(VarInt::from_u32(1));
-    Done::failed(&error.code, error.message, json!({ "path": path }))
+    Done::worker(error, json!({ "path": path }))
 }
 
 fn lost(path: &str) -> Done {
     let message = "the connection to the client was lost".to_string();
-    Done::failed("connection_lost", message, json!({ "path": path }))
+    Done::failed(code::connection_lost, message, json!({ "path": path }))
 }
 
 fn unexpected() -> WorkerError {
@@ -180,5 +184,5 @@ fn unexpected() -> WorkerError {
 
 fn bad_arguments() -> Done {
     let message = "the request is missing remote_path or size".to_string();
-    Done::failed("bad_request", message, Value::Null)
+    Done::failed(code::bad_request, message, Value::Null)
 }

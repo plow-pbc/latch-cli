@@ -29,7 +29,7 @@ use serde_json::{Map, Value, json};
 
 use super::host::{Browsers, Entry, paused};
 use super::steps::owner_call as worker;
-use crate::failure::{Exit, Failure};
+use crate::failure::{Failure, code};
 
 /// How long a handoff waits for the owner by default, and at most.
 pub const WITHIN: u64 = 600;
@@ -56,8 +56,8 @@ pub fn screen(headless: bool) -> bool {
 /// The answer on a host with no screen: only the owner could do this, and
 /// not at this host.
 pub fn no_screen(why: &str) -> Failure {
-    let mut failure = Failure::failed(
-        "needs_owner",
+    let mut failure = Failure::new(
+        code::needs_owner,
         format!("{why}, and this host has no screen for its owner to use; nothing was handed off"),
     );
     failure.details = json!({"reason": "no_screen"});
@@ -73,15 +73,15 @@ pub(super) async fn run(
 ) -> Result<Value, Failure> {
     let reason = args["reason"].as_str().unwrap_or_default();
     if !REASONS.contains(&reason) {
-        return Err(Failure::usage(
-            "bad_arguments",
+        return Err(Failure::new(
+            code::bad_arguments,
             format!("--reason is one of {}", REASONS.join(", ")),
         ));
     }
     let within = args["within"].as_u64().unwrap_or(WITHIN);
     if !(1..=MAX_WITHIN).contains(&within) {
-        return Err(Failure::usage(
-            "bad_arguments",
+        return Err(Failure::new(
+            code::bad_arguments,
             format!("--within is between 1 and {MAX_WITHIN} seconds"),
         ));
     }
@@ -114,8 +114,8 @@ pub(super) async fn run(
     // handoff names an element any more; otherwise it stays paused.
     if let Err(failure) = worker(entry, json!({"op": "forget"}), audit).await {
         audit.insert("forget_failed".into(), json!(failure.code));
-        return Err(Failure::failed(
-            "session_paused",
+        return Err(Failure::new(
+            code::session_paused,
             format!(
                 "the handoff ended, but latch could not retire the refs from before it ({}); the session stays paused: close it",
                 failure.code
@@ -147,7 +147,7 @@ async fn wait(
 ) -> Result<Duration, Failure> {
     let written = fs::create_dir_all(file.parent().expect("in a folder"))
         .and_then(|()| fs::write(file, pending.to_string()));
-    written.map_err(|err| Failure::failed("handoff_failed", err.to_string()))?;
+    written.map_err(|err| Failure::new(code::handoff_failed, err.to_string()))?;
     browsers.notice_handoffs();
     worker(entry, json!({"op": "front"}), audit).await?;
     let started = Instant::now();
@@ -156,8 +156,8 @@ async fn wait(
             return Ok(started.elapsed());
         }
         if started.elapsed() >= Duration::from_secs(within) {
-            let mut failure = Failure::failed(
-                "timeout",
+            let mut failure = Failure::new(
+                code::timeout,
                 format!(
                     "the owner did not hand the session back within {within}s; it is yours again, and refs from before the handoff are refused"
                 ),
@@ -166,8 +166,8 @@ async fn wait(
             return Err(failure);
         }
         if !entry.runtime.alive() {
-            return Err(Failure::failed(
-                "browser_gone",
+            return Err(Failure::new(
+                code::browser_gone,
                 "the browser closed during the handoff".into(),
             ));
         }
@@ -177,8 +177,8 @@ async fn wait(
 
 /// Refused while the owner has the session.
 pub fn handed_off() -> Failure {
-    Failure::failed(
-        "session_paused",
+    Failure::new(
+        code::session_paused,
         "the owner has this session (a handoff); nothing can be read or done until it is handed back"
             .into(),
     )
@@ -221,23 +221,22 @@ pub fn done(state_dir: &Path, session: Option<&str>) -> Result<Value, Failure> {
     let hash = match session {
         Some(hash) if hashes.contains(&hash) => hash,
         Some(hash) => {
-            return Err(Failure::failed(
-                "no_handoff",
+            return Err(Failure::new(
+                code::no_handoff,
                 format!("no handoff is pending for session {hash}; pending: {hashes:?}"),
             ));
         }
         None => match hashes.as_slice() {
             [one] => one,
             [] => {
-                return Err(Failure::failed(
-                    "no_handoff",
+                return Err(Failure::new(
+                    code::no_handoff,
                     "no handoff is pending on this host".into(),
                 ));
             }
             _ => {
                 let mut failure = Failure::new(
-                    Exit::Usage,
-                    "which_handoff",
+                    code::which_handoff,
                     "several handoffs are pending: name one, `latch browser handoff done HASH`"
                         .into(),
                 );
@@ -247,7 +246,7 @@ pub fn done(state_dir: &Path, session: Option<&str>) -> Result<Value, Failure> {
         },
     };
     fs::remove_file(folder(state_dir).join(format!("{hash}.json")))
-        .map_err(|err| Failure::failed("handoff_failed", err.to_string()))?;
+        .map_err(|err| Failure::new(code::handoff_failed, err.to_string()))?;
     Ok(json!({"handed_back": hash}))
 }
 

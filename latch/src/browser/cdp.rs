@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-use crate::failure::Failure;
+use crate::failure::{Failure, code};
 
 /// The schemes whose loads the driver stops before they start: those that
 /// read the host's own files or the browser's own pages, which no proxy
@@ -153,8 +153,8 @@ impl Cdp {
             })?;
             if message["id"] == id {
                 if let Some(error) = message.get("error") {
-                    return Err(Failure::failed(
-                        "engine_error",
+                    return Err(Failure::new(
+                        code::engine_error,
                         format!(
                             "{method}: {}",
                             error["message"].as_str().unwrap_or("failed")
@@ -324,13 +324,14 @@ impl Cdp {
         loop {
             if let Some(end) = self.buffer.iter().position(|&b| b == 0) {
                 let message: Vec<u8> = self.buffer.drain(..=end).collect();
-                return serde_json::from_slice(&message[..end])
-                    .map_err(|_| Failure::failed("engine_error", "unreadable CDP message".into()));
+                return serde_json::from_slice(&message[..end]).map_err(|_| {
+                    Failure::new(code::engine_error, "unreadable CDP message".into())
+                });
             }
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() || !readable(&self.from_chrome, left)? {
-                return Err(Failure::failed(
-                    "timeout",
+                return Err(Failure::new(
+                    code::timeout,
                     format!("the browser did not answer {waiting_for} in time"),
                 ));
             }
@@ -365,13 +366,13 @@ pub fn readable(file: &impl AsRawFd, wait: Duration) -> Result<bool, Failure> {
             return Ok(ready > 0);
         }
         if io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
-            return Err(Failure::failed("engine_error", "poll failed".into()));
+            return Err(Failure::new(code::engine_error, "poll failed".into()));
         }
     }
 }
 
 fn gone() -> Failure {
-    Failure::failed("browser_gone", "the browser closed its pipe".into())
+    Failure::new(code::browser_gone, "the browser closed its pipe".into())
 }
 
 /// Standard base64, as CDP sends screenshots.

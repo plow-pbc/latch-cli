@@ -44,7 +44,7 @@ use serde_json::{Map, Value, json};
 use super::host::{Browsers, Entry, paused, take_audit};
 use super::session::Session;
 use super::suggest::{self, Control};
-use crate::failure::{Exit, Failure};
+use crate::failure::{Failure, code};
 use crate::vault::item::{Item, Meta};
 use crate::vault::store::Backend;
 use crate::vault::{classify, dates, sites, totp};
@@ -66,13 +66,16 @@ pub fn releases_secret(browsers: &Browsers, args: &Value) -> Result<Option<Strin
 }
 
 fn item_of(browsers: &Browsers, args: &Value) -> Result<Item, Failure> {
-    let id = args["item"]
-        .as_str()
-        .ok_or_else(|| Failure::usage("bad_arguments", "name the vault item with --item".into()))?;
+    let id = args["item"].as_str().ok_or_else(|| {
+        Failure::new(
+            code::bad_arguments,
+            "name the vault item with --item".into(),
+        )
+    })?;
     browsers.vault.with(|store| {
         store
             .item(id)
-            .ok_or_else(|| Failure::usage("no_such_item", format!("there is no vault item {id}")))
+            .ok_or_else(|| Failure::new(code::no_such_item, format!("there is no vault item {id}")))
     })
 }
 
@@ -187,8 +190,8 @@ pub async fn resolve(browsers: &Browsers, entry: &Entry, args: &Value) -> Result
             .find(|s| s.id == id)
     });
     let Some(found) = found else {
-        let mut failure = Failure::failed(
-            "stale_snapshot",
+        let mut failure = Failure::new(
+            code::stale_snapshot,
             format!(
                 "suggestion {id} no longer fits the page or item {} as they are now; nothing was released. Use one of the fresh suggestions, or map the fields yourself",
                 meta.item
@@ -292,8 +295,7 @@ pub async fn preview(
 
 fn bad_target(label: &str, why: &str) -> Failure {
     let mut failure = Failure::new(
-        Exit::Denied,
-        "bad_target",
+        code::bad_target,
         format!("nothing was released: {label} can't go there: {why}"),
     );
     failure.details = json!({"field": label, "reason": why});
@@ -323,8 +325,8 @@ pub async fn run(
     if let Some(confirmed) = args["confirmed"]["revision"].as_u64()
         && confirmed != meta.revision
     {
-        return Err(Failure::failed(
-            "context_changed",
+        return Err(Failure::new(
+            code::context_changed,
             "the item changed after the fill was confirmed; nothing was released".into(),
         ));
     }
@@ -363,7 +365,7 @@ impl Plan {
 
     fn of(item: &Item, args: &Value) -> Result<Plan, Failure> {
         let meta = item.meta();
-        let usage = |message: &str| Failure::usage("bad_arguments", message.to_string());
+        let usage = |message: &str| Failure::new(code::bad_arguments, message.to_string());
         let mut fields: Vec<(String, Vec<String>)> = Vec::new();
         for pair in args["fields"].as_array().into_iter().flatten() {
             let label = pair[0].as_str().unwrap_or_default().to_string();
@@ -383,8 +385,8 @@ impl Plan {
                 _ => classify::read(&item.raw, &label).is_some(),
             };
             if !known {
-                return Err(Failure::usage(
-                    "no_such_field",
+                return Err(Failure::new(
+                    code::no_such_field,
                     format!(
                         "item {} has no field {label:?}; observe lists the fields each item holds",
                         item.id
@@ -430,8 +432,7 @@ impl Plan {
             .any(|(label, _)| suggest::secret_field(&meta, label));
         if secret && press.is_none() {
             return Err(Failure::new(
-                Exit::Denied,
-                "press_required",
+                code::press_required,
                 "that fill includes a secret, which must leave the page before you are back: add --press eN, the button that submits it".into(),
             ));
         }
@@ -497,8 +498,8 @@ async fn fill(
     if let Some(sites) = args["confirmed"]["frames"].as_array() {
         let now = frame_sites(browsers, &prepared);
         if now.iter().any(|site| !sites.contains(&json!(site))) {
-            let failure = Failure::failed(
-                "context_changed",
+            let failure = Failure::new(
+                code::context_changed,
                 "a field's frame is on another site than the one confirmed; nothing was released"
                     .into(),
             );
@@ -697,8 +698,8 @@ async fn stage_ended(
     audit: &mut Map<String, Value>,
 ) -> Failure {
     let ended = || {
-        Failure::failed(
-            "needs_fields",
+        Failure::new(
+            code::needs_fields,
             format!(
                 "latch submitted the first stage and stopped: {why}. Map this stage's fields in a new fill, or hand off to the owner"
             ),
@@ -743,8 +744,8 @@ async fn stop(session: &mut Session, failure: Failure, audit: &mut Map<String, V
 
 /// The session stays paused: values may still be on the page.
 fn stuck(why: &str) -> Failure {
-    Failure::failed(
-        "session_paused",
+    Failure::new(
+        code::session_paused,
         format!(
             "the fill stopped ({why}) and latch could not confirm the filled values left the page; the session stays paused (close it to end it)"
         ),
@@ -792,24 +793,20 @@ async fn release_and_set(
             audit.insert("frame_origins".into(), json!(frame_origins));
             let (seen, page) = (browsers.origin_as(origin), browsers.origin_as(top));
             if let Err(why) = sites::allows(&meta, &seen, &page) {
-                let mut failure = Failure::new(
-                    Exit::Denied,
-                    "origin_mismatch",
-                    format!("nothing was filled: {why}"),
-                );
+                let mut failure =
+                    Failure::new(code::origin_mismatch, format!("nothing was filled: {why}"));
                 failure.details = json!({"reason": why});
                 return Err(failure);
             }
             if meta.kind == "note" && target["page_secret"] == true {
                 return Err(Failure::new(
-                    Exit::Denied,
-                    "secret_field",
+                    code::secret_field,
                     "a note fills only fields the page does not mark secret".into(),
                 ));
             }
             if target["kind"] != "text" && target["kind"] != "select" {
-                return Err(Failure::usage(
-                    "wrong_target",
+                return Err(Failure::new(
+                    code::wrong_target,
                     "a value goes into a text field or a list".into(),
                 ));
             }
@@ -833,8 +830,8 @@ async fn release_and_set(
         let value = release(item, label)?;
         let value = shaped(label, value, &boxes[0])?;
         let pieces = split(&value, &boxes).ok_or_else(|| {
-            Failure::failed(
-                "split_mismatch",
+            Failure::new(
+                code::split_mismatch,
                 format!(
                     "{label} does not split into those {} boxes; nothing was filled",
                     boxes.len()
@@ -848,8 +845,8 @@ async fn release_and_set(
             // A value split across boxes must land whole in each one.
             let dropped = answer["dropped_breaks"] == true;
             if answer["held"] != true || dropped && boxes.len() > 1 {
-                return Err(Failure::failed(
-                    "needs_owner",
+                return Err(Failure::new(
+                    code::needs_owner,
                     "the page would not keep the value latch set; this site needs the owner (handoff)".into(),
                 ));
             }
@@ -875,8 +872,8 @@ async fn release_and_set(
 /// confirmation never saw, gives none of its values to this fill.
 fn release(item: &Item, label: &str) -> Result<String, Failure> {
     let missing = || {
-        Failure::usage(
-            "no_such_field",
+        Failure::new(
+            code::no_such_field,
             format!(
                 "item {} has no field {label:?}; list it to see its fields",
                 item.id
@@ -890,7 +887,7 @@ fn release(item: &Item, label: &str) -> Result<String, Failure> {
             .as_ref()
             .and_then(|login| login.totp.as_deref());
         let key = key.filter(|key| !key.is_empty()).ok_or_else(missing)?;
-        let params = totp::Params::parse(key).map_err(|why| Failure::failed("bad_item", why))?;
+        let params = totp::Params::parse(key).map_err(|why| Failure::new(code::bad_item, why))?;
         return Ok(params.current());
     }
     classify::read(&item.raw, label).ok_or_else(missing)
@@ -913,8 +910,8 @@ fn shaped(label: &str, value: String, field: &Value) -> Result<String, Failure> 
         return Ok(value);
     }
     dates::format(&value, &pattern).map_err(|_| {
-        Failure::failed(
-            "bad_item",
+        Failure::new(
+            code::bad_item,
             format!("the stored {label} is not a date; correct it in the vault"),
         )
     })

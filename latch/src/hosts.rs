@@ -7,7 +7,7 @@
 //! host is up isn't checked here: `dial::connect` refuses one Plow lists as
 //! offline without dialing, and learns about any other by dialing it.
 
-use crate::failure::Failure;
+use crate::failure::{Failure, code};
 use crate::login;
 use crate::plow::{Peer, Plow};
 use crate::state::StateDir;
@@ -63,18 +63,18 @@ pub fn pick(asked: Option<&str>, hosts: &[Peer]) -> Result<Peer, Failure> {
             Some(host) => Ok(host.clone()),
             None => {
                 let message = format!("no host named {name:?}; hosts: {}", names(hosts));
-                Err(Failure::usage("unknown_host", message))
+                Err(Failure::new(code::unknown_host, message))
             }
         };
     }
     match hosts {
         [only] => Ok(only.clone()),
-        [] => Err(Failure::usage(
-            "no_host",
+        [] => Err(Failure::new(
+            code::no_host,
             "no hosts in this account; start `latch serve` on one".into(),
         )),
-        _ => Err(Failure::usage(
-            "host_required",
+        _ => Err(Failure::new(
+            code::host_required,
             format!(
                 "several hosts; pass --host or set LATCH_HOST: {}",
                 names(hosts)

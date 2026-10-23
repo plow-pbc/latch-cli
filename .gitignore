@@ -21,6 +21,7 @@ target/
 .claude/
 .kitchen/
 .superpowers/
+docs/superpowers/
 
 # Byte-compiled Python (latch/scripts)
 __pycache__/
