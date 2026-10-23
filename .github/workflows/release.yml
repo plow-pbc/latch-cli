@@ -194,7 +194,8 @@ jobs:
           grep -F "<string>$LATCH_TEAM_ID.co.plow.latch</string>" <<< "$entitlements"
           notarized() {
             local assessment
-            assessment=$(spctl --assess -vvv "$@" 2>&1)
+            # Printed whatever spctl answers; the source line decides.
+            assessment=$(spctl --assess -vvv "$@" 2>&1) || true
             echo "$assessment"
             grep -Fx 'source=Notarized Developer ID' <<< "$assessment"
           }
