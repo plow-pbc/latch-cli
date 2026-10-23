@@ -1240,9 +1240,9 @@ Exit code and output:
 Input:
   Without -i the command's stdin is empty (so `echo hi | latch exec -- cat`
   prints nothing). With -i (--stdin) latch reads its own stdin to the end
-  first, within --timeout, and sends it. The host's gatekeeper reads all of
-  it, so it must be UTF-8 text of at most 16 KiB; anything else, a terminal
-  or a pipe that never ends is a usage error and nothing runs:
+  first, at most 16 KiB of UTF-8 text, within --timeout, and sends it; a terminal,
+  oversized or non-UTF-8 input, or a pipe that never ends is a usage error
+  and nothing runs:
     latch exec --host pi -i -- sh < script.sh
     cat <<'EOF' | latch exec --host pi -i -- sh
     uname -a
@@ -1294,7 +1294,7 @@ pub struct ExecArgs {
           value_parser = clap::value_parser!(u64).range(1..=600))]
     pub timeout: u64,
 
-    /// Send this machine's stdin to the program (read to the end first; at most 16 KiB of UTF-8 text, which the gatekeeper reads); without it the program's stdin is empty
+    /// Send this machine's stdin to the program (read to the end first, at most 16 KiB of UTF-8 text); without it the program's stdin is empty
     #[arg(short = 'i', long)]
     pub stdin: bool,
 
