@@ -1,18 +1,26 @@
 #!/bin/sh
 # Wraps a macOS latch binary in Plow Latch.app: no window or Dock icon,
-# Contents/MacOS/latch, the icon, the bundle id co.plow.latch.cli that
-# Full Disk Access and the Developer ID signature name, and the Developer ID
-# provisioning profile that lets a signature claim latch's keychain group.
-# Signing is the caller's: ad hoc for a build that keeps files, Developer ID
-# with latch/macos/latch.entitlements for one that keeps the Keychain.
+# Contents/MacOS/latch, the icon, the bundle id (latch/macos/identity.sh)
+# that Full Disk Access and the Developer ID signature name, and the
+# Developer ID provisioning profile that lets a signature claim latch's
+# keychain group. Signing is the caller's: ad hoc for a build that keeps
+# files, Developer ID with latch/macos/latch.entitlements for one that keeps
+# the Keychain.
 #   macos-app-bundle.sh VERSION BINARY BUNDLE
 set -eu
 [ "$#" -eq 3 ] || { echo 'usage: macos-app-bundle.sh VERSION BINARY BUNDLE' >&2; exit 1; }
 version=$1 binary=$2 bundle=$3
 here=$(cd "$(dirname "$0")/.." && pwd)
-# CFBundleVersion takes digits and dots only: the version without its tag.
+. "$here/latch/macos/identity.sh"
+# The version without its tag, as a person reads it.
 short=${version#v}
 short=${short%%-*}
+# What macOS and Sparkle compare builds by: a release's build number (the
+# tag's v0.1.0-1327), so each build is distinct; else the version.
+build=$short
+case "$version" in
+  *-*) case "${version##*-}" in '' | *[!0-9]*) ;; *) build=${version##*-} ;; esac ;;
+esac
 rm -rf "$bundle"
 mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources"
 cp "$binary" "$bundle/Contents/MacOS/latch"
@@ -25,11 +33,11 @@ cat > "$bundle/Contents/Info.plist" <<PLIST
 <plist version="1.0">
 <dict>
 	<key>CFBundleIdentifier</key>
-	<string>co.plow.latch.cli</string>
+	<string>$LATCH_BUNDLE_ID</string>
 	<key>CFBundleName</key>
-	<string>Plow Latch</string>
+	<string>$LATCH_APP_NAME</string>
 	<key>CFBundleDisplayName</key>
-	<string>Plow Latch</string>
+	<string>$LATCH_APP_NAME</string>
 	<key>CFBundleExecutable</key>
 	<string>latch</string>
 	<key>CFBundleIconFile</key>
@@ -39,7 +47,7 @@ cat > "$bundle/Contents/Info.plist" <<PLIST
 	<key>CFBundleShortVersionString</key>
 	<string>$short</string>
 	<key>CFBundleVersion</key>
-	<string>$short</string>
+	<string>$build</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>LSUIElement</key>

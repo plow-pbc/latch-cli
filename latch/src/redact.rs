@@ -140,12 +140,17 @@ pub fn argv(argv: &[String]) -> Vec<String> {
                     spans.push((from, end));
                 }
             }
+            // A long run of token characters looks like a credential, unless
+            // it is part of a path that exists on this host.
             let mut run = 0;
             for (i, c) in arg.char_indices().chain(std::iter::once((arg.len(), ' '))) {
                 if c.is_ascii_alphanumeric() || "+/=_-".contains(c) {
                     run += 1;
                 } else {
-                    if run >= 32 && !spans.iter().any(|&(start, end)| start < i && end > i - run) {
+                    if run >= 32
+                        && !existing_path(arg, i - run, i)
+                        && !spans.iter().any(|&(start, end)| start < i && end > i - run)
+                    {
                         spans.push((i - run, i));
                     }
                     run = 0;
@@ -165,6 +170,29 @@ pub fn argv(argv: &[String]) -> Vec<String> {
             shown
         })
         .collect()
+}
+
+/// Whether the word in `arg` that the run `start..end` is part of is, up
+/// to the run's end, a path that exists on this host: one from `/`, or
+/// from the home folder after `~`.
+fn existing_path(arg: &str, start: usize, end: usize) -> bool {
+    let word = arg[..start]
+        .rfind(|c: char| c.is_ascii_whitespace() || "\"'`;|()<>=".contains(c))
+        .map_or(0, |at| at + 1);
+    // A flag's value: `--workdir=/path`.
+    let path = &arg[word..end];
+    let path = path.split_once('=').map_or(path, |(_, value)| value);
+    let path = if let Some(rest) = path.strip_prefix("~/") {
+        match std::env::var_os("HOME") {
+            Some(home) => std::path::Path::new(&home).join(rest),
+            None => return false,
+        }
+    } else if path.starts_with('/') {
+        std::path::PathBuf::from(path)
+    } else {
+        return false;
+    };
+    path.exists()
 }
 
 #[cfg(test)]
@@ -318,6 +346,26 @@ mod tests {
         assert_eq!(
             shown(&["ordinary", "short-token", "the owner", "日本語"]),
             ["ordinary", "short-token", "the owner", "日本語"]
+        );
+        // A path that exists on this host stays readable; one that doesn't,
+        // and a key with slashes, are hidden.
+        let dir = tempfile::tempdir().unwrap();
+        let deep = dir.path().join("plow-pbc/latch-cli/latch-cli/dev-g134");
+        std::fs::create_dir_all(&deep).unwrap();
+        let path = format!("ls '{}/.latch'", deep.display());
+        assert_eq!(shown(&[&path]), [path.as_str()]);
+        let workdir = format!("--workdir={}", deep.display());
+        assert_eq!(shown(&[&workdir]), [workdir.as_str()]);
+        // Past where the path exists, a long run is hidden again.
+        let missing = format!("{}/Ab3dE5fG/H7jK9mN1/P3qR5sT7/U9vWx", deep.display());
+        assert!(shown(&[&missing])[0].ends_with("[redacted]"));
+        assert_eq!(
+            shown(&["set", "Ab3dE5fG/H7jK9mN1/P3qR5sT7/U9vWx"]),
+            ["set", "[redacted]"]
+        );
+        assert_eq!(
+            shown(&["cat", "/Ab3dE5fG/H7jK9mN1/P3qR5sT7/U9vWx"]),
+            ["cat", "[redacted]"]
         );
     }
 }

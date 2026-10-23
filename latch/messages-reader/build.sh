@@ -5,8 +5,13 @@
 # pin a host checks it against.
 set -eu
 cd "$(dirname "$0")"
+. ../macos/identity.sh
 swift build -c release --arch arm64 --arch x86_64 --product latch-messages
 mkdir -p dist
 cp "$(swift build -c release --arch arm64 --arch x86_64 --show-bin-path)/latch-messages" dist/latch-messages
-codesign --force --options runtime --identifier co.plow.latch.messages --sign "${LATCH_CODESIGN_IDENTITY:--}" dist/latch-messages
+# A Developer ID signature is time-stamped, as Gatekeeper needs; ad hoc has none.
+identity=${LATCH_CODESIGN_IDENTITY:--}
+timestamp=--timestamp
+[ "$identity" != - ] || timestamp=--timestamp=none
+codesign --force --options runtime "$timestamp" --identifier "$LATCH_READER_ID" --sign "$identity" dist/latch-messages
 shasum -a 256 dist/latch-messages | cut -d ' ' -f 1

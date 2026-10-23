@@ -1359,3 +1359,33 @@ fn the_decision_tab_shows_the_owners_rule_for_an_owners_call() {
         "{decision}"
     );
 }
+
+#[test]
+fn a_refilled_call_is_at_the_time_it_began() {
+    let mut record = crate::audit::record("host-key", None, "exec", "allow", "ok");
+    record.args = json!({"argv": ["ls"], "exit_code": 0});
+    record.time = "2026-10-22T14:00:02Z".into();
+    record.started = Some("2026-10-22T14:00:00Z".into());
+    let (_, at, _) = recorded(&record, "host-key").unwrap();
+    assert_eq!(at.to_string(), "2026-10-22T14:00:00Z");
+    // A record made before latch kept the start: the time it was made.
+    record.started = None;
+    let (_, at, _) = recorded(&record, "host-key").unwrap();
+    assert_eq!(at.to_string(), "2026-10-22T14:00:02Z");
+}
+
+#[test]
+fn a_frame_redraws_in_place_as_one_update_never_clearing_the_screen() {
+    let drawn = super::show::frame("one\ntwo", 4);
+    assert_eq!(
+        drawn,
+        "\x1b[?2026h\x1b[H\x1b[Kone\n\x1b[Ktwo\n\x1b[J\x1b[?2026l"
+    );
+    assert!(!drawn.contains("\x1b[2J"));
+    // A frame as tall as the screen: nothing below it to clear, and no
+    // line feed that would scroll it.
+    assert_eq!(
+        super::show::frame("one\ntwo", 2),
+        "\x1b[?2026h\x1b[H\x1b[Kone\n\x1b[Ktwo\x1b[?2026l"
+    );
+}

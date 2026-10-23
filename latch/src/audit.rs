@@ -53,7 +53,11 @@ const PLAINTEXT: &str = "audit.ndjson";
 /// One audit record as read: its sealed body, and its line's hashes.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Record {
+    /// When the record was made, as the operation ended.
     pub time: String,
+    /// When the operation began, for an operation the board showed running.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started: Option<String>,
     /// The caller's key, from the connection itself.
     pub caller: String,
     /// The caller's agent uid, when Plow says the key is an agent's.
@@ -505,6 +509,7 @@ pub fn record(
 ) -> Record {
     Record {
         time: jiff::Timestamp::now().to_string(),
+        started: None,
         caller: caller.to_string(),
         agent,
         op: op.to_string(),

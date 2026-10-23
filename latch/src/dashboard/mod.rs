@@ -279,7 +279,7 @@ impl Dashboard {
                 session,
                 Call {
                     id,
-                    at: Timestamp::now(),
+                    at: begun.at,
                     kind: begun.kind,
                     command: begun.command,
                     title: begun.title,
@@ -355,6 +355,7 @@ impl Dashboard {
     /// door, a phone link's.
     pub fn once(&self, caller: Caller, finished: Finished) {
         let begun = Begun {
+            at: Timestamp::now(),
             kind: finished.kind.clone(),
             command: finished.command.clone(),
             title: finished.title.clone(),
