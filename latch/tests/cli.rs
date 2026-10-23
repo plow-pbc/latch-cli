@@ -1592,6 +1592,10 @@ impl LivePlow {
             }
         }
         match (method, path) {
+            // Plow's answer with no Google account connected.
+            ("POST", "/v1/connectors/gmail/access-token") if state.google.is_none() => {
+                (412, json!({"detail": "No Gmail account connected."}))
+            }
             ("POST", "/v1/connectors/gmail/access-token") => {
                 let accounts: Vec<Value> = state
                     .google
@@ -3135,6 +3139,7 @@ fn local_socket_judges_exec_files_google_and_allows_owner_commands() {
     let share = dir.path().join("share");
     fs::create_dir(&share).unwrap();
     google_enabled(&host);
+    plow.state.lock().unwrap().google = Some("google-token".into());
     let _serve = serving(&host, &relay);
     assert_eq!(
         fs::metadata(host.join("serve-v3.sock"))
@@ -3167,7 +3172,7 @@ fn local_socket_judges_exec_files_google_and_allows_owner_commands() {
     assert_eq!(exec["stdout"], "local socket\n");
     assert_eq!(
         run(&["google", "--host", "host", "--", "accounts"])["accounts"],
-        json!([])
+        json!(["owner@example.com"])
     );
     let source = dir.path().join("source.txt");
     let remote = share.join("copied.txt");
