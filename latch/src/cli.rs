@@ -12,6 +12,18 @@ use clap::{Args, Parser, Subcommand};
 /// override them. Unset, latch uses `~/.latch`, and only a release build has
 /// a default Plow (`default_api_url`).
 pub const BUILD_STATE_DIR: Option<&str> = option_env!("LATCH_BUILD_STATE_DIR");
+/// Names the state folder when `--state-dir` does not, over this build's
+/// default: for a machine whose home is not where latch's state lives.
+pub const STATE_DIR_ENV: &str = "LATCH_STATE_DIR";
+
+/// The state folder latch uses without `--state-dir`: `LATCH_STATE_DIR`,
+/// else this build's default; `None` for `~/.latch`.
+pub fn default_state_dir() -> Option<PathBuf> {
+    std::env::var_os(STATE_DIR_ENV)
+        .filter(|dir| !dir.is_empty())
+        .map(PathBuf::from)
+        .or(BUILD_STATE_DIR.map(PathBuf::from))
+}
 pub const BUILD_API_URL: Option<&str> = option_env!("LATCH_BUILD_API_URL");
 /// What a login with no name adds to the hostname, for a local build that
 /// must not take the name of the installed latch's machine (e.g. `-dev`).
@@ -144,8 +156,8 @@ read `do --history R` first, and never resend it.";
     disable_help_subcommand = true
 )]
 pub struct Cli {
-    /// Directory of this latch instance: its key, Plow credential and config (~/.latch unless this build has another default)
-    #[arg(long, global = true, value_name = "DIR", default_value = BUILD_STATE_DIR)]
+    /// Directory of this latch instance: its key, Plow credential and config (else LATCH_STATE_DIR, else ~/.latch unless this build has another default)
+    #[arg(long, global = true, value_name = "DIR", env = STATE_DIR_ENV, default_value = BUILD_STATE_DIR)]
     pub state_dir: Option<PathBuf>,
 
     /// Indent the JSON a command prints, for a person to read; the same

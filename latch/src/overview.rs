@@ -102,14 +102,14 @@ pub fn run(state: &StateDir) -> Result<(), Failure> {
                 crate::cli::BUILD_CHANNEL,
             ),
         },
-        state_flag: (state.path
-            != StateDir::new(crate::cli::BUILD_STATE_DIR.map(PathBuf::from))?.path)
-            .then(|| {
+        state_flag: (state.path != StateDir::new(crate::cli::default_state_dir())?.path).then(
+            || {
                 format!(
                     " --state-dir {}",
                     crate::login::shell_quoted(&state.path.display().to_string())
                 )
-            }),
+            },
+        ),
         serve: crate::setup::start_args(state),
         host: Pending::Waiting,
         plow: config.is_some().then_some(Pending::Waiting),

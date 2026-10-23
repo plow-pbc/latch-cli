@@ -157,7 +157,8 @@ No Homebrew tap is included.
   cloud agent's start, and `latch agents remove AGENT` removes one.
 - Exec and file calls need no shared-folder setup. They read home and the
   system's files (programs, libraries, developer tools and certificates),
-  except `~/.latch`, this host's state directory, and on macOS `~/Library`
+  except `~/.latch`, this host's state directory, the one `LATCH_STATE_DIR`
+  names, and on macOS `~/Library`
   except `~/Library/Caches`. Other home content, including `.ssh` and other
   credential dotfiles, is readable; the gatekeeper judges each use. Latch
   does not search home for other state directories.
