@@ -81,6 +81,11 @@ struct PlowLatchApp: App {
         .defaultSize(width: 1120, height: 700)
         .restorationBehavior(.disabled)
         .defaultLaunchBehavior(finished ? .presented : .suppressed)
+
+        Settings {
+            AppSettingsView()
+                .environment(model)
+        }
     }
 }
 

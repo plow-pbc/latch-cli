@@ -234,9 +234,33 @@ final class AppModel {
         vaultShows[host, default: [:]][vaultShow.item.item] = .success(vaultShow)
     }
 
-    /// Host Settings: the account's logged-in machines (`latch devices`),
-    /// the last update check, and a start, stop or restart of this Mac's
-    /// host while it runs and how it failed.
+    /// Connections: the account's Google accounts in Plow, as `setup
+    /// --status` says; nil until it has said.
+    private(set) var connections: Connections?
+
+    func refreshConnections() async {
+        connections = Connections(try? await client.setupStatus())
+    }
+
+    /// "Connect…" or "Add another account…": the page latch names, only on
+    /// a click.
+    func connectGoogle() {
+        if case let .google(_, connect?)? = connections { open(connect) }
+    }
+
+    /// A plugin's "Manage accounts…": the account's connections.
+    func manageAccounts() {
+        section = .connections
+    }
+
+    /// For snapshots: what `setup --status` said of Google.
+    func stage(connections: Connections?) {
+        self.connections = connections
+    }
+
+    /// Connections: the account's logged-in machines (`latch devices`).
+    /// Settings: the last update check. Host Settings: a start, stop or
+    /// restart of this Mac's host while it runs and how it failed.
     private(set) var devices: Result<[DeviceList.Device], LatchError>?
     private(set) var update: Result<UpdateCheck, LatchError>?
     private(set) var checkingUpdate = false
@@ -261,7 +285,7 @@ final class AppModel {
     private(set) var deviceRemoveError: String?
 
     /// Removes a machine from the account; it's logged out there. A
-    /// refusal is kept for Host Settings to say.
+    /// refusal is kept for Connections to say.
     func removeDevice(_ name: String) async {
         let removed = await Self.result { try await self.client.removeDevice(name) }
         await refreshDevices()
@@ -299,14 +323,14 @@ final class AppModel {
         await refreshStatus()
     }
 
-    /// Turns a connector on this Mac's host on or off, then reads the
-    /// connectors again.
+    /// Turns a plugin on this Mac's host on or off, then reads the plugins
+    /// again. A refusal is thrown in the app's words.
     func setConnector(_ name: String, on: Bool, host: HostEntry) async throws {
         let changed = await Self.result {
             if on { _ = try await self.client.enable(name) } else { try await self.client.disable(name) }
         }
         summaries[host.name, default: HostSummary()].plugins = await Self.result { try await self.client.pluginsList(host: nil) }
-        try changed.get()
+        if case let .failure(error) = changed { throw LatchError.unreachable(PluginCopy.refusal(error, plugin: name, on: on)) }
     }
 
     /// While `latch logout` runs, and after it if Plow couldn't take this
@@ -327,9 +351,8 @@ final class AppModel {
         }
         let result = try await client.logout()
         if let device = result.device, !device.removed {
-            logOutWarning = "This Mac is logged out, but Plow couldn't take it out of your account"
-                + (device.error.map { ": \($0.message)." } ?? ".")
-                + (device.next.map { " Finish with \($0)." } ?? "")
+            logOutWarning = "This Mac is logged out, but Plow couldn't take \(device.name) out of your account. "
+                + "Remove it in Connections on another of your Macs."
         }
         await refreshStatus()
     }
