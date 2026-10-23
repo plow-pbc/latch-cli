@@ -5,14 +5,17 @@ nonisolated protocol LatchClient: Sendable {
     /// The state folder every run is given.
     var stateDir: String { get }
     func localStatus() async throws -> LocalStatus
-    /// `latch login --events [--name NAME]`: the code to text, then how it
-    /// ends. Stopping the iteration cancels the login.
-    func login(name: String?) -> AsyncThrowingStream<LoginEvent, Error>
+    /// `latch login --events [--name NAME] [--replace]`: the code to text,
+    /// then how it ends. Stopping the iteration cancels the login.
+    func login(name: String?, replace: Bool) -> AsyncThrowingStream<LoginEvent, Error>
     func rulesShow() async throws -> RulesShow
     /// `latch rules set --file -`, the text on stdin.
     func rulesSet(_ text: String) async throws
     /// `latch setup --status`: what's set up, read from the state folder.
     func setupStatus() async throws -> SetupStatus
+    /// The same, with `--check-access`: whether Plow Latch has Full Disk
+    /// Access, which takes a moment.
+    func setupStatusCheckingAccess() async throws -> SetupStatus
     /// `latch plugins enable NAME`; Google answers with its accounts.
     func enable(_ plugin: String) async throws -> GoogleEnabled?
     /// A setup step, as `setup --status` gives its words after `latch`.
@@ -30,8 +33,9 @@ nonisolated struct LiveLatchClient: LatchClient {
         try decode(LocalStatus.self, try await run(["status", "--local"]))
     }
 
-    func login(name: String?) -> AsyncThrowingStream<LoginEvent, Error> {
-        let process = LatchProcess(executable: executable, arguments: withState(["login", "--events"] + (name.map { ["--name", $0] } ?? [])))
+    func login(name: String?, replace: Bool) -> AsyncThrowingStream<LoginEvent, Error> {
+        let arguments = ["login", "--events"] + (name.map { ["--name", $0] } ?? []) + (replace ? ["--replace"] : [])
+        let process = LatchProcess(executable: executable, arguments: withState(arguments))
         return AsyncThrowingStream { continuation in
             let reader = Task.detached {
                 do {
@@ -62,6 +66,10 @@ nonisolated struct LiveLatchClient: LatchClient {
 
     func setupStatus() async throws -> SetupStatus {
         try decode(SetupStatus.self, try await run(["setup", "--status"]))
+    }
+
+    func setupStatusCheckingAccess() async throws -> SetupStatus {
+        try decode(SetupStatus.self, try await run(["setup", "--status", "--check-access"]))
     }
 
     func enable(_ plugin: String) async throws -> GoogleEnabled? {

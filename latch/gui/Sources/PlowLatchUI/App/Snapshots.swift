@@ -10,7 +10,7 @@ nonisolated struct FakeLatchClient: LatchClient {
     var rules: String? = nil
 
     func localStatus() async throws -> LocalStatus { try Fixtures.decode(status) }
-    func login(name: String?) -> AsyncThrowingStream<LoginEvent, Error> { AsyncThrowingStream { $0.finish() } }
+    func login(name: String?, replace: Bool) -> AsyncThrowingStream<LoginEvent, Error> { AsyncThrowingStream { $0.finish() } }
     func rulesShow() async throws -> RulesShow {
         try Fixtures.decode(rules.map { #"{"agents":[],"every_agent":{"revision":"r1","text":"\#($0)"},"host":"studio"}"# }
             ?? #"{"agents":[],"every_agent":null,"host":"studio"}"#)
@@ -18,6 +18,7 @@ nonisolated struct FakeLatchClient: LatchClient {
     func rulesSet(_ text: String) async throws {}
     var connectorsOn: [String] = []
     func setupStatus() async throws -> SetupStatus { try Fixtures.decode(Fixtures.setup(on: connectorsOn)) }
+    func setupStatusCheckingAccess() async throws -> SetupStatus { try await setupStatus() }
     func enable(_ plugin: String) async throws -> GoogleEnabled? { nil }
     func perform(_ args: [String]) async throws {}
     func stop() async throws {}
@@ -26,13 +27,14 @@ nonisolated struct FakeLatchClient: LatchClient {
 nonisolated enum Fixtures {
     /// `latch setup --status` on a logged-in Mac whose host is stopped,
     /// with these connectors on.
-    static func setup(on: [String], google: String? = nil,
+    static func setup(on: [String], google: String? = nil, access: String? = nil,
                       host: String = #"{"step":"host","state":"needed","reason":"latch is not running.","args":["serve","-d","--again"]}"#) -> String {
         let connectors = ["google", "messages", "contacts"].map { name in
             if name == "google", let google { return google }
+            let checked = name != "google" ? access.map { #","access":"\#($0)""# } ?? "" : ""
             return on.contains(name)
-                ? #"{"step":"\#(name)","state":"done","reason":"The \#(name.capitalized) connector is on; agents can use it once latch is running.","args":null,"enabled":true,"ready":false}"#
-                : #"{"step":"\#(name)","state":"needed","reason":"The \#(name.capitalized) connector is off.","args":["plugins","enable","\#(name)"],"enabled":false,"ready":false}"#
+                ? #"{"step":"\#(name)","state":"done","reason":"The \#(name.capitalized) connector is on; agents can use it once latch is running.","args":null,"enabled":true,"ready":false\#(checked)}"#
+                : #"{"step":"\#(name)","state":"needed","reason":"The \#(name.capitalized) connector is off.","args":["plugins","enable","\#(name)"],"enabled":false,"ready":false\#(checked)}"#
         }
         return #"{"steps":[{"step":"login","state":"done","reason":"Logged in as studio.","args":null},"#
             + connectors.joined(separator: ",")
@@ -77,7 +79,7 @@ package enum SnapshotRunner {
             ("02-login-error", .login, Fixtures.loggedOut, Progress(), {
                 $0.login = .failed("Plow couldn't be reached at http://127.0.0.1:18934; check your connection, then try again")
             }),
-            ("02-login-name-taken", .login, Fixtures.loggedOut, Progress(), { $0.login = .nameTaken; $0.loginName = "studio-2" }),
+            ("02-login-name-taken", .login, Fixtures.loggedOut, Progress(), { $0.login = .nameTaken(existing: "studio", lastSeen: nil); $0.loginName = "studio-2" }),
             ("02-login-verified", .login, Fixtures.serving, Progress(), { $0.login = .verified(name: "studio") }),
             ("03-privacy", .privacy, Fixtures.stopped, Progress(), { _ in }),
             ("04-rules-first-run", .rules, Fixtures.stopped, Progress(), {
