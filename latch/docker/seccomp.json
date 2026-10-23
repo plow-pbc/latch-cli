@@ -1091,12 +1091,7 @@
       "names": [
         "chroot"
       ],
-      "action": "SCMP_ACT_ALLOW",
-      "includes": {
-        "caps": [
-          "CAP_SYS_CHROOT"
-        ]
-      }
+      "action": "SCMP_ACT_ALLOW"
     },
     {
       "names": [
@@ -1272,6 +1267,40 @@
           "index": 1,
           "value": 2,
           "op": "SCMP_CMP_EQ"
+        }
+      ]
+    },
+    {
+      "names": [
+        "clone"
+      ],
+      "action": "SCMP_ACT_ALLOW",
+      "args": [
+        {
+          "index": 0,
+          "value": 369098752,
+          "valueTwo": 0,
+          "op": "SCMP_CMP_MASKED_EQ"
+        }
+      ],
+      "includes": {
+        "arches": [
+          "amd64",
+          "arm64"
+        ]
+      }
+    },
+    {
+      "names": [
+        "unshare"
+      ],
+      "action": "SCMP_ACT_ALLOW",
+      "args": [
+        {
+          "index": 0,
+          "value": 100663296,
+          "valueTwo": 0,
+          "op": "SCMP_CMP_MASKED_EQ"
         }
       ]
     }
