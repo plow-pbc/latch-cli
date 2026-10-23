@@ -263,6 +263,7 @@ enum TestHooks {
                     case let .verdict(answer)?: "\(example.title): \(answer.verdict)"
                     case let .failed(error)?: "\(example.title): failed \(error.message)"
                     case .checking?: "\(example.title): checking"
+                    case .noAnswer?: "\(example.title): no answer"
                     default: "\(example.title): not checked"
                     }
                 },

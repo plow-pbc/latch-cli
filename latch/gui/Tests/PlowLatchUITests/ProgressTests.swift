@@ -175,6 +175,34 @@ struct GatekeeperTests {
         #expect(client.tries.count == asked)
     }
 
+    @Test func leavingMidReviewLeavesNoRowCheckingAndTheSameTextAsksAgain() async throws {
+        let client = ScriptedClient(pause: .seconds(60)) { _ in nil }
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
+        let flow = app.stage(.rules)
+        flow.choose(Onboarding.decks[1])
+        await until { !client.tries.isEmpty }
+        flow.stopWork()
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(!flow.deck.examples.contains { flow.previews[$0.id] == .checking })
+        // Back on the screen with the same text: it is judged again.
+        let asked = client.tries.count
+        flow.draftChanged()
+        try await Task.sleep(for: .milliseconds(1100))
+        #expect(client.tries.count > asked)
+        flow.stopWork()
+    }
+
+    @Test func aCheckThatNeverAnswersSaysSo() async {
+        let client = ScriptedClient(pause: .seconds(60)) { _ in nil }
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
+        let flow = app.stage(.rules)
+        flow.checkDeadline = .milliseconds(300)
+        flow.choose(Onboarding.decks[1])
+        await until { !flow.reviewing }
+        #expect(!flow.reviewing)
+        #expect(flow.deck.examples.allSatisfy { flow.previews[$0.id] == .noAnswer })
+    }
+
     @Test func startAtLoginOnlyWithRunInTheBackground() async {
         let app = AppModel(client: FakeLatchClient(status: Fixtures.stopped), store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
         var loginItem: [Bool] = []

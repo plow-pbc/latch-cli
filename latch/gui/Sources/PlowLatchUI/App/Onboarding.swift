@@ -49,6 +49,8 @@ final class Onboarding {
         case checking
         case verdict(RulesTry)
         case failed(LatchError)
+        /// latch gave no answer before `checkDeadline`.
+        case noAnswer
     }
 
     /// An example request on the rules screen: what a person reads, its
@@ -123,6 +125,8 @@ final class Onboarding {
     var previews: [String: Preview] = [:]
     /// While latch is judging the examples (the beam scans).
     var reviewing = false
+    /// How long an example waits for latch before it says it got no answer.
+    var checkDeadline: Duration = .seconds(15)
     /// The draft the examples were last judged on, and which review is the
     /// current one: an answer from an older one is dropped.
     private var reviewed: String?
@@ -232,6 +236,10 @@ final class Onboarding {
         reviewTask?.cancel()
         reviewTask = nil
         reviewing = false
+        // A review stopped part way is not judged: its rows are unchecked
+        // again, and the same text is judged afresh.
+        for (id, preview) in previews where preview == .checking { previews[id] = .notChecked }
+        reviewed = nil
         googleTask?.cancel()
         googleTask = nil
         googleCheck?.cancel()
@@ -425,13 +433,15 @@ final class Onboarding {
 
     /// Judges each example against the draft as a new agent would be judged
     /// (`rules try --new-agent --draft`), all at once, each verdict shown
-    /// as it comes. Nothing is saved. A newer review drops older answers.
+    /// as it comes, or no answer after `checkDeadline`. Nothing is saved.
+    /// A newer review drops older answers.
     private func startReview(after delay: Duration = .zero) {
         let draft = previewedRules
         reviewed = draft
         review += 1
         let current = review
         let examples = deck.examples
+        let deadline = checkDeadline
         for example in examples { previews[example.id] = .checking }
         reviewing = true
         macLit = false
@@ -442,11 +452,7 @@ final class Onboarding {
             await withTaskGroup(of: (String, Preview).self) { group in
                 for example in examples {
                     group.addTask { [client] in
-                        do {
-                            return (example.id, .verdict(try await client.rulesTry(example.request, host: nil, agent: nil, newAgent: true, draft: draft)))
-                        } catch {
-                            return (example.id, .failed(.from(error)))
-                        }
+                        (example.id, await Self.judge(example, draft: draft, client: client, within: deadline))
                     }
                 }
                 for await (id, preview) in group where current == review && !Task.isCancelled {
@@ -463,6 +469,29 @@ final class Onboarding {
             macLit = true
             try? await Task.sleep(for: .milliseconds(260))
             macLit = false
+        }
+    }
+
+    /// One example's verdict, or `.noAnswer` once `deadline` passes first:
+    /// latch is then stopped.
+    private nonisolated static func judge(_ example: Example, draft: String, client: any LatchClient, within deadline: Duration) async -> Preview {
+        await withTaskGroup(of: Preview?.self) { race in
+            race.addTask {
+                do {
+                    return .verdict(try await client.rulesTry(example.request, host: nil, agent: nil, newAgent: true, draft: draft))
+                } catch is CancellationError {
+                    return nil
+                } catch {
+                    return .failed(.from(error))
+                }
+            }
+            race.addTask {
+                try? await Task.sleep(for: deadline)
+                return Task.isCancelled ? nil : .noAnswer
+            }
+            let first = await race.next() ?? nil
+            race.cancelAll()
+            return first ?? .noAnswer
         }
     }
 
