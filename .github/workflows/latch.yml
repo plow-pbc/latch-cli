@@ -27,8 +27,9 @@ concurrency:
 
 jobs:
   # What this run tests: everything, except a pull request that changes
-  # only docs. Pull requests test on Linux; the Mac runs on main, and by hand
-  # on any branch with the mac-tests workflow.
+  # only docs. Pull requests test on Linux, and run the macOS archives on
+  # older Macs (mac-smoke); the full Mac suite runs on main, and by hand on
+  # any branch with the mac-tests workflow.
   changes:
     if: github.ref != 'refs/heads/ci-speed' || (github.event_name == 'workflow_dispatch' && inputs.mode != 'probe')
     runs-on: ubuntu-24.04
@@ -300,10 +301,68 @@ jobs:
           name: latch-linux-${{ matrix.arch }}
           path: latch/target/musl-${{ matrix.arch }}/release/latch
 
+  # The macOS archives, built on macOS 26 as a release builds them (unsigned
+  # and in debug), for mac-smoke to run on older Macs.
+  mac-smoke-build:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source-ref || github.sha }}
+      - run: rustup toolchain install && rustup target add aarch64-apple-darwin x86_64-apple-darwin
+        working-directory: latch
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: latch -> target
+          shared-key: mac-smoke
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Build
+        working-directory: latch
+        run: |
+          LATCH_MESSAGES_READER_SHA256=$(messages-reader/build.sh | tail -n 1)
+          export LATCH_MESSAGES_READER_SHA256
+          gui/build.sh
+          for target in aarch64-apple-darwin x86_64-apple-darwin; do
+            cargo build --locked --target "$target"
+            sh ../scripts/package-release.sh v0.0.0-smoke "$target" "$PWD/target/$target/debug/latch"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac-smoke
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
+  # Each archive on the oldest macOS GitHub offers for its architecture: the
+  # rest of Mac CI runs on macOS 26 only.
+  mac-smoke:
+    needs: mac-smoke-build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: macos-15, target: aarch64-apple-darwin }
+          - { runner: macos-15-intel, target: x86_64-apple-darwin }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source-ref || github.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: mac-smoke
+      - run: |
+          tar -xzf latch-v0.0.0-smoke-${{ matrix.target }}.tar.gz
+          sh scripts/macos-smoke.sh latch-v0.0.0-smoke-${{ matrix.target }}
+
   ci-required:
     name: ${{ inputs.source-ref != '' && 'ci-benchmark' || 'ci-required' }}
     if: always() && (github.ref != 'refs/heads/ci-speed' || (github.event_name == 'workflow_dispatch' && inputs.mode != 'probe'))
-    needs: [changes, mac, linux-build, linux, linux-restricted, linux-x64, linux-static]
+    needs: [changes, mac, linux-build, linux, linux-restricted, linux-x64, linux-static, mac-smoke-build, mac-smoke]
     runs-on: ubuntu-24.04
     env:
       RESULTS: ${{ toJSON(needs) }}

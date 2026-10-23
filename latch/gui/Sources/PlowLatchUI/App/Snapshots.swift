@@ -20,7 +20,9 @@ nonisolated struct FakeLatchClient: LatchClient {
     }
     func rulesSet(_ text: String) async throws {}
     var connectorsOn: [String] = []
-    func setupStatus() async throws -> SetupStatus { try Fixtures.decode(Fixtures.setup(on: connectorsOn)) }
+    /// Google's step in `setup --status`, when not the default.
+    var google: String?
+    func setupStatus() async throws -> SetupStatus { try Fixtures.decode(Fixtures.setup(on: connectorsOn, google: google)) }
     func pluginsList(host: String?) async throws -> PluginsList {
         throw LatchError.failed(LatchFailure(code: "serve_required", message: "this machine needs a live receiver; start `latch serve` on this state folder, then retry"))
     }
@@ -83,6 +85,14 @@ nonisolated struct FakeLatchClient: LatchClient {
 nonisolated struct ImportPreviewFixture: Decodable { var preview: ImportPreview }
 
 nonisolated enum Fixtures {
+    /// Google's step in `latch setup --status` on local Plow: no account
+    /// connected; one connected (through Plow's OAuth stand-in) after an
+    /// enable that found none; turned on; and Plow not answering.
+    static let googleNotConnected = #"{"step":"google","state":"needed","reason":"Google is not connected in Plow: connect it at http://localhost:3000/connections, then run `latch plugins enable google`.","args":null,"enabled":false,"ready":false,"accounts":[],"connect_url":"http://localhost:3000/connections"}"#
+    static let googleConnectedOff = #"{"step":"google","state":"needed","reason":"Google is connected in Plow (testuser@plow.test); the Google connector needs setup: Plow has no Google account this host can use; connect one at http://localhost:3000/connections, then run `latch plugins enable google` again","args":["plugins","enable","google"],"enabled":false,"ready":false,"accounts":["testuser@plow.test"]}"#
+    static let googleOn = #"{"step":"google","state":"done","reason":"Google is connected in Plow (testuser@plow.test); the Google connector is on; agents can use it once latch is running.","args":null,"enabled":true,"ready":false,"accounts":["testuser@plow.test"]}"#
+    static let googleUnreachable = #"{"step":"google","state":"blocked","reason":"Plow could not say whether Google is connected: could not reach Plow at http://127.0.0.1:9: error sending request for url (http://127.0.0.1:9/v1/connectors)","args":null,"enabled":true,"ready":false}"#
+
     /// `latch setup --status` on a logged-in Mac whose host is stopped,
     /// with these connectors on.
     static func setup(on: [String], google: String? = nil, access: String? = nil,
@@ -244,7 +254,7 @@ package enum SnapshotRunner {
         let full = Progress(passed: [.welcome: .continued, .login: .continued, .privacy: .continued, .rules: .continued,
                                      .google: .continued, .access: .continued, .start: .continued])
 
-        typealias Stage = (Onboarding) -> Void
+        typealias Stage = (Onboarding) async -> Void
         let states: [(String, Step, String, Progress, Stage)] = [
             ("01-welcome", .welcome, Fixtures.loggedOut, Progress(), { _ in }),
             ("02-login-starting", .login, Fixtures.loggedOut, Progress(), { $0.login = .starting }),
@@ -281,25 +291,18 @@ package enum SnapshotRunner {
                 $0.draftRules = rules
                 $0.rulesError = "rules are at most 8 KB together; shorten them, then save again"
             }),
-            ("05-google-not-checked", .google, Fixtures.stopped, Progress(), { $0.google = .unknown }),
-            ("05-google-not-connected", .google, Fixtures.stopped, Progress(), {
-                $0.google = .needed("Plow has no Google account this host can use; connect one in Plow, then run `latch plugins enable google` again")
+            ("05-google-checking", .google, Fixtures.stopped, Progress(), { _ in }),
+            ("05-google-not-connected", .google, Fixtures.stopped, Progress(), { await $0.checkGoogle() }),
+            ("05-google-waiting", .google, Fixtures.stopped, Progress(), {
+                await $0.checkGoogle(); $0.google = .waiting
             }),
-            ("05-google-not-connected-with-link", .google, Fixtures.stopped, Progress(), {
-                $0.google = .needed("connect a Google account in Plow"); $0.googleConnectURL = URL(string: "https://plow.co/connect/google")
+            ("05-google-wait-ended", .google, Fixtures.stopped, Progress(), {
+                await $0.checkGoogle(); $0.googleWaitEnded = true
             }),
-            ("05-google-off-connected-in-plow", .google, Fixtures.stopped, Progress(), {
-                $0.google = .unknown; $0.googleAccounts = ["owner@example.com"]
-            }),
-            ("05-google-connected", .google, Fixtures.stopped, Progress(), {
-                $0.google = .done; $0.googleAccounts = ["owner@example.com"]
-            }),
-            ("05-google-rerun-connected", .google, Fixtures.serving, Progress(rerun: true), {
-                $0.google = .done; $0.googleAccounts = ["owner@example.com", "work@example.com"]
-            }),
-            ("05-google-error", .google, Fixtures.stopped, Progress(), {
-                $0.google = .failed("Plow couldn't be reached at http://127.0.0.1:18934; check your connection, then try again")
-            }),
+            ("05-google-connected-turned-on", .google, Fixtures.stopped, Progress(), { await $0.checkGoogle() }),
+            ("05-google-rerun-connected", .google, Fixtures.serving, Progress(rerun: true), { await $0.checkGoogle() }),
+            ("05-google-plow-unreachable", .google, Fixtures.stopped, Progress(), { await $0.checkGoogle() }),
+            ("05-google-tools-missing", .google, Fixtures.stopped, Progress(), { $0.google = .failed(Onboarding.toolsMissing) }),
             ("06-access-not-checked", .access, Fixtures.stopped, Progress(), { _ in }),
             ("06-access-waiting", .access, Fixtures.stopped, Progress(), {
                 $0.messages = .needed("Waiting for access"); $0.contacts = .needed("Waiting for access"); $0.waitingForAccess = true
@@ -331,6 +334,10 @@ package enum SnapshotRunner {
             ("08-done-all-set", .done, Fixtures.serving, full, {
                 $0.app.stage(rulesSaved: true, setup: try! Fixtures.decode(Fixtures.setup(on: ["google", "messages", "contacts"])))
             }),
+            ("08-done-google-skipped", .done, Fixtures.serving,
+             Progress(passed: full.passed.merging([.google: .skipped]) { $1 }), {
+                $0.app.stage(rulesSaved: true, setup: try! Fixtures.decode(Fixtures.setup(on: ["messages", "contacts"], google: Fixtures.googleNotConnected)))
+            }),
             ("08-done-with-skips", .done, Fixtures.serving, skipped, {
                 $0.app.stage(rulesSaved: false, setup: try! Fixtures.decode(Fixtures.setup(on: [])))
             }),
@@ -341,10 +348,10 @@ package enum SnapshotRunner {
 
         for dark in [false, true] {
             for (name, step, status, progress, stage) in states {
-                let app = AppModel(client: FakeLatchClient(status: status), still: true)
+                let app = AppModel(client: FakeLatchClient(status: status, google: Self.google[name]), still: true)
                 app.stage(status: try Fixtures.decode(status))
                 let flow = app.stage(step, progress: progress)
-                stage(flow)
+                await stage(flow)
                 try await render(OnboardingView(entranceTime: step == .welcome ? 10 : nil).environment(app),
                                  size: Brand.windowSize, dark: dark, file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
             }
@@ -644,6 +651,16 @@ package enum SnapshotRunner {
 
     private static let mainSize = CGSize(width: 860, height: 560)
 
+    /// What `setup --status` says of Google for each Connect Google still.
+    private static let google: [String: String] = [
+        "05-google-not-connected": Fixtures.googleNotConnected,
+        "05-google-waiting": Fixtures.googleNotConnected,
+        "05-google-wait-ended": Fixtures.googleNotConnected,
+        "05-google-connected-turned-on": Fixtures.googleConnectedOff,
+        "05-google-rerun-connected": Fixtures.googleOn,
+        "05-google-plow-unreachable": Fixtures.googleUnreachable,
+    ]
+
     /// Each host's activity as `latch audit` printed it.
     private static func stageActivity(_ app: AppModel) {
         for host in app.hosts where host.name == "studio" || host.name == "pi-kitchen" {
@@ -675,11 +692,12 @@ package enum SnapshotRunner {
         // The panel is sized as the helper sizes it, not to its content.
         if !background { host.sizingOptions = [] }
         // A floating panel has no title bar, nor its minimum height.
-        let window = NSWindow(contentRect: CGRect(origin: .zero, size: size), styleMask: background ? [.titled, .fullSizeContentView] : [.borderless],
+        // Off every display: nothing shows, and no click lands on it.
+        let window = NSWindow(contentRect: CGRect(origin: CGPoint(x: -4000, y: -4000), size: size),
+                              styleMask: background ? [.titled, .fullSizeContentView] : [.borderless],
                               backing: .buffered, defer: false)
         window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
         window.contentView = host
-        window.alphaValue = 0.01
         window.orderFrontRegardless()
         try await Task.sleep(for: .milliseconds(400))
         try Render.png(host, to: file, background: background)
