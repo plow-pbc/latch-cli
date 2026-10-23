@@ -125,6 +125,43 @@ final class AppModel {
         summaries[host] = summary
     }
 
+    /// Each host's activity, by host name, made when a screen first shows it.
+    private var feeds: [String: ActivityFeed] = [:]
+
+    func feed(for host: HostEntry) -> ActivityFeed {
+        if let feed = feeds[host.name] { return feed }
+        let feed = ActivityFeed(client: client, host: host.isThisMac ? nil : host.name)
+        feeds[host.name] = feed
+        return feed
+    }
+
+    /// The key on records of a host's requests of itself: this Mac's own,
+    /// else Plow's for that host.
+    func key(of host: HostEntry) -> String? {
+        host.isThisMac ? status?.peer?.key ?? host.key : host.key
+    }
+
+    /// The record Activity's inspector shows; Home's recent rows set it.
+    var selectedRecord: AuditRecord.ID?
+    /// Activity's filters, kept as hosts change.
+    var activityFilter = ActivityView.Filter.all
+    var showConnections = false
+
+    /// Follows `status --local --follow` until the main window closes, so
+    /// this Mac's state is always latch's latest without asking again.
+    func followStatus() async {
+        do {
+            for try await status in client.statusFollow() {
+                self.status = status
+                statusError = nil
+                leaveMainIfLoggedOut()
+            }
+        } catch is CancellationError {
+        } catch {
+            statusError = (error as? LatchError)?.message ?? error.localizedDescription
+        }
+    }
+
     /// "Start hosting on this Mac…" asked, awaiting the person's yes; and a
     /// start from the main window, while it runs and how it failed.
     var confirmingStartHosting = false

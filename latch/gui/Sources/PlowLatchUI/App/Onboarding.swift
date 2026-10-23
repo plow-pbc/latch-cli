@@ -276,7 +276,7 @@ final class Onboarding {
                 for try await event in events {
                     switch event {
                     case let .code(code): login = .waiting(code)
-                    case .waiting: break
+                    case .waiting, .other: break
                     case let .verified(name):
                         login = .verified(name: name)
                         await app.refreshStatus()

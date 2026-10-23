@@ -187,6 +187,9 @@ final class ScriptedClient: LatchClient, @unchecked Sendable {
     func rulesSet(_ text: String) async throws { try await Task.sleep(for: pause) }
     func pluginsList(host: String?) async throws -> PluginsList { throw CancellationError() }
     func vaultList(host: String?) async throws -> VaultList { try Fixtures.decode(#"{"items":[]}"#) }
+    func statusFollow() -> AsyncThrowingStream<LocalStatus, Error> { AsyncThrowingStream { $0.finish() } }
+    func audit(host: String?, before: String?) async throws -> AuditPage { AuditPage(records: [], hasOlder: false) }
+    func auditFollow(host: String?, after: String?) -> AsyncThrowingStream<AuditLine, Error> { AsyncThrowingStream { $0.finish() } }
     /// How `serve -d` fails, if it does.
     var serveFailure: LatchFailure?
     func serve(again: Bool) async throws {

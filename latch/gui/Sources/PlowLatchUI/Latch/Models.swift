@@ -4,6 +4,8 @@ import Foundation
 nonisolated struct LocalStatus: Decodable, Equatable {
     struct Peer: Decodable, Equatable {
         var name: String
+        /// This machine's key: the `caller` on records of its own requests.
+        var key: String?
     }
 
     struct Serve: Decodable, Equatable {
@@ -79,6 +81,9 @@ nonisolated enum LoginEvent: Equatable {
     case verified(name: String)
     case expired
     case error(LatchFailure)
+    /// A line this app doesn't act on (`hello`, or a type a newer latch
+    /// adds): skipped, never an error.
+    case other
 }
 
 nonisolated extension LoginEvent: Decodable {
@@ -92,8 +97,7 @@ nonisolated extension LoginEvent: Decodable {
         case "verified": self = .verified(name: try c.decode(LocalStatus.Peer.self, forKey: .peer).name)
         case "expired": self = .expired
         case "error": self = .error(try c.decode(LatchFailure.self, forKey: .error))
-        case let other:
-            throw DecodingError.dataCorruptedError(forKey: .type, in: c, debugDescription: "unknown login event \(other)")
+        default: self = .other
         }
     }
 }

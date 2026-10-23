@@ -40,6 +40,9 @@ struct HostEntry: Equatable, Identifiable {
     /// last heard from it. This Mac's state is its own `status --local`.
     var online: Bool?
     var lastSeen: Date?
+    /// Its key, as Plow lists it: the `caller` on records of requests the
+    /// host made of itself.
+    var key: String?
 
     var id: String { name }
 
@@ -49,11 +52,11 @@ struct HostEntry: Equatable, Identifiable {
     /// it never served, so until then it keeps its place, running or not.
     static func list(local: LocalStatus?, account: AccountStatus?) -> [HostEntry] {
         var hosts = (account?.hosts ?? []).map {
-            HostEntry(name: $0.name, isThisMac: $0.isThisMac, online: $0.online, lastSeen: $0.lastSeenAt)
+            HostEntry(name: $0.name, isThisMac: $0.isThisMac, online: $0.online, lastSeen: $0.lastSeenAt, key: $0.key)
         }
         if let local, let peer = local.peer, local.serve.running || account == nil, !hosts.contains(where: \.isThisMac) {
             hosts.removeAll { $0.name == peer.name }
-            hosts.append(HostEntry(name: peer.name, isThisMac: true))
+            hosts.append(HostEntry(name: peer.name, isThisMac: true, key: peer.key))
         }
         return hosts.sorted { ($0.isThisMac ? 0 : 1, $0.name) < ($1.isThisMac ? 0 : 1, $1.name) }
     }
