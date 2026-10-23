@@ -2757,10 +2757,12 @@ impl Events {
             .stdout(std::process::Stdio::piped())
             .spawn()
             .unwrap();
-        let stdout = BufReader::new(child.stdout.take().unwrap());
+        let mut stdout = BufReader::new(child.stdout.take().unwrap()).lines();
+        let hello: Value = serde_json::from_str(&stdout.next().unwrap().unwrap()).unwrap();
+        assert_eq!(hello, json!({"type": "hello", "schema": 1}));
         let (send, lines) = std::sync::mpsc::channel();
         thread::spawn(move || {
-            for line in stdout.lines() {
+            for line in stdout {
                 let _ = send.send(serde_json::from_str(&line.unwrap()).unwrap());
             }
         });
@@ -2894,12 +2896,161 @@ fn events_follow_the_host_and_its_activity_resume_exactly_and_reset_after_a_rest
     assert!(lifecycle.close().success());
 }
 
+/// A `login --events`' lines after its `hello`.
 fn event_lines(output: &Output) -> Vec<Value> {
-    String::from_utf8(output.stdout.clone())
+    let lines: Vec<Value> = String::from_utf8(output.stdout.clone())
         .unwrap()
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
-        .collect()
+        .collect();
+    assert_eq!(lines[0], json!({"type": "hello", "schema": 1}));
+    lines[1..].to_vec()
+}
+
+/// `latch ARGS`, a stream, read piped: `ready` lines, then `more` runs and
+/// its stdin closes (which ends a follow), then every line to its end.
+fn stream_lines(state: &Path, args: &[&str], ready: usize, more: &dyn Fn()) -> Vec<String> {
+    let mut child = latch_command(state, args, &[])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut out = BufReader::new(child.stdout.take().unwrap()).lines();
+    let mut lines: Vec<String> = (&mut out).take(ready).map(Result::unwrap).collect();
+    more();
+    drop(child.stdin.take());
+    lines.extend(out.map(Result::unwrap));
+    assert!(child.wait().unwrap().success(), "{args:?}: {lines:?}");
+    lines
+}
+
+/// Every stream, piped, with `--pretty` and without: its first line is
+/// `hello` with the schema, each line is one JSON object with a `type`, and
+/// `--pretty` changes none of it.
+#[test]
+fn every_stream_says_hello_first_and_types_every_line() {
+    let (dir, state, _) = owner_host();
+    let set = latch(&state, &["rules", "set", "Never send email."], &[]);
+    assert_eq!(set.status.code(), Some(0), "{set:?}");
+    let log = state.join("serve.log");
+    fs::write(
+        &log,
+        "2026-10-22T08:00:00Z serving\n2026-10-22T08:00:01Z exec: ok\n",
+    )
+    .unwrap();
+    let append = || {
+        let mut file = fs::OpenOptions::new().append(true).open(&log).unwrap();
+        // A record written in two pieces is one line, once whole.
+        file.write_all(b"2026-10-22T08:00:02Z stop").unwrap();
+        file.flush().unwrap();
+        thread::sleep(std::time::Duration::from_millis(300));
+        file.write_all(b"ping: asked\n").unwrap();
+        thread::sleep(std::time::Duration::from_millis(500));
+    };
+    let nothing = || {};
+    let mut texted = 0;
+    let mut login = |pretty: &[&str]| {
+        let (api_url, server) = plow_texted_at_once();
+        texted += 1;
+        let fresh = dir.path().join(format!("texted-{texted}"));
+        let mut args = pretty.to_vec();
+        args.extend(["login", "--events", "--api-url", &api_url, "--name", "mac"]);
+        let lines = stream_lines(&fresh, &args, 0, &nothing);
+        server.join().unwrap();
+        lines
+    };
+    for pretty in [&[][..], &["--pretty"]] {
+        let streams: Vec<(&str, Vec<String>)> = vec![
+            (
+                "events",
+                stream_lines(&state, &[pretty, &["events"]].concat(), 0, &nothing),
+            ),
+            (
+                "events --follow",
+                stream_lines(
+                    &state,
+                    &[pretty, &["events", "--follow"]].concat(),
+                    2,
+                    &nothing,
+                ),
+            ),
+            (
+                "audit show -f",
+                stream_lines(
+                    &state,
+                    &[pretty, &["audit", "show", "-f"]].concat(),
+                    2,
+                    &nothing,
+                ),
+            ),
+            (
+                "logs",
+                stream_lines(&state, &[pretty, &["logs"]].concat(), 0, &nothing),
+            ),
+            (
+                "logs -f",
+                stream_lines(&state, &[pretty, &["logs", "-f"]].concat(), 3, &append),
+            ),
+            ("login --events", login(pretty)),
+        ];
+        for (name, lines) in &streams {
+            let parsed: Vec<Value> = lines
+                .iter()
+                .map(|line| serde_json::from_str(line).unwrap_or_else(|_| panic!("{name}: {line}")))
+                .collect();
+            assert_eq!(
+                parsed[0],
+                json!({"type": "hello", "schema": 1}),
+                "{name}: {lines:?}"
+            );
+            assert!(
+                parsed.iter().all(|line| line["type"].is_string()),
+                "{name}: {lines:?}"
+            );
+            assert!(
+                lines
+                    .iter()
+                    .all(|line| line.starts_with('{') && !line.contains("\n")),
+                "{name}"
+            );
+            let types: Vec<&str> = parsed
+                .iter()
+                .map(|line| line["type"].as_str().unwrap())
+                .collect();
+            println!("{name} {pretty:?}: {types:?}");
+        }
+        let logs = |name: &str| -> Vec<String> {
+            let (_, lines) = streams.iter().find(|(n, _)| *n == name).unwrap();
+            lines[1..]
+                .iter()
+                .map(|line| {
+                    serde_json::from_str::<Value>(line).unwrap()["line"]
+                        .as_str()
+                        .unwrap()
+                        .to_string()
+                })
+                .collect()
+        };
+        // One line per record the host wrote.
+        assert_eq!(
+            logs("logs")[..2],
+            [
+                "2026-10-22T08:00:00Z serving",
+                "2026-10-22T08:00:01Z exec: ok"
+            ]
+        );
+        assert!(
+            logs("logs -f").contains(&"2026-10-22T08:00:02Z stopping: asked".to_string()),
+            "{:?}",
+            logs("logs -f")
+        );
+        // The log grows as the loop goes on: the next pass starts over.
+        fs::write(
+            &log,
+            "2026-10-22T08:00:00Z serving\n2026-10-22T08:00:01Z exec: ok\n",
+        )
+        .unwrap();
+    }
 }
 
 #[test]
@@ -4833,7 +4984,10 @@ fn audit_show_follows_the_log_and_refuses_one_whose_last_record_was_cut_short() 
         .spawn()
         .unwrap();
     let mut lines = BufReader::new(follow.stdout.take().unwrap()).lines();
+    let hello: Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
+    assert_eq!(hello["type"], "hello");
     let first: Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
+    assert_eq!(first["type"], "record");
     assert_eq!(first["id"], shown["records"][0]["id"]);
     rules("Ask before paying.");
     let second: Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
@@ -4870,6 +5024,8 @@ fn audit_show_follow_sleeps_while_the_log_is_quiet() {
         .spawn()
         .unwrap();
     let mut lines = BufReader::new(follow.stdout.take().unwrap()).lines();
+    // Its `hello`, then the one record there is.
+    lines.next().unwrap().unwrap();
     lines.next().unwrap().unwrap();
     // CPU time used (user + system, in clock ticks) while nothing happens.
     let ticks = || {
@@ -5619,7 +5775,13 @@ mod lifecycle {
         assert!(log.contains("stopping: asked to by `latch stop`"), "{log}");
         assert_eq!(log.matches("exec: refused to every agent").count(), 2);
         let logs = latch(&host, &["logs"], &[]);
-        assert_eq!(String::from_utf8_lossy(&logs.stdout), log);
+        let records: Vec<Value> = String::from_utf8_lossy(&logs.stdout)
+            .lines()
+            .skip(1)
+            .map(|line| serde_json::from_str::<Value>(line).unwrap()["line"].clone())
+            .collect();
+        let written: Vec<Value> = log.lines().map(|line| json!(line)).collect();
+        assert_eq!(records, written);
         let audit = latch(&host, &["audit", "show"], &[]);
         let audit: Value = serde_json::from_slice(&audit.stdout).unwrap();
         let exec = audit["records"]

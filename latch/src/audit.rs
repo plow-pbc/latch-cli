@@ -399,8 +399,8 @@ pub fn read_next(keys: &Keys, prev: &str, text: &[u8], number: usize) -> Result<
     keys.open(&line, number)
 }
 
-/// `latch audit show --follow`: every record, one JSON line each, then each
-/// new one as it is written, until stopped (or, when stdin is a pipe, until
+/// `latch audit show --follow`: after the `hello` line, every record, one
+/// `record` line each, then each new one as it is written, until stopped (or, when stdin is a pipe, until
 /// it closes). A log that fails its checks, or no longer begins with what
 /// was printed, stops it with `audit_broken`.
 pub fn follow(state: &StateDir) -> Result<(), Failure> {
@@ -417,6 +417,10 @@ pub fn follow(state: &StateDir) -> Result<(), Failure> {
     .map_err(watching)?;
     let mut printed: Option<(usize, String)> = None;
     let mut out = std::io::stdout().lock();
+    let hello = crate::events::hello();
+    if writeln!(out, "{hello}").and_then(|()| out.flush()).is_err() {
+        return Ok(());
+    }
     loop {
         watch.arm().map_err(watching)?;
         let records = read_all(&path)?;
@@ -429,6 +433,7 @@ pub fn follow(state: &StateDir) -> Result<(), Failure> {
         };
         for record in &records[from..] {
             let mut shown = serde_json::to_value(record).expect("a record serializes");
+            shown["type"] = json!("record");
             shown["id"] = json!(record.hash);
             if writeln!(out, "{shown}").and_then(|()| out.flush()).is_err() {
                 return Ok(());

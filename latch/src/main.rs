@@ -169,6 +169,7 @@ async fn run(
     trace::init(&state, foreground)?;
     match command {
         Command::Login(args) if args.events => {
+            login::event(events::hello());
             // Every ending is a line too; the failure still goes to stderr.
             match login::run(&state, args).await {
                 Ok(output) => {

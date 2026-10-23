@@ -11,7 +11,11 @@
 //! no longer matches (it was replaced) or too far behind, gets `reset` and
 //! a fresh snapshot instead, so the app replaces what it holds.
 //!
-//! `latch logs` follows the host's log the same way.
+//! `latch logs` follows the host's log the same way, a line per record.
+//!
+//! Every stream latch prints (these two, `audit show -f`, `login --events`)
+//! is JSON lines, each with a `type`, the first `hello` with the `schema`
+//! its lines follow. A reader ignores fields it does not know.
 
 use std::fs::File;
 use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
@@ -25,6 +29,14 @@ use crate::failure::Failure;
 use crate::lifecycle::{self, Host};
 use crate::state::StateDir;
 use crate::watch::{self, Watch, Woke};
+
+/// The version of the streams' lines, which `hello` says.
+pub const SCHEMA: u32 = 1;
+
+/// The first line of every stream.
+pub fn hello() -> Value {
+    json!({"type": "hello", "schema": SCHEMA})
+}
 
 /// How many recent records a fresh snapshot replays.
 const REPLAY: usize = 50;
@@ -60,7 +72,7 @@ pub fn run(state: &StateDir, args: EventsArgs) -> Result<(), Failure> {
         }
     };
     let mut out = std::io::stdout().lock();
-    for line in opening {
+    for line in std::iter::once(hello()).chain(opening) {
         if !emit(&mut out, &line) {
             return Ok(());
         }
@@ -85,13 +97,16 @@ pub fn run(state: &StateDir, args: EventsArgs) -> Result<(), Failure> {
     }
 }
 
-/// `latch logs`: the host's log (`serve.log`); with `follow`, then what is
-/// added to it, as it is.
+/// `latch logs`: the host's log (`serve.log`), a `log` line per record
+/// (each line the host wrote); with `follow`, then each one added.
 pub fn logs(state: &StateDir, follow: bool) -> Result<(), Failure> {
     let path = state.path.join("serve.log");
     let mut watch = start_watch(state, &path)?;
     let mut offset = 0;
     let mut out = std::io::stdout().lock();
+    if !emit(&mut out, &hello()) {
+        return Ok(());
+    }
     loop {
         watch.arm().map_err(|err| watch_failed(state, err))?;
         let bytes = match std::fs::read(&path) {
@@ -108,14 +123,21 @@ pub fn logs(state: &StateDir, follow: bool) -> Result<(), Failure> {
         if bytes.len() < offset {
             offset = 0;
         }
-        if out
-            .write_all(&bytes[offset..])
-            .and_then(|()| out.flush())
-            .is_err()
-        {
-            return Ok(());
+        // Whole records only: a line still being written waits for its end.
+        let written = bytes[offset..]
+            .iter()
+            .rposition(|&b| b == b'\n')
+            .map_or(0, |end| end + 1);
+        for record in bytes[offset..offset + written].split(|&b| b == b'\n') {
+            if record.is_empty() {
+                continue;
+            }
+            let line = json!({"type": "log", "line": String::from_utf8_lossy(record)});
+            if !emit(&mut out, &line) {
+                return Ok(());
+            }
         }
-        offset = bytes.len();
+        offset += written;
         if !follow || !sleep(&mut watch, state)? {
             return Ok(());
         }

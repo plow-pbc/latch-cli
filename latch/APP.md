@@ -4,6 +4,12 @@ Four commands let an app (the Mac app) drive latch without a terminal.
 Each prints JSON. Each reads only this machine's state folder, except for
 `login`, which talks to Plow. None of them prints a token.
 
+The streams among them (`login --events`, `events`, and also `audit show -f`
+and `logs`) print one JSON object per line, each with a `type`. The first
+line is always `{"type":"hello","schema":1}`: the schema the lines follow.
+Ignore fields and line types you do not know. `--pretty` never changes a
+stream's lines.
+
 ## `latch login --events`
 
 This logs in by text and reports each step as one JSON line on stdout.
@@ -12,6 +18,7 @@ Without `--events`, a login by text needs a person at a terminal; with
 already holds a login, the command goes straight to `verified`.
 
 ```
+{"type":"hello","schema":1}
 {"type":"code","code":"JFO3S","send_to":"+15550000001","send_to_display":"+1 555-000-0001","smsto":"SMSTO:+15550000001:JFO3S","sms_link":"sms:+15550000001?&body=JFO3S","expires_at":null}
 {"type":"waiting"}
 {"type":"verified","peer":{"name":"studio","key":"d9438ef1…","kind":"device"}}
@@ -77,13 +84,14 @@ credentials out of argv.
 
 This reports what the host on this state folder is doing.
 
-It always starts with a snapshot: the host's state and its recent activity,
+After its `hello`, it always starts with a snapshot: the host's state and its recent activity,
 oldest first (up to 50 records). With `--follow`, it then prints each change
 as it happens. It sleeps when nothing changes: no polling, no timers. When
 stdin is a pipe, it exits once that pipe closes, so an app that dies leaves
 no `events` behind.
 
 ```
+{"type":"hello","schema":1}
 {"type":"snapshot","cursor":"64617-1792557851878:2:27ff057f18f54d04","host":{"state":"serving"},"activity":[…]}
 {"type":"host","cursor":"…","state":"stopped"}
 {"type":"activity","cursor":"…","entry":{"id":"27ff057f…","time":"2026-10-21T04:44:15.488378Z","caller":"b735f084…","caller_name":null,"agent":null,"op":"exec","decision":"allow","outcome":"ok"}}

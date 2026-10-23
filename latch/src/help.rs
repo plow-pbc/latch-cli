@@ -77,7 +77,7 @@ use Effect::{Once, ReadOnly, Repeatable};
 const ENTRIES: &[Entry] = &[
     Entry {
         id: "login",
-        output: "This peer (name, key, kind) and whether its key was created now; with --events, JSON lines (code, waiting, verified, expired, error) instead.",
+        output: "This peer (name, key, kind) and whether its key was created now; with --events, JSON lines (hello, code, waiting, verified, expired, error) instead.",
         effect: Repeatable("creates this peer's key if missing and registers it with Plow"),
         owner_only: false,
         connector: None,
@@ -885,7 +885,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "audit.show",
-        output: "`records`: every record of this machine's host, opened with the key, each with its `id`; with --follow, one record per line, then each new one.",
+        output: "`records`: every record of this machine's host, opened with the key, each with its `id`; with --follow, JSON lines: `hello`, then one `record` per line, then each new one.",
         effect: ReadOnly,
         owner_only: true,
         connector: None,
@@ -918,7 +918,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "events",
-        output: "JSON lines: a snapshot of the host, then with --follow each change.",
+        output: "JSON lines: `hello`, a snapshot of the host, then with --follow each change.",
         effect: ReadOnly,
         owner_only: true,
         connector: None,
@@ -968,7 +968,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "logs",
-        output: "The host's log (serve.log); with --follow, then what is added.",
+        output: "JSON lines: `hello`, then a `log` line per record of the host's log (serve.log); with --follow, then each one added.",
         effect: ReadOnly,
         owner_only: true,
         connector: None,
