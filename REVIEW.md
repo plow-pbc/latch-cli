@@ -36,8 +36,8 @@ hosts (Macs and Linux VMs), agents run by Plow. Pre-PMF.
 **Architectural commitments** (don't propose replacing these unless the PR does):
 - One crate, one binary, every role. No daemon besides `latch serve`, and
   no local server for other programs: `latch serve`'s private socket in its
-  state folder (`serve-v3.sock`) is for latch's own commands on that
-  machine; an app drives the CLI and reads its JSON.
+  state folder is for latch's own commands on that machine; an app drives
+  the CLI and reads its JSON.
 - **Identity comes from the credential, never from a name.** A caller is its
   ed25519 key; the host asks Plow (`GET /v1/latch/peers/{key}`) who that key
   is on every operation. Names are labels.
