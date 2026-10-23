@@ -18,7 +18,7 @@ use serde_json::{Value, json};
 
 use crate::cli::{AgentsAction, AgentsArgs};
 use crate::dial::{self, ANSWER_WITHIN};
-use crate::failure::{Exit, Failure};
+use crate::failure::{Failure, code};
 use crate::hosts;
 use crate::plow::{ListedAgent, Plow};
 use crate::state::StateDir;
@@ -74,7 +74,7 @@ pub async fn run(state: &StateDir, args: AgentsArgs) -> Result<Value, Failure> {
     let config = state.require_login()?;
     if config.peer.kind != "device" {
         let message = "agents are managed by their owner, from the owner's own machines";
-        return Err(Failure::new(Exit::Denied, "owner_only", message.into()));
+        return Err(Failure::new(code::owner_only, message.into()));
     }
     let plow = Plow::from_state(state)?;
     managed(state, &plow, &config.api_url, args)
@@ -207,7 +207,7 @@ impl HostRules {
                 "{host}'s rules answer has no readable {what}, so its agents' standing is \
                  unknown; it may run an older latch: `latch update` there"
             );
-            Failure::failed("bad_host_answer", message)
+            Failure::new(code::bad_host_answer, message)
         };
         let deny_exec = match rules.get("deny_exec") {
             None => return Err(unreadable("deny_exec")),
@@ -279,13 +279,13 @@ async fn resolve(plow: &Plow, named: &str) -> Result<ListedAgent, Failure> {
         1 => Ok(found.remove(0)),
         0 => {
             let message = format!("no agent in this account is called {named:?}");
-            let mut failure = Failure::usage("no_such_agent", message);
+            let mut failure = Failure::new(code::no_such_agent, message);
             failure.details = json!({"next": "latch agents"});
             Err(failure)
         }
         n => {
             let message = format!("{n} agents are called {named:?}: name one by its uid");
-            let mut failure = Failure::usage("ambiguous_agent", message);
+            let mut failure = Failure::new(code::ambiguous_agent, message);
             let agents: Vec<Value> = found
                 .iter()
                 .map(|agent| json!({"uid": agent.uid, "name": agent.name}))
@@ -341,18 +341,18 @@ async fn new(
     let name = name.trim();
     if name.is_empty() || name.chars().any(char::is_control) {
         let message = "an agent's name must have text and no control characters";
-        return Err(Failure::usage("bad_name", message.into()));
+        return Err(Failure::new(code::bad_name, message.into()));
     }
     if token_file.as_deref() == Some(Path::new("-")) {
         let message = "an agent's credential is never printed: give --token-file a file";
-        return Err(Failure::usage("usage", message.into()));
+        return Err(Failure::new(code::usage, message.into()));
     }
     let provider = match &cloud {
         Some(kind) => {
             let kinds = plow.agent_kinds().await?;
             if kind == OWN || !kinds.iter().any(|known| &known.id == kind) {
                 let message = format!("Plow offers no cloud agent {kind:?}");
-                let mut failure = Failure::usage("unknown_cloud_kind", message);
+                let mut failure = Failure::new(code::unknown_cloud_kind, message);
                 failure.details = json!({"next": "latch agents catalog"});
                 return Err(failure);
             }
@@ -397,7 +397,7 @@ async fn line_named(plow: &Plow, named: &str) -> Result<String, Failure> {
         Some(line) => Ok(line.uid),
         None => {
             let message = format!("Plow has no line {named:?}");
-            let mut failure = Failure::usage("no_such_line", message);
+            let mut failure = Failure::new(code::no_such_line, message);
             failure.details = json!({"next": "latch agents lines"});
             Err(failure)
         }
@@ -412,17 +412,17 @@ fn not_created(failure: Failure, line: &str) -> Failure {
     ) {
         ("conflict", Some("AGENT_EXISTS")) => {
             let message = format!("line {line} already has an agent; pick a free one");
-            let mut failure = Failure::usage("line_taken", message);
+            let mut failure = Failure::new(code::line_taken, message);
             failure.details = json!({"next": "latch agents lines"});
             failure
         }
-        ("conflict", Some("NO_FREE_LINE")) => Failure::failed(
-            "no_free_line",
+        ("conflict", Some("NO_FREE_LINE")) => Failure::new(
+            code::no_free_line,
             "all of this account's lines are busy".into(),
         ),
         (code, _) if lost(code) => {
             let message = "Plow may or may not have created the agent: its answer was lost; look before trying again";
-            let mut failure = Failure::new(Exit::Unknown, "outcome_unknown", message.into());
+            let mut failure = Failure::new(code::outcome_unknown, message.into());
             failure.details = json!({"next": "latch agents"});
             failure
         }
@@ -443,7 +443,7 @@ async fn remove(plow: &Plow, named: &str, yes: bool) -> Result<Value, Failure> {
     if !yes {
         if !term::interactive() {
             let message = format!("removing {what} signs it out of Plow; pass --yes to do it");
-            return Err(Failure::usage("confirmation_required", message));
+            return Err(Failure::new(code::confirmation_required, message));
         }
         let program = if own {
             " The program you run for it keeps running until you stop it."
@@ -456,7 +456,7 @@ async fn remove(plow: &Plow, named: &str, yes: bool) -> Result<Value, Failure> {
         );
         if !term::confirm(&question) {
             let message = format!("kept {what}");
-            return Err(Failure::usage("not_removed", message));
+            return Err(Failure::new(code::not_removed, message));
         }
     }
     let uid = agent.uid.clone();
@@ -466,7 +466,7 @@ async fn remove(plow: &Plow, named: &str, yes: bool) -> Result<Value, Failure> {
             let message = format!(
                 "Plow may or may not have removed {what}: its answer was lost; look before trying again"
             );
-            let mut failure = Failure::new(Exit::Unknown, "outcome_unknown", message);
+            let mut failure = Failure::new(code::outcome_unknown, message);
             failure.details = json!({"next": format!("latch agents show {uid}")});
             Err(failure)
         }
@@ -499,11 +499,11 @@ impl TokenFile {
                     "{} already exists; the credential goes only to a new file: name another",
                     path.display()
                 );
-                Err(Failure::usage("token_file_exists", message))
+                Err(Failure::new(code::token_file_exists, message))
             }
             Err(err) => {
                 let message = format!("{} cannot be made: {err}", path.display());
-                Err(Failure::usage("token_file_unwritable", message))
+                Err(Failure::new(code::token_file_unwritable, message))
             }
         }
     }
@@ -533,7 +533,7 @@ impl TokenFile {
                     "the agent was created, but its credential could not be saved to {}: {why}",
                     self.path.display()
                 );
-                let mut failure = Failure::failed("token_not_saved", message);
+                let mut failure = Failure::new(code::token_not_saved, message);
                 failure.details = json!({"agent_uid": agent_uid, "path": self.path,
                     "file_removed": file_removed, "next": format!("latch agents show {agent_uid}")});
                 Err(failure)

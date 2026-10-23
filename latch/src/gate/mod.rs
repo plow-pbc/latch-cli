@@ -37,7 +37,7 @@ use serde_json::value::RawValue;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::failure::{Exit, Failure};
+use crate::failure::{Failure, code};
 use crate::model::{self, Answer, Kind, Model, Provider, Question, REQUEST_BUDGET, request_size};
 use crate::plow::Plow;
 use crate::state::to_hex;
@@ -246,8 +246,7 @@ impl Gatekeeper {
             (None, false) => "rules",
             (None, true) => {
                 return Err(Failure::new(
-                    Exit::Denied,
-                    "no_intent",
+                    code::no_intent,
                     "The owner has given this agent no instructions: no Plow chat and no rules on this host."
                         .to_string(),
                 ));
@@ -343,15 +342,14 @@ fn verdict(owner: bool, covered: f64, not_covered: f64, forbidden: f64) -> Resul
             "The owner's messages don't cover this. Ask the owner in chat, saying exactly what you will do (item, total, recipient), then retry.".to_string(),
         ),
     };
-    let mut failure = Failure::new(Exit::Denied, "gatekeeper_denied", message);
+    let mut failure = Failure::new(code::gatekeeper_denied, message);
     failure.details = json!({"reason": reason});
     Err(failure)
 }
 
 fn unavailable(why: &str) -> Failure {
     Failure::new(
-        Exit::Unreachable,
-        "gatekeeper_unavailable",
+        code::gatekeeper_unavailable,
         format!(
             "The gatekeeper could not judge this, so it did not run: {why}. The owner's settings commands (rules, vault) still work."
         ),

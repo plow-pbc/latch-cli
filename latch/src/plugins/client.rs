@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use super::{Connector, Plugins, host};
 use crate::cli::{PluginsArgs, PluginsCommand};
 use crate::dial::{self, ANSWER_WITHIN};
-use crate::failure::{Exit, Failure};
+use crate::failure::{Failure, code};
 use crate::hosts;
 use crate::lifecycle;
 use crate::plow::{Peer, Plow};
@@ -73,11 +73,11 @@ async fn without_a_host(state: &StateDir, args: &Value) -> Result<Value, Failure
         Err(holder) if serving(&holder) => {
             // A host of this latch's, not answering yet.
             let message = format!("{holder} is starting on this state folder; run this again");
-            return Err(Failure::new(Exit::Unreachable, "serve_required", message));
+            return Err(Failure::new(code::serve_required, message));
         }
         Err(holder) => {
             let message = format!("{holder} still holds this state folder; run this again");
-            return Err(Failure::failed("state_busy", message));
+            return Err(Failure::new(code::state_busy, message));
         }
     };
     let workers = crate::serve::workers(dir)?;
@@ -96,7 +96,7 @@ fn this_host(state: &StateDir) -> Result<Peer, Failure> {
     let config = state.require_config()?;
     if config.peer.kind != "device" {
         let message = "plugins are turned on and off by the owner, on the host itself";
-        return Err(Failure::new(Exit::Denied, "owner_only", message.into()));
+        return Err(Failure::new(code::owner_only, message.into()));
     }
     Ok(Peer {
         this_machine: true,

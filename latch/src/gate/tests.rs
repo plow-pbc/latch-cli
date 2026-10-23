@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 use super::fake::{self, AGENT, LINE, World, agent_self, member, message, owner};
 use super::rules::{RULES_DIR, RuleFiles, Rules, RulesSource};
 use super::*;
+use crate::failure::Exit;
 use crate::model::{Asked, CallFailed, CallMeta, system_one};
 use serde_json::value::RawValue;
 

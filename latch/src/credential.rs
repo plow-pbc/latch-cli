@@ -9,7 +9,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::failure::Failure;
+use crate::failure::{Failure, code};
 use crate::state::StateDir;
 
 /// Where a cloud agent's credential lives, unless `$PLOW_TOKEN_FILE` says
@@ -64,7 +64,7 @@ pub fn read(path: &Path) -> Result<String, Failure> {
         Ok(token) => Ok(token.trim().to_string()),
         Err(err) => {
             let message = format!("cannot read the Plow credential {}: {err}", path.display());
-            Err(Failure::usage("no_credential", message))
+            Err(Failure::new(code::no_credential, message))
         }
     }
 }

@@ -15,7 +15,7 @@ use serde_json::{Value, json};
 use crate::cli::{self, BUILD_API_URL, LoginArgs};
 use crate::credential;
 use crate::devices;
-use crate::failure::Failure;
+use crate::failure::{Failure, code};
 use crate::heartbeat;
 use crate::plow::{self, Peer, Plow, Registration};
 use crate::state::{Config, StateDir};
@@ -61,7 +61,7 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
     let Some(api_url) = api_url else {
         let message = "latch doesn't know which Plow to use: pass --api-url https://api.plow.co \
                        (or set $PLOW_API_BASE or $PLOW_API_URL)";
-        return Err(Failure::usage("not_configured", message.to_string()));
+        return Err(Failure::new(code::not_configured, message.to_string()));
     };
     let source = if let Some(path) = &args.token_file {
         Source::Given(credential::read(path)?)
@@ -77,7 +77,7 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
         let message = "no Plow credential: pass --token-file FILE with the owner's Plow login, \
                        or run `latch login` at a terminal to log in by text"
             .to_string();
-        let mut failure = Failure::usage("no_credential", message);
+        let mut failure = Failure::new(code::no_credential, message);
         failure.next = Some("latch login --token-file PATH, or latch login --events".into());
         return Err(failure);
     };
@@ -257,7 +257,7 @@ async fn wait_for_text(
                 // Only the first `verified` answer carries the token.
                 let Some(token) = answer.token else {
                     let message = "this login was already collected; run `latch login` again";
-                    return Err(Failure::failed("login_collected", message.to_string()));
+                    return Err(Failure::new(code::login_collected, message.to_string()));
                 };
                 state.create()?;
                 state.save_token(&token, api_url)?;
@@ -269,11 +269,11 @@ async fn wait_for_text(
             }
             Err(failure) if failure.code == "expired" => {
                 let message = "the code expired before it was texted; run `latch login` again";
-                return Err(Failure::failed("code_expired", message.to_string()));
+                return Err(Failure::new(code::code_expired, message.to_string()));
             }
             Err(failure) if failure.code == "not_found" => {
                 let message = "Plow no longer knows this login; run `latch login` again";
-                return Err(Failure::failed("login_not_found", message.to_string()));
+                return Err(Failure::new(code::login_not_found, message.to_string()));
             }
             // Asking again would get the same refusal.
             Err(failure) if plow::refused(&failure) => return Err(failure),
@@ -289,7 +289,7 @@ async fn wait_for_text(
                 "no text arrived within {} minutes; run `latch login` again",
                 GIVE_UP_AFTER.as_secs() / 60
             );
-            return Err(Failure::failed("code_expired", message));
+            return Err(Failure::new(code::code_expired, message));
         };
         tokio::time::sleep(wait).await;
     }
@@ -351,14 +351,14 @@ async fn clash(plow: &Plow, mut registration: Registration, rerun: &str) -> Resu
     let machine = match peers.iter().find(|peer| peer.name == name) {
         Some(peer) if peer.kind == "agent" => {
             let message = format!("the name {name:?} belongs to an agent; choose another --name");
-            return Err(Failure::usage("conflict", message));
+            return Err(Failure::new(code::conflict, message));
         }
         Some(machine) if machine.key != registration.key => machine,
         _ => {
             let message = format!(
                 "this key or the name {name:?} is taken by another peer; choose another --name"
             );
-            return Err(Failure::usage("conflict", message));
+            return Err(Failure::new(code::conflict, message));
         }
     };
     let last_seen = machine.last_seen_at.as_deref().unwrap_or("never");
@@ -369,7 +369,7 @@ async fn clash(plow: &Plow, mut registration: Registration, rerun: &str) -> Resu
              terminal to replace it (no second text needed)",
             shell_quoted(&name)
         );
-        Failure::usage("conflict", message)
+        Failure::new(code::conflict, message)
     };
     if !term::interactive() {
         return Err(taken());
@@ -455,7 +455,7 @@ fn api_url(
 }
 
 fn missing(what: &str) -> Failure {
-    Failure::usage("not_configured", format!("first login needs {what}"))
+    Failure::new(code::not_configured, format!("first login needs {what}"))
 }
 
 #[cfg(test)]

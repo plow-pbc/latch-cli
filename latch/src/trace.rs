@@ -14,7 +14,7 @@ use std::sync::Mutex;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::format::FmtSpan;
 
-use crate::failure::Failure;
+use crate::failure::{Failure, code};
 use crate::state::StateDir;
 
 /// The file in the state folder a command's events are appended to.
@@ -26,8 +26,8 @@ pub fn init(state: &StateDir, to_stderr: bool) -> Result<(), Failure> {
     };
     let filter = filter.to_string_lossy();
     let filter = EnvFilter::builder().parse(&*filter).map_err(|err| {
-        Failure::usage(
-            "bad_trace",
+        Failure::new(
+            code::bad_trace,
             format!("LATCH_TRACE {filter:?} is not a filter: {err}"),
         )
     })?;
@@ -54,7 +54,7 @@ pub fn file(state: &StateDir) -> Result<File, Failure> {
         .create(true)
         .mode(0o600)
         .open(&path)
-        .map_err(|err| Failure::failed("state_io", format!("{}: {err}", path.display())))
+        .map_err(|err| Failure::new(code::state_io, format!("{}: {err}", path.display())))
 }
 
 /// Where a program a command runs writes, stdout and stderr both: `log`,
@@ -63,7 +63,7 @@ pub fn output(log: &File) -> Result<(Stdio, Stdio), Failure> {
     let copy = || {
         log.try_clone()
             .map(Stdio::from)
-            .map_err(|err| Failure::failed("state_io", format!("{FILE}: {err}")))
+            .map_err(|err| Failure::new(code::state_io, format!("{FILE}: {err}")))
     };
     Ok((copy()?, copy()?))
 }

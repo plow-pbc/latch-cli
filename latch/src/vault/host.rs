@@ -17,7 +17,7 @@ use super::import;
 use super::item::{Item, Raw, kind_code};
 use super::link::{self, Here};
 use super::store::{Backend, OwnStore};
-use crate::failure::{Exit, Failure};
+use crate::failure::{Failure, code};
 use crate::serve::Done;
 use crate::wire::{self, Response};
 
@@ -55,7 +55,7 @@ impl Vault {
     ) -> Result<T, Failure> {
         // Lock a stable sidecar: vault.json itself is replaced atomically on save.
         let path = self.dir.join("vault.lock");
-        let io = |err| Failure::failed("vault_failed", format!("{}: {err}", path.display()));
+        let io = |err| Failure::new(code::vault_failed, format!("{}: {err}", path.display()));
         let lock = OpenOptions::new()
             .read(true)
             .write(true)
@@ -105,8 +105,8 @@ pub(super) fn manage(
         "add" => add(vault, args, audit),
         "edit" => edit(vault, args, audit),
         "remove" => remove(vault, args, audit),
-        command => Err(Failure::usage(
-            "bad_command",
+        command => Err(Failure::new(
+            code::bad_command,
             format!("unknown vault command {command:?}"),
         )),
     }
@@ -119,8 +119,7 @@ pub(super) fn owner_only(kind: &str) -> Result<(), Failure> {
         return Ok(());
     }
     Err(Failure::new(
-        Exit::Denied,
-        "owner_only",
+        code::owner_only,
         "the vault takes commands from the owner's own devices only".into(),
     ))
 }
@@ -152,7 +151,7 @@ fn strings(value: &Value) -> Vec<String> {
 /// The item `args` describes (kind, title, sites, values by label), not
 /// yet checked.
 pub(super) fn item_from(args: &Value) -> Result<Item, Failure> {
-    let bad = |message: String| Failure::usage("bad_item", message);
+    let bad = |message: String| Failure::new(code::bad_item, message);
     let kind = args["kind"]
         .as_str()
         .and_then(kind_code)
@@ -192,10 +191,10 @@ pub(super) fn add(
 /// value clears the field. The kind never changes. The audit gets the
 /// names of the fields that changed, never a value.
 pub fn edit(vault: &Vault, args: &Value, audit: &mut Map<String, Value>) -> Result<Value, Failure> {
-    let bad = |message: String| Failure::usage("bad_item", message);
+    let bad = |message: String| Failure::new(code::bad_item, message);
     let (Some(id), Some(revision)) = (args["item"].as_str(), args["revision"].as_u64()) else {
-        return Err(Failure::usage(
-            "bad_arguments",
+        return Err(Failure::new(
+            code::bad_arguments,
             "edit needs the item and its revision".into(),
         ));
     };
@@ -209,7 +208,7 @@ pub fn edit(vault: &Vault, args: &Value, audit: &mut Map<String, Value>) -> Resu
     let (meta, changed) = vault.with(|store| {
         let current = store
             .item(id)
-            .ok_or_else(|| Failure::usage("no_such_item", format!("there is no item {id}")))?;
+            .ok_or_else(|| Failure::new(code::no_such_item, format!("there is no item {id}")))?;
         if let Some(kind) = args["kind"].as_str()
             && kind_code(kind) != Some(current.raw.kind)
         {
@@ -261,7 +260,7 @@ fn show(vault: &Vault, args: &Value, audit: &mut Map<String, Value>) -> Result<V
     let item = vault.with(|store| {
         store
             .item(id)
-            .ok_or_else(|| Failure::usage("no_such_item", format!("there is no item {id}")))
+            .ok_or_else(|| Failure::new(code::no_such_item, format!("there is no item {id}")))
     })?;
     let meta = item.meta();
     let values: Map<String, Value> = meta
@@ -278,8 +277,8 @@ fn show(vault: &Vault, args: &Value, audit: &mut Map<String, Value>) -> Result<V
 
 fn remove(vault: &Vault, args: &Value, audit: &mut Map<String, Value>) -> Result<Value, Failure> {
     let (Some(item), Some(revision)) = (args["item"].as_str(), args["revision"].as_u64()) else {
-        return Err(Failure::usage(
-            "bad_arguments",
+        return Err(Failure::new(
+            code::bad_arguments,
             "remove needs the item and its revision".into(),
         ));
     };
@@ -291,8 +290,7 @@ fn remove(vault: &Vault, args: &Value, audit: &mut Map<String, Value>) -> Result
 
 fn lost() -> Failure {
     Failure::new(
-        Exit::Unknown,
-        "connection_lost",
+        code::connection_lost,
         "the import broke off; nothing was saved".into(),
     )
 }
@@ -307,10 +305,10 @@ async fn receive(
 ) -> Result<import::Parsed, Failure> {
     let size = args["size"]
         .as_u64()
-        .ok_or_else(|| Failure::usage("bad_arguments", "the export's size is missing".into()))?;
+        .ok_or_else(|| Failure::new(code::bad_arguments, "the export's size is missing".into()))?;
     if size > 300 * 1024 * 1024 {
-        return Err(Failure::usage(
-            "file_too_large",
+        return Err(Failure::new(
+            code::file_too_large,
             "that export is too large".into(),
         ));
     }
@@ -372,8 +370,8 @@ async fn import(
         Ok(Ok(json)) => serde_json::from_slice::<Value>(&json).map_err(|_| lost())?,
         Ok(Err(_)) => return Err(lost()),
         Err(_) => {
-            return Err(Failure::usage(
-                "import_expired",
+            return Err(Failure::new(
+                code::import_expired,
                 "no pick came in time; nothing was saved; run `latch vault import` again".into(),
             ));
         }
@@ -396,6 +394,7 @@ async fn import(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::failure::Exit;
 
     #[test]
     fn an_edit_changes_what_it_names_at_its_revision_and_audits_only_names() {

@@ -10,7 +10,7 @@
 use jiff::Timestamp;
 
 use super::unavailable;
-use crate::failure::{Exit, Failure};
+use crate::failure::{Failure, code};
 use crate::model::REQUEST_BUDGET;
 use crate::plow::{Message, Plow, Sender};
 
@@ -125,7 +125,7 @@ fn said(message: Message) -> Result<Said, Failure> {
 }
 
 fn which_chat(message: String) -> Failure {
-    Failure::new(Exit::Usage, "which_chat", message)
+    Failure::new(code::which_chat, message)
 }
 
 fn listed(chats: &[String]) -> String {

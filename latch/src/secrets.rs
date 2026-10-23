@@ -20,7 +20,7 @@ use std::io::{ErrorKind, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
-use crate::failure::Failure;
+use crate::failure::{Failure, code};
 use crate::state::write_private;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -173,12 +173,12 @@ impl Secrets {
              the logged-in user, in their session",
             self.account(secret)
         );
-        Failure::failed("keychain_failed", message)
+        Failure::new(code::keychain_failed, message)
     }
 }
 
 fn io_failure(path: &Path, err: std::io::Error) -> Failure {
-    Failure::failed("state_io", format!("{}: {err}", path.display()))
+    Failure::new(code::state_io, format!("{}: {err}", path.display()))
 }
 
 #[cfg(target_os = "macos")]
@@ -201,7 +201,7 @@ mod platform {
     };
 
     use super::Store;
-    use crate::failure::Failure;
+    use crate::failure::{Failure, code};
 
     /// The Keychain access group Plow's signed builds share with the Mac app.
     const KEYCHAIN_GROUP: &str = "3559PD337Z.co.plow.latch";
@@ -237,7 +237,7 @@ mod platform {
                      ({why}), so it can't tell where its secrets belong; nothing was \
                      read or written"
                 );
-                Err(Failure::failed("keychain_failed", message))
+                Err(Failure::new(code::keychain_failed, message))
             }
         }
     }

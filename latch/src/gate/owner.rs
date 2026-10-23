@@ -14,7 +14,7 @@ use std::path::Path;
 use serde_json::{Map, Value, json};
 
 use super::rules::{Change, RulesDir, Scope, is_agent_uid, revision};
-use crate::failure::{Exit, Failure};
+use crate::failure::{Failure, code};
 use crate::plow::{NamedAgent, Peer, Plow};
 use crate::serve::Done;
 
@@ -36,8 +36,8 @@ pub async fn run(state_dir: &Path, plow: &Plow, host: &str, kind: &str, args: &V
                 "show" => show(state_dir, &dir, plow, host, from).await,
                 "set" | "edit" => set(&dir, plow, host, command, args, &mut audit).await,
                 "clear" => clear(&dir, plow, host, from, &mut audit).await,
-                _ => Err(Failure::usage(
-                    "bad_command",
+                _ => Err(Failure::new(
+                    code::bad_command,
                     format!("unknown rules command {command:?}"),
                 )),
             }
@@ -53,8 +53,7 @@ pub(crate) fn owner_only(kind: &str) -> Result<(), Failure> {
         return Ok(());
     }
     Err(Failure::new(
-        Exit::Denied,
-        "owner_only",
+        code::owner_only,
         "the rules take commands from the owner's own devices only".into(),
     ))
 }
@@ -78,7 +77,7 @@ async fn set(
 ) -> Result<Value, Failure> {
     let text = args["text"]
         .as_str()
-        .ok_or_else(|| Failure::usage("bad_arguments", "the rules' text is missing".into()))?;
+        .ok_or_else(|| Failure::new(code::bad_arguments, "the rules' text is missing".into()))?;
     let (scope, name, peer) = match args["from"].as_str() {
         None => (Scope::Host, None, None),
         Some(from) => {
@@ -254,21 +253,21 @@ impl Account {
                 .iter()
                 .any(|peer| peer.name == name && peer.kind == "device") =>
             {
-                Err(Failure::usage(
-                    "not_an_agent",
+                Err(Failure::new(
+                    code::not_an_agent,
                     format!(
                         "{name:?} is a device: `--agent` names an agent, and a device is judged on the rules for every agent"
                     ),
                 ))
             }
             [] if any_uid && is_agent_uid(name) => Ok(name.to_string()),
-            [] => Err(Failure::usage(
-                "no_such_agent",
+            [] => Err(Failure::new(
+                code::no_such_agent,
                 format!("no agent or agent's latch in this account is called {name:?}"),
             )),
             many => {
-                let mut refused = Failure::usage(
-                    "ambiguous_agent",
+                let mut refused = Failure::new(
+                    code::ambiguous_agent,
                     format!(
                         "{} agents go by {name:?}: {}; name one by its uid with --agent",
                         many.len(),
@@ -301,6 +300,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
+    use crate::failure::Exit;
     use crate::gate::rules::{RuleFiles, Rules, RulesSource};
     use crate::wire::Response;
 

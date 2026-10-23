@@ -10,7 +10,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use tokio::io::AsyncReadExt;
 
-use crate::failure::{Exit, Failure};
+use crate::failure::{Failure, code};
 use crate::serve::Done;
 use crate::wire::Response;
 use crate::worker::WorkerSetup;
@@ -64,7 +64,7 @@ pub async fn plan(workers: &WorkerSetup, op: &str, args: &Value) -> Result<Value
             Ok(json!({"action": action, "args": words, "plan": answer["plan"]}))
         }
         Ok(_) => Err(Box::new(refused(
-            Failure::failed("reader_failed", "the reader gave no plan".to_string()),
+            Failure::new(code::reader_failed, "the reader gave no plan".to_string()),
             kept.clone(),
         ))),
         Err(failure) => Err(Box::new(refused(failure, kept))),
@@ -182,7 +182,7 @@ fn refused(failure: Failure, audit: Value) -> Done {
 /// The action and the reader's words for it, checked for shape only: the
 /// reader checks their meaning.
 pub fn request(op: &str, args: &Value) -> Result<(String, Vec<String>), Failure> {
-    let bad = |message: &str| Failure::usage("bad_request", message.to_string());
+    let bad = |message: &str| Failure::new(code::bad_request, message.to_string());
     let action = args["action"].as_str().unwrap_or_default();
     if !actions(op).contains(&action) {
         return Err(bad(&format!("{op} takes {}", actions(op).join(", "))));
@@ -221,13 +221,13 @@ pub async fn read(
 ) -> Result<Value, Failure> {
     if !cfg!(target_os = "macos") {
         let message = "Messages and contacts are read on macOS hosts only".to_string();
-        return Err(Failure::failed("messages_unavailable", message));
+        return Err(Failure::new(code::messages_unavailable, message));
     }
     let program = reader(&workers.state_dir);
     verify(&program, READER_SHA256)?;
     let mut child = workers
         .messages(&program, reads, argv)
-        .map_err(|error| Failure::failed(&error.code, error.message))?;
+        .map_err(|error| Failure::reported(&error.code, error.message))?;
     let mut stdout = child.stdout.take().expect("piped").take(MAX_ANSWER + 1);
     let mut stderr = child.stderr.take().expect("piped").take(64 << 10);
     let (mut out, mut err) = (Vec::new(), Vec::new());
@@ -241,18 +241,18 @@ pub async fn read(
             "the reader did not finish within {}s",
             READER_LIMIT.as_secs()
         );
-        return Err(Failure::failed("reader_timeout", message));
+        return Err(Failure::new(code::reader_timeout, message));
     };
     if status.success() {
         if out.len() as u64 > MAX_ANSWER {
-            return Err(Failure::failed(
-                "reader_failed",
+            return Err(Failure::new(
+                code::reader_failed,
                 "the reader's answer is too large".to_string(),
             ));
         }
         return serde_json::from_slice(&out).map_err(|_| {
-            Failure::failed(
-                "reader_failed",
+            Failure::new(
+                code::reader_failed,
                 "the reader's answer is not JSON".to_string(),
             )
         });
@@ -278,7 +278,7 @@ async fn region() -> Option<String> {
 /// or the worker's own, as a failure. Neither holds message content.
 fn reader_error(stderr: &str) -> Failure {
     if let Some(error) = crate::worker::worker_error(stderr) {
-        return Failure::failed(&error.code, error.message);
+        return Failure::reported(&error.code, error.message);
     }
     let line: Value = stderr
         .lines()
@@ -287,21 +287,13 @@ fn reader_error(stderr: &str) -> Failure {
         .unwrap_or(Value::Null);
     let error = &line["error"];
     let Some(code) = error["code"].as_str() else {
-        return Failure::failed(
-            "reader_failed",
+        return Failure::new(
+            code::reader_failed,
             "the reader stopped without saying why".to_string(),
         );
     };
-    let exit = if error["exit"] == 2 {
-        Exit::Usage
-    } else {
-        Exit::Failed
-    };
-    let mut failure = Failure::new(
-        exit,
-        code,
-        error["message"].as_str().unwrap_or_default().to_string(),
-    );
+    let message = error["message"].as_str().unwrap_or_default().to_string();
+    let mut failure = Failure::reported(code, message);
     let mut details = error.clone();
     if let Some(object) = details.as_object_mut() {
         for key in ["code", "message", "exit"] {
@@ -322,7 +314,7 @@ fn verify(program: &Path, pinned: Option<&str>) -> Result<(), Failure> {
             "the Messages reader is not installed at {}; run install.sh",
             program.display()
         );
-        Failure::failed("messages_not_installed", message)
+        Failure::new(code::messages_not_installed, message)
     };
     let mut file = std::fs::File::open(program).map_err(|_| missing())?;
     let Some(pinned) = pinned else {
@@ -334,7 +326,7 @@ fn verify(program: &Path, pinned: Option<&str>) -> Result<(), Failure> {
     if digest != pinned {
         let message =
             "the installed Messages reader is not the one this latch was built with".to_string();
-        return Err(Failure::new(Exit::Denied, "messages_unverified", message));
+        return Err(Failure::new(code::messages_unverified, message));
     }
     Ok(())
 }
@@ -342,6 +334,7 @@ fn verify(program: &Path, pinned: Option<&str>) -> Result<(), Failure> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::failure::Exit;
 
     #[test]
     fn a_request_names_one_of_its_actions_and_gives_strings() {

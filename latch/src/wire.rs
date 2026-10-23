@@ -162,7 +162,7 @@ impl Response {
                 message,
                 details,
             } => {
-                let mut failure = crate::failure::Failure::new(exit, &code, message);
+                let mut failure = crate::failure::Failure::relayed(exit, &code, message);
                 failure.details = details;
                 Err(failure)
             }

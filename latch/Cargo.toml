@@ -66,9 +66,6 @@ minisign-verify = "0.3.0"
 iroh-relay = { version = "1.3.0", default-features = false, features = ["server"] }
 # Signs the test releases `latch update` checks, with a key made per test.
 minisign = "0.10.0"
-# Read latch's source as syntax: every error code it names is listed (failure.rs).
-syn = { version = "2.0.119", default-features = false, features = ["full", "parsing", "visit", "printing"] }
-proc-macro2 = "1.0.107"
 
 # The build date `latch --version` prints (build.rs).
 [build-dependencies]

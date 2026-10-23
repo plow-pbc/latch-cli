@@ -38,7 +38,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::cli::AuditAction;
-use crate::failure::Failure;
+use crate::failure::{Failure, code};
 use crate::seal::from_hex;
 use crate::secrets::{Secret, Secrets};
 use crate::state::{StateDir, to_hex};
@@ -411,7 +411,10 @@ pub fn read_next(keys: &Keys, prev: &str, text: &[u8], number: usize) -> Result<
 pub fn follow(state: &StateDir) -> Result<(), Failure> {
     let path = state.path.join(FILE);
     let watching = |err: std::io::Error| {
-        Failure::failed("watch_failed", format!("{}: {err}", state.path.display()))
+        Failure::new(
+            code::watch_failed,
+            format!("{}: {err}", state.path.display()),
+        )
     };
     state.create()?;
     let mut watch = crate::watch::Watch::new(
@@ -570,15 +573,15 @@ fn no_key(path: &Path) -> Failure {
 }
 
 fn failed(message: String) -> Failure {
-    Failure::failed("audit_key", message)
+    Failure::new(code::audit_key, message)
 }
 
 fn broken(path: &Path, problem: &str) -> Failure {
-    Failure::failed("audit_broken", format!("{}: {problem}", path.display()))
+    Failure::new(code::audit_broken, format!("{}: {problem}", path.display()))
 }
 
 fn io_failure(path: &Path, err: std::io::Error) -> Failure {
-    Failure::failed("audit_io", format!("{}: {err}", path.display()))
+    Failure::new(code::audit_io, format!("{}: {err}", path.display()))
 }
 
 #[cfg(test)]

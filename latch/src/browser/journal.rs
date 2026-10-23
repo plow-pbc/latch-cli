@@ -25,7 +25,7 @@ use std::time::{Duration, SystemTime};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::failure::Failure;
+use crate::failure::{Failure, code};
 use crate::state::to_hex;
 
 pub struct Journal {
@@ -42,8 +42,8 @@ fn folder(state_dir: &Path, session: &str) -> PathBuf {
 }
 
 fn lost(err: std::io::Error) -> Failure {
-    Failure::failed(
-        "journal_failed",
+    Failure::new(
+        code::journal_failed,
         format!(
             "the request could not be journaled ({err}); a step of it may already have run: read its history (`latch browser do --history R`) before sending it again"
         ),
@@ -75,8 +75,8 @@ impl Journal {
             .mode(0o600)
             .open(folder.join(format!("{request}.jsonl")))
             .map_err(|err| match err.kind() {
-                std::io::ErrorKind::AlreadyExists => Failure::usage(
-                    "duplicate_request",
+                std::io::ErrorKind::AlreadyExists => Failure::new(
+                    code::duplicate_request,
                     format!(
                         "request {request} was already sent to this session; read it with `latch browser do --history {request}`, never resend it"
                     ),
@@ -184,8 +184,8 @@ pub fn shot(
     // Its owner is the request's: a missing or foreign request reads as none.
     history(state_dir, session, caller, request, false)?;
     let missing = || {
-        Failure::usage(
-            "no_such_shot",
+        Failure::new(
+            code::no_such_shot,
             format!("request {request} has no screenshot {shot:?}"),
         )
     };
@@ -210,8 +210,8 @@ pub fn history(
     running: bool,
 ) -> Result<Value, Failure> {
     let missing = || {
-        Failure::usage(
-            "no_such_request",
+        Failure::new(
+            code::no_such_request,
             format!("this session has no request {request}"),
         )
     };

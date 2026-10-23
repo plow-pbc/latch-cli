@@ -55,6 +55,7 @@ mod watch;
 mod wire;
 mod worker;
 
+use crate::failure::code;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
@@ -398,7 +399,7 @@ fn usage_error(err: clap::Error) -> ExitCode {
         return ExitCode::SUCCESS;
     }
     let message = err.to_string().trim_end().to_string();
-    let mut failure = Failure::usage("usage", message);
+    let mut failure = Failure::new(code::usage, message);
     // `latch exec --host h ls -la` (no `--`): say how to pass a command.
     let exec = std::env::args().skip(1).any(|word| word == "exec");
     if exec && err.kind() == ErrorKind::UnknownArgument {

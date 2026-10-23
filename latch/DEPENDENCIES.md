@@ -50,10 +50,6 @@ Tests only, too: `minisign` (3.0M / 1.0M downloads, 112 stars, jedisct1,
 0.10.0, MIT), which signs the test releases `latch update` checks with a key
 made for each test.
 
-Tests only, too: `syn` and `proc-macro2` (dtolnay, MIT/Apache-2.0), the
-versions serde's and clap's derives already build, which read latch's source
-as syntax for the test that every error code it names is listed.
-
 Not used, although the audit lists them: `anyhow` and `thiserror`. A failure
 is one plain struct (`src/failure.rs`) with an exit kind, a code and a
 message, which is all the error contract needs.

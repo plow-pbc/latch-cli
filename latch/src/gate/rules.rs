@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
-use crate::failure::{Exit, Failure};
+use crate::failure::{Failure, code};
 use crate::state::{to_hex, write_private};
 
 /// The owner's rules that apply to one agent.
@@ -62,7 +62,7 @@ impl RuleFiles {
     /// where a caller cannot rewrite them, and no agent's rules come to
     /// more than [`MAX_RULES`].
     pub fn new(state_dir: &Path) -> Result<RuleFiles, Failure> {
-        let refuse = |message: String| Failure::usage("bad_rules", message);
+        let refuse = |message: String| Failure::new(code::bad_rules, message);
         let state = state_dir
             .canonicalize()
             .map_err(|err| refuse(err.to_string()))?;
@@ -239,7 +239,7 @@ impl RulesDir {
     ) -> Result<Change, Failure> {
         if text.trim().is_empty() {
             let message = "the rules are empty; to remove them, use `latch rules clear`";
-            return Err(Failure::usage("empty_rules", message.into()));
+            return Err(Failure::new(code::empty_rules, message.into()));
         }
         let _lock = self.lock()?;
         let before = self.text(scope)?.as_deref().map(revision);
@@ -247,8 +247,7 @@ impl RulesDir {
             && expected != before.as_deref()
         {
             let mut refused = Failure::new(
-                Exit::Denied,
-                "stale_revision",
+                code::stale_revision,
                 "the rules changed since they were read; nothing was saved, and the current text is kept".into(),
             );
             refused.details = serde_json::json!({"revision": before});
@@ -270,7 +269,7 @@ impl RulesDir {
                 "the rules for every agent and one agent's own may come to {MAX_RULES} bytes together; these would come to {}",
                 text.len() + others
             );
-            return Err(Failure::usage("rules_too_long", message));
+            return Err(Failure::new(code::rules_too_long, message));
         }
         if let Scope::Agent(uid) = scope {
             let peer_file = format!("{uid}.peer");
@@ -342,7 +341,7 @@ impl RulesDir {
     }
 
     fn failure(&self, path: &Path, err: std::io::Error) -> Failure {
-        Failure::failed("rules_io", format!("{}: {err}", path.display()))
+        Failure::new(code::rules_io, format!("{}: {err}", path.display()))
     }
 }
 

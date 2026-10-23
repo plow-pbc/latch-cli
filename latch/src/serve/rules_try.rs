@@ -20,7 +20,7 @@
 use serde_json::{Value, json};
 
 use super::{Binary, Checks, DenyExec, Stop, check, exec_denied};
-use crate::failure::{Exit, Failure};
+use crate::failure::{Exit, Failure, code};
 use crate::gate::rules::RuleFiles;
 use crate::gate::{self, Caller, Gate, Gatekeeper};
 use crate::plow::{Identity, Permissions, Plow};
@@ -34,7 +34,7 @@ pub(crate) async fn preview_here(state: &StateDir, args: &Value) -> Result<Value
     let config = state.require_login()?;
     let plow = Plow::from_state(state)?;
     let provider = Gatekeeper::provider_for_host(&state.path)
-        .map_err(|why| Failure::failed("not_logged_in", why))?;
+        .map_err(|why| Failure::new(code::not_logged_in, why))?;
     let gatekeeper = Gatekeeper::new(
         plow.clone(),
         provider,
@@ -43,7 +43,7 @@ pub(crate) async fn preview_here(state: &StateDir, args: &Value) -> Result<Value
     let state_dir = state
         .path
         .canonicalize()
-        .map_err(|err| Failure::failed("state_dir", format!("{}: {err}", state.path.display())))?;
+        .map_err(|err| Failure::new(code::state_dir, format!("{}: {err}", state.path.display())))?;
     let workers = super::workers(state_dir)?;
     let binary = Binary::at(&workers.program)?;
     let home = std::env::home_dir().unwrap_or_default();
@@ -94,7 +94,7 @@ async fn preview(
     }
     let Ok(mut request) = serde_json::from_value::<Request>(args["request"].clone()) else {
         let message = "The request to preview is not a latch request.".to_string();
-        return refused(Failure::usage("bad_request", message));
+        return refused(Failure::new(code::bad_request, message));
     };
     if gate::gated(&request.op, &request.args).is_none() {
         return refused(not_previewable(&request.op));
@@ -112,7 +112,7 @@ async fn preview(
     let (judged_as, judged_local, shown_as) = match (args["from"].as_str(), new_agent) {
         (Some(_), true) => {
             let message = "Judge as one agent (from) or as a new agent, not both.".to_string();
-            return refused(Failure::usage("bad_request", message));
+            return refused(Failure::new(code::bad_request, message));
         }
         (Some(from), false) => match gate::owner::agent(host.plow, from).await {
             Ok((uid, name)) => {
@@ -144,8 +144,8 @@ async fn preview(
                 ..*host
             };
             let gate = match chat {
-                Some(_) => Err(Failure::usage(
-                    "plow_chat_not_supported",
+                Some(_) => Err(Failure::new(
+                    code::plow_chat_not_supported,
                     "A new agent has no Plow chat yet; omit --plow-chat and LATCH_PLOW_CHAT".into(),
                 )),
                 None => Ok(Gate {
@@ -274,5 +274,5 @@ pub(crate) fn not_previewable(op: &str) -> Failure {
             "`{op}` is not judged by the gatekeeper, so there is nothing to preview. {instead}"
         ),
     };
-    Failure::usage("not_previewable", message)
+    Failure::new(code::not_previewable, message)
 }

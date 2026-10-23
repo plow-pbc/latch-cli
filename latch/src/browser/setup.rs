@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 
 use super::engine::{CAMOUFOX, CFT};
 use crate::cli::EngineArg;
-use crate::failure::{Exit, Failure};
+use crate::failure::{Failure, code};
 use crate::state::StateDir;
 
 /// What `browser-engines.sh` reads, at the paths it reads them from.
@@ -52,8 +52,7 @@ pub fn run(state: &StateDir, engine: EngineArg) -> Result<Value, Failure> {
         && config.peer.kind == "agent"
     {
         return Err(Failure::new(
-            Exit::Denied,
-            "owner_only",
+            code::owner_only,
             "only the host's owner installs a browser engine, on the host: this latch is \
              logged in as an agent"
                 .to_string(),
@@ -81,7 +80,7 @@ pub fn run(state: &StateDir, engine: EngineArg) -> Result<Value, Failure> {
 /// messages go to trace.log, so stdout keeps only latch's JSON and stderr
 /// only its error line.
 fn install(state: &StateDir, engine: &str) -> Result<(), Failure> {
-    let local = |err: std::io::Error| Failure::failed("setup_failed", err.to_string());
+    let local = |err: std::io::Error| Failure::new(code::setup_failed, err.to_string());
     let files = tempfile::tempdir().map_err(local)?;
     for (path, bytes) in FILES {
         let path = files.path().join(path);
@@ -100,8 +99,8 @@ fn install(state: &StateDir, engine: &str) -> Result<(), Failure> {
         .status()
         .map_err(local)?;
     if !status.success() {
-        return Err(Failure::failed(
-            "setup_failed",
+        return Err(Failure::new(
+            code::setup_failed,
             format!(
                 "installing {engine} failed ({status}); its messages are in {}",
                 state.path.join(crate::trace::FILE).display()

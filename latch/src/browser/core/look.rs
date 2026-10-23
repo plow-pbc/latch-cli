@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 
 use super::{Core, TEXT_CHARS, document_key};
 use crate::browser::driver::{Driver, Frame};
-use crate::failure::{Exit, Failure};
+use crate::failure::{Failure, code};
 use crate::state::to_hex;
 
 /// The most page lines a judgement gets.
@@ -128,13 +128,13 @@ impl<D: Driver> Core<D> {
             .strip_prefix('e')
             .and_then(|n| n.parse::<usize>().ok())
             .filter(|n| *n > 0)
-            .ok_or_else(|| Failure::usage("bad_target", format!("{target:?} is not a ref")))?;
+            .ok_or_else(|| Failure::new(code::bad_target, format!("{target:?} is not a ref")))?;
         let latest = self.last_shown.clone();
         let id = snapshot.or(latest.as_deref()).ok_or_else(super::stale)?;
         let found = self.snapshot(id)?;
         if found.refs.len() < position {
-            return Err(Failure::failed(
-                "no_such_target",
+            return Err(Failure::new(
+                code::no_such_target,
                 format!("snapshot {id} has no {target}"),
             ));
         }
@@ -367,8 +367,8 @@ impl<D: Driver> Core<D> {
         if let Condition::Ref { state, .. } = &condition
             && !STATES.contains(&state.as_str())
         {
-            return Err(Failure::usage(
-                "bad_arguments",
+            return Err(Failure::new(
+                code::bad_arguments,
                 format!("--state is one of {}", STATES.join(", ")),
             ));
         }
@@ -432,8 +432,7 @@ impl<D: Driver> Core<D> {
                 };
                 if element["secret"] == true || element["filled"] == true {
                     return Err(Failure::new(
-                        Exit::Denied,
-                        "secret_field",
+                        code::secret_field,
                         "that is a password or secret field; latch never reads one back".into(),
                     ));
                 }

@@ -34,7 +34,7 @@ use std::path::{Path, PathBuf};
 use iroh::SecretKey;
 use serde::{Deserialize, Serialize};
 
-use crate::failure::Failure;
+use crate::failure::{Failure, code};
 use crate::plow::Peer;
 use crate::secrets::{Secret, Secrets};
 
@@ -71,7 +71,7 @@ impl StateDir {
                 Some(home) => home.join(".latch"),
                 None => {
                     let message = "no home directory; pass --state-dir".to_string();
-                    return Err(Failure::usage("no_state_dir", message));
+                    return Err(Failure::new(code::no_state_dir, message));
                 }
             },
         };
@@ -117,8 +117,8 @@ impl StateDir {
                     }
                     Err(err) => return Err(self.io_failure(&self.path, err)),
                 }
-                return Err(Failure::failed(
-                    "state_format",
+                return Err(Failure::new(
+                    code::state_format,
                     format!(
                         "{} has no latch.json format marker; pass a fresh --state-dir. Nothing was read or changed",
                         self.path.display()
@@ -129,7 +129,7 @@ impl StateDir {
         };
         let marker: Marker = serde_json::from_str(&text).map_err(|err| {
             let message = format!("{} is not valid: {err}", path.display());
-            Failure::failed("bad_state", message)
+            Failure::new(code::bad_state, message)
         })?;
         let fix = match marker.format.cmp(&FORMAT) {
             std::cmp::Ordering::Equal => return Ok(()),
@@ -144,7 +144,7 @@ impl StateDir {
             marker.written_by,
             crate::cli::version(),
         );
-        Err(Failure::failed("state_format", message))
+        Err(Failure::new(code::state_format, message))
     }
 
     /// Where this folder keeps its secrets (see `secrets.rs`).
@@ -170,7 +170,7 @@ impl StateDir {
                 "{} has no key; run `latch login` first",
                 self.path.display()
             );
-            return Err(Failure::failed("state_io", message));
+            return Err(Failure::new(code::state_io, message));
         };
         // `SecretKey` parses itself from the hex we wrote.
         let parsed = String::from_utf8(bytes)
@@ -178,7 +178,7 @@ impl StateDir {
             .and_then(|text| text.trim().parse().ok());
         parsed.ok_or_else(|| {
             let message = format!("{}: its key is not a valid key", self.path.display());
-            Failure::failed("bad_state", message)
+            Failure::new(code::bad_state, message)
         })
     }
 
@@ -195,7 +195,7 @@ impl StateDir {
         };
         let text = String::from_utf8(bytes).map_err(|_| {
             let message = format!("{}: its Plow token is not text", self.path.display());
-            Failure::failed("bad_state", message)
+            Failure::new(code::bad_state, message)
         })?;
         Ok(Some(text.trim().to_string()))
     }
@@ -226,7 +226,7 @@ impl StateDir {
         let text = self.read(&path)?;
         let config = serde_json::from_str(&text).map_err(|err| {
             let message = format!("{} is not valid: {err}", path.display());
-            Failure::failed("bad_state", message)
+            Failure::new(code::bad_state, message)
         })?;
         Ok(Some(config))
     }
@@ -247,7 +247,7 @@ impl StateDir {
                 "{} is not logged in; run `latch login` first",
                 self.path.display()
             );
-            Failure::usage("not_logged_in", message)
+            Failure::new(code::not_logged_in, message)
         })
     }
 
@@ -261,7 +261,7 @@ impl StateDir {
                 "{}: the key does not match the key this instance registered with Plow",
                 self.path.display()
             );
-            return Err(Failure::failed("key_mismatch", message));
+            return Err(Failure::new(code::key_mismatch, message));
         }
         Ok(config)
     }
@@ -271,7 +271,7 @@ impl StateDir {
     }
 
     fn io_failure(&self, path: &Path, err: std::io::Error) -> Failure {
-        Failure::failed("state_io", format!("{}: {err}", path.display()))
+        Failure::new(code::state_io, format!("{}: {err}", path.display()))
     }
 }
 

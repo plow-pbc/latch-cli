@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 
 use super::{Account, MAX_OUTPUT, Output, PIN, Request, Tokens, policy, problem, process};
-use crate::failure::{Exit, Failure};
+use crate::failure::{Failure, code};
 use crate::plow::Plow;
 use crate::serve::Done;
 use crate::wire::{self, Response};
@@ -66,16 +66,17 @@ pub async fn run(
     }
 }
 fn timeout_failure(args: &Value, limit: Duration) -> Failure {
-    let mut failure = problem(
-        Exit::Failed,
-        "google_timeout",
-        json!({"limit_seconds":limit.as_secs()}),
-    );
-    if let Ok(request) = serde_json::from_value::<Request>(args.clone())
-        && let Ok(plan) = policy::parse(&request.gog_args)
-        && !plan.read_only()
-    {
-        failure.exit = Exit::Unknown;
+    let write = serde_json::from_value::<Request>(args.clone())
+        .ok()
+        .and_then(|request| policy::parse(&request.gog_args).ok())
+        .is_some_and(|plan| !plan.read_only());
+    // A write that timed out may have happened: its own code, exit 5.
+    let code = match write {
+        true => code::google_write_timeout,
+        false => code::google_timeout,
+    };
+    let mut failure = problem(code, json!({"limit_seconds": limit.as_secs()}));
+    if write {
         failure.message = "Google write timed out; outcome unknown; check before resending".into();
     }
     failure
@@ -92,8 +93,8 @@ async fn operation(
     recv: &mut RecvStream,
     audit: &mut Value,
 ) -> Result<Value, Failure> {
-    let mut request: Request = serde_json::from_value(args)
-        .map_err(|_| problem(Exit::Denied, "not_allowed", json!({})))?;
+    let mut request: Request =
+        serde_json::from_value(args).map_err(|_| problem(code::not_allowed, json!({})))?;
     audit["command"] = json!(policy::command_prefix(&request.gog_args));
     let plan = plan(&mut request, &owner_time_zone())?;
     let accounts_only = plan.is_none();
@@ -109,7 +110,7 @@ async fn operation(
             Some(
                 program
                     .canonicalize()
-                    .map_err(|_| problem(Exit::Denied, "gog_unverified", json!({})))?,
+                    .map_err(|_| problem(code::gog_unverified, json!({})))?,
             )
         }
         None => None,
@@ -130,7 +131,7 @@ async fn operation(
             .zip(&plan.inputs)
             .any(|(a, b)| a.index != b.index)
     {
-        return Err(problem(Exit::Denied, "not_allowed", json!({})));
+        return Err(problem(code::not_allowed, json!({})));
     }
     let program = program.expect("found above for every command but accounts");
     process::verify(&program)?;
@@ -213,11 +214,7 @@ async fn operation(
         audit["outcomes"] = json!(outcomes);
         super::merge::sort(&plan.command, &mut items);
         if answered == 0 {
-            return Err(problem(
-                Exit::Failed,
-                "google_failed",
-                json!({"accounts":outcomes}),
-            ));
+            return Err(problem(code::google_failed, json!({"accounts":outcomes})));
         }
         let mut result = json!({"items":items,"accounts":outcomes});
         if plan.compact() {
@@ -256,9 +253,9 @@ async fn operation(
     for moved in &output.files {
         let hash = wire::copy(&mut worker.stdout, send, moved.size)
             .await
-            .map_err(|_| problem(Exit::Unknown, "transfer_failed", json!({})))?;
+            .map_err(|_| problem(code::transfer_failed, json!({})))?;
         if hash != moved.sha256 {
-            return Err(problem(Exit::Failed, "checksum_mismatch", json!({})));
+            return Err(problem(code::checksum_mismatch, json!({})));
         }
     }
     worker.finish().await.map_err(worker_error)?;
@@ -293,8 +290,8 @@ pub(super) fn plan(request: &mut Request, zone: &str) -> Result<Option<policy::P
         && calendar_ids
         && request.account.len() != 1
     {
-        return Err(Failure::usage(
-            "account_required",
+        return Err(Failure::new(
+            code::account_required,
             "a calendar id needs its account: add --account <email> for the account that owns it, \
              or drop --calendars and name the accounts to read with --account a@x,b@y"
                 .into(),
@@ -365,8 +362,7 @@ pub(super) fn select<'a>(
     let connected: Vec<_> = tokens.accounts.iter().map(|a| &a.account).collect();
     if requested.iter().any(|name| !connected.contains(&name)) {
         return Err(problem(
-            Exit::Usage,
-            "unknown_account",
+            code::unknown_account,
             json!({"accounts":connected}),
         ));
     }
@@ -377,8 +373,7 @@ pub(super) fn select<'a>(
         .collect();
     if selected.is_empty() || (!fanout && selected.len() != 1) {
         return Err(problem(
-            Exit::Usage,
-            "account_required",
+            code::account_required,
             json!({"accounts":connected}),
         ));
     }
@@ -406,7 +401,7 @@ async fn invoke(
         .prefix("latch-google-")
         .permissions(std::fs::Permissions::from_mode(0o700))
         .tempdir()
-        .map_err(|_| problem(Exit::Failed, "google_worker_failed", json!({})))?;
+        .map_err(|_| problem(code::google_worker_failed, json!({})))?;
     let job = process::Job {
         account: account.account.clone(),
         argv: request.gog_args.clone(),
@@ -425,7 +420,7 @@ async fn invoke(
         .await
         .map_err(worker_error)?;
     if first["ready"] != true {
-        return Err(problem(Exit::Failed, "google_worker_failed", json!({})));
+        return Err(problem(code::google_worker_failed, json!({})));
     }
     if let Some((recv, audit)) = upload {
         let mut files = Vec::new();
@@ -436,18 +431,18 @@ async fn invoke(
                 input.size,
             )
             .await
-            .map_err(|_| problem(Exit::Unknown, "transfer_failed", json!({})))?;
+            .map_err(|_| problem(code::transfer_failed, json!({})))?;
             files.push(json!({"name":input.name,"size":input.size,"sha256":hash}));
         }
         audit["inputs"] = json!(files);
     }
     drop(worker.child.stdin.take());
     let response: Response = serde_json::from_value(worker.line().await.map_err(worker_error)?)
-        .map_err(|_| problem(Exit::Failed, "google_worker_failed", json!({})))?;
+        .map_err(|_| problem(code::google_worker_failed, json!({})))?;
     match response {
         Response::Ok(value) => {
             let output: Output = serde_json::from_value(value)
-                .map_err(|_| problem(Exit::Failed, "google_worker_failed", json!({})))?;
+                .map_err(|_| problem(code::google_worker_failed, json!({})))?;
             Ok((worker, output, folder))
         }
         Response::Error {
@@ -457,7 +452,7 @@ async fn invoke(
             details,
         } => {
             let _ = worker.finish().await;
-            let mut failure = Failure::new(exit, &code, message);
+            let mut failure = Failure::relayed(exit, &code, message);
             failure.details = details;
             Err(failure)
         }
@@ -547,7 +542,7 @@ async fn conflict(
         if !unreadable.is_empty() {
             details["could_not_check"] = json!(unreadable);
         }
-        return Err(problem(Exit::Denied, "calendar_conflict", details));
+        return Err(problem(code::calendar_conflict, details));
     }
     Ok(unreadable)
 }
@@ -640,11 +635,7 @@ fn free_busy(calendars: &Value) -> Option<(Vec<Value>, Vec<String>)> {
 /// Fails with `output_too_large` when `value` is over `MAX_OUTPUT` as JSON.
 fn check_size(value: &Value) -> Result<(), Failure> {
     if serde_json::to_vec(value).expect("JSON").len() > MAX_OUTPUT {
-        Err(problem(
-            Exit::Failed,
-            "output_too_large",
-            json!({"limit":MAX_OUTPUT}),
-        ))
+        Err(problem(code::output_too_large, json!({"limit":MAX_OUTPUT})))
     } else {
         Ok(())
     }
@@ -661,7 +652,7 @@ pub(crate) fn gog_program(state_dir: &Path, version: &str) -> Result<PathBuf, Fa
         "gog {version} is not installed at {}; run install.sh",
         path.display()
     );
-    Err(Failure::new(Exit::Failed, "gog_not_configured", message))
+    Err(Failure::new(code::gog_not_configured, message))
 }
 /// Sends one `Ok` answer frame to the client.
 async fn frame(send: &mut SendStream, value: Value) -> Result<(), Failure> {
@@ -670,7 +661,7 @@ async fn frame(send: &mut SendStream, value: Value) -> Result<(), Failure> {
         &serde_json::to_vec(&Response::Ok(value)).expect("JSON"),
     )
     .await
-    .map_err(|_| problem(Exit::Unknown, "connection_lost", json!({})))
+    .map_err(|_| problem(code::connection_lost, json!({})))
 }
 /// The short reason for an account's failure in `outcomes`: the failure's
 /// `reason` detail when it has one (gog's, or `needs_reauth`), else its code.
@@ -678,12 +669,13 @@ fn reason(failure: &Failure) -> &str {
     failure.details["reason"].as_str().unwrap_or(&failure.code)
 }
 fn worker_error(error: crate::worker::WorkerError) -> Failure {
-    Failure::new(Exit::Failed, &error.code, error.message)
+    Failure::reported(&error.code, error.message)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::failure::Exit;
     #[test]
     fn gog_comes_only_from_the_state_dirs_plugins_folder() {
         let state = tempfile::tempdir().unwrap();

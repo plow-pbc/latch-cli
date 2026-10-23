@@ -14,7 +14,7 @@ use clap::{ArgAction, ArgMatches, CommandFactory, FromArgMatches};
 use serde::Serialize;
 
 use crate::cli::{Cli, GoogleArgs, HandoffAction, HelpArgs};
-use crate::failure::{Exit, Failure};
+use crate::failure::{Exit, Failure, code};
 use crate::google::policy::{self, Allowed};
 
 /// What latch knows about a command beyond what its parser says.
@@ -1332,7 +1332,7 @@ pub fn run(args: HelpArgs, pretty: bool) -> ExitCode {
             "no command `latch {}`; `latch help` lists them",
             args.path.join(" ")
         );
-        eprintln!("{}", Failure::usage("unknown_command", message).to_json());
+        eprintln!("{}", Failure::new(code::unknown_command, message).to_json());
         return Exit::Usage.into();
     };
     if !args.examples && !args.json && gog_words.is_empty() {
@@ -1358,9 +1358,9 @@ pub fn run(args: HelpArgs, pretty: bool) -> ExitCode {
                 .collect(),
             error_codes: crate::failure::CODES
                 .iter()
-                .map(|(code, exit)| ErrorCodeHelp {
-                    code,
-                    exit: u8::from(*exit),
+                .map(|code| ErrorCodeHelp {
+                    code: code.name,
+                    exit: u8::from(code.exit),
                 })
                 .collect(),
             actions: listed,
@@ -1466,8 +1466,8 @@ pub fn check_selectors(matches: &ArgMatches) -> Result<(), Failure> {
         .find(|entry| entry.id == id)
         .map_or(RunsOn::Local, |entry| (entry.runs_on)(args));
     if has("host") && location == RunsOn::Local {
-        return Err(Failure::usage(
-            "host_not_supported",
+        return Err(Failure::new(
+            code::host_not_supported,
             format!(
                 "`latch {}` runs locally; omit --host and unset LATCH_HOST. Run it on the intended machine",
                 id.replace('.', " ")
@@ -1475,8 +1475,8 @@ pub fn check_selectors(matches: &ArgMatches) -> Result<(), Failure> {
         ));
     }
     if has("plow_chat") && location != RunsOn::Host {
-        return Err(Failure::usage(
-            "plow_chat_not_supported",
+        return Err(Failure::new(
+            code::plow_chat_not_supported,
             format!(
                 "`latch {}` does not use a Plow chat; omit --plow-chat and unset LATCH_PLOW_CHAT",
                 id.replace('.', " ")

@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::failure::Failure;
+use crate::failure::{Failure, code};
 use crate::state::StateDir;
 
 /// How often, and how long, the Full Disk Access step checks again.
@@ -303,7 +303,7 @@ pub fn no_terminal(status: &Status) -> Failure {
         })
         .unwrap_or_else(|| "latch status".to_string());
     let message = "latch setup asks questions, so it needs a terminal".to_string();
-    let mut failure = Failure::usage("no_terminal", message);
+    let mut failure = Failure::new(code::no_terminal, message);
     failure.next = Some(next.into());
     failure
 }

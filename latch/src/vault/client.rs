@@ -16,7 +16,7 @@ use tokio::fs::File;
 use super::item::{entry_labels, kind_code};
 use crate::cli::{VaultArgs, VaultCommand};
 use crate::dial::{self, ANSWER_WITHIN};
-use crate::failure::{Exit, Failure};
+use crate::failure::{Failure, code};
 use crate::hosts;
 use crate::state::StateDir;
 use crate::term;
@@ -90,8 +90,8 @@ pub async fn run(state: &StateDir, args: VaultArgs) -> Result<Value, Failure> {
                 && ask.is_empty()
                 && !stdin
             {
-                return Err(Failure::usage(
-                    "bad_arguments",
+                return Err(Failure::new(
+                    code::bad_arguments,
                     "say what to change: --title, --site, --no-sites, --other-top-site, \
                      --no-other-top-sites, --field, --ask or --stdin"
                         .into(),
@@ -105,7 +105,9 @@ pub async fn run(state: &StateDir, args: VaultArgs) -> Result<Value, Failure> {
                 .flatten()
                 .find(|meta| meta["item"] == item.as_str())
                 .and_then(|meta| meta["kind"].as_str())
-                .ok_or_else(|| Failure::usage("no_such_item", format!("there is no item {item}")))?
+                .ok_or_else(|| {
+                    Failure::new(code::no_such_item, format!("there is no item {item}"))
+                })?
                 .to_string();
             let values = match stdin {
                 true => with_stdin(&kind, &field)?,
@@ -160,8 +162,8 @@ pub async fn run(state: &StateDir, args: VaultArgs) -> Result<Value, Failure> {
         } => {
             // Rows are picked at a prompt only by a person who can see it.
             if !preview && pick.is_none() && !term::interactive() {
-                let mut failure = Failure::usage(
-                    "no_terminal",
+                let mut failure = Failure::new(
+                    code::no_terminal,
                     "the rows to import are picked at a prompt, and there is no terminal".into(),
                 );
                 failure.next = Some(
@@ -245,7 +247,10 @@ fn edits(kind: &str, fields: &[String], ask: &[String]) -> Result<Map<String, Va
 /// The labels a `kind` has, and whether each is secret.
 fn labels(kind: &str) -> Result<Vec<(&'static str, bool)>, Failure> {
     let code = kind_code(kind).ok_or_else(|| {
-        Failure::usage("bad_item", "--kind is login, card, identity or note".into())
+        Failure::new(
+            code::bad_item,
+            "--kind is login, card, identity or note".into(),
+        )
     })?;
     Ok(entry_labels(code))
 }
@@ -263,20 +268,20 @@ fn given(kind: &str, fields: &[String]) -> Result<Map<String, Value>, Failure> {
     let mut values = Map::new();
     for pair in fields {
         let (label, value) = pair.split_once('=').ok_or_else(|| {
-            Failure::usage(
-                "bad_arguments",
+            Failure::new(
+                code::bad_arguments,
                 format!("--field takes LABEL=VALUE, not {pair:?}"),
             )
         })?;
         let Some((_, secret)) = known(&labels, kind, label) else {
-            return Err(Failure::usage(
-                "bad_item",
+            return Err(Failure::new(
+                code::bad_item,
                 format!("a {kind} has no field {label:?}"),
             ));
         };
         if secret {
-            return Err(Failure::usage(
-                "secret_in_argv",
+            return Err(Failure::new(
+                code::secret_in_argv,
                 format!(
                     "{label} is secret: it is asked for at a prompt or read with --stdin, never given on the command line"
                 ),
@@ -294,13 +299,13 @@ fn with_stdin(kind: &str, fields: &[String]) -> Result<Map<String, Value>, Failu
     let bytes = crate::input::read_all(Duration::from_secs(30), MAX_STDIN_VALUES)?;
     if bytes.len() > MAX_STDIN_VALUES {
         let message = "stdin is over 1 MiB; nothing was saved";
-        return Err(Failure::usage("stdin_too_big", message.into()));
+        return Err(Failure::new(code::stdin_too_big, message.into()));
     }
     let read = read_values(&bytes, kind)?;
     for (label, value) in read {
         if values.contains_key(&label) {
-            return Err(Failure::usage(
-                "bad_arguments",
+            return Err(Failure::new(
+                code::bad_arguments,
                 format!("{label} is given twice: in --field and on stdin"),
             ));
         }
@@ -318,7 +323,7 @@ fn read_values(input: &[u8], kind: &str) -> Result<Map<String, Value>, Failure> 
     let bad = || {
         let message = "--stdin takes one JSON object of field values by label, each a string, \
                        e.g. {\"password\": \"…\"}";
-        Failure::usage("bad_values", message.into())
+        Failure::new(code::bad_values, message.into())
     };
     let values: Map<String, Value> = serde_json::from_slice(input).map_err(|_| bad())?;
     let labels = labels(kind)?;
@@ -327,8 +332,8 @@ fn read_values(input: &[u8], kind: &str) -> Result<Map<String, Value>, Failure> 
             return Err(bad());
         }
         if known(&labels, kind, label).is_none() {
-            return Err(Failure::usage(
-                "bad_item",
+            return Err(Failure::new(
+                code::bad_item,
                 format!("a {kind} has no field {label:?}"),
             ));
         }
@@ -342,8 +347,8 @@ fn prompted(kind: &str, asked: &[String], required: bool) -> Result<Map<String, 
     let labels = labels(kind)?;
     for label in asked {
         if known(&labels, kind, label).is_none() {
-            return Err(Failure::usage(
-                "bad_item",
+            return Err(Failure::new(
+                code::bad_item,
                 format!("a {kind} has no field {label:?}"),
             ));
         }
@@ -360,7 +365,7 @@ fn prompted(kind: &str, asked: &[String], required: bool) -> Result<Map<String, 
             .iter()
             .map(|label| format!("{label:?}: \"…\""))
             .collect();
-        let mut failure = Failure::usage("no_terminal", message);
+        let mut failure = Failure::new(code::no_terminal, message);
         failure.next =
             Some(format!("pipe them as JSON with --stdin: {{{}}}", example.join(", ")).into());
         return Err(failure);
@@ -374,8 +379,8 @@ fn prompted(kind: &str, asked: &[String], required: bool) -> Result<Map<String, 
         let value = term::ask_secret(&format!("{prompt}: "));
         if value.is_empty() {
             if required {
-                return Err(Failure::usage(
-                    "nothing_typed",
+                return Err(Failure::new(
+                    code::nothing_typed,
                     format!("nothing was typed for {label}; leave out --ask {label} to keep it"),
                 ));
             }
@@ -405,7 +410,7 @@ async fn import(
     pick: Option<&str>,
 ) -> Result<Value, Failure> {
     let local =
-        |err: std::io::Error| Failure::usage("local_file", format!("{}: {err}", path.display()));
+        |err: std::io::Error| Failure::new(code::local_file, format!("{}: {err}", path.display()));
     let mut file = File::open(path).await.map_err(local)?;
     let size = file.metadata().await.map_err(local)?.len();
     let request = Request {
@@ -515,8 +520,7 @@ pub fn pick(answer: &str, rows: usize) -> Result<Vec<usize>, Failure> {
     }
     let bad = || {
         Failure::new(
-            Exit::Usage,
-            "bad_pick",
+            code::bad_pick,
             format!("{answer:?} is not a pick of rows 1-{rows}"),
         )
     };

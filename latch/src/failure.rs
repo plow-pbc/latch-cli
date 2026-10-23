@@ -6,7 +6,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 /// What the agent should do after a failure, with stable numeric exit codes.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Exit {
     Failed,
     Usage,
@@ -92,6 +92,8 @@ pub struct Failure {
     /// on their terminal: nothing more is printed for it.
     pub said: bool,
     pub details: Value,
+    /// Private, so a failure is only built by `new` or `relayed`.
+    _sealed: (),
 }
 
 #[derive(Debug, Default)]
@@ -105,7 +107,13 @@ pub struct PlowSaid {
 }
 
 impl Failure {
-    pub fn new(exit: Exit, code: &str, message: String) -> Failure {
+    pub fn new(code: Code, message: String) -> Failure {
+        Failure::relayed(code.exit, code.name, message)
+    }
+
+    /// A failure another program or peer reported, with its code and exit
+    /// as it gave them.
+    pub fn relayed(exit: Exit, code: &str, message: String) -> Failure {
         Failure {
             exit,
             code: code.to_string(),
@@ -114,15 +122,23 @@ impl Failure {
             next: None,
             said: false,
             details: Value::Null,
+            _sealed: (),
         }
     }
 
-    pub fn failed(code: &str, message: String) -> Failure {
-        Failure::new(Exit::Failed, code, message)
+    /// A failure a worker or helper program reported by its code: with that
+    /// code's exit when latch knows the code, else exit 1.
+    pub fn reported(code: &str, message: String) -> Failure {
+        match CODES.iter().find(|known| known.name == code) {
+            Some(known) => Failure::new(*known, message),
+            None => Failure::relayed(Exit::Failed, code, message),
+        }
     }
 
-    pub fn usage(code: &str, message: String) -> Failure {
-        Failure::new(Exit::Usage, code, message)
+    /// Reports the same failure as `code`, with its exit.
+    pub fn recode(&mut self, code: Code) {
+        self.exit = code.exit;
+        self.code = code.name.to_string();
     }
 
     /// How long Plow asked us to wait, if it did.
@@ -156,445 +172,308 @@ impl Failure {
     }
 }
 
-/// Every error code latch reports, with the exit it comes with, as
-/// `latch help --json` lists them. A code reported with two exits is listed
-/// once for each. Besides the codes latch's own source names, this holds
-/// the ones its workers and helper programs (the Camoufox helper, the
-/// Messages reader) report, which reach the agent unchanged.
-pub const CODES: &[(&str, Exit)] = &[
-    ("account_required", Exit::Usage),
-    ("addressbook_missing", Exit::Failed),
-    ("addressbook_not_granted", Exit::Failed),
-    ("addressbook_unreadable", Exit::Failed),
-    ("addressbook_version", Exit::Failed),
-    ("already_serving", Exit::Failed),
-    ("ambiguous_agent", Exit::Usage),
-    ("ambiguous_chat", Exit::Usage),
-    ("audit_broken", Exit::Failed),
-    ("audit_failed", Exit::Failed),
-    ("audit_io", Exit::Failed),
-    ("audit_key", Exit::Failed),
-    ("bad_app_signature", Exit::Denied),
-    ("bad_arguments", Exit::Usage),
-    ("bad_command", Exit::Usage),
-    ("bad_directory", Exit::Failed),
-    ("bad_download", Exit::Failed),
-    ("bad_engine", Exit::Usage),
-    ("bad_home", Exit::Failed),
-    ("bad_host_answer", Exit::Failed),
-    ("bad_host_settings", Exit::Failed),
-    ("bad_import", Exit::Usage),
-    ("bad_item", Exit::Failed),
-    ("bad_item", Exit::Usage),
-    ("bad_key", Exit::Usage),
-    ("bad_name", Exit::Usage),
-    ("bad_path", Exit::Denied),
-    ("bad_path", Exit::Failed),
-    ("bad_pick", Exit::Usage),
-    ("bad_relay", Exit::Usage),
-    ("bad_release", Exit::Failed),
-    ("bad_request", Exit::Failed),
-    ("bad_request", Exit::Usage),
-    ("bad_response", Exit::Failed),
-    ("bad_response", Exit::Unknown),
-    ("bad_rules", Exit::Usage),
-    ("bad_secret_env", Exit::Usage),
-    ("bad_serve_args", Exit::Usage),
-    ("bad_signature", Exit::Denied),
-    ("bad_state", Exit::Failed),
-    ("bad_tag", Exit::Usage),
-    ("bad_target", Exit::Denied),
-    ("bad_target", Exit::Usage),
-    ("bad_test_access", Exit::Usage),
-    ("bad_trace", Exit::Usage),
-    ("bad_values", Exit::Usage),
-    ("browser_gone", Exit::Failed),
-    ("calendar_conflict", Exit::Denied),
-    ("caller_denied", Exit::Denied),
-    ("check_not_met", Exit::Failed),
-    ("checksum_mismatch", Exit::Failed),
-    ("code_expired", Exit::Failed),
-    ("confirm_needed", Exit::Denied),
-    ("confirm_needed", Exit::Usage),
-    ("confirm_stale", Exit::Denied),
-    ("confirm_stale", Exit::Usage),
-    ("confirmation_required", Exit::Usage),
-    ("conflict", Exit::Usage),
-    ("connection_lost", Exit::Failed),
-    ("connection_lost", Exit::Unknown),
-    ("context_changed", Exit::Failed),
-    ("covered_target", Exit::Failed),
-    ("destination_changed", Exit::Denied),
-    ("dialog_open", Exit::Failed),
-    ("display_failed", Exit::Failed),
-    ("download_failed", Exit::Failed),
-    ("download_incomplete", Exit::Failed),
-    ("duplicate_request", Exit::Usage),
-    ("editor_failed", Exit::Failed),
-    ("empty_rules", Exit::Usage),
-    ("engine_error", Exit::Failed),
-    ("engine_failed", Exit::Failed),
-    ("engine_not_installed", Exit::Failed),
-    ("engine_unverified", Exit::Denied),
-    ("engine_unverified", Exit::Failed),
-    ("eval_failed", Exit::Failed),
-    ("exec_denied", Exit::Denied),
-    ("expired", Exit::Failed),
-    ("failed", Exit::Failed),
-    ("file_too_large", Exit::Usage),
-    ("fill_refused", Exit::Denied),
-    ("gatekeeper_denied", Exit::Denied),
-    ("gatekeeper_unavailable", Exit::Unreachable),
-    ("get_form", Exit::Denied),
-    ("gog_not_configured", Exit::Failed),
-    ("gog_not_executable", Exit::Failed),
-    ("gog_unverified", Exit::Denied),
-    ("gone", Exit::Failed),
-    ("google_failed", Exit::Failed),
-    ("google_not_connected", Exit::Failed),
-    ("google_timeout", Exit::Failed),
-    ("google_worker_failed", Exit::Failed),
-    ("handoff_failed", Exit::Failed),
-    ("heartbeat", Exit::Failed),
-    ("host_gone", Exit::Failed),
-    ("host_not_supported", Exit::Usage),
-    ("host_offline", Exit::Unreachable),
-    ("host_required", Exit::Usage),
-    ("host_running", Exit::Failed),
-    ("host_unreachable", Exit::Unreachable),
-    ("host_upgraded", Exit::Failed),
-    ("import_expired", Exit::Usage),
-    ("install_failed", Exit::Failed),
-    ("invalid_request", Exit::Usage),
-    ("io_error", Exit::Failed),
-    ("iroh", Exit::Failed),
-    ("is_a_directory", Exit::Failed),
-    ("journal_failed", Exit::Failed),
-    ("key_mismatch", Exit::Failed),
-    ("keychain_failed", Exit::Failed),
-    ("last_tab", Exit::Usage),
-    ("launch_busy", Exit::Failed),
-    ("line_taken", Exit::Usage),
-    ("local_build", Exit::Failed),
-    ("local_file", Exit::Failed),
-    ("local_file", Exit::Usage),
-    ("local_socket", Exit::Failed),
-    ("log_io", Exit::Failed),
-    ("login_collected", Exit::Failed),
-    ("login_not_found", Exit::Failed),
-    ("messages_missing", Exit::Failed),
-    ("messages_not_installed", Exit::Failed),
-    ("messages_unavailable", Exit::Failed),
-    ("messages_unverified", Exit::Denied),
-    ("missing_field", Exit::Usage),
-    ("model_unavailable", Exit::Failed),
-    ("name_moved", Exit::Failed),
-    ("navigation_failed", Exit::Failed),
-    ("needs_fields", Exit::Failed),
-    ("needs_owner", Exit::Failed),
-    ("needs_setup", Exit::Failed),
-    ("no_answer", Exit::Failed),
-    ("no_answer", Exit::Unknown),
-    ("no_binary", Exit::Failed),
-    ("no_credential", Exit::Usage),
-    ("no_dialog", Exit::Failed),
-    ("no_file_name", Exit::Usage),
-    ("no_free_line", Exit::Failed),
-    ("no_handoff", Exit::Failed),
-    ("no_history", Exit::Failed),
-    ("no_host", Exit::Usage),
-    ("no_intent", Exit::Denied),
-    ("no_session", Exit::Usage),
-    ("no_state_dir", Exit::Usage),
-    ("no_such_agent", Exit::Usage),
-    ("no_such_chat", Exit::Usage),
-    ("no_such_download", Exit::Usage),
-    ("no_such_field", Exit::Usage),
-    ("no_such_item", Exit::Usage),
-    ("no_such_line", Exit::Usage),
-    ("no_such_release", Exit::Failed),
-    ("no_such_request", Exit::Usage),
-    ("no_such_session", Exit::Failed),
-    ("no_such_shot", Exit::Usage),
-    ("no_such_tab", Exit::Usage),
-    ("no_such_target", Exit::Failed),
-    ("no_terminal", Exit::Usage),
-    ("not_a_file", Exit::Usage),
-    ("not_allowed", Exit::Denied),
-    ("not_an_agent", Exit::Usage),
-    ("not_built_yet", Exit::Failed),
-    ("not_configured", Exit::Usage),
-    ("not_enabled", Exit::Denied),
-    ("not_focused", Exit::Failed),
-    ("not_found", Exit::Failed),
-    ("not_logged_in", Exit::Failed),
-    ("not_logged_in", Exit::Usage),
-    ("not_on_a_phone_link", Exit::Denied),
-    ("not_owner", Exit::Denied),
-    ("not_permitted", Exit::Denied),
-    ("not_previewable", Exit::Usage),
-    ("not_removed", Exit::Usage),
-    ("nothing_to_start_again", Exit::Usage),
-    ("nothing_typed", Exit::Usage),
-    ("origin_mismatch", Exit::Denied),
-    ("other_version", Exit::Unreachable),
-    ("outcome_unknown", Exit::Unknown),
-    ("output_too_large", Exit::Failed),
-    ("own_machine", Exit::Usage),
-    ("owner_only", Exit::Denied),
-    ("plow_chat_not_supported", Exit::Usage),
-    ("plow_denied", Exit::Denied),
-    ("plow_error", Exit::Failed),
-    ("plow_rejected", Exit::Failed),
-    ("plow_unreachable", Exit::Failed),
-    ("precondition_failed", Exit::Failed),
-    ("press_required", Exit::Denied),
-    ("profile_failed", Exit::Failed),
-    ("protocol_mismatch", Exit::Failed),
-    ("rate_limited", Exit::Failed),
-    ("reader_failed", Exit::Failed),
-    ("reader_timeout", Exit::Failed),
-    ("relay_unreachable", Exit::Failed),
-    ("releases_unreachable", Exit::Unreachable),
-    ("removed_command", Exit::Usage),
-    ("rules_io", Exit::Failed),
-    ("rules_too_long", Exit::Usage),
-    ("sandbox_denied", Exit::Denied),
-    ("sandbox_failed", Exit::Failed),
-    ("sandbox_unavailable", Exit::Failed),
-    ("secret_field", Exit::Denied),
-    ("secret_in_argv", Exit::Usage),
-    ("secret_on_page", Exit::Denied),
-    ("select_failed", Exit::Failed),
-    ("serve_failed", Exit::Failed),
-    ("serve_required", Exit::Unreachable),
-    ("service_failed", Exit::Failed),
-    ("session_paused", Exit::Failed),
-    ("setup_failed", Exit::Failed),
-    ("setup_superseded", Exit::Failed),
-    ("signal", Exit::Failed),
-    ("split_mismatch", Exit::Failed),
-    ("stale_revision", Exit::Denied),
-    ("stale_revision", Exit::Failed),
-    ("stale_snapshot", Exit::Failed),
-    ("state_busy", Exit::Failed),
-    ("state_dir", Exit::Failed),
-    ("state_dir_too_long", Exit::Usage),
-    ("state_format", Exit::Failed),
-    ("state_io", Exit::Failed),
-    ("stdin_is_terminal", Exit::Usage),
-    ("stdin_not_judgeable", Exit::Usage),
-    ("stdin_timeout", Exit::Usage),
-    ("stdin_too_big", Exit::Usage),
-    ("stdin_unreadable", Exit::Usage),
-    ("stop_failed", Exit::Failed),
-    ("store_failed", Exit::Failed),
-    ("store_rejected", Exit::Failed),
-    ("timed_out", Exit::Failed),
-    ("timeout", Exit::Failed),
-    ("tmpdir_failed", Exit::Failed),
-    ("token_file_exists", Exit::Usage),
-    ("token_file_unwritable", Exit::Usage),
-    ("token_not_saved", Exit::Failed),
-    ("tool_failed", Exit::Failed),
-    ("transfer_failed", Exit::Failed),
-    ("transfer_failed", Exit::Unknown),
-    ("transfer_incomplete", Exit::Failed),
-    ("unknown_account", Exit::Usage),
-    ("unknown_cloud_kind", Exit::Usage),
-    ("unknown_command", Exit::Usage),
-    ("unknown_host", Exit::Usage),
-    ("unknown_plugin", Exit::Usage),
-    ("unsafe_output", Exit::Failed),
-    ("unsupported_capability", Exit::Failed),
-    ("unsupported_platform", Exit::Failed),
-    ("update_io", Exit::Failed),
-    ("upload_failed", Exit::Failed),
-    ("url_refused", Exit::Denied),
-    ("usage", Exit::Usage),
-    ("vague_condition", Exit::Usage),
-    ("vault_failed", Exit::Failed),
-    ("vault_version", Exit::Failed),
-    ("watch_failed", Exit::Failed),
-    ("which_chat", Exit::Usage),
-    ("which_handoff", Exit::Usage),
-    ("workdir_outside_areas", Exit::Denied),
-    ("worker_failed", Exit::Failed),
-    ("write_path_failed", Exit::Failed),
-    ("wrong_target", Exit::Usage),
-];
+/// A registered error code and the exit it always comes with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Code {
+    pub name: &'static str,
+    pub exit: Exit,
+}
+
+/// Defines each code once, as a `code::name` constant with its exit, and
+/// `CODES`, the list `latch help --json` shows.
+macro_rules! codes {
+    ($($name:ident: $exit:ident,)*) => {
+        #[allow(non_upper_case_globals)]
+        pub mod code {
+            use super::{Code, Exit};
+            $(pub const $name: Code = Code { name: stringify!($name), exit: Exit::$exit };)*
+        }
+        pub const CODES: &[Code] = &[$(code::$name),*];
+    };
+}
+
+// Every error code latch reports. Besides latch's own, these are the ones
+// its workers and helper programs (the Camoufox helper, the Messages
+// reader) report, which reach the agent unchanged.
+codes! {
+    account_required: Usage,
+    addressbook_missing: Failed,
+    addressbook_not_granted: Failed,
+    addressbook_unreadable: Failed,
+    addressbook_version: Failed,
+    already_attached: Failed,
+    already_serving: Failed,
+    already_true: Failed,
+    ambiguous_agent: Usage,
+    ambiguous_chat: Usage,
+    ambiguous_target: Failed,
+    audit_broken: Failed,
+    audit_failed: Failed,
+    audit_io: Failed,
+    audit_key: Failed,
+    bad_app_signature: Denied,
+    bad_arguments: Usage,
+    bad_command: Usage,
+    bad_directory: Failed,
+    bad_download: Failed,
+    bad_engine: Usage,
+    bad_home: Failed,
+    bad_host_answer: Failed,
+    bad_host_settings: Failed,
+    bad_import: Usage,
+    bad_item: Usage,
+    bad_key: Usage,
+    bad_name: Usage,
+    bad_path: Denied,
+    bad_pick: Usage,
+    bad_relay: Usage,
+    bad_release: Failed,
+    bad_request: Usage,
+    bad_response: Unknown,
+    bad_rules: Usage,
+    bad_secret_env: Usage,
+    bad_serve_args: Usage,
+    bad_signature: Denied,
+    bad_state: Failed,
+    bad_tag: Usage,
+    bad_target: Usage,
+    bad_test_access: Usage,
+    bad_trace: Usage,
+    bad_values: Usage,
+    blocked: Failed,
+    browser_gone: Failed,
+    calendar_conflict: Denied,
+    caller_denied: Denied,
+    caller_gone: Unknown,
+    check_not_met: Failed,
+    checksum_mismatch: Failed,
+    code_expired: Failed,
+    confirm_needed: Denied,
+    confirm_stale: Denied,
+    confirmation_required: Usage,
+    conflict: Usage,
+    connection_lost: Unknown,
+    context_changed: Failed,
+    covered_target: Failed,
+    deadline: Failed,
+    destination_changed: Denied,
+    dialog_open: Failed,
+    display_failed: Failed,
+    download_failed: Failed,
+    download_incomplete: Failed,
+    duplicate_request: Usage,
+    editor_failed: Failed,
+    empty_rules: Usage,
+    engine_error: Failed,
+    engine_failed: Failed,
+    engine_not_installed: Failed,
+    engine_unverified: Denied,
+    eval_failed: Failed,
+    exec_denied: Denied,
+    expired: Failed,
+    failed: Failed,
+    file_too_large: Usage,
+    fill_refused: Denied,
+    gatekeeper_denied: Denied,
+    gatekeeper_unavailable: Unreachable,
+    get_form: Denied,
+    gog_not_configured: Failed,
+    gog_not_executable: Failed,
+    gog_unverified: Denied,
+    gone: Failed,
+    google_failed: Failed,
+    google_not_connected: Failed,
+    google_timeout: Failed,
+    google_worker_failed: Failed,
+    google_write_timeout: Unknown,
+    handoff_failed: Failed,
+    heartbeat: Failed,
+    host_gone: Failed,
+    host_not_supported: Usage,
+    host_offline: Unreachable,
+    host_required: Usage,
+    host_running: Failed,
+    host_unreachable: Unreachable,
+    host_upgraded: Failed,
+    import_expired: Usage,
+    install_failed: Failed,
+    interrupted: Unknown,
+    invalid_request: Usage,
+    io_error: Failed,
+    iroh: Failed,
+    is_a_directory: Failed,
+    journal_failed: Failed,
+    key_mismatch: Failed,
+    keychain_failed: Failed,
+    last_tab: Usage,
+    launch_busy: Failed,
+    line_taken: Usage,
+    link_expired: Denied,
+    link_used: Denied,
+    local_build: Failed,
+    local_file: Usage,
+    local_socket: Failed,
+    log_io: Failed,
+    login_collected: Failed,
+    login_not_found: Failed,
+    messages_missing: Failed,
+    messages_not_installed: Failed,
+    messages_unavailable: Failed,
+    messages_unverified: Denied,
+    missing_field: Usage,
+    model_unavailable: Failed,
+    name_moved: Failed,
+    navigation_failed: Failed,
+    needs_fields: Failed,
+    needs_login: Failed,
+    needs_owner: Failed,
+    needs_setup: Failed,
+    needs_text: Failed,
+    no_answer: Unknown,
+    no_binary: Failed,
+    no_credential: Usage,
+    no_dialog: Failed,
+    no_file_name: Usage,
+    no_free_line: Failed,
+    no_handoff: Failed,
+    no_history: Failed,
+    no_host: Usage,
+    no_intent: Denied,
+    no_progress: Failed,
+    no_session: Usage,
+    no_state_dir: Usage,
+    no_such_agent: Usage,
+    no_such_chat: Usage,
+    no_such_download: Usage,
+    no_such_field: Usage,
+    no_such_item: Usage,
+    no_such_line: Usage,
+    no_such_link: Denied,
+    no_such_release: Failed,
+    no_such_request: Usage,
+    no_such_session: Failed,
+    no_such_shot: Usage,
+    no_such_tab: Usage,
+    no_such_target: Failed,
+    no_terminal: Usage,
+    not_a_file: Usage,
+    not_allowed: Denied,
+    not_an_agent: Usage,
+    not_attached: Failed,
+    not_built_yet: Failed,
+    not_configured: Usage,
+    not_enabled: Denied,
+    not_focused: Failed,
+    not_found: Failed,
+    not_logged_in: Usage,
+    not_on_a_phone_link: Denied,
+    not_owner: Denied,
+    not_permitted: Denied,
+    not_previewable: Usage,
+    not_removed: Usage,
+    not_this_host: Failed,
+    nothing_to_start_again: Usage,
+    nothing_typed: Usage,
+    origin_mismatch: Denied,
+    other_version: Unreachable,
+    outcome_unknown: Unknown,
+    output_too_large: Failed,
+    own_machine: Usage,
+    owner_only: Denied,
+    plan_budget: Failed,
+    plow_chat_not_supported: Usage,
+    plow_denied: Denied,
+    plow_error: Failed,
+    plow_rejected: Failed,
+    plow_unreachable: Failed,
+    precondition_failed: Failed,
+    press_required: Denied,
+    profile_failed: Failed,
+    program_not_found: Failed,
+    protocol_mismatch: Failed,
+    rate_limited: Failed,
+    reader_failed: Failed,
+    reader_timeout: Failed,
+    relay_unreachable: Failed,
+    releases_unreachable: Unreachable,
+    removed_command: Usage,
+    repeat: Failed,
+    request_too_large: Failed,
+    rules_io: Failed,
+    rules_too_long: Usage,
+    sandbox_denied: Denied,
+    sandbox_failed: Failed,
+    sandbox_unavailable: Failed,
+    secret_field: Denied,
+    secret_in_argv: Usage,
+    secret_on_page: Denied,
+    select_failed: Failed,
+    serve_failed: Failed,
+    serve_required: Unreachable,
+    service_failed: Failed,
+    session_paused: Failed,
+    setup_failed: Failed,
+    setup_superseded: Failed,
+    signal: Failed,
+    split_mismatch: Failed,
+    stale_revision: Denied,
+    stale_snapshot: Failed,
+    state_busy: Failed,
+    state_dir: Failed,
+    state_dir_too_long: Usage,
+    state_format: Failed,
+    state_io: Failed,
+    stdin_is_terminal: Usage,
+    stdin_not_judgeable: Usage,
+    stdin_timeout: Usage,
+    stdin_too_big: Usage,
+    stdin_unreadable: Usage,
+    step_budget: Failed,
+    stop_failed: Failed,
+    store_failed: Failed,
+    store_rejected: Failed,
+    stuck: Failed,
+    timed_out: Failed,
+    timeout: Failed,
+    tmpdir_failed: Failed,
+    token_file_exists: Usage,
+    token_file_unwritable: Usage,
+    token_not_saved: Failed,
+    tool_failed: Failed,
+    transfer_failed: Unknown,
+    transfer_incomplete: Failed,
+    unconfirmed: Failed,
+    unknown_account: Usage,
+    unknown_cloud_kind: Usage,
+    unknown_command: Usage,
+    unknown_host: Usage,
+    unknown_plugin: Usage,
+    unsafe_output: Failed,
+    unsupported_capability: Failed,
+    unsupported_platform: Failed,
+    update_io: Failed,
+    upload_failed: Failed,
+    url_refused: Denied,
+    usage: Usage,
+    vague_condition: Usage,
+    vault_failed: Failed,
+    vault_version: Failed,
+    watch_failed: Failed,
+    which_chat: Usage,
+    which_handoff: Usage,
+    workdir_outside_areas: Denied,
+    worker_failed: Failed,
+    write_path_failed: Failed,
+    wrong_target: Usage,
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
-
-    /// The codes the production source gives a failure, with their exits,
-    /// read as syntax from `main.rs` down: `Failure::usage("code", …)`,
-    /// `Failure::failed`, `Done::failed`, and `Exit::Name, "code"` side by
-    /// side in a call or tuple. What `#[cfg(test)]` marks is left out.
-    fn named_in_source() -> Vec<(String, String)> {
-        let mut scan = Scan::default();
-        scan.file(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"));
-        scan.named
-    }
-
-    #[derive(Default)]
-    struct Scan {
-        named: Vec<(String, String)>,
-        /// Where a `mod name;` in the file being read finds name.rs.
-        folder: std::path::PathBuf,
-    }
-
-    impl Scan {
-        fn file(&mut self, path: &Path) {
-            let text = std::fs::read_to_string(path).unwrap();
-            let parsed = syn::parse_file(&text).unwrap_or_else(|err| panic!("{path:?}: {err}"));
-            // `mod name;` in a.rs is a/name.rs; in main.rs or mod.rs, beside it.
-            let folder = match path.file_stem().and_then(|stem| stem.to_str()) {
-                Some("main" | "mod") => path.parent().unwrap().to_path_buf(),
-                _ => path.with_extension(""),
-            };
-            let outer = std::mem::replace(&mut self.folder, folder);
-            syn::visit::visit_file(self, &parsed);
-            self.folder = outer;
-        }
-
-        /// A macro's tokens, read as expressions where they are some
-        /// (`eprintln!`'s), else each group in them (`select!`'s arms).
-        fn tokens(&mut self, tokens: proc_macro2::TokenStream) {
-            use syn::parse::Parser;
-            let exprs = syn::punctuated::Punctuated::<syn::Expr, syn::Token![,]>::parse_terminated;
-            match exprs.parse2(tokens.clone()) {
-                Ok(exprs) => exprs
-                    .iter()
-                    .for_each(|expr| syn::visit::Visit::visit_expr(self, expr)),
-                Err(_) => tokens.into_iter().for_each(|tree| {
-                    if let proc_macro2::TokenTree::Group(group) = tree {
-                        self.tokens(group.stream())
-                    }
-                }),
-            }
-        }
-    }
-
-    impl<'ast> syn::visit::Visit<'ast> for Scan {
-        fn visit_item(&mut self, item: &'ast syn::Item) {
-            let attrs: &[syn::Attribute] = match item {
-                syn::Item::Fn(item) => &item.attrs,
-                syn::Item::Impl(item) => &item.attrs,
-                syn::Item::Mod(item) => &item.attrs,
-                _ => &[],
-            };
-            let test = |list: syn::Result<&syn::MetaList>| {
-                list.is_ok_and(|list| {
-                    list.path.is_ident("cfg") && list.tokens.to_string() == "test"
-                })
-            };
-            match item {
-                _ if attrs.iter().any(|attr| test(attr.meta.require_list())) => {}
-                syn::Item::Mod(module) if module.content.is_none() => {
-                    let path = attrs.iter().find_map(|attr| match &attr.meta {
-                        syn::Meta::NameValue(pair) if pair.path.is_ident("path") => {
-                            text_of(&pair.value)
-                        }
-                        _ => None,
-                    });
-                    let name = module.ident.to_string();
-                    let file = match path {
-                        Some(path) => self.folder.parent().unwrap().join(path),
-                        None if self.folder.join(format!("{name}.rs")).exists() => {
-                            self.folder.join(format!("{name}.rs"))
-                        }
-                        None => self.folder.join(name).join("mod.rs"),
-                    };
-                    self.file(&file);
-                }
-                _ => syn::visit::visit_item(self, item),
-            }
-        }
-
-        fn visit_expr(&mut self, expr: &'ast syn::Expr) {
-            let (made, args): (Vec<String>, Vec<&syn::Expr>) = match expr {
-                syn::Expr::Call(call) => (path_of(&call.func), call.args.iter().collect()),
-                syn::Expr::Tuple(tuple) => (Vec::new(), tuple.elems.iter().collect()),
-                _ => (Vec::new(), Vec::new()),
-            };
-            let exit = match made.iter().map(String::as_str).collect::<Vec<_>>()[..] {
-                [.., "Failure", "usage"] => Some("Usage"),
-                [.., "Failure" | "Done", "failed"] => Some("Failed"),
-                _ => None,
-            };
-            if let (Some(exit), Some(code)) = (exit, args.first().and_then(|arg| code_of(arg))) {
-                self.named.push((code, exit.into()));
-            }
-            for pair in args.windows(2) {
-                let path = path_of(pair[0]);
-                if let ([.., exits, exit], Some(code)) = (path.as_slice(), code_of(pair[1]))
-                    && exits == "Exit"
-                {
-                    self.named.push((code, exit.clone()));
-                }
-            }
-            syn::visit::visit_expr(self, expr);
-        }
-
-        fn visit_macro(&mut self, mac: &'ast syn::Macro) {
-            self.tokens(mac.tokens.clone());
-        }
-    }
-
-    /// The words of a path expression (`crate::failure::Exit::Usage`).
-    fn path_of(expr: &syn::Expr) -> Vec<String> {
-        let syn::Expr::Path(path) = expr else {
-            return Vec::new();
-        };
-        path.path
-            .segments
-            .iter()
-            .map(|word| word.ident.to_string())
-            .collect()
-    }
-
-    /// A string literal's text.
-    fn text_of(expr: &syn::Expr) -> Option<String> {
-        let syn::Expr::Lit(syn::ExprLit {
-            lit: syn::Lit::Str(text),
-            ..
-        }) = expr
-        else {
-            return None;
-        };
-        Some(text.value())
-    }
-
-    /// A string literal that reads as a code: lower-case letters, digits
-    /// and underscores.
-    fn code_of(expr: &syn::Expr) -> Option<String> {
-        let code = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_';
-        text_of(expr).filter(|text| !text.is_empty() && text.chars().all(code))
-    }
-
-    #[test]
-    fn every_code_the_source_names_is_listed_with_its_exit() {
-        let listed: Vec<(String, String)> = CODES
-            .iter()
-            .map(|(code, exit)| (code.to_string(), format!("{exit:?}")))
-            .collect();
-        let named = named_in_source();
-        assert!(named.len() > 200, "the scan found only {}", named.len());
-        let missing: std::collections::BTreeSet<_> =
-            named.iter().filter(|pair| !listed.contains(pair)).collect();
-        assert!(missing.is_empty(), "not in CODES: {missing:?}");
-        let mut sorted = listed.clone();
-        sorted.sort();
-        sorted.dedup();
-        assert_eq!(sorted, listed, "CODES is sorted, each pair once");
-    }
 
     #[test]
     fn an_error_line_carries_its_exit_and_next_step_over_any_detail() {
-        let mut failure = Failure::usage("usage", "Bad flag.".to_string());
+        let mut failure = Failure::new(code::usage, "Bad flag.".to_string());
         failure.next = Some("latch help status".into());
         failure.details = serde_json::json!({"exit": 0, "code": "other", "request_id": "r1"});
         let line: Value = serde_json::from_str(&failure.to_json()).unwrap();
@@ -607,12 +486,15 @@ mod tests {
     }
 
     #[test]
-    fn an_error_lines_exit_is_the_process_exit() {
-        for exit in Exit::ALL {
+    fn an_error_lines_exit_is_its_codes_and_the_process_exit() {
+        for code in CODES {
             let line: Value =
-                serde_json::from_str(&Failure::new(exit, "c", "m".into()).to_json()).unwrap();
-            assert_eq!(line["error"]["exit"], u8::from(exit));
-            assert_eq!(ExitCode::from(exit), ExitCode::from(u8::from(exit)));
+                serde_json::from_str(&Failure::new(*code, "m".into()).to_json()).unwrap();
+            assert_eq!(line["error"]["exit"], u8::from(code.exit), "{code:?}");
+            assert_eq!(
+                ExitCode::from(code.exit),
+                ExitCode::from(u8::from(code.exit))
+            );
         }
     }
 }

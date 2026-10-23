@@ -9,7 +9,7 @@ use serde_json::{Map, Value};
 
 use super::dates;
 use super::sites;
-use crate::failure::Failure;
+use crate::failure::{Failure, code};
 
 /// Bitwarden's item types; latch keeps the first four.
 pub const LOGIN: u8 = 1;
@@ -303,7 +303,7 @@ impl Item {
                 }
             }
         }
-        let bad = |message: String| Failure::usage("bad_item", message);
+        let bad = |message: String| Failure::new(code::bad_item, message);
         if ![LOGIN, NOTE, CARD, IDENTITY].contains(&self.raw.kind) {
             return Err(bad("an item is a login, card, identity or note".into()));
         }

@@ -21,7 +21,7 @@ use super::item::{CARD, IDENTITY, Item, LOGIN, Login, NOTE, Raw, Uri};
 use super::sites;
 use super::store::Backend;
 use super::totp::Params;
-use crate::failure::Failure;
+use crate::failure::{Failure, code};
 
 /// Larger than any real export; a cap, not a target.
 pub const MAX_IMPORT_BYTES: usize = 20 * 1024 * 1024;
@@ -74,7 +74,7 @@ pub struct Parsed {
 }
 
 fn usage(message: &str) -> Failure {
-    Failure::usage("bad_import", message.to_string())
+    Failure::new(code::bad_import, message.to_string())
 }
 
 /// Reads an export: a zip is a 1PUX, text opening with `{` is JSON
@@ -888,7 +888,7 @@ pub fn commit(vault: &mut dyn Backend, parsed: &Parsed, picks: &[usize]) -> Outc
             let Some(current) = vault.item(&update.item) else {
                 fail(
                     &mut outcome,
-                    Failure::failed("gone", "the item is gone from the vault".into()),
+                    Failure::new(code::gone, "the item is gone from the vault".into()),
                 );
                 continue;
             };
@@ -905,8 +905,8 @@ pub fn commit(vault: &mut dyn Backend, parsed: &Parsed, picks: &[usize]) -> Outc
                 Ok(_) => outcome.updated += 1,
                 Err(failure) if failure.code == "stale_revision" => fail(
                     &mut outcome,
-                    Failure::failed(
-                        "stale_revision",
+                    Failure::new(
+                        code::stale_revision,
                         "the item changed somewhere else since this import was read".into(),
                     ),
                 ),

@@ -16,7 +16,7 @@ use crate::cli::{
     HandoffAction, TabCommand,
 };
 use crate::dial::{self, ANSWER_MARGIN, ANSWER_WITHIN};
-use crate::failure::{Exit, Failure};
+use crate::failure::{Exit, Failure, code};
 use crate::hosts;
 use crate::state::StateDir;
 use crate::transfer;
@@ -43,8 +43,8 @@ pub async fn run(state: &StateDir, args: BrowserArgs) -> Result<Value, Failure> 
         ..
     } = &args.command
     {
-        return Err(Failure::usage(
-            "bad_arguments",
+        return Err(Failure::new(
+            code::bad_arguments,
             "with --history, --output takes one of R's screenshots: add --shot N".into(),
         ));
     }
@@ -118,7 +118,7 @@ pub async fn run(state: &StateDir, args: BrowserArgs) -> Result<Value, Failure> 
                 .as_deref()
                 .map(Check::parse)
                 .transpose()
-                .map_err(|why| Failure::usage("bad_arguments", why))?;
+                .map_err(|why| Failure::new(code::bad_arguments, why))?;
             let plan = Plan {
                 steps: vec![Step {
                     literal: Some(literal),
@@ -128,7 +128,7 @@ pub async fn run(state: &StateDir, args: BrowserArgs) -> Result<Value, Failure> 
                 ..Plan::default()
             };
             plan.validate()
-                .map_err(|why| Failure::usage("bad_arguments", why))?;
+                .map_err(|why| Failure::new(code::bad_arguments, why))?;
             Some(plan)
         }
         BrowserCommand::Wait { within, .. } => {
@@ -214,12 +214,12 @@ struct Upload {
 
 async fn open_upload(path: &Path) -> Result<Upload, Failure> {
     let local =
-        |err: std::io::Error| Failure::usage("local_file", format!("{}: {err}", path.display()));
+        |err: std::io::Error| Failure::new(code::local_file, format!("{}: {err}", path.display()));
     let file = File::open(path).await.map_err(local)?;
     let metadata = file.metadata().await.map_err(local)?;
     if !metadata.is_file() {
-        return Err(Failure::usage(
-            "not_a_file",
+        return Err(Failure::new(
+            code::not_a_file,
             format!("{} is not a file", path.display()),
         ));
     }
@@ -227,7 +227,10 @@ async fn open_upload(path: &Path) -> Result<Upload, Failure> {
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(|| {
-            Failure::usage("local_file", format!("{} has no file name", path.display()))
+            Failure::new(
+                code::local_file,
+                format!("{} has no file name", path.display()),
+            )
         })?
         .to_string();
     Ok(Upload {
@@ -245,15 +248,15 @@ fn read_script(path: &Path) -> Result<String, Failure> {
         if bytes.len() > limit {
             let message =
                 "stdin is over 256 KiB; nothing was run (put a big input with `latch file put`)";
-            return Err(Failure::usage("stdin_too_big", message.into()));
+            return Err(Failure::new(code::stdin_too_big, message.into()));
         }
         bytes
     } else {
         std::fs::read(path)
-            .map_err(|err| Failure::usage("local_file", format!("{}: {err}", path.display())))?
+            .map_err(|err| Failure::new(code::local_file, format!("{}: {err}", path.display())))?
     };
     String::from_utf8(bytes)
-        .map_err(|_| Failure::usage("local_file", "the script is not UTF-8 text".into()))
+        .map_err(|_| Failure::new(code::local_file, "the script is not UTF-8 text".into()))
 }
 
 /// An upload: the bytes, then the host's answer, given this side's sha256.
@@ -322,8 +325,8 @@ fn fill(request: &mut Value, command: BrowserCommand) -> Result<(), Failure> {
         }
         BrowserCommand::Find { role, name } => {
             if role.is_none() || name.is_none() {
-                return Err(Failure::usage(
-                    "bad_arguments",
+                return Err(Failure::new(
+                    code::bad_arguments,
                     "find takes --role R --name N".into(),
                 ));
             }
@@ -397,8 +400,8 @@ fn fill(request: &mut Value, command: BrowserCommand) -> Result<(), Failure> {
             let mut pairs = Vec::new();
             for field in fields {
                 let (label, refs) = field.rsplit_once('=').ok_or_else(|| {
-                    Failure::usage(
-                        "bad_arguments",
+                    Failure::new(
+                        code::bad_arguments,
                         format!("--field takes FIELD=eN, not {field:?}"),
                     )
                 })?;
@@ -406,8 +409,8 @@ fn fill(request: &mut Value, command: BrowserCommand) -> Result<(), Failure> {
                 pairs.push(json!([label, refs]));
             }
             if pairs.is_empty() && suggested.is_none() {
-                return Err(Failure::usage(
-                    "bad_arguments",
+                return Err(Failure::new(
+                    code::bad_arguments,
                     "fill needs --field FIELD=eN for each field, or --suggested S from observe"
                         .into(),
                 ));
@@ -424,21 +427,21 @@ fn fill(request: &mut Value, command: BrowserCommand) -> Result<(), Failure> {
             "fill"
         }
         BrowserCommand::Login { .. } => {
-            return Err(Failure::usage(
-                "removed_command",
+            return Err(Failure::new(
+                code::removed_command,
                 "`login` is folded into `fill`: `latch browser fill --item vN --field username=eN --field password=eN --press eN`, or `--suggested S` from observe".into(),
             ));
         }
         BrowserCommand::FillCode { .. } => {
-            return Err(Failure::usage(
-                "removed_command",
+            return Err(Failure::new(
+                code::removed_command,
                 "`fill-code` is folded into `fill`: `latch browser fill --item vN --field otp=eN --press eN`".into(),
             ));
         }
         BrowserCommand::Handoff { reason, within, .. } => {
             let reason = reason.ok_or_else(|| {
-                Failure::usage(
-                    "bad_arguments",
+                Failure::new(
+                    code::bad_arguments,
                     "handoff needs --reason captcha|2fa|passkey|signin (or, on the host, `handoff done`)".into(),
                 )
             })?;
@@ -451,8 +454,8 @@ fn fill(request: &mut Value, command: BrowserCommand) -> Result<(), Failure> {
         BrowserCommand::Setup { .. } => unreachable!("run here, never sent"),
     };
     if !matches!(name, "open" | "sessions") && request["session"].is_null() {
-        return Err(Failure::usage(
-            "no_session",
+        return Err(Failure::new(
+            code::no_session,
             "this command needs a session: give --session S, or set LATCH_BROWSER_SESSION, to \
              the `session` id `latch browser open` answered. Keep that id when you open: it is \
              shown only then, and `latch browser sessions` lists your sessions without ids. A \
@@ -491,7 +494,7 @@ fn with_request(mut failure: Failure, id: &Value) -> Failure {
 
 /// The plan with `--fact NAME=TEXT` and `--item vN` added, checked again.
 fn with_facts(mut plan: Plan, facts: &[String], items: &[String]) -> Result<Plan, Failure> {
-    let bad = |why: String| Failure::usage("bad_arguments", why);
+    let bad = |why: String| Failure::new(code::bad_arguments, why);
     for fact in facts {
         match fact.split_once('=') {
             Some((name, text)) if !name.trim().is_empty() => {
@@ -549,7 +552,7 @@ pub(super) fn do_plan(
     facts: &[String],
     items: &[String],
 ) -> Result<Plan, Failure> {
-    let bad = |why: String| Failure::usage("bad_arguments", why);
+    let bad = |why: String| Failure::new(code::bad_arguments, why);
     let mut plan = match plan_file {
         Some(file) => serde_json::from_str::<Plan>(&read_script(file)?)
             .map_err(|err| bad(format!("the plan file is malformed: {err}")))?,
@@ -584,16 +587,16 @@ pub(super) fn act_literal(
     text: Option<String>,
 ) -> Result<Literal, Failure> {
     let action = action.ok_or_else(|| {
-        Failure::usage(
-            "bad_arguments",
+        Failure::new(
+            code::bad_arguments,
             "act needs an action: click, type, select, press, scroll or back".into(),
         )
     })?;
     let (target, text) = match (action, target, text) {
         (ActAction::Scroll, Some(word), None) if !plan::is_ref(&word) => (None, Some(word)),
         (_, Some(word), _) if !plan::is_ref(&word) => {
-            return Err(Failure::usage(
-                "bad_arguments",
+            return Err(Failure::new(
+                code::bad_arguments,
                 format!(
                     "act takes a ref (eN), not {word:?}: to name an element by its name or in words, write it as a plan step; see `latch browser do --help`"
                 ),
@@ -638,7 +641,7 @@ mod tests {
 
     #[test]
     fn a_lost_plan_names_its_request_for_its_history() {
-        let lost = Failure::new(Exit::Unknown, "outcome_unknown", "dropped".into());
+        let lost = Failure::new(code::outcome_unknown, "dropped".into());
         let named = with_request(lost, &json!("r00aa"));
         assert_eq!(named.details["request"], "r00aa");
         assert!(named.message.contains("do --history r00aa"));

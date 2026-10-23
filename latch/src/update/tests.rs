@@ -8,6 +8,7 @@ use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
 
 use super::*;
+use crate::failure::Exit;
 
 /// A release server: the files under `/latch-cli/`, by path, which a test may
 /// change; and how many requests it saw.

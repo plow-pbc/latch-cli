@@ -38,12 +38,12 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::Child;
 use tokio::task::JoinHandle;
 
-use crate::failure::Failure;
+use crate::failure::{Code, Failure, code};
 use crate::log::log;
 use crate::serve::Done;
 use crate::state::to_hex;
 use crate::wire::Response;
-use crate::worker::{WorkerError, WorkerSetup, authenticated_worker_error};
+use crate::worker::{WorkerSetup, authenticated_worker_error};
 
 /// How much of each output stream the agent gets back.
 const OUTPUT_CAP: usize = 256 * 1024;
@@ -82,7 +82,7 @@ pub(crate) struct PrivateExec {
 /// in its details.
 pub fn timed_out(timeout: u64, result: Value) -> Failure {
     let message = format!("the program ran past its {timeout} s timeout and was stopped");
-    let mut failure = Failure::failed("timed_out", message);
+    let mut failure = Failure::new(code::timed_out, message);
     failure.details = result;
     failure
 }
@@ -118,7 +118,7 @@ pub fn parse_secret_env(values: &[String]) -> Result<BTreeMap<String, String>, F
 }
 
 fn bad_secret_env() -> Failure {
-    Failure::usage("bad_secret_env", "use distinct NAME=VALUE entries with valid environment names; HOME, PATH, TMPDIR, LATCH_*, LD_* and DYLD_* are reserved".into())
+    Failure::new(code::bad_secret_env, "use distinct NAME=VALUE entries with valid environment names; HOME, PATH, TMPDIR, LATCH_*, LD_* and DYLD_* are reserved".into())
 }
 
 pub(crate) fn validate_secret_env(secrets: &BTreeMap<String, String>) -> Result<(), Failure> {
@@ -161,7 +161,7 @@ fn default_timeout() -> u64 {
 
 /// Resolves host path fields before judgment, without creating anything.
 pub fn normalize(workers: &WorkerSetup, value: &Value) -> Result<PreparedExec, Failure> {
-    let bad = |message: &str| Failure::usage("bad_request", message.to_string());
+    let bad = |message: &str| Failure::new(code::bad_request, message.to_string());
     if !value.is_object() {
         return Err(bad("exec arguments must be an object"));
     }
@@ -235,8 +235,8 @@ pub(crate) fn resolve(home: &Path, path: &Path) -> Result<PathBuf, Failure> {
             Err(_) => break,
         }
     }
-    Err(Failure::failed(
-        "bad_path",
+    Err(Failure::new(
+        code::bad_path,
         "the host path cannot be resolved".into(),
     ))
 }
@@ -257,7 +257,7 @@ pub(crate) fn is_hidden(workers: &WorkerSetup, path: &Path) -> bool {
 pub(crate) fn check_path(workers: &WorkerSetup, path: &Path, write: bool) -> Result<(), Failure> {
     let hidden = is_hidden(workers, path);
     if !path.starts_with(&workers.home) || (write && path == workers.home) || hidden {
-        return Err(Failure::new(crate::failure::Exit::Denied, "bad_path",
+        return Err(Failure::new(code::bad_path,
             "the path must be inside the host's home and outside hidden state; home itself cannot be a write target".into()));
     }
     Ok(())
@@ -290,7 +290,7 @@ pub(crate) fn caches(workers: &WorkerSetup) -> Vec<PathBuf> {
 pub async fn run(
     workers: &WorkerSetup,
     prepared: PreparedExec,
-    cut_off: impl Future<Output = &'static str>,
+    cut_off: impl Future<Output = Code>,
 ) -> Done {
     let mut args = prepared.0;
     let timeout = args.timeout;
@@ -311,7 +311,11 @@ pub async fn run(
         .chain(args.workdir.as_deref().map(Path::new))
     {
         if !resolve(&workers.home, path).is_ok_and(|real| real == path) {
-            return Done::failed("bad_path", "the path changed after judgment".into(), audit);
+            return Done::failed(
+                code::bad_path,
+                "the path changed after judgment".into(),
+                audit,
+            );
         }
     }
 
@@ -319,7 +323,7 @@ pub async fn run(
         if !path.exists()
             && let Err(error) = create_write_dir(path)
         {
-            return Done::failed("write_path_failed", error.to_string(), audit);
+            return Done::failed(code::write_path_failed, error.to_string(), audit);
         }
     }
 
@@ -327,7 +331,7 @@ pub async fn run(
         Ok(tmpdir) => tmpdir,
         Err(err) => {
             let message = format!("{}: {err}", std::env::temp_dir().display());
-            return Done::failed("tmpdir_failed", message, audit);
+            return Done::failed(code::tmpdir_failed, message, audit);
         }
     };
     let limits = Limits { timeout, cut_off };
@@ -447,7 +451,7 @@ enum End {
     Exited,
     TimedOut,
     /// Cut off, with this outcome.
-    Cut(&'static str),
+    Cut(Code),
 }
 
 /// Starts the program and waits for it, within `limits`.
@@ -456,7 +460,7 @@ async fn run_program(
     args: &ExecArgs,
     tmpdir: &Path,
     input: Option<Vec<u8>>,
-    limits: Limits<impl Future<Output = &'static str>>,
+    limits: Limits<impl Future<Output = Code>>,
     mut audit: Value,
 ) -> Done {
     let started = Instant::now();
@@ -468,7 +472,7 @@ async fn run_program(
     let started_exec = workers.start_exec(args, tmpdir, &private.error_token, kill_after);
     let mut child = match started_exec {
         Ok(child) => child,
-        Err(error) => return refused(error, audit),
+        Err(error) => return Done::worker(error, audit),
     };
     let stdout = capture(child.stdout.take().expect("stdout is piped"));
     let stderr = capture(child.stderr.take().expect("stderr is piped"));
@@ -499,7 +503,7 @@ async fn run_program(
         && let Some(error) =
             authenticated_worker_error(&String::from_utf8_lossy(&stderr), &private.error_token)
     {
-        return refused(error, audit);
+        return Done::worker(error, audit);
     }
 
     let exit_code = status.code();
@@ -511,20 +515,11 @@ async fn run_program(
     // How much it wrote to stderr (never what), so the host's view can mark it.
     audit["stderr_bytes"] = json!(stderr.len());
     if let End::Cut(outcome) = end {
-        let message = match outcome {
-            "interrupted" => "the host stopped while the program ran, and killed it",
-            _ => "the caller went away while the program ran, so the host killed it",
+        let message = match outcome == code::interrupted {
+            true => "the host stopped while the program ran, and killed it",
+            false => "the caller went away while the program ran, so the host killed it",
         };
-        return Done {
-            response: Response::Error {
-                exit: crate::failure::Exit::Unknown,
-                details: Value::Null,
-                code: outcome.to_string(),
-                message: format!("{message} after {duration_ms} ms"),
-            },
-            audit_args: audit,
-            outcome: outcome.to_string(),
-        };
+        return Done::failed(outcome, format!("{message} after {duration_ms} ms"), audit);
     }
     let result = json!({
         "writes": args.writes,
@@ -551,7 +546,7 @@ fn argv_is_usable(argv: &[String]) -> bool {
 /// whole process group and returns its (killed) status, and why.
 async fn wait_or_kill(
     child: &mut Child,
-    limits: Limits<impl Future<Output = &'static str>>,
+    limits: Limits<impl Future<Output = Code>>,
 ) -> (ExitStatus, End) {
     let end = tokio::select! {
         biased;
@@ -656,29 +651,6 @@ fn signal_name(signal: i32) -> String {
     name.to_string()
 }
 
-/// The worker refused or failed before the program ran: a refusal by the
-/// sandbox (or a workdir outside the areas) is a denial, anything else a
-/// failure. There is no execution result.
-fn refused(error: WorkerError, audit_args: Value) -> Done {
-    let refusal = matches!(
-        error.code.as_str(),
-        "sandbox_denied" | "workdir_outside_areas"
-    );
-    if !refusal {
-        return Done::failed(&error.code, error.message, audit_args);
-    }
-    Done {
-        response: Response::Error {
-            exit: crate::failure::Exit::Denied,
-            details: Value::Null,
-            code: error.code.clone(),
-            message: error.message,
-        },
-        audit_args,
-        outcome: error.code,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -686,11 +658,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use tokio::io::AsyncWriteExt;
 
-    async fn run(
-        workers: &WorkerSetup,
-        args: &Value,
-        cut_off: impl Future<Output = &'static str>,
-    ) -> Done {
+    async fn run(workers: &WorkerSetup, args: &Value, cut_off: impl Future<Output = Code>) -> Done {
         match normalize(workers, args) {
             Ok(prepared) => super::run(workers, prepared, cut_off).await,
             Err(failure) => Done {

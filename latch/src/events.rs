@@ -25,7 +25,7 @@ use serde_json::{Value, json};
 
 use crate::audit::{self, Record};
 use crate::cli::EventsArgs;
-use crate::failure::Failure;
+use crate::failure::{Failure, code};
 use crate::lifecycle::{self, Host};
 use crate::state::StateDir;
 use crate::watch::{self, Watch, Woke};
@@ -50,7 +50,10 @@ pub fn run(state: &StateDir, args: EventsArgs) -> Result<(), Failure> {
     state.create()?;
     let audit = state.path.join(audit::FILE);
     let watching = |err: std::io::Error| {
-        Failure::failed("watch_failed", format!("{}: {err}", state.path.display()))
+        Failure::new(
+            code::watch_failed,
+            format!("{}: {err}", state.path.display()),
+        )
     };
     let mut watch =
         Watch::new(&state.path, &[audit], watch::stdin_is_a_pipe()).map_err(watching)?;
@@ -113,8 +116,8 @@ pub fn logs(state: &StateDir, follow: bool) -> Result<(), Failure> {
             Ok(bytes) => bytes,
             Err(err) if err.kind() == ErrorKind::NotFound => Vec::new(),
             Err(err) => {
-                return Err(Failure::failed(
-                    "log_io",
+                return Err(Failure::new(
+                    code::log_io,
                     format!("{}: {err}", path.display()),
                 ));
             }
@@ -159,7 +162,10 @@ fn sleep(watch: &mut Watch, state: &StateDir) -> Result<bool, Failure> {
 }
 
 fn watch_failed(state: &StateDir, err: std::io::Error) -> Failure {
-    Failure::failed("watch_failed", format!("{}: {err}", state.path.display()))
+    Failure::new(
+        code::watch_failed,
+        format!("{}: {err}", state.path.display()),
+    )
 }
 
 /// Writes one line; false once nobody reads our stdout.
@@ -229,7 +235,7 @@ impl Follower {
         let Some(mut records) = self.read_new()? else {
             let path = self.dir.join(audit::FILE);
             let message = format!("{}: the audit log fails its checks", path.display());
-            return Err(Failure::failed("audit_broken", message));
+            return Err(Failure::new(code::audit_broken, message));
         };
         let keep = records.len().saturating_sub(REPLAY);
         Ok(records.split_off(keep))
@@ -345,7 +351,7 @@ impl Follower {
         // Read on each look, so a key rotated meanwhile is there too.
         let Some(keys) = audit::Keys::existing(&self.dir)? else {
             let message = format!("{}: there is no key to read it with", path.display());
-            return Err(Failure::failed("audit_key", message));
+            return Err(Failure::new(code::audit_key, message));
         };
         for line in bytes[..complete]
             .split(|&b| b == b'\n')
@@ -386,7 +392,7 @@ fn entry(record: &Record) -> Value {
 }
 
 fn io_failure(path: &Path, err: std::io::Error) -> Failure {
-    Failure::failed("audit_io", format!("{}: {err}", path.display()))
+    Failure::new(code::audit_io, format!("{}: {err}", path.display()))
 }
 
 #[cfg(test)]

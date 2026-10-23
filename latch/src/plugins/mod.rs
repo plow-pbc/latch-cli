@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::Notify;
 
-use crate::failure::{Exit, Failure};
+use crate::failure::{Failure, code};
 use crate::state::StateDir;
 
 /// One connector. An operation of the same name belongs to it.
@@ -63,7 +63,7 @@ impl Connector {
             .ok_or_else(|| {
                 let names: Vec<&str> = Self::ALL.iter().map(|c| c.name()).collect();
                 let message = format!("no plugin {name:?} here; plugins: {}", names.join(", "));
-                Failure::usage("unknown_plugin", message)
+                Failure::new(code::unknown_plugin, message)
             })
     }
 
@@ -79,8 +79,7 @@ impl Connector {
 
     fn not_enabled(self) -> Failure {
         let mut failure = Failure::new(
-            Exit::Denied,
-            "not_enabled",
+            code::not_enabled,
             format!(
                 "{} is not enabled on this host; its owner turns it on there with `{}`",
                 self.name(),
@@ -178,7 +177,7 @@ impl Plugins {
                 connector.name(),
                 connector.enable_command()
             );
-            return Err(Failure::failed("setup_superseded", message));
+            return Err(Failure::new(code::setup_superseded, message));
         }
         *revision += 1;
         let mut settings = inner.settings.clone();
@@ -188,7 +187,7 @@ impl Plugins {
         };
         let text = serde_json::to_string_pretty(&settings).expect("settings serialize") + "\n";
         crate::state::write_private(&self.path, text.as_bytes()).map_err(|err| {
-            Failure::failed("bad_state", format!("{}: {err}", self.path.display()))
+            Failure::new(code::bad_state, format!("{}: {err}", self.path.display()))
         })?;
         inner.settings = settings;
         Ok(inner.running.get(&connector).copied().unwrap_or(0))
@@ -265,14 +264,14 @@ pub(crate) fn saved(state: &StateDir) -> Result<BTreeMap<Connector, Setting>, Fa
     let path = state.path.join("plugins.json");
     match std::fs::read_to_string(&path) {
         Ok(text) => serde_json::from_str(&text).map_err(|err| {
-            Failure::failed(
-                "bad_state",
+            Failure::new(
+                code::bad_state,
                 format!("{} is not valid: {err}", path.display()),
             )
         }),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
-        Err(err) => Err(Failure::failed(
-            "bad_state",
+        Err(err) => Err(Failure::new(
+            code::bad_state,
             format!("{}: {err}", path.display()),
         )),
     }

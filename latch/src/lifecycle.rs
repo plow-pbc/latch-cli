@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::failure::Failure;
+use crate::failure::{Failure, code};
 use crate::state::write_private;
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
@@ -108,7 +108,7 @@ pub fn record(
     let path = state_dir.join("serve.json");
     let json = serde_json::to_string(&written).expect("a step serializes") + "\n";
     write_private(&path, json.as_bytes())
-        .map_err(|err| Failure::failed("state_io", format!("{}: {err}", path.display())))
+        .map_err(|err| Failure::new(code::state_io, format!("{}: {err}", path.display())))
 }
 
 /// What the host on `state_dir` is doing now. Reads only; works on a folder
@@ -199,7 +199,7 @@ pub fn other_version_running(pid: u32) -> Failure {
         "a host from another latch version is running (pid {pid}); stop it \
          (Ctrl-C in its terminal, or kill {pid}), then retry"
     );
-    Failure::new(crate::failure::Exit::Unreachable, "other_version", message)
+    Failure::new(code::other_version, message)
 }
 
 /// The pid `serve.lock` names (`latch serve (pid N, …)`).
@@ -265,7 +265,7 @@ mod tests {
         assert_eq!(ended.run, serving.run);
         let dir = killed;
 
-        let failure = Failure::failed("relay_unreachable", "no relay".to_string());
+        let failure = Failure::new(code::relay_unreachable, "no relay".to_string());
         record(dir.path(), Phase::Error, false, Some(&failure)).unwrap();
         assert_eq!(now(dir.path()).error.unwrap().code, "relay_unreachable");
         record(dir.path(), Phase::Stopped, false, None).unwrap();

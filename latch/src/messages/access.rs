@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::failure::Failure;
+use crate::failure::{Failure, code};
 use crate::plugins::Connector;
 use crate::state::StateDir;
 use crate::worker::WorkerSetup;
@@ -115,7 +115,7 @@ pub async fn check_here(state: &StateDir, connector: Connector) -> Result<Access
     #[cfg(debug_assertions)]
     if let Some(answer) = std::env::var_os("LATCH_TEST_ACCESS") {
         let status = serde_json::from_value(serde_json::json!(answer.to_string_lossy()))
-            .map_err(|err| Failure::usage("bad_test_access", err.to_string()))?;
+            .map_err(|err| Failure::new(code::bad_test_access, err.to_string()))?;
         let reason = "LATCH_TEST_ACCESS".to_string();
         return Ok(Access { status, reason });
     }

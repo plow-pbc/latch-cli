@@ -10,7 +10,7 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 
 use super::{File as MovedFile, Input, MAX_OUTPUT, Output, gog_failure, policy, problem};
-use crate::failure::{Exit, Failure};
+use crate::failure::{Failure, code};
 use crate::wire::Response;
 
 /// What the host tells the worker, as one JSON line on its stdin. The bytes
@@ -24,10 +24,8 @@ pub struct Job {
 
 /// Refuses to run gog unless its sha256 is one of the pinned release's.
 pub fn verify(program: &Path) -> Result<(), Failure> {
-    let mut file =
-        File::open(program).map_err(|_| problem(Exit::Denied, "gog_unverified", json!({})))?;
-    let digest =
-        sha256(&mut file).map_err(|_| problem(Exit::Denied, "gog_unverified", json!({})))?;
+    let mut file = File::open(program).map_err(|_| problem(code::gog_unverified, json!({})))?;
+    let digest = sha256(&mut file).map_err(|_| problem(code::gog_unverified, json!({})))?;
     // A test build's stand-in is a latch built with it (see `fake.rs`):
     // its bytes hold the marker. (A worker has no /proc to find its own.)
     #[cfg(feature = "fake-gog")]
@@ -38,7 +36,7 @@ pub fn verify(program: &Path) -> Result<(), Failure> {
         return Ok(());
     }
     if !super::PIN.hashes.contains(&digest) {
-        return Err(problem(Exit::Denied, "gog_unverified", json!({})));
+        return Err(problem(code::gog_unverified, json!({})));
     }
     Ok(())
 }
@@ -52,7 +50,7 @@ pub fn run(program: &Path) -> Result<(), Failure> {
     let mut line = String::new();
     input.read_line(&mut line).map_err(io_error)?;
     let job: Job =
-        serde_json::from_str(&line).map_err(|_| problem(Exit::Failed, "bad_request", json!({})))?;
+        serde_json::from_str(&line).map_err(|_| problem(code::bad_request, json!({})))?;
     let mut plan = policy::parse(&job.argv)?;
     verify(program)?;
     let root = std::env::current_dir().map_err(io_error)?;
@@ -100,14 +98,14 @@ fn execute(
     input: &mut impl Read,
 ) -> Result<Output, Failure> {
     if plan.inputs.len() != inputs.len() {
-        return Err(problem(Exit::Denied, "not_allowed", json!({})));
+        return Err(problem(code::not_allowed, json!({})));
     }
     for (n, (wanted, sent)) in plan.inputs.iter().zip(inputs).enumerate() {
         if sent.index != wanted.index
             || Path::new(&sent.name).file_name().and_then(|s| s.to_str())
                 != Some(sent.name.as_str())
         {
-            return Err(problem(Exit::Denied, "not_allowed", json!({})));
+            return Err(problem(code::not_allowed, json!({})));
         }
         let folder = root.join("in").join(n.to_string());
         fs::create_dir(&folder).map_err(io_error)?;
@@ -115,7 +113,7 @@ fn execute(
         let mut file = File::create(&path).map_err(io_error)?;
         let copied = io::copy(&mut input.take(sent.size), &mut file).map_err(io_error)?;
         if copied != sent.size {
-            return Err(problem(Exit::Failed, "transfer_failed", json!({})));
+            return Err(problem(code::transfer_failed, json!({})));
         }
         plan.argv[wanted.index] = path.to_string_lossy().into_owned();
     }
@@ -135,13 +133,8 @@ fn execute(
         plan.argv[output.index] = path.to_string_lossy().into_owned();
     }
     fs::create_dir_all(&home).map_err(io_error)?;
-    let token = std::env::var("GOG_ACCESS_TOKEN").map_err(|_| {
-        problem(
-            Exit::Failed,
-            "google_failed",
-            json!({"reason":"needs_reauth"}),
-        )
-    })?;
+    let token = std::env::var("GOG_ACCESS_TOKEN")
+        .map_err(|_| problem(code::google_failed, json!({"reason":"needs_reauth"})))?;
     let mut child = Command::new(program)
         .args(["--json", "--no-input", "--wrap-untrusted", "--color=never"])
         .args(if plan.fanout() && plan.projected() {
@@ -179,11 +172,7 @@ fn execute(
     if bytes.len() > MAX_OUTPUT {
         let _ = child.kill();
         let _ = child.wait();
-        return Err(problem(
-            Exit::Failed,
-            "output_too_large",
-            json!({"limit":MAX_OUTPUT}),
-        ));
+        return Err(problem(code::output_too_large, json!({"limit":MAX_OUTPUT})));
     }
     let status = child.wait().map_err(io_error)?;
     if status.code() == Some(3) {
@@ -196,18 +185,13 @@ fn execute(
         return Err(gog_failure(status.code().unwrap_or(1)));
     }
     if !token.is_empty() && bytes.windows(token.len()).any(|w| w == token.as_bytes()) {
-        return Err(problem(Exit::Failed, "unsafe_output", json!({})));
+        return Err(problem(code::unsafe_output, json!({})));
     }
     let mut result = if plan.help {
         json!({"usage":String::from_utf8_lossy(&bytes)})
     } else {
-        serde_json::from_slice(&bytes).map_err(|_| {
-            problem(
-                Exit::Failed,
-                "google_failed",
-                json!({"reason":"invalid_output"}),
-            )
-        })?
+        serde_json::from_slice(&bytes)
+            .map_err(|_| problem(code::google_failed, json!({"reason":"invalid_output"})))?
     };
     let mut files = Vec::new();
     collect(&root.join("out"), &root.join("out"), &mut files).map_err(io_error)?;
@@ -282,7 +266,7 @@ fn collect(root: &Path, folder: &Path, files: &mut Vec<MovedFile>) -> io::Result
 /// An I/O failure inside the worker. Only the code `google_worker_failed`
 /// is reported, not the error's text.
 fn io_error(_: io::Error) -> Failure {
-    problem(Exit::Failed, "google_worker_failed", json!({}))
+    problem(code::google_worker_failed, json!({}))
 }
 
 pub(crate) fn sha256(input: &mut impl Read) -> io::Result<String> {
