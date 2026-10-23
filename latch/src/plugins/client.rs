@@ -55,9 +55,7 @@ pub async fn run(state: &StateDir, args: PluginsArgs) -> Result<Value, Failure> 
     };
     let send = || async {
         match dial::call(state, &host, &request, ANSWER_WITHIN).await {
-            Err(failure)
-                if failure.code == "serve_required" && request.args["name"].is_string() =>
-            {
+            Err(failure) if failure.code == "serve_required" => {
                 without_a_host(state, &request.args).await
             }
             answer => answer,
