@@ -182,16 +182,6 @@ struct GatekeeperTests {
         #expect(loginItem == [false, true])
     }
 
-    @Test func connectGoogleInPlowOpensWhatLatchNames() {
-        let app = AppModel(client: FakeLatchClient(), store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
-        var opened: [URL] = []
-        app.open = { opened.append($0) }
-        let flow = app.stage(.google)
-        flow.googleConnectURL = URL(string: "https://plow.co/connect/google")
-        flow.connectGoogleInPlow()
-        #expect(opened == [URL(string: "https://plow.co/connect/google")!])
-    }
-
     @Test func googleNotConnectedCarriesLatchsConnectURL() throws {
         struct Line: Decodable { var error: LatchFailure }
         let json = #"{"error":{"code":"google_not_connected","message":"connect Google in Plow","connect_url":"https://plow.co/connect/google"}}"#
@@ -276,8 +266,11 @@ final class ScriptedClient: LatchClient, @unchecked Sendable {
     /// The Google and host steps `setup --status` gives, when not the default.
     var google: String?
     var host: String?
+    /// How many times `setup --status` was read.
+    private(set) var looked = 0
     func setupStatus() async throws -> SetupStatus {
-        try Fixtures.decode(host.map { Fixtures.setup(on: connectorsOn, google: google, host: $0) } ?? Fixtures.setup(on: connectorsOn, google: google))
+        looked += 1
+        return try Fixtures.decode(host.map { Fixtures.setup(on: connectorsOn, google: google, host: $0) } ?? Fixtures.setup(on: connectorsOn, google: google))
     }
     /// What `--check-access` says of Full Disk Access.
     var access: String?
@@ -439,27 +432,6 @@ struct ClosingTests {
         #expect(flow.progress.passed[.google] == nil)
     }
 
-    @Test func connectGoogleInPlowOnlyWithLatchsURL() async {
-        let quiet = LatchFailure(code: "google_not_connected", message: "connect a Google account in Plow")
-        let client = ScriptedClient { _ in throw LatchError.failed(quiet) }
-        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
-        var opened: [URL] = []
-        app.open = { opened.append($0) }
-        let flow = app.stage(.google)
-        // Coming back to the app only reads what latch says: no enable.
-        await flow.returnedToApp()
-        #expect(client.enabled.isEmpty)
-        #expect(flow.google == .unknown)
-        await flow.checkGoogle()
-        #expect(flow.google == .needed("connect a Google account in Plow"))
-        #expect(flow.googleConnectURL == nil)
-        flow.connectGoogleInPlow()
-        #expect(opened.isEmpty)
-        // No page opened, so nothing to come back from.
-        await flow.returnedToApp()
-        #expect(client.enabled == ["google"])
-    }
-
     @Test func notSetUpIsOnlyLatchsAnswer() {
         let app = AppModel(client: FakeLatchClient(), store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
         app.stage(status: try? Fixtures.decode(Fixtures.stopped))
@@ -510,63 +482,152 @@ struct ClosingTests {
         #expect(client.stopped == 0)
     }
 
-    @Test func googleNotConnectedContinuesWithoutIt() async {
-        let notConnected = LatchFailure(code: "google_not_connected", message: "connect Google in Plow")
-        let client = ScriptedClient { _ in throw LatchError.failed(notConnected) }
+    @Test func continueNeverSkipsGoogleSilently() async {
+        let client = ScriptedClient { _ in nil }
         let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
         let flow = app.stage(.google)
-        #expect(flow.primaryTitle == "Check connection")
-        flow.primary()
-        await until { flow.google.isNeeded }
-        // Continue moves on; checking again is the screen's own button.
-        #expect(flow.primaryTitle == "Continue")
-        #expect(flow.primarySkips)
-        flow.primary()
+        for state: Onboarding.Google in [.checking, .notConnected, .waiting, .unreachable, .failed(Onboarding.couldNotCheck)] {
+            flow.google = state
+            #expect(flow.primaryTitle == "Continue")
+            #expect(!flow.primaryEnabled)
+            #expect(!flow.stepDone)
+            flow.primary()
+            #expect(flow.step == .google)
+            #expect(flow.progress.passed[.google] == nil)
+        }
+        // Skipping is its own, visible choice.
+        flow.skip()
         #expect(flow.step == .access)
         #expect(flow.progress.passed[.google] == .skipped)
-        #expect(client.enabled == ["google"])
+
+        let connected = app.stage(.google)
+        connected.google = .connected
+        #expect(connected.stepDone)
+        connected.primary()
+        #expect(connected.step == .access)
+        #expect(connected.progress.passed[.google] == .continued)
     }
 
-    @Test func arrivingAtGoogleReadsWhatPlowSays() async {
-        let client = ScriptedClient { _ in GoogleEnabled(accounts: ["me@example.com"]) }
-        client.google = #"{"step":"google","state":"needed","reason":"Google is not connected in Plow: connect it at http://127.0.0.1:18934/connections, then run `latch plugins enable google`.","args":null,"enabled":false,"ready":false,"accounts":[],"connect_url":"http://127.0.0.1:18934/connections"}"#
+    @Test func googleTurnsOnOnceAnAccountIsConnected() async {
+        let client = ScriptedClient { _ in GoogleEnabled(accounts: ["testuser@plow.test"]) }
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
+        app.open = { Issue.record("opened \($0)") }
+
+        client.google = Fixtures.googleNotConnected
+        let notConnected = app.stage(.google)
+        await notConnected.checkGoogle()
+        #expect(notConnected.google == .notConnected)
+        #expect(notConnected.googleConnectURL == URL(string: "http://localhost:3000/connections"))
+
+        client.google = Fixtures.googleUnreachable
+        let unreachable = app.stage(.google)
+        await unreachable.checkGoogle()
+        #expect(unreachable.google == .unreachable)
+        #expect(client.enabled.isEmpty)
+
+        // Connected in Plow, off here: on with no press.
+        client.google = Fixtures.googleConnectedOff
+        let off = app.stage(.google)
+        await off.checkGoogle()
+        #expect(off.google == .connected)
+        #expect(off.googleAccounts == ["testuser@plow.test"])
+        #expect(client.enabled == ["google"])
+
+        // Already on: nothing to run.
+        client.google = Fixtures.googleOn
+        let on = app.stage(.google, progress: Progress(rerun: true))
+        await on.checkGoogle()
+        #expect(on.google == .connected)
+        #expect(client.enabled == ["google"])
+
+        // Turned on once, then disconnected in Plow: not connected.
+        client.google = #"{"step":"google","state":"needed","reason":"Google is not connected in Plow.","args":null,"enabled":true,"ready":false,"accounts":[],"connect_url":"http://localhost:3000/connections"}"#
+        let disconnected = app.stage(.google, progress: Progress(rerun: true))
+        await disconnected.checkGoogle()
+        #expect(disconnected.google == .notConnected)
+        app.stage(rulesSaved: true, setup: try? await client.setupStatus())
+        #expect(Summary.rows(app: app, flow: nil).first { $0.title == "Google" }?.state == "Not set up")
+    }
+
+    @Test func connectingWaitsForTheAccountThenTurnsGoogleOn() async {
+        let client = ScriptedClient { _ in GoogleEnabled(accounts: ["testuser@plow.test"]) }
+        client.google = Fixtures.googleNotConnected
         let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
         var opened: [URL] = []
         app.open = { opened.append($0) }
-        let notConnected = app.stage(.google)
-        await notConnected.googleAppeared()
-        #expect(notConnected.google.isNeeded)
-        #expect(notConnected.primaryTitle == "Continue")
-        notConnected.connectGoogleInPlow()
-        #expect(opened == [URL(string: "http://127.0.0.1:18934/connections")!])
-
-        client.google = #"{"step":"google","state":"needed","reason":"Google is connected in Plow (me@example.com); the Google connector is off.","args":["plugins","enable","google"],"enabled":false,"ready":false,"accounts":["me@example.com"]}"#
-        let off = app.stage(.google)
-        await off.googleAppeared()
-        #expect(off.google == .unknown)
-        #expect(off.googleAccounts == ["me@example.com"])
-        #expect(off.primaryTitle == "Turn on")
-        // Looking turns nothing on; Turn on does.
+        let flow = app.stage(.google)
+        flow.googleRecheck = .milliseconds(20)
+        await flow.checkGoogle()
+        flow.connectGoogle()
+        #expect(opened == [URL(string: "http://localhost:3000/connections")!])
+        #expect(flow.google == .waiting)
+        // Signing in takes a few checks; each one only reads.
+        let before = client.looked
+        await until { client.looked >= before + 3 }
+        #expect(flow.google == .waiting)
         #expect(client.enabled.isEmpty)
-        off.primary()
-        await until { off.google == .done }
+        client.google = Fixtures.googleConnectedOff
+        await until { flow.google == .connected }
         #expect(client.enabled == ["google"])
+        #expect(flow.googleAccounts == ["testuser@plow.test"])
+        // Once connected, the checks stop.
+        let after = client.looked
+        try? await Task.sleep(for: .milliseconds(100))
+        #expect(client.looked == after)
+        #expect(flow.step == .google)
+    }
 
-        client.google = #"{"step":"google","state":"done","reason":"Google is connected in Plow (me@example.com); the Google connector is on.","args":null,"enabled":true,"ready":true,"accounts":["me@example.com"]}"#
-        let on = app.stage(.google, progress: Progress(rerun: true))
-        await on.googleAppeared()
-        #expect(on.google == .done)
-        #expect(on.stepDone)
-        #expect(on.googleAccounts == ["me@example.com"])
+    @Test func leavingGoogleStopsItsChecks() async {
+        let client = ScriptedClient { _ in nil }
+        client.google = Fixtures.googleNotConnected
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
+        app.open = { _ in }
+        let flow = app.stage(.google)
+        flow.googleRecheck = .milliseconds(20)
+        await flow.checkGoogle()
+        flow.connectGoogle()
+        await until { client.looked >= 3 }
+        flow.skip()
+        let after = client.looked
+        try? await Task.sleep(for: .milliseconds(150))
+        #expect(client.looked == after)
+        #expect(flow.google == .notConnected)
+    }
 
-        // Turned on once, then disconnected in Plow: not connected, whatever
-        // was turned on here.
-        client.google = #"{"step":"google","state":"needed","reason":"Google is not connected in Plow: connect it at http://127.0.0.1:18934/connections, then run `latch plugins enable google`.","args":null,"enabled":true,"ready":false,"accounts":[],"connect_url":"http://127.0.0.1:18934/connections"}"#
-        let disconnected = app.stage(.google, progress: Progress(rerun: true))
-        await disconnected.googleAppeared()
-        #expect(disconnected.google.isNeeded)
-        app.stage(rulesSaved: true, setup: try? await client.setupStatus())
-        #expect(Summary.rows(app: app, flow: nil).first { $0.title == "Google" }?.state == "Not set up")
+    @Test func waitingForGoogleEndsAtItsLimit() async {
+        let client = ScriptedClient { _ in nil }
+        client.google = Fixtures.googleNotConnected
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
+        app.open = { _ in }
+        let flow = app.stage(.google)
+        flow.googleRecheck = .milliseconds(20)
+        flow.googleWaitLimit = .milliseconds(150)
+        await flow.checkGoogle()
+        flow.connectGoogle()
+        await until { flow.google != .waiting }
+        #expect(flow.google == .notConnected)
+        #expect(flow.googleWaitEnded)
+        #expect(client.enabled.isEmpty)
+    }
+
+    @Test func googleProblemsAreSaidPlainly() async {
+        let answers: [(String, Onboarding.Google)] = [
+            ("plow_unreachable", .unreachable),
+            ("gog_not_configured", .failed(Onboarding.toolsMissing)),
+            ("something_new", .failed(Onboarding.couldNotCheck)),
+        ]
+        for (code, shown) in answers {
+            let refusal = LatchFailure(code: code, message: "could not reach Plow at http://127.0.0.1:9; run `latch plugins enable google`")
+            let client = ScriptedClient { _ in throw LatchError.failed(refusal) }
+            client.google = Fixtures.googleConnectedOff
+            let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
+            let flow = app.stage(.google)
+            await flow.checkGoogle()
+            #expect(flow.google == shown)
+            if case let .failed(why) = flow.google {
+                #expect(!why.contains("latch ") && !why.contains("http") && !why.contains("`"))
+            }
+        }
     }
 
     @Test func accessAlreadyGrantedTurnsOnWithoutSystemSettings() async {
