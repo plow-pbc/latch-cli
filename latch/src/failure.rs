@@ -166,6 +166,7 @@ pub const CODES: &[(&str, Exit)] = &[
     ("bad_download", Exit::Failed),
     ("bad_engine", Exit::Usage),
     ("bad_home", Exit::Failed),
+    ("bad_host_answer", Exit::Failed),
     ("bad_host_settings", Exit::Failed),
     ("bad_import", Exit::Usage),
     ("bad_item", Exit::Failed),

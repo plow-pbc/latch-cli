@@ -158,6 +158,9 @@ pub enum Command {
     Logout(LogoutArgs),
     /// List this account's machines, online or not, or remove one
     Devices(DevicesArgs),
+    /// The account's agents, with their lines and Plow status; with --host,
+    /// each one's standing on that host (owner only)
+    Agents(AgentsArgs),
     /// Print this peer's identity and the hosts it can reach
     Status(StatusArgs),
     /// Copy a file between this machine and a host
@@ -868,6 +871,14 @@ pub enum WorkerAction {
         #[arg(last = true, required = true)]
         argv: Vec<String>,
     },
+}
+
+#[derive(Args, Debug)]
+pub struct AgentsArgs {
+    /// Also show each agent's standing on this host: its own rules there,
+    /// and whether the host refuses it exec. Never taken from $LATCH_HOST
+    #[arg(long)]
+    pub host: Option<String>,
 }
 
 #[derive(Args, Debug)]

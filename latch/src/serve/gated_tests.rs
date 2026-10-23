@@ -142,6 +142,7 @@ pub(super) async fn start_with(
         .unwrap(),
         home: home.clone(),
         stopping: tokio::sync::watch::Sender::new(Stopping::No),
+        agent_names: Mutex::default(),
     });
     let serving = host.clone();
     tokio::spawn(async move {
