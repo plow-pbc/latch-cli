@@ -552,7 +552,7 @@ impl Facts {
                     }
                     line.push(plain(crate::setup::title(&plugin.name)));
                     if plugin.state == "needs_setup" {
-                        line.push(toned(" (setup)", Tone::Warn));
+                        line.push(toned(" (needs setup)", Tone::Warn));
                     }
                 }
                 return line;
@@ -563,7 +563,7 @@ impl Facts {
             (Some(_), _) => toned(" · no plugins on", Tone::Dim),
             (None, Some("host_offline")) => return line,
             (None, None) if host.online == Some(false) => return line,
-            (None, Some("host_unreachable")) => toned(" · no answer in time", Tone::Warn),
+            (None, Some("host_unreachable")) => toned(" · no answer", Tone::Warn),
             (None, Some(reason)) => toned(format!(" · {reason}"), Tone::Warn),
             (None, None) => toned(" · …", Tone::Warn),
         });

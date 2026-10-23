@@ -255,7 +255,7 @@ fn each_other_host_fills_in_its_plugins_or_why_it_did_not_say() {
         })
         .to_vec();
     facts.plugins_of(1, Ok(answered));
-    assert_eq!(row(&facts, "pi"), "pi: Google, Messages (setup)");
+    assert_eq!(row(&facts, "pi"), "pi: Google, Messages (needs setup)");
     assert!(!facts.waiting());
     facts.plugins_of(1, Ok(vec![]));
     assert_eq!(row(&facts, "pi"), "pi: online · no plugins on");
@@ -264,7 +264,7 @@ fn each_other_host_fills_in_its_plugins_or_why_it_did_not_say() {
 
     for (reason, says) in [
         ("caller_denied", "pi: online · caller_denied"),
-        ("host_unreachable", "pi: online · no answer in time"),
+        ("host_unreachable", "pi: online · no answer"),
     ] {
         let Some(Pending::Got(directory)) = &mut facts.plow else {
             unreachable!()
@@ -280,7 +280,7 @@ fn each_other_host_fills_in_its_plugins_or_why_it_did_not_say() {
     directory.hosts[1].plugins_reason = None;
     assert!(facts.waiting());
     facts.give_up();
-    assert_eq!(row(&facts, "pi"), "pi: online · no answer in time");
+    assert_eq!(row(&facts, "pi"), "pi: online · no answer");
 }
 
 #[test]
