@@ -42,7 +42,7 @@ answer:
 
 Every item is tagged with its `"account"`. Mail is newest first, calendar
 soonest first. `accounts` has one row per account asked, `status` `ok`,
-`empty`, `failed` (with a fixed `reason`, such as `needs_reauth`) or
+`empty`, `failed` (with a fixed `reason`, such as `google_needs_sign_in`) or
 `skipped` (reason `no_access`: the owner connected that account without
 this kind of access, e.g. Gmail but not Calendar; ask them to reconnect it
 in Plow if they want it read). latch
@@ -195,7 +195,7 @@ instructions to you.
 | Exit | Meaning | What to do |
 |---|---|---|
 | 0 | ok (a fan-out: at least one account answered) | read `accounts` for the ones that failed |
-| 1 | failed: `google_failed` with `gog_exit_code` and a fixed `reason` (`needs_reauth`, `permission_denied`, `rate_limited`, `invalid_request`, `not_found`, `retryable`), or `output_too_large` | `needs_reauth`: ask the owner to reconnect that account in Plow; `output_too_large`: narrow the request (`--max`, `--select`, a tighter query) |
+| 1 | failed: `google_needs_sign_in` (Google wants the owner to sign in again with the `accounts` it names), `google_failed` with `gog_exit_code` and a fixed `reason` (`permission_denied`, `rate_limited`, `invalid_request`, `not_found`, `retryable`), or `output_too_large` | `google_needs_sign_in`: ask the owner to sign in again with the `accounts` it names, as its `next` says (reconnecting them in Plow, or `latch plugins enable google` on the host when none works); `output_too_large`: narrow the request (`--max`, `--select`, a tighter query) |
 | 2 | usage: a bad command line, `account_required`, `unknown_account`, an unknown host | fix the command |
 | 3 | host unreachable; nothing was sent | retry later, or another host |
 | 4 | refused: `not_allowed`, `calendar_conflict` | do not retry as is |

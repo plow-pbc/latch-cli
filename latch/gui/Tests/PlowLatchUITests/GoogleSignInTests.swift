@@ -15,6 +15,8 @@ final class SignInClient: LatchClient, @unchecked Sendable {
     private let stops = Mutex(0)
     var stopped: Int { stops.withLock { $0 } }
     private(set) var enabled: [String] = []
+    /// latch's refusal of a plain enable, when a test gives one.
+    var enableRefusal: LatchFailure?
 
     func signInGoogle(addAccount: Bool) -> AsyncThrowingStream<GoogleSignInEvent, Error> {
         signIns.append(addAccount)
@@ -29,6 +31,7 @@ final class SignInClient: LatchClient, @unchecked Sendable {
     func setupStatus() async throws -> SetupStatus { try Fixtures.decode(Fixtures.setup(on: [], google: google)) }
     func enable(_ plugin: String) async throws -> GoogleEnabled? {
         enabled.append(plugin)
+        if let enableRefusal { throw LatchError.failed(enableRefusal) }
         return GoogleEnabled(accounts: ["testuser@plow.test"])
     }
     func pluginsList(host: String?) async throws -> PluginsList { try Fixtures.decode(Fixtures.studioPluginsSetUp) }
@@ -71,6 +74,29 @@ struct GoogleSignInTests {
     /// Connect opens latch's first link and waits; a renewed link replaces
     /// it for "open again" without opening a second page; latch's result
     /// is Google on, with no enable of the app's own.
+    /// Every connected account needs signing in again: the enable is
+    /// refused with google_needs_sign_in, and the screen offers Connect
+    /// Google, whose sign-in latch runs, never a Try again that repeats the
+    /// refused enable.
+    @Test func signingInAgainOffersConnectGoogle() async {
+        let client = SignInClient()
+        client.google = #"{"step":"google","state":"needed","reason":"Google needs you to sign in again with testuser@plow.test: `latch plugins enable google` signs you in.","args":["plugins","enable","google","--events"],"enabled":false,"ready":false,"accounts":["testuser@plow.test"],"needs_sign_in":["testuser@plow.test"]}"#
+        client.enableRefusal = LatchFailure(code: "google_needs_sign_in", message: "Google needs the owner to sign in again with testuser@plow.test.")
+        let (app, _, _) = app(client)
+        let flow = app.stage(.google)
+        await flow.checkGoogle()
+        #expect(client.enabled == ["google"])
+        #expect(flow.google == .notConnected)
+        flow.connectGoogle()
+        #expect(flow.google == .waiting)
+        await waitUntil { client.events != nil }
+        #expect(client.signIns == [false])
+        client.events?.yield(.enabled(GoogleEnabled(accounts: ["testuser@plow.test"])))
+        client.events?.finish()
+        await waitUntil { flow.google == .connected }
+        #expect(client.enabled == ["google"])
+    }
+
     @Test func connectOpensLatchsLinkAndLatchTurnsGoogleOn() async {
         let client = SignInClient()
         let (app, _, opened) = app(client)

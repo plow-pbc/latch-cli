@@ -137,7 +137,13 @@ async fn google(workers: &WorkerSetup, plow: &Plow) -> Result<Value, Failure> {
         .filter(|account| account.access_token.is_some())
         .map(|account| account.account.as_str())
         .collect();
-    Ok(json!({"accounts": accounts}))
+    let mut found = json!({"accounts": accounts});
+    // The rest still work; these wait for the owner to sign in again.
+    let needs_sign_in = tokens.needs_sign_in();
+    if !needs_sign_in.is_empty() {
+        found["needs_sign_in"] = json!(needs_sign_in);
+    }
+    Ok(found)
 }
 
 /// No Google account connected in Plow: where the owner connects one

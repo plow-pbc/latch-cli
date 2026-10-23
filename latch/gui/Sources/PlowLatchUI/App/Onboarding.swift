@@ -624,6 +624,9 @@ final class Onboarding {
         case "not_logged_in": .failed(notLoggedIn)
         case "plow_error": .failed("Plow couldn't answer just now. Try again in a moment.")
         case "gog_not_configured": .failed(toolsMissing)
+        // No connected account works until the owner signs in again:
+        // Connect Google runs latch's sign-in, as for none connected.
+        case "google_needs_sign_in": .notConnected
         default: .failed(couldNotCheck)
         }
     }

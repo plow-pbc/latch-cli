@@ -39,7 +39,8 @@ pub static PIN: LazyLock<Pin> =
     LazyLock::new(|| serde_json::from_str(include_str!("pin.json")).expect("gog pin"));
 
 /// A connected Google account and its access token. `None` when Plow could
-/// not mint one; a call on that account then fails as `needs_reauth`.
+/// not mint one: a call on that account then fails, as
+/// `google_needs_sign_in` when that is why.
 // Credentials deliberately have no Debug or Serialize implementation.
 #[derive(Deserialize)]
 pub struct Account {
@@ -47,6 +48,9 @@ pub struct Account {
     pub access_token: Option<String>,
     /// What the owner let Plow read on this account.
     pub capabilities: Access,
+    /// Google wants the owner to sign in with this account again.
+    #[serde(default)]
+    pub needs_sign_in: bool,
 }
 
 /// The reads the owner granted on one account, from its Google scopes:
@@ -76,6 +80,8 @@ struct Mint {
 #[derive(Deserialize)]
 struct Unavailable {
     account: String,
+    #[serde(default)]
+    reason: String,
 }
 impl From<Mint> for Tokens {
     fn from(mint: Mint) -> Self {
@@ -84,11 +90,12 @@ impl From<Mint> for Tokens {
             account: entry.account,
             access_token: None,
             // Plow sends no grants for an account it could not mint for.
-            // Its calls fail as needs_reauth, so it is never skipped.
+            // Its calls fail, saying why, so it is never skipped.
             capabilities: Access {
                 mail_read: true,
                 calendar_read: true,
             },
+            needs_sign_in: entry.reason == "needs_reauth",
         }));
         Self { accounts }
     }
@@ -133,11 +140,66 @@ pub fn problem(code: Code, details: Value) -> Failure {
     failure.details = details;
     failure
 }
-/// gog exited with `code`: a `google_failed` failure with a fixed reason from
-/// gog's published exit codes. gog's own error text is never passed on.
-pub fn gog_failure(code: i32) -> Failure {
+impl Tokens {
+    /// The accounts Google wants the owner to sign in with again.
+    pub fn needs_sign_in(&self) -> Vec<String> {
+        self.accounts
+            .iter()
+            .filter(|account| account.needs_sign_in)
+            .map(|account| account.account.clone())
+            .collect()
+    }
+}
+
+/// Google wants the owner to sign in again with `accounts`, and no
+/// connected account works: `latch plugins enable google` signs them in.
+pub fn needs_sign_in(accounts: Vec<String>) -> Failure {
+    let mut failure = sign_in_again(accounts);
+    failure.next = Some("latch plugins enable google".into());
+    failure
+}
+
+/// Google wants the owner to sign in again with `accounts`, which a call
+/// needed, while other accounts may still work: then `plugins enable
+/// google` succeeds without a sign-in, so the owner reconnects these in
+/// Plow. One code for a call on such an account and gog's own auth error.
+pub fn needs_sign_in_on(accounts: Vec<String>) -> Failure {
+    let mut failure = sign_in_again(accounts);
+    failure.next = Some("reconnect these accounts on Plow's Connections page".into());
+    failure
+}
+
+fn sign_in_again(accounts: Vec<String>) -> Failure {
+    let named = if accounts.is_empty() {
+        "a Google account".to_string()
+    } else {
+        accounts.join(", ")
+    };
+    let mut failure = Failure::new(
+        code::google_needs_sign_in,
+        format!("Google needs the owner to sign in again with {named}."),
+    );
+    failure.details = json!({"accounts": accounts});
+    failure
+}
+
+/// The `accounts` a `google_needs_sign_in` failure's details (or Plow's
+/// `needs_reauth` refusal) name.
+pub fn sign_in_accounts(details: &Value) -> Vec<String> {
+    details["accounts"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|account| account.as_str().map(String::from))
+        .collect()
+}
+
+/// gog exited with `code` for `account`: a `google_failed` failure with a
+/// fixed reason from gog's published exit codes, or for its auth error
+/// (exit 4) `google_needs_sign_in`. gog's own error text is never passed on.
+pub fn gog_failure(code: i32, account: &str) -> Failure {
     let reason = match code {
-        4 => "needs_reauth",
+        4 => return needs_sign_in_on(vec![account.to_string()]),
         6 => "permission_denied",
         7 => "rate_limited",
         2 => "invalid_request",

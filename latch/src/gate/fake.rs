@@ -35,6 +35,9 @@ pub struct World {
     pub asked: Vec<Value>,
     /// The owner's connected Google accounts, each given a made-up token.
     pub google_accounts: Vec<String>,
+    /// Those of them Google wants the owner to sign in with again: Plow
+    /// mints them no token.
+    pub google_reauth: Vec<String>,
     /// The Google token route holds its answer while this is set.
     pub google_paused: bool,
 }
@@ -92,15 +95,32 @@ impl World {
             if self.google_accounts.is_empty() {
                 return (412, json!({"detail": "No Gmail account connected."}));
             }
-            let accounts: Vec<Value> = self
+            let (again, working): (Vec<&String>, Vec<&String>) = self
                 .google_accounts
+                .iter()
+                .partition(|account| self.google_reauth.contains(account));
+            if working.is_empty() {
+                return (
+                    401,
+                    json!({"detail": {"reason": "needs_reauth", "accounts": again,
+                                      "message": "Reconnect to grant access again."}}),
+                );
+            }
+            let accounts: Vec<Value> = working
                 .iter()
                 .map(|account| {
                     json!({"account": account, "access_token": "made-up-token",
                            "capabilities": {"mail_read": true, "calendar_read": true}})
                 })
                 .collect();
-            return (200, json!({"data": {"accounts": accounts}}));
+            let degraded: Vec<Value> = again
+                .iter()
+                .map(|account| json!({"account": account, "reason": "needs_reauth"}))
+                .collect();
+            return (
+                200,
+                json!({"data": {"accounts": accounts, "degraded": degraded}}),
+            );
         }
         if let Some(identity) = path
             .strip_prefix("/v1/latch/peers/")

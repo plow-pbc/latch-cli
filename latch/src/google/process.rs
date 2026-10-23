@@ -134,7 +134,7 @@ fn execute(
     }
     fs::create_dir_all(&home).map_err(io_error)?;
     let token = std::env::var("GOG_ACCESS_TOKEN")
-        .map_err(|_| problem(code::google_failed, json!({"reason":"needs_reauth"})))?;
+        .map_err(|_| super::needs_sign_in_on(vec![account.to_string()]))?;
     let mut child = Command::new(program)
         .args(["--json", "--no-input", "--wrap-untrusted", "--color=never"])
         .args(if plan.fanout() && plan.projected() {
@@ -182,7 +182,7 @@ fn execute(
         });
     }
     if !status.success() {
-        return Err(gog_failure(status.code().unwrap_or(1)));
+        return Err(gog_failure(status.code().unwrap_or(1), account));
     }
     if !token.is_empty() && bytes.windows(token.len()).any(|w| w == token.as_bytes()) {
         return Err(problem(code::unsafe_output, json!({})));
