@@ -80,7 +80,7 @@ jobs:
 
   # The Linux gate (`just test`) on arm64, where both engines are pinned:
   # linux-build lints and builds the tests once into a nextest archive, and
-  # six shards and linux-restricted test that build.
+  # four shards and linux-restricted test that build.
   linux-build:
     needs: changes
     if: needs.changes.outputs.code == 'true'
@@ -111,7 +111,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6]
+        shard: [1, 2, 3, 4]
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
     steps:
@@ -147,7 +147,7 @@ jobs:
           for _ in $(seq 30); do [ -S "/run/user/$(id -u)/bus" ] && break; sleep 1; done
           echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "$GITHUB_ENV"
           echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus" >> "$GITHUB_ENV"
-      - run: just test --shard ${{ matrix.shard }}/6 --from-archive linux-tests.tar.zst --ci
+      - run: just test --shard ${{ matrix.shard }}/4 --from-archive linux-tests.tar.zst --ci
       - uses: actions/upload-artifact@v4
         if: always()
         with:
