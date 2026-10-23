@@ -611,7 +611,7 @@ package enum SnapshotRunner {
                                     caller: .agent(scout), on: "studio")
                 }),
                 // An item picked from Try a request's Examples menu, to edit.
-                ("16-rules-studio-try-example-filled", .rules, nil, [], { app in app.trial.use(Onboarding.examples[1]) }),
+                ("16-rules-studio-try-example-filled", .rules, nil, [], { app in app.trial.use(Trial.examples[1]) }),
                 ("16-rules-studio-unsaved-draft", .rules, nil, [], { app in
                     let key = AppModel.RulesKey(host: "studio", agent: nil)
                     let saved = app.savedRules(key)

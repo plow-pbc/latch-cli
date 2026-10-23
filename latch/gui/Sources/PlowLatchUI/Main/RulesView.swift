@@ -217,7 +217,7 @@ private struct TryPanel: View {
                         .focused($editingRequest)
                         .onSubmit { Task { await trial.run(on: host, app: app) } }
                     Menu("Examples") {
-                        ForEach(Onboarding.examples) { example in
+                        ForEach(Trial.examples) { example in
                             Button {
                                 trial.use(example)
                                 editingRequest = true
@@ -280,9 +280,13 @@ final class Trial {
 
     var words: [String]? { ShellWords.split(request) }
 
+    /// The rules screen's examples that are words to edit: the Instacart
+    /// sign-in, a saved login's fill, has none.
+    static var examples: [Onboarding.Example] { Onboarding.examples.filter { $0.request.words != nil } }
+
     /// An example from the rules screen, in the request field to edit.
     func use(_ example: Onboarding.Example) {
-        request = ShellWords.join(example.request)
+        request = ShellWords.join(example.request.words ?? [])
     }
 
     func run(on host: HostEntry, app: AppModel) async {

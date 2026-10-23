@@ -72,8 +72,8 @@ enum TestHooks {
         }
         // Rules › Try a request's Examples menu: the item at this index.
         on("try-example") { index in
-            guard let index = Int(index ?? ""), Onboarding.examples.indices.contains(index) else { return }
-            app.trial.use(Onboarding.examples[index])
+            guard let index = Int(index ?? ""), Trial.examples.indices.contains(index) else { return }
+            app.trial.use(Trial.examples[index])
         }
         on("start-at-login") { value in app.onboarding?.startAtLogin = value == "1" }
         on("set-up-again") { _ in app.setUpAgain() }

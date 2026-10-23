@@ -135,11 +135,13 @@ struct RulesTests {
     /// Each of the Examples menu's items fills the request field with
     /// words that split back to the example's request.
     @Test func everyExampleFillsTheRequestWithItsWords() {
-        #expect(Onboarding.examples.count == 10)
+        // The Instacart sign-in is a saved login's fill, with no words.
+        #expect(Trial.examples.map(\.title) == Onboarding.examples.map(\.title).filter { !$0.contains("Instacart") })
+        #expect(Trial.examples.count == 9)
         let trial = Trial()
-        for example in Onboarding.examples {
+        for example in Trial.examples {
             trial.use(example)
-            #expect(trial.words == example.request, "\(example.title): \(trial.request)")
+            #expect(trial.words == example.request.words, "\(example.title): \(trial.request)")
         }
         let awkward = ["", "it's", #"say "hi""#, #"back\slash"#, "two\nlines", "plain"]
         #expect(ShellWords.split(ShellWords.join(awkward)) == awkward)
