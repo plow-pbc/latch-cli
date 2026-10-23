@@ -181,9 +181,9 @@ pub enum Command {
     /// The connectors on a host: list them; on the host itself, its owner
     /// turns one on (running its setup) or off
     Plugins(PluginsArgs),
-    /// This machine's host audit log: its records in full, its chain checked without the key, or a new key
+    /// This machine's host audit log: its records in full (or another host's, with --host), its chain checked without the key, or a new key
     Audit(AuditArgs),
-    /// This machine's host as JSON lines, for an app: a snapshot of its state and recent activity, then with --follow each change
+    /// This machine's host (or another, with --host) as JSON lines, for an app: a snapshot of its state and recent activity, then with --follow each change
     Events(EventsArgs),
     /// Run this machine as a host, as a service of this user's: with its
     /// dashboard (Ctrl-C stops the host), or detached with -d
@@ -869,6 +869,9 @@ pub struct EventsArgs {
     /// Only the host's state changes, no activity
     #[arg(long)]
     pub lifecycle_only: bool,
+    /// Another serving machine of the owner's to ask, the same lines as there (owner devices only) [default: this machine's host]
+    #[arg(long)]
+    pub host: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -884,6 +887,9 @@ pub enum AuditAction {
         /// One record per line, then each new one as it is written, until stopped
         #[arg(long, short)]
         follow: bool,
+        /// Another serving machine of the owner's to ask, the same records as there (owner devices only) [default: this machine's host]
+        #[arg(long)]
+        host: Option<String>,
     },
     /// Check every record's place in the chain, without the key
     Verify,
@@ -907,6 +913,10 @@ pub struct StatusArgs {
     /// whether a host serves it and version. Works offline and before login
     #[arg(long, conflicts_with = "pretty")]
     pub local: bool,
+    /// Another serving machine of the owner's to ask for its own `status
+    /// --local`, the same JSON as there (owner devices only)
+    #[arg(long, conflicts_with_all = ["pretty", "local"])]
+    pub host: Option<String>,
 }
 
 #[derive(Args, Debug)]

@@ -15,6 +15,7 @@
 
 use std::fs::File;
 use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
+use std::os::fd::RawFd;
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
@@ -36,13 +37,25 @@ pub fn run(state: &StateDir, args: EventsArgs) -> Result<(), Failure> {
     // A folder that does not exist yet has a stopped host and no activity;
     // making it lets the watch start before the first login.
     state.create()?;
-    let audit = state.path.join(audit::FILE);
-    let watching = |err: std::io::Error| {
-        Failure::failed("watch_failed", format!("{}: {err}", state.path.display()))
-    };
-    let mut watch =
-        Watch::new(&state.path, &[audit], watch::stdin_is_a_pipe()).map_err(watching)?;
-    let mut follower = Follower::new(&state.path, !args.lifecycle_only);
+    let mut out = std::io::stdout().lock();
+    let stdin = watch::stdin_is_a_pipe().then_some(libc::STDIN_FILENO);
+    stream(&state.path, &args, stdin, |line| emit(&mut out, line))
+}
+
+/// The lines of `latch events` for the host on `dir`, each given to `send`
+/// until it returns false, or `hangup` closes. A host streams them to its
+/// owner's `latch events --host` this way.
+pub fn stream(
+    dir: &Path,
+    args: &EventsArgs,
+    hangup: Option<RawFd>,
+    mut send: impl FnMut(&Value) -> bool,
+) -> Result<(), Failure> {
+    let audit = dir.join(audit::FILE);
+    let watching =
+        |err: std::io::Error| Failure::failed("watch_failed", format!("{}: {err}", dir.display()));
+    let mut watch = Watch::new(dir, &[audit], hangup).map_err(watching)?;
+    let mut follower = Follower::new(dir, !args.lifecycle_only);
     let after = args.after.as_deref().and_then(Cursor::parse);
     let resumed = match &after {
         Some(cursor) => follower.resume(cursor),
@@ -59,9 +72,8 @@ pub fn run(state: &StateDir, args: EventsArgs) -> Result<(), Failure> {
             vec![follower.snapshot(entries)]
         }
     };
-    let mut out = std::io::stdout().lock();
     for line in opening {
-        if !emit(&mut out, &line) {
+        if !send(&line) {
             return Ok(());
         }
     }
@@ -73,13 +85,13 @@ pub fn run(state: &StateDir, args: EventsArgs) -> Result<(), Failure> {
     loop {
         watch.arm().map_err(watching)?;
         for line in follower.changes()? {
-            if !emit(&mut out, &line) {
+            if !send(&line) {
                 return Ok(());
             }
         }
         watch.process(follower.host.pid);
         match watch.wait().map_err(watching)? {
-            Woke::StdinClosed => return Ok(()),
+            Woke::HungUp => return Ok(()),
             Woke::Changed => {}
         }
     }
@@ -124,14 +136,14 @@ pub fn logs(state: &StateDir, follow: bool) -> Result<(), Failure> {
 
 fn start_watch(state: &StateDir, file: &Path) -> Result<Watch, Failure> {
     state.create()?;
-    Watch::new(&state.path, &[file.to_path_buf()], watch::stdin_is_a_pipe())
-        .map_err(|err| watch_failed(state, err))
+    let stdin = watch::stdin_is_a_pipe().then_some(libc::STDIN_FILENO);
+    Watch::new(&state.path, &[file.to_path_buf()], stdin).map_err(|err| watch_failed(state, err))
 }
 
 /// Sleeps until the folder changes; false once whoever started us is gone.
 fn sleep(watch: &mut Watch, state: &StateDir) -> Result<bool, Failure> {
     match watch.wait().map_err(|err| watch_failed(state, err))? {
-        Woke::StdinClosed => Ok(false),
+        Woke::HungUp => Ok(false),
         Woke::Changed => Ok(true),
     }
 }

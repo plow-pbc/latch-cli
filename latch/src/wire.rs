@@ -10,6 +10,9 @@
 //! - `file_put`: request with `"size": N`, then `Ok({})` ("go ahead"), N bytes
 //!   client → host, and the final answer.
 //!
+//! An operation that streams lines (`events`, `audit` with `follow`) sends
+//! each as `Ok({"line": LINE})`, then the final answer, which has no `line`.
+//!
 //! Any error answer instead of the first `Ok` ends the operation there. A frame is a 4-byte big-endian length, then that many
 //! bytes of JSON. Nothing here knows about iroh: any byte stream works, so
 //! another transport could carry the same frames later.

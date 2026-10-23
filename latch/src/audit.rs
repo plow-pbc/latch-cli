@@ -310,14 +310,7 @@ pub fn run(state: &StateDir, action: AuditAction) -> Result<Value, Failure> {
     let path = state.path.join(FILE);
     match action {
         AuditAction::Show { .. } => {
-            let records: Vec<Value> = read_all(&path)?
-                .into_iter()
-                .map(|record| {
-                    let mut shown = serde_json::to_value(&record).expect("a record serializes");
-                    shown["id"] = json!(record.hash);
-                    shown
-                })
-                .collect();
+            let records: Vec<Value> = read_all(&path)?.iter().map(shown).collect();
             Ok(json!({"records": records}))
         }
         AuditAction::Verify => {
@@ -331,6 +324,13 @@ pub fn run(state: &StateDir, action: AuditAction) -> Result<Value, Failure> {
                       "note": "new records use the new key, a running latch serve's included"}))
         }
     }
+}
+
+/// A record as `audit show` prints it: with its hash as `id`.
+fn shown(record: &Record) -> Value {
+    let mut shown = serde_json::to_value(record).expect("a record serializes");
+    shown["id"] = json!(record.hash);
+    shown
 }
 
 /// The `hash` of the log's last line, read from the end of the file.
@@ -403,19 +403,28 @@ pub fn read_next(keys: &Keys, prev: &str, text: &[u8], number: usize) -> Result<
 /// it closes). A log that fails its checks, or no longer begins with what
 /// was printed, stops it with `audit_broken`.
 pub fn follow(state: &StateDir) -> Result<(), Failure> {
-    let path = state.path.join(FILE);
-    let watching = |err: std::io::Error| {
-        Failure::failed("watch_failed", format!("{}: {err}", state.path.display()))
-    };
     state.create()?;
-    let mut watch = crate::watch::Watch::new(
-        &state.path,
-        std::slice::from_ref(&path),
-        crate::watch::stdin_is_a_pipe(),
-    )
-    .map_err(watching)?;
-    let mut printed: Option<(usize, String)> = None;
     let mut out = std::io::stdout().lock();
+    let stdin = crate::watch::stdin_is_a_pipe().then_some(libc::STDIN_FILENO);
+    follow_lines(&state.path, stdin, |line| {
+        writeln!(out, "{line}").and_then(|()| out.flush()).is_ok()
+    })
+}
+
+/// The lines of `latch audit show --follow` for the log in `dir`, each
+/// given to `send` until it returns false, or `hangup` closes. A host
+/// streams them to its owner's `latch audit show --follow --host` this way.
+pub fn follow_lines(
+    dir: &Path,
+    hangup: Option<std::os::fd::RawFd>,
+    mut send: impl FnMut(&Value) -> bool,
+) -> Result<(), Failure> {
+    let path = dir.join(FILE);
+    let watching =
+        |err: std::io::Error| Failure::failed("watch_failed", format!("{}: {err}", dir.display()));
+    let mut watch =
+        crate::watch::Watch::new(dir, std::slice::from_ref(&path), hangup).map_err(watching)?;
+    let mut printed: Option<(usize, String)> = None;
     loop {
         watch.arm().map_err(watching)?;
         let records = read_all(&path)?;
@@ -427,9 +436,7 @@ pub fn follow(state: &StateDir) -> Result<(), Failure> {
             Some(_) => return Err(broken(&path, "it no longer begins with what was shown")),
         };
         for record in &records[from..] {
-            let mut shown = serde_json::to_value(record).expect("a record serializes");
-            shown["id"] = json!(record.hash);
-            if writeln!(out, "{shown}").and_then(|()| out.flush()).is_err() {
+            if !send(&shown(record)) {
                 return Ok(());
             }
         }
@@ -437,7 +444,7 @@ pub fn follow(state: &StateDir) -> Result<(), Failure> {
             printed = Some((records.len(), last.hash.clone()));
         }
         match watch.wait().map_err(watching)? {
-            crate::watch::Woke::StdinClosed => return Ok(()),
+            crate::watch::Woke::HungUp => return Ok(()),
             crate::watch::Woke::Changed => {}
         }
     }

@@ -161,7 +161,8 @@ No Homebrew tap is included.
   `audit.sealed.ndjson`; a plaintext `audit.ndjson` from an older latch is
   never read, and latch says it can be deleted.
 - `latch status --local`, `latch events --follow` and `latch login --events`
-  are for an app: see [latch/APP.md](latch/APP.md).
+  are for an app: see [latch/APP.md](latch/APP.md). With `--host NAME`,
+  `status`, `audit show` and `events` read another of the owner's hosts.
 
 ## On the host itself
 

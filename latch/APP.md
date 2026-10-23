@@ -116,6 +116,24 @@ log was replaced by a sound one, and otherwise stops with `audit_broken`.
 
 `--lifecycle-only` leaves the activity out. That is the menu bar's subscription.
 
+## Another host: `--host NAME`
+
+`latch status --host NAME`, `latch audit show --host NAME [--follow]` and
+`latch events --host NAME [...]` read another of the owner's hosts over
+latch's connection and print exactly what that host's own `status --local`,
+`audit show` and `events` print there. Only the owner's own devices may
+read them; an agent's login gets exit 4 `owner_only`. Naming this machine
+reads it here.
+
+- An offline host gives exit 3 `host_offline` at once; nothing is shown from
+  elsewhere.
+- Each read is recorded in that host's audit, as `status`, `audit` or
+  `events`, when it ends.
+- A followed stream ends when stdin (a pipe) closes, on Ctrl-C or SIGTERM,
+  closing the connection so the host stops reading too. If that host stops,
+  it ends with exit 3 `host_stopped`; a dropped connection with exit 3
+  `host_unreachable`. Either way, run it again (with `--after` for events).
+
 ## Calling this machine's receiver
 
 Run ordinary `latch exec`, `latch file`, `latch browser` and `latch google` commands on the

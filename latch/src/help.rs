@@ -126,13 +126,14 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "status",
-        output: "This peer, its Plow and the hosts it can reach; with --pretty, a card for a person; with --local, only this machine's own latch, asking no one.",
+        output: "This peer, its Plow and the hosts it can reach; with --pretty, a card for a person; with --local, only this machine's own latch, asking no one; with --host, that host's own `status --local` (owner devices only).",
         effect: ReadOnly,
         owner_only: false,
         connector: None,
         examples: &[
             ex("Which hosts can I reach?", &["status"]),
             ex("This machine's own latch, offline", &["status", "--local"]),
+            ex("Another host's own latch", &["status", "--host", "studio"]),
         ],
     },
     Entry {
@@ -885,7 +886,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "audit.show",
-        output: "`records`: every record of this machine's host, opened with the key, each with its `id`; with --follow, one record per line, then each new one.",
+        output: "`records`: every record of this machine's host, or with --host another's, opened with the key, each with its `id`; with --follow, one record per line, then each new one.",
         effect: ReadOnly,
         owner_only: true,
         connector: None,
@@ -894,6 +895,10 @@ const ENTRIES: &[Entry] = &[
             ex(
                 "Watch the audit as it grows",
                 &["audit", "show", "--follow"],
+            ),
+            ex(
+                "Read another host's audit",
+                &["audit", "show", "--host", "studio"],
             ),
         ],
     },
@@ -918,11 +923,17 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "events",
-        output: "JSON lines: a snapshot of the host, then with --follow each change.",
+        output: "JSON lines: a snapshot of this machine's host, or with --host another's, then with --follow each change.",
         effect: ReadOnly,
         owner_only: true,
         connector: None,
-        examples: &[ex("Watch this machine's host", &["events", "--follow"])],
+        examples: &[
+            ex("Watch this machine's host", &["events", "--follow"]),
+            ex(
+                "Watch another host",
+                &["events", "--follow", "--host", "studio"],
+            ),
+        ],
     },
     Entry {
         id: "serve",

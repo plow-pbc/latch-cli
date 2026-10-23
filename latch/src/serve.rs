@@ -1084,6 +1084,10 @@ async fn serve_request(
                         )
                         .await
                     }
+                    "status" | "audit" | "events" => {
+                        reads::run(host, &identity.kind, op, &request.args, &mut send, cut_off)
+                            .await
+                    }
                     "google" => {
                         crate::google::host::run(
                             &host.workers,
@@ -1483,6 +1487,9 @@ mod control;
 mod gated_tests;
 #[cfg(test)]
 mod plugins_tests;
+mod reads;
+#[cfg(test)]
+mod reads_tests;
 
 #[cfg(test)]
 mod tests {

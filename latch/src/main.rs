@@ -38,6 +38,7 @@ mod paint;
 mod plow;
 mod plugins;
 mod redact;
+mod remote;
 mod sandbox;
 mod seal;
 mod secrets;
@@ -202,6 +203,12 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
                 to_json(devices::remove(&state, &name, yes).await?)
             }
         },
+        Command::Status(args) if args.host.is_some() => {
+            match remote::other_host(&state, args.host).await? {
+                Some(host) => to_json(remote::call(&state, &host, "status", json!({})).await?),
+                None => to_json(status::local(&state)?),
+            }
+        }
         Command::Status(args) if args.local => to_json(status::local(&state)?),
         Command::Status(args) => {
             let output = status::run(&state).await?;
@@ -250,25 +257,31 @@ async fn run(state_dir: Option<PathBuf>, command: Command) -> Result<Printed, Fa
         Command::Rules(args) => to_json(gate::client::run(&state, args).await?),
         Command::Plugins(args) => to_json(plugins::client::run(&state, args).await?),
         Command::Update(args) => to_json(update::run(&state, args).await?),
-        // Its lines, printed as they come, are its whole output.
         Command::Audit(cli::AuditArgs {
-            action: cli::AuditAction::Show { follow: true },
+            action: cli::AuditAction::Show { follow, host },
         }) => {
-            audit::follow(&state)?;
-            Ok(Printed {
-                text: String::new(),
-                exit: ExitCode::SUCCESS,
-            })
+            let args = json!({"follow": follow});
+            match remote::other_host(&state, host).await? {
+                Some(host) if follow => {
+                    streamed(remote::stream(&state, &host, "audit", args).await)
+                }
+                Some(host) => to_json(remote::call(&state, &host, "audit", args).await?),
+                None if follow => streamed(audit::follow(&state)),
+                None => to_json(audit::run(
+                    &state,
+                    cli::AuditAction::Show { follow, host: None },
+                )?),
+            }
         }
         Command::Audit(args) => to_json(audit::run(&state, args.action)?),
-        // Its lines, printed as they come, are its whole output.
-        Command::Events(args) => {
-            events::run(&state, args)?;
-            Ok(Printed {
-                text: String::new(),
-                exit: ExitCode::SUCCESS,
-            })
-        }
+        Command::Events(args) => match remote::other_host(&state, args.host.clone()).await? {
+            Some(host) => {
+                let request = json!({"follow": args.follow, "after": args.after,
+                                     "lifecycle_only": args.lifecycle_only});
+                streamed(remote::stream(&state, &host, "events", request).await)
+            }
+            None => streamed(events::run(&state, args)),
+        },
         #[cfg(target_os = "macos")]
         Command::Messages(command) => {
             let request = messages::messages_request(&command);
@@ -382,6 +395,14 @@ async fn call_host(
         chat: host.chat,
     };
     dial::call(state, &peer, &request, answer_within).await
+}
+
+/// A stream's lines, printed as they came, are its whole output.
+fn streamed(result: Result<(), Failure>) -> Result<Printed, Failure> {
+    result.map(|()| Printed {
+        text: String::new(),
+        exit: ExitCode::SUCCESS,
+    })
 }
 
 fn to_json(output: impl Serialize) -> Result<Printed, Failure> {
