@@ -273,7 +273,7 @@ final class Onboarding {
         case .login: verified
         case .rules: !savingRules
         // Continue never skips: until Google is on too, Skip for now does that.
-        case .access: accessDone ? google == .connected : accessFailed || !waitingForAccess
+        case .access: accessDone || accessFailed ? google == .connected : !waitingForAccess
         case .start: !starting
         default: true
         }
@@ -331,12 +331,13 @@ final class Onboarding {
         default: false
         }
     }
-    /// Continue moves on without it: the step couldn't be set up here, and
-    /// checking again is the screen's own button, so Skip for now would say
-    /// the same thing twice.
+    /// Continue moves on without Contacts & Messages: they couldn't be set
+    /// up here, and checking again is the screen's own button. Only once
+    /// Google is on, since Continue never skips it; Skip for now would then
+    /// say the same thing twice.
     var primarySkips: Bool {
         switch step {
-        case .access: !accessDone && accessFailed
+        case .access: !accessDone && accessFailed && google == .connected
         default: false
         }
     }

@@ -645,6 +645,27 @@ struct ClosingTests {
         connected.primary()
         #expect(connected.step == .start)
         #expect(connected.progress.passed[.access] == .continued)
+
+        // Contacts & Messages couldn't turn on: Continue still waits for
+        // Google, and Skip for now stays; with Google on, Continue moves on
+        // as a skip, since access isn't set up.
+        let failed = app.stage(.access)
+        failed.messages = .failed(LatchError.failed(LatchFailure(code: "messages_not_installed", message: "")))
+        failed.contacts = .done
+        for state: Onboarding.Google in [.notConnected, .waiting] {
+            failed.google = state
+            #expect(failed.primaryTitle == "Continue")
+            #expect(!failed.primaryEnabled)
+            #expect(!failed.primarySkips)
+            failed.primary()
+            #expect(failed.step == .access)
+            #expect(failed.progress.passed[.access] == nil)
+        }
+        failed.google = .connected
+        #expect(failed.primaryEnabled && failed.primarySkips)
+        failed.primary()
+        #expect(failed.step == .start)
+        #expect(failed.progress.passed[.access] == .skipped)
     }
 
     /// Every screen's Back and Skip for now: Back goes to the screen

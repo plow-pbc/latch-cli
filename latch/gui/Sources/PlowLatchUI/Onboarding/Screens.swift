@@ -359,7 +359,7 @@ struct GrantAccessView: View {
             ForEach([flow.messages, flow.contacts].compactMap { if case let .failed(error) = $0 { error } else { nil } }, id: \.self) {
                 ErrorText(error: $0).foregroundStyle(Brand.clay)
             }
-            if flow.primarySkips {
+            if flow.accessFailed {
                 HStack {
                     Spacer()
                     Button("Check Again") { flow.requestAccess() }.disabled(flow.waitingForAccess)
