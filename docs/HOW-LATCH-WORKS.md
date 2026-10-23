@@ -309,7 +309,7 @@ The few commands that take `--host` but run only on this machine
 | A host with no sandbox; Windows | Not supported |
 | An agent's login running a host | Doesn't work today: with the usual agent credential, login saves no Plow token, so `latch serve` stops with `not_logged_in` |
 | Turning connectors on or off from another machine | Not supported |
-| Another machine's audit log, dashboard or logs | Not supported |
+| Another machine's dashboard or logs | Not supported |
 | Exec stdin over 16 KiB, or stdin that isn't UTF-8 text | Refused (`stdin_not_judgeable`, exit 2) |
 | Browsing anything but web addresses, or local addresses without `host.json` | Refused |
 | Per-agent permission lists | None, by design: write rules for that agent, or use `--deny-exec=AGENT_UID` |
