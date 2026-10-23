@@ -174,8 +174,10 @@ fn timed_out() -> Failure {
     timeout
 }
 
-/// Stopped before the enable was sent: this run turned nothing on. A
-/// sign-in already started in a browser is left to finish or not.
+/// Stopped before the final enable was sent: the wait turned nothing on.
+/// With `--add-account`, the enable before the wait may already have turned
+/// Google on for this host. A sign-in already started in a browser is left
+/// to finish or not.
 fn cancelled(adding: bool) -> Failure {
     let mut cancelled = Failure::new(
         code::google_connect_cancelled,
