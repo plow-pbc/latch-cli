@@ -109,11 +109,6 @@ struct DecodingTests {
 
 @MainActor
 struct GatekeeperTests {
-    /// Waits for `done`, up to two seconds.
-    private func until(_ done: () -> Bool) async {
-        for _ in 0..<200 where !done() { try? await Task.sleep(for: .milliseconds(10)) }
-    }
-
     @Test func examplesAreJudgedOnTheDraftAsANewAgent() async {
         let client = ScriptedClient { _ in nil }
         client.verdict = { draft, request in draft.contains("Do not send email") && request.contains("send") ? "owner_said_no" : "allow" }
@@ -122,7 +117,7 @@ struct GatekeeperTests {
         flow.choose(Onboarding.decks[0])
         #expect(flow.reviewing)
         #expect(flow.deck.examples.allSatisfy { flow.previews[$0.id] == .checking })
-        await until { !flow.reviewing }
+        await waitUntil { !flow.reviewing }
         let verdicts = flow.deck.examples.map { if case let .verdict(answer)? = flow.previews[$0.id] { answer.verdict } else { "-" } }
         #expect(verdicts == ["allow", "allow", "allow", "allow", "owner_said_no"])
         #expect(client.tries.allSatisfy { $0.draft == Onboarding.decks[0].rules })
@@ -133,37 +128,50 @@ struct GatekeeperTests {
         let client = ScriptedClient { _ in nil }
         let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
         let flow = app.stage(.rules)
+        flow.reviewDelay = .zero
         flow.savedRules = "Allow everything."
         flow.draftRules = "  "
         flow.draftChanged()
-        await until { !flow.reviewing && !client.tries.isEmpty }
+        await waitUntil { !flow.reviewing && !client.tries.isEmpty }
         // Continue keeps the saved rules, so they are what the examples show.
         #expect(flow.primaryTitle == "Continue")
         #expect(!client.tries.isEmpty && client.tries.allSatisfy { $0.draft == "Allow everything." })
     }
 
-    @Test func typingWaitsASecondAndDropsOlderAnswers() async throws {
-        let client = ScriptedClient(pause: .milliseconds(300)) { _ in nil }
+    @Test func typingWaitsAPauseAndDropsOlderAnswers() async throws {
+        let client = ScriptedClient { _ in nil }
         client.verdict = { draft, _ in draft == "second" ? "not_covered" : "allow" }
+        let first = Gate()
+        client.holds["try first"] = first
         let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
         let flow = app.stage(.rules)
+        // Still typing: checking at once, but nothing asked during the pause.
+        flow.reviewDelay = .seconds(3600)
+        flow.draftRules = "typing"
+        flow.draftChanged()
+        #expect(flow.deck.examples.allSatisfy { flow.previews[$0.id] == .checking })
+        // Typing on restarts the pause; once it passes, "first" is asked.
+        flow.reviewDelay = .zero
         flow.draftRules = "first"
         flow.draftChanged()
-        // Checking at once, but nothing asked before the person pauses.
-        #expect(flow.deck.examples.allSatisfy { flow.previews[$0.id] == .checking })
-        try await Task.sleep(for: .milliseconds(1100))
-        #expect(client.tries.map(\.draft).allSatisfy { $0 == "first" } && !client.tries.isEmpty)
-        // A change while "first" is out: its answers never show.
+        await waitUntil { client.tries.count == flow.deck.examples.count }
+        #expect(client.tries.allSatisfy { $0.draft == "first" })
+        // A change while "first" is out: its answers, let go after the
+        // newer ones, never show.
+        let stale = flow.reviewTask
         flow.draftRules = "second"
         flow.draftChanged()
-        await until { client.tries.contains { $0.draft == "second" } }
-        await until { !flow.reviewing }
+        await waitUntil { !flow.reviewing }
+        first.open()
+        await stale?.value
         #expect(flow.deck.examples.allSatisfy { if case let .verdict(answer)? = flow.previews[$0.id] { answer.verdict == "not_covered" } else { false } })
+        // The text typed first was never asked about.
+        #expect(!client.tries.contains { $0.draft == "typing" })
         // The same text again asks nothing new.
         let asked = client.tries.count
         flow.draftRules = " second "
         flow.draftChanged()
-        try await Task.sleep(for: .milliseconds(1200))
+        #expect(!flow.reviewing)
         #expect(client.tries.count == asked)
     }
 
@@ -222,8 +230,10 @@ final class FakeGuide: GrantGuide {
     func stop() { calls.append("stop") }
 }
 
-/// A latch whose `plugins enable` answers as a test says, after a pause,
-/// and counts its calls; `rules set` takes the same pause.
+/// A latch whose `plugins enable` answers as a test says and counts its
+/// calls. A call answers at once unless the test holds it (`holds`): the
+/// nth `enable N`, the nth `look N` of `setup --status`, `try DRAFT` of
+/// `rules try`, or `save` of `rules set`.
 final class ScriptedClient: LatchClient, @unchecked Sendable {
     let stateDir = "/Users/me/.latch"
     var status = Fixtures.stopped
@@ -239,12 +249,15 @@ final class ScriptedClient: LatchClient, @unchecked Sendable {
     /// How `login --events` ends.
     var loginEvents: [LoginEvent] = []
     let enableAnswer: @Sendable (String) throws -> GoogleEnabled?
-    let pause: Duration
     private(set) var enabled: [String] = []
+    var holds: [String: Gate] = [:]
 
-    init(pause: Duration = .zero, enable: @escaping @Sendable (String) throws -> GoogleEnabled?) {
-        self.pause = pause
+    init(enable: @escaping @Sendable (String) throws -> GoogleEnabled?) {
         self.enableAnswer = enable
+    }
+
+    private func held(_ call: String) async {
+        await holds[call]?.wait()
     }
 
     func localStatus() async throws -> LocalStatus { try Fixtures.decode(status) }
@@ -268,11 +281,9 @@ final class ScriptedClient: LatchClient, @unchecked Sendable {
     var host: String?
     /// How many times `setup --status` was read.
     private(set) var looked = 0
-    /// How long `setup --status` takes to answer.
-    var lookPause: Duration = .zero
     func setupStatus() async throws -> SetupStatus {
         looked += 1
-        try await Task.sleep(for: lookPause)
+        await held("look \(looked)")
         return try Fixtures.decode(host.map { Fixtures.setup(on: connectorsOn, google: google, host: $0) } ?? Fixtures.setup(on: connectorsOn, google: google))
     }
     /// What `--check-access` says of Full Disk Access.
@@ -283,7 +294,7 @@ final class ScriptedClient: LatchClient, @unchecked Sendable {
     func rulesShow(host: String?) async throws -> RulesShow { try Fixtures.decode(#"{"agents":[],"every_agent":null}"#) }
     func rulesSet(_ text: String) async throws {
         saved.append(text)
-        try await Task.sleep(for: pause)
+        await held("save")
     }
     private(set) var saved: [String] = []
     /// What `rules try` answers for a draft and request, and what it was asked.
@@ -294,7 +305,7 @@ final class ScriptedClient: LatchClient, @unchecked Sendable {
     func rulesTry(_ request: [String], host: String?, agent: String?, newAgent: Bool, draft: String?) async throws -> RulesTry {
         let draft = draft ?? ""
         asked.withLock { $0.append((draft, request)) }
-        try await Task.sleep(for: pause)
+        await held("try \(draft)")
         return try Fixtures.decode(#"{"verdict":"\#(verdict(draft, request))","host":"studio","as":"new agent","gate":null}"#)
     }
     /// How a setup step (`serve -d`) fails, if it does.
@@ -309,41 +320,45 @@ final class ScriptedClient: LatchClient, @unchecked Sendable {
     }
     func enable(_ plugin: String) async throws -> GoogleEnabled? {
         enabled.append(plugin)
-        try await Task.sleep(for: pause)
+        await held("enable \(enabled.count)")
         return try enableAnswer(plugin)
     }
 }
 
 @MainActor
 struct ClosingTests {
-    private func until(_ done: () -> Bool) async {
-        for _ in 0..<200 where !done() { try? await Task.sleep(for: .milliseconds(10)) }
-    }
-
     @Test func cancellingARunStopsLatch() async throws {
-        let process = LatchProcess(executable: URL(filePath: "/bin/sleep"), arguments: ["30"])
-        let started = ContinuousClock.now
+        let started = FileManager.default.temporaryDirectory.appending(path: "started-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: started) }
+        let process = LatchProcess(executable: URL(filePath: "/bin/sh"), arguments: ["-c", "touch '\(started.path)'; exec sleep 30"])
+        let began = ContinuousClock.now
         let run = Task { try await process.output() }
-        try await Task.sleep(for: .milliseconds(100))
+        // Running, not merely asked to start.
+        await waitUntil { FileManager.default.fileExists(atPath: started.path) }
         run.cancel()
         let result = await run.result
         #expect(throws: CancellationError.self) { try result.get() }
-        #expect(ContinuousClock.now - started < .seconds(3))
+        #expect(ContinuousClock.now - began < .seconds(3))
     }
 
     @Test func leavingContactsAndMessagesStopsItsChecks() async throws {
         let notGranted = LatchFailure(code: "needs_setup", message: "no Full Disk Access", grant: "/Applications/Plow Latch.app",
                                       settings: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")
-        let client = ScriptedClient(pause: .milliseconds(300)) { _ in throw LatchError.failed(notGranted) }
+        let client = ScriptedClient { _ in throw LatchError.failed(notGranted) }
+        let reply = Gate()
+        client.holds["enable 1"] = reply
         let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
         var opened: [URL] = []
         app.open = { opened.append($0) }
         app.guideGrant = { opened.append($0); return FakeGuide() }
         let flow = app.stage(.access)
         flow.requestAccess()
-        try await Task.sleep(for: .milliseconds(50))
+        await waitUntil { client.enabled == ["messages"] }
+        let checks = flow.accessTask
         flow.skip()
-        try await Task.sleep(for: .milliseconds(700))
+        // Messages' refusal arrives after the screen went.
+        reply.open()
+        await checks?.value
         #expect(flow.step == .start)
         #expect(opened.isEmpty)
         #expect(flow.messages == .unknown)
@@ -359,6 +374,9 @@ struct ClosingTests {
             if calls.withLock({ $0 += 1; return $0 }) <= 2 { throw LatchError.failed(notGranted) }
             return nil
         }
+        // The next check's first answer waits for the test.
+        let granted = Gate()
+        client.holds["enable 3"] = granted
         let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
         var opened: [URL] = []
         app.open = { opened.append($0) }
@@ -366,12 +384,15 @@ struct ClosingTests {
         var guided: [URL] = []
         app.guideGrant = { guided.append($0); return guide }
         let flow = app.stage(.access)
+        flow.accessRecheck = .zero
         flow.requestAccess()
-        try await Task.sleep(for: .milliseconds(200))
+        await waitUntil { client.enabled.count == 3 }
+        #expect(flow.messages.isNeeded && flow.contacts.isNeeded)
         #expect(opened == [URL(string: notGranted.settings!)!])
         #expect(guided == [URL(filePath: "/Applications/Plow Latch.app")])
         #expect(guide.calls.isEmpty)
-        try await Task.sleep(for: .milliseconds(2300))
+        granted.open()
+        await flow.accessTask?.value
         #expect(flow.accessDone)
         #expect(guide.calls == ["granted"])
         // Leaving afterwards stops it at once, granted or not.
@@ -389,11 +410,13 @@ struct ClosingTests {
         app.guideGrant = { _ in guide }
         let flow = app.stage(.access)
         flow.requestAccess()
-        try await Task.sleep(for: .milliseconds(200))
+        await waitUntil { flow.messages.isNeeded && flow.contacts.isNeeded }
+        let checks = flow.accessTask
         flow.back()
-        #expect(guide.calls.first == "stop")
-        try await Task.sleep(for: .milliseconds(100))
-        #expect(!guide.calls.contains("granted"))
+        #expect(guide.calls == ["stop"])
+        // The checks end too, and their ending stops it again, never "granted".
+        await checks?.value
+        #expect(guide.calls == ["stop", "stop"])
     }
 
     @Test func aRerunShowsTheLoginItemAsItIs() {
@@ -420,14 +443,17 @@ struct ClosingTests {
     }
 
     @Test func skipWaitsWhileTheRulesSave() async {
-        let client = ScriptedClient(pause: .milliseconds(300)) { _ in nil }
+        let client = ScriptedClient { _ in nil }
+        let save = Gate()
+        client.holds["save"] = save
         let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
         let flow = app.stage(.rules)
         flow.draftRules = "Never send email."
         let saving = Task { await flow.saveRules() }
-        await until { flow.savingRules }
+        await waitUntil { flow.savingRules }
         flow.skip()
         #expect(flow.step == .rules)
+        save.open()
         await saving.value
         // The save moves on from Set your rules, and Google is still to do.
         #expect(flow.step == .google)
@@ -461,7 +487,7 @@ struct ClosingTests {
         await app.refreshStatus()
         let flow = app.stage(.access)
         flow.checkAccess()
-        await until { flow.messages.isNeeded && flow.contacts.isNeeded }
+        await waitUntil { flow.messages.isNeeded && flow.contacts.isNeeded }
         return (client, app, flow)
     }
 
@@ -474,7 +500,7 @@ struct ClosingTests {
         await flow.restartLatch()
         #expect(client.stopped == 1)
         #expect(client.performed == [["serve", "-d", "--again"]])
-        await until { client.enabled.count >= 4 }
+        await waitUntil { client.enabled.count >= 4 }
         #expect(client.enabled == ["messages", "contacts", "messages", "contacts"])
     }
 
@@ -554,14 +580,16 @@ struct ClosingTests {
     @Test func aCheckStillAnsweringWhenGoogleIsSkippedTurnsNothingOn() async {
         let client = ScriptedClient { _ in GoogleEnabled(accounts: ["testuser@plow.test"]) }
         client.google = Fixtures.googleConnectedOff
-        client.lookPause = .milliseconds(100)
+        let look = Gate()
+        client.holds["look 1"] = look
         let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
         let flow = app.stage(.google)
         flow.google = .unreachable
         // Try again, then Skip for now before latch answers.
         let check = Task { await flow.checkGoogle() }
-        await until { client.looked == 1 }
+        await waitUntil { client.looked == 1 }
         flow.skip()
+        look.open()
         await check.value
         #expect(flow.step == .access)
         #expect(client.enabled.isEmpty)
@@ -570,14 +598,18 @@ struct ClosingTests {
     @Test func leavingGoogleStopsTryAgain() async {
         let client = ScriptedClient { _ in GoogleEnabled(accounts: ["testuser@plow.test"]) }
         client.google = Fixtures.googleConnectedOff
-        client.lookPause = .milliseconds(100)
+        let look = Gate()
+        client.holds["look 1"] = look
         let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
         let flow = app.stage(.google)
         flow.google = .unreachable
         flow.recheckGoogle()
-        await until { client.looked == 1 }
+        await waitUntil { client.looked == 1 }
+        let check = flow.googleCheck
         flow.back()
-        try? await Task.sleep(for: .milliseconds(200))
+        // latch answers after the screen went.
+        look.open()
+        await check?.value
         #expect(flow.step == .rules)
         #expect(client.enabled.isEmpty)
         // Elsewhere, a return to the app checks nothing.
@@ -596,7 +628,7 @@ struct ClosingTests {
         client.google = #"{"step":"google","state":"needed","reason":"Google is not connected in Plow.","args":null,"enabled":true,"ready":false,"accounts":[],"connect_url":"http://localhost:3000/connections"}"#
         flow.recheckGoogle()
         #expect(flow.google == .connected)
-        await until { flow.google == .notConnected }
+        await waitUntil { flow.google == .notConnected }
         #expect(flow.google == .notConnected)
     }
 
@@ -630,7 +662,7 @@ struct ClosingTests {
         #expect(flow.primaryTitle == "Turn on")
         #expect(client.enabled.isEmpty)
         flow.primary()
-        await until { flow.accessDone }
+        await waitUntil { flow.accessDone }
         #expect(client.enabled == ["messages", "contacts"])
         #expect(flow.primaryTitle == "Continue")
 
@@ -647,7 +679,7 @@ struct ClosingTests {
         app.open = { Issue.record("opened \($0)") }
         let flow = app.stage(.access)
         await flow.accessAppeared()
-        try await Task.sleep(for: .milliseconds(100))
+        await flow.accessTask?.value
         #expect(flow.messages == .done)
         #expect(flow.contacts == .unknown)
         // Looking turns nothing on.
@@ -677,27 +709,29 @@ struct ClosingTests {
         let flow = app.stage(.login)
         flow.startLogin()
         let taken = Onboarding.Login.nameTaken(existing: "studio", lastSeen: LatchJSON.parseTimestamp("2026-10-21T04:44:15Z"))
-        await until { flow.login == taken }
+        await waitUntil { flow.login == taken }
         #expect(flow.login == taken)
         client.loginEvents = [.verified(name: "studio-2")]
         flow.loginName = " studio-2 "
         flow.useAnotherName()
-        await until { flow.login == .verified(name: "studio-2") }
+        await waitUntil { flow.login == .verified(name: "studio-2") }
         #expect(client.loginNames == [nil, "studio-2"])
         // Replacing is the person's choice, under the name that's taken.
         #expect(client.replaced == [false, false])
         client.loginEvents = [line.event!]
         flow.startLogin()
-        await until { flow.login == taken }
+        await waitUntil { flow.login == taken }
         client.loginEvents = [.verified(name: "studio")]
         flow.replaceMachine()
-        await until { flow.login == .verified(name: "studio") }
+        await waitUntil { flow.login == .verified(name: "studio") }
         #expect(client.loginNames.last == "studio")
         #expect(client.replaced == [false, false, false, true])
     }
 
     @Test func aRelaunchWithNoArgumentsKeepsTheStateFolder() throws {
-        let defaults = try #require(UserDefaults(suiteName: "co.plow.latch.tests.\(UUID())"))
+        let suite = "co.plow.latch.tests.\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
         #expect(StateFolder.choose(given: "/Users/me/.latch", launched: .unnamed, defaults: defaults) == ("/Users/me/.latch", true))
         #expect(StateFolder.choose(given: "/tmp/dev", launched: .other, defaults: defaults) == ("/tmp/dev", false))
         // Quit & Reopen: no arguments, the same folder, and no login item.
@@ -729,7 +763,7 @@ struct ClosingTests {
         // The person restarts latch in their terminal, then Check again.
         grant.on = true
         flow.checkAccess()
-        await until { flow.accessDone }
+        await waitUntil { flow.accessDone }
         #expect(flow.accessDone)
         #expect(client.stopped == 0 && client.performed.isEmpty)
     }

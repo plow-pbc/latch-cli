@@ -60,10 +60,6 @@ struct GoogleSignInTests {
         .failed(LatchFailure(code: "something_new", message: "sign in at \(canary.absoluteString), then try again"))
     }
 
-    private func until(_ done: () -> Bool) async {
-        for _ in 0..<300 where !done() { try? await Task.sleep(for: .milliseconds(10)) }
-    }
-
     private func app(_ client: SignInClient) -> (AppModel, ProgressStore.Memory, () -> [URL]) {
         let memory = ProgressStore.Memory()
         let app = AppModel(client: client, store: ProgressStore(memory: memory, stateDir: client.stateDir), still: true)
@@ -83,17 +79,16 @@ struct GoogleSignInTests {
         #expect(flow.google == .notConnected)
         flow.connectGoogle()
         #expect(flow.google == .waiting)
-        await until { client.events != nil }
+        await waitUntil { client.events != nil }
         #expect(client.signIns == [false])
         client.events?.yield(.link(first))
-        await until { !opened().isEmpty }
+        await waitUntil { !opened().isEmpty }
         #expect(opened() == [first])
         client.events?.yield(.link(renewed))
         // Open again opens the first link until the renewal is in.
-        for _ in 0..<300 {
+        await waitUntil {
             flow.openGoogleSignInAgain()
-            if opened().last == renewed { break }
-            try? await Task.sleep(for: .milliseconds(10))
+            return opened().last == renewed
         }
         // Every open before the renewal was in was the first link, and the
         // renewal itself opened nothing: only open again did.
@@ -103,7 +98,7 @@ struct GoogleSignInTests {
         flow.recheckGoogle()
         client.events?.yield(.enabled(GoogleEnabled(accounts: ["testuser@plow.test"])))
         client.events?.finish()
-        await until { flow.google == .connected }
+        await waitUntil { flow.google == .connected }
         #expect(flow.googleAccounts == ["testuser@plow.test"])
         #expect(client.enabled.isEmpty)
         #expect(!flow.canOpenGoogleSignInAgain)
@@ -114,18 +109,18 @@ struct GoogleSignInTests {
         let (app, _, _) = app(client)
         let flow = app.stage(.google)
         flow.connectGoogle()
-        await until { client.events != nil }
+        await waitUntil { client.events != nil }
         client.events?.yield(.link(first))
-        await until { flow.canOpenGoogleSignInAgain }
+        await waitUntil { flow.canOpenGoogleSignInAgain }
         client.events?.finish(throwing: timeout)
-        await until { flow.google != .waiting }
+        await waitUntil { flow.google != .waiting }
         #expect(flow.google == .notConnected)
         #expect(flow.googleWaitEnded)
         #expect(!flow.canOpenGoogleSignInAgain)
         #expect(!flow.primaryEnabled)
         flow.connectGoogle()
         #expect(flow.google == .waiting && !flow.googleWaitEnded)
-        await until { client.signIns.count == 2 }
+        await waitUntil { client.signIns.count == 2 }
         #expect(client.signIns == [false, false])
     }
 
@@ -137,16 +132,19 @@ struct GoogleSignInTests {
             let (app, _, _) = app(client)
             let flow = app.stage(.google)
             flow.connectGoogle()
-            await until { client.events != nil }
+            await waitUntil { client.events != nil }
             client.events?.yield(.link(first))
-            await until { flow.canOpenGoogleSignInAgain }
+            await waitUntil { flow.canOpenGoogleSignInAgain }
+            let wait = flow.googleTask
             leave(flow)
-            await until { client.stopped == 1 }
+            await wait?.value
+            await waitUntil { client.stopped == 1 }
             #expect(client.stopped == 1)
             #expect(flow.google == .notConnected)
             #expect(!flow.canOpenGoogleSignInAgain)
-            client.events?.yield(.enabled(GoogleEnabled(accounts: ["testuser@plow.test"])))
-            try? await Task.sleep(for: .milliseconds(50))
+            // A late answer has nowhere to go: the stream is over.
+            let late = client.events?.yield(.enabled(GoogleEnabled(accounts: ["testuser@plow.test"])))
+            #expect({ if case .terminated? = late { true } else { false } }())
             #expect(flow.google == .notConnected)
         }
     }
@@ -159,12 +157,12 @@ struct GoogleSignInTests {
         let (app, memory, opened) = app(client)
         let flow = app.stage(.google)
         flow.connectGoogle()
-        await until { client.events != nil }
+        await waitUntil { client.events != nil }
         client.events?.yield(.link(canary))
-        await until { flow.canOpenGoogleSignInAgain }
+        await waitUntil { flow.canOpenGoogleSignInAgain }
         #expect(opened() == [canary])
         client.events?.finish(throwing: canaryRefusal)
-        await until { flow.google != .waiting }
+        await waitUntil { flow.google != .waiting }
         #expect(flow.google == .failed(Onboarding.couldNotCheck))
         #expect(!flow.canOpenGoogleSignInAgain)
         for shown in [Onboarding.couldNotCheck, flow.primaryTitle] + flow.googleAccounts {
@@ -190,10 +188,10 @@ struct GoogleSignInTests {
         await app.refreshConnections()
         app.connectGoogle(adding: adding)
         #expect(app.googleSignIn == GoogleSignIn(adding: adding))
-        await until { client.events != nil }
+        await waitUntil { client.events != nil }
         #expect(client.signIns == [adding])
         client.events?.yield(.link(first))
-        await until { app.canOpenGoogleSignInAgain }
+        await waitUntil { app.canOpenGoogleSignInAgain }
         #expect(opened() == [first])
         let after = accounts + ["ada.work@example.com"]
         client.google = Fixtures.googleConnected(after)
@@ -202,7 +200,7 @@ struct GoogleSignInTests {
         func googleOn() -> Bool {
             (try? app.summaries["studio"]?.plugins?.get())?.plugins.first { $0.name == "google" }?.state == "enabled"
         }
-        await until { app.googleSignIn == nil && app.connections == .google(accounts: after) && googleOn() }
+        await waitUntil { app.googleSignIn == nil && app.connections == .google(accounts: after) && googleOn() }
         #expect(app.googleSignIn == nil)
         #expect(app.connections == .google(accounts: after))
         #expect(googleOn())
@@ -219,12 +217,12 @@ struct GoogleSignInTests {
         let (app, _, opened) = app(client)
         await app.refreshConnections()
         app.connectGoogle(adding: true)
-        await until { client.events != nil }
+        await waitUntil { client.events != nil }
         client.events?.yield(.link(canary))
-        await until { app.canOpenGoogleSignInAgain }
+        await waitUntil { app.canOpenGoogleSignInAgain }
         #expect(opened() == [canary])
         if refused { client.events?.finish(throwing: canaryRefusal) } else { client.events?.finish() }
-        await until { app.googleSignIn?.failure != nil }
+        await waitUntil { app.googleSignIn?.failure != nil }
         let failure = app.googleSignIn?.failure ?? ""
         #expect(failure == (refused ? GoogleSignIn.problem(canaryRefusal, adding: true) : GoogleSignIn.stopped))
         #expect(!failure.contains(canaryCode))
@@ -241,20 +239,20 @@ struct GoogleSignInTests {
         let (app, _, _) = app(client)
         await app.refreshConnections()
         app.connectGoogle(adding: true)
-        await until { client.events != nil }
+        await waitUntil { client.events != nil }
         client.events?.yield(.link(first))
-        await until { app.canOpenGoogleSignInAgain }
+        await waitUntil { app.canOpenGoogleSignInAgain }
         app.endGoogleSignIn()
-        await until { client.stopped == 1 }
+        await waitUntil { client.stopped == 1 }
         #expect(client.stopped == 1)
         #expect(app.googleSignIn == nil && !app.canOpenGoogleSignInAgain)
 
         app.connectGoogle(adding: true)
-        await until { client.signIns.count == 2 }
+        await waitUntil { client.signIns.count == 2 }
         client.events?.yield(.link(first))
-        await until { app.canOpenGoogleSignInAgain }
+        await waitUntil { app.canOpenGoogleSignInAgain }
         client.events?.finish(throwing: timeout)
-        await until { app.googleSignIn?.failure != nil }
+        await waitUntil { app.googleSignIn?.failure != nil }
         #expect(app.googleSignIn?.failure == GoogleSignIn.problem(timeout, adding: true))
         #expect(!app.canOpenGoogleSignInAgain)
         let unreachable = LatchError.failed(LatchFailure(code: "plow_unreachable", message: "could not reach Plow at http://127.0.0.1:9"))
@@ -272,15 +270,15 @@ struct GoogleSignInTests {
         let (app, _, _) = app(client)
         await app.refreshConnections()
         app.connectGoogle(adding: true)
-        await until { client.events != nil }
+        await waitUntil { client.events != nil }
         client.events?.finish(throwing: timeout)
-        await until { app.googleSignIn?.failure != nil }
+        await waitUntil { app.googleSignIn?.failure != nil }
         client.google = Fixtures.googleUnreachable
         await app.refreshConnections()
         #expect(app.connections == .unknown)
         // Try Again, as the sheet presses it.
         app.connectGoogle(adding: app.googleSignIn?.adding ?? false)
-        await until { client.signIns.count == 2 }
+        await waitUntil { client.signIns.count == 2 }
         #expect(client.signIns == [true, true])
         #expect(app.googleSignIn == GoogleSignIn(adding: true))
     }
@@ -322,7 +320,7 @@ struct GoogleSignInTests {
         let args = try String(contentsOf: folder.appending(path: "args"), encoding: .utf8)
         #expect(args == "--state-dir\n/s\nplugins\nenable\ngoogle\n--events\n--add-account\n")
         let pid = try #require(pid_t(try String(contentsOf: folder.appending(path: "pid"), encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)))
-        await until { kill(pid, 0) != 0 }
+        await waitUntil { kill(pid, 0) != 0 }
         #expect(kill(pid, 0) != 0)
     }
 }
