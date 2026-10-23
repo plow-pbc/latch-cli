@@ -131,7 +131,6 @@ final class NeverServedClient: LatchClient, @unchecked Sendable {
     func setupStatusCheckingAccess() async throws -> SetupStatus { try await setupStatus() }
     func rulesShow(host: String?) async throws -> RulesShow { try Fixtures.decode(#"{"agents":[],"every_agent":null}"#) }
     func rulesSet(_ text: String) async throws {}
-    func pluginsList(host: String?) async throws -> PluginsList { try Fixtures.decode(#"{"plugins":[]}"#) }
     func vaultList(host: String?) async throws -> VaultList { try Fixtures.decode(#"{"items":[]}"#) }
     func enable(_ plugin: String) async throws -> GoogleEnabled? { nil }
     func statusFollow() -> AsyncThrowingStream<LocalStatus, Error> { AsyncThrowingStream { _ in } }
@@ -200,6 +199,15 @@ struct OwnerReadTests {
         }
         // An agent asking is never the owner looking.
         #expect(try !record(op: "vault", args: #"{"command":"list"}"#, agent: "a1").isBackground)
+    }
+
+    /// Every `latch status`, an agent's too, asks each host for its plugins:
+    /// answered, that is background; refused, it stays in view.
+    @Test func anyCallersAnsweredPluginsListIsBackground() throws {
+        #expect(try record(op: "plugins", args: #"{"command":"list"}"#, agent: "a1").isBackground)
+        let refused = try LatchJSON.decoder.decode(AuditRecord.self, from: Data(
+            #"{"agent":"a1","caller":"k","caller_name":null,"decision":"deny","details":{"args":{"command":"list"},"gate":null,"started":null},"id":"p","op":"plugins","outcome":"host_upgraded","time":"2026-10-23T05:27:23Z"}"#.utf8))
+        #expect(!refused.isBackground)
     }
 }
 
@@ -290,7 +298,6 @@ final class PagedClient: LatchClient, @unchecked Sendable {
     func setupStatusCheckingAccess() async throws -> SetupStatus { try await setupStatus() }
     func rulesShow(host: String?) async throws -> RulesShow { try Fixtures.decode(#"{"agents":[],"every_agent":null}"#) }
     func rulesSet(_ text: String) async throws {}
-    func pluginsList(host: String?) async throws -> PluginsList { try Fixtures.decode(#"{"plugins":[]}"#) }
     func vaultList(host: String?) async throws -> VaultList { try Fixtures.decode(#"{"items":[]}"#) }
     func enable(_ plugin: String) async throws -> GoogleEnabled? { nil }
     func statusFollow() -> AsyncThrowingStream<LocalStatus, Error> { AsyncThrowingStream { _ in } }

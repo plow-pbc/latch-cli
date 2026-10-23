@@ -22,7 +22,6 @@ final class VaultClient: LatchClient, @unchecked Sendable {
     func setupStatusCheckingAccess() async throws -> SetupStatus { try await setupStatus() }
     func rulesShow(host: String?) async throws -> RulesShow { try Fixtures.decode(Fixtures.rulesStudio) }
     func rulesSet(_ text: String) async throws {}
-    func pluginsList(host: String?) async throws -> PluginsList { try Fixtures.decode(#"{"plugins":[]}"#) }
     func vaultList(host: String?) async throws -> VaultList {
         lists += 1
         return try Fixtures.decode(Fixtures.vaultItems)

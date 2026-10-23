@@ -1,4 +1,5 @@
-//! The `plugins` operation: `list` for any caller the host lets in;
+//! The `plugins` operation: `list` for any caller the host lets in (what
+//! `latch status` asks each host);
 //! `enable` and `disable` only from the owner at this host itself, over its
 //! private socket. Neither is ever judged: the owner's commands on the host
 //! are the owner's, and an agent gets `owner_only` for both.

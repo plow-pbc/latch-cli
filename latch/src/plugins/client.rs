@@ -1,6 +1,4 @@
-//! `latch plugins …`. `list` asks another host named by `--host`; for this
-//! machine it reads the state folder, running host or not, as `rules show`
-//! does. `enable` and `disable` are for this machine only, and only from
+//! `latch plugins enable|disable`, for this machine only, and only from
 //! the owner's own login: managing another host's connectors from here is
 //! not a thing latch does. They go to this machine's host over its private
 //! socket when it runs; when none does, this command makes the same change
@@ -14,7 +12,6 @@ use super::{Connector, Plugins, host};
 use crate::cli::{PluginsArgs, PluginsCommand};
 use crate::dial::{self, ANSWER_WITHIN};
 use crate::failure::{Failure, code};
-use crate::hosts;
 use crate::lifecycle;
 use crate::plow::{Peer, Plow};
 use crate::state::StateDir;
@@ -34,13 +31,6 @@ pub async fn run(state: &StateDir, args: PluginsArgs) -> Result<Value, Failure> 
         }
     );
     let (host, args) = match args.command {
-        PluginsCommand::List { host } if hosts::local_target(state, host.as_deref())? => {
-            return super::list_saved(state);
-        }
-        PluginsCommand::List { host } => (
-            hosts::resolve(state, host).await?,
-            json!({"command": "list"}),
-        ),
         PluginsCommand::Enable {
             name, add_account, ..
         } => {

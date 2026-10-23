@@ -21,8 +21,9 @@ when there is a next step), with an exit code you can branch on. Branch on
   is meant to be used here.
 - **From another machine:** log in with your own credential (`latch login`
   with no flags finds it). `latch status` shows your account, this machine
-  (`this_machine`), the account's hosts (`self` marks this one) and
-  `default_host`, where a command without `--host` goes; name one with
+  (`this_machine`), the account's hosts (`self` marks this one), the
+  plugins each one has on (`plugins`; `null` with `plugins_reason` when it
+  didn't say) and `default_host`, where a command without `--host` goes; name one with
   `--host` (or `$LATCH_HOST`); with only one host, latch picks it.
 - Never copy or borrow a device login (a machine's state folder or its
   token) onto another machine to act from there: hosts would take that

@@ -1410,7 +1410,8 @@ fn status_names_the_account_this_machine_and_each_host_once() {
     let own_key = {
         let mut state = plow.state.lock().unwrap();
         let (own, _) = &mut state.peers[0];
-        own["relay_url"] = json!("https://relay.example/");
+        // A relay nothing answers at: pi can't be asked for its plugins.
+        own["relay_url"] = json!("http://127.0.0.1:9/");
         own["online"] = json!(false);
         own["last_seen_at"] = Value::Null;
         let own_key = own["key"].clone();
@@ -1418,7 +1419,7 @@ fn status_names_the_account_this_machine_and_each_host_once() {
             json!("c".repeat(64)),
             "pi",
             "device",
-            json!("https://relay.example/"),
+            json!("http://127.0.0.1:9/"),
         );
         state.peers.insert(0, (pi, "owner-login".to_string()));
         own_key
@@ -1435,9 +1436,11 @@ fn status_names_the_account_this_machine_and_each_host_once() {
     assert_eq!(
         logged_in["hosts"],
         json!([
-            {"name": "host", "key": own_key, "self": true, "online": false, "last_seen_at": null},
+            {"name": "host", "key": own_key, "self": true, "online": false, "last_seen_at": null,
+             "plugins": [], "plugins_reason": null},
             {"name": "pi", "key": "c".repeat(64), "self": false, "online": true,
-             "last_seen_at": "2026-10-15T01:30:12Z"},
+             "last_seen_at": "2026-10-15T01:30:12Z", "plugins": null,
+             "plugins_reason": "host_unreachable"},
         ])
     );
     for gone in ["peer", "serve", "art", "relay_url"] {
@@ -2629,18 +2632,29 @@ fn a_cloud_agent_logs_in_through_a_proxy_that_adds_its_credential() {
 /// An iroh relay on this machine, over plain HTTP, kept running by the
 /// returned runtime. Returns its URL.
 fn local_relay() -> (tokio::runtime::Runtime, String) {
+    let (runtime, url, _) = counted_relay();
+    (runtime, url)
+}
+
+/// `local_relay`, with how many connections it has had.
+fn counted_relay() -> (
+    tokio::runtime::Runtime,
+    String,
+    std::sync::Arc<iroh_relay::server::Metrics>,
+) {
     use iroh_relay::server::{RelayConfig, Server, ServerConfig};
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let mut config = ServerConfig::default();
     config.relay = Some(RelayConfig::new(([127, 0, 0, 1], 0)));
     let server = runtime.block_on(Server::spawn(config)).unwrap();
     let url = format!("http://{}", server.http_addr().unwrap());
+    let metrics = server.metrics().server.clone();
     // The server stops when dropped; it lives as long as the runtime.
     runtime.spawn(async move {
         let _server = server;
         std::future::pending::<()>().await
     });
-    (runtime, url)
+    (runtime, url, metrics)
 }
 
 /// A running `latch serve`, stopped when dropped: when the test ends,
@@ -2775,6 +2789,150 @@ fn a_plain_serve_stopped_cleanly_prints_nothing_on_stdout() {
     let status = serve.0.wait().unwrap();
     assert!(status.success(), "{status:?}");
     assert_eq!(printed, "");
+}
+
+/// An endpoint on `relay` that speaks `alpn`, lets every connection in and
+/// never answers on it.
+async fn silent(relay: &str, alpn: &[u8]) -> iroh::Endpoint {
+    let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .clear_ip_transports()
+        .bind_addr("127.0.0.1:0")
+        .unwrap()
+        .portmapper_config(iroh::endpoint::PortmapperConfig::Disabled)
+        .relay_mode(iroh::RelayMode::custom([relay.parse().unwrap()]))
+        .alpns(vec![alpn.to_vec()])
+        .bind()
+        .await
+        .unwrap();
+    endpoint.online().await;
+    let accepting = endpoint.clone();
+    tokio::spawn(async move {
+        let mut held = Vec::new();
+        while let Some(incoming) = accepting.accept().await {
+            if let Ok(connection) = incoming.await {
+                held.push(connection);
+            }
+        }
+    });
+    endpoint
+}
+
+/// `latch status` asks every host Plow lists online which plugins it has
+/// on, all at once through one endpoint, within 2 s in all, and says why
+/// for each that didn't answer; none of them fails it.
+#[test]
+fn status_asks_every_host_for_its_plugins_at_once_and_in_time() {
+    let plow = LivePlow::start();
+    let (relay_runtime, relay, relayed) = counted_relay();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    // This Plow has no Google account, so Google's setup fails: needs_setup.
+    let enabled = latch(&host, &["plugins", "enable", "google"], &[]);
+    assert_eq!(enabled.status.code(), Some(1), "{enabled:?}");
+    let token = dir.path().join("owner.token");
+    let login = |name: &str| {
+        let state = dir.path().join(name);
+        let args = [
+            "login",
+            "--api-url",
+            &plow.url,
+            "--token-file",
+            token.to_str().unwrap(),
+            "--name",
+            name,
+        ];
+        let login = latch(&state, &args, &[]);
+        assert_eq!(login.status.code(), Some(0), "{login:?}");
+        state
+    };
+    let (pi, laptop) = (login("pi"), login("laptop"));
+    let _serving = (serving(&host, &relay), serving(&pi, &relay));
+    // One host that lets the call in and never answers, one of another
+    // protocol, and one Plow lists offline.
+    let stalled = relay_runtime.block_on(silent(&relay, b"plow/latch/4"));
+    let older = relay_runtime.block_on(silent(&relay, b"plow/latch/3"));
+    {
+        let mut state = plow.state.lock().unwrap();
+        for (endpoint, name) in [(&stalled, "stalled"), (&older, "older")] {
+            let key = json!(endpoint.id().to_string());
+            let listed = peer(key, name, "device", json!(relay));
+            state.peers.push((listed, "owner-login".to_string()));
+        }
+        let mut asleep = peer(json!("d".repeat(64)), "asleep", "device", json!(relay));
+        asleep["online"] = json!(false);
+        state.peers.push((asleep, "owner-login".to_string()));
+    }
+    let rows = |status: &Value| -> Vec<(String, Value, Value)> {
+        status["hosts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|host| {
+                let name = host["name"].as_str().unwrap().to_string();
+                (
+                    name,
+                    host["plugins"].clone(),
+                    host["plugins_reason"].clone(),
+                )
+            })
+            .collect()
+    };
+
+    let (accepted, left) = (relayed.accepts.get(), relayed.disconnects.get());
+    let started = std::time::Instant::now();
+    let output = latch(&laptop, &["status"], &[]);
+    let took = started.elapsed();
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let status: Value = serde_json::from_slice(&output.stdout).unwrap();
+    println!("status with a host that never answers took {took:?}");
+    assert_eq!(
+        rows(&status),
+        [
+            (
+                "host",
+                json!([{"name": "google", "state": "needs_setup"}]),
+                Value::Null
+            ),
+            ("pi", json!([]), Value::Null),
+            ("stalled", Value::Null, json!("host_unreachable")),
+            ("older", Value::Null, json!("protocol_mismatch")),
+            ("asleep", Value::Null, json!("host_offline")),
+        ]
+        .map(|(name, plugins, reason)| (name.to_string(), plugins, reason)),
+        "{status}"
+    );
+    // It waited out the 2 s for the one that never answers, and no more.
+    assert!(took >= std::time::Duration::from_secs(2), "{took:?}");
+    assert!(took < std::time::Duration::from_secs(4), "{took:?}");
+    // All through one endpoint, gone once status is.
+    assert_eq!(relayed.accepts.get() - accepted, 1, "one endpoint");
+    let closed = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    while relayed.disconnects.get() - left < 1 && std::time::Instant::now() < closed {
+        thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert_eq!(relayed.disconnects.get() - left, 1, "nothing left asking");
+
+    // Hosts that don't let this machine in say so.
+    let key = serde_json::from_slice::<Value>(&latch(&laptop, &["status", "--local"], &[]).stdout)
+        .unwrap()["this_machine"]["key"]
+        .clone();
+    plow.state
+        .lock()
+        .unwrap()
+        .peers
+        .retain(|(peer, _)| peer["key"] != key);
+    let output = latch(&laptop, &["status"], &[]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let status: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let refused = rows(&status);
+    assert_eq!(
+        refused[..2],
+        [
+            ("host".to_string(), Value::Null, json!("caller_denied")),
+            ("pi".to_string(), Value::Null, json!("caller_denied")),
+        ],
+        "{status}"
+    );
 }
 
 /// An owner's host state logged in to `plow` as `host`.
@@ -5721,12 +5879,12 @@ fn setup_sets_up_every_connector_with_no_host_running() {
         plugins.iter().all(|plugin| plugin["state"] == "enabled")
     };
     assert!(
-        enabled(&latch(&host, &["plugins", "list"], &[])),
+        enabled(&latch(&host, &["status", "--local"], &[])),
         "saved, with no host running"
     );
     let _serve = serving(&host, &relay);
     assert!(
-        enabled(&latch(&host, &["plugins", "list"], &[])),
+        enabled(&latch(&host, &["status", "--local"], &[])),
         "the host's"
     );
 }
@@ -5998,8 +6156,8 @@ fn enabling_google_offers_a_sign_in_link_and_waits_for_the_account() {
     );
 
     // No link is kept: not in the state folder (plugins.json, the audit,
-    // anything), nor in what `plugins list` says.
-    let listed = latch(&host, &["plugins", "list"], &[]);
+    // anything), nor in what `status --local` says.
+    let listed = latch(&host, &["status", "--local"], &[]);
     assert!(!String::from_utf8_lossy(&listed.stdout).contains("made-up-connect-code"));
     fn kept(dir: &Path, found: &mut Vec<PathBuf>) {
         for entry in fs::read_dir(dir).unwrap() {
@@ -7163,15 +7321,18 @@ fn plugins_are_listed_for_anyone_and_turned_on_or_off_only_by_the_owner_at_the_h
         serde_json::from_str(&fs::read_to_string(host.join("plugins.json")).unwrap()).unwrap();
     assert_eq!(saved["google"]["state"], "needs_setup", "{saved}");
     // Listing this machine's needs no host: it reads what was saved.
-    let (code, listed) = run(&host, &["plugins", "list", "--host", "host"], &[]);
+    let (code, listed) = run(&host, &["status", "--local"], &[]);
     assert_eq!(code, Some(0));
     assert_eq!(listed["plugins"][0]["state"], "needs_setup", "{listed}");
+    // There is no command of its own to list them.
+    let (code, error) = run(&host, &["plugins", "list"], &[]);
+    assert_eq!((code, &error["error"]["code"]), (Some(2), &json!("usage")));
     let (code, disabled) = run(&host, &["plugins", "disable", "google"], &[]);
     assert_eq!(code, Some(0));
     assert_eq!(disabled["state"], "disabled");
 
     let _serve = serving(&host, &relay);
-    let (code, listed) = run(&host, &["plugins", "list"], &[]);
+    let (code, listed) = run(&host, &["status", "--local"], &[]);
     assert_eq!(code, Some(0));
     let names: Vec<&str> = listed["plugins"]
         .as_array()
@@ -7186,9 +7347,18 @@ fn plugins_are_listed_for_anyone_and_turned_on_or_off_only_by_the_owner_at_the_h
     };
     assert_eq!(names, expected, "never the browser");
     assert_eq!(listed["plugins"][0]["state"], "disabled");
-    let (code, agents) = run(&agent, &["plugins", "list", "--host", "host"], &agent_env);
+    // An agent sees the ones the host has on, as the host says: none.
+    let host_row = |status: &Value| status["hosts"][0].clone();
+    let (code, agents) = run(&agent, &["status"], &agent_env);
     assert_eq!(code, Some(0));
-    assert_eq!(agents["plugins"], listed["plugins"]);
+    assert_eq!(
+        (
+            &host_row(&agents)["plugins"],
+            &host_row(&agents)["plugins_reason"]
+        ),
+        (&json!([]), &Value::Null),
+        "{agents}"
+    );
 
     for command in ["enable", "disable"] {
         let (code, error) = run(&agent, &["plugins", command, "google"], &agent_env);
@@ -7208,8 +7378,14 @@ fn plugins_are_listed_for_anyone_and_turned_on_or_off_only_by_the_owner_at_the_h
     let (code, error) = run(&host, &["plugins", "enable", "google"], &[]);
     assert_eq!(code, Some(1));
     assert_eq!(error["error"]["code"], "gog_not_configured");
-    let (_, listed) = run(&host, &["plugins", "list"], &[]);
+    let (_, listed) = run(&host, &["status", "--local"], &[]);
     assert_eq!(listed["plugins"][0]["state"], "needs_setup");
+    let (_, agents) = run(&agent, &["status"], &agent_env);
+    assert_eq!(
+        host_row(&agents)["plugins"],
+        json!([{"name": "google", "state": "needs_setup"}]),
+        "{agents}"
+    );
     let (code, disabled) = run(&host, &["plugins", "disable", "google"], &[]);
     assert_eq!(code, Some(0));
     assert_eq!(disabled["waited_for"], 0);

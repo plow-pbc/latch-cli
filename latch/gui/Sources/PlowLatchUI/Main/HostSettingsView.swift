@@ -139,13 +139,13 @@ private struct PluginsSection: View {
 
     var body: some View {
         Section {
-            switch app.summaries[host.name]?.plugins {
+            switch app.plugins(of: host) {
             case nil:
                 ProgressView().frame(maxWidth: .infinity)
             case .failure?:
                 Text("\(host.name) couldn't list its plugins.").foregroundStyle(.secondary)
             case let .success(list)?:
-                ForEach(list.plugins, id: \.name) { plugin in
+                ForEach(list, id: \.name) { plugin in
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(PluginCopy.title(plugin.name))
@@ -182,17 +182,17 @@ private struct PluginsSection: View {
     }
 
     private func isOn(_ name: String) -> Bool {
-        guard case let .success(list)? = app.summaries[host.name]?.plugins else { return false }
-        return list.plugins.first { $0.name == name }?.state == "enabled"
+        guard case let .success(list)? = app.plugins(of: host) else { return false }
+        return list.first { $0.name == name }?.state == "enabled"
     }
 
-    private func binding(_ plugin: PluginsList.Plugin) -> Binding<Bool> {
+    private func binding(_ plugin: Plugin) -> Binding<Bool> {
         Binding { plugin.state == "enabled" } set: { on in
             changing = plugin.name
             Task {
                 defer { changing = nil }
                 do {
-                    try await app.setConnector(plugin.name, on: on, host: host)
+                    try await app.setConnector(plugin.name, on: on)
                     error = nil
                 } catch {
                     self.error = .from(error)
@@ -210,7 +210,7 @@ nonisolated enum PluginCopy {
     }
 
     /// Under its name: on, off, or what it needs first.
-    static func state(_ plugin: PluginsList.Plugin) -> String {
+    static func state(_ plugin: Plugin) -> String {
         switch plugin.state {
         case "enabled": "On"
         case "needs_setup": needs(plugin.name)

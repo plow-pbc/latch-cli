@@ -196,9 +196,10 @@ No Homebrew tap is included.
   enables it only if that succeeds; with no Google account in Plow yet,
   `enable google` signs you in with Google first (a link and QR code at
   a terminal; `--events` for an app). `latch plugins disable NAME` refuses new calls at once
-  and returns once running ones finish. `latch plugins list` shows each
-  one's state, this machine's with or without a host running; agents may
-  list, never enable or disable. A call to a
+  and returns once running ones finish. `latch status --local` shows each
+  one's state, with or without a host running, and `latch status` the ones
+  each of your hosts has on; agents may see them, never enable or disable
+  them. A call to a
   connector that is off gets `not_enabled` (exit 4) with the enable command.
 - The host's audit log is sealed: each record is encrypted with the host's
   audit key, kept with its other secrets. `latch audit` prints its newest

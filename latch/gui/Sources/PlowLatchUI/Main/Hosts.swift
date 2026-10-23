@@ -152,12 +152,11 @@ struct PlowNotice: Equatable {
     }
 }
 
-/// What a host said of its rules, vault and connectors, each read on its
+/// What a host said of itself, its rules and its vault, each read on its
 /// own: one can fail while the others answer; nil until it has answered.
 struct HostSummary: Equatable {
-    /// Another host's own `status --local`; Host Settings reads it.
+    /// Another host's own `status --local`, its plugins among it.
     var status: Result<LocalStatus, LatchError>?
     var rules: Result<RulesShow, LatchError>?
     var vault: Result<VaultList, LatchError>?
-    var plugins: Result<PluginsList, LatchError>?
 }

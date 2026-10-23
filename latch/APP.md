@@ -78,7 +78,7 @@ Field by field:
 - `hosting.blocked`, when set, says why a running host cannot be used: `other_version`, a host from another latch version, with its pid and how to stop it. `hosting.ready` is then false.
 - `hosting.state` is one of `starting`, `serving`, `stopped` or `error`. A machine that never served says `stopped`.
 - `hosting.keep_awake` is the keep-awake switch, `latch settings set --keep-awake on|off`, which saves the choice with no host, login or restart. `enabled` is the saved choice; show the switch from it. `held` is whether the serving host keeps the Mac from idle sleep now, and `null` only for the moment before a starting host says. When it is `false`, `reason` says why: `disabled`, `not_serving`, `on_battery`, `unsupported` (not macOS), `refused` (macOS refused; the choice stays on) or `unknown` (the power source can't be read). It changes without the choice changing, as the Mac is plugged in or unplugged, so `--follow` sends a line each time. It is `null` only if the saved settings can't be read.
-- `plugins` is what `latch plugins list` says.
+- `plugins` is each connector here: its `name` and `state` (`enabled`, `disabled` or `needs_setup`), and for one not enabled, the `reason` and the owner's `enable` command.
 - `last_error` says why the host last stopped, when it stopped because of a failure. A host that was killed or crashed shows `serve_ended`.
 
 ## `latch status`
@@ -88,12 +88,15 @@ The same as `status --local`, plus what Plow says of the account:
 ```
 {"account":{"owner_uid":"9a51a542-…","display_name":"Morgan"},
  …the fields of status --local…,
- "hosts":[{"name":"studio","key":"5b66c591…","self":true,"online":true,"last_seen_at":"2026-10-23T19:41:50.229474Z"},
-          {"name":"pi-kitchen","key":"ea6a25b3…","self":false,"online":true,"last_seen_at":"2026-10-23T19:41:58.723159Z"}],
+ "hosts":[{"name":"studio","key":"5b66c591…","self":true,"online":true,"last_seen_at":"2026-10-23T19:41:50.229474Z",
+           "plugins":[{"name":"google","state":"enabled"},{"name":"messages","state":"needs_setup"}],"plugins_reason":null},
+          {"name":"pi-kitchen","key":"ea6a25b3…","self":false,"online":true,"last_seen_at":"2026-10-23T19:41:58.723159Z",
+           "plugins":null,"plugins_reason":"host_unreachable"}],
  "default_host":"studio","default_host_reason":null}
 ```
 
 - `hosts` are the account's hosts as Plow lists them, this machine first; `self` marks it. A machine that never served isn't one. `online` and `last_seen_at` are Plow's report, as Plow names them.
+- `plugins` on each host are the ones it has `enabled` (the owner's saved setting, not a check that it works) or that `needs_setup`; one that is off isn't listed, so `[]` means none is on. This machine's are read from its state folder. Every other host Plow lists online is asked at once, all within 2 seconds in all; `plugins` is then `null` with `plugins_reason`: `host_offline` (Plow lists it offline: not asked), `host_unreachable` (no answer in time, or the connection failed; `online` stays Plow's word), `caller_denied` (the host doesn't let this login in), `protocol_mismatch`, or the code the host failed with. A host that doesn't answer never fails `latch status`. Host Settings reads a host's full list from `status --local` or `status --host H`, never from this row.
 - `default_host` is where a command without `--host` goes. When there is none it is `null`, and `default_host_reason` says why: `unknown_host` (`$LATCH_HOST` names no host), `no_host`, `host_required` (several, and none chosen) or `not_logged_in`.
 - Before login it asks no one: `account`, `hosts` and `default_host` are `null`.
 - When Plow can't be asked it fails, with `plow_unreachable` (exit 1, `next` `latch status --local`) or `plow_denied` (exit 4); it never answers with Plow's fields left out.

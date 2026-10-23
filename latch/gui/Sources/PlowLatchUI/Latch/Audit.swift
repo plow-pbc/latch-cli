@@ -120,8 +120,13 @@ nonisolated struct AuditRecord: Decodable, Equatable, Identifiable {
         }
     }
 
-    /// A connection or an owner's read: shown in Activity only on request.
-    var isBackground: Bool { (op == "connect" && decision == "allow") || isOwnerRead }
+    /// A connection, an owner's read, or any caller's list of plugins that
+    /// was answered (every `latch status` asks each host for it): shown in
+    /// Activity only on request. A refused one stays in view.
+    var isBackground: Bool {
+        (op == "connect" && decision == "allow") || isOwnerRead
+            || (op == "plugins" && args?.command == "list" && outcome == "ok")
+    }
 }
 
 /// Any JSON value, kept as latch wrote it.

@@ -53,7 +53,7 @@ pub const CLOSE_DENIED: u32 = 4;
 pub const MAX_FRAME: usize = 16 * 1024 * 1024;
 
 /// One operation, e.g. `{"op": "exec", "args": {"argv": ["uname", "-a"]}}`.
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Request {
     pub op: String,
     pub args: Value,

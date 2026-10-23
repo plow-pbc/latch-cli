@@ -24,7 +24,12 @@ state() { if [ -f "$STUB/$1" ]; then echo true; else echo false; fi; }
 case "$*" in
   "status --local")
     if [ -f "$STUB/peer" ]; then login='{"kind":"device"}' name='"mac"'; else login=null name=null; fi
-    echo "{\"login\":$login,\"this_machine\":{\"name\":$name,\"hosting\":{\"running\":$(state ready),\"ready\":$(state ready)}}}" ;;
+    plugins='['; sep=''
+    for plugin in google messages contacts; do
+      if [ -f "$STUB/enabled-$plugin" ]; then s=enabled; else s=disabled; fi
+      plugins="$plugins$sep{\"name\":\"$plugin\",\"state\":\"$s\"}"; sep=,
+    done
+    echo "{\"login\":$login,\"this_machine\":{\"name\":$name,\"hosting\":{\"running\":$(state ready),\"ready\":$(state ready)}},\"plugins\":$plugins]}" ;;
   login)
     if [ -f "$STUB/taken" ]; then
       printf 'A machine named "mac" already exists. Replace it? [y/N] ' >&2
@@ -46,13 +51,6 @@ case "$*" in
     else echo "Logged in as mac." >&2; fi
     touch "$STUB/peer" ;;
   "serve -d"|"serve -d --again") touch "$STUB/ready"; echo '{"pid":4242}' ;;
-  "plugins list")
-    out='{"plugins":['; sep=''
-    for name in google messages contacts; do
-      if [ -f "$STUB/enabled-$name" ]; then s=enabled; else s=disabled; fi
-      out="$out$sep{\"name\":\"$name\",\"state\":\"$s\"}"; sep=,
-    done
-    echo "$out]}" ;;
   "plugins enable "*)
     name=$3
     answer=$(head -n 1 "$STUB/enable-$name" 2>/dev/null || echo ok)
@@ -100,19 +98,10 @@ impl Stub {
         fs::write(self.root.join("stub").join(name), body).unwrap();
     }
 
-    /// `name` enabled, as the stand-in's host lists it and as the host
-    /// saves it in the state folder.
+    /// `name` enabled, as the stand-in's `status --local` lists it.
     #[cfg(target_os = "macos")]
     fn enable(&self, name: &str) {
         self.file(&format!("enabled-{name}"), "");
-        let state = self.root.join("state");
-        fs::create_dir_all(&state).unwrap();
-        let path = state.join("plugins.json");
-        let mut saved: serde_json::Value = fs::read_to_string(&path)
-            .map(|text| serde_json::from_str(&text).unwrap())
-            .unwrap_or_else(|_| serde_json::json!({}));
-        saved[name] = serde_json::json!({"state": "enabled"});
-        fs::write(path, saved.to_string()).unwrap();
     }
 
     fn has(&self, name: &str) -> bool {
