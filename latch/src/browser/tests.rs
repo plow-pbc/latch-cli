@@ -1782,9 +1782,12 @@ async fn with_no_engine_a_call_names_the_owners_setup_and_downloads_nothing() {
         .unwrap_err();
     assert_eq!(other.code, "bad_arguments");
     assert!(!state.join("plugins").exists());
-    let left = fs::read_dir(profile::root(&state)).unwrap().count();
-    println!("profiles left by the failed launches: {left}");
-    assert_eq!(left, 0);
+    // The engine is checked before a profile is made: no launch got that far.
+    println!(
+        "profiles folder after the failed launches: exists {}",
+        profile::root(&state).exists()
+    );
+    assert!(!profile::root(&state).exists());
 }
 
 /// One command as the host runs it, and its audit record.

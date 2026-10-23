@@ -358,9 +358,12 @@ fn checked(receipt: &Path, parts: &[(PathBuf, &str)]) -> Result<(), String> {
     let kept = fs::read(receipt)
         .ok()
         .and_then(|bytes| serde_json::from_slice::<Receipt>(&bytes).ok());
+    // The metadata before the full hash: a receipt is written only if it
+    // is the same after, so nothing written meanwhile is vouched for.
+    let before = metadata_hash(&folders).ok();
     if let Some(kept) = &kept
+        && before.as_ref() == Some(&kept.metadata)
         && kept.trees == trees
-        && metadata_hash(&folders).is_ok_and(|now| now == kept.metadata)
     {
         return Ok(());
     }
@@ -373,13 +376,12 @@ fn checked(receipt: &Path, parts: &[(PathBuf, &str)]) -> Result<(), String> {
             ));
         }
     }
-    if let (Ok(metadata), Some(dir)) = (metadata_hash(&folders), receipt.parent()) {
-        let json = serde_json::to_vec(&Receipt { trees, metadata }).expect("JSON");
-        let _ = tempfile::NamedTempFile::new_in(dir).and_then(|mut temp| {
-            io::Write::write_all(&mut temp, &json)?;
-            temp.persist(receipt).map_err(|err| err.error)?;
-            Ok(())
-        });
+    if let Some(metadata) = before
+        && metadata_hash(&folders).is_ok_and(|after| after == metadata)
+    {
+        let receipt_now = Receipt { trees, metadata };
+        let _ =
+            crate::state::write_private(receipt, &serde_json::to_vec(&receipt_now).expect("JSON"));
     }
     Ok(())
 }
