@@ -311,54 +311,86 @@ struct GoogleView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
             PlowMark().fill(Brand.volt, style: FillStyle(eoFill: true)).frame(width: 56, height: 56).accessibilityHidden(true)
-            ScreenHeader(title: "Connect Google", lead: "Let your agents use Gmail and Calendar. Connect your Google account in Plow, then come back here.")
+            ScreenHeader(title: "Connect Google",
+                         lead: "Let your agents use Gmail and Calendar. Connecting opens your browser so you can sign in with Google.")
             Panel {
-                PanelRow(symbol: "g.circle", title: "Google accounts", state: state, stateColor: color)
+                PanelRow(symbol: "g.circle", title: "Google account", state: state, stateColor: color)
             }
-            if flow.primarySkips {
-                HStack(spacing: 16) {
-                    if flow.googleConnectURL != nil {
-                        Button("Connect Google in Plow") { flow.connectGoogleInPlow() }
-                            .buttonStyle(.link).foregroundStyle(Brand.volt)
-                    }
-                    Button("Check again") { Task { await flow.checkGoogle() } }
-                }
-            }
-            if case let .failed(message) = flow.google {
-                Text(message).foregroundStyle(Brand.clay).font(.callout)
-            }
-            if flow.google == .done, !flow.googleAccounts.isEmpty {
-                Text("Connected as \(ListFormatter.localizedString(byJoining: flow.googleAccounts)).").foregroundStyle(Brand.muted)
-            } else if flow.google == .unknown, !flow.googleAccounts.isEmpty {
-                Text("Connected in Plow as \(ListFormatter.localizedString(byJoining: flow.googleAccounts)). Turn on lets your agents use it here.")
-                    .foregroundStyle(Brand.muted)
-            }
+            detail
             Spacer(minLength: 0)
+            if flow.google != .connected {
+                Text("You can finish this later in Settings.").foregroundStyle(Brand.muted).font(.callout)
+            }
         }
         .padding(.horizontal, 56)
         .padding(.top, 52)
-        .task { if !flow.app.still { await flow.googleAppeared() } }
-        // Coming back from Plow: check again.
+        .padding(.bottom, 24)
+        .task { if !flow.app.still { await flow.checkGoogle() } }
+        // Back from the browser, or from anywhere: check again.
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            Task { await flow.returnedToApp() }
+            flow.recheckGoogle()
+        }
+    }
+
+    /// Each state's words, and its one action.
+    @ViewBuilder private var detail: some View {
+        switch flow.google {
+        case .checking:
+            EmptyView()
+        case .notConnected:
+            VStack(alignment: .leading, spacing: 14) {
+                if flow.googleWaitEnded {
+                    Text("No Google account has shown up yet. If you finished signing in, connect again.").foregroundStyle(Brand.muted)
+                }
+                Button("Connect Google") { flow.connectGoogle() }
+                    .controlSize(.large)
+            }
+        case .waiting:
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(spacing: 10) {
+                    ProgressView().controlSize(.small).accessibilityHidden(true)
+                    Text("Finish signing in with Google in your browser. This screen updates when you're done.")
+                }
+                Button("Open the sign-in page again") { flow.connectGoogle() }
+                    .buttonStyle(.link).foregroundStyle(Brand.volt)
+            }
+        case .connected:
+            if !flow.googleAccounts.isEmpty {
+                Text("Connected as \(ListFormatter.localizedString(byJoining: flow.googleAccounts)). Your agents can use Gmail and Calendar on this Mac.")
+                    .foregroundStyle(Brand.muted)
+            }
+        case .unreachable:
+            problem("Latch couldn't get an answer from Plow, so it can't tell whether Google is connected. Check your internet connection, then try again.")
+        case let .failed(why):
+            problem(why)
+        }
+    }
+
+    private func problem(_ why: String) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(why).foregroundStyle(Brand.clay)
+            Button("Try again") { flow.recheckGoogle() }
+                .controlSize(.large)
         }
     }
 
     private var state: String {
         switch flow.google {
-        case .unknown: flow.googleAccounts.isEmpty ? "Not checked" : "Off"
         case .checking: "Checking…"
-        case .done: "Connected"
-        case .needed: "Not connected in Plow"
+        case .notConnected: "Not connected"
+        case .waiting: "Waiting for sign-in"
+        case .connected: "Connected"
+        case .unreachable: "Couldn't reach Plow"
         case .failed: "Couldn't check"
         }
     }
 
     private var color: Color {
         switch flow.google {
-        case .done: Brand.volt
-        case .needed, .failed: Brand.amber
-        default: Brand.muted
+        case .connected: Brand.volt
+        case .notConnected, .waiting, .unreachable: Brand.amber
+        case .failed: Brand.clay
+        case .checking: Brand.muted
         }
     }
 }
