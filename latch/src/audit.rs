@@ -79,12 +79,23 @@ pub struct Record {
     /// revisions. Never chat or rules text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gate: Option<Value>,
+    /// How long parts of it took, for a remote caller.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timings: Option<Timings>,
     /// The line's `prev`.
     #[serde(skip)]
     pub prev: String,
     /// The line's own sha256; also the record's `audit_id` in the host's answer.
     #[serde(skip)]
     pub hash: String,
+}
+
+/// How long parts of an operation took, in milliseconds.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug)]
+pub struct Timings {
+    /// Plow saying who the caller is: on connect, and again before each
+    /// operation.
+    pub caller_check_ms: u64,
 }
 
 /// One line on disk.
@@ -575,7 +586,7 @@ fn record_line(record: &Record) -> Value {
         "agent": record.agent, "op": record.op, "command": crate::dashboard::recorded_command(record),
         "decision": record.decision, "outcome": record.outcome,
         "details": {"started": record.started, "args": crate::redact::shown(&record.op, &record.args),
-                    "gate": record.gate},
+                    "gate": record.gate, "timings": record.timings},
     });
     json!({"type": "record", "cursor": record.hash, "record": shown})
 }
@@ -673,6 +684,7 @@ pub fn record(
         decision: decision.to_string(),
         outcome: outcome.to_string(),
         gate: None,
+        timings: None,
         prev: String::new(),
         hash: String::new(),
     }

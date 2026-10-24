@@ -225,15 +225,18 @@ struct RulesDraftTests {
         app.typeRules("Agents may read ~/Projects.", at: every, from: app.savedRules(every))
         app.typeRules("scout may run make test.", at: scout, from: app.savedRules(scout))
         let seen = SavePublished()
-        let window = NSWindow(contentRect: CGRect(x: -4000, y: -4000, width: 600, height: 500), styleMask: [.titled],
-                              backing: .buffered, defer: false)
+        let window = Offscreen(contentRect: CGRect(x: -4000, y: -4000, width: 600, height: 500), styleMask: [.titled],
+                               backing: .buffered, defer: false)
         window.contentView = NSHostingView(rootView: Form {
             RulesEditor(title: "every", note: "", saved: app.savedRules(every), host: host, agent: nil)
             RulesEditor(title: "scout", note: "", saved: app.savedRules(scout), host: host, agent: scoutAgent)
             SaveProbe(seen: seen)
         }.environment(app))
+        // Setting its content can move the window onto a display: back.
+        window.setFrameOrigin(CGPoint(x: -4000, y: -4000))
         window.makeKeyAndOrderFront(nil)
         defer { window.orderOut(nil) }
+        #expect(!NSScreen.screens.contains { $0.frame.intersects(window.frame) }, "\(window.frame) \(NSScreen.screens.map(\.frame))")
         await waitUntil { textViews(in: window.contentView!).count == 2 }
         #expect(seen.key == nil)
         window.makeFirstResponder(textViews(in: window.contentView!)[1])
