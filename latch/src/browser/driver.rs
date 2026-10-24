@@ -133,6 +133,10 @@ pub trait Driver {
     /// through every ancestor: each parent document has that frame's own
     /// element there, not something of its own drawn over it.
     fn reaches(&mut self, frame: &Frame, x: f64, y: f64) -> Result<bool, Failure>;
+    /// Whether `frame` holds the page's focus, so the engine's keys go
+    /// into it: each parent document's active element is that frame's own
+    /// element.
+    fn holds_focus(&mut self, frame: &Frame) -> Result<bool, Failure>;
     /// Where `frame`'s viewport starts in the tab's viewport.
     fn frame_offset(&mut self, frame: &Frame) -> Result<(f64, f64), Failure>;
 

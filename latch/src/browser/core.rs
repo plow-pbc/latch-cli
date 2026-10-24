@@ -1370,6 +1370,9 @@ mod tests {
         fn call(&mut self, _: &Frame, _: &str, _: Vec<Value>) -> Result<Value, Failure> {
             unreachable!()
         }
+        fn holds_focus(&mut self, _: &Frame) -> Result<bool, Failure> {
+            Ok(true)
+        }
         fn reaches(&mut self, _: &Frame, _: f64, _: f64) -> Result<bool, Failure> {
             unreachable!()
         }
@@ -1547,6 +1550,9 @@ mod tests {
         }
         fn call(&mut self, _: &Frame, _: &str, _: Vec<Value>) -> Result<Value, Failure> {
             unreachable!()
+        }
+        fn holds_focus(&mut self, _: &Frame) -> Result<bool, Failure> {
+            Ok(true)
         }
         fn reaches(&mut self, _: &Frame, _: f64, _: f64) -> Result<bool, Failure> {
             unreachable!()

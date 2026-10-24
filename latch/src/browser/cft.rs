@@ -932,6 +932,67 @@ fn fetch_patterns(guarding: bool) -> Value {
     json!({"patterns": patterns})
 }
 
+impl Cft {
+    /// Whether each parent document of `frame` has that frame's own
+    /// `<iframe>` at the point (`reaches`), not something of its own drawn
+    /// over it; or, with none, as its active element (`holds_focus`).
+    fn owners_hold(&mut self, frame: &Frame, at: Option<(f64, f64)>) -> Result<bool, Failure> {
+        let deadline = self.by(COMMAND);
+        let mut current = frame.clone();
+        while let Some(parent_id) = current.parent.clone() {
+            let (Some(place), Some(parent)) = (
+                self.placements.get(&current.id).cloned(),
+                self.placements.get(&parent_id).cloned(),
+            ) else {
+                return Err(stale());
+            };
+            let owner_session = place.owner_session.ok_or_else(stale)?;
+            let parent_frame = Frame {
+                id: parent_id,
+                parent: parent.parent,
+                document: parent.document,
+            };
+            let expression = match at {
+                Some((x, y)) => {
+                    let (dx, dy) = self.frame_offset(&parent_frame)?;
+                    format!("document.elementFromPoint({}, {})", x - dx, y - dy)
+                }
+                None => "document.activeElement".to_string(),
+            };
+            let hit = self.evaluate(&parent_frame, &expression, false, COMMAND)?;
+            let Some(object) = hit["objectId"].as_str().map(str::to_string) else {
+                return Ok(false);
+            };
+            let node = self.frame_command(
+                "DOM.describeNode",
+                json!({"objectId": object}),
+                &parent.session,
+                deadline,
+            );
+            let _ = self.frame_command(
+                "Runtime.releaseObject",
+                json!({"objectId": object}),
+                &parent.session,
+                deadline,
+            );
+            let owner = self.frame_command(
+                "DOM.getFrameOwner",
+                json!({"frameId": current.id}),
+                &owner_session,
+                deadline,
+            );
+            let (Ok(node), Ok(owner)) = (node, owner) else {
+                return Err(stale());
+            };
+            if node["node"]["backendNodeId"] != owner["backendNodeId"] {
+                return Ok(false);
+            }
+            current = parent_frame;
+        }
+        Ok(true)
+    }
+}
+
 impl Driver for Cft {
     fn limit(&mut self, deadline: Option<Instant>) {
         self.deadline = deadline;
@@ -1137,60 +1198,11 @@ impl Driver for Cft {
     }
 
     fn reaches(&mut self, frame: &Frame, x: f64, y: f64) -> Result<bool, Failure> {
-        let deadline = self.by(COMMAND);
-        let mut current = frame.clone();
-        while let Some(parent_id) = current.parent.clone() {
-            let (Some(place), Some(parent)) = (
-                self.placements.get(&current.id).cloned(),
-                self.placements.get(&parent_id).cloned(),
-            ) else {
-                return Err(stale());
-            };
-            let owner_session = place.owner_session.ok_or_else(stale)?;
-            let parent_frame = Frame {
-                id: parent_id,
-                parent: parent.parent,
-                document: parent.document,
-            };
-            // The point in the parent's viewport must land on this frame's
-            // own <iframe>, not on something of the parent's drawn over it.
-            let (dx, dy) = self.frame_offset(&parent_frame)?;
-            let hit = self.evaluate(
-                &parent_frame,
-                &format!("document.elementFromPoint({}, {})", x - dx, y - dy),
-                false,
-                COMMAND,
-            )?;
-            let Some(object) = hit["objectId"].as_str().map(str::to_string) else {
-                return Ok(false);
-            };
-            let node = self.frame_command(
-                "DOM.describeNode",
-                json!({"objectId": object}),
-                &parent.session,
-                deadline,
-            );
-            let _ = self.frame_command(
-                "Runtime.releaseObject",
-                json!({"objectId": object}),
-                &parent.session,
-                deadline,
-            );
-            let owner = self.frame_command(
-                "DOM.getFrameOwner",
-                json!({"frameId": current.id}),
-                &owner_session,
-                deadline,
-            );
-            let (Ok(node), Ok(owner)) = (node, owner) else {
-                return Err(stale());
-            };
-            if node["node"]["backendNodeId"] != owner["backendNodeId"] {
-                return Ok(false);
-            }
-            current = parent_frame;
-        }
-        Ok(true)
+        self.owners_hold(frame, Some((x, y)))
+    }
+
+    fn holds_focus(&mut self, frame: &Frame) -> Result<bool, Failure> {
+        self.owners_hold(frame, None)
     }
 
     fn frame_offset(&mut self, frame: &Frame) -> Result<(f64, f64), Failure> {

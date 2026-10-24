@@ -214,8 +214,14 @@ the item and the reviewed lines are as confirmed; otherwise it clears the
 values and answers `confirm_stale`.
 
 While a fill runs, its session is paused: every other call in it answers
-`session_paused`. Each value is set in one step after the
-field's element, document and origin are checked again. A field that
+`session_paused`. Each value goes in after the field's element,
+document and origin are checked again, as a person types it: latch
+focuses a text field and types the value with the engine's own key
+presses (`isTrusted`), checking before each key that the field still has
+the focus and its caret has not gone back; only the head of a value
+longer than 64 characters is set in one step. A field that takes no keys,
+or only the first ones, gets the value in one step, as does any other
+field (a list, a date) and a value with a line break or a tab. A field that
 formats what it gets (a code as "123 456", a card number in fours) still
 holds the value: only spaces, dashes, dots, slashes, parentheses and plus
 signs may come between its characters, none lost, added or moved; a field

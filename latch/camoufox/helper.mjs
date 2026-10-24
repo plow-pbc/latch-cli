@@ -282,6 +282,23 @@ async function inFrame(id, work, options) {
 const checked = (document) =>
   `if (globalThis.__latchDocument !== ${JSON.stringify(document)}) throw new Error("latch:stale");\n${reader}\n`;
 
+/// Whether `check(parent, element)` holds in each parent of `frame`, of
+/// that frame's own `<iframe>` element there: it is at a point there
+/// (`reaches`), or it is the parent's active element (`holds_focus`).
+async function ownersHold(frame, check) {
+  let current = frameOf(frame);
+  for (let parent = current.parentFrame(); parent; parent = current.parentFrame()) {
+    const element = await guarded(current.frameElement());
+    try {
+      if (!(await check(parent, element))) return false;
+    } finally {
+      element.dispose().catch(() => {});
+    }
+    current = parent;
+  }
+  return true;
+}
+
 /// Where `frame`'s viewport starts in the tab's viewport: the content box
 /// of each `<iframe>` holding it, added up through its ancestors.
 async function offset(frame) {
@@ -511,22 +528,19 @@ const ops = {
     return inFrame(frame, (f) => f.evaluate(new Function("args", body), args));
   },
 
-  async reaches({ frame, x, y }) {
-    let current = frameOf(frame);
-    for (let parent = current.parentFrame(); parent; parent = current.parentFrame()) {
+  reaches({ frame, x, y }) {
+    return ownersHold(frame, async (parent, element) => {
       const [dx, dy] = await inFrame(frameId(parent), offset);
-      const element = await guarded(current.frameElement());
-      try {
-        const hit = await inFrame(frameId(parent), (f) =>
-          f.evaluate(([el, px, py]) => document.elementFromPoint(px, py) === el, [element, x - dx, y - dy]),
-        );
-        if (!hit) return false;
-      } finally {
-        element.dispose().catch(() => {});
-      }
-      current = parent;
-    }
-    return true;
+      return inFrame(frameId(parent), (f) =>
+        f.evaluate(([el, px, py]) => document.elementFromPoint(px, py) === el, [element, x - dx, y - dy]),
+      );
+    });
+  },
+
+  holds_focus({ frame }) {
+    return ownersHold(frame, (parent, element) =>
+      inFrame(frameId(parent), (f) => f.evaluate((el) => document.activeElement === el, element)),
+    );
   },
 
   frame_offset({ frame }) {
