@@ -5,7 +5,7 @@
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use tokio::io::AsyncReadExt;
@@ -110,18 +110,27 @@ pub async fn run(workers: &WorkerSetup, home: &Path, names: bool, op: &str, args
     if !names {
         reads.retain(|folder| *folder != address_book);
     }
+    let started = Instant::now();
     let result = read(workers, &reads, &argv).await;
     match result {
         Ok(mut answer) => {
             if !names {
                 answer["names_unavailable"] = json!("contacts_not_enabled");
             }
+            // The reader's own phases, for the audit only; the whole run
+            // includes starting its worker.
+            let mut timings = answer
+                .as_object_mut()
+                .and_then(|answer| answer.remove("timings"))
+                .unwrap_or_else(|| json!({}));
+            timings["reader_ms"] = json!(started.elapsed().as_millis() as u64);
             audit["result"] = json!({
                 "count": answer["count"],
                 "unreadable": answer["unreadable"],
                 "unchecked": answer["unchecked"],
                 "incomplete": answer["incomplete"],
                 "more": !answer["next"].is_null(),
+                "timings": timings,
             });
             Done {
                 response: Response::Ok(answer),
