@@ -227,7 +227,7 @@ pub struct FakePlow {
 
 impl FakePlow {
     pub fn client(&self) -> crate::plow::Plow {
-        crate::plow::Plow::new(&self.url, "made-up-login")
+        crate::plow::Plow::new(&self.url, "made-up-login").unwrap()
     }
 
     /// How many requests it saw whose line contains `part`.

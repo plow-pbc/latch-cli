@@ -122,7 +122,7 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
             name,
             relay_url,
         };
-        let plow = Plow::new(&api_url, &token);
+        let plow = Plow::new(&api_url, &token)?;
         // An agent is named after itself in Plow. Plow names one that is not
         // an agent's credential, as it always has.
         let me = if owner {
@@ -213,7 +213,7 @@ async fn by_text(
     name: &str,
     events: bool,
 ) -> Result<String, Failure> {
-    let plow = Plow::anonymous(api_url);
+    let plow = Plow::anonymous(api_url)?;
     let activation = plow.activate(name).await?;
     let code = &activation.display_code;
     let link = sms_link(&activation.send_to, code);

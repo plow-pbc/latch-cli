@@ -435,6 +435,24 @@ fn logged_in_agent(
     (dir, token_file, server)
 }
 
+/// Only the owner's own login turns plugins on: an agent's status says why
+/// one is off, and offers no command it can't run.
+#[test]
+fn an_agents_status_offers_no_owners_command() {
+    let (dir, token_file, _server) = logged_in_agent(vec![]);
+    let env = [("PLOW_TOKEN_FILE", token_file.as_path())];
+    let output = latch(&dir.path().join("state"), &["status", "--local"], &env);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let status: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let google = &status["plugins"][0];
+    assert_eq!(google["state"], "disabled", "{status}");
+    assert_eq!(google.get("enable"), None, "{status}");
+    assert_eq!(
+        google["reason"],
+        "only the owner's login can turn this plugin on"
+    );
+}
+
 /// A machine whose commands run with a home that is not where latch's state
 /// lives (`HOME=/`) finds it through `LATCH_STATE_DIR`; `--state-dir` still wins.
 #[test]
@@ -587,6 +605,30 @@ fn a_cloud_agent_given_its_token_sends_it() {
             "{request}"
         );
     }
+}
+
+/// A machine with no CA certificates (a bare container) can't check any
+/// server: logging in says so, with what fixes it, rather than crashing.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_machine_with_no_ca_certificates_says_so_in_json() {
+    let dir = test_dir();
+    let token_file = dir.path().join("agent.token");
+    fs::write(&token_file, "file-credential\n").unwrap();
+    // Where the system's certificates are read from: nowhere.
+    let none = dir.path().join("no-certificates");
+    let env = [
+        ("PLOW_API_BASE", Path::new("http://127.0.0.1:9")),
+        ("PLOW_TOKEN_FILE", token_file.as_path()),
+        ("SSL_CERT_FILE", none.as_path()),
+        ("SSL_CERT_DIR", none.as_path()),
+    ];
+    let login = latch(&dir.path().join("state"), &["login"], &env);
+    assert_eq!(login.status.code(), Some(1), "{login:?}");
+    let error = one_error_line(&String::from_utf8_lossy(&login.stderr), Some(1));
+    assert_eq!(error["error"]["code"], "no_ca_certificates", "{error}");
+    let next = error["error"]["next"].as_str().unwrap();
+    assert!(next.contains("CA certificates"), "{next}");
 }
 
 #[test]

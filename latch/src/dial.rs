@@ -92,20 +92,20 @@ async fn connect_within(state: &StateDir, host: &Peer, within: Duration) -> Resu
         .await
         .map_err(|err| Failure::new(code::iroh, format!("could not start iroh: {err}")))?;
     let address = EndpointAddr::new(id).with_relay_url(relay);
-    match tokio::time::timeout(within, endpoint.connect(address, wire::ALPN)).await {
-        Ok(Ok(connection)) => Ok(Link {
-            endpoint: Some(endpoint),
-            connection: Connection::Remote(connection),
-        }),
-        Ok(Err(err)) => {
-            endpoint.close().await;
-            Err(not_connected(host, &err))
+    let failure = match tokio::time::timeout(within, endpoint.connect(address, wire::ALPN)).await {
+        Ok(Ok(connection)) => {
+            return Ok(Link {
+                endpoint: Some(endpoint),
+                connection: Connection::Remote(connection),
+            });
         }
-        Err(_) => {
-            endpoint.close().await;
-            Err(not_connected_within(host, within))
-        }
-    }
+        Ok(Err(err)) => not_connected(host, &err),
+        Err(_) => not_connected_within(host, within),
+    };
+    // Nothing was sent, so there is nothing to drain: iroh would otherwise
+    // keep the dial attempt going for seconds past `within`.
+    let _ = tokio::time::timeout(CLOSE_WITHIN, endpoint.close()).await;
+    Err(failure)
 }
 
 /// Plow lists `host` offline: it is not dialed.
@@ -559,7 +559,11 @@ mod tests {
         let other = iroh::SecretKey::generate().public().to_string();
         let (_dir, state, host) = dialing(Some(other), "http://127.0.0.1:9/");
         let within = Duration::from_millis(300);
+        let started = Instant::now();
         let (dialed, logged) = traced(connect_within(&state, &host, within)).await;
+        // The time the message gives is the time it took.
+        let took = started.elapsed();
+        assert!(took < within + Duration::from_secs(1), "took {took:?}");
         let failure = dialed.err().unwrap();
         assert_eq!(failure.code, "host_unreachable");
         assert_eq!(
