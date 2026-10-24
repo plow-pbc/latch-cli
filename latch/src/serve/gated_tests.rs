@@ -437,6 +437,30 @@ async fn a_judge_that_cannot_answer_runs_nothing() {
 }
 
 #[tokio::test]
+async fn the_answer_does_not_wait_for_the_dashboard_name_lookup() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let released = Arc::new(AtomicBool::new(false));
+    let world = World {
+        paused: Some((format!("/v1/agents/{AGENT}"), released.clone())),
+        ..World::default()
+    };
+    let plow = fake::serve(world);
+    let provider = model::Plow::new(&plow.url, "made-up-login".into()).with_model(gate::MODEL);
+    let t = start_with(
+        plow,
+        Arc::new(provider),
+        DenyExec::from_flags(&[crate::cli::EVERY_AGENT.to_string()]),
+    )
+    .await;
+    let agent = t.caller("agent").await;
+    let call = t.call(&agent, "exec", exec("touch made"));
+    let answered = tokio::time::timeout(Duration::from_secs(10), call).await;
+    released.store(true, Ordering::SeqCst);
+    let (answer, _) = answered.expect("the answer waited for the name lookup");
+    assert_eq!(refusal(&answer).1, "exec_denied");
+}
+
+#[tokio::test]
 async fn the_owners_reply_lets_the_retry_through_and_every_call_is_judged() {
     let t = start(a_chat(covered_after_a_yes)).await;
     let agent = t.caller("agent").await;

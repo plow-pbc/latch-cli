@@ -1007,7 +1007,7 @@ async fn serve_request(
     let timings = (!local).then(|| audit::Timings {
         caller_check_ms: checking.elapsed().as_millis() as u64,
     });
-    let mut response = match identity {
+    let response = match identity {
         Err(denial) => {
             let mut record = audit::record(caller, None, op, "deny", &denial.code);
             record.timings = timings;
@@ -1203,6 +1203,8 @@ async fn serve_request(
                 Ok(audit_id) => with_audit_id(done.response, audit_id),
                 Err(message) => failed(code::audit_failed, message),
             };
+            // Answered before the board's name for the caller, which may ask Plow.
+            answer(&mut send, &with_permissions(response, exec_permissions)).await;
             let name = host.shown_name(&identity).await;
             host.dashboard.end(
                 on_board,
@@ -1214,9 +1216,14 @@ async fn serve_request(
             }
             drop(running);
             drop(names);
-            response
+            return;
         }
     };
+    answer(&mut send, &with_permissions(response, exec_permissions)).await;
+}
+
+/// An exec's refusal, with the writes and network it asked for.
+fn with_permissions(mut response: Response, exec_permissions: Option<Value>) -> Response {
     if let (Some(permissions), Response::Error { details, .. }) = (exec_permissions, &mut response)
     {
         if details.is_null() {
@@ -1225,7 +1232,7 @@ async fn serve_request(
         details["writes"] = permissions["writes"].clone();
         details["network"] = permissions["network"].clone();
     }
-    answer(&mut send, &response).await;
+    response
 }
 
 /// Everything a request meets before it runs, in order: its file path
