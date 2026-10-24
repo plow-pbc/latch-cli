@@ -1,13 +1,16 @@
 #if DEBUG || LATCH_TEST_HOOKS
 import Foundation
+import Synchronization
 
 /// A latch with made-up data at the sizes the main window is measured at,
 /// for a test-hooks app opened with `hooks.sh open --fixture SPEC`: this Mac
 /// serving and logged in, its hosts, each host's records, vault items and
 /// rules, and the account's agents. It never runs latch, reaches Plow, or
-/// holds a secret; anything it can't make up is `FakeLatchClient`'s.
+/// holds a secret; anything it can't make up is `FakeLatchClient`'s. With
+/// `connectors`, this Mac's plugins and the account's Google accounts change
+/// as they're changed, and stay so.
 nonisolated struct SyntheticLatchClient: LatchClient {
-    /// How much there is: "hosts=8,records=10000,vault=1000,agents=5,rate=10,delay=40".
+    /// How much there is: "hosts=8,records=10000,vault=1000,agents=5,rate=10,delay=40,connectors=1500".
     struct Spec: Equatable {
         /// The account's hosts, this Mac first (3 to 8 of `names`).
         var hosts = 3
@@ -21,6 +24,9 @@ nonisolated struct SyntheticLatchClient: LatchClient {
         var rate = 0
         /// Milliseconds every read takes, as a latch run would.
         var delay = 0
+        /// Milliseconds a plugin change or a Google sign-in takes; with it,
+        /// changes hold and Google has an account that works.
+        var connectors = 0
 
         init() {}
 
@@ -36,6 +42,7 @@ nonisolated struct SyntheticLatchClient: LatchClient {
                 case "agents": agents = value
                 case "rate": rate = value
                 case "delay": delay = value
+                case "connectors": connectors = value
                 default: return nil
                 }
             }
@@ -51,6 +58,13 @@ nonisolated struct SyntheticLatchClient: LatchClient {
     let spec: Spec
     let stateDir: String
     private let base = FakeLatchClient()
+    private let connectors = Connectors()
+
+    /// This Mac's plugins that are on and the account's Google accounts, as
+    /// the last change left them.
+    private final class Connectors: Sendable {
+        let state = Mutex((on: Set<String>(), accounts: ["morgan@example.com"]))
+    }
 
     init(_ spec: Spec, stateDir: String) {
         self.spec = spec
@@ -76,7 +90,19 @@ nonisolated struct SyntheticLatchClient: LatchClient {
     }
 
     func localStatus() async throws -> LocalStatus {
-        try await read(Fixtures.status(#"{"login":{"kind":"device"},"this_machine":{"name":"\#(hostNames[0])","key":"\#(key(hostNames[0]))","hosting":{"running":true,"ready":true,"configuring":false,"managed":true,"attached":false,"state":"serving","pid":4100,"blocked":null,"keep_awake":{"enabled":false,"held":false,"reason":"disabled"}}},"update":{"available":false,"build":null,"checked_at":null},"last_error":null,"state_dir":"\#(stateDir)","version":"0.1.0","protocol":2}"#, plugins: Fixtures.studioPlugins))
+        try await read(Fixtures.status(#"{"login":{"kind":"device"},"this_machine":{"name":"\#(hostNames[0])","key":"\#(key(hostNames[0]))","hosting":{"running":true,"ready":true,"configuring":false,"managed":true,"attached":false,"state":"serving","pid":4100,"blocked":null,"keep_awake":{"enabled":false,"held":false,"reason":"disabled"}}},"update":{"available":false,"build":null,"checked_at":null},"last_error":null,"state_dir":"\#(stateDir)","version":"0.1.0","protocol":2}"#, plugins: plugins))
+    }
+
+    /// This Mac's plugins: off, or, with `connectors`, as changed.
+    private var plugins: String {
+        guard spec.connectors > 0 else { return Fixtures.studioPlugins }
+        let on = connectors.state.withLock { $0.on }
+        let plugins = ["google", "messages", "contacts"].map { name in
+            on.contains(name)
+                ? #"{"enable":null,"name":"\#(name)","reason":"enabled; agents can use it once latch is running","state":"enabled"}"#
+                : #"{"enable":"latch plugins enable \#(name)","name":"\#(name)","reason":"its owner has not enabled it on this host","state":"disabled"}"#
+        }
+        return "[" + plugins.joined(separator: ",") + "]"
     }
 
     func statusFollow() -> AsyncThrowingStream<LocalStatus, Error> {
@@ -193,7 +219,10 @@ nonisolated struct SyntheticLatchClient: LatchClient {
     }
 
     func setupStatus() async throws -> SetupStatus {
-        try await read(Fixtures.setup(on: [], host: #"{"step":"host","state":"done","reason":"latch is running.","args":null}"#))
+        let (on, accounts) = connectors.state.withLock { (Array($0.on), $0.accounts) }
+        let google = spec.connectors > 0 ? Fixtures.googleConnected(accounts) : nil
+        return try await read(Fixtures.setup(on: spec.connectors > 0 ? on : [], google: google,
+                                             host: #"{"step":"host","state":"done","reason":"latch is running.","args":null}"#))
     }
 
     func setupStatusCheckingAccess() async throws -> SetupStatus { try await setupStatus() }
@@ -212,11 +241,44 @@ nonisolated struct SyntheticLatchClient: LatchClient {
     func vaultImport(_ file: URL, picks: [Int], expect: String, host: String?) async throws -> ImportResult {
         try await base.vaultImport(file, picks: picks, expect: expect, host: host)
     }
-    func enable(_ plugin: String) async throws -> GoogleEnabled? { nil }
-    func signInGoogle(addAccount: Bool) -> AsyncThrowingStream<GoogleSignInEvent, Error> { base.signInGoogle(addAccount: addAccount) }
+    func enable(_ plugin: String) async throws -> GoogleEnabled? {
+        guard spec.connectors > 0 else { return nil }
+        try await Task.sleep(for: .milliseconds(spec.connectors))
+        let accounts = connectors.state.withLock { $0.on.insert(plugin); return $0.accounts }
+        return plugin == "google" ? GoogleEnabled(accounts: accounts) : nil
+    }
+
+    /// With `connectors`, a link, then, after a sign-in's time, one more
+    /// account and Google on.
+    func signInGoogle(addAccount: Bool) -> AsyncThrowingStream<GoogleSignInEvent, Error> {
+        guard spec.connectors > 0 else { return base.signInGoogle(addAccount: addAccount) }
+        let client = self
+        return AsyncThrowingStream { continuation in
+            let task = Task {
+                continuation.yield(.link(Fixtures.signInLink))
+                do {
+                    try await Task.sleep(for: .milliseconds(client.spec.connectors))
+                } catch {
+                    return continuation.finish(throwing: error)
+                }
+                let accounts = client.connectors.state.withLock {
+                    $0.accounts.append("morgan\($0.accounts.count + 1)@example.com")
+                    $0.on.insert("google")
+                    return $0.accounts
+                }
+                continuation.yield(.enabled(GoogleEnabled(accounts: accounts)))
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
     func perform(_ args: [String]) async throws {}
     func stop() async throws {}
-    func disable(_ plugin: String) async throws {}
+    func disable(_ plugin: String) async throws {
+        guard spec.connectors > 0 else { return }
+        try await Task.sleep(for: .milliseconds(spec.connectors))
+        _ = connectors.state.withLock { $0.on.remove(plugin) }
+    }
     func devices() async throws -> DeviceList { try await read(Fixtures.devices) }
     func removeDevice(_ name: String) async throws {}
     func updateCheck() async throws -> UpdateCheck { try await read(Fixtures.updateCheck) }

@@ -127,9 +127,12 @@ private struct Detail: View {
         }
     }
 
+    /// A host's state, or, on an account page, that no host owns it.
     private var subtitle: String {
-        guard case let .host(_, host?) = route else { return "" }
-        return host.subtitle(local: app.status)
+        switch route {
+        case .account: "Your account"
+        case let .host(_, host): host?.subtitle(local: app.status) ?? ""
+        }
     }
 
     private var screen: Binding<HostScreen> {
