@@ -2939,6 +2939,14 @@ fn status_asks_every_host_for_its_plugins_at_once_and_in_time() {
             .collect()
     };
 
+    // An endpoint is online before the relay has counted it: wait until it
+    // has counted all four (the two hosts and the two silent ones), so
+    // only status's own connection counts below.
+    let counted = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while relayed.accepts.get() < 4 && std::time::Instant::now() < counted {
+        thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(relayed.accepts.get(), 4, "the hosts' relay connections");
     let (accepted, left) = (relayed.accepts.get(), relayed.disconnects.get());
     let started = std::time::Instant::now();
     let output = latch(&laptop, &["status"], &[]);
