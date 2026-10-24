@@ -859,7 +859,12 @@ const LINGER: Duration = Duration::from_secs(1);
 async fn serve_caller(host: &Host, caller: &str, connection: &Connection) {
     // First check: on connect. A refused caller's connection is closed with
     // the "denied" code, which its client reports as exit 4.
-    let refusal = match host.check(caller).await {
+    let checking = Instant::now();
+    let checked = host.check(caller).await;
+    let timings = Some(audit::Timings {
+        caller_check_ms: checking.elapsed().as_millis() as u64,
+    });
+    let refusal = match checked {
         Ok(identity) => {
             let who = format!("{} ({})", identity.name, identity.kind);
             let mut record = audit::record(
@@ -870,6 +875,7 @@ async fn serve_caller(host: &Host, caller: &str, connection: &Connection) {
                 "connected",
             );
             record.caller_name = host.known_name(&identity);
+            record.timings = timings;
             match host.append(record).await {
                 Ok(_) => {
                     log(&format!("connect: {who} {caller}: allowed"));
@@ -880,7 +886,8 @@ async fn serve_caller(host: &Host, caller: &str, connection: &Connection) {
         }
         Err(denial) => {
             // Already refusing, so a failed audit write changes nothing here.
-            let record = audit::record(caller, None, "connect", "deny", &denial.code);
+            let mut record = audit::record(caller, None, "connect", "deny", &denial.code);
+            record.timings = timings;
             let _ = host.append(record).await;
             host.show_refusal(caller, "connect", &denial);
             Some(denial.message)
@@ -985,6 +992,7 @@ async fn serve_request(
 
     // Second check: before the operation, in case the caller was revoked
     // since it connected.
+    let checking = Instant::now();
     let identity = if local {
         Ok(Identity {
             key: caller.to_string(),
@@ -996,11 +1004,14 @@ async fn serve_request(
     } else {
         host.check(caller).await
     };
+    let timings = (!local).then(|| audit::Timings {
+        caller_check_ms: checking.elapsed().as_millis() as u64,
+    });
     let mut response = match identity {
         Err(denial) => {
-            let _ = host
-                .append(audit::record(caller, None, op, "deny", &denial.code))
-                .await;
+            let mut record = audit::record(caller, None, op, "deny", &denial.code);
+            record.timings = timings;
+            let _ = host.append(record).await;
             log(&format!("{op}: {caller}: denied: {}", denial.message));
             host.show_refusal(caller, op, &denial);
             failed(code::caller_denied, denial.message)
@@ -1174,6 +1185,7 @@ async fn serve_request(
             record.caller_name = host.known_name(&identity);
             record.args = done.audit_args.clone();
             record.started = Some(begun_at.to_string());
+            record.timings = timings;
             record.gate = judged
                 .clone()
                 .or_else(|| local.then(|| serde_json::json!({"caller":"owner_on_host"})));

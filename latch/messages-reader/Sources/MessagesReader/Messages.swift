@@ -32,6 +32,10 @@ let messageColumns = """
       left join handle h on h.ROWID = m.handle_id
     """
 
+func milliseconds(_ duration: Duration) -> Int64 {
+    duration.components.seconds * 1000 + duration.components.attoseconds / 1_000_000_000_000_000
+}
+
 func nanoseconds(_ seconds: Double) -> Int64 { Int64((seconds - coreDataEpoch) * 1_000_000_000) }
 func seconds(_ nanoseconds: Int64) -> Double { Double(nanoseconds) / 1_000_000_000 + coreDataEpoch }
 
@@ -58,9 +62,12 @@ func text(_ row: Row, _ limits: Limits) -> (String?, BodyError?) {
 
 /// Runs search, thread, chats or unreplied.
 func messages(_ call: Call, now: Date, limits: Limits, deadline: ContinuousClock.Instant) throws -> Answer {
+    let opening = ContinuousClock.now
     let store = try Store(path: call.store, deadline: deadline)
+    let opened = ContinuousClock.now
     let phones = Phones(region: call.region)
     let book = AddressBook(directory: call.addressBook, phones: phones)
+    let booked = ContinuousClock.now
     let context = Context(call: call, store: store, book: book, limits: limits)
     var answer: Answer
     switch call.command {
@@ -69,6 +76,13 @@ func messages(_ call: Call, now: Date, limits: Limits, deadline: ContinuousClock
     case "chats": answer = try context.chats()
     default: answer = try context.unreplied(now: now)
     }
+    // How long each part took, for the host's audit; the host takes it out
+    // of the answer.
+    answer.extra["timings"] = [
+        "store_open_ms": milliseconds(opened - opening),
+        "address_book_ms": milliseconds(booked - opened),
+        "query_ms": milliseconds(ContinuousClock.now - booked),
+    ]
     if store.interrupted && answer.incomplete == nil { answer.incomplete = .timeBudget }
     answer.extra["warning"] = untrusted
     if let unavailable = book.unavailable { answer.extra["names_unavailable"] = unavailable }
