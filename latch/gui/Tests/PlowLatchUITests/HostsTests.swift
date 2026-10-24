@@ -138,6 +138,43 @@ struct HostSettingsTests {
         #expect(app.summaries["studio"]?.status == nil)
     }
 
+    /// A plugin is turned on on this Mac, one change at a time, whichever
+    /// host shows by the time latch answers: its answer and refusal are
+    /// this Mac's, and another host's plugins are left as they were.
+    @Test func aConnectorChangeIsThisMacsWhicheverHostShows() async throws {
+        let client = CountingClient()
+        let gate = Gate()
+        client.held["plugins enable contacts"] = gate
+        client.enableRefusal = LatchFailure(code: "serve_required", message: "start `latch serve` on this state folder")
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
+        app.stage(status: try Fixtures.decode(Fixtures.serving))
+        app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
+        app.place = .host(.settings)
+        let change = Task { await app.setConnector("contacts", on: true) }
+        await waitUntil { client.calls == ["plugins enable contacts"] }
+        #expect(app.connectorChange == AppModel.ConnectorChange(plugin: "contacts", on: true))
+        app.chosenHost = "pi-kitchen"
+        await app.setConnector("messages", on: true)
+        #expect(client.calls == ["plugins enable contacts"])
+        gate.open()
+        await change.value
+        #expect(client.calls == ["plugins enable contacts", "status --local"])
+        #expect(app.connectorChange == nil)
+        #expect(app.connectorError?.message == "Couldn't turn Contacts on.")
+        #expect(app.summaries["pi-kitchen"] == nil)
+    }
+
+    /// A Mac that only views its hosts has no plugins of its own to change.
+    @Test func aViewingMacChangesNoPlugins() async throws {
+        let client = CountingClient()
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
+        app.stage(status: try Fixtures.decode(Fixtures.laptop))
+        app.stage(account: try Fixtures.decode(Fixtures.laptopHosts))
+        app.place = .host(.settings)
+        await app.setConnector("messages", on: true)
+        #expect(client.calls.isEmpty && app.connectorChange == nil)
+    }
+
     @Test func manageAccountsOpensConnections() throws {
         let app = AppModel(client: FakeLatchClient(), store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
         app.place = .host(.settings)

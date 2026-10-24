@@ -215,7 +215,7 @@ enum TestHooks {
         on("start") { _ in Task { await app.startHosting() } }
         on("connector") { argument in
             guard let parts = argument?.split(separator: "|"), parts.count == 2 else { return }
-            Task { try? await app.setConnector(String(parts[0]), on: parts[1] == "1") }
+            Task { await app.setConnector(String(parts[0]), on: parts[1] == "1") }
         }
         on("device-remove") { name in
             guard let name else { return }
