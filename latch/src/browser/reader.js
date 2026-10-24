@@ -369,18 +369,82 @@
     return i === want.length;
   };
 
-  // Checks the element, document and origin, then sets the value in one
-  // step. Answers whether the field holds it, never the value.
-  const fill = (snap, index, value, origin, expected) => {
+  // The field a value goes into, checked again: its element, document and
+  // origin, and (the page can make a field editable after the fill was
+  // checked, e.g. from an earlier field's input handler) its kind.
+  const fillable = (snap, index, origin, expected) => {
     const el = element(snap, index);
     if (!el) return { refused: 'the field is gone' };
     if (expected !== token) return { refused: 'the document was replaced' };
     if ((self.origin === 'null' ? 'opaque' : self.origin) !== origin) return { refused: 'the origin changed' };
-    // Checked again here: the page can make a field editable after the
-    // fill was checked, e.g. from an earlier field's input handler.
     if (el.isContentEditable) return { refused: 'the field became an editable region' };
+    return { el };
+  };
+
+  // Checks the field, then sets the value in one step. Answers whether the
+  // field holds it, never the value.
+  const fill = (snap, index, value, origin, expected) => {
+    const { el, refused } = fillable(snap, index, origin, expected);
+    if (refused) return { refused };
     if (!setValue(el, value)) return { refused: 'no option matches' };
     if (value) filled.add(el); else filled.delete(el);
+    return held(el, value);
+  };
+
+  // A text field takes a value as a person types it: `typeStart` checks
+  // the field, focuses it and sets `head` (all but the value's last keys,
+  // usually nothing); the engine's own keys type the rest, each after
+  // `typeKey`; `typeEnd` answers whether the field holds the value. Any
+  // other field (`assign`) is filled in one step.
+  const TYPED = ['text', 'email', 'password', 'search', 'tel', 'url', 'number'];
+  const typeStart = (snap, index, head, origin, expected) => {
+    const { el, refused } = fillable(snap, index, origin, expected);
+    if (refused) return { refused };
+    if (el.localName !== 'textarea' && !(el.localName === 'input' && TYPED.includes(el.type))) return { assign: true };
+    el.focus();
+    if (!focused(el)) return { assign: true };
+    filled.add(el);
+    if (current(el) !== head) setValue(el, head);
+    return { caret: caretAt(el, head.length) };
+  };
+  // Before each key: the field still has the focus, and its caret is where
+  // the typing left it. A field that puts its caret back at the start, as
+  // some do on each change, would take the keys in reverse.
+  const typeKey = (snap, index, caret, expected) => {
+    const el = element(snap, index);
+    if (!el || expected !== token) return { refused: 'the field is gone' };
+    if (!focused(el)) el.focus();
+    if (!focused(el)) return { refused: 'the field lost the focus' };
+    return { caret: caretAt(el, caret) };
+  };
+  // A field that took none of the keys, or only the first ones, gets the
+  // value in one step.
+  const typeEnd = (snap, index, value, expected) => {
+    const el = element(snap, index);
+    if (!el || expected !== token) return { refused: 'the field is gone' };
+    const now = current(el);
+    if (now !== value && value.startsWith(now)) setValue(el, value);
+    return held(el, value);
+  };
+  // Whether `el` is its document's active element. Keys go to it only
+  // while its frame holds the page's focus too, which latch asks the
+  // engine (`holds_focus`): a frame keeps its active element when another
+  // frame takes the focus.
+  const focused = (el) => el.getRootNode().activeElement === el;
+  // The field's caret, moved to the end if it is before `expected`; null
+  // for a field with none (an email or number input).
+  const caretAt = (el, expected) => {
+    try {
+      if (el.selectionStart === null) return null;
+      if (el.selectionStart < expected) el.setSelectionRange(el.value.length, el.value.length);
+      return el.selectionStart;
+    } catch {
+      return null;
+    }
+  };
+
+  // Whether the field holds `value`, never the value.
+  const held = (el, value) => {
     if (el.localName === 'select' || keeps(current(el), value)) return { held: true };
     // A single-line field drops line breaks, as it does from a paste: it
     // holds the value less them, which is what a person would have got.
@@ -600,6 +664,9 @@
     stageMark,
     fillTarget,
     fill,
+    typeStart,
+    typeKey,
+    typeEnd,
     holding,
     clearFilled,
   };

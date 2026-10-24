@@ -37,6 +37,8 @@ conformance!(
     a_fill_pauses_its_own_session_and_no_other,
     agent_code_is_noted_per_site_for_its_session_only,
     a_login_after_an_edit_fills_the_new_password,
+    a_login_is_typed_with_the_engines_own_keys,
+    no_part_of_a_typed_secret_goes_into_an_address,
     a_field_that_formats_its_value_still_holds_it,
     only_a_layer_of_its_own_covers_a_field_and_the_refusal_names_it,
     no_secret_goes_into_a_form_sent_by_get,
@@ -2341,12 +2343,12 @@ async fn requests_go_on_while_a_guard_outlives_its_call(engine: &str) {
         assert_eq!(trapped.unwrap_err().code, "session_paused");
         if !host_stops {
             assert!(
-                started.elapsed() < Duration::from_secs(19),
+                started.elapsed() < Duration::from_secs(29),
                 "too slow to test"
             );
-            // The page reaches /beacon 20 seconds after the number arrived,
+            // The page reaches /beacon 30 seconds after the number arrived,
             // with no call under way.
-            tokio::time::sleep(Duration::from_secs(24).saturating_sub(started.elapsed())).await;
+            tokio::time::sleep(Duration::from_secs(34).saturating_sub(started.elapsed())).await;
             let (after, _) = beacons(port);
             println!("beacons while the trap held: {}", after - before);
             assert!(after > before, "the page's request waited for a call");
@@ -2700,5 +2702,150 @@ async fn a_field_that_formats_its_value_still_holds_it(engine: &str) {
     println!("spaced code: {}", verified["fields"]);
     assert_eq!(verified["submitted"], true);
     assert!(h.text().await.contains("code accepted"));
+    h.call("close", json!({})).await.ok();
+}
+
+async fn a_login_is_typed_with_the_engines_own_keys(engine: &str) {
+    let (_dir, state, _area) = test_state(engine);
+    let vault = Vault::new(state.clone());
+    let login = vault
+        .with(|s| {
+            s.add(item(
+                LOGIN,
+                "Shop",
+                &["shop.example"],
+                &[("username", "ada@shop.example"), ("password", PASSWORD)],
+            ))
+        })
+        .unwrap();
+    let pages = site();
+    let local = format!("http://127.0.0.1:{pages}");
+    let mut browsers = Browsers::new(state.clone(), vault.clone(), super::HEADLESS);
+    browsers.test = Some((
+        latch(),
+        vec![(local.clone(), "https://login.shop.example".into())],
+    ));
+    let mut h = Harness::start(browsers, engine).await;
+
+    // Every character a trusted key press, into the field it was meant
+    // for, though the email field puts its caret back at the start.
+    h.call("open", json!({"url": format!("{local}/keys-login.html")}))
+        .await
+        .unwrap();
+    let (signed_in, _) = h.login(&login.item).await;
+    assert_eq!(signed_in.unwrap()["submitted"], true);
+    let page = h.text().await;
+    println!(
+        "typed login: {}",
+        page.lines()
+            .find(|l| l.starts_with("sent:"))
+            .unwrap_or(&page)
+    );
+    assert!(
+        page.contains("sent: email right, password right, keys 16/16 and 17/17"),
+        "{page}"
+    );
+
+    // The same in another site's frame, whose focus is its own.
+    let frame = format!("http://localhost:{}", site());
+    let mut browsers = Browsers::new(state.clone(), vault.clone(), super::HEADLESS);
+    browsers.test = Some((
+        latch(),
+        vec![
+            (local.clone(), "https://www.shop.example".into()),
+            (frame.clone(), "https://login.shop.example".into()),
+        ],
+    ));
+    h.call("close", json!({})).await.ok();
+    let mut h = Harness::start(browsers, engine).await;
+    h.call(
+        "open",
+        json!({"url": format!("{local}/embed-login.html?cross={}&page=keys-login.html", &frame[17..])}),
+    )
+    .await
+    .unwrap();
+    let (signed_in, _) = h.login(&login.item).await;
+    assert_eq!(signed_in.unwrap()["submitted"], true);
+    let page = h.text().await;
+    println!("typed in a frame: {page}");
+    assert!(
+        page.contains("sent: email right, password right, keys 16/16 and 17/17"),
+        "{page}"
+    );
+
+    // A frame whose page takes the focus mid-value gets no more keys, and
+    // neither does the page. (Chrome keeps a frame's focus from a page
+    // that moves it with no person's input: then the fill just ends.) (Chrome keeps a frame's focus from a page
+    // that moves it with no person's input: then the fill just ends.)
+    h.call(
+        "open",
+        json!({"url": format!(
+            "{local}/embed-login.html?cross={}&page=keys-login.html&steal",
+            &frame[17..]
+        )}),
+    )
+    .await
+    .unwrap();
+    let (stolen, _) = h.login(&login.item).await;
+    println!(
+        "focus taken: {:?}",
+        stolen
+            .as_ref()
+            .map(|r| &r["submitted"])
+            .map_err(|f| &f.message)
+    );
+    if let Err(failure) = &stolen {
+        assert!(
+            failure.message.contains("lost the focus"),
+            "{}",
+            failure.message
+        );
+    }
+    let page = h.text().await;
+    assert!(!page.contains("caught"), "{page}");
+    h.call("close", json!({})).await.ok();
+}
+
+async fn no_part_of_a_typed_secret_goes_into_an_address(engine: &str) {
+    let (_dir, state, _area) = test_state(engine);
+    let vault = Vault::new(state.clone());
+    let login = vault
+        .with(|s| {
+            s.add(item(
+                LOGIN,
+                "Shop",
+                &["shop.example"],
+                &[("username", "ada@shop.example"), ("password", PASSWORD)],
+            ))
+        })
+        .unwrap();
+    let pages = site();
+    let local = format!("http://127.0.0.1:{pages}");
+    let mut browsers = Browsers::new(state.clone(), vault.clone(), super::HEADLESS);
+    browsers.test = Some((
+        latch(),
+        vec![(local.clone(), "https://login.shop.example".into())],
+    ));
+    let mut h = Harness::start(browsers, engine).await;
+
+    // The page sends the password field in an address at every key: each
+    // part of the password is guarded before its key, so none goes out,
+    // and the fill says the page tried.
+    h.call(
+        "open",
+        json!({"url": format!("{local}/keys-login.html?beacon")}),
+    )
+    .await
+    .unwrap();
+    let (sent, _) = h.login(&login.item).await;
+    let refused = sent.unwrap_err();
+    println!(
+        "typed with a beacon: {} ({}); beacons {:?}",
+        refused.code,
+        refused.message,
+        beacons(pages)
+    );
+    assert_eq!(refused.code, "get_form");
+    assert_eq!(beacons(pages).1, 0);
     h.call("close", json!({})).await.ok();
 }
