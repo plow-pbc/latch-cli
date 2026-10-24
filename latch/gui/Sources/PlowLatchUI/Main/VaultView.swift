@@ -2,11 +2,11 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 /// A host's vault: its items, never their secrets; an item opens in the
-/// inspector, and items are added, changed, removed and imported in sheets.
+/// window's inspector, and items are added, changed, removed and imported
+/// in sheets.
 struct VaultView: View {
     @Environment(AppModel.self) private var app
-    @State private var search = ""
-    @State private var inspecting = true
+    @FocusState private var searching: Bool
     @State private var choosingExport = false
 
     var body: some View {
@@ -20,16 +20,16 @@ struct VaultView: View {
                         Text("Its vault is kept on \(host.name). Start Latch there to see and change it.")
                     }
                 } else {
-                    HostVault(host: host, search: search, inspecting: $inspecting).id(host.id)
+                    HostVault(host: host).id(host.id)
                 }
             } else {
                 ContentUnavailableView("No host", systemImage: "lock.rectangle.stack",
                                        description: Text("A vault is kept on each host. Pick one in the sidebar."))
             }
         }
-        .navigationTitle("Vault")
-        .navigationSubtitle(subtitle)
-        .searchable(text: $search, placement: .toolbar, prompt: "Search items")
+        .searchable(text: $app.vaultSearch, placement: .toolbar, prompt: "Search items")
+        .searchFocused($searching)
+        .focusedSceneValue(\.find, FindAction { searching = true })
         .toolbar {
             ToolbarItemGroup {
                 Button("New Item", systemImage: "plus") {
@@ -41,10 +41,6 @@ struct VaultView: View {
                     .help("Import another password manager's export")
                     .disabled(!canChange)
             }
-            ToolbarItem {
-                Button("Inspector", systemImage: "sidebar.trailing") { inspecting.toggle() }
-                    .help(inspecting ? "Hide the inspector" : "Show the inspector")
-            }
         }
         .fileImporter(isPresented: $choosingExport, allowedContentTypes: [.commaSeparatedText, .json, .data]) { result in
             guard case let .success(file) = result, let host = app.host else { return }
@@ -52,7 +48,7 @@ struct VaultView: View {
             app.vaultSheet = .importer(importer)
             Task { await importer.load(app: app) }
         }
-        // A sheet works on the host it was opened for, whatever the picker
+        // A sheet works on the host it was opened for, whatever the sidebar
         // shows meanwhile.
         .sheet(item: $app.vaultSheet) { sheet in
             switch sheet {
@@ -66,12 +62,6 @@ struct VaultView: View {
     private var canChange: Bool {
         guard let host = app.host, case .success? = app.summaries[host.name]?.vault else { return false }
         return true
-    }
-
-    private var subtitle: String {
-        guard let host = app.host else { return "" }
-        guard case let .success(vault)? = app.summaries[host.name]?.vault else { return host.name }
-        return "\(host.name) · \(vault.items.count) item\(vault.items.count == 1 ? "" : "s")"
     }
 }
 
@@ -91,13 +81,12 @@ enum VaultSheet: Identifiable {
 /// One host's items, and their states while there are none.
 private struct HostVault: View {
     var host: HostEntry
-    var search: String
-    @Binding var inspecting: Bool
     @Environment(AppModel.self) private var app
-    @State private var removing: VaultList.Item?
+    /// Set by an item picked in the list: SwiftUI leaves the keyboard
+    /// focus where it was (the sidebar), so the arrow keys moved that.
+    @FocusState private var listFocused: Bool
 
     var body: some View {
-        @Bindable var app = app
         Group {
             switch app.summaries[host.name]?.vault {
             case nil:
@@ -119,33 +108,18 @@ private struct HostVault: View {
                     Button("New Item…") { app.vaultSheet = .editor(VaultEditor(on: host)) }
                 }
             case let .success(vault)?:
-                List(rows(vault), selection: $app.selectedVaultItem) { item in
+                List(app.vaultRows(vault), selection: selection) { item in
                     VaultRow(item: item)
                 }
                 .contextMenu(forSelectionType: VaultList.Item.ID.self) { ids in
                     if let item = item(ids, in: vault) {
                         Button("Edit…", systemImage: "pencil") { edit(item) }
-                        Button("Remove…", systemImage: "trash", role: .destructive) { removing = item }
+                        Button("Remove…", systemImage: "trash", role: .destructive) { app.askToRemove(item, on: host) }
                     }
                 } primaryAction: { ids in
                     if let item = item(ids, in: vault) { edit(item) }
                 }
-                .inspector(isPresented: $inspecting) {
-                    Group {
-                        if let item = vault.items.first(where: { $0.item == app.selectedVaultItem }) {
-                            VaultItemInspector(item: item, show: app.vaultShows[host.name]?[item.item], hostName: host.name,
-                                               edit: { edit(item) }, remove: { removing = item })
-                                .task(id: "\(item.item)@\(item.revision)") {
-                                    guard !app.still else { return }
-                                    await app.showVaultItem(item.item, on: host)
-                                }
-                        } else {
-                            ContentUnavailableView("No Selection", systemImage: "lock.rectangle",
-                                                   description: Text("Select an item to see what it holds. Secret values are never shown."))
-                        }
-                    }
-                    .inspectorColumnWidth(min: 260, ideal: 320, max: 460)
-                }
+                .focused($listFocused)
             }
         }
         // Said above the list, where latch's reason can sit under Details
@@ -168,7 +142,8 @@ private struct HostVault: View {
                 .background(.bar)
             }
         }
-        .confirmationDialog("Remove “\(removing?.title ?? "")” from \(host.name)?", isPresented: removingBinding, presenting: removing) { item in
+        .confirmationDialog("Remove “\(app.removal(on: host)?.title ?? "")” from \(host.name)?", isPresented: removingBinding,
+                            presenting: app.removal(on: host)) { item in
             Button("Remove", role: .destructive) {
                 Task { await app.removeVaultItem(item, on: host) }
             }
@@ -178,7 +153,18 @@ private struct HostVault: View {
     }
 
     private var removingBinding: Binding<Bool> {
-        Binding { removing != nil } set: { if !$0 { removing = nil } }
+        Binding { app.removal(on: host) != nil } set: { if !$0 { app.endRemoval() } }
+    }
+
+    /// The list's selection: an item on this host. Picked in the list, the
+    /// list takes the keyboard focus.
+    private var selection: Binding<VaultList.Item.ID?> {
+        Binding { app.selectedVaultItem?.host == host.name ? app.selectedVaultItem?.id : nil }
+            set: { id in
+                app.selectedVaultItem = id.map { OnHost(host: host.name, id: $0) }
+                // A pick, not SwiftUI clearing a row a search or new data hid.
+                if id != nil { listFocused = true }
+            }
     }
 
     private func item(_ ids: Set<VaultList.Item.ID>, in vault: VaultList) -> VaultList.Item? {
@@ -188,14 +174,6 @@ private struct HostVault: View {
 
     private func edit(_ item: VaultList.Item) {
         Task { await app.beginVaultEdit(item, on: host) }
-    }
-
-    private func rows(_ vault: VaultList) -> [VaultList.Item] {
-        let query = search.trimmingCharacters(in: .whitespaces).lowercased()
-        guard !query.isEmpty else { return vault.items }
-        return vault.items.filter { item in
-            ([item.title, item.kind, item.username ?? ""] + item.sites).contains { $0.lowercased().contains(query) }
-        }
     }
 }
 

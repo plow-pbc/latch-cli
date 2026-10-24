@@ -61,7 +61,7 @@ struct KeepAwakeTests {
     /// Unreadable settings: no switch to set.
     @Test func unreadableSettingsCantBeSet() async {
         let client = ScriptedClient { _ in nil }
-        client.status = Fixtures.serving
+        client.status = Fixtures.keepAwake("null")
         let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
         await app.refreshStatus()
         #expect(app.status?.thisMachine.hosting.keepAwake == nil)

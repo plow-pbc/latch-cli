@@ -36,11 +36,13 @@ die() { echo "hooks.sh: $*" >&2; exit 1; }
 # The app itself; its latch's commands run the same binary with more words.
 pid() { pgrep -fx "$exe --state-dir $state" || true; }
 send() { "$dir/hooks" post "$id" "$@"; }
-# The test app's preferences (which screens were passed), and the empty
-# file cfprefsd leaves behind once they are deleted.
+# The test app's preferences (which screens were passed), the empty file
+# cfprefsd leaves behind once they are deleted, and its windows' saved
+# state.
 forget() {
   defaults delete "$id" >/dev/null 2>&1 || true
   rm -f "$HOME/Library/Preferences/$id.plist"
+  rm -rf "$HOME/Library/Saved Application State/$id.savedState"
 }
 # The flow's state, asked for again until it comes: the app hears nothing
 # until it has set up its hooks.

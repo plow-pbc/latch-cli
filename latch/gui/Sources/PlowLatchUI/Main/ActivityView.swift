@@ -1,12 +1,12 @@
 import SwiftUI
 
 /// The selected host's audit, newest first, live while on screen; a record
-/// opens in the inspector. Under its heading, a scope bar narrows the
+/// opens in the window's inspector. Under its heading, a scope bar narrows the
 /// records loaded so far: by outcome and, from an agent's link, to that
 /// agent.
 struct ActivityView: View {
     @Environment(AppModel.self) private var app
-    @State private var inspecting = true
+    @FocusState private var searching: Bool
 
     enum Filter: String, CaseIterable, Identifiable {
         case all = "All", allowed = "Allowed", refused = "Refused"
@@ -24,7 +24,7 @@ struct ActivityView: View {
                         Text("Its activity is kept on \(host.name). Start Latch there to see it.")
                     }
                 } else {
-                    Records(feed: app.feed(for: host), host: host, inspecting: $inspecting)
+                    Records(feed: app.feed(for: host), host: host)
                         .id(host.id)
                 }
             } else {
@@ -32,17 +32,13 @@ struct ActivityView: View {
                                        description: Text("Activity is kept on each host. Pick one in the sidebar."))
             }
         }
-        .navigationTitle("Activity")
-        .navigationSubtitle(app.host?.name ?? "")
         .searchable(text: $app.activitySearch, placement: .toolbar, prompt: "Search requests")
+        .searchFocused($searching)
+        .focusedSceneValue(\.find, FindAction { searching = true })
         .toolbar {
             ToolbarItem {
                 Toggle("Show Connections and Reads", systemImage: "point.3.connected.trianglepath.dotted", isOn: $app.showConnections)
                     .help("Also show when callers connected, and your own reads (rules, vault, status, activity)")
-            }
-            ToolbarItem {
-                Button("Inspector", systemImage: "sidebar.trailing") { inspecting.toggle() }
-                    .help(inspecting ? "Hide the inspector" : "Show the inspector")
             }
         }
     }
@@ -53,8 +49,10 @@ struct ActivityView: View {
 private struct Records: View {
     var feed: ActivityFeed
     var host: HostEntry
-    @Binding var inspecting: Bool
     @Environment(AppModel.self) private var app
+    /// Set by a row picked in the table: SwiftUI leaves the keyboard
+    /// focus where it was (the sidebar), so the arrow keys moved that.
+    @FocusState private var tableFocused: Bool
 
     var body: some View {
         let rows = app.activityRows(feed.records, on: host)
@@ -82,25 +80,26 @@ private struct Records: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        // No minimum of its own: with the sidebar or inspector dragged wide,
+        // the table scrolls sideways rather than ask the split view for
+        // more width than the window has, which AppKit gives up on.
+        .frame(minWidth: 0, maxWidth: .infinity)
     }
 
     /// The heading, then the scope bar: the outcome, and the agent asked
-    /// for, which a click removes. Too narrow for one line, they stack.
+    /// for, which a click removes. Too narrow for one line, they stack, and
+    /// the outcome's segments narrow to fit.
     private var heading: some View {
         @Bindable var app = app
         let outcome = Picker("Show", selection: $app.activityFilter) {
             ForEach(ActivityView.Filter.allCases) { Text($0.rawValue).tag($0) }
         }
         .pickerStyle(.segmented)
-        .fixedSize()
         return VStack(alignment: .leading, spacing: 10) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Activity").font(.title2.bold())
-                Text(host.subtitle(local: app.status)).font(.callout).foregroundStyle(.secondary)
-            }
+            Text("Activity").font(.title2.bold())
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 12) {
-                    outcome
+                    outcome.fixedSize()
                     agentFilter
                 }
                 VStack(alignment: .leading, spacing: 8) {
@@ -129,8 +128,7 @@ private struct Records: View {
     }
 
     private func table(_ rows: [AuditRecord]) -> some View {
-        @Bindable var app = app
-        return Table(rows, selection: $app.selectedRecord) {
+        Table(rows, selection: selection) {
             TableColumn("Time") { record in
                 Text(record.time, format: .dateTime.hour().minute().second()).foregroundStyle(.secondary)
             }
@@ -148,17 +146,18 @@ private struct Records: View {
             }
             .width(min: 110, ideal: 140, max: 240)
         }
-        .inspector(isPresented: $inspecting) {
-            Group {
-                if let record = app.selectedRecord(in: rows) {
-                    RecordInspector(record: record, caller: callerLabel(record), hostName: host.name)
-                } else {
-                    ContentUnavailableView("No Selection", systemImage: "doc.text.magnifyingglass",
-                                           description: Text("Select a request to see who asked, why it was allowed or refused, and what ran."))
-                }
+        .focused($tableFocused)
+    }
+
+    /// The table's selection: a record on this host. Picked in the table,
+    /// the table takes the keyboard focus.
+    private var selection: Binding<AuditRecord.ID?> {
+        Binding { app.selectedRecord?.host == host.name ? app.selectedRecord?.id : nil }
+            set: { id in
+                app.selectedRecord = id.map { OnHost(host: host.name, id: $0) }
+                // A pick, not SwiftUI clearing a row a search or new data hid.
+                if id != nil { tableFocused = true }
             }
-            .inspectorColumnWidth(min: 260, ideal: 320, max: 460)
-        }
     }
 
     /// Load Earlier, and how many of the records loaded match: what's

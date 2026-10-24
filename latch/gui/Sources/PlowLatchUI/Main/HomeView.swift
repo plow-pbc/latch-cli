@@ -50,8 +50,6 @@ struct HomeView: View {
             }
         }
         .formStyle(.grouped)
-        .navigationTitle(app.host?.name ?? "Home")
-        .navigationSubtitle(app.host?.subtitle(local: app.status) ?? "")
     }
 }
 

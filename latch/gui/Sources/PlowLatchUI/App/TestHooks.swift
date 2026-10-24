@@ -105,14 +105,17 @@ enum TestHooks {
                   let window = NSApp.windows.first(where: { $0.isVisible && $0.canBecomeMain }) else { return }
             window.setFrame(CGRect(origin: window.frame.origin, size: CGSize(width: parts[0], height: parts[1])), display: true)
         }
-        // The main window's host picker and sidebar, as a click picks them.
-        on("host") { name in app.chosenHost = name }
-        on("section") { name in
-            if let screen = name.flatMap(HostScreen.init(rawValue:)) { app.place = .host(screen) }
-            if let page = name.flatMap(AccountPage.init(rawValue:)) { app.place = .account(page) }
-        }
+        // The main window's sidebar and screen picker, as a click picks
+        // them; the inspector of the screen showing, "1" shown, as its
+        // toolbar button.
+        on("host") { name in if let name { app.showHost(name) } }
+        on("section") { name in if let place = name.flatMap(Place.init(rawValue:)) { app.place = place } }
         // Activity's selection and filter, as a click sets them.
-        on("record") { id in app.selectedRecord = id }
+        on("inspector") { value in
+            guard case let .host(screen) = app.place, HostScreen.inspected.contains(screen) else { return }
+            if value == "1" { app.inspecting.insert(screen) } else { app.inspecting.remove(screen) }
+        }
+        on("record") { id in app.selectedRecord = app.host.flatMap { host in id.map { OnHost(host: host.name, id: $0) } } }
         on("filter") { name in if let filter = name.flatMap(ActivityView.Filter.init(rawValue:)) { app.activityFilter = filter } }
         on("connections") { value in app.showConnections = value == "1" }
         on("search") { text in app.activitySearch = text ?? "" }
@@ -163,7 +166,7 @@ enum TestHooks {
             guard let host = app.host, case let .success(vault)? = app.summaries[host.name]?.vault else { return nil }
             return vault.items.first { $0.item == id }
         }
-        on("vault-select") { id in app.selectedVaultItem = id }
+        on("vault-select") { id in app.selectedVaultItem = app.host.flatMap { host in id.map { OnHost(host: host.name, id: $0) } } }
         on("vault-new") { kind in
             guard let host = app.host else { return }
             app.vaultSheet = .editor(VaultEditor(kind: kind.flatMap(VaultKind.init(rawValue:)) ?? .login, on: host))
@@ -334,10 +337,12 @@ extension TestHooks {
     /// scheduling proxy: it doesn't show the change made that refresh), and
     /// `visible_ms`, when the window server's image of the window first
     /// differs from the one before the action, looked at on each refresh
-    /// for up to two seconds (null if nothing changed). Signposted too,
+    /// for up to two seconds (null if nothing changed, both null with no
+    /// window on a display). Signposted too,
     /// for Instruments' Points of Interest.
     private static func measure(_ command: String, to file: URL, _ act: () -> Void) {
-        let window = NSApp?.windows.first { $0.isVisible && $0.canBecomeMain }
+        // On a display: a window off every display never refreshes.
+        let window = NSApp?.windows.first { $0.isVisible && $0.canBecomeMain && $0.screen != nil }
         let before = window.flatMap(Render.image)
         let start = CACurrentMediaTime()
         let interval = AppModel.signposter.beginInterval("hook", id: AppModel.signposter.makeSignpostID(), "\(command, privacy: .public)")

@@ -127,7 +127,7 @@ struct VaultTests {
         #expect(client.lists == 1)
     }
 
-    @Test func anEditSavesOnTheHostItWasOpenedOnAfterThePickerMoves() async throws {
+    @Test func anEditSavesOnTheHostItWasOpenedOnAfterTheSidebarMoves() async throws {
         let client = VaultClient()
         let (app, studio) = try app(client)
         let editor = VaultEditor(editing: try Fixtures.decode(Fixtures.vaultShows["v1"]!), on: studio)
@@ -140,10 +140,10 @@ struct VaultTests {
     @Test func aRefusedRemovalIsKeptToBeShown() async throws {
         let (app, studio) = try app(VaultClient())
         let vault: VaultList = try Fixtures.decode(Fixtures.vaultItems)
-        app.selectedVaultItem = vault.items[0].item
+        app.selectedVaultItem = OnHost(host: studio.name, id: vault.items[0].item)
         await app.removeVaultItem(vault.items[0], on: studio)
         #expect(app.vaultRemoveError == .unreachable("not scripted"))
-        #expect(app.selectedVaultItem == vault.items[0].item)
+        #expect(app.selectedVaultItem == OnHost(host: studio.name, id: vault.items[0].item))
     }
 
     /// The bundle's latch is given every value on stdin, never in argv.

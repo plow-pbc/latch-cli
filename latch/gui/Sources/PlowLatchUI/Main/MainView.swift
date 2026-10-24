@@ -1,10 +1,14 @@
 import SwiftUI
 
-/// The main window: a sidebar with the account tier (Agents, Connections)
-/// above the host tier (the host picker and that host's screens), and the
-/// selected screen.
+/// The main window: the sidebar's account pages and hosts; the selected
+/// page, or the selected host's workspace, whose five screens the toolbar
+/// switches between; and, for Activity and Vault, one inspector for the
+/// whole window.
 struct MainView: View {
     @Environment(AppModel.self) private var app
+    /// The place and host the window was on, kept with its scene state.
+    @SceneStorage("place") private var savedPlace = Place.host(.home).rawValue
+    @SceneStorage("host") private var savedHost = ""
 
     var body: some View {
         @Bindable var app = app
@@ -13,22 +17,26 @@ struct MainView: View {
             Sidebar()
                 .navigationSplitViewColumnWidth(min: 210, ideal: 230, max: 320)
         } detail: {
-            switch app.place {
-            case .account(.agents): AgentsView()
-            case .account(.connections): ConnectionsView()
-            case .host(.home): HomeView()
-            case .host(.activity): ActivityView()
-            case .host(.rules): HostRulesView()
-            case .host(.vault): VaultView()
-            case .host(.settings): HostSettingsView()
-            }
+            Detail(route: route)
         }
-        .frame(minWidth: 680, minHeight: 440)
+        // At the window's own level, full height, at its native width.
+        .inspector(isPresented: inspecting) {
+            Inspector(route: route)
+        }
+        // As narrow as the sidebar, Activity's table columns and the
+        // inspector side by side allow.
+        .frame(minWidth: 1040, minHeight: 440)
         .confirmationDialog("Start hosting on this Mac?", isPresented: $app.confirmingStartHosting) {
             Button("Start Hosting") { Task { await app.startHosting() } }
         } message: {
             Text("Latch runs in the background, and your agents can reach this Mac, judged by your rules.")
         }
+        .onAppear {
+            guard !app.still else { return }
+            app.restore(place: savedPlace, host: savedHost.isEmpty ? nil : savedHost)
+        }
+        .onChange(of: app.place) { savedPlace = app.place.rawValue }
+        .onChange(of: app.chosenHost) { savedHost = app.chosenHost ?? "" }
         .task {
             guard !app.still else { return }
             await app.refreshStatus()
@@ -56,22 +64,145 @@ struct MainView: View {
             Task { await app.activated() }
         }
     }
+
+    /// The inspector shows on Activity and Vault, as each was left.
+    private var inspecting: Binding<Bool> {
+        Binding {
+            guard case let .host(screen) = app.place, HostScreen.inspected.contains(screen) else { return false }
+            return app.inspecting.contains(screen)
+        } set: { shown in
+            guard case let .host(screen) = app.place, HostScreen.inspected.contains(screen) else { return }
+            if shown { app.inspecting.insert(screen) } else { app.inspecting.remove(screen) }
+        }
+    }
 }
 
-private struct Sidebar: View {
+/// The selected page or host screen, titled for the host it's on, with the
+/// workspace's screens in the toolbar.
+private struct Detail: View {
+    var route: Route
     @Environment(AppModel.self) private var app
+
+    var body: some View {
+        Group {
+            switch app.place {
+            case .account(.agents): AgentsView()
+            case .account(.connections): ConnectionsView()
+            case .host(.home): HomeView()
+            case .host(.activity): ActivityView()
+            case .host(.rules): HostRulesView()
+            case .host(.vault): VaultView()
+            case .host(.settings): HostSettingsView()
+            }
+        }
+        .navigationTitle(title)
+        .navigationSubtitle(subtitle)
+        .toolbar {
+            if case .host = route {
+                ToolbarItem(placement: .principal) {
+                    Picker("Screen", selection: screen) {
+                        ForEach(HostScreen.allCases) { Text($0.title).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                    .help("Switch between this host's screens")
+                }
+            }
+            if case let .host(screen, _) = route, HostScreen.inspected.contains(screen) {
+                ToolbarItem(placement: .primaryAction) {
+                    Button("Inspector", systemImage: "sidebar.trailing") {
+                        if app.inspecting.contains(screen) { app.inspecting.remove(screen) } else { app.inspecting.insert(screen) }
+                    }
+                    .help(app.inspecting.contains(screen) ? "Hide the inspector" : "Show the inspector")
+                }
+            }
+        }
+    }
+
+    private var title: String {
+        switch route {
+        case let .account(page): page.title
+        case let .host(_, host): host?.name ?? "No host"
+        }
+    }
+
+    private var subtitle: String {
+        guard case let .host(_, host?) = route else { return "" }
+        return host.subtitle(local: app.status)
+    }
+
+    private var screen: Binding<HostScreen> {
+        Binding { app.screen } set: { app.place = .host($0) }
+    }
+}
+
+/// The window's inspector: on Activity, the selected request; on Vault, the
+/// selected item; each only while its host shows and the screen lists it.
+struct Inspector: View {
+    var route: Route
+    @Environment(AppModel.self) private var app
+
+    var body: some View {
+        switch route {
+        case let .host(.activity, host?):
+            if let record = app.inspectedRecord(on: host) {
+                RecordInspector(record: record, caller: record.callerLabel(hostKey: app.key(of: host), hostName: host.name,
+                                                                          isThisMac: host.isThisMac), hostName: host.name)
+            } else {
+                ContentUnavailableView("No Selection", systemImage: "doc.text.magnifyingglass",
+                                       description: Text("Select a request to see who asked, why it was allowed or refused, and what ran."))
+            }
+        case let .host(.vault, host?):
+            if let item = app.inspectedVaultItem(on: host) {
+                VaultItemInspector(item: item, show: app.vaultShows[host.name]?[item.item], hostName: host.name,
+                                   edit: { Task { await app.beginVaultEdit(item, on: host) } },
+                                   remove: { app.askToRemove(item, on: host) })
+                    .task(id: "\(host.name)/\(item.item)@\(item.revision)") {
+                        guard !app.still else { return }
+                        await app.showVaultItem(item.item, on: host)
+                    }
+            } else {
+                ContentUnavailableView("No Selection", systemImage: "lock.rectangle",
+                                       description: Text("Select an item to see what it holds. Secret values are never shown."))
+            }
+        default:
+            ContentUnavailableView("No Selection", systemImage: "sidebar.trailing")
+        }
+    }
+}
+
+/// The account's pages, then each of its hosts; picking a host keeps the
+/// screen the workspace was on.
+struct Sidebar: View {
+    @Environment(AppModel.self) private var app
+
+    enum Row: Hashable {
+        case account(AccountPage)
+        case host(String)
+    }
 
     var body: some View {
         List(selection: selection) {
             Section("Your account") {
                 ForEach(AccountPage.allCases) { page in
-                    Label(page.title, systemImage: page.symbol).tag(Place.account(page))
+                    Label(page.title, systemImage: page.symbol).tag(Row.account(page))
                 }
             }
-            Section("Host") {
-                HostPicker()
-                ForEach(HostScreen.allCases) { screen in
-                    Label(screen.title, systemImage: screen.symbol).tag(Place.host(screen))
+            Section("Hosts") {
+                ForEach(app.hosts) { host in
+                    HostRow(host: host).tag(Row.host(host.name))
+                }
+                if app.hosts.isEmpty {
+                    Text(app.viewerOnly ? "No hosts yet" : app.plowNotice == nil ? "Checking…" : "Not listed")
+                        .foregroundStyle(.secondary)
+                }
+                if let notice = app.plowNotice {
+                    Label(notice.title, systemImage: "icloud.slash")
+                        .foregroundStyle(.secondary)
+                        .help(notice.detail)
+                }
+                if app.viewerOnly {
+                    Button("Start Hosting on This Mac…") { app.confirmingStartHosting = true }
+                        .help("This Mac isn't hosting; you're viewing your hosts")
                 }
             }
         }
@@ -87,63 +218,37 @@ private struct Sidebar: View {
         }
     }
 
-    private var selection: Binding<Place?> {
-        Binding { app.place } set: { if let place = $0 { app.place = place } }
+    private var selection: Binding<Row?> {
+        Binding {
+            switch app.route {
+            case let .account(page): .account(page)
+            case let .host(_, host): host.map { .host($0.name) }
+            }
+        } set: { row in
+            switch row {
+            case let .account(page)?: app.place = .account(page)
+            case let .host(name)?: app.showHost(name)
+            case nil: break
+            }
+        }
     }
 }
 
-/// Which host the host tier shows: this Mac and the account's other hosts.
-/// Picking one changes the host tier only; the sidebar item stays.
-struct HostPicker: View {
+/// A host in the sidebar: its name, and its state in words.
+private struct HostRow: View {
+    var host: HostEntry
     @Environment(AppModel.self) private var app
 
     var body: some View {
-        Menu {
-            if app.viewerOnly, let name = app.status?.loggedInAs {
-                Section {
-                    Button {} label: {
-                        Text("This Mac (\(name))")
-                        Text("Not hosting · you're viewing your hosts")
-                    }
-                    .disabled(true)
-                    Button("Start hosting on this Mac…") { app.confirmingStartHosting = true }
-                }
+        Label {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(host.name).lineLimit(1).truncationMode(.middle)
+                Text(host.subtitle(local: app.status)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
-            Picker("Host", selection: chosen) {
-                ForEach(app.hosts) { host in
-                    Text(host.name).tag(host.name)
-                        .badge(Text(host.subtitle(local: app.status)))
-                }
-            }
-            .pickerStyle(.inline)
-            .labelsHidden()
-            if let notice = app.plowNotice {
-                Divider()
-                Text(notice.title)
-            }
-            Divider()
-            Text("To add a host, install and start Latch on another computer.")
-        } label: {
-            HStack(spacing: 8) {
-                StateDot(state: app.host.map { HostState($0, local: app.status) })
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(app.host?.name ?? "No host").font(.headline)
-                    Text(app.host?.subtitle(local: app.status) ?? (app.viewerOnly ? "This Mac isn't hosting" : "Checking…"))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .lineLimit(1)
-            }
+        } icon: {
+            Image(systemName: host.isThisMac ? "laptopcomputer" : "server.rack")
         }
-        .menuStyle(.button)
-        .buttonStyle(.plain)
-        .menuIndicator(.visible)
-        .accessibilityLabel("Host: \(app.host.map { "\($0.name), \($0.subtitle(local: app.status))" } ?? "none")")
-        .padding(.vertical, 2)
-    }
-
-    private var chosen: Binding<String> {
-        Binding { app.host?.name ?? "" } set: { app.chosenHost = $0 }
+        .help("\(host.name): \(host.subtitle(local: app.status))")
     }
 }
 

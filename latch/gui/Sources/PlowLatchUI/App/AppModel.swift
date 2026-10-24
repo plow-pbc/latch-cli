@@ -101,13 +101,41 @@ final class AppModel {
         }
     }
 
-    /// What Home and the picker say while `latch status` fails.
+    /// What Home and the sidebar say while `latch status` fails.
     var plowNotice: PlowNotice? { accountError.map { PlowNotice(error: $0, listed: account != nil) } }
 
-    /// The main window's place, and the host the host tier shows (the
-    /// picker's choice; nil until the person picks one).
-    var place: Place = .host(.home)
+    /// The main window's place: an account page, or a screen of the host
+    /// workspace, which keeps its screen while an account page shows and
+    /// as hosts change.
+    var place: Place {
+        get { page.map(Place.account) ?? .host(screen) }
+        set {
+            switch newValue {
+            case let .account(page): self.page = page
+            case let .host(screen): (page, self.screen) = (nil, screen)
+            }
+        }
+    }
+    private var page: AccountPage?
+    private(set) var screen: HostScreen = .home
+    /// The host the workspace shows, as the sidebar picked it; nil until
+    /// one is picked.
     var chosenHost: String?
+
+    /// A sidebar host row's click: that host's workspace, on the screen it
+    /// was last on.
+    func showHost(_ name: String) {
+        chosenHost = name
+        place = .host(screen)
+    }
+
+    /// The window's place and host as the window last saved them (its
+    /// scene state): a place no longer known is Home, and a host no longer
+    /// listed falls back as `host` does.
+    func restore(place saved: String, host: String?) {
+        place = Place(rawValue: saved) ?? .host(.home)
+        chosenHost = host
+    }
 
     /// What the main window shows: an account page carries no host.
     var route: Route {
@@ -134,11 +162,11 @@ final class AppModel {
         }
     }
 
-    /// The picker's hosts, this Mac first.
+    /// The sidebar's hosts, this Mac first.
     var hosts: [HostEntry] { HostEntry.list(local: status, account: account) }
 
-    /// The host the host tier shows: the one picked, else this Mac when it
-    /// hosts, else the first other host.
+    /// The host the workspace shows: the one picked while it's listed,
+    /// else this Mac when it hosts, else the first other host.
     var host: HostEntry? { hosts.first { $0.name == chosenHost } ?? hosts.first }
 
     /// Logged in, with nothing served here: this Mac only views its hosts.
@@ -258,9 +286,11 @@ final class AppModel {
         summaries[host] = summary
     }
 
-    /// The Vault screen's selected item, and what `vault show` said of
-    /// items, by host name then item.
-    var selectedVaultItem: VaultList.Item.ID?
+    /// The Vault screen's selected item, on the host it was selected on,
+    /// its search, and what `vault show` said of items, by host name then
+    /// item.
+    var selectedVaultItem: OnHost?
+    var vaultSearch = ""
     /// The sheet over the Vault screen: New Item, Edit, or Import.
     var vaultSheet: VaultSheet?
     private(set) var vaultShows: [String: [String: Result<VaultShow, LatchError>]] = [:]
@@ -290,7 +320,7 @@ final class AppModel {
     /// Adds an item to a host's vault and selects it.
     func addVaultItem(_ draft: VaultDraft, on host: HostEntry) async throws {
         let item = try await vaultChange(on: host) { try await self.client.vaultAdd(draft, host: $0) }
-        selectedVaultItem = item.item
+        selectedVaultItem = OnHost(host: host.name, id: item.item)
     }
 
     /// Changes an item at the revision the person saw: an item changed
@@ -298,6 +328,44 @@ final class AppModel {
     func editVaultItem(_ item: VaultList.Item, _ draft: VaultDraft, on host: HostEntry) async throws {
         _ = try await vaultChange(on: host) { try await self.client.vaultEdit(item.item, revision: item.revision, draft, host: $0) }
         await showVaultItem(item.item, on: host)
+    }
+
+    /// The items a host's Vault lists: those its search matches.
+    func vaultRows(_ vault: VaultList) -> [VaultList.Item] {
+        let query = vaultSearch.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !query.isEmpty else { return vault.items }
+        return vault.items.filter { item in
+            ([item.title, item.kind, item.username ?? ""] + item.sites).contains { $0.lowercased().contains(query) }
+        }
+    }
+
+    /// The item the inspector shows on a host: the one selected there,
+    /// while the Vault lists it.
+    func inspectedVaultItem(on host: HostEntry) -> VaultList.Item? {
+        guard let selected = selectedVaultItem, selected.host == host.name,
+              case let .success(vault)? = summaries[host.name]?.vault,
+              let item = vault.items.first(where: { $0.item == selected.id }) else { return nil }
+        return vaultRows(VaultList(items: [item])).isEmpty ? nil : item
+    }
+
+    /// The item whose removal is being confirmed, on the host it's on:
+    /// confirmed only on that host's Vault, whatever another host's shows.
+    private var removing: (host: String, item: VaultList.Item)?
+
+    /// Remove…: asks to confirm removing an item from a host's vault.
+    func askToRemove(_ item: VaultList.Item, on host: HostEntry) {
+        removing = (host.name, item)
+    }
+
+    /// The item a host's Vault asks to confirm removing; nil on any other
+    /// host.
+    func removal(on host: HostEntry) -> VaultList.Item? {
+        removing?.host == host.name ? removing?.item : nil
+    }
+
+    /// The confirmation went, removed or not.
+    func endRemoval() {
+        removing = nil
     }
 
     /// Why the last removal from a vault failed, until it's dismissed.
@@ -309,7 +377,7 @@ final class AppModel {
         do {
             try await vaultChange(on: host) { try await self.client.vaultRemove(item.item, revision: item.revision, host: $0) }
             vaultRemoveError = nil
-            if selectedVaultItem == item.item { selectedVaultItem = nil }
+            if selectedVaultItem == OnHost(host: host.name, id: item.item) { selectedVaultItem = nil }
             vaultShows[host.name]?[item.item] = nil
         } catch {
             vaultRemoveError = .from(error)
@@ -802,8 +870,9 @@ final class AppModel {
         host.isThisMac ? status?.thisMachine.key ?? host.key : host.key
     }
 
-    /// The record Activity's inspector shows; Home's recent rows set it.
-    var selectedRecord: AuditRecord.ID?
+    /// The record Activity's inspector shows, on the host it was selected
+    /// on; Home's recent rows set it.
+    var selectedRecord: OnHost?
     /// Activity's filters, kept as hosts change: its outcome, connections
     /// and the owner's reads shown too, text to search for, and the one
     /// agent asked for on one host.
@@ -832,13 +901,19 @@ final class AppModel {
             chosenHost = host.name
             place = .host(.activity)
         }
-        selectedRecord = record.id
+        selectedRecord = OnHost(host: host.name, id: record.id)
     }
 
-    /// The selected record, while Activity lists it.
-    func selectedRecord(in rows: [AuditRecord]) -> AuditRecord? {
-        rows.first { $0.id == selectedRecord }
+    /// The record the inspector shows on a host: the one selected there,
+    /// while Activity lists it.
+    func inspectedRecord(on host: HostEntry) -> AuditRecord? {
+        guard let selected = selectedRecord, selected.host == host.name,
+              let record = feeds[host.name]?.records.last(where: { $0.id == selected.id }) else { return nil }
+        return activityRows([record], on: host).isEmpty ? nil : record
     }
+
+    /// Which of the screens with an inspector show it; each keeps its own.
+    var inspecting: Set<HostScreen> = [.activity, .vault]
 
     /// The agent Activity narrows to on a host: only the one asked for
     /// there.
