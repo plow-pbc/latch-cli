@@ -198,13 +198,6 @@ impl<D: Driver> Core<D> {
                 controls.push(control);
             }
         }
-        // Refs are listed in snapshot order.
-        controls.sort_by_key(|c| {
-            c["ref"]
-                .as_str()
-                .and_then(|r| r.trim_start_matches('e').parse::<usize>().ok())
-                .unwrap_or(usize::MAX)
-        });
         Ok(json!({"snapshot": snapshot, "top_origin": top, "controls": controls}))
     }
 
@@ -276,8 +269,8 @@ impl<D: Driver> Core<D> {
     /// Each frame of a snapshot, with its refs and their in-frame indexes.
     fn frames_of(&self, snapshot: &str) -> Result<Vec<FrameRefs>, Failure> {
         let mut frames: Vec<FrameRefs> = Vec::new();
-        for (position, entry) in self.snapshot(snapshot)?.refs.iter().enumerate() {
-            let reference = (format!("e{}", position + 1), entry.index);
+        for entry in &self.snapshot(snapshot)?.refs {
+            let reference = (format!("e{}", entry.number), entry.index);
             match frames.iter_mut().find(|(f, _)| f.id == entry.frame.id) {
                 Some((_, refs)) => refs.push(reference),
                 None => frames.push((entry.frame.clone(), vec![reference])),

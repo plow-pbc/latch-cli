@@ -158,6 +158,9 @@
       origin: self.origin === 'null' ? 'opaque' : self.origin,
       url: location.href,
       elements: kept.map(describe),
+      // Each element's identity in this document, which latch keeps its
+      // ref by from one reading to the next.
+      ids: kept.map(uid),
       more: all.length > kept.length,
     };
   };

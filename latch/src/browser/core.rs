@@ -10,7 +10,7 @@
 //! Each answer carries the result for the agent and, separately, what the
 //! host's audit may record: never page text, field values or typed text.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -232,6 +232,8 @@ pub enum TabAction {
 struct Ref {
     frame: Frame,
     index: usize,
+    /// Its ref's number: `e7` is 7.
+    number: usize,
 }
 
 struct Snapshot {
@@ -285,6 +287,12 @@ pub struct Core<D: Driver> {
     /// The latest snapshot shown the agent: what a ref without
     /// `--snapshot` is read in.
     last_shown: Option<String>,
+    /// Each element's ref number, by its tab, and its frame, document and
+    /// identity there: an element keeps its ref from one reading to the
+    /// next, and a new one gets the next number, never one another element
+    /// had.
+    numbers: HashMap<String, HashMap<(String, String, u64), usize>>,
+    next_number: usize,
     /// When the current call's reading stops starting frames.
     read_until: Option<Instant>,
 }
@@ -309,6 +317,8 @@ impl<D: Driver> Core<D> {
             fill: fill::State::default(),
             quiet: false,
             last_shown: None,
+            numbers: HashMap::new(),
+            next_number: 0,
             read_until: None,
         }
     }
@@ -1029,6 +1039,7 @@ impl<D: Driver> Core<D> {
         self.next_snapshot += 1;
         let id = format!("o{}", self.next_snapshot);
         let frames = self.driver.frames()?;
+        let tab = self.driver.active_tab();
         let scoped = match &scope {
             Some((snapshot, position)) => {
                 let (frame, index) = self.reference(snapshot, *position)?;
@@ -1096,14 +1107,32 @@ impl<D: Driver> Core<D> {
                 .flatten()
                 .enumerate()
             {
+                let identity = read["ids"][index].as_u64().ok_or_else(|| {
+                    Failure::new(
+                        code::engine_error,
+                        "the page's reader listed an element with no identity".into(),
+                    )
+                })?;
+                let key = (frame.id.clone(), frame.document.clone(), identity);
+                let next = &mut self.next_number;
+                let number = *self
+                    .numbers
+                    .entry(tab.clone())
+                    .or_default()
+                    .entry(key)
+                    .or_insert_with(|| {
+                        *next += 1;
+                        *next
+                    });
                 let mut element = element.clone();
-                element["ref"] = json!(format!("e{}", refs.len() + 1));
+                element["ref"] = json!(format!("e{number}"));
                 if n > 0 {
                     element["frame"] = json!(label);
                 }
                 refs.push(Ref {
                     frame: frame.clone(),
                     index,
+                    number,
                 });
                 elements.push(element);
             }
@@ -1116,9 +1145,17 @@ impl<D: Driver> Core<D> {
         {
             return Err(failure);
         }
+        // A document gone from the tab takes its elements' numbers with it.
+        if let Some(known) = self.numbers.get_mut(&tab) {
+            known.retain(|(frame, document, _), _| {
+                frames
+                    .iter()
+                    .any(|f| &f.id == frame && &f.document == document)
+            });
+        }
         self.snapshots.push_back(Snapshot {
             id: id.clone(),
-            tab: self.driver.active_tab(),
+            tab,
             refs,
         });
         if !self.quiet {
@@ -1167,12 +1204,13 @@ impl<D: Driver> Core<D> {
             Some(id) => self.snapshot(id)?,
             None => return Err(stale()),
         };
-        let Some(entry) = snapshot.refs.get(number - 1) else {
+        let Some(position) = snapshot.refs.iter().position(|r| r.number == number) else {
             return Err(Failure::new(
                 code::no_such_target,
                 format!("snapshot {} has no {target}", snapshot.id),
             ));
         };
+        let entry = &snapshot.refs[position];
         if snapshot.tab != self.driver.active_tab() {
             return Err(stale());
         }
@@ -1184,7 +1222,7 @@ impl<D: Driver> Core<D> {
         {
             return Err(stale());
         }
-        Ok((id, number - 1))
+        Ok((id, position))
     }
 
     /// The element as `snapshot` listed it, looked up again by the reader.
