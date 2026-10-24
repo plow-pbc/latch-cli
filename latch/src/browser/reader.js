@@ -354,7 +354,9 @@
   // Whether a field holding `held` holds `wanted`: the same characters in
   // the same order, give or take the separators a field adds as it formats
   // a value (a code as "123 456", a card number in fours, a date with
-  // slashes). Walked by code point, so an astral character is one.
+  // slashes). Walked by code point, so an astral character is one. The
+  // GET guards (`cdp.rs`, `helper.mjs`) match a value the same way.
+  const SEPARATORS = new Set([' ', '\u00a0', '-', '/', '.', '(', ')', '+']);
   const keeps = (held, wanted) => {
     if (held === wanted) return true;
     if (wanted === '') return false;
@@ -362,7 +364,7 @@
     let i = 0;
     for (const ch of held) {
       if (i < want.length && ch === want[i]) i++;
-      else if (!/[\s\-/.()+]/.test(ch)) return false;
+      else if (!SEPARATORS.has(ch)) return false;
     }
     return i === want.length;
   };

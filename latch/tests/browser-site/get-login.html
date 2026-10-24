@@ -2,9 +2,11 @@
 <!-- Three sign-in forms a browser would send by GET, the password in the
      address: one that says GET, one that posts but whose button says
      formmethod=get, and one that states no method at all; a memo, whose
-     line breaks the browser sends as CRLF; and a code field that shows its
-     code as "123 456" and sends it so. latch stops each request; nothing
-     reaches /welcome. -->
+     line breaks the browser sends as CRLF; a code field that shows its
+     code as "123 456" and sends it so; a password field that shows its
+     password in pairs; and a code field that puts a zero-width character
+     in the middle, which is no separator a fill allows. latch stops each
+     request, or (the last) never presses; nothing reaches /welcome. -->
 <h1>Sign in</h1>
 <form method="get" action="welcome">
   <p><label>Email <input type="email" name="email"></label></p>
@@ -29,10 +31,23 @@
   <p><label>Code <input name="otp" autocomplete="one-time-code" maxlength="7"></label></p>
   <p><button type="submit">Verify by address</button></p>
 </form>
+<form action="welcome">
+  <p><label>Pair password <input type="password" name="password" class="pairs"></label></p>
+  <p><button type="submit">Sign in in pairs</button></p>
+</form>
+<form action="welcome">
+  <p><label>Odd code <input name="otp" class="odd" autocomplete="one-time-code"></label></p>
+  <p><button type="submit">Verify oddly</button></p>
+</form>
 <script>
-  const otp = document.querySelector('[name=otp]');
-  otp.addEventListener('input', () => {
-    const digits = otp.value.replace(/\D/g, '').slice(0, 6);
-    otp.value = digits.length > 3 ? digits.slice(0, 3) + ' ' + digits.slice(3) : digits;
+  const format = (field, shape) => field.addEventListener('input', () => { field.value = shape(field.value); });
+  format(document.querySelector('[name=otp]'), (v) => {
+    const digits = v.replace(/\D/g, '').slice(0, 6);
+    return digits.length > 3 ? digits.slice(0, 3) + ' ' + digits.slice(3) : digits;
+  });
+  format(document.querySelector('.pairs'), (v) => v.replace(/ /g, '').replace(/(..)(?=.)/g, '$1 '));
+  format(document.querySelector('.odd'), (v) => {
+    const digits = v.replace(/\D/g, '').slice(0, 6);
+    return digits.length > 3 ? digits.slice(0, 3) + '\uFEFF' + digits.slice(3) : digits;
   });
 </script>

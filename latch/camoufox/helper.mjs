@@ -81,13 +81,23 @@ let nextFrame = 0;
 let nextDocument = 0;
 // Filled vault values no GET request may carry as a query parameter
 // (`guard`); the session's `stopped` says one was stopped. Line breaks
-// count alike however written: a form sends a field's as CRLF. So does a
-// value as a field formats it ("123 456"): the same once the separators a
-// field may add (`reader.js`'s `keeps`) are left out of both.
+// count alike however written: a form sends a field's as CRLF. A value
+// counts as a fill takes a field to hold it (`reader.js`'s `keeps`): its
+// characters in order, with only the separators a field adds between them.
 const oneNewline = (text) => text.replace(/\r\n?/g, "\n");
-const bare = (text) => text.replace(/[\s\-/.()+]/g, "");
-const same = (guarded, param) =>
-  oneNewline(guarded) === oneNewline(param) || (bare(guarded) !== "" && bare(guarded) === bare(param));
+const SEPARATORS = new Set([" ", "\u00a0", "-", "/", ".", "(", ")", "+"]);
+const keeps = (held, wanted) => {
+  if (held === wanted) return true;
+  if (wanted === "") return false;
+  const want = Array.from(wanted);
+  let i = 0;
+  for (const ch of held) {
+    if (i < want.length && ch === want[i]) i++;
+    else if (!SEPARATORS.has(ch)) return false;
+  }
+  return i === want.length;
+};
+const same = (guarded, param) => keeps(oneNewline(param), oneNewline(guarded));
 const guarding = () => Boolean(session?.guard?.length);
 const guardRoute = (route, request) => {
   if (request.method() === "GET") {

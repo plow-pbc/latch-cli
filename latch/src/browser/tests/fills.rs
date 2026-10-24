@@ -2140,6 +2140,17 @@ async fn no_secret_goes_into_a_form_sent_by_get(engine: &str) {
         linked_id: None,
     });
     let login = vault.with(|s| s.add(shop)).unwrap();
+    // A password of separators alone, which its field shows in pairs.
+    let dashes = vault
+        .with(|s| {
+            s.add(item(
+                LOGIN,
+                "Shop with dashes",
+                &["shop.example"],
+                &[("username", "ada@shop.example"), ("password", "----")],
+            ))
+        })
+        .unwrap();
     // A password with a line break, which its field holds without it.
     let broken = vault
         .with(|s| {
@@ -2174,7 +2185,7 @@ async fn no_secret_goes_into_a_form_sent_by_get(engine: &str) {
     // its line break.
     // The item, its fields and their names, and the button.
     type Row<'a> = (&'a str, &'a [(&'a str, &'a str)], &'a str);
-    let rows: [Row; 6] = [
+    let rows: [Row; 7] = [
         (
             &login.item,
             &[("username", "Email"), ("password", "Password")],
@@ -2192,6 +2203,11 @@ async fn no_secret_goes_into_a_form_sent_by_get(engine: &str) {
         ),
         (&login.item, &[("memo", "Memo")], "Send memo"),
         (&login.item, &[("otp", "Code")], "Verify by address"),
+        (
+            &dashes.item,
+            &[("password", "Pair password")],
+            "Sign in in pairs",
+        ),
         (
             &broken.item,
             &[("username", "Email"), ("password", "Password")],
@@ -2225,6 +2241,24 @@ async fn no_secret_goes_into_a_form_sent_by_get(engine: &str) {
             assert!(url.ends_with("/get-login.html"), "{seen}");
         }
     }
+    // A field that adds a character no field adds as a separator doesn't
+    // hold the value: the fill ends before the press.
+    let page = open(&mut h).await;
+    let (odd, _) = h
+        .fill(json!({
+            "item": login.item,
+            "fields": [["otp", [find(&page, "textbox", "Odd code")]]],
+            "press": find(&page, "button", "Verify oddly"),
+        }))
+        .await;
+    let odd = odd.unwrap_err();
+    println!("Verify oddly: {} ({})", odd.code, odd.message);
+    assert_eq!(odd.code, "needs_owner");
+    let seen = h.call("observe", json!({})).await.unwrap();
+    assert!(
+        seen["url"].as_str().unwrap().ends_with("/get-login.html"),
+        "{seen}"
+    );
     // A username alone is no secret: an email-first sign-in carries it to
     // the next page in the address, and that goes on.
     let page = open(&mut h).await;
