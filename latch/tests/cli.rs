@@ -449,7 +449,7 @@ fn an_agents_status_offers_no_owners_command() {
     assert_eq!(google.get("enable"), None, "{status}");
     assert_eq!(
         google["reason"],
-        "turned on by the owner's own login, not an agent's"
+        "only the owner's login can turn this plugin on"
     );
 }
 

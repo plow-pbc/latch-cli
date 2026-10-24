@@ -162,8 +162,8 @@ fi
 # A folder this user can't write, such as /.local/bin for a user whose HOME
 # is /, is refused before anything changes.
 if ! { mkdir -p "$bin_dir" && [ -w "$bin_dir" ]; } 2>/dev/null; then
-  where="choose a folder you can write with --bin-dir DIR"
-  [ -n "$state_given" ] || where="$where, and one for latch's state with LATCH_STATE_DIR"
+  where="choose a folder you can write to with --bin-dir DIR"
+  [ -n "$state_given" ] || where="$where, and set \`LATCH_STATE_DIR\` to a writable state folder"
   die "can't write to $bin_dir; $where; nothing was installed"
 fi
 # The latch being replaced: on macOS the app's own, wherever a link to it

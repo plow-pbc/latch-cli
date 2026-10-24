@@ -264,7 +264,7 @@ fn each_other_host_fills_in_its_plugins_or_why_it_did_not_say() {
 
     for (reason, says) in [
         ("caller_denied", "pi: online · refused this login"),
-        ("protocol_mismatch", "pi: online · another latch version"),
+        ("protocol_mismatch", "pi: online · incompatible version"),
         ("host_unreachable", "pi: online · no answer"),
         ("bad_state", "pi: online · bad state"),
     ] {

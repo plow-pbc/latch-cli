@@ -789,7 +789,7 @@ fn why(reason: &str) -> String {
     match reason {
         "host_unreachable" => "no answer".into(),
         "caller_denied" => "refused this login".into(),
-        "protocol_mismatch" => "another latch version".into(),
+        "protocol_mismatch" => "incompatible version".into(),
         // The host's own code.
         code => code.replace('_', " "),
     }

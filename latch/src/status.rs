@@ -307,7 +307,7 @@ pub fn local(state: &StateDir) -> Result<LocalStatus, Failure> {
         for plugin in plugins["plugins"].as_array_mut().into_iter().flatten() {
             let off = plugin.as_object_mut().and_then(|p| p.remove("enable"));
             if off.is_some() {
-                plugin["reason"] = json!("turned on by the owner's own login, not an agent's");
+                plugin["reason"] = json!("only the owner's login can turn this plugin on");
             }
         }
     }
