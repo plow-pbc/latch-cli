@@ -155,7 +155,8 @@ private struct Records: View {
         Binding { app.selectedRecord?.host == host.name ? app.selectedRecord?.id : nil }
             set: { id in
                 app.selectedRecord = id.map { OnHost(host: host.name, id: $0) }
-                tableFocused = true
+                // A pick, not SwiftUI clearing a row a search or new data hid.
+                if id != nil { tableFocused = true }
             }
     }
 

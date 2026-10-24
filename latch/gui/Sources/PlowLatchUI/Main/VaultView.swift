@@ -162,7 +162,8 @@ private struct HostVault: View {
         Binding { app.selectedVaultItem?.host == host.name ? app.selectedVaultItem?.id : nil }
             set: { id in
                 app.selectedVaultItem = id.map { OnHost(host: host.name, id: $0) }
-                listFocused = true
+                // A pick, not SwiftUI clearing a row a search or new data hid.
+                if id != nil { listFocused = true }
             }
     }
 
