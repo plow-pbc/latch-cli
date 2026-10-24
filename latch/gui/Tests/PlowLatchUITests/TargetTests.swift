@@ -193,7 +193,7 @@ struct ActivityScopeTests {
     }
 
     // Home's Requests and Refused: all of the host's Activity, or what was
-    // refused, whatever filters were left there.
+    // refused, whatever outcome, agent or search was left there.
     @Test func homesCountsOpenAllOfActivityOrWhatWasRefused() throws {
         let (app, studio) = try app()
         let records = app.feed(for: studio).records

@@ -188,9 +188,11 @@ private struct ActivitySections: View {
 
 /// What Home shows of a host's held records: what callers asked of it
 /// (not connections, nor the owner's own reads, Home's own summary being
-/// one) today, and the newest five. Read from the newest back, stopping
-/// once both are known, as records arrive in the order latch wrote them:
-/// at 10,000 held, each new one costs a few records, not all of them.
+/// one) today, and the newest five. Read from the newest back, stopping at
+/// the first record before today once five are found: today's records and
+/// no more, not every held record, and no calendar asked of each one.
+/// Records are in the order latch wrote them, which is their time order
+/// to within the moment two requests finish together.
 nonisolated struct HomeActivity {
     private(set) var today = 0
     private(set) var refusedToday = 0
@@ -252,13 +254,12 @@ private struct GoRow<Label: View>: View {
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .combine)
-        .accessibilityAddTraits(.isButton)
         .accessibilityHint(hint)
     }
 }
 
 /// A host's rules, vault and plugins at a glance, each opening its screen,
-/// and the account's Google accounts when the host has Google; this Mac's
+/// and the account's Google accounts when Google is on there; this Mac's
 /// also offers setting up again.
 private struct OnHostSection: View {
     var host: HostEntry
@@ -273,7 +274,7 @@ private struct OnHostSection: View {
             SummaryRow(host: host.spoken, title: "Plugins", value: plugins?.map(Self.plugins), opens: "Host Settings") {
                 app.place = .host(.settings)
             }
-            if case let .success(list)? = plugins, list.contains(where: { $0.name == "google" }) {
+            if case let .success(list)? = plugins, list.contains(where: { $0.name == "google" && $0.state == "enabled" }) {
                 SummaryRow(host: host.spoken, title: "Google accounts", value: .success(Self.accounts(app.connections)), opens: "Connections") {
                     app.manageAccounts()
                 }

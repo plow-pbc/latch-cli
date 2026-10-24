@@ -31,6 +31,14 @@ struct HomeTests {
         #expect(home.recent.map(\.id) == calls.suffix(5).reversed().map(\.id))
     }
 
+    // A day with nothing yet: no counts, and still the newest five.
+    @Test func aDayWithNothingYetCountsNoneAndShowsTheNewestFive() {
+        let next = Calendar.current.date(byAdding: .day, value: 1, to: Self.records.last!.time)!
+        let home = HomeActivity(Self.records, today: Calendar.current.dateInterval(of: .day, for: next)!)
+        #expect(home.today == 0 && home.refusedToday == 0 && home.agentsToday.isEmpty)
+        #expect(home.recent.map(\.id) == Self.records.filter { !$0.isBackground }.suffix(5).reversed().map(\.id))
+    }
+
     @Test func noCallsIsNoneRecent() {
         let connections = Self.records.filter(\.isBackground)
         #expect(!connections.isEmpty)
