@@ -91,9 +91,7 @@ struct HostPill: View {
         let standing = self.standing
         let offline = !host.isThisMac && host.online == false
         Button {
-            app.chosenHost = host.name
-            app.rulesFocus = agent.uid
-            app.section = .rules
+            app.openRules(host, agent: agent.uid)
         } label: {
             HStack(spacing: 4) {
                 if standing?.ownRules == true {
@@ -168,9 +166,7 @@ struct AgentPage: View {
                         }
                         Spacer()
                         Button("Rules on \(host.name)") {
-                            app.chosenHost = host.name
-                            app.rulesFocus = agent.uid
-                            app.section = .rules
+                            app.openRules(host, agent: agent.uid)
                         }
                     }
                 }

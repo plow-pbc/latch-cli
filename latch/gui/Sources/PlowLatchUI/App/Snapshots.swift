@@ -401,22 +401,22 @@ package enum SnapshotRunner {
             }
             // The main window's host tier: each kind of host, and switching.
             let plowDown = LatchError.failed(LatchFailure(code: "plow_unreachable", message: "could not reach Plow at http://127.0.0.1:18934: error sending request for url (http://127.0.0.1:18934/v1/latch/peers)"))
-            let homes: [(String, String, String?, String?, SidebarItem)] = [
-                ("10-home-this-mac-serving", Fixtures.serving, Fixtures.studioHosts, nil, .home),
-                ("10-home-this-mac-terminal", Fixtures.servingAttached, Fixtures.studioHosts, nil, .home),
-                ("10-home-this-mac-stopped-update", Fixtures.stopped, Fixtures.studioHosts, nil, .home),
-                ("10-home-this-mac-other-version", Fixtures.otherVersion, Fixtures.studioHosts, nil, .home),
-                ("10-home-this-mac-plow-unreachable", Fixtures.serving, nil, nil, .home),
-                ("10-home-this-mac-stopped-plow-unreachable", Fixtures.stopped, nil, nil, .home),
-                ("11-home-viewer-only", Fixtures.laptop, Fixtures.laptopHosts, nil, .home),
-                ("11-home-viewer-only-no-hosts", Fixtures.laptop, Fixtures.noHosts, nil, .home),
-                ("12-home-remote-online", Fixtures.serving, Fixtures.studioHosts, "pi-kitchen", .home),
-                ("12-home-remote-offline-viewer", Fixtures.laptop, Fixtures.laptopHostsPiOffline, "pi-kitchen", .home),
-                ("13-agents-on-studio", Fixtures.serving, Fixtures.studioHosts, nil, .agents),
-                ("13-agents-after-switch-to-pi-kitchen", Fixtures.serving, Fixtures.studioHosts, "pi-kitchen", .agents),
-                ("13-rules-on-pi-kitchen", Fixtures.serving, Fixtures.studioHosts, "pi-kitchen", .rules),
+            let homes: [(String, String, String?, String?, Place)] = [
+                ("10-home-this-mac-serving", Fixtures.serving, Fixtures.studioHosts, nil, .host(.home)),
+                ("10-home-this-mac-terminal", Fixtures.servingAttached, Fixtures.studioHosts, nil, .host(.home)),
+                ("10-home-this-mac-stopped-update", Fixtures.stopped, Fixtures.studioHosts, nil, .host(.home)),
+                ("10-home-this-mac-other-version", Fixtures.otherVersion, Fixtures.studioHosts, nil, .host(.home)),
+                ("10-home-this-mac-plow-unreachable", Fixtures.serving, nil, nil, .host(.home)),
+                ("10-home-this-mac-stopped-plow-unreachable", Fixtures.stopped, nil, nil, .host(.home)),
+                ("11-home-viewer-only", Fixtures.laptop, Fixtures.laptopHosts, nil, .host(.home)),
+                ("11-home-viewer-only-no-hosts", Fixtures.laptop, Fixtures.noHosts, nil, .host(.home)),
+                ("12-home-remote-online", Fixtures.serving, Fixtures.studioHosts, "pi-kitchen", .host(.home)),
+                ("12-home-remote-offline-viewer", Fixtures.laptop, Fixtures.laptopHostsPiOffline, "pi-kitchen", .host(.home)),
+                ("13-agents-on-studio", Fixtures.serving, Fixtures.studioHosts, nil, .account(.agents)),
+                ("13-agents-after-switch-to-pi-kitchen", Fixtures.serving, Fixtures.studioHosts, "pi-kitchen", .account(.agents)),
+                ("13-rules-on-pi-kitchen", Fixtures.serving, Fixtures.studioHosts, "pi-kitchen", .host(.rules)),
             ]
-            for (name, status, account, chosen, section) in homes {
+            for (name, status, account, chosen, place) in homes {
                 let app = AppModel(client: FakeLatchClient(), still: true)
                 app.stage(status: try Fixtures.decode(status))
                 app.stage(account: try account.map { try Fixtures.decode($0) }, error: account == nil ? plowDown : nil)
@@ -429,7 +429,7 @@ package enum SnapshotRunner {
                                                plugins: .success(try Fixtures.decode(Fixtures.piPlugins))),
                           for: "pi-kitchen")
                 app.chosenHost = chosen
-                app.section = section
+                app.place = place
                 stageActivity(app)
                 _ = app.stage(.done, progress: full)
                 try await renderWindow(MainView().environment(app), size: mainSize, dark: dark,
@@ -442,18 +442,18 @@ package enum SnapshotRunner {
                                                              message: #"could not connect to host "pi-kitchen"; nothing was sent"#))
             let stopped = LatchError.failed(LatchFailure(code: "host_stopped", message: #"host "pi-kitchen" stopped serving"#))
             let busy = LatchError.failed(LatchFailure(code: "state_busy", message: "another latch is changing /Users/me/.latch; try again"))
-            let errors: [(String, String?, SidebarItem, HostSummary)] = [
+            let errors: [(String, String?, HostScreen, HostSummary)] = [
                 ("23-error-rules-pi-kitchen-unreachable", "pi-kitchen", .rules, HostSummary(rules: .failure(unreachable))),
                 ("23-error-activity-pi-kitchen-stopped", "pi-kitchen", .activity, HostSummary()),
                 ("23-error-rules-unknown-code", nil, .rules, HostSummary(rules: .failure(busy))),
             ]
-            for (name, chosen, section, summary) in errors {
+            for (name, chosen, screen, summary) in errors {
                 let app = AppModel(client: FakeLatchClient(), still: true)
                 app.stage(status: try Fixtures.decode(Fixtures.serving))
                 app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
                 app.stage(summary: summary, for: chosen ?? "studio")
                 app.chosenHost = chosen
-                app.section = section
+                app.place = .host(screen)
                 stageActivity(app)
                 if let kitchen = app.hosts.first(where: { $0.name == "pi-kitchen" }) {
                     app.feed(for: kitchen).stage("", error: stopped)
@@ -479,13 +479,44 @@ package enum SnapshotRunner {
                 app.stage(status: try Fixtures.decode(status))
                 app.stage(account: try Fixtures.decode(account))
                 app.chosenHost = chosen
-                app.section = .activity
+                app.place = .host(.activity)
                 app.activityFilter = filter
                 stageActivity(app)
                 app.selectedRecord = app.host.flatMap { app.feed(for: $0).records.last(where: pick)?.id }
                 _ = app.stage(.done, progress: full)
                 try await renderWindow(MainView().environment(app), size: CGSize(width: 1180, height: 640), dark: dark,
                                  file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
+            }
+            // Activity's scope bar at the default and narrow sizes: an
+            // agent's link (its chip), no match in what's loaded, reading,
+            // a host out of reach, and a read that failed.
+            let scout = "a74f38668570a45ddc4b762ba0465d74"
+            let scopes: [(String, (AppModel, HostEntry) -> Void)] = [
+                ("24-activity-agent-chip", { app, studio in
+                    app.feed(for: studio).stage(Fixtures.studioAudit)
+                    app.openActivity(studio, agent: scout)
+                }),
+                ("24-activity-no-match", { app, studio in
+                    app.feed(for: studio).stage(Fixtures.studioAudit)
+                    app.openActivity(studio, agent: scout)
+                    app.activitySearch = "Taxes"
+                }),
+                ("24-activity-reading", { _, _ in }),
+                ("24-activity-unreachable", { app, studio in app.feed(for: studio).stage("", error: unreachable) }),
+                ("24-activity-read-failure", { app, studio in app.feed(for: studio).stage("", error: busy) }),
+            ]
+            for (name, stage) in scopes {
+                for (label, size) in [("default", CGSize(width: 1120, height: 640)), ("narrow", CGSize(width: 900, height: 600))] {
+                    let app = AppModel(client: FakeLatchClient(), still: true)
+                    app.stage(status: try Fixtures.decode(Fixtures.serving))
+                    app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
+                    app.place = .host(.activity)
+                    guard let studio = app.host else { continue }
+                    stage(app, studio)
+                    _ = app.stage(.done, progress: full)
+                    try await renderWindow(MainView().environment(app), size: size, dark: dark,
+                                           file: output.appending(path: "\(name)-\(label)-\(dark ? "dark" : "light").png"))
+                }
             }
         }
         // The Full Disk Access helper, as wide as it floats under a
@@ -509,30 +540,30 @@ package enum SnapshotRunner {
                 of: #""self":false,"online":true,"last_seen_at":"2026-10-22T22:06:33.384336Z""#,
                 with: #""self":false,"online":false,"last_seen_at":null"#)
             let scout = "ba3c0b3ad1eba7a9a1eb04b67c9db0dd", helper = "3971582e59baad83250141c8dcc95855"
-            let screens: [(String, SidebarItem, String?, [String], (AppModel) throws -> Void)] = [
-                ("15-agents-pills", .agents, nil, [], { _ in }),
-                ("15-agent-page-helper", .agents, nil, [helper], { _ in }),
-                ("16-rules-studio-scout-try-allowed", .rules, nil, [], { app in
-                    app.rulesFocus = scout
+            let screens: [(String, Place, String?, [String], (AppModel) throws -> Void)] = [
+                ("15-agents-pills", .account(.agents), nil, [], { _ in }),
+                ("15-agent-page-helper", .account(.agents), nil, [helper], { _ in }),
+                ("16-rules-studio-scout-try-allowed", .host(.rules), nil, [], { app in
+                    app.rulesFocus = AgentTarget(host: "studio", agent: scout)
                     app.trial.stage(try Fixtures.decode(Fixtures.tries["allow-scout"]!), request: "exec --workdir ~/Projects/latch-demo -- make test",
                                     caller: .agent(scout), on: "studio")
                 }),
-                ("16-rules-studio-try-you-said-no", .rules, nil, [], { app in
+                ("16-rules-studio-try-you-said-no", .host(.rules), nil, [], { app in
                     app.trial.stage(try Fixtures.decode(Fixtures.tries["said-no"]!), request: "exec -- cat Finance/2026.csv",
                                     caller: .agent(scout), on: "studio")
                 }),
-                ("16-rules-studio-unsaved-draft", .rules, nil, [], { app in
+                ("16-rules-studio-unsaved-draft", .host(.rules), nil, [], { app in
                     let key = AppModel.RulesKey(host: "studio", agent: nil)
                     let saved = app.savedRules(key)
                     app.rulesDrafts[key] = .init(text: (saved?.text ?? "") + "Never send email without asking me.", base: saved?.revision)
                 }),
-                ("16-rules-pi-kitchen-helper-exec-refused", .rules, "pi-kitchen", [], { app in
-                    app.rulesFocus = helper
+                ("16-rules-pi-kitchen-helper-exec-refused", .host(.rules), "pi-kitchen", [], { app in
+                    app.rulesFocus = AgentTarget(host: "pi-kitchen", agent: helper)
                     app.trial.stage(try Fixtures.decode(Fixtures.tries["host-refused"]!), request: "exec -- ls",
                                     caller: .agent(helper), on: "pi-kitchen")
                 }),
             ]
-            for (name, section, chosen, path, stage) in screens {
+            for (name, place, chosen, path, stage) in screens {
                 let app = AppModel(client: FakeLatchClient(), still: true)
                 app.stage(status: try Fixtures.decode(Fixtures.serving))
                 app.stage(account: try Fixtures.decode(sidecarOffline))
@@ -543,7 +574,7 @@ package enum SnapshotRunner {
                 app.stage(summary: HostSummary(rules: .success(try Fixtures.decode(Fixtures.rulesStudio))), for: "studio")
                 app.stage(summary: HostSummary(rules: .success(try Fixtures.decode(Fixtures.rulesKitchen))), for: "pi-kitchen")
                 app.chosenHost = chosen
-                app.section = section
+                app.place = place
                 app.agentsPath = path
                 try stage(app)
                 _ = app.stage(.done, progress: full)
@@ -575,7 +606,7 @@ package enum SnapshotRunner {
                 let shows = chosen == nil ? Array(Fixtures.vaultShows.values) : [Fixtures.remoteVaultShow]
                 for show in shows { app.stage(vaultShow: try Fixtures.decode(show), on: chosen ?? "studio") }
                 app.chosenHost = chosen
-                app.section = .vault
+                app.place = .host(.vault)
                 app.selectedVaultItem = selected
                 if name.hasSuffix("remove-failed") {
                     app.vaultRemoveError = .failed(LatchFailure(code: "state_busy", message: "another latch is changing /Users/me/.latch; try again"))
@@ -643,7 +674,7 @@ package enum SnapshotRunner {
                 app.stage(devices: try Fixtures.decode(Fixtures.devices), update: checked ? try Fixtures.decode(Fixtures.updateCheck) : nil)
                 app.stage(connections: Connections(try Fixtures.decode(Fixtures.setup(on: [], google: google)) as SetupStatus))
                 app.chosenHost = chosen
-                app.section = .settings
+                app.place = .host(.settings)
                 _ = app.stage(.done, progress: full)
                 return app
             }
@@ -667,7 +698,7 @@ package enum SnapshotRunner {
             ]
             for (name, google) in connections {
                 let app = try settingsApp(status: Fixtures.serving, account: Fixtures.studioHosts, chosen: nil, checked: false, google: google)
-                app.section = .connections
+                app.place = .account(.connections)
                 try await renderWindow(MainView().environment(app), size: CGSize(width: 900, height: 700), dark: dark,
                                        file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
             }

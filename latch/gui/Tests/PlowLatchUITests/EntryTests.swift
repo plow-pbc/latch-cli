@@ -56,15 +56,18 @@ struct EntryTests {
         return app
     }
 
-    @Test(arguments: [SidebarItem.home, .settings, .rules, .vault, .agents, .connections, .activity])
-    func comingBackToALoadedScreenStartsNoLatch(_ section: SidebarItem) async throws {
+    @Test(arguments: [Place.host(.home), .host(.settings), .host(.rules), .host(.vault), .account(.agents), .account(.connections),
+                      .host(.activity)])
+    func comingBackToALoadedScreenStartsNoLatch(_ place: Place) async throws {
         let client = CountingClient()
         let app = try app(client)
+        app.place = place
         for host in [app.hosts[0], app.hosts[1]] {
-            await app.enter(section, host: host)
+            app.chosenHost = host.name
+            await app.enter(app.route)
             let first = client.calls.count
-            await app.enter(section, host: host)
-            #expect(client.calls.count == first, "\(section) on \(host.name): \(client.calls.dropFirst(first))")
+            await app.enter(app.route)
+            #expect(client.calls.count == first, "\(place) on \(host.name): \(client.calls.dropFirst(first))")
         }
     }
 
@@ -72,13 +75,13 @@ struct EntryTests {
         let client = CountingClient()
         let app = try app(client)
         let mac = app.hosts[0], kitchen = app.hosts[1]
-        await app.enter(.settings, host: mac)
+        await app.enter(.host(.settings, mac))
         #expect(client.calls == ["rules show", "plugins list"])
-        await app.enter(.settings, host: kitchen)
+        await app.enter(.host(.settings, kitchen))
         #expect(Array(client.calls.dropFirst(2)) == ["rules show", "plugins list", "status --host"])
-        await app.enter(.activity, host: mac)
+        await app.enter(.host(.activity, mac))
         #expect(client.calls.count == 5)
-        await app.enter(.home, host: mac)
+        await app.enter(.host(.home, mac))
         #expect(client.calls.last == "vault list")
         #expect(client.calls.count == 6)
     }
@@ -86,8 +89,8 @@ struct EntryTests {
     @Test func refreshReadsAgainWhatIsHeld() async throws {
         let client = CountingClient()
         let app = try app(client)
-        await app.enter(.home, host: app.host)
-        await app.enter(.home, host: app.host, refresh: true)
+        await app.enter(.host(.home, app.host))
+        await app.enter(.host(.home, app.host), refresh: true)
         #expect(client.calls == ["rules show", "vault list", "plugins list", "rules show", "vault list", "plugins list"])
     }
 
@@ -98,7 +101,7 @@ struct EntryTests {
         let gate = Gate()
         client.held["rules show"] = gate
         let app = try app(client)
-        let entering = Task { await app.enter(.home, host: app.host) }
+        let entering = Task { await app.enter(.host(.home, app.host)) }
         await waitUntil { client.calls == ["rules show"] }
         entering.cancel()
         gate.open()
@@ -124,12 +127,12 @@ struct EntryTests {
         let gate = Gate()
         client.held["agents --host"] = gate
         let app = try app(client)
-        let entering = Task { await app.enter(.agents, host: app.host) }
+        let entering = Task { await app.enter(.account(.agents)) }
         await waitUntil { client.calls.contains("agents --host") }
         entering.cancel()
         gate.open()
         await entering.value
-        await app.enter(.agents, host: app.host)
+        await app.enter(.account(.agents))
         let reachable = app.hosts.filter { $0.isThisMac || $0.online != false }
         #expect(!reachable.isEmpty)
         #expect(reachable.allSatisfy { AppModel.held(app.standings[$0.name]) })
@@ -137,13 +140,13 @@ struct EntryTests {
 
     @Test func homeAndActivityShareTheirHostsFeedAndOtherScreensHaveNone() throws {
         let app = try app(CountingClient())
-        app.section = .home
+        app.place = .host(.home)
         let home = try #require(app.activityFeed)
-        app.section = .activity
+        app.place = .host(.activity)
         #expect(app.activityFeed === home)
-        app.section = .rules
+        app.place = .host(.rules)
         #expect(app.activityFeed == nil)
-        app.section = .activity
+        app.place = .host(.activity)
         app.chosenHost = "pi-kitchen"
         #expect(app.activityFeed !== home)
     }
@@ -222,14 +225,14 @@ struct FeedGraceTests {
 /// Back in front, the app reads again the screen showing, whichever it is.
 @MainActor
 struct ActivationTests {
-    @Test(arguments: [SidebarItem.rules, .vault, .home])
-    func comingToTheFrontReadsTheVisibleScreenAgain(_ section: SidebarItem) async throws {
+    @Test(arguments: [HostScreen.rules, .vault, .home])
+    func comingToTheFrontReadsTheVisibleScreenAgain(_ section: HostScreen) async throws {
         let client = CountingClient()
         let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
         app.stage(status: try Fixtures.decode(Fixtures.serving))
         app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
-        app.section = section
-        await app.enter(section, host: app.host)
+        app.place = .host(section)
+        await app.enter(app.route)
         let first = client.calls
         await app.activated()
         let again = Array(client.calls.dropFirst(first.count))
@@ -243,8 +246,8 @@ struct ActivationTests {
         let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
         app.stage(status: try Fixtures.decode(Fixtures.serving))
         app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
-        app.section = .rules
-        await app.enter(.rules, host: app.host)
+        app.place = .host(.rules)
+        await app.enter(.host(.rules, app.host))
         await app.activated()
         #expect(client.calls == ["agents", "rules show", "agents", "rules show"])
         #expect(!client.calls.contains("agents --host"))

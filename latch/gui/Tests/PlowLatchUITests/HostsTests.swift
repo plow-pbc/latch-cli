@@ -23,10 +23,10 @@ struct HostsTests {
 
     @Test func pickingAHostChangesTheHostTierOnly() throws {
         let app = try app(status: Fixtures.serving, account: Fixtures.studioHosts)
-        app.section = .rules
+        app.place = .host(.rules)
         app.chosenHost = "pi-kitchen"
         #expect(app.host?.name == "pi-kitchen")
-        #expect(app.section == .rules)
+        #expect(app.place == .host(.rules))
     }
 
     // A stopped Mac is this Mac's host whether Plow is unreachable (only
@@ -42,7 +42,7 @@ struct HostsTests {
         app.stage(account: plowAnswered ? offline : nil, error: plowAnswered ? nil : unreachable)
         #expect(app.hosts.map(\.name) == (plowAnswered ? ["studio", "pi-kitchen", "sidecar"] : ["studio"]))
         #expect(app.host?.isThisMac == true && !app.viewerOnly)
-        await app.enter(.home, host: app.host)
+        await app.enter(.host(.home, app.host))
         #expect(app.summaries["studio"]?.rules != nil)
         #expect(app.summaries["studio"]?.vault != nil)
     }
@@ -128,21 +128,21 @@ struct HostSettingsTests {
         await app.refreshStatus()
         await app.refreshAccount()
         app.chosenHost = "pi-kitchen"
-        await app.enter(.settings, host: app.host)
+        await app.enter(.host(.settings, app.host))
         #expect(try app.summaries["pi-kitchen"]?.status?.get().version?.hasPrefix("0.1.0 (138)") == true)
         app.chosenHost = "sidecar"
-        await app.enter(.settings, host: app.host)
+        await app.enter(.host(.settings, app.host))
         #expect(app.summaries["sidecar"]?.status == nil)
         app.chosenHost = "studio"
-        await app.enter(.settings, host: app.host)
+        await app.enter(.host(.settings, app.host))
         #expect(app.summaries["studio"]?.status == nil)
     }
 
     @Test func manageAccountsOpensConnections() throws {
         let app = AppModel(client: FakeLatchClient(), store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
-        app.section = .settings
+        app.place = .host(.settings)
         app.manageAccounts()
-        #expect(app.section == .connections)
+        #expect(app.place == .account(.connections))
     }
 
     /// latch's reasons and refusals name commands and pages; the Plugins

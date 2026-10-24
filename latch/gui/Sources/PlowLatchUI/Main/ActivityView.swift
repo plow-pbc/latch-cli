@@ -1,10 +1,11 @@
 import SwiftUI
 
 /// The selected host's audit, newest first, live while on screen; a record
-/// opens in the inspector.
+/// opens in the inspector. Under its heading, a scope bar narrows the
+/// records loaded so far: by outcome and, from an agent's link, to that
+/// agent.
 struct ActivityView: View {
     @Environment(AppModel.self) private var app
-    @State private var search = ""
     @State private var inspecting = true
 
     enum Filter: String, CaseIterable, Identifiable {
@@ -23,8 +24,7 @@ struct ActivityView: View {
                         Text("Its activity is kept on \(host.name). Start Latch there to see it.")
                     }
                 } else {
-                    Records(feed: app.feed(for: host), host: host, filter: app.activityFilter, showConnections: app.showConnections,
-                            search: search, inspecting: $inspecting)
+                    Records(feed: app.feed(for: host), host: host, inspecting: $inspecting)
                         .id(host.id)
                 }
             } else {
@@ -34,15 +34,8 @@ struct ActivityView: View {
         }
         .navigationTitle("Activity")
         .navigationSubtitle(app.host?.name ?? "")
-        .searchable(text: $search, placement: .toolbar, prompt: "Search requests")
+        .searchable(text: $app.activitySearch, placement: .toolbar, prompt: "Search requests")
         .toolbar {
-            ToolbarItem {
-                Picker("Show", selection: $app.activityFilter) {
-                    ForEach(Filter.allCases) { Text($0.rawValue).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-            }
             ToolbarItem {
                 Toggle("Show Connections and Reads", systemImage: "point.3.connected.trianglepath.dotted", isOn: $app.showConnections)
                     .help("Also show when callers connected, and your own reads (rules, vault, status, activity)")
@@ -55,65 +48,122 @@ struct ActivityView: View {
     }
 }
 
-/// The table of one host's records, and its states while there are none.
+/// One host's records under its heading and scope bar, and its states
+/// while there are none to show.
 private struct Records: View {
     var feed: ActivityFeed
     var host: HostEntry
-    var filter: ActivityView.Filter
-    var showConnections: Bool
-    var search: String
     @Binding var inspecting: Bool
     @Environment(AppModel.self) private var app
 
     var body: some View {
-        @Bindable var app = app
-        let rows = rows
-        Group {
-            if feed.records.isEmpty, let error = feed.error {
-                Unavailable(error: error, host: host)
-            } else if feed.records.isEmpty, !feed.caughtUp {
-                ProgressView("Reading \(host.isThisMac ? "this Mac's" : "\(host.name)'s") activity…")
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if feed.records.isEmpty {
-                ContentUnavailableView("No activity yet", systemImage: "tray",
-                                       description: Text("Every request to \(host.name), allowed or refused, shows up here."))
-            } else {
-                Table(rows, selection: $app.selectedRecord) {
-                    TableColumn("Time") { record in
-                        Text(record.time, format: .dateTime.hour().minute().second()).foregroundStyle(.secondary)
-                    }
-                    .width(min: 95, ideal: 100, max: 130)
-                    TableColumn("Status") { record in StatusLabel(status: record.status).help(record.status.title) }
-                        .width(min: 140, ideal: 210, max: 280)
-                    TableColumn("Request") { record in
-                        Text(record.command ?? "—").font(.body.monospaced()).lineLimit(1).truncationMode(.middle)
-                            .help(record.command ?? "A connection")
-                    }
-                    .width(min: 160, ideal: 200)
-                    TableColumn("Caller") { record in
-                        let caller = callerLabel(record)
-                        Text("\(caller.who) \(Text("· \(caller.kind)").foregroundStyle(.secondary))")
-                    }
-                    .width(min: 110, ideal: 140, max: 240)
-                }
-                .safeAreaInset(edge: .bottom, spacing: 0) { footer }
-                .inspector(isPresented: $inspecting) {
-                    Group {
-                        if let record = feed.records.first(where: { $0.id == app.selectedRecord }) {
-                            RecordInspector(record: record, caller: callerLabel(record), hostName: host.name)
-                        } else {
-                            ContentUnavailableView("No Selection", systemImage: "doc.text.magnifyingglass",
-                                                   description: Text("Select a request to see who asked, why it was allowed or refused, and what ran."))
-                        }
-                    }
-                    .inspectorColumnWidth(min: 260, ideal: 320, max: 460)
+        let rows = app.activityRows(feed.records, on: host)
+        VStack(alignment: .leading, spacing: 0) {
+            heading
+            Divider()
+            Group {
+                if feed.records.isEmpty, let error = feed.error {
+                    Unavailable(error: error, host: host)
+                } else if feed.records.isEmpty, !feed.caughtUp {
+                    ProgressView("Reading \(host.isThisMac ? "this Mac's" : "\(host.name)'s") activity…")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if feed.records.isEmpty {
+                    ContentUnavailableView("No activity yet", systemImage: "tray",
+                                           description: Text("Every request to \(host.name), allowed or refused, shows up here."))
+                } else if rows.isEmpty {
+                    ContentUnavailableView("No matching requests in the loaded history", systemImage: "line.3.horizontal.decrease.circle",
+                                           description: Text(feed.hasOlder ? "Try another filter, or load earlier requests." : "Try another filter."))
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .safeAreaInset(edge: .bottom, spacing: 0) { footer(rows) }
+                } else {
+                    table(rows)
+                        .safeAreaInset(edge: .bottom, spacing: 0) { footer(rows) }
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 
-    /// Load Earlier, and whether the list is live.
-    private var footer: some View {
+    /// The heading, then the scope bar: the outcome, and the agent asked
+    /// for, which a click removes. Too narrow for one line, they stack.
+    private var heading: some View {
+        @Bindable var app = app
+        let outcome = Picker("Show", selection: $app.activityFilter) {
+            ForEach(ActivityView.Filter.allCases) { Text($0.rawValue).tag($0) }
+        }
+        .pickerStyle(.segmented)
+        .fixedSize()
+        return VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Activity").font(.title2.bold())
+                Text(host.subtitle(local: app.status)).font(.callout).foregroundStyle(.secondary)
+            }
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 12) {
+                    outcome
+                    agentFilter
+                }
+                VStack(alignment: .leading, spacing: 8) {
+                    outcome
+                    agentFilter
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+    }
+
+    @ViewBuilder private var agentFilter: some View {
+        if let uid = app.activityAgent(on: host) {
+            let name = app.agents?.first(where: { $0.uid == uid })?.name
+                ?? feed.records.last(where: { $0.agent == uid && $0.callerName != nil })?.callerName ?? "Unnamed agent"
+            Button {
+                app.activityAgent = nil
+            } label: {
+                Label("Agent: \(name)", systemImage: "xmark.circle.fill")
+            }
+            .buttonStyle(.bordered)
+            .help("Show every agent's requests")
+            .accessibilityLabel("Remove filter: agent \(name)")
+        }
+    }
+
+    private func table(_ rows: [AuditRecord]) -> some View {
+        @Bindable var app = app
+        return Table(rows, selection: $app.selectedRecord) {
+            TableColumn("Time") { record in
+                Text(record.time, format: .dateTime.hour().minute().second()).foregroundStyle(.secondary)
+            }
+            .width(min: 95, ideal: 100, max: 130)
+            TableColumn("Status") { record in StatusLabel(status: record.status).help(record.status.title) }
+                .width(min: 140, ideal: 210, max: 280)
+            TableColumn("Request") { record in
+                Text(record.command ?? "—").font(.body.monospaced()).lineLimit(1).truncationMode(.middle)
+                    .help(record.command ?? "A connection")
+            }
+            .width(min: 160, ideal: 200)
+            TableColumn("Caller") { record in
+                let caller = callerLabel(record)
+                Text("\(caller.who) \(Text("· \(caller.kind)").foregroundStyle(.secondary))")
+            }
+            .width(min: 110, ideal: 140, max: 240)
+        }
+        .inspector(isPresented: $inspecting) {
+            Group {
+                if let record = app.selectedRecord(in: rows) {
+                    RecordInspector(record: record, caller: callerLabel(record), hostName: host.name)
+                } else {
+                    ContentUnavailableView("No Selection", systemImage: "doc.text.magnifyingglass",
+                                           description: Text("Select a request to see who asked, why it was allowed or refused, and what ran."))
+                }
+            }
+            .inspectorColumnWidth(min: 260, ideal: 320, max: 460)
+        }
+    }
+
+    /// Load Earlier, and how many of the records loaded match: what's
+    /// loaded is not all there is while earlier records exist.
+    private func footer(_ rows: [AuditRecord]) -> some View {
         HStack {
             if feed.hasOlder {
                 Button(feed.loadingOlder ? "Loading…" : "Load Earlier") { Task { await feed.loadOlder() } }
@@ -123,7 +173,8 @@ private struct Records: View {
             if let error = feed.error {
                 Label(ErrorCopy.short(error, host: host.spoken), systemImage: "exclamationmark.triangle").foregroundStyle(.secondary).lineLimit(1)
             } else {
-                Text("\(feed.records.count) records\(feed.caughtUp ? "" : " · reading…")").foregroundStyle(.secondary)
+                Text("\(rows.count) \(rows.count == 1 ? "match" : "matches") · \(feed.records.count) \(feed.records.count == 1 ? "record" : "records") loaded\(feed.caughtUp ? "" : " · reading…")")
+                    .foregroundStyle(.secondary)
             }
         }
         .font(.callout)
@@ -131,21 +182,6 @@ private struct Records: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
         .background(.bar)
-    }
-
-    private var rows: [AuditRecord] {
-        let query = search.trimmingCharacters(in: .whitespaces).lowercased()
-        return feed.records.reversed().filter { record in
-            guard showConnections || !record.isBackground else { return false }
-            switch filter {
-            case .all: break
-            case .allowed: guard record.decision == "allow" else { return false }
-            case .refused: guard record.isRefused else { return false }
-            }
-            guard !query.isEmpty else { return true }
-            let caller = callerLabel(record)
-            return [record.command ?? "", caller.who, caller.kind, record.status.title].contains { $0.lowercased().contains(query) }
-        }
     }
 
     private func callerLabel(_ record: AuditRecord) -> (who: String, kind: String) {
