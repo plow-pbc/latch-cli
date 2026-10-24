@@ -120,12 +120,22 @@ struct ShellTests {
         await waitUntil { splits(window.contentView!).count == 2 }
         // The outermost: the sidebar, then the rest.
         let split = try #require(splits(window.contentView!).last)
-        for _ in 0..<30 {
+        // Dragged until it goes no wider: its widest, whatever this macOS
+        // makes of the column's maximum.
+        var widths: [CGFloat] = []
+        for _ in 0..<40 {
             split.setPosition(split.arrangedSubviews[0].frame.width + 4, ofDividerAt: 0)
             window.layoutIfNeeded()
             window.displayIfNeeded()
             try await Task.sleep(for: .milliseconds(10))
+            widths.append(split.arrangedSubviews[0].frame.width)
         }
-        #expect(split.arrangedSubviews[0].frame.width == 320)
+        #expect(Set(widths.suffix(5)).count == 1, "\(widths)")
+        // Wider than where it gave up (~280 points), and the layout settles:
+        // the window keeps its size and needs no more passes.
+        #expect(widths.last! > 290)
+        #expect(window.frame.width == 1040)
+        window.layoutIfNeeded()
+        #expect(!window.contentView!.needsLayout && !window.contentView!.needsUpdateConstraints)
     }
 }
