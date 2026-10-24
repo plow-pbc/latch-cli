@@ -348,7 +348,7 @@ async fn run_host(
     lifetime: Lifetime,
 ) -> Result<(), Failure> {
     let binary = Binary::at(&workers.program)?;
-    let plow = Plow::new(&config.api_url, &credential::token(state)?);
+    let plow = Plow::new(&config.api_url, &credential::token(state)?)?;
     let gatekeeper = Gatekeeper::new(
         plow.clone(),
         Gatekeeper::provider_for_host(&state.path)

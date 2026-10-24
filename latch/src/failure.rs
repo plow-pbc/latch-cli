@@ -345,6 +345,7 @@ codes! {
     needs_setup: Failed,
     needs_text: Failed,
     no_answer: Unknown,
+    no_ca_certificates: Failed,
     no_binary: Failed,
     no_credential: Usage,
     no_dialog: Failed,

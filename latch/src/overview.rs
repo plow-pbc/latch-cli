@@ -376,7 +376,10 @@ impl Facts {
                 vec![plain("agents can't run programs here")],
             ));
         }
-        rows.extend(self.connectors(width));
+        // Only the owner's own login turns connectors on.
+        if !self.agent() {
+            rows.extend(self.connectors(width));
+        }
         rows.push(labeled("Update", self.update()));
         let mut folder = folded(&self.folder(), width.saturating_sub(LABEL))
             .into_iter()
@@ -544,7 +547,8 @@ impl Facts {
     /// for it, and why it didn't say, or that it is still being asked.
     fn plugins(&self, host: &status::Host) -> Line {
         let mut line = match &host.plugins {
-            Some(plugins) if !plugins.is_empty() => {
+            Some(plugins) if plugins.is_empty() => return vec![toned("no plugins on", Tone::Dim)],
+            Some(plugins) => {
                 let mut line = vec![];
                 for plugin in plugins {
                     if !line.is_empty() {
@@ -557,15 +561,13 @@ impl Facts {
                 }
                 return line;
             }
-            _ => self.seen(host),
+            None => self.seen(host),
         };
-        line.push(match (&host.plugins, host.plugins_reason.as_deref()) {
-            (Some(_), _) => toned(" · no plugins on", Tone::Dim),
-            (None, Some("host_offline")) => return line,
-            (None, None) if host.online == Some(false) => return line,
-            (None, Some("host_unreachable")) => toned(" · no answer", Tone::Warn),
-            (None, Some(reason)) => toned(format!(" · {reason}"), Tone::Warn),
-            (None, None) => toned(" · …", Tone::Warn),
+        line.push(match host.plugins_reason.as_deref() {
+            Some("host_offline") => return line,
+            None if host.online == Some(false) => return line,
+            Some(reason) => toned(format!(" · {}", why(reason)), Tone::Warn),
+            None => toned(" · …", Tone::Warn),
         });
         line
     }
@@ -780,6 +782,17 @@ fn footer() -> Line {
         toned("For agents (JSON): latch status.", Tone::Dim),
         toned(" Live activity: latch dashboard.", Tone::Dim),
     ]
+}
+
+/// Why a host didn't say which plugins it has on, in words.
+fn why(reason: &str) -> String {
+    match reason {
+        "host_unreachable" => "no answer".into(),
+        "caller_denied" => "refused this login".into(),
+        "protocol_mismatch" => "another latch version".into(),
+        // The host's own code.
+        code => code.replace('_', " "),
+    }
 }
 
 /// Not answered about its plugins yet, nor known not to answer.

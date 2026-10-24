@@ -83,6 +83,7 @@ async fn a_disabled_connector_is_refused_before_it_is_judged_or_given_a_credenti
     let (exit, code, details) = refusal(&answer);
     assert_eq!((exit, code), (Exit::Denied, "not_enabled"));
     assert_eq!(details["enable"], "latch plugins enable google");
+    assert_eq!(details["state"], "disabled");
     assert!(rest.is_empty());
     let owners = t.local_call("google", accounts()).await;
     assert_eq!(refusal(&owners).1, "not_enabled");
@@ -149,6 +150,10 @@ async fn what_this_host_cannot_run_is_audited_as_its_refusal() {
         let (answer, _) = t.call(&agent, op, read).await;
         let (exit, code, _) = refusal(&answer);
         assert_eq!((exit, code), (Exit::Failed, "unsupported_platform"));
+        // Nor can its owner turn the connector on here.
+        let enabled = plugins(&t, "enable", op).await;
+        let (exit, code, _) = refusal(&enabled);
+        assert_eq!((exit, code), (Exit::Failed, "unsupported_platform"));
     }
 
     assert_eq!(t.judged(), 0, "nothing was judged");
@@ -187,9 +192,21 @@ async fn google_setup_refuses_a_missing_or_unverified_gog_and_stays_off() {
     let answer = plugins(&t, "enable", "google").await;
     assert_eq!(refusal(&answer).1, "gog_unverified");
     assert_eq!(state_of(&t, "google").await["state"], "needs_setup");
-    assert_eq!(
-        refusal(&t.local_call("google", accounts()).await).1,
-        "not_enabled"
+    // A call says it needs setup: its owner did turn it on.
+    let Response::Error {
+        code,
+        message,
+        details,
+        ..
+    } = t.local_call("google", accounts()).await
+    else {
+        panic!("a call to a connector that needs setup is refused");
+    };
+    assert_eq!(code, "not_enabled");
+    assert_eq!(details["state"], "needs_setup");
+    assert!(
+        message.starts_with("google needs setup on this host"),
+        "{message}"
     );
     assert_eq!(t.plow.saw("access-token"), 0, "no credential asked for");
 }

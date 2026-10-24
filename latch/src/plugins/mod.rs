@@ -57,15 +57,21 @@ impl Connector {
     }
 
     pub fn named(name: &str) -> Result<Connector, Failure> {
-        Self::ALL
-            .iter()
-            .copied()
-            .find(|connector| connector.name() == name)
-            .ok_or_else(|| {
-                let names: Vec<&str> = Self::ALL.iter().map(|c| c.name()).collect();
-                let message = format!("no plugin {name:?} here; plugins: {}", names.join(", "));
-                Failure::new(code::unknown_plugin, message)
-            })
+        if let Some(connector) = Self::ALL.iter().copied().find(|c| c.name() == name) {
+            return Ok(connector);
+        }
+        // Messages and Contacts are connectors only on a Mac.
+        if !crate::messages::host::actions(name).is_empty() {
+            let mut failure = Failure::new(
+                code::unsupported_platform,
+                format!("this host is not a Mac; the {name} plugin runs on macOS hosts only"),
+            );
+            failure.next = Some(format!("run `latch plugins enable {name}` on a Mac host").into());
+            return Err(failure);
+        }
+        let names: Vec<&str> = Self::ALL.iter().map(|c| c.name()).collect();
+        let message = format!("no plugin {name:?} here; plugins: {}", names.join(", "));
+        Err(Failure::new(code::unknown_plugin, message))
     }
 
     /// The connector a host operation belongs to, if any.
@@ -78,16 +84,30 @@ impl Connector {
         format!("latch plugins enable {}", self.name())
     }
 
-    fn not_enabled(self) -> Failure {
-        let mut failure = Failure::new(
-            code::not_enabled,
-            format!(
-                "{} is not enabled on this host; its owner turns it on there with `{}`",
-                self.name(),
-                self.enable_command()
+    /// Not enabled: never turned on (`setting` none), or turned on with a
+    /// setup that did not succeed.
+    fn not_enabled(self, setting: Option<&Setting>) -> Failure {
+        let (state, message) = match setting {
+            Some(Setting::NeedsSetup { .. }) => (
+                "needs_setup",
+                format!(
+                    "{} needs setup on this host; its owner sets it up there with `{}`",
+                    self.name(),
+                    self.enable_command()
+                ),
             ),
-        );
-        failure.details = json!({"plugin": self.name(), "enable": self.enable_command()});
+            _ => (
+                "disabled",
+                format!(
+                    "{} is not enabled on this host; its owner turns it on there with `{}`",
+                    self.name(),
+                    self.enable_command()
+                ),
+            ),
+        };
+        let mut failure = Failure::new(code::not_enabled, message);
+        failure.details =
+            json!({"plugin": self.name(), "state": state, "enable": self.enable_command()});
         failure
     }
 }
@@ -145,8 +165,9 @@ impl Plugins {
     /// counts as running until the returned guard is dropped.
     pub fn start(&self, connector: Connector) -> Result<Running<'_>, Failure> {
         let mut inner = self.inner.lock().expect("plugins lock");
-        if inner.settings.get(&connector) != Some(&Setting::Enabled) {
-            return Err(connector.not_enabled());
+        match inner.settings.get(&connector) {
+            Some(Setting::Enabled) => {}
+            setting => return Err(connector.not_enabled(setting)),
         }
         *inner.running.entry(connector).or_default() += 1;
         Ok(Running {

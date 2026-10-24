@@ -375,6 +375,29 @@ class BinaryInstall(unittest.TestCase):
                 self.assertIn("next: run `latch login` to log in", said.stdout)
                 self.assertNotIn("setup", said.stdout)
 
+    def test_a_home_this_user_cannot_write_is_refused_with_the_options_that_fix_it(self):
+        # As for a user whose HOME is / in a container: no ~/.local/bin to make.
+        parent = ROOT / ".dev/tests"
+        parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=parent) as directory:
+            root = Path(directory)
+            setup, binary, tools = fixture(root, root / "state", "#!/bin/sh\n")
+            home = root / "home"
+            home.mkdir(mode=0o555)
+            env = {**os.environ, "HOME": f"{home}/", "PATH": f"{tools}:{os.environ['PATH']}"}
+            try:
+                result = subprocess.run(["sh", str(setup / "install-binary.sh"), "--client-only",
+                                         str(binary)], cwd=root, env=env, capture_output=True,
+                                        text=True)
+            finally:
+                home.chmod(0o755)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(f"can't write to {home}/.local/bin;", result.stderr)
+            self.assertIn("--bin-dir DIR", result.stderr)
+            self.assertIn("LATCH_STATE_DIR", result.stderr)
+            self.assertNotIn("//", result.stderr)
+            self.assertFalse((home / ".local").exists())
+
     def test_client_only_installs_no_browser_so_one_named_is_refused(self):
         result = subprocess.run(["sh", str(ROOT / "latch/install-binary.sh"), "--client-only",
                                  "--browser", "chrome", "/nonexistent/latch"],

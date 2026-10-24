@@ -147,7 +147,7 @@ pub struct Directory {
 /// would, without registering or dialing anything.
 pub async fn directory(state: &StateDir) -> Result<Directory, Failure> {
     let config = state.require_login()?;
-    let plow = Plow::new(&config.api_url, &credential::token(state)?);
+    let plow = Plow::new(&config.api_url, &credential::token(state)?)?;
     let (peers, owner_uid, display_name) =
         tokio::try_join!(plow.list_peers(), plow.owner_uid(), plow.display_name())?;
     let mut listed = hosts::only_hosts(peers, &config.peer.key);
@@ -229,7 +229,8 @@ pub struct LocalStatus {
     pub login: Option<Login>,
     pub this_machine: ThisMachine,
     /// Each connector: `name` and `state` (enabled, disabled or
-    /// needs_setup), and for one not enabled, why and the owner's `enable`.
+    /// needs_setup), and for one not enabled, why and the owner's `enable`
+    /// (on an agent's login, why alone).
     pub plugins: Value,
     /// Whether a newer build is available, as the host last looked.
     pub update: crate::update::Status,
@@ -297,6 +298,19 @@ pub struct Hosting {
 pub fn local(state: &StateDir) -> Result<LocalStatus, Failure> {
     let config = state.load_config()?;
     let mut plugins = crate::plugins::list_saved(state)?;
+    // Only the owner's own login turns plugins on: an agent's has no
+    // command to run.
+    if config
+        .as_ref()
+        .is_some_and(|config| config.peer.kind != "device")
+    {
+        for plugin in plugins["plugins"].as_array_mut().into_iter().flatten() {
+            let off = plugin.as_object_mut().and_then(|p| p.remove("enable"));
+            if off.is_some() {
+                plugin["reason"] = json!("turned on by the owner's own login, not an agent's");
+            }
+        }
+    }
     let dir = state.path.canonicalize().unwrap_or(state.path.clone());
     let Hosted {
         hosting,
