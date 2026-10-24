@@ -814,11 +814,11 @@ package enum SnapshotRunner {
         print(file.path)
     }
 }
-/// A window for a still, which never shows: kept off every display (a
-/// titled window is otherwise moved onto one, such as a display left of
-/// the main one) and transparent. The stills draw its views, not what the
-/// window server shows.
-private final class Offscreen: NSWindow {
+/// A window for a still or a test, which never shows: kept off every
+/// display (a titled window is otherwise moved onto one, such as a display
+/// left of the main one) and transparent. The stills draw its views, not
+/// what the window server shows.
+final class Offscreen: NSWindow {
     override init(contentRect: NSRect, styleMask: NSWindow.StyleMask, backing: NSWindow.BackingStoreType, defer flag: Bool) {
         super.init(contentRect: contentRect, styleMask: styleMask, backing: backing, defer: flag)
         alphaValue = 0

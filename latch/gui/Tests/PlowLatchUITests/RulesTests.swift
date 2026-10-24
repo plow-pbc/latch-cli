@@ -225,8 +225,8 @@ struct RulesDraftTests {
         app.typeRules("Agents may read ~/Projects.", at: every, from: app.savedRules(every))
         app.typeRules("scout may run make test.", at: scout, from: app.savedRules(scout))
         let seen = SavePublished()
-        let window = OffscreenWindow(contentRect: CGRect(x: -4000, y: -4000, width: 600, height: 500), styleMask: [.titled],
-                                     backing: .buffered, defer: false)
+        let window = Offscreen(contentRect: CGRect(x: -4000, y: -4000, width: 600, height: 500), styleMask: [.titled],
+                               backing: .buffered, defer: false)
         window.contentView = NSHostingView(rootView: Form {
             RulesEditor(title: "every", note: "", saved: app.savedRules(every), host: host, agent: nil)
             RulesEditor(title: "scout", note: "", saved: app.savedRules(scout), host: host, agent: scoutAgent)
