@@ -73,9 +73,6 @@ private struct HostRules: View {
             .onScrollGeometryChange(for: CGFloat.self, of: { $0.contentSize.height }) { _, _ in
                 if let uid = app.rulesScrollTarget(on: host) { scroller.scrollTo(uid, anchor: .center) }
             }
-            // Leaving this host's Rules first: the request goes too, so it
-            // can't take the focus when it's next shown.
-            .onDisappear { app.dropRulesFocus(on: host) }
             .onChange(of: app.trial.results[host.name]) {
                 scroller.scrollTo(Self.verdictAnchor, anchor: .bottom)
             }

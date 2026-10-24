@@ -53,24 +53,22 @@ struct AgentsHubTests {
     }
 
     // A request for helper's rules on pi-kitchen: taken only by
-    // pi-kitchen's helper editor, once; gone if pi-kitchen's Rules goes
-    // first, so it can't take the focus on another host or later.
+    // pi-kitchen's helper editor, once; gone if another host is picked
+    // first, so it can't take the focus there or later.
     @Test func aRulesRequestIsTakenOnlyByItsHostsEditor() throws {
         let app = AppModel(client: FakeLatchClient(), store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
         app.stage(status: try Fixtures.decode(Fixtures.serving))
         app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
-        let studio = try #require(app.hosts.first { $0.name == "studio" }), kitchen = try #require(app.hosts.first { $0.name == "pi-kitchen" })
+        let kitchen = try #require(app.hosts.first { $0.name == "pi-kitchen" })
         let helper = "3971582e59baad83250141c8dcc95855", scout = "ba3c0b3ad1eba7a9a1eb04b67c9db0dd"
         app.openRules(kitchen, agent: helper)
         #expect(!app.takeRulesFocus(AgentTarget(host: "studio", agent: helper)))
         #expect(!app.takeRulesFocus(AgentTarget(host: "pi-kitchen", agent: scout)))
-        app.dropRulesFocus(on: studio)
         #expect(app.takeRulesFocus(AgentTarget(host: "pi-kitchen", agent: helper)))
         #expect(!app.takeRulesFocus(AgentTarget(host: "pi-kitchen", agent: helper)))
 
         app.openRules(kitchen, agent: helper)
         app.showHost("studio")
-        app.dropRulesFocus(on: kitchen)
         #expect(app.rulesFocus == nil)
         #expect(!app.takeRulesFocus(AgentTarget(host: "pi-kitchen", agent: helper)))
     }

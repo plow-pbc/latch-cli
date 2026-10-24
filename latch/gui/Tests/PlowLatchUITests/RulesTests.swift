@@ -172,6 +172,68 @@ struct RulesScrollTests {
         #expect(app.takeRulesFocus(AgentTarget(host: host.name, agent: scout)))
         #expect(app.rulesScrollTarget(on: host) == nil)
     }
+
+    // In a real (offscreen) window too short to show it, Agents' Rules
+    // button for helper, who has no rules of its own on studio: its editor
+    // is scrolled into view, takes the request, begins an empty draft and
+    // has the keyboard focus.
+    @Test func anAskedForEditorBelowTheFoldIsRevealedAndFocused() async throws {
+        let client = RulesClient()
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
+        app.stage(status: try Fixtures.decode(Fixtures.serving))
+        app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
+        let host = try #require(app.host)
+        await app.refreshRules(on: host)
+        await app.refreshAgents()
+        let helper = try #require(app.agents?.first { $0.name == "helper" }?.uid)
+        let key = AppModel.RulesKey(host: host.name, agent: helper)
+        #expect(app.savedRules(key) == nil)
+        let window = OffscreenWindow(contentRect: CGRect(x: -4000, y: -4000, width: 600, height: 260), styleMask: [.titled],
+                                     backing: .buffered, defer: false)
+        window.contentView = NSHostingView(rootView: HostRulesView().environment(app))
+        // Setting its content can move the window onto a display: back.
+        window.setFrameOrigin(CGPoint(x: -4000, y: -4000))
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+        #expect(!NSScreen.screens.contains { $0.frame.intersects(window.frame) })
+        await waitUntil { !textViews(in: window.contentView!).isEmpty }
+        app.openRules(host, agent: helper)
+        await waitUntil { app.rulesFocus == nil }
+        #expect(app.rulesDrafts[key]?.text == "")
+        await waitUntil { window.firstResponder is NSTextView }
+        let editor = try #require(window.firstResponder as? NSTextView)
+        // helper's: the only editor with no text (the rules for every
+        // agent and scout's own have theirs).
+        #expect(editor.string.isEmpty)
+        #expect(textViews(in: window.contentView!).filter { !$0.string.isEmpty }.count == 2)
+        #expect(!editor.visibleRect.isEmpty)
+    }
+
+    // Rules asked for on a host Plow counts offline (its Rules says so and
+    // shows no editor), then another host or screen: the request goes, so
+    // the agent's editor doesn't take the focus, or begin a draft, once
+    // that host is back.
+    @Test func leavingRulesInAnyStateDropsItsRequest() throws {
+        let app = AppModel(client: RulesClient(), store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
+        app.stage(status: try Fixtures.decode(Fixtures.serving))
+        app.stage(account: try Fixtures.decode(Fixtures.studioHosts.replacingOccurrences(
+            of: #""self":false,"online":true,"last_seen_at":"2026-10-22T22:06:30.037004Z""#,
+            with: #""self":false,"online":false,"last_seen_at":null"#)))
+        let kitchen = try #require(app.hosts.first { $0.name == "pi-kitchen" })
+        #expect(kitchen.online == false)
+        let helper = AgentTarget(host: "pi-kitchen", agent: "3971582e59baad83250141c8dcc95855")
+        app.openRules(kitchen, agent: helper.agent)
+        #expect(app.rulesFocus == helper)
+        app.showHost("studio")
+        #expect(app.rulesFocus == nil)
+        #expect(!app.takeRulesFocus(helper))
+        app.openRules(kitchen, agent: helper.agent)
+        app.place = .account(.agents)
+        #expect(app.rulesFocus == nil)
+        app.openRules(kitchen, agent: helper.agent)
+        app.place = .host(.vault)
+        #expect(app.rulesFocus == nil)
+    }
 }
 
 /// Rules being edited stay while the person goes elsewhere, and Save (⌘S)

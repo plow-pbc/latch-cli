@@ -134,7 +134,6 @@ enum TestHooks {
             app.trial.request = String(argument[argument.index(after: bar)...])
             Task { await app.trial.run(on: host, app: app) }
         }
-        on("focus") { uid in if let host = app.host, let uid { app.openRules(host, agent: uid) } }
         // Agents' buttons on a host's row, "HOST|UID": Rules, Activity;
         // and Remove…, confirmed: "UID".
         func onAgentRow(_ command: String, _ act: @escaping @MainActor (HostEntry, String) -> Void) {

@@ -114,13 +114,16 @@ final class AppModel {
             case let .account(page): self.page = page
             case let .host(screen): (page, self.screen) = (nil, screen)
             }
+            dropRulesFocusLeft()
         }
     }
     private var page: AccountPage?
     private(set) var screen: HostScreen = .home
     /// The host the workspace shows, as the sidebar picked it; nil until
     /// one is picked.
-    var chosenHost: String?
+    var chosenHost: String? {
+        didSet { dropRulesFocusLeft() }
+    }
 
     /// A sidebar host row's click: that host's workspace, on the screen it
     /// was last on.
@@ -738,10 +741,13 @@ final class AppModel {
         return true
     }
 
-    /// A host's Rules went before the editor asked for came into view:
-    /// the request goes with it, so it can't take the focus later.
-    func dropRulesFocus(on host: HostEntry) {
-        if rulesFocus?.host == host.name { rulesFocus = nil }
+    /// The window left the Rules a request was for, before its editor
+    /// took it, whatever that Rules showed (offline, unavailable, loading):
+    /// the request goes, so it can't take the focus, or begin a draft, when
+    /// that Rules is next shown.
+    private func dropRulesFocusLeft() {
+        guard let focus = rulesFocus, place != .host(.rules) || host?.name != focus.host else { return }
+        rulesFocus = nil
     }
 
     /// The agent's rules to scroll to on a host's Rules screen: the one
