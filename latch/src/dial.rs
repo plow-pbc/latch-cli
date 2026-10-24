@@ -553,13 +553,15 @@ mod tests {
         assert!(logged.contains("error=Connecting to ourself"), "{logged}");
     }
 
-    #[tokio::test]
+    // On a paused clock, time passes only for the waits themselves, so a
+    // busy machine that is slow to bind or schedule doesn't count.
+    #[tokio::test(start_paused = true)]
     async fn a_connection_that_never_comes_says_it_timed_out() {
         // Nothing answers at the host's relay, so the dial runs out of time.
         let other = iroh::SecretKey::generate().public().to_string();
         let (_dir, state, host) = dialing(Some(other), "http://127.0.0.1:9/");
         let within = Duration::from_millis(300);
-        let started = Instant::now();
+        let started = tokio::time::Instant::now();
         let (dialed, logged) = traced(connect_within(&state, &host, within)).await;
         // The time the message gives is the time it took.
         let took = started.elapsed();
