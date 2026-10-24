@@ -29,10 +29,13 @@ command (`latch browser setup --engine chrome`; an `open` that names no
 engine also mentions `--engine camoufox`).
 
 A build may add launch arguments of its own (`args`) after the recipe's.
-The macOS builds add `--disable-crashpad-for-testing`, which keeps Chrome's
-crash handler from writing to the user's Library; the Linux arm64 build
-leaves it out, because with it the network service crashes at once on the
-Pi ("FD ownership violation") and no page loads.
+The macOS builds add `--disable-crashpad-for-testing`, which the pinned
+macOS build does not act on: Chrome's crash handler still starts, writing
+only to the runtime's scratch folder (`BREAKPAD_DUMP_LOCATION`), never the
+user's Library. The handler leaves the browser's process group as it starts
+and ends on its own soon after the browser does. The Linux arm64 build
+leaves the flag out, because with it the network service crashes at once on
+the Pi ("FD ownership violation") and no page loads.
 
 latch hashes the whole unpacked build (every file's bytes and execute bit,
 every link and folder) and refuses one that differs from the pin's

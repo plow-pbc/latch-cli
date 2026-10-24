@@ -802,18 +802,36 @@ async fn the_engine_runs_from_the_host_with_its_own_sandbox_and_leaves_nothing(e
     let closed = session.close().await.unwrap();
     println!("close: {closed}");
     assert_eq!(closed["closed"], true);
-    let left: Vec<String> = processes()
-        .into_iter()
-        .filter(|p| {
-            p.pgid == browser
-                || engine.iter().any(|e| e.pid == p.pid)
-                || p.args.contains(&data.display().to_string())
-                || p.args.contains(&scratch.display().to_string())
-        })
-        .map(|p| format!("{} {}", p.pid, p.args))
-        .collect();
-    println!("processes left: {}", left.len());
-    assert!(left.is_empty(), "{left:#?}");
+    // The browser's process group is gone when close answers. Chrome's
+    // crash handlers leave the group as they start and end on their own
+    // once the browser has, later on a busy machine: they get a while.
+    let left = |in_group: bool| -> Vec<String> {
+        processes()
+            .into_iter()
+            .filter(|p| {
+                (p.pgid == browser || engine.iter().any(|e| e.pid == p.pid)) == in_group
+                    && (in_group
+                        || p.args.contains(&data.display().to_string())
+                        || p.args.contains(&scratch.display().to_string()))
+            })
+            .map(|p| format!("{} {}", p.pid, p.args))
+            .collect()
+    };
+    let grouped = left(true);
+    println!("processes left in the browser's group: {}", grouped.len());
+    assert!(grouped.is_empty(), "{grouped:#?}");
+    let waited = std::time::Instant::now();
+    let mut outside = left(false);
+    while !outside.is_empty() && waited.elapsed() < Duration::from_secs(10) {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        outside = left(false);
+    }
+    println!(
+        "processes left outside it after {:?}: {}",
+        waited.elapsed(),
+        outside.len()
+    );
+    assert!(outside.is_empty(), "{outside:#?}");
     // The scratch folder and the profile go with the runtime.
     println!(
         "after close: scratch exists {}, profile exists {}",
