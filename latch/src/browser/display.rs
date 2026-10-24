@@ -197,11 +197,13 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(50));
         };
+        // One read of its state, after its name: a process that is gone, a
+        // zombie (Z), or one being reaped (X, seen just after Z) has ended.
         let alive = || {
-            std::path::Path::new(&format!("/proc/{pid}")).exists()
-                && !std::fs::read_to_string(format!("/proc/{pid}/stat"))
-                    .unwrap_or_default()
-                    .contains(") Z ")
+            std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+                stat.rsplit_once(") ")
+                    .is_some_and(|(_, state)| !state.starts_with(['Z', 'X']))
+            })
         };
         assert!(alive());
         helper.kill().unwrap();
