@@ -149,8 +149,9 @@ struct RulesTests {
 
 @MainActor
 struct RulesScrollTests {
-    // A pill sets the agent before its host's rules have loaded; the scroll
-    // waits for the editor rather than firing at nothing.
+    // Agents' Rules button asks for an agent before its host's rules have
+    // loaded; the scroll waits for the editor rather than firing at
+    // nothing, and the request stays until the editor takes it.
     @Test func aPillScrollsOnceTheRulesHaveLoaded() async throws {
         let client = RulesClient()
         let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
@@ -162,8 +163,14 @@ struct RulesScrollTests {
         #expect(app.rulesScrollTarget(on: host) == nil)
         await app.refreshRules(on: host)
         #expect(app.rulesScrollTarget(on: host) == nil)
+        // The request waits for its editor however the reads go: nothing
+        // but the editor taking it, or its Rules going, ends it.
         await app.refreshAgents()
         #expect(app.rulesScrollTarget(on: host) == scout)
+        await app.refreshRules(on: host)
+        #expect(app.rulesScrollTarget(on: host) == scout)
+        #expect(app.takeRulesFocus(AgentTarget(host: host.name, agent: scout)))
+        #expect(app.rulesScrollTarget(on: host) == nil)
     }
 }
 

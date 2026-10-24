@@ -61,21 +61,17 @@ private struct HostRules: View {
                 }
             }
             .formStyle(.grouped)
-            // An agent's rules asked for (Agents' Rules button): once its
-            // editor can exist (the rules and agents read), it's scrolled to
-            // on each frame until the editor has taken the request and its
-            // focus, which a row the Form hasn't made yet does only once
-            // it's scrolled to; at most a second. Not animated: an animated
-            // scrollTo in this Form never moves.
-            .task(id: app.rulesScrollTarget(on: host)) {
-                guard let uid = app.rulesScrollTarget(on: host) else { return }
-                let asked = AgentTarget(host: host.name, agent: uid)
-                var frames = 0
-                repeat {
-                    scroller.scrollTo(uid, anchor: .center)
-                    try? await Task.sleep(for: .milliseconds(16))
-                    frames += 1
-                } while app.rulesFocus == asked && frames < 60 && !Task.isCancelled
+            // An agent's rules asked for (Agents' Rules button): scrolled to
+            // once its editor can exist (the rules and agents read), and
+            // again each time the Form's content changes size, as rows it
+            // lays out later arrive, until the editor, on screen, has taken
+            // the request. Not animated: an animated scrollTo in this Form
+            // never moves.
+            .onChange(of: app.rulesScrollTarget(on: host), initial: true) { _, uid in
+                if let uid { scroller.scrollTo(uid, anchor: .center) }
+            }
+            .onScrollGeometryChange(for: CGFloat.self, of: { $0.contentSize.height }) { _, _ in
+                if let uid = app.rulesScrollTarget(on: host) { scroller.scrollTo(uid, anchor: .center) }
             }
             // Leaving this host's Rules first: the request goes too, so it
             // can't take the focus when it's next shown.
@@ -122,6 +118,8 @@ struct RulesEditor: View {
     var agent: AgentsList.Agent?
     @Environment(AppModel.self) private var app
     @FocusState private var focused: Bool
+    /// Its first row is on screen.
+    @State private var visible = false
 
     private var key: AppModel.RulesKey { .init(host: host.name, agent: agent?.uid) }
 
@@ -145,17 +143,18 @@ struct RulesEditor: View {
                         focused = true
                     }
                 }
+                .onScrollVisibilityChange(threshold: 0.5) { visible = $0 }
             } else {
-                DraftEditor(key: key, saved: saved, draft: draft, title: title, host: host, focused: $focused, begin: begin)
+                DraftEditor(key: key, saved: saved, draft: draft, title: title, host: host, focused: $focused, visible: $visible, begin: begin)
             }
         } header: {
             Text(title)
         } footer: {
             Text(note).foregroundStyle(.secondary)
         }
-        // Asked for: it takes the request, begins a draft if it has no
-        // rules yet, and has the focus.
-        .onChange(of: asked, initial: true) { _, asked in
+        // Asked for and on screen: it takes the request, begins a draft if
+        // it has no rules yet, and has the focus.
+        .onChange(of: visible ? asked : nil, initial: true) { _, asked in
             guard let asked, app.takeRulesFocus(asked) else { return }
             if saved == nil, app.rulesDrafts[key] == nil { begin() }
             focused = true
@@ -178,6 +177,7 @@ private struct DraftEditor: View {
     var title: String
     var host: HostEntry
     var focused: FocusState<Bool>.Binding
+    var visible: Binding<Bool>
     var begin: () -> Void
     @Environment(AppModel.self) private var app
 
@@ -194,6 +194,7 @@ private struct DraftEditor: View {
         .accessibilityLabel(title)
         .focused(focused)
         .focusedValue(\.rulesSave, save)
+        .onScrollVisibilityChange(threshold: 0.5) { visible.wrappedValue = $0 }
         if let error = app.rulesErrors[key] {
             Label { ErrorText(error: error, host: host.spoken) } icon: { Image(systemName: "exclamationmark.triangle") }
                 .foregroundStyle(.red)
