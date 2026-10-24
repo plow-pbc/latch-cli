@@ -188,8 +188,8 @@ struct RulesScrollTests {
         let helper = try #require(app.agents?.first { $0.name == "helper" }?.uid)
         let key = AppModel.RulesKey(host: host.name, agent: helper)
         #expect(app.savedRules(key) == nil)
-        let window = OffscreenWindow(contentRect: CGRect(x: -4000, y: -4000, width: 600, height: 260), styleMask: [.titled],
-                                     backing: .buffered, defer: false)
+        let window = Offscreen(contentRect: CGRect(x: -4000, y: -4000, width: 600, height: 260), styleMask: [.titled],
+                               backing: .buffered, defer: false)
         window.contentView = NSHostingView(rootView: HostRulesView().environment(app))
         // Setting its content can move the window onto a display: back.
         window.setFrameOrigin(CGPoint(x: -4000, y: -4000))

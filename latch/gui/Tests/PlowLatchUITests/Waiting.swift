@@ -1,4 +1,3 @@
-import AppKit
 import Synchronization
 import Testing
 
@@ -46,17 +45,4 @@ final class Gate: Sendable {
         }
         for waiter in waiting { waiter.resume() }
     }
-}
-
-/// A real window for a test, which never shows: kept off every display (a
-/// titled window is otherwise moved onto one, such as a display left of
-/// the main one) and transparent.
-final class OffscreenWindow: NSWindow {
-    override init(contentRect: NSRect, styleMask: NSWindow.StyleMask, backing: NSWindow.BackingStoreType, defer flag: Bool) {
-        super.init(contentRect: contentRect, styleMask: styleMask, backing: backing, defer: flag)
-        alphaValue = 0
-        ignoresMouseEvents = true
-    }
-
-    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect { frameRect }
 }
