@@ -337,10 +337,12 @@ extension TestHooks {
     /// scheduling proxy: it doesn't show the change made that refresh), and
     /// `visible_ms`, when the window server's image of the window first
     /// differs from the one before the action, looked at on each refresh
-    /// for up to two seconds (null if nothing changed). Signposted too,
+    /// for up to two seconds (null if nothing changed, both null with no
+    /// window on a display). Signposted too,
     /// for Instruments' Points of Interest.
     private static func measure(_ command: String, to file: URL, _ act: () -> Void) {
-        let window = NSApp?.windows.first { $0.isVisible && $0.canBecomeMain }
+        // On a display: a window off every display never refreshes.
+        let window = NSApp?.windows.first { $0.isVisible && $0.canBecomeMain && $0.screen != nil }
         let before = window.flatMap(Render.image)
         let start = CACurrentMediaTime()
         let interval = AppModel.signposter.beginInterval("hook", id: AppModel.signposter.makeSignpostID(), "\(command, privacy: .public)")
