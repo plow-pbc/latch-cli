@@ -715,6 +715,8 @@ final class AppModel {
     /// to say.
     func removeAgent(_ agent: AgentsList.Agent) async {
         guard let removed = await Self.result({ try await self.client.removeAgent(agent.uid) }) else { return }
+        // Gone even if the list can't be read again just now.
+        if case .success = removed { agents?.removeAll { $0.uid == agent.uid } }
         await refreshAgentList()
         if case let .failure(error) = removed { agentRemoveError = error } else { agentRemoveError = nil }
     }

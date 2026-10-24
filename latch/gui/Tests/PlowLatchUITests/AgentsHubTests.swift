@@ -13,9 +13,11 @@ struct AgentsHubTests {
         private let removed = Mutex<[String]>([])
         var removals: [String] { removed.withLock { $0 } }
         var refuse: LatchError?
+        var listing: LatchError?
         static let twins = #"{"agents":[{"kind":"own","line":{"name":null,"number":"+15550000002"},"name":"scout","standing":null,"status":null,"uid":"00000000000000000000000000000001"},{"kind":"own","line":{"name":null,"number":"+15550000003"},"name":"scout","standing":null,"status":null,"uid":"00000000000000000000000000000002"}]}"#
 
         func agents(host: String?) async throws -> AgentsList {
+            if let listing { throw listing }
             let listed: AgentsList = try Fixtures.decode(Self.twins)
             return AgentsList(agents: listed.agents.filter { !removals.contains($0.uid) })
         }
@@ -39,6 +41,17 @@ struct AgentsHubTests {
         let second = try #require(app.agents?.last)
         await app.removeAgent(second)
         #expect(client.removals == ["00000000000000000000000000000002"])
+        #expect(app.agents?.map(\.uid) == ["00000000000000000000000000000001"])
+        #expect(app.agentRemoveError == nil)
+    }
+
+    // Removed, then the list can't be read again: the removed agent isn't
+    // still shown with its buttons.
+    @Test func aRemovedAgentGoesEvenWhenTheListCantBeReadAgain() async throws {
+        let client = TwinsClient()
+        let app = try await app(client)
+        client.listing = .unreachable("Plow didn't answer")
+        await app.removeAgent(try #require(app.agents?.last))
         #expect(app.agents?.map(\.uid) == ["00000000000000000000000000000001"])
         #expect(app.agentRemoveError == nil)
     }
