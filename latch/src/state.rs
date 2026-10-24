@@ -14,15 +14,20 @@
 //!   (see `audit.rs`); `audit.keys`*: the keys that seal it; `audit.lock`:
 //!   held by what writes it. A plaintext `audit.ndjson` from an older latch
 //!   is never read, and every command says it can be deleted.
-//! - `serve.log`, on a host: what a managed host logs (`latch logs`).
+//! - `serve.log`, on a host: what a managed host logs (`latch logs`);
+//!   `serve.log.1`, the one before, once it grew past 10 MB.
 //! - `serve.plist` (macOS) and `launch.lock`, on a host: the managed host's
 //!   service, and the lock that starts and stops it one at a time (see
 //!   `managed.rs`).
+//! - `settings.json`: this machine's host settings (see `settings.rs`);
+//!   `keep-awake.json`, on a host: what it holds (see `keep_awake.rs`).
 //! - `vault.json` and `vault.key`*, on a host: the vault and its custody key
 //!   (see `vault/store.rs`).
 //! - `browser/`, on a host: open sessions' profiles, the model's settings
 //!   and each session's journal.
-//! - `plugins/`, on a host: the pinned engines and the Google CLI.
+//! - `plugins/`, on a host: the pinned engines, the Google CLI and the
+//!   Messages reader, a folder per version; a starting host removes the
+//!   versions it does not run.
 //! - `latch.json`: the folder's format (see `FORMAT`), which every command
 //!   checks before it reads or writes anything else.
 

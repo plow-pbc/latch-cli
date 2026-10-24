@@ -1,4 +1,5 @@
-//! The `plugins` operation: `list` for any caller the host lets in;
+//! The `plugins` operation: `list` for any caller the host lets in (what
+//! `latch status` asks each host);
 //! `enable` and `disable` only from the owner at this host itself, over its
 //! private socket. Neither is ever judged: the owner's commands on the host
 //! are the owner's, and an agent gets `owner_only` for both.
@@ -125,8 +126,7 @@ async fn google(workers: &WorkerSetup, plow: &Plow) -> Result<Value, Failure> {
         return Err(Failure::new(code::gog_not_executable, message));
     }
     let tokens = match plow.google_tokens().await {
-        // Plow's answer when the owner has no Google account connected.
-        Err(failure) if failure.code == "precondition_failed" => {
+        Err(failure) if failure.code == code::google_not_connected.name => {
             return Err(google_not_connected(plow).await);
         }
         tokens => tokens?,

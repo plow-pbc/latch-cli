@@ -78,7 +78,20 @@ pub enum Event {
         name: String,
         state: String,
     },
+    /// A page's own request (a page load, an XHR or a fetch) that the site
+    /// answered with an error status (a 429 to a sign-in, say), by the
+    /// site's origin only: never its path or query.
+    HttpError {
+        tab: String,
+        status: u16,
+        origin: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        retry_after: Option<String>,
+    },
 }
+
+/// The most `HttpError` events kept between two answers.
+pub const HTTP_ERRORS: usize = 5;
 
 /// The keys `press` takes, by name.
 pub const KEY_NAMES: &[&str] = &[
@@ -133,6 +146,10 @@ pub trait Driver {
     /// through every ancestor: each parent document has that frame's own
     /// element there, not something of its own drawn over it.
     fn reaches(&mut self, frame: &Frame, x: f64, y: f64) -> Result<bool, Failure>;
+    /// Whether `frame` holds the page's focus, so the engine's keys go
+    /// into it: each parent document's active element is that frame's own
+    /// element.
+    fn holds_focus(&mut self, frame: &Frame) -> Result<bool, Failure>;
     /// Where `frame`'s viewport starts in the tab's viewport.
     fn frame_offset(&mut self, frame: &Frame) -> Result<(f64, f64), Failure>;
 

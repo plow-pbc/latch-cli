@@ -1220,6 +1220,9 @@ impl Run<'_> {
             shown["fields"] = filled["fields"].clone();
             shown["stages"] = filled["stages"].clone();
             shown["submitted"] = filled["submitted"].clone();
+            if let Some(events) = filled.get("events") {
+                shown["events"] = events.clone();
+            }
         }
         self.trail.push(shown);
         outcome.map(|_| ())

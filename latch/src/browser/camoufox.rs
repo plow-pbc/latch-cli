@@ -371,6 +371,10 @@ impl Driver for Camoufox {
         self.ask("reaches", params)
     }
 
+    fn holds_focus(&mut self, frame: &Frame) -> Result<bool, Failure> {
+        self.ask("holds_focus", Self::frame_params(frame))
+    }
+
     fn frame_offset(&mut self, frame: &Frame) -> Result<(f64, f64), Failure> {
         self.ask("frame_offset", Self::frame_params(frame))
     }

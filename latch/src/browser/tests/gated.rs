@@ -103,7 +103,7 @@ fn plow(messages: Messages) -> crate::plow::Plow {
             );
         }
     });
-    crate::plow::Plow::new(&url, "made-up-login")
+    crate::plow::Plow::new(&url, "made-up-login").unwrap()
 }
 
 /// P(COVERED), P(NOT_COVERED), P(FORBIDDEN) for a judge's state.

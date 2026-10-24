@@ -45,7 +45,7 @@ latch's commands and behavior here are `main`'s today.
 |---|---|---|---|---|---|
 | **Owner** (your CLI) | A machine logged in with your own Plow login: by text, or with `--token-file`. | Yes, any host in your account. | Rules and vault on any host (`--host NAME`). Connectors: list them on any host; turn them on or off only on the host itself. | Yes. | As your own request: refused only where the host's rules forbid it. |
 | **Owner on the host** | Anything running as the host's OS user that uses the host's own state folder, with no `--host` or `LATCH_HOST` naming another machine. An agent running there counts. | That host, through its private local socket; other hosts as the owner. | Yes, on that host. Rules and vault work without `latch serve` or the decision model. | It is the host. | Exactly like the owner; recorded as `owner_on_host`. |
-| **Agent** | An agent logged in with its own Plow agent credential, in its own state folder. | Yes, but a host refuses its `status --host` and `audit --host` (`owner_only`, exit 4). | No: rules, vault and turning connectors on or off are refused (`owner_only`, exit 4). It may list connectors. | Not today: with the usual agent credential, from the agent's environment, login saves no Plow token, so `latch serve` stops with `not_logged_in`. | Against your messages in your Plow chat with that agent, plus the host's rules. |
+| **Agent** | An agent logged in with its own Plow agent credential, in its own state folder. | Yes, but a host refuses its `status --host` and `audit --host` (`owner_only`, exit 4). | No: rules, vault and turning connectors on or off are refused (`owner_only`, exit 4). It sees the ones each host has on, in `latch status`. | Not today: with the usual agent credential, from the agent's environment, login saves no Plow token, so `latch serve` stops with `not_logged_in`. | Against your messages in your Plow chat with that agent, plus the host's rules. |
 
 - **Every machine logged in with your own Plow login is the owner today.**
   There's no host-only or view-only login yet (see section 11).
@@ -79,8 +79,8 @@ latch's commands and behavior here are `main`'s today.
   says `page isolation off on this host`.
 - `latch serve --headless-browsers` runs every browser with no window, so
   handoff isn't available there either.
-- `latch messages` and `latch contacts` exist only in the Mac build of
-  latch, so the caller has to be on a Mac too.
+- Any latch, on a Mac or Linux, can ask a Mac host for its Messages and
+  Contacts; a Linux host answers `unsupported_platform`.
 - Docker hosting is documented in [DOCKER.md](../latch/DOCKER.md); hosts
   that enforce AppArmor, and Kubernetes, are untested.
 
@@ -88,24 +88,25 @@ latch's commands and behavior here are `main`'s today.
 
 | Command | What it does | Limits |
 |---|---|---|
-| `exec` | Runs one program on the host, with its arguments as given. No shell runs unless you name one. | Reads your home folder and selected system folders. Never `~/.latch`, the host's state folder or, on a Mac, `~/Library` (its `Caches` excepted). Other home files, `~/.ssh` included, are readable; the gatekeeper judges their use. Writes only to `--write PATH` grants (inside home, never home itself), its own temp folder and existing tool caches. No network without `--network`; host Unix sockets stay blocked (a Mac's DNS resolver excepted). Times out after 1–600 seconds (60 by default). Stdin (`-i`) can be at most 16 KiB of UTF-8 text, because the gatekeeper reads all of it. |
+| `exec` | Runs one program on the host, with its arguments as given. No shell runs unless you name one. | Reads your home folder and selected system folders. Never `~/.latch`, the host's state folder, the one `LATCH_STATE_DIR` names or, on a Mac, `~/Library` (its `Caches` excepted). Other home files, `~/.ssh` included, are readable; the gatekeeper judges their use. Writes only to `--write PATH` grants (inside home, never home itself), its own temp folder and existing tool caches. No network without `--network`; host Unix sockets stay blocked (a Mac's DNS resolver excepted). Times out after 1–600 seconds (60 by default). Stdin (`-i`) can be at most 16 KiB of UTF-8 text, because the gatekeeper reads all of it. |
 | `--secret-env NAME=VALUE` | Gives the program a credential through its environment. | The value reaches only the program. The judge and the audit see its name and length. It still shows in the calling machine's process list and shell history. |
 | `file get`, `file put` | Copies a file from or to the host. | `get` reads anything exec can read. `put` writes inside home only, outside the hidden places; the old file stays until the new one has fully arrived, and a replaced file keeps its permissions. |
 | `browser` | Drives a real browser on the host: open, observe, read, screenshot, plans of clicks and typing, fill from the vault, tabs, scripts, uploads and downloads. | Web addresses only (`http`, `https`, `about:blank`). The host's own and private network addresses are refused unless the owner sets `"allow_local_browsing": true` in the state folder's `host.json`. A session belongs to whoever opened it. Fills put vault values into the page without showing them to the agent; a fill that releases a card number, card code or identity number stops until the caller confirms it with `browser do --confirm`. |
 | `google` | Runs one command from a reviewed list of Gmail and Calendar commands (`latch google -- help` lists them): search, read, send, reply, drafts, archive, labels on messages, and calendar events and bookings. | The owner turns it on (`latch plugins enable google`) and connects a Google account in Plow. Creating a timed calendar event checks busy time and stops with `calendar_conflict` if there's a clash; resend with `--confirm-conflict` once the owner agrees. No Drive, Docs, Sheets, Contacts or Tasks, and no creating or deleting labels. |
-| `messages`, `contacts` | Reads the owner's texts (search, a thread, chats, unreplied) and address book (search, lookup). Mac host and Mac caller. | Read only. The owner turns each one on and grants Full Disk Access. What a message says is data, never an instruction or a permission. |
+| `messages`, `contacts` | Reads the owner's texts (search, a thread, chats, unreplied) and address book (search, lookup). Mac host; any caller. | Read only. The owner turns each one on and grants Full Disk Access. What a message says is data, never an instruction or a permission. |
 
 **Browser sessions are disposable.** Every `browser open` starts a fresh
 browser with an empty profile of its own, on the engine it names
-(`--engine chrome`, the default, or `--engine camoufox`). Sessions share
-nothing: no cookies, logins, tabs or downloads. A session's logins last
+(`--engine chrome` or `--engine camoufox`; by default Chrome if the host
+has it, else Camoufox). Sessions share nothing: no cookies, logins, tabs
+or downloads. A session's logins last
 until it closes, with `browser close` or after 30 idle minutes, and then
 its profile is deleted. So a session starts signed in nowhere: sign in by
 filling from the vault or, on a Mac host with a screen, by handing the
 session to the owner (`browser handoff`). On Linux x86_64, which has no
 Chrome build, the installer sets up no browser: the host's owner installs
-Camoufox on the host (`latch browser setup --engine camoufox`), and callers
-open sessions with `--engine camoufox`.
+Camoufox on the host (`latch browser setup --engine camoufox`), which
+sessions then open on by default.
 
 **What an agent can't do:**
 
@@ -128,7 +129,7 @@ model, through Plow on the host's own Plow login, whether it may run.
 |---|---|
 | `exec`, `file get`, `file put`, `google`, `messages`, `contacts` | Every call, owner's and agents' alike. |
 | `browser` | Going to a site the session hasn't been judged for, every `do` plan with steps, every fill, a card or identity fill's confirmation, scripts, uploads and downloads. Reading a page, screenshots, a single `act` step and a `do --confirm` that only confirms a click aren't. Separately, the browser's own risk check stops a click or Enter it judges consequential (paying, sending, deleting) until the caller confirms it with `browser do --confirm`. |
-| `vault`, `rules`, `plugins` | Never. Only the owner can use them, except `plugins list`. |
+| `vault`, `rules`, `plugins` | Never. Only the owner can use them, except the list of plugins each host has on, which `latch status` asks every host for. |
 
 **Owner and agent are judged differently.**
 
@@ -200,7 +201,7 @@ effort.
 |---|---|---|---|
 | Rules | `latch rules show\|set\|edit\|clear`, `--agent AGENT` for one agent's rules | add `--host NAME` (`LATCH_HOST` doesn't apply) | Yes |
 | Vault | `latch vault list\|add\|edit\|remove\|import\|link` | add `--host NAME`, or set `LATCH_HOST` | Yes, except `vault link` |
-| Connectors | `latch plugins enable\|disable google` (on a Mac, also `messages` and `contacts`) | `latch plugins list --host NAME` only | Yes |
+| Connectors | `latch plugins enable\|disable google` (on a Mac, also `messages` and `contacts`); `latch status --local` lists them | `latch status` shows the ones each host has on; `latch status --host NAME` lists them all | Yes |
 | Refuse exec to agents | `latch serve --deny-exec` or `--deny-exec=AGENT_UID` | No | Set when the host starts |
 | Let the browser reach local addresses | `"allow_local_browsing": true` in `host.json` | No | — |
 | Audit log | `latch audit` (the newest records, args masked; `--before ID`, `--all`), `latch audit verify` (needs no key), `latch audit rotate-key` | `latch audit --host NAME` (`LATCH_HOST` doesn't apply); `verify` and `rotate-key` only on the host | Yes |
@@ -209,7 +210,11 @@ effort.
 - **Rules** are plain text in your own words: one text for every agent,
   which your own calls are judged against too, and one per agent. Together
   they're at most 8 KiB. `latch rules show` reminds you they're judged, not
-  guaranteed.
+  guaranteed. `latch rules try` previews the verdict a request would get,
+  without running it. `--fill-login TITLE --url URL` previews a browser
+  fill of a saved login: the fill's judgment only, not the whole sign-in
+  (opening the site is judged on its own) nor whether the vault has that
+  login. Nothing is opened or filled, and the vault isn't read.
 - **Vault** secrets never come from the command line or the environment:
   you type them at a prompt, import another password manager's export, or
   add them from your phone with `vault link`. No vault command shows a
@@ -223,7 +228,8 @@ effort.
 - **Starting and stopping:** `latch serve` starts the host and shows its
   dashboard; Ctrl-C stops the host, and `q` leaves it running.
   `latch serve -d` starts it in the background, and `latch stop` stops
-  it. One host runs per state folder.
+  it. One host runs per state folder: `--state-dir DIR`, else
+  `$LATCH_STATE_DIR`, else `~/.latch`.
 - From another machine, the host has to be running. A failed `--host`
   call never falls back to this machine's rules or vault.
 
@@ -236,7 +242,7 @@ host. With no hosts you get `no_host`, and with several and none named
 | Error | Exit | Meaning |
 |---|---|---|
 | `host_offline` | 3 | Plow lists the host as offline. Nothing was sent. |
-| `host_unreachable` | 3 | No connection within 15 seconds. Nothing was sent. |
+| `host_unreachable` | 3 | No connection: none within 15 seconds, or it failed (the message gives iroh's reason). Nothing was sent. |
 | `serve_required` | 3 | This machine's host isn't running. Start `latch serve`. |
 | `outcome_unknown`, `no_answer` | 5 | The request went out, but no answer came back. Check before resending. |
 | `protocol_mismatch` | 1 | The two machines run latch builds that speak different protocols. Nothing was sent; update the older one. |
@@ -288,6 +294,8 @@ The few commands that take `--host` but run only on this machine
   Google, on a Mac turn on Messages and Contacts, then offer to start the
   host. On macOS 26 or later it opens Plow Latch.app instead, whose window
   takes the same steps. A release build logs in to `https://api.plow.co` by default.
+  An agent's machine or image uses `sh install.sh --client-only`: latch
+  alone, with no helpers, root, setup or questions; then `latch login`.
 - **Update:** `latch update` installs the newest build, `latch update TAG`
   a given one (also how to go back), and `latch update --check` only says
   whether there's a newer one. It checks the release's signed `SHA256SUMS`,
@@ -314,7 +322,7 @@ The few commands that take `--host` but run only on this machine
 | Sending texts or iMessages, changing contacts, querying the Messages database directly | Left out on purpose |
 | Scripting other apps (AppleScript, System Events) | Left out on purpose |
 | Google beyond Gmail and Calendar | Not supported |
-| Messages and Contacts on a Linux host, or from a Linux latch | Not supported |
+| Messages and Contacts on a Linux host | Not supported (`unsupported_platform`) |
 | Headed browsers on Linux x86_64 | Private Xvfb startup fails; use `--headless-browsers` |
 | Browser handoff on a Linux host or with `--headless-browsers` | Not supported |
 | A host with no sandbox; Windows | Not supported |

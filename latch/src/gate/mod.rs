@@ -262,7 +262,12 @@ impl Gatekeeper {
         gate: &mut Value,
     ) -> Result<(), Failure> {
         let conversation = match caller {
-            Caller::Agent { uid, chat } => chat::read(&self.plow, uid, chat).await?,
+            Caller::Agent { uid, chat } => {
+                let reading = Instant::now();
+                let conversation = chat::read(&self.plow, uid, chat).await?;
+                gate["chat_read_ms"] = json!(reading.elapsed().as_millis() as u64);
+                conversation
+            }
             Caller::Owner | Caller::OwnerOnHost | Caller::RulesLayer { .. } => None,
         };
         // The owner's key is no agent uid: only the host's rules apply.
@@ -424,7 +429,7 @@ impl Gatekeeper {
             )
             .await;
         if let Some(asked) = model.calls.first() {
-            for field in ["model", "model_request", "cost"] {
+            for field in ["model", "model_request", "cost", "latency_ms"] {
                 if let Some(value) = asked.get(field) {
                     call[field] = value.clone();
                 }

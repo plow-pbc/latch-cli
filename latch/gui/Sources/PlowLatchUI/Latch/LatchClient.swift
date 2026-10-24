@@ -32,8 +32,6 @@ nonisolated protocol LatchClient: Sendable {
     /// would get on a host now, as `agent` (a uid), a new agent, or you;
     /// `draft` judges against unsaved rules for every agent.
     func rulesTry(_ request: [String], host: String?, agent: String?, newAgent: Bool, draft: String?) async throws -> RulesTry
-    /// `latch plugins list`, on this Mac's host or, with `host`, another.
-    func pluginsList(host: String?) async throws -> PluginsList
     /// `latch vault list`, on this Mac's host or, with `host`, another.
     func vaultList(host: String?) async throws -> VaultList
     /// `latch vault show ITEM`: its non-secret values.
@@ -202,9 +200,6 @@ nonisolated struct LiveLatchClient: LatchClient {
         return try decode(RulesTry.self, try await run(arguments + ["--"] + request, input: draft.map { Data($0.utf8) }))
     }
 
-    func pluginsList(host: String?) async throws -> PluginsList {
-        try decode(PluginsList.self, try await run(["plugins", "list"] + on(host)))
-    }
 
     func vaultList(host: String?) async throws -> VaultList {
         try decode(VaultList.self, try await run(["vault", "list"] + on(host)))

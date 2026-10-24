@@ -1,7 +1,7 @@
 #!/bin/sh
 # Installs a latch binary you already have into ~/.local/bin, or --bin-dir.
 #
-#   sh install-binary.sh [--bin-dir DIR] [--state-dir DIR] [--browser chrome|camoufox]... [--no-browser] [--non-interactive] [path/to/latch]
+#   sh install-binary.sh [--bin-dir DIR] [--state-dir DIR] [--browser chrome|camoufox]... [--no-browser] [--client-only] [--non-interactive] [path/to/latch]
 #
 # A first install (no login in the state directory yet) at a terminal ends
 # by running `latch setup` (log in, connect Google, and so on), or, when it
@@ -41,6 +41,10 @@
 # did, into <state-dir>/plugins/messages/<latch version>/latch-messages; latch
 # runs only the reader it was built with.
 #
+# Once the new versions are in, it removes the ones this latch does not
+# run (an older latch's gog, reader and browser engines), unless a host it
+# could not stop still runs.
+#
 # It also installs a browser engine for `latch browser`, with
 # browser-engines.sh next to this script: Chrome for Testing by default (on
 # macOS and Linux arm64/x86_64), or the engines `--browser` names (chrome,
@@ -54,6 +58,11 @@
 # once, and only when something is missing. On macOS none of that is
 # needed. It downloads no latch binary. Running it again changes
 # nothing that is already in place.
+#
+# --client-only installs latch alone, for a machine that only asks other
+# hosts, such as an agent's image: no gog, Messages reader, bubblewrap or
+# browser engine, and no setup or app window at the end, only the word to
+# run `latch login`.
 set -eu
 
 say() { printf 'install-binary.sh: %s\n' "$*"; }
@@ -61,13 +70,15 @@ die() { say "$*" >&2; exit 1; }
 # One word for the shell, whatever it holds.
 quote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 
-usage="usage: sh install-binary.sh [--bin-dir DIR] [--state-dir DIR] [--browser chrome|camoufox]... [--no-browser] [--non-interactive] [path/to/latch]"
-bin_dir="$HOME/.local/bin"
-state_dir="$HOME/.latch"
+usage="usage: sh install-binary.sh [--bin-dir DIR] [--state-dir DIR] [--browser chrome|camoufox]... [--no-browser] [--client-only] [--non-interactive] [path/to/latch]"
+# HOME=/ (a container's root) gives /.local/bin, not //.local/bin.
+bin_dir="${HOME%/}/.local/bin"
+state_dir=${LATCH_STATE_DIR:-"${HOME%/}/.latch"}
 browsers=""
 no_browser=""
+client_only=""
 non_interactive=""
-state_given=""
+state_given=${LATCH_STATE_DIR:+1}
 src="$(dirname "$0")/latch"
 given_src=""
 while [ $# -gt 0 ]; do
@@ -76,9 +87,10 @@ while [ $# -gt 0 ]; do
       printf '%s\n' "$usage" '' \
         'Without a binary path, installs the latch next to this script.' \
         'Options may appear before or after the binary path.' \
-        'Binary directory defaults to ~/.local/bin; state and plugins default to ~/.latch.' \
+        'Binary directory defaults to ~/.local/bin; state and plugins default to $LATCH_STATE_DIR, else ~/.latch.' \
         'The browser engine defaults to Chrome for Testing; --browser chrome|camoufox' \
-        'names the engines instead (repeat it for both), --no-browser installs none.'
+        'names the engines instead (repeat it for both), --no-browser installs none.' \
+        '--client-only installs latch alone, for a machine that only asks hosts.'
       exit 0
       ;;
     --bin-dir)
@@ -103,6 +115,10 @@ while [ $# -gt 0 ]; do
       no_browser=1
       shift
       ;;
+    --client-only)
+      client_only=1
+      shift
+      ;;
     --non-interactive)
       non_interactive=1
       shift
@@ -116,7 +132,9 @@ while [ $# -gt 0 ]; do
       ;;
   esac
 done
-if [ -n "$no_browser" ]; then
+if [ -n "$client_only" ]; then
+  [ -z "$browsers" ] || die "--client-only installs no browser, so --browser can't be given"
+elif [ -n "$no_browser" ]; then
   [ -z "$browsers" ] || die "--no-browser and --browser can't both be given"
 elif [ -z "$browsers" ]; then
   browsers=chrome
@@ -140,6 +158,13 @@ if [ "$(uname -s)" = Darwin ]; then
   case "$inner" in
     *.app/Contents/MacOS/*) app=${inner%/Contents/MacOS/*} ;;
   esac
+fi
+# A folder this user can't write, such as /.local/bin for a user whose HOME
+# is /, is refused before anything changes.
+if ! { mkdir -p "$bin_dir" && [ -w "$bin_dir" ]; } 2>/dev/null; then
+  where="choose a folder you can write to with --bin-dir DIR"
+  [ -n "$state_given" ] || where="$where, and set \`LATCH_STATE_DIR\` to a writable state folder"
+  die "can't write to $bin_dir; $where; nothing was installed"
 fi
 # The latch being replaced: on macOS the app's own, wherever a link to it
 # is (or none is), since the app is what gets replaced; elsewhere $dest.
@@ -265,59 +290,62 @@ case ":$PATH:" in
   *) say "add $bin_dir to your PATH to run latch by name" ;;
 esac
 
-# 2. The pinned gog. The pin is JSON, but its shape is fixed: one version
-# string and a list of sha256 hashes, one for each OS and architecture.
-pin="$(dirname "$0")/src/google/pin.json"
-[ -f "$pin" ] || die "$pin not found; run install-binary.sh from the latch workspace"
-gog_version=$(sed -n 's/^ *"version": *"\([0-9][0-9.]*\)".*/\1/p' "$pin")
-gog_hashes=$(tr -cs '0-9a-f' '\n' < "$pin" | grep -x '[0-9a-f]\{64\}' || true)
-[ -n "$gog_version" ] && [ -n "$gog_hashes" ] || die "$pin has no gog version or hashes"
-if command -v sha256sum >/dev/null 2>&1; then
-  sha256() { sha256sum < "$1" | cut -d ' ' -f 1; }
-elif command -v shasum >/dev/null 2>&1; then
-  sha256() { shasum -a 256 < "$1" | cut -d ' ' -f 1; }
-else
-  die "need sha256sum or shasum to check gog"
-fi
-pinned() { printf '%s\n' "$gog_hashes" | grep -qx "$(sha256 "$1")"; }
+# 2. The pinned gog, which only a host runs. The pin is JSON, but its shape
+# is fixed: one version string and a list of sha256 hashes, one for each OS
+# and architecture.
+if [ -z "$client_only" ]; then
+  pin="$(dirname "$0")/src/google/pin.json"
+  [ -f "$pin" ] || die "$pin not found; run install-binary.sh from the latch workspace"
+  gog_version=$(sed -n 's/^ *"version": *"\([0-9][0-9.]*\)".*/\1/p' "$pin")
+  gog_hashes=$(tr -cs '0-9a-f' '\n' < "$pin" | grep -x '[0-9a-f]\{64\}' || true)
+  [ -n "$gog_version" ] && [ -n "$gog_hashes" ] || die "$pin has no gog version or hashes"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256() { sha256sum < "$1" | cut -d ' ' -f 1; }
+  elif command -v shasum >/dev/null 2>&1; then
+    sha256() { shasum -a 256 < "$1" | cut -d ' ' -f 1; }
+  else
+    die "need sha256sum or shasum to check gog"
+  fi
+  pinned() { printf '%s\n' "$gog_hashes" | grep -qx "$(sha256 "$1")"; }
 
-gog_dir="$state_dir/plugins/gog/$gog_version"
-gog="$gog_dir/gog"
-if [ -f "$gog" ] && pinned "$gog"; then
-  say "gog $gog_version already installed at $gog"
-else
-  case "$(uname -s)" in
-    Darwin) os=darwin ;;
-    Linux) os=linux ;;
-    *) die "no gog release for $(uname -s)" ;;
-  esac
-  case "$(uname -m)" in
-    arm64 | aarch64) arch=arm64 ;;
-    x86_64 | amd64) arch=amd64 ;;
-    *) die "no gog release for $(uname -m)" ;;
-  esac
-  for tool in curl tar; do
-    command -v "$tool" >/dev/null 2>&1 || die "need $tool to download gog; install it, then run this again"
-  done
-  url="https://github.com/openclaw/gogcli/releases/download/v$gog_version/gogcli_${gog_version}_${os}_${arch}.tar.gz"
-  # The state directory is this user's only, as latch keeps it.
-  (umask 077 && mkdir -p "$state_dir")
-  mkdir -p "$gog_dir"
-  tmp=$(mktemp -d "$gog_dir/.download.XXXXXX")
-  curl -fsSL --proto '=https' -o "$tmp/gog.tar.gz" "$url" || die "could not download $url"
-  # Only the one file, written by this script, so the archive chooses no
-  # path, owner or mode.
-  tar -xzOf "$tmp/gog.tar.gz" ./gog > "$tmp/gog" || die "$url has no gog in it"
-  pinned "$tmp/gog" || die "the gog in $url has sha256 $(sha256 "$tmp/gog"), which $pin does not list; nothing installed"
-  chmod 755 "$tmp/gog"
-  mv "$tmp/gog" "$gog"
-  say "installed gog $gog_version to $gog (sha256 $(sha256 "$gog"))"
+  gog_dir="$state_dir/plugins/gog/$gog_version"
+  gog="$gog_dir/gog"
+  if [ -f "$gog" ] && pinned "$gog"; then
+    say "gog $gog_version already installed at $gog"
+  else
+    case "$(uname -s)" in
+      Darwin) os=darwin ;;
+      Linux) os=linux ;;
+      *) die "no gog release for $(uname -s)" ;;
+    esac
+    case "$(uname -m)" in
+      arm64 | aarch64) arch=arm64 ;;
+      x86_64 | amd64) arch=amd64 ;;
+      *) die "no gog release for $(uname -m)" ;;
+    esac
+    for tool in curl tar; do
+      command -v "$tool" >/dev/null 2>&1 || die "need $tool to download gog; install it, then run this again"
+    done
+    url="https://github.com/openclaw/gogcli/releases/download/v$gog_version/gogcli_${gog_version}_${os}_${arch}.tar.gz"
+    # The state directory is this user's only, as latch keeps it.
+    (umask 077 && mkdir -p "$state_dir")
+    mkdir -p "$gog_dir"
+    tmp=$(mktemp -d "$gog_dir/.download.XXXXXX")
+    curl -fsSL --proto '=https' -o "$tmp/gog.tar.gz" "$url" || die "could not download $url"
+    # Only the one file, written by this script, so the archive chooses no
+    # path, owner or mode.
+    tar -xzOf "$tmp/gog.tar.gz" ./gog > "$tmp/gog" || die "$url has no gog in it"
+    pinned "$tmp/gog" || die "the gog in $url has sha256 $(sha256 "$tmp/gog"), which $pin does not list; nothing installed"
+    chmod 755 "$tmp/gog"
+    mv "$tmp/gog" "$gog"
+    say "installed gog $gog_version to $gog (sha256 $(sha256 "$gog"))"
+  fi
 fi
 
 # 3. macOS: the Messages reader packaged beside this latch, if there is one,
 # in a folder named for this latch's version (the one that runs it).
 reader="$(dirname "$src")/latch-messages"
-if [ "$(uname -s)" = Darwin ] && [ -f "$reader" ]; then
+if [ "$(uname -s)" = Darwin ] && [ -f "$reader" ] && [ -z "$client_only" ]; then
   # `--version` says {"version":"0.1.0 (1327): commit …"}: its first word.
   latch_version=$("$dest" --version | sed -n 's/.*"version": *"\([^" ]*\).*/\1/p')
   [ -n "$latch_version" ] || die "could not read $dest's version"
@@ -329,9 +357,9 @@ if [ "$(uname -s)" = Darwin ] && [ -f "$reader" ]; then
   say "installed the Messages reader to $reader_dir/latch-messages"
 fi
 
-# 4. Linux: work out what needs root, then run it all under one sudo. What
-# Chrome needs is browser-engines.sh's to install, then or later.
-if [ "$(uname -s)" = Linux ]; then
+# 4. Linux hosts: work out what needs root, then run it all under one sudo.
+# What Chrome needs is browser-engines.sh's to install, then or later.
+if [ "$(uname -s)" = Linux ] && [ -z "$client_only" ]; then
   packages=""
   want() { packages="${packages:+$packages }$1"; }
   command -v bwrap >/dev/null 2>&1 || want bubblewrap
@@ -368,7 +396,15 @@ if [ -n "$browsers" ]; then
   sh "$(dirname "$0")/browser-engines.sh" --state-dir "$state_dir" $browsers
 fi
 
-# 6. The host stopped in step 0, started again by the new latch.
+# 6. The helper versions an older latch installed and this one does not
+# run. The host was stopped in step 0; one this latch could not stop keeps
+# them, and removes them itself once it starts again on this latch.
+if [ -z "$client_only" ]; then
+  "$dest" --state-dir "$state_dir" prune-helpers > /dev/null ||
+    say "could not remove older helper versions from $state_dir/plugins (see above)"
+fi
+
+# 7. The host stopped in step 0, started again by the new latch.
 if [ -n "$restart_host" ]; then
   "$dest" --state-dir "$state_dir" serve -d --again > /dev/null ||
     die "the new latch did not start the host again (see above)"
@@ -385,7 +421,9 @@ fi
 # state directory given here goes to the app as an absolute path, since it
 # runs from another folder. Whatever happens in setup, the install is done.
 if [ -n "$first_install" ]; then
-  if [ -n "$non_interactive" ] || [ ! -t 1 ] || ! (: </dev/tty) 2>/dev/null; then
+  if [ -n "$client_only" ]; then
+    say "next: run \`latch login\` to log in"
+  elif [ -n "$non_interactive" ] || [ ! -t 1 ] || ! (: </dev/tty) 2>/dev/null; then
     say "next: run \`latch setup\` to log in and set up the rest"
   elif [ -n "$app" ] && [ "$macos" -ge 26 ]; then
     say "opening $installed to set up the rest"

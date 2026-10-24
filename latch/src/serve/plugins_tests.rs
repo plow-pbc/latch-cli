@@ -83,6 +83,7 @@ async fn a_disabled_connector_is_refused_before_it_is_judged_or_given_a_credenti
     let (exit, code, details) = refusal(&answer);
     assert_eq!((exit, code), (Exit::Denied, "not_enabled"));
     assert_eq!(details["enable"], "latch plugins enable google");
+    assert_eq!(details["state"], "disabled");
     assert!(rest.is_empty());
     let owners = t.local_call("google", accounts()).await;
     assert_eq!(refusal(&owners).1, "not_enabled");
@@ -129,6 +130,45 @@ async fn a_disabled_connector_is_refused_before_it_is_judged_or_given_a_credenti
 }
 
 /// Where this host's pinned gog goes.
+/// What this host can't run at all, an operation it doesn't know or a
+/// connector its platform lacks, is its own refusal: audited as a deny, so
+/// no one reads it as allowed, and never judged.
+#[tokio::test]
+async fn what_this_host_cannot_run_is_audited_as_its_refusal() {
+    let t = start(covered()).await;
+    let agent = t.caller("agent").await;
+    let (answer, _) = t.call(&agent, "teleport", json!({})).await;
+    assert_eq!(refusal(&answer).1, "not_built_yet");
+    // A Mac host runs these, so only another can refuse them.
+    let elsewhere: &[&str] = if cfg!(target_os = "macos") {
+        &[]
+    } else {
+        &["messages", "contacts"]
+    };
+    for &op in elsewhere {
+        let read = json!({"action": "search", "args": ["--", "code"]});
+        let (answer, _) = t.call(&agent, op, read).await;
+        let (exit, code, _) = refusal(&answer);
+        assert_eq!((exit, code), (Exit::Failed, "unsupported_platform"));
+        // Nor can its owner turn the connector on here.
+        let enabled = plugins(&t, "enable", op).await;
+        let (exit, code, _) = refusal(&enabled);
+        assert_eq!((exit, code), (Exit::Failed, "unsupported_platform"));
+    }
+
+    assert_eq!(t.judged(), 0, "nothing was judged");
+    let records = t.audit();
+    let refused = elsewhere
+        .iter()
+        .map(|&op| (op, "unsupported_platform"))
+        .chain([("teleport", "not_built_yet")]);
+    for (op, outcome) in refused {
+        let record = records.iter().find(|r| r["op"] == op).unwrap();
+        assert_eq!(record["decision"], "deny", "{record}");
+        assert_eq!(record["outcome"], outcome, "{record}");
+    }
+}
+
 fn gog_folder(t: &TestHost) -> PathBuf {
     t.state
         .join("plugins/gog")
@@ -152,9 +192,21 @@ async fn google_setup_refuses_a_missing_or_unverified_gog_and_stays_off() {
     let answer = plugins(&t, "enable", "google").await;
     assert_eq!(refusal(&answer).1, "gog_unverified");
     assert_eq!(state_of(&t, "google").await["state"], "needs_setup");
-    assert_eq!(
-        refusal(&t.local_call("google", accounts()).await).1,
-        "not_enabled"
+    // A call says it needs setup: its owner did turn it on.
+    let Response::Error {
+        code,
+        message,
+        details,
+        ..
+    } = t.local_call("google", accounts()).await
+    else {
+        panic!("a call to a connector that needs setup is refused");
+    };
+    assert_eq!(code, "not_enabled");
+    assert_eq!(details["state"], "needs_setup");
+    assert!(
+        message.starts_with("google needs setup on this host"),
+        "{message}"
     );
     assert_eq!(t.plow.saw("access-token"), 0, "no credential asked for");
 }
@@ -419,6 +471,26 @@ mod pinned {
         let listed = ok(t.local_call("google", accounts()).await);
         assert_eq!(listed["accounts"], json!(["me@example.com"]));
 
+        // The account gone from Plow: said as such, not as Plow's 412. An
+        // agent, refused `plugins enable`, is told to ask the owner.
+        t.plow.world.lock().unwrap().google_accounts.clear();
+        let agent = t.caller("agent").await;
+        let (refused, _) = t.call(&agent, "google", accounts()).await;
+        assert_eq!(refusal(&refused).1, "google_not_connected");
+        let ask = format!(
+            "ask the owner to run `latch plugins enable google` on {}",
+            t.host.name
+        );
+        let Response::Error { next, .. } = &refused else {
+            unreachable!()
+        };
+        assert_eq!(next.as_deref(), Some(ask.as_str()));
+        let Response::Error { next, .. } = t.local_call("google", accounts()).await else {
+            panic!("the owner's call is refused too")
+        };
+        assert_eq!(next.as_deref(), Some("latch plugins enable google"));
+        t.plow.world.lock().unwrap().google_accounts = vec!["me@example.com".into()];
+
         // A host started again on this state folder keeps it enabled.
         let state = crate::state::StateDir {
             path: t.state.clone(),
@@ -509,5 +581,14 @@ mod pinned {
             vec!["me@example.com".into(), "work@example.com".into()];
         let (refused, _) = t.call(&agent, "google", accounts()).await;
         assert_eq!(refusal(&refused).1, "google_needs_sign_in");
+        // None works: only the owner's enable on this host signs them in.
+        let Response::Error { next, .. } = &refused else {
+            unreachable!()
+        };
+        let ask = format!(
+            "ask the owner to run `latch plugins enable google` on {}",
+            t.host.name
+        );
+        assert_eq!(next.as_deref(), Some(ask.as_str()));
     }
 }

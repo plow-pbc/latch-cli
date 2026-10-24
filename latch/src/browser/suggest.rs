@@ -193,13 +193,16 @@ impl Control {
             .filter(|f| *f >= 0)
             .map(|f| format!("{}#{f}", text("frame")));
         let unusable = if found["hidden"] == true {
-            Some("it is hidden from the page's readers (hidden, aria-hidden or inert)")
+            Some("it is hidden from the page's readers (hidden, aria-hidden or inert)".into())
         } else if found["disabled"] == true {
-            Some("it is disabled")
+            Some("it is disabled".into())
         } else if found["readonly"] == true {
-            Some("it is read-only")
+            Some("it is read-only".into())
         } else if found["covered"] == true {
-            Some("something covers it")
+            Some(match found.get("cover") {
+                Some(cover) => format!("{} covers it", super::core::covering(cover)),
+                None => "something covers it".into(),
+            })
         } else {
             None
         };
@@ -215,7 +218,7 @@ impl Control {
             clickable: found["clickable"] == true,
             role: text("role"),
             name: text("name"),
-            unusable: unusable.map(str::to_string),
+            unusable,
         }
     }
 

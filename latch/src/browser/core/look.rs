@@ -124,7 +124,7 @@ impl<D: Driver> Core<D> {
     /// The snapshot `target` is read in, if it holds that ref. The page
     /// may have moved on since; that is checked when the step runs.
     pub(super) fn pin(&mut self, snapshot: Option<&str>, target: &str) -> Result<Value, Failure> {
-        let position = target
+        let number = target
             .strip_prefix('e')
             .and_then(|n| n.parse::<usize>().ok())
             .filter(|n| *n > 0)
@@ -132,7 +132,7 @@ impl<D: Driver> Core<D> {
         let latest = self.last_shown.clone();
         let id = snapshot.or(latest.as_deref()).ok_or_else(super::stale)?;
         let found = self.snapshot(id)?;
-        if found.refs.len() < position {
+        if !found.refs.iter().any(|r| r.number == number) {
             return Err(Failure::new(
                 code::no_such_target,
                 format!("snapshot {id} has no {target}"),

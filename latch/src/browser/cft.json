@@ -44,7 +44,8 @@
     "--no-startup-window",
     "--disable-backgrounding-occluded-windows",
     "--disable-renderer-backgrounding",
-    "--disable-background-timer-throttling"
+    "--disable-background-timer-throttling",
+    "--disable-features=PMProcessPriorityPolicy"
   ],
   "capabilities": ["eval", "upload", "downloads"],
   "licence": "Google Chrome for Testing, built from Chromium (https://www.chromium.org/) and other open source software (chrome://credits); Google Chrome Terms of Service (chrome://terms). Downloaded from Google at install time, never shipped with latch."

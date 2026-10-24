@@ -26,6 +26,7 @@ mod heartbeat;
 mod help;
 mod hosts;
 mod input;
+mod keep_awake;
 mod keyart;
 mod lifecycle;
 mod log;
@@ -36,6 +37,7 @@ mod logs;
 mod managed;
 mod messages;
 mod model;
+mod overview;
 mod paint;
 mod plow;
 mod plugins;
@@ -45,6 +47,7 @@ mod sandbox;
 mod seal;
 mod secrets;
 mod serve;
+mod settings;
 mod setup;
 mod state;
 mod status;
@@ -85,13 +88,15 @@ fn main() -> ExitCode {
     if let Some(exit) = gui::launch() {
         return exit;
     }
-    // A bare `latch` at a terminal shows the Plow logo. Anywhere else (a
-    // pipe, an agent) it stays a usage error, as before.
-    if std::env::args_os().len() == 1 && term::stdout_is_terminal() {
-        let color = !term::no_color();
-        paint::set_color(color);
-        logo::show(color);
-        return ExitCode::SUCCESS;
+    // A relative LATCH_STATE_DIR names a folder from here: made absolute
+    // for every latch this one starts, a host's service in another
+    // working folder included.
+    if let Some(dir) = std::env::var_os(cli::STATE_DIR_ENV).map(PathBuf::from)
+        && dir.is_relative()
+        && let Ok(dir) = std::path::absolute(&dir)
+    {
+        // SAFETY: no other thread exists yet to read or write the environment.
+        unsafe { std::env::set_var(cli::STATE_DIR_ENV, dir) };
     }
     let matches = match Cli::command().try_get_matches() {
         Ok(matches) => matches,
@@ -103,7 +108,22 @@ fn main() -> ExitCode {
     }
     let cli = Cli::from_arg_matches(&matches).expect("the command line was validated");
     // Workers confine the initial thread before any runtime threads exist.
-    let command = match cli.command {
+    // A bare `latch`: the overview, for a person at a terminal.
+    let Some(command) = cli.command else {
+        let shown = if term::stdout_is_terminal() {
+            StateDir::new(cli.state_dir).and_then(|state| overview::run(&state))
+        } else {
+            Err(overview::no_terminal())
+        };
+        return match shown {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(failure) => {
+                report(&failure);
+                failure.exit.into()
+            }
+        };
+    };
+    let command = match command {
         Command::Worker(args) => return worker::run(args),
         // At a terminal, running other latch commands; no runtime of its own.
         Command::Setup(args) if !args.status && term::interactive() => {
@@ -233,10 +253,7 @@ async fn run(
                     let request = json!({"follow": true});
                     streamed(remote::stream(&state, &host, "status", request, true).await)
                 }
-                Some(host) => json(
-                    pretty,
-                    remote::call(&state, &host, "status", json!({})).await?,
-                ),
+                Some(host) => json(pretty, remote::status(&state, &host).await?),
                 None if follow => {
                     // Before the first login, too.
                     state.create()?;
@@ -305,6 +322,9 @@ async fn run(
             Ok(Printed(String::new()))
         }
         Command::Plugins(args) => json(pretty, plugins::client::run(&state, args).await?),
+        Command::Settings(cli::SettingsArgs {
+            command: cli::SettingsCommand::Set { keep_awake },
+        }) => json(pretty, settings::set(&state, keep_awake == cli::OnOff::On)?),
         Command::Update(args) => json(pretty, update::run(&state, args).await?),
         Command::Audit(cli::AuditArgs {
             action: Some(action),
@@ -345,7 +365,6 @@ async fn run(
                 }
             }
         }
-        #[cfg(target_os = "macos")]
         Command::Messages(command) => {
             let request = messages::messages_request(&command);
             json(
@@ -360,7 +379,6 @@ async fn run(
                 .await?,
             )
         }
-        #[cfg(target_os = "macos")]
         Command::Contacts(command) => {
             let request = messages::contacts_request(&command);
             json(
@@ -416,6 +434,7 @@ async fn run(
             logs::run(&state, args.follow)?;
             Ok(Printed(String::new()))
         }
+        Command::PruneHelpers => json(pretty, plugins::prune_alone(&state.path)?),
         #[cfg(target_os = "macos")]
         Command::AccessCheck { name } => {
             let connector = plugins::Connector::named(&name)?;

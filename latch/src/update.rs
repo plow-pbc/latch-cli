@@ -114,7 +114,7 @@ impl Source {
             let message = format!("could not download {url}: {why}");
             Failure::new(code::releases_unreachable, message)
         };
-        let response = http()
+        let response = http()?
             .get(&url)
             .send()
             .await
@@ -176,12 +176,12 @@ impl Source {
     }
 }
 
-fn http() -> reqwest::Client {
-    reqwest::Client::builder()
-        .timeout(Duration::from_secs(300))
-        .retry(reqwest::retry::never())
-        .build()
-        .expect("HTTP client settings are valid")
+fn http() -> Result<reqwest::Client, Failure> {
+    crate::plow::http(
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(300))
+            .retry(reqwest::retry::never()),
+    )
 }
 
 /// This latch's build number; none for a local build.

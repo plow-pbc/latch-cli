@@ -138,9 +138,10 @@ final class Onboarding {
     var openExamples: Set<String> = []
     // Connect Google.
     var google: Google = .checking
-    var googleAccounts: [String] = []
-    /// The last wait for a sign-in ended with no account in Plow.
-    var googleWaitEnded = false
+    var googleAccounts = GoogleAccounts(accounts: [])
+    /// Why the last wait for a sign-in ended with no new account, in the
+    /// app's words.
+    var googleWaitEnded: String?
     /// The newest sign-in link latch gave, kept only to open again.
     private var googleSignInLink: URL?
     private(set) var googleTask: Task<Void, Never>?
@@ -261,10 +262,9 @@ final class Onboarding {
         case .welcome: "Get started"
         case .login, .privacy: "Continue"
         case .rules: savingRules ? "Saving…" : rulesChanged ? "Save rules" : "Continue"
-        case .google: "Continue"
         case .access: accessDone || accessFailed ? "Continue" : accessGranted ? "Turn on" : "Open System Settings"
         case .start: starting ? "Starting…" : runInBackground && app.status?.thisMachine.hosting.ready != true ? "Start Latch" : "Continue"
-        case .done: "Open Latch"
+        case .done: textAgent.map { "Text \($0.name)" } ?? "Open Latch"
         }
     }
 
@@ -272,9 +272,8 @@ final class Onboarding {
         switch step {
         case .login: verified
         case .rules: !savingRules
-        // Continue never skips: until Google is on, Skip for now does that.
-        case .google: google == .connected
-        case .access: accessDone || !waitingForAccess
+        // Continue never skips: until Google is on too, Skip for now does that.
+        case .access: accessDone || accessFailed ? google == .connected : !waitingForAccess
         case .start: !starting
         default: true
         }
@@ -285,12 +284,34 @@ final class Onboarding {
         switch step {
         case .welcome, .login, .privacy: next()
         case .rules: Task { await saveRules() }
-        case .google: next()
         case .access:
             if accessDone { next() } else if accessFailed { skip() } else if accessGranted { checkAccess() } else { requestAccess() }
         case .start: Task { await startLatch() }
-        case .done: finish()
+        case .done: if let textAgent { text(textAgent) } else { finish() }
         }
+    }
+
+    /// The agent Done offers to text: the newest with a phone line that is
+    /// past provisioning.
+    var textAgent: AgentsList.Agent? {
+        (app.agents ?? []).filter { $0.line?.number != nil && $0.status != "provisioning" }
+            .max { ($0.createdAt ?? "") < ($1.createdAt ?? "") }
+    }
+
+    /// The first thing to ask an agent: Messages opens with it filled in,
+    /// to the agent's line.
+    static let demoRequest = #"Use Latch to say "hello world" out loud on my Mac."#
+
+    /// "Text ‹agent›": Messages, to its line, with the demo request.
+    func text(_ agent: AgentsList.Agent) {
+        guard let number = agent.line?.number else { return }
+        app.open(Self.smsLink(to: number))
+    }
+
+    static func smsLink(to number: String) -> URL {
+        // Only URL-unreserved characters stay as they are.
+        let body = demoRequest.addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(CharacterSet(charactersIn: "-._~"))) ?? ""
+        return URL(string: "sms:\(number)?&body=\(body)")!
     }
 
     private var verified: Bool {
@@ -306,17 +327,17 @@ final class Onboarding {
     var stepDone: Bool {
         switch step {
         case .rules: !(savedRules ?? "").isEmpty && !rulesChanged
-        case .google: google == .connected
-        case .access: accessDone
+        case .access: accessDone && google == .connected
         default: false
         }
     }
-    /// Continue moves on without it: the step couldn't be set up here, and
-    /// checking again is the screen's own button, so Skip for now would say
-    /// the same thing twice.
+    /// Continue moves on without Contacts & Messages: they couldn't be set
+    /// up here, and checking again is the screen's own button. Only once
+    /// Google is on, since Continue never skips it; Skip for now would then
+    /// say the same thing twice.
     var primarySkips: Bool {
         switch step {
-        case .access: !accessDone && accessFailed
+        case .access: !accessDone && accessFailed && google == .connected
         default: false
         }
     }
@@ -527,42 +548,49 @@ final class Onboarding {
         defer { lookingAtGoogle = false }
         // Waiting, or already on, the screen keeps saying so until latch answers.
         if google != .waiting, google != .connected { google = .checking }
+        let before = googleAccounts.working
         if let seen = await lookAtGoogle() { google = seen }
+        // A sign-in finished after the wait ended, adding an account or
+        // signing one in again: its timeout no longer holds.
+        if googleAccounts.working.contains(where: { !before.contains($0) }) { googleWaitEnded = nil }
     }
 
     /// Try again, or the app back in front: a check that leaving the
     /// screen stops. One already under way stands for it, and while latch
     /// waits for a sign-in, its answer does.
     func recheckGoogle() {
-        guard step == .google, !lookingAtGoogle, google != .waiting else { return }
+        guard step == .access, !lookingAtGoogle, google != .waiting else { return }
         googleCheck = Task { await checkGoogle() }
     }
 
-    /// "Connect Google": latch gets a sign-in link from Plow, which opens in
-    /// the browser, and waits (up to 5 minutes, while the screen shows) for
-    /// the account, then turns Google on; only ever on a click.
+    /// "Connect Google…", "Add Another Account…" or "Sign In Again…", as
+    /// `googleAccounts` offers: latch gets a sign-in link from Plow, which
+    /// opens in the browser, and waits (up to 5 minutes, while the screen
+    /// shows) for the account, then turns Google on; only ever on a click.
     func connectGoogle() {
-        googleWaitEnded = false
+        let adding = googleAccounts.addsAccount
+        googleWaitEnded = nil
         google = .waiting
         googleTask?.cancel()
         googleTask = Task {
             do {
-                let accounts = try await app.signInWithGoogle(addAccount: false) { googleSignInLink = $0 }
+                let enabled = try await app.signInWithGoogle(addAccount: adding) { googleSignInLink = $0 }
                 guard !Task.isCancelled else { return }
                 googleSignInLink = nil
-                guard let accounts else {
+                guard let enabled else {
                     // latch stopped before it answered: what is there now.
                     google = .checking
                     return await checkGoogle()
                 }
-                googleAccounts = accounts
+                googleAccounts = GoogleAccounts(enabled)
                 google = .connected
             } catch {
                 guard !Task.isCancelled else { return }
                 googleSignInLink = nil
-                if (error as? LatchError)?.code == "sign_in_timeout" {
-                    google = .notConnected
-                    googleWaitEnded = true
+                if let error = error as? LatchError, error.code == "sign_in_timeout" {
+                    // Adding, the accounts already there still work.
+                    google = adding ? .connected : .notConnected
+                    googleWaitEnded = GoogleSignIn.problem(error, adding: adding)
                 } else {
                     google = Self.googleProblem(error)
                 }
@@ -597,16 +625,16 @@ final class Onboarding {
         guard let step = setup.step("google") else { return .failed(Self.couldNotCheck) }
         // Logged in as the owner, Google's step lacks accounts only when
         // Plow couldn't be asked.
-        guard let accounts = step.accounts else { return .unreachable }
+        guard let accounts = GoogleAccounts(step) else { return .unreachable }
         googleAccounts = accounts
         if step.state == "done" { return .connected }
         // While latch waits for a sign-in, turning Google on is its to do.
         if google == .waiting { return .waiting }
-        guard !accounts.isEmpty else { return .notConnected }
+        guard !accounts.accounts.isEmpty else { return .notConnected }
         // Turning Google on is this screen's alone: not once it was left.
-        guard !Task.isCancelled, self.step == .google else { return nil }
+        guard !Task.isCancelled, self.step == .access else { return nil }
         do {
-            googleAccounts = try await client.enable("google")?.accounts ?? accounts
+            googleAccounts = try await client.enable("google").map(GoogleAccounts.init) ?? accounts
             return .connected
         } catch {
             return Task.isCancelled ? nil : Self.googleProblem(error)
@@ -642,34 +670,39 @@ final class Onboarding {
         grantGuide?.stop()
         grantGuide = nil
         accessTask = Task {
-            var opened = false
-            var guide: (any GrantGuide)?
-            waitingForAccess = true
-            defer {
-                waitingForAccess = false
-                if accessDone { guide?.granted() } else { guide?.stop() }
-            }
-            let deadline = ContinuousClock.now + .seconds(180)
-            while !Task.isCancelled {
-                for plugin in ["messages", "contacts"] where check(plugin) != .done {
-                    let result = await enableAccess(plugin)
-                    // Left the screen meanwhile: a late answer changes nothing.
-                    guard !Task.isCancelled else { return }
-                    set(plugin, result.check)
-                    if let failure = result.failure, !opened, let settings = failure.settings.flatMap(URL.init(string:)) {
-                        opened = true
-                        app.open(settings)
-                        if let grant = failure.grant {
-                            guide = app.guideGrant(URL(filePath: grant))
-                            grantGuide = guide
-                        }
+            await waitForAccess()
+            await readFullDiskAccess()
+        }
+    }
+
+    private func waitForAccess() async {
+        var opened = false
+        var guide: (any GrantGuide)?
+        waitingForAccess = true
+        defer {
+            waitingForAccess = false
+            if accessDone { guide?.granted() } else { guide?.stop() }
+        }
+        let deadline = ContinuousClock.now + .seconds(180)
+        while !Task.isCancelled {
+            for plugin in ["messages", "contacts"] where check(plugin) != .done {
+                let result = await enableAccess(plugin)
+                // Left the screen meanwhile: a late answer changes nothing.
+                guard !Task.isCancelled else { return }
+                set(plugin, result.check)
+                if let failure = result.failure, !opened, let settings = failure.settings.flatMap(URL.init(string:)) {
+                    opened = true
+                    app.open(settings)
+                    if let grant = failure.grant {
+                        guide = app.guideGrant(URL(filePath: grant))
+                        grantGuide = guide
                     }
                 }
-                if messages == .done && contacts == .done { return }
-                if [messages, contacts].contains(where: { if case .failed = $0 { true } else { false } }) { return }
-                guard ContinuousClock.now < deadline else { return }
-                try? await Task.sleep(for: accessRecheck)
             }
+            if messages == .done && contacts == .done { return }
+            if [messages, contacts].contains(where: { if case .failed = $0 { true } else { false } }) { return }
+            guard ContinuousClock.now < deadline else { return }
+            try? await Task.sleep(for: accessRecheck)
         }
     }
 
@@ -696,7 +729,15 @@ final class Onboarding {
                 guard !Task.isCancelled else { return }
                 set(plugin, result.check)
             }
+            await readFullDiskAccess()
         }
+    }
+
+    /// Full Disk Access as latch says it now, for its row: read again after
+    /// each round of turning the connectors on, which granting it changes.
+    private func readFullDiskAccess() async {
+        guard !Task.isCancelled, let setup = try? await client.setupStatusCheckingAccess(), !Task.isCancelled else { return }
+        fullDiskAccess = setup.step("messages")?.access
     }
 
     /// Whether access is missing while a host latch started in the
@@ -768,6 +809,12 @@ final class Onboarding {
             startError = .from(error)
             await app.refreshStatus()
         }
+    }
+
+    /// Start showing: this Mac's status, followed while the screen shows, so
+    /// the keep-awake line changes as the Mac is plugged in or unplugged.
+    func startAppeared() async {
+        await app.followStatus()
     }
 
     /// Start is waiting for the login item to be allowed in Login Items.

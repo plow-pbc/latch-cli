@@ -130,6 +130,21 @@ class BinaryInstall(unittest.TestCase):
     def test_options_on_both_sides_of_the_binary(self):
         self.install(custom=True, source="middle")
 
+    def test_latch_state_dir_names_the_state_folder_without_the_option(self):
+        parent = ROOT / ".dev/tests"
+        parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=parent) as directory:
+            root = Path(directory)
+            state = root / "state"
+            setup, binary, tools = fixture(root, state, "#!/bin/sh\n")
+            env = {**os.environ, "HOME": str(root / "home"), "LATCH_STATE_DIR": str(state),
+                   "PATH": f"{tools}:{os.environ['PATH']}"}
+            result = subprocess.run(["sh", str(setup / "install-binary.sh"), "--no-browser", str(binary)],
+                                    cwd=root, env=env, capture_output=True, text=True,
+                                    stdin=subprocess.DEVNULL)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(f"gog 1.0 already installed at {state}/plugins/gog/1.0/gog", result.stdout)
+
     def test_setup_runs_only_at_a_terminal_and_not_when_told_not_to(self):
         parent = ROOT / ".dev/tests"
         parent.mkdir(parents=True, exist_ok=True)
@@ -156,17 +171,21 @@ class BinaryInstall(unittest.TestCase):
                                             stdin=subprocess.DEVNULL)
                 self.assertEqual(result.returncode, 0)
                 ran = called.read_text() if called.exists() else ""
-                self.assertEqual(ran, f"--state-dir {state} setup\n" if runs else "",
+                # Every install removes the helper versions the new latch does not run.
+                pruned = f"--state-dir {state} prune-helpers\n"
+                self.assertEqual(ran, pruned + (f"--state-dir {state} setup\n" if runs else ""),
                                  (terminal, extra, upgrade))
 
     def test_a_first_mac_install_at_a_terminal_opens_the_app_from_macos_26(self):
         parent = ROOT / ".dev/tests"
         parent.mkdir(parents=True, exist_ok=True)
         # What a first install ends with: the app opened (its arguments), or
-        # `latch setup` run (latch's), or neither. An explicit --state-dir,
-        # here a relative one, reaches the app as an absolute path.
+        # `latch setup` run (latch's), or neither. An explicit --state-dir
+        # or LATCH_STATE_DIR, here a relative one, reaches the app as an
+        # absolute path.
         for macos, given, extra, upgrade, opens, runs in [
                 ("26.0", True, [], False, "--args --state-dir {state}", ""),
+                ("26.0", "env", [], False, "--args --state-dir {state}", ""),
                 ("27.1", False, [], False, "", ""),
                 ("26.0", True, ["--non-interactive"], False, None, ""),
                 ("26.0", True, [], True, None, ""),
@@ -189,14 +208,17 @@ class BinaryInstall(unittest.TestCase):
                 if upgrade:
                     (state / "config.json").write_text("{}")
                 env = {**os.environ, "HOME": str(home), "PATH": f"{tools}:{os.environ['PATH']}"}
-                options = ["--state-dir", "state"] if given else []
+                if given == "env":
+                    env["LATCH_STATE_DIR"] = "state"
+                options = ["--state-dir", "state"] if given is True else []
                 result = at_terminal(["sh", str(setup / "install-binary.sh"), *options,
                                       "--no-browser", *extra, str(setup / "latch")], root, env)
                 self.assertEqual(result.returncode, 0, case)
                 app = home / "Applications/Plow Latch.app"
                 expected = None if opens is None else f"{app} {opens.format(state=state)}".strip() + "\n"
                 self.assertEqual(opened.read_text() if opened.exists() else None, expected, case)
-                self.assertEqual(called.read_text() if called.exists() else "", runs, case)
+                pruned = f"--state-dir {'state' if given else state} prune-helpers\n"
+                self.assertEqual(called.read_text() if called.exists() else "", pruned + runs, case)
 
     def test_a_mac_before_13_is_refused_and_nothing_installed(self):
         parent = ROOT / ".dev/tests"
@@ -299,19 +321,104 @@ class BinaryInstall(unittest.TestCase):
             leftovers = sorted(path.name for path in (home / "Applications").iterdir())
             self.assertEqual(leftovers, ["Plow Latch.app"])
 
+    def test_client_only_installs_latch_alone_and_asks_nothing(self):
+        parent = ROOT / ".dev/tests"
+        parent.mkdir(parents=True, exist_ok=True)
+        # A fresh Linux machine and a fresh macOS 26 one, each at a terminal:
+        # no gog pin, Messages reader, bubblewrap or engine script is there to
+        # find, root is never asked for, no setup runs and no app opens.
+        for system in ["Linux", "Darwin"]:
+            with tempfile.TemporaryDirectory(dir=parent) as directory:
+                root = Path(directory)
+                home = root / "home"
+                state = home / ".latch"
+                called, asked = root / "called", root / "asked"
+                setup = root / "setup"
+                setup.mkdir()
+                shutil.copyfile(ROOT / "latch/install-binary.sh", setup / "install-binary.sh")
+                tools = root / "tools"
+                tools.mkdir()
+                link_basic_tools(tools)
+                for name in ["readlink", "basename", "ln", "diff"]:
+                    (tools / name).symlink_to(shutil.which(name))
+                tool(tools, "uname", f'case "$1" in -s) echo {system};; -m) echo arm64;; esac\n')
+                tool(tools, "sw_vers", "echo 26.0\n")
+                for name in ["sudo", "apt-get", "open", "curl"]:
+                    tool(tools, name, f'echo "{name} $*" >> "{asked}"\n')
+                latch = f'#!/bin/sh\necho "$@" >> "{called}"\n'
+                if system == "Darwin":
+                    inner = setup / "Plow Latch.app/Contents/MacOS/latch"
+                    inner.parent.mkdir(parents=True)
+                    inner.write_text(latch)
+                    inner.chmod(0o755)
+                    (setup / "latch").symlink_to("Plow Latch.app/Contents/MacOS/latch")
+                    (setup / "Plow Latch.app/Contents/MacOS/latch-messages").write_text("reader")
+                    installed = home / "Applications/Plow Latch.app/Contents/MacOS/latch"
+                else:
+                    tool(setup, "latch", latch.removeprefix("#!/bin/sh\n"))
+                    installed = home / ".local/bin/latch"
+                env = {**os.environ, "HOME": str(home), "PATH": str(tools)}
+                result = at_terminal(["sh", str(setup / "install-binary.sh"), "--client-only"],
+                                     root, env)
+                self.assertEqual(result.returncode, 0, system)
+                self.assertEqual(installed.read_text(), latch, system)
+                self.assertTrue((home / ".local/bin/latch").exists(), system)
+                self.assertFalse(state.exists(), system)
+                self.assertFalse(asked.exists(), asked.read_text() if asked.exists() else system)
+                self.assertFalse(called.exists(), system)
+
+                # What it says last is to log in, with nothing else to set up.
+                said = subprocess.run(["sh", str(setup / "install-binary.sh"), "--client-only",
+                                       "--state-dir", str(root / "other")],
+                                      cwd=root, env=env, capture_output=True, text=True)
+                self.assertEqual(said.returncode, 0, said.stderr)
+                self.assertIn("next: run `latch login` to log in", said.stdout)
+                self.assertNotIn("setup", said.stdout)
+
+    def test_a_home_this_user_cannot_write_is_refused_with_the_options_that_fix_it(self):
+        # As for a user whose HOME is / in a container: no ~/.local/bin to make.
+        parent = ROOT / ".dev/tests"
+        parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=parent) as directory:
+            root = Path(directory)
+            setup, binary, tools = fixture(root, root / "state", "#!/bin/sh\n")
+            home = root / "home"
+            home.mkdir(mode=0o555)
+            env = {**os.environ, "HOME": f"{home}/", "PATH": f"{tools}:{os.environ['PATH']}"}
+            try:
+                result = subprocess.run(["sh", str(setup / "install-binary.sh"), "--client-only",
+                                         str(binary)], cwd=root, env=env, capture_output=True,
+                                        text=True)
+            finally:
+                home.chmod(0o755)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(f"can't write to {home}/.local/bin;", result.stderr)
+            self.assertIn("--bin-dir DIR", result.stderr)
+            self.assertIn("LATCH_STATE_DIR", result.stderr)
+            self.assertNotIn("//", result.stderr)
+            self.assertFalse((home / ".local").exists())
+
+    def test_client_only_installs_no_browser_so_one_named_is_refused(self):
+        result = subprocess.run(["sh", str(ROOT / "latch/install-binary.sh"), "--client-only",
+                                 "--browser", "chrome", "/nonexistent/latch"],
+                                capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("--client-only installs no browser", result.stderr)
+
     def test_help_needs_no_binary_or_setup(self):
         result = subprocess.run([str(ROOT / "latch/install-binary.sh"), "--help"],
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        for option in ["--bin-dir", "--state-dir", "--browser", "--no-browser"]:
+        for option in ["--bin-dir", "--state-dir", "--browser", "--no-browser", "--client-only"]:
             self.assertIn(option, result.stdout)
 
 
 def fake_latch(version, log, managed=True, stop_ok=True, start_ok=True, running=True,
-               attached=False, other_version=False, stop=None):
+               attached=False, other_version=False, stop=None, prune="echo '{\"removed\":[]}'"):
     """A latch that says `version`, reports a host (managed or not, attached
     or not, another version's or not) on `status --local`, and writes each
-    stop and start it does to `log`. `stop`, if given, is its whole stop."""
+    stop and start it does to `log`. `stop`, if given, is its whole stop;
+    `prune`, its whole `prune-helpers`."""
     blocked = '{"code":"other_version","message":"a host from another latch version"}'
     serve = '{"this_machine":{"hosting":{"running":%s,"ready":%s,"managed":%s,"attached":%s,"blocked":%s}}}' % (
         str(running).lower(), str(running and not other_version).lower(), str(managed).lower(),
@@ -325,6 +432,7 @@ case "$*" in
   --version) echo '{{"version":"{version}"}}' ;;
   *"status --local") echo '{serve}' ;;
   *" stop") {stop} ;;
+  *" prune-helpers") {prune} ;;
   *"serve -d --again") echo "{version} serve -d --again" >> "{log}"; {start} ;;
   *) exit 2 ;;
 esac
@@ -364,9 +472,13 @@ class HostUpgrade(unittest.TestCase):
 
     def test_a_managed_host_is_stopped_then_started_again_by_the_new_latch(self):
         log = self.log()
-        result, calls, dest = self.upgrade(fake_latch("0.1.0 (1)", log), fake_latch("0.1.0 (2)", log), log)
+        # Older helper versions go while the host is stopped, before it starts again.
+        prune = f'echo "0.1.0 (2) prune-helpers" >> "{log}"; echo \'{{"removed":[]}}\''
+        new = fake_latch("0.1.0 (2)", log, prune=prune)
+        result, calls, dest = self.upgrade(fake_latch("0.1.0 (1)", log), new, log)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(calls, ["0.1.0 (2) stop", "0.1.0 (2) serve -d --again"])
+        self.assertEqual(calls, ["0.1.0 (2) stop", "0.1.0 (2) prune-helpers",
+                                 "0.1.0 (2) serve -d --again"])
         self.assertIn("started the host", result.stdout)
         self.assertIn("it starts again with the new latch once the install is done",
                       result.stdout, "the stop says it will start again after installation")

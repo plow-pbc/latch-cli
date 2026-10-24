@@ -21,9 +21,13 @@ when there is a next step), with an exit code you can branch on. Branch on
   is meant to be used here.
 - **From another machine:** log in with your own credential (`latch login`
   with no flags finds it). `latch status` shows your account, this machine
-  (`this_machine`), the account's hosts (`self` marks this one) and
-  `default_host`, where a command without `--host` goes; name one with
+  (`this_machine`), the account's hosts (`self` marks this one), the
+  plugins each one has on (`plugins`; `null` with `plugins_reason` when it
+  didn't say) and `default_host`, where a command without `--host` goes; name one with
   `--host` (or `$LATCH_HOST`); with only one host, latch picks it.
+- Your login lives in a state folder: `--state-dir DIR`, else
+  `$LATCH_STATE_DIR`, else `~/.latch`. Where `HOME` is not your home,
+  set `LATCH_STATE_DIR` once rather than passing `--state-dir` each time.
 - Never copy or borrow a device login (a machine's state folder or its
   token) onto another machine to act from there: hosts would take that
   for the owner's own request instead of judging it as yours.
@@ -42,8 +46,8 @@ when there is a next step), with an exit code you can branch on. Branch on
   blocked even with network (macOS allows its system DNS resolver).
 - `latch file get` reads a readable host path; `latch file put` writes only
   its judged destination. Exec and file need no shared-folder setup.
-- Hidden for both: `~/.latch`, the host's own state directory, and on macOS
-  `~/Library` except `~/Library/Caches`. Other home files, including `.ssh`,
+- Hidden for both: `~/.latch`, the host's own state directory, the one
+  `LATCH_STATE_DIR` names, and on macOS `~/Library` except `~/Library/Caches`. Other home files, including `.ssh`,
   are readable; the gatekeeper judges their use. Writes must stay inside
   home, outside hidden places, and cannot grant home itself.
 - Quote host paths beginning with `~`: latch expands them on the host.
@@ -56,13 +60,14 @@ when there is a next step), with an exit code you can branch on. Branch on
   (keep its id), `observe`, then act on the refs it returns.
 - `latch messages …` and `latch contacts …` read the owner's texts and
   address book on a Mac host: search, a thread, chats; a person's handles.
-  Only a latch running on macOS has them; on Linux they are unknown commands.
+  Any latch can ask, on Linux too; a host that isn't a Mac answers
+  `unsupported_platform`.
 
 ## A sign-in code sent by text
 
 When a site asks for a code it texted to the owner (a goal in words stops
-there with `needs_fields`), your latch runs on macOS and the host reads
-Messages, it is two steps, each judged:
+there with `needs_fields`) and the host reads Messages, it is two steps,
+each judged:
 
 1. `latch messages search --host H --since 10m code`: take the code from
    the newest message that is plainly that site's sign-in code (none yet:
@@ -70,9 +75,8 @@ Messages, it is two steps, each judged:
 2. Type it into the code field from `observe`: `latch browser do 'type eN
    "CODE"'`, then submit as the page asks.
 
-Use the code for that sign-in only. On a Linux latch, which has no
-`messages`, or if the host can't read Messages, hand the session to the
-owner: `latch browser handoff --reason 2fa`.
+Use the code for that sign-in only. If the host can't read Messages, hand
+the session to the owner: `latch browser handoff --reason 2fa`.
 
 ## Credentials in exec
 
@@ -147,6 +151,9 @@ fixes it.
 - Never fake a click or key with `eval`: the site sees it isn't real.
   `covered_target` means something is on top: click the banner's or
   dialog's own button.
+- A plan that stops (`do` or `act`: exit 1, or 4 for a confirmation)
+  prints nothing on stdout: its whole answer, with `status`, `steps`,
+  `stop` and `page`, is in the stderr `error` line. Read it there.
 - A value `fill` put in a page stays there: never copy it out, repeat it
   or write it anywhere.
 - Buying: sign in, choose, `fill` the card, `do --confirm C` each

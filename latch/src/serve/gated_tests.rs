@@ -437,6 +437,30 @@ async fn a_judge_that_cannot_answer_runs_nothing() {
 }
 
 #[tokio::test]
+async fn the_answer_does_not_wait_for_the_dashboard_name_lookup() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let released = Arc::new(AtomicBool::new(false));
+    let world = World {
+        paused: Some((format!("/v1/agents/{AGENT}"), released.clone())),
+        ..World::default()
+    };
+    let plow = fake::serve(world);
+    let provider = model::Plow::new(&plow.url, "made-up-login".into()).with_model(gate::MODEL);
+    let t = start_with(
+        plow,
+        Arc::new(provider),
+        DenyExec::from_flags(&[crate::cli::EVERY_AGENT.to_string()]),
+    )
+    .await;
+    let agent = t.caller("agent").await;
+    let call = t.call(&agent, "exec", exec("touch made"));
+    let answered = tokio::time::timeout(Duration::from_secs(10), call).await;
+    released.store(true, Ordering::SeqCst);
+    let (answer, _) = answered.expect("the answer waited for the name lookup");
+    assert_eq!(refusal(&answer).1, "exec_denied");
+}
+
+#[tokio::test]
 async fn the_owners_reply_lets_the_retry_through_and_every_call_is_judged() {
     let t = start(a_chat(covered_after_a_yes)).await;
     let agent = t.caller("agent").await;
@@ -485,8 +509,22 @@ async fn the_owners_reply_lets_the_retry_through_and_every_call_is_judged() {
     assert_eq!(gate["layers"]["rules"]["says"], "neither");
     for layer in ["rules", "chat"] {
         assert_eq!(gate["layers"][layer]["model_request"], "req_fake");
+        assert!(gate["layers"][layer]["latency_ms"].is_u64(), "{gate}");
     }
+    assert!(gate["chat_read_ms"].is_u64(), "{gate}");
     assert!(gate["p"]["COVERED"].as_f64().unwrap() >= 0.5);
+    // Both caller checks are timed: on connect, and before the operation.
+    assert!(records[2]["timings"]["caller_check_ms"].is_u64());
+    let connects: Vec<Value> = t
+        .audit_text()
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .filter(|record| record["op"] == "connect")
+        .collect();
+    assert!(!connects.is_empty());
+    for connect in &connects {
+        assert!(connect["timings"]["caller_check_ms"].is_u64(), "{connect}");
+    }
     assert_eq!(records[2]["args"]["argv"][2], "echo tidied >> made");
 
     let log = t.audit_text();
@@ -1714,6 +1752,12 @@ async fn messages_and_contacts_reads_are_judged_and_audited_without_a_row() {
     assert_eq!(records[0]["args"]["action"], "messages.search");
     assert_eq!(records[0]["args"]["result"]["count"], 1);
     assert_eq!(records[2]["args"]["result"]["count"], 3);
+    // The reader's phases are timed in the audit, not in the answer.
+    let timings = &records[0]["args"]["result"]["timings"];
+    for phase in ["store_open_ms", "address_book_ms", "query_ms", "reader_ms"] {
+        assert!(timings[phase].is_u64(), "{timings}");
+    }
+    assert!(found.get("timings").is_none(), "{found}");
 
     // A later page of contacts: its cursor holds the last name the page
     // before gave, which neither the audit nor the log keeps.

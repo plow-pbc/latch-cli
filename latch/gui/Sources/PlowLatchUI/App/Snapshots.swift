@@ -23,9 +23,6 @@ nonisolated struct FakeLatchClient: LatchClient {
     /// Google's step in `setup --status`, when not the default.
     var google: String?
     func setupStatus() async throws -> SetupStatus { try Fixtures.decode(Fixtures.setup(on: connectorsOn, google: google)) }
-    func pluginsList(host: String?) async throws -> PluginsList {
-        throw LatchError.failed(LatchFailure(code: "serve_required", message: "this machine needs a live receiver; start `latch serve` on this state folder, then retry"))
-    }
     func vaultList(host: String?) async throws -> VaultList { try Fixtures.decode(#"{"items":[]}"#) }
     func setupStatusCheckingAccess() async throws -> SetupStatus { try await setupStatus() }
     func enable(_ plugin: String) async throws -> GoogleEnabled? { nil }
@@ -115,10 +112,17 @@ nonisolated enum Fixtures {
 
     /// `setup --status`'s Google step with these accounts connected in Plow
     /// (the plugin off here).
-    static func googleConnected(_ accounts: [String]) -> String {
-        #"{"step":"google","state":"needed","reason":"Google is connected in Plow (\#(accounts.joined(separator: ", "))); the Google connector is off.","args":["plugins","enable","google"],"enabled":false,"ready":false,"accounts":[\#(accounts.map { "\"\($0)\"" }.joined(separator: ","))]}"#
+    static let threeAccounts = ["alex@example.com", "alex.work@example.com", "family@example.com"]
+    static func googleConnected(_ accounts: [String], needsSignIn: [String] = []) -> String {
+        func list(_ names: [String]) -> String { "[" + names.map { "\"\($0)\"" }.joined(separator: ",") + "]" }
+        let again = needsSignIn.isEmpty ? "" : #","needs_sign_in":\#(list(needsSignIn))"#
+        return #"{"step":"google","state":"needed","reason":"Google is connected in Plow (\#(accounts.joined(separator: ", "))); the Google connector is off.","args":["plugins","enable","google"],"enabled":false,"ready":false,"accounts":\#(list(accounts))\#(again)}"#
     }
 
+    /// `status`, its host's keep-awake switch as latch says it.
+    static func keepAwake(_ keepAwake: String, in status: String = serving) -> String {
+        status.replacingOccurrences(of: #""blocked":null"#, with: #""blocked":null,"keep_awake":\#(keepAwake)"#)
+    }
     static let serving = #"{"login":{"kind":"device"},"this_machine":{"name":"studio","key":"6b55a78f","hosting":{"running":true,"ready":true,"configuring":false,"managed":true,"attached":false,"state":"serving","pid":32250,"blocked":null}},"update":{"available":false,"build":null,"checked_at":null},"last_error":null,"state_dir":"/Users/me/.latch","version":"0.1.0","protocol":2}"#
     static let stopped = #"{"login":{"kind":"device"},"this_machine":{"name":"studio","key":"6b55a78f","hosting":{"running":false,"ready":false,"configuring":false,"managed":false,"attached":false,"state":"stopped","pid":null,"blocked":null}},"update":{"available":true,"build":1342,"checked_at":"2026-10-22T22:07:54.186472Z"},"last_error":null,"state_dir":"/Users/me/.latch","version":"0.1.0","protocol":2}"#
     static let loggedOut = #"{"login":null,"this_machine":{"name":null,"key":null,"hosting":{"running":false,"ready":false,"configuring":false,"managed":false,"attached":false,"state":"stopped","pid":null,"blocked":null}},"update":{"available":false,"build":null,"checked_at":null},"last_error":null,"state_dir":"/Users/me/.latch","version":"0.1.0","protocol":2}"#
@@ -131,17 +135,21 @@ nonisolated enum Fixtures {
     static let laptopHosts = #"{"account":{"owner_uid":"usr_5f2c9a7e","display_name":"Morgan"},"hosts":[{"name":"pi-kitchen","key":"78d8cd12e343e28d70b1da3ac8a0bb8c37593b5f8d535a58b716b776a91f2edc","self":false,"online":true,"last_seen_at":"2026-10-22T22:06:30.037004Z"},{"name":"sidecar","key":"b58ac41605d91211b1d5c052addea8d6e7b81702d4902f746e6d639e38909364","self":false,"online":true,"last_seen_at":"2026-10-22T22:06:33.384336Z"},{"name":"studio","key":"6b55a78fcd1400f6ac14f129cd1825744125406e25a2892be4abda157baaa23f","self":false,"online":true,"last_seen_at":"2026-10-22T22:06:26.724881Z"}],"default_host":null,"default_host_reason":"host_required","api_url":"http://127.0.0.1:18934"}"#
     static let laptopHostsPiOffline = #"{"account":{"owner_uid":"usr_5f2c9a7e","display_name":"Morgan"},"hosts":[{"name":"pi-kitchen","key":"78d8cd12e343e28d70b1da3ac8a0bb8c37593b5f8d535a58b716b776a91f2edc","self":false,"online":false,"last_seen_at":null},{"name":"sidecar","key":"b58ac41605d91211b1d5c052addea8d6e7b81702d4902f746e6d639e38909364","self":false,"online":true,"last_seen_at":"2026-10-22T22:06:33.384336Z"},{"name":"studio","key":"6b55a78fcd1400f6ac14f129cd1825744125406e25a2892be4abda157baaa23f","self":false,"online":true,"last_seen_at":"2026-10-22T22:06:26.724881Z"}],"default_host":null,"default_host_reason":"host_required","api_url":"http://127.0.0.1:18934"}"#
     static let noHosts = #"{"account":{"owner_uid":"usr_5f2c9a7e","display_name":"Morgan"},"hosts":[],"default_host":null,"default_host_reason":"no_host","api_url":"http://127.0.0.1:18934"}"#
-    // `rules show`, `vault list` and `plugins list` on studio, and on
-    // pi-kitchen (rules and connectors read from laptop with `--host`).
+    // `rules show`, `vault list` and `status --local`'s `plugins` on studio,
+    // and on pi-kitchen (read from laptop with `--host`).
     static let studioRules = #"{"agents":[{"agent_name":"scout","agent_uid":"0432eb0ee1e99e24c40c54fc2bada229","note":"no latch registered when set","revision":"8be9ed94de19f40ae8a8f06b98bb6ee54da22900b8191b70dd2f2486edf1a1f0","text":"scout may run builds and tests in ~/Projects/latch-demo with --write there, and may use the network for package downloads."}],"audit_id":"81c7dce2aa3758db17a746b2284596fcfb4e2773a99d34cc49cee9e6071b2e3f","every_agent":{"revision":"9b1e8ee3911c42472937f948983a24e6c087c4f70d5bc5b924b84c799f0bff05","text":"Agents may read and summarize anything in ~/Projects. Ask me before sending any email or deleting files. Never touch ~/Finance."},"host":"studio","warning":"Freeform rules are judged, not guaranteed. --deny-exec is enforced in code."}"#
     static let studioVault = #"{"audit_id":"bcaf28dedfe777a60303c3ccd802a8a2380237b6f02988bc33dabb307431e0a6","items":[{"fields":[{"alias":false,"custom":false,"hidden":false,"label":"username"},{"alias":false,"custom":false,"hidden":true,"label":"password"}],"item":"v1","kind":"login","revision":1,"sites":["shop.example"],"title":"Shop (test)","totp":false,"username":"ada"},{"fields":[{"alias":false,"custom":false,"hidden":false,"label":"username"},{"alias":false,"custom":false,"hidden":true,"label":"password"}],"item":"v2","kind":"login","other_top_sites":["grocer-login.example"],"revision":1,"sites":["grocer.example"],"title":"Grocer (test)","totp":false,"username":"ada@example.com"},{"fields":[],"item":"v3","kind":"note","revision":1,"sites":[],"title":"Building notes (test)","totp":false},{"fields":[{"alias":false,"custom":false,"hidden":true,"label":"number"},{"alias":false,"custom":false,"hidden":true,"label":"code"},{"alias":false,"custom":false,"hidden":false,"label":"cardholder name"}],"item":"v4","kind":"card","revision":1,"sites":["shop.example"],"title":"Visa (test)","totp":false}]}"#
-    static let studioPlugins = #"{"audit_id":"4bb10df4087e3d779901b77fecce312db061776f1f5fffa1716f6d193bb298cd","plugins":[{"enable":"latch plugins enable google","name":"google","reason":"its owner has not enabled it on this host","state":"disabled"},{"enable":"latch plugins enable messages","name":"messages","reason":"its owner has not enabled it on this host","state":"disabled"},{"enable":"latch plugins enable contacts","name":"contacts","reason":"its owner has not enabled it on this host","state":"disabled"}]}"#
+    static let studioPlugins = #"[{"enable":"latch plugins enable google","name":"google","reason":"its owner has not enabled it on this host","state":"disabled"},{"enable":"latch plugins enable messages","name":"messages","reason":"its owner has not enabled it on this host","state":"disabled"},{"enable":"latch plugins enable contacts","name":"contacts","reason":"its owner has not enabled it on this host","state":"disabled"}]"#
     /// studio's after turning Google on, with Messages lacking Full Disk Access.
-    static let studioPluginsSetUp = #"{"audit_id":"5cc20df4087e3d779901b77fecce312db061776f1f5fffa1716f6d193bb298cd","plugins":[{"enable":null,"name":"google","reason":"enabled; agents can use it once latch is running","state":"enabled"},{"enable":"latch plugins enable messages","name":"messages","reason":"this host has no Full Disk Access; turn it on for /Applications/Plow Latch.app in System Settings (x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles), then run `latch plugins enable messages` again","state":"needs_setup"},{"enable":"latch plugins enable contacts","name":"contacts","reason":"its owner has not enabled it on this host","state":"disabled"}]}"#
+    static let studioPluginsSetUp = #"[{"enable":null,"name":"google","reason":"enabled; agents can use it once latch is running","state":"enabled"},{"enable":"latch plugins enable messages","name":"messages","reason":"this host has no Full Disk Access; turn it on for /Applications/Plow Latch.app in System Settings (x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles), then run `latch plugins enable messages` again","state":"needs_setup"},{"enable":"latch plugins enable contacts","name":"contacts","reason":"its owner has not enabled it on this host","state":"disabled"}]"#
     /// pi-kitchen's own `status --local`, as `status --host pi-kitchen` gives it.
     static let piStatus = #"{"login":{"kind":"device"},"this_machine":{"name":"pi-kitchen","key":"78d8cd12e343e28d70b1da3ac8a0bb8c37593b5f8d535a58b716b776a91f2edc","hosting":{"running":true,"ready":true,"configuring":false,"managed":true,"attached":false,"state":"serving","pid":811,"blocked":null}},"update":{"available":false,"build":138,"checked_at":"2026-10-23T08:00:00Z"},"last_error":null,"state_dir":"/home/pi/.latch","version":"0.1.0 (138): commit 4c1e0a2b9, built 2026-10-22 18:04 UTC, standalone, protocol plow/latch/4","protocol":4}"#
     static let piRules = #"{"agents":[],"audit_id":"c57f1209db34c3767c262960f596b34ec61e8b932a2b3011b3677db297f74bea","every_agent":{"revision":"8419fd077d6e4e3adc59789beedadb9864635746da5e22ae63b727c9b42c8715","text":"This Pi runs the kitchen display. Agents may read ~/recipes and write only to ~/recipes/drafts."},"host":"pi-kitchen","warning":"Freeform rules are judged, not guaranteed. --deny-exec is enforced in code."}"#
-    static let piPlugins = #"{"audit_id":"9727a671710eb349e52bc36fc65f7958273c76056619f26705bee57f164b7a5e","plugins":[{"enable":"latch plugins enable google","name":"google","reason":"its owner has not enabled it on this host","state":"disabled"},{"enable":"latch plugins enable messages","name":"messages","reason":"its owner has not enabled it on this host","state":"disabled"},{"enable":"latch plugins enable contacts","name":"contacts","reason":"its owner has not enabled it on this host","state":"disabled"}]}"#
+    /// `status` with `plugins` in it, as `status --local` lists them.
+    static func status(_ status: String, plugins: String) -> String {
+        "{\"plugins\":\(plugins)," + status.dropFirst()
+    }
+    static let piPlugins = #"[{"enable":"latch plugins enable google","name":"google","reason":"its owner has not enabled it on this host","state":"disabled"},{"enable":"latch plugins enable messages","name":"messages","reason":"its owner has not enabled it on this host","state":"disabled"},{"enable":"latch plugins enable contacts","name":"contacts","reason":"its owner has not enabled it on this host","state":"disabled"}]"#
     static let piVault = #"{"audit_id":"1e059a4e60011ac425fc08b23c8c43e6de7a4db7a571fe8fcce7881388c9f00e","items":[]}"#
     // `vault list`, `vault show` and `vault import --preview` on vstudio, and
     // the import of a Chrome export's first row: real runs.
@@ -265,9 +273,9 @@ package enum SnapshotRunner {
         let code: LoginCode = try Fixtures.decode(Fixtures.code)
         let rules = "Agents may read and summarize anything in ~/Projects. Ask me before sending any email or deleting files. Never touch ~/Finance."
         let skipped = Progress(passed: [.welcome: .continued, .login: .continued, .privacy: .continued, .rules: .skipped,
-                                        .google: .skipped, .access: .skipped, .start: .continued])
+                                        .access: .skipped, .start: .continued])
         let full = Progress(passed: [.welcome: .continued, .login: .continued, .privacy: .continued, .rules: .continued,
-                                     .google: .continued, .access: .continued, .start: .continued])
+                                     .access: .continued, .start: .continued])
 
         typealias Stage = (Onboarding) async -> Void
         let states: [(String, Step, String, Progress, Stage)] = [
@@ -318,42 +326,55 @@ package enum SnapshotRunner {
                 $0.draftRules = rules
                 $0.rulesError = LatchError.failed(LatchFailure(code: "rules_too_long", message: "rules are at most 8 KB together; shorten them, then save again"))
             }),
-            ("05-google-checking", .google, Fixtures.stopped, Progress(), { _ in }),
-            ("05-google-not-connected", .google, Fixtures.stopped, Progress(), { await $0.checkGoogle() }),
-            ("05-google-waiting", .google, Fixtures.stopped, Progress(), {
+            ("05-grant-google-checking", .access, Fixtures.stopped, Progress(), { _ in }),
+            ("05-grant-google-not-connected", .access, Fixtures.stopped, Progress(), { await $0.checkGoogle() }),
+            ("05-grant-google-waiting", .access, Fixtures.stopped, Progress(), {
                 await $0.checkGoogle(); $0.google = .waiting; $0.stage(googleSignInLink: Fixtures.signInLink)
             }),
-            ("05-google-wait-ended", .google, Fixtures.stopped, Progress(), {
-                await $0.checkGoogle(); $0.googleWaitEnded = true
+            ("05-grant-google-wait-ended", .access, Fixtures.stopped, Progress(), {
+                await $0.checkGoogle(); $0.googleWaitEnded = GoogleSignIn.problem(.failed(LatchFailure(code: "sign_in_timeout", message: "")), adding: false)
             }),
-            ("05-google-connected-turned-on", .google, Fixtures.stopped, Progress(), { await $0.checkGoogle() }),
-            ("05-google-rerun-connected", .google, Fixtures.serving, Progress(rerun: true), { await $0.checkGoogle() }),
-            ("05-google-plow-unreachable", .google, Fixtures.stopped, Progress(), { await $0.checkGoogle() }),
-            ("05-google-tools-missing", .google, Fixtures.stopped, Progress(), { $0.google = .failed(Onboarding.toolsMissing) }),
-            ("06-access-not-checked", .access, Fixtures.stopped, Progress(), { _ in }),
-            ("06-access-waiting", .access, Fixtures.stopped, Progress(), {
+            ("05-grant-google-connected-turned-on", .access, Fixtures.stopped, Progress(), { await $0.checkGoogle() }),
+            ("05-grant-google-three-accounts", .access, Fixtures.stopped, Progress(), { await $0.checkGoogle() }),
+            ("05-grant-google-adding-waiting", .access, Fixtures.stopped, Progress(), {
+                await $0.checkGoogle(); $0.google = .waiting; $0.stage(googleSignInLink: Fixtures.signInLink)
+            }),
+            ("05-grant-google-adding-timed-out", .access, Fixtures.stopped, Progress(), {
+                await $0.checkGoogle(); $0.googleWaitEnded = GoogleSignIn.problem(.failed(LatchFailure(code: "sign_in_timeout", message: "")), adding: true)
+            }),
+            ("05-grant-google-some-need-sign-in", .access, Fixtures.stopped, Progress(), { await $0.checkGoogle() }),
+            ("05-grant-google-all-need-sign-in", .access, Fixtures.stopped, Progress(), {
+                $0.googleAccounts = GoogleAccounts(accounts: Fixtures.threeAccounts, needsSignIn: Fixtures.threeAccounts); $0.google = .notConnected
+            }),
+            ("05-grant-google-rerun-connected", .access, Fixtures.serving, Progress(rerun: true), { await $0.checkGoogle() }),
+            ("05-grant-google-plow-unreachable", .access, Fixtures.stopped, Progress(), { await $0.checkGoogle() }),
+            ("05-grant-google-tools-missing", .access, Fixtures.stopped, Progress(), { $0.google = .failed(Onboarding.toolsMissing) }),
+            ("05-grant-access-not-checked", .access, Fixtures.stopped, Progress(), { _ in }),
+            ("05-grant-access-waiting", .access, Fixtures.stopped, Progress(), {
                 $0.messages = .needed("Waiting for access"); $0.contacts = .needed("Waiting for access"); $0.waitingForAccess = true
             }),
-            ("06-access-allowed", .access, Fixtures.stopped, Progress(), {
+            ("05-grant-access-allowed", .access, Fixtures.stopped, Progress(), {
                 $0.messages = .done; $0.contacts = .done
             }),
-            ("06-access-restart-latch", .access, Fixtures.serving, Progress(), {
+            ("05-grant-access-restart-latch", .access, Fixtures.serving, Progress(), {
                 $0.messages = .needed("Waiting for access"); $0.contacts = .needed("Waiting for access")
             }),
-            ("06-access-restart-failed", .access, Fixtures.stopped, Progress(), {
+            ("05-grant-access-restart-failed", .access, Fixtures.stopped, Progress(), {
                 $0.messages = .needed("Waiting for access"); $0.contacts = .needed("Waiting for access")
                 $0.restartError = LatchError.failed(LatchFailure(code: "serve_failed", message: "the host did not answer within 30 seconds (`latch logs` has its log)"))
             }),
-            ("06-access-terminal-host", .access, Fixtures.servingAttached, Progress(), {
+            ("05-grant-access-terminal-host", .access, Fixtures.servingAttached, Progress(), {
                 $0.messages = .needed("Waiting for access"); $0.contacts = .needed("Waiting for access")
             }),
-            ("06-access-unavailable", .access, Fixtures.stopped, Progress(), {
+            ("05-grant-access-unavailable", .access, Fixtures.stopped, Progress(), {
                 $0.messages = .failed(LatchError.failed(LatchFailure(code: "messages_not_installed", message: "the Messages reader is not installed at /Users/me/.latch/plugins/messages/0.1.0/latch-messages; run install.sh")))
                 $0.contacts = .done
             }),
             ("07-start", .start, Fixtures.stopped, Progress(), { _ in }),
             ("07-start-background-off", .start, Fixtures.stopped, Progress(), { $0.runInBackground = false }),
             ("07-start-already-running", .start, Fixtures.serving, Progress(), { _ in }),
+            ("07-start-keep-awake-held", .start, Fixtures.keepAwake(#"{"enabled":true,"held":true,"reason":null}"#), Progress(), { _ in }),
+            ("07-start-keep-awake-off", .start, Fixtures.keepAwake(#"{"enabled":false,"held":false,"reason":"disabled"}"#, in: Fixtures.stopped), Progress(), { _ in }),
             ("07-start-other-version", .start, Fixtures.otherVersion, Progress(), { _ in }),
             ("07-start-error", .start, Fixtures.stopped, Progress(), {
                 $0.startError = LatchError.failed(LatchFailure(code: "serve_failed", message: "the host did not answer within 30 seconds (`latch logs` has its log)"))
@@ -362,8 +383,12 @@ package enum SnapshotRunner {
             ("08-done-all-set", .done, Fixtures.serving, full, {
                 $0.app.stage(rulesSaved: true, setup: try! Fixtures.decode(Fixtures.setup(on: ["google", "messages", "contacts"])))
             }),
+            ("08-done-text-agent", .done, Fixtures.serving, full, {
+                $0.app.stage(rulesSaved: true, setup: try! Fixtures.decode(Fixtures.setup(on: ["google", "messages", "contacts"])))
+                $0.app.stage(agents: try! Fixtures.decode(Fixtures.agents), standings: [:])
+            }),
             ("08-done-google-skipped", .done, Fixtures.serving,
-             Progress(passed: full.passed.merging([.google: .skipped]) { $1 }), {
+             Progress(passed: full.passed.merging([.access: .skipped]) { $1 }), {
                 $0.app.stage(rulesSaved: true, setup: try! Fixtures.decode(Fixtures.setup(on: ["messages", "contacts"], google: Fixtures.googleNotConnected)))
             }),
             ("08-done-with-skips", .done, Fixtures.serving, skipped, {
@@ -418,15 +443,14 @@ package enum SnapshotRunner {
             ]
             for (name, status, account, chosen, place) in homes {
                 let app = AppModel(client: FakeLatchClient(), still: true)
-                app.stage(status: try Fixtures.decode(status))
+                app.stage(status: try Fixtures.decode(Fixtures.status(status, plugins: Fixtures.studioPlugins)))
                 app.stage(account: try account.map { try Fixtures.decode($0) }, error: account == nil ? plowDown : nil)
                 app.stage(summary: HostSummary(rules: .success(try Fixtures.decode(Fixtures.studioRules)),
-                                               vault: .success(try Fixtures.decode(Fixtures.studioVault)),
-                                               plugins: .success(try Fixtures.decode(Fixtures.studioPlugins))),
+                                               vault: .success(try Fixtures.decode(Fixtures.studioVault))),
                           for: "studio")
-                app.stage(summary: HostSummary(rules: .success(try Fixtures.decode(Fixtures.piRules)),
-                                               vault: .success(try Fixtures.decode(Fixtures.piVault)),
-                                               plugins: .success(try Fixtures.decode(Fixtures.piPlugins))),
+                app.stage(summary: HostSummary(status: .success(try Fixtures.decode(Fixtures.status(Fixtures.piStatus, plugins: Fixtures.piPlugins))),
+                                               rules: .success(try Fixtures.decode(Fixtures.piRules)),
+                                               vault: .success(try Fixtures.decode(Fixtures.piVault))),
                           for: "pi-kitchen")
                 app.chosenHost = chosen
                 app.place = place
@@ -655,6 +679,8 @@ package enum SnapshotRunner {
                 with: #""self":false,"online":false,"last_seen_at":null"#)
             let screens: [(String, String, String, String?, Bool)] = [
                 ("19-settings-this-mac-serving", Fixtures.serving, Fixtures.studioHosts, nil, false),
+                ("19-settings-this-mac-keep-awake-on-battery", Fixtures.keepAwake(#"{"enabled":true,"held":false,"reason":"on_battery"}"#),
+                 Fixtures.studioHosts, nil, false),
                 ("19-settings-this-mac-stopped-update", Fixtures.stopped, Fixtures.studioHosts, nil, true),
                 ("19-settings-remote-online", Fixtures.serving, Fixtures.studioHosts, "pi-kitchen", false),
                 ("19-settings-remote-offline", Fixtures.serving, piOffline, "pi-kitchen", false),
@@ -663,14 +689,12 @@ package enum SnapshotRunner {
             func settingsApp(status: String, account: String, chosen: String?, checked: Bool, plugins: String = Fixtures.studioPlugins,
                              google: String = Fixtures.googleNotConnected) throws -> AppModel {
                 let app = AppModel(client: FakeLatchClient(), still: true)
-                app.stage(status: try Fixtures.decode(status))
+                app.stage(status: try Fixtures.decode(Fixtures.status(status, plugins: plugins)))
                 app.stage(account: try Fixtures.decode(account))
                 app.stage(agents: try Fixtures.decode(Fixtures.agents), standings: [:])
-                app.stage(summary: HostSummary(rules: .success(try Fixtures.decode(Fixtures.rulesStudio)),
-                                               plugins: .success(try Fixtures.decode(plugins))), for: "studio")
-                app.stage(summary: HostSummary(status: .success(try Fixtures.decode(Fixtures.piStatus)),
-                                               rules: .success(try Fixtures.decode(Fixtures.rulesKitchen)),
-                                               plugins: .success(try Fixtures.decode(Fixtures.piPlugins))), for: "pi-kitchen")
+                app.stage(summary: HostSummary(rules: .success(try Fixtures.decode(Fixtures.rulesStudio))), for: "studio")
+                app.stage(summary: HostSummary(status: .success(try Fixtures.decode(Fixtures.status(Fixtures.piStatus, plugins: Fixtures.piPlugins))),
+                                               rules: .success(try Fixtures.decode(Fixtures.rulesKitchen))), for: "pi-kitchen")
                 app.stage(devices: try Fixtures.decode(Fixtures.devices), update: checked ? try Fixtures.decode(Fixtures.updateCheck) : nil)
                 app.stage(connections: Connections(try Fixtures.decode(Fixtures.setup(on: [], google: google)) as SetupStatus))
                 app.chosenHost = chosen
@@ -694,6 +718,9 @@ package enum SnapshotRunner {
                 ("21-connections-none", Fixtures.googleNotConnected),
                 ("21-connections-one", Fixtures.googleConnected(["ada@example.com"])),
                 ("21-connections-two", Fixtures.googleConnected(["ada@example.com", "ada.work@example.com"])),
+                ("21-connections-three", Fixtures.googleConnected(Fixtures.threeAccounts)),
+                ("21-connections-some-need-sign-in", Fixtures.googleConnected(Fixtures.threeAccounts, needsSignIn: ["family@example.com"])),
+                ("21-connections-all-need-sign-in", Fixtures.googleConnected(Fixtures.threeAccounts, needsSignIn: Fixtures.threeAccounts)),
                 ("21-connections-unknown", Fixtures.googleUnreachable),
             ]
             for (name, google) in connections {
@@ -760,12 +787,16 @@ package enum SnapshotRunner {
 
     /// What `setup --status` says of Google for each Connect Google still.
     private static let google: [String: String] = [
-        "05-google-not-connected": Fixtures.googleNotConnected,
-        "05-google-waiting": Fixtures.googleNotConnected,
-        "05-google-wait-ended": Fixtures.googleNotConnected,
-        "05-google-connected-turned-on": Fixtures.googleConnectedOff,
-        "05-google-rerun-connected": Fixtures.googleOn,
-        "05-google-plow-unreachable": Fixtures.googleUnreachable,
+        "05-grant-google-not-connected": Fixtures.googleNotConnected,
+        "05-grant-google-waiting": Fixtures.googleNotConnected,
+        "05-grant-google-wait-ended": Fixtures.googleNotConnected,
+        "05-grant-google-connected-turned-on": Fixtures.googleConnectedOff,
+        "05-grant-google-three-accounts": Fixtures.googleConnected(Fixtures.threeAccounts),
+        "05-grant-google-adding-waiting": Fixtures.googleConnected(Fixtures.threeAccounts),
+        "05-grant-google-adding-timed-out": Fixtures.googleConnected(Fixtures.threeAccounts),
+        "05-grant-google-some-need-sign-in": Fixtures.googleConnected(Fixtures.threeAccounts, needsSignIn: ["family@example.com"]),
+        "05-grant-google-rerun-connected": Fixtures.googleOn,
+        "05-grant-google-plow-unreachable": Fixtures.googleUnreachable,
     ]
 
     /// Each host's activity as `latch audit` printed it.
@@ -780,9 +811,9 @@ package enum SnapshotRunner {
     /// image of it (nor of the sidebar's materials) to give.
     private static func renderWindow(_ view: some View, size: CGSize, dark: Bool, file: URL) async throws {
         guard wanted(file) else { return }
-        let window = NSWindow(contentRect: CGRect(origin: CGPoint(x: -4000, y: -4000), size: size),
-                              styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
-                              backing: .buffered, defer: false)
+        let window = Offscreen(contentRect: CGRect(origin: CGPoint(x: -4000, y: -4000), size: size),
+                               styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+                               backing: .buffered, defer: false)
         window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
         window.contentViewController = NSHostingController(rootView: view)
         window.setFrame(CGRect(origin: CGPoint(x: -4000, y: -4000), size: size), display: true)
@@ -800,16 +831,31 @@ package enum SnapshotRunner {
         if !background { host.sizingOptions = [] }
         // A floating panel has no title bar, nor its minimum height.
         // Off every display: nothing shows, and no click lands on it.
-        let window = NSWindow(contentRect: CGRect(origin: CGPoint(x: -4000, y: -4000), size: size),
-                              styleMask: background ? [.titled, .fullSizeContentView] : [.borderless],
-                              backing: .buffered, defer: false)
+        let window = Offscreen(contentRect: CGRect(origin: CGPoint(x: -4000, y: -4000), size: size),
+                               styleMask: background ? [.titled, .fullSizeContentView] : [.borderless],
+                               backing: .buffered, defer: false)
         window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
         window.contentView = host
+        // Setting its content can move the window onto a display: back.
+        window.setFrameOrigin(CGPoint(x: -4000, y: -4000))
         window.orderFrontRegardless()
         try await Task.sleep(for: .milliseconds(400))
         try Render.png(host, to: file, background: background)
         window.orderOut(nil)
         print(file.path)
     }
+}
+/// A window for a still or a test, which never shows: kept off every
+/// display (a titled window is otherwise moved onto one, such as a display
+/// left of the main one) and transparent. The stills draw its views, not
+/// what the window server shows.
+final class Offscreen: NSWindow {
+    override init(contentRect: NSRect, styleMask: NSWindow.StyleMask, backing: NSWindow.BackingStoreType, defer flag: Bool) {
+        super.init(contentRect: contentRect, styleMask: styleMask, backing: backing, defer: flag)
+        alphaValue = 0
+        ignoresMouseEvents = true
+    }
+
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect { frameRect }
 }
 #endif

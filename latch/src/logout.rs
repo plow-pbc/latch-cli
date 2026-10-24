@@ -115,10 +115,11 @@ async fn unregister(state: &StateDir) -> Value {
         return Value::Null;
     }
     let name = config.peer.name;
-    let removed = match credential::token(state) {
-        Ok(token) => Plow::new(&config.api_url, &token).remove_self().await,
-        Err(failure) => Err(failure),
-    };
+    let removed =
+        match credential::token(state).and_then(|token| Plow::new(&config.api_url, &token)) {
+            Ok(plow) => plow.remove_self().await,
+            Err(failure) => Err(failure),
+        };
     match removed {
         Ok(_) => json!({"name": name, "removed": true}),
         Err(failure) => json!({

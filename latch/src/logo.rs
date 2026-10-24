@@ -1,19 +1,15 @@
-//! The Plow logo, shown by a bare `latch` on a terminal. It plays the old
-//! Latch app's welcome animation in text: the mark's outline draws itself,
-//! the letters fill in Plow's volt green as the outline fades, and a white
-//! glint sweeps across them. With `NO_COLOR` it shows the finished mark,
-//! as the app did for people who prefer reduced motion.
+//! The Plow logo, beside the overview a bare `latch` shows at a terminal
+//! (`overview.rs`). It plays the old Latch app's welcome animation in text:
+//! the mark's outline draws itself, the letters fill in Plow's volt green as
+//! the outline fades, and a white glint sweeps across them. With `NO_COLOR`
+//! the overview shows the finished mark, as the app did for people who
+//! prefer reduced motion.
 //!
 //! The mark is Plow's lettermark (plow.co/assets/logos/v2), scaled to 32 ×
 //! 32 pixels. Each character cell shows two pixels, one above the other
 //! (`▀`, `▄`, `█`), so the logo is 32 columns by 16 rows.
 
-use std::io::Write;
-use std::thread::sleep;
-use std::time::Duration;
-
-use crate::paint::{self, DIM, FAINT, Rgb, SHINE, VOLT, mix};
-use crate::term;
+use crate::paint::{self, FAINT, Rgb, SHINE, VOLT, mix};
 
 /// The mark, one string per pixel row: `#` is part of the letters.
 const MARK: [&str; 32] = [
@@ -51,39 +47,16 @@ const MARK: [&str; 32] = [
     ".###.......##......#......#.....",
 ];
 const SIZE: usize = 32;
+/// The mark's size in character cells.
+pub const COLUMNS: usize = SIZE;
+pub const ROWS: usize = SIZE / 2;
 
 /// What a pixel looks like in one frame: empty, or a color.
-type Pixels = [[Option<Rgb>; SIZE]; SIZE];
-
-/// Plays the animation (or, without color, shows the finished mark) and
-/// the word "Plow" under it.
-pub fn show(animate: bool) {
-    let mut out = std::io::stdout();
-    let frames = if animate {
-        frames()
-    } else {
-        vec![(finished(), 0)]
-    };
-    let height = SIZE / 2;
-    for (i, (pixels, ms)) in frames.iter().enumerate() {
-        let mut text = String::new();
-        if i > 0 {
-            // Back to the top of the logo, to draw the next frame over it.
-            text.push_str(&term::up(height));
-        }
-        text.push_str(&render(pixels));
-        let _ = out.write_all(text.as_bytes());
-        let _ = out.flush();
-        sleep(Duration::from_millis(*ms));
-    }
-    let word = format!("{}{}", " ".repeat(SIZE / 2 - 2), paint::bold("Plow", VOLT));
-    let hint = paint::fg("run `latch --help` to see what latch does", DIM);
-    let _ = writeln!(out, "\n{word}\n\n{hint}");
-}
+pub type Pixels = [[Option<Rgb>; SIZE]; SIZE];
 
 /// The frames, about 2 seconds in all: the outline draws in, the letters
 /// fill as it fades, the glint sweeps across, and the mark rests.
-fn frames() -> Vec<(Pixels, u64)> {
+pub fn frames() -> Vec<(Pixels, u64)> {
     let outline = outline_in_drawing_order();
     let mut frames = Vec::new();
 
@@ -125,7 +98,7 @@ fn frames() -> Vec<(Pixels, u64)> {
 }
 
 /// The resting mark: every letter pixel in volt.
-fn finished() -> Pixels {
+pub fn finished() -> Pixels {
     filled(VOLT)
 }
 
@@ -174,25 +147,25 @@ fn outline_in_drawing_order() -> Vec<(usize, usize)> {
     ordered
 }
 
-/// Two pixel rows per text row: the upper pixel is the character's top
-/// half, the lower its bottom half.
-fn render(pixels: &Pixels) -> String {
-    let mut text = String::new();
-    for pair in pixels.chunks(2) {
-        for (&top, &bottom) in pair[0].iter().zip(&pair[1]) {
-            let cell = match (top, bottom) {
-                (None, None) => " ".to_string(),
-                (Some(top), None) => paint::fg("▀", top),
-                (None, Some(bottom)) => paint::fg("▄", bottom),
-                (Some(top), Some(bottom)) if top == bottom => paint::fg("█", top),
-                (Some(top), Some(bottom)) => paint::fg_bg("▀", top, bottom),
-            };
-            text.push_str(&cell);
-        }
-        text.push_str(term::CLEAR_LINE_END);
-        text.push('\n');
-    }
-    text
+/// The mark as text, a line each: two pixel rows per line, the upper
+/// pixel the character's top half, the lower its bottom half.
+pub fn lines(pixels: &Pixels) -> Vec<String> {
+    pixels
+        .chunks(2)
+        .map(|pair| {
+            pair[0]
+                .iter()
+                .zip(&pair[1])
+                .map(|(&top, &bottom)| match (top, bottom) {
+                    (None, None) => " ".to_string(),
+                    (Some(top), None) => paint::fg("▀", top),
+                    (None, Some(bottom)) => paint::fg("▄", bottom),
+                    (Some(top), Some(bottom)) if top == bottom => paint::fg("█", top),
+                    (Some(top), Some(bottom)) => paint::fg_bg("▀", top, bottom),
+                })
+                .collect()
+        })
+        .collect()
 }
 
 #[cfg(test)]

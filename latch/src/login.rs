@@ -26,8 +26,10 @@ use crate::term;
 const POLL: Duration = Duration::from_secs(1);
 const POLL_FAST_FOR: Duration = Duration::from_secs(2 * 60);
 const POLL_SLOW: Duration = Duration::from_secs(5);
-/// How long a login by text waits for the text before it gives up.
-const GIVE_UP_AFTER: Duration = Duration::from_secs(10 * 60);
+/// How long a login by text waits for the text before it gives up: as long
+/// as Plow keeps the code (its `ACTIVATION_CODE_TTL`), which may say sooner
+/// that the code expired.
+const GIVE_UP_AFTER: Duration = Duration::from_secs(30 * 60);
 
 #[derive(Serialize)]
 pub struct LoginOutput {
@@ -120,7 +122,7 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
             name,
             relay_url,
         };
-        let plow = Plow::new(&api_url, &token);
+        let plow = Plow::new(&api_url, &token)?;
         // An agent is named after itself in Plow. Plow names one that is not
         // an agent's credential, as it always has.
         let me = if owner {
@@ -211,7 +213,7 @@ async fn by_text(
     name: &str,
     events: bool,
 ) -> Result<String, Failure> {
-    let plow = Plow::anonymous(api_url);
+    let plow = Plow::anonymous(api_url)?;
     let activation = plow.activate(name).await?;
     let code = &activation.display_code;
     let link = sms_link(&activation.send_to, code);
@@ -458,7 +460,7 @@ fn hostname() -> Option<String> {
 /// credential), then `$PLOW_API_URL`, then this build's baked-in URL; on a
 /// repeat login, the Plow the first one saved (with its config, or with its
 /// token if it went no further); last, a release build's default.
-fn api_url(
+pub(crate) fn api_url(
     flag: Option<String>,
     env: impl Fn(&str) -> Option<String>,
     saved: Option<String>,
@@ -524,14 +526,18 @@ mod tests {
     }
 
     #[test]
-    fn a_login_gives_up_after_ten_minutes() {
+    fn a_login_waits_as_long_as_plow_keeps_the_code() {
         let second = Duration::from_secs(1);
         assert_eq!(before_giving_up(Duration::ZERO, second), Some(second));
         assert_eq!(
-            before_giving_up(Duration::from_millis(599_500), 5 * second),
+            before_giving_up(Duration::from_secs(11 * 60), 5 * second),
+            Some(5 * second)
+        );
+        assert_eq!(
+            before_giving_up(Duration::from_millis(1_799_500), 5 * second),
             Some(Duration::from_millis(500))
         );
-        assert_eq!(before_giving_up(Duration::from_secs(600), second), None);
+        assert_eq!(before_giving_up(Duration::from_secs(1800), second), None);
     }
 
     #[test]

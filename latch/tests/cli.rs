@@ -145,6 +145,7 @@ fn latch_command(state: &Path, args: &[&str], env: &[(&str, &Path)]) -> Command 
         .env_remove("LATCH_HOST")
         .env_remove("LATCH_PLOW_CHAT")
         .env_remove("LATCH_TRACE")
+        .env_remove("LATCH_STATE_DIR")
         .arg("--state-dir")
         .arg(state)
         .args(args);
@@ -434,6 +435,56 @@ fn logged_in_agent(
     (dir, token_file, server)
 }
 
+/// Only the owner's own login turns plugins on: an agent's status says why
+/// one is off, and offers no command it can't run.
+#[test]
+fn an_agents_status_offers_no_owners_command() {
+    let (dir, token_file, _server) = logged_in_agent(vec![]);
+    let env = [("PLOW_TOKEN_FILE", token_file.as_path())];
+    let output = latch(&dir.path().join("state"), &["status", "--local"], &env);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let status: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let google = &status["plugins"][0];
+    assert_eq!(google["state"], "disabled", "{status}");
+    assert_eq!(google.get("enable"), None, "{status}");
+    assert_eq!(
+        google["reason"],
+        "only the owner's login can turn this plugin on"
+    );
+}
+
+/// A machine whose commands run with a home that is not where latch's state
+/// lives (`HOME=/`) finds it through `LATCH_STATE_DIR`; `--state-dir` still wins.
+#[test]
+fn latch_state_dir_names_the_state_folder_a_home_does_not() {
+    let (dir, token_file, _server) = logged_in_agent(vec![]);
+    let state = dir.path().join("state");
+    let status = |state_dir: Option<&Path>, flag: Option<&Path>| {
+        let mut command = latch_process();
+        command
+            .env("HOME", "/")
+            .env("PLOW_TOKEN_FILE", &token_file)
+            .env_remove("LATCH_STATE_DIR");
+        if let Some(dir) = state_dir {
+            command.env("LATCH_STATE_DIR", dir);
+        }
+        if let Some(dir) = flag {
+            command.arg("--state-dir").arg(dir);
+        }
+        let output = command.args(["status", "--local"]).output().unwrap();
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
+    };
+    let found = status(Some(&state), None);
+    assert_eq!(found["login"]["kind"], "agent", "{found}");
+    assert_eq!(found["state_dir"], json!(state.canonicalize().unwrap()));
+    let elsewhere = dir.path().join("elsewhere");
+    let flagged = status(Some(&state), Some(&elsewhere));
+    assert_eq!(flagged["login"], Value::Null, "{flagged}");
+    let unset = status(None, None);
+    assert_eq!(unset["login"], Value::Null, "{unset}");
+}
+
 #[test]
 fn an_agent_plow_no_longer_lists_registers_again_before_calling() {
     // After a rotation Plow forgets the agent's key until it registers again.
@@ -554,6 +605,30 @@ fn a_cloud_agent_given_its_token_sends_it() {
             "{request}"
         );
     }
+}
+
+/// A machine with no CA certificates (a bare container) can't check any
+/// server: logging in says so, with what fixes it, rather than crashing.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_machine_with_no_ca_certificates_says_so_in_json() {
+    let dir = test_dir();
+    let token_file = dir.path().join("agent.token");
+    fs::write(&token_file, "file-credential\n").unwrap();
+    // Where the system's certificates are read from: nowhere.
+    let none = dir.path().join("no-certificates");
+    let env = [
+        ("PLOW_API_BASE", Path::new("http://127.0.0.1:9")),
+        ("PLOW_TOKEN_FILE", token_file.as_path()),
+        ("SSL_CERT_FILE", none.as_path()),
+        ("SSL_CERT_DIR", none.as_path()),
+    ];
+    let login = latch(&dir.path().join("state"), &["login"], &env);
+    assert_eq!(login.status.code(), Some(1), "{login:?}");
+    let error = one_error_line(&String::from_utf8_lossy(&login.stderr), Some(1));
+    assert_eq!(error["error"]["code"], "no_ca_certificates", "{error}");
+    let next = error["error"]["next"].as_str().unwrap();
+    assert!(next.contains("CA certificates"), "{next}");
 }
 
 #[test]
@@ -1410,7 +1485,8 @@ fn status_names_the_account_this_machine_and_each_host_once() {
     let own_key = {
         let mut state = plow.state.lock().unwrap();
         let (own, _) = &mut state.peers[0];
-        own["relay_url"] = json!("https://relay.example/");
+        // A relay nothing answers at: pi can't be asked for its plugins.
+        own["relay_url"] = json!("http://127.0.0.1:9/");
         own["online"] = json!(false);
         own["last_seen_at"] = Value::Null;
         let own_key = own["key"].clone();
@@ -1418,7 +1494,7 @@ fn status_names_the_account_this_machine_and_each_host_once() {
             json!("c".repeat(64)),
             "pi",
             "device",
-            json!("https://relay.example/"),
+            json!("http://127.0.0.1:9/"),
         );
         state.peers.insert(0, (pi, "owner-login".to_string()));
         own_key
@@ -1435,9 +1511,11 @@ fn status_names_the_account_this_machine_and_each_host_once() {
     assert_eq!(
         logged_in["hosts"],
         json!([
-            {"name": "host", "key": own_key, "self": true, "online": false, "last_seen_at": null},
+            {"name": "host", "key": own_key, "self": true, "online": false, "last_seen_at": null,
+             "plugins": [], "plugins_reason": null},
             {"name": "pi", "key": "c".repeat(64), "self": false, "online": true,
-             "last_seen_at": "2026-10-15T01:30:12Z"},
+             "last_seen_at": "2026-10-15T01:30:12Z", "plugins": null,
+             "plugins_reason": "host_unreachable"},
         ])
     );
     for gone in ["peer", "serve", "art", "relay_url"] {
@@ -1475,6 +1553,163 @@ fn status_names_the_account_this_machine_and_each_host_once() {
     let error: Value = serde_json::from_slice(&down.stderr).unwrap();
     assert_eq!(error["error"]["code"], "plow_unreachable", "{error}");
     assert_eq!(error["error"]["next"], "latch status --local");
+
+    // Plow takes the connection and never answers: it says so, in seconds.
+    let stalled = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    use_plow(&host, &format!("http://{}", stalled.local_addr().unwrap()));
+    let started = std::time::Instant::now();
+    let late = latch(&host, &["status"], &[]);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(15),
+        "{late:?}"
+    );
+    assert_eq!(late.status.code(), Some(1), "{late:?}");
+    let error: Value = serde_json::from_slice(&late.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "plow_unreachable", "{error}");
+    let message = error["error"]["message"].as_str().unwrap();
+    assert!(message.ends_with("didn't answer within 10 s"), "{message}");
+}
+
+#[test]
+fn bare_latch_piped_says_it_needs_a_terminal_and_where_to_look() {
+    let dir = test_dir();
+    let output = latch(&dir.path().join("state"), &[], &[]);
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+    let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "no_terminal", "{error}");
+    assert_eq!(error["error"]["next"], "latch status", "{error}");
+}
+
+/// The end of each frame a bare `latch` draws.
+const FRAME_END: &str = "\x1b[?2026l";
+
+/// What a bare `latch` showed on a terminal `size` (columns, rows), and how
+/// long it took to give the prompt back.
+fn overview(
+    state: &Path,
+    env: &[(&str, &Path)],
+    size: (u16, u16),
+) -> (String, std::time::Duration) {
+    let started = std::time::Instant::now();
+    let (mut child, _terminal, shown) = at_a_terminal(state, &[], env, size, false);
+    let status = exits_within(&mut child, 10);
+    let took = started.elapsed();
+    let mut all = String::new();
+    while let Ok(more) = shown.recv_timeout(std::time::Duration::from_secs(1)) {
+        all.push_str(&more);
+    }
+    assert!(status.success(), "{status:?}: {all}");
+    (all, took)
+}
+
+#[test]
+fn bare_latch_draws_what_it_knows_at_once_and_plow_as_it_answers() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+
+    // Colored, whatever this test's own environment says.
+    let color = [("NO_COLOR", Path::new(""))];
+    let (shown, took) = overview(&host, &color, (100, 30));
+    let first = &shown[..shown.find(FRAME_END).expect(&shown)];
+    // This machine's rows are there from the first frame; Plow's, and the
+    // host's state, wait.
+    assert!(shown.contains("stopped"), "{shown}");
+    for row in ["this ", "host", "Account", "…", "Folder"] {
+        assert!(
+            first.contains(row),
+            "{row:?} not in the first frame: {first}"
+        );
+    }
+    // Plow's answer is drawn while the mark still moves.
+    let filled = shown.find("Ada Example").expect(&shown);
+    assert!(shown[filled..].matches(FRAME_END).count() > 5, "{shown}");
+    assert!(shown.contains("not listed as a host"), "{shown}");
+    assert!(took < std::time::Duration::from_secs(5), "{took:?}");
+    println!("Plow answering: prompt back after {took:?}");
+
+    // A Plow that takes the connection and never answers: the rest still
+    // shows, and the prompt comes back at the deadline.
+    let silent = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", silent.local_addr().unwrap());
+    thread::spawn(move || {
+        let held: Vec<_> = silent.incoming().collect();
+        drop(held);
+    });
+    use_plow(&host, &url);
+    let (shown, took) = overview(&host, &color, (100, 30));
+    let last = &shown[shown.rfind("\x1b[?2026h").unwrap()..];
+    assert_eq!(last.matches("Plow didn't answer").count(), 3, "{last}");
+    assert!(!last.contains("not logged in"), "{last}");
+    assert!(took >= std::time::Duration::from_secs(2), "{took:?}");
+    assert!(took < std::time::Duration::from_secs(5), "{took:?}");
+    println!("Plow silent: prompt back after {took:?}");
+}
+
+#[test]
+fn bare_latch_waits_on_a_stalled_service_manager_only_until_its_deadline() {
+    use std::os::unix::fs::PermissionsExt;
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let _serve = serving(&host, &relay);
+    // A service manager that never answers: asked whether the running host
+    // is its service, it hangs.
+    let bin = dir.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    let hung = dir.path().join("hung.pid");
+    for manager in ["launchctl", "systemctl"] {
+        // It outlives the terminal closing, as one would under a shell
+        // that is not the terminal's session leader.
+        let script = format!(
+            "#!/bin/sh\ntrap '' HUP\necho $$ > '{}'\nexec sleep 8\n",
+            hung.display()
+        );
+        fs::write(bin.join(manager), script).unwrap();
+        fs::set_permissions(bin.join(manager), fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let path = std::env::join_paths(
+        std::iter::once(bin).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
+    let (shown, took) = overview(&host, &[("PATH", Path::new(&path))], (100, 30));
+    let first = &shown[..shown.find(FRAME_END).expect(&shown)];
+    assert!(first.contains("Folder") && first.contains("…"), "{first}");
+    assert!(!first.contains("serving"), "{first}");
+    let last = &shown[shown.rfind("\x1b[?2026h").unwrap()..];
+    assert!(
+        last.contains("state unknown: the check timed out"),
+        "{last}"
+    );
+    assert!(last.contains("Ada Example"), "{last}");
+    assert!(took >= std::time::Duration::from_secs(2), "{took:?}");
+    assert!(took < std::time::Duration::from_secs(5), "{took:?}");
+    // The hung command was killed and reaped before latch exited.
+    let pid: i32 = fs::read_to_string(&hung).unwrap().trim().parse().unwrap();
+    // SAFETY: signal 0 only asks whether the process exists.
+    assert_ne!(unsafe { libc::kill(pid, 0) }, 0, "pid {pid} outlived latch");
+    println!("service manager stalled: prompt back after {took:?}");
+}
+
+#[test]
+fn bare_latch_narrow_puts_the_mark_above_and_no_color_keeps_it_still() {
+    let dir = test_dir();
+    let state = dir.path().join("state");
+    let no_color = [("NO_COLOR", Path::new("1"))];
+    let (shown, _) = overview(&state, &no_color, (60, 24));
+    assert!(!shown.contains("\x1b[0;"), "colored: {shown:?}");
+    // The still mark first, on lines of its own, then the facts.
+    let mark = shown.find("███▄").expect(&shown);
+    let header = shown.find("latch 0.1.0").expect(&shown);
+    assert!(mark < header, "{shown}");
+    assert!(!shown[mark..header].contains("Account"), "{shown}");
+    // Too long for the line, the command goes on one of its own, whole.
+    assert!(shown.contains("isn't logged in to Plow. Run:"), "{shown}");
+    let command = format!("latch --state-dir {} setup", state.display());
+    assert!(shown.contains(&command), "{shown}");
+    assert!(!state.exists(), "the overview made the state folder");
 }
 
 #[test]
@@ -2472,18 +2707,29 @@ fn a_cloud_agent_logs_in_through_a_proxy_that_adds_its_credential() {
 /// An iroh relay on this machine, over plain HTTP, kept running by the
 /// returned runtime. Returns its URL.
 fn local_relay() -> (tokio::runtime::Runtime, String) {
+    let (runtime, url, _) = counted_relay();
+    (runtime, url)
+}
+
+/// `local_relay`, with how many connections it has had.
+fn counted_relay() -> (
+    tokio::runtime::Runtime,
+    String,
+    std::sync::Arc<iroh_relay::server::Metrics>,
+) {
     use iroh_relay::server::{RelayConfig, Server, ServerConfig};
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let mut config = ServerConfig::default();
     config.relay = Some(RelayConfig::new(([127, 0, 0, 1], 0)));
     let server = runtime.block_on(Server::spawn(config)).unwrap();
     let url = format!("http://{}", server.http_addr().unwrap());
+    let metrics = server.metrics().server.clone();
     // The server stops when dropped; it lives as long as the runtime.
     runtime.spawn(async move {
         let _server = server;
         std::future::pending::<()>().await
     });
-    (runtime, url)
+    (runtime, url, metrics)
 }
 
 /// A running `latch serve`, stopped when dropped: when the test ends,
@@ -2566,8 +2812,36 @@ fn serve_command(host: &Path, relay: &str) -> Command {
         ])
         .env("LATCH_TEST_RELAY_URL", relay)
         .env_remove("LATCH_HOST")
-        .env_remove("LATCH_TRACE");
+        .env_remove("LATCH_TRACE")
+        .env_remove("LATCH_STATE_DIR");
     command
+}
+
+/// A host started where `LATCH_STATE_DIR` names another state folder, the
+/// one a plain `latch` uses there, keeps that folder from its commands too.
+#[test]
+fn a_host_hides_the_state_folder_latch_state_dir_names() {
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let other = dir.path().join("client");
+    fs::create_dir_all(&other).unwrap();
+    fs::write(other.join("key"), "client key").unwrap();
+    let (_serve, _) = serving_with_env(&host, &relay, &[("LATCH_STATE_DIR", &other)]);
+
+    let key = other.join("key");
+    let key = key.to_str().unwrap();
+    let cat = latch(&host, &["exec", "--", "cat", key], &[]);
+    let ran: Value = serde_json::from_slice(&cat.stdout).unwrap();
+    assert_ne!(ran["exit_code"], 0, "{ran}");
+    assert!(!ran.to_string().contains("client key"), "{ran}");
+    let copy = dir.path().join("copy");
+    let get = latch(&host, &["file", "get", key, copy.to_str().unwrap()], &[]);
+    let error: Value = serde_json::from_slice(&get.stderr).unwrap();
+    assert_eq!(get.status.code(), Some(4), "{get:?}");
+    assert_eq!(error["error"]["code"], "bad_path");
+    assert!(!copy.exists());
 }
 
 /// Starts `command`, a `latch serve`, and reads its log up to its
@@ -2618,6 +2892,158 @@ fn a_plain_serve_stopped_cleanly_prints_nothing_on_stdout() {
     let status = serve.0.wait().unwrap();
     assert!(status.success(), "{status:?}");
     assert_eq!(printed, "");
+}
+
+/// An endpoint on `relay` that speaks `alpn`, lets every connection in and
+/// never answers on it.
+async fn silent(relay: &str, alpn: &[u8]) -> iroh::Endpoint {
+    let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .clear_ip_transports()
+        .bind_addr("127.0.0.1:0")
+        .unwrap()
+        .portmapper_config(iroh::endpoint::PortmapperConfig::Disabled)
+        .relay_mode(iroh::RelayMode::custom([relay.parse().unwrap()]))
+        .alpns(vec![alpn.to_vec()])
+        .bind()
+        .await
+        .unwrap();
+    endpoint.online().await;
+    let accepting = endpoint.clone();
+    tokio::spawn(async move {
+        let mut held = Vec::new();
+        while let Some(incoming) = accepting.accept().await {
+            if let Ok(connection) = incoming.await {
+                held.push(connection);
+            }
+        }
+    });
+    endpoint
+}
+
+/// `latch status` asks every host Plow lists online which plugins it has
+/// on, all at once through one endpoint, within 2 s in all, and says why
+/// for each that didn't answer; none of them fails it.
+#[test]
+fn status_asks_every_host_for_its_plugins_at_once_and_in_time() {
+    let plow = LivePlow::start();
+    let (relay_runtime, relay, relayed) = counted_relay();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    // This Plow has no Google account, so Google's setup fails: needs_setup.
+    let enabled = latch(&host, &["plugins", "enable", "google"], &[]);
+    assert_eq!(enabled.status.code(), Some(1), "{enabled:?}");
+    let token = dir.path().join("owner.token");
+    let login = |name: &str| {
+        let state = dir.path().join(name);
+        let args = [
+            "login",
+            "--api-url",
+            &plow.url,
+            "--token-file",
+            token.to_str().unwrap(),
+            "--name",
+            name,
+        ];
+        let login = latch(&state, &args, &[]);
+        assert_eq!(login.status.code(), Some(0), "{login:?}");
+        state
+    };
+    let (pi, laptop) = (login("pi"), login("laptop"));
+    let _serving = (serving(&host, &relay), serving(&pi, &relay));
+    // One host that lets the call in and never answers, one of another
+    // protocol, and one Plow lists offline.
+    let stalled = relay_runtime.block_on(silent(&relay, b"plow/latch/4"));
+    let older = relay_runtime.block_on(silent(&relay, b"plow/latch/3"));
+    {
+        let mut state = plow.state.lock().unwrap();
+        for (endpoint, name) in [(&stalled, "stalled"), (&older, "older")] {
+            let key = json!(endpoint.id().to_string());
+            let listed = peer(key, name, "device", json!(relay));
+            state.peers.push((listed, "owner-login".to_string()));
+        }
+        let mut asleep = peer(json!("d".repeat(64)), "asleep", "device", json!(relay));
+        asleep["online"] = json!(false);
+        state.peers.push((asleep, "owner-login".to_string()));
+    }
+    let rows = |status: &Value| -> Vec<(String, Value, Value)> {
+        status["hosts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|host| {
+                let name = host["name"].as_str().unwrap().to_string();
+                (
+                    name,
+                    host["plugins"].clone(),
+                    host["plugins_reason"].clone(),
+                )
+            })
+            .collect()
+    };
+
+    // An endpoint is online before the relay has counted it: wait until it
+    // has counted all four (the two hosts and the two silent ones), so
+    // only status's own connection counts below.
+    let counted = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while relayed.accepts.get() < 4 && std::time::Instant::now() < counted {
+        thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(relayed.accepts.get(), 4, "the hosts' relay connections");
+    let (accepted, left) = (relayed.accepts.get(), relayed.disconnects.get());
+    let started = std::time::Instant::now();
+    let output = latch(&laptop, &["status"], &[]);
+    let took = started.elapsed();
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let status: Value = serde_json::from_slice(&output.stdout).unwrap();
+    println!("status with a host that never answers took {took:?}");
+    assert_eq!(
+        rows(&status),
+        [
+            (
+                "host",
+                json!([{"name": "google", "state": "needs_setup"}]),
+                Value::Null
+            ),
+            ("pi", json!([]), Value::Null),
+            ("stalled", Value::Null, json!("host_unreachable")),
+            ("older", Value::Null, json!("protocol_mismatch")),
+            ("asleep", Value::Null, json!("host_offline")),
+        ]
+        .map(|(name, plugins, reason)| (name.to_string(), plugins, reason)),
+        "{status}"
+    );
+    // It waited out the 2 s for the one that never answers, and no more.
+    assert!(took >= std::time::Duration::from_secs(2), "{took:?}");
+    assert!(took < std::time::Duration::from_secs(4), "{took:?}");
+    // All through one endpoint, gone once status is.
+    assert_eq!(relayed.accepts.get() - accepted, 1, "one endpoint");
+    let closed = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    while relayed.disconnects.get() - left < 1 && std::time::Instant::now() < closed {
+        thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert_eq!(relayed.disconnects.get() - left, 1, "nothing left asking");
+
+    // Hosts that don't let this machine in say so.
+    let key = serde_json::from_slice::<Value>(&latch(&laptop, &["status", "--local"], &[]).stdout)
+        .unwrap()["this_machine"]["key"]
+        .clone();
+    plow.state
+        .lock()
+        .unwrap()
+        .peers
+        .retain(|(peer, _)| peer["key"] != key);
+    let output = latch(&laptop, &["status"], &[]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let status: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let refused = rows(&status);
+    assert_eq!(
+        refused[..2],
+        [
+            ("host".to_string(), Value::Null, json!("caller_denied")),
+            ("pi".to_string(), Value::Null, json!("caller_denied")),
+        ],
+        "{status}"
+    );
 }
 
 /// An owner's host state logged in to `plow` as `host`.
@@ -2733,13 +3159,23 @@ fn a_host_runs_exec_and_files_under_home() {
     let login = latch(&agent, &["login", "--api-url", &plow.url], &agent_env);
     assert_eq!(login.status.code(), Some(0), "{login:?}");
 
-    // The host uses the test's own home, where its files go.
+    // The host uses the test's own home, where its files go, and the bare
+    // PATH a host started by the Mac app or the login item has.
     let home = dir.path().join("home");
     fs::create_dir(&home).unwrap();
-    let (serve, _) = serving_with_env(&host, &relay, &[("HOME", &home)]);
+    let env = [
+        ("HOME", home.as_path()),
+        ("PATH", Path::new("/usr/bin:/bin")),
+    ];
+    let (serve, _) = serving_with_env(&host, &relay, &env);
     let local = latch(&host, &["status", "--local"], &[]);
     let local: Value = serde_json::from_slice(&local.stdout).unwrap();
     assert_eq!(local["this_machine"]["hosting"]["state"], "serving");
+    // The owner reads its status as it prints it there.
+    let remote = latch(&owner, &["status", "--host", "host"], &[]);
+    assert_eq!(remote.status.code(), Some(0), "{remote:?}");
+    let remote: Value = serde_json::from_slice(&remote.stdout).unwrap();
+    assert_eq!(remote, local);
 
     let into = dir.path().join("hosts");
     let into = into.to_str().unwrap();
@@ -2747,6 +3183,22 @@ fn a_host_runs_exec_and_files_under_home() {
     assert_eq!(executed.status.code(), Some(0), "{executed:?}");
     let result: Value = serde_json::from_slice(&executed.stdout).unwrap();
     assert_eq!(result["exit_code"], 0);
+    // Exec still finds Homebrew's tools, after the host's own PATH.
+    let script = [
+        "exec",
+        "--host",
+        "host",
+        "--",
+        "/bin/sh",
+        "-c",
+        "echo $PATH",
+    ];
+    let executed = latch(&owner, &script, &[]);
+    let result: Value = serde_json::from_slice(&executed.stdout).unwrap();
+    assert_eq!(
+        result["stdout"], "/usr/bin:/bin:/opt/homebrew/bin:/usr/local/bin:/usr/sbin:/sbin\n",
+        "{executed:?}"
+    );
     // A get reads what exec can (home and the system's files), and a put
     // goes under home.
     let system = latch(
@@ -3412,7 +3864,8 @@ fn local_status_says_login_serving_and_how_the_host_ended_without_asking_plow() 
         before["this_machine"]["hosting"],
         json!({"running": false, "ready": false, "configuring": false, "managed": false, "attached": false,
                "state": "stopped", "pid": null, "blocked": null,
-               "deny_exec": {"every_agent": false, "agent_uids": []}})
+               "deny_exec": {"every_agent": false, "agent_uids": []},
+               "keep_awake": {"enabled": false, "held": false, "reason": "disabled"}})
     );
     assert_eq!(before["last_error"], Value::Null);
 
@@ -3430,7 +3883,8 @@ fn local_status_says_login_serving_and_how_the_host_ended_without_asking_plow() 
         up["this_machine"]["hosting"],
         json!({"running": true, "ready": true, "configuring": false, "managed": false, "attached": false,
                "state": "serving", "pid": pid, "blocked": null,
-               "deny_exec": {"every_agent": false, "agent_uids": []}})
+               "deny_exec": {"every_agent": false, "agent_uids": []},
+               "keep_awake": {"enabled": false, "held": false, "reason": "disabled"}})
     );
     drop(serve);
     let stopped = local(&host);
@@ -3449,6 +3903,84 @@ fn local_status_says_login_serving_and_how_the_host_ended_without_asking_plow() 
         .filter(|(line, _)| !line.contains("/v1/latch/peers") && !line.contains("offline"))
         .count();
     assert_eq!(statuses, 0, "{:?}", plow.seen());
+}
+
+#[test]
+fn keep_awake_is_saved_without_a_host_and_a_serving_host_follows_it_without_a_restart() {
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let set = |state: &Path, on: &str| {
+        let output = latch(state, &["settings", "set", "--keep-awake", on], &[]);
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        let saved: Value = serde_json::from_slice(&output.stdout).unwrap();
+        let on = on == "on";
+        assert_eq!(
+            saved,
+            json!({"settings": {"keep_awake": on}, "next": "latch status --local"})
+        );
+    };
+    let keep_awake = |state: &Path| {
+        let output = latch(state, &["status", "--local"], &[]);
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        let status: Value = serde_json::from_slice(&output.stdout).unwrap();
+        status["this_machine"]["hosting"]["keep_awake"].clone()
+    };
+    let stopped = if cfg!(target_os = "macos") {
+        "not_serving"
+    } else {
+        "unsupported"
+    };
+
+    // Before login: saved, and nothing holds it.
+    let never = dir.path().join("never");
+    set(&never, "on");
+    assert_eq!(
+        keep_awake(&never),
+        json!({"enabled": true, "held": false, "reason": stopped})
+    );
+
+    let host = owner_host_on(&plow, dir.path());
+    set(&host, "on");
+    assert_eq!(
+        keep_awake(&host),
+        json!({"enabled": true, "held": false, "reason": stopped})
+    );
+    let serve = serving(&host, &relay);
+    let pid = serve.0.id();
+    let status = Lines::start(&host, &["status", "--local", "--follow"]);
+    let next_keep_awake = |until: &dyn Fn(&Value) -> bool| loop {
+        let line = status.next();
+        let hosting = &line["status"]["this_machine"]["hosting"];
+        assert_eq!(hosting["pid"], pid, "the host restarted: {line}");
+        if until(&hosting["keep_awake"]) {
+            return hosting["keep_awake"].clone();
+        }
+    };
+    if cfg!(target_os = "macos") {
+        // On AC it holds; on battery it says so.
+        let held = next_keep_awake(&|keep_awake| keep_awake["held"] != Value::Null);
+        assert!(
+            held == json!({"enabled": true, "held": true, "reason": null})
+                || held == json!({"enabled": true, "held": false, "reason": "on_battery"}),
+            "{held}"
+        );
+    } else {
+        let unsupported = next_keep_awake(&|_| true);
+        assert_eq!(
+            unsupported,
+            json!({"enabled": true, "held": false, "reason": "unsupported"})
+        );
+    }
+    set(&host, "off");
+    assert_eq!(
+        // Until the host reads it, the saved choice is off but the hold is
+        // still on.
+        next_keep_awake(&|keep_awake| keep_awake["reason"] == "disabled"),
+        json!({"enabled": false, "held": false, "reason": "disabled"})
+    );
+    status.close();
+    drop(serve);
 }
 
 /// A running stream of lines (`latch audit --follow`, `latch status
@@ -5458,12 +5990,12 @@ fn setup_sets_up_every_connector_with_no_host_running() {
         plugins.iter().all(|plugin| plugin["state"] == "enabled")
     };
     assert!(
-        enabled(&latch(&host, &["plugins", "list"], &[])),
+        enabled(&latch(&host, &["status", "--local"], &[])),
         "saved, with no host running"
     );
     let _serve = serving(&host, &relay);
     assert!(
-        enabled(&latch(&host, &["plugins", "list"], &[])),
+        enabled(&latch(&host, &["status", "--local"], &[])),
         "the host's"
     );
 }
@@ -5694,10 +6226,10 @@ fn enabling_google_offers_a_sign_in_link_and_waits_for_the_account() {
         "{stopped}"
     );
     assert_eq!(stopped["error"]["exit"], 1, "{stopped}");
-    // The enable before an --add-account wait may already have turned it on.
-    let message = stopped["error"]["message"].as_str().unwrap();
-    assert!(
-        message.contains("Google may already be on for this host"),
+    // The enable before an --add-account wait turned it on.
+    assert_eq!(
+        stopped["error"]["message"],
+        "Stopped waiting for another Google account. Google was enabled before the wait.",
         "{stopped}"
     );
     assert_eq!(child.wait().unwrap().code(), Some(1));
@@ -5735,8 +6267,8 @@ fn enabling_google_offers_a_sign_in_link_and_waits_for_the_account() {
     );
 
     // No link is kept: not in the state folder (plugins.json, the audit,
-    // anything), nor in what `plugins list` says.
-    let listed = latch(&host, &["plugins", "list"], &[]);
+    // anything), nor in what `status --local` says.
+    let listed = latch(&host, &["status", "--local"], &[]);
     assert!(!String::from_utf8_lossy(&listed.stdout).contains("made-up-connect-code"));
     fn kept(dir: &Path, found: &mut Vec<PathBuf>) {
         for entry in fs::read_dir(dir).unwrap() {
@@ -5861,6 +6393,17 @@ fn signing_in_again_is_offered_and_waited_for() {
         json!(["plugins", "enable", "google", "--events"])
     );
 
+    // A wait that ends first says the account wasn't signed in again.
+    let within = [("LATCH_TEST_CONNECT_WITHIN", Path::new("1"))];
+    let output = latch(&host, &["plugins", "enable", "google", "--events"], &within);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "sign_in_timeout", "{error}");
+    assert_eq!(
+        error["error"]["message"],
+        "owner@example.com wasn't signed in again before the wait ended."
+    );
+
     // `--events` waits until the account works again, then enables.
     let mut child = latch_command(&host, &["plugins", "enable", "google", "--events"], &[])
         .stdin(std::process::Stdio::null())
@@ -5942,8 +6485,13 @@ fn a_reader_that_leaves_cancels_the_sign_in_wait() {
 
     // At a terminal with stdout piped: its reader leaves, then the account
     // appears; nothing is enabled for no one.
-    let (mut child, _typing, shown) =
-        at_a_terminal(&host, &["plugins", "enable", "google"], &[], true);
+    let (mut child, _typing, shown) = at_a_terminal(
+        &host,
+        &["plugins", "enable", "google"],
+        &[],
+        (120, 30),
+        true,
+    );
     shows(&shown, "Waiting for the account");
     drop(child.stdout.take());
     plow.state.lock().unwrap().google = Some("google-token".into());
@@ -6066,6 +6614,86 @@ fn install_fake_gog(host: &Path) {
         .join(pin["version"].as_str().unwrap());
     fs::create_dir_all(&folder).unwrap();
     fs::copy(env!("CARGO_BIN_EXE_latch"), folder.join("gog")).unwrap();
+}
+
+/// In `state`, a folder for each helper version this latch runs and for an
+/// older one beside it, each holding a file. Returns both sets.
+fn helper_versions(state: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    let pin = |text: &str| -> String {
+        let pin: Value = serde_json::from_str(text).unwrap();
+        pin["version"].as_str().unwrap().to_string()
+    };
+    let plugins = state.join("plugins");
+    let pinned = vec![
+        plugins
+            .join("cft")
+            .join(pin(include_str!("../src/browser/cft.json"))),
+        plugins
+            .join("camoufox")
+            .join(pin(include_str!("../src/browser/camoufox.json"))),
+        plugins
+            .join("gog")
+            .join(pin(include_str!("../src/google/pin.json"))),
+        plugins.join("messages").join(env!("CARGO_PKG_VERSION")),
+    ];
+    let older: Vec<PathBuf> = pinned
+        .iter()
+        .map(|at| at.with_file_name("0.0.1-old"))
+        .collect();
+    for folder in pinned.iter().chain(&older) {
+        fs::create_dir_all(folder).unwrap();
+        fs::write(folder.join("helper"), "a helper").unwrap();
+    }
+    (pinned, older)
+}
+
+/// The installer's `prune-helpers` removes the helper versions this latch
+/// does not run, holding the state folder as a host does. While a host of
+/// another latch, which may use them, holds it, it touches nothing.
+#[test]
+fn the_installer_removes_older_helper_versions_only_while_no_host_runs() {
+    let (_dir, state, _) = owner_host();
+    let (pinned, older) = helper_versions(&state);
+    let prune = || -> Value {
+        let output = latch(&state, &["prune-helpers"], &[]);
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        serde_json::from_slice(&output.stdout).unwrap()
+    };
+    {
+        let (old, _socket, _) = old_host(&state);
+        let held = prune();
+        assert_eq!(held["removed"], json!([]), "{held}");
+        let holder = held["held_by"].as_str().unwrap();
+        assert!(holder.contains(&format!("pid {}", old.0.id())), "{held}");
+        assert!(older.iter().all(|folder| folder.join("helper").exists()));
+    }
+    let mut removed: Vec<String> = serde_json::from_value(prune()["removed"].clone()).unwrap();
+    removed.sort();
+    let mut expected: Vec<String> = older.iter().map(|at| at.display().to_string()).collect();
+    expected.sort();
+    assert_eq!(removed, expected);
+    assert!(pinned.iter().all(|folder| folder.join("helper").exists()));
+}
+
+/// A starting host holds the folder, so no other host uses an older
+/// latch's helpers: it removes them, and keeps the ones it runs.
+#[test]
+fn a_starting_host_removes_the_helper_versions_it_does_not_run() {
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let (pinned, older) = helper_versions(&host);
+    let (_serve, lines) = serving_with_env(&host, &relay, &[]);
+    for folder in &older {
+        assert!(!folder.exists(), "{} is left", folder.display());
+        let said = format!(
+            "removed {}, which this latch does not run",
+            folder.display()
+        );
+        assert!(lines.iter().any(|line| line.ends_with(&said)), "{lines:?}");
+    }
+    assert!(pinned.iter().all(|folder| folder.join("helper").exists()));
 }
 
 /// A `latch serve` that holds the state folder but answers no socket this
@@ -6281,7 +6909,6 @@ fn serve_again_with_nothing_served_before_says_so_and_starts_nothing() {
 /// way a shell starts it: Ctrl-C typed there interrupts it, and closing
 /// the terminal hangs it up. Returns the process and the terminal's side
 /// we type into and read.
-#[cfg(any(target_os = "macos", feature = "systemd-tests", feature = "fake-gog"))]
 fn at_its_own_terminal(
     state: &Path,
     args: &[&str],
@@ -6291,17 +6918,18 @@ fn at_its_own_terminal(
     fs::File,
     std::sync::mpsc::Receiver<String>,
 ) {
-    at_a_terminal(state, args, env, false)
+    at_a_terminal(state, args, env, (120, 30), false)
 }
 
-/// As `at_its_own_terminal`, with stdout a pipe when `pipe_stdout` (the
-/// child's `stdout` is the test's to read): a person at the terminal
-/// whose command's output goes elsewhere.
-#[cfg(any(target_os = "macos", feature = "systemd-tests", feature = "fake-gog"))]
+/// As `at_its_own_terminal`, on a terminal `columns` wide and `rows` high,
+/// and with stdout a pipe when `pipe_stdout` (the child's `stdout` is the
+/// test's to read): a person at the terminal whose command's output goes
+/// elsewhere.
 fn at_a_terminal(
     state: &Path,
     args: &[&str],
     env: &[(&str, &Path)],
+    (columns, rows): (u16, u16),
     pipe_stdout: bool,
 ) -> (
     std::process::Child,
@@ -6312,8 +6940,8 @@ fn at_a_terminal(
     use std::os::unix::process::CommandExt;
     let (mut main, mut side) = (0, 0);
     let size = libc::winsize {
-        ws_row: 30,
-        ws_col: 120,
+        ws_row: rows,
+        ws_col: columns,
         ws_xpixel: 0,
         ws_ypixel: 0,
     };
@@ -6380,7 +7008,6 @@ fn at_a_terminal(
 /// Reads what the terminal shows until it has shown `text`, within a
 /// minute in all: a screen that keeps redrawing without it fails rather
 /// than waits forever.
-#[cfg(any(target_os = "macos", feature = "systemd-tests", feature = "fake-gog"))]
 fn shows(shown: &std::sync::mpsc::Receiver<String>, text: &str) -> String {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     let mut all = String::new();
@@ -6399,7 +7026,6 @@ fn shows(shown: &std::sync::mpsc::Receiver<String>, text: &str) -> String {
     all
 }
 
-#[cfg(any(target_os = "macos", feature = "systemd-tests"))]
 fn exits_within(child: &mut std::process::Child, limit: u64) -> std::process::ExitStatus {
     let mut status = None;
     assert!(
@@ -6886,15 +7512,18 @@ fn plugins_are_listed_for_anyone_and_turned_on_or_off_only_by_the_owner_at_the_h
         serde_json::from_str(&fs::read_to_string(host.join("plugins.json")).unwrap()).unwrap();
     assert_eq!(saved["google"]["state"], "needs_setup", "{saved}");
     // Listing this machine's needs no host: it reads what was saved.
-    let (code, listed) = run(&host, &["plugins", "list", "--host", "host"], &[]);
+    let (code, listed) = run(&host, &["status", "--local"], &[]);
     assert_eq!(code, Some(0));
     assert_eq!(listed["plugins"][0]["state"], "needs_setup", "{listed}");
+    // There is no command of its own to list them.
+    let (code, error) = run(&host, &["plugins", "list"], &[]);
+    assert_eq!((code, &error["error"]["code"]), (Some(2), &json!("usage")));
     let (code, disabled) = run(&host, &["plugins", "disable", "google"], &[]);
     assert_eq!(code, Some(0));
     assert_eq!(disabled["state"], "disabled");
 
     let _serve = serving(&host, &relay);
-    let (code, listed) = run(&host, &["plugins", "list"], &[]);
+    let (code, listed) = run(&host, &["status", "--local"], &[]);
     assert_eq!(code, Some(0));
     let names: Vec<&str> = listed["plugins"]
         .as_array()
@@ -6909,9 +7538,18 @@ fn plugins_are_listed_for_anyone_and_turned_on_or_off_only_by_the_owner_at_the_h
     };
     assert_eq!(names, expected, "never the browser");
     assert_eq!(listed["plugins"][0]["state"], "disabled");
-    let (code, agents) = run(&agent, &["plugins", "list", "--host", "host"], &agent_env);
+    // An agent sees the ones the host has on, as the host says: none.
+    let host_row = |status: &Value| status["hosts"][0].clone();
+    let (code, agents) = run(&agent, &["status"], &agent_env);
     assert_eq!(code, Some(0));
-    assert_eq!(agents["plugins"], listed["plugins"]);
+    assert_eq!(
+        (
+            &host_row(&agents)["plugins"],
+            &host_row(&agents)["plugins_reason"]
+        ),
+        (&json!([]), &Value::Null),
+        "{agents}"
+    );
 
     for command in ["enable", "disable"] {
         let (code, error) = run(&agent, &["plugins", command, "google"], &agent_env);
@@ -6931,8 +7569,14 @@ fn plugins_are_listed_for_anyone_and_turned_on_or_off_only_by_the_owner_at_the_h
     let (code, error) = run(&host, &["plugins", "enable", "google"], &[]);
     assert_eq!(code, Some(1));
     assert_eq!(error["error"]["code"], "gog_not_configured");
-    let (_, listed) = run(&host, &["plugins", "list"], &[]);
+    let (_, listed) = run(&host, &["status", "--local"], &[]);
     assert_eq!(listed["plugins"][0]["state"], "needs_setup");
+    let (_, agents) = run(&agent, &["status"], &agent_env);
+    assert_eq!(
+        host_row(&agents)["plugins"],
+        json!([{"name": "google", "state": "needs_setup"}]),
+        "{agents}"
+    );
     let (code, disabled) = run(&host, &["plugins", "disable", "google"], &[]);
     assert_eq!(code, Some(0));
     assert_eq!(disabled["waited_for"], 0);
@@ -6943,31 +7587,26 @@ fn plugins_are_listed_for_anyone_and_turned_on_or_off_only_by_the_owner_at_the_h
     );
 }
 
-/// Messages and Contacts are macOS connectors: a Linux latch has no such
-/// commands and its help names neither.
+/// A Linux latch asks for Messages and Contacts like any other: its help
+/// has them, and a Linux host refuses them as a platform it can't serve,
+/// before anything is judged or checked for being on.
 #[cfg(not(target_os = "macos"))]
 #[test]
-fn a_linux_latch_has_no_messages_or_contacts() {
+fn a_linux_latch_asks_for_messages_and_a_linux_host_says_it_cannot_read_them() {
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
     let dir = test_dir();
-    for command in ["messages", "contacts"] {
-        let output = latch(dir.path(), &[command, "--help"], &[]);
-        assert_eq!(output.status.code(), Some(2), "{output:?}");
-        let error: Value = serde_json::from_slice(&output.stderr).unwrap();
-        assert_eq!(error["error"]["code"], "usage");
-        let message = error["error"]["message"].as_str().unwrap();
-        assert!(
-            message.contains(&format!("unrecognized subcommand '{command}'")),
-            "{message}"
-        );
-    }
-    let help = String::from_utf8(latch(dir.path(), &["--help"], &[]).stdout).unwrap();
-    assert!(!help.contains("latch messages"), "{help}");
-    let listed = help
-        .lines()
-        .filter_map(|line| line.split_whitespace().next())
-        .any(|word| word == "messages" || word == "contacts");
-    assert!(!listed, "{help}");
-    let catalog = latch(dir.path(), &["help", "--json"], &[]);
+    let host = owner_host_on(&plow, dir.path());
+    let agent_token = dir.path().join("agent.token");
+    fs::write(&agent_token, "agent-credential\n").unwrap();
+    let agent = dir.path().join("agent");
+    let agent_env = [("PLOW_TOKEN_FILE", agent_token.as_path())];
+    let login = latch(&agent, &["login", "--api-url", &plow.url], &agent_env);
+    assert_eq!(login.status.code(), Some(0), "{login:?}");
+
+    let help = String::from_utf8(latch(&agent, &["--help"], &[]).stdout).unwrap();
+    assert!(help.contains("latch messages"), "{help}");
+    let catalog = latch(&agent, &["help", "--json"], &[]);
     let catalog: Value = serde_json::from_slice(&catalog.stdout).unwrap();
     let ids: Vec<&str> = catalog["actions"]
         .as_array()
@@ -6975,11 +7614,35 @@ fn a_linux_latch_has_no_messages_or_contacts() {
         .iter()
         .map(|action| action["id"].as_str().unwrap())
         .collect();
-    assert!(ids.contains(&"exec"), "{ids:?}");
-    assert!(
-        !ids.iter()
-            .any(|id| id.starts_with("messages") || id.starts_with("contacts")),
-        "{ids:?}"
+    assert!(ids.contains(&"messages.search"), "{ids:?}");
+    assert!(ids.contains(&"contacts.lookup"), "{ids:?}");
+
+    let _serve = serving(&host, &relay);
+    for command in [
+        &[
+            "messages", "search", "--host", "host", "--since", "10m", "code",
+        ][..],
+        &["contacts", "lookup", "--host", "host", "+15550000001"],
+    ] {
+        let output = latch(&agent, command, &agent_env);
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(error["error"]["code"], "unsupported_platform", "{error}");
+        assert_eq!(
+            error["error"]["next"],
+            "ask a macOS host with --host H; `latch status` lists your hosts"
+        );
+    }
+    // Its owner previews them as the host would answer: refused.
+    let previewed = latch(&host, &["rules", "try", "--", "messages", "chats"], &[]);
+    let (code, preview) = answered(&previewed);
+    assert_eq!(code, Some(0), "{preview}");
+    assert_eq!(preview["verdict"], "host_refused", "{preview}");
+    assert_eq!(preview["refused"]["code"], "unsupported_platform");
+    assert_eq!(
+        plow.state.lock().unwrap().decisions.len(),
+        0,
+        "never judged"
     );
 }
 
@@ -7014,6 +7677,8 @@ mod pinned {
         };
         let url = format!("{}/socket-page", plow.url);
         let opened = run(&["browser", "open", &url]);
+        // Named no engine: the host's default, Chrome, which it has.
+        assert_eq!(opened["engine"], "chrome", "{opened}");
         let session = opened["session"].as_str().unwrap();
         let observed = run(&["browser", "--host", "host", "--session", session, "observe"]);
         assert!(
@@ -7443,6 +8108,30 @@ mod lifecycle {
         assert!(log.contains("relay_unreachable"), "{log}");
         assert_eq!(local_serve(&host)["running"], false);
         assert!(!registered(&host));
+    }
+
+    /// A relative `LATCH_STATE_DIR` names a folder from where `serve -d`
+    /// ran: the host's service, which runs elsewhere, still hides it.
+    #[test]
+    fn a_detached_host_hides_a_relative_latch_state_dir() {
+        let plow = LivePlow::start();
+        let (_relay, relay) = local_relay();
+        let dir = test_dir();
+        let host = owner_host_on(&plow, dir.path());
+        let _managed = Managed(host.clone());
+        let key = dir.path().join("client/key");
+        fs::create_dir(dir.path().join("client")).unwrap();
+        fs::write(&key, "client key").unwrap();
+
+        let started = latch_command(&host, &["serve", "-d"], &[])
+            .env("LATCH_TEST_RELAY_URL", &relay)
+            .env("LATCH_STATE_DIR", "client")
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        assert_eq!(started.status.code(), Some(0), "{started:?}");
+        let read = local_operation(&host, "exec", json!({"argv": ["cat", key], "timeout": 10}));
+        assert!(!read.to_string().contains("client key"), "{read}");
     }
 
     #[test]
@@ -8293,6 +8982,43 @@ fn rules_try_previews_a_verdict_and_runs_nothing() {
     assert_eq!(tried["as"], "owner");
     assert_eq!(tried["gate"]["source"], "owner_request");
 
+    // A login fill is only judged, here and on another host: no browser,
+    // and no vault or vault key made.
+    let fill = [
+        "rules",
+        "try",
+        "--fill-login",
+        "Instacart",
+        "--url",
+        "https://www.instacart.com/login",
+    ];
+    let (code, tried) = answered(&latch(&host, &fill, &[]));
+    assert_eq!(code, Some(0), "{tried}");
+    assert_eq!(tried["verdict"], "allow");
+    assert_eq!(
+        tried["request"],
+        json!({"op": "browser", "action": {"kind": "vault_fill", "site": "instacart.com",
+               "item": {"kind": "login", "title": "Instacart"},
+               "fields": ["username", "password"]}})
+    );
+    let fields = [
+        "--host",
+        "host",
+        "--agent",
+        "Research bot",
+        "--field",
+        "password",
+    ];
+    let words: Vec<&str> = [&fill[..], &fields].concat();
+    let (code, tried) = answered(&latch(&owner, &words, &[]));
+    assert_eq!(code, Some(0), "{tried}");
+    assert_eq!(tried["as"]["agent_uid"], AGENT_UID);
+    assert_eq!(tried["request"]["action"]["fields"], json!(["password"]));
+    for state in [&host, &owner] {
+        assert!(!state.join("vault.json").exists());
+        assert!(!state.join("vault.key").exists());
+    }
+
     // Without --host, the owner's other machine previews on itself, never
     // on the account's one host: judged here, though it does not serve.
     let (code, tried) = previewed(&owner, &[]);
@@ -8343,6 +9069,11 @@ fn rules_try_previews_a_verdict_and_runs_nothing() {
     assert_eq!(
         (code, &error["error"]["code"]),
         (Some(2), &json!("not_previewable"))
+    );
+    let message = error["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("Preview a login fill with --fill-login TITLE --url URL, or an exec,"),
+        "{message}"
     );
 
     // With its host stopped, the host's machine still previews on itself:
@@ -8449,6 +9180,29 @@ fn rules_try_says_what_is_missing_before_reaching_a_host() {
         error["error"]["next"],
         "give the draft as a file: --draft F"
     );
+    // A login fill goes in place of REQUEST, with its --url, and --field
+    // only with it.
+    let fill = [
+        "--fill-login",
+        "Instacart",
+        "--url",
+        "https://www.instacart.com/",
+    ];
+    for words in [
+        &["rules", "try", "--fill-login", "Instacart"][..],
+        &["rules", "try", "--url", "https://www.instacart.com/"],
+        &[&["rules", "try"][..], &fill, &["--", "exec", "--", "true"]].concat(),
+        &[
+            "rules", "try", "--field", "password", "--", "exec", "--", "true",
+        ],
+    ] {
+        let (code, error) = answered(&latch(&fresh, words, &[]));
+        assert_eq!(
+            (code, &error["error"]["code"]),
+            (Some(2), &json!("usage")),
+            "{words:?}"
+        );
+    }
     let settings = ["rules", "try", "--", "vault", "list"];
     let (code, error) = answered(&latch(&fresh, &settings, &[]));
     assert_eq!(

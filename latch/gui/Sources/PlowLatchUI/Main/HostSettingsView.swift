@@ -11,6 +11,17 @@ struct HostSettingsView: View {
         Form {
             if let host = app.host {
                 HostSection(host: host, stopping: $stopping)
+                if host.isThisMac {
+                    Section("Sleep") {
+                        Toggle(isOn: app.keepAwakeBinding) {
+                            Text(KeepAwakeSwitch.title)
+                            Text(KeepAwakeSwitch.detail)
+                        }
+                        .toggleStyle(.switch)
+                        .disabled(!app.canSetKeepAwake)
+                        KeepAwakeSwitch.Said().foregroundStyle(.secondary)
+                    }
+                }
                 if !host.isThisMac && host.online == false {
                     Section {
                         Text("\(host.name) is offline. Its running programs and plugins show here once it's back online.")
@@ -139,13 +150,13 @@ private struct PluginsSection: View {
 
     var body: some View {
         Section {
-            switch app.summaries[host.name]?.plugins {
+            switch app.plugins(of: host) {
             case nil:
                 ProgressView().frame(maxWidth: .infinity)
             case .failure?:
                 Text("\(host.name) couldn't list its plugins.").foregroundStyle(.secondary)
             case let .success(list)?:
-                ForEach(list.plugins, id: \.name) { plugin in
+                ForEach(list, id: \.name) { plugin in
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(PluginCopy.title(plugin.name))
@@ -182,17 +193,17 @@ private struct PluginsSection: View {
     }
 
     private func isOn(_ name: String) -> Bool {
-        guard case let .success(list)? = app.summaries[host.name]?.plugins else { return false }
-        return list.plugins.first { $0.name == name }?.state == "enabled"
+        guard case let .success(list)? = app.plugins(of: host) else { return false }
+        return list.first { $0.name == name }?.state == "enabled"
     }
 
-    private func binding(_ plugin: PluginsList.Plugin) -> Binding<Bool> {
+    private func binding(_ plugin: Plugin) -> Binding<Bool> {
         Binding { plugin.state == "enabled" } set: { on in
             changing = plugin.name
             Task {
                 defer { changing = nil }
                 do {
-                    try await app.setConnector(plugin.name, on: on, host: host)
+                    try await app.setConnector(plugin.name, on: on)
                     error = nil
                 } catch {
                     self.error = .from(error)
@@ -210,7 +221,7 @@ nonisolated enum PluginCopy {
     }
 
     /// Under its name: on, off, or what it needs first.
-    static func state(_ plugin: PluginsList.Plugin) -> String {
+    static func state(_ plugin: Plugin) -> String {
         switch plugin.state {
         case "enabled": "On"
         case "needs_setup": needs(plugin.name)
@@ -233,4 +244,38 @@ nonisolated enum PluginCopy {
         default: "Needs setting up"
         }
     }
+}
+
+/// The keep-awake switch, on Start and in Host Settings. It shows the
+/// choice latch reads back (`status --local`), never the click, and below
+/// it what the host makes of it.
+enum KeepAwakeSwitch {
+    static let title = "Keep this Mac awake while plugged in"
+    static let detail = "The display still sleeps, and closing the lid still sleeps the Mac."
+
+    /// What the host does about the choice, and a failed save.
+    struct Said: View {
+        @Environment(AppModel.self) private var app
+
+        var body: some View {
+            if let error = app.keepAwakeError {
+                ErrorText(error: error).foregroundStyle(.red)
+            } else if app.status != nil, app.status?.thisMachine.hosting.keepAwake == nil {
+                Text("Latch couldn't read this Mac's settings.")
+            } else if let said = app.status?.thisMachine.hosting.keepAwake?.said {
+                Text(said)
+            }
+        }
+    }
+}
+
+extension AppModel {
+    var keepAwakeBinding: Binding<Bool> {
+        Binding { self.status?.thisMachine.hosting.keepAwake?.enabled ?? false } set: { on in
+            Task { await self.setKeepAwake(on) }
+        }
+    }
+
+    /// Only once latch has said the choice, and not while saving one.
+    var canSetKeepAwake: Bool { status?.thisMachine.hosting.keepAwake != nil && !settingKeepAwake }
 }

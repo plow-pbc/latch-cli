@@ -32,10 +32,6 @@ final class CountingClient: LatchClient, @unchecked Sendable {
         await ran(host == nil ? "agents" : "agents --host")
         return try Fixtures.decode(Fixtures.agents)
     }
-    func pluginsList(host: String?) async throws -> PluginsList {
-        await ran("plugins list")
-        return try Fixtures.decode(Fixtures.studioPlugins)
-    }
     func vaultList(host: String?) async throws -> VaultList {
         await ran("vault list")
         return try Fixtures.decode(Fixtures.studioVault)
@@ -75,15 +71,20 @@ struct EntryTests {
         let client = CountingClient()
         let app = try app(client)
         let mac = app.hosts[0], kitchen = app.hosts[1]
+        // This Mac's plugins are in its own status, which the app holds.
         await app.enter(.host(.settings, mac))
-        #expect(client.calls == ["rules show", "plugins list"])
+        #expect(client.calls == ["rules show"])
         await app.enter(.host(.settings, kitchen))
-        #expect(Array(client.calls.dropFirst(2)) == ["rules show", "plugins list", "status --host"])
+        #expect(Array(client.calls.dropFirst(1)) == ["rules show", "status --host"])
         await app.enter(.host(.activity, mac))
-        #expect(client.calls.count == 5)
+        #expect(client.calls.count == 3)
         await app.enter(.host(.home, mac))
         #expect(client.calls.last == "vault list")
-        #expect(client.calls.count == 6)
+        #expect(client.calls.count == 4)
+        // Another host's are in its status, which Settings already read.
+        await app.enter(.host(.home, kitchen))
+        #expect(client.calls.last == "vault list")
+        #expect(client.calls.count == 5)
     }
 
     @Test func refreshReadsAgainWhatIsHeld() async throws {
@@ -91,7 +92,7 @@ struct EntryTests {
         let app = try app(client)
         await app.enter(.host(.home, app.host))
         await app.enter(.host(.home, app.host), refresh: true)
-        #expect(client.calls == ["rules show", "vault list", "plugins list", "rules show", "vault list", "plugins list"])
+        #expect(client.calls == ["rules show", "vault list", "rules show", "vault list"])
     }
 
     // Leaving a screen while its read runs: what was held stays, nothing

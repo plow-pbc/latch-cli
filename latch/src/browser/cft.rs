@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use super::cdp::{self, Cdp, Pipes};
-use super::driver::{self, Download, Driver, Event, Frame, KEY_NAMES, Runtime, Tab};
+use super::driver::{self, Download, Driver, Event, Frame, HTTP_ERRORS, KEY_NAMES, Runtime, Tab};
 use super::engine::{CFT, Engine};
 use super::profile;
 use crate::failure::{Failure, code};
@@ -410,6 +410,8 @@ impl Cft {
             .to_string();
         self.cdp
             .call("Page.enable", json!({}), Some(&session), deadline)?;
+        self.cdp
+            .call("Network.enable", json!({}), Some(&session), deadline)?;
         if !self.auto_attach(&session)? {
             return Err(Failure::new(
                 code::engine_error,
@@ -505,6 +507,17 @@ impl Cft {
 
     fn active_state(&self) -> &TabState {
         self.tab(&self.share.active).expect("the active tab exists")
+    }
+
+    /// The tab whose page `session` is, or holds as one of its frames.
+    fn tab_of(&self, session: &str) -> Option<String> {
+        let mut session = session;
+        loop {
+            if let Some(tab) = self.share.tabs.iter().find(|tab| tab.session == session) {
+                return Some(tab.id.clone());
+            }
+            session = &self.remotes.get(session)?.parent;
+        }
     }
 
     /// Takes in the events read so far: frames attached in other
@@ -603,6 +616,39 @@ impl Cft {
                 method @ ("Browser.downloadWillBegin" | "Browser.downloadProgress") => {
                     self.download_event(method, params, &dialogs)?;
                 }
+                // A page's own load, XHR or fetch the site refused (the
+                // only responses kept), in any of its frames: its status
+                // and origin, never its path or query.
+                "Network.responseReceived" => {
+                    let response = &params["response"];
+                    let status = response["status"].as_u64().unwrap_or(0);
+                    let origin = url::Url::parse(response["url"].as_str().unwrap_or_default())
+                        .map(|url| url.origin().ascii_serialization());
+                    let refused = self
+                        .share
+                        .pending
+                        .iter()
+                        .filter(|e| matches!(e, Event::HttpError { .. }))
+                        .count();
+                    if let (400..=599, Ok(origin), Some(tab)) =
+                        (status, origin, self.tab_of(session))
+                        && refused < HTTP_ERRORS
+                    {
+                        let retry_after = response["headers"]
+                            .as_object()
+                            .into_iter()
+                            .flatten()
+                            .find(|(name, _)| name.eq_ignore_ascii_case("retry-after"))
+                            .and_then(|(_, value)| value.as_str())
+                            .map(|value| clip(value, 40));
+                        self.share.pending.push(Event::HttpError {
+                            tab,
+                            status: status as u16,
+                            origin,
+                            retry_after,
+                        });
+                    }
+                }
                 _ => {}
             }
         }
@@ -613,6 +659,10 @@ impl Cft {
             if !self.remotes.contains_key(&session) {
                 continue;
             }
+            // Its own requests are watched as its page's are; one the frame
+            // no longer answers simply goes unwatched.
+            let deadline = self.by(COMMAND);
+            let _ = self.session_call("Network.enable", json!({}), &session, deadline, |_| false);
             match self.auto_attach(&session) {
                 Ok(true) => {}
                 Ok(false) => {
@@ -932,6 +982,67 @@ fn fetch_patterns(guarding: bool) -> Value {
     json!({"patterns": patterns})
 }
 
+impl Cft {
+    /// Whether each parent document of `frame` has that frame's own
+    /// `<iframe>` at the point (`reaches`), not something of its own drawn
+    /// over it; or, with none, as its active element (`holds_focus`).
+    fn owners_hold(&mut self, frame: &Frame, at: Option<(f64, f64)>) -> Result<bool, Failure> {
+        let deadline = self.by(COMMAND);
+        let mut current = frame.clone();
+        while let Some(parent_id) = current.parent.clone() {
+            let (Some(place), Some(parent)) = (
+                self.placements.get(&current.id).cloned(),
+                self.placements.get(&parent_id).cloned(),
+            ) else {
+                return Err(stale());
+            };
+            let owner_session = place.owner_session.ok_or_else(stale)?;
+            let parent_frame = Frame {
+                id: parent_id,
+                parent: parent.parent,
+                document: parent.document,
+            };
+            let expression = match at {
+                Some((x, y)) => {
+                    let (dx, dy) = self.frame_offset(&parent_frame)?;
+                    format!("document.elementFromPoint({}, {})", x - dx, y - dy)
+                }
+                None => "document.activeElement".to_string(),
+            };
+            let hit = self.evaluate(&parent_frame, &expression, false, COMMAND)?;
+            let Some(object) = hit["objectId"].as_str().map(str::to_string) else {
+                return Ok(false);
+            };
+            let node = self.frame_command(
+                "DOM.describeNode",
+                json!({"objectId": object}),
+                &parent.session,
+                deadline,
+            );
+            let _ = self.frame_command(
+                "Runtime.releaseObject",
+                json!({"objectId": object}),
+                &parent.session,
+                deadline,
+            );
+            let owner = self.frame_command(
+                "DOM.getFrameOwner",
+                json!({"frameId": current.id}),
+                &owner_session,
+                deadline,
+            );
+            let (Ok(node), Ok(owner)) = (node, owner) else {
+                return Err(stale());
+            };
+            if node["node"]["backendNodeId"] != owner["backendNodeId"] {
+                return Ok(false);
+            }
+            current = parent_frame;
+        }
+        Ok(true)
+    }
+}
+
 impl Driver for Cft {
     fn limit(&mut self, deadline: Option<Instant>) {
         self.deadline = deadline;
@@ -1137,60 +1248,11 @@ impl Driver for Cft {
     }
 
     fn reaches(&mut self, frame: &Frame, x: f64, y: f64) -> Result<bool, Failure> {
-        let deadline = self.by(COMMAND);
-        let mut current = frame.clone();
-        while let Some(parent_id) = current.parent.clone() {
-            let (Some(place), Some(parent)) = (
-                self.placements.get(&current.id).cloned(),
-                self.placements.get(&parent_id).cloned(),
-            ) else {
-                return Err(stale());
-            };
-            let owner_session = place.owner_session.ok_or_else(stale)?;
-            let parent_frame = Frame {
-                id: parent_id,
-                parent: parent.parent,
-                document: parent.document,
-            };
-            // The point in the parent's viewport must land on this frame's
-            // own <iframe>, not on something of the parent's drawn over it.
-            let (dx, dy) = self.frame_offset(&parent_frame)?;
-            let hit = self.evaluate(
-                &parent_frame,
-                &format!("document.elementFromPoint({}, {})", x - dx, y - dy),
-                false,
-                COMMAND,
-            )?;
-            let Some(object) = hit["objectId"].as_str().map(str::to_string) else {
-                return Ok(false);
-            };
-            let node = self.frame_command(
-                "DOM.describeNode",
-                json!({"objectId": object}),
-                &parent.session,
-                deadline,
-            );
-            let _ = self.frame_command(
-                "Runtime.releaseObject",
-                json!({"objectId": object}),
-                &parent.session,
-                deadline,
-            );
-            let owner = self.frame_command(
-                "DOM.getFrameOwner",
-                json!({"frameId": current.id}),
-                &owner_session,
-                deadline,
-            );
-            let (Ok(node), Ok(owner)) = (node, owner) else {
-                return Err(stale());
-            };
-            if node["node"]["backendNodeId"] != owner["backendNodeId"] {
-                return Ok(false);
-            }
-            current = parent_frame;
-        }
-        Ok(true)
+        self.owners_hold(frame, Some((x, y)))
+    }
+
+    fn holds_focus(&mut self, frame: &Frame) -> Result<bool, Failure> {
+        self.owners_hold(frame, None)
     }
 
     fn frame_offset(&mut self, frame: &Frame) -> Result<(f64, f64), Failure> {

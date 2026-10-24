@@ -2,10 +2,11 @@ import Foundation
 
 /// The onboarding screens, in order.
 enum Step: String, CaseIterable, Codable {
-    case welcome, login, privacy, rules, google, access, start, done
+    /// `access` is Grant access: Contacts & Messages and Google.
+    case welcome, login, privacy, rules, access, start, done
 
     /// The screens a person may skip.
-    var skippable: Bool { [.rules, .google, .access].contains(self) }
+    var skippable: Bool { [.rules, .access].contains(self) }
 }
 
 /// How a person left a screen.
@@ -38,7 +39,7 @@ struct Progress: Equatable {
         if finished { return .main }
         // Set up again walks Welcome and Log in too; a first run that is
         // logged in already is past them.
-        let steps: [Step] = rerun ? [.welcome, .login, .privacy, .rules, .google, .access, .start] : [.privacy, .rules, .google, .access, .start]
+        let steps: [Step] = rerun ? [.welcome, .login, .privacy, .rules, .access, .start] : [.privacy, .rules, .access, .start]
         return .onboarding(steps.first { passed[$0] == nil } ?? .done)
     }
 

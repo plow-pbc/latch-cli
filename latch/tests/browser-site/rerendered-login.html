@@ -1,0 +1,17 @@
+<!doctype html><title>latch re-rendered login test</title>
+<!-- A login whose email field the page replaces with a new one a moment
+     after it loads, as a framework re-rendering it does; the email field
+     carries no autocomplete hint, so only its place before the password
+     says it is the username. Posts to /welcome. -->
+<h1>Sign in</h1>
+<form method="post" action="welcome">
+  <p id="email"><label>Email <input type="email" name="email"></label></p>
+  <p><label>Password <input type="password" name="password"></label></p>
+  <p><button type="submit">Sign in</button></p>
+</form>
+<script>
+  setTimeout(() => {
+    document.getElementById('email').innerHTML = '<label>Email <input type="email" name="email"></label>';
+    document.title = 'latch re-rendered login test (done)';
+  }, 300);
+</script>

@@ -76,7 +76,7 @@ nonisolated struct SyntheticLatchClient: LatchClient {
     }
 
     func localStatus() async throws -> LocalStatus {
-        try await read(#"{"login":{"kind":"device"},"this_machine":{"name":"\#(hostNames[0])","key":"\#(key(hostNames[0]))","hosting":{"running":true,"ready":true,"configuring":false,"managed":true,"attached":false,"state":"serving","pid":4100,"blocked":null}},"update":{"available":false,"build":null,"checked_at":null},"last_error":null,"state_dir":"\#(stateDir)","version":"0.1.0","protocol":2}"#)
+        try await read(Fixtures.status(#"{"login":{"kind":"device"},"this_machine":{"name":"\#(hostNames[0])","key":"\#(key(hostNames[0]))","hosting":{"running":true,"ready":true,"configuring":false,"managed":true,"attached":false,"state":"serving","pid":4100,"blocked":null}},"update":{"available":false,"build":null,"checked_at":null},"last_error":null,"state_dir":"\#(stateDir)","version":"0.1.0","protocol":2}"#, plugins: Fixtures.studioPlugins))
     }
 
     func statusFollow() -> AsyncThrowingStream<LocalStatus, Error> {
@@ -100,7 +100,7 @@ nonisolated struct SyntheticLatchClient: LatchClient {
     }
 
     func hostStatus(_ host: String) async throws -> LocalStatus {
-        try await read(Fixtures.piStatus.replacingOccurrences(of: "pi-kitchen", with: host))
+        try await read(Fixtures.status(Fixtures.piStatus.replacingOccurrences(of: "pi-kitchen", with: host), plugins: Fixtures.studioPlugins))
     }
 
     func agents(host: String?) async throws -> AgentsList {
@@ -117,8 +117,6 @@ nonisolated struct SyntheticLatchClient: LatchClient {
         }
         return try await read(#"{"agents":[\#(own.joined(separator: ","))],"deny_exec":{"agent_uids":[],"every_agent":false},"every_agent":{"revision":"\#(Self.hex(0, salt: 0x5a7e, width: 64))","text":"Agents may list and read files in ~/Projects.\nNever delete anything.\nNever touch ~/Finance.\n"},"host":"\#(self.host(host))"}"#)
     }
-
-    func pluginsList(host: String?) async throws -> PluginsList { try await read(Fixtures.studioPlugins) }
 
     func vaultList(host: String?) async throws -> VaultList {
         try await read(#"{"items":[\#((0..<spec.vault).map(Self.vaultItem).joined(separator: ","))]}"#)
