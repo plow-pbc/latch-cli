@@ -74,6 +74,10 @@ private struct Records: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        // No minimum of its own: with the sidebar or inspector dragged wide,
+        // the table scrolls sideways rather than ask the split view for
+        // more width than the window has, which AppKit gives up on.
+        .frame(minWidth: 0, maxWidth: .infinity)
     }
 
     /// The heading, then the scope bar: the outcome, and the agent asked

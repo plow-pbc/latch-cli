@@ -1,4 +1,5 @@
-import Foundation
+import AppKit
+import SwiftUI
 import Testing
 @testable import PlowLatchUI
 
@@ -97,5 +98,34 @@ struct ShellTests {
         #expect(app.removal(on: kitchen) == item)
         app.endRemoval()
         #expect(app.removal(on: kitchen) == nil)
+    }
+
+    // The sidebar dragged to its widest at the window's narrowest, with
+    // Activity's inspector open: the window lays out, as it once didn't
+    // (AppKit's "more Update Constraints in Window passes" exception).
+    @Test func aWideSidebarBesideActivityAndItsInspectorLaysOut() async throws {
+        let app = try app()
+        let studio = try host(app, "studio")
+        app.feed(for: studio).stage(Fixtures.studioAudit)
+        let record = try #require(app.feed(for: studio).records.last { $0.agent != nil })
+        app.openRecord(record, on: studio)
+        let window = Offscreen(contentRect: CGRect(x: -4000, y: -4000, width: 1040, height: 600), styleMask: [.titled, .resizable],
+                               backing: .buffered, defer: false)
+        window.contentView = NSHostingView(rootView: MainView().environment(app))
+        window.setFrameOrigin(CGPoint(x: -4000, y: -4000))
+        window.orderFrontRegardless()
+        defer { window.orderOut(nil) }
+        #expect(!NSScreen.screens.contains { $0.frame.intersects(window.frame) })
+        func splits(_ view: NSView) -> [NSSplitView] { ((view as? NSSplitView).map { [$0] } ?? []) + view.subviews.flatMap(splits) }
+        await waitUntil { splits(window.contentView!).count == 2 }
+        // The outermost: the sidebar, then the rest.
+        let split = try #require(splits(window.contentView!).last)
+        for _ in 0..<30 {
+            split.setPosition(split.arrangedSubviews[0].frame.width + 4, ofDividerAt: 0)
+            window.layoutIfNeeded()
+            window.displayIfNeeded()
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(split.arrangedSubviews[0].frame.width == 320)
     }
 }
