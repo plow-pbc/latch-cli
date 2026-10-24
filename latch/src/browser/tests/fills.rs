@@ -37,6 +37,7 @@ conformance!(
     a_fill_pauses_its_own_session_and_no_other,
     agent_code_is_noted_per_site_for_its_session_only,
     a_login_after_an_edit_fills_the_new_password,
+    a_login_whose_page_replaces_its_email_field_still_fills_whole,
     a_login_is_typed_with_the_engines_own_keys,
     no_part_of_a_typed_secret_goes_into_an_address,
     a_field_that_formats_its_value_still_holds_it,
@@ -2847,5 +2848,55 @@ async fn no_part_of_a_typed_secret_goes_into_an_address(engine: &str) {
     );
     assert_eq!(refused.code, "get_form");
     assert_eq!(beacons(pages).1, 0);
+    h.call("close", json!({})).await.ok();
+}
+
+async fn a_login_whose_page_replaces_its_email_field_still_fills_whole(engine: &str) {
+    let (_dir, state, _area) = test_state(engine);
+    let vault = Vault::new(state.clone());
+    let login = vault
+        .with(|s| {
+            s.add(item(
+                LOGIN,
+                "Shop",
+                &["shop.example"],
+                &[("username", "ada@shop.example"), ("password", PASSWORD)],
+            ))
+        })
+        .unwrap();
+    let pages = site();
+    let local = format!("http://127.0.0.1:{pages}");
+    let mut browsers = Browsers::new(state.clone(), vault.clone(), super::HEADLESS);
+    browsers.test = Some((
+        latch(),
+        vec![(local.clone(), "https://login.shop.example".into())],
+    ));
+    let mut h = Harness::start(browsers, engine).await;
+
+    // Read once, then again after the page replaced its email field: the
+    // new field has a newer ref than the password after it, and is still
+    // the username before the password.
+    h.call(
+        "open",
+        json!({"url": format!("{local}/rerendered-login.html")}),
+    )
+    .await
+    .unwrap();
+    std::thread::sleep(Duration::from_millis(800));
+    let observed = h.call("observe", json!({})).await.unwrap();
+    println!(
+        "after the re-render: {} {}",
+        observed["elements"], observed["fill"]["suggestions"]
+    );
+    assert_eq!(
+        observed["fill"]["suggestions"][0]["fields"]
+            .as_object()
+            .unwrap()
+            .len(),
+        2
+    );
+    let (signed_in, _) = h.login(&login.item).await;
+    assert_eq!(signed_in.unwrap()["submitted"], true);
+    assert!(h.text().await.contains("password accepted"));
     h.call("close", json!({})).await.ok();
 }

@@ -198,13 +198,6 @@ impl<D: Driver> Core<D> {
                 controls.push(control);
             }
         }
-        // Refs are listed in snapshot order.
-        controls.sort_by_key(|c| {
-            c["ref"]
-                .as_str()
-                .and_then(|r| r.trim_start_matches('e').parse::<usize>().ok())
-                .unwrap_or(usize::MAX)
-        });
         Ok(json!({"snapshot": snapshot, "top_origin": top, "controls": controls}))
     }
 

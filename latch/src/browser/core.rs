@@ -1107,21 +1107,23 @@ impl<D: Driver> Core<D> {
                 .flatten()
                 .enumerate()
             {
-                // An element the reader gave no identity is new each time.
-                let key = read["ids"][index]
-                    .as_u64()
-                    .map(|identity| (frame.id.clone(), frame.document.clone(), identity));
-                let known = self.numbers.entry(tab.clone()).or_default();
-                let number = match key.as_ref().and_then(|key| known.get(key)) {
-                    Some(number) => *number,
-                    None => {
-                        self.next_number += 1;
-                        if let Some(key) = key {
-                            known.insert(key, self.next_number);
-                        }
-                        self.next_number
-                    }
-                };
+                let identity = read["ids"][index].as_u64().ok_or_else(|| {
+                    Failure::new(
+                        code::engine_error,
+                        "the page's reader listed an element with no identity".into(),
+                    )
+                })?;
+                let key = (frame.id.clone(), frame.document.clone(), identity);
+                let next = &mut self.next_number;
+                let number = *self
+                    .numbers
+                    .entry(tab.clone())
+                    .or_default()
+                    .entry(key)
+                    .or_insert_with(|| {
+                        *next += 1;
+                        *next
+                    });
                 let mut element = element.clone();
                 element["ref"] = json!(format!("e{number}"));
                 if n > 0 {
