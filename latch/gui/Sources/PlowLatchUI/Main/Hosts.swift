@@ -38,16 +38,6 @@ enum HostScreen: String, CaseIterable, Identifiable {
         case .settings: "Host Settings"
         }
     }
-
-    var symbol: String {
-        switch self {
-        case .home: "house"
-        case .activity: "waveform.path.ecg"
-        case .rules: "list.bullet.rectangle"
-        case .vault: "lock.rectangle.stack"
-        case .settings: "gearshape"
-        }
-    }
 }
 
 /// The main window's place: an account page, or one of the host
