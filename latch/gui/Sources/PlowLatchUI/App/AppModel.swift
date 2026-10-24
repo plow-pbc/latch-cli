@@ -958,13 +958,15 @@ final class AppModel {
     var activityAgent: AgentTarget?
 
     /// A host's requests, or one agent's there: that host's Activity with
-    /// every outcome, or the one asked for, and no search.
+    /// every outcome, or the one asked for, no search, and no connections or
+    /// owner's reads, which Home's counts leave out.
     func openActivity(_ host: HostEntry, agent uid: String? = nil, showing filter: ActivityView.Filter = .all) {
         chosenHost = host.name
         place = .host(.activity)
         activityAgent = uid.map { AgentTarget(host: host.name, agent: $0) }
         activityFilter = filter
         activitySearch = ""
+        showConnections = false
     }
 
     /// One request on a host: that host's Activity, the request selected

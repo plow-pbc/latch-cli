@@ -193,17 +193,20 @@ struct ActivityScopeTests {
     }
 
     // Home's Requests and Refused: all of the host's Activity, or what was
-    // refused, whatever outcome, agent or search was left there.
+    // refused, whatever filters were left there: exactly what Home counted.
     @Test func homesCountsOpenAllOfActivityOrWhatWasRefused() throws {
         let (app, studio) = try app()
         let records = app.feed(for: studio).records
+        #expect(records.contains { $0.isBackground })
         app.openActivity(studio, agent: scout)
         app.activityFilter = .allowed
         app.activitySearch = "Finance"
+        app.showConnections = true
         app.place = .host(.home)
         app.openActivity(studio)
         #expect(app.activityRows(records, on: studio).count == records.filter { !$0.isBackground }.count)
 
+        app.showConnections = true
         app.place = .host(.home)
         app.openActivity(studio, showing: .refused)
         #expect(app.route == .host(.activity, studio))
