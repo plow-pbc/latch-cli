@@ -134,13 +134,20 @@ enum TestHooks {
             app.trial.request = String(argument[argument.index(after: bar)...])
             Task { await app.trial.run(on: host, app: app) }
         }
-        on("focus") { uid in app.rulesFocus = app.host.flatMap { host in uid.map { AgentTarget(host: host.name, agent: $0) } } }
-        on("agent") { uid in app.agentsPath = uid.map { [$0] } ?? [] }
-        // A host pill's click: "HOST|UID".
-        on("pill") { argument in
-            guard let parts = argument?.split(separator: "|"), parts.count == 2,
-                  let host = app.hosts.first(where: { $0.name == parts[0] }) else { return }
-            app.openRules(host, agent: String(parts[1]))
+        // Agents' buttons on a host's row, "HOST|UID": Rules, Activity;
+        // and Remove…, confirmed: "UID".
+        func onAgentRow(_ command: String, _ act: @escaping @MainActor (HostEntry, String) -> Void) {
+            on(command) { argument in
+                guard let parts = argument?.split(separator: "|"), parts.count == 2,
+                      let host = app.hosts.first(where: { $0.name == parts[0] }) else { return }
+                act(host, String(parts[1]))
+            }
+        }
+        onAgentRow("agent-rules") { host, uid in app.openRules(host, agent: uid) }
+        onAgentRow("agent-activity") { host, uid in app.openActivity(host, agent: uid) }
+        on("agent-remove") { uid in
+            guard let agent = app.agents?.first(where: { $0.uid == uid }) else { return }
+            Task { await app.removeAgent(agent) }
         }
         // Saves "UID|TEXT" (UID empty: every agent's) on the selected host
         // as Save does, over the revision on screen.

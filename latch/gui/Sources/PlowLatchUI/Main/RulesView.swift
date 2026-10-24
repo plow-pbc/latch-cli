@@ -61,19 +61,17 @@ private struct HostRules: View {
                 }
             }
             .formStyle(.grouped)
-            // A pill or "Rules on…" asks for an agent's rules: scroll once
-            // its editor is on screen, which may be only after the rules
-            // and agents have loaded; then the ask is done.
+            // An agent's rules asked for (Agents' Rules button): scrolled to
+            // once its editor can exist (the rules and agents read), and
+            // again each time the Form's content changes size, as rows it
+            // lays out later arrive, until the editor, on screen, has taken
+            // the request. Not animated: an animated scrollTo in this Form
+            // never moves.
             .onChange(of: app.rulesScrollTarget(on: host), initial: true) { _, uid in
-                guard let uid else { return }
-                app.rulesFocus = nil
-                // The editors appear in this same update and aren't laid
-                // out yet, so the scroll waits a moment; and it isn't
-                // animated: an animated scrollTo in this Form never moves.
-                Task {
-                    try? await Task.sleep(for: .milliseconds(100))
-                    scroller.scrollTo(uid, anchor: .top)
-                }
+                if let uid { scroller.scrollTo(uid, anchor: .center) }
+            }
+            .onScrollGeometryChange(for: CGFloat.self, of: { $0.contentSize.height }) { _, _ in
+                if let uid = app.rulesScrollTarget(on: host) { scroller.scrollTo(uid, anchor: .center) }
             }
             .onChange(of: app.trial.results[host.name]) {
                 scroller.scrollTo(Self.verdictAnchor, anchor: .bottom)
@@ -117,8 +115,15 @@ struct RulesEditor: View {
     var agent: AgentsList.Agent?
     @Environment(AppModel.self) private var app
     @FocusState private var focused: Bool
+    /// Its first row is on screen.
+    @State private var visible = false
 
     private var key: AppModel.RulesKey { .init(host: host.name, agent: agent?.uid) }
+
+    /// This editor's rules are the ones asked for.
+    private var asked: AgentTarget? {
+        agent.map { AgentTarget(host: host.name, agent: $0.uid) }.flatMap { app.rulesFocus == $0 ? $0 : nil }
+    }
 
     var body: some View {
         // The draft object, not its text: typing redraws only the editor
@@ -135,13 +140,21 @@ struct RulesEditor: View {
                         focused = true
                     }
                 }
+                .onScrollVisibilityChange(threshold: 0.5) { visible = $0 }
             } else {
-                DraftEditor(key: key, saved: saved, draft: draft, title: title, host: host, focused: $focused, begin: begin)
+                DraftEditor(key: key, saved: saved, draft: draft, title: title, host: host, focused: $focused, visible: $visible, begin: begin)
             }
         } header: {
             Text(title)
         } footer: {
             Text(note).foregroundStyle(.secondary)
+        }
+        // Asked for and on screen: it takes the request, begins a draft if
+        // it has no rules yet, and has the focus.
+        .onChange(of: visible ? asked : nil, initial: true) { _, asked in
+            guard let asked, app.takeRulesFocus(asked) else { return }
+            if saved == nil, app.rulesDrafts[key] == nil { begin() }
+            focused = true
         }
     }
 
@@ -161,6 +174,7 @@ private struct DraftEditor: View {
     var title: String
     var host: HostEntry
     var focused: FocusState<Bool>.Binding
+    var visible: Binding<Bool>
     var begin: () -> Void
     @Environment(AppModel.self) private var app
 
@@ -177,6 +191,7 @@ private struct DraftEditor: View {
         .accessibilityLabel(title)
         .focused(focused)
         .focusedValue(\.rulesSave, save)
+        .onScrollVisibilityChange(threshold: 0.5) { visible.wrappedValue = $0 }
         if let error = app.rulesErrors[key] {
             Label { ErrorText(error: error, host: host.spoken) } icon: { Image(systemName: "exclamationmark.triangle") }
                 .foregroundStyle(.red)

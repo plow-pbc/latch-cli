@@ -114,6 +114,7 @@ final class AppModel {
             case let .account(page): self.page = page
             case let .host(screen): (page, self.screen) = (nil, screen)
             }
+            dropRulesFocusLeft()
         }
     }
     private var page: AccountPage?
@@ -121,7 +122,10 @@ final class AppModel {
     /// The host the workspace shows, as the sidebar picked it; nil until
     /// one is picked. Picking another closes Stop…'s confirmation.
     var chosenHost: String? {
-        didSet { if chosenHost != oldValue { confirmingStop = false } }
+        didSet {
+            dropRulesFocusLeft()
+            if chosenHost != oldValue { confirmingStop = false }
+        }
     }
 
     /// Host Settings' Stop… is asking to confirm stopping this Mac's host.
@@ -673,6 +677,10 @@ final class AppModel {
     /// The New Agent sheet, while open.
     var newAgent: NewAgent?
 
+    /// How far down Agents was scrolled, for a return to it. Not observed:
+    /// only Agents reads it, as it appears.
+    @ObservationIgnored var agentsScrolled: CGFloat = 0
+
     func agentCatalog() async throws -> AgentCatalog { try await client.agentCatalog() }
     func agentLines() async throws -> AgentLines { try await client.agentLines() }
     /// `latch agents show`, kept in the account's agents too, so the
@@ -739,11 +747,25 @@ final class AppModel {
                                                         uniquingKeysWith: { first, _ in first }) }
     }
 
-    /// The Agents page's path: an agent's uid opens its page.
-    var agentsPath: [String] = []
-    /// The agent whose rules the Rules screen brings into view, on the one
-    /// host it was asked for.
-    var rulesFocus: AgentTarget?
+    /// Why the last removal of an agent failed, until it's dismissed.
+    var agentRemoveError: LatchError?
+
+    /// Removes an agent by its uid (never its name, which another agent
+    /// may share), once the person has confirmed it; then the account's
+    /// agents are read again, removed or not. A refusal is kept for Agents
+    /// to say.
+    func removeAgent(_ agent: AgentsList.Agent) async {
+        guard let removed = await Self.result({ try await self.client.removeAgent(agent.uid) }) else { return }
+        // Gone even if the list can't be read again just now.
+        if case .success = removed { agents?.removeAll { $0.uid == agent.uid } }
+        await refreshAgentList()
+        if case let .failure(error) = removed { agentRemoveError = error } else { agentRemoveError = nil }
+    }
+
+    /// The agent whose rules the Rules screen brings into view and focuses,
+    /// on the one host it was asked for, until its editor takes it or that
+    /// host's Rules goes.
+    private(set) var rulesFocus: AgentTarget?
 
     /// An agent's rules on a host: that host's Rules, its editor brought
     /// into view.
@@ -751,6 +773,24 @@ final class AppModel {
         chosenHost = host.name
         place = .host(.rules)
         rulesFocus = AgentTarget(host: host.name, agent: uid)
+    }
+
+    /// An agent's editor on a host's Rules: the request is its, so it's
+    /// done; true only for the request it matches, so a request for another
+    /// host or agent is left for that one.
+    func takeRulesFocus(_ target: AgentTarget) -> Bool {
+        guard rulesFocus == target else { return false }
+        rulesFocus = nil
+        return true
+    }
+
+    /// The window left the Rules a request was for, before its editor
+    /// took it, whatever that Rules showed (offline, unavailable, loading):
+    /// the request goes, so it can't take the focus, or begin a draft, when
+    /// that Rules is next shown.
+    private func dropRulesFocusLeft() {
+        guard let focus = rulesFocus, place != .host(.rules) || host?.name != focus.host else { return }
+        rulesFocus = nil
     }
 
     /// The agent's rules to scroll to on a host's Rules screen: the one

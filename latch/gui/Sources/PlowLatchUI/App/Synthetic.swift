@@ -288,6 +288,7 @@ nonisolated struct SyntheticLatchClient: LatchClient {
     func newAgent(name: String, cloud: String?, tokenFile: URL?, line: String) async throws -> AgentCreated {
         try await base.newAgent(name: name, cloud: cloud, tokenFile: tokenFile, line: line)
     }
+    func removeAgent(_ uid: String) async throws {}
     func agentShow(_ uid: String) async throws -> AgentsList.Agent {
         guard let agent = try await agents(host: nil).agents.first(where: { $0.uid == uid }) else { throw LatchError.unreachable("no such agent") }
         return agent
