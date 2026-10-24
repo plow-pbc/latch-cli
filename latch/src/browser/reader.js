@@ -351,6 +351,23 @@
     return true;
   };
   const current = (el) => (el.isContentEditable ? el.textContent : el.value);
+  // Whether a field holding `held` holds `wanted`: the same characters in
+  // the same order, give or take the separators a field adds as it formats
+  // a value (a code as "123 456", a card number in fours, a date with
+  // slashes). Walked by code point, so an astral character is one. The
+  // GET guards (`cdp.rs`, `helper.mjs`) match a value the same way.
+  const SEPARATORS = new Set([' ', '\u00a0', '-', '/', '.', '(', ')', '+']);
+  const keeps = (held, wanted) => {
+    if (held === wanted) return true;
+    if (wanted === '') return false;
+    const want = Array.from(wanted);
+    let i = 0;
+    for (const ch of held) {
+      if (i < want.length && ch === want[i]) i++;
+      else if (!SEPARATORS.has(ch)) return false;
+    }
+    return i === want.length;
+  };
 
   // Checks the element, document and origin, then sets the value in one
   // step. Answers whether the field holds it, never the value.
@@ -364,11 +381,11 @@
     if (el.isContentEditable) return { refused: 'the field became an editable region' };
     if (!setValue(el, value)) return { refused: 'no option matches' };
     if (value) filled.add(el); else filled.delete(el);
-    if (el.localName === 'select' || current(el) === value) return { held: true };
+    if (el.localName === 'select' || keeps(current(el), value)) return { held: true };
     // A single-line field drops line breaks, as it does from a paste: it
     // holds the value less them, which is what a person would have got.
     const unbroken = value.replace(/[\r\n]/g, '');
-    if (el.localName === 'input' && unbroken !== value && current(el) === unbroken) {
+    if (el.localName === 'input' && unbroken !== value && keeps(current(el), unbroken)) {
       return { held: true, dropped_breaks: true };
     }
     return { held: false };

@@ -1,0 +1,17 @@
+<!doctype html><title>latch spaced code test</title>
+<!-- A code field that shows its six digits as "123 456" as they arrive,
+     and sends them without the space. Posts to /verify, which checks the
+     code against the test key. -->
+<h1>Two-step verification</h1>
+<form method="post" action="verify">
+  <p><label>Authentication code <input name="otp" autocomplete="one-time-code" inputmode="numeric" maxlength="7"></label></p>
+  <p><button type="submit">Verify</button></p>
+</form>
+<script>
+  const otp = document.querySelector('[name=otp]');
+  otp.addEventListener('input', () => {
+    const digits = otp.value.replace(/\D/g, '').slice(0, 6);
+    otp.value = digits.length > 3 ? digits.slice(0, 3) + ' ' + digits.slice(3) : digits;
+  });
+  document.querySelector('form').addEventListener('submit', () => { otp.value = otp.value.replace(/\s/g, ''); });
+</script>

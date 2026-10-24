@@ -37,6 +37,7 @@ conformance!(
     a_fill_pauses_its_own_session_and_no_other,
     agent_code_is_noted_per_site_for_its_session_only,
     a_login_after_an_edit_fills_the_new_password,
+    a_field_that_formats_its_value_still_holds_it,
     only_a_layer_of_its_own_covers_a_field_and_the_refusal_names_it,
     no_secret_goes_into_a_form_sent_by_get,
     requests_go_on_while_a_guard_outlives_its_call,
@@ -2125,7 +2126,11 @@ async fn no_secret_goes_into_a_form_sent_by_get(engine: &str) {
         LOGIN,
         "Shop",
         &["shop.example"],
-        &[("username", "ada@shop.example"), ("password", PASSWORD)],
+        &[
+            ("username", "ada@shop.example"),
+            ("password", PASSWORD),
+            ("totp", KEY),
+        ],
     );
     // A hidden custom field: a secret, with a line break.
     shop.raw.fields.push(crate::vault::item::Custom {
@@ -2135,6 +2140,17 @@ async fn no_secret_goes_into_a_form_sent_by_get(engine: &str) {
         linked_id: None,
     });
     let login = vault.with(|s| s.add(shop)).unwrap();
+    // A password of separators alone, which its field shows in pairs.
+    let dashes = vault
+        .with(|s| {
+            s.add(item(
+                LOGIN,
+                "Shop with dashes",
+                &["shop.example"],
+                &[("username", "ada@shop.example"), ("password", "----")],
+            ))
+        })
+        .unwrap();
     // A password with a line break, which its field holds without it.
     let broken = vault
         .with(|s| {
@@ -2156,17 +2172,20 @@ async fn no_secret_goes_into_a_form_sent_by_get(engine: &str) {
         vec![(local.clone(), "https://login.shop.example".into())],
     ));
     let mut h = Harness::start(browsers, engine).await;
+    // Every form's elements, the last ones below the fold included.
     let open = async |h: &mut Harness| {
         h.call("open", json!({"url": format!("{local}/get-login.html")}))
             .await
-            .unwrap()
+            .unwrap();
+        h.call("observe", json!({"all": true})).await.unwrap()
     };
     // A form that says GET, one whose button says so, one that says
-    // nothing (a GET too), a secret's line breaks, sent as CRLF, and a
-    // password whose field dropped its line break.
+    // nothing (a GET too), a secret's line breaks, sent as CRLF, a code
+    // its field formats as "123 456", and a password whose field dropped
+    // its line break.
     // The item, its fields and their names, and the button.
     type Row<'a> = (&'a str, &'a [(&'a str, &'a str)], &'a str);
-    let rows: [Row; 5] = [
+    let rows: [Row; 7] = [
         (
             &login.item,
             &[("username", "Email"), ("password", "Password")],
@@ -2183,6 +2202,12 @@ async fn no_secret_goes_into_a_form_sent_by_get(engine: &str) {
             "Sign in elsewhere",
         ),
         (&login.item, &[("memo", "Memo")], "Send memo"),
+        (&login.item, &[("otp", "Code")], "Verify by address"),
+        (
+            &dashes.item,
+            &[("password", "Pair password")],
+            "Sign in in pairs",
+        ),
         (
             &broken.item,
             &[("username", "Email"), ("password", "Password")],
@@ -2216,6 +2241,24 @@ async fn no_secret_goes_into_a_form_sent_by_get(engine: &str) {
             assert!(url.ends_with("/get-login.html"), "{seen}");
         }
     }
+    // A field that adds a character no field adds as a separator doesn't
+    // hold the value: the fill ends before the press.
+    let page = open(&mut h).await;
+    let (odd, _) = h
+        .fill(json!({
+            "item": login.item,
+            "fields": [["otp", [find(&page, "textbox", "Odd code")]]],
+            "press": find(&page, "button", "Verify oddly"),
+        }))
+        .await;
+    let odd = odd.unwrap_err();
+    println!("Verify oddly: {} ({})", odd.code, odd.message);
+    assert_eq!(odd.code, "needs_owner");
+    let seen = h.call("observe", json!({})).await.unwrap();
+    assert!(
+        seen["url"].as_str().unwrap().ends_with("/get-login.html"),
+        "{seen}"
+    );
     // A username alone is no secret: an email-first sign-in carries it to
     // the next page in the address, and that goes on.
     let page = open(&mut h).await;
@@ -2622,5 +2665,40 @@ async fn only_a_layer_of_its_own_covers_a_field_and_the_refusal_names_it(engine:
         stopped.details["stop"]["covered_by"]["frame"],
         json!(prompt)
     );
+    h.call("close", json!({})).await.ok();
+}
+
+async fn a_field_that_formats_its_value_still_holds_it(engine: &str) {
+    let (_dir, state, _area) = test_state(engine);
+    let vault = Vault::new(state.clone());
+    let login = vault
+        .with(|s| s.add(item(LOGIN, "Shop", &["shop.example"], &[("totp", KEY)])))
+        .unwrap();
+    let pages = site();
+    let local = format!("http://127.0.0.1:{pages}");
+    let mut browsers = Browsers::new(state.clone(), vault.clone(), super::HEADLESS);
+    browsers.test = Some((
+        latch(),
+        vec![(local.clone(), "https://login.shop.example".into())],
+    ));
+    let mut h = Harness::start(browsers, engine).await;
+
+    // The field shows the code as "123 456": it holds the code, and the
+    // page sends it.
+    let page = h
+        .call("open", json!({"url": format!("{local}/totp-spaced.html")}))
+        .await
+        .unwrap();
+    let (verified, _) = h
+        .fill(json!({
+            "item": login.item,
+            "fields": [["otp", [find(&page, "textbox", "Authentication code")]]],
+            "press": find(&page, "button", "Verify"),
+        }))
+        .await;
+    let verified = verified.unwrap();
+    println!("spaced code: {}", verified["fields"]);
+    assert_eq!(verified["submitted"], true);
+    assert!(h.text().await.contains("code accepted"));
     h.call("close", json!({})).await.ok();
 }

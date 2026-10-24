@@ -19,15 +19,42 @@ use crate::failure::{Failure, code};
 /// other schemes are never paused.
 pub const OFF_THE_WEB: &[&str] = &["file", "filesystem", "chrome", "devtools", "view-source"];
 
-/// Whether `url` has a query parameter equal to one of `values`. Line
-/// breaks count alike however they are written: a form sends a field's
-/// as CRLF.
+/// Whether `url` has a query parameter that holds one of `values` as a
+/// fill takes a field to hold it (`keeps`). Line breaks count alike
+/// however they are written: a form sends a field's as CRLF.
 pub fn carries(url: &str, values: &[String]) -> bool {
     let lines = |text: &str| text.replace("\r\n", "\n").replace('\r', "\n");
     url::Url::parse(url).is_ok_and(|url| {
-        url.query_pairs()
-            .any(|(_, value)| values.iter().any(|guarded| lines(guarded) == lines(&value)))
+        url.query_pairs().any(|(_, value)| {
+            values
+                .iter()
+                .any(|guarded| keeps(&lines(&value), &lines(guarded)))
+        })
     })
+}
+
+/// The characters a field may add between a value's own as it formats it,
+/// the same in `reader.js` and `helper.mjs`.
+const SEPARATORS: &[char] = &[' ', '\u{a0}', '-', '/', '.', '(', ')', '+'];
+
+/// Whether `held` holds `wanted`: its characters in order, with only
+/// [`SEPARATORS`] between them (`reader.js`'s `keeps`).
+fn keeps(held: &str, wanted: &str) -> bool {
+    if held == wanted {
+        return true;
+    }
+    if wanted.is_empty() {
+        return false;
+    }
+    let mut want = wanted.chars().peekable();
+    for ch in held.chars() {
+        if want.peek() == Some(&ch) {
+            want.next();
+        } else if !SEPARATORS.contains(&ch) {
+            return false;
+        }
+    }
+    want.peek().is_none()
 }
 
 pub struct Cdp {
@@ -422,6 +449,18 @@ mod tests {
         assert!(carries(
             "https://a.example/w?note=line+one%0D%0Aline+two",
             &lines
+        ));
+        // A code as its field formats it, but not another number, nor one
+        // with a character no field adds (which a fill doesn't take as
+        // held either); a secret of separators alone, formatted.
+        let code = vec!["123456".to_string()];
+        assert!(carries("https://a.example/w?otp=123+456", &code));
+        assert!(carries("https://a.example/w?otp=123-456", &code));
+        assert!(!carries("https://a.example/w?otp=123+457", &code));
+        assert!(!carries("https://a.example/w?otp=123%EF%BB%BF456", &code));
+        assert!(carries(
+            "https://a.example/w?p=--+--",
+            &["----".to_string()]
         ));
     }
 

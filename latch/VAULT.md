@@ -133,7 +133,8 @@ Both the field's frame and the top-level page must be HTTPS with a real
 host: `http`, IP addresses, local hosts, a page without an address and
 opaque (sandboxed) frames are refused (`origin_mismatch`). While a filled
 secret may be on a page, the browser stops every GET request whose address
-carries it as a query parameter, as a form sent by GET would; the press, or
+carries it as a query parameter (as its field formats it too, "123 456"),
+as a form sent by GET would; the press, or
 the agent's own click, then fails `get_form`, and nothing was sent. A
 username is no secret: an email-first sign-in may carry it to the password
 page in the address.
@@ -214,7 +215,11 @@ values and answers `confirm_stale`.
 
 While a fill runs, its session is paused: every other call in it answers
 `session_paused`. Each value is set in one step after the
-field's element, document and origin are checked again; latch then presses
+field's element, document and origin are checked again. A field that
+formats what it gets (a code as "123 456", a card number in fours) still
+holds the value: only spaces, dashes, dots, slashes, parentheses and plus
+signs may come between its characters, none lost, added or moved; a field
+that holds anything else ends the fill with `needs_owner`. latch then presses
 submit and waits until the values have left the page (clearing them itself
 if the page keeps them). A fill that stops part-way (a covered button, a
 refused field) is cleaned up the same way. If latch cannot confirm the
