@@ -2555,7 +2555,8 @@ mod mac {
     /// tab that loads in the background; Firefox keeps the ones that differ from
     /// its defaults in the profile's `prefs.js` as it quits. Whether a window
     /// then stays behind the owner's needs a screen to tell: Playwright keeps
-    /// every page active, and Camoufox reports a made-up screen.
+    /// every page active, and Camoufox reports a made-up screen. It never
+    /// loads the OS's client certificates (the owner's keychain).
     #[tokio::test]
     async fn camoufox_runs_with_page_windows_as_background_tabs() {
         let (_dir, state, _area) = test_state("camoufox");
@@ -2578,6 +2579,14 @@ mod mac {
             assert!(
                 prefs.contains(r#"user_pref("widget.macos.allow-native-select", false);"#),
                 "headless Firefox must disable native macOS select menus"
+            );
+        }
+        // On macOS, where Firefox loads the OS's client certificates (the
+        // owner's keychain) by default, turning that off shows in `prefs.js`.
+        if cfg!(target_os = "macos") {
+            assert!(
+                prefs.contains(r#"user_pref("security.osclientcerts.autoload", false);"#),
+                "Camoufox must not load the keychain's client certificates"
             );
         }
         for pref in [

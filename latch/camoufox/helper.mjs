@@ -328,6 +328,8 @@ async function launch(params) {
       ...THROUGH_PROXY,
       // Firefox can open a native macOS select menu even with -headless.
       "widget.macos.allow-native-select": !params.headless,
+      // Never the OS's client certificates: on macOS, the owner's keychain.
+      "security.osclientcerts.autoload": false,
     },
     proxy: { server: params.proxy },
     acceptDownloads: true,
