@@ -680,14 +680,20 @@ package enum SnapshotRunner {
                                  file: output.appending(path: "15-agents-hub-5x8-\(dark ? "dark" : "light").png"))
             }
         }
-        // Vault: this Mac's items with each kind in the inspector, the empty
-        // state, another host's, one offline, and the sheets.
+        // Vault: this Mac's items with each kind selected, none selected,
+        // none matching a search, the empty state, a failed read, another
+        // host's, one offline, at the default and narrow sizes; the
+        // inspector on its own (the window captures leave it out); and the
+        // sheets.
         for dark in [false, true] {
             let piOffline = Fixtures.studioHosts.replacingOccurrences(
                 of: #""self":false,"online":true,"last_seen_at":"2026-10-22T22:06:30.037004Z""#,
                 with: #""self":false,"online":false,"last_seen_at":null"#)
             let screens: [(String, String?, String, String?, String)] = [
                 ("17-vault-login-2fa", nil, Fixtures.vaultItems, "v1", Fixtures.studioHosts),
+                ("17-vault-no-selection", nil, Fixtures.vaultItems, nil, Fixtures.studioHosts),
+                ("17-vault-search-no-match", nil, Fixtures.vaultItems, nil, Fixtures.studioHosts),
+                ("17-vault-read-failed", nil, Fixtures.vaultItems, nil, Fixtures.studioHosts),
                 ("17-vault-card", nil, Fixtures.vaultItems, "v3", Fixtures.studioHosts),
                 ("17-vault-identity", nil, Fixtures.vaultItems, "v4", Fixtures.studioHosts),
                 ("17-vault-login-also-inside", nil, Fixtures.vaultItems, "v6", Fixtures.studioHosts),
@@ -709,9 +715,20 @@ package enum SnapshotRunner {
                 if name.hasSuffix("remove-failed") {
                     app.vaultRemoveError = .failed(LatchFailure(code: "state_busy", message: "another latch is changing /Users/me/.latch; try again"))
                 }
+                if name.hasSuffix("search-no-match") { app.vaultSearch = "bank" }
+                if name.hasSuffix("read-failed") {
+                    app.stage(summary: HostSummary(vault: .failure(.failed(LatchFailure(code: "state_busy",
+                        message: "another latch is changing /Users/me/.latch; try again")))), for: "studio")
+                }
                 _ = app.stage(.done, progress: full)
-                try await renderWindow(MainView().environment(app), size: CGSize(width: 1020, height: 620), dark: dark,
-                                       file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
+                for (label, size) in [("default", CGSize(width: 1120, height: 640)), ("narrow", narrowSize)] {
+                    try await renderWindow(MainView().environment(app), size: size, dark: dark,
+                                           file: output.appending(path: "\(name)-\(label)-\(dark ? "dark" : "light").png"))
+                }
+                if selected != nil || name.hasSuffix("no-selection") {
+                    try await render(Inspector(route: app.route).environment(app), size: CGSize(width: 320, height: 600), dark: dark,
+                                     file: output.appending(path: "\(name)-inspector-\(dark ? "dark" : "light").png"))
+                }
             }
             let app = AppModel(client: FakeLatchClient(), still: true)
             app.stage(status: try Fixtures.decode(Fixtures.serving))
@@ -745,8 +762,10 @@ package enum SnapshotRunner {
                                  file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
             }
         }
-        // Host Settings: this Mac serving, stopped with an update, another
+        // Host Settings at the default and narrowest sizes: this Mac
+        // serving, stopped with an update, blocked by another latch, another
         // host online and offline, viewer-only; and the New Agent sheet.
+        let sizes = [("default", CGSize(width: 1120, height: 640)), ("narrow", narrowSize)]
         for dark in [false, true] {
             let piOffline = Fixtures.studioHosts.replacingOccurrences(
                 of: #""self":false,"online":true,"last_seen_at":"2026-10-22T22:06:30.037004Z""#,
@@ -756,6 +775,7 @@ package enum SnapshotRunner {
                 ("19-settings-this-mac-keep-awake-on-battery", Fixtures.keepAwake(#"{"enabled":true,"held":false,"reason":"on_battery"}"#),
                  Fixtures.studioHosts, nil, false),
                 ("19-settings-this-mac-stopped-update", Fixtures.stopped, Fixtures.studioHosts, nil, true),
+                ("19-settings-this-mac-blocked", Fixtures.otherVersion, Fixtures.studioHosts, nil, false),
                 ("19-settings-remote-online", Fixtures.serving, Fixtures.studioHosts, "pi-kitchen", false),
                 ("19-settings-remote-offline", Fixtures.serving, piOffline, "pi-kitchen", false),
                 ("19-settings-viewer-only", Fixtures.laptop, Fixtures.laptopHosts, nil, false),
@@ -778,14 +798,18 @@ package enum SnapshotRunner {
             }
             for (name, status, account, chosen, checked) in screens {
                 let app = try settingsApp(status: status, account: account, chosen: chosen, checked: checked)
-                try await renderWindow(MainView().environment(app), size: CGSize(width: 900, height: 900), dark: dark,
-                                       file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
+                for (label, size) in sizes {
+                    try await renderWindow(MainView().environment(app), size: size, dark: dark,
+                                           file: output.appending(path: "\(name)-\(label)-\(dark ? "dark" : "light").png"))
+                }
             }
             // This Mac with Google on and Messages needing Full Disk Access.
             let setUp = try settingsApp(status: Fixtures.serving, account: Fixtures.studioHosts, chosen: nil, checked: false,
                                         plugins: Fixtures.studioPluginsSetUp)
-            try await renderWindow(MainView().environment(setUp), size: CGSize(width: 900, height: 900), dark: dark,
-                                   file: output.appending(path: "19-settings-this-mac-plugins-\(dark ? "dark" : "light").png"))
+            for (label, size) in sizes {
+                try await renderWindow(MainView().environment(setUp), size: size, dark: dark,
+                                       file: output.appending(path: "19-settings-this-mac-plugins-\(label)-\(dark ? "dark" : "light").png"))
+            }
             // Your account › Connections: no Google account, one, two, Plow
             // out of reach; and where a plugin's Manage Accounts… lands.
             let connections: [(String, String)] = [
@@ -800,8 +824,10 @@ package enum SnapshotRunner {
             for (name, google) in connections {
                 let app = try settingsApp(status: Fixtures.serving, account: Fixtures.studioHosts, chosen: nil, checked: false, google: google)
                 app.place = .account(.connections)
-                try await renderWindow(MainView().environment(app), size: CGSize(width: 900, height: 700), dark: dark,
-                                       file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
+                for (label, size) in sizes {
+                    try await renderWindow(MainView().environment(app), size: size, dark: dark,
+                                           file: output.appending(path: "\(name)-\(label)-\(dark ? "dark" : "light").png"))
+                }
             }
             // Its sign-in sheet: adding an account, connecting a first, and
             // a wait that saw no new account.
@@ -818,8 +844,10 @@ package enum SnapshotRunner {
             let managing = try settingsApp(status: Fixtures.serving, account: Fixtures.studioHosts, chosen: "pi-kitchen", checked: false,
                                            google: Fixtures.googleConnected(["ada@example.com"]))
             managing.manageAccounts()
-            try await renderWindow(MainView().environment(managing), size: CGSize(width: 900, height: 700), dark: dark,
-                                   file: output.appending(path: "21-connections-from-manage-accounts-\(dark ? "dark" : "light").png"))
+            for (label, size) in sizes {
+                try await renderWindow(MainView().environment(managing), size: size, dark: dark,
+                                       file: output.appending(path: "21-connections-from-manage-accounts-\(label)-\(dark ? "dark" : "light").png"))
+            }
             // The Settings window: up to date, and a build available.
             for (name, status, checked) in [("22-app-settings", Fixtures.serving, true), ("22-app-settings-update", Fixtures.stopped, false)] {
                 let app = try settingsApp(status: status, account: Fixtures.studioHosts, chosen: nil, checked: checked)

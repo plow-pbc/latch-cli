@@ -15,6 +15,10 @@ final class CountingClient: LatchClient, @unchecked Sendable {
         await held[command]?.wait()
     }
 
+    func localStatus() async throws -> LocalStatus {
+        await ran("status --local")
+        return try Fixtures.decode(Fixtures.serving)
+    }
     func hostStatus(_ host: String) async throws -> LocalStatus {
         await ran("status --host")
         return try Fixtures.decode(Fixtures.serving)
@@ -39,6 +43,13 @@ final class CountingClient: LatchClient, @unchecked Sendable {
     func devices() async throws -> DeviceList {
         await ran("devices")
         return try Fixtures.decode(Fixtures.devices)
+    }
+    /// latch's refusal of an enable, when a test gives one.
+    var enableRefusal: LatchFailure?
+    func enable(_ plugin: String) async throws -> GoogleEnabled? {
+        await ran("plugins enable \(plugin)")
+        if let enableRefusal { throw LatchError.failed(enableRefusal) }
+        return nil
     }
 }
 

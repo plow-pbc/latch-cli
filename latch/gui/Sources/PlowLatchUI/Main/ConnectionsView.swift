@@ -147,7 +147,8 @@ struct GoogleSignIn: Equatable {
 }
 
 /// Your account › Connections: the accounts connected in Plow, the same
-/// whatever host is picked, and the account's logged-in devices.
+/// whatever host is picked, and the account's logged-in devices. The
+/// window's title is the page's.
 struct ConnectionsView: View {
     @Environment(AppModel.self) private var app
     @State private var removingDevice: DeviceList.Device?
@@ -158,7 +159,6 @@ struct ConnectionsView: View {
             devicesSection
         }
         .formStyle(.grouped)
-        .navigationTitle("Connections")
         .sheet(isPresented: signingInBinding) {
             GoogleSignInSheet()
         }

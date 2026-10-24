@@ -8,8 +8,9 @@ import Testing
 struct SyntheticTests {
     @Test func aSpecIsReadOrRefused() {
         #expect(SyntheticLatchClient.Spec("") == SyntheticLatchClient.Spec())
-        let spec = SyntheticLatchClient.Spec("hosts=8,records=10000,vault=1000,agents=5,rate=10,delay=40")
+        let spec = SyntheticLatchClient.Spec("hosts=8,records=10000,vault=1000,agents=5,rate=10,delay=40,connectors=1500")
         #expect(spec?.hosts == 8 && spec?.records == 10000 && spec?.vault == 1000 && spec?.agents == 5 && spec?.rate == 10 && spec?.delay == 40)
+        #expect(spec?.connectors == 1500)
         #expect(SyntheticLatchClient.Spec("hosts=9") == nil)
         #expect(SyntheticLatchClient.Spec("hosts=0") == nil)
         #expect(SyntheticLatchClient.Spec("colour=blue") == nil)
@@ -46,6 +47,35 @@ struct SyntheticTests {
         #expect(try await client.rulesShow(host: "mini").agents?.count == 3)
         #expect(app.plugins(of: app.hosts[0])?.map(\.count) == .success(3))
         #expect(try await client.hostStatus("mini").plugins?.count == 3)
+    }
+
+    // With connectors, a plugin turned on stays on, busy while it turns;
+    // Google has an account that works, and a sign-in adds another.
+    @Test func connectorChangesHoldAndGoogleSignsIn() async throws {
+        let client = SyntheticLatchClient(try #require(.init("hosts=3,connectors=200")), stateDir: "/s")
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
+        await app.refreshStatus()
+        await app.refreshAccount()
+        let mac = try #require(app.hosts.first)
+        let change = Task { await app.setConnector("messages", on: true) }
+        await waitUntil { app.connectorChange != nil }
+        #expect(app.connectorChange == AppModel.ConnectorChange(plugin: "messages", on: true))
+        await change.value
+        #expect(app.connectorChange == nil && app.connectorError == nil)
+        #expect(try app.plugins(of: mac)?.get().first { $0.name == "messages" }?.state == "enabled")
+        await app.setConnector("messages", on: false)
+        #expect(try app.plugins(of: mac)?.get().first { $0.name == "messages" }?.state == "disabled")
+
+        await app.refreshConnections()
+        #expect(app.connections == .google(GoogleAccounts(accounts: ["morgan@example.com"])))
+        var events: [GoogleSignInEvent] = []
+        for try await event in client.signInGoogle(addAccount: true) { events.append(event) }
+        #expect(events == [.link(Fixtures.signInLink), .enabled(GoogleEnabled(accounts: ["morgan@example.com", "morgan2@example.com"]))])
+        await app.refreshConnections()
+        #expect(app.connections == .google(GoogleAccounts(accounts: ["morgan@example.com", "morgan2@example.com"])))
+        #expect(try app.plugins(of: mac)?.get().first { $0.name == "google" }?.state == "disabled")
+        await app.refreshStatus()
+        #expect(try app.plugins(of: mac)?.get().first { $0.name == "google" }?.state == "enabled")
     }
 
     // Coming back after the grace, the stream picks up after the last

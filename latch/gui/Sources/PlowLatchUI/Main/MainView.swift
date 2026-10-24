@@ -23,6 +23,8 @@ struct MainView: View {
         .inspector(isPresented: inspecting) {
             Inspector(route: route)
         }
+        // Shown or hidden by a change of screen: at once, not slid.
+        .transaction(value: app.place) { $0.disablesAnimations = true }
         // As narrow as the sidebar, Activity's table columns and the
         // inspector side by side allow.
         .frame(minWidth: 1040, minHeight: 440)
@@ -125,9 +127,12 @@ private struct Detail: View {
         }
     }
 
+    /// A host's state, or, on an account page, that no host owns it.
     private var subtitle: String {
-        guard case let .host(_, host?) = route else { return "" }
-        return host.subtitle(local: app.status)
+        switch route {
+        case .account: "Your account"
+        case let .host(_, host): host?.subtitle(local: app.status) ?? ""
+        }
     }
 
     private var screen: Binding<HostScreen> {
@@ -153,7 +158,7 @@ struct Inspector: View {
             }
         case let .host(.vault, host?):
             if let item = app.inspectedVaultItem(on: host) {
-                VaultItemInspector(item: item, show: app.vaultShows[host.name]?[item.item], hostName: host.name,
+                VaultItemInspector(item: item, show: app.vaultShow(of: item, on: host), hostName: host.name,
                                    edit: { Task { await app.beginVaultEdit(item, on: host) } },
                                    remove: { app.askToRemove(item, on: host) })
                     .task(id: "\(host.name)/\(item.item)@\(item.revision)") {

@@ -120,10 +120,16 @@ final class AppModel {
     private var page: AccountPage?
     private(set) var screen: HostScreen = .home
     /// The host the workspace shows, as the sidebar picked it; nil until
-    /// one is picked.
+    /// one is picked. Picking another closes Stop…'s confirmation.
     var chosenHost: String? {
-        didSet { dropRulesFocusLeft() }
+        didSet {
+            dropRulesFocusLeft()
+            if chosenHost != oldValue { confirmingStop = false }
+        }
     }
+
+    /// Host Settings' Stop… is asking to confirm stopping this Mac's host.
+    var confirmingStop = false
 
     /// A sidebar host row's click: that host's workspace, on the screen it
     /// was last on.
@@ -304,10 +310,22 @@ final class AppModel {
         summaries[host.name, default: HostSummary()].vault = vault
     }
 
-    /// Reads an item's non-secret values.
+    /// Reads an item's non-secret values; if it changed since the vault was
+    /// listed, the vault is read again, so the item listed is the one shown.
     func showVaultItem(_ item: String, on host: HostEntry) async {
         guard let show = await Self.result({ try await self.client.vaultShow(item, host: host.isThisMac ? nil : host.name) }) else { return }
         vaultShows[host.name, default: [:]][item] = show
+        guard case let .success(shown) = show, case let .success(vault)? = summaries[host.name]?.vault,
+              let listed = vault.items.first(where: { $0.item == item }), listed.revision < shown.item.revision else { return }
+        await refreshVault(on: host)
+    }
+
+    /// What `vault show` said of an item at the revision listed; nil while
+    /// that revision is read (a show of an older one is not its values).
+    func vaultShow(of item: VaultList.Item, on host: HostEntry) -> Result<VaultShow, LatchError>? {
+        let show = vaultShows[host.name]?[item.item]
+        if case let .success(shown)? = show, shown.item.revision != item.revision { return nil }
+        return show
     }
 
     /// Opens an item's Edit sheet, from the item as it is now.
@@ -480,10 +498,12 @@ final class AppModel {
 
     /// Signs in with Google through latch: the first link it gives opens in
     /// the browser, and each is handed to `newLink` for opening again.
-    /// latch's enable once Google is on; nil if latch stopped before.
+    /// latch's enable once Google is on; nil if latch stopped before. Once
+    /// the wait is stopped, a line latch printed before it ends goes nowhere.
     func signInWithGoogle(addAccount: Bool, newLink: (URL) -> Void) async throws -> GoogleEnabled? {
         var opened = false
         for try await event in client.signInGoogle(addAccount: addAccount) {
+            try Task.checkCancellation()
             switch event {
             case let .link(url):
                 newLink(url)
@@ -596,15 +616,32 @@ final class AppModel {
         await refreshStatus()
     }
 
-    /// Turns a plugin on this Mac's host on or off, then reads this Mac's
-    /// status, its plugins among it, again. A refusal is thrown in the
-    /// app's words.
-    func setConnector(_ name: String, on: Bool) async throws {
+    /// Host Settings: a plugin of this Mac's being turned on or off while
+    /// latch does it, and why the last change failed, in the app's words.
+    /// Only this Mac's plugins change here, whichever host shows; another
+    /// host's are turned on there.
+    private(set) var connectorChange: ConnectorChange?
+    private(set) var connectorError: LatchError?
+
+    struct ConnectorChange: Equatable {
+        var plugin: String
+        var on: Bool
+    }
+
+    /// Turns a plugin on this Mac's host on or off, one at a time, then
+    /// reads this Mac's status, its plugins among it, again.
+    func setConnector(_ name: String, on: Bool) async {
+        guard connectorChange == nil, hosts.contains(where: \.isThisMac) else { return }
+        connectorChange = ConnectorChange(plugin: name, on: on)
+        connectorError = nil
+        defer { connectorChange = nil }
         guard let changed = await Self.result({
             if on { _ = try await self.client.enable(name) } else { try await self.client.disable(name) }
-        }) else { throw CancellationError() }
+        }) else { return }
         await refreshStatus()
-        if case let .failure(error) = changed { throw LatchError.unreachable(PluginCopy.refusal(error, plugin: name, on: on), detail: error.details) }
+        if case let .failure(error) = changed {
+            connectorError = .unreachable(PluginCopy.refusal(error, plugin: name, on: on), detail: error.details)
+        }
     }
 
     /// While `latch logout` runs, and after it if Plow couldn't take this
