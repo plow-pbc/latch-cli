@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 /// in sheets.
 struct VaultView: View {
     @Environment(AppModel.self) private var app
+    @FocusState private var searching: Bool
     @State private var choosingExport = false
 
     var body: some View {
@@ -27,6 +28,8 @@ struct VaultView: View {
             }
         }
         .searchable(text: $app.vaultSearch, placement: .toolbar, prompt: "Search items")
+        .searchFocused($searching)
+        .focusedSceneValue(\.find, FindAction { searching = true })
         .toolbar {
             ToolbarItemGroup {
                 Button("New Item", systemImage: "plus") {
@@ -79,6 +82,9 @@ enum VaultSheet: Identifiable {
 private struct HostVault: View {
     var host: HostEntry
     @Environment(AppModel.self) private var app
+    /// Set by an item picked in the list: SwiftUI leaves the keyboard
+    /// focus where it was (the sidebar), so the arrow keys moved that.
+    @FocusState private var listFocused: Bool
 
     var body: some View {
         Group {
@@ -113,6 +119,7 @@ private struct HostVault: View {
                 } primaryAction: { ids in
                     if let item = item(ids, in: vault) { edit(item) }
                 }
+                .focused($listFocused)
             }
         }
         // Said above the list, where latch's reason can sit under Details
@@ -149,10 +156,14 @@ private struct HostVault: View {
         Binding { app.removal(on: host) != nil } set: { if !$0 { app.endRemoval() } }
     }
 
-    /// The list's selection: an item on this host.
+    /// The list's selection: an item on this host. Picked in the list, the
+    /// list takes the keyboard focus.
     private var selection: Binding<VaultList.Item.ID?> {
         Binding { app.selectedVaultItem?.host == host.name ? app.selectedVaultItem?.id : nil }
-            set: { id in app.selectedVaultItem = id.map { OnHost(host: host.name, id: $0) } }
+            set: { id in
+                app.selectedVaultItem = id.map { OnHost(host: host.name, id: $0) }
+                listFocused = true
+            }
     }
 
     private func item(_ ids: Set<VaultList.Item.ID>, in vault: VaultList) -> VaultList.Item? {

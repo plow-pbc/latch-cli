@@ -6,6 +6,7 @@ import SwiftUI
 /// agent.
 struct ActivityView: View {
     @Environment(AppModel.self) private var app
+    @FocusState private var searching: Bool
 
     enum Filter: String, CaseIterable, Identifiable {
         case all = "All", allowed = "Allowed", refused = "Refused"
@@ -32,6 +33,8 @@ struct ActivityView: View {
             }
         }
         .searchable(text: $app.activitySearch, placement: .toolbar, prompt: "Search requests")
+        .searchFocused($searching)
+        .focusedSceneValue(\.find, FindAction { searching = true })
         .toolbar {
             ToolbarItem {
                 Toggle("Show Connections and Reads", systemImage: "point.3.connected.trianglepath.dotted", isOn: $app.showConnections)
@@ -47,6 +50,9 @@ private struct Records: View {
     var feed: ActivityFeed
     var host: HostEntry
     @Environment(AppModel.self) private var app
+    /// Set by a row picked in the table: SwiftUI leaves the keyboard
+    /// focus where it was (the sidebar), so the arrow keys moved that.
+    @FocusState private var tableFocused: Bool
 
     var body: some View {
         let rows = app.activityRows(feed.records, on: host)
@@ -140,12 +146,17 @@ private struct Records: View {
             }
             .width(min: 110, ideal: 140, max: 240)
         }
+        .focused($tableFocused)
     }
 
-    /// The table's selection: a record on this host.
+    /// The table's selection: a record on this host. Picked in the table,
+    /// the table takes the keyboard focus.
     private var selection: Binding<AuditRecord.ID?> {
         Binding { app.selectedRecord?.host == host.name ? app.selectedRecord?.id : nil }
-            set: { id in app.selectedRecord = id.map { OnHost(host: host.name, id: $0) } }
+            set: { id in
+                app.selectedRecord = id.map { OnHost(host: host.name, id: $0) }
+                tableFocused = true
+            }
     }
 
     /// Load Earlier, and how many of the records loaded match: what's

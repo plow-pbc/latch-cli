@@ -94,6 +94,7 @@ struct PlowLatchApp: App {
             SidebarCommands()
             InspectorCommands()
             ScreenCommands(app: model)
+            FindCommands()
         }
 
         Settings {
@@ -104,6 +105,27 @@ struct PlowLatchApp: App {
 }
 
 /// View › a host screen, ⌘1 to ⌘5: the selected host's workspace on it.
+/// Find (⌘F): the search field of the screen showing, where it has one.
+struct FindAction {
+    let focus: () -> Void
+}
+
+extension FocusedValues {
+    @Entry var find: FindAction?
+}
+
+private struct FindCommands: Commands {
+    @FocusedValue(\.find) private var find
+
+    var body: some Commands {
+        CommandGroup(after: .textEditing) {
+            Button("Find…") { find?.focus() }
+                .keyboardShortcut("f")
+                .disabled(find == nil)
+        }
+    }
+}
+
 private struct ScreenCommands: Commands {
     var app: AppModel
 
