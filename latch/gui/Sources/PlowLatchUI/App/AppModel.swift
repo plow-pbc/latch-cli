@@ -301,10 +301,14 @@ final class AppModel {
         summaries[host.name, default: HostSummary()].vault = vault
     }
 
-    /// Reads an item's non-secret values.
+    /// Reads an item's non-secret values; if it changed since the vault was
+    /// listed, the vault is read again, so the item listed is the one shown.
     func showVaultItem(_ item: String, on host: HostEntry) async {
         guard let show = await Self.result({ try await self.client.vaultShow(item, host: host.isThisMac ? nil : host.name) }) else { return }
         vaultShows[host.name, default: [:]][item] = show
+        guard case let .success(shown) = show, case let .success(vault)? = summaries[host.name]?.vault,
+              let listed = vault.items.first(where: { $0.item == item }), listed.revision < shown.item.revision else { return }
+        await refreshVault(on: host)
     }
 
     /// What `vault show` said of an item at the revision listed; nil while

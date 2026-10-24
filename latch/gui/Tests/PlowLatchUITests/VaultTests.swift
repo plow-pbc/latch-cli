@@ -16,6 +16,9 @@ final class VaultClient: LatchClient, @unchecked Sendable {
     private(set) var previews = 0
     /// Holds each `vault show` until opened.
     var showGate: Gate?
+    /// Each item was changed elsewhere since the app listed it: latch says
+    /// so at the next revision.
+    var editedElsewhere = false
     var removals = false
 
     func localStatus() async throws -> LocalStatus { try Fixtures.decode(Fixtures.serving) }
@@ -27,11 +30,15 @@ final class VaultClient: LatchClient, @unchecked Sendable {
     func rulesSet(_ text: String) async throws {}
     func vaultList(host: String?) async throws -> VaultList {
         lists += 1
-        return try Fixtures.decode(Fixtures.vaultItems)
+        var vault: VaultList = try Fixtures.decode(Fixtures.vaultItems)
+        if editedElsewhere { for index in vault.items.indices { vault.items[index].revision += 1 } }
+        return vault
     }
     func vaultShow(_ item: String, host: String?) async throws -> VaultShow {
         await showGate?.wait()
-        return try Fixtures.decode(Fixtures.vaultShows[item]!)
+        var show: VaultShow = try Fixtures.decode(Fixtures.vaultShows[item]!)
+        if editedElsewhere { show.item.revision += 1 }
+        return show
     }
     func vaultRemove(_ item: String, revision: Int, host: String?) async throws {
         if !removals { throw LatchError.unreachable("not scripted") }
@@ -200,6 +207,20 @@ struct VaultTests {
         #expect(app.vaultShow(of: item, on: studio) != nil)
         item.revision += 1
         #expect(app.vaultShow(of: item, on: studio) == nil)
+    }
+
+    // The item was changed elsewhere since the list was read: its values
+    // come at a newer revision, and the list is read again so they show.
+    @Test func valuesReadAtANewerRevisionReadTheListAgain() async throws {
+        let client = VaultClient()
+        let (app, studio) = try app(client)
+        await app.refreshVault(on: studio)
+        app.selectedVaultItem = OnHost(host: studio.name, id: "v1")
+        client.editedElsewhere = true
+        await app.showVaultItem("v1", on: studio)
+        let item = try #require(app.inspectedVaultItem(on: studio))
+        #expect(client.lists == 2)
+        #expect(app.vaultShow(of: item, on: studio) != nil)
     }
 
     /// The bundle's latch is given every value on stdin, never in argv.
