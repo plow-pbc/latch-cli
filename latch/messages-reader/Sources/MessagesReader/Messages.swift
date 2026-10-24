@@ -93,8 +93,9 @@ struct Context {
         ]
     }
 
-    /// One message as an answer row, and whether its text was unreadable.
-    func messageRow(_ row: Row) -> ([String: Any], Bool) {
+    /// One message as an answer row, from its text as `text` read it, and
+    /// whether that text was unreadable.
+    func messageRow(_ row: Row, _ text: (String?, BodyError?)) -> ([String: Any], Bool) {
         let direct = row.int(3) != Int64(groupChatStyle)
         let me = row.int(6) == 1
         var from: [String: Any] = ["me": me]
@@ -110,7 +111,7 @@ struct Context {
             // A direct chat's other party, which an outbound message is to.
             "with": direct ? person(row.string(4)) : NSNull(),
         ]
-        let (body, error) = text(row, limits)
+        let (body, error) = text
         var object: [String: Any] = [
             "id": row.int(0),
             "at": iso(seconds(row.int(7))),
@@ -178,14 +179,17 @@ struct Context {
         var scanned: (Int64, Int64)?
         try store.query(sql, params) { row in
             scanned = (row.int(7), row.int(0))
-            let (object, failed) = messageRow(row)
-            let body = object["text"] as? String
-            guard needle.isEmpty || failed || asciiLower(body ?? "").contains(needle) else { return true }
+            // The phrase is checked on the text alone: only a match is made
+            // into a row, with its names from the address book.
+            let body = text(row, limits)
+            let failed = body.1 != nil
+            guard needle.isEmpty || failed || asciiLower(body.0 ?? "").contains(needle) else { return true }
             // One more match than the limit: there is a next page.
             if answer.rows.count == call.limit {
                 answer.next = cursor(last!.0, last!.1)
                 return false
             }
+            let (object, _) = messageRow(row, body)
             guard answer.add(object) else {
                 answer.next = last.map { cursor($0.0, $0.1) } ?? call.cursor
                 return false
@@ -238,7 +242,7 @@ struct Context {
                 answer.next = cursor(last!.0, last!.1)
                 return false
             }
-            let (object, failed) = messageRow(row)
+            let (object, failed) = messageRow(row, text(row, limits))
             guard answer.add(object) else {
                 answer.next = last.map { cursor($0.0, $0.1) } ?? call.cursor
                 return false
