@@ -87,10 +87,12 @@ struct PlowLatchApp: App {
         .defaultSize(width: 1120, height: 700)
         // Its frame, place and host come back as macOS restores windows.
         .defaultLaunchBehavior(windowed && finished ? .presented : .suppressed)
-        // One Save: the rules editor with the keyboard focus. The sidebar
-        // and inspector toggles, and a shortcut for each host screen.
+        // One Save: the rules editor with the keyboard focus. New Item and
+        // Import on the Vault. The sidebar and inspector toggles, and a
+        // shortcut for each host screen.
         .commands {
             RulesCommands()
+            VaultCommands()
             SidebarCommands()
             InspectorCommands()
             ScreenCommands(app: model)

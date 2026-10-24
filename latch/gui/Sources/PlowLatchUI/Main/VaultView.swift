@@ -32,9 +32,7 @@ struct VaultView: View {
         .focusedSceneValue(\.find, FindAction { searching = true })
         .toolbar {
             ToolbarItemGroup {
-                Button("New Item", systemImage: "plus") {
-                    if let host = app.host { app.vaultSheet = .editor(VaultEditor(on: host)) }
-                }
+                Button("New Item", systemImage: "plus", action: newItem)
                     .help("Add a login, card, identity or note")
                     .disabled(!canChange)
                 Button("Import…", systemImage: "square.and.arrow.down") { choosingExport = true }
@@ -42,6 +40,8 @@ struct VaultView: View {
                     .disabled(!canChange)
             }
         }
+        // File › New Item… and Import…, while this host's vault can change.
+        .focusedSceneValue(\.vaultActions, canChange ? VaultActions(new: newItem, importExport: { choosingExport = true }) : nil)
         .fileImporter(isPresented: $choosingExport, allowedContentTypes: [.commaSeparatedText, .json, .data]) { result in
             guard case let .success(file) = result, let host = app.host else { return }
             let importer = VaultImport(file: file, on: host)
@@ -62,6 +62,38 @@ struct VaultView: View {
     private var canChange: Bool {
         guard let host = app.host, case .success? = app.summaries[host.name]?.vault else { return false }
         return true
+    }
+
+    private func newItem() {
+        if let host = app.host { app.vaultSheet = .editor(VaultEditor(on: host)) }
+    }
+}
+
+/// The Vault's commands for the menu bar, published while it shows a vault
+/// that can change.
+struct VaultActions {
+    let new: () -> Void
+    let importExport: () -> Void
+}
+
+extension FocusedValues {
+    @Entry var vaultActions: VaultActions?
+}
+
+/// File › New Item… (⌘N) and Import…: the shown Vault's, when there is one.
+struct VaultCommands: Commands {
+    @FocusedValue(\.vaultActions) private var vault
+
+    var body: some Commands {
+        CommandGroup(replacing: .newItem) {
+            Button("New Item…") { vault?.new() }
+                .keyboardShortcut("n", modifiers: .command)
+                .disabled(vault == nil)
+        }
+        CommandGroup(replacing: .importExport) {
+            Button("Import…") { vault?.importExport() }
+                .disabled(vault == nil)
+        }
     }
 }
 
@@ -107,9 +139,15 @@ private struct HostVault: View {
                 } actions: {
                     Button("New Item…") { app.vaultSheet = .editor(VaultEditor(on: host)) }
                 }
+            case let .success(vault)? where app.vaultRows(vault).isEmpty:
+                ContentUnavailableView.search(text: app.vaultSearch)
             case let .success(vault)?:
                 List(app.vaultRows(vault), selection: selection) { item in
                     VaultRow(item: item)
+                }
+                // Delete, and Edit › Delete: the selected item, confirmed.
+                .onDeleteCommand {
+                    if let item = app.inspectedVaultItem(on: host) { app.askToRemove(item, on: host) }
                 }
                 .contextMenu(forSelectionType: VaultList.Item.ID.self) { ids in
                     if let item = item(ids, in: vault) {
@@ -193,9 +231,9 @@ private struct VaultRow: View {
             }
             Spacer(minLength: 8)
             if item.totp {
-                Text("2FA").font(.caption).foregroundStyle(.secondary)
-                    .padding(.horizontal, 6).padding(.vertical, 1)
-                    .overlay(Capsule().strokeBorder(.tertiary))
+                Label("2FA", systemImage: "lock.shield")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
                     .help("Its authenticator code is filled at sign-in")
             }
         }

@@ -158,14 +158,15 @@ enum TestHooks {
                 }
             }
         }
-        // Vault, as a person clicks and types: select an item, open New
-        // Item ("KIND") or an item's Edit, type "LABEL=VALUE" (title, sites
-        // and other-sites too), save, remove an item, pick an export (a
-        // path, as the file chooser gives it), and import its picked rows.
+        // Vault, as a person clicks and types: search, select an item, open
+        // New Item ("KIND") or an item's Edit, type "LABEL=VALUE" (title,
+        // sites and other-sites too), save, remove an item, pick an export
+        // (a path, as the file chooser gives it), and import its picked rows.
         func vaultItem(_ id: String?) -> VaultList.Item? {
             guard let host = app.host, case let .success(vault)? = app.summaries[host.name]?.vault else { return nil }
             return vault.items.first { $0.item == id }
         }
+        on("vault-search") { text in app.vaultSearch = text ?? "" }
         on("vault-select") { id in app.selectedVaultItem = app.host.flatMap { host in id.map { OnHost(host: host.name, id: $0) } } }
         on("vault-new") { kind in
             guard let host = app.host else { return }

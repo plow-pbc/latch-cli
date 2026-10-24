@@ -301,10 +301,22 @@ final class AppModel {
         summaries[host.name, default: HostSummary()].vault = vault
     }
 
-    /// Reads an item's non-secret values.
+    /// Reads an item's non-secret values; if it changed since the vault was
+    /// listed, the vault is read again, so the item listed is the one shown.
     func showVaultItem(_ item: String, on host: HostEntry) async {
         guard let show = await Self.result({ try await self.client.vaultShow(item, host: host.isThisMac ? nil : host.name) }) else { return }
         vaultShows[host.name, default: [:]][item] = show
+        guard case let .success(shown) = show, case let .success(vault)? = summaries[host.name]?.vault,
+              let listed = vault.items.first(where: { $0.item == item }), listed.revision < shown.item.revision else { return }
+        await refreshVault(on: host)
+    }
+
+    /// What `vault show` said of an item at the revision listed; nil while
+    /// that revision is read (a show of an older one is not its values).
+    func vaultShow(of item: VaultList.Item, on host: HostEntry) -> Result<VaultShow, LatchError>? {
+        let show = vaultShows[host.name]?[item.item]
+        if case let .success(shown)? = show, shown.item.revision != item.revision { return nil }
+        return show
     }
 
     /// Opens an item's Edit sheet, from the item as it is now.
