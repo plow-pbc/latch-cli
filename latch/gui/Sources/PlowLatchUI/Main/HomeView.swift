@@ -130,10 +130,8 @@ private struct ActivitySections: View {
     @Environment(AppModel.self) private var app
 
     var body: some View {
-        // What callers asked of the host: not connections, nor the owner's
-        // own reads (Home's own summary is one).
-        let calls = feed.records.filter { !$0.isBackground }
-        if calls.isEmpty, let error = feed.error {
+        let calls = HomeActivity(feed.records, today: Calendar.current.dateInterval(of: .day, for: .now)!)
+        if calls.recent.isEmpty, let error = feed.error {
             Section("Activity") {
                 if error.code == "no_host_here" {
                     Text("This Mac keeps no activity yet.")
@@ -142,43 +140,41 @@ private struct ActivitySections: View {
                     ErrorText(error: error, host: host.spoken, titled: true).foregroundStyle(.secondary)
                 }
             }
-        } else if calls.isEmpty, !feed.caughtUp {
+        } else if calls.recent.isEmpty, !feed.caughtUp {
             Section("Today") {
                 ProgressView().frame(maxWidth: .infinity)
             }
         } else {
-            let today = calls.filter { Calendar.current.isDateInToday($0.time) }
             // Only the newest records are held: if the oldest held is from
             // today, there were more today than these.
             let more = feed.hasOlder && feed.records.first.map { Calendar.current.isDateInToday($0.time) } == true ? "+" : ""
-            let agents = Array(Set(today.compactMap { $0.agent == nil ? nil : $0.callerName ?? "Agent \($0.agent!.prefix(8))" })).sorted()
             Section("Today") {
-                LabeledContent("Requests", value: "\(today.count)\(more)")
-                LabeledContent("Refused") {
-                    Text("\(today.filter(\.isRefused).count)\(more)")
-                        .foregroundStyle(today.contains(where: \.isRefused) ? .red : .secondary)
+                GoRow(hint: "Opens Activity") { app.openActivity(host) } label: {
+                    LabeledContent("Requests", value: "\(calls.today)\(more)")
                 }
-                LabeledContent("Agents that called", value: agents.isEmpty ? "None" : agents.joined(separator: ", "))
+                GoRow(hint: "Opens Activity, showing what was refused") { app.openActivity(host, showing: .refused) } label: {
+                    LabeledContent("Refused") {
+                        Text("\(calls.refusedToday)\(more)")
+                            .foregroundStyle(calls.refusedToday > 0 ? .red : .secondary)
+                    }
+                }
+                LabeledContent("Agents that called", value: calls.agentsToday.isEmpty ? "None" : calls.agentsToday.joined(separator: ", "))
             }
             Section("Recent activity") {
-                if calls.isEmpty {
+                if calls.recent.isEmpty {
                     Text(feed.loadingOlder ? "Looking further back…" : "No requests yet.").foregroundStyle(.secondary)
                 }
-                ForEach(calls.suffix(5).reversed()) { record in
-                    Button {
-                        app.openRecord(record, on: host)
-                    } label: {
+                ForEach(calls.recent) { record in
+                    GoRow(hint: "Opens it in Activity") { app.openRecord(record, on: host) } label: {
                         RecentRow(record: record, caller: record.callerLabel(hostKey: app.key(of: host), hostName: host.name,
                                                                             isThisMac: host.isThisMac))
                     }
-                    .buttonStyle(.plain)
                 }
                 // Home reaches back only a few pages on its own; the rest is
                 // a click away.
-                if calls.count < 5, feed.hasOlder, !feed.loadingOlder {
+                if calls.recent.count < 5, feed.hasOlder, !feed.loadingOlder {
                     Button("Load Earlier") { Task { await feed.loadOlder() } }
                 }
-                Button("Show All Activity") { app.openActivity(host) }
             }
             // The newest page may be all connections and reads: reach back
             // for five requests, or to the start.
@@ -187,6 +183,38 @@ private struct ActivitySections: View {
                 await feed.loadOlder(until: 5, pages: ActivityFeed.homePages)
             }
         }
+    }
+}
+
+/// What Home shows of a host's held records: what callers asked of it
+/// (not connections, nor the owner's own reads, Home's own summary being
+/// one) today, and the newest five. Read from the newest back, stopping at
+/// the first record before today once five are found: today's records and
+/// no more, not every held record, and no calendar asked of each one.
+/// Records are in the order latch wrote them, which is their time order
+/// to within the moment two requests finish together.
+nonisolated struct HomeActivity {
+    private(set) var today = 0
+    private(set) var refusedToday = 0
+    /// The agents that called today, by name, sorted.
+    private(set) var agentsToday: [String] = []
+    /// The newest five calls, newest first.
+    private(set) var recent: [AuditRecord] = []
+
+    /// `today`: the day the counts are for.
+    init(_ records: [AuditRecord], today day: DateInterval) {
+        var agents = Set<String>()
+        for record in records.reversed() {
+            let earlier = record.time < day.start
+            guard !earlier || recent.count < 5 else { break }
+            guard !record.isBackground else { continue }
+            if recent.count < 5 { recent.append(record) }
+            guard !earlier, record.time < day.end else { continue }
+            today += 1
+            if record.isRefused { refusedToday += 1 }
+            if let agent = record.agent { agents.insert(record.callerName ?? "Agent \(agent.prefix(8))") }
+        }
+        agentsToday = agents.sorted()
     }
 }
 
@@ -202,25 +230,54 @@ private struct RecentRow: View {
             StatusLabel(status: record.status).lineLimit(1)
             Text(record.time, format: .dateTime.hour().minute()).foregroundStyle(.tertiary).monospacedDigit()
         }
-        .contentShape(.rect)
-        .accessibilityElement(children: .combine)
-        .accessibilityHint("Opens it in Activity")
     }
 }
 
-/// A host's rules, vault and connectors at a glance, each opening its
-/// screen; this Mac's also offers setting up again.
+/// A row that takes the person somewhere: the whole row is the button,
+/// with the chevron of a grouped form's navigating row, and the focus ring
+/// full keyboard access draws for any button.
+private struct GoRow<Label: View>: View {
+    var hint: String
+    var action: () -> Void
+    @ViewBuilder var label: Label
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                label
+                Image(systemName: "chevron.forward")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+                    .accessibilityHidden(true)
+            }
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .combine)
+        .accessibilityHint(hint)
+    }
+}
+
+/// A host's rules, vault and plugins at a glance, each opening its screen,
+/// and the account's Google accounts when Google is on there; this Mac's
+/// also offers setting up again.
 private struct OnHostSection: View {
     var host: HostEntry
     @Environment(AppModel.self) private var app
 
     var body: some View {
         let summary = app.summaries[host.name]
+        let plugins = app.plugins(of: host)
         Section("On \(host.name)") {
-            SummaryRow(host: host.spoken, title: "Rules", value: summary?.rules?.map(Self.rules), open: "Open") { app.place = .host(.rules) }
-            SummaryRow(host: host.spoken, title: "Vault", value: summary?.vault?.map(Self.vault), open: "Open") { app.place = .host(.vault) }
-            SummaryRow(host: host.spoken, title: "Plugins", value: app.plugins(of: host)?.map(Self.plugins), open: "Host Settings") {
+            SummaryRow(host: host.spoken, title: "Rules", value: summary?.rules?.map(Self.rules), opens: "Rules") { app.place = .host(.rules) }
+            SummaryRow(host: host.spoken, title: "Vault", value: summary?.vault?.map(Self.vault), opens: "Vault") { app.place = .host(.vault) }
+            SummaryRow(host: host.spoken, title: "Plugins", value: plugins?.map(Self.plugins), opens: "Host Settings") {
                 app.place = .host(.settings)
+            }
+            if case let .success(list)? = plugins, list.contains(where: { $0.name == "google" && $0.state == "enabled" }) {
+                SummaryRow(host: host.spoken, title: "Google accounts", value: .success(Self.accounts(app.connections)), opens: "Connections") {
+                    app.manageAccounts()
+                }
             }
             if host.isThisMac {
                 Button("Set up again…") { app.setUpAgain() }
@@ -245,6 +302,17 @@ private struct OnHostSection: View {
         }
     }
 
+    /// How many Google accounts Plow said are connected, once Connections
+    /// has asked; Home doesn't ask.
+    private static func accounts(_ connections: Connections?) -> String {
+        guard case let .google(google)? = connections else { return "In Connections" }
+        return switch google.accounts.count {
+        case 0: "None connected"
+        case 1: "1 connected"
+        case let n: "\(n) connected"
+        }
+    }
+
     /// "Google: on · Messages, Contacts: off".
     private static func plugins(_ list: [Plugin]) -> String {
         let name = { (plugin: Plugin) in plugin.name.prefix(1).uppercased() + plugin.name.dropFirst() }
@@ -255,26 +323,26 @@ private struct OnHostSection: View {
     }
 }
 
-/// One line of a host's summary: what latch said, or why it couldn't.
+/// One line of a host's summary: what latch said, or why it couldn't;
+/// the row opens the screen it summarizes. Why it couldn't is its own row
+/// under it, so its Details open rather than the screen.
 private struct SummaryRow: View {
     var host: String
     var title: String
     /// nil until the host has answered.
     var value: Result<String, LatchError>?
-    var open: String
+    /// The screen the row opens.
+    var opens: String
     var action: () -> Void
 
     var body: some View {
-        HStack(spacing: 12) {
-            LabeledContent {
+        GoRow(hint: "Opens \(opens)", action: action) {
+            LabeledContent(title) {
                 Text(shown).multilineTextAlignment(.trailing)
-            } label: {
-                Text(title)
-                if case let .failure(error) = value {
-                    ErrorText(error: error, host: host, titled: true)
-                }
             }
-            Button(open, action: action).fixedSize()
+        }
+        if case let .failure(error) = value {
+            ErrorText(error: error, host: host, titled: true).foregroundStyle(.secondary)
         }
     }
 

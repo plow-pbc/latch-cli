@@ -168,7 +168,8 @@ struct ActivityScopeTests {
     }
 
     // Home's recent request opens in Activity even where a filter left
-    // there would hide it; filters it passes are kept.
+    // there would hide it, in the inspector even if it was closed; filters
+    // it passes are kept.
     @Test func aRecentRequestFromHomeIsShownWhateverWasFiltered() throws {
         let (app, studio) = try app()
         let records = app.feed(for: studio).records
@@ -176,10 +177,12 @@ struct ActivityScopeTests {
         app.openActivity(studio, agent: scout)
         app.activityFilter = .refused
         app.activitySearch = "Finance"
+        app.inspecting.remove(.activity)
         app.place = .host(.home)
         app.openRecord(other, on: studio)
         #expect(app.route == .host(.activity, studio))
         #expect(app.inspectedRecord(on: studio) == other)
+        #expect(app.inspecting.contains(.activity))
 
         let refused = try #require(records.last { $0.agent == scout && $0.isRefused && $0.command?.contains("Finance") == true })
         app.openActivity(studio, agent: scout)
@@ -189,15 +192,27 @@ struct ActivityScopeTests {
         #expect(app.inspectedRecord(on: studio) == refused)
     }
 
-    @Test func showAllActivityShowsAllOfIt() throws {
+    // Home's Requests and Refused: all of the host's Activity, or what was
+    // refused, whatever filters were left there: exactly what Home counted.
+    @Test func homesCountsOpenAllOfActivityOrWhatWasRefused() throws {
         let (app, studio) = try app()
         let records = app.feed(for: studio).records
+        #expect(records.contains { $0.isBackground })
         app.openActivity(studio, agent: scout)
-        app.activityFilter = .refused
+        app.activityFilter = .allowed
         app.activitySearch = "Finance"
+        app.showConnections = true
         app.place = .host(.home)
         app.openActivity(studio)
         #expect(app.activityRows(records, on: studio).count == records.filter { !$0.isBackground }.count)
+
+        app.showConnections = true
+        app.place = .host(.home)
+        app.openActivity(studio, showing: .refused)
+        #expect(app.route == .host(.activity, studio))
+        let refused = records.filter { !$0.isBackground && $0.isRefused }
+        #expect(!refused.isEmpty)
+        #expect(app.activityRows(records, on: studio).count == refused.count)
     }
 
     @Test func filteringNeverStartsTheStreamAgain() async throws {

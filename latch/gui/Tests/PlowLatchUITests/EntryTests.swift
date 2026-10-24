@@ -3,15 +3,16 @@ import Synchronization
 import Testing
 @testable import PlowLatchUI
 
-/// A latch that counts every process the app would start, by command; a
-/// held command waits for its gate.
+/// A latch that counts every process the app would start, by command, and
+/// the host each asked (nil: this Mac); a held command waits for its gate.
 final class CountingClient: LatchClient, @unchecked Sendable {
-    private let counted = Mutex<[String]>([])
+    private let counted = Mutex<[(command: String, host: String?)]>([])
     var held: [String: Gate] = [:]
-    var calls: [String] { counted.withLock { $0 } }
+    var calls: [String] { counted.withLock { $0.map(\.command) } }
+    var hostsAsked: [String?] { counted.withLock { $0.map(\.host) } }
 
-    private func ran(_ command: String) async {
-        counted.withLock { $0.append(command) }
+    private func ran(_ command: String, host: String? = nil) async {
+        counted.withLock { $0.append((command, host)) }
         await held[command]?.wait()
     }
 
@@ -20,7 +21,7 @@ final class CountingClient: LatchClient, @unchecked Sendable {
         return try Fixtures.decode(Fixtures.serving)
     }
     func hostStatus(_ host: String) async throws -> LocalStatus {
-        await ran("status --host")
+        await ran("status --host", host: host)
         return try Fixtures.decode(Fixtures.serving)
     }
     func setupStatus() async throws -> SetupStatus {
@@ -29,16 +30,30 @@ final class CountingClient: LatchClient, @unchecked Sendable {
     }
     func setupStatusCheckingAccess() async throws -> SetupStatus { try await setupStatus() }
     func rulesShow(host: String?) async throws -> RulesShow {
-        await ran("rules show")
+        await ran("rules show", host: host)
         return try Fixtures.decode(Fixtures.studioRules)
     }
     func agents(host: String?) async throws -> AgentsList {
-        await ran(host == nil ? "agents" : "agents --host")
+        await ran(host == nil ? "agents" : "agents --host", host: host)
         return try Fixtures.decode(Fixtures.agents)
     }
     func vaultList(host: String?) async throws -> VaultList {
-        await ran("vault list")
+        await ran("vault list", host: host)
         return try Fixtures.decode(Fixtures.studioVault)
+    }
+    func audit(host: String?, before: String?) async throws -> AuditPage {
+        await ran("audit --before", host: host)
+        return AuditPage(records: [], hasOlder: true)
+    }
+    nonisolated func auditFollow(host: String?, after: String?) -> AsyncThrowingStream<AuditLine, Error> {
+        counted.withLock { $0.append(("audit --follow", host)) }
+        // One connection, with more before it.
+        return AsyncThrowingStream { continuation in
+            for line in [#"{"type":"snapshot","cursor":"x","has_older":true}"#, PagedClient.line(1, op: "connect"),
+                         #"{"type":"caught_up","cursor":"y","has_older":true}"#] {
+                continuation.yield(try! LatchJSON.decoder.decode(AuditLine.self, from: Data(line.utf8)))
+            }
+        }
     }
     func devices() async throws -> DeviceList {
         await ran("devices")
@@ -96,6 +111,27 @@ struct EntryTests {
         await app.enter(.host(.home, kitchen))
         #expect(client.calls.last == "vault list")
         #expect(client.calls.count == 5)
+    }
+
+    // Home on a host asks only that host, never the others it could: its
+    // summary reads, its activity's stream and the pages before it.
+    @Test func homeAsksOnlyItsHost() async throws {
+        let client = CountingClient()
+        let app = try app(client)
+        let mac = app.hosts[0], kitchen = app.hosts[1]
+        var first = 0
+        for (host, asked) in [(mac, nil), (kitchen, kitchen.name)] as [(HostEntry, String?)] {
+            await app.enter(.host(.home, host))
+            let feed = app.feed(for: host)
+            feed.start()
+            await waitUntil { feed.caughtUp }
+            await feed.loadOlder(until: 5, pages: ActivityFeed.homePages)
+            feed.end()
+            let calls = client.calls.dropFirst(first)
+            #expect(calls.contains("audit --follow") && calls.contains("audit --before"), "\(calls)")
+            #expect(client.hostsAsked.dropFirst(first).allSatisfy { $0 == asked }, "\(host.name): \(client.hostsAsked)")
+            first = client.calls.count
+        }
     }
 
     @Test func refreshReadsAgainWhatIsHeld() async throws {

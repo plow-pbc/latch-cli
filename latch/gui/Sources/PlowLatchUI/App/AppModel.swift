@@ -958,18 +958,21 @@ final class AppModel {
     var activityAgent: AgentTarget?
 
     /// A host's requests, or one agent's there: that host's Activity with
-    /// every outcome and no search.
-    func openActivity(_ host: HostEntry, agent uid: String? = nil) {
+    /// every outcome, or the one asked for, no search, and no connections or
+    /// owner's reads, which Home's counts leave out.
+    func openActivity(_ host: HostEntry, agent uid: String? = nil, showing filter: ActivityView.Filter = .all) {
         chosenHost = host.name
         place = .host(.activity)
         activityAgent = uid.map { AgentTarget(host: host.name, agent: $0) }
-        activityFilter = .all
+        activityFilter = filter
         activitySearch = ""
+        showConnections = false
     }
 
     /// One request on a host: that host's Activity, the request selected
-    /// and shown. Filters it passes are kept; if one would hide it, the
-    /// outcome, search and agent filters go.
+    /// and shown in the inspector, opened if it was closed. Filters it
+    /// passes are kept; if one would hide it, the outcome, search and agent
+    /// filters go.
     func openRecord(_ record: AuditRecord, on host: HostEntry) {
         if activityRows([record], on: host).isEmpty {
             openActivity(host)
@@ -978,6 +981,7 @@ final class AppModel {
             place = .host(.activity)
         }
         selectedRecord = OnHost(host: host.name, id: record.id)
+        inspecting.insert(.activity)
     }
 
     /// The record the inspector shows on a host: the one selected there,
