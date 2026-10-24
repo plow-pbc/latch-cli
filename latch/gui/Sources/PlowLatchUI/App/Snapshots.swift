@@ -805,6 +805,8 @@ package enum SnapshotRunner {
                                backing: .buffered, defer: false)
         window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
         window.contentView = host
+        // Setting its content can move the window onto a display: back.
+        window.setFrameOrigin(CGPoint(x: -4000, y: -4000))
         window.orderFrontRegardless()
         try await Task.sleep(for: .milliseconds(400))
         try Render.png(host, to: file, background: background)
