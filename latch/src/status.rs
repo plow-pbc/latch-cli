@@ -5,6 +5,7 @@
 
 use std::os::fd::RawFd;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -13,9 +14,14 @@ use crate::credential;
 use crate::failure::{Failure, code};
 use crate::hosts;
 use crate::lifecycle::{self, Phase, Problem};
-use crate::plow::Plow;
+use crate::plow::{Peer, Plow};
 use crate::state::StateDir;
 use crate::watch::{Watch, Woke};
+use crate::wire::Request;
+
+/// How long the account's hosts have, all together, to say which plugins
+/// they have on, from before the first is dialed.
+pub const PLUGINS_WITHIN: Duration = Duration::from_secs(2);
 
 #[derive(Serialize)]
 pub struct Status {
@@ -49,13 +55,49 @@ pub struct Host {
     pub this_machine: bool,
     pub online: Option<bool>,
     pub last_seen_at: Option<String>,
+    /// Its plugins that are on or need setup, as it says when asked (this
+    /// machine's from its own state folder); `null` when that is unknown,
+    /// with why in `plugins_reason`.
+    pub plugins: Option<Vec<Plugin>>,
+    /// `host_offline` (not asked), `host_unreachable` (no answer in time),
+    /// `caller_denied`, `protocol_mismatch` or the code the host failed with.
+    pub plugins_reason: Option<String>,
 }
+
+/// One of a host's plugins, as `hosts[]` lists it: never one that is off.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct Plugin {
+    pub name: String,
+    /// `enabled` or `needs_setup`: the owner's saved setting, not a check
+    /// that it works.
+    pub state: String,
+}
+
+/// The plugins in a host's list (its `plugins` request's answer) that are
+/// on or need setup.
+pub fn on_or_set_up(listed: &Value) -> Vec<Plugin> {
+    listed["plugins"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|plugin| {
+            let state = plugin["state"].as_str()?;
+            (state == "enabled" || state == "needs_setup").then(|| Plugin {
+                name: plugin["name"].as_str().unwrap_or_default().to_string(),
+                state: state.to_string(),
+            })
+        })
+        .collect()
+}
+
+/// How long `status` waits for Plow's answer.
+const PLOW_WITHIN: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// `status`: `--local`'s answer, and what Plow says of the account. Before
 /// login it asks no one; after, a failed request fails the command.
 pub async fn run(state: &StateDir) -> Result<Status, Failure> {
     let local = local(state)?;
-    if state.load_config()?.is_none() {
+    let Some(config) = state.load_config()? else {
         return Ok(Status {
             account: None,
             local,
@@ -63,20 +105,52 @@ pub async fn run(state: &StateDir) -> Result<Status, Failure> {
             default_host: None,
             default_host_reason: Some(code::not_logged_in.name.to_string()),
         });
-    }
+    };
+    let directory = tokio::time::timeout(PLOW_WITHIN, directory(state))
+        .await
+        .unwrap_or_else(|_| Err(crate::plow::no_answer(&config.api_url, PLOW_WITHIN)));
+    let mut directory = directory.map_err(|mut failure| {
+        if failure.code == code::plow_unreachable.name {
+            failure.next = Some("latch status --local".into());
+        }
+        failure
+    })?;
+    let hosts = &mut directory.hosts;
+    ask_plugins(state, &directory.peers, |index, answer| match answer {
+        Ok(plugins) => hosts[index].plugins = Some(plugins),
+        Err(reason) => hosts[index].plugins_reason = Some(reason),
+    })
+    .await;
+    Ok(Status {
+        account: Some(directory.account),
+        local,
+        hosts: Some(directory.hosts),
+        default_host: directory.default_host,
+        default_host_reason: directory.default_host_reason,
+    })
+}
+
+/// What Plow says of the account this machine is logged in to.
+pub struct Directory {
+    pub account: Account,
+    /// This machine first; the rest in Plow's order. Their plugins are not
+    /// asked yet (`ask_plugins`).
+    pub hosts: Vec<Host>,
+    /// The same hosts, as Plow lists them, to dial.
+    pub peers: Vec<Peer>,
+    pub default_host: Option<String>,
+    pub default_host_reason: Option<String>,
+}
+
+/// Asks Plow, all at once, who the account is and which hosts it has, and
+/// picks the host a command without `--host` goes to, as `hosts::resolve`
+/// would, without registering or dialing anything.
+pub async fn directory(state: &StateDir) -> Result<Directory, Failure> {
     let config = state.require_login()?;
-    let plow = Plow::new(&config.api_url, &credential::token(state)?);
+    let plow = Plow::new(&config.api_url, &credential::token(state)?)?;
     let (peers, owner_uid, display_name) =
-        tokio::try_join!(plow.list_peers(), plow.owner_uid(), plow.display_name()).map_err(
-            |mut failure| {
-                if failure.code == code::plow_unreachable.name {
-                    failure.next = Some("latch status --local".into());
-                }
-                failure
-            },
-        )?;
+        tokio::try_join!(plow.list_peers(), plow.owner_uid(), plow.display_name())?;
     let mut listed = hosts::only_hosts(peers, &config.peer.key);
-    // This machine first; the rest in Plow's order.
     listed.sort_by_key(|host| !host.this_machine);
     let asked = std::env::var("LATCH_HOST").ok();
     let default = if hosts::this_machine_chosen(state, &config, asked.as_deref()) {
@@ -88,27 +162,64 @@ pub async fn run(state: &StateDir) -> Result<Status, Failure> {
         Ok(name) => (Some(name), None),
         Err(failure) => (None, Some(failure.code)),
     };
-    Ok(Status {
-        account: Some(Account {
+    Ok(Directory {
+        account: Account {
             owner_uid,
             display_name,
-        }),
-        local,
-        hosts: Some(
-            listed
-                .into_iter()
-                .map(|peer| Host {
-                    name: peer.name,
-                    key: peer.key,
-                    this_machine: peer.this_machine,
-                    online: peer.online,
-                    last_seen_at: peer.last_seen_at,
-                })
-                .collect(),
-        ),
+        },
+        hosts: listed
+            .iter()
+            .map(|peer| Host {
+                name: peer.name.clone(),
+                key: peer.key.clone(),
+                this_machine: peer.this_machine,
+                online: peer.online,
+                last_seen_at: peer.last_seen_at.clone(),
+                plugins: None,
+                plugins_reason: None,
+            })
+            .collect(),
+        peers: listed,
         default_host,
         default_host_reason,
     })
+}
+
+/// Asks each of `hosts` which plugins it has on, all at once within
+/// `PLUGINS_WITHIN`, and gives `each` a host's answer, or the code of why
+/// there is none, by its place in `hosts`, as it comes. This machine's is
+/// read from its state folder, never dialed. Asking no host fails this.
+pub async fn ask_plugins(
+    state: &StateDir,
+    hosts: &[Peer],
+    mut each: impl FnMut(usize, Result<Vec<Plugin>, String>),
+) {
+    let mut others = Vec::new();
+    for (index, host) in hosts.iter().enumerate() {
+        if !host.this_machine {
+            others.push(index);
+            continue;
+        }
+        match crate::plugins::list_saved(state) {
+            Ok(listed) => each(index, Ok(on_or_set_up(&listed))),
+            Err(failure) => each(index, Err(failure.code)),
+        }
+    }
+    let peers: Vec<Peer> = others.iter().map(|&index| hosts[index].clone()).collect();
+    let request = Request {
+        op: "plugins".to_string(),
+        args: json!({"command": "list"}),
+        chat: None,
+    };
+    crate::dial::ask_each(state, &peers, &request, PLUGINS_WITHIN, |at, answer| {
+        each(
+            others[at],
+            answer
+                .map(|listed| on_or_set_up(&listed))
+                .map_err(|failure| failure.code),
+        )
+    })
+    .await;
 }
 
 #[derive(Serialize)]
@@ -117,7 +228,9 @@ pub struct LocalStatus {
     /// before login.
     pub login: Option<Login>,
     pub this_machine: ThisMachine,
-    /// As `latch plugins list` says.
+    /// Each connector: `name` and `state` (enabled, disabled or
+    /// needs_setup), and for one not enabled, why and the owner's `enable`
+    /// (on an agent's login, why alone).
     pub plugins: Value,
     /// Whether a newer build is available, as the host last looked.
     pub update: crate::update::Status,
@@ -174,11 +287,69 @@ pub struct Hosting {
     /// The agents refused `exec` here (`serve --deny-exec`): as the host
     /// runs, or as the last one ran; `null` if its saved flags are unreadable.
     pub deny_exec: Option<crate::serve::DenyExec>,
+    /// Whether the host keeps this machine awake (`latch settings set
+    /// --keep-awake`): the setting, and what the host holds; `null` if the
+    /// saved settings are unreadable.
+    pub keep_awake: Option<crate::keep_awake::KeepAwake>,
 }
 
 /// `status --local`: reads the state folder and asks no one, so it works
 /// offline and before login. Not logged in and not serving are answers.
 pub fn local(state: &StateDir) -> Result<LocalStatus, Failure> {
+    let config = state.load_config()?;
+    let mut plugins = crate::plugins::list_saved(state)?;
+    // Only the owner's own login turns plugins on: an agent's has no
+    // command to run.
+    if config
+        .as_ref()
+        .is_some_and(|config| config.peer.kind != "device")
+    {
+        for plugin in plugins["plugins"].as_array_mut().into_iter().flatten() {
+            let off = plugin.as_object_mut().and_then(|p| p.remove("enable"));
+            if off.is_some() {
+                plugin["reason"] = json!("only the owner's login can turn this plugin on");
+            }
+        }
+    }
+    let dir = state.path.canonicalize().unwrap_or(state.path.clone());
+    let Hosted {
+        hosting,
+        last_error,
+    } = hosted(state, None).expect("with no deadline the service manager is waited for");
+    Ok(LocalStatus {
+        login: config.as_ref().map(|config| Login {
+            kind: config.peer.kind.clone(),
+        }),
+        this_machine: ThisMachine {
+            name: config.as_ref().map(|config| config.peer.name.clone()),
+            key: config.as_ref().map(|config| config.peer.key.clone()),
+            hosting,
+        },
+        plugins: plugins["plugins"].take(),
+        update: crate::update::status(&dir),
+        last_error,
+        api_url: config.map(|config| config.api_url),
+        state_dir: dir.clone(),
+        version: crate::cli::version(),
+        protocol: crate::wire::protocol(),
+        old_audit_log: crate::audit::plaintext(&dir),
+        page_isolation: crate::sandbox::page_isolation_off()
+            .then_some(crate::sandbox::PAGE_ISOLATION_OFF),
+    })
+}
+
+/// What latch knows of the host on a state folder, and why it last stopped
+/// when a failure stopped it.
+pub struct Hosted {
+    pub hosting: Hosting,
+    pub last_error: Option<Problem>,
+}
+
+/// The part of `--local` that can wait: on the service manager
+/// (`launchctl`, `systemctl`), and up to half a second on a running host's
+/// socket. With `until`, `None` if the service manager has not answered by
+/// then; its command is killed and reaped.
+pub fn hosted(state: &StateDir, until: Option<std::time::Instant>) -> Option<Hosted> {
     let host = lifecycle::now(&state.path);
     let blocked = lifecycle::other_version(&state.path).map(|pid| {
         let failure = lifecycle::other_version_running(pid);
@@ -187,38 +358,22 @@ pub fn local(state: &StateDir) -> Result<LocalStatus, Failure> {
             message: failure.message,
         }
     });
-    let config = state.load_config()?;
-    let mut plugins = crate::plugins::list_saved(state)?;
     let dir = state.path.canonicalize().unwrap_or(state.path.clone());
-    Ok(LocalStatus {
-        login: config.as_ref().map(|config| Login {
-            kind: config.peer.kind.clone(),
-        }),
-        this_machine: ThisMachine {
-            name: config.as_ref().map(|config| config.peer.name.clone()),
-            key: config.as_ref().map(|config| config.peer.key.clone()),
-            hosting: Hosting {
-                running: host.running,
-                ready: host.state == Phase::Serving && blocked.is_none(),
-                configuring: host.configuring,
-                managed: host.running && crate::managed::Service::new(&dir).registered(),
-                attached: host.attached,
-                state: host.state,
-                pid: host.pid,
-                blocked,
-                deny_exec: crate::managed::saved_deny_exec(&dir),
-            },
+    let managed = host.running && crate::managed::Service::new(&dir).registered_by(until)?;
+    Some(Hosted {
+        hosting: Hosting {
+            running: host.running,
+            ready: host.state == Phase::Serving && blocked.is_none(),
+            configuring: host.configuring,
+            managed,
+            attached: host.attached,
+            state: host.state,
+            pid: host.pid,
+            blocked,
+            deny_exec: crate::managed::saved_deny_exec(&dir),
+            keep_awake: crate::keep_awake::status(&dir, &host).ok(),
         },
-        plugins: plugins["plugins"].take(),
-        update: crate::update::status(&dir),
         last_error: host.error,
-        api_url: config.map(|config| config.api_url),
-        state_dir: dir.clone(),
-        version: crate::cli::version(),
-        protocol: crate::wire::protocol(),
-        old_audit_log: crate::audit::plaintext(&dir),
-        page_isolation: crate::sandbox::page_isolation_off()
-            .then_some(crate::sandbox::PAGE_ISOLATION_OFF),
     })
 }
 

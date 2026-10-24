@@ -159,6 +159,11 @@ pub struct DenyExec {
 }
 
 impl DenyExec {
+    /// Every agent is refused `exec`, not only some.
+    pub fn every_agent(&self) -> bool {
+        self.every_agent
+    }
+
     pub fn from_flags(values: &[String]) -> DenyExec {
         DenyExec {
             every_agent: values.iter().any(|value| value == crate::cli::EVERY_AGENT),
@@ -305,6 +310,21 @@ async fn run_locked(
     })?;
     log(&format!("worker sandbox: {}", crate::sandbox::name()));
     exec::sweep_tmpdirs();
+    // Holding the folder, no other host runs here to use an older latch's.
+    match crate::plugins::prune(&state.path) {
+        Ok(removed) => {
+            for path in removed {
+                log(&format!(
+                    "removed {}, which this latch does not run",
+                    path.display()
+                ));
+            }
+        }
+        Err(failure) => log(&format!(
+            "could not remove old helper versions: {}",
+            failure.message
+        )),
+    }
     let config = state.require_login()?;
     run_host(
         state,
@@ -328,7 +348,7 @@ async fn run_host(
     lifetime: Lifetime,
 ) -> Result<(), Failure> {
     let binary = Binary::at(&workers.program)?;
-    let plow = Plow::new(&config.api_url, &credential::token(state)?);
+    let plow = Plow::new(&config.api_url, &credential::token(state)?)?;
     let gatekeeper = Gatekeeper::new(
         plow.clone(),
         Gatekeeper::provider_for_host(&state.path)
@@ -428,6 +448,8 @@ async fn run_host(
     sweep_browsers(&host);
     crate::update::watch(&state.path, &host.dashboard);
     let local_socket = crate::transport::LocalSocket::bind(&state.path)?;
+    // Held while this host serves; it lets go as `run_host` returns.
+    let _awake = crate::keep_awake::start(&state.path);
     lifecycle::record(
         &state.path,
         Phase::Serving,
@@ -837,7 +859,12 @@ const LINGER: Duration = Duration::from_secs(1);
 async fn serve_caller(host: &Host, caller: &str, connection: &Connection) {
     // First check: on connect. A refused caller's connection is closed with
     // the "denied" code, which its client reports as exit 4.
-    let refusal = match host.check(caller).await {
+    let checking = Instant::now();
+    let checked = host.check(caller).await;
+    let timings = Some(audit::Timings {
+        caller_check_ms: checking.elapsed().as_millis() as u64,
+    });
+    let refusal = match checked {
         Ok(identity) => {
             let who = format!("{} ({})", identity.name, identity.kind);
             let mut record = audit::record(
@@ -848,6 +875,7 @@ async fn serve_caller(host: &Host, caller: &str, connection: &Connection) {
                 "connected",
             );
             record.caller_name = host.known_name(&identity);
+            record.timings = timings;
             match host.append(record).await {
                 Ok(_) => {
                     log(&format!("connect: {who} {caller}: allowed"));
@@ -858,7 +886,8 @@ async fn serve_caller(host: &Host, caller: &str, connection: &Connection) {
         }
         Err(denial) => {
             // Already refusing, so a failed audit write changes nothing here.
-            let record = audit::record(caller, None, "connect", "deny", &denial.code);
+            let mut record = audit::record(caller, None, "connect", "deny", &denial.code);
+            record.timings = timings;
             let _ = host.append(record).await;
             host.show_refusal(caller, "connect", &denial);
             Some(denial.message)
@@ -963,6 +992,7 @@ async fn serve_request(
 
     // Second check: before the operation, in case the caller was revoked
     // since it connected.
+    let checking = Instant::now();
     let identity = if local {
         Ok(Identity {
             key: caller.to_string(),
@@ -974,11 +1004,14 @@ async fn serve_request(
     } else {
         host.check(caller).await
     };
-    let mut response = match identity {
+    let timings = (!local).then(|| audit::Timings {
+        caller_check_ms: checking.elapsed().as_millis() as u64,
+    });
+    let response = match identity {
         Err(denial) => {
-            let _ = host
-                .append(audit::record(caller, None, op, "deny", &denial.code))
-                .await;
+            let mut record = audit::record(caller, None, op, "deny", &denial.code);
+            record.timings = timings;
+            let _ = host.append(record).await;
             log(&format!("{op}: {caller}: denied: {}", denial.message));
             host.show_refusal(caller, op, &denial);
             failed(code::caller_denied, denial.message)
@@ -1120,6 +1153,8 @@ async fn serve_request(
                         crate::google::host::run(
                             &host.workers,
                             &host.plow,
+                            &host.name,
+                            local,
                             request.args,
                             &mut send,
                             &mut recv,
@@ -1150,6 +1185,7 @@ async fn serve_request(
             record.caller_name = host.known_name(&identity);
             record.args = done.audit_args.clone();
             record.started = Some(begun_at.to_string());
+            record.timings = timings;
             record.gate = judged
                 .clone()
                 .or_else(|| local.then(|| serde_json::json!({"caller":"owner_on_host"})));
@@ -1167,6 +1203,8 @@ async fn serve_request(
                 Ok(audit_id) => with_audit_id(done.response, audit_id),
                 Err(message) => failed(code::audit_failed, message),
             };
+            // Answered before the board's name for the caller, which may ask Plow.
+            answer(&mut send, &with_permissions(response, exec_permissions)).await;
             let name = host.shown_name(&identity).await;
             host.dashboard.end(
                 on_board,
@@ -1178,9 +1216,14 @@ async fn serve_request(
             }
             drop(running);
             drop(names);
-            response
+            return;
         }
     };
+    answer(&mut send, &with_permissions(response, exec_permissions)).await;
+}
+
+/// An exec's refusal, with the writes and network it asked for.
+fn with_permissions(mut response: Response, exec_permissions: Option<Value>) -> Response {
     if let (Some(permissions), Response::Error { details, .. }) = (exec_permissions, &mut response)
     {
         if details.is_null() {
@@ -1189,12 +1232,12 @@ async fn serve_request(
         details["writes"] = permissions["writes"].clone();
         details["network"] = permissions["network"].clone();
     }
-    answer(&mut send, &response).await;
+    response
 }
 
 /// Everything a request meets before it runs, in order: its file path
 /// resolved, the caller's gate, the host's own refusals (`--deny-exec`, a
-/// connector that is off, a replaced binary), an exec's paths checked, a
+/// connector this host can't run or that is off, a replaced binary), an exec's paths checked, a
 /// messages read planned, then the gatekeeper's judgment. Nothing the
 /// request asks for runs here; `rules_try` stops after it.
 struct Checked<'a> {
@@ -1211,8 +1254,8 @@ struct Checked<'a> {
 /// Why a checked request does not run, as its caller is answered.
 enum Stop {
     /// The host's own refusal, made without asking the judge: an exec its
-    /// owner turned off (`--deny-exec`), a connector that is off, a path it
-    /// never lets a worker use.
+    /// owner turned off (`--deny-exec`), a connector this host can't run or
+    /// that is off, a path it never lets a worker use.
     Host(Done),
     /// Any other: a replaced binary, a bad request, the gatekeeper's no.
     Refused(Done),
@@ -1265,16 +1308,19 @@ async fn check<'a>(
     } else {
         (None, None)
     };
-    // Nor for a connector its owner has not enabled. One that is
-    // counts as running until its answer is audited, so `disable`
-    // waits for it.
-    let (running, not_enabled) = match crate::plugins::Connector::of_op(op)
-        .zip(host.plugins)
-        .map(|(connector, plugins)| plugins.start(connector))
-    {
-        Some(Ok(running)) => (Some(running), None),
-        Some(Err(failure)) => (None, Some(failure)),
-        None => (None, None),
+    // Nor for a connector this host can't run, or one its owner has not
+    // enabled. One that is counts as running until its answer is
+    // audited, so `disable` waits for it.
+    let (running, not_enabled) = match crate::messages::host::supported_here(op) {
+        Err(failure) => (None, Some(failure)),
+        Ok(()) => match crate::plugins::Connector::of_op(op)
+            .zip(host.plugins)
+            .map(|(connector, plugins)| plugins.start(connector))
+        {
+            Some(Ok(running)) => (Some(running), None),
+            Some(Err(failure)) => (None, Some(failure)),
+            None => (None, None),
+        },
     };
     // A messages call reads the address book for names only while
     // Contacts is enabled too, held the same way.
@@ -1478,7 +1524,8 @@ async fn serve_phone(host: &Host, caller: &str, connection: &Connection) {
 /// a failure that is not a refusal (a missing file) was allowed to run.
 /// A worker that could not apply its sandbox is a "deny" too: the host
 /// refused to run the operation unconfined, so it never ran. So is an
-/// operation the gatekeeper could not judge.
+/// operation the gatekeeper could not judge, and one this host can't run
+/// at all: one it doesn't know, or one its platform lacks.
 pub(crate) fn decision(response: &Response) -> &'static str {
     match response {
         Response::Error {
@@ -1488,7 +1535,9 @@ pub(crate) fn decision(response: &Response) -> &'static str {
         Response::Error { code, .. }
             if code == "sandbox_failed"
                 || code == "gatekeeper_unavailable"
-                || code == "host_upgraded" =>
+                || code == "host_upgraded"
+                || code == "not_built_yet"
+                || code == "unsupported_platform" =>
         {
             "deny"
         }

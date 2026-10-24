@@ -1,0 +1,12 @@
+<!doctype html><meta charset="utf-8"><title>Shop · Same-day delivery</title>
+<!-- A shop's front page behind a "Sign in with Google" prompt, whose ×
+     only dismisses it: the live risk check's Close button. -->
+<h1>Same-day delivery</h1>
+<p><a href="login.html">Sign In</a></p>
+<div role="dialog" aria-label="Sign in with Google" id="prompt"
+     style="position:fixed;top:12px;right:12px;width:360px;padding:12px;border:1px solid #ccc;background:white">
+  <p>Sign in to Shop with google.example</p>
+  <p>Ada Lovelace · ada@google.example</p>
+  <p><button>Continue as Ada</button></p>
+  <button aria-label="Close" onclick="document.getElementById('prompt').remove()">×</button>
+</div>

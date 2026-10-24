@@ -30,9 +30,22 @@ pub async fn run(state: &StateDir, args: RulesArgs) -> Result<Value, Failure> {
             agent,
             new_agent,
             draft,
+            fill_login,
+            url,
+            fields,
             request,
         } => {
-            let args = json!({"from": agent, "new_agent": new_agent});
+            let mut args = json!({"from": agent, "new_agent": new_agent});
+            if let (Some(title), Some(url)) = (fill_login, url) {
+                let fields = match fields.is_empty() {
+                    true => vec!["username".to_string(), "password".to_string()],
+                    false => fields,
+                };
+                args["fill"] = json!({"url": url, "item": {"kind": "login", "title": title},
+                                      "fields": fields});
+                args["draft"] = json!(draft.map(|file| read_file(&file)).transpose()?);
+                return previewed(state, host, args).await;
+            }
             return preview(state, host, args, draft, request).await;
         }
         RulesCommand::Set { ref scope, .. }
@@ -154,7 +167,7 @@ async fn preview(
         return Err(failure);
     }
     if draft.as_deref() == Some(Path::new("-"))
-        && matches!(&parsed.command, Latch::Exec(exec) if exec.stdin)
+        && matches!(&parsed.command, Some(Latch::Exec(exec)) if exec.stdin)
     {
         let message = "--draft - and exec --stdin both read stdin";
         let mut failure = Failure::new(code::usage, message.to_string());
@@ -163,31 +176,29 @@ async fn preview(
     }
     args["draft"] = json!(draft.map(|file| read_file(&file)).transpose()?);
     let (op, request, asked): (&str, Value, HostArg) = match parsed.command {
-        Latch::Exec(args) => ("exec", crate::exec::request(&args)?, args.host),
-        Latch::File(FileCommand::Get {
+        Some(Latch::Exec(args)) => ("exec", crate::exec::request(&args)?, args.host),
+        Some(Latch::File(FileCommand::Get {
             remote_path, host, ..
-        }) => ("file_get", transfer::get_args(&remote_path), host),
-        Latch::File(FileCommand::Put {
+        })) => ("file_get", transfer::get_args(&remote_path), host),
+        Some(Latch::File(FileCommand::Put {
             local_path,
             remote_path,
             host,
-        }) => {
+        })) => {
             let (_, args) = transfer::put_args(&local_path, &remote_path).await?;
             ("file_put", args, host)
         }
-        Latch::Google(args) if !args.local_help() => {
+        Some(Latch::Google(args)) if !args.local_help() => {
             let prepared = google::client::prepare(&args).await?;
             let request = serde_json::to_value(&prepared.request).expect("request serializes");
             ("google", request, args.host)
         }
-        #[cfg(target_os = "macos")]
-        Latch::Messages(command) => (
+        Some(Latch::Messages(command)) => (
             "messages",
             crate::messages::messages_request(&command),
             command.host(),
         ),
-        #[cfg(target_os = "macos")]
-        Latch::Contacts(command) => (
+        Some(Latch::Contacts(command)) => (
             "contacts",
             crate::messages::contacts_request(&command),
             command.host(),
@@ -198,6 +209,12 @@ async fn preview(
         }
     };
     args["request"] = json!({"op": op, "args": request, "chat": asked.plow_chat});
+    previewed(state, host, args).await
+}
+
+/// The `rules_try` operation with `args`, on this machine's own host or the
+/// one `--host` names.
+async fn previewed(state: &StateDir, host: Option<String>, args: Value) -> Result<Value, Failure> {
     if hosts::local_target(state, host.as_deref())? {
         return crate::serve::preview_here(state, &args).await;
     }

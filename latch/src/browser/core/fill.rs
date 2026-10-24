@@ -67,6 +67,10 @@ struct Target {
     token: String,
 }
 
+/// How many of a value's last characters a fill types as keys: every one
+/// of a password, a code or a card number.
+const TYPED_KEYS: usize = 64;
+
 #[derive(Default)]
 pub struct State {
     /// The snapshot the fill was prepared on.
@@ -194,13 +198,6 @@ impl<D: Driver> Core<D> {
                 controls.push(control);
             }
         }
-        // Refs are listed in snapshot order.
-        controls.sort_by_key(|c| {
-            c["ref"]
-                .as_str()
-                .and_then(|r| r.trim_start_matches('e').parse::<usize>().ok())
-                .unwrap_or(usize::MAX)
-        });
         Ok(json!({"snapshot": snapshot, "top_origin": top, "controls": controls}))
     }
 
@@ -230,8 +227,11 @@ impl<D: Driver> Core<D> {
         let before = self.fill.stage.clone().unwrap_or_default();
         let deadline = Instant::now() + NEXT_STAGE;
         let mut last: Option<(String, Instant)> = None;
+        // What the page did meanwhile, a refusal of the first stage's
+        // submission among it.
+        let mut events = Vec::new();
         loop {
-            let _ = self.driver.settle();
+            events.extend(self.driver.settle().unwrap_or_default());
             if let Ok((mark, asks)) = self.stage_now()
                 && mark != before
             {
@@ -255,7 +255,9 @@ impl<D: Driver> Core<D> {
         // latch's own reading of the new stage, not the agent's.
         self.quiet = true;
         let reading = self.read(None)?;
-        self.inventory(&reading.snapshot)
+        let mut stage = self.inventory(&reading.snapshot)?;
+        stage["events"] = json!(events);
+        Ok(stage)
     }
 
     /// `expression`'s answer in one of a snapshot's frames, or `None` when
@@ -272,8 +274,8 @@ impl<D: Driver> Core<D> {
     /// Each frame of a snapshot, with its refs and their in-frame indexes.
     fn frames_of(&self, snapshot: &str) -> Result<Vec<FrameRefs>, Failure> {
         let mut frames: Vec<FrameRefs> = Vec::new();
-        for (position, entry) in self.snapshot(snapshot)?.refs.iter().enumerate() {
-            let reference = (format!("e{}", position + 1), entry.index);
+        for entry in &self.snapshot(snapshot)?.refs {
+            let reference = (format!("e{}", entry.number), entry.index);
             match frames.iter_mut().find(|(f, _)| f.id == entry.frame.id) {
                 Some((_, refs)) => refs.push(reference),
                 None => frames.push((entry.frame.clone(), vec![reference])),
@@ -307,11 +309,19 @@ impl<D: Driver> Core<D> {
             return Err(refused("the document was replaced"));
         }
         // A secret is guarded before it reaches the page, as stored and as
-        // a single-line field holds it, without its line breaks.
+        // a single-line field holds it, without its line breaks; and each
+        // part of it the field holds as the keys arrive.
         if secret {
             let unbroken = value.replace(['\r', '\n'], "");
+            let parts: Vec<String> = [value, unbroken.as_str()]
+                .iter()
+                .flat_map(|form| {
+                    form.char_indices()
+                        .map(|(at, ch)| form[..at + ch.len_utf8()].to_string())
+                })
+                .collect();
             let mut added = false;
-            for form in [value.to_string(), unbroken] {
+            for form in parts {
                 if !form.is_empty() && !self.fill.guarded.contains(&form) {
                     self.fill.guarded.push(form);
                     added = true;
@@ -328,17 +338,8 @@ impl<D: Driver> Core<D> {
             target.origin.clone(),
             target.token.clone(),
         );
-        let answer = self.driver.call(
-            &frame,
-            "function (s, i, v, o, t) { return __latch.fill(s, i, v, o, t); }",
-            vec![
-                json!(snapshot),
-                json!(index),
-                json!(value),
-                json!(origin),
-                json!(token),
-            ],
-        )?;
+        // The frame is registered before the first key: a fill that fails
+        // part-way through the typing is cleaned up there too.
         if !self
             .fill
             .filled
@@ -346,13 +347,91 @@ impl<D: Driver> Core<D> {
             .any(|(_, f)| f.id == frame.id && f.document == frame.document)
         {
             let tab = self.driver.active_tab();
-            self.fill.filled.push((tab, frame));
+            self.fill.filled.push((tab, frame.clone()));
         }
+        let answer = self.type_value(&frame, &snapshot, index, value, &origin, &token)?;
         if let Some(why) = answer["refused"].as_str() {
             return Err(refused(why));
         }
         Ok(json!({"held": answer["held"] == true,
                   "dropped_breaks": answer["dropped_breaks"] == true}))
+    }
+
+    /// Puts `value` into the field as a person types it: a text field
+    /// gets its last keys (all of them, for any value under
+    /// [`TYPED_KEYS`]) as the engine's own key presses, the head before
+    /// them set in one step; any other field, or a value with a line break
+    /// or a tab, which keys would turn into a submit or a move, is set in
+    /// one step. Answers the reader's `held`, or its refusal.
+    fn type_value(
+        &mut self,
+        frame: &Frame,
+        snapshot: &str,
+        index: usize,
+        value: &str,
+        origin: &str,
+        token: &str,
+    ) -> Result<Value, Failure> {
+        let at = value
+            .char_indices()
+            .rev()
+            .nth(TYPED_KEYS - 1)
+            .map_or(0, |(at, _)| at);
+        let (head, tail) = value.split_at(at);
+        let start = if tail.contains(['\r', '\n', '\t']) {
+            json!({"assign": true})
+        } else {
+            self.driver.call(
+                frame,
+                "function (s, i, h, o, t) { return __latch.typeStart(s, i, h, o, t); }",
+                vec![
+                    json!(snapshot),
+                    json!(index),
+                    json!(head),
+                    json!(origin),
+                    json!(token),
+                ],
+            )?
+        };
+        if start["refused"].is_string() {
+            return Ok(start);
+        }
+        // A field whose frame can't hold the page's focus gets no keys:
+        // they would go to another frame.
+        if start["assign"] == true || !self.driver.holds_focus(frame)? {
+            return self.driver.call(
+                frame,
+                "function (s, i, v, o, t) { return __latch.fill(s, i, v, o, t); }",
+                vec![
+                    json!(snapshot),
+                    json!(index),
+                    json!(value),
+                    json!(origin),
+                    json!(token),
+                ],
+            );
+        }
+        let mut caret = start["caret"].as_u64().unwrap_or(0);
+        for key in tail.chars() {
+            let ready = self.driver.call(
+                frame,
+                "function (s, i, c, t) { return __latch.typeKey(s, i, c, t); }",
+                vec![json!(snapshot), json!(index), json!(caret), json!(token)],
+            )?;
+            if ready["refused"].is_string() {
+                return Ok(ready);
+            }
+            if !self.driver.holds_focus(frame)? {
+                return Ok(json!({"refused": "the field's frame lost the focus"}));
+            }
+            self.driver.type_text(&key.to_string())?;
+            caret = ready["caret"].as_u64().unwrap_or(0) + key.len_utf16() as u64;
+        }
+        self.driver.call(
+            frame,
+            "function (s, i, v, t) { return __latch.typeEnd(s, i, v, t); }",
+            vec![json!(snapshot), json!(index), json!(value), json!(token)],
+        )
     }
 
     /// Clicks the submit or `--press` button, as an agent's click would.
@@ -388,16 +467,18 @@ impl<D: Driver> Core<D> {
         // the way leaves the session paused too.
         self.fill.unclean = true;
         let deadline = Instant::now() + CLEANUP;
+        // What the page did while latch waited, a refused request among it.
+        let mut events = Vec::new();
         loop {
             if self.holding().ok() == Some(0) {
                 self.fill.unclean = false;
-                return Ok(json!({"clean": true, "cleared_by_latch": false}));
+                return Ok(json!({"clean": true, "cleared_by_latch": false, "events": events}));
             }
             if Instant::now() >= deadline || self.driver.dialog_open() {
                 break;
             }
             std::thread::sleep(Duration::from_millis(200));
-            let _ = self.driver.settle();
+            events.extend(self.driver.settle().unwrap_or_default());
         }
         for (_, frame) in self.live_filled()?.here {
             let _ = self.driver.run(&frame, "__latch.clearFilled()");
@@ -407,7 +488,7 @@ impl<D: Driver> Core<D> {
         std::thread::sleep(SETTLED);
         let clean = self.holding().ok() == Some(0);
         self.fill.unclean = !clean;
-        Ok(json!({"clean": clean, "cleared_by_latch": clean}))
+        Ok(json!({"clean": clean, "cleared_by_latch": clean, "events": events}))
     }
 
     /// Lets the agent back in, unless a cleanup could not confirm the values
@@ -576,6 +657,9 @@ mod tests {
             unreachable!()
         }
         fn call(&mut self, _: &Frame, _: &str, _: Vec<Value>) -> Result<Value, Failure> {
+            unreachable!()
+        }
+        fn holds_focus(&mut self, _: &Frame) -> Result<bool, Failure> {
             unreachable!()
         }
         fn reaches(&mut self, _: &Frame, _: f64, _: f64) -> Result<bool, Failure> {

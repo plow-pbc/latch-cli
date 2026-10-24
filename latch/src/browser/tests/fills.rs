@@ -37,6 +37,12 @@ conformance!(
     a_fill_pauses_its_own_session_and_no_other,
     agent_code_is_noted_per_site_for_its_session_only,
     a_login_after_an_edit_fills_the_new_password,
+    a_sign_in_the_site_refuses_says_so,
+    a_login_whose_page_replaces_its_email_field_still_fills_whole,
+    a_login_is_typed_with_the_engines_own_keys,
+    no_part_of_a_typed_secret_goes_into_an_address,
+    a_field_that_formats_its_value_still_holds_it,
+    only_a_layer_of_its_own_covers_a_field_and_the_refusal_names_it,
     no_secret_goes_into_a_form_sent_by_get,
     requests_go_on_while_a_guard_outlives_its_call,
     no_vault_value_goes_into_an_editable_region,
@@ -324,6 +330,15 @@ fn site() -> u16 {
                     file => std::fs::read(folder.join(file.trim_start_matches('/'))).ok(),
                 };
                 let mut socket = socket;
+                if path == "/limited-late" {
+                    std::thread::sleep(Duration::from_millis(700));
+                }
+                if path == "/limited" || path == "/limited-late" {
+                    let _ = socket.write_all(
+                        b"HTTP/1.1 429 Too Many Requests\r\nRetry-After: 30\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    );
+                    return;
+                }
                 let (status, page) = match page {
                     Some(page) => ("200 OK", page),
                     None => ("404 Not Found", Vec::new()),
@@ -2124,7 +2139,11 @@ async fn no_secret_goes_into_a_form_sent_by_get(engine: &str) {
         LOGIN,
         "Shop",
         &["shop.example"],
-        &[("username", "ada@shop.example"), ("password", PASSWORD)],
+        &[
+            ("username", "ada@shop.example"),
+            ("password", PASSWORD),
+            ("totp", KEY),
+        ],
     );
     // A hidden custom field: a secret, with a line break.
     shop.raw.fields.push(crate::vault::item::Custom {
@@ -2134,6 +2153,17 @@ async fn no_secret_goes_into_a_form_sent_by_get(engine: &str) {
         linked_id: None,
     });
     let login = vault.with(|s| s.add(shop)).unwrap();
+    // A password of separators alone, which its field shows in pairs.
+    let dashes = vault
+        .with(|s| {
+            s.add(item(
+                LOGIN,
+                "Shop with dashes",
+                &["shop.example"],
+                &[("username", "ada@shop.example"), ("password", "----")],
+            ))
+        })
+        .unwrap();
     // A password with a line break, which its field holds without it.
     let broken = vault
         .with(|s| {
@@ -2155,17 +2185,20 @@ async fn no_secret_goes_into_a_form_sent_by_get(engine: &str) {
         vec![(local.clone(), "https://login.shop.example".into())],
     ));
     let mut h = Harness::start(browsers, engine).await;
+    // Every form's elements, the last ones below the fold included.
     let open = async |h: &mut Harness| {
         h.call("open", json!({"url": format!("{local}/get-login.html")}))
             .await
-            .unwrap()
+            .unwrap();
+        h.call("observe", json!({"all": true})).await.unwrap()
     };
     // A form that says GET, one whose button says so, one that says
-    // nothing (a GET too), a secret's line breaks, sent as CRLF, and a
-    // password whose field dropped its line break.
+    // nothing (a GET too), a secret's line breaks, sent as CRLF, a code
+    // its field formats as "123 456", and a password whose field dropped
+    // its line break.
     // The item, its fields and their names, and the button.
     type Row<'a> = (&'a str, &'a [(&'a str, &'a str)], &'a str);
-    let rows: [Row; 5] = [
+    let rows: [Row; 7] = [
         (
             &login.item,
             &[("username", "Email"), ("password", "Password")],
@@ -2182,6 +2215,12 @@ async fn no_secret_goes_into_a_form_sent_by_get(engine: &str) {
             "Sign in elsewhere",
         ),
         (&login.item, &[("memo", "Memo")], "Send memo"),
+        (&login.item, &[("otp", "Code")], "Verify by address"),
+        (
+            &dashes.item,
+            &[("password", "Pair password")],
+            "Sign in in pairs",
+        ),
         (
             &broken.item,
             &[("username", "Email"), ("password", "Password")],
@@ -2215,6 +2254,24 @@ async fn no_secret_goes_into_a_form_sent_by_get(engine: &str) {
             assert!(url.ends_with("/get-login.html"), "{seen}");
         }
     }
+    // A field that adds a character no field adds as a separator doesn't
+    // hold the value: the fill ends before the press.
+    let page = open(&mut h).await;
+    let (odd, _) = h
+        .fill(json!({
+            "item": login.item,
+            "fields": [["otp", [find(&page, "textbox", "Odd code")]]],
+            "press": find(&page, "button", "Verify oddly"),
+        }))
+        .await;
+    let odd = odd.unwrap_err();
+    println!("Verify oddly: {} ({})", odd.code, odd.message);
+    assert_eq!(odd.code, "needs_owner");
+    let seen = h.call("observe", json!({})).await.unwrap();
+    assert!(
+        seen["url"].as_str().unwrap().ends_with("/get-login.html"),
+        "{seen}"
+    );
     // A username alone is no secret: an email-first sign-in carries it to
     // the next page in the address, and that goes on.
     let page = open(&mut h).await;
@@ -2297,12 +2354,12 @@ async fn requests_go_on_while_a_guard_outlives_its_call(engine: &str) {
         assert_eq!(trapped.unwrap_err().code, "session_paused");
         if !host_stops {
             assert!(
-                started.elapsed() < Duration::from_secs(19),
+                started.elapsed() < Duration::from_secs(29),
                 "too slow to test"
             );
-            // The page reaches /beacon 20 seconds after the number arrived,
+            // The page reaches /beacon 30 seconds after the number arrived,
             // with no call under way.
-            tokio::time::sleep(Duration::from_secs(24).saturating_sub(started.elapsed())).await;
+            tokio::time::sleep(Duration::from_secs(34).saturating_sub(started.elapsed())).await;
             let (after, _) = beacons(port);
             println!("beacons while the trap held: {}", after - before);
             assert!(after > before, "the page's request waited for a call");
@@ -2539,4 +2596,450 @@ mod mac {
             assert!(out.stdout.is_empty());
         }
     }
+}
+
+async fn only_a_layer_of_its_own_covers_a_field_and_the_refusal_names_it(engine: &str) {
+    let (_dir, state, _area) = test_state(engine);
+    let vault = Vault::new(state.clone());
+    let login = vault
+        .with(|s| {
+            s.add(item(
+                LOGIN,
+                "Shop",
+                &["shop.example"],
+                &[("username", "ada@shop.example"), ("password", PASSWORD)],
+            ))
+        })
+        .unwrap();
+    let (pages, prompt) = (site(), site());
+    let local = format!("http://127.0.0.1:{pages}");
+    let mut browsers = Browsers::new(state.clone(), vault.clone(), super::HEADLESS);
+    browsers.test = Some((
+        latch(),
+        vec![(local.clone(), "https://login.shop.example".into())],
+    ));
+    let mut h = Harness::start(browsers, engine).await;
+
+    // A floating label and a page's fixed banner over the password field
+    // keep no one from it: latch suggests the whole login, and it fills.
+    for over in ["label", "footer"] {
+        h.call(
+            "open",
+            json!({"url": format!("{local}/covered-login.html?{over}")}),
+        )
+        .await
+        .unwrap();
+        let observed = h.call("observe", json!({})).await.unwrap();
+        println!("{over}: offers {}", observed["fill"]["page_offers"]);
+        assert_eq!(
+            observed["fill"]["page_offers"],
+            json!(["password"]),
+            "{over}"
+        );
+        let (signed_in, _) = h.login(&login.item).await;
+        assert_eq!(signed_in.unwrap()["submitted"], true, "{over}");
+        assert!(h.text().await.contains("password accepted"), "{over}");
+    }
+
+    // Another site's frame over it does: the fill and a click are refused,
+    // each naming the frame.
+    let prompt = format!("http://localhost:{prompt}");
+    let page = h
+        .call(
+            "open",
+            json!({"url": format!("{local}/covered-login.html?prompt={}", &prompt[17..])}),
+        )
+        .await
+        .unwrap();
+    let observed = h.call("observe", json!({})).await.unwrap();
+    assert_eq!(observed["fill"]["page_offers"], json!(["username_only"]));
+    let password = find(&page, "textbox", "Password");
+    let (refused, _) = h
+        .fill(json!({"item": login.item, "snapshot": page["snapshot"],
+                     "fields": [["password", [password.clone()]]],
+                     "press": find(&page, "button", "Sign in")}))
+        .await;
+    let refused = refused.unwrap_err();
+    println!("prompt: {} ({})", refused.code, refused.message);
+    assert_eq!(refused.code, "bad_target");
+    assert!(
+        refused
+            .message
+            .contains(&format!("a frame from {prompt} covers it")),
+        "{}",
+        refused.message
+    );
+    let mut typed = super::act(&format!("type {password} \"x\""));
+    typed["plan"]["steps"][0]["literal"]["snapshot"] = page["snapshot"].clone();
+    let stopped = h.call("do", typed).await.unwrap_err();
+    println!("type: {} {}", stopped.code, stopped.details["stop"]);
+    assert_eq!(stopped.details["stop"]["code"], "covered_target");
+    assert_eq!(
+        stopped.details["stop"]["covered_by"]["frame"],
+        json!(prompt)
+    );
+    h.call("close", json!({})).await.ok();
+}
+
+async fn a_field_that_formats_its_value_still_holds_it(engine: &str) {
+    let (_dir, state, _area) = test_state(engine);
+    let vault = Vault::new(state.clone());
+    let login = vault
+        .with(|s| s.add(item(LOGIN, "Shop", &["shop.example"], &[("totp", KEY)])))
+        .unwrap();
+    let pages = site();
+    let local = format!("http://127.0.0.1:{pages}");
+    let mut browsers = Browsers::new(state.clone(), vault.clone(), super::HEADLESS);
+    browsers.test = Some((
+        latch(),
+        vec![(local.clone(), "https://login.shop.example".into())],
+    ));
+    let mut h = Harness::start(browsers, engine).await;
+
+    // The field shows the code as "123 456": it holds the code, and the
+    // page sends it.
+    let page = h
+        .call("open", json!({"url": format!("{local}/totp-spaced.html")}))
+        .await
+        .unwrap();
+    let (verified, _) = h
+        .fill(json!({
+            "item": login.item,
+            "fields": [["otp", [find(&page, "textbox", "Authentication code")]]],
+            "press": find(&page, "button", "Verify"),
+        }))
+        .await;
+    let verified = verified.unwrap();
+    println!("spaced code: {}", verified["fields"]);
+    assert_eq!(verified["submitted"], true);
+    assert!(h.text().await.contains("code accepted"));
+    h.call("close", json!({})).await.ok();
+}
+
+async fn a_login_is_typed_with_the_engines_own_keys(engine: &str) {
+    let (_dir, state, _area) = test_state(engine);
+    let vault = Vault::new(state.clone());
+    let login = vault
+        .with(|s| {
+            s.add(item(
+                LOGIN,
+                "Shop",
+                &["shop.example"],
+                &[("username", "ada@shop.example"), ("password", PASSWORD)],
+            ))
+        })
+        .unwrap();
+    let pages = site();
+    let local = format!("http://127.0.0.1:{pages}");
+    let mut browsers = Browsers::new(state.clone(), vault.clone(), super::HEADLESS);
+    browsers.test = Some((
+        latch(),
+        vec![(local.clone(), "https://login.shop.example".into())],
+    ));
+    let mut h = Harness::start(browsers, engine).await;
+
+    // Every character a trusted key press, into the field it was meant
+    // for, though the email field puts its caret back at the start.
+    h.call("open", json!({"url": format!("{local}/keys-login.html")}))
+        .await
+        .unwrap();
+    let (signed_in, _) = h.login(&login.item).await;
+    assert_eq!(signed_in.unwrap()["submitted"], true);
+    let page = h.text().await;
+    println!(
+        "typed login: {}",
+        page.lines()
+            .find(|l| l.starts_with("sent:"))
+            .unwrap_or(&page)
+    );
+    assert!(
+        page.contains("sent: email right, password right, keys 16/16 and 17/17"),
+        "{page}"
+    );
+
+    // The same in another site's frame, whose focus is its own.
+    let frame = format!("http://localhost:{}", site());
+    let mut browsers = Browsers::new(state.clone(), vault.clone(), super::HEADLESS);
+    browsers.test = Some((
+        latch(),
+        vec![
+            (local.clone(), "https://www.shop.example".into()),
+            (frame.clone(), "https://login.shop.example".into()),
+        ],
+    ));
+    h.call("close", json!({})).await.ok();
+    let mut h = Harness::start(browsers, engine).await;
+    h.call(
+        "open",
+        json!({"url": format!("{local}/embed-login.html?cross={}&page=keys-login.html", &frame[17..])}),
+    )
+    .await
+    .unwrap();
+    let (signed_in, _) = h.login(&login.item).await;
+    assert_eq!(signed_in.unwrap()["submitted"], true);
+    let page = h.text().await;
+    println!("typed in a frame: {page}");
+    assert!(
+        page.contains("sent: email right, password right, keys 16/16 and 17/17"),
+        "{page}"
+    );
+
+    // A frame whose page takes the focus mid-value gets no more keys, and
+    // neither does the page. (Chrome keeps a frame's focus from a page
+    // that moves it with no person's input: then the fill just ends.) (Chrome keeps a frame's focus from a page
+    // that moves it with no person's input: then the fill just ends.)
+    h.call(
+        "open",
+        json!({"url": format!(
+            "{local}/embed-login.html?cross={}&page=keys-login.html&steal",
+            &frame[17..]
+        )}),
+    )
+    .await
+    .unwrap();
+    let (stolen, _) = h.login(&login.item).await;
+    println!(
+        "focus taken: {:?}",
+        stolen
+            .as_ref()
+            .map(|r| &r["submitted"])
+            .map_err(|f| &f.message)
+    );
+    if let Err(failure) = &stolen {
+        assert!(
+            failure.message.contains("lost the focus"),
+            "{}",
+            failure.message
+        );
+    }
+    let page = h.text().await;
+    assert!(!page.contains("caught"), "{page}");
+    h.call("close", json!({})).await.ok();
+}
+
+async fn no_part_of_a_typed_secret_goes_into_an_address(engine: &str) {
+    let (_dir, state, _area) = test_state(engine);
+    let vault = Vault::new(state.clone());
+    let login = vault
+        .with(|s| {
+            s.add(item(
+                LOGIN,
+                "Shop",
+                &["shop.example"],
+                &[("username", "ada@shop.example"), ("password", PASSWORD)],
+            ))
+        })
+        .unwrap();
+    let pages = site();
+    let local = format!("http://127.0.0.1:{pages}");
+    let mut browsers = Browsers::new(state.clone(), vault.clone(), super::HEADLESS);
+    browsers.test = Some((
+        latch(),
+        vec![(local.clone(), "https://login.shop.example".into())],
+    ));
+    let mut h = Harness::start(browsers, engine).await;
+
+    // The page sends the password field in an address at every key: each
+    // part of the password is guarded before its key, so none goes out,
+    // and the fill says the page tried.
+    h.call(
+        "open",
+        json!({"url": format!("{local}/keys-login.html?beacon")}),
+    )
+    .await
+    .unwrap();
+    let (sent, _) = h.login(&login.item).await;
+    let refused = sent.unwrap_err();
+    println!(
+        "typed with a beacon: {} ({}); beacons {:?}",
+        refused.code,
+        refused.message,
+        beacons(pages)
+    );
+    assert_eq!(refused.code, "get_form");
+    assert_eq!(beacons(pages).1, 0);
+    h.call("close", json!({})).await.ok();
+}
+
+async fn a_login_whose_page_replaces_its_email_field_still_fills_whole(engine: &str) {
+    let (_dir, state, _area) = test_state(engine);
+    let vault = Vault::new(state.clone());
+    let login = vault
+        .with(|s| {
+            s.add(item(
+                LOGIN,
+                "Shop",
+                &["shop.example"],
+                &[("username", "ada@shop.example"), ("password", PASSWORD)],
+            ))
+        })
+        .unwrap();
+    let pages = site();
+    let local = format!("http://127.0.0.1:{pages}");
+    let mut browsers = Browsers::new(state.clone(), vault.clone(), super::HEADLESS);
+    browsers.test = Some((
+        latch(),
+        vec![(local.clone(), "https://login.shop.example".into())],
+    ));
+    let mut h = Harness::start(browsers, engine).await;
+
+    // Read once, then again after the page replaced its email field: the
+    // new field has a newer ref than the password after it, and is still
+    // the username before the password.
+    h.call(
+        "open",
+        json!({"url": format!("{local}/rerendered-login.html")}),
+    )
+    .await
+    .unwrap();
+    std::thread::sleep(Duration::from_millis(800));
+    let observed = h.call("observe", json!({})).await.unwrap();
+    println!(
+        "after the re-render: {} {}",
+        observed["elements"], observed["fill"]["suggestions"]
+    );
+    assert_eq!(
+        observed["fill"]["suggestions"][0]["fields"]
+            .as_object()
+            .unwrap()
+            .len(),
+        2
+    );
+    let (signed_in, _) = h.login(&login.item).await;
+    assert_eq!(signed_in.unwrap()["submitted"], true);
+    assert!(h.text().await.contains("password accepted"));
+    h.call("close", json!({})).await.ok();
+}
+
+async fn a_sign_in_the_site_refuses_says_so(engine: &str) {
+    let (_dir, state, _area) = test_state(engine);
+    let vault = Vault::new(state.clone());
+    let login = vault
+        .with(|s| {
+            s.add(item(
+                LOGIN,
+                "Shop",
+                &["shop.example"],
+                &[("username", "ada@shop.example"), ("password", PASSWORD)],
+            ))
+        })
+        .unwrap();
+    let pages = site();
+    let local = format!("http://127.0.0.1:{pages}");
+    let mut browsers = Browsers::new(state.clone(), vault.clone(), super::HEADLESS);
+    browsers.test = Some((
+        latch(),
+        vec![(local.clone(), "https://login.shop.example".into())],
+    ));
+    let mut h = Harness::start(browsers, engine).await;
+
+    // The page only says "Something went wrong"; the fill's answer says
+    // the site answered its sign-in 429.
+    h.call(
+        "open",
+        json!({"url": format!("{local}/limited-login.html")}),
+    )
+    .await
+    .unwrap();
+    let (signed_in, _) = h.login(&login.item).await;
+    let signed_in = signed_in.unwrap();
+    println!("rate-limited sign-in: events {}", signed_in["events"]);
+    assert_eq!(signed_in["submitted"], true);
+    // Its Retry-After stays out: a site could put the value there.
+    let refused = json!([{"event": "http_error", "tab": "t1", "status": 429, "origin": local}]);
+    assert_eq!(signed_in["events"], refused);
+
+    // The same at an identifier-first sign-in's password stage, which
+    // latch fills and presses itself.
+    h.call(
+        "open",
+        json!({"url": format!("{local}/limited-login.html?two")}),
+    )
+    .await
+    .unwrap();
+    let (signed_in, _) = h.login(&login.item).await;
+    let signed_in = signed_in.unwrap();
+    println!(
+        "rate-limited password stage: stages {}, events {}",
+        signed_in["stages"], signed_in["events"]
+    );
+    assert_eq!(signed_in["stages"], 2);
+    assert_eq!(signed_in["events"], refused);
+
+    // And when the email stage's own send is refused and no password
+    // stage comes: the fill stops for the agent, saying why.
+    h.call(
+        "open",
+        json!({"url": format!("{local}/limited-login.html?first")}),
+    )
+    .await
+    .unwrap();
+    let (stopped, _) = h.login(&login.item).await;
+    let stopped = stopped.unwrap_err();
+    println!(
+        "refused at the email stage: {} {}",
+        stopped.code, stopped.details["events"]
+    );
+    assert_eq!(stopped.code, "needs_fields");
+    assert_eq!(stopped.details["events"], refused);
+
+    // And in a plan: the fill step's trail carries it.
+    h.call(
+        "open",
+        json!({"url": format!("{local}/limited-login.html")}),
+    )
+    .await
+    .unwrap();
+    let observed = h.call("observe", json!({})).await.unwrap();
+    let suggestion = observed["fill"]["suggestions"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let mut plan = super::act("click e1");
+    plan["plan"]["steps"][0] =
+        json!({"literal": {"op": "fill", "item": login.item, "suggestion": suggestion}});
+    plan.as_object_mut().unwrap().remove("act");
+    let planned = h.call("do", plan).await;
+    println!(
+        "rate-limited in a plan: {:?}",
+        planned
+            .as_ref()
+            .map(|p| &p["trail"])
+            .map_err(|f| &f.message)
+    );
+    assert_eq!(planned.unwrap()["trail"][0]["events"], refused);
+
+    // A refusal that comes late, after the page let go of the values: it
+    // is heard as the fill resumes, through the same filter.
+    h.call(
+        "open",
+        json!({"url": format!("{local}/limited-login.html?late")}),
+    )
+    .await
+    .unwrap();
+    let (late, _) = h.login(&login.item).await;
+    let late = late.unwrap();
+    println!("a late refusal: {}", late["events"]);
+    assert!(!late.to_string().contains("retry_after"), "{late}");
+
+    // A page that shows the value in a dialog as it sends it: the fill
+    // can't confirm the page let go of the value, and its answer carries
+    // no dialog's message.
+    h.call(
+        "open",
+        json!({"url": format!("{local}/limited-login.html?alert")}),
+    )
+    .await
+    .unwrap();
+    let (paused, _) = h.login(&login.item).await;
+    let paused = paused.unwrap_err();
+    println!(
+        "a dialog with the value: {} {}",
+        paused.code, paused.details
+    );
+    assert_eq!(paused.code, "session_paused");
+    assert!(!paused.details.to_string().contains(PASSWORD));
+    let everything = h.shown.join("\n");
+    assert!(!everything.contains(PASSWORD), "the password was shown");
+    h.call("close", json!({})).await.ok();
 }

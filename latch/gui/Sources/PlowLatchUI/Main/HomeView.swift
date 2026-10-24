@@ -221,7 +221,7 @@ private struct OnHostSection: View {
         Section("On \(host.name)") {
             SummaryRow(host: host.spoken, title: "Rules", value: summary?.rules?.map(Self.rules), open: "Open") { app.place = .host(.rules) }
             SummaryRow(host: host.spoken, title: "Vault", value: summary?.vault?.map(Self.vault), open: "Open") { app.place = .host(.vault) }
-            SummaryRow(host: host.spoken, title: "Plugins", value: summary?.plugins?.map(Self.plugins), open: "Host Settings") {
+            SummaryRow(host: host.spoken, title: "Plugins", value: app.plugins(of: host)?.map(Self.plugins), open: "Host Settings") {
                 app.place = .host(.settings)
             }
             if host.isThisMac {
@@ -248,10 +248,10 @@ private struct OnHostSection: View {
     }
 
     /// "Google: on · Messages, Contacts: off".
-    private static func plugins(_ list: PluginsList) -> String {
-        let name = { (plugin: PluginsList.Plugin) in plugin.name.prefix(1).uppercased() + plugin.name.dropFirst() }
-        let on = list.plugins.filter { $0.state == "enabled" }.map(name)
-        let off = list.plugins.filter { $0.state != "enabled" }.map(name)
+    private static func plugins(_ list: [Plugin]) -> String {
+        let name = { (plugin: Plugin) in plugin.name.prefix(1).uppercased() + plugin.name.dropFirst() }
+        let on = list.filter { $0.state == "enabled" }.map(name)
+        let off = list.filter { $0.state != "enabled" }.map(name)
         return [on.isEmpty ? nil : on.joined(separator: ", ") + ": on", off.isEmpty ? nil : off.joined(separator: ", ") + ": off"]
             .compactMap { $0 }.joined(separator: " · ")
     }

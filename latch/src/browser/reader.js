@@ -158,8 +158,21 @@
       origin: self.origin === 'null' ? 'opaque' : self.origin,
       url: location.href,
       elements: kept.map(describe),
+      // Each element's identity in this document, which latch keeps its
+      // ref by from one reading to the next.
+      ids: kept.map(uid),
       more: all.length > kept.length,
     };
+  };
+
+  // What a click meant for another element lands on instead: its role and
+  // name, and for a frame, the site its address is on.
+  const coverOf = (hit) => {
+    const cover = { role: role(hit), name: name(hit) };
+    if (hit.localName === 'iframe' || hit.localName === 'frame') {
+      try { cover.frame = new URL(hit.src, location.href).origin; } catch { cover.frame = 'opaque'; }
+    }
+    return cover;
   };
 
   // Brings element `index` of `snap` into view and reports where to click
@@ -179,6 +192,7 @@
     let x = rect.left + rect.width / 2;
     let y = rect.top + rect.height / 2;
     let reaches = reachesAt(x, y);
+    const top = reaches ? null : document.elementFromPoint(x, y);
     for (const line of reaches ? [] : el.getClientRects()) {
       const [lx, ly] = [line.left + line.width / 2, line.top + line.height / 2];
       if (line.width > 0 && line.height > 0 && reachesAt(lx, ly)) {
@@ -189,6 +203,7 @@
     return {
       x, y, width: rect.width, height: rect.height,
       covered: !reaches,
+      cover: !reaches && top ? coverOf(top) : undefined,
       disabled: !!(el.disabled || el.getAttribute('aria-disabled') === 'true'),
       kind: el.localName === 'select' ? 'select'
         : (el.localName === 'input' && el.type === 'file') ? 'file'
@@ -213,22 +228,40 @@
     || (el.localName === 'input' && inputRole(el) !== 'button'
       && !['checkbox', 'radio', 'file', 'hidden', 'range', 'color'].includes(el.type));
   const SUBMIT_BUTTONS = 'button:not([type]), button[type=submit], input[type=submit], input[type=image]';
-  // Whether something, such as a modal or a banner, covers `el` so a click
-  // could not reach it now. Off-screen elements are never covered: a click
-  // scrolls them into view first. A link that wraps onto several lines is
-  // tried at the middle of each line, not of the box around them.
-  const covered = (el) => {
-    if (!rendered(el) || offscreen(el.getBoundingClientRect())) return false;
+  // Something drawn over a field that keeps a person from it: a control, a
+  // frame or a dialog of its own, not a part of the field's own control or
+  // dialog. A floating label or a page's fixed footer is none of these.
+  const LAYERS = `${INTERACTIVE}, iframe, frame, dialog, [role=dialog], [role=alertdialog]`;
+  const layerOver = (hit, el) => {
+    const layer = hit.closest(LAYERS);
+    return !!layer && !layer.contains(el);
+  };
+
+  // What, such as a modal or a banner, covers `el` so a click could not
+  // reach it now (`coverOf` the element on top), or null. For a vault
+  // value (`value`), which goes into a text field with no click, only a
+  // layer (above) covers one. Off-screen elements are never
+  // covered: a click scrolls them into view first. A link that wraps onto
+  // several lines is tried at the middle of each line, not of the box
+  // around them.
+  const cover = (el, value = false) => {
+    if (!rendered(el) || offscreen(el.getBoundingClientRect())) return null;
+    const field = value && textLike(el);
+    let top = null;
     const reachesAt = (rect) => {
       const x = Math.min(Math.max(rect.left + rect.width / 2, 0), innerWidth - 1);
       const y = Math.min(Math.max(rect.top + rect.height / 2, 0), innerHeight - 1);
       const hit = document.elementFromPoint(x, y);
-      return !hit || hit === el || el.contains(hit) || hit.contains(el)
-        || (el.labels && [...el.labels].some((l) => l.contains(hit)));
+      const reaches = !hit || hit === el || el.contains(hit) || hit.contains(el)
+        || (el.labels && [...el.labels].some((l) => l.contains(hit)))
+        || (field && !layerOver(hit, el));
+      top ??= reaches ? null : hit;
+      return reaches;
     };
     const lines = [...el.getClientRects()].filter((r) => r.width > 0 && r.height > 0 && !offscreen(r));
-    return !(lines.length ? lines : [el.getBoundingClientRect()]).some(reachesAt);
+    return (lines.length ? lines : [el.getBoundingClientRect()]).some(reachesAt) ? null : coverOf(top);
   };
+  const covered = (el) => cover(el) !== null;
 
   // What a fill needs to know of one element, from the page's own markup:
   // its tag and input type, its `autocomplete` attribute, its form (an
@@ -238,6 +271,7 @@
   const controlOf = (el) => {
     const form = el.form || el.closest('form');
     const r = role(el);
+    const over = cover(el, true);
     return {
       // Editable first: a textarea made contenteditable takes its value as
       // text too, which its name and the page's text show.
@@ -252,7 +286,8 @@
       hidden: !rendered(el) || unread(el),
       disabled: !!(el.disabled || el.getAttribute('aria-disabled') === 'true'),
       readonly: !!el.readOnly,
-      covered: covered(el),
+      covered: over !== null,
+      cover: over ?? undefined,
     };
   };
 
@@ -319,24 +354,105 @@
     return true;
   };
   const current = (el) => (el.isContentEditable ? el.textContent : el.value);
+  // Whether a field holding `held` holds `wanted`: the same characters in
+  // the same order, give or take the separators a field adds as it formats
+  // a value (a code as "123 456", a card number in fours, a date with
+  // slashes). Walked by code point, so an astral character is one. The
+  // GET guards (`cdp.rs`, `helper.mjs`) match a value the same way.
+  const SEPARATORS = new Set([' ', '\u00a0', '-', '/', '.', '(', ')', '+']);
+  const keeps = (held, wanted) => {
+    if (held === wanted) return true;
+    if (wanted === '') return false;
+    const want = Array.from(wanted);
+    let i = 0;
+    for (const ch of held) {
+      if (i < want.length && ch === want[i]) i++;
+      else if (!SEPARATORS.has(ch)) return false;
+    }
+    return i === want.length;
+  };
 
-  // Checks the element, document and origin, then sets the value in one
-  // step. Answers whether the field holds it, never the value.
-  const fill = (snap, index, value, origin, expected) => {
+  // The field a value goes into, checked again: its element, document and
+  // origin, and (the page can make a field editable after the fill was
+  // checked, e.g. from an earlier field's input handler) its kind.
+  const fillable = (snap, index, origin, expected) => {
     const el = element(snap, index);
     if (!el) return { refused: 'the field is gone' };
     if (expected !== token) return { refused: 'the document was replaced' };
     if ((self.origin === 'null' ? 'opaque' : self.origin) !== origin) return { refused: 'the origin changed' };
-    // Checked again here: the page can make a field editable after the
-    // fill was checked, e.g. from an earlier field's input handler.
     if (el.isContentEditable) return { refused: 'the field became an editable region' };
+    return { el };
+  };
+
+  // Checks the field, then sets the value in one step. Answers whether the
+  // field holds it, never the value.
+  const fill = (snap, index, value, origin, expected) => {
+    const { el, refused } = fillable(snap, index, origin, expected);
+    if (refused) return { refused };
     if (!setValue(el, value)) return { refused: 'no option matches' };
     if (value) filled.add(el); else filled.delete(el);
-    if (el.localName === 'select' || current(el) === value) return { held: true };
+    return held(el, value);
+  };
+
+  // A text field takes a value as a person types it: `typeStart` checks
+  // the field, focuses it and sets `head` (all but the value's last keys,
+  // usually nothing); the engine's own keys type the rest, each after
+  // `typeKey`; `typeEnd` answers whether the field holds the value. Any
+  // other field (`assign`) is filled in one step.
+  const TYPED = ['text', 'email', 'password', 'search', 'tel', 'url', 'number'];
+  const typeStart = (snap, index, head, origin, expected) => {
+    const { el, refused } = fillable(snap, index, origin, expected);
+    if (refused) return { refused };
+    if (el.localName !== 'textarea' && !(el.localName === 'input' && TYPED.includes(el.type))) return { assign: true };
+    el.focus();
+    if (!focused(el)) return { assign: true };
+    filled.add(el);
+    if (current(el) !== head) setValue(el, head);
+    return { caret: caretAt(el, head.length) };
+  };
+  // Before each key: the field still has the focus, and its caret is where
+  // the typing left it. A field that puts its caret back at the start, as
+  // some do on each change, would take the keys in reverse.
+  const typeKey = (snap, index, caret, expected) => {
+    const el = element(snap, index);
+    if (!el || expected !== token) return { refused: 'the field is gone' };
+    if (!focused(el)) el.focus();
+    if (!focused(el)) return { refused: 'the field lost the focus' };
+    return { caret: caretAt(el, caret) };
+  };
+  // A field that took none of the keys, or only the first ones, gets the
+  // value in one step.
+  const typeEnd = (snap, index, value, expected) => {
+    const el = element(snap, index);
+    if (!el || expected !== token) return { refused: 'the field is gone' };
+    const now = current(el);
+    if (now !== value && value.startsWith(now)) setValue(el, value);
+    return held(el, value);
+  };
+  // Whether `el` is its document's active element. Keys go to it only
+  // while its frame holds the page's focus too, which latch asks the
+  // engine (`holds_focus`): a frame keeps its active element when another
+  // frame takes the focus.
+  const focused = (el) => el.getRootNode().activeElement === el;
+  // The field's caret, moved to the end if it is before `expected`; null
+  // for a field with none (an email or number input).
+  const caretAt = (el, expected) => {
+    try {
+      if (el.selectionStart === null) return null;
+      if (el.selectionStart < expected) el.setSelectionRange(el.value.length, el.value.length);
+      return el.selectionStart;
+    } catch {
+      return null;
+    }
+  };
+
+  // Whether the field holds `value`, never the value.
+  const held = (el, value) => {
+    if (el.localName === 'select' || keeps(current(el), value)) return { held: true };
     // A single-line field drops line breaks, as it does from a paste: it
     // holds the value less them, which is what a person would have got.
     const unbroken = value.replace(/[\r\n]/g, '');
-    if (el.localName === 'input' && unbroken !== value && current(el) === unbroken) {
+    if (el.localName === 'input' && unbroken !== value && keeps(current(el), unbroken)) {
       return { held: true, dropped_breaks: true };
     }
     return { held: false };
@@ -551,6 +667,9 @@
     stageMark,
     fillTarget,
     fill,
+    typeStart,
+    typeKey,
+    typeEnd,
     holding,
     clearFilled,
   };

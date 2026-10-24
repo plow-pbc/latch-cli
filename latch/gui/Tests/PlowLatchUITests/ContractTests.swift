@@ -73,10 +73,23 @@ final class ContractTests {
         }
     }
 
-    @Test func pluginsListOfAFreshStateFolder() async throws {
-        let plugins = try await client.pluginsList(host: nil)
-        #expect(Set(plugins.plugins.map(\.name)) == ["google", "messages", "contacts"])
-        #expect(plugins.plugins.allSatisfy { $0.state == "disabled" })
+    @Test func pluginsOfAFreshStateFolder() async throws {
+        let plugins = try #require(try await client.localStatus().plugins)
+        #expect(Set(plugins.map(\.name)) == ["google", "messages", "contacts"])
+        #expect(plugins.allSatisfy { $0.state == "disabled" })
+    }
+
+    /// The keep-awake switch saves with no login or host, and `status
+    /// --local` reads the choice back, not held while no host serves.
+    @Test func keepAwakeSavesAndReadsBack() async throws {
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: state.path), still: true)
+        await app.refreshStatus()
+        #expect(app.status?.thisMachine.hosting.keepAwake == LocalStatus.KeepAwake(enabled: false, held: false, reason: "disabled"))
+        await app.setKeepAwake(true)
+        #expect(app.keepAwakeError == nil)
+        #expect(app.status?.thisMachine.hosting.keepAwake == LocalStatus.KeepAwake(enabled: true, held: false, reason: "not_serving"))
+        await app.setKeepAwake(false)
+        #expect(app.status?.thisMachine.hosting.keepAwake?.enabled == false)
     }
 
     /// `status` before login answers here, asking no one: no hosts.

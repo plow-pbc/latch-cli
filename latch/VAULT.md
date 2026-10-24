@@ -133,7 +133,8 @@ Both the field's frame and the top-level page must be HTTPS with a real
 host: `http`, IP addresses, local hosts, a page without an address and
 opaque (sandboxed) frames are refused (`origin_mismatch`). While a filled
 secret may be on a page, the browser stops every GET request whose address
-carries it as a query parameter, as a form sent by GET would; the press, or
+carries it as a query parameter (as its field formats it too, "123 456"),
+as a form sent by GET would; the press, or
 the agent's own click, then fails `get_form`, and nothing was sent. A
 username is no secret: an email-first sign-in may carry it to the password
 page in the address.
@@ -184,7 +185,11 @@ search field; a code never into the sign-in's password field; a card's
 number and code only into a text, tel or number input whose token, if any,
 is theirs; anything else unless the markup contradicts it. Hidden,
 `aria-hidden`, inert, disabled, read-only and covered elements are
-refused. A weak mismatch (an email into a box marked `tel-national`) fills,
+refused, a covered one naming what covers it. A value goes in with no
+click, so only a layer that keeps a person from the field covers it:
+another control, a frame or a dialog that does not hold the field; its
+own floating label or a page's fixed banner does not. A press button is
+covered by anything on top of it. A weak mismatch (an email into a box marked `tel-national`) fills,
 flagged `hint_mismatch` in the result and the audit. These checks reject
 what the page's markup contradicts; they can't prove what a page means,
 so the mapping supplies the purpose and the site rule bounds who gets the
@@ -209,8 +214,18 @@ the item and the reviewed lines are as confirmed; otherwise it clears the
 values and answers `confirm_stale`.
 
 While a fill runs, its session is paused: every other call in it answers
-`session_paused`. Each value is set in one step after the
-field's element, document and origin are checked again; latch then presses
+`session_paused`. Each value goes in after the field's element,
+document and origin are checked again, as a person types it: latch
+focuses a text field and types the value with the engine's own key
+presses (`isTrusted`), checking before each key that the field still has
+the focus and its caret has not gone back; only the head of a value
+longer than 64 characters is set in one step. A field that takes no keys,
+or only the first ones, gets the value in one step, as does any other
+field (a list, a date) and a value with a line break or a tab. A field that
+formats what it gets (a code as "123 456", a card number in fours) still
+holds the value: only spaces, dashes, dots, slashes, parentheses and plus
+signs may come between its characters, none lost, added or moved; a field
+that holds anything else ends the fill with `needs_owner`. latch then presses
 submit and waits until the values have left the page (clearing them itself
 if the page keeps them). A fill that stops part-way (a covered button, a
 refused field) is cleaned up the same way. If latch cannot confirm the
@@ -223,8 +238,13 @@ browser, and an element list marks a field holding a filled value as
 `filled`, never showing the value. While a filled value may be on a page,
 in whichever of the session's tabs, `eval` and screenshots are refused
 (`secret_on_page`) until it is gone or its tab is closed. The result says
-`submitted`, not "logged in" or "paid", with each field's outcome and the
-number of stages.
+`submitted`, not "logged in" or "paid", with each field's outcome, the
+number of stages and its `events`: a sign-in the site refused at either
+stage (`http_error`, a 429) shows there, though the page may say only
+"something went wrong". Only its status comes back, and only for the
+page's own origin or one a value went to: while a value is on the page, a
+dialog's message, a new tab's address, another site's name or a
+response's `Retry-After` may be what the page or the site made of it.
 
 The audit records the item, its revision, the mapping by ref, where it
 came from (a suggestion's id, or the agent), the stages, both origins, any

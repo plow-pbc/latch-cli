@@ -459,12 +459,14 @@ pub async fn run(
     recv: &mut RecvStream,
 ) -> Done {
     let command = args["command"].as_str().unwrap_or_default().to_string();
-    // `open` names an engine; every other session command, a session id.
+    // `open` names an engine (or none, for the host's default); every
+    // other session command, a session id.
     let name = if command == "open" {
-        args["engine"].as_str().unwrap_or("chrome")
+        args["engine"].as_str()
     } else {
-        args["session"].as_str().unwrap_or_default()
+        args["session"].as_str()
     }
+    .unwrap_or_default()
     .to_string();
     let mut audit = Map::new();
     audit.insert("command".into(), json!(command));
@@ -806,8 +808,8 @@ async fn off_web(browsers: &Browsers, url: &str) -> Result<(), Failure> {
         .expect("the address check does not panic")
 }
 
-/// `open`: a new session on engine `name` (`chrome` or `camoufox`), its
-/// page loaded. The answer carries the session's id and its engine; a
+/// `open`: a new session on engine `name` (`chrome` or `camoufox`; empty
+/// for `engine::default`'s), its page loaded. The answer carries the session's id and its engine; a
 /// session that could not load its page is ended. An agent's site is
 /// judged before any session starts.
 async fn open(
@@ -817,12 +819,16 @@ async fn open(
     args: &Value,
     audit: &mut Map<String, Value>,
 ) -> Result<(Value, Option<Vec<u8>>), Failure> {
-    let engine = super::engine::unnamed(name).ok_or_else(|| {
-        Failure::new(
-            code::bad_arguments,
-            format!("no browser engine {name:?}: use chrome or camoufox"),
-        )
-    })?;
+    let named = if name.is_empty() {
+        None
+    } else {
+        Some(super::engine::unnamed(name).ok_or_else(|| {
+            Failure::new(
+                code::bad_arguments,
+                format!("no browser engine {name:?}: use chrome or camoufox"),
+            )
+        })?)
+    };
     let url = args["url"].as_str();
     if let Some(url) = url {
         off_web(browsers, url).await?;
@@ -831,6 +837,16 @@ async fn open(
         let action = judged::open_site(browsers, url);
         judged::judge(caller.gate, action, audit).await?;
     }
+    // Judged first, as a named engine's own check comes only at its launch.
+    let engine = match named {
+        Some(engine) => engine,
+        None => {
+            let state_dir = browsers.state_dir.clone();
+            tokio::task::spawn_blocking(move || super::engine::default(&state_dir))
+                .await
+                .expect("the engine check does not panic")?
+        }
+    };
     open_judged(browsers, caller.key, engine, args, audit).await
 }
 

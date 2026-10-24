@@ -38,6 +38,9 @@ Setup requires curl, tar and SHA-256 tools.
 Linux hosting needs bubblewrap and usable user namespaces; setup explains missing
 packages and may ask for sudo, including for Ubuntu's AppArmor profile;
 see [Docker hosting](latch/DOCKER.md).
+A machine that only asks hosts, such as an agent's image, installs with
+`sh install.sh --client-only`: latch alone, with no gog, browser engine,
+Messages reader or bubblewrap, no sudo, and no setup at the end.
 
 Update with `latch update`: it installs the newest build, or `latch update TAG`
 that build (also how to go back to an older one); `latch update --check` only
@@ -64,7 +67,9 @@ No Homebrew tap is included.
 - **On the host itself, just run latch.** An agent on a machine that runs
   `latch serve` uses latch there with no `--host` and no login of its own,
   as the owner (see [On the host itself](#on-the-host-itself)).
-- **From another machine, log in with your own credential.** `latch login`
+- **From another machine, install latch alone and log in with your own
+  credential.** `sh install.sh --client-only` installs just latch, for an
+  agent's image. `latch login`
   with no flags finds a Plow agent's own credential (`$PLOW_AGENT_TOKEN`,
   the token file, or `$PLOW_API_BASE`'s proxy) and registers under the
   agent's name in Plow. Never copy a device login (a machine's state
@@ -93,6 +98,12 @@ No Homebrew tap is included.
 
 ## For hosts
 
+- `latch` alone, at a terminal, shows this machine at a glance beside the
+  Plow logo: the account it is signed in to, whether it hosts, the
+  account's hosts as Plow lists them, where commands go, its connectors,
+  its update and one next step. What this machine knows shows at once;
+  Plow's rows fill in as it answers, within two seconds. Without a
+  terminal it says to use `latch status`.
 - `latch setup`, at a terminal, walks a machine through logging in,
   connecting Google, and on a Mac turning on Messages and Contacts, none
   of which needs latch running, then offers to start it. Each step runs a latch command and says which, and is skipped once
@@ -113,7 +124,8 @@ No Homebrew tap is included.
   stops it, and nothing starts it again until the next `latch serve`.
   `latch dashboard` views a running host (`q` or Ctrl-C closes only the
   view), `latch logs [-f]` shows its log (`serve.log`, a JSON line per
-  record) and `latch audit [-f]` its audit.
+  record; past 10 MB the next start keeps it as `serve.log.1` and begins
+  anew) and `latch audit [-f]` its audit.
 - The dashboard lists what callers asked for and how it went: Done,
   Running, Refused (the gatekeeper or your settings), Stopped (a browser
   safety check) or Failed. A browser session's calls, and a plan's steps,
@@ -146,7 +158,8 @@ No Homebrew tap is included.
   cloud agent's start, and `latch agents remove AGENT` removes one.
 - Exec and file calls need no shared-folder setup. They read home and the
   system's files (programs, libraries, developer tools and certificates),
-  except `~/.latch`, this host's state directory, and on macOS `~/Library`
+  except `~/.latch`, this host's state directory, the one `LATCH_STATE_DIR`
+  names, and on macOS `~/Library`
   except `~/Library/Caches`. Other home content, including `.ssh` and other
   credential dotfiles, is readable; the gatekeeper judges each use. Latch
   does not search home for other state directories.
@@ -168,6 +181,11 @@ No Homebrew tap is included.
   own machines are unaffected. `latch rules show` and `latch status
   --local` report it (`this_machine.hosting.deny_exec`) as the host runs,
   or last ran.
+- `latch settings set --keep-awake on` keeps a Mac host from idle sleep
+  while it serves on AC power, with no restart; the display still sleeps
+  and locks, and the lid still sleeps it. `latch status --local` reports
+  it (`this_machine.hosting.keep_awake`): saved, and whether the host
+  holds it now. On Linux it is saved and reported `unsupported`.
 - A connection problem (`host_unreachable`, a slow call): set
   `LATCH_TRACE=iroh=debug,latch=info` on the client, the host or both, to
   see iroh's connection events (the filter syntax is `RUST_LOG`'s). A
@@ -180,9 +198,10 @@ No Homebrew tap is included.
   enables it only if that succeeds; with no Google account in Plow yet,
   `enable google` signs you in with Google first (a link and QR code at
   a terminal; `--events` for an app). `latch plugins disable NAME` refuses new calls at once
-  and returns once running ones finish. `latch plugins list` shows each
-  one's state, this machine's with or without a host running; agents may
-  list, never enable or disable. A call to a
+  and returns once running ones finish. `latch status --local` shows each
+  one's state, with or without a host running, and `latch status` the ones
+  each of your hosts has on; agents may see them, never enable or disable
+  them. A call to a
   connector that is off gets `not_enabled` (exit 4) with the enable command.
 - The host's audit log is sealed: each record is encrypted with the host's
   audit key, kept with its other secrets. `latch audit` prints its newest

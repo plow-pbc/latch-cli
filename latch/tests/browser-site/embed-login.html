@@ -1,9 +1,28 @@
 <!doctype html><title>latch embedded login test</title>
 <!-- Another site's page embedding a login form in a frame: open
-     embed-login.html?cross=PORT, and the frame comes from the second origin. -->
+     embed-login.html?cross=PORT, and the frame comes from the second origin;
+     &page=P frames page P instead of login.html. What the frame posts to
+     it, it shows. &steal adds a field of the page's own that takes the
+     focus at the first key the login frame reports, and counts the keys
+     it gets. -->
 <h1>Portal</h1>
 <iframe id="login" width="460" height="260"></iframe>
+<p id="out"></p>
 <script>
   const cross = new URLSearchParams(location.search).get('cross');
-  if (cross) document.getElementById('login').src = 'http://localhost:' + cross + '/login.html';
+  const page = new URLSearchParams(location.search).get('page') || 'login.html';
+  if (cross) document.getElementById('login').src = 'http://localhost:' + cross + '/' + page;
+  const steal = new URLSearchParams(location.search).has('steal');
+  const catcher = document.createElement('input');
+  catcher.setAttribute('aria-label', 'Catch');
+  let caught = 0;
+  catcher.addEventListener('keydown', () => { document.getElementById('out').textContent = `caught ${++caught}`; });
+  if (steal) document.body.append(catcher);
+  addEventListener('message', (e) => {
+    if (e.data === 'key') {
+      if (steal && !caught) catcher.focus();
+      return;
+    }
+    document.getElementById('out').textContent = e.data;
+  });
 </script>

@@ -5,7 +5,7 @@
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use tokio::io::AsyncReadExt;
@@ -22,6 +22,20 @@ pub fn actions(op: &str) -> &'static [&'static str] {
         "contacts" => &["search", "lookup"],
         _ => &[],
     }
+}
+
+/// Refuses a `messages` or `contacts` call on a host that isn't a Mac,
+/// before anything else about it is looked at.
+pub fn supported_here(op: &str) -> Result<(), Failure> {
+    if cfg!(target_os = "macos") || actions(op).is_empty() {
+        return Ok(());
+    }
+    let mut failure = Failure::new(
+        code::unsupported_platform,
+        format!("this host is not a Mac; {op} are read on macOS hosts only"),
+    );
+    failure.next = Some("ask a macOS host with --host H; `latch status` lists your hosts".into());
+    Err(failure)
 }
 
 /// The reader's sha256, when this build pins one (a release build does).
@@ -96,18 +110,27 @@ pub async fn run(workers: &WorkerSetup, home: &Path, names: bool, op: &str, args
     if !names {
         reads.retain(|folder| *folder != address_book);
     }
+    let started = Instant::now();
     let result = read(workers, &reads, &argv).await;
     match result {
         Ok(mut answer) => {
             if !names {
                 answer["names_unavailable"] = json!("contacts_not_enabled");
             }
+            // The reader's own phases, for the audit only; the whole run
+            // includes starting its worker.
+            let mut timings = answer
+                .as_object_mut()
+                .and_then(|answer| answer.remove("timings"))
+                .unwrap_or_else(|| json!({}));
+            timings["reader_ms"] = json!(started.elapsed().as_millis() as u64);
             audit["result"] = json!({
                 "count": answer["count"],
                 "unreadable": answer["unreadable"],
                 "unchecked": answer["unchecked"],
                 "incomplete": answer["incomplete"],
                 "more": !answer["next"].is_null(),
+                "timings": timings,
             });
             Done {
                 response: Response::Ok(answer),
@@ -219,10 +242,6 @@ pub async fn read(
     reads: &[PathBuf],
     argv: &[String],
 ) -> Result<Value, Failure> {
-    if !cfg!(target_os = "macos") {
-        let message = "Messages and contacts are read on macOS hosts only".to_string();
-        return Err(Failure::new(code::messages_unavailable, message));
-    }
     let program = reader(&workers.state_dir);
     verify(&program, READER_SHA256)?;
     let mut child = workers

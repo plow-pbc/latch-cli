@@ -44,6 +44,8 @@ struct SyntheticTests {
         let agents = try await client.agents(host: "mini").agents
         #expect(agents.count == 5 && agents.allSatisfy { $0.standing != nil })
         #expect(try await client.rulesShow(host: "mini").agents?.count == 3)
+        #expect(app.plugins(of: app.hosts[0])?.map(\.count) == .success(3))
+        #expect(try await client.hostStatus("mini").plugins?.count == 3)
     }
 
     // Coming back after the grace, the stream picks up after the last

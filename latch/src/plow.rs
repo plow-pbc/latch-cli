@@ -280,26 +280,59 @@ pub struct Plow {
     token: String,
 }
 
+/// How long a request to Plow may take.
+const ANSWER_WITHIN: Duration = Duration::from_secs(30);
+
+/// Plow at `api_url` took longer than `within` to answer.
+pub fn no_answer(api_url: &str, within: Duration) -> Failure {
+    let message = format!(
+        "Plow at {api_url} didn't answer within {} s",
+        within.as_secs()
+    );
+    Failure::new(code::plow_unreachable, message)
+}
+
+/// The HTTP client `builder` makes. Its settings are fixed; what can fail is
+/// the system's part: a machine with no CA certificates (a bare container)
+/// gives nothing to check a server against.
+pub fn http(builder: reqwest::ClientBuilder) -> Result<reqwest::Client, Failure> {
+    builder.build().map_err(|err| {
+        let mut reason = err.to_string();
+        let mut source = std::error::Error::source(&err);
+        while let Some(err) = source {
+            reason = err.to_string();
+            source = err.source();
+        }
+        let message = format!("latch can't make HTTPS connections on this machine: {reason}");
+        let mut failure = Failure::new(code::no_ca_certificates, message);
+        failure.next = Some(
+            "install the system's CA certificates (such as ca-certificates), then run this again"
+                .into(),
+        );
+        failure
+    })
+}
+
 impl Plow {
-    pub fn new(api_url: &str, token: &str) -> Plow {
-        let http = reqwest::Client::builder()
-            .timeout(Duration::from_secs(30))
-            // A redirect must not carry the credential to another server.
-            .redirect(reqwest::redirect::Policy::none())
-            // One attempt per command: latch never calls Plow in a loop.
-            .retry(reqwest::retry::never())
-            .build()
-            .expect("HTTP client settings are valid");
-        Plow {
+    pub fn new(api_url: &str, token: &str) -> Result<Plow, Failure> {
+        let http = http(
+            reqwest::Client::builder()
+                .timeout(ANSWER_WITHIN)
+                // A redirect must not carry the credential to another server.
+                .redirect(reqwest::redirect::Policy::none())
+                // One attempt per command: latch never calls Plow in a loop.
+                .retry(reqwest::retry::never()),
+        )?;
+        Ok(Plow {
             http,
             api_url: api_url.trim_end_matches('/').to_string(),
             token: token.trim().to_string(),
-        }
+        })
     }
 
     /// A client with no credential, for the calls that take none: those
     /// that log in by text.
-    pub fn anonymous(api_url: &str) -> Plow {
+    pub fn anonymous(api_url: &str) -> Result<Plow, Failure> {
         Plow::new(api_url, "")
     }
 
@@ -307,7 +340,7 @@ impl Plow {
     pub fn from_state(state: &StateDir) -> Result<Plow, Failure> {
         let config = state.require_login()?;
         let token = credential::token(state)?;
-        Ok(Plow::new(&config.api_url, &token))
+        Plow::new(&config.api_url, &token)
     }
 
     /// Registers this peer, or refreshes it if it already is (§5.1).
@@ -554,6 +587,10 @@ impl Plow {
                 .and_then(|said| said.needs_sign_in.clone())
             {
                 Some(accounts) => crate::google::needs_sign_in(accounts),
+                // Plow's answer when the owner has no Google account connected.
+                None if failure.code == code::precondition_failed.name => {
+                    crate::google::not_connected()
+                }
                 None => failure,
             }
         })?;
@@ -577,6 +614,7 @@ impl Plow {
         };
         let response = match request.send().await {
             Ok(response) => response,
+            Err(err) if err.is_timeout() => return Err(no_answer(&self.api_url, ANSWER_WITHIN)),
             Err(err) => {
                 let message = format!("could not reach Plow at {}: {err}", self.api_url);
                 return Err(Failure::new(code::plow_unreachable, message));

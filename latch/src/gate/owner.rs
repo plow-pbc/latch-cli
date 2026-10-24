@@ -396,7 +396,7 @@ mod tests {
                 );
             }
         });
-        Plow::new(&url, "made-up-login")
+        Plow::new(&url, "made-up-login").unwrap()
     }
 
     /// A host's state folder, its Plow, and the world behind it.

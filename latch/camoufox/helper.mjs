@@ -45,6 +45,8 @@ const COMMAND = 30_000;
 const LOADING = 15_000;
 /// How long after an input a navigation may still start.
 const NAVIGATION_STARTS = 350;
+/// The most refused requests kept between two answers (latch's `HTTP_ERRORS`).
+const HTTP_ERRORS = 5;
 
 class Failure extends Error {
   constructor(code, message) {
@@ -81,16 +83,31 @@ let nextFrame = 0;
 let nextDocument = 0;
 // Filled vault values no GET request may carry as a query parameter
 // (`guard`); the session's `stopped` says one was stopped. Line breaks
-// count alike however written: a form sends a field's as CRLF.
+// count alike however written: a form sends a field's as CRLF. A value
+// counts as a fill takes a field to hold it (`reader.js`'s `keeps`): its
+// characters in order, with only the separators a field adds between them.
 const oneNewline = (text) => text.replace(/\r\n?/g, "\n");
+const SEPARATORS = new Set([" ", "\u00a0", "-", "/", ".", "(", ")", "+"]);
+const keeps = (held, wanted) => {
+  if (held === wanted) return true;
+  if (wanted === "") return false;
+  const want = Array.from(wanted);
+  let i = 0;
+  for (const ch of held) {
+    if (i < want.length && ch === want[i]) i++;
+    else if (!SEPARATORS.has(ch)) return false;
+  }
+  return i === want.length;
+};
+const same = (guarded, param) => keeps(oneNewline(param), oneNewline(guarded));
 const guarding = () => Boolean(session?.guard?.length);
 const guardRoute = (route, request) => {
   if (request.method() === "GET") {
     let params = [];
     try {
-      params = [...new URL(request.url()).searchParams.values()].map(oneNewline);
+      params = [...new URL(request.url()).searchParams.values()];
     } catch {}
-    if (session?.guard?.some((v) => params.includes(oneNewline(v)))) {
+    if (session?.guard?.some((v) => params.some((param) => same(v, param)))) {
       session.stopped = true;
       // Aborted, so no error page keeps the address as the tab's.
       return route.abort("aborted");
@@ -191,6 +208,21 @@ function adopt(page, opener) {
     state.loading = false;
     download(owner, started);
   });
+  // A page's own load, XHR or fetch the site refused, in any of its
+  // frames: its status and origin, never its path or query.
+  page.on("response", (response) => {
+    const request = response.request();
+    if (response.status() < 400 || !["document", "xhr", "fetch"].includes(request.resourceType())) return;
+    if (owner.pending.filter((e) => e.event === "http_error").length >= HTTP_ERRORS) return;
+    let origin;
+    try {
+      origin = new URL(response.url()).origin;
+    } catch {
+      return;
+    }
+    const retry = response.headers()["retry-after"];
+    owner.pending.push({ event: "http_error", tab: state.id, status: response.status(), origin, ...(retry ? { retry_after: clip(retry, 40) } : {}) });
+  });
   page.on("framedetached", (frame) => framesById.delete(frameIds.get(frame)));
   page.on("close", () => {
     const at = owner.tabs.indexOf(state);
@@ -267,6 +299,23 @@ async function inFrame(id, work, options) {
 const checked = (document) =>
   `if (globalThis.__latchDocument !== ${JSON.stringify(document)}) throw new Error("latch:stale");\n${reader}\n`;
 
+/// Whether `check(parent, element)` holds in each parent of `frame`, of
+/// that frame's own `<iframe>` element there: it is at a point there
+/// (`reaches`), or it is the parent's active element (`holds_focus`).
+async function ownersHold(frame, check) {
+  let current = frameOf(frame);
+  for (let parent = current.parentFrame(); parent; parent = current.parentFrame()) {
+    const element = await guarded(current.frameElement());
+    try {
+      if (!(await check(parent, element))) return false;
+    } finally {
+      element.dispose().catch(() => {});
+    }
+    current = parent;
+  }
+  return true;
+}
+
 /// Where `frame`'s viewport starts in the tab's viewport: the content box
 /// of each `<iframe>` holding it, added up through its ancestors.
 async function offset(frame) {
@@ -328,6 +377,8 @@ async function launch(params) {
       ...THROUGH_PROXY,
       // Firefox can open a native macOS select menu even with -headless.
       "widget.macos.allow-native-select": !params.headless,
+      // Never the OS's client certificates: on macOS, the owner's keychain.
+      "security.osclientcerts.autoload": false,
     },
     proxy: { server: params.proxy },
     acceptDownloads: true,
@@ -494,22 +545,19 @@ const ops = {
     return inFrame(frame, (f) => f.evaluate(new Function("args", body), args));
   },
 
-  async reaches({ frame, x, y }) {
-    let current = frameOf(frame);
-    for (let parent = current.parentFrame(); parent; parent = current.parentFrame()) {
+  reaches({ frame, x, y }) {
+    return ownersHold(frame, async (parent, element) => {
       const [dx, dy] = await inFrame(frameId(parent), offset);
-      const element = await guarded(current.frameElement());
-      try {
-        const hit = await inFrame(frameId(parent), (f) =>
-          f.evaluate(([el, px, py]) => document.elementFromPoint(px, py) === el, [element, x - dx, y - dy]),
-        );
-        if (!hit) return false;
-      } finally {
-        element.dispose().catch(() => {});
-      }
-      current = parent;
-    }
-    return true;
+      return inFrame(frameId(parent), (f) =>
+        f.evaluate(([el, px, py]) => document.elementFromPoint(px, py) === el, [element, x - dx, y - dy]),
+      );
+    });
+  },
+
+  holds_focus({ frame }) {
+    return ownersHold(frame, (parent, element) =>
+      inFrame(frameId(parent), (f) => f.evaluate((el) => document.activeElement === el, element)),
+    );
   },
 
   frame_offset({ frame }) {

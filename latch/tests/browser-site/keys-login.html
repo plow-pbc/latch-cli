@@ -1,0 +1,37 @@
+<!doctype html><title>latch typed login test</title>
+<!-- A login that counts the key presses each field gets, and how many the
+     browser itself made (isTrusted), and keeps them on the page when it is
+     sent (and posts them to the page that frames it). Its email field
+     puts its caret back at the start on every change, as some controlled
+     fields do. With ?beacon, every change to the password sends it to
+     /beacon in the address, as a search-as-you-type field would. -->
+<h1>Sign in</h1>
+<form>
+  <p><input id="user" name="email" autocomplete="username" aria-label="Email"></p>
+  <p><input id="pw" type="password" name="password" autocomplete="current-password" aria-label="Password"></p>
+  <p><button type="submit">Sign in</button></p>
+</form>
+<p id="out">not sent</p>
+<script>
+  const [user, pw] = [document.getElementById('user'), document.getElementById('pw')];
+  const keys = new Map([[user, [0, 0]], [pw, [0, 0]]]);
+  for (const [field, count] of keys) {
+    field.addEventListener('keydown', (e) => {
+      count[0]++;
+      if (e.isTrusted) count[1]++;
+      if (parent !== window) parent.postMessage('key', '*');
+    });
+  }
+  user.addEventListener('input', () => user.setSelectionRange(0, 0));
+  if (location.search === '?beacon') {
+    pw.addEventListener('input', () => { if (pw.value) fetch(`beacon?leak=${encodeURIComponent(pw.value)}`).catch(() => {}); });
+  }
+  document.querySelector('form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const right = (ok) => (ok ? 'right' : 'wrong');
+    const sent = `sent: email ${right(user.value === 'ada@shop.example')}, `
+      + `password ${right(pw.value === 'made-up-pass-7c41')}, keys ${keys.get(user).join('/')} and ${keys.get(pw).join('/')}`;
+    document.getElementById('out').textContent = sent;
+    if (parent !== window) parent.postMessage(sent, '*');
+  });
+</script>

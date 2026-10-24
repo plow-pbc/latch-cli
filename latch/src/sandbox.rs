@@ -63,10 +63,12 @@ pub struct Policy {
     pub break_for_test: bool,
 }
 
-/// Latch's private state and, on macOS, Library. Exec profiles make a
-/// narrow exception for Library/Caches. The host denies its own state separately.
+/// Latch's private state (`~/.latch`, and the folder latch uses without
+/// `--state-dir` wherever it is) and, on macOS, Library. Exec profiles make
+/// a narrow exception for Library/Caches. The host denies its own state separately.
 pub fn never_readable(home: &Path) -> Vec<PathBuf> {
     std::iter::once(home.join(".latch"))
+        .chain(crate::cli::default_state_dir())
         .chain(cfg!(target_os = "macos").then(|| home.join("Library")))
         .collect()
 }

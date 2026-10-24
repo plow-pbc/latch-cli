@@ -145,7 +145,7 @@ final class AppModel {
     /// Known once Plow has listed them.
     var viewerOnly: Bool { status?.login != nil && account != nil && !hosts.contains(where: \.isThisMac) }
 
-    /// What each host last said of its rules, vault and connectors, by host
+    /// What each host last said of itself, its rules and its vault, by host
     /// name; Home shows the selected host's.
     private(set) var summaries: [String: HostSummary] = [:]
 
@@ -165,14 +165,17 @@ final class AppModel {
             guard let items = await Self.result({ try await self.client.vaultList(host: target) }) else { return }
             summaries[host.name, default: HostSummary()].vault = items
         }
-        if refresh || !Self.held(summaries[host.name]?.plugins) {
-            guard let plugins = await Self.result({ try await self.client.pluginsList(host: target) }) else { return }
-            summaries[host.name, default: HostSummary()].plugins = plugins
-        }
     }
 
-    /// Another host's own status (Host Settings' version), asked only of a
-    /// host Plow doesn't count offline.
+    /// A host's plugins, each with whether it's on: this Mac's from its own
+    /// status, another host's from its `status --host`; nil until known.
+    func plugins(of host: HostEntry) -> Result<[Plugin], LatchError>? {
+        if host.isThisMac { return status.map { .success($0.plugins ?? []) } }
+        return summaries[host.name]?.status?.map { $0.plugins ?? [] }
+    }
+
+    /// Another host's own status (its plugins, and Host Settings' version),
+    /// asked only of a host Plow doesn't count offline.
     private func readHostStatus(of host: HostEntry, refresh: Bool) async {
         guard !host.isThisMac, host.online != false, refresh || !Self.held(summaries[host.name]?.status) else { return }
         guard let status = await Self.result({ try await self.client.hostStatus(host.name) }) else { return }
@@ -189,7 +192,9 @@ final class AppModel {
         defer { Self.signposter.endInterval("enter", interval) }
         switch route {
         case let .host(.home, host):
-            if let host { await readSummary(of: host, vault: true, refresh: refresh) }
+            guard let host else { return }
+            await readSummary(of: host, vault: true, refresh: refresh)
+            await readHostStatus(of: host, refresh: refresh)
         case let .host(.settings, host):
             guard let host else { return }
             await readSummary(of: host, vault: false, refresh: refresh)
@@ -378,10 +383,7 @@ final class AppModel {
                 googleSignInTask = nil
                 googleSignIn = nil
                 await refreshConnections()
-                if let mac = hosts.first(where: \.isThisMac),
-                   let plugins = await Self.result({ try await self.client.pluginsList(host: nil) }) {
-                    summaries[mac.name, default: HostSummary()].plugins = plugins
-                }
+                await refreshStatus()
             case .success(nil):
                 googleSignIn?.failure = GoogleSignIn.stopped
             case let .failure(error):
@@ -406,9 +408,9 @@ final class AppModel {
     }
 
     /// Signs in with Google through latch: the first link it gives opens in
-    /// the browser, and each is handed to `newLink` for opening again. The
-    /// accounts once Google is on; nil if latch stopped before.
-    func signInWithGoogle(addAccount: Bool, newLink: (URL) -> Void) async throws -> [String]? {
+    /// the browser, and each is handed to `newLink` for opening again.
+    /// latch's enable once Google is on; nil if latch stopped before.
+    func signInWithGoogle(addAccount: Bool, newLink: (URL) -> Void) async throws -> GoogleEnabled? {
         var opened = false
         for try await event in client.signInGoogle(addAccount: addAccount) {
             switch event {
@@ -419,7 +421,7 @@ final class AppModel {
                     open(url)
                 }
             case let .enabled(result):
-                return result.accounts
+                return result
             }
         }
         return nil
@@ -482,6 +484,23 @@ final class AppModel {
     }
 
     /// Stops this Mac's host; agents can't reach it until it's started.
+    /// "Keep this Mac awake while plugged in": latch saves it (no host or
+    /// restart needed), then the switch shows what latch reads back.
+    private(set) var settingKeepAwake = false
+    private(set) var keepAwakeError: LatchError?
+
+    func setKeepAwake(_ on: Bool) async {
+        settingKeepAwake = true
+        defer { settingKeepAwake = false }
+        do {
+            try await client.perform(["settings", "set", "--keep-awake", on ? "on" : "off"])
+            keepAwakeError = nil
+        } catch {
+            keepAwakeError = .from(error)
+        }
+        await refreshStatus()
+    }
+
     func stopHost() async {
         await hostAction(.stopping) { try await self.client.stop() }
     }
@@ -506,15 +525,14 @@ final class AppModel {
         await refreshStatus()
     }
 
-    /// Turns a plugin on this Mac's host on or off, then reads the plugins
-    /// again. A refusal is thrown in the app's words.
-    func setConnector(_ name: String, on: Bool, host: HostEntry) async throws {
+    /// Turns a plugin on this Mac's host on or off, then reads this Mac's
+    /// status, its plugins among it, again. A refusal is thrown in the
+    /// app's words.
+    func setConnector(_ name: String, on: Bool) async throws {
         guard let changed = await Self.result({
             if on { _ = try await self.client.enable(name) } else { try await self.client.disable(name) }
         }) else { throw CancellationError() }
-        if let plugins = await Self.result({ try await self.client.pluginsList(host: nil) }) {
-            summaries[host.name, default: HostSummary()].plugins = plugins
-        }
+        await refreshStatus()
         if case let .failure(error) = changed { throw LatchError.unreachable(PluginCopy.refusal(error, plugin: name, on: on), detail: error.details) }
     }
 

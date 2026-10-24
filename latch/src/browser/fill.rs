@@ -510,28 +510,35 @@ async fn fill(
         return Err(stop(session, failure, audit).await);
     }
     let mut stages = 1;
+    // What the presses and the waits after them set off, a request the
+    // site refused (a 429) among them: the agent hears it with the fill's
+    // answer, as `heard` lets it.
+    let mut events: Vec<Value> = Vec::new();
+    let mut sites = fill_origins(&prepared);
     if let Some(press) = &plan.press {
         audit.insert("pressed".into(), json!(press));
         let pressed = json!({"op": "fill_submit", "target": press, "guard": args["guard"]});
-        if let Err(failure) = step(session, pressed, audit).await {
-            return Err(stop(session, failure, audit).await);
+        match step(session, pressed, audit).await {
+            Ok(pressed) => events.extend(listed(&pressed["events"])),
+            Err(failure) => return Err(stop(session, failure, audit).await),
         }
         if plan.identifier_stage(&meta) {
             let mut second = Map::new();
-            let outcome = next_stage(browsers, session, item, &mut second).await;
+            let outcome = next_stage(browsers, session, item, &mut events, &mut second).await;
+            audit.insert("second_stage".into(), Value::Object(second));
             match outcome {
-                Ok(Stage::Filled(more)) => {
+                Ok(Stage::Filled(more, origins)) => {
                     stages = 2;
                     outcomes.extend(more);
-                    audit.insert("second_stage".into(), Value::Object(second));
+                    sites.extend(origins);
                 }
                 Ok(Stage::Ended(ended)) => {
-                    audit.insert("second_stage".into(), Value::Object(second));
-                    return Err(stage_ended(browsers, session, ended, audit).await);
+                    let failure = stage_ended(browsers, session, ended, audit).await;
+                    return Err(failure_events(failure, events, &sites));
                 }
                 Err(failure) => {
-                    audit.insert("second_stage".into(), Value::Object(second));
-                    return Err(stop(session, failure, audit).await);
+                    let failure = stop(session, failure, audit).await;
+                    return Err(failure_events(failure, events, &sites));
                 }
             }
         }
@@ -541,10 +548,11 @@ async fn fill(
                 "cleared_by_latch".into(),
                 cleaned["cleared_by_latch"].clone(),
             );
+            events.extend(listed(&cleaned["events"]));
         }
         if !cleaned.as_ref().is_ok_and(|c| c["clean"] == true) {
             // The values may still be on the page: the agent stays out.
-            return Err(stuck("submitted"));
+            return Err(failure_events(stuck("submitted"), events, &sites));
         }
     }
     audit.insert("stages".into(), json!(stages));
@@ -561,8 +569,31 @@ async fn fill(
         object.insert("fields".into(), json!(outcomes));
         object.insert("stages".into(), json!(stages));
         object.insert("submitted".into(), json!(plan.press.is_some()));
+        answer_events(object, events, &sites);
     }
     Ok(result)
+}
+
+/// A fill that stopped, with what it heard (`answer_events`) in its
+/// details.
+fn failure_events(mut failure: Failure, events: Vec<Value>, sites: &[String]) -> Failure {
+    let mut details = failure.details.as_object().cloned().unwrap_or_default();
+    answer_events(&mut details, events, sites);
+    if !details.is_empty() {
+        failure.details = Value::Object(details);
+    }
+    failure
+}
+
+/// A fill's answer's `events`: the resume's own, which the page set off
+/// while the values may still have been on it, with all the others, as
+/// `heard` lets the agent hear them.
+fn answer_events(answer: &mut Map<String, Value>, mut events: Vec<Value>, sites: &[String]) {
+    events.extend(listed(&answer.remove("events").unwrap_or_default()));
+    let heard = heard(events, sites);
+    if !heard.is_empty() {
+        answer.insert("events".into(), json!(heard));
+    }
 }
 
 /// Each prepared element against the item field it takes: the field's
@@ -603,8 +634,9 @@ fn frame_sites(browsers: &Browsers, prepared: &Value) -> Vec<String> {
 
 /// How a login's second stage went.
 enum Stage {
-    /// The password went in and its button was pressed: its outcome.
-    Filled(Vec<Value>),
+    /// The password went in and its button was pressed: its outcome, and
+    /// the origins the stage's value went to, and its page's.
+    Filled(Vec<Value>, Vec<String>),
     /// The stage was no password stage latch fills by itself: why, and the
     /// stage as latch read it.
     Ended(String),
@@ -617,10 +649,14 @@ async fn next_stage(
     browsers: &Browsers,
     session: &mut Session,
     item: &Item,
+    events: &mut Vec<Value>,
     audit: &mut Map<String, Value>,
 ) -> Result<Stage, Failure> {
     let meta = item.meta();
     let stage = step(session, json!({"op": "next_stage"}), audit).await?;
+    // What the page did while latch waited for the stage: a refusal of the
+    // first stage's submission among it.
+    events.extend(listed(&stage["events"]));
     let controls = controls_of(&stage);
     let offers = suggest::offers(&controls);
     audit.insert("page_offers".into(), json!(offers));
@@ -671,13 +707,14 @@ async fn next_stage(
     let outcomes = checked(&meta, &prepared)?;
     release_and_set(browsers, session, item, &prepared, audit).await?;
     audit.insert("pressed".into(), json!(submit.reference));
-    step(
+    let pressed = step(
         session,
         json!({"op": "fill_submit", "target": submit.reference}),
         audit,
     )
     .await?;
-    Ok(Stage::Filled(outcomes))
+    events.extend(listed(&pressed["events"]));
+    Ok(Stage::Filled(outcomes, fill_origins(&prepared)))
 }
 
 fn described(offers: &[&str]) -> String {
@@ -743,6 +780,51 @@ async fn stop(session: &mut Session, failure: Failure, audit: &mut Map<String, V
 }
 
 /// The session stays paused: values may still be on the page.
+/// The events in an answer's `events`.
+fn listed(events: &Value) -> Vec<Value> {
+    events.as_array().cloned().unwrap_or_default()
+}
+
+/// The origins a fill's values went to, and the page's own.
+fn fill_origins(prepared: &Value) -> Vec<String> {
+    let mut origins = vec![
+        prepared["top_origin"]
+            .as_str()
+            .unwrap_or("opaque")
+            .to_string(),
+    ];
+    for field in prepared["fields"].as_array().into_iter().flatten() {
+        for target in field["boxes"].as_array().into_iter().flatten() {
+            origins.push(target["origin"].as_str().unwrap_or("opaque").to_string());
+        }
+    }
+    origins
+}
+
+/// What of a fill's `events` the agent hears: only a request the site
+/// refused, by its status, and only from an origin the fill's values went
+/// to or the page itself is on. While a value is on the page, a dialog's
+/// message, a new tab's address, a download's name, another site's origin
+/// or a response's Retry-After may be what the page or the site made of
+/// the value.
+fn heard(events: Vec<Value>, origins: &[String]) -> Vec<Value> {
+    events
+        .into_iter()
+        .filter(|event| {
+            event["event"] == "http_error"
+                && origins
+                    .iter()
+                    .any(|origin| event["origin"] == origin.as_str())
+        })
+        .map(|mut event| {
+            if let Some(event) = event.as_object_mut() {
+                event.remove("retry_after");
+            }
+            event
+        })
+        .collect()
+}
+
 fn stuck(why: &str) -> Failure {
     Failure::new(
         code::session_paused,
@@ -950,6 +1032,41 @@ fn split(value: &str, boxes: &[Value]) -> Option<Vec<String>> {
 mod tests {
     use super::*;
     use crate::vault::item::{Custom, LOGIN, Raw};
+
+    /// The resume's events go through the same filter as the presses' and
+    /// the cleanup's: a page's dialog, another site's refusal and any
+    /// Retry-After stay out, whichever part of the fill heard them.
+    #[test]
+    fn a_fill_answers_only_the_refusals_of_its_own_sites() {
+        let site = "https://login.shop.example".to_string();
+        let refused = |origin: &str| {
+            json!({"event": "http_error", "tab": "t1", "status": 429,
+                   "origin": origin, "retry_after": "482913"})
+        };
+        let dialog = json!({"event": "dialog", "tab": "t1", "kind": "alert", "message": "made-up-pass-31c9"});
+        let mut answer = Map::new();
+        answer.insert(
+            "events".into(),
+            json!([
+                dialog.clone(),
+                refused(&site),
+                refused("https://elsewhere.example")
+            ]),
+        );
+        answer_events(
+            &mut answer,
+            vec![dialog, refused(&site)],
+            std::slice::from_ref(&site),
+        );
+        let only = json!({"event": "http_error", "tab": "t1", "status": 429, "origin": site});
+        assert_eq!(answer["events"], json!([only.clone(), only]));
+
+        // Nothing heard: no `events` at all, not the resume's own.
+        let mut answer = Map::new();
+        answer.insert("events".into(), json!([{"event": "new_tab", "tab": "t2", "url": "https://x.example/?p=made-up-pass-31c9"}]));
+        answer_events(&mut answer, Vec::new(), &[site]);
+        assert!(answer.get("events").is_none());
+    }
 
     /// Values come from the item as loaded: one no vault holds any more,
     /// or holds edited, still gives its own.

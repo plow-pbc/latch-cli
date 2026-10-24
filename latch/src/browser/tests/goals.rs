@@ -1142,13 +1142,12 @@ async fn fills_inside_plans_take_latchs_suggestions_or_stop() {
     );
     assert_eq!(code, "needs_fields");
     // The stop says each way on: the vault's code, a texted one found and
-    // typed (from a macOS latch), then the owner (from a Linux one too).
+    // typed, then the owner.
     for way in [
         "--field otp=eN",
-        "runs on macOS with a host that reads Messages",
+        "the host reads Messages",
         "latch messages search",
         "type eN",
-        "On a Linux latch",
         "handoff --reason 2fa",
     ] {
         assert!(stopped.message.contains(way), "{way}: {}", stopped.message);

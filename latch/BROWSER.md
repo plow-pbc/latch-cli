@@ -5,7 +5,8 @@ A host runs Chrome for Testing (CfT), the release pinned in
 and on Linux arm64/x86_64 `install.sh` fetches the zip for the machine's
 architecture by default, checks its sha256 against the pin, unpacks it
 (`ditto` on macOS, `unzip` on Linux) into `<state-dir>/plugins/cft/<version>/`
-(beside older versions, as gog's are) and copies the pin in as
+(beside older versions, as gog's are, until the new latch removes them
+once no host of an older one runs) and copies the pin in as
 `manifest.json`, which marks the install complete. On Linux it also
 installs Xvfb, for hosts with no screen. `install.sh --no-browser` installs
 no engine; `--browser camoufox` installs Camoufox instead (name both
@@ -24,13 +25,17 @@ later; it is the host's owner's command, run on the host, and refuses a
 latch logged in as an agent. On Linux, installing Chrome either way first
 installs unzip, Xvfb and its runtime libraries if they are missing, asking for sudo once. An agent's browser call never downloads anything: with no engine it
 fails with `engine_not_installed`, whose `details.setup` is the owner's
-command (`latch browser setup --engine chrome`).
+command (`latch browser setup --engine chrome`; an `open` that names no
+engine also mentions `--engine camoufox`).
 
 A build may add launch arguments of its own (`args`) after the recipe's.
-The macOS builds add `--disable-crashpad-for-testing`, which keeps Chrome's
-crash handler from writing to the user's Library; the Linux arm64 build
-leaves it out, because with it the network service crashes at once on the
-Pi ("FD ownership violation") and no page loads.
+The macOS builds add `--disable-crashpad-for-testing`, which the pinned
+macOS build does not act on: Chrome's crash handler still starts, writing
+only to the runtime's scratch folder (`BREAKPAD_DUMP_LOCATION`), never the
+user's Library. The handler leaves the browser's process group as it starts
+and ends on its own soon after the browser does. The Linux arm64 build
+leaves the flag out, because with it the network service crashes at once on
+the Pi ("FD ownership violation") and no page loads.
 
 latch hashes the whole unpacked build (every file's bytes and execute bit,
 every link and folder) and refuses one that differs from the pin's
@@ -83,7 +88,7 @@ the same device for the whole task, and a new one the next.
 Camoufox ships with password saving and form autofill off; its uBlock
 add-on is left out.
 
-`open` runs on Chrome for Testing unless it names Camoufox:
+`open` names Camoufox to run on it where Chrome is installed too:
 
     latch browser open --engine camoufox https://example.com
 
@@ -106,8 +111,10 @@ returns `serve_required`, with instructions to start `latch serve`.
 ## Sessions
 
 Each `open` makes a new **session** in a browser of its own, its
-**runtime**: a fresh profile, the engine `open` names (`--engine chrome`,
-the default, or `--engine camoufox`), and one long-lived browser worker
+**runtime**: a fresh profile, the engine `open` names (`--engine chrome`
+or `--engine camoufox`; with neither, Chrome if the host has it and it
+checks out, else Camoufox, and the answer's `engine` says which), and one
+long-lived browser worker
 (`latch browser-worker`, hidden) driving it, which the host talks to over
 stdio. The worker drives CfT over `--remote-debugging-pipe` only: CDP on
 Chrome's fds 3 and 4, never a port; Camoufox through its helper (above).
@@ -250,8 +257,14 @@ reservations read the full addresses.
 
 A ref is bound to its frame's document: after a navigation, a ref from
 before it is refused with `stale_snapshot`, with a fresh element list in
-the error. A target that is hidden, disabled, covered or still moving is
-refused with `covered_target`. Input is the engine's own mouse and keys at a
+the error. Within a document an element keeps its ref from one reading to
+the next, and an element the page adds gets a number no element had: a
+button the page puts before a field moves nothing, and a ref read before
+it still names the same element (one no longer on the page is
+`no_such_target`). A target that is hidden, disabled, covered or still moving is
+refused with `covered_target`; a covered one's `covered_by` names what a
+click would land on instead (its role and name, or a frame's site), and
+one under a layer of the page around its frame says so. Input is the engine's own mouse and keys at a
 person's pace (`isTrusted` is true); `select` focuses the list and types
 the option's label, as a person picks one without opening it. `type`
 types what the agent gives it into any text field, a password or a
@@ -369,8 +382,8 @@ latch browser do --dry-run 'add the note "A -> B" for the driver'               
 ```
 
 A plan holds at most 10 steps. A ref is from the last page latch returned
-(or `--snapshot`); once the page has changed, `observe` again for fresh
-refs. Before going on after a stop, read `steps` (each step's outcome:
+(or `--snapshot`); an element keeps its ref while its document lasts, and
+after a navigation, `observe` again for fresh refs. Before going on after a stop, read `steps` (each step's outcome:
 those before the stop ran) and `stop` (its step, code and message), and
 send only what is left: resending the whole plan repeats what already ran.
 An answer that exited 5 names its request: read `do --history R` first,
@@ -453,7 +466,10 @@ evidence, its action count), `trail` (per action: page URL and title,
 operation, target with role, name and row text, `chosen` (`ref`, or
 `model` with the operation's and target's p), the risk `p`,
 the confirmation used, `result` `dispatched`/`refused`/`unknown`, what
-changed, and `screenshot`: the handle `{"request": R, "shot": N}` of a
+changed, `events` (a dialog, a new tab, a download, or an `http_error`: a
+page load, XHR or fetch of the page's that the site answered with an
+error status, such as a sign-in's 429, by its status, origin and any
+`retry_after`, at most 5 between two answers), and `screenshot`: the handle `{"request": R, "shot": N}` of a
 screenshot taken after it, or `{"suppressed": true}` after a vault fill or
 while a filled value is on the page) and `page` (snapshot, URL, title, up to 40 lines, the element
 list, bounded as every answer's is). A plan that stopped before sending any
@@ -465,8 +481,10 @@ deadline; nothing is replayed or retried. Exit 0 is `reached` or
 `step_not_allowed`.
 
 **Confirmations.** Before a click, latch asks the decision model whether it
-would pay, place an order, send, publish, delete or close something, sign
-out, create credentials or otherwise can't be undone, judged on the exact
+would pay, place an order, send, publish or delete something, close or
+cancel an account, order, subscription or ticket, sign out, create
+credentials or otherwise can't be undone (closing a dialog, popup, banner
+or menu is none of these), judged on the exact
 element, its row text, the page title and the lines of the form or section
 around it; an Enter in a field is judged as its form's submit (the form's
 submit control, else the form), and so is `type` text with a line break,

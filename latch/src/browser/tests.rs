@@ -375,6 +375,7 @@ fn exec_probe_can_reach_its_loopback_fixture() {
 conformance!(
     frames_that_come_and_go_while_a_page_loads_break_no_call,
     a_frames_target_under_a_parent_page_layer_is_refused,
+    an_element_keeps_its_ref_when_the_page_adds_one_before_it,
     a_late_popup_is_followed_before_the_next_step,
     one_sessions_wait_does_not_hold_the_browser_for_another,
     a_call_longer_than_the_idle_timeout_does_not_end_its_session,
@@ -802,18 +803,36 @@ async fn the_engine_runs_from_the_host_with_its_own_sandbox_and_leaves_nothing(e
     let closed = session.close().await.unwrap();
     println!("close: {closed}");
     assert_eq!(closed["closed"], true);
-    let left: Vec<String> = processes()
-        .into_iter()
-        .filter(|p| {
-            p.pgid == browser
-                || engine.iter().any(|e| e.pid == p.pid)
-                || p.args.contains(&data.display().to_string())
-                || p.args.contains(&scratch.display().to_string())
-        })
-        .map(|p| format!("{} {}", p.pid, p.args))
-        .collect();
-    println!("processes left: {}", left.len());
-    assert!(left.is_empty(), "{left:#?}");
+    // The browser's process group is gone when close answers. Chrome's
+    // crash handlers leave the group as they start and end on their own
+    // once the browser has, later on a busy machine: they get a while.
+    let left = |in_group: bool| -> Vec<String> {
+        processes()
+            .into_iter()
+            .filter(|p| {
+                (p.pgid == browser || engine.iter().any(|e| e.pid == p.pid)) == in_group
+                    && (in_group
+                        || p.args.contains(&data.display().to_string())
+                        || p.args.contains(&scratch.display().to_string()))
+            })
+            .map(|p| format!("{} {}", p.pid, p.args))
+            .collect()
+    };
+    let grouped = left(true);
+    println!("processes left in the browser's group: {}", grouped.len());
+    assert!(grouped.is_empty(), "{grouped:#?}");
+    let waited = std::time::Instant::now();
+    let mut outside = left(false);
+    while !outside.is_empty() && waited.elapsed() < Duration::from_secs(10) {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        outside = left(false);
+    }
+    println!(
+        "processes left outside it after {:?}: {}",
+        waited.elapsed(),
+        outside.len()
+    );
+    assert!(outside.is_empty(), "{outside:#?}");
     // The scratch folder and the profile go with the runtime.
     println!(
         "after close: scratch exists {}, profile exists {}",
@@ -1595,6 +1614,51 @@ async fn a_dialog_in_one_session_does_not_hold_another_sessions_download(engine:
     }
 }
 
+async fn an_element_keeps_its_ref_when_the_page_adds_one_before_it(engine: &str) {
+    let (_dir, state, _area) = test_state(engine);
+    let mut session =
+        Session::start_with(&latch(), &state, engine, Duration::from_secs(120), HEADLESS)
+            .await
+            .unwrap();
+    let url = test_site().replace("frames.html", "renumber.html");
+    let page = session
+        .call(json!({"op": "open", "url": url}))
+        .await
+        .unwrap()
+        .result;
+    let (email, password) = (
+        find(&page, "textbox", "Email"),
+        find(&page, "textbox", "Password"),
+    );
+    let typed = session
+        .call(json!({"op": "act", "action": "type", "target": email, "text": "ada@shop.example"}))
+        .await
+        .unwrap()
+        .result;
+    // The page put a button before the password: the password keeps its
+    // ref, the button gets one no element had.
+    println!(
+        "refs before: {:?}; after: {}",
+        (&email, &password),
+        typed["elements"]
+    );
+    assert_eq!(find(&typed, "textbox", "Password"), password);
+    let clear = find(&typed, "button", "Clear");
+    assert!(![&email, &password].contains(&&clear));
+    // So the ref the agent read before goes to the same field.
+    session
+        .call(json!({"op": "act", "action": "type", "target": password, "text": "x"}))
+        .await
+        .unwrap();
+    let text = session
+        .call(json!({"op": "eval", "script": "document.querySelector('[name=password]').value"}))
+        .await
+        .unwrap()
+        .result;
+    assert_eq!(text["value"], "x");
+    session.close().await.unwrap();
+}
+
 async fn a_frames_target_under_a_parent_page_layer_is_refused(engine: &str) {
     let (_dir, state, _area) = test_state(engine);
     let mut session =
@@ -1826,6 +1890,16 @@ async fn with_no_engine_a_call_names_the_owners_setup_and_downloads_nothing() {
     assert_eq!(
         fox.details["setup"],
         "latch browser setup --engine camoufox"
+    );
+    // An open that names no engine says so too, and names the setup.
+    let unnamed = h
+        .call(CALLER, "open", "", json!({"url": "https://example.com/"}))
+        .await
+        .unwrap_err();
+    assert_eq!(unnamed.code, "engine_not_installed", "{unnamed:?}");
+    assert_eq!(
+        unnamed.details["setup"],
+        "latch browser setup --engine chrome"
     );
     let other = h
         .call(CALLER, "open", "firefox", json!({}))
@@ -2545,7 +2619,8 @@ mod mac {
     /// tab that loads in the background; Firefox keeps the ones that differ from
     /// its defaults in the profile's `prefs.js` as it quits. Whether a window
     /// then stays behind the owner's needs a screen to tell: Playwright keeps
-    /// every page active, and Camoufox reports a made-up screen.
+    /// every page active, and Camoufox reports a made-up screen. It never
+    /// loads the OS's client certificates (the owner's keychain).
     #[tokio::test]
     async fn camoufox_runs_with_page_windows_as_background_tabs() {
         let (_dir, state, _area) = test_state("camoufox");
@@ -2570,11 +2645,87 @@ mod mac {
                 "headless Firefox must disable native macOS select menus"
             );
         }
+        // On macOS, where Firefox loads the OS's client certificates (the
+        // owner's keychain) by default, turning that off shows in `prefs.js`.
+        if cfg!(target_os = "macos") {
+            assert!(
+                prefs.contains(r#"user_pref("security.osclientcerts.autoload", false);"#),
+                "Camoufox must not load the keychain's client certificates"
+            );
+        }
         for pref in [
             r#"user_pref("browser.link.open_newwindow.restriction", 0);"#,
             r#"user_pref("browser.tabs.loadDivertedInBackground", true);"#,
         ] {
             assert!(prefs.contains(pref), "{pref} is not in force");
         }
+    }
+
+    /// A tab its popup hid keeps the browser's own priority: macOS's
+    /// background band (Chrome's process priority policy puts a hidden
+    /// tab's renderer there) starves it on a busy machine, and the session
+    /// still acts in that tab.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn cft_keeps_a_tab_its_popup_hid_at_the_browsers_priority() {
+        let (_dir, state, _area) = test_state("cft");
+        let base = test_site()
+            .split("/frames.html")
+            .next()
+            .unwrap()
+            .to_string();
+        let mut h = Host::new(&state);
+        let (id, page) = h
+            .open(CALLER, "cft", json!({"url": format!("{base}/alert.html")}))
+            .await;
+        let link = find(&page, "link", "Open next in a new tab");
+        h.call(CALLER, "do", &id, act(&format!("click {link}")))
+            .await
+            .unwrap();
+        h.call(CALLER, "tab", &id, json!({"action": "switch", "tab": "t1"}))
+            .await
+            .unwrap();
+        let shown = h
+            .call(
+                CALLER,
+                "eval",
+                &id,
+                json!({"script": "document.visibilityState"}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(shown["value"], "hidden");
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        let entry = h.browsers.session(&id, CALLER).await.unwrap();
+        let browser = entry.runtime.ready["pid"].as_u64().unwrap().to_string();
+        let out = Command::new("/bin/ps")
+            .args(["-Aww", "-o", "pid=,pgid=,pri=,args="])
+            .output()
+            .unwrap();
+        let listed = String::from_utf8_lossy(&out.stdout);
+        let rows: Vec<Vec<&str>> = listed
+            .lines()
+            .map(|line| line.split_whitespace().collect::<Vec<_>>())
+            .filter(|fields| fields.len() > 3 && fields[1] == browser)
+            .collect();
+        let priority = |fields: &Vec<&str>| fields[2].parse::<u32>().unwrap();
+        let own = rows
+            .iter()
+            .find(|fields| fields[0] == browser)
+            .map(priority);
+        let renderers: Vec<(&str, u32)> = rows
+            .iter()
+            .filter(|fields| fields.contains(&"--type=renderer"))
+            .map(|fields| (fields[0], priority(fields)))
+            .collect();
+        println!("browser priority {own:?}; renderers (pid, priority): {renderers:?}");
+        assert!(!renderers.is_empty());
+        assert!(
+            renderers.iter().all(|(_, pri)| Some(*pri) == own),
+            "{renderers:?}"
+        );
+        drop(entry);
+        h.call(CALLER, "close", &id, json!({})).await.unwrap();
     }
 }
