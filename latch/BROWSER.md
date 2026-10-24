@@ -466,7 +466,10 @@ evidence, its action count), `trail` (per action: page URL and title,
 operation, target with role, name and row text, `chosen` (`ref`, or
 `model` with the operation's and target's p), the risk `p`,
 the confirmation used, `result` `dispatched`/`refused`/`unknown`, what
-changed, and `screenshot`: the handle `{"request": R, "shot": N}` of a
+changed, `events` (a dialog, a new tab, a download, or an `http_error`: a
+page load, XHR or fetch of the page's that the site answered with an
+error status, such as a sign-in's 429, by its status, origin and any
+`retry_after`, at most 5 between two answers), and `screenshot`: the handle `{"request": R, "shot": N}` of a
 screenshot taken after it, or `{"suppressed": true}` after a vault fill or
 while a filled value is on the page) and `page` (snapshot, URL, title, up to 40 lines, the element
 list, bounded as every answer's is). A plan that stopped before sending any

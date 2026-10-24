@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use super::cdp::{self, Cdp, Pipes};
-use super::driver::{self, Download, Driver, Event, Frame, KEY_NAMES, Runtime, Tab};
+use super::driver::{self, Download, Driver, Event, Frame, HTTP_ERRORS, KEY_NAMES, Runtime, Tab};
 use super::engine::{CFT, Engine};
 use super::profile;
 use crate::failure::{Failure, code};
@@ -410,6 +410,8 @@ impl Cft {
             .to_string();
         self.cdp
             .call("Page.enable", json!({}), Some(&session), deadline)?;
+        self.cdp
+            .call("Network.enable", json!({}), Some(&session), deadline)?;
         if !self.auto_attach(&session)? {
             return Err(Failure::new(
                 code::engine_error,
@@ -505,6 +507,17 @@ impl Cft {
 
     fn active_state(&self) -> &TabState {
         self.tab(&self.share.active).expect("the active tab exists")
+    }
+
+    /// The tab whose page `session` is, or holds as one of its frames.
+    fn tab_of(&self, session: &str) -> Option<String> {
+        let mut session = session;
+        loop {
+            if let Some(tab) = self.share.tabs.iter().find(|tab| tab.session == session) {
+                return Some(tab.id.clone());
+            }
+            session = &self.remotes.get(session)?.parent;
+        }
     }
 
     /// Takes in the events read so far: frames attached in other
@@ -603,6 +616,39 @@ impl Cft {
                 method @ ("Browser.downloadWillBegin" | "Browser.downloadProgress") => {
                     self.download_event(method, params, &dialogs)?;
                 }
+                // A page's own load, XHR or fetch the site refused (the
+                // only responses kept), in any of its frames: its status
+                // and origin, never its path or query.
+                "Network.responseReceived" => {
+                    let response = &params["response"];
+                    let status = response["status"].as_u64().unwrap_or(0);
+                    let origin = url::Url::parse(response["url"].as_str().unwrap_or_default())
+                        .map(|url| url.origin().ascii_serialization());
+                    let refused = self
+                        .share
+                        .pending
+                        .iter()
+                        .filter(|e| matches!(e, Event::HttpError { .. }))
+                        .count();
+                    if let (400..=599, Ok(origin), Some(tab)) =
+                        (status, origin, self.tab_of(session))
+                        && refused < HTTP_ERRORS
+                    {
+                        let retry_after = response["headers"]
+                            .as_object()
+                            .into_iter()
+                            .flatten()
+                            .find(|(name, _)| name.eq_ignore_ascii_case("retry-after"))
+                            .and_then(|(_, value)| value.as_str())
+                            .map(|value| clip(value, 40));
+                        self.share.pending.push(Event::HttpError {
+                            tab,
+                            status: status as u16,
+                            origin,
+                            retry_after,
+                        });
+                    }
+                }
                 _ => {}
             }
         }
@@ -613,6 +659,10 @@ impl Cft {
             if !self.remotes.contains_key(&session) {
                 continue;
             }
+            // Its own requests are watched as its page's are; one the frame
+            // no longer answers simply goes unwatched.
+            let deadline = self.by(COMMAND);
+            let _ = self.session_call("Network.enable", json!({}), &session, deadline, |_| false);
             match self.auto_attach(&session) {
                 Ok(true) => {}
                 Ok(false) => {

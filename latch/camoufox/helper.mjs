@@ -45,6 +45,8 @@ const COMMAND = 30_000;
 const LOADING = 15_000;
 /// How long after an input a navigation may still start.
 const NAVIGATION_STARTS = 350;
+/// The most refused requests kept between two answers (latch's `HTTP_ERRORS`).
+const HTTP_ERRORS = 5;
 
 class Failure extends Error {
   constructor(code, message) {
@@ -205,6 +207,21 @@ function adopt(page, opener) {
     // A navigation that turned into a download loads nothing.
     state.loading = false;
     download(owner, started);
+  });
+  // A page's own load, XHR or fetch the site refused, in any of its
+  // frames: its status and origin, never its path or query.
+  page.on("response", (response) => {
+    const request = response.request();
+    if (response.status() < 400 || !["document", "xhr", "fetch"].includes(request.resourceType())) return;
+    if (owner.pending.filter((e) => e.event === "http_error").length >= HTTP_ERRORS) return;
+    let origin;
+    try {
+      origin = new URL(response.url()).origin;
+    } catch {
+      return;
+    }
+    const retry = response.headers()["retry-after"];
+    owner.pending.push({ event: "http_error", tab: state.id, status: response.status(), origin, ...(retry ? { retry_after: clip(retry, 40) } : {}) });
   });
   page.on("framedetached", (frame) => framesById.delete(frameIds.get(frame)));
   page.on("close", () => {
