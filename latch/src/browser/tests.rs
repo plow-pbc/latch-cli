@@ -375,6 +375,7 @@ fn exec_probe_can_reach_its_loopback_fixture() {
 conformance!(
     frames_that_come_and_go_while_a_page_loads_break_no_call,
     a_frames_target_under_a_parent_page_layer_is_refused,
+    an_element_keeps_its_ref_when_the_page_adds_one_before_it,
     a_late_popup_is_followed_before_the_next_step,
     one_sessions_wait_does_not_hold_the_browser_for_another,
     a_call_longer_than_the_idle_timeout_does_not_end_its_session,
@@ -1611,6 +1612,51 @@ async fn a_dialog_in_one_session_does_not_hold_another_sessions_download(engine:
     for id in [&a, &b] {
         h.call(CALLER, "close", id, json!({})).await.unwrap();
     }
+}
+
+async fn an_element_keeps_its_ref_when_the_page_adds_one_before_it(engine: &str) {
+    let (_dir, state, _area) = test_state(engine);
+    let mut session =
+        Session::start_with(&latch(), &state, engine, Duration::from_secs(120), HEADLESS)
+            .await
+            .unwrap();
+    let url = test_site().replace("frames.html", "renumber.html");
+    let page = session
+        .call(json!({"op": "open", "url": url}))
+        .await
+        .unwrap()
+        .result;
+    let (email, password) = (
+        find(&page, "textbox", "Email"),
+        find(&page, "textbox", "Password"),
+    );
+    let typed = session
+        .call(json!({"op": "act", "action": "type", "target": email, "text": "ada@shop.example"}))
+        .await
+        .unwrap()
+        .result;
+    // The page put a button before the password: the password keeps its
+    // ref, the button gets one no element had.
+    println!(
+        "refs before: {:?}; after: {}",
+        (&email, &password),
+        typed["elements"]
+    );
+    assert_eq!(find(&typed, "textbox", "Password"), password);
+    let clear = find(&typed, "button", "Clear");
+    assert!(![&email, &password].contains(&&clear));
+    // So the ref the agent read before goes to the same field.
+    session
+        .call(json!({"op": "act", "action": "type", "target": password, "text": "x"}))
+        .await
+        .unwrap();
+    let text = session
+        .call(json!({"op": "eval", "script": "document.querySelector('[name=password]').value"}))
+        .await
+        .unwrap()
+        .result;
+    assert_eq!(text["value"], "x");
+    session.close().await.unwrap();
 }
 
 async fn a_frames_target_under_a_parent_page_layer_is_refused(engine: &str) {

@@ -257,7 +257,11 @@ reservations read the full addresses.
 
 A ref is bound to its frame's document: after a navigation, a ref from
 before it is refused with `stale_snapshot`, with a fresh element list in
-the error. A target that is hidden, disabled, covered or still moving is
+the error. Within a document an element keeps its ref from one reading to
+the next, and an element the page adds gets a number no element had: a
+button the page puts before a field moves nothing, and a ref read before
+it still names the same element (one no longer on the page is
+`no_such_target`). A target that is hidden, disabled, covered or still moving is
 refused with `covered_target`; a covered one's `covered_by` names what a
 click would land on instead (its role and name, or a frame's site), and
 one under a layer of the page around its frame says so. Input is the engine's own mouse and keys at a
@@ -378,8 +382,8 @@ latch browser do --dry-run 'add the note "A -> B" for the driver'               
 ```
 
 A plan holds at most 10 steps. A ref is from the last page latch returned
-(or `--snapshot`); once the page has changed, `observe` again for fresh
-refs. Before going on after a stop, read `steps` (each step's outcome:
+(or `--snapshot`); an element keeps its ref while its document lasts, and
+after a navigation, `observe` again for fresh refs. Before going on after a stop, read `steps` (each step's outcome:
 those before the stop ran) and `stop` (its step, code and message), and
 send only what is left: resending the whole plan repeats what already ran.
 An answer that exited 5 names its request: read `do --history R` first,

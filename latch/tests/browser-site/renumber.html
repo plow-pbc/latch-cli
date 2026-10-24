@@ -1,0 +1,16 @@
+<!doctype html><title>latch renumber test</title>
+<!-- Typing the email puts a "Clear" button before the password, as some
+     sign-in forms do: every element after it moves one place down the
+     page's list. -->
+<form>
+  <p><input name="email" aria-label="Email"></p>
+  <p id="slot"></p>
+  <p><input type="password" name="password" aria-label="Password"></p>
+  <p><button type="button">Sign in</button></p>
+</form>
+<script>
+  document.querySelector('[name=email]').addEventListener('input', () => {
+    const slot = document.getElementById('slot');
+    if (!slot.firstChild) slot.innerHTML = '<button type="button">Clear</button>';
+  });
+</script>
