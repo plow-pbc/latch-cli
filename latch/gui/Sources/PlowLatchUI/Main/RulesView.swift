@@ -61,20 +61,25 @@ private struct HostRules: View {
                 }
             }
             .formStyle(.grouped)
-            // A pill or "Rules on…" asks for an agent's rules: scroll once
-            // its editor is on screen, which may be only after the rules
-            // and agents have loaded; then the ask is done.
-            .onChange(of: app.rulesScrollTarget(on: host), initial: true) { _, uid in
-                guard let uid else { return }
-                app.rulesFocus = nil
-                // The editors appear in this same update and aren't laid
-                // out yet, so the scroll waits a moment; and it isn't
-                // animated: an animated scrollTo in this Form never moves.
-                Task {
-                    try? await Task.sleep(for: .milliseconds(100))
-                    scroller.scrollTo(uid, anchor: .top)
-                }
+            // An agent's rules asked for (Agents' Rules button): once its
+            // editor can exist (the rules and agents read), it's scrolled to
+            // on each frame until the editor has taken the request and its
+            // focus, which a row the Form hasn't made yet does only once
+            // it's scrolled to; at most a second. Not animated: an animated
+            // scrollTo in this Form never moves.
+            .task(id: app.rulesScrollTarget(on: host)) {
+                guard let uid = app.rulesScrollTarget(on: host) else { return }
+                let asked = AgentTarget(host: host.name, agent: uid)
+                var frames = 0
+                repeat {
+                    scroller.scrollTo(uid, anchor: .center)
+                    try? await Task.sleep(for: .milliseconds(16))
+                    frames += 1
+                } while app.rulesFocus == asked && frames < 60 && !Task.isCancelled
             }
+            // Leaving this host's Rules first: the request goes too, so it
+            // can't take the focus when it's next shown.
+            .onDisappear { app.dropRulesFocus(on: host) }
             .onChange(of: app.trial.results[host.name]) {
                 scroller.scrollTo(Self.verdictAnchor, anchor: .bottom)
             }
@@ -120,6 +125,11 @@ struct RulesEditor: View {
 
     private var key: AppModel.RulesKey { .init(host: host.name, agent: agent?.uid) }
 
+    /// This editor's rules are the ones asked for.
+    private var asked: AgentTarget? {
+        agent.map { AgentTarget(host: host.name, agent: $0.uid) }.flatMap { app.rulesFocus == $0 ? $0 : nil }
+    }
+
     var body: some View {
         // The draft object, not its text: typing redraws only the editor
         // that holds it (`DraftEditor`).
@@ -142,6 +152,13 @@ struct RulesEditor: View {
             Text(title)
         } footer: {
             Text(note).foregroundStyle(.secondary)
+        }
+        // Asked for: it takes the request, begins a draft if it has no
+        // rules yet, and has the focus.
+        .onChange(of: asked, initial: true) { _, asked in
+            guard let asked, app.takeRulesFocus(asked) else { return }
+            if saved == nil, app.rulesDrafts[key] == nil { begin() }
+            focused = true
         }
     }
 

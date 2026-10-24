@@ -108,6 +108,17 @@ final class ContractTests {
         }
         #expect(error.code == "not_logged_in")
     }
+
+    /// The app's removal is words latch takes: it gets as far as needing a
+    /// login, not a usage error.
+    @Test func removingAnAgentByUidIsALatchCommand() async throws {
+        let refusal = await AppModel.result { try await client.removeAgent("00000000000000000000000000000001") }
+        guard case let .failure(error) = refusal else {
+            Issue.record("`agents remove` answered without a login: \(refusal)")
+            return
+        }
+        #expect(error.code == "not_logged_in")
+    }
 }
 
 /// The app's streams on latch, held by `LiveLatchClient` in a process of

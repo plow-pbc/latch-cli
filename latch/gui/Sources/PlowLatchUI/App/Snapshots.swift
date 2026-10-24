@@ -77,6 +77,7 @@ nonisolated struct FakeLatchClient: LatchClient {
         throw LatchError.unreachable("a still")
     }
     func agentShow(_ uid: String) async throws -> AgentsList.Agent { throw LatchError.unreachable("a still") }
+    func removeAgent(_ uid: String) async throws {}
 }
 
 /// `vault import --preview`'s answer, around the preview.
@@ -615,37 +616,39 @@ package enum SnapshotRunner {
                                  dark: dark, background: false, file: output.appending(path: "10-fda-helper-\(name)-\(dark ? "dark" : "light").png"))
             }
         }
-        // Agents and Rules: real agents and standings (sidecar offline), an
-        // agent's page, a host's rules, and Try a request's verdicts.
+        // Agents and Rules: real agents and standings (sidecar offline), a
+        // removal that failed, a host's rules, and Try a request's verdicts.
         for dark in [false, true] {
             let sidecarOffline = Fixtures.studioHosts.replacingOccurrences(
                 of: #""self":false,"online":true,"last_seen_at":"2026-10-22T22:06:33.384336Z""#,
                 with: #""self":false,"online":false,"last_seen_at":null"#)
             let scout = "ba3c0b3ad1eba7a9a1eb04b67c9db0dd", helper = "3971582e59baad83250141c8dcc95855"
-            let screens: [(String, Place, String?, [String], (AppModel) throws -> Void)] = [
-                ("15-agents-pills", .account(.agents), nil, [], { _ in }),
-                ("15-agent-page-helper", .account(.agents), nil, [helper], { _ in }),
-                ("16-rules-studio-scout-try-allowed", .host(.rules), nil, [], { app in
-                    app.rulesFocus = AgentTarget(host: "studio", agent: scout)
+            let screens: [(String, Place, String?, (AppModel) throws -> Void)] = [
+                ("15-agents-hub", .account(.agents), nil, { _ in }),
+                ("15-agents-remove-failed", .account(.agents), nil, { app in
+                    app.agentRemoveError = .failed(LatchFailure(code: "outcome_unknown", message: "Plow may or may not have removed helper"))
+                }),
+                ("16-rules-studio-scout-try-allowed", .host(.rules), nil, { app in
+                    if let studio = app.host { app.openRules(studio, agent: scout) }
                     app.trial.stage(try Fixtures.decode(Fixtures.tries["allow-scout"]!), request: "exec --workdir ~/Projects/latch-demo -- make test",
                                     caller: .agent(scout), on: "studio")
                 }),
-                ("16-rules-studio-try-you-said-no", .host(.rules), nil, [], { app in
+                ("16-rules-studio-try-you-said-no", .host(.rules), nil, { app in
                     app.trial.stage(try Fixtures.decode(Fixtures.tries["said-no"]!), request: "exec -- cat Finance/2026.csv",
                                     caller: .agent(scout), on: "studio")
                 }),
-                ("16-rules-studio-unsaved-draft", .host(.rules), nil, [], { app in
+                ("16-rules-studio-unsaved-draft", .host(.rules), nil, { app in
                     let key = AppModel.RulesKey(host: "studio", agent: nil)
                     let saved = app.savedRules(key)
                     app.rulesDrafts[key] = .init(text: (saved?.text ?? "") + "Never send email without asking me.", base: saved?.revision)
                 }),
-                ("16-rules-pi-kitchen-helper-exec-refused", .host(.rules), "pi-kitchen", [], { app in
-                    app.rulesFocus = AgentTarget(host: "pi-kitchen", agent: helper)
+                ("16-rules-pi-kitchen-helper-exec-refused", .host(.rules), "pi-kitchen", { app in
+                    if let kitchen = app.host { app.openRules(kitchen, agent: helper) }
                     app.trial.stage(try Fixtures.decode(Fixtures.tries["host-refused"]!), request: "exec -- ls",
                                     caller: .agent(helper), on: "pi-kitchen")
                 }),
             ]
-            for (name, place, chosen, path, stage) in screens {
+            for (name, place, chosen, stage) in screens {
                 let app = AppModel(client: FakeLatchClient(), still: true)
                 app.stage(status: try Fixtures.decode(Fixtures.serving))
                 app.stage(account: try Fixtures.decode(sidecarOffline))
@@ -657,11 +660,24 @@ package enum SnapshotRunner {
                 app.stage(summary: HostSummary(rules: .success(try Fixtures.decode(Fixtures.rulesKitchen))), for: "pi-kitchen")
                 app.chosenHost = chosen
                 app.place = place
-                app.agentsPath = path
                 try stage(app)
                 _ = app.stage(.done, progress: full)
                 try await renderWindow(MainView().environment(app), size: CGSize(width: 1120, height: 700), dark: dark,
                                        file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
+            }
+        }
+        // The Agents hub at 5 agents × 8 hosts, every one of its 40 rows,
+        // on the synthetic latch the measured test app runs on.
+        for dark in [false, true] {
+            if wanted(output.appending(path: "15-agents-hub-5x8-\(dark ? "dark" : "light").png")),
+               let spec = SyntheticLatchClient.Spec("hosts=8,agents=5") {
+                let app = AppModel(client: SyntheticLatchClient(spec, stateDir: "/s"), still: true)
+                await app.refreshStatus()
+                await app.refreshAccount()
+                await app.refreshAgents()
+                app.place = .account(.agents)
+                try await render(AgentsView().environment(app), size: CGSize(width: 760, height: 2600), dark: dark,
+                                 file: output.appending(path: "15-agents-hub-5x8-\(dark ? "dark" : "light").png"))
             }
         }
         // Vault: this Mac's items with each kind in the inspector, the empty

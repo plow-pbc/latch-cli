@@ -158,7 +158,7 @@ struct RulesScrollTests {
         app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
         let host = try #require(app.host)
         let scout = try #require(client.show.agents?.first?.agentUid)
-        app.rulesFocus = AgentTarget(host: host.name, agent: scout)
+        app.openRules(host, agent: scout)
         #expect(app.rulesScrollTarget(on: host) == nil)
         await app.refreshRules(on: host)
         #expect(app.rulesScrollTarget(on: host) == nil)

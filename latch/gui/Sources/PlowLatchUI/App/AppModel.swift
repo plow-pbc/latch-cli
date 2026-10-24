@@ -703,11 +703,23 @@ final class AppModel {
                                                         uniquingKeysWith: { first, _ in first }) }
     }
 
-    /// The Agents page's path: an agent's uid opens its page.
-    var agentsPath: [String] = []
-    /// The agent whose rules the Rules screen brings into view, on the one
-    /// host it was asked for.
-    var rulesFocus: AgentTarget?
+    /// Why the last removal of an agent failed, until it's dismissed.
+    var agentRemoveError: LatchError?
+
+    /// Removes an agent by its uid (never its name, which another agent
+    /// may share), once the person has confirmed it; then the account's
+    /// agents are read again, removed or not. A refusal is kept for Agents
+    /// to say.
+    func removeAgent(_ agent: AgentsList.Agent) async {
+        guard let removed = await Self.result({ try await self.client.removeAgent(agent.uid) }) else { return }
+        await refreshAgentList()
+        if case let .failure(error) = removed { agentRemoveError = error } else { agentRemoveError = nil }
+    }
+
+    /// The agent whose rules the Rules screen brings into view and focuses,
+    /// on the one host it was asked for, until its editor takes it or that
+    /// host's Rules goes.
+    private(set) var rulesFocus: AgentTarget?
 
     /// An agent's rules on a host: that host's Rules, its editor brought
     /// into view.
@@ -715,6 +727,21 @@ final class AppModel {
         chosenHost = host.name
         place = .host(.rules)
         rulesFocus = AgentTarget(host: host.name, agent: uid)
+    }
+
+    /// An agent's editor on a host's Rules: the request is its, so it's
+    /// done; true only for the request it matches, so a request for another
+    /// host or agent is left for that one.
+    func takeRulesFocus(_ target: AgentTarget) -> Bool {
+        guard rulesFocus == target else { return false }
+        rulesFocus = nil
+        return true
+    }
+
+    /// A host's Rules went before the editor asked for came into view:
+    /// the request goes with it, so it can't take the focus later.
+    func dropRulesFocus(on host: HostEntry) {
+        if rulesFocus?.host == host.name { rulesFocus = nil }
     }
 
     /// The agent's rules to scroll to on a host's Rules screen: the one
