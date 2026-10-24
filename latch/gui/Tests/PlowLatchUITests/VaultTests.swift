@@ -14,6 +14,9 @@ final class VaultClient: LatchClient, @unchecked Sendable {
     var staleImports = 0
     private(set) var expected: [String] = []
     private(set) var previews = 0
+    /// Holds each `vault show` until opened.
+    var showGate: Gate?
+    var removals = false
 
     func localStatus() async throws -> LocalStatus { try Fixtures.decode(Fixtures.serving) }
     func accountStatus() async throws -> AccountStatus { try Fixtures.decode(Fixtures.studioHosts) }
@@ -26,7 +29,13 @@ final class VaultClient: LatchClient, @unchecked Sendable {
         lists += 1
         return try Fixtures.decode(Fixtures.vaultItems)
     }
-    func vaultShow(_ item: String, host: String?) async throws -> VaultShow { try Fixtures.decode(Fixtures.vaultShows[item]!) }
+    func vaultShow(_ item: String, host: String?) async throws -> VaultShow {
+        await showGate?.wait()
+        return try Fixtures.decode(Fixtures.vaultShows[item]!)
+    }
+    func vaultRemove(_ item: String, revision: Int, host: String?) async throws {
+        if !removals { throw LatchError.unreachable("not scripted") }
+    }
     func vaultEdit(_ item: String, revision: Int, _ draft: VaultDraft, host: String?) async throws -> VaultList.Item {
         editedOn.append(host)
         if staleEdits {
@@ -144,6 +153,53 @@ struct VaultTests {
         await app.removeVaultItem(vault.items[0], on: studio)
         #expect(app.vaultRemoveError == .unreachable("not scripted"))
         #expect(app.selectedVaultItem == OnHost(host: studio.name, id: vault.items[0].item))
+    }
+
+    @Test func aRemovedItemLeavesNoSelectionAndNoDetail() async throws {
+        let client = VaultClient()
+        client.removals = true
+        let (app, studio) = try app(client)
+        await app.refreshVault(on: studio)
+        app.selectedVaultItem = OnHost(host: studio.name, id: "v1")
+        let item = try #require(app.inspectedVaultItem(on: studio))
+        await app.showVaultItem(item.item, on: studio)
+        await app.removeVaultItem(item, on: studio)
+        #expect(app.selectedVaultItem == nil)
+        #expect(app.inspectedVaultItem(on: studio) == nil)
+        #expect(app.vaultShow(of: item, on: studio) == nil)
+    }
+
+    // The sidebar moves to another host while an item's values are read:
+    // the read, cancelled, leaves nothing, and a read that does answer is
+    // its own host's, never shown for the other's item with that id.
+    @Test func aDetailReadIsItsHostsAndACancelledOneLeavesNothing() async throws {
+        let client = VaultClient()
+        let gate = Gate()
+        client.showGate = gate
+        let (app, studio) = try app(client)
+        let kitchen = try #require(app.hosts.first { $0.name == "pi-kitchen" })
+        let item = (try Fixtures.decode(Fixtures.vaultShows["v1"]!) as VaultShow).item
+        let kitchenItem = try #require((try Fixtures.decode(Fixtures.remoteVaultItems) as VaultList).items.first { $0.item == item.item })
+        let read = Task { await app.showVaultItem(item.item, on: studio) }
+        app.chosenHost = kitchen.name
+        read.cancel()
+        gate.open()
+        await read.value
+        #expect(app.vaultShow(of: item, on: studio) == nil)
+        await app.showVaultItem(item.item, on: studio)
+        #expect(app.vaultShow(of: item, on: studio) == .success(try Fixtures.decode(Fixtures.vaultShows["v1"]!)))
+        #expect(app.vaultShow(of: kitchenItem, on: kitchen) == nil)
+    }
+
+    // The item changed since its values were read: the inspector waits for
+    // the new revision's rather than showing the old ones as its.
+    @Test func valuesReadAtAnOlderRevisionAreNotTheNewOnes() async throws {
+        let (app, studio) = try app(VaultClient())
+        var item = (try Fixtures.decode(Fixtures.vaultShows["v1"]!) as VaultShow).item
+        await app.showVaultItem(item.item, on: studio)
+        #expect(app.vaultShow(of: item, on: studio) != nil)
+        item.revision += 1
+        #expect(app.vaultShow(of: item, on: studio) == nil)
     }
 
     /// The bundle's latch is given every value on stdin, never in argv.

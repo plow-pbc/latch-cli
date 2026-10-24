@@ -307,6 +307,14 @@ final class AppModel {
         vaultShows[host.name, default: [:]][item] = show
     }
 
+    /// What `vault show` said of an item at the revision listed; nil while
+    /// that revision is read (a show of an older one is not its values).
+    func vaultShow(of item: VaultList.Item, on host: HostEntry) -> Result<VaultShow, LatchError>? {
+        let show = vaultShows[host.name]?[item.item]
+        if case let .success(shown)? = show, shown.item.revision != item.revision { return nil }
+        return show
+    }
+
     /// Opens an item's Edit sheet, from the item as it is now.
     func beginVaultEdit(_ item: VaultList.Item, on host: HostEntry) async {
         await showVaultItem(item.item, on: host)

@@ -664,14 +664,20 @@ package enum SnapshotRunner {
                                        file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
             }
         }
-        // Vault: this Mac's items with each kind in the inspector, the empty
-        // state, another host's, one offline, and the sheets.
+        // Vault: this Mac's items with each kind selected, none selected,
+        // none matching a search, the empty state, a failed read, another
+        // host's, one offline, at the default and narrow sizes; the
+        // inspector on its own (the window captures leave it out); and the
+        // sheets.
         for dark in [false, true] {
             let piOffline = Fixtures.studioHosts.replacingOccurrences(
                 of: #""self":false,"online":true,"last_seen_at":"2026-10-22T22:06:30.037004Z""#,
                 with: #""self":false,"online":false,"last_seen_at":null"#)
             let screens: [(String, String?, String, String?, String)] = [
                 ("17-vault-login-2fa", nil, Fixtures.vaultItems, "v1", Fixtures.studioHosts),
+                ("17-vault-no-selection", nil, Fixtures.vaultItems, nil, Fixtures.studioHosts),
+                ("17-vault-search-no-match", nil, Fixtures.vaultItems, nil, Fixtures.studioHosts),
+                ("17-vault-read-failed", nil, Fixtures.vaultItems, nil, Fixtures.studioHosts),
                 ("17-vault-card", nil, Fixtures.vaultItems, "v3", Fixtures.studioHosts),
                 ("17-vault-identity", nil, Fixtures.vaultItems, "v4", Fixtures.studioHosts),
                 ("17-vault-login-also-inside", nil, Fixtures.vaultItems, "v6", Fixtures.studioHosts),
@@ -693,9 +699,20 @@ package enum SnapshotRunner {
                 if name.hasSuffix("remove-failed") {
                     app.vaultRemoveError = .failed(LatchFailure(code: "state_busy", message: "another latch is changing /Users/me/.latch; try again"))
                 }
+                if name.hasSuffix("search-no-match") { app.vaultSearch = "bank" }
+                if name.hasSuffix("read-failed") {
+                    app.stage(summary: HostSummary(vault: .failure(.failed(LatchFailure(code: "state_busy",
+                        message: "another latch is changing /Users/me/.latch; try again")))), for: "studio")
+                }
                 _ = app.stage(.done, progress: full)
-                try await renderWindow(MainView().environment(app), size: CGSize(width: 1020, height: 620), dark: dark,
-                                       file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
+                for (label, size) in [("default", CGSize(width: 1120, height: 640)), ("narrow", narrowSize)] {
+                    try await renderWindow(MainView().environment(app), size: size, dark: dark,
+                                           file: output.appending(path: "\(name)-\(label)-\(dark ? "dark" : "light").png"))
+                }
+                if selected != nil || name.hasSuffix("no-selection") {
+                    try await render(Inspector(route: app.route).environment(app), size: CGSize(width: 320, height: 600), dark: dark,
+                                     file: output.appending(path: "\(name)-inspector-\(dark ? "dark" : "light").png"))
+                }
             }
             let app = AppModel(client: FakeLatchClient(), still: true)
             app.stage(status: try Fixtures.decode(Fixtures.serving))
