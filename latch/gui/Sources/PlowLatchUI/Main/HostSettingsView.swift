@@ -6,12 +6,11 @@ import SwiftUI
 /// Mac). The window's title names the host.
 struct HostSettingsView: View {
     @Environment(AppModel.self) private var app
-    @State private var stopping = false
 
     var body: some View {
         Form {
             if let host = app.host {
-                HostSection(host: host, stopping: $stopping)
+                HostSection(host: host)
                 if host.isThisMac {
                     Section("Sleep") {
                         Toggle(isOn: app.keepAwakeBinding) {
@@ -19,6 +18,7 @@ struct HostSettingsView: View {
                             Text(KeepAwakeSwitch.detail)
                         }
                         .toggleStyle(.switch)
+                        .accessibilityLabel(KeepAwakeSwitch.title)
                         .disabled(!app.canSetKeepAwake)
                         KeepAwakeSwitch.Said().foregroundStyle(.secondary)
                     }
@@ -35,18 +35,22 @@ struct HostSettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .confirmationDialog("Stop Latch on this Mac?", isPresented: $stopping) {
+        .confirmationDialog("Stop Latch on this Mac?", isPresented: stopping) {
             Button("Stop", role: .destructive) { Task { await app.stopHost() } }
         } message: {
             Text("Your agents can't reach this Mac until you start it again.")
         }
+    }
+
+    /// Only over this Mac's settings.
+    private var stopping: Binding<Bool> {
+        Binding { app.confirmingStop && app.host?.isThisMac == true } set: { app.confirmingStop = $0 }
     }
 }
 
 /// The host's state; this Mac's restarts and stops here.
 private struct HostSection: View {
     var host: HostEntry
-    @Binding var stopping: Bool
     @Environment(AppModel.self) private var app
 
     var body: some View {
@@ -68,7 +72,7 @@ private struct HostSection: View {
                     if app.status?.thisMachine.hosting.running == true {
                         Button("Restart") { Task { await app.restartHost() } }
                             .help("Stop Latch and start it again as it last ran")
-                        Button("Stop…") { stopping = true }
+                        Button("Stop…") { app.confirmingStop = true }
                     } else {
                         Button(app.startingHost ? "Starting…" : "Start Latch") { Task { await app.startHosting() } }
                             .disabled(app.startingHost)

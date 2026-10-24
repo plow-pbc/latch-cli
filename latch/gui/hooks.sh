@@ -12,7 +12,9 @@
 #                               latch's, in the main window (needs --window):
 #                               SPEC is "hosts=3,records=50,vault=100,agents=2"
 #                               (the defaults) plus "rate=N" new records a
-#                               second and "delay=MS" per read
+#                               second, "delay=MS" per read and
+#                               "connectors=MS" a plugin change or Google
+#                               sign-in takes, which then hold
 #   hooks.sh send COMMAND [ARG] one hook (TestHooks.swift lists them)
 #   hooks.sh state              prints the flow's state as the app records it
 #   hooks.sh quit               quits it and deletes its preferences

@@ -119,8 +119,13 @@ final class AppModel {
     private var page: AccountPage?
     private(set) var screen: HostScreen = .home
     /// The host the workspace shows, as the sidebar picked it; nil until
-    /// one is picked.
-    var chosenHost: String?
+    /// one is picked. Picking another closes Stop…'s confirmation.
+    var chosenHost: String? {
+        didSet { if chosenHost != oldValue { confirmingStop = false } }
+    }
+
+    /// Host Settings' Stop… is asking to confirm stopping this Mac's host.
+    var confirmingStop = false
 
     /// A sidebar host row's click: that host's workspace, on the screen it
     /// was last on.

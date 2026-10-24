@@ -164,6 +164,23 @@ struct HostSettingsTests {
         #expect(app.summaries["pi-kitchen"] == nil)
     }
 
+    /// Stop…'s confirmation is this Mac's: picking another host closes it
+    /// rather than leaving it over that host's settings, and coming back
+    /// doesn't bring it back.
+    @Test func stopsConfirmationClosesWhenTheHostChanges() throws {
+        let app = AppModel(client: FakeLatchClient(), store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
+        app.stage(status: try Fixtures.decode(Fixtures.serving))
+        app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
+        app.showHost("studio")
+        app.confirmingStop = true
+        app.showHost("studio")
+        #expect(app.confirmingStop)
+        app.showHost("pi-kitchen")
+        #expect(!app.confirmingStop)
+        app.showHost("studio")
+        #expect(!app.confirmingStop)
+    }
+
     /// A Mac that only views its hosts has no plugins of its own to change.
     @Test func aViewingMacChangesNoPlugins() async throws {
         let client = CountingClient()
