@@ -37,6 +37,7 @@ conformance!(
     a_fill_pauses_its_own_session_and_no_other,
     agent_code_is_noted_per_site_for_its_session_only,
     a_login_after_an_edit_fills_the_new_password,
+    only_a_layer_of_its_own_covers_a_field_and_the_refusal_names_it,
     no_secret_goes_into_a_form_sent_by_get,
     requests_go_on_while_a_guard_outlives_its_call,
     no_vault_value_goes_into_an_editable_region,
@@ -2539,4 +2540,87 @@ mod mac {
             assert!(out.stdout.is_empty());
         }
     }
+}
+
+async fn only_a_layer_of_its_own_covers_a_field_and_the_refusal_names_it(engine: &str) {
+    let (_dir, state, _area) = test_state(engine);
+    let vault = Vault::new(state.clone());
+    let login = vault
+        .with(|s| {
+            s.add(item(
+                LOGIN,
+                "Shop",
+                &["shop.example"],
+                &[("username", "ada@shop.example"), ("password", PASSWORD)],
+            ))
+        })
+        .unwrap();
+    let (pages, prompt) = (site(), site());
+    let local = format!("http://127.0.0.1:{pages}");
+    let mut browsers = Browsers::new(state.clone(), vault.clone(), super::HEADLESS);
+    browsers.test = Some((
+        latch(),
+        vec![(local.clone(), "https://login.shop.example".into())],
+    ));
+    let mut h = Harness::start(browsers, engine).await;
+
+    // A floating label and a page's fixed banner over the password field
+    // keep no one from it: latch suggests the whole login, and it fills.
+    for over in ["label", "footer"] {
+        h.call(
+            "open",
+            json!({"url": format!("{local}/covered-login.html?{over}")}),
+        )
+        .await
+        .unwrap();
+        let observed = h.call("observe", json!({})).await.unwrap();
+        println!("{over}: offers {}", observed["fill"]["page_offers"]);
+        assert_eq!(
+            observed["fill"]["page_offers"],
+            json!(["password"]),
+            "{over}"
+        );
+        let (signed_in, _) = h.login(&login.item).await;
+        assert_eq!(signed_in.unwrap()["submitted"], true, "{over}");
+        assert!(h.text().await.contains("password accepted"), "{over}");
+    }
+
+    // Another site's frame over it does: the fill and a click are refused,
+    // each naming the frame.
+    let prompt = format!("http://localhost:{prompt}");
+    let page = h
+        .call(
+            "open",
+            json!({"url": format!("{local}/covered-login.html?prompt={}", &prompt[17..])}),
+        )
+        .await
+        .unwrap();
+    let observed = h.call("observe", json!({})).await.unwrap();
+    assert_eq!(observed["fill"]["page_offers"], json!(["username_only"]));
+    let password = find(&page, "textbox", "Password");
+    let (refused, _) = h
+        .fill(json!({"item": login.item, "snapshot": page["snapshot"],
+                     "fields": [["password", [password.clone()]]],
+                     "press": find(&page, "button", "Sign in")}))
+        .await;
+    let refused = refused.unwrap_err();
+    println!("prompt: {} ({})", refused.code, refused.message);
+    assert_eq!(refused.code, "bad_target");
+    assert!(
+        refused
+            .message
+            .contains(&format!("a frame from {prompt} covers it")),
+        "{}",
+        refused.message
+    );
+    let mut typed = super::act(&format!("type {password} \"x\""));
+    typed["plan"]["steps"][0]["literal"]["snapshot"] = page["snapshot"].clone();
+    let stopped = h.call("do", typed).await.unwrap_err();
+    println!("type: {} {}", stopped.code, stopped.details["stop"]);
+    assert_eq!(stopped.details["stop"]["code"], "covered_target");
+    assert_eq!(
+        stopped.details["stop"]["covered_by"]["frame"],
+        json!(prompt)
+    );
+    h.call("close", json!({})).await.ok();
 }

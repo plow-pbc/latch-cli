@@ -882,6 +882,17 @@ impl<D: Driver> Core<D> {
             failure.details = json!({"reason": reason});
             failure
         };
+        let covered_by = |cover: &Value| {
+            let mut failure = Failure::new(
+                code::covered_target,
+                format!(
+                    "that element is covered by {}; observe again",
+                    covering(cover)
+                ),
+            );
+            failure.details = json!({"reason": "covered", "covered_by": cover});
+            failure
+        };
         if second["gone"] == true {
             return Err(stale());
         }
@@ -892,7 +903,10 @@ impl<D: Driver> Core<D> {
             return Err(refused("disabled"));
         }
         if second["covered"] == true {
-            return Err(refused("covered"));
+            return Err(match second.get("cover") {
+                Some(cover) => covered_by(cover),
+                None => refused("covered"),
+            });
         }
         let moved = ["x", "y"].iter().any(|axis| {
             (first[axis].as_f64().unwrap_or(0.0) - second[axis].as_f64().unwrap_or(0.0)).abs() > 2.0
@@ -908,7 +922,10 @@ impl<D: Driver> Core<D> {
         // Not covered in its own document is not enough for an element in
         // a frame: the pages around the frame may draw over it.
         if !self.driver.reaches(&frame, x, y)? {
-            return Err(refused("covered"));
+            let mut failure = refused("covered");
+            failure.message =
+                "that element is covered by the page around its frame; observe again".into();
+            return Err(failure);
         }
         Ok(Located {
             x,
@@ -1225,6 +1242,21 @@ pub fn origin_and_path(url: &str) -> (String, String) {
             without.split(':').next().unwrap_or_default().to_string() + ":",
             String::new(),
         ),
+    }
+}
+
+/// What the page's reader says covers an element, in words: a frame by
+/// its site, anything else by its role and name.
+pub fn covering(cover: &Value) -> String {
+    let (role, name) = (
+        cover["role"].as_str().unwrap_or("generic"),
+        cover["name"].as_str().unwrap_or_default(),
+    );
+    match cover["frame"].as_str() {
+        Some("opaque") => "a frame".into(),
+        Some(site) => format!("a frame from {site}"),
+        None if name.is_empty() => format!("a {role} element"),
+        None => format!("{role} {name:?}"),
     }
 }
 

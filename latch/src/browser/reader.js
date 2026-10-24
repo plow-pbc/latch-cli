@@ -162,6 +162,16 @@
     };
   };
 
+  // What a click meant for another element lands on instead: its role and
+  // name, and for a frame, the site its address is on.
+  const coverOf = (hit) => {
+    const cover = { role: role(hit), name: name(hit) };
+    if (hit.localName === 'iframe' || hit.localName === 'frame') {
+      try { cover.frame = new URL(hit.src, location.href).origin; } catch { cover.frame = 'opaque'; }
+    }
+    return cover;
+  };
+
   // Brings element `index` of `snap` into view and reports where to click
   // it, in this frame's viewport, and whether a click there would reach it:
   // its centre, or for a link that wraps onto several lines (whose box's
@@ -179,6 +189,7 @@
     let x = rect.left + rect.width / 2;
     let y = rect.top + rect.height / 2;
     let reaches = reachesAt(x, y);
+    const top = reaches ? null : document.elementFromPoint(x, y);
     for (const line of reaches ? [] : el.getClientRects()) {
       const [lx, ly] = [line.left + line.width / 2, line.top + line.height / 2];
       if (line.width > 0 && line.height > 0 && reachesAt(lx, ly)) {
@@ -189,6 +200,7 @@
     return {
       x, y, width: rect.width, height: rect.height,
       covered: !reaches,
+      cover: !reaches && top ? coverOf(top) : undefined,
       disabled: !!(el.disabled || el.getAttribute('aria-disabled') === 'true'),
       kind: el.localName === 'select' ? 'select'
         : (el.localName === 'input' && el.type === 'file') ? 'file'
@@ -213,22 +225,40 @@
     || (el.localName === 'input' && inputRole(el) !== 'button'
       && !['checkbox', 'radio', 'file', 'hidden', 'range', 'color'].includes(el.type));
   const SUBMIT_BUTTONS = 'button:not([type]), button[type=submit], input[type=submit], input[type=image]';
-  // Whether something, such as a modal or a banner, covers `el` so a click
-  // could not reach it now. Off-screen elements are never covered: a click
-  // scrolls them into view first. A link that wraps onto several lines is
-  // tried at the middle of each line, not of the box around them.
-  const covered = (el) => {
-    if (!rendered(el) || offscreen(el.getBoundingClientRect())) return false;
+  // Something drawn over a field that keeps a person from it: a control, a
+  // frame or a dialog of its own, not a part of the field's own control or
+  // dialog. A floating label or a page's fixed footer is none of these.
+  const LAYERS = `${INTERACTIVE}, iframe, frame, dialog, [role=dialog], [role=alertdialog]`;
+  const layerOver = (hit, el) => {
+    const layer = hit.closest(LAYERS);
+    return !!layer && !layer.contains(el);
+  };
+
+  // What, such as a modal or a banner, covers `el` so a click could not
+  // reach it now (`coverOf` the element on top), or null. For a vault
+  // value (`value`), which goes into a text field with no click, only a
+  // layer (above) covers one. Off-screen elements are never
+  // covered: a click scrolls them into view first. A link that wraps onto
+  // several lines is tried at the middle of each line, not of the box
+  // around them.
+  const cover = (el, value = false) => {
+    if (!rendered(el) || offscreen(el.getBoundingClientRect())) return null;
+    const field = value && textLike(el);
+    let top = null;
     const reachesAt = (rect) => {
       const x = Math.min(Math.max(rect.left + rect.width / 2, 0), innerWidth - 1);
       const y = Math.min(Math.max(rect.top + rect.height / 2, 0), innerHeight - 1);
       const hit = document.elementFromPoint(x, y);
-      return !hit || hit === el || el.contains(hit) || hit.contains(el)
-        || (el.labels && [...el.labels].some((l) => l.contains(hit)));
+      const reaches = !hit || hit === el || el.contains(hit) || hit.contains(el)
+        || (el.labels && [...el.labels].some((l) => l.contains(hit)))
+        || (field && !layerOver(hit, el));
+      top ??= reaches ? null : hit;
+      return reaches;
     };
     const lines = [...el.getClientRects()].filter((r) => r.width > 0 && r.height > 0 && !offscreen(r));
-    return !(lines.length ? lines : [el.getBoundingClientRect()]).some(reachesAt);
+    return (lines.length ? lines : [el.getBoundingClientRect()]).some(reachesAt) ? null : coverOf(top);
   };
+  const covered = (el) => cover(el) !== null;
 
   // What a fill needs to know of one element, from the page's own markup:
   // its tag and input type, its `autocomplete` attribute, its form (an
@@ -238,6 +268,7 @@
   const controlOf = (el) => {
     const form = el.form || el.closest('form');
     const r = role(el);
+    const over = cover(el, true);
     return {
       // Editable first: a textarea made contenteditable takes its value as
       // text too, which its name and the page's text show.
@@ -252,7 +283,8 @@
       hidden: !rendered(el) || unread(el),
       disabled: !!(el.disabled || el.getAttribute('aria-disabled') === 'true'),
       readonly: !!el.readOnly,
-      covered: covered(el),
+      covered: over !== null,
+      cover: over ?? undefined,
     };
   };
 
