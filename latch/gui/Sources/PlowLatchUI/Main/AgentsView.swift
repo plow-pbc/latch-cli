@@ -6,6 +6,7 @@ import SwiftUI
 struct AgentsView: View {
     @Environment(AppModel.self) private var app
     @State private var removing: AgentsList.Agent?
+    @State private var position = ScrollPosition()
 
     var body: some View {
         @Bindable var app = app
@@ -37,6 +38,20 @@ struct AgentsView: View {
                         }
                     }
                     .formStyle(.grouped)
+                    // Back where it was left (a Rules or Activity link and
+                    // back, another page and back): scrolled there as it
+                    // appears, and again as its content changes size, until
+                    // the person scrolls. Kept from the top of the content,
+                    // under the toolbar's inset, which is where scrollTo
+                    // measures from.
+                    .scrollPosition($position)
+                    .onScrollGeometryChange(for: CGFloat.self, of: { $0.contentSize.height }) { _, _ in
+                        if !position.isPositionedByUser { position.scrollTo(y: app.agentsScrolled) }
+                    }
+                    .onScrollGeometryChange(for: CGFloat.self, of: { $0.contentOffset.y + $0.contentInsets.top }) { _, y in
+                        if position.isPositionedByUser { app.agentsScrolled = y }
+                    }
+                    .onAppear { position.scrollTo(y: app.agentsScrolled) }
                 }
             } else if let error = app.agentsError {
                 ContentUnavailableView {

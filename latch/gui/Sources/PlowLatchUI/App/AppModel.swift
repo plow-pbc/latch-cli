@@ -640,6 +640,10 @@ final class AppModel {
     /// The New Agent sheet, while open.
     var newAgent: NewAgent?
 
+    /// How far down Agents was scrolled, for a return to it. Not observed:
+    /// only Agents reads it, as it appears.
+    @ObservationIgnored var agentsScrolled: CGFloat = 0
+
     func agentCatalog() async throws -> AgentCatalog { try await client.agentCatalog() }
     func agentLines() async throws -> AgentLines { try await client.agentLines() }
     /// `latch agents show`, kept in the account's agents too, so the

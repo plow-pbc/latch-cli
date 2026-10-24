@@ -1,10 +1,12 @@
-import Foundation
+import AppKit
 import Synchronization
+import SwiftUI
 import Testing
 @testable import PlowLatchUI
 
 /// Agents' Remove… and Rules buttons: a removal names the agent by uid, and
-/// a request for an agent's rules is taken only by that host's editor.
+/// a request for an agent's rules is taken only by that host's editor. And
+/// Agents itself, back where it was left.
 @MainActor
 struct AgentsHubTests {
     /// Two agents both called scout; records each removal's uid.
@@ -63,6 +65,27 @@ struct AgentsHubTests {
         await app.removeAgent(try #require(app.agents?.first))
         #expect(app.agentRemoveError?.code == "outcome_unknown")
         #expect(app.agents?.count == 2)
+    }
+
+    // Left scrolled down, then returned to (a new view of it): Agents
+    // opens where it was, once its rows are laid out, and stays there.
+    @Test func agentsOpensWhereItWasLeft() async throws {
+        let app = try await app(TwinsClient())
+        app.agentsScrolled = 120
+        let window = Offscreen(contentRect: CGRect(x: -4000, y: -4000, width: 700, height: 300), styleMask: [.titled],
+                               backing: .buffered, defer: false)
+        window.contentView = NSHostingView(rootView: AgentsView().environment(app))
+        // Setting its content can move the window onto a display: back.
+        window.setFrameOrigin(CGPoint(x: -4000, y: -4000))
+        window.orderFrontRegardless()
+        defer { window.orderOut(nil) }
+        #expect(!NSScreen.screens.contains { $0.frame.intersects(window.frame) })
+        func scrollers(_ view: NSView) -> [NSScrollView] { ((view as? NSScrollView).map { [$0] } ?? []) + view.subviews.flatMap(scrollers) }
+        func shown() -> CGFloat? { scrollers(window.contentView!).first?.documentVisibleRect.minY }
+        await waitUntil { shown() == 120 }
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(shown() == 120)
+        #expect(app.agentsScrolled == 120)
     }
 
     // A request for helper's rules on pi-kitchen: taken only by
