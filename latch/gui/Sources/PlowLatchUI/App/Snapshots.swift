@@ -447,13 +447,7 @@ package enum SnapshotRunner {
                 let app = AppModel(client: FakeLatchClient(), still: true)
                 app.stage(status: try Fixtures.decode(Fixtures.status(status, plugins: Fixtures.studioPlugins)))
                 app.stage(account: try account.map { try Fixtures.decode($0) }, error: account == nil ? plowDown : nil)
-                app.stage(summary: HostSummary(rules: .success(try Fixtures.decode(Fixtures.studioRules)),
-                                               vault: .success(try Fixtures.decode(Fixtures.studioVault))),
-                          for: "studio")
-                app.stage(summary: HostSummary(status: .success(try Fixtures.decode(Fixtures.status(Fixtures.piStatus, plugins: Fixtures.piPlugins))),
-                                               rules: .success(try Fixtures.decode(Fixtures.piRules)),
-                                               vault: .success(try Fixtures.decode(Fixtures.piVault))),
-                          for: "pi-kitchen")
+                try stageSummaries(app)
                 app.chosenHost = chosen
                 app.place = place
                 stageActivity(app)
@@ -470,13 +464,7 @@ package enum SnapshotRunner {
                     let app = AppModel(client: FakeLatchClient(), still: true)
                     app.stage(status: try Fixtures.decode(Fixtures.status(Fixtures.serving, plugins: Fixtures.studioPlugins)))
                     app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
-                    app.stage(summary: HostSummary(rules: .success(try Fixtures.decode(Fixtures.studioRules)),
-                                                   vault: .success(try Fixtures.decode(Fixtures.studioVault))),
-                              for: "studio")
-                    app.stage(summary: HostSummary(status: .success(try Fixtures.decode(Fixtures.status(Fixtures.piStatus, plugins: Fixtures.piPlugins))),
-                                                   rules: .success(try Fixtures.decode(Fixtures.piRules)),
-                                                   vault: .success(try Fixtures.decode(Fixtures.piVault))),
-                              for: "pi-kitchen")
+                    try stageSummaries(app)
                     app.stage(connections: Connections(try Fixtures.decode(Fixtures.setup(on: [], google: Fixtures.googleNotConnected)) as SetupStatus))
                     app.chosenHost = chosen
                     app.place = .host(.home)
@@ -912,6 +900,17 @@ package enum SnapshotRunner {
     }
 
     private static let mainSize = CGSize(width: 860, height: 560)
+    /// studio's and pi-kitchen's rules and vault, and pi-kitchen's status.
+    private static func stageSummaries(_ app: AppModel) throws {
+        app.stage(summary: HostSummary(rules: .success(try Fixtures.decode(Fixtures.studioRules)),
+                                       vault: .success(try Fixtures.decode(Fixtures.studioVault))),
+                  for: "studio")
+        app.stage(summary: HostSummary(status: .success(try Fixtures.decode(Fixtures.status(Fixtures.piStatus, plugins: Fixtures.piPlugins))),
+                                       rules: .success(try Fixtures.decode(Fixtures.piRules)),
+                                       vault: .success(try Fixtures.decode(Fixtures.piVault))),
+                  for: "pi-kitchen")
+    }
+
     /// The main window at its narrowest (MainView's minimum width).
     private static let narrowSize = CGSize(width: 1040, height: 600)
 
