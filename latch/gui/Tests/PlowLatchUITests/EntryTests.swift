@@ -3,15 +3,16 @@ import Synchronization
 import Testing
 @testable import PlowLatchUI
 
-/// A latch that counts every process the app would start, by command; a
-/// held command waits for its gate.
+/// A latch that counts every process the app would start, by command, and
+/// the host each asked (nil: this Mac); a held command waits for its gate.
 final class CountingClient: LatchClient, @unchecked Sendable {
-    private let counted = Mutex<[String]>([])
+    private let counted = Mutex<[(command: String, host: String?)]>([])
     var held: [String: Gate] = [:]
-    var calls: [String] { counted.withLock { $0 } }
+    var calls: [String] { counted.withLock { $0.map(\.command) } }
+    var hostsAsked: [String?] { counted.withLock { $0.map(\.host) } }
 
-    private func ran(_ command: String) async {
-        counted.withLock { $0.append(command) }
+    private func ran(_ command: String, host: String? = nil) async {
+        counted.withLock { $0.append((command, host)) }
         await held[command]?.wait()
     }
 
@@ -20,7 +21,7 @@ final class CountingClient: LatchClient, @unchecked Sendable {
         return try Fixtures.decode(Fixtures.serving)
     }
     func hostStatus(_ host: String) async throws -> LocalStatus {
-        await ran("status --host")
+        await ran("status --host", host: host)
         return try Fixtures.decode(Fixtures.serving)
     }
     func setupStatus() async throws -> SetupStatus {
@@ -29,15 +30,15 @@ final class CountingClient: LatchClient, @unchecked Sendable {
     }
     func setupStatusCheckingAccess() async throws -> SetupStatus { try await setupStatus() }
     func rulesShow(host: String?) async throws -> RulesShow {
-        await ran("rules show")
+        await ran("rules show", host: host)
         return try Fixtures.decode(Fixtures.studioRules)
     }
     func agents(host: String?) async throws -> AgentsList {
-        await ran(host == nil ? "agents" : "agents --host")
+        await ran(host == nil ? "agents" : "agents --host", host: host)
         return try Fixtures.decode(Fixtures.agents)
     }
     func vaultList(host: String?) async throws -> VaultList {
-        await ran("vault list")
+        await ran("vault list", host: host)
         return try Fixtures.decode(Fixtures.studioVault)
     }
     func devices() async throws -> DeviceList {
@@ -96,6 +97,18 @@ struct EntryTests {
         await app.enter(.host(.home, kitchen))
         #expect(client.calls.last == "vault list")
         #expect(client.calls.count == 5)
+    }
+
+    // Home on a host asks only that host, never the others it could.
+    @Test func homeAsksOnlyItsHost() async throws {
+        let client = CountingClient()
+        let app = try app(client)
+        let mac = app.hosts[0], kitchen = app.hosts[1]
+        await app.enter(.host(.home, mac))
+        #expect(!client.hostsAsked.isEmpty && client.hostsAsked.allSatisfy { $0 == nil })
+        let first = client.calls.count
+        await app.enter(.host(.home, kitchen))
+        #expect(client.hostsAsked.dropFirst(first).allSatisfy { $0 == kitchen.name }, "\(client.hostsAsked)")
     }
 
     @Test func refreshReadsAgainWhatIsHeld() async throws {
