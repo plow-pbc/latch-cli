@@ -78,7 +78,20 @@ pub enum Event {
         name: String,
         state: String,
     },
+    /// A page's own request (a page load, an XHR or a fetch) that the site
+    /// answered with an error status (a 429 to a sign-in, say), by the
+    /// site's origin only: never its path or query.
+    HttpError {
+        tab: String,
+        status: u16,
+        origin: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        retry_after: Option<String>,
+    },
 }
+
+/// The most `HttpError` events kept between two answers.
+pub const HTTP_ERRORS: usize = 5;
 
 /// The keys `press` takes, by name.
 pub const KEY_NAMES: &[&str] = &[

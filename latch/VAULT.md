@@ -238,8 +238,13 @@ browser, and an element list marks a field holding a filled value as
 `filled`, never showing the value. While a filled value may be on a page,
 in whichever of the session's tabs, `eval` and screenshots are refused
 (`secret_on_page`) until it is gone or its tab is closed. The result says
-`submitted`, not "logged in" or "paid", with each field's outcome and the
-number of stages.
+`submitted`, not "logged in" or "paid", with each field's outcome, the
+number of stages and its `events`: a sign-in the site refused at either
+stage (`http_error`, a 429) shows there, though the page may say only
+"something went wrong". Only its status comes back, and only for the
+page's own origin or one a value went to: while a value is on the page, a
+dialog's message, a new tab's address, another site's name or a
+response's `Retry-After` may be what the page or the site made of it.
 
 The audit records the item, its revision, the mapping by ref, where it
 came from (a suggestion's id, or the agent), the stages, both origins, any

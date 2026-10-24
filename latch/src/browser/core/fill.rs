@@ -227,8 +227,11 @@ impl<D: Driver> Core<D> {
         let before = self.fill.stage.clone().unwrap_or_default();
         let deadline = Instant::now() + NEXT_STAGE;
         let mut last: Option<(String, Instant)> = None;
+        // What the page did meanwhile, a refusal of the first stage's
+        // submission among it.
+        let mut events = Vec::new();
         loop {
-            let _ = self.driver.settle();
+            events.extend(self.driver.settle().unwrap_or_default());
             if let Ok((mark, asks)) = self.stage_now()
                 && mark != before
             {
@@ -252,7 +255,9 @@ impl<D: Driver> Core<D> {
         // latch's own reading of the new stage, not the agent's.
         self.quiet = true;
         let reading = self.read(None)?;
-        self.inventory(&reading.snapshot)
+        let mut stage = self.inventory(&reading.snapshot)?;
+        stage["events"] = json!(events);
+        Ok(stage)
     }
 
     /// `expression`'s answer in one of a snapshot's frames, or `None` when
@@ -462,16 +467,18 @@ impl<D: Driver> Core<D> {
         // the way leaves the session paused too.
         self.fill.unclean = true;
         let deadline = Instant::now() + CLEANUP;
+        // What the page did while latch waited, a refused request among it.
+        let mut events = Vec::new();
         loop {
             if self.holding().ok() == Some(0) {
                 self.fill.unclean = false;
-                return Ok(json!({"clean": true, "cleared_by_latch": false}));
+                return Ok(json!({"clean": true, "cleared_by_latch": false, "events": events}));
             }
             if Instant::now() >= deadline || self.driver.dialog_open() {
                 break;
             }
             std::thread::sleep(Duration::from_millis(200));
-            let _ = self.driver.settle();
+            events.extend(self.driver.settle().unwrap_or_default());
         }
         for (_, frame) in self.live_filled()?.here {
             let _ = self.driver.run(&frame, "__latch.clearFilled()");
@@ -481,7 +488,7 @@ impl<D: Driver> Core<D> {
         std::thread::sleep(SETTLED);
         let clean = self.holding().ok() == Some(0);
         self.fill.unclean = !clean;
-        Ok(json!({"clean": clean, "cleared_by_latch": clean}))
+        Ok(json!({"clean": clean, "cleared_by_latch": clean, "events": events}))
     }
 
     /// Lets the agent back in, unless a cleanup could not confirm the values

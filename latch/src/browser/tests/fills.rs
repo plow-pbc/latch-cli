@@ -37,6 +37,7 @@ conformance!(
     a_fill_pauses_its_own_session_and_no_other,
     agent_code_is_noted_per_site_for_its_session_only,
     a_login_after_an_edit_fills_the_new_password,
+    a_sign_in_the_site_refuses_says_so,
     a_login_whose_page_replaces_its_email_field_still_fills_whole,
     a_login_is_typed_with_the_engines_own_keys,
     no_part_of_a_typed_secret_goes_into_an_address,
@@ -329,6 +330,15 @@ fn site() -> u16 {
                     file => std::fs::read(folder.join(file.trim_start_matches('/'))).ok(),
                 };
                 let mut socket = socket;
+                if path == "/limited-late" {
+                    std::thread::sleep(Duration::from_millis(700));
+                }
+                if path == "/limited" || path == "/limited-late" {
+                    let _ = socket.write_all(
+                        b"HTTP/1.1 429 Too Many Requests\r\nRetry-After: 30\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    );
+                    return;
+                }
                 let (status, page) = match page {
                     Some(page) => ("200 OK", page),
                     None => ("404 Not Found", Vec::new()),
@@ -2898,5 +2908,138 @@ async fn a_login_whose_page_replaces_its_email_field_still_fills_whole(engine: &
     let (signed_in, _) = h.login(&login.item).await;
     assert_eq!(signed_in.unwrap()["submitted"], true);
     assert!(h.text().await.contains("password accepted"));
+    h.call("close", json!({})).await.ok();
+}
+
+async fn a_sign_in_the_site_refuses_says_so(engine: &str) {
+    let (_dir, state, _area) = test_state(engine);
+    let vault = Vault::new(state.clone());
+    let login = vault
+        .with(|s| {
+            s.add(item(
+                LOGIN,
+                "Shop",
+                &["shop.example"],
+                &[("username", "ada@shop.example"), ("password", PASSWORD)],
+            ))
+        })
+        .unwrap();
+    let pages = site();
+    let local = format!("http://127.0.0.1:{pages}");
+    let mut browsers = Browsers::new(state.clone(), vault.clone(), super::HEADLESS);
+    browsers.test = Some((
+        latch(),
+        vec![(local.clone(), "https://login.shop.example".into())],
+    ));
+    let mut h = Harness::start(browsers, engine).await;
+
+    // The page only says "Something went wrong"; the fill's answer says
+    // the site answered its sign-in 429.
+    h.call(
+        "open",
+        json!({"url": format!("{local}/limited-login.html")}),
+    )
+    .await
+    .unwrap();
+    let (signed_in, _) = h.login(&login.item).await;
+    let signed_in = signed_in.unwrap();
+    println!("rate-limited sign-in: events {}", signed_in["events"]);
+    assert_eq!(signed_in["submitted"], true);
+    // Its Retry-After stays out: a site could put the value there.
+    let refused = json!([{"event": "http_error", "tab": "t1", "status": 429, "origin": local}]);
+    assert_eq!(signed_in["events"], refused);
+
+    // The same at an identifier-first sign-in's password stage, which
+    // latch fills and presses itself.
+    h.call(
+        "open",
+        json!({"url": format!("{local}/limited-login.html?two")}),
+    )
+    .await
+    .unwrap();
+    let (signed_in, _) = h.login(&login.item).await;
+    let signed_in = signed_in.unwrap();
+    println!(
+        "rate-limited password stage: stages {}, events {}",
+        signed_in["stages"], signed_in["events"]
+    );
+    assert_eq!(signed_in["stages"], 2);
+    assert_eq!(signed_in["events"], refused);
+
+    // And when the email stage's own send is refused and no password
+    // stage comes: the fill stops for the agent, saying why.
+    h.call(
+        "open",
+        json!({"url": format!("{local}/limited-login.html?first")}),
+    )
+    .await
+    .unwrap();
+    let (stopped, _) = h.login(&login.item).await;
+    let stopped = stopped.unwrap_err();
+    println!(
+        "refused at the email stage: {} {}",
+        stopped.code, stopped.details["events"]
+    );
+    assert_eq!(stopped.code, "needs_fields");
+    assert_eq!(stopped.details["events"], refused);
+
+    // And in a plan: the fill step's trail carries it.
+    h.call(
+        "open",
+        json!({"url": format!("{local}/limited-login.html")}),
+    )
+    .await
+    .unwrap();
+    let observed = h.call("observe", json!({})).await.unwrap();
+    let suggestion = observed["fill"]["suggestions"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let mut plan = super::act("click e1");
+    plan["plan"]["steps"][0] =
+        json!({"literal": {"op": "fill", "item": login.item, "suggestion": suggestion}});
+    plan.as_object_mut().unwrap().remove("act");
+    let planned = h.call("do", plan).await;
+    println!(
+        "rate-limited in a plan: {:?}",
+        planned
+            .as_ref()
+            .map(|p| &p["trail"])
+            .map_err(|f| &f.message)
+    );
+    assert_eq!(planned.unwrap()["trail"][0]["events"], refused);
+
+    // A refusal that comes late, after the page let go of the values: it
+    // is heard as the fill resumes, through the same filter.
+    h.call(
+        "open",
+        json!({"url": format!("{local}/limited-login.html?late")}),
+    )
+    .await
+    .unwrap();
+    let (late, _) = h.login(&login.item).await;
+    let late = late.unwrap();
+    println!("a late refusal: {}", late["events"]);
+    assert!(!late.to_string().contains("retry_after"), "{late}");
+
+    // A page that shows the value in a dialog as it sends it: the fill
+    // can't confirm the page let go of the value, and its answer carries
+    // no dialog's message.
+    h.call(
+        "open",
+        json!({"url": format!("{local}/limited-login.html?alert")}),
+    )
+    .await
+    .unwrap();
+    let (paused, _) = h.login(&login.item).await;
+    let paused = paused.unwrap_err();
+    println!(
+        "a dialog with the value: {} {}",
+        paused.code, paused.details
+    );
+    assert_eq!(paused.code, "session_paused");
+    assert!(!paused.details.to_string().contains(PASSWORD));
+    let everything = h.shown.join("\n");
+    assert!(!everything.contains(PASSWORD), "the password was shown");
     h.call("close", json!({})).await.ok();
 }

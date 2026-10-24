@@ -334,6 +334,12 @@ impl Cdp {
                 }
                 false
             }
+            // Only a page's own load, XHR or fetch the site refused is
+            // kept, of all the responses its pages get.
+            "Network.responseReceived" => {
+                matches!(params["type"].as_str(), Some("Document" | "XHR" | "Fetch"))
+                    && params["response"]["status"].as_u64().unwrap_or(0) >= 400
+            }
             // An open dialog blocks its page until latch answers it, so
             // these come one at a time.
             "Page.javascriptDialogOpening"
