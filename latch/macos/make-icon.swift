@@ -63,8 +63,9 @@ func png(size: Int) -> Data {
     context.addPath(CGPath(roundedRect: body, cornerWidth: 185, cornerHeight: 185, transform: nil))
     context.setFillColor(CGColor(red: 0x11 / 255, green: 0x11 / 255, blue: 0x10 / 255, alpha: 1))
     context.fillPath()
-    // The mark, 440 points across, centred; SVG's y runs down.
-    var place = CGAffineTransform(translationX: 512 - 220, y: 512 + 220).scaledBy(x: 1.1, y: -1.1)
+    // The mark, about 600 points across (73% of the body), centred; the
+    // outline fills 392 of its 400 box, and SVG's y runs down.
+    var place = CGAffineTransform(translationX: 512 - 306, y: 512 + 306).scaledBy(x: 1.53, y: -1.53)
     context.addPath(outline(mark).copy(using: &place)!)
     context.setFillColor(CGColor(red: 0xD5 / 255, green: 0xEF / 255, blue: 0x8A / 255, alpha: 1))
     context.fillPath(using: .evenOdd)
