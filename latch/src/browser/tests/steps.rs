@@ -1105,22 +1105,25 @@ async fn a_return_goes_through_selection_cards_in_batched_plans(engine: &str) {
     h.close().await;
 }
 
-/// A click aimed at a button that lands on its own container, because
-/// the container draws an ::after over it, does not reach the button: the
-/// step is refused and nothing is clicked.
+/// A click aimed at a button that lands on its own container does not
+/// reach the button, whether the container draws an ::after over it or the
+/// button takes no pointer events: the step is refused and nothing is
+/// clicked.
 async fn a_container_drawn_over_its_target_still_covers_it(engine: &str) {
     let (_dir, state, _area) = test_state(engine);
     let site = site();
     let fake: Arc<dyn Provider> = Arc::new(Fake::default());
     let mut h = Harness::start(&state, engine, Some(fake)).await;
     let page = h.open(&format!("{site}/drawn-over.html")).await;
-    let save = find(&page, "button", "Save");
-    let failure = h.short(&[&format!("click {save}")]).await.unwrap_err();
-    assert_eq!(
-        refused(&failure),
-        (Exit::Failed, "covered_target"),
-        "{failure:?}"
-    );
+    for name in ["Save", "Send"] {
+        let button = find(&page, "button", name);
+        let failure = h.short(&[&format!("click {button}")]).await.unwrap_err();
+        assert_eq!(
+            refused(&failure),
+            (Exit::Failed, "covered_target"),
+            "{name}: {failure:?}"
+        );
+    }
     assert!(h.text().await.contains("nothing clicked"));
     h.close().await;
 }

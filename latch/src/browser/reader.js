@@ -125,12 +125,16 @@
   // ancestor (checkouts carry such copies of their fields).
   const unread = (el) => !!el.closest('[aria-hidden="true"], [inert]');
 
-  // Whether a click meant for `el` can only land on a container around it:
-  // `el` has no box, or takes no pointer events (from itself or a
-  // container), as a selection card's checkbox drawn inside the card. A
-  // hit on a container of any other element is something covering it,
-  // such as the container's ::before or ::after drawn over it.
-  const clickedThrough = (el) => {
+  // Whether a click landing on `hit` reaches `el`: on it, inside it, on
+  // one of its labels, or on a container around a checkbox or radio that
+  // has no box or takes no pointer events itself, as a selection card's
+  // whose whole box takes the click. A hit on a container of anything
+  // else is something covering it, such as the container's ::before or
+  // ::after drawn over it, or a container that never passes it the click.
+  const hitsTarget = (hit, el) => {
+    if (hit === el || el.contains(hit)) return true;
+    if (el.labels && [...el.labels].some((l) => l.contains(hit))) return true;
+    if (!hit.contains(el) || el.localName !== 'input' || !['checkbox', 'radio'].includes(el.type)) return false;
     const r = el.getBoundingClientRect();
     return r.width === 0 || r.height === 0 || getComputedStyle(el).pointerEvents === 'none';
   };
@@ -207,8 +211,7 @@
     const rect = el.getBoundingClientRect();
     const reachesAt = (px, py) => {
       const hit = document.elementFromPoint(px, py);
-      return !!hit && (hit === el || el.contains(hit) || (hit.contains(el) && clickedThrough(el))
-        || (el.labels && [...el.labels].some((l) => l.contains(hit))));
+      return !!hit && hitsTarget(hit, el);
     };
     let x = rect.left + rect.width / 2;
     let y = rect.top + rect.height / 2;
@@ -273,9 +276,7 @@
       const x = Math.min(Math.max(rect.left + rect.width / 2, 0), innerWidth - 1);
       const y = Math.min(Math.max(rect.top + rect.height / 2, 0), innerHeight - 1);
       const hit = document.elementFromPoint(x, y);
-      const reaches = !hit || hit === el || el.contains(hit) || (hit.contains(el) && clickedThrough(el))
-        || (el.labels && [...el.labels].some((l) => l.contains(hit)))
-        || (field && !layerOver(hit, el));
+      const reaches = !hit || hitsTarget(hit, el) || (field && !layerOver(hit, el));
       top ??= reaches ? null : hit;
       return reaches;
     };

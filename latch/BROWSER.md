@@ -265,11 +265,11 @@ it still names the same element (one no longer on the page is
 refused with `covered_target`; a covered one's `covered_by` names what a
 click would land on instead (its role and name, or a frame's site), and
 one under a layer of the page around its frame says so. A click that lands
-on the target's own container reaches it when the target itself has no box
-or takes no pointer events: a selection card whose whole box takes the
-click, over a checkbox or radio drawn inside it that takes none. A
-container drawn over a target that does take clicks (its ::before or
-::after) covers it.
+on the target's own container reaches it only for a checkbox or radio that
+itself has no box or takes no pointer events: a selection card whose whole
+box takes the click, over the input drawn inside it. A container hit for
+anything else covers it (its ::before or ::after drawn over it, or a
+button that takes no pointer events).
 Such a checkbox or radio with no name of its own is named by its card's
 text. Input is the engine's own mouse and keys at a
 person's pace (`isTrusted` is true); `select` focuses the list and types
