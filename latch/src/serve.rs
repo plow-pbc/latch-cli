@@ -287,20 +287,7 @@ pub async fn run(state: &StateDir, args: &crate::cli::ServeArgs) -> Result<(), F
     crate::managed::save_given(&state.path, &crate::managed::given_now(args))?;
     // From here on, other processes see this host's steps (`lifecycle.rs`).
     lifecycle::record(&state.path, Phase::Starting, attached, None)?;
-    let result = match own_key(state, attached).await {
-        Ok(key) => {
-            run_locked(
-                state,
-                key,
-                headless_browsers,
-                deny_exec,
-                attached,
-                state_dir,
-            )
-            .await
-        }
-        Err(failure) => Err(failure),
-    };
+    let result = run_locked(state, headless_browsers, deny_exec, attached, state_dir).await;
     let (phase, error) = match &result {
         Ok(()) => (Phase::Stopped, None),
         Err(failure) => (Phase::Error, Some(failure)),
@@ -362,7 +349,6 @@ pub(crate) fn workers(state_dir: PathBuf) -> Result<WorkerSetup, Failure> {
 /// `run`, once this serve holds the state folder.
 async fn run_locked(
     state: &StateDir,
-    key: HeldKey,
     headless_browsers: bool,
     deny_exec: DenyExec,
     attached: bool,
@@ -391,6 +377,7 @@ async fn run_locked(
             failure.message
         )),
     }
+    let key = own_key(state, attached).await?;
     run_host(
         state,
         key,
