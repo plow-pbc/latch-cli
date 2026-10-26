@@ -116,6 +116,10 @@ No Homebrew tap is included.
   where to connect it. On a Mac, `--check-access` adds whether Plow Latch
   already has Full Disk Access, checked as the host would, turning nothing
   on.
+- `latch app` opens Plow Latch.app, the app this latch is inside, wherever
+  it is (macOS), on the state folder `--state-dir` or `LATCH_STATE_DIR`
+  names. A latch built from a checkout is in no app and says so
+  (`local_build`); off macOS it is `unsupported_platform`.
 - `latch serve` starts this machine's host as a service of yours (a
   launchd agent on macOS, running the `latch` in `Plow Latch.app`; a systemd
   user service on Linux) and shows its dashboard: Ctrl-C there, or closing

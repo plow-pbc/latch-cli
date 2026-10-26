@@ -1324,6 +1324,15 @@ const ENTRIES: &[Entry] = &[
         examples: &[ex("Follow the host's log", &["logs", "--follow"])],
     },
     Entry {
+        id: "app",
+        runs_on: |_| RunsOn::Local,
+        output: "`app` (the Plow Latch.app it opened) and `state_dir` (the absolute state folder it handed the app, or null). Only on macOS, from the latch inside the app or a link to it: elsewhere `unsupported_platform`, and a latch outside an app `local_build`.",
+        effect: Repeatable("opens the Mac app's window, or brings it to the front"),
+        owner_only: false,
+        connector: None,
+        examples: &[ex("Open the Mac app", &["app"])],
+    },
+    Entry {
         id: "help",
         runs_on: |_| RunsOn::Local,
         output: "Help text; with --json, every command described as JSON.",
