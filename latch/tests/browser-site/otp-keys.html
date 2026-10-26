@@ -1,0 +1,18 @@
+<!doctype html><title>latch code test: key codes</title>
+<!-- A one-time-code field that lets only digit keys through, judged by the
+     key's keyCode as older scripts do, and enables Verify on keyup once it
+     holds six digits. -->
+<h1>Enter your code</h1>
+<p><input id="code" inputmode="numeric" aria-label="Code"></p>
+<p><button id="go" disabled>Verify</button></p>
+<p id="out">not verified</p>
+<script>
+  const [code, go] = [document.getElementById('code'), document.getElementById('go')];
+  code.addEventListener('keydown', (e) => {
+    const digit = (e.keyCode >= 48 && e.keyCode <= 57) || (e.keyCode >= 96 && e.keyCode <= 105);
+    const editing = [8, 9, 13, 37, 39, 46].includes(e.keyCode) || e.metaKey || e.ctrlKey;
+    if (!digit && !editing) e.preventDefault();
+  });
+  code.addEventListener('keyup', () => { go.disabled = !/^\d{6}$/.test(code.value); });
+  go.addEventListener('click', () => { document.getElementById('out').textContent = `verified ${code.value}`; });
+</script>

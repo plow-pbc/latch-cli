@@ -33,6 +33,7 @@ conformance!(
     with_no_model_clicks_and_enter_stop_and_issued_confirmations_still_dispatch,
     the_journal_outlives_a_host_restart_and_a_lost_reply_is_never_resent,
     a_key_on_an_element_that_cannot_take_the_focus_is_refused,
+    typing_a_code_reaches_the_fields_one_time_code_pages_use,
 );
 
 /// The test site, plus the answers to its expense and order forms.
@@ -969,5 +970,84 @@ async fn live_the_model_asks_for_a_confirmation_only_where_one_is_needed() {
     assert_eq!(saved["steps"][0]["outcome"], "model_assessed");
     let calls = serde_json::to_string(&h.audits).unwrap();
     assert!(calls.contains("\"provider\":\"plow\""));
+    h.close().await;
+}
+
+/// Types a six-digit code on each of the test site's one-time-code pages,
+/// then presses its button; every page but the focus trap must show the
+/// code verified. Prints one line per page, as typing ended and what the
+/// page then said.
+async fn typing_a_code_reaches_the_fields_one_time_code_pages_use(engine: &str) {
+    let (_dir, state, _area) = test_state(engine);
+    let site = site();
+    let fake: Arc<dyn Provider> = Arc::new(Fake::default());
+    let mut h = Harness::start(&state, engine, Some(fake)).await;
+    let pages = [
+        ("otp-keys.html", "textbox", "Code", "Verify"),
+        ("otp-split.html", "textbox", "Digit 1", "Verify"),
+        ("otp-controlled.html", "textbox", "Code", "Verify"),
+        ("otp-autofill.html", "textbox", "Code", "Verify"),
+        (
+            "otp-modal.html",
+            "spinbutton",
+            "Enter your 6-digit code",
+            "Submit",
+        ),
+        (
+            "otp-modal.html?trap",
+            "spinbutton",
+            "Enter your 6-digit code",
+            "Submit",
+        ),
+    ];
+    let mut outcomes = Vec::new();
+    for (path, role, name, button) in pages {
+        let page = h.open(&format!("{site}/{path}")).await;
+        let field = find(&page, role, name);
+        let typed = h.act(ActAction::Type, &[&field, "123456"], None).await;
+        let typed = typed.map_or_else(|f| f.code, |t| t["status"].as_str().unwrap().to_string());
+        let page = h.call("observe", json!({})).await;
+        let go = find(&page, "button", button);
+        let pressed = h.act(ActAction::Click, &[&go], None).await;
+        let pressed =
+            pressed.map_or_else(|f| f.code, |p| p["status"].as_str().unwrap().to_string());
+        let text = h.text().await;
+        let said: Vec<&str> = text
+            .lines()
+            .filter(|l| {
+                l.starts_with("verified")
+                    || l.starts_with("not verified")
+                    || l.starts_with("selected:")
+            })
+            .collect();
+        println!(
+            "{engine} {path}: type {typed}, {button} {pressed}, page: {}",
+            said.join(", ")
+        );
+        outcomes.push((path, typed, text));
+    }
+    for (path, typed, text) in &outcomes {
+        if *path == "otp-modal.html?trap" {
+            // The field never holds the focus, so nothing is typed, and
+            // no select-all lands on the page instead.
+            assert_eq!(typed, "not_focused", "{path}");
+            assert!(text.contains("selected: 0"), "{path}: {text}");
+        } else {
+            assert_eq!(typed, "dispatched", "{path}");
+            assert!(text.contains("verified 123456"), "{path}: {text}");
+        }
+    }
+    // A field whose page turns every key away is not reported typed.
+    let page = h.open(&format!("{site}/otp-keys.html")).await;
+    let field = find(&page, "textbox", "Code");
+    let failure = h
+        .act(ActAction::Type, &[&field, "abcdef"], None)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        refused(&failure),
+        (Exit::Failed, "type_failed"),
+        "{failure:?}"
+    );
     h.close().await;
 }

@@ -809,8 +809,22 @@ impl<D: Driver> Core<D> {
                     ));
                 }
                 self.driver.click(at.x, at.y)?;
+                // A click can leave the focus elsewhere, such as with a
+                // dialog that keeps it to itself; the keys would go there.
+                self.focus(&frame, snapshot, index)?;
+                let value = format!("__latch.valueAt({snapshot:?}, {index})");
+                let before = self.driver.run(&frame, &value)?;
                 self.driver.select_all()?;
-                self.driver.type_text(text)
+                self.driver.type_text(text)?;
+                let after = self.driver.run(&frame, &value)?;
+                if after == before && after != json!(text) {
+                    return Err(Failure::new(
+                        code::type_failed,
+                        "the typing left the field as it was: the page did not take the keys"
+                            .into(),
+                    ));
+                }
+                Ok(())
             }
             Action::Select => {
                 let choice = required(text, "select needs the option to choose")?;
@@ -869,7 +883,7 @@ impl<D: Driver> Core<D> {
         if focused != true {
             return Err(Failure::new(
                 code::not_focused,
-                "that element did not take the focus (hidden, disabled or not focusable); nothing was pressed"
+                "that element did not take the focus (hidden, disabled, not focusable, or a dialog keeps the focus to itself); no key was sent"
                     .into(),
             ));
         }

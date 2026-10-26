@@ -658,6 +658,8 @@
       el.focus();
       return el.getRootNode().activeElement === el;
     },
+    // What a field holds now, as typing left it.
+    valueAt: (snap, index) => { const el = element(snap, index); return el ? current(el) : null; },
     selected: (snap, index) => { const el = element(snap, index); return el ? [...el.selectedOptions].map((o) => o.label) : null; },
     text: (max) => {
       const body = document.body ? document.body.innerText : '';

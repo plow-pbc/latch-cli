@@ -1325,10 +1325,11 @@ impl Driver for Cft {
                 self.press("Enter")?;
             } else {
                 let text = ch.to_string();
+                let (code, key_code) = physical_key(ch);
                 let key = Key {
                     key: &text,
-                    code: "",
-                    key_code: 0,
+                    code: &code,
+                    key_code,
                     text: &text,
                 };
                 self.key("keyDown", &key, 0, &[])?;
@@ -1683,6 +1684,21 @@ fn named_key(name: &str) -> Option<Key<'static>> {
         key_code,
         text,
     })
+}
+
+/// The physical key (`code`) and key code a US keyboard sends `ch` with,
+/// which pages read to tell a digit or letter from other keys; none for
+/// other characters.
+fn physical_key(ch: char) -> (String, i64) {
+    match ch {
+        '0'..='9' => (format!("Digit{ch}"), ch as i64),
+        'a'..='z' | 'A'..='Z' => {
+            let upper = ch.to_ascii_uppercase();
+            (format!("Key{upper}"), upper as i64)
+        }
+        ' ' => ("Space".into(), 32),
+        _ => (String::new(), 0),
+    }
 }
 
 /// A person's pause between two inputs.
