@@ -175,12 +175,19 @@ pub fn argv(argv: &[String]) -> Vec<String> {
 }
 
 /// Whether the word in `arg` that the run `start..end` is part of is, up
-/// to the run's end, a path that exists on this host: one from `/`, or
-/// from the home folder after `~`.
+/// to the end of the name the run stops in (a file's `.txt` included), a
+/// path that exists on this host: one from `/`, or from the home folder
+/// after `~`.
 fn existing_path(arg: &str, start: usize, end: usize) -> bool {
-    let word = arg[..start]
-        .rfind(|c: char| c.is_ascii_whitespace() || "\"'`;|()<>=".contains(c))
-        .map_or(0, |at| at + 1);
+    let boundary = |c: char| c.is_ascii_whitespace() || "\"'`;|()<>=".contains(c);
+    let word = arg[..start].rfind(boundary).map_or(0, |at| at + 1);
+    let end = if arg[..end].ends_with('/') {
+        end
+    } else {
+        arg[end..]
+            .find(|c: char| c == '/' || boundary(c))
+            .map_or(arg.len(), |at| end + at)
+    };
     // A flag's value: `--workdir=/path`.
     let path = &arg[word..end];
     let path = path.split_once('=').map_or(path, |(_, value)| value);
@@ -358,6 +365,16 @@ mod tests {
         assert_eq!(shown(&[&path]), [path.as_str()]);
         let workdir = format!("--workdir={}", deep.display());
         assert_eq!(shown(&[&workdir]), [workdir.as_str()]);
+        // A file whose name has a dot in it is a path that exists too.
+        let file = deep.join("notes.txt");
+        std::fs::write(&file, "").unwrap();
+        let file = file.display().to_string();
+        assert_eq!(shown(&["cat", &file]), ["cat", file.as_str()]);
+        let script = format!("date > {file}");
+        assert_eq!(
+            shown(&["/bin/sh", "-c", &script]),
+            ["/bin/sh", "-c", &script]
+        );
         // Past where the path exists, a long run is hidden again.
         let missing = format!("{}/Ab3dE5fG/H7jK9mN1/P3qR5sT7/U9vWx", deep.display());
         assert!(shown(&[&missing])[0].ends_with("[redacted]"));
