@@ -658,6 +658,14 @@
       el.focus();
       return el.getRootNode().activeElement === el;
     },
+    // Sets a text field's value as input from the page's own scripts
+    // would, without the focus, and answers what it then holds.
+    setText: (snap, index, value) => {
+      const el = element(snap, index);
+      if (!el) return null;
+      setValue(el, value);
+      return current(el);
+    },
     // What a field holds now, as typing left it, and whether it still has
     // the focus (a page can move it on, to the next box of a split code).
     typedInto: (snap, index) => {

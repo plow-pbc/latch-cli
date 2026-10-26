@@ -1012,14 +1012,13 @@ async fn typing_a_code_reaches_the_fields_one_time_code_pages_use(engine: &str) 
             pressed.map_or_else(|f| f.code, |p| p["status"].as_str().unwrap().to_string());
         let text = h.text().await;
         println!("{engine} {path}: type {typed}, {button} {pressed}, page: {text:?}");
+        assert_eq!(typed, "dispatched", "{path}");
+        assert!(text.contains("verified 123456"), "{path}: {text}");
         if path == "otp-modal.html?trap" {
-            // The field never holds the focus, so nothing is typed, and
-            // no select-all lands on the page instead.
-            assert_eq!(typed, "not_focused", "{path}");
+            // The field never holds the focus, so the code is set in it
+            // without, and no select-all lands on the page instead.
+            assert!(text.contains("input: unfocused"), "{path}: {text}");
             assert!(text.contains("selected: 0"), "{path}: {text}");
-        } else {
-            assert_eq!(typed, "dispatched", "{path}");
-            assert!(text.contains("verified 123456"), "{path}: {text}");
         }
     }
     // The code typed again from the first box, which already holds its

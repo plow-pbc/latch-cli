@@ -272,8 +272,11 @@ one-time code field included; only a value from the vault (`fill`) stays
 out of the agent's sight. While a dialog is open, every call but `dialog` is refused with
 `dialog_open`. A key goes only to an element that takes the focus: a hidden
 or disabled one, or one a dialog keeps the focus from, is refused
-(`not_focused`), and `type` that leaves the field as it was, its keys
-turned away, is `type_failed`.
+(`not_focused`). `type` into a field a dialog keeps the focus from (a
+dialog's focus lock left active under one stacked on it) sets the value
+as a page's own script would, with its input and change events, so not
+with trusted keys; `type` that leaves the field as it was, its keys turned
+away, is `type_failed`.
 
 `eval` runs the script's expression in the page's main frame, in the
 page's own world (a promise is awaited), and answers its JSON value (at
