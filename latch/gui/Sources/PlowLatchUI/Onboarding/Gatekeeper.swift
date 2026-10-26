@@ -246,7 +246,7 @@ private struct Lane: View {
     /// app's words: one sentence, with no step to take from here.
     private var reason: String? {
         switch preview {
-        case let .failed(error): ErrorCopy.said(error, host: ErrorCopy.thisMac, place: .tryRequest(connector: example.request.first))
+        case let .failed(error): ErrorCopy.said(error, host: ErrorCopy.thisMac, place: .tryRequest(connector: example.request.words?.first))
         case let .verdict(answer):
             answer.refused.flatMap {
                 ErrorCopy.sentence(.failed($0), host: ErrorCopy.thisMac, place: .tryRequest(connector: answer.connector))
@@ -267,10 +267,9 @@ private struct Lane: View {
 
     private var detail: some View {
         VStack(alignment: .leading, spacing: 5) {
-            Text(example.shown)
-                .font(.system(size: 11.5, design: .monospaced))
+            Text(example.detail)
+                .font(.system(size: 12))
                 .foregroundStyle(Brand.text)
-                .textSelection(.enabled)
             (Text("Decision: ").fontWeight(.semibold).foregroundStyle(Brand.text)
                 + Text(verdictWord + (reason.map { ". \($0)" } ?? "")))
                 .font(.system(size: 12))
