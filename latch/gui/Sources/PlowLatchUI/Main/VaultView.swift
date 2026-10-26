@@ -6,38 +6,38 @@ import UniformTypeIdentifiers
 /// in sheets.
 struct VaultView: View {
     @Environment(AppModel.self) private var app
-    @FocusState private var searching: Bool
     @State private var choosingExport = false
 
     var body: some View {
         @Bindable var app = app
-        Group {
-            if let host = app.host {
-                if !host.isThisMac, host.online == false {
-                    ContentUnavailableView {
-                        Label("\(host.name) is offline", systemImage: "wifi.slash")
-                    } description: {
-                        Text("Its vault is kept on \(host.name). Start Latch there to see and change it.")
-                    }
-                } else {
-                    HostVault(host: host).id(host.id)
-                }
-            } else {
-                ContentUnavailableView("No host", systemImage: "lock.rectangle.stack",
-                                       description: Text("A vault is kept on each host. Pick one in the sidebar."))
-            }
-        }
-        .searchable(text: $app.vaultSearch, placement: .toolbar, prompt: "Search items")
-        .searchFocused($searching)
-        .focusedSceneValue(\.find, FindAction { searching = true })
-        .toolbar {
-            ToolbarItemGroup {
+        VStack(spacing: 0) {
+            // The page's own buttons, above it: the window's toolbar is the same on
+            // every screen.
+            HStack {
+                Spacer()
                 Button("New Item", systemImage: "plus", action: newItem)
                     .help("Add a login, card, identity or note")
-                    .disabled(!canChange)
                 Button("Import…", systemImage: "square.and.arrow.down") { choosingExport = true }
                     .help("Import another password manager's export")
-                    .disabled(!canChange)
+            }
+            .disabled(!canChange)
+            .padding(.horizontal, 20)
+            .padding(.top, 10)
+            Group {
+                if let host = app.host {
+                    if !host.isThisMac, host.online == false {
+                        ContentUnavailableView {
+                            Label("\(host.name) is offline", systemImage: "wifi.slash")
+                        } description: {
+                            Text("Its vault is kept on \(host.name). Start Latch there to see and change it.")
+                        }
+                    } else {
+                        HostVault(host: host).id(host.id)
+                    }
+                } else {
+                    ContentUnavailableView("No host", systemImage: "lock.rectangle.stack",
+                                           description: Text("A vault is kept on each host. Pick one in the sidebar."))
+                }
             }
         }
         // File › New Item… and Import…, while this host's vault can change.

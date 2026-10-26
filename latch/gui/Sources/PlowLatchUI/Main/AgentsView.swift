@@ -10,65 +10,70 @@ struct AgentsView: View {
 
     var body: some View {
         @Bindable var app = app
-        Group {
-            if let agents = app.agents {
-                if agents.isEmpty {
-                    ContentUnavailableView("No agents yet", systemImage: "person.2",
-                                           description: Text("Agents you create in Plow, cloud or your own, show up here."))
-                } else {
-                    Form {
-                        if let error = app.agentRemoveError {
-                            Section {
-                                HStack(alignment: .top) {
-                                    Label {
-                                        VStack(alignment: .leading, spacing: 2) {
-                                            Text("Couldn't remove the agent")
-                                            ErrorText(error: error, titled: true).foregroundStyle(.secondary)
-                                        }
-                                    } icon: {
-                                        Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange)
-                                    }
-                                    Spacer()
-                                    Button("OK") { app.agentRemoveError = nil }
-                                }
-                            }
-                        }
-                        ForEach(agents) { agent in
-                            AgentSection(agent: agent, remove: { removing = agent })
-                        }
-                    }
-                    .formStyle(.grouped)
-                    // Back where it was left (a Rules or Activity link and
-                    // back, another page and back): scrolled there as it
-                    // appears, and again as its content changes size, until
-                    // the person scrolls. Kept from the top of the content,
-                    // under the toolbar's inset, which is where scrollTo
-                    // measures from.
-                    .scrollPosition($position)
-                    .onScrollGeometryChange(for: CGFloat.self, of: { $0.contentSize.height }) { _, _ in
-                        if !position.isPositionedByUser { position.scrollTo(y: app.agentsScrolled) }
-                    }
-                    .onScrollGeometryChange(for: CGFloat.self, of: { $0.contentOffset.y + $0.contentInsets.top }) { _, y in
-                        if position.isPositionedByUser { app.agentsScrolled = y }
-                    }
-                    .onAppear { position.scrollTo(y: app.agentsScrolled) }
-                }
-            } else if let error = app.agentsError {
-                ContentUnavailableView {
-                    Label("Couldn't list your agents", systemImage: "exclamationmark.triangle")
-                } description: {
-                    ErrorText(error: error, titled: true)
-                } actions: {
-                    Button("Try Again") { Task { await app.refreshAgents() } }
-                }
-            } else {
-                ProgressView("Listing your agents…").frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-        }
-        .toolbar {
-            ToolbarItem {
+        VStack(spacing: 0) {
+            // The page's own button, above it: the window's toolbar is the same on
+            // every page.
+            HStack {
+                Spacer()
                 Button("New Agent", systemImage: "plus") { app.newAgent = NewAgent() }
                     .help("Create a cloud agent or your own")
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 10)
+            Group {
+                if let agents = app.agents {
+                    if agents.isEmpty {
+                        ContentUnavailableView("No agents yet", systemImage: "person.2",
+                                               description: Text("Agents you create in Plow, cloud or your own, show up here."))
+                    } else {
+                        Form {
+                            if let error = app.agentRemoveError {
+                                Section {
+                                    HStack(alignment: .top) {
+                                        Label {
+                                            VStack(alignment: .leading, spacing: 2) {
+                                                Text("Couldn't remove the agent")
+                                                ErrorText(error: error, titled: true).foregroundStyle(.secondary)
+                                            }
+                                        } icon: {
+                                            Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange)
+                                        }
+                                        Spacer()
+                                        Button("OK") { app.agentRemoveError = nil }
+                                    }
+                                }
+                            }
+                            ForEach(agents) { agent in
+                                AgentSection(agent: agent, remove: { removing = agent })
+                            }
+                        }
+                        .formStyle(.grouped)
+                        // Back where it was left (a Rules or Activity link and
+                        // back, another page and back): scrolled there as it
+                        // appears, and again as its content changes size, until
+                        // the person scrolls. Kept from the top of the content,
+                        // under the toolbar's inset, which is where scrollTo
+                        // measures from.
+                        .scrollPosition($position)
+                        .onScrollGeometryChange(for: CGFloat.self, of: { $0.contentSize.height }) { _, _ in
+                            if !position.isPositionedByUser { position.scrollTo(y: app.agentsScrolled) }
+                        }
+                        .onScrollGeometryChange(for: CGFloat.self, of: { $0.contentOffset.y + $0.contentInsets.top }) { _, y in
+                            if position.isPositionedByUser { app.agentsScrolled = y }
+                        }
+                        .onAppear { position.scrollTo(y: app.agentsScrolled) }
+                    }
+                } else if let error = app.agentsError {
+                    ContentUnavailableView {
+                        Label("Couldn't list your agents", systemImage: "exclamationmark.triangle")
+                    } description: {
+                        ErrorText(error: error, titled: true)
+                    } actions: {
+                        Button("Try Again") { Task { await app.refreshAgents() } }
+                    }
+                } else {
+                    ProgressView("Listing your agents…").frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
             }
         }
         .sheet(item: $app.newAgent) { NewAgentSheet(flow: $0) }

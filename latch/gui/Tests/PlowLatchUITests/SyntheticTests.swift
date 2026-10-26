@@ -8,8 +8,9 @@ import Testing
 struct SyntheticTests {
     @Test func aSpecIsReadOrRefused() {
         #expect(SyntheticLatchClient.Spec("") == SyntheticLatchClient.Spec())
-        let spec = SyntheticLatchClient.Spec("hosts=8,records=10000,vault=1000,agents=5,rate=10,delay=40,connectors=1500")
+        let spec = SyntheticLatchClient.Spec("hosts=8,records=10000,vault=1000,agents=5,rate=10,delay=40,jitter=20,connectors=1500")
         #expect(spec?.hosts == 8 && spec?.records == 10000 && spec?.vault == 1000 && spec?.agents == 5 && spec?.rate == 10 && spec?.delay == 40)
+        #expect(spec?.jitter == 20)
         #expect(spec?.connectors == 1500)
         #expect(SyntheticLatchClient.Spec("hosts=9") == nil)
         #expect(SyntheticLatchClient.Spec("hosts=0") == nil)
