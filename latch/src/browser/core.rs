@@ -809,9 +809,24 @@ impl<D: Driver> Core<D> {
                     ));
                 }
                 self.driver.click(at.x, at.y)?;
-                // A click can leave the focus elsewhere, such as with a
-                // dialog that keeps it to itself; the keys would go there.
-                self.focus(&frame, snapshot, index)?;
+                // A dialog's focus lock left active under a dialog stacked on
+                // it puts the focus straight back where it was, and keys would
+                // go there: the value goes in as a page's own script sets one,
+                // with its input and change events.
+                if !self.takes_focus(&frame, snapshot, index)? {
+                    let held = self.driver.run(
+                        &frame,
+                        &format!("__latch.setText({snapshot:?}, {index}, {})", json!(text)),
+                    )?;
+                    if held != json!(text) {
+                        return Err(Failure::new(
+                            code::type_failed,
+                            "the field would not take the focus, nor keep the value set in it"
+                                .into(),
+                        ));
+                    }
+                    return Ok(());
+                }
                 let typed = format!("__latch.typedInto({snapshot:?}, {index})");
                 let before = self.driver.run(&frame, &typed)?;
                 self.driver.select_all()?;
@@ -886,13 +901,7 @@ impl<D: Driver> Core<D> {
     /// Gives the element the focus, so keys go to it; refused when it does
     /// not take it (hidden, disabled, or not focusable).
     fn focus(&mut self, frame: &Frame, snapshot: &str, index: usize) -> Result<(), Failure> {
-        let focused = self
-            .driver
-            .run(frame, &format!("__latch.focus({snapshot:?}, {index})"))?;
-        if focused.is_null() {
-            return Err(stale());
-        }
-        if focused != true {
+        if !self.takes_focus(frame, snapshot, index)? {
             return Err(Failure::new(
                 code::not_focused,
                 "that element did not take the focus (hidden, disabled, not focusable, or a dialog keeps the focus to itself); no key was sent"
@@ -900,6 +909,22 @@ impl<D: Driver> Core<D> {
             ));
         }
         Ok(())
+    }
+
+    /// Whether the element has the focus, given it if it has not.
+    fn takes_focus(
+        &mut self,
+        frame: &Frame,
+        snapshot: &str,
+        index: usize,
+    ) -> Result<bool, Failure> {
+        let focused = self
+            .driver
+            .run(frame, &format!("__latch.focus({snapshot:?}, {index})"))?;
+        if focused.is_null() {
+            return Err(stale());
+        }
+        Ok(focused == true)
     }
 
     /// Brings the element into view and finds a point that reaches it,
