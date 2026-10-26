@@ -61,10 +61,10 @@ nonisolated protocol LatchClient: Sendable {
     /// `latch audit [--before ID]`: a page of a host's audit, this Mac's or,
     /// with `host`, another's.
     func audit(host: String?, before: String?) async throws -> AuditPage
-    /// `latch audit --follow`: the newest page, then each new record;
-    /// `after` picks up after that record instead. Stopping the iteration
-    /// ends it.
-    func auditFollow(host: String?, after: String?) -> AsyncThrowingStream<AuditLine, Error>
+    /// `latch audit --follow`: the newest `last` records (latch's page
+    /// without it), then each new record; `after` picks up after that record
+    /// instead, every record since. Stopping the iteration ends it.
+    func auditFollow(host: String?, after: String?, last: Int?) -> AsyncThrowingStream<AuditLine, Error>
     /// A setup step, as `setup --status` gives its words after `latch`.
     func perform(_ args: [String]) async throws
     /// `latch stop`: stops the host on this state folder.
@@ -134,8 +134,9 @@ nonisolated struct LiveLatchClient: LatchClient {
         }
     }
 
-    func auditFollow(host: String?, after: String?) -> AsyncThrowingStream<AuditLine, Error> {
-        stream(["audit", "--follow"] + (after.map { ["--after", $0] } ?? []) + on(host)) { try decode(AuditLine.self, $0) }
+    func auditFollow(host: String?, after: String?, last: Int?) -> AsyncThrowingStream<AuditLine, Error> {
+        let from = after.map { ["--after", $0] } ?? last.map { ["--last", String($0)] } ?? []
+        return stream(["audit", "--follow"] + from + on(host)) { try decode(AuditLine.self, $0) }
     }
 
     /// Runs latch and yields each JSON line it prints (skipping those

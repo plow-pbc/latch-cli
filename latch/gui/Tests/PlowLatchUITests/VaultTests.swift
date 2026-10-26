@@ -65,7 +65,7 @@ final class VaultClient: LatchClient, @unchecked Sendable {
     func enable(_ plugin: String) async throws -> GoogleEnabled? { nil }
     func statusFollow() -> AsyncThrowingStream<LocalStatus, Error> { AsyncThrowingStream { _ in } }
     func audit(host: String?, before: String?) async throws -> AuditPage { AuditPage(records: [], hasOlder: false) }
-    func auditFollow(host: String?, after: String?) -> AsyncThrowingStream<AuditLine, Error> { AsyncThrowingStream { _ in } }
+    func auditFollow(host: String?, after: String?, last: Int?) -> AsyncThrowingStream<AuditLine, Error> { AsyncThrowingStream { _ in } }
     func perform(_ args: [String]) async throws {}
     func stop() async throws {}
 }

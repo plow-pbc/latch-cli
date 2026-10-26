@@ -36,7 +36,7 @@ nonisolated struct FakeLatchClient: LatchClient {
         try AuditPage.parse(Data((host == nil ? Fixtures.studioAudit : Fixtures.kitchenAudit).utf8))
     }
     /// The fixture's lines, then nothing more until stopped.
-    func auditFollow(host: String?, after: String?) -> AsyncThrowingStream<AuditLine, Error> {
+    func auditFollow(host: String?, after: String?, last: Int?) -> AsyncThrowingStream<AuditLine, Error> {
         AsyncThrowingStream { continuation in
             for line in (host == nil ? Fixtures.studioAudit : Fixtures.kitchenAudit).split(separator: "\n") {
                 if let line = try? LatchJSON.decoder.decode(AuditLine.self, from: Data(line.utf8)) { continuation.yield(line) }

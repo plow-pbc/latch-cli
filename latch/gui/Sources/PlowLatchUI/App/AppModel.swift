@@ -193,15 +193,22 @@ final class AppModel {
     /// host Plow counts offline isn't asked; this Mac always is.
     private func readSummary(of host: HostEntry, vault: Bool, refresh: Bool) async {
         guard host.isThisMac || host.online != false else { return }
-        let target = host.isThisMac ? nil : host.name
-        if refresh || !Self.held(summaries[host.name]?.rules) {
-            guard let rules = await Self.result({ try await self.client.rulesShow(host: target) }) else { return }
-            summaries[host.name, default: HostSummary()].rules = rules
-        }
-        if vault, refresh || !Self.held(summaries[host.name]?.vault) {
-            guard let items = await Self.result({ try await self.client.vaultList(host: target) }) else { return }
-            summaries[host.name, default: HostSummary()].vault = items
-        }
+        // Side by side: each is a read over latch's connection.
+        async let rules: Void = readSummaryRules(of: host, refresh: refresh)
+        async let items: Void = vault ? readSummaryVault(of: host, refresh: refresh) : ()
+        _ = await (rules, items)
+    }
+
+    private func readSummaryRules(of host: HostEntry, refresh: Bool) async {
+        guard refresh || !Self.held(summaries[host.name]?.rules),
+              let rules = await Self.result({ try await self.client.rulesShow(host: host.isThisMac ? nil : host.name) }) else { return }
+        summaries[host.name, default: HostSummary()].rules = rules
+    }
+
+    private func readSummaryVault(of host: HostEntry, refresh: Bool) async {
+        guard refresh || !Self.held(summaries[host.name]?.vault),
+              let items = await Self.result({ try await self.client.vaultList(host: host.isThisMac ? nil : host.name) }) else { return }
+        summaries[host.name, default: HostSummary()].vault = items
     }
 
     /// A host's plugins, each with whether it's on: this Mac's from its own
@@ -230,18 +237,22 @@ final class AppModel {
         switch route {
         case let .host(.home, host):
             guard let host else { return }
-            await readSummary(of: host, vault: true, refresh: refresh)
-            await readHostStatus(of: host, refresh: refresh)
+            async let summary: Void = readSummary(of: host, vault: true, refresh: refresh)
+            async let status: Void = readHostStatus(of: host, refresh: refresh)
+            _ = await (summary, status)
         case let .host(.settings, host):
             guard let host else { return }
-            await readSummary(of: host, vault: false, refresh: refresh)
-            await readHostStatus(of: host, refresh: refresh)
+            async let summary: Void = readSummary(of: host, vault: false, refresh: refresh)
+            async let status: Void = readHostStatus(of: host, refresh: refresh)
+            _ = await (summary, status)
         case let .host(.rules, host):
             guard let host, host.isThisMac || host.online != false else { return }
             // Its editors name the agents; their standing on each host isn't
             // shown here.
-            if refresh || agents == nil { await refreshAgentList() }
-            if refresh || !Self.held(summaries[host.name]?.rules) { await refreshRules(on: host) }
+            let list = refresh || agents == nil, read = refresh || !Self.held(summaries[host.name]?.rules)
+            async let agentList = list ? refreshAgentList() : true
+            async let rules: Void = read ? refreshRules(on: host) : ()
+            _ = await (agentList, rules)
         case let .host(.vault, host):
             guard let host, host.isThisMac || host.online != false else { return }
             if refresh || !Self.held(summaries[host.name]?.vault) { await refreshVault(on: host) }
@@ -731,13 +742,14 @@ final class AppModel {
         await readStandings(missing: false)
     }
 
-    /// Each reachable host's standing, or only those not held yet.
+    /// Each reachable host's standing, or only those not held yet, all at
+    /// once: each is a read over latch's connection to that host.
     private func readStandings(missing: Bool) async {
-        // One host at a time: each is a read over latch's connection.
-        for host in hosts where host.isThisMac || host.online != false {
-            guard !Task.isCancelled else { return }
-            if missing, Self.held(standings[host.name]) { continue }
-            await refreshStanding(on: host)
+        await withTaskGroup { group in
+            for host in hosts where host.isThisMac || host.online != false {
+                if missing, Self.held(standings[host.name]) { continue }
+                group.addTask { await self.refreshStanding(on: host) }
+            }
         }
     }
 

@@ -137,7 +137,7 @@ final class NeverServedClient: LatchClient, @unchecked Sendable {
     func enable(_ plugin: String) async throws -> GoogleEnabled? { nil }
     func statusFollow() -> AsyncThrowingStream<LocalStatus, Error> { AsyncThrowingStream { _ in } }
     func audit(host: String?, before: String?) async throws -> AuditPage { AuditPage(records: [], hasOlder: false) }
-    func auditFollow(host: String?, after: String?) -> AsyncThrowingStream<AuditLine, Error> {
+    func auditFollow(host: String?, after: String?, last: Int?) -> AsyncThrowingStream<AuditLine, Error> {
         follows += 1
         let hosting = hosting
         let refusal = refusal
@@ -305,7 +305,7 @@ final class PagedClient: LatchClient, @unchecked Sendable {
     func vaultList(host: String?) async throws -> VaultList { try Fixtures.decode(#"{"items":[]}"#) }
     func enable(_ plugin: String) async throws -> GoogleEnabled? { nil }
     func statusFollow() -> AsyncThrowingStream<LocalStatus, Error> { AsyncThrowingStream { _ in } }
-    func auditFollow(host: String?, after: String?) -> AsyncThrowingStream<AuditLine, Error> {
+    func auditFollow(host: String?, after: String?, last: Int?) -> AsyncThrowingStream<AuditLine, Error> {
         follows += 1
         afters.append(after)
         return following(follows - 1)

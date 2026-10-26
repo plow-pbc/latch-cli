@@ -374,7 +374,7 @@ final class ScriptedClient: LatchClient, @unchecked Sendable {
         }
     }
     func audit(host: String?, before: String?) async throws -> AuditPage { AuditPage(records: [], hasOlder: false) }
-    func auditFollow(host: String?, after: String?) -> AsyncThrowingStream<AuditLine, Error> { AsyncThrowingStream { $0.finish() } }
+    func auditFollow(host: String?, after: String?, last: Int?) -> AsyncThrowingStream<AuditLine, Error> { AsyncThrowingStream { $0.finish() } }
     func login(name: String?, replace: Bool) -> AsyncThrowingStream<LoginEvent, Error> {
         loginNames.append(name)
         replaced.append(replace)

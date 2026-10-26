@@ -31,8 +31,10 @@ struct SyntheticTests {
         let feed = app.feed(for: app.hosts[1])
         feed.start()
         await waitUntil(within: .seconds(30)) { feed.caughtUp }
-        #expect(feed.records.count == 10000)
-        #expect(Set(feed.records.map(\.id)).count == 10000)
+        // The newest 500, with older ones on the host.
+        #expect(feed.records.count == ActivityFeed.openingPage)
+        #expect(Set(feed.records.map(\.id)).count == ActivityFeed.openingPage)
+        #expect(feed.hasOlder)
         // Every agent has requests allowed and refused, not one kind each.
         for uid in Set(feed.records.compactMap(\.agent)) {
             let own = feed.records.filter { $0.agent == uid }
@@ -86,7 +88,7 @@ struct SyntheticTests {
         // Up to caught up: a follow then waits for more.
         func lines(after: String?) async throws -> [AuditLine] {
             var lines: [AuditLine] = []
-            for try await line in client.auditFollow(host: nil, after: after) {
+            for try await line in client.auditFollow(host: nil, after: after, last: nil) {
                 lines.append(line)
                 if case .caughtUp = line { break }
             }

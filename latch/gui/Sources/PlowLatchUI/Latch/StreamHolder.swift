@@ -13,7 +13,7 @@ package enum StreamHolder {
                     do {
                         switch stream {
                         case "status": for try await _ in client.statusFollow() {}
-                        case "audit": for try await _ in client.auditFollow(host: nil, after: nil) {}
+                        case "audit": for try await _ in client.auditFollow(host: nil, after: nil, last: nil) {}
                         default: break
                         }
                     } catch {}
