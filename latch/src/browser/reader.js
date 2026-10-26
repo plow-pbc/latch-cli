@@ -658,8 +658,12 @@
       el.focus();
       return el.getRootNode().activeElement === el;
     },
-    // What a field holds now, as typing left it.
-    valueAt: (snap, index) => { const el = element(snap, index); return el ? current(el) : null; },
+    // What a field holds now, as typing left it, and whether it still has
+    // the focus (a page can move it on, to the next box of a split code).
+    typedInto: (snap, index) => {
+      const el = element(snap, index);
+      return el ? { value: current(el), focused: el.getRootNode().activeElement === el } : null;
+    },
     selected: (snap, index) => { const el = element(snap, index); return el ? [...el.selectedOptions].map((o) => o.label) : null; },
     text: (max) => {
       const body = document.body ? document.body.innerText : '';

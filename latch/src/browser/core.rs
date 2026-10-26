@@ -812,8 +812,8 @@ impl<D: Driver> Core<D> {
                 // A click can leave the focus elsewhere, such as with a
                 // dialog that keeps it to itself; the keys would go there.
                 self.focus(&frame, snapshot, index)?;
-                let value = format!("__latch.valueAt({snapshot:?}, {index})");
-                let before = self.driver.run(&frame, &value)?;
+                let typed = format!("__latch.typedInto({snapshot:?}, {index})");
+                let before = self.driver.run(&frame, &typed)?;
                 self.driver.select_all()?;
                 self.driver.type_text(text)?;
                 // A dialog the keys opened, or a page they replaced (an
@@ -821,11 +821,15 @@ impl<D: Driver> Core<D> {
                 if self.driver.dialog_open() {
                     return Ok(());
                 }
-                let after = match self.driver.run(&frame, &value) {
+                let after = match self.driver.run(&frame, &typed) {
                     Err(failure) if failure.code == "stale_snapshot" => return Ok(()),
                     after => after?,
                 };
-                if after == before && after != json!(text) {
+                // Keys the page moved on elsewhere were taken too.
+                if after["focused"] == true
+                    && after["value"] == before["value"]
+                    && after["value"] != json!(text)
+                {
                     return Err(Failure::new(
                         code::type_failed,
                         "the typing left the field as it was: the page did not take the keys"

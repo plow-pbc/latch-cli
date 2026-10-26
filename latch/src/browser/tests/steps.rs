@@ -1022,6 +1022,14 @@ async fn typing_a_code_reaches_the_fields_one_time_code_pages_use(engine: &str) 
             assert!(text.contains("verified 123456"), "{path}: {text}");
         }
     }
+    // The code typed again from the first box, which already holds its
+    // digit: the rest go to the boxes the focus moves on to.
+    let page = h.open(&format!("{site}/otp-split.html")).await;
+    let first = find(&page, "textbox", "Digit 1");
+    h.act(ActAction::Type, &[&first, "1"], None).await.unwrap();
+    h.act(ActAction::Type, &[&first, "123456"], None)
+        .await
+        .unwrap();
     // A field whose page turns every key away is not reported typed.
     let page = h.open(&format!("{site}/otp-keys.html")).await;
     let field = find(&page, "textbox", "Code");
