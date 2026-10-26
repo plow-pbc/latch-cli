@@ -76,7 +76,9 @@ each judged:
    "CODE"'`, then submit as the page asks.
 
 Use the code for that sign-in only. If the host can't read Messages, hand
-the session to the owner: `latch browser handoff --reason 2fa`.
+the session to the owner: `latch browser handoff --reason 2fa`. A host
+with no screen (a Linux host) refuses a handoff (`needs_owner`, reason
+`no_screen`): ask the owner for the code instead, and type it as above.
 
 ## Credentials in exec
 
@@ -147,7 +149,11 @@ fixes it.
   closes: do the whole task in one session.
 - A site that blocks you outright ("Access denied", nothing to click or
   type) will not let a retry or a wait through: stop and tell the owner.
-  A challenge you can't do yourself is `handoff`'s.
+  A challenge you can't do yourself is `handoff`'s; on a host with no
+  screen (`no_screen`), stop and tell the owner what the page needs.
+- A sign-in you submitted that doesn't move on (the same page, no code
+  prompt): retry it once at most, then stop and tell the owner. More
+  attempts can get the account rate-limited or locked.
 - Never fake a click or key with `eval`: the site sees it isn't real.
   `covered_target` means something is on top: click the banner's or
   dialog's own button.

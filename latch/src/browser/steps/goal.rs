@@ -49,6 +49,7 @@ use std::collections::{BTreeMap, HashSet};
 use serde_json::{Value, json};
 
 use super::*;
+use crate::browser::handoff;
 use crate::browser::model::{Decision, Offer, Pass, Pick};
 use crate::browser::plan::Step;
 use crate::browser::suggest;
@@ -279,7 +280,10 @@ impl Run<'_> {
             if view["wall"] == "captcha" {
                 let mut failure = stopped(
                     code::needs_owner,
-                    format!("step {n} reached a CAPTCHA; hand off to the owner"),
+                    format!(
+                        "step {n} reached a CAPTCHA; {}",
+                        handoff::to_owner(self.browsers.screen(), "captcha")
+                    ),
                 );
                 failure.details = json!({"reason": "captcha"});
                 return Err(failure);
@@ -305,10 +309,17 @@ impl Run<'_> {
                             .any(|f| f["id"] == "password")
                 });
             if suggest::code_stage(&offers) || (suggest::passkey_stage(&offers) && !password_path) {
+                let screen = self.browsers.screen();
                 let recovery = if suggest::code_stage(&offers) {
-                    "a one-time code; nothing was sent. If it is the saved login's authenticator code, send `fill --item vN --field otp=eN --press eN`. If the site texted it to the owner and the host reads Messages, find it with `latch messages search --since 10m code` and enter it as a literal step, `do 'type eN \"CODE\"'`, then submit as the page asks. If neither works, hand off to the owner (`handoff --reason 2fa`)"
+                    format!(
+                        "a one-time code; nothing was sent. If it is the saved login's authenticator code, send `fill --item vN --field otp=eN --press eN`. If the site texted it to the owner and the host reads Messages, find it with `latch messages search --since 10m code` and enter it as a literal step, `do 'type eN \"CODE\"'`, then submit as the page asks. If neither works, {}",
+                        handoff::to_owner(screen, "2fa")
+                    )
                 } else {
-                    "a passkey; nothing was sent. Hand off to the owner (`handoff --reason passkey`)"
+                    format!(
+                        "a passkey; nothing was sent: {}",
+                        handoff::to_owner(screen, "passkey")
+                    )
                 };
                 let mut failure = stopped(
                     code::needs_fields,

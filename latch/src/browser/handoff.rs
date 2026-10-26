@@ -55,13 +55,27 @@ pub fn screen(headless: bool) -> bool {
 
 /// The answer on a host with no screen: only the owner could do this, and
 /// not at this host.
-pub fn no_screen(why: &str) -> Failure {
+pub fn no_screen(reason: &str) -> Failure {
     let mut failure = Failure::new(
         code::needs_owner,
-        format!("{why}, and this host has no screen for its owner to use; nothing was handed off"),
+        format!(
+            "this needs the owner ({reason}); nothing was handed off: {}",
+            to_owner(false, reason)
+        ),
     );
     failure.details = json!({"reason": "no_screen"});
     failure
+}
+
+/// The way on to the owner, for an agent told only the owner can go on: a
+/// handoff on a host with a `screen`, else the owner asked, as no one can
+/// act in this host's windows.
+pub fn to_owner(screen: bool, reason: &str) -> String {
+    match (screen, reason) {
+        (true, _) => format!("hand off to the owner (`handoff --reason {reason}`)"),
+        (false, "2fa") => "this host has no screen for a handoff, so ask the owner for the code and type it as a literal step".into(),
+        (false, _) => "this host has no screen for a handoff, so stop and tell the owner what the page needs".into(),
+    }
 }
 
 /// `handoff --reason R [--within S]`: waits for the owner's `done`.
@@ -87,7 +101,7 @@ pub(super) async fn run(
     }
     audit.insert("reason".into(), json!(reason));
     if !browsers.screen() {
-        return Err(no_screen(&format!("this needs the owner ({reason})")));
+        return Err(no_screen(reason));
     }
     if entry
         .runtime
@@ -302,10 +316,19 @@ mod tests {
             cfg!(target_os = "linux")
         );
         assert!(!super::super::display::for_runtime(true));
-        let failure = no_screen("this needs the owner (captcha)");
+        let failure = no_screen("captcha");
         assert_eq!(
             (failure.code.as_str(), &failure.details["reason"]),
             ("needs_owner", &json!("no_screen"))
         );
+        // It says what to do instead, and never to hand off.
+        assert!(
+            failure.message.contains("tell the owner"),
+            "{}",
+            failure.message
+        );
+        assert!(!failure.message.contains("`handoff"), "{}", failure.message);
+        assert!(to_owner(false, "2fa").contains("ask the owner for the code"));
+        assert!(to_owner(true, "2fa").contains("`handoff --reason 2fa`"));
     }
 }
