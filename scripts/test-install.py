@@ -15,6 +15,10 @@ import zipfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
+# No install here reaches the real /Applications: it stands in for it with a
+# folder that doesn't exist, so a Mac app goes to the fake HOME's
+# ~/Applications, unless a test names a folder of its own.
+os.environ["LATCH_APPLICATIONS"] = "/nonexistent/Applications"
 
 
 def seed_gog(setup, state):
@@ -593,6 +597,118 @@ class HostUpgrade(unittest.TestCase):
             result, calls, _ = self.upgrade(old, new, log)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(calls, [])
+
+
+class MacAppFolder(unittest.TestCase):
+    """Where the app goes: /Applications (a folder standing in for it) when
+    this user can write there and no other user's copy is there, else
+    ~/Applications; and this user's copy in the other folder goes."""
+
+    def install(self, shared="writable", own=None, host="none", cut_short=False):
+        """Installs an app whose latch says 0.1.0 (2), with `own` the version
+        of a copy in ~/Applications already, if any (`cut_short`: moved aside
+        by a run cut short), and `host` a host on the state folder ("none",
+        "managed", or "other_version"). Returns the result, the stops and
+        starts, HOME and the stand-in /Applications."""
+        parent = ROOT / ".dev/tests"
+        parent.mkdir(parents=True, exist_ok=True)
+        directory = tempfile.TemporaryDirectory(dir=parent)
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        state, home, applications = root / "state", root / "home", root / "Applications"
+        log = root / "calls"
+        setup, _, tools = fixture(root, state, "", system="Darwin", machine="arm64")
+        (setup / "latch").unlink()
+        cft_pin = '{\n  "version": "1.0"\n}\n'
+        (setup / "src/browser").mkdir(parents=True)
+        (setup / "src/browser/cft.json").write_text(cft_pin)
+        (state / "plugins/cft/1.0").mkdir(parents=True)
+        (state / "plugins/cft/1.0/manifest.json").write_text(cft_pin)
+        new = fake_latch("0.1.0 (2)", log, running=host != "none", managed=host == "managed",
+                         other_version=host == "other_version")
+        apps = [(setup / "Plow Latch.app", new)]
+        if own:
+            apps.append((home / "Applications/Plow Latch.app",
+                         new if own == "0.1.0 (2)" else fake_latch(own, log)))
+        for app, latch in apps:
+            (app / "Contents/MacOS").mkdir(parents=True)
+            (app / "Contents/MacOS/latch").write_text(latch)
+            (app / "Contents/MacOS/latch").chmod(0o755)
+        (setup / "latch").symlink_to("Plow Latch.app/Contents/MacOS/latch")
+        if cut_short:
+            (home / "Applications/Plow Latch.app").rename(home / "Applications/Plow Latch.app.old")
+        if shared == "writable":
+            applications.mkdir()
+        elif shared == "read-only":
+            applications.mkdir(mode=0o555)
+            self.addCleanup(applications.chmod, 0o755)
+        elif shared == "another user's":
+            # A copy this user doesn't own: the root folder stands in for it.
+            applications.mkdir()
+            (applications / "Plow Latch.app").symlink_to("/")
+        env = {**os.environ, "HOME": str(home), "LATCH_APPLICATIONS": str(applications),
+               "PATH": f"{tools}:{os.environ['PATH']}"}
+        result = subprocess.run(["sh", str(setup / "install-binary.sh"), "--state-dir", str(state),
+                                 str(setup / "latch")], cwd=root, env=env, capture_output=True, text=True)
+        calls = log.read_text().splitlines() if log.exists() else []
+        return result, calls, home, applications
+
+    def assert_installed_in(self, folder, home, result):
+        self.assertEqual(result.returncode, 0, result.stderr)
+        app = folder / "Plow Latch.app"
+        link = home / ".local/bin/latch"
+        self.assertEqual(os.readlink(link), str(app / "Contents/MacOS/latch"))
+        self.assertIn('"0.1.0 (2)"', subprocess.check_output([str(link), "--version"], text=True))
+        self.assertIn(f"installed Plow Latch.app to {app}", result.stdout)
+
+    def test_a_first_install_goes_to_applications_when_this_user_can_write_there(self):
+        result, calls, home, applications = self.install()
+        self.assert_installed_in(applications, home, result)
+        self.assertFalse((home / "Applications").exists())
+        self.assertEqual(calls, [])
+
+    def test_a_first_install_goes_to_the_users_own_folder_otherwise(self):
+        if os.geteuid() == 0:
+            self.skipTest("root writes and owns everything")
+        for shared in ["absent", "read-only", "another user's"]:
+            with self.subTest(shared=shared):
+                result, _, home, applications = self.install(shared=shared)
+                self.assert_installed_in(home / "Applications", home, result)
+                if shared == "another user's":
+                    self.assertIn(f"{applications}/Plow Latch.app is another user's; installing to "
+                                  f"{home}/Applications, for this user only", result.stdout)
+                    self.assertTrue((applications / "Plow Latch.app").is_symlink())
+                else:
+                    self.assertFalse((applications / "Plow Latch.app").exists())
+
+    def test_an_install_moves_the_users_copy_and_its_host_to_applications(self):
+        # A new latch, or the same one installed again: either way the host
+        # running from ~/Applications is stopped, the copy there goes (with
+        # what a run cut short left beside it), and the host starts again
+        # from /Applications.
+        for own in ["0.1.0 (1)", "0.1.0 (2)"]:
+            with self.subTest(own=own):
+                result, calls, home, applications = self.install(own=own, host="managed")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                link = home / ".local/bin/latch"
+                self.assertEqual(os.readlink(link),
+                                 str(applications / "Plow Latch.app/Contents/MacOS/latch"))
+                self.assertEqual(calls, ["0.1.0 (2) stop", "0.1.0 (2) serve -d --again"])
+                self.assertEqual(list((home / "Applications").iterdir()), [])
+                self.assertIn(f"removed {home}/Applications/Plow Latch.app", result.stdout)
+                self.assertEqual([path.name for path in applications.iterdir()], ["Plow Latch.app"])
+
+    def test_a_copy_a_run_cut_short_left_aside_in_the_users_folder_goes_too(self):
+        result, _, home, applications = self.install(own="0.1.0 (1)", cut_short=True)
+        self.assert_installed_in(applications, home, result)
+        self.assertEqual(list((home / "Applications").iterdir()), [])
+
+    def test_a_host_the_new_latch_cannot_stop_keeps_the_copy_it_may_run_from(self):
+        result, calls, home, applications = self.install(own="0.1.0 (1)", host="other_version")
+        self.assert_installed_in(applications, home, result)
+        self.assertEqual(calls, [])
+        self.assertTrue((home / "Applications/Plow Latch.app/Contents/MacOS/latch").exists())
+        self.assertIn(f"left {home}/Applications/Plow Latch.app in place", result.stdout)
 
 
 class MessagesReaderInstall(unittest.TestCase):

@@ -21,8 +21,8 @@ number counts release runs; `latch --version` shows it as `0.1.0 (1327)`.
 
 The installer selects macOS Apple Silicon/Intel or Linux x86_64/arm64, verifies
 its archive against the release's `SHA256SUMS`, and installs `~/.local/bin/latch`.
-On macOS that is a link into `~/Applications/Plow Latch.app`, the signed app
-latch runs in, which Full Disk Access is granted to; opened from the Finder,
+On macOS that is a link into `/Applications/Plow Latch.app` (`~/Applications`
+when this user can't write `/Applications`), the signed app latch runs in, which Full Disk Access is granted to; opened from the Finder,
 it shows its window (macOS 26 or later).
 Pass `--bin-dir DIR` (after the tag, if any) to choose another binary directory.
 The archive's executable `install-binary.sh` installs the adjacent `latch` with no
@@ -48,7 +48,7 @@ says whether a newer one is out. It checks the release's `SHA256SUMS` against
 latch's release signing key and the archive against it (on macOS, also that
 the app is signed by Plow), then runs the release's own `install-binary.sh`:
 on Linux into the folder latch runs from, on macOS replacing the whole
-`Plow Latch.app` in `~/Applications` (see [macOS](latch/MACOS.md)). State
+`Plow Latch.app` (see [macOS](latch/MACOS.md)). State
 and versioned plugins stay in place, and the browser engines installed are
 brought up to date. A host `serve -d`
 started is stopped and started again with the new latch, with what it was

@@ -1,6 +1,7 @@
 # latch on macOS
 
-On macOS a release's latch is `~/Applications/Plow Latch.app`. Its
+On macOS a release's latch is `/Applications/Plow Latch.app`, or
+`~/Applications/Plow Latch.app` for a user who can't write `/Applications`. Its
 executable, `Contents/MacOS/latch`, is the same `latch` binary Linux ships
 bare. The bundle gives that binary a signed identity, so the owner can grant
 it Full Disk Access the supported way and it can keep its secrets in the
@@ -106,11 +107,21 @@ ticket.
 ## Install and update
 
 `install-binary.sh` sees that the `latch` it was given leads into an app
-bundle. Then it copies the whole bundle to `~/Applications`, replacing the
-one there unless every file is the same (a new window with the same latch
-is a new app), and makes `~/.local/bin/latch` (or `--bin-dir`'s) a symlink to
-`~/Applications/Plow Latch.app/Contents/MacOS/latch`. The link's target
-never changes, so later installs leave it alone.
+bundle. Then it copies the whole bundle to `/Applications`, for every account
+on the Mac, when this user can write there (an admin can, with no sudo) and
+no other user's copy is there. Otherwise, as for a standard user, it goes to
+`~/Applications`, this user's own. The installer never asks for sudo on
+macOS. It replaces the copy there unless every file is the same (a new
+window with the same latch is a new app), and makes `~/.local/bin/latch` (or
+`--bin-dir`'s) a symlink to `Plow Latch.app/Contents/MacOS/latch` in that
+folder. Once the new copy is in place it removes this user's copy in the
+other folder, such as one an earlier latch put in `~/Applications`, so only
+one app has latch's bundle id; a link to latch that led into it, other than
+the one the installer makes, must be made again. It keeps that copy only
+while a host from another latch version, which it could not stop, may run
+from it. `$LATCH_APPLICATIONS` names a folder to use in place of
+`/Applications`: the installer tests and dev installs use one, so they never
+touch the real one.
 
 A first install at a terminal (no login in the state folder yet, no
 `--non-interactive`) ends by opening the installed app on macOS 26 or
@@ -123,16 +134,17 @@ macOS 13 the installer refuses and installs nothing.
 against the signed `SHA256SUMS`, and refuses the app unless it is
 `co.plow.latch.cli` signed by team 3559PD337Z, intact, and accepted by
 Gatekeeper. Then it runs that release's own `install-binary.sh`, with no
-`--bin-dir` on macOS: the app in `~/Applications` is what gets replaced, so
-a link to it anywhere keeps working, and the link the installer checks is
-`~/.local/bin/latch`. The installer:
+`--bin-dir` on macOS: the app is what gets replaced, so a link to it
+anywhere keeps working (until the app moves to `/Applications`, above), and
+the link the installer checks is `~/.local/bin/latch`. The installer:
 
-1. stops a host running the latch being replaced (a different version),
-   with the new latch;
+1. stops a host running the latch being replaced (a different version, or
+   the copy in the other folder), with the new latch;
 2. copies the new app beside the old one, moves the old one aside, moves
    the new one into its place, then removes the old one. If a move fails
    the old app goes back, still working;
-3. links `~/.local/bin/latch` into it, if the link is not there already;
+3. links `~/.local/bin/latch` into it, if the link is not there already,
+   and removes this user's copy in the other folder;
 4. installs what lives outside the bundle (below);
 5. starts a host that `serve -d` had started again, with what it was
    given. A host that ran in a terminal stays stopped, and the update says

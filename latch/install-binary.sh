@@ -24,10 +24,15 @@
 # on.
 #
 # On macOS a release's latch is inside Plow Latch.app (the `latch` beside
-# this script leads into it). Then the whole app goes to ~/Applications,
-# replacing an older one at the same path, so it keeps its identity and its
+# this script leads into it). Then the whole app goes to /Applications, for
+# every account on the Mac, when this user can write there and no other
+# user's copy is there; otherwise to ~/Applications, this user's own. It
+# replaces an older one at the same path, so it keeps its identity and its
 # Full Disk Access, and ~/.local/bin/latch becomes a link to the latch
-# inside it.
+# inside it. This user's copy in the other folder, from an earlier install,
+# is removed once the new one is in place, so only one app has latch's
+# bundle id. $LATCH_APPLICATIONS names a folder to use in place of
+# /Applications (tests and dev installs, which never touch the real one).
 #
 # It also installs gog, the Google CLI a host runs for `latch google`: the
 # release pinned in src/google/pin.json next to this script (the pin latch
@@ -166,11 +171,33 @@ if ! { mkdir -p "$bin_dir" && [ -w "$bin_dir" ]; } 2>/dev/null; then
   [ -n "$state_given" ] || where="$where, and set \`LATCH_STATE_DIR\` to a writable state folder"
   die "can't write to $bin_dir; $where; nothing was installed"
 fi
-# The latch being replaced: on macOS the app's own, wherever a link to it
-# is (or none is), since the app is what gets replaced; elsewhere $dest.
+# The latch being replaced: on macOS the app's own, in either folder,
+# wherever a link to it is (or none is), since the app is what gets
+# replaced; elsewhere $dest.
 old=$dest
 if [ -n "$app" ]; then
-  old="$HOME/Applications/$(basename "$app")/Contents/MacOS/$(basename "$inner")"
+  name=$(basename "$app")
+  shared=${LATCH_APPLICATIONS:-/Applications}
+  own="${HOME%/}/Applications"
+  if [ -e "$shared/$name" ] && [ ! -O "$shared/$name" ]; then
+    say "$shared/$name is another user's; installing to $own, for this user only"
+    apps=$own
+  elif [ -d "$shared" ] && [ -w "$shared" ]; then
+    apps=$shared
+  else
+    apps=$own
+  fi
+  installed="$apps/$name"
+  # This user's copy in the other folder, never another user's (and none
+  # when both folders are one, as for a user whose HOME is /).
+  if [ "$apps" = "$shared" ]; then other="$own/$name"; else other="$shared/$name"; fi
+  if [ "$other" = "$installed" ] || { [ -e "$other" ] && [ ! -O "$other" ]; }; then
+    other=""
+  fi
+  old="$installed/Contents/MacOS/$(basename "$inner")"
+  if [ ! -x "$old" ] && [ -n "$other" ]; then
+    old="$other/Contents/MacOS/$(basename "$inner")"
+  fi
 fi
 # A first install: no login in the state directory yet.
 first_install=""
@@ -179,8 +206,13 @@ first_install=""
 # counts: a new window with the same latch is a new app. cksum, unlike cmp,
 # is on every system.
 replace=1
+# Whether this user has a copy in the other folder to remove: its host is
+# stopped first, as for a replaced one.
+moving=""
 if [ -n "$app" ]; then
-  installed="$HOME/Applications/$(basename "$app")"
+  if [ -n "$other" ] && [ -d "$other" ]; then
+    moving=1
+  fi
   if [ -d "$installed" ] && diff -rq "$app" "$installed" >/dev/null 2>&1; then
     replace=""
   fi
@@ -194,6 +226,7 @@ fi
 # explicit start.
 restart_host=""
 terminal_host=""
+left_running=""
 tmp=""
 on_exit() {
   ended=$?
@@ -206,7 +239,7 @@ trap on_exit EXIT
 # The new latch asks and stops: the latch there may be too old to know
 # `stop`, or to reach a host of a latch older still.
 host=""
-if [ -x "$old" ] && [ -n "$replace" ]; then
+if [ -x "$old" ] && { [ -n "$replace" ] || [ -n "$moving" ]; }; then
   host=$("$src" --state-dir "$state_dir" status --local 2>/dev/null) || host=""
   case "$host" in
     # A host this latch cannot reach: its owner is told how to stop it,
@@ -214,6 +247,7 @@ if [ -x "$old" ] && [ -n "$replace" ]; then
     *'"other_version"'*)
       say "$(printf '%s\n' "$host" | sed -n 's/.*"blocked":{"code":"other_version","message":"\([^"]*\)"}.*/\1/p')"
       host=""
+      left_running=1
       ;;
   esac
 fi
@@ -247,7 +281,7 @@ if [ -n "$app" ]; then
     # away, until the new one has its path: if that fails, the old one goes
     # back, still working, and the link into it with it. A run cut short
     # between the two leaves the old one aside, which the next run restores.
-    mkdir -p "$HOME/Applications"
+    mkdir -p "$apps"
     if [ ! -d "$installed" ] && [ -d "$installed.old" ]; then
       mv "$installed.old" "$installed"
     fi
@@ -275,6 +309,17 @@ if [ -n "$app" ]; then
     ln -sf "$link" "$dest.tmp"
     mv -f "$dest.tmp" "$dest"
     say "linked $dest to $link"
+  fi
+  # The copy in the other folder goes, with what a run cut short left
+  # beside it, unless a host this latch could not stop may run from it.
+  if [ -n "$other" ] && { [ -e "$other" ] || [ -e "$other.new" ] || [ -e "$other.old" ]; }; then
+    if [ -n "$left_running" ]; then
+      say "left $other in place, since a host from another latch version may run from it; remove it once that host is stopped"
+    elif rm -rf "$other" "$other.new" "$other.old" 2>/dev/null; then
+      say "removed $other; $installed replaces it (relink any link to latch other than $dest)"
+    else
+      say "could not remove $other; remove it, so only one $name is left"
+    fi
   fi
 elif [ -z "$replace" ]; then
   say "latch already installed at $dest"
