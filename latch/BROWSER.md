@@ -429,7 +429,7 @@ pass stops, in this order, at a CAPTCHA (`needs_owner`), a code stage
 or a passkey stage (`needs_fields`, before the model is asked; a code
 stage's stop names the way on: the vault's authenticator code with `fill`,
 a texted code found and typed as below ("A code sent by text"), else a
-handoff; a passkey
+handoff, or on a host with no screen, the owner asked for the code; a passkey
 stage goes on when a named item that fits holds a password, so the model
 can take the page's password path), `blocked`,
 `unconfirmed`, `stuck` or `already_true`, a budget (8 actions a step, 30 a
@@ -595,13 +595,15 @@ the code always comes from one of these:
 
 A code from an authenticator app in the vault is `fill --item vN --field
 otp=eN` instead, and a host that cannot read Messages hands the session to
-the owner: `handoff --reason 2fa`.
+the owner: `handoff --reason 2fa`. A host with no screen cannot (see
+"Handoff and screenless hosts"): ask the owner for the code, and enter it
+as above.
 
 ## For agents
 
 - **One session per task.** A session starts signed in nowhere and keeps
   its logins until it closes: sign in with `fill` (or `handoff` what only
-  the owner can do) once, and do the whole task in that session.
+  the owner can do, on a host with a screen) once, and do the whole task in that session.
 - **A hard block is not a challenge.** A challenge has something to click
   or type (a CAPTCHA, "confirm you are human", a code prompt); a hard
   block ("You have been blocked", "Access denied", a check that never
@@ -639,7 +641,11 @@ session is the agent's again (`timeout`), its old refs refused the same.
 
 A host with no screen a person could use (any Linux host, or any host
 started with `--headless-browsers`) answers `handoff` with `needs_owner`
-and `"reason": "no_screen"` at once. On Linux, each headed session
+and `"reason": "no_screen"` at once, and its message says what to do
+instead: for a code, ask the owner for it and type it; for anything else,
+stop and tell the owner what the page needs. The stops that name the owner
+as the way on (a CAPTCHA, a code or passkey stage, a fill the page would
+not keep) say the same on such a host, never to hand off. On Linux, each headed session
 runtime's worker starts a private Xvfb display (`-displayfd`)
 for its engine, up for as long as the runtime. It listens only on its
 socket file in the runtime's private `/tmp`: no TCP port and no abstract
