@@ -54,6 +54,14 @@ latch's commands and behavior here are `main`'s today.
   refuses the call if Plow says no or can't be reached. Callers on the
   host's own socket are trusted as the owner by the socket's file
   permissions; Plow isn't asked.
+- **While a machine's host runs, that machine's calls to other hosts go
+  through it.** Both would use the state folder's one key, and the relay
+  delivers to the newest connection with a key, so a command dialing on
+  its own would make the host unreachable while it ran. Calls answer as
+  they would directly. A host that is starting or stopping takes none:
+  they fail with `host_unreachable` and are not dialed around it. A host
+  that starts waits for the direct calls already running, and a direct
+  `--follow` ends to let it start ("run this again").
 - **Never copy a machine's state folder or Plow token to where an agent
   runs.** The host would take the agent for you, and judge its calls only
   against your rules.

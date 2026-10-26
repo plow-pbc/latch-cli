@@ -284,6 +284,8 @@ pub struct Hosting {
     pub pid: Option<u32>,
     /// Why a host that runs cannot be used: one from another latch version.
     pub blocked: Option<Problem>,
+    /// What a starting host waits for, while it does.
+    pub waiting: Option<String>,
     /// The agents refused `exec` here (`serve --deny-exec`): as the host
     /// runs, or as the last one ran; `null` if its saved flags are unreadable.
     pub deny_exec: Option<crate::serve::DenyExec>,
@@ -370,6 +372,7 @@ pub fn hosted(state: &StateDir, until: Option<std::time::Instant>) -> Option<Hos
             state: host.state,
             pid: host.pid,
             blocked,
+            waiting: host.waiting.clone(),
             deny_exec: crate::managed::saved_deny_exec(&dir),
             keep_awake: crate::keep_awake::status(&dir, &host).ok(),
         },

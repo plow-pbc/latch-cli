@@ -367,8 +367,12 @@ async fn ready(dir: &Path, before: Option<&str>) -> Result<Value, Failure> {
             return Err(Failure::new(code::serve_failed, message));
         }
         if started.elapsed() > READY_WITHIN {
+            let waiting = match host.waiting {
+                Some(why) => format!(": it is {why}, and starts by itself once they end"),
+                None => String::new(),
+            };
             let message = format!(
-                "the host did not answer within {} seconds (`latch logs` has its log)",
+                "the host did not answer within {} seconds{waiting} (`latch logs` has its log)",
                 READY_WITHIN.as_secs()
             );
             return Err(Failure::new(code::serve_failed, message));
