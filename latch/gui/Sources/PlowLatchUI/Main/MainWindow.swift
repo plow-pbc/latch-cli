@@ -272,7 +272,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
 /// The split view: the inspector's toggle opens and closes it on the
 /// screens that have one, and the model keeps which are open.
-final class MainSplitController: NSSplitViewController {
+final class MainSplitController: NSSplitViewController, NSToolbarItemValidation {
     let app: AppModel
 
     init(app: AppModel) {
@@ -298,6 +298,13 @@ final class MainSplitController: NSSplitViewController {
         let open = inspected.map(app.inspecting.contains) ?? false
         (item as? NSMenuItem)?.title = open ? "Hide Inspector" : "Show Inspector"
         return inspected != nil
+    }
+
+    /// What the toolbar's toggle asks, as the menu's asks the method above:
+    /// greyed, not hidden, where there's no inspector, as Finder greys Show
+    /// Preview where there's no preview.
+    func validateToolbarItem(_ item: NSToolbarItem) -> Bool {
+        validateUserInterfaceItem(item)
     }
 }
 

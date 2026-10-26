@@ -52,6 +52,23 @@ struct MainWindowTests {
         }
     }
 
+    // The inspector's toggle works only where there's an inspector, Activity
+    // and Vault; elsewhere it stays in place, greyed, as Finder's Show
+    // Preview does where there's no preview.
+    @Test func theInspectorToggleIsGreyedWhereThereIsNoInspector() async throws {
+        let app = try app(LiveClient())
+        let controller = open(app)
+        defer { controller.close() }
+        let toolbar = try #require(controller.window?.toolbar)
+        for (place, enabled) in [(Place.host(.activity), true), (.host(.home), false), (.host(.vault), true), (.host(.rules), false),
+                                 (.host(.settings), false), (.account(.agents), false), (.account(.connections), false)] {
+            app.place = place
+            try await Task.sleep(for: .milliseconds(20))
+            toolbar.validateVisibleItems()
+            #expect(toolbar.items.first { $0.itemIdentifier == .toggleInspector }?.isEnabled == enabled, "\(place)")
+        }
+    }
+
     @Test func aChangeOfPlaceCancelsTheLastPlacesReads() async throws {
         let client = CountingClient()
         let gate = Gate()
