@@ -224,6 +224,35 @@ impl Done {
     pub fn worker(error: crate::worker::WorkerError, audit_args: Value) -> Done {
         Done::failure(Failure::reported(&error.code, error.message), audit_args)
     }
+
+    /// Sends a file to the client: `first` as its own answer, then the
+    /// bytes, then the last answer with their size and sha256, which the
+    /// audit record keeps too.
+    pub async fn send_bytes(
+        send: &mut crate::transport::SendStream,
+        first: Value,
+        bytes: &[u8],
+        mut audit: serde_json::Map<String, Value>,
+    ) -> Done {
+        use sha2::{Digest, Sha256};
+        use tokio::io::AsyncWriteExt;
+        let result = json!({
+            "size": bytes.len(),
+            "sha256": crate::state::to_hex(&Sha256::digest(bytes)),
+        });
+        audit.insert("size".into(), result["size"].clone());
+        audit.insert("sha256".into(), result["sha256"].clone());
+        let first = serde_json::to_vec(&Response::Ok(first)).expect("serializes");
+        if wire::write_frame(send, &first).await.is_err() || send.write_all(bytes).await.is_err() {
+            let message = "the client left".into();
+            return Done::failed(code::connection_lost, message, Value::Object(audit));
+        }
+        Done {
+            response: Response::Ok(result),
+            audit_args: Value::Object(audit),
+            outcome: "ok".into(),
+        }
+    }
 }
 
 /// How long the host waits for a relay connection when it starts.

@@ -28,7 +28,6 @@ use std::time::{Duration, Instant};
 use crate::transport::{RecvStream, SendStream};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
-use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 
 use super::judged;
@@ -521,28 +520,8 @@ pub async fn run(
             outcome: "ok".into(),
         };
     };
-    // A screenshot or a download: its details first, then its bytes, then
-    // the last answer with their sha256.
-    let sha256 = to_hex(&Sha256::digest(&bytes));
-    audit.insert("size".into(), json!(bytes.len()));
-    audit.insert("sha256".into(), json!(sha256));
-    let first = serde_json::to_vec(&Response::Ok(result)).expect("serializes");
-    let sent = match wire::write_frame(send, &first).await {
-        Ok(()) => send.write_all(&bytes).await.is_ok(),
-        Err(_) => false,
-    };
-    if !sent {
-        return Done::failed(
-            code::connection_lost,
-            "the client left".into(),
-            Value::Object(audit),
-        );
-    }
-    Done {
-        response: Response::Ok(json!({"size": bytes.len(), "sha256": sha256})),
-        audit_args: Value::Object(audit),
-        outcome: "ok".into(),
-    }
+    // A screenshot or a download: its details first, then its bytes.
+    Done::send_bytes(send, result, &bytes, audit).await
 }
 
 /// A `fill`: a suggestion taken by its id becomes the mapping it stands

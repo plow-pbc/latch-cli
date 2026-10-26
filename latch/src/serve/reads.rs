@@ -14,14 +14,12 @@ use std::os::fd::{AsRawFd, RawFd};
 
 use iroh::endpoint::VarInt;
 use serde_json::{Map, Value, json};
-use sha2::{Digest, Sha256};
-use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 
 use super::Host;
 use crate::failure::{Code, Failure, code};
 use crate::serve::Done;
-use crate::state::{StateDir, to_hex};
+use crate::state::StateDir;
 use crate::transport::SendStream;
 use crate::wire::{self, Response};
 
@@ -48,7 +46,7 @@ pub(super) async fn run(
 /// is sent: its size, its bytes, then their sha256.
 async fn shot(host: &Host, args: &Value, send: &mut SendStream) -> Done {
     let (record, shot) = (args["record"].clone(), args["shot"].clone());
-    let mut audit = Map::from_iter([
+    let audit = Map::from_iter([
         ("record".into(), record.clone()),
         ("shot".into(), shot.clone()),
     ]);
@@ -67,22 +65,7 @@ async fn shot(host: &Host, args: &Value, send: &mut SendStream) -> Done {
         Ok(png) => png,
         Err(failure) => return crate::vault::host::done(Err(failure), audit),
     };
-    let sha256 = to_hex(&Sha256::digest(&png));
-    audit.insert("size".into(), json!(png.len()));
-    audit.insert("sha256".into(), json!(sha256));
-    let start = serde_json::to_vec(&Response::Ok(json!({"size": png.len()}))).expect("serializes");
-    let sent = match wire::write_frame(send, &start).await {
-        Ok(()) => send.write_all(&png).await.is_ok(),
-        Err(_) => false,
-    };
-    if !sent {
-        return Done::failed(
-            code::connection_lost,
-            "the client left".into(),
-            Value::Object(audit),
-        );
-    }
-    crate::vault::host::done(Ok(json!({"size": png.len(), "sha256": sha256})), audit)
+    Done::send_bytes(send, json!({"size": png.len()}), &png, audit).await
 }
 
 async fn read(
