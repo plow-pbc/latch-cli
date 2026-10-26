@@ -1105,19 +1105,24 @@ async fn a_return_goes_through_selection_cards_in_batched_plans(engine: &str) {
     h.close().await;
 }
 
-/// A click aimed at a button that lands on its own container does not
-/// reach the button, whether the container draws an ::after over it or the
-/// button takes no pointer events: the step is refused and nothing is
-/// clicked.
+/// A click aimed at a control that lands on its own container does not
+/// reach it when the container draws an ::after over it, or the control
+/// is a button that takes no pointer events: the step is refused and
+/// nothing is clicked. A checkbox that takes none is no exception under
+/// such an ::after.
 async fn a_container_drawn_over_its_target_still_covers_it(engine: &str) {
     let (_dir, state, _area) = test_state(engine);
     let site = site();
     let fake: Arc<dyn Provider> = Arc::new(Fake::default());
     let mut h = Harness::start(&state, engine, Some(fake)).await;
     let page = h.open(&format!("{site}/drawn-over.html")).await;
-    for name in ["Save", "Send"] {
-        let button = find(&page, "button", name);
-        let failure = h.short(&[&format!("click {button}")]).await.unwrap_err();
+    for (role, name) in [
+        ("button", "Save"),
+        ("button", "Send"),
+        ("checkbox", "Gift wrap"),
+    ] {
+        let target = find(&page, role, name);
+        let failure = h.short(&[&format!("click {target}")]).await.unwrap_err();
         assert_eq!(
             refused(&failure),
             (Exit::Failed, "covered_target"),

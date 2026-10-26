@@ -1,20 +1,22 @@
 <!doctype html><meta charset="utf-8"><title>Drawn over · Shop</title>
-<!-- Two buttons a click aimed at lands on their container instead: one
-     whose container draws an ::after over it, one that takes no pointer
-     events. Neither container passes the click on. -->
+<!-- Controls a click aimed at lands on their container instead, which
+     never passes it on: a button whose container draws an ::after over
+     it, a button that takes no pointer events, and a checkbox that takes
+     none under its container's ::after. -->
 <style>
   .wrap { position: relative; display: inline-block; padding: 8px; }
-  .over::after { content: ''; position: absolute; inset: 0; background: #0001; }
+  .over::after { content: ''; position: absolute; inset: 0; background: #ddd; }
 </style>
 <div class="wrap over" id="over"><button id="save">Save</button></div>
 <div class="wrap" id="plain"><button id="send" style="pointer-events: none">Send</button></div>
+<div class="wrap over" id="boxed"><span style="pointer-events: none"><input type="checkbox" id="gift" aria-label="Gift wrap"></span></div>
 <p id="out">nothing clicked</p>
 <script>
   const out = document.getElementById('out');
-  for (const id of ['save', 'send']) {
+  for (const id of ['save', 'send', 'gift']) {
     document.getElementById(id).addEventListener('click', (e) => { e.stopPropagation(); out.textContent = `clicked ${id}`; });
   }
-  for (const id of ['over', 'plain']) {
+  for (const id of ['over', 'plain', 'boxed']) {
     document.getElementById(id).addEventListener('click', () => { out.textContent = `clicked ${id}`; });
   }
 </script>

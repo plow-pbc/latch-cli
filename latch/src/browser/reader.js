@@ -125,6 +125,14 @@
   // ancestor (checkouts carry such copies of their fields).
   const unread = (el) => !!el.closest('[aria-hidden="true"], [inert]');
 
+  // Whether `box` draws a ::before or ::after out of its flow, which can
+  // lie over what it holds and take the clicks meant for it.
+  const drawsOver = (box) => ['::before', '::after'].some((pseudo) => {
+    const style = getComputedStyle(box, pseudo);
+    return !['none', 'normal'].includes(style.content) && style.display !== 'none'
+      && ['absolute', 'fixed'].includes(style.position);
+  });
+
   // Whether a click landing on `hit` reaches `el`: on it, inside it, on
   // one of its labels, or on a container around a checkbox or radio that
   // has no box or takes no pointer events itself, as a selection card's
@@ -135,6 +143,7 @@
     if (hit === el || el.contains(hit)) return true;
     if (el.labels && [...el.labels].some((l) => l.contains(hit))) return true;
     if (!hit.contains(el) || el.localName !== 'input' || !['checkbox', 'radio'].includes(el.type)) return false;
+    if (drawsOver(hit)) return false;
     const r = el.getBoundingClientRect();
     return r.width === 0 || r.height === 0 || getComputedStyle(el).pointerEvents === 'none';
   };
