@@ -4426,7 +4426,20 @@ fn a_call_through_this_machines_host_answers_and_is_recorded_as_a_direct_one() {
     assert!(!owners.studio.join(format!("serve-v{}.sock", 4)).exists());
     let direct = run_all(&owners.studio);
     let direct_follow = followed(&owners.studio, "one");
-    let direct_records = owners.records_by(&owners.host, &owners.studio);
+    // A follow's record is written as the host sees it end, after the
+    // command has: wait for it.
+    let after_follow = || {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let records = owners.records_by(&owners.host, &owners.studio);
+            if records.last().is_some_and(|record| record["op"] == "audit") {
+                return records;
+            }
+            assert!(std::time::Instant::now() < deadline, "{records:?}");
+            thread::sleep(std::time::Duration::from_millis(50));
+        }
+    };
+    let direct_records = after_follow();
 
     let (_studio, log) = owners.serve_logged(&owners.studio);
     let proxied = run_all(&owners.studio);
@@ -4443,7 +4456,7 @@ fn a_call_through_this_machines_host_answers_and_is_recorded_as_a_direct_one() {
         assert!(log.count(&format!("proxy: {op} to \"host\"")) > 0, "{op}");
     }
     // The other host saw the same caller each time.
-    let records = owners.records_by(&owners.host, &owners.studio);
+    let records = after_follow();
     let (direct_records, proxied_records) = records.split_at(direct_records.len());
     let callers = |records: &[Value]| -> Vec<Value> {
         records
@@ -8718,6 +8731,14 @@ mod lifecycle {
     /// is left to start: `serve -d` says so, and it serves once the call ends.
     #[test]
     fn a_host_waiting_past_serve_d_for_a_direct_call_starts_once_it_ends() {
+        // A latch of its own: a rebuild of the checkout's beside this test,
+        // which runs over a minute, would count as an upgrade to its hosts.
+        let own = test_dir();
+        let binary = own.path().join("latch");
+        fs::copy(latch_bin(), &binary).unwrap();
+        // SAFETY: nextest runs each test in a process of its own, and this
+        // one has started no other thread yet.
+        unsafe { std::env::set_var("LATCH_TEST_BIN", &binary) };
         let owners = Owners::start();
         let _host = owners.serve(&owners.host);
         let _managed = Managed(owners.studio.clone());
