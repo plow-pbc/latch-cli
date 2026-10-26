@@ -154,6 +154,17 @@ fixes it.
 - A plan that stops (`do` or `act`: exit 1, or 4 for a confirmation)
   prints nothing on stdout: its whole answer, with `status`, `steps`,
   `stop` and `page`, is in the stderr `error` line. Read it there.
+- Do a page's steps in one `do`, up to 10, not a call each: `latch browser
+  do 'type e3 "Ada"' 'type e4 "12 Elm Road"' 'select e5 "Large"' 'click
+  e9'`. Every call is a round trip and a turn of yours. Refs come from the
+  page latch last returned, so a step that loads a new page goes last.
+- `do` answers with the page as the plan left it (`page`: its lines and
+  element refs): act on those refs rather than `observe` after each step.
+  Observe again only when that answer has no refs (a plan that stopped
+  before acting gives only the URL and title).
+- Read a page with `text` (its words) or `observe` (its elements), not
+  `eval`: the gatekeeper judges every script, which is slower, and can
+  refuse it.
 - A value `fill` put in a page stays there: never copy it out, repeat it
   or write it anywhere.
 - Buying: sign in, choose, `fill` the card, `do --confirm C` each
