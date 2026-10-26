@@ -289,6 +289,24 @@ extension MainWindowTests {
         #expect(editor.string == saved.text)
     }
 
+    // Tab from nothing focused goes into the window: to the sidebar or the
+    // bar's search, whichever AppKit puts first by where they sit. The rest
+    // of the round, which needs keyboard navigation on, is the VM's to show.
+    @Test func tabGoesIntoTheWindow() async throws {
+        let app = try app(VaultClient())
+        app.place = .host(.home)
+        let controller = open(app)
+        defer { controller.close() }
+        let window = try #require(controller.window)
+        app.place = .host(.vault)
+        await waitUntil { AppModel.held(app.summaries["studio"]?.vault) }
+        window.makeFirstResponder(nil)
+        window.selectNextKeyView(nil)
+        let reached = window.firstResponder
+        #expect(reached is NSOutlineView || ((reached as? NSTextView)?.delegate as? NSSearchField)?.placeholderString == "Search items",
+                "\(String(describing: reached))")
+    }
+
     // The bar's search field holds each screen's own search.
     @Test func eachScreenKeepsItsOwnSearch() async throws {
         let app = try app(LiveClient())

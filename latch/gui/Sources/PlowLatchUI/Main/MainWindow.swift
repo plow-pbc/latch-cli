@@ -84,6 +84,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         window.toolbarStyle = .unified
         // The only window of its kind: no tab bar, nor its menu items.
         window.tabbingMode = .disallowed
+        // Tab goes through the screen showing, made after the window was.
+        window.autorecalculatesKeyViewLoop = true
         window.contentViewController = split
         window.contentMinSize = CGSize(width: 1040, height: 440)
         if own {
@@ -208,7 +210,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         // shown or hidden by a change of place at once, not slid.
         let inspecting = if case let .host(screen) = app.place { HostScreen.inspected.contains(screen) && app.inspecting.contains(screen) }
             else { false }
-        if inspectorItem.isCollapsed == inspecting { Self.unanimated { inspectorItem.isCollapsed = !inspecting } }
+        if inspectorItem.isCollapsed == inspecting {
+            Self.unanimated { inspectorItem.isCollapsed = !inspecting }
+            // Tab reaches what the inspector shows only once the window
+            // has counted it in again: AppKit leaves out a collapsed one.
+            window.recalculateKeyViewLoop()
+        }
         if case let .host(screen, _) = route, HostScreen.inspected.contains(screen), inspectorShows.route != route { inspectorShows.route = route }
 
         if !app.still {
@@ -302,6 +309,7 @@ final class MainSplitController: NSSplitViewController, NSToolbarItemValidation 
     override func toggleInspector(_ sender: Any?) {
         guard let screen = inspected else { return }
         super.toggleInspector(sender)
+        view.window?.recalculateKeyViewLoop()
         if app.inspecting.contains(screen) { app.inspecting.remove(screen) } else { app.inspecting.insert(screen) }
     }
 
@@ -378,20 +386,25 @@ final class ScreenController: NSViewController, NSUserInterfaceValidations {
     }
 }
 
+/// The host's screen tabs. Like a toolbar control, a click leaves the
+/// keyboard focus where it was (a segmented control would take it), unless
+/// keyboard navigation is on: then Tab reaches them, as any control.
+final class ScreenTabs: NSSegmentedControl {
+    override var acceptsFirstResponder: Bool { NSApp.isFullKeyboardAccessEnabled && super.acceptsFirstResponder }
+}
+
 /// The bar over a host's screen: its screen tabs, and the search of the
 /// screen showing, on Activity (its requests) and Vault (its items).
 final class ContentBar: NSView {
     var pick: (HostScreen) -> Void = { _ in }
     var search: (String) -> Void = { _ in }
-    private let tabs = NSSegmentedControl(labels: HostScreen.allCases.map(\.title), trackingMode: .selectOne, target: nil, action: nil)
+    private let tabs = ScreenTabs(labels: HostScreen.allCases.map(\.title), trackingMode: .selectOne, target: nil, action: nil)
     private let field = NSSearchField()
 
     init() {
         super.init(frame: .zero)
         tabs.target = self
         tabs.action = #selector(picked)
-        // As a toolbar control: a click leaves the keyboard focus where it was.
-        tabs.refusesFirstResponder = true
         field.target = self
         field.action = #selector(searched)
         for view in [tabs, field] {
