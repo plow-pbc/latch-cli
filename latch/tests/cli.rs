@@ -4588,6 +4588,23 @@ fn exec_true_with(from: &Path, args: &[&str]) {
     assert!(output.status.success(), "{output:?}");
 }
 
+/// A copy of a latch beside it, removed when dropped.
+struct OwnLatch(PathBuf);
+
+impl OwnLatch {
+    fn beside(latch: &Path) -> OwnLatch {
+        let copy = latch.with_file_name(format!("latch-own-{}", std::process::id()));
+        fs::copy(latch, &copy).unwrap();
+        OwnLatch(copy)
+    }
+}
+
+impl Drop for OwnLatch {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
 /// An exec on `host` (whose home is `home`) that runs from when it makes
 /// `home/marks/NAME.running` until the test makes `NAME.release` beside it.
 struct Held {
@@ -8733,12 +8750,12 @@ mod lifecycle {
     fn a_host_waiting_past_serve_d_for_a_direct_call_starts_once_it_ends() {
         // A latch of its own: a rebuild of the checkout's beside this test,
         // which runs over a minute, would count as an upgrade to its hosts.
-        let own = test_dir();
-        let binary = own.path().join("latch");
-        fs::copy(latch_bin(), &binary).unwrap();
+        // It sits beside the build's, as a test folder is no place for the
+        // latch a Linux host sandboxes its workers with.
+        let own = OwnLatch::beside(&latch_bin());
         // SAFETY: nextest runs each test in a process of its own, and this
         // one has started no other thread yet.
-        unsafe { std::env::set_var("LATCH_TEST_BIN", &binary) };
+        unsafe { std::env::set_var("LATCH_TEST_BIN", &own.0) };
         let owners = Owners::start();
         let _host = owners.serve(&owners.host);
         let _managed = Managed(owners.studio.clone());
