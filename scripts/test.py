@@ -439,11 +439,17 @@ def in_container(args):
         apparmor = ["--security-opt=apparmor=latch-bwrap"]
         print("test.py: AppArmor host: the container runs under latch-bwrap "
               "(sudo apparmor_parser -r latch/docker/latch-bwrap.apparmor)", flush=True)
+    # The tests' state folders go on the container's own filesystem: on
+    # the repo, shared from the Mac, a file renamed over another is missing
+    # for an instant to readers, so latch's atomic writes are not atomic
+    # there and a `status --local` beside a host's write finds no config.
+    (DEV / "tests").mkdir(parents=True, exist_ok=True)
     command = ["docker", "run", "--rm", "--init", "--platform", "linux/arm64", *apparmor, "--user", f"{os.getuid()}:{os.getgid()}",
                "--cap-drop=ALL", "--security-opt=no-new-privileges=true",
                "--security-opt=systempaths=unconfined",
                f"--security-opt=seccomp={docker / 'seccomp.json'}",
                "--shm-size=1g", "-v", f"{ROOT}:/repo", "-w", "/repo",
+               "--tmpfs", "/repo/.dev/tests:exec,mode=1777",
                "-e", "HOME=/tmp", "-e", "LATCH_TEST_CONTAINER=1", "-e", "RUSTUP_HOME=/usr/local/rustup",
                "-e", "CARGO_HOME=/repo/latch/target/cargo-home",
                IMAGE, *inner]

@@ -8203,9 +8203,15 @@ fn plugins_are_listed_for_anyone_and_turned_on_or_off_only_by_the_owner_at_the_h
     let agent_token = dir.path().join("agent.token");
     fs::write(&agent_token, "agent-credential\n").unwrap();
     let agent = dir.path().join("agent");
-    let agent_env = [("PLOW_TOKEN_FILE", agent_token.as_path())];
+    // The agent's calls are traced: a host it could not ask for its
+    // plugins is only a code in `status`, and its trace.log says why.
+    let agent_env = [
+        ("PLOW_TOKEN_FILE", agent_token.as_path()),
+        ("LATCH_TRACE", Path::new("latch=info,iroh=warn")),
+    ];
     let login = latch(&agent, &["login", "--api-url", &plow.url], &agent_env);
     assert_eq!(login.status.code(), Some(0), "{login:?}");
+    let agent_trace = || fs::read_to_string(agent.join("trace.log")).unwrap_or_default();
     let run = |state: &Path, args: &[&str], env: &[(&str, &Path)]| {
         let output = latch(state, args, env);
         let printed = if output.status.success() {
@@ -8267,7 +8273,8 @@ fn plugins_are_listed_for_anyone_and_turned_on_or_off_only_by_the_owner_at_the_h
             &host_row(&agents)["plugins_reason"]
         ),
         (&json!([]), &Value::Null),
-        "{agents}"
+        "{agents}\n{}",
+        agent_trace()
     );
 
     for command in ["enable", "disable"] {
@@ -8294,7 +8301,8 @@ fn plugins_are_listed_for_anyone_and_turned_on_or_off_only_by_the_owner_at_the_h
     assert_eq!(
         host_row(&agents)["plugins"],
         json!([{"name": "google", "state": "needs_setup"}]),
-        "{agents}"
+        "{agents}\n{}",
+        agent_trace()
     );
     let (code, disabled) = run(&host, &["plugins", "disable", "google"], &[]);
     assert_eq!(code, Some(0));
