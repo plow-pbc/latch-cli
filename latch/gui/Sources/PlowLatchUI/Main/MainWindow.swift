@@ -33,6 +33,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     private let screens: ScreenController
     private let bar = ContentBar()
     private let barItem = NSSplitViewItemAccessoryViewController()
+    private let inspectorShows = WindowInspector.Shown()
     private let inspectorItem: NSSplitViewItem
     /// Where the window keeps its place, host and inspectors; nil for one
     /// that keeps nothing (a still, a test).
@@ -72,7 +73,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         content.automaticallyAdjustsSafeAreaInsets = true
         barItem.view = bar
         content.addTopAlignedAccessoryViewController(barItem)
-        inspectorItem = NSSplitViewItem(inspectorWithViewController: Self.hosting(WindowInspector(), app))
+        inspectorItem = NSSplitViewItem(inspectorWithViewController: Self.hosting(WindowInspector(shown: inspectorShows), app))
         inspectorItem.minimumThickness = 260
         inspectorItem.maximumThickness = 360
         [sidebar, content, inspectorItem].forEach(split.addSplitViewItem)
@@ -208,6 +209,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         let inspecting = if case let .host(screen) = app.place { HostScreen.inspected.contains(screen) && app.inspecting.contains(screen) }
             else { false }
         if inspectorItem.isCollapsed == inspecting { Self.unanimated { inspectorItem.isCollapsed = !inspecting } }
+        if case let .host(screen, _) = route, HostScreen.inspected.contains(screen), inspectorShows.route != route { inspectorShows.route = route }
 
         if !app.still {
             // Each place's reads, for the route that keyed them: a change of
@@ -402,14 +404,19 @@ final class ContentBar: NSView {
     }
 }
 
-/// The window's inspector, for the place and host showing; empty where
-/// there's none, so a hidden one follows nothing.
+/// The window's inspector, for the last screen shown that has one. The
+/// window sets it as it collapses or opens the inspector, so leaving
+/// Activity or Vault never draws it empty before it's gone.
 private struct WindowInspector: View {
-    @Environment(AppModel.self) private var app
+    @Observable final class Shown {
+        var route: Route?
+    }
+
+    let shown: Shown
 
     var body: some View {
-        if case let .host(screen, _) = app.route, HostScreen.inspected.contains(screen) {
-            Inspector(route: app.route)
+        if let route = shown.route {
+            Inspector(route: route)
         }
     }
 }
@@ -419,6 +426,8 @@ private struct WindowInspector: View {
 struct Inspector: View {
     var route: Route
     @Environment(AppModel.self) private var app
+
+    private var showing: Bool { app.place == .host(.vault) && app.inspecting.contains(.vault) }
 
     var body: some View {
         switch route {
@@ -435,11 +444,11 @@ struct Inspector: View {
                 VaultItemInspector(item: item, show: app.vaultShow(of: item, on: host), hostName: host.name,
                                    edit: { Task { await app.beginVaultEdit(item, on: host) } },
                                    remove: { app.askToRemove(item, on: host) })
-                    // Read only while the inspector is open: a closed one
-                    // stays built (AppKit keeps a collapsed item's view) but
-                    // asks latch for nothing, and reads once it opens.
-                    .task(id: "\(host.name)/\(item.item)@\(item.revision) \(app.inspecting.contains(.vault))") {
-                        guard !app.still, app.inspecting.contains(.vault) else { return }
+                    // Read only while it shows: a closed inspector, or one
+                    // left behind another screen, stays built (AppKit keeps
+                    // a collapsed item's view) but asks latch for nothing.
+                    .task(id: "\(host.name)/\(item.item)@\(item.revision) \(showing)") {
+                        guard !app.still, showing else { return }
                         await app.showVaultItem(item.item, on: host)
                     }
             } else {
