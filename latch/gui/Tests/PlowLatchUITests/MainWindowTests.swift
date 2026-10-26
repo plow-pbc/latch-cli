@@ -133,6 +133,26 @@ struct MainWindowTests {
         #expect(dismissed.withLock { $0 } == [AppModel.mainWindow])
     }
 
+    // A closed inspector reads nothing: selecting a Vault item with it
+    // closed asks latch for nothing until it opens.
+    @Test func aClosedVaultInspectorReadsNoItem() async throws {
+        let client = VaultClient()
+        let app = try app(client)
+        app.place = .host(.vault)
+        app.inspecting.remove(.vault)
+        let controller = open(app)
+        defer { controller.close() }
+        await waitUntil { AppModel.held(app.summaries["studio"]?.vault) }
+        let split = try #require(controller.window?.contentViewController as? NSSplitViewController)
+        #expect(split.splitViewItems[2].isCollapsed)
+        app.selectedVaultItem = OnHost(host: "studio", id: "v1")
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(app.vaultShows["studio"]?["v1"] == nil)
+        app.inspecting.insert(.vault)
+        await waitUntil { !split.splitViewItems[2].isCollapsed }
+        await waitUntil { app.vaultShows["studio"]?["v1"] != nil }
+    }
+
     // The place, host and inspectors are the window's to keep: a new window
     // on the same defaults comes back to them.
     @Test func aNewWindowComesBackWhereTheLastWasLeft() async throws {

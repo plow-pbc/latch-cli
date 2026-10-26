@@ -435,8 +435,11 @@ struct Inspector: View {
                 VaultItemInspector(item: item, show: app.vaultShow(of: item, on: host), hostName: host.name,
                                    edit: { Task { await app.beginVaultEdit(item, on: host) } },
                                    remove: { app.askToRemove(item, on: host) })
-                    .task(id: "\(host.name)/\(item.item)@\(item.revision)") {
-                        guard !app.still else { return }
+                    // Read only while the inspector is open: a closed one
+                    // stays built (AppKit keeps a collapsed item's view) but
+                    // asks latch for nothing, and reads once it opens.
+                    .task(id: "\(host.name)/\(item.item)@\(item.revision) \(app.inspecting.contains(.vault))") {
+                        guard !app.still, app.inspecting.contains(.vault) else { return }
                         await app.showVaultItem(item.item, on: host)
                     }
             } else {
