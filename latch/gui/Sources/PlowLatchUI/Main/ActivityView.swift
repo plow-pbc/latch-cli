@@ -243,20 +243,3 @@ private struct DotLabelStyle: LabelStyle {
         }
     }
 }
-
-extension View {
-    /// Runs `feed`'s stream while this view is on screen, and for its grace
-    /// after.
-    func following(_ feed: ActivityFeed?, still: Bool) -> some View {
-        task(id: feed.map(ObjectIdentifier.init)) {
-            guard let feed, !still else { return }
-            feed.start()
-            // Until this view goes away: a stream nothing is sent on ends
-            // only when the task is cancelled.
-            let (untilGone, open) = AsyncStream<Never>.makeStream()
-            for await _ in untilGone {}
-            withExtendedLifetime(open) {}
-            feed.stop()
-        }
-    }
-}
