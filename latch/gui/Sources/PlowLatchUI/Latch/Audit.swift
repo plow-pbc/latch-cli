@@ -73,8 +73,15 @@ nonisolated struct AuditRecord: Decodable, Equatable, Identifiable {
         var origin: String?
         /// A browser judgment, kept beside what was judged (`judged`).
         var gate: Gate?
+        /// A plan's actions, each with the screenshot the host kept after it.
+        var stepRecords: [StepRecord]?
+        /// The page a plan stopped on for a confirmation, or ended on.
+        var screenshot: Shot?
 
         struct Secret: Decodable, Equatable { var name: String? }
+        struct StepRecord: Decodable, Equatable { var screenshot: Shot? }
+        /// A screenshot the host kept: an action's number, or `final`.
+        struct Shot: Decodable, Equatable { var shot: String? }
     }
 
     /// The gatekeeper's judgment, when it was asked.
@@ -100,6 +107,14 @@ nonisolated struct AuditRecord: Decodable, Equatable, Identifiable {
     }
 
     var args: Args? { details?.args }
+    /// The screenshots the host kept of a browser plan, in the order taken:
+    /// `latch audit shot` reads each by its name.
+    var shots: [String] {
+        guard op == "browser", let args else { return [] }
+        return ((args.stepRecords ?? []).map(\.screenshot) + [args.screenshot]).compactMap { $0?.shot }
+    }
+    /// A standalone `browser screenshot`: saved on its caller's machine, never kept on the host.
+    var isScreenshot: Bool { op == "browser" && args?.command == "screenshot" }
     /// The gatekeeper's judgment: a browser step's is in its args (its
     /// details' `gate` may be only the host's `owner_on_host` mark), any
     /// other's in the details.
@@ -107,12 +122,12 @@ nonisolated struct AuditRecord: Decodable, Equatable, Identifiable {
     var isRefused: Bool { decision != "allow" }
 
     /// The owner looking, not acting: `rules show`, `vault list`/`show`,
-    /// `plugins list`, `status`, `audit` (the app's own reads among them).
+    /// `plugins list`, `status`, `audit` and its screenshots (the app's own reads among them).
     /// Home leaves them out; Activity shows them with connections.
     var isOwnerRead: Bool {
         guard agent == nil else { return false }
         switch op {
-        case "status", "audit": return true
+        case "status", "audit", "audit_shot": return true
         case "rules": return args?.command == "show"
         case "vault": return ["list", "show"].contains(args?.command)
         case "plugins": return args?.command == "list"

@@ -31,6 +31,7 @@ extension LatchClient {
     func agentShow(_ uid: String) async throws -> AgentsList.Agent { throw LatchError.unreachable("not scripted") }
     func vaultImportPreview(_ file: URL, host: String?) async throws -> ImportPreview { throw LatchError.unreachable("not scripted") }
     func vaultImport(_ file: URL, picks: [Int], expect: String, host: String?) async throws -> ImportResult { throw LatchError.unreachable("not scripted") }
+    func auditShot(_ record: String, shot: String, host: String?) async throws -> Data { throw LatchError.unreachable("not scripted") }
     // What a double that only follows or pages needs no script for.
     nonisolated var stateDir: String { "/s" }
     func localStatus() async throws -> LocalStatus { try Fixtures.decode(Fixtures.serving) }

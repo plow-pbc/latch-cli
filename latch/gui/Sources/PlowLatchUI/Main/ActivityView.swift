@@ -100,7 +100,7 @@ private struct Records: View {
                 .inspector(isPresented: $inspecting) {
                     Group {
                         if let record = feed.records.first(where: { $0.id == app.selectedRecord }) {
-                            RecordInspector(record: record, caller: callerLabel(record), hostName: host.name)
+                            RecordInspector(record: record, caller: callerLabel(record), hostName: host.name, host: feed.host)
                         } else {
                             ContentUnavailableView("No Selection", systemImage: "doc.text.magnifyingglass",
                                                    description: Text("Select a request to see who asked, why it was allowed or refused, and what ran."))

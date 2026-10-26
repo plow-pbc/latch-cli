@@ -65,6 +65,10 @@ nonisolated protocol LatchClient: Sendable {
     /// `after` picks up after that record instead. Stopping the iteration
     /// ends it.
     func auditFollow(host: String?, after: String?) -> AsyncThrowingStream<AuditLine, Error>
+    /// `latch audit shot ID SHOT`: the PNG a browser record names, from
+    /// this Mac's host or, with `host`, another's. Only its bytes come
+    /// back; no copy is left on disk.
+    func auditShot(_ record: String, shot: String, host: String?) async throws -> Data
     /// A setup step, as `setup --status` gives its words after `latch`.
     func perform(_ args: [String]) async throws
     /// `latch stop`: stops the host on this state folder.
@@ -133,6 +137,16 @@ nonisolated struct LiveLatchClient: LatchClient {
 
     func auditFollow(host: String?, after: String?) -> AsyncThrowingStream<AuditLine, Error> {
         stream(["audit", "--follow"] + (after.map { ["--after", $0] } ?? []) + on(host)) { try decode(AuditLine.self, $0) }
+    }
+
+    /// latch saves it, readable only by this user, into a folder of its own
+    /// that is removed once the bytes are read.
+    func auditShot(_ record: String, shot: String, host: String?) async throws -> Data {
+        let folder = try ShotFolder.make()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let file = folder.appending(path: "shot.png")
+        _ = try await run(["audit", "shot", record, shot, "--output", file.path] + on(host))
+        return try Data(contentsOf: file)
     }
 
     /// Runs latch and yields each JSON line it prints (skipping those

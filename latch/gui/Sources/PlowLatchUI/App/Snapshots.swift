@@ -20,6 +20,8 @@ nonisolated struct FakeLatchClient: LatchClient {
     }
     func rulesSet(_ text: String) async throws {}
     var connectorsOn: [String] = []
+    /// Whether the host still keeps a plan's screenshots.
+    var shotsKept = true
     /// Google's step in `setup --status`, when not the default.
     var google: String?
     func setupStatus() async throws -> SetupStatus { try Fixtures.decode(Fixtures.setup(on: connectorsOn, google: google)) }
@@ -42,6 +44,12 @@ nonisolated struct FakeLatchClient: LatchClient {
                 if let line = try? LatchJSON.decoder.decode(AuditLine.self, from: Data(line.utf8)) { continuation.yield(line) }
             }
         }
+    }
+    func auditShot(_ record: String, shot: String, host: String?) async throws -> Data {
+        guard shotsKept else {
+            throw LatchError.failed(LatchFailure(code: "no_such_shot", message: "record \(record)'s screenshot \(shot) is no longer kept"))
+        }
+        return try await MainActor.run { try Fixtures.page(shot) }
     }
     func rulesSet(_ text: String, host: String?, agent: String?, revision: String?) async throws {}
     func agents(host: String?) async throws -> AgentsList {
@@ -77,6 +85,36 @@ nonisolated struct FakeLatchClient: LatchClient {
         throw LatchError.unreachable("a still")
     }
     func agentShow(_ uid: String) async throws -> AgentsList.Agent { throw LatchError.unreachable("a still") }
+}
+
+extension Fixtures {
+    /// A made-up shop page as a browser screenshot, drawn here, no real
+    /// site's: the cart, then checkout once `shot` is past the first action.
+    static func page(_ shot: String) throws -> Data {
+        let size = CGSize(width: 1280, height: 800)
+        let checkout = shot != "1"
+        let image = NSImage(size: size, flipped: true) { bounds in
+            NSColor.white.setFill()
+            bounds.fill()
+            NSColor(calibratedRed: 0.16, green: 0.32, blue: 0.62, alpha: 1).setFill()
+            CGRect(x: 0, y: 0, width: bounds.width, height: 72).fill()
+            let title: [NSAttributedString.Key: Any] = [.font: NSFont.boldSystemFont(ofSize: 30), .foregroundColor: NSColor.white]
+            NSAttributedString(string: "Test Shop", attributes: title).draw(at: CGPoint(x: 40, y: 18))
+            let heading: [NSAttributedString.Key: Any] = [.font: NSFont.boldSystemFont(ofSize: 40), .foregroundColor: NSColor.black]
+            NSAttributedString(string: checkout ? "Checkout" : "Your cart", attributes: heading).draw(at: CGPoint(x: 40, y: 120))
+            NSColor(white: 0.88, alpha: 1).setFill()
+            for row in 0..<4 { CGRect(x: 40, y: 210 + row * 70, width: 760, height: 40).fill() }
+            NSColor(calibratedRed: 0.13, green: 0.55, blue: 0.27, alpha: 1).setFill()
+            NSBezierPath(roundedRect: CGRect(x: 40, y: 520, width: 300, height: 64), xRadius: 10, yRadius: 10).fill()
+            let button: [NSAttributedString.Key: Any] = [.font: NSFont.boldSystemFont(ofSize: 26), .foregroundColor: NSColor.white]
+            NSAttributedString(string: checkout ? "Place order" : "Check out", attributes: button).draw(at: CGPoint(x: 70, y: 536))
+            return true
+        }
+        guard let tiff = image.tiffRepresentation, let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) else {
+            throw LatchError.unreachable("the page could not be drawn")
+        }
+        return png
+    }
 }
 
 /// `vault import --preview`'s answer, around the preview.
@@ -202,6 +240,13 @@ nonisolated enum Fixtures {
 {"cursor":"6d94c96d9b41d92efb792aceb3eff19c222ddfedcf737eb9855b21bd2ea90edb","record":{"agent":"a74f38668570a45ddc4b762ba0465d74","caller":"9f4d06180a5fa0824b2bc4fc4f056b0395e90914cedf7709621e6559047263f2","caller_name":null,"decision":"allow","details":{"args":null,"gate":null,"started":null},"id":"6d94c96d9b41d92efb792aceb3eff19c222ddfedcf737eb9855b21bd2ea90edb","op":"connect","outcome":"connected","time":"2026-10-23T05:00:04.753334Z","command":null},"type":"record"}
 {"cursor":"afe395811c3842b422aba81f8926d00eeb808b7f11362e5ffc949b2ed9c27717","record":{"agent":"a74f38668570a45ddc4b762ba0465d74","caller":"9f4d06180a5fa0824b2bc4fc4f056b0395e90914cedf7709621e6559047263f2","caller_name":null,"decision":"deny","details":{"args":{"argv":["ls","Projects"],"network":false,"secret_env":[],"workdir":null,"writes":[]},"gate":null,"started":"2026-10-23T05:00:04.784896Z"},"id":"afe395811c3842b422aba81f8926d00eeb808b7f11362e5ffc949b2ed9c27717","op":"exec","outcome":"exec_denied","time":"2026-10-23T05:00:04.785546Z","command":"latch exec ls Projects"},"type":"record"}
 {"cursor":"afe395811c3842b422aba81f8926d00eeb808b7f11362e5ffc949b2ed9c27717","has_older":false,"type":"caught_up"}
+"""#
+    /// `latch audit` on a host after a browser plan of one click and a
+    /// standalone screenshot, on a synthetic page: a real run, the caller
+    /// shortened to studio's.
+    static let browserAudit = #"""
+{"cursor":"d306f2c75b54b9e72650325717066c86755e2ff5ca78a8530e0f4935bbad88be","record":{"agent":null,"caller":"6b55a78f","caller_name":"studio","command":"latch browser do","decision":"allow","details":{"args":{"command":"do","engine":"cft","gate":{"caller":"owner_on_host","cost":9e-6,"latency_ms":715,"model":"typesafe/jev-1.14-20261014","model_request":"req_iborytxaoxliybww","p":{"COVERED":1.0,"FORBIDDEN":0.0,"NOT_COVERED":0.0},"prompt":"741ca2fdd2382d0c","rule":"refused when forbidden >= within instructions","source":"owner_request","verdict":"allow"},"goals":0,"judged":{"kind":"browser_plan","page":{"title":"Test Shop (synthetic)","url":"http://127.0.0.1:18977/"},"steps":[{"step":"click e1 -> path: /checkout.html"}]},"model_calls":[{"cost":5e-6,"latency_ms":320,"model":"typesafe/jev-1.13-20260917","model_request":"req_rtsxfrrjftmeqstp","outcome":"ok","provider":"plow","purpose":"risk","sent":["element_names","row_text","page_lines"]}],"origin":"http://127.0.0.1:18977","path":"/","ppid":35708,"request":"r0afb2c0dcd43","screenshot":{"sha256":"7565126b41dde2099c6309e0e9e694d125ca36233f5ca8241af775adca4f7c96","shot":"final","size":12610},"session":"lbgimebglkak","status":"reached","step_outcomes":[{"actions":1,"kind":"literal","outcome":"checked","step":1}],"step_records":[{"action":1,"chosen":"ref","dispatch":"sent","op":"click","origin":"http://127.0.0.1:18977","path":"/","ref":"e1","risk_p":0.37,"role":"link","screenshot":{"sha256":"7565126b41dde2099c6309e0e9e694d125ca36233f5ca8241af775adca4f7c96","shot":"1","size":12610},"step":1}],"steps":1,"tab":"t1","task":"synthetic shot check"},"gate":{"caller":"owner_on_host"},"started":"2026-10-23T22:48:07.839984Z"},"id":"d306f2c75b54b9e72650325717066c86755e2ff5ca78a8530e0f4935bbad88be","op":"browser","outcome":"ok","time":"2026-10-23T22:48:09.767639Z"},"type":"record"}
+{"cursor":"e1c2126a6ae4781a2e72f860326b4520daef4fb58ceaa6d48f2eee2d02cdb993","record":{"agent":null,"caller":"6b55a78f","caller_name":"studio","command":"latch browser screenshot","decision":"allow","details":{"args":{"command":"screenshot","engine":"cft","origin":"http://127.0.0.1:18977","path":"/checkout.html","ppid":35875,"session":"lbgimebglkak","sha256":"7565126b41dde2099c6309e0e9e694d125ca36233f5ca8241af775adca4f7c96","size":12610,"tab":"t1","task":"synthetic shot check"},"gate":{"caller":"owner_on_host"},"started":"2026-10-23T22:48:09.818809Z"},"id":"e1c2126a6ae4781a2e72f860326b4520daef4fb58ceaa6d48f2eee2d02cdb993","op":"browser","outcome":"ok","time":"2026-10-23T22:48:09.848213Z"},"type":"record"}
 """#
     static let kitchenAudit = #"""
 {"schema":1,"type":"hello"}
@@ -509,6 +554,19 @@ package enum SnapshotRunner {
                 app.selectedRecord = app.host.flatMap { app.feed(for: $0).records.last(where: pick)?.id }
                 _ = app.stage(.done, progress: full)
                 try await renderWindow(MainView().environment(app), size: CGSize(width: 1180, height: 640), dark: dark,
+                                 file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
+            }
+            // A browser plan's screenshots in the inspector, kept and gone,
+            // and a standalone screenshot, which the host never keeps: the
+            // inspector alone, which a window drawn off screen leaves blank.
+            for (name, kept, command) in [("14-activity-inspector-browser-plan", true, "do"), ("14-activity-inspector-browser-plan-gone", false, "do"),
+                                          ("14-activity-inspector-browser-screenshot", true, "screenshot")] {
+                let app = AppModel(client: FakeLatchClient(shotsKept: kept), still: true)
+                guard let record = try AuditPage.parse(Data(Fixtures.browserAudit.utf8)).records.last(where: { $0.args?.command == command }) else {
+                    throw LatchError.unreachable("no \(command) record in the fixture")
+                }
+                let inspector = RecordInspector(record: record, caller: ("You", "on this Mac"), hostName: "studio", host: nil)
+                try await render(inspector.environment(app).frame(width: 340, height: 760), size: CGSize(width: 340, height: 760), dark: dark,
                                  file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
             }
         }
