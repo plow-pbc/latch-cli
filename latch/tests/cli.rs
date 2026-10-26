@@ -6166,13 +6166,16 @@ fn enabling_google_offers_a_sign_in_link_and_waits_for_the_account() {
         "open sign_in_url, finish Google sign-in, then latch plugins enable google"
     );
 
-    // `--events`, nobody signs in: the link, then the timeout, exit 1.
+    // `--events`, nobody signs in: the link, then the timeout, exit 1. The
+    // wait starts once the link is offered, however long Plow took to give it.
     let wait = |secs: &'static str| [("LATCH_TEST_CONNECT_WITHIN", Path::new(secs))];
+    plow.state.lock().unwrap().sign_in_slow = std::time::Duration::from_millis(1500);
     let output = latch(&host, &events, &wait("1"));
+    plow.state.lock().unwrap().sign_in_slow = std::time::Duration::ZERO;
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let shown = lines(&output);
     assert_eq!(shown[0], json!({"type": "hello", "schema": 1}));
-    assert_eq!(shown[1]["type"], "link");
+    assert_eq!(shown[1]["type"], "link", "{shown:?}");
     assert_eq!(shown[1]["url"], link(2));
     assert_eq!(shown[2]["type"], "error");
     assert_eq!(shown[2]["error"]["code"], "sign_in_timeout");
@@ -6315,41 +6318,50 @@ fn enabling_google_offers_a_sign_in_link_and_waits_for_the_account() {
     assert!(found.is_empty(), "a link was kept: {found:?}");
 }
 
-/// The five-minute wait covers Plow's answers too, and a stop is heard
-/// from the start: a sign-in link Plow is slow to give ends in
-/// `sign_in_timeout` on time, and a caller closing its stdin pipe while
-/// Plow is still giving it stops the command before any link is shown.
+/// The five-minute wait covers Plow's answers during it too, and a stop is
+/// heard from the start: a renewed sign-in link Plow is slow to give ends
+/// in `sign_in_timeout` on time, and a caller closing its stdin pipe while
+/// Plow is still giving the first stops the command before any link is
+/// shown.
 #[cfg(all(
     feature = "fake-gog",
     any(target_os = "macos", feature = "systemd-tests")
 ))]
 #[test]
 fn a_slow_sign_in_link_neither_outlasts_the_wait_nor_a_stop() {
-    use std::io::Read;
+    use std::io::{BufRead, Read};
     let plow = LivePlow::start();
     let dir = test_dir();
     let host = owner_host_on(&plow, dir.path());
     install_fake_gog(&host);
-    plow.state.lock().unwrap().sign_in_slow = std::time::Duration::from_secs(20);
     let events = ["plugins", "enable", "google", "--events"];
 
+    // The first link expires unopened, and Plow is slow to renew it.
+    plow.state.lock().unwrap().sign_in_for = 1;
+    let within = [("LATCH_TEST_CONNECT_WITHIN", Path::new("5"))];
+    let mut child = latch_command(&host, &events, &within)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut out = std::io::BufReader::new(child.stdout.take().unwrap());
+    let mut offered = String::new();
+    out.read_line(&mut offered).unwrap();
+    out.read_line(&mut offered).unwrap();
+    assert!(offered.contains("\"link\""), "{offered}");
     let started = std::time::Instant::now();
-    let within = [("LATCH_TEST_CONNECT_WITHIN", Path::new("2"))];
-    let output = latch(&host, &events, &within);
+    plow.state.lock().unwrap().sign_in_slow = std::time::Duration::from_secs(20);
+    let mut shown = String::new();
+    out.read_to_string(&mut shown).unwrap();
+    assert_eq!(child.wait().unwrap().code(), Some(1), "{shown}");
     assert!(
         started.elapsed() < std::time::Duration::from_secs(10),
-        "{output:?}"
+        "{shown}"
     );
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let last: Value = serde_json::from_slice(
-        output
-            .stdout
-            .split(|b| *b == b'\n')
-            .rfind(|l| !l.is_empty())
-            .unwrap(),
-    )
-    .unwrap();
-    assert_eq!(last["error"]["code"], "sign_in_timeout", "{output:?}");
+    let last: Value = serde_json::from_str(shown.lines().last().unwrap()).unwrap();
+    assert_eq!(last["error"]["code"], "sign_in_timeout", "{shown}");
+    plow.state.lock().unwrap().sign_in_for = 120;
 
     let started = std::time::Instant::now();
     let mut child = latch_command(&host, &events, &[])
