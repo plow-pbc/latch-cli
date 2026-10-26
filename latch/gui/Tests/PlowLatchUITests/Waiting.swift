@@ -1,3 +1,4 @@
+import AppKit
 import Synchronization
 import Testing
 
@@ -45,4 +46,11 @@ final class Gate: Sendable {
         }
         for waiter in waiting { waiter.resume() }
     }
+}
+
+/// The text views in a window's views, in view order: a SwiftUI
+/// `TextEditor` is one.
+@MainActor
+func textViews(in view: NSView) -> [NSTextView] {
+    (view as? NSTextView).map { [$0] } ?? view.subviews.flatMap(textViews)
 }

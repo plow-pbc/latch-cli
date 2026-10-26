@@ -356,8 +356,3 @@ extension MainWindowTests {
 private func searchFields(in view: NSView) -> [NSSearchField] {
     (view as? NSSearchField).map { [$0] } ?? view.subviews.flatMap(searchFields)
 }
-
-@MainActor
-private func textViews(in view: NSView) -> [NSTextView] {
-    (view as? NSTextView).map { [$0] } ?? view.subviews.flatMap(textViews)
-}
