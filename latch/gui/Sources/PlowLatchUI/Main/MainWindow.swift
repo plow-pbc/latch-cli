@@ -76,7 +76,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         inspectorItem.minimumThickness = 260
         inspectorItem.maximumThickness = 360
         [sidebar, content, inspectorItem].forEach(split.addSplitViewItem)
-        split.inspectorItem = inspectorItem
 
         super.init(window: window)
         window.delegate = self
@@ -273,7 +272,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 /// screens that have one, and the model keeps which are open.
 final class MainSplitController: NSSplitViewController {
     let app: AppModel
-    var inspectorItem: NSSplitViewItem?
 
     init(app: AppModel) {
         self.app = app
