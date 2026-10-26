@@ -729,6 +729,52 @@ async fn no_chat_is_neither_but_a_layer_that_fails_refuses() {
     }
 }
 
+#[tokio::test]
+async fn a_fill_from_the_vault_is_judged_knowing_what_a_fill_does() {
+    let fill = crate::browser::previewed_fill(
+        "https://www.instacart.com/login",
+        "login",
+        "Instacart",
+        vec!["username".into(), "password".into()],
+    );
+    let plan = |may_fill: Value| {
+        json!({"kind": "browser_plan",
+               "page": {"url": "https://www.instacart.com/login", "title": "Log in"},
+               "steps": [{"step": "Sign in"}], "may_fill": may_fill})
+    };
+    let script = json!({"kind": "run_script", "site": "instacart.com", "script": "return 1"});
+    for (action, told) in [
+        (serde_json::to_value(&fill).unwrap(), true),
+        (plan(json!([{"kind": "login", "title": "Instacart"}])), true),
+        (plan(json!([])), false),
+        (script, false),
+        (serde_json::from_str(order().get()).unwrap(), false),
+    ] {
+        let action = serde_json::value::to_raw_value(&action).unwrap();
+        let model = Recorder::answering(0.9, 0.05, 0.05);
+        gatekeeper(one_chat(), &model, host_rules())
+            .judge(AGENT_CALLER, &action)
+            .await;
+        // Both layers are told, as the owner is; the owner's messages also
+        // that a request on a site covers signing in there.
+        let rules = model.rules_state()["rules_of_judgment"].to_string();
+        assert_eq!(rules.contains(VAULT_FILL), told, "{action}");
+        assert!(!rules.contains(VAULT_FILL_ASKED), "{action}");
+        let chat = model.chat_state()["rules_of_judgment"].to_string();
+        assert_eq!(chat.contains(VAULT_FILL_ASKED), told, "{action}");
+        let model = Recorder::answering(0.9, 0.05, 0.05);
+        gatekeeper(one_chat(), &model, host_rules())
+            .judge(Caller::Owner, &action)
+            .await;
+        let rules_of_judgment = model.state()["rules_of_judgment"].to_string();
+        assert_eq!(
+            rules_of_judgment.contains(VAULT_FILL_ASKED),
+            told,
+            "{action}"
+        );
+    }
+}
+
 fn held_out() -> Value {
     serde_json::from_str(include_str!("../../tests/fixtures/gatekeeper/heldout.json")).unwrap()
 }

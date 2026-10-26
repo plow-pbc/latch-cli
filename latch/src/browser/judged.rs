@@ -8,8 +8,8 @@
 //!
 //! Each is judged before anything of it is sent to the page. A refusal
 //! sends nothing; the audit gets the judgment's `gate` object either way.
-//! The judge sees an item's kind and title and the fields a fill maps,
-//! never a value.
+//! The judge sees an item's kind, title and the sites it is saved for, and
+//! the fields a fill maps, never a value.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -90,6 +90,13 @@ pub(super) struct Page {
 pub(super) struct ItemShown {
     kind: String,
     title: String,
+    /// The sites the item is saved for, which a login fills only on: the
+    /// judge sets them beside the page's site.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    sites: Vec<String>,
+    /// Other top-level sites a login may be filled under.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    other_top_sites: Vec<String>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -153,8 +160,8 @@ pub(super) async fn site(browsers: &Browsers, entry: &Entry) -> Result<Option<St
     Ok(sites::site_of(&page(browsers, entry).await?.url))
 }
 
-/// A vault item's kind and title; an item the vault lacks is shown by its
-/// handle, and is refused later by the step that uses it.
+/// A vault item's kind, title and sites; an item the vault lacks is shown
+/// by its handle, and is refused later by the step that uses it.
 pub(super) fn item(browsers: &Browsers, id: &str) -> ItemShown {
     let meta = browsers
         .vault
@@ -165,10 +172,14 @@ pub(super) fn item(browsers: &Browsers, id: &str) -> ItemShown {
         Some(meta) => ItemShown {
             kind: meta.kind.to_string(),
             title: meta.title,
+            sites: meta.sites,
+            other_top_sites: meta.other_top_sites,
         },
         None => ItemShown {
             kind: "unknown".into(),
             title: id.to_string(),
+            sites: vec![],
+            other_top_sites: vec![],
         },
     }
 }
@@ -196,19 +207,23 @@ pub(super) fn fill(
 }
 
 /// A login fill as `rules try --fill-login` previews it: the item's kind
-/// and title as given, never looked up in the vault, on the site of `url`.
+/// and title as given, never looked up in the vault, on the site of `url`,
+/// as a login saved for that site.
 pub(crate) fn previewed_fill(
     url: &str,
     kind: &str,
     title: &str,
     fields: Vec<String>,
 ) -> impl Serialize + use<> {
+    let site = sites::site_of(url);
     Action::VaultFill {
-        site: sites::site_of(url),
         item: ItemShown {
             kind: kind.to_string(),
             title: title.to_string(),
+            sites: site.iter().cloned().collect(),
+            other_top_sites: vec![],
         },
+        site,
         fields,
         confirmed: false,
     }

@@ -176,9 +176,16 @@ model, through Plow on the host's own Plow login, whether it may run.
 - The judge sees what it's judging: exec arguments, folders, network and
   stdin; file paths, sizes and names; the full Google command with its
   arguments; a browser plan as written, with its values, and its site. For
-  a vault fill it sees the item's kind and title and the fields mapped,
-  never their values; for `--secret-env`, only names and lengths. It runs
-  at Plow, so keep credentials out of arguments.
+  a vault fill it sees the item's kind and title, the sites it's saved
+  for and the fields mapped, never their values. It is told what a fill
+  does: the agent never receives the values, and a saved login fills only
+  on its own sites. A matching site says where a login may go, not that
+  it may be used: signing in still needs your OK, in a rule or the chat,
+  where asking for something to be done on a site covers signing in
+  there. With that OK, signing in on the login's own site isn't judged as
+  sharing the password; revealing or copying a value, or filling it
+  elsewhere, still is. For `--secret-env` it sees only names and lengths.
+  It runs at Plow, so keep credentials out of arguments.
 
 **What's logged.** The host keeps a sealed audit log of the calls it
 handles, `audit.sealed.ndjson` in its state folder. Each record is
@@ -216,7 +223,8 @@ typed text and the rest of the page can show.
   they're at most 8 KiB. `latch rules show` reminds you they're judged, not
   guaranteed. `latch rules try` previews the verdict a request would get,
   without running it. `--fill-login TITLE --url URL` previews a browser
-  fill of a saved login: the fill's judgment only, not the whole sign-in
+  fill of a saved login, as saved for that page's site: the fill's
+  judgment only, not the whole sign-in
   (opening the site is judged on its own) nor whether the vault has that
   login. Nothing is opened or filled, and the vault isn't read.
 - **Vault** secrets never come from the command line or the environment:

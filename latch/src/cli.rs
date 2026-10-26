@@ -865,9 +865,9 @@ pub enum RulesCommand {
         #[arg(long, value_name = "F")]
         draft: Option<PathBuf>,
         /// Preview a browser fill of the saved login TITLE on --url instead
-        /// of REQUEST. It previews the fill's judgment only, not the whole
-        /// sign-in (opening the site is judged on its own) nor whether the
-        /// vault has that login
+        /// of REQUEST, as a login saved for that page's site. It previews
+        /// the fill's judgment only, not the whole sign-in (opening the site
+        /// is judged on its own) nor whether the vault has that login
         #[arg(long, value_name = "TITLE", requires = "url")]
         fill_login: Option<String>,
         /// The page --fill-login fills the login on
