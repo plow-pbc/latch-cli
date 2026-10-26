@@ -126,11 +126,12 @@
   const unread = (el) => !!el.closest('[aria-hidden="true"], [inert]');
 
   // Whether `box` draws a ::before or ::after out of its flow, which can
-  // lie over what it holds and take the clicks meant for it.
+  // lie over what it holds and take the clicks meant for it (one that
+  // takes no pointer events is only drawn).
   const drawsOver = (box) => ['::before', '::after'].some((pseudo) => {
     const style = getComputedStyle(box, pseudo);
     return !['none', 'normal'].includes(style.content) && style.display !== 'none'
-      && ['absolute', 'fixed'].includes(style.position);
+      && ['absolute', 'fixed'].includes(style.position) && style.pointerEvents !== 'none';
   });
 
   // Whether a click landing on `hit` reaches `el`: on it, inside it, on

@@ -1109,7 +1109,8 @@ async fn a_return_goes_through_selection_cards_in_batched_plans(engine: &str) {
 /// reach it when the container draws an ::after over it, or the control
 /// is a button that takes no pointer events: the step is refused and
 /// nothing is clicked. A checkbox that takes none is no exception under
-/// such an ::after.
+/// such an ::after, unless the ::after takes no pointer events either:
+/// then the click on it is the click on its card.
 async fn a_container_drawn_over_its_target_still_covers_it(engine: &str) {
     let (_dir, state, _area) = test_state(engine);
     let site = site();
@@ -1130,5 +1131,9 @@ async fn a_container_drawn_over_its_target_still_covers_it(engine: &str) {
         );
     }
     assert!(h.text().await.contains("nothing clicked"));
+    let card = find(&page, "checkbox", "Gift box");
+    let picked = h.short(&[&format!("click {card}")]).await.unwrap();
+    assert_eq!(picked["status"], "dispatched", "{picked}");
+    assert!(h.text().await.contains("card picked"));
     h.close().await;
 }

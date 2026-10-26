@@ -270,7 +270,8 @@ itself has no box or takes no pointer events: a selection card whose whole
 box takes the click, over the input drawn inside it. A container hit for
 anything else covers it (a button that takes no pointer events), and so
 does a container that draws a ::before or ::after out of its flow, which
-can lie over the target and take its click.
+can lie over the target and take its click (one that takes no pointer
+events is only drawn, and covers nothing).
 Such a checkbox or radio with no name of its own is named by its card's
 text. Input is the engine's own mouse and keys at a
 person's pace (`isTrusted` is true); `select` focuses the list and types
