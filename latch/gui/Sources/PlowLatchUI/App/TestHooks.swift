@@ -116,7 +116,7 @@ enum TestHooks {
             if value == "1" { app.inspecting.insert(screen) } else { app.inspecting.remove(screen) }
         }
         on("record") { id in app.selectedRecord = app.host.flatMap { host in id.map { OnHost(host: host.name, id: $0) } } }
-        on("filter") { name in if let filter = name.flatMap(ActivityView.Filter.init(rawValue:)) { app.activityFilter = filter } }
+        on("filter") { name in if let filter = name.flatMap(ActivityFilter.init(rawValue:)) { app.activityFilter = filter } }
         on("connections") { value in app.showConnections = value == "1" }
         on("search") { text in app.activitySearch = text ?? "" }
         // An agent's Activity link: "HOST|UID"; with no argument, the

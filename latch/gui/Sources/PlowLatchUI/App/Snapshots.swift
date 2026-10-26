@@ -504,7 +504,7 @@ package enum SnapshotRunner {
             }
             // Activity: real records of each kind, a filter, the inspector,
             // another host's, and one Plow counts offline.
-            let activities: [(String, String, String, String?, ActivityView.Filter, (AuditRecord) -> Bool)] = [
+            let activities: [(String, String, String, String?, ActivityFilter, (AuditRecord) -> Bool)] = [
                 ("14-activity-studio-agent-allowed", Fixtures.serving, Fixtures.studioHosts, nil, .all,
                  { $0.callerName == "scout" && $0.decision == "allow" && $0.op == "exec" }),
                 ("14-activity-studio-refused-you-said-no", Fixtures.serving, Fixtures.studioHosts, nil, .refused,

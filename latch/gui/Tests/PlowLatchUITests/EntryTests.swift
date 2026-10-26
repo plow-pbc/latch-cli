@@ -183,7 +183,7 @@ struct EntryTests {
         await app.enter(.account(.agents))
         let reachable = app.hosts.filter { $0.isThisMac || $0.online != false }
         #expect(!reachable.isEmpty)
-        #expect(reachable.allSatisfy { AppModel.held(app.standings[$0.name]) })
+        #expect(reachable.allSatisfy { app.standings[$0.name] != nil })
     }
 
     @Test func homeAndActivityShareTheirHostsFeedAndOtherScreensHaveNone() throws {
@@ -285,6 +285,25 @@ struct ActivationTests {
         await app.activated()
         let again = Array(client.calls.dropFirst(first.count))
         #expect(again.contains(section == .vault ? "vault list" : "rules show"), "\(section): \(again)")
+    }
+
+    // Agents asks every reachable host for its agents' standing at once,
+    // not one host after another.
+    @Test func agentsAsksEveryHostAtOnce() async throws {
+        let client = CountingClient()
+        let gate = Gate()
+        client.held["agents --host"] = gate
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
+        app.stage(status: try Fixtures.decode(Fixtures.serving))
+        app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
+        let reachable = app.hosts.filter { $0.isThisMac || $0.online != false }
+        #expect(reachable.count > 1)
+        let entering = Task { await app.enter(.account(.agents)) }
+        // All asked while the first answer is still held.
+        await waitUntil { client.calls.filter { $0 == "agents --host" }.count == reachable.count }
+        gate.open()
+        await entering.value
+        #expect(reachable.allSatisfy { AppModel.held(app.standings[$0.name]) })
     }
 
     // Rules names the agents but doesn't show their standing on each host:

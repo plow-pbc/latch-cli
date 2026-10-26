@@ -964,7 +964,7 @@ final class AppModel {
     /// Activity's filters, kept as hosts change: its outcome, connections
     /// and the owner's reads shown too, text to search for, and the one
     /// agent asked for on one host.
-    var activityFilter = ActivityView.Filter.all
+    var activityFilter = ActivityFilter.all
     var showConnections = false
     var activitySearch = ""
     var activityAgent: AgentTarget?
@@ -972,7 +972,7 @@ final class AppModel {
     /// A host's requests, or one agent's there: that host's Activity with
     /// every outcome, or the one asked for, no search, and no connections or
     /// owner's reads, which Home's counts leave out.
-    func openActivity(_ host: HostEntry, agent uid: String? = nil, showing filter: ActivityView.Filter = .all) {
+    func openActivity(_ host: HostEntry, agent uid: String? = nil, showing filter: ActivityFilter = .all) {
         chosenHost = host.name
         place = .host(.activity)
         activityAgent = uid.map { AgentTarget(host: host.name, agent: $0) }

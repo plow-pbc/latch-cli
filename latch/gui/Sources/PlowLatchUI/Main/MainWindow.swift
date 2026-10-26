@@ -53,7 +53,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         self.app = app
         self.defaults = defaults
         split = MainSplitController(app: app)
-        screens = ScreenController(app: app)
+        screens = ScreenController(app: app, autosave: defaults != nil && !app.still)
         let own = window == nil
         let window = window ?? NSWindow(contentRect: CGRect(x: 0, y: 0, width: 1120, height: 700),
                                         styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
@@ -338,10 +338,14 @@ final class MainSplitController: NSSplitViewController, NSToolbarItemValidation 
 /// when another replaces it. What must outlive it is the model's.
 final class ScreenController: NSViewController, NSUserInterfaceValidations {
     let app: AppModel
+    /// Screens keep what AppKit keeps of them (Activity's columns and sort)
+    /// across launches; not a still's or a test's.
+    let autosave: Bool
     private var shown: (place: Place, controller: NSViewController, actions: ScreenActions)?
 
-    init(app: AppModel) {
+    init(app: AppModel, autosave: Bool) {
         self.app = app
+        self.autosave = autosave
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -352,7 +356,9 @@ final class ScreenController: NSViewController, NSUserInterfaceValidations {
     func show(_ place: Place) {
         guard shown?.place != place else { return }
         let actions = ScreenActions()
-        let controller = MainWindowController.hosting(Self.screen(place).environment(actions), app)
+        // Activity's table is AppKit's; every other screen is SwiftUI.
+        let controller = place == .host(.activity) ? ActivityController(app: app, autosaveName: autosave ? "Activity" : nil)
+            : MainWindowController.hosting(Self.screen(place).environment(actions), app)
         addChild(controller)
         controller.view.frame = view.bounds
         controller.view.autoresizingMask = [.width, .height]
@@ -384,7 +390,7 @@ final class ScreenController: NSViewController, NSUserInterfaceValidations {
         case .account(.agents): AgentsView()
         case .account(.connections): ConnectionsView()
         case .host(.home): HomeView()
-        case .host(.activity): ActivityView()
+        case .host(.activity): EmptyView()
         case .host(.rules): HostRulesView()
         case .host(.vault): VaultView()
         case .host(.settings): HostSettingsView()
