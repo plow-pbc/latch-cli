@@ -271,7 +271,9 @@ types what the agent gives it into any text field, a password or a
 one-time code field included; only a value from the vault (`fill`) stays
 out of the agent's sight. While a dialog is open, every call but `dialog` is refused with
 `dialog_open`. A key goes only to an element that takes the focus: a hidden
-or disabled one is refused (`not_focused`).
+or disabled one, or one a dialog keeps the focus from, is refused
+(`not_focused`), and `type` that leaves the field as it was, its keys
+turned away, is `type_failed`.
 
 `eval` runs the script's expression in the page's main frame, in the
 page's own world (a promise is awaited), and answers its JSON value (at

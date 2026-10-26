@@ -462,6 +462,7 @@ codes! {
     tool_failed: Failed,
     transfer_failed: Unknown,
     transfer_incomplete: Failed,
+    type_failed: Failed,
     unconfirmed: Failed,
     unknown_account: Usage,
     unknown_cloud_kind: Usage,

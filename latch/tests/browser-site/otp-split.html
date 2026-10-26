@@ -1,0 +1,31 @@
+<!doctype html><title>latch code test: split boxes</title>
+<!-- Six one-digit boxes: a digit moves the focus to the next box, as a
+     person sees it jump; Verify is enabled once all six hold one. -->
+<h1>Enter your code</h1>
+<p id="boxes"></p>
+<p><button id="go" disabled>Verify</button></p>
+<p id="out">not verified</p>
+<script>
+  const holder = document.getElementById('boxes');
+  const go = document.getElementById('go');
+  const boxes = [1, 2, 3, 4, 5, 6].map((n) => {
+    const box = document.createElement('input');
+    Object.assign(box, { maxLength: 1, inputMode: 'numeric', size: 1 });
+    box.setAttribute('aria-label', `Digit ${n}`);
+    holder.append(box);
+    return box;
+  });
+  boxes.forEach((box, i) => {
+    box.addEventListener('input', () => {
+      box.value = box.value.replace(/\D/g, '');
+      if (box.value && boxes[i + 1]) boxes[i + 1].focus();
+      go.disabled = !boxes.every((b) => b.value);
+    });
+    box.addEventListener('keydown', (e) => {
+      if (e.key === 'Backspace' && !box.value && boxes[i - 1]) boxes[i - 1].focus();
+    });
+  });
+  go.addEventListener('click', () => {
+    document.getElementById('out').textContent = `verified ${boxes.map((b) => b.value).join('')}`;
+  });
+</script>
