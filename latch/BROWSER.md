@@ -264,7 +264,16 @@ it still names the same element (one no longer on the page is
 `no_such_target`). A target that is hidden, disabled, covered or still moving is
 refused with `covered_target`; a covered one's `covered_by` names what a
 click would land on instead (its role and name, or a frame's site), and
-one under a layer of the page around its frame says so. Input is the engine's own mouse and keys at a
+one under a layer of the page around its frame says so. A click that lands
+on the target's own container reaches it only for a checkbox or radio that
+itself has no box or takes no pointer events: a selection card whose whole
+box takes the click, over the input drawn inside it. A container hit for
+anything else covers it (a button that takes no pointer events), and so
+does a container that draws a ::before or ::after out of its flow, which
+can lie over the target and take its click (one that takes no pointer
+events is only drawn, and covers nothing).
+Such a checkbox or radio with no name of its own is named by its card's
+text. Input is the engine's own mouse and keys at a
 person's pace (`isTrusted` is true); `select` focuses the list and types
 the option's label, as a person picks one without opening it. `type`
 types what the agent gives it into any text field, a password or a

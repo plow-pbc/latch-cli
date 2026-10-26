@@ -34,10 +34,12 @@ conformance!(
     the_journal_outlives_a_host_restart_and_a_lost_reply_is_never_resent,
     a_key_on_an_element_that_cannot_take_the_focus_is_refused,
     typing_a_code_reaches_the_fields_one_time_code_pages_use,
+    a_return_goes_through_selection_cards_in_batched_plans,
+    a_container_drawn_over_its_target_still_covers_it,
 );
 
 /// The test site, plus the answers to its expense and order forms.
-fn site() -> String {
+pub(super) fn site() -> String {
     let folder = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/browser-site");
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -1041,5 +1043,96 @@ async fn typing_a_code_reaches_the_fields_one_time_code_pages_use(engine: &str) 
         (Exit::Failed, "type_failed"),
         "{failure:?}"
     );
+    h.close().await;
+}
+
+/// A return on the portal rebuilt from an agent's live run, each page's
+/// steps in one plan on the refs the last answer gave. Its selection
+/// cards draw a checkbox or radio with no name of its own, 0x0 in a span
+/// that takes no clicks, and take the click on the whole card: each is
+/// named by its card, and a click on it is the click on its card a person
+/// makes.
+async fn a_return_goes_through_selection_cards_in_batched_plans(engine: &str) {
+    let (_dir, state, _area) = test_state(engine);
+    let site = site();
+    let fake: Arc<dyn Provider> = Arc::new(Fake::default());
+    let mut h = Harness::start(&state, engine, Some(fake)).await;
+    let page = h.open(&format!("{site}/return-portal.html")).await;
+    macro_rules! plan {
+        ($($step:expr),+ $(,)?) => {{
+            let steps: Vec<String> = vec![$($step),+];
+            let steps: Vec<&str> = steps.iter().map(String::as_str).collect();
+            let answer = h.short(&steps).await.unwrap();
+            assert_eq!(answer["status"], "dispatched", "{answer}");
+            answer["page"].clone()
+        }};
+    }
+    let page = plan!(
+        format!(
+            "type {} \"10001\"",
+            find(&page, "textbox", "Email or Zip code")
+        ),
+        format!("type {} \"#1001\"", find(&page, "textbox", "Order Number")),
+        format!("click {}", find(&page, "button", "Search")),
+    );
+    let page = plan!(format!("click {}", find(&page, "button", "Start a return")));
+    let page = plan!(
+        format!("click {}", find(&page, "checkbox", "Rib Tank, White / M")),
+        format!("click {}", find(&page, "button", "Continue")),
+    );
+    let page = plan!(format!("click {}", find(&page, "button", "Add details")));
+    let mut page = plan!(
+        format!("click {}", find(&page, "radio", "Too big")),
+        format!("click {}", find(&page, "button", "Continue")),
+    );
+    for text in ["Too loose", "Through the chest"] {
+        page = plan!(
+            format!(
+                "type {} \"{text}\"",
+                find(&page, "textbox", "Return reason")
+            ),
+            format!("click {}", find(&page, "button", "Continue")),
+        );
+    }
+    let page = plan!(format!("click {}", find(&page, "button", "No thanks")));
+    let _ = plan!(
+        format!("click {}", find(&page, "radio", "Refund")),
+        format!("click {}", find(&page, "button", "Continue")),
+    );
+    let text = h.text().await;
+    assert!(text.contains("ready to submit: 1 items, Refund"), "{text}");
+    h.close().await;
+}
+
+/// A click aimed at a control that lands on its own container does not
+/// reach it when the container draws an ::after over it, or the control
+/// is a button that takes no pointer events: the step is refused and
+/// nothing is clicked. A checkbox that takes none is no exception under
+/// such an ::after, unless the ::after takes no pointer events either:
+/// then the click on it is the click on its card.
+async fn a_container_drawn_over_its_target_still_covers_it(engine: &str) {
+    let (_dir, state, _area) = test_state(engine);
+    let site = site();
+    let fake: Arc<dyn Provider> = Arc::new(Fake::default());
+    let mut h = Harness::start(&state, engine, Some(fake)).await;
+    let page = h.open(&format!("{site}/drawn-over.html")).await;
+    for (role, name) in [
+        ("button", "Save"),
+        ("button", "Send"),
+        ("checkbox", "Gift wrap"),
+    ] {
+        let target = find(&page, role, name);
+        let failure = h.short(&[&format!("click {target}")]).await.unwrap_err();
+        assert_eq!(
+            refused(&failure),
+            (Exit::Failed, "covered_target"),
+            "{name}: {failure:?}"
+        );
+    }
+    assert!(h.text().await.contains("nothing clicked"));
+    let card = find(&page, "checkbox", "Gift box");
+    let picked = h.short(&[&format!("click {card}")]).await.unwrap();
+    assert_eq!(picked["status"], "dispatched", "{picked}");
+    assert!(h.text().await.contains("card picked"));
     h.close().await;
 }

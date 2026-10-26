@@ -91,7 +91,17 @@
       const img = el.querySelector('img[alt]');
       if (img && img.alt.trim()) return clean(img.alt);
     }
-    return clean(el.getAttribute('placeholder') || el.getAttribute('title') || '');
+    const own = clean(el.getAttribute('placeholder') || el.getAttribute('title') || '');
+    if (own || !['checkbox', 'radio'].includes(role(el))) return own;
+    // A checkbox or radio with no name of its own, drawn on a selection
+    // card: the text of the card around it, the nearest container with
+    // text that holds no other checkbox or radio.
+    for (let box = el.parentElement; box && box !== document.body; box = box.parentElement) {
+      if (box.querySelectorAll('input[type=checkbox], input[type=radio], [role=checkbox], [role=radio]').length > 1) break;
+      const text = clean(box.innerText);
+      if (text) return text;
+    }
+    return '';
   };
 
   const value = (el) => {
@@ -114,6 +124,30 @@
   // Hidden from the page's readers: `aria-hidden` or inert, itself or by an
   // ancestor (checkouts carry such copies of their fields).
   const unread = (el) => !!el.closest('[aria-hidden="true"], [inert]');
+
+  // Whether `box` draws a ::before or ::after out of its flow, which can
+  // lie over what it holds and take the clicks meant for it (one that
+  // takes no pointer events is only drawn).
+  const drawsOver = (box) => ['::before', '::after'].some((pseudo) => {
+    const style = getComputedStyle(box, pseudo);
+    return !['none', 'normal'].includes(style.content) && style.display !== 'none'
+      && ['absolute', 'fixed'].includes(style.position) && style.pointerEvents !== 'none';
+  });
+
+  // Whether a click landing on `hit` reaches `el`: on it, inside it, on
+  // one of its labels, or on a container around a checkbox or radio that
+  // has no box or takes no pointer events itself, as a selection card's
+  // whose whole box takes the click. A hit on a container of anything
+  // else is something covering it, such as the container's ::before or
+  // ::after drawn over it, or a container that never passes it the click.
+  const hitsTarget = (hit, el) => {
+    if (hit === el || el.contains(hit)) return true;
+    if (el.labels && [...el.labels].some((l) => l.contains(hit))) return true;
+    if (!hit.contains(el) || el.localName !== 'input' || !['checkbox', 'radio'].includes(el.type)) return false;
+    if (drawsOver(hit)) return false;
+    const r = el.getBoundingClientRect();
+    return r.width === 0 || r.height === 0 || getComputedStyle(el).pointerEvents === 'none';
+  };
 
   const offscreen = (rect) => rect.bottom < 0 || rect.right < 0 || rect.top > innerHeight || rect.left > innerWidth;
 
@@ -187,7 +221,7 @@
     const rect = el.getBoundingClientRect();
     const reachesAt = (px, py) => {
       const hit = document.elementFromPoint(px, py);
-      return !!hit && (hit === el || el.contains(hit) || (el.labels && [...el.labels].some((l) => l.contains(hit))));
+      return !!hit && hitsTarget(hit, el);
     };
     let x = rect.left + rect.width / 2;
     let y = rect.top + rect.height / 2;
@@ -252,9 +286,7 @@
       const x = Math.min(Math.max(rect.left + rect.width / 2, 0), innerWidth - 1);
       const y = Math.min(Math.max(rect.top + rect.height / 2, 0), innerHeight - 1);
       const hit = document.elementFromPoint(x, y);
-      const reaches = !hit || hit === el || el.contains(hit) || hit.contains(el)
-        || (el.labels && [...el.labels].some((l) => l.contains(hit)))
-        || (field && !layerOver(hit, el));
+      const reaches = !hit || hitsTarget(hit, el) || (field && !layerOver(hit, el));
       top ??= reaches ? null : hit;
       return reaches;
     };

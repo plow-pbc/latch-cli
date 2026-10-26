@@ -1,0 +1,1939 @@
+{
+ "run": {
+  "host": "studio",
+  "engine": "cft",
+  "site": "https://mackweldon.com (Redo returns portal)",
+  "started": "2026-10-26T21:00:31.842771Z",
+  "ended": "2026-10-26T21:10:46.604535Z",
+  "wall_s": 614.8,
+  "calls": 105,
+  "connects": 105,
+  "note": "From the Studio host audit and browser journal. The order id in paths is a fake; typed text is not recorded (only its length); gate prompts and owner messages are left out."
+ },
+ "calls": [
+  {
+   "seq": 1,
+   "at_s": 0.05,
+   "gap_before_s": 0.0,
+   "duration_s": 1.06,
+   "op": "exec",
+   "command": null,
+   "outcome": "ok",
+   "path": null,
+   "caller_check_ms": 44
+  },
+  {
+   "seq": 2,
+   "at_s": 6.74,
+   "gap_before_s": 5.64,
+   "duration_s": 1.23,
+   "op": "browser",
+   "command": "open",
+   "outcome": "engine_not_installed",
+   "path": null,
+   "gate": {
+    "verdict": "allow",
+    "decided_by": "rules",
+    "latency_ms": 1200,
+    "chat_read_ms": 407,
+    "rules_ms": 655,
+    "chat_ms": 792,
+    "model": "typesafe/jev-1.14-20261014"
+   },
+   "caller_check_ms": 54
+  },
+  {
+   "seq": 3,
+   "at_s": 13.34,
+   "gap_before_s": 5.37,
+   "duration_s": 4.18,
+   "op": "browser",
+   "command": "open",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/login",
+   "engine": "cft",
+   "gate": {
+    "verdict": "allow",
+    "decided_by": "rules",
+    "latency_ms": 827,
+    "chat_read_ms": 441,
+    "rules_ms": 288,
+    "chat_ms": 386,
+    "model": "typesafe/jev-1.14-20261014"
+   },
+   "caller_check_ms": 69
+  },
+  {
+   "seq": 4,
+   "at_s": 23.22,
+   "gap_before_s": 5.69,
+   "duration_s": 0.53,
+   "op": "browser",
+   "command": "observe",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/login",
+   "engine": "cft",
+   "caller_check_ms": 55
+  },
+  {
+   "seq": 5,
+   "at_s": 28.39,
+   "gap_before_s": 4.65,
+   "duration_s": 1.7,
+   "op": "browser",
+   "command": "do",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/login",
+   "engine": "cft",
+   "steps": [
+    {
+     "step": 1,
+     "op": "type",
+     "ref": "e2",
+     "result": "sent",
+     "role": "textbox",
+     "name": "Email or Zip code",
+     "text_length": 5,
+     "screenshot": "005-type-1.png"
+    }
+   ],
+   "risk_ms": [],
+   "caller_check_ms": 79
+  },
+  {
+   "seq": 6,
+   "at_s": 31.73,
+   "gap_before_s": 1.64,
+   "duration_s": 1.89,
+   "op": "browser",
+   "command": "do",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/login",
+   "engine": "cft",
+   "steps": [
+    {
+     "step": 1,
+     "op": "type",
+     "ref": "e3",
+     "result": "sent",
+     "role": "textbox",
+     "name": "Order Number",
+     "text_length": 8,
+     "screenshot": "006-type-1.png"
+    }
+   ],
+   "risk_ms": [],
+   "caller_check_ms": 61
+  },
+  {
+   "seq": 7,
+   "at_s": 36.12,
+   "gap_before_s": 2.5,
+   "duration_s": 1.81,
+   "op": "browser",
+   "command": "do",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/login",
+   "engine": "cft",
+   "steps": [
+    {
+     "step": 1,
+     "op": "click",
+     "ref": "e4",
+     "result": "sent",
+     "role": "button",
+     "name": "Search",
+     "risk_p": 0.05,
+     "screenshot": "007-click-1.png"
+    }
+   ],
+   "risk_ms": [
+    355
+   ],
+   "caller_check_ms": 51
+  },
+  {
+   "seq": 8,
+   "at_s": 42.86,
+   "gap_before_s": 4.93,
+   "duration_s": 0.52,
+   "op": "browser",
+   "command": "observe",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567",
+   "engine": "cft",
+   "caller_check_ms": 46
+  },
+  {
+   "seq": 9,
+   "at_s": 45.22,
+   "gap_before_s": 1.84,
+   "duration_s": 1.2,
+   "op": "browser",
+   "command": "do",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567",
+   "engine": "cft",
+   "steps": [
+    {
+     "step": 1,
+     "op": "click",
+     "ref": "e16",
+     "result": "sent",
+     "role": "button",
+     "name": "Start a return",
+     "risk_p": 0.32,
+     "screenshot": "009-click-1.png"
+    }
+   ],
+   "risk_ms": [
+    327
+   ],
+   "caller_check_ms": 51
+  },
+  {
+   "seq": 10,
+   "at_s": 51.23,
+   "gap_before_s": 4.81,
+   "duration_s": 0.53,
+   "op": "browser",
+   "command": "observe",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "caller_check_ms": 44
+  },
+  {
+   "seq": 11,
+   "at_s": 53.63,
+   "gap_before_s": 1.86,
+   "duration_s": 1.64,
+   "op": "browser",
+   "command": "eval",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "gate": {
+    "verdict": "allow",
+    "decided_by": "rules",
+    "latency_ms": 1121,
+    "chat_read_ms": 736,
+    "rules_ms": 262,
+    "chat_ms": 384,
+    "model": "typesafe/jev-1.14-20261014"
+   },
+   "script": "(() => {\n  const boxes = document.querySelectorAll('input[type=\"checkbox\"]');\n  return Array.from(boxes).map((b, i) => {\n    const r = b.getBoundingClientRect();\n    return {index: i, x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2), checked: b.checked};\n  });\n})()\n",
+   "caller_check_ms": 44
+  },
+  {
+   "seq": 12,
+   "at_s": 58.99,
+   "gap_before_s": 3.73,
+   "duration_s": 0.52,
+   "op": "browser",
+   "command": "observe",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "caller_check_ms": 43
+  },
+  {
+   "seq": 13,
+   "at_s": 61.5,
+   "gap_before_s": 1.99,
+   "duration_s": 1.34,
+   "op": "browser",
+   "command": "eval",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "gate": {
+    "verdict": "allow",
+    "decided_by": "chat",
+    "latency_ms": 825,
+    "chat_read_ms": 475,
+    "rules_ms": 275,
+    "chat_ms": 349,
+    "model": "typesafe/jev-1.14-20261014"
+   },
+   "script": "(() => {\n  const boxes = document.querySelectorAll('input[type=\"checkbox\"]');\n  const results = [];\n  for (const box of boxes) {\n    box.click();\n    results.push({checked: box.checked});\n  }\n  return results;\n})()\n",
+   "caller_check_ms": 49
+  },
+  {
+   "seq": 14,
+   "at_s": 64.69,
+   "gap_before_s": 1.84,
+   "duration_s": 0.53,
+   "op": "browser",
+   "command": "observe",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "caller_check_ms": 44
+  },
+  {
+   "seq": 15,
+   "at_s": 67.09,
+   "gap_before_s": 1.87,
+   "duration_s": 1.19,
+   "op": "browser",
+   "command": "do",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "steps": [
+    {
+     "step": 1,
+     "op": "click",
+     "ref": "e24",
+     "result": "sent",
+     "role": "button",
+     "name": "Continue",
+     "risk_p": 0.2,
+     "screenshot": "015-click-1.png"
+    }
+   ],
+   "risk_ms": [
+    307
+   ],
+   "caller_check_ms": 43
+  },
+  {
+   "seq": 16,
+   "at_s": 73.38,
+   "gap_before_s": 5.11,
+   "duration_s": 0.53,
+   "op": "browser",
+   "command": "observe",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "caller_check_ms": 72
+  },
+  {
+   "seq": 17,
+   "at_s": 76.68,
+   "gap_before_s": 2.77,
+   "duration_s": 1.27,
+   "op": "browser",
+   "command": "do",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "steps": [
+    {
+     "step": 1,
+     "op": "click",
+     "ref": "e25",
+     "result": "sent",
+     "role": "button",
+     "name": "Add details",
+     "risk_p": 0.14,
+     "screenshot": "017-click-1.png"
+    }
+   ],
+   "risk_ms": [
+    389
+   ],
+   "caller_check_ms": 49
+  },
+  {
+   "seq": 18,
+   "at_s": 80.02,
+   "gap_before_s": 2.07,
+   "duration_s": 0.52,
+   "op": "browser",
+   "command": "observe",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "caller_check_ms": 43
+  },
+  {
+   "seq": 19,
+   "at_s": 82.77,
+   "gap_before_s": 2.23,
+   "duration_s": 1.03,
+   "op": "browser",
+   "command": "eval",
+   "outcome": "gatekeeper_denied",
+   "path": null,
+   "engine": "cft",
+   "gate": {
+    "verdict": "not_covered",
+    "decided_by": "rules",
+    "latency_ms": 1028,
+    "chat_read_ms": 684,
+    "rules_ms": 260,
+    "chat_ms": 343,
+    "model": "typesafe/jev-1.14-20261014"
+   },
+   "script": "(() => {\n  const radios = document.querySelectorAll('input[type=\"radio\"]');\n  // Click the last radio (Other) for this item\n  if (radios.length > 0) {\n    radios[radios.length - 1].click();\n    return {clicked: radios.length - 1, checked: radios[radios.length - 1].checked};\n  }\n  return {error: \"no radios found\"};\n})()\n",
+   "caller_check_ms": 51
+  },
+  {
+   "seq": 20,
+   "at_s": 201.08,
+   "gap_before_s": 117.27,
+   "duration_s": 1.68,
+   "op": "browser",
+   "command": "eval",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "gate": {
+    "verdict": "allow",
+    "decided_by": "chat",
+    "latency_ms": 1166,
+    "chat_read_ms": 590,
+    "rules_ms": 362,
+    "chat_ms": 574,
+    "model": "typesafe/jev-1.14-20261014"
+   },
+   "script": "(() => {\n  const radios = document.querySelectorAll('input[type=\"radio\"]');\n  if (radios.length > 0) {\n    radios[radios.length - 1].click();\n    return {clicked: radios.length - 1, checked: radios[radios.length - 1].checked};\n  }\n  return {error: \"no radios found\"};\n})()\n",
+   "caller_check_ms": 43
+  },
+  {
+   "seq": 21,
+   "at_s": 204.66,
+   "gap_before_s": 1.91,
+   "duration_s": 0.53,
+   "op": "browser",
+   "command": "observe",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "caller_check_ms": 52
+  },
+  {
+   "seq": 22,
+   "at_s": 207.17,
+   "gap_before_s": 1.99,
+   "duration_s": 1.26,
+   "op": "browser",
+   "command": "do",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "steps": [
+    {
+     "step": 1,
+     "op": "click",
+     "ref": "e38",
+     "result": "sent",
+     "role": "button",
+     "name": "Continue",
+     "risk_p": 0.22,
+     "screenshot": "022-click-1.png"
+    }
+   ],
+   "risk_ms": [
+    383
+   ],
+   "caller_check_ms": 50
+  },
+  {
+   "seq": 23,
+   "at_s": 210.54,
+   "gap_before_s": 2.11,
+   "duration_s": 0.53,
+   "op": "browser",
+   "command": "observe",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "caller_check_ms": 47
+  },
+  {
+   "seq": 24,
+   "at_s": 216.2,
+   "gap_before_s": 5.13,
+   "duration_s": 2.07,
+   "op": "browser",
+   "command": "do",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "steps": [
+    {
+     "step": 1,
+     "op": "type",
+     "ref": "e39",
+     "result": "sent",
+     "role": "textbox",
+     "name": "Return reason",
+     "text_length": 23,
+     "screenshot": "024-type-1.png"
+    }
+   ],
+   "risk_ms": [],
+   "caller_check_ms": 56
+  },
+  {
+   "seq": 25,
+   "at_s": 219.99,
+   "gap_before_s": 1.72,
+   "duration_s": 0.52,
+   "op": "browser",
+   "command": "observe",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "caller_check_ms": 42
+  },
+  {
+   "seq": 26,
+   "at_s": 222.62,
+   "gap_before_s": 2.11,
+   "duration_s": 1.19,
+   "op": "browser",
+   "command": "do",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "steps": [
+    {
+     "step": 1,
+     "op": "click",
+     "ref": "e41",
+     "result": "sent",
+     "role": "button",
+     "name": "Continue",
+     "risk_p": 0.24,
+     "screenshot": "026-click-1.png"
+    }
+   ],
+   "risk_ms": [
+    327
+   ],
+   "caller_check_ms": 44
+  },
+  {
+   "seq": 27,
+   "at_s": 228.67,
+   "gap_before_s": 4.86,
+   "duration_s": 0.53,
+   "op": "browser",
+   "command": "observe",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "caller_check_ms": 50
+  },
+  {
+   "seq": 28,
+   "at_s": 230.97,
+   "gap_before_s": 1.77,
+   "duration_s": 3.45,
+   "op": "browser",
+   "command": "do",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "steps": [
+    {
+     "step": 1,
+     "op": "type",
+     "ref": "e42",
+     "result": "sent",
+     "role": "textbox",
+     "name": "Return reason",
+     "text_length": 45,
+     "screenshot": "028-type-1.png"
+    }
+   ],
+   "risk_ms": [],
+   "caller_check_ms": 45
+  },
+  {
+   "seq": 29,
+   "at_s": 236.28,
+   "gap_before_s": 1.86,
+   "duration_s": 0.53,
+   "op": "browser",
+   "command": "observe",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "caller_check_ms": 43
+  },
+  {
+   "seq": 30,
+   "at_s": 238.77,
+   "gap_before_s": 1.96,
+   "duration_s": 1.23,
+   "op": "browser",
+   "command": "do",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "steps": [
+    {
+     "step": 1,
+     "op": "click",
+     "ref": "e44",
+     "result": "sent",
+     "role": "button",
+     "name": "Continue",
+     "risk_p": 0.23,
+     "screenshot": "030-click-1.png"
+    }
+   ],
+   "risk_ms": [
+    375
+   ],
+   "caller_check_ms": 45
+  },
+  {
+   "seq": 31,
+   "at_s": 244.95,
+   "gap_before_s": 4.95,
+   "duration_s": 0.52,
+   "op": "browser",
+   "command": "observe",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "caller_check_ms": 42
+  },
+  {
+   "seq": 32,
+   "at_s": 247.55,
+   "gap_before_s": 2.08,
+   "duration_s": 0.53,
+   "op": "browser",
+   "command": "do",
+   "outcome": "covered_target",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "steps": [
+    {
+     "step": 1,
+     "op": "click",
+     "ref": "e45",
+     "result": "refused",
+     "risk_p": 0.06
+    }
+   ],
+   "stop": {
+    "code": "covered_target",
+    "step": 1
+   },
+   "risk_ms": [
+    400
+   ],
+   "caller_check_ms": 60
+  },
+  {
+   "seq": 33,
+   "at_s": 253.32,
+   "gap_before_s": 5.24,
+   "duration_s": 0.53,
+   "op": "browser",
+   "command": "observe",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "caller_check_ms": 89
+  },
+  {
+   "seq": 34,
+   "at_s": 257.6,
+   "gap_before_s": 3.75,
+   "duration_s": 1.48,
+   "op": "browser",
+   "command": "do",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "steps": [
+    {
+     "step": 1,
+     "op": "click",
+     "ref": "e76",
+     "result": "sent",
+     "role": "button",
+     "name": "No thanks",
+     "risk_p": 0.07,
+     "screenshot": "034-click-1.png"
+    }
+   ],
+   "risk_ms": [
+    311
+   ],
+   "caller_check_ms": 52
+  },
+  {
+   "seq": 35,
+   "at_s": 261.14,
+   "gap_before_s": 2.07,
+   "duration_s": 1.2,
+   "op": "browser",
+   "command": "do",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "steps": [
+    {
+     "step": 1,
+     "op": "click",
+     "ref": "e93",
+     "result": "sent",
+     "role": "button",
+     "name": "No thanks",
+     "risk_p": 0.07,
+     "screenshot": "035-click-1.png"
+    }
+   ],
+   "risk_ms": [
+    345
+   ],
+   "caller_check_ms": 49
+  },
+  {
+   "seq": 36,
+   "at_s": 315.01,
+   "gap_before_s": 52.67,
+   "duration_s": 0.52,
+   "op": "browser",
+   "command": "observe",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "caller_check_ms": 44
+  },
+  {
+   "seq": 37,
+   "at_s": 318.0,
+   "gap_before_s": 2.47,
+   "duration_s": 1.54,
+   "op": "browser",
+   "command": "eval",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "gate": {
+    "verdict": "allow",
+    "decided_by": "chat",
+    "latency_ms": 1017,
+    "chat_read_ms": 441,
+    "rules_ms": 575,
+    "chat_ms": 465,
+    "model": "typesafe/jev-1.14-20261014"
+   },
+   "script": "(() => {\n  const buttons = document.querySelectorAll('button');\n  for (const b of buttons) {\n    if (b.textContent.trim() === 'Add details') {\n      b.click();\n      return {clicked: b.textContent.trim()};\n    }\n  }\n  return {error: \"no Add details button found\"};\n})()\n",
+   "caller_check_ms": 44
+  },
+  {
+   "seq": 38,
+   "at_s": 323.68,
+   "gap_before_s": 4.14,
+   "duration_s": 0.53,
+   "op": "browser",
+   "command": "observe",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "caller_check_ms": 44
+  },
+  {
+   "seq": 39,
+   "at_s": 331.51,
+   "gap_before_s": 7.3,
+   "duration_s": 1.41,
+   "op": "browser",
+   "command": "eval",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "gate": {
+    "verdict": "allow",
+    "decided_by": "chat",
+    "latency_ms": 897,
+    "chat_read_ms": 500,
+    "rules_ms": 328,
+    "chat_ms": 395,
+    "model": "typesafe/jev-1.14-20261014"
+   },
+   "script": "(() => {\n  const radios = document.querySelectorAll('input[type=\"radio\"]');\n  if (radios.length > 0) {\n    radios[radios.length - 1].click();\n    return {clicked: radios.length - 1, checked: radios[radios.length - 1].checked};\n  }\n  return {error: \"no radios found\"};\n})()\n",
+   "caller_check_ms": 44
+  },
+  {
+   "seq": 40,
+   "at_s": 346.13,
+   "gap_before_s": 13.21,
+   "duration_s": 0.52,
+   "op": "browser",
+   "command": "observe",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "caller_check_ms": 72
+  },
+  {
+   "seq": 41,
+   "at_s": 348.82,
+   "gap_before_s": 2.17,
+   "duration_s": 1.27,
+   "op": "browser",
+   "command": "do",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "steps": [
+    {
+     "step": 1,
+     "op": "click",
+     "ref": "e103",
+     "result": "sent",
+     "role": "button",
+     "name": "Continue",
+     "risk_p": 0.19,
+     "screenshot": "041-click-1.png"
+    }
+   ],
+   "risk_ms": [
+    380
+   ],
+   "caller_check_ms": 42
+  },
+  {
+   "seq": 42,
+   "at_s": 360.58,
+   "gap_before_s": 10.5,
+   "duration_s": 0.53,
+   "op": "browser",
+   "command": "observe",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "caller_check_ms": 43
+  },
+  {
+   "seq": 43,
+   "at_s": 392.36,
+   "gap_before_s": 31.25,
+   "duration_s": 0.53,
+   "op": "browser",
+   "command": "observe",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "caller_check_ms": 42
+  },
+  {
+   "seq": 44,
+   "at_s": 395.05,
+   "gap_before_s": 2.16,
+   "duration_s": 3.34,
+   "op": "browser",
+   "command": "do",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "steps": [
+    {
+     "step": 1,
+     "op": "type",
+     "ref": "e104",
+     "result": "sent",
+     "role": "textbox",
+     "name": "Return reason",
+     "text_length": 45,
+     "screenshot": "044-type-1.png"
+    }
+   ],
+   "risk_ms": [],
+   "caller_check_ms": 46
+  },
+  {
+   "seq": 45,
+   "at_s": 400.49,
+   "gap_before_s": 2.1,
+   "duration_s": 0.53,
+   "op": "browser",
+   "command": "observe",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "caller_check_ms": 43
+  },
+  {
+   "seq": 46,
+   "at_s": 402.83,
+   "gap_before_s": 1.81,
+   "duration_s": 1.27,
+   "op": "browser",
+   "command": "do",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "steps": [
+    {
+     "step": 1,
+     "op": "click",
+     "ref": "e106",
+     "result": "sent",
+     "role": "button",
+     "name": "Continue",
+     "risk_p": 0.25,
+     "screenshot": "046-click-1.png"
+    }
+   ],
+   "risk_ms": [
+    387
+   ],
+   "caller_check_ms": 42
+  },
+  {
+   "seq": 47,
+   "at_s": 406.38,
+   "gap_before_s": 2.28,
+   "duration_s": 0.53,
+   "op": "browser",
+   "command": "observe",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "caller_check_ms": 44
+  },
+  {
+   "seq": 48,
+   "at_s": 409.1,
+   "gap_before_s": 2.19,
+   "duration_s": 3.34,
+   "op": "browser",
+   "command": "do",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "steps": [
+    {
+     "step": 1,
+     "op": "type",
+     "ref": "e107",
+     "result": "sent",
+     "role": "textbox",
+     "name": "Return reason",
+     "text_length": 45,
+     "screenshot": "048-type-1.png"
+    }
+   ],
+   "risk_ms": [],
+   "caller_check_ms": 49
+  },
+  {
+   "seq": 49,
+   "at_s": 417.37,
+   "gap_before_s": 4.93,
+   "duration_s": 0.53,
+   "op": "browser",
+   "command": "observe",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "caller_check_ms": 43
+  },
+  {
+   "seq": 50,
+   "at_s": 420.11,
+   "gap_before_s": 2.21,
+   "duration_s": 1.22,
+   "op": "browser",
+   "command": "do",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "steps": [
+    {
+     "step": 1,
+     "op": "click",
+     "ref": "e109",
+     "result": "sent",
+     "role": "button",
+     "name": "Continue",
+     "risk_p": 0.26,
+     "screenshot": "050-click-1.png"
+    }
+   ],
+   "risk_ms": [
+    330
+   ],
+   "caller_check_ms": 43
+  },
+  {
+   "seq": 51,
+   "at_s": 426.49,
+   "gap_before_s": 5.16,
+   "duration_s": 0.52,
+   "op": "browser",
+   "command": "observe",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "caller_check_ms": 44
+  },
+  {
+   "seq": 52,
+   "at_s": 428.77,
+   "gap_before_s": 1.75,
+   "duration_s": 0.44,
+   "op": "browser",
+   "command": "do",
+   "outcome": "covered_target",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "steps": [
+    {
+     "step": 1,
+     "op": "click",
+     "ref": "e110",
+     "result": "refused",
+     "risk_p": 0.07
+    }
+   ],
+   "stop": {
+    "code": "covered_target",
+    "step": 1
+   },
+   "risk_ms": [
+    308
+   ],
+   "caller_check_ms": 43
+  },
+  {
+   "seq": 53,
+   "at_s": 431.11,
+   "gap_before_s": 1.91,
+   "duration_s": 0.52,
+   "op": "browser",
+   "command": "observe",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "caller_check_ms": 49
+  },
+  {
+   "seq": 54,
+   "at_s": 433.41,
+   "gap_before_s": 1.79,
+   "duration_s": 1.2,
+   "op": "browser",
+   "command": "do",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "steps": [
+    {
+     "step": 1,
+     "op": "click",
+     "ref": "e110",
+     "result": "sent",
+     "role": "button",
+     "name": "Skip wait",
+     "risk_p": 0.07,
+     "screenshot": "054-click-1.png"
+    }
+   ],
+   "risk_ms": [
+    322
+   ],
+   "caller_check_ms": 58
+  },
+  {
+   "seq": 55,
+   "at_s": 436.33,
+   "gap_before_s": 1.72,
+   "duration_s": 0.52,
+   "op": "browser",
+   "command": "observe",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "caller_check_ms": 50
+  },
+  {
+   "seq": 56,
+   "at_s": 438.98,
+   "gap_before_s": 2.13,
+   "duration_s": 0.52,
+   "op": "browser",
+   "command": "observe",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "caller_check_ms": 78
+  },
+  {
+   "seq": 57,
+   "at_s": 441.77,
+   "gap_before_s": 2.27,
+   "duration_s": 1.96,
+   "op": "browser",
+   "command": "eval",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "gate": {
+    "verdict": "allow",
+    "decided_by": "chat",
+    "latency_ms": 1434,
+    "chat_read_ms": 858,
+    "rules_ms": 336,
+    "chat_ms": 575,
+    "model": "typesafe/jev-1.14-20261014"
+   },
+   "script": "(() => {\n  const buttons = document.querySelectorAll('button');\n  for (const b of buttons) {\n    if (b.textContent.trim() === 'Add details') {\n      b.click();\n      return {clicked: true};\n    }\n  }\n  return {error: \"no Add details button found\"};\n})()\n",
+   "caller_check_ms": 84
+  },
+  {
+   "seq": 58,
+   "at_s": 446.26,
+   "gap_before_s": 2.54,
+   "duration_s": 0.52,
+   "op": "browser",
+   "command": "observe",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "caller_check_ms": 55
+  },
+  {
+   "seq": 59,
+   "at_s": 448.69,
+   "gap_before_s": 1.9,
+   "duration_s": 1.37,
+   "op": "browser",
+   "command": "eval",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "gate": {
+    "verdict": "allow",
+    "decided_by": "chat",
+    "latency_ms": 856,
+    "chat_read_ms": 471,
+    "rules_ms": 273,
+    "chat_ms": 384,
+    "model": "typesafe/jev-1.14-20261014"
+   },
+   "script": "(() => {\n  const radios = document.querySelectorAll('input[type=\"radio\"]');\n  if (radios.length > 0) {\n    radios[radios.length - 1].click();\n    return {clicked: radios.length - 1, checked: radios[radios.length - 1].checked};\n  }\n  return {error: \"no radios found\"};\n})()\n",
+   "caller_check_ms": 52
+  },
+  {
+   "seq": 60,
+   "at_s": 451.89,
+   "gap_before_s": 1.83,
+   "duration_s": 0.52,
+   "op": "browser",
+   "command": "observe",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "caller_check_ms": 43
+  },
+  {
+   "seq": 61,
+   "at_s": 454.13,
+   "gap_before_s": 1.71,
+   "duration_s": 1.13,
+   "op": "browser",
+   "command": "do",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "steps": [
+    {
+     "step": 1,
+     "op": "click",
+     "ref": "e120",
+     "result": "sent",
+     "role": "button",
+     "name": "Continue",
+     "risk_p": 0.25,
+     "screenshot": "061-click-1.png"
+    }
+   ],
+   "risk_ms": [
+    301
+   ],
+   "caller_check_ms": 44
+  },
+  {
+   "seq": 62,
+   "at_s": 460.33,
+   "gap_before_s": 5.08,
+   "duration_s": 0.53,
+   "op": "browser",
+   "command": "observe",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "caller_check_ms": 43
+  },
+  {
+   "seq": 63,
+   "at_s": 462.63,
+   "gap_before_s": 1.77,
+   "duration_s": 3.3,
+   "op": "browser",
+   "command": "do",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "steps": [
+    {
+     "step": 1,
+     "op": "type",
+     "ref": "e121",
+     "result": "sent",
+     "role": "textbox",
+     "name": "Return reason",
+     "text_length": 45,
+     "screenshot": "063-type-1.png"
+    }
+   ],
+   "risk_ms": [],
+   "caller_check_ms": 47
+  },
+  {
+   "seq": 64,
+   "at_s": 467.62,
+   "gap_before_s": 1.69,
+   "duration_s": 0.53,
+   "op": "browser",
+   "command": "observe",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "caller_check_ms": 45
+  },
+  {
+   "seq": 65,
+   "at_s": 469.87,
+   "gap_before_s": 1.73,
+   "duration_s": 1.16,
+   "op": "browser",
+   "command": "do",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "steps": [
+    {
+     "step": 1,
+     "op": "click",
+     "ref": "e123",
+     "result": "sent",
+     "role": "button",
+     "name": "Continue",
+     "risk_p": 0.28,
+     "screenshot": "065-click-1.png"
+    }
+   ],
+   "risk_ms": [
+    304
+   ],
+   "caller_check_ms": 54
+  },
+  {
+   "seq": 66,
+   "at_s": 476.08,
+   "gap_before_s": 5.04,
+   "duration_s": 0.53,
+   "op": "browser",
+   "command": "observe",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "caller_check_ms": 49
+  },
+  {
+   "seq": 67,
+   "at_s": 478.58,
+   "gap_before_s": 1.98,
+   "duration_s": 3.1,
+   "op": "browser",
+   "command": "do",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "steps": [
+    {
+     "step": 1,
+     "op": "type",
+     "ref": "e124",
+     "result": "sent",
+     "role": "textbox",
+     "name": "Return reason",
+     "text_length": 45,
+     "screenshot": "067-type-1.png"
+    }
+   ],
+   "risk_ms": [],
+   "caller_check_ms": 50
+  },
+  {
+   "seq": 68,
+   "at_s": 483.48,
+   "gap_before_s": 1.79,
+   "duration_s": 0.52,
+   "op": "browser",
+   "command": "observe",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "caller_check_ms": 48
+  },
+  {
+   "seq": 69,
+   "at_s": 485.67,
+   "gap_before_s": 1.68,
+   "duration_s": 1.21,
+   "op": "browser",
+   "command": "do",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "steps": [
+    {
+     "step": 1,
+     "op": "click",
+     "ref": "e126",
+     "result": "sent",
+     "role": "button",
+     "name": "Continue",
+     "risk_p": 0.28,
+     "screenshot": "069-click-1.png"
+    }
+   ],
+   "risk_ms": [
+    366
+   ],
+   "caller_check_ms": 50
+  },
+  {
+   "seq": 70,
+   "at_s": 488.69,
+   "gap_before_s": 1.81,
+   "duration_s": 0.52,
+   "op": "browser",
+   "command": "observe",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "caller_check_ms": 51
+  },
+  {
+   "seq": 71,
+   "at_s": 496.33,
+   "gap_before_s": 7.12,
+   "duration_s": 0.52,
+   "op": "browser",
+   "command": "observe",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "caller_check_ms": 44
+  },
+  {
+   "seq": 72,
+   "at_s": 503.89,
+   "gap_before_s": 7.03,
+   "duration_s": 0.52,
+   "op": "browser",
+   "command": "observe",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "caller_check_ms": 44
+  },
+  {
+   "seq": 73,
+   "at_s": 506.3,
+   "gap_before_s": 1.89,
+   "duration_s": 0.52,
+   "op": "browser",
+   "command": "observe",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "caller_check_ms": 43
+  },
+  {
+   "seq": 74,
+   "at_s": 508.6,
+   "gap_before_s": 1.78,
+   "duration_s": 0.49,
+   "op": "browser",
+   "command": "do",
+   "outcome": "covered_target",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "steps": [
+    {
+     "step": 1,
+     "op": "click",
+     "ref": "e127",
+     "result": "refused",
+     "risk_p": 0.07
+    }
+   ],
+   "stop": {
+    "code": "covered_target",
+    "step": 1
+   },
+   "risk_ms": [
+    351
+   ],
+   "caller_check_ms": 44
+  },
+  {
+   "seq": 75,
+   "at_s": 511.17,
+   "gap_before_s": 2.08,
+   "duration_s": 0.52,
+   "op": "browser",
+   "command": "observe",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "caller_check_ms": 43
+  },
+  {
+   "seq": 76,
+   "at_s": 513.42,
+   "gap_before_s": 1.72,
+   "duration_s": 1.32,
+   "op": "browser",
+   "command": "do",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "steps": [
+    {
+     "step": 1,
+     "op": "click",
+     "ref": "e156",
+     "result": "sent",
+     "role": "button",
+     "name": "No thanks",
+     "risk_p": 0.06,
+     "screenshot": "076-click-1.png"
+    }
+   ],
+   "risk_ms": [
+    307
+   ],
+   "caller_check_ms": 42
+  },
+  {
+   "seq": 77,
+   "at_s": 516.62,
+   "gap_before_s": 1.88,
+   "duration_s": 0.52,
+   "op": "browser",
+   "command": "observe",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "caller_check_ms": 57
+  },
+  {
+   "seq": 78,
+   "at_s": 518.86,
+   "gap_before_s": 1.72,
+   "duration_s": 1.2,
+   "op": "browser",
+   "command": "do",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "steps": [
+    {
+     "step": 1,
+     "op": "click",
+     "ref": "e173",
+     "result": "sent",
+     "role": "button",
+     "name": "No thanks",
+     "risk_p": 0.06,
+     "screenshot": "078-click-1.png"
+    }
+   ],
+   "risk_ms": [
+    325
+   ],
+   "caller_check_ms": 50
+  },
+  {
+   "seq": 79,
+   "at_s": 522.42,
+   "gap_before_s": 2.36,
+   "duration_s": 0.52,
+   "op": "browser",
+   "command": "observe",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "caller_check_ms": 54
+  },
+  {
+   "seq": 80,
+   "at_s": 524.86,
+   "gap_before_s": 1.92,
+   "duration_s": 1.47,
+   "op": "browser",
+   "command": "eval",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "gate": {
+    "verdict": "allow",
+    "decided_by": "chat",
+    "latency_ms": 946,
+    "chat_read_ms": 435,
+    "rules_ms": 338,
+    "chat_ms": 510,
+    "model": "typesafe/jev-1.14-20261014"
+   },
+   "script": "(() => {\n  const buttons = document.querySelectorAll('button');\n  for (const b of buttons) {\n    if (b.textContent.trim() === 'Add details') {\n      b.click();\n      return {clicked: true};\n    }\n  }\n  return {error: \"no Add details button found\"};\n})()\n",
+   "caller_check_ms": 49
+  },
+  {
+   "seq": 81,
+   "at_s": 528.27,
+   "gap_before_s": 1.94,
+   "duration_s": 0.52,
+   "op": "browser",
+   "command": "observe",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "caller_check_ms": 44
+  },
+  {
+   "seq": 82,
+   "at_s": 530.6,
+   "gap_before_s": 1.81,
+   "duration_s": 1.32,
+   "op": "browser",
+   "command": "eval",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "gate": {
+    "verdict": "allow",
+    "decided_by": "chat",
+    "latency_ms": 805,
+    "chat_read_ms": 440,
+    "rules_ms": 250,
+    "chat_ms": 364,
+    "model": "typesafe/jev-1.14-20261014"
+   },
+   "script": "(() => {\n  const radios = document.querySelectorAll('input[type=\"radio\"]');\n  if (radios.length > 0) {\n    radios[radios.length - 1].click();\n    return {clicked: radios.length - 1, checked: radios[radios.length - 1].checked};\n  }\n  return {error: \"no radios found\"};\n})()\n",
+   "caller_check_ms": 51
+  },
+  {
+   "seq": 83,
+   "at_s": 533.87,
+   "gap_before_s": 1.96,
+   "duration_s": 0.52,
+   "op": "browser",
+   "command": "observe",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "caller_check_ms": 52
+  },
+  {
+   "seq": 84,
+   "at_s": 536.22,
+   "gap_before_s": 1.83,
+   "duration_s": 1.2,
+   "op": "browser",
+   "command": "do",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "steps": [
+    {
+     "step": 1,
+     "op": "click",
+     "ref": "e183",
+     "result": "sent",
+     "role": "button",
+     "name": "Continue",
+     "risk_p": 0.21,
+     "screenshot": "084-click-1.png"
+    }
+   ],
+   "risk_ms": [
+    334
+   ],
+   "caller_check_ms": 41
+  },
+  {
+   "seq": 85,
+   "at_s": 539.24,
+   "gap_before_s": 1.82,
+   "duration_s": 0.52,
+   "op": "browser",
+   "command": "observe",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "caller_check_ms": 45
+  },
+  {
+   "seq": 86,
+   "at_s": 541.49,
+   "gap_before_s": 1.73,
+   "duration_s": 3.15,
+   "op": "browser",
+   "command": "do",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "steps": [
+    {
+     "step": 1,
+     "op": "type",
+     "ref": "e184",
+     "result": "sent",
+     "role": "textbox",
+     "name": "Return reason",
+     "text_length": 45,
+     "screenshot": "086-type-1.png"
+    }
+   ],
+   "risk_ms": [],
+   "caller_check_ms": 43
+  },
+  {
+   "seq": 87,
+   "at_s": 546.48,
+   "gap_before_s": 1.84,
+   "duration_s": 0.53,
+   "op": "browser",
+   "command": "observe",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "caller_check_ms": 42
+  },
+  {
+   "seq": 88,
+   "at_s": 549.07,
+   "gap_before_s": 2.07,
+   "duration_s": 1.23,
+   "op": "browser",
+   "command": "do",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "steps": [
+    {
+     "step": 1,
+     "op": "click",
+     "ref": "e186",
+     "result": "sent",
+     "role": "button",
+     "name": "Continue",
+     "risk_p": 0.26,
+     "screenshot": "088-click-1.png"
+    }
+   ],
+   "risk_ms": [
+    371
+   ],
+   "caller_check_ms": 47
+  },
+  {
+   "seq": 89,
+   "at_s": 555.3,
+   "gap_before_s": 4.99,
+   "duration_s": 0.53,
+   "op": "browser",
+   "command": "observe",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "caller_check_ms": 41
+  },
+  {
+   "seq": 90,
+   "at_s": 557.64,
+   "gap_before_s": 1.81,
+   "duration_s": 3.36,
+   "op": "browser",
+   "command": "do",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "steps": [
+    {
+     "step": 1,
+     "op": "type",
+     "ref": "e187",
+     "result": "sent",
+     "role": "textbox",
+     "name": "Return reason",
+     "text_length": 45,
+     "screenshot": "090-type-1.png"
+    }
+   ],
+   "risk_ms": [],
+   "caller_check_ms": 43
+  },
+  {
+   "seq": 91,
+   "at_s": 562.78,
+   "gap_before_s": 1.79,
+   "duration_s": 0.52,
+   "op": "browser",
+   "command": "observe",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "caller_check_ms": 50
+  },
+  {
+   "seq": 92,
+   "at_s": 565.07,
+   "gap_before_s": 1.76,
+   "duration_s": 1.27,
+   "op": "browser",
+   "command": "do",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "steps": [
+    {
+     "step": 1,
+     "op": "click",
+     "ref": "e189",
+     "result": "sent",
+     "role": "button",
+     "name": "Continue",
+     "risk_p": 0.23,
+     "screenshot": "092-click-1.png"
+    }
+   ],
+   "risk_ms": [
+    389
+   ],
+   "caller_check_ms": 69
+  },
+  {
+   "seq": 93,
+   "at_s": 571.12,
+   "gap_before_s": 4.79,
+   "duration_s": 0.52,
+   "op": "browser",
+   "command": "observe",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "caller_check_ms": 67
+  },
+  {
+   "seq": 94,
+   "at_s": 578.83,
+   "gap_before_s": 7.19,
+   "duration_s": 0.52,
+   "op": "browser",
+   "command": "observe",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "caller_check_ms": 43
+  },
+  {
+   "seq": 95,
+   "at_s": 581.43,
+   "gap_before_s": 2.07,
+   "duration_s": 1.31,
+   "op": "browser",
+   "command": "do",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "steps": [
+    {
+     "step": 1,
+     "op": "click",
+     "ref": "e228",
+     "result": "sent",
+     "role": "button",
+     "name": "No thanks",
+     "risk_p": 0.08,
+     "screenshot": "095-click-1.png"
+    }
+   ],
+   "risk_ms": [
+    311
+   ],
+   "caller_check_ms": 48
+  },
+  {
+   "seq": 96,
+   "at_s": 584.48,
+   "gap_before_s": 1.74,
+   "duration_s": 0.52,
+   "op": "browser",
+   "command": "observe",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "caller_check_ms": 44
+  },
+  {
+   "seq": 97,
+   "at_s": 586.92,
+   "gap_before_s": 1.92,
+   "duration_s": 0.53,
+   "op": "browser",
+   "command": "observe",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "caller_check_ms": 49
+  },
+  {
+   "seq": 98,
+   "at_s": 589.21,
+   "gap_before_s": 1.77,
+   "duration_s": 1.18,
+   "op": "browser",
+   "command": "do",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "steps": [
+    {
+     "step": 1,
+     "op": "click",
+     "ref": "e245",
+     "result": "sent",
+     "role": "button",
+     "name": "No thanks",
+     "risk_p": 0.07,
+     "screenshot": "098-click-1.png"
+    }
+   ],
+   "risk_ms": [
+    306
+   ],
+   "caller_check_ms": 51
+  },
+  {
+   "seq": 99,
+   "at_s": 592.46,
+   "gap_before_s": 2.07,
+   "duration_s": 0.52,
+   "op": "browser",
+   "command": "observe",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "caller_check_ms": 56
+  },
+  {
+   "seq": 100,
+   "at_s": 599.95,
+   "gap_before_s": 6.97,
+   "duration_s": 0.52,
+   "op": "browser",
+   "command": "observe",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "caller_check_ms": 54
+  },
+  {
+   "seq": 101,
+   "at_s": 602.83,
+   "gap_before_s": 2.36,
+   "duration_s": 1.27,
+   "op": "browser",
+   "command": "do",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "steps": [
+    {
+     "step": 1,
+     "op": "click",
+     "ref": "e248",
+     "result": "sent",
+     "role": "button",
+     "name": "Continue",
+     "risk_p": 0.27,
+     "screenshot": "101-click-1.png"
+    }
+   ],
+   "risk_ms": [
+    374
+   ],
+   "caller_check_ms": 51
+  },
+  {
+   "seq": 102,
+   "at_s": 606.09,
+   "gap_before_s": 1.99,
+   "duration_s": 0.53,
+   "op": "browser",
+   "command": "observe",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "caller_check_ms": 50
+  },
+  {
+   "seq": 103,
+   "at_s": 608.67,
+   "gap_before_s": 2.05,
+   "duration_s": 0.53,
+   "op": "browser",
+   "command": "observe",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "caller_check_ms": 47
+  },
+  {
+   "seq": 104,
+   "at_s": 611.13,
+   "gap_before_s": 1.93,
+   "duration_s": 1.42,
+   "op": "browser",
+   "command": "eval",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "gate": {
+    "verdict": "allow",
+    "decided_by": "chat",
+    "latency_ms": 905,
+    "chat_read_ms": 433,
+    "rules_ms": 389,
+    "chat_ms": 471,
+    "model": "typesafe/jev-1.14-20261014"
+   },
+   "script": "(() => {\n  const radios = document.querySelectorAll('input[type=\"radio\"]');\n  if (radios.length >= 3) {\n    radios[2].click();\n    return {selected: \"refund\", checked: radios[2].checked};\n  }\n  return {error: \"not enough radios\", count: radios.length};\n})()\n",
+   "caller_check_ms": 46
+  },
+  {
+   "seq": 105,
+   "at_s": 614.24,
+   "gap_before_s": 1.69,
+   "duration_s": 0.53,
+   "op": "browser",
+   "command": "observe",
+   "outcome": "ok",
+   "path": "/apps/redo/returns-portal/orders/0123456789abcdef01234567/return",
+   "engine": "cft",
+   "caller_check_ms": 43
+  }
+ ]
+}
