@@ -24,6 +24,8 @@ nonisolated struct SyntheticLatchClient: LatchClient {
         var rate = 0
         /// Milliseconds every read takes, as a latch run would.
         var delay = 0
+        /// Up to this many milliseconds more on each read, at random.
+        var jitter = 0
         /// Milliseconds a plugin change or a Google sign-in takes; with it,
         /// changes hold and Google has an account that works.
         var connectors = 0
@@ -42,6 +44,7 @@ nonisolated struct SyntheticLatchClient: LatchClient {
                 case "agents": agents = value
                 case "rate": rate = value
                 case "delay": delay = value
+                case "jitter": jitter = value
                 case "connectors": connectors = value
                 default: return nil
                 }
@@ -84,8 +87,14 @@ nonisolated struct SyntheticLatchClient: LatchClient {
     /// The host a read names: this Mac's for nil.
     private func host(_ name: String?) -> String { name ?? hostNames[0] }
 
+    /// Waits as long as a read takes.
+    private func wait() async throws {
+        let ms = spec.delay + Int.random(in: 0...spec.jitter)
+        if ms > 0 { try await Task.sleep(for: .milliseconds(ms)) }
+    }
+
     private func read<T: Decodable>(_ json: String) async throws -> T {
-        if spec.delay > 0 { try await Task.sleep(for: .milliseconds(spec.delay)) }
+        try await wait()
         return try Fixtures.decode(json)
     }
 
@@ -183,7 +192,7 @@ nonisolated struct SyntheticLatchClient: LatchClient {
     }
 
     func audit(host: String?, before: String?) async throws -> AuditPage {
-        if spec.delay > 0 { try await Task.sleep(for: .milliseconds(spec.delay)) }
+        try await wait()
         return AuditPage(records: [], hasOlder: false)
     }
 
@@ -196,7 +205,7 @@ nonisolated struct SyntheticLatchClient: LatchClient {
                 func send(_ line: String) {
                     if let line = try? LatchJSON.decoder.decode(AuditLine.self, from: Data(line.utf8)) { continuation.yield(line) }
                 }
-                if client.spec.delay > 0 { try? await Task.sleep(for: .milliseconds(client.spec.delay)) }
+                try? await client.wait()
                 let start = String(repeating: "0", count: 64)
                 var cursor = after ?? start
                 var n = after.flatMap { $0 == start ? nil : Int($0.suffix(8), radix: 16) }.map { $0 + 1 } ?? 0
@@ -226,7 +235,14 @@ nonisolated struct SyntheticLatchClient: LatchClient {
     }
 
     func setupStatusCheckingAccess() async throws -> SetupStatus { try await setupStatus() }
-    func login(name: String?, replace: Bool) -> AsyncThrowingStream<LoginEvent, Error> { base.login(name: name, replace: replace) }
+    /// Logged in already, as latch says at once.
+    func login(name: String?, replace: Bool) -> AsyncThrowingStream<LoginEvent, Error> {
+        let name = hostNames[0]
+        return AsyncThrowingStream { continuation in
+            continuation.yield(.verified(name: name))
+            continuation.finish()
+        }
+    }
     func rulesSet(_ text: String) async throws {}
     func rulesSet(_ text: String, host: String?, agent: String?, revision: String?) async throws {}
     func rulesTry(_ request: [String], host: String?, agent: String?, newAgent: Bool, draft: String?) async throws -> RulesTry {

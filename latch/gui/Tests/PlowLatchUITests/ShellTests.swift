@@ -111,15 +111,14 @@ struct ShellTests {
         app.openRecord(record, on: studio)
         let window = Offscreen(contentRect: CGRect(x: -4000, y: -4000, width: 1040, height: 600), styleMask: [.titled, .resizable],
                                backing: .buffered, defer: false)
-        window.contentView = NSHostingView(rootView: MainView().environment(app))
-        window.setFrameOrigin(CGPoint(x: -4000, y: -4000))
+        let controller = MainWindowController(app: app, window: window, defaults: nil)
+        window.setFrame(CGRect(x: -4000, y: -4000, width: 1040, height: 600), display: true)
         window.orderFrontRegardless()
         defer { window.orderOut(nil) }
         #expect(!NSScreen.screens.contains { $0.frame.intersects(window.frame) })
-        func splits(_ view: NSView) -> [NSSplitView] { ((view as? NSSplitView).map { [$0] } ?? []) + view.subviews.flatMap(splits) }
-        await waitUntil { splits(window.contentView!).count == 2 }
-        // The outermost: the sidebar, then the rest.
-        let split = try #require(splits(window.contentView!).last)
+        // The sidebar, the screen and the inspector.
+        let split = (controller.contentViewController as! NSSplitViewController).splitView
+        await waitUntil { split.arrangedSubviews.count == 3 && !split.arrangedSubviews[2].isHidden }
         // Dragged until it goes no wider: its widest, whatever this macOS
         // makes of the column's maximum.
         var widths: [CGFloat] = []

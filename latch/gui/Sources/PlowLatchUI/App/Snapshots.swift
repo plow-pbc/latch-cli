@@ -423,7 +423,7 @@ package enum SnapshotRunner {
                 app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
                 app.stage(rulesSaved: rulesSaved, setup: try on.map { try Fixtures.decode(Fixtures.setup(on: $0)) })
                 _ = app.stage(.done, progress: progress)
-                try await renderWindow(MainView().environment(app), size: mainSize, dark: dark,
+                try await renderWindow(app, size: mainSize, dark: dark,
                                  file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
             }
             // The main window's host workspace: each kind of host, and switching.
@@ -452,7 +452,7 @@ package enum SnapshotRunner {
                 app.place = place
                 stageActivity(app)
                 _ = app.stage(.done, progress: full)
-                try await renderWindow(MainView().environment(app), size: mainSize, dark: dark,
+                try await renderWindow(app, size: mainSize, dark: dark,
                                  file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
             }
             // Home at the default and narrowest sizes, on this Mac and
@@ -470,7 +470,7 @@ package enum SnapshotRunner {
                     app.place = .host(.home)
                     stageActivity(app)
                     _ = app.stage(.done, progress: full)
-                    try await renderWindow(MainView().environment(app), size: size, dark: dark, file: file)
+                    try await renderWindow(app, size: size, dark: dark, file: file)
                 }
             }
             // latch's errors in the app's words, latch's own under Details:
@@ -499,7 +499,7 @@ package enum SnapshotRunner {
                     app.feed(for: kitchen).stage("", error: stopped)
                 }
                 _ = app.stage(.done, progress: full)
-                try await renderWindow(MainView().environment(app), size: mainSize, dark: dark,
+                try await renderWindow(app, size: mainSize, dark: dark,
                                  file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
             }
             // Activity: real records of each kind, a filter, the inspector,
@@ -526,7 +526,7 @@ package enum SnapshotRunner {
                     app.selectedRecord = OnHost(host: host.name, id: record.id)
                 }
                 _ = app.stage(.done, progress: full)
-                try await renderWindow(MainView().environment(app), size: CGSize(width: 1180, height: 640), dark: dark,
+                try await renderWindow(app, size: CGSize(width: 1180, height: 640), dark: dark,
                                  file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
             }
             // Activity's scope bar at the default and narrowest sizes: an
@@ -611,7 +611,7 @@ package enum SnapshotRunner {
                     guard let studio = app.host else { continue }
                     stage(app, studio)
                     _ = app.stage(.done, progress: full)
-                    try await renderWindow(MainView().environment(app), size: size, dark: dark,
+                    try await renderWindow(app, size: size, dark: dark,
                                            file: output.appending(path: "\(name)-\(label)-\(dark ? "dark" : "light").png"))
                 }
             }
@@ -676,7 +676,7 @@ package enum SnapshotRunner {
                 app.place = place
                 try stage(app)
                 _ = app.stage(.done, progress: full)
-                try await renderWindow(MainView().environment(app), size: CGSize(width: 1120, height: 700), dark: dark,
+                try await renderWindow(app, size: CGSize(width: 1120, height: 700), dark: dark,
                                        file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
             }
         }
@@ -736,7 +736,7 @@ package enum SnapshotRunner {
                 }
                 _ = app.stage(.done, progress: full)
                 for (label, size) in [("default", CGSize(width: 1120, height: 640)), ("narrow", narrowSize)] {
-                    try await renderWindow(MainView().environment(app), size: size, dark: dark,
+                    try await renderWindow(app, size: size, dark: dark,
                                            file: output.appending(path: "\(name)-\(label)-\(dark ? "dark" : "light").png"))
                 }
                 if selected != nil || name.hasSuffix("no-selection") {
@@ -813,7 +813,7 @@ package enum SnapshotRunner {
             for (name, status, account, chosen, checked) in screens {
                 let app = try settingsApp(status: status, account: account, chosen: chosen, checked: checked)
                 for (label, size) in sizes {
-                    try await renderWindow(MainView().environment(app), size: size, dark: dark,
+                    try await renderWindow(app, size: size, dark: dark,
                                            file: output.appending(path: "\(name)-\(label)-\(dark ? "dark" : "light").png"))
                 }
             }
@@ -821,7 +821,7 @@ package enum SnapshotRunner {
             let setUp = try settingsApp(status: Fixtures.serving, account: Fixtures.studioHosts, chosen: nil, checked: false,
                                         plugins: Fixtures.studioPluginsSetUp)
             for (label, size) in sizes {
-                try await renderWindow(MainView().environment(setUp), size: size, dark: dark,
+                try await renderWindow(setUp, size: size, dark: dark,
                                        file: output.appending(path: "19-settings-this-mac-plugins-\(label)-\(dark ? "dark" : "light").png"))
             }
             // Your account › Connections: no Google account, one, two, Plow
@@ -839,7 +839,7 @@ package enum SnapshotRunner {
                 let app = try settingsApp(status: Fixtures.serving, account: Fixtures.studioHosts, chosen: nil, checked: false, google: google)
                 app.place = .account(.connections)
                 for (label, size) in sizes {
-                    try await renderWindow(MainView().environment(app), size: size, dark: dark,
+                    try await renderWindow(app, size: size, dark: dark,
                                            file: output.appending(path: "\(name)-\(label)-\(dark ? "dark" : "light").png"))
                 }
             }
@@ -859,7 +859,7 @@ package enum SnapshotRunner {
                                            google: Fixtures.googleConnected(["ada@example.com"]))
             managing.manageAccounts()
             for (label, size) in sizes {
-                try await renderWindow(MainView().environment(managing), size: size, dark: dark,
+                try await renderWindow(managing, size: size, dark: dark,
                                        file: output.appending(path: "21-connections-from-manage-accounts-\(label)-\(dark ? "dark" : "light").png"))
             }
             // The Settings window: up to date, and a build available.
@@ -911,7 +911,7 @@ package enum SnapshotRunner {
                   for: "pi-kitchen")
     }
 
-    /// The main window at its narrowest (MainView's minimum width).
+    /// The main window at its narrowest (its minimum width).
     private static let narrowSize = CGSize(width: 1040, height: 600)
 
     /// What `setup --status` says of Google for each Connect Google still.
@@ -938,18 +938,32 @@ package enum SnapshotRunner {
     /// The main window, title bar included, drawn off every display from its
     /// own views: the window server composites nothing there, so it has no
     /// image of it (nor of the sidebar's materials) to give.
+    private static func renderWindow(_ app: AppModel, size: CGSize, dark: Bool, file: URL) async throws {
+        try await renderWindow(size: size, dark: dark, file: file) { MainWindowController(app: app, window: $0, defaults: nil) }
+    }
+
+    /// Another window (Settings) the same way, its content `view`.
     private static func renderWindow(_ view: some View, size: CGSize, dark: Bool, file: URL) async throws {
+        try await renderWindow(size: size, dark: dark, file: file) { window -> AnyObject? in
+            window.contentViewController = NSHostingController(rootView: view)
+            return nil
+        }
+    }
+
+    /// `build` fills the window, returning what must stay alive while it's drawn.
+    private static func renderWindow(size: CGSize, dark: Bool, file: URL, build: (NSWindow) -> AnyObject?) async throws {
         guard wanted(file) else { return }
         let window = Offscreen(contentRect: CGRect(origin: CGPoint(x: -4000, y: -4000), size: size),
                                styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                                backing: .buffered, defer: false)
         window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
-        window.contentViewController = NSHostingController(rootView: view)
+        let owner = build(window)
         window.setFrame(CGRect(origin: CGPoint(x: -4000, y: -4000), size: size), display: true)
         window.orderFrontRegardless()
         try await Task.sleep(for: .milliseconds(600))
         try Render.frame(window, to: file)
         window.orderOut(nil)
+        withExtendedLifetime(owner) {}
         print(file.path)
     }
 

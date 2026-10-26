@@ -79,24 +79,17 @@ struct PlowLatchApp: App {
         .restorationBehavior(.disabled)
         .defaultLaunchBehavior(windowed && !finished ? .presented : .suppressed)
 
-        Window("Latch", id: AppModel.mainWindow) {
-            MainView()
-                .environment(model)
-                .installWindowActions(model)
-        }
-        .defaultSize(width: 1120, height: 700)
-        // Its frame, place and host come back as macOS restores windows.
-        .defaultLaunchBehavior(windowed && finished ? .presented : .suppressed)
-        // One Save: the rules editor with the keyboard focus. New Item and
-        // Import on the Vault. The sidebar and inspector toggles, and a
-        // shortcut for each host screen.
+        // The main window is AppKit's (`MainWindowController`), opened by
+        // the app delegate at launch once set up. One Save: the rules editor
+        // with the keyboard focus. New Item and Import on the Vault. The
+        // sidebar and inspector toggles, and a shortcut for each host screen.
         .commands {
             RulesCommands()
             VaultCommands()
             SidebarCommands()
             InspectorCommands()
             ScreenCommands(app: model)
-            FindCommands()
+            FindCommands(app: model)
         }
 
         Settings {
@@ -108,22 +101,14 @@ struct PlowLatchApp: App {
 
 /// View › a host screen, ⌘1 to ⌘5: the selected host's workspace on it.
 /// Find (⌘F): the search field of the screen showing, where it has one.
-struct FindAction {
-    let focus: () -> Void
-}
-
-extension FocusedValues {
-    @Entry var find: FindAction?
-}
-
 private struct FindCommands: Commands {
-    @FocusedValue(\.find) private var find
+    var app: AppModel
 
     var body: some Commands {
         CommandGroup(after: .textEditing) {
-            Button("Find…") { find?.focus() }
+            Button("Find…") { MainWindowController.shown?.find() }
                 .keyboardShortcut("f")
-                .disabled(find == nil)
+                .disabled(app.place != .host(.activity) && app.place != .host(.vault))
         }
     }
 }
@@ -142,6 +127,15 @@ private struct ScreenCommands: Commands {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    /// Set up: the main window, where the app left it.
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        #if LATCH_TEST_HOOKS
+        guard !TestHooks.headless else { return }
+        #endif
+        guard let model = PlowLatchApp.model, model.store.load().finished else { return }
+        MainWindowController.open(model)
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         LatchProcess.terminateAll()
     }
@@ -166,8 +160,12 @@ private struct WindowActions: ViewModifier {
     func body(content: Content) -> some View {
         content
             .onAppear {
-                model.openWindow = { openWindow(id: $0) }
-                model.dismissWindow = { dismissWindow(id: $0) }
+                model.openWindow = { id in
+                    if id == AppModel.mainWindow { MainWindowController.open(model) } else { openWindow(id: id) }
+                }
+                model.dismissWindow = { id in
+                    if id == AppModel.mainWindow { MainWindowController.dismiss() } else { dismissWindow(id: id) }
+                }
             }
             .background(WindowReader { FirstWindow.bringForward($0) })
     }

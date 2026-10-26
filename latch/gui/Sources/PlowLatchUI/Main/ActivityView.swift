@@ -6,7 +6,6 @@ import SwiftUI
 /// agent.
 struct ActivityView: View {
     @Environment(AppModel.self) private var app
-    @FocusState private var searching: Bool
 
     enum Filter: String, CaseIterable, Identifiable {
         case all = "All", allowed = "Allowed", refused = "Refused"
@@ -14,7 +13,6 @@ struct ActivityView: View {
     }
 
     var body: some View {
-        @Bindable var app = app
         Group {
             if let host = app.host {
                 if !host.isThisMac, host.online == false {
@@ -30,15 +28,6 @@ struct ActivityView: View {
             } else {
                 ContentUnavailableView("No host", systemImage: "waveform.path.ecg",
                                        description: Text("Activity is kept on each host. Pick one in the sidebar."))
-            }
-        }
-        .searchable(text: $app.activitySearch, placement: .toolbar, prompt: "Search requests")
-        .searchFocused($searching)
-        .focusedSceneValue(\.find, FindAction { searching = true })
-        .toolbar {
-            ToolbarItem {
-                Toggle("Show Connections and Reads", systemImage: "point.3.connected.trianglepath.dotted", isOn: $app.showConnections)
-                    .help("Also show when callers connected, and your own reads (rules, vault, status, activity)")
             }
         }
     }
@@ -96,7 +85,14 @@ private struct Records: View {
         }
         .pickerStyle(.segmented)
         return VStack(alignment: .leading, spacing: 10) {
-            Text("Activity").font(.title2.bold())
+            HStack {
+                Text("Activity").font(.title2.bold())
+                Spacer()
+                Toggle("Show Connections and Reads", systemImage: "point.3.connected.trianglepath.dotted", isOn: $app.showConnections)
+                    .toggleStyle(.button)
+                    .labelStyle(.iconOnly)
+                    .help("Also show when callers connected, and your own reads (rules, vault, status, activity)")
+            }
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 12) {
                     outcome.fixedSize()
@@ -244,23 +240,6 @@ private struct DotLabelStyle: LabelStyle {
         HStack(spacing: 6) {
             configuration.icon.accessibilityHidden(true)
             configuration.title
-        }
-    }
-}
-
-extension View {
-    /// Runs `feed`'s stream while this view is on screen, and for its grace
-    /// after.
-    func following(_ feed: ActivityFeed?, still: Bool) -> some View {
-        task(id: feed.map(ObjectIdentifier.init)) {
-            guard let feed, !still else { return }
-            feed.start()
-            // Until this view goes away: a stream nothing is sent on ends
-            // only when the task is cancelled.
-            let (untilGone, open) = AsyncStream<Never>.makeStream()
-            for await _ in untilGone {}
-            withExtendedLifetime(open) {}
-            feed.stop()
         }
     }
 }

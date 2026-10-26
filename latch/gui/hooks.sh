@@ -12,7 +12,8 @@
 #                               latch's, in the main window (needs --window):
 #                               SPEC is "hosts=3,records=50,vault=100,agents=2"
 #                               (the defaults) plus "rate=N" new records a
-#                               second, "delay=MS" per read and
+#                               second, "delay=MS" per read (and up to
+#                               "jitter=MS" more, at random) and
 #                               "connectors=MS" a plugin change or Google
 #                               sign-in takes, which then hold
 #   hooks.sh send COMMAND [ARG] one hook (TestHooks.swift lists them)
