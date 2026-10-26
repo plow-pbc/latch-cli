@@ -1187,3 +1187,16 @@ async fn live_owner_calls_are_judged_against_the_rules_alone() {
         );
     }
 }
+
+/// The judge's future, which every gated call holds inline (the browser's
+/// deep in its stack), stays small: its concurrent reads and calls are
+/// boxed.
+#[tokio::test]
+async fn the_judgment_future_stays_small() {
+    let model = Recorder::answering(0.9, 0.05, 0.05);
+    let keeper = gatekeeper(one_chat(), &model, host_rules());
+    let action = order();
+    let judging = keeper.judge(AGENT_CALLER, &action);
+    let size = std::mem::size_of_val(&judging);
+    assert!(size <= 4096, "{size} bytes");
+}

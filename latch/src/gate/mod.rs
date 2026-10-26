@@ -287,7 +287,10 @@ impl Gatekeeper {
             .rules(caller.key())
             .map_err(|why| unavailable(&format!("the owner's rules could not be read: {why}")));
         let chat = match caller {
-            Caller::Agent { uid, chat } => Some(chat::read(&self.plow, uid, chat)),
+            // Boxed, as are the layers' calls below: held all at once,
+            // inline they would make every caller's future several times
+            // larger, deep in the browser's stack.
+            Caller::Agent { uid, chat } => Some(Box::pin(chat::read(&self.plow, uid, chat))),
             Caller::Owner | Caller::OwnerOnHost | Caller::RulesLayer { .. } => None,
         };
         let owner = matches!(caller, Caller::Owner | Caller::OwnerOnHost);
@@ -349,12 +352,12 @@ impl Gatekeeper {
         };
         let mut rules_call = json!({});
         let mut chat_call = json!({});
-        let by_rules = async {
+        let by_rules = Box::pin(async {
             Ok(self
                 .ask(&alone, &RULES_LAYER, now, clock, action, &mut rules_call)
                 .await)
-        };
-        let by_chat = async {
+        });
+        let by_chat = Box::pin(async {
             let Some(chat) = chat else { return Ok(None) };
             let Some(conversation) = read(chat, gate).await? else {
                 return Ok(None);
@@ -366,7 +369,7 @@ impl Gatekeeper {
             };
             let p = self.ask(&intent, &ASKED, now, clock, action, &mut chat_call);
             Ok(Some(p.await))
-        };
+        });
         let (by_rules, by_chat) = tokio::try_join!(by_rules, by_chat)?;
         if let Some(hashes) = hashes {
             gate["rules"] = hashes;
