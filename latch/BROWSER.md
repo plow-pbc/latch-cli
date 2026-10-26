@@ -334,8 +334,10 @@ each before anything of it reaches the page:
 - every vault fill: a `fill`, each fill a plan makes (a literal fill step
   or one a goal chose), and every `do --confirm` that releases a card or
   identity: the item's kind and title, the fields and the site, never a
-  value. A refused fill in a plan stops the plan at that step, the reason
-  in its `stop`;
+  value. The judge is told that the agent never receives the values and
+  that a login fills only on its own site, so a sign-in there for the
+  owner's task isn't read as sharing the password. A refused fill in a
+  plan stops the plan at that step, the reason in its `stop`;
 - every `eval` (its script), upload and download (the file's name and
   size).
 

@@ -177,8 +177,12 @@ model, through Plow on the host's own Plow login, whether it may run.
   stdin; file paths, sizes and names; the full Google command with its
   arguments; a browser plan as written, with its values, and its site. For
   a vault fill it sees the item's kind and title and the fields mapped,
-  never their values; for `--secret-env`, only names and lengths. It runs
-  at Plow, so keep credentials out of arguments.
+  never their values. It is told what a fill does: the agent never
+  receives the values, and a saved login fills only on its own site. So
+  signing in there for something the owner wants isn't judged as sharing
+  the password; revealing or copying a value, or filling it elsewhere,
+  still is. For `--secret-env` it sees only names and lengths. It runs at
+  Plow, so keep credentials out of arguments.
 
 **What's logged.** The host keeps a sealed audit log of the calls it
 handles, `audit.sealed.ndjson` in its state folder. Each record is
