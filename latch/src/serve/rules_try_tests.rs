@@ -693,7 +693,7 @@ async fn a_login_fill_is_judged_as_the_browser_judges_it_and_nothing_is_opened()
     assert_eq!(tried["gate"]["caller"], "owner_device");
     // The action a real fill shows the judge, and only that.
     let shown = json!({"kind": "vault_fill", "site": "instacart.com",
-                       "item": {"kind": "login", "title": "Instacart"},
+                       "item": {"kind": "login", "title": "Instacart", "sites": ["instacart.com"]},
                        "fields": ["username", "password"]});
     let judged = t.plow.world.lock().unwrap().asked.last().unwrap()["proposed_action"].clone();
     assert_eq!(judged, shown);

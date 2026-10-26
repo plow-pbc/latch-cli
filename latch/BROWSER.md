@@ -329,14 +329,16 @@ each before anything of it reaches the page:
   `goto URL` or `tab new URL` on another site;
 - each plan (`do`): its steps as written with each step's values, the
   page it starts on (URL and title), the sites it names and the vault
-  items it may fill (kind and title). Every `do` is judged, one of a
-  single step too; only `act`'s one click, keypress or scroll is not;
+  items it may fill (kind, title and saved sites). Every `do` is judged,
+  one of a single step too; only `act`'s one click, keypress or scroll is
+  not;
 - every vault fill: a `fill`, each fill a plan makes (a literal fill step
   or one a goal chose), and every `do --confirm` that releases a card or
-  identity: the item's kind and title, the fields and the site, never a
-  value. The judge is told that the agent never receives the values and
-  that a login fills only on its own site, so a sign-in there for the
-  owner's task isn't read as sharing the password. A refused fill in a
+  identity: the item's kind and title, the sites it is saved for, the
+  fields and the page's site, never a value. The judge is told that the
+  agent never receives the values and that a login fills only on its own
+  sites, so a sign-in there for the owner's task isn't read as sharing the
+  password, while a login on any other site is. A refused fill in a
   plan stops the plan at that step, the reason in its `stop`;
 - every `eval` (its script), upload and download (the file's name and
   size).

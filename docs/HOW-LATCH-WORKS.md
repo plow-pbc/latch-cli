@@ -176,9 +176,10 @@ model, through Plow on the host's own Plow login, whether it may run.
 - The judge sees what it's judging: exec arguments, folders, network and
   stdin; file paths, sizes and names; the full Google command with its
   arguments; a browser plan as written, with its values, and its site. For
-  a vault fill it sees the item's kind and title and the fields mapped,
-  never their values. It is told what a fill does: the agent never
-  receives the values, and a saved login fills only on its own site. So
+  a vault fill it sees the item's kind and title, the sites it's saved
+  for and the fields mapped, never their values. It is told what a fill
+  does: the agent never receives the values, and a saved login fills only
+  on its own sites. So
   signing in there for something the owner wants isn't judged as sharing
   the password; revealing or copying a value, or filling it elsewhere,
   still is. For `--secret-env` it sees only names and lengths. It runs at
@@ -216,7 +217,8 @@ effort.
   they're at most 8 KiB. `latch rules show` reminds you they're judged, not
   guaranteed. `latch rules try` previews the verdict a request would get,
   without running it. `--fill-login TITLE --url URL` previews a browser
-  fill of a saved login: the fill's judgment only, not the whole sign-in
+  fill of a saved login, as saved for that page's site: the fill's
+  judgment only, not the whole sign-in
   (opening the site is judged on its own) nor whether the vault has that
   login. Nothing is opened or filled, and the vault isn't read.
 - **Vault** secrets never come from the command line or the environment:
