@@ -22,6 +22,18 @@ struct HostRulesView: View {
                                        description: Text("Rules are kept on each host. Pick one in the sidebar."))
             }
         }
+        .background(SaveForTheMenu())
+    }
+}
+
+/// File › Save (⌘S): the focused editor's, as it publishes it, for the
+/// window to run.
+private struct SaveForTheMenu: View {
+    @Environment(ScreenActions.self) private var actions: ScreenActions?
+    @FocusedValue(\.rulesSave) private var save
+
+    var body: some View {
+        Color.clear.onChange(of: save?.key, initial: true) { actions?.save = save?.run }
     }
 }
 
@@ -81,8 +93,8 @@ private struct HostRules: View {
 }
 
 /// Save (⌘S) for the rules editor with the keyboard focus. The editor
-/// publishes it while it's focused in the front window and has a change to
-/// save; the menu's Save runs it.
+/// publishes it while it's focused and has a change to save; the menu's
+/// Save runs it.
 struct RulesSave {
     let key: AppModel.RulesKey
     let run: () -> Void
@@ -90,19 +102,6 @@ struct RulesSave {
 
 extension FocusedValues {
     @Entry var rulesSave: RulesSave?
-}
-
-/// The menu's one Save: the focused rules editor's, when there is one.
-struct RulesCommands: Commands {
-    @FocusedValue(\.rulesSave) private var save
-
-    var body: some Commands {
-        CommandGroup(replacing: .saveItem) {
-            Button("Save") { save?.run() }
-                .keyboardShortcut("s", modifiers: .command)
-                .disabled(save == nil)
-        }
-    }
 }
 
 /// One set of rules: the saved text, edited in place, saved only when

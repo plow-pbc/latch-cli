@@ -9,7 +9,7 @@ import SwiftUI
 /// for the window: this Mac's status, Plow's hosts, the reads of the place
 /// showing (cancelled when it changes) and the selected host's activity;
 /// closing it ends them.
-final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolbarDelegate {
+final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolbarDelegate, NSUserInterfaceValidations {
     /// The open main window; the app has at most one.
     private(set) static var shown: MainWindowController?
 
@@ -235,11 +235,23 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             defaults.set(app.inspecting.map(\.rawValue).sorted(), forKey: Self.inspectingKey)
         }
         window.toolbar?.validateVisibleItems()
+        MenuBridge.shared.setNeedsRefresh()
     }
 
-    /// Find (⌘F): into the bar's search field.
-    func find() {
+    /// Find (⌘F): into the bar's search field, on a screen that has one.
+    @objc func findInScreen(_ sender: Any?) {
         bar.focusSearch()
+    }
+
+    func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
+        item.action == #selector(findInScreen(_:)) ? bar.searching : true
+    }
+
+    /// The screen's commands answer from anywhere in the window, as a
+    /// document's do: New Item works with the focus in the sidebar, and
+    /// Save asks the screen, which has one only for a focused editor.
+    override func supplementalTarget(forAction action: Selector, sender: Any?) -> Any? {
+        screens.responds(to: action) ? screens : super.supplementalTarget(forAction: action, sender: sender)
     }
 
     private static func unanimated(_ change: () -> Void) {
@@ -310,9 +322,9 @@ final class MainSplitController: NSSplitViewController, NSToolbarItemValidation 
 
 /// The content column: the place showing, made as it's shown and released
 /// when another replaces it. What must outlive it is the model's.
-final class ScreenController: NSViewController {
+final class ScreenController: NSViewController, NSUserInterfaceValidations {
     let app: AppModel
-    private var shown: (place: Place, controller: NSViewController)?
+    private var shown: (place: Place, controller: NSViewController, actions: ScreenActions)?
 
     init(app: AppModel) {
         self.app = app
@@ -325,14 +337,32 @@ final class ScreenController: NSViewController {
 
     func show(_ place: Place) {
         guard shown?.place != place else { return }
-        let controller = MainWindowController.hosting(Self.screen(place), app)
+        let actions = ScreenActions()
+        let controller = MainWindowController.hosting(Self.screen(place).environment(actions), app)
         addChild(controller)
         controller.view.frame = view.bounds
         controller.view.autoresizingMask = [.width, .height]
         view.addSubview(controller.view)
         shown?.controller.view.removeFromSuperview()
         shown?.controller.removeFromParent()
-        shown = (place, controller)
+        shown = (place, controller, actions)
+        MenuBridge.shared.setNeedsRefresh()
+    }
+
+    // MARK: The screen's commands, from the menu bar
+
+    @objc func newDocument(_ sender: Any?) { shown?.actions.newItem?() }
+    @objc func importItems(_ sender: Any?) { shown?.actions.importItems?() }
+    @objc func saveDocument(_ sender: Any?) { shown?.actions.save?() }
+
+    func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
+        let actions = shown?.actions
+        switch item.action {
+        case #selector(newDocument(_:)): return actions?.newItem != nil
+        case #selector(importItems(_:)): return actions?.importItems != nil
+        case #selector(saveDocument(_:)): return actions?.save != nil
+        default: return true
+        }
     }
 
     @ViewBuilder private static func screen(_ place: Place) -> some View {
@@ -397,8 +427,10 @@ final class ContentBar: NSView {
         if field.stringValue != search.text { field.stringValue = search.text }
     }
 
+    var searching: Bool { !field.isHidden }
+
     func focusSearch() {
-        guard !field.isHidden else { return }
+        guard searching else { return }
         window?.makeFirstResponder(field)
     }
 

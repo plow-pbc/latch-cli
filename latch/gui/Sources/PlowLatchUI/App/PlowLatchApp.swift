@@ -80,16 +80,13 @@ struct PlowLatchApp: App {
         .defaultLaunchBehavior(windowed && !finished ? .presented : .suppressed)
 
         // The main window is AppKit's (`MainWindowController`), opened by
-        // the app delegate at launch once set up. One Save: the rules editor
-        // with the keyboard focus. New Item and Import on the Vault. The
-        // sidebar and inspector toggles, and a shortcut for each host screen.
+        // the app delegate at launch once set up. Its commands go along its
+        // responder chain: one Save, the rules editor with the keyboard
+        // focus; New Item and Import on the Vault; Find, the sidebar and
+        // the inspector. And a shortcut for each host screen.
         .commands {
-            RulesCommands()
-            VaultCommands()
-            SidebarCommands()
-            InspectorCommands()
+            WindowCommands(menu: .shared)
             ScreenCommands(app: model)
-            FindCommands(app: model)
         }
 
         Settings {
@@ -100,19 +97,6 @@ struct PlowLatchApp: App {
 }
 
 /// View › a host screen, ⌘1 to ⌘5: the selected host's workspace on it.
-/// Find (⌘F): the search field of the screen showing, where it has one.
-private struct FindCommands: Commands {
-    var app: AppModel
-
-    var body: some Commands {
-        CommandGroup(after: .textEditing) {
-            Button("Find…") { MainWindowController.shown?.find() }
-                .keyboardShortcut("f")
-                .disabled(app.place != .host(.activity) && app.place != .host(.vault))
-        }
-    }
-}
-
 private struct ScreenCommands: Commands {
     var app: AppModel
 
@@ -132,6 +116,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         #if LATCH_TEST_HOOKS
         guard !TestHooks.headless else { return }
         #endif
+        MenuBridge.shared.start()
         guard let model = PlowLatchApp.model, model.store.load().finished else { return }
         MainWindowController.open(model)
     }
