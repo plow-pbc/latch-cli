@@ -125,6 +125,16 @@
   // ancestor (checkouts carry such copies of their fields).
   const unread = (el) => !!el.closest('[aria-hidden="true"], [inert]');
 
+  // Whether a click meant for `el` can only land on a container around it:
+  // `el` has no box, or takes no pointer events (from itself or a
+  // container), as a selection card's checkbox drawn inside the card. A
+  // hit on a container of any other element is something covering it,
+  // such as the container's ::before or ::after drawn over it.
+  const clickedThrough = (el) => {
+    const r = el.getBoundingClientRect();
+    return r.width === 0 || r.height === 0 || getComputedStyle(el).pointerEvents === 'none';
+  };
+
   const offscreen = (rect) => rect.bottom < 0 || rect.right < 0 || rect.top > innerHeight || rect.left > innerWidth;
 
   const describe = (el) => {
@@ -197,10 +207,7 @@
     const rect = el.getBoundingClientRect();
     const reachesAt = (px, py) => {
       const hit = document.elementFromPoint(px, py);
-      // A hit on its own container reaches it too, as `cover` reads it: a
-      // selection card whose whole box takes the click, over a checkbox
-      // drawn inside it that takes none.
-      return !!hit && (hit === el || el.contains(hit) || hit.contains(el)
+      return !!hit && (hit === el || el.contains(hit) || (hit.contains(el) && clickedThrough(el))
         || (el.labels && [...el.labels].some((l) => l.contains(hit))));
     };
     let x = rect.left + rect.width / 2;
@@ -266,7 +273,7 @@
       const x = Math.min(Math.max(rect.left + rect.width / 2, 0), innerWidth - 1);
       const y = Math.min(Math.max(rect.top + rect.height / 2, 0), innerHeight - 1);
       const hit = document.elementFromPoint(x, y);
-      const reaches = !hit || hit === el || el.contains(hit) || hit.contains(el)
+      const reaches = !hit || hit === el || el.contains(hit) || (hit.contains(el) && clickedThrough(el))
         || (el.labels && [...el.labels].some((l) => l.contains(hit)))
         || (field && !layerOver(hit, el));
       top ??= reaches ? null : hit;
