@@ -337,9 +337,10 @@ each before anything of it reaches the page:
   identity: the item's kind and title, the sites it is saved for, the
   fields and the page's site, never a value. The judge is told that the
   agent never receives the values and that a login fills only on its own
-  sites, so a sign-in there for the owner's task isn't read as sharing the
-  password, while a login on any other site is. A refused fill in a
-  plan stops the plan at that step, the reason in its `stop`;
+  sites. A sign-in still needs the owner's OK, from a rule or the chat;
+  with it, a sign-in on the login's own site isn't read as sharing the
+  password, while a login on any other site is. A refused fill in a plan
+  stops the plan at that step, the reason in its `stop`;
 - every `eval` (its script), upload and download (the file's name and
   size).
 

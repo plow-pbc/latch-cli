@@ -179,11 +179,12 @@ model, through Plow on the host's own Plow login, whether it may run.
   a vault fill it sees the item's kind and title, the sites it's saved
   for and the fields mapped, never their values. It is told what a fill
   does: the agent never receives the values, and a saved login fills only
-  on its own sites. So
-  signing in there for something the owner wants isn't judged as sharing
-  the password; revealing or copying a value, or filling it elsewhere,
-  still is. For `--secret-env` it sees only names and lengths. It runs at
-  Plow, so keep credentials out of arguments.
+  on its own sites. A matching site says where a login may go, not that
+  it may be used: signing in still needs your OK, in a rule or the chat.
+  With that OK, signing in on the login's own site isn't judged as
+  sharing the password; revealing or copying a value, or filling it
+  elsewhere, still is. For `--secret-env` it sees only names and lengths.
+  It runs at Plow, so keep credentials out of arguments.
 
 **What's logged.** The host keeps a sealed audit log of the calls it
 handles, `audit.sealed.ndjson` in its state folder. Each record is
