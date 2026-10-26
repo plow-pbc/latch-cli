@@ -3075,6 +3075,34 @@ fn first_login_accepts_the_installers_plugin_directory() {
     assert!(host.join("latch.json").is_file());
 }
 
+/// A first install runs `prune-helpers` on a folder that holds only the
+/// plugins it just put there: it leaves the folder as it was, so the first
+/// login still takes it.
+#[test]
+fn a_first_install_prunes_nothing_and_its_first_login_takes_the_folder() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = dir.path().join("host");
+    let (pinned, older) = helper_versions(&host);
+    let output = latch(&host, &["prune-helpers"], &[]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let answer: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(answer, json!({"removed": []}));
+    let entries: Vec<_> = fs::read_dir(&host)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert_eq!(entries, ["plugins"]);
+    assert!(
+        pinned
+            .iter()
+            .chain(&older)
+            .all(|at| at.join("helper").exists())
+    );
+    owner_host_on(&plow, dir.path());
+    assert!(host.join("latch.json").is_file());
+}
+
 #[test]
 fn the_audit_verifies_without_its_key_reads_with_it_and_survives_a_rotation() {
     let (_dir, state, _key) = owner_host();
