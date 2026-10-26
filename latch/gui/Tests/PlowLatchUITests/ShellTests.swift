@@ -130,10 +130,9 @@ struct ShellTests {
             widths.append(split.arrangedSubviews[0].frame.width)
         }
         #expect(Set(widths.suffix(5)).count == 1, "\(widths)")
-        // Past its minimum, until the screen's bar (its tabs and search)
-        // needs the rest; and the layout settles: the window keeps its size
-        // and needs no more passes.
-        #expect(widths.last! > 230, "\(widths)")
+        // Wider than where it gave up (~280 points), and the layout settles:
+        // the window keeps its size and needs no more passes.
+        #expect(widths.last! > 290)
         #expect(window.frame.width == 1040)
         window.layoutIfNeeded()
         #expect(!window.contentView!.needsLayout && !window.contentView!.needsUpdateConstraints)

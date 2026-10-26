@@ -371,8 +371,9 @@ final class ContentBar: NSView {
             view.translatesAutoresizingMaskIntoConstraints = false
             addSubview(view)
         }
-        // 200 points where there's room; narrower, down to 120, before it
-        // would reach the tabs.
+        // 200 points where there's room, narrower before it would reach the
+        // tabs: with no minimum of its own, it gives way to a sidebar or
+        // inspector dragged wide in a narrow window rather than stop it.
         let preferred = field.widthAnchor.constraint(equalToConstant: 200)
         preferred.priority = .defaultLow
         NSLayoutConstraint.activate([
@@ -383,7 +384,6 @@ final class ContentBar: NSView {
             field.centerYAnchor.constraint(equalTo: centerYAnchor),
             field.leadingAnchor.constraint(greaterThanOrEqualTo: shown.trailingAnchor, constant: 12),
             field.widthAnchor.constraint(lessThanOrEqualToConstant: 200),
-            field.widthAnchor.constraint(greaterThanOrEqualToConstant: 120),
             preferred,
         ])
     }
