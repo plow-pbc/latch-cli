@@ -91,7 +91,17 @@
       const img = el.querySelector('img[alt]');
       if (img && img.alt.trim()) return clean(img.alt);
     }
-    return clean(el.getAttribute('placeholder') || el.getAttribute('title') || '');
+    const own = clean(el.getAttribute('placeholder') || el.getAttribute('title') || '');
+    if (own || !['checkbox', 'radio'].includes(role(el))) return own;
+    // A checkbox or radio with no name of its own, drawn on a selection
+    // card: the text of the card around it, the nearest container with
+    // text that holds no other checkbox or radio.
+    for (let box = el.parentElement; box && box !== document.body; box = box.parentElement) {
+      if (box.querySelectorAll('input[type=checkbox], input[type=radio], [role=checkbox], [role=radio]').length > 1) break;
+      const text = clean(box.innerText);
+      if (text) return text;
+    }
+    return '';
   };
 
   const value = (el) => {
@@ -187,7 +197,11 @@
     const rect = el.getBoundingClientRect();
     const reachesAt = (px, py) => {
       const hit = document.elementFromPoint(px, py);
-      return !!hit && (hit === el || el.contains(hit) || (el.labels && [...el.labels].some((l) => l.contains(hit))));
+      // A hit on its own container reaches it too, as `cover` reads it: a
+      // selection card whose whole box takes the click, over a checkbox
+      // drawn inside it that takes none.
+      return !!hit && (hit === el || el.contains(hit) || hit.contains(el)
+        || (el.labels && [...el.labels].some((l) => l.contains(hit))));
     };
     let x = rect.left + rect.width / 2;
     let y = rect.top + rect.height / 2;

@@ -34,10 +34,12 @@ conformance!(
     the_journal_outlives_a_host_restart_and_a_lost_reply_is_never_resent,
     a_key_on_an_element_that_cannot_take_the_focus_is_refused,
     typing_a_code_reaches_the_fields_one_time_code_pages_use,
+    a_selection_card_names_its_checkbox_and_takes_a_click_on_it,
+    a_return_replayed_as_an_agent_drove_it_and_batched,
 );
 
 /// The test site, plus the answers to its expense and order forms.
-fn site() -> String {
+pub(super) fn site() -> String {
     let folder = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/browser-site");
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -1043,4 +1045,215 @@ async fn typing_a_code_reaches_the_fields_one_time_code_pages_use(engine: &str) 
         "{failure:?}"
     );
     h.close().await;
+}
+
+/// The portal's selection cards draw a checkbox or radio with no name of
+/// its own, in a span that takes no clicks, and take the click on the
+/// whole card: the control is named by its card, and a click on it is
+/// the click on its card a person makes.
+async fn a_selection_card_names_its_checkbox_and_takes_a_click_on_it(engine: &str) {
+    let (_dir, state, _area) = test_state(engine);
+    let site = site();
+    let fake: Arc<dyn Provider> = Arc::new(Fake::default());
+    let mut h = Harness::start(&state, engine, Some(fake)).await;
+    let page = h.open(&format!("{site}/return-portal.html")).await;
+    let typed = h
+        .short(&[
+            &format!(
+                "type {} \"10001\"",
+                find(&page, "textbox", "Email or Zip code")
+            ),
+            &format!("type {} \"1001\"", find(&page, "textbox", "Order Number")),
+            &format!("click {}", find(&page, "button", "Search")),
+        ])
+        .await
+        .unwrap();
+    let start = find(&typed["page"], "button", "Start a return");
+    let items = h.short(&[&format!("click {start}")]).await.unwrap();
+    let tank = find(&items["page"], "checkbox", "Rib Tank, White / M");
+    let picked = h.short(&[&format!("click {tank}")]).await.unwrap();
+    assert_eq!(picked["status"], "dispatched", "{picked}");
+    let shown = h.call("observe", json!({})).await;
+    let elements = shown["elements"].as_array().unwrap();
+    let ticked = elements.iter().find(|e| e["ref"] == tank).unwrap();
+    assert_eq!(ticked["checked"], true, "{ticked}");
+    assert!(
+        elements
+            .iter()
+            .any(|e| e["name"] == "Continue" && e["disabled"].is_null()),
+        "Continue is enabled once an item is picked"
+    );
+    h.close().await;
+}
+
+/// The return an agent made on the live portal, replayed on its rebuilt
+/// pages as the agent drove it (a call per step, an observe after nearly
+/// each, its own scripts to tick the checkboxes and radios), then the same
+/// return the batched way: each page's steps in one `do`, on the refs the
+/// last answer gave. Prints the calls and wall time of each.
+async fn a_return_replayed_as_an_agent_drove_it_and_batched(engine: &str) {
+    let (_dir, state, _area) = test_state(engine);
+    let site = site();
+    let url = format!("{site}/return-portal.html");
+    // Texts of the lengths the agent typed.
+    let (zip, order) = ("10001", "#1001001");
+    let why = "Did not fit as expected";
+    let more = "The fit was too loose through the chest area.";
+    let tick_all = "(() => { const boxes = document.querySelectorAll('input[type=\"checkbox\"]'); \
+                    for (const box of boxes) box.click(); return boxes.length; })()";
+    let last_radio = "(() => { const r = document.querySelectorAll('input[type=\"radio\"]'); \
+                      r[r.length - 1].click(); return r.length; })()";
+    let add_details = "(() => { for (const b of document.querySelectorAll('button')) \
+                       if (b.textContent.trim() === 'Add details') { b.click(); return true; } \
+                       return false; })()";
+    let refund =
+        "(() => { document.querySelectorAll('input[type=\"radio\"]')[2].click(); return true; })()";
+    let fake: Arc<dyn Provider> = Arc::new(Fake::default());
+
+    // As the agent drove it: each answer it read is `page`; the others
+    // it threw away.
+    let mut h = Harness::start(&state, engine, Some(fake.clone())).await;
+    let started = std::time::Instant::now();
+    let mut calls = 1;
+    h.open(&url).await;
+    macro_rules! observe {
+        () => {{
+            calls += 1;
+            h.call("observe", json!({})).await
+        }};
+    }
+    macro_rules! step {
+        ($text:expr) => {{
+            calls += 1;
+            h.short(&[&$text]).await.unwrap();
+        }};
+    }
+    macro_rules! script {
+        ($script:expr) => {{
+            calls += 1;
+            h.call("eval", json!({"script": $script})).await;
+        }};
+    }
+    let mut page = observe!();
+    step!(format!(
+        "type {} \"{zip}\"",
+        find(&page, "textbox", "Email or Zip code")
+    ));
+    step!(format!(
+        "type {} \"{order}\"",
+        find(&page, "textbox", "Order Number")
+    ));
+    step!(format!("click {}", find(&page, "button", "Search")));
+    page = observe!();
+    step!(format!("click {}", find(&page, "button", "Start a return")));
+    observe!();
+    script!(tick_all);
+    page = observe!();
+    step!(format!("click {}", find(&page, "button", "Continue")));
+    page = observe!();
+    for item in 0..4 {
+        if item == 0 {
+            step!(format!("click {}", find(&page, "button", "Add details")));
+        } else {
+            script!(add_details);
+        }
+        observe!();
+        script!(last_radio);
+        page = observe!();
+        step!(format!("click {}", find(&page, "button", "Continue")));
+        for text in [why, more] {
+            page = observe!();
+            step!(format!(
+                "type {} \"{text}\"",
+                find(&page, "textbox", "Return reason")
+            ));
+            page = observe!();
+            step!(format!("click {}", find(&page, "button", "Continue")));
+        }
+        page = observe!();
+        step!(format!("click {}", find(&page, "button", "No thanks")));
+        observe!();
+    }
+    script!(refund);
+    page = observe!();
+    step!(format!("click {}", find(&page, "button", "Continue")));
+    let as_driven = (calls, started.elapsed());
+    assert!(h.text().await.contains("ready to submit: 4 items, Refund"));
+    h.close().await;
+
+    // Batched: a page's steps in one plan, on the refs its answer gave.
+    let mut h = Harness::start(&state, engine, Some(fake)).await;
+    let started = std::time::Instant::now();
+    let mut calls = 1;
+    let page = h.open(&url).await;
+    macro_rules! plan {
+        ($($step:expr),+ $(,)?) => {{
+            calls += 1;
+            let steps: Vec<String> = vec![$($step),+];
+            let steps: Vec<&str> = steps.iter().map(String::as_str).collect();
+            let answer = h.short(&steps).await.unwrap();
+            assert_eq!(answer["status"], "dispatched", "{answer}");
+            answer["page"].clone()
+        }};
+    }
+    let page = plan!(
+        format!(
+            "type {} \"{zip}\"",
+            find(&page, "textbox", "Email or Zip code")
+        ),
+        format!(
+            "type {} \"{order}\"",
+            find(&page, "textbox", "Order Number")
+        ),
+        format!("click {}", find(&page, "button", "Search")),
+    );
+    let page = plan!(format!("click {}", find(&page, "button", "Start a return")));
+    let boxes: Vec<String> = page["elements"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["role"] == "checkbox")
+        .map(|e| e["ref"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(boxes.len(), 4, "{page}");
+    let mut page = plan!(
+        format!("click {}", boxes[0]),
+        format!("click {}", boxes[1]),
+        format!("click {}", boxes[2]),
+        format!("click {}", boxes[3]),
+        format!("click {}", find(&page, "button", "Continue")),
+    );
+    for _ in 0..4 {
+        page = plan!(format!("click {}", find(&page, "button", "Add details")));
+        page = plan!(
+            format!("click {}", find(&page, "radio", "Other")),
+            format!("click {}", find(&page, "button", "Continue")),
+        );
+        for text in [why, more] {
+            page = plan!(
+                format!(
+                    "type {} \"{text}\"",
+                    find(&page, "textbox", "Return reason")
+                ),
+                format!("click {}", find(&page, "button", "Continue")),
+            );
+        }
+        page = plan!(format!("click {}", find(&page, "button", "No thanks")));
+    }
+    let _ = plan!(
+        format!("click {}", find(&page, "radio", "Refund")),
+        format!("click {}", find(&page, "button", "Continue")),
+    );
+    let batched = (calls, started.elapsed());
+    assert!(h.text().await.contains("ready to submit: 4 items, Refund"));
+    h.close().await;
+
+    println!(
+        "{engine} return: as driven {} calls in {:.1}s; batched {} calls in {:.1}s",
+        as_driven.0,
+        as_driven.1.as_secs_f64(),
+        batched.0,
+        batched.1.as_secs_f64()
+    );
+    assert!(batched.0 * 3 < as_driven.0, "{as_driven:?} {batched:?}");
 }
