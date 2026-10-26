@@ -230,6 +230,26 @@ extension MainWindowTests {
         await waitUntil { MenuBridge.state(MenuBridge.toggleInspector, in: controller.window).title == "Show Inspector" }
     }
 
+    // Find is the screen's: straight from Activity or Vault to an account
+    // page it's off and focuses nothing, though the bar there is hidden
+    // whole with its search field as it was.
+    @Test func findIsOffOnAnAccountPageReachedStraightFromASearch() async throws {
+        let app = try app(VaultClient())
+        let controller = open(app)
+        defer { controller.close() }
+        let window = try #require(controller.window)
+        for (from, to) in [(Place.host(.activity), Place.account(.agents)), (.host(.vault), .account(.connections))] {
+            app.place = from
+            await waitUntil { MenuBridge.state(MenuBridge.find, in: window).enabled }
+            app.place = to
+            try await Task.sleep(for: .milliseconds(100))
+            #expect(!MenuBridge.state(MenuBridge.find, in: window).enabled, "\(from) → \(to)")
+            window.makeFirstResponder(nil)
+            controller.findInScreen(nil)
+            #expect(window.firstResponder === window, "\(from) → \(to)")
+        }
+    }
+
     // ⌘N on the Vault opens New Item for its host, whatever has the focus.
     @Test func newItemActsOnTheVault() async throws {
         let app = try app(VaultClient())

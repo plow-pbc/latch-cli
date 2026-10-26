@@ -247,12 +247,18 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
     /// Find (⌘F): into the bar's search field, on a screen that has one.
     @objc func findInScreen(_ sender: Any?) {
+        guard searches else { return }
         bar.focusSearch()
     }
 
     func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
-        item.action == #selector(findInScreen(_:)) ? bar.searching : true
+        item.action == #selector(findInScreen(_:)) ? searches : true
     }
+
+    /// The place showing has a search: Activity's requests, Vault's items.
+    /// The place's, not the bar's field: an account page hides the bar
+    /// whole, leaving the field as the last host screen had it.
+    private var searches: Bool { app.place == .host(.activity) || app.place == .host(.vault) }
 
     /// The screen's commands answer from anywhere in the window, as a
     /// document's do: New Item works with the focus in the sidebar, and
@@ -440,10 +446,8 @@ final class ContentBar: NSView {
         if field.stringValue != search.text { field.stringValue = search.text }
     }
 
-    var searching: Bool { !field.isHidden }
-
     func focusSearch() {
-        guard searching else { return }
+        guard !field.isHidden else { return }
         window?.makeFirstResponder(field)
     }
 
