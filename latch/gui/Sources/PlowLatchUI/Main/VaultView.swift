@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 /// in sheets.
 struct VaultView: View {
     @Environment(AppModel.self) private var app
+    @Environment(ScreenActions.self) private var actions: ScreenActions?
     @State private var choosingExport = false
 
     var body: some View {
@@ -17,7 +18,7 @@ struct VaultView: View {
                 Spacer()
                 Button("New Item", systemImage: "plus", action: newItem)
                     .help("Add a login, card, identity or note")
-                Button("Import…", systemImage: "square.and.arrow.down") { choosingExport = true }
+                Button("Import…", systemImage: "square.and.arrow.down", action: chooseImport)
                     .help("Import another password manager's export")
             }
             .disabled(!canChange)
@@ -41,7 +42,7 @@ struct VaultView: View {
             }
         }
         // File › New Item… and Import…, while this host's vault can change.
-        .focusedSceneValue(\.vaultActions, canChange ? VaultActions(new: newItem, importExport: { choosingExport = true }) : nil)
+        .onChange(of: canChange, initial: true) { _, canChange in publish(canChange) }
         .fileImporter(isPresented: $choosingExport, allowedContentTypes: [.commaSeparatedText, .json, .data]) { result in
             guard case let .success(file) = result, let host = app.host else { return }
             let importer = VaultImport(file: file, on: host)
@@ -64,36 +65,18 @@ struct VaultView: View {
         return true
     }
 
+    private func publish(_ canChange: Bool) {
+        guard let actions else { return }
+        actions.newItem = canChange ? { newItem() } : nil
+        actions.importItems = canChange ? { chooseImport() } : nil
+    }
+
+    private func chooseImport() {
+        choosingExport = true
+    }
+
     private func newItem() {
         if let host = app.host { app.vaultSheet = .editor(VaultEditor(on: host)) }
-    }
-}
-
-/// The Vault's commands for the menu bar, published while it shows a vault
-/// that can change.
-struct VaultActions {
-    let new: () -> Void
-    let importExport: () -> Void
-}
-
-extension FocusedValues {
-    @Entry var vaultActions: VaultActions?
-}
-
-/// File › New Item… (⌘N) and Import…: the shown Vault's, when there is one.
-struct VaultCommands: Commands {
-    @FocusedValue(\.vaultActions) private var vault
-
-    var body: some Commands {
-        CommandGroup(replacing: .newItem) {
-            Button("New Item…") { vault?.new() }
-                .keyboardShortcut("n", modifiers: .command)
-                .disabled(vault == nil)
-        }
-        CommandGroup(replacing: .importExport) {
-            Button("Import…") { vault?.importExport() }
-                .disabled(vault == nil)
-        }
     }
 }
 

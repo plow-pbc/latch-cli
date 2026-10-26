@@ -9,7 +9,7 @@ import SwiftUI
 /// for the window: this Mac's status, Plow's hosts, the reads of the place
 /// showing (cancelled when it changes) and the selected host's activity;
 /// closing it ends them.
-final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolbarDelegate {
+final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolbarDelegate, NSUserInterfaceValidations {
     /// The open main window; the app has at most one.
     private(set) static var shown: MainWindowController?
 
@@ -84,6 +84,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         window.toolbarStyle = .unified
         // The only window of its kind: no tab bar, nor its menu items.
         window.tabbingMode = .disallowed
+        // Tab goes through the screen showing, made after the window was.
+        window.autorecalculatesKeyViewLoop = true
         window.contentViewController = split
         window.contentMinSize = CGSize(width: 1040, height: 440)
         if own {
@@ -208,7 +210,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         // shown or hidden by a change of place at once, not slid.
         let inspecting = if case let .host(screen) = app.place { HostScreen.inspected.contains(screen) && app.inspecting.contains(screen) }
             else { false }
-        if inspectorItem.isCollapsed == inspecting { Self.unanimated { inspectorItem.isCollapsed = !inspecting } }
+        if inspectorItem.isCollapsed == inspecting {
+            Self.unanimated { inspectorItem.isCollapsed = !inspecting }
+            // Tab reaches what the inspector shows only once the window
+            // has counted it in again: AppKit leaves out a collapsed one.
+            window.recalculateKeyViewLoop()
+        }
         if case let .host(screen, _) = route, HostScreen.inspected.contains(screen), inspectorShows.route != route { inspectorShows.route = route }
 
         if !app.still {
@@ -235,11 +242,29 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             defaults.set(app.inspecting.map(\.rawValue).sorted(), forKey: Self.inspectingKey)
         }
         window.toolbar?.validateVisibleItems()
+        MenuBridge.shared.setNeedsRefresh()
     }
 
-    /// Find (⌘F): into the bar's search field.
-    func find() {
+    /// Find (⌘F): into the bar's search field, on a screen that has one.
+    @objc func findInScreen(_ sender: Any?) {
+        guard searches else { return }
         bar.focusSearch()
+    }
+
+    func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
+        item.action == #selector(findInScreen(_:)) ? searches : true
+    }
+
+    /// The place showing has a search: Activity's requests, Vault's items.
+    /// The place's, not the bar's field: an account page hides the bar
+    /// whole, leaving the field as the last host screen had it.
+    private var searches: Bool { app.place == .host(.activity) || app.place == .host(.vault) }
+
+    /// The screen's commands answer from anywhere in the window, as a
+    /// document's do: New Item works with the focus in the sidebar, and
+    /// Save asks the screen, which has one only for a focused editor.
+    override func supplementalTarget(forAction action: Selector, sender: Any?) -> Any? {
+        screens.responds(to: action) ? screens : super.supplementalTarget(forAction: action, sender: sender)
     }
 
     private static func unanimated(_ change: () -> Void) {
@@ -290,6 +315,7 @@ final class MainSplitController: NSSplitViewController, NSToolbarItemValidation 
     override func toggleInspector(_ sender: Any?) {
         guard let screen = inspected else { return }
         super.toggleInspector(sender)
+        view.window?.recalculateKeyViewLoop()
         if app.inspecting.contains(screen) { app.inspecting.remove(screen) } else { app.inspecting.insert(screen) }
     }
 
@@ -310,9 +336,9 @@ final class MainSplitController: NSSplitViewController, NSToolbarItemValidation 
 
 /// The content column: the place showing, made as it's shown and released
 /// when another replaces it. What must outlive it is the model's.
-final class ScreenController: NSViewController {
+final class ScreenController: NSViewController, NSUserInterfaceValidations {
     let app: AppModel
-    private var shown: (place: Place, controller: NSViewController)?
+    private var shown: (place: Place, controller: NSViewController, actions: ScreenActions)?
 
     init(app: AppModel) {
         self.app = app
@@ -325,14 +351,32 @@ final class ScreenController: NSViewController {
 
     func show(_ place: Place) {
         guard shown?.place != place else { return }
-        let controller = MainWindowController.hosting(Self.screen(place), app)
+        let actions = ScreenActions()
+        let controller = MainWindowController.hosting(Self.screen(place).environment(actions), app)
         addChild(controller)
         controller.view.frame = view.bounds
         controller.view.autoresizingMask = [.width, .height]
         view.addSubview(controller.view)
         shown?.controller.view.removeFromSuperview()
         shown?.controller.removeFromParent()
-        shown = (place, controller)
+        shown = (place, controller, actions)
+        MenuBridge.shared.setNeedsRefresh()
+    }
+
+    // MARK: The screen's commands, from the menu bar
+
+    @objc func newDocument(_ sender: Any?) { shown?.actions.newItem?() }
+    @objc func importItems(_ sender: Any?) { shown?.actions.importItems?() }
+    @objc func saveDocument(_ sender: Any?) { shown?.actions.save?() }
+
+    func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
+        let actions = shown?.actions
+        switch item.action {
+        case #selector(newDocument(_:)): return actions?.newItem != nil
+        case #selector(importItems(_:)): return actions?.importItems != nil
+        case #selector(saveDocument(_:)): return actions?.save != nil
+        default: return true
+        }
     }
 
     @ViewBuilder private static func screen(_ place: Place) -> some View {
@@ -348,20 +392,25 @@ final class ScreenController: NSViewController {
     }
 }
 
+/// The host's screen tabs. Like a toolbar control, a click leaves the
+/// keyboard focus where it was (a segmented control would take it), unless
+/// keyboard navigation is on: then Tab reaches them, as any control.
+final class ScreenTabs: NSSegmentedControl {
+    override var acceptsFirstResponder: Bool { NSApp.isFullKeyboardAccessEnabled && super.acceptsFirstResponder }
+}
+
 /// The bar over a host's screen: its screen tabs, and the search of the
 /// screen showing, on Activity (its requests) and Vault (its items).
 final class ContentBar: NSView {
     var pick: (HostScreen) -> Void = { _ in }
     var search: (String) -> Void = { _ in }
-    private let tabs = NSSegmentedControl(labels: HostScreen.allCases.map(\.title), trackingMode: .selectOne, target: nil, action: nil)
+    private let tabs = ScreenTabs(labels: HostScreen.allCases.map(\.title), trackingMode: .selectOne, target: nil, action: nil)
     private let field = NSSearchField()
 
     init() {
         super.init(frame: .zero)
         tabs.target = self
         tabs.action = #selector(picked)
-        // As a toolbar control: a click leaves the keyboard focus where it was.
-        tabs.refusesFirstResponder = true
         field.target = self
         field.action = #selector(searched)
         for view in [tabs, field] {

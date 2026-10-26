@@ -194,3 +194,165 @@ struct MainWindowTests {
         #expect(second.inspecting == [.activity])
     }
 }
+
+/// The menu bar's commands reach the screen showing along the window's
+/// responder chain, and are enabled where it can run them.
+extension MainWindowTests {
+    private func enabled(_ controller: MainWindowController) -> Set<String> {
+        let actions = [MenuBridge.newItem, MenuBridge.importItems, MenuBridge.save, MenuBridge.find, MenuBridge.toggleInspector]
+        return Set(actions.filter { MenuBridge.state($0, in: controller.window).enabled }.map(NSStringFromSelector))
+    }
+
+    @Test func theMenuFollowsTheScreenShowing() async throws {
+        let app = try app(VaultClient())
+        let controller = open(app)
+        defer { controller.close() }
+        await waitUntil { AppModel.held(app.summaries["studio"]?.vault) }
+        let expected: [(Place, Set<String>)] = [
+            (.host(.home), []),
+            (.host(.activity), ["findInScreen:", "toggleInspector:"]),
+            (.host(.rules), []),
+            (.host(.vault), ["newDocument:", "importItems:", "findInScreen:", "toggleInspector:"]),
+            (.host(.settings), []),
+            (.account(.agents), []),
+            (.account(.connections), []),
+        ]
+        for (place, actions) in expected {
+            app.place = place
+            await waitUntil { enabled(controller) == actions }
+            #expect(enabled(controller) == actions, "\(place)")
+        }
+        // The sidebar's and inspector's titles say what they will do.
+        #expect(MenuBridge.state(MenuBridge.toggleSidebar, in: controller.window) == .init(enabled: true, title: "Hide Sidebar"))
+        app.place = .host(.activity)
+        await waitUntil { MenuBridge.state(MenuBridge.toggleInspector, in: controller.window).title == "Hide Inspector" }
+        app.inspecting.remove(.activity)
+        await waitUntil { MenuBridge.state(MenuBridge.toggleInspector, in: controller.window).title == "Show Inspector" }
+    }
+
+    // Find is the screen's: straight from Activity or Vault to an account
+    // page it's off and focuses nothing, though the bar there is hidden
+    // whole with its search field as it was.
+    @Test func findIsOffOnAnAccountPageReachedStraightFromASearch() async throws {
+        let app = try app(VaultClient())
+        let controller = open(app)
+        defer { controller.close() }
+        let window = try #require(controller.window)
+        for (from, to) in [(Place.host(.activity), Place.account(.agents)), (.host(.vault), .account(.connections))] {
+            app.place = from
+            await waitUntil { MenuBridge.state(MenuBridge.find, in: window).enabled }
+            app.place = to
+            try await Task.sleep(for: .milliseconds(100))
+            #expect(!MenuBridge.state(MenuBridge.find, in: window).enabled, "\(from) → \(to)")
+            window.makeFirstResponder(nil)
+            controller.findInScreen(nil)
+            #expect(window.firstResponder === window, "\(from) → \(to)")
+        }
+    }
+
+    // ⌘N on the Vault opens New Item for its host, whatever has the focus.
+    @Test func newItemActsOnTheVault() async throws {
+        let app = try app(VaultClient())
+        app.place = .host(.vault)
+        let controller = open(app)
+        defer { controller.close() }
+        controller.window?.makeFirstResponder(nil)
+        await waitUntil { MenuBridge.state(MenuBridge.newItem, in: controller.window).enabled }
+        MenuBridge.send(MenuBridge.newItem, in: controller.window)
+        guard case let .editor(editor)? = app.vaultSheet else { Issue.record("no New Item: \(String(describing: app.vaultSheet))"); return }
+        #expect(editor.host.name == "studio")
+        app.vaultSheet = nil
+    }
+
+    // ⌘S saves the focused editor's draft only, and only while an edited
+    // editor has the focus.
+    @Test func saveIsTheFocusedRulesEditors() async throws {
+        let client = RulesClient()
+        let app = try app(client)
+        app.place = .host(.rules)
+        let controller = open(app)
+        defer { controller.close() }
+        let window = try #require(controller.window)
+        let every = AppModel.RulesKey(host: "studio", agent: nil)
+        let scout = AppModel.RulesKey(host: "studio", agent: "ba3c0b3ad1eba7a9a1eb04b67c9db0dd")
+        await waitUntil { textViews(in: window.contentView!).count >= 2 && app.savedRules(scout) != nil }
+        app.typeRules("Agents may read ~/Projects.", at: every, from: app.savedRules(every))
+        app.typeRules("scout may run make test.", at: scout, from: app.savedRules(scout))
+        #expect(!MenuBridge.state(MenuBridge.save, in: window).enabled)
+        await waitUntil { textViews(in: window.contentView!).contains { $0.string == "scout may run make test." } }
+        let scoutEditor = try #require(textViews(in: window.contentView!).first { $0.string == "scout may run make test." })
+        window.makeFirstResponder(scoutEditor)
+        await waitUntil { MenuBridge.state(MenuBridge.save, in: window).enabled }
+        MenuBridge.send(MenuBridge.save, in: window)
+        await waitUntil { !client.sets.isEmpty }
+        #expect(client.sets.map(\.agent) == [scout.agent])
+        #expect(app.rulesDrafts[every] != nil)
+        // The focus elsewhere: nothing to save.
+        window.makeFirstResponder(nil)
+        await waitUntil { !MenuBridge.state(MenuBridge.save, in: window).enabled }
+    }
+
+    // Agents › Rules lands in that agent's editor, with the keyboard focus.
+    @Test func anAgentsRulesTakeTheFocus() async throws {
+        let app = try app(RulesClient())
+        app.place = .account(.agents)
+        let controller = open(app)
+        defer { controller.close() }
+        let window = try #require(controller.window)
+        let studio = try #require(app.host)
+        await waitUntil { app.agents != nil }
+        let scout = AppModel.RulesKey(host: "studio", agent: "ba3c0b3ad1eba7a9a1eb04b67c9db0dd")
+        app.openRules(studio, agent: try #require(scout.agent))
+        await waitUntil { app.rulesFocus == nil && window.firstResponder is NSTextView }
+        let editor = try #require(window.firstResponder as? NSTextView)
+        let saved = try #require(app.savedRules(scout))
+        #expect(editor.string == saved.text)
+    }
+
+    // Tab from nothing focused goes into the window: to the sidebar or the
+    // bar's search, whichever AppKit puts first by where they sit. The rest
+    // of the round, which needs keyboard navigation on, is the VM's to show.
+    @Test func tabGoesIntoTheWindow() async throws {
+        let app = try app(VaultClient())
+        app.place = .host(.home)
+        let controller = open(app)
+        defer { controller.close() }
+        let window = try #require(controller.window)
+        app.place = .host(.vault)
+        await waitUntil { AppModel.held(app.summaries["studio"]?.vault) }
+        window.makeFirstResponder(nil)
+        window.selectNextKeyView(nil)
+        let reached = window.firstResponder
+        #expect(reached is NSOutlineView || ((reached as? NSTextView)?.delegate as? NSSearchField)?.placeholderString == "Search items",
+                "\(String(describing: reached))")
+    }
+
+    // The bar's search field holds each screen's own search.
+    @Test func eachScreenKeepsItsOwnSearch() async throws {
+        let app = try app(LiveClient())
+        app.place = .host(.activity)
+        let controller = open(app)
+        defer { controller.close() }
+        let field = try #require(searchFields(in: controller.window!.contentView!.superview!).first)
+        func type(_ text: String) {
+            field.stringValue = text
+            NSApp.sendAction(field.action!, to: field.target, from: field)
+        }
+        type("exec")
+        app.place = .host(.vault)
+        await waitUntil { field.placeholderString == "Search items" }
+        #expect(field.stringValue == "")
+        type("card")
+        app.place = .host(.rules)
+        await waitUntil { field.isHidden }
+        app.place = .host(.activity)
+        await waitUntil { field.placeholderString == "Search requests" }
+        #expect(field.stringValue == "exec")
+        #expect(app.activitySearch == "exec" && app.vaultSearch == "card")
+    }
+}
+
+@MainActor
+private func searchFields(in view: NSView) -> [NSSearchField] {
+    (view as? NSSearchField).map { [$0] } ?? view.subviews.flatMap(searchFields)
+}
