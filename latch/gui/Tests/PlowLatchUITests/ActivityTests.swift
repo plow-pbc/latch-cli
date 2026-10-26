@@ -399,30 +399,25 @@ struct RecordShotsTests {
     }
 
     /// Nothing is read until the record is opened; then each shot once,
-    /// from the record's own host, into memory.
-    @Test func shotsAreReadOnlyOnceTheRecordIsOpened() async throws {
+    /// from the record's own host, into memory. A shot the host no longer
+    /// keeps says how long it keeps them.
+    @Test(arguments: [("pi-kitchen", []), (nil, ["1"])] as [(String?, Set<String>)])
+    func shotsLoadOnceFromTheirHost(host: String?, gone: Set<String>) async throws {
         let plan = try #require(try browser().first { $0.args?.command == "do" })
         let client = ShotClient()
-        let shots = RecordShots(client: client, host: "pi-kitchen", record: plan)
+        client.gone = gone
+        let shots = RecordShots(client: client, host: host, record: plan)
         #expect(client.asked.isEmpty)
         #expect(shots.shots.map(\.state) == [.loading, .loading])
         await shots.load()
-        #expect(client.asked == ["1", "final"].map { "\(plan.id) \($0) pi-kitchen" })
-        #expect(shots.shots.map(\.state) == [.loaded(Data("png 1".utf8)), .loaded(Data("png final".utf8))])
-        await shots.load()
-        #expect(client.asked.count == 2)
-    }
-
-    @Test func aShotTheHostNoLongerKeepsSaysHowLongItKeepsThem() async throws {
-        let plan = try #require(try browser().first { $0.args?.command == "do" })
-        let client = ShotClient()
-        client.gone = ["1"]
-        let shots = RecordShots(client: client, host: nil, record: plan)
-        await shots.load()
-        #expect(shots.shots.map(\.state) == [.gone, .loaded(Data("png final".utf8))])
+        #expect(client.asked == ["1", "final"].map { "\(plan.id) \($0) \(host ?? "-")" })
+        let first: RecordShots.State = gone.isEmpty ? .loaded(Data("png 1".utf8)) : .gone
+        #expect(shots.shots.map(\.state) == [first, .loaded(Data("png final".utf8))])
+        #expect(shots.shots.map(\.title) == ["After action 1", "Last page"])
         #expect(RecordShots.gone.contains("Kept on the host for 7 days"))
         #expect(RecordShots.standalone.contains("Saved on the caller's machine"))
-        #expect(shots.shots.map(\.title) == ["After action 1", "Last page"])
+        await shots.load()
+        #expect(client.asked.count == 2)
     }
 
     private func records(_ fixture: String) throws -> [AuditRecord] {
