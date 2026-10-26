@@ -1000,7 +1000,6 @@ async fn typing_a_code_reaches_the_fields_one_time_code_pages_use(engine: &str) 
             "Submit",
         ),
     ];
-    let mut outcomes = Vec::new();
     for (path, role, name, button) in pages {
         let page = h.open(&format!("{site}/{path}")).await;
         let field = find(&page, role, name);
@@ -1012,22 +1011,8 @@ async fn typing_a_code_reaches_the_fields_one_time_code_pages_use(engine: &str) 
         let pressed =
             pressed.map_or_else(|f| f.code, |p| p["status"].as_str().unwrap().to_string());
         let text = h.text().await;
-        let said: Vec<&str> = text
-            .lines()
-            .filter(|l| {
-                l.starts_with("verified")
-                    || l.starts_with("not verified")
-                    || l.starts_with("selected:")
-            })
-            .collect();
-        println!(
-            "{engine} {path}: type {typed}, {button} {pressed}, page: {}",
-            said.join(", ")
-        );
-        outcomes.push((path, typed, text));
-    }
-    for (path, typed, text) in &outcomes {
-        if *path == "otp-modal.html?trap" {
+        println!("{engine} {path}: type {typed}, {button} {pressed}, page: {text:?}");
+        if path == "otp-modal.html?trap" {
             // The field never holds the focus, so nothing is typed, and
             // no select-all lands on the page instead.
             assert_eq!(typed, "not_focused", "{path}");
