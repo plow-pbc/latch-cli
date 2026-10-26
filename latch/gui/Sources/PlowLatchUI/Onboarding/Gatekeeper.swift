@@ -30,7 +30,7 @@ struct RulesView: View {
                 ForEach(Onboarding.decks) { deck in
                     Button(deck.name) { flow.choose(deck) }
                         .buttonStyle(.plain)
-                        .foregroundStyle(flow.deck == deck && flow.draftRules == deck.rules ? Brand.volt : Brand.sage)
+                        .foregroundStyle(flow.deck.name == deck.name && flow.draftRules == deck.rules ? Brand.volt : Brand.sage)
                         .overlay(alignment: .bottom) { Rectangle().fill(Brand.sage.opacity(0.3)).frame(height: 1).offset(y: 2) }
                 }
             }
@@ -38,8 +38,6 @@ struct RulesView: View {
             .padding(.top, 10)
             if let error = flow.rulesError {
                 ErrorText(error: error, host: ErrorCopy.thisMac).foregroundStyle(Brand.clay).font(.callout).padding(.top, 8)
-            } else if flow.draftRules.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !(flow.savedRules ?? "").isEmpty {
-                Text("An empty box keeps your saved rules; the examples show them.").foregroundStyle(Brand.muted).font(.callout).padding(.top, 8)
             }
             Deck(flow: flow, reduceMotion: reduceMotion)
                 .padding(.top, 14)
@@ -62,16 +60,6 @@ struct RulesView: View {
             .writingToolsBehavior(.disabled)
             .background(Brand.surface, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(Brand.fieldBorder))
-            .overlay(alignment: .topLeading) {
-                if flow.draftRules.isEmpty {
-                    Text("Write your rules here (optional).")
-                        .font(.system(size: 13.5))
-                        .foregroundStyle(Brand.muted)
-                        .padding(.horizontal, 13)
-                        .padding(.vertical, 8)
-                        .allowsHitTesting(false)
-                }
-            }
             .accessibilityLabel("Your rules for agents on this Mac")
     }
 }

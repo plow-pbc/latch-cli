@@ -74,9 +74,9 @@ final class Onboarding {
     }
 
     /// The defaults, their calendar requests for the week from today.
-    static var decks: [Deck] { decks(from: .now) }
+    nonisolated static var decks: [Deck] { decks(from: .now) }
 
-    static func decks(from today: Date) -> [Deck] {
+    nonisolated static func decks(from today: Date) -> [Deck] {
         let day = Date.ISO8601FormatStyle(timeZone: .current).year().month().day()
         let from = today.formatted(day)
         let to = Calendar.current.date(byAdding: .day, value: 7, to: today)!.formatted(day)
@@ -429,12 +429,16 @@ final class Onboarding {
 
     // MARK: Set your rules
 
-    /// Reads the saved shared rules into the box, then reviews the examples.
+    /// Reads the saved shared rules into the box, or on a first run the
+    /// first default's, so it is never empty on arrival; then reviews the
+    /// examples, the default's whose text the box holds, else the last shown.
     func loadRules() async {
         do {
             let saved = try await client.rulesShow().everyAgent?.text
             savedRules = saved
-            if draftRules.isEmpty { draftRules = saved ?? "" }
+            if draftRules.isEmpty { draftRules = (saved ?? "").isEmpty ? Self.decks[0].rules : saved ?? "" }
+            let draft = draftRules.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let match = Self.decks.first(where: { $0.rules == draft }) { deck = match }
             rulesError = nil
         } catch {
             rulesError = .from(error)

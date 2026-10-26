@@ -141,6 +141,40 @@ struct GatekeeperTests {
         #expect(client.saved.isEmpty)
     }
 
+    /// The box on arrival: the first default's on a first run, else the
+    /// saved rules; the deck is the default whose text that is, else the
+    /// last one shown.
+    @Test(arguments: [(nil, 0, 0), (Onboarding.decks[1].rules, 0, 1), ("Allow everything.", 1, 1)] as [(String?, Int, Int)])
+    func theBoxArrivesFilled(saved: String?, lastShown: Int, expected: Int) async {
+        let client = ScriptedClient { _ in nil }
+        client.savedText = saved
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
+        let flow = app.stage(.rules)
+        flow.deck = Onboarding.decks[lastShown]
+        await flow.loadRules()
+        #expect(flow.draftRules == saved ?? Onboarding.decks[0].rules)
+        #expect(flow.deck.name == Onboarding.decks[expected].name)
+        // A first run's box isn't saved yet; saved rules already are.
+        #expect(flow.primaryTitle == (saved == nil ? "Save rules" : "Continue"))
+        await waitUntil { !flow.reviewing }
+        #expect(client.tries.allSatisfy { $0.draft == saved ?? Onboarding.decks[0].rules })
+    }
+
+    /// An emptied box saves nothing and moves on; the saved rules stay.
+    @Test func anEmptiedBoxSavesNothing() async {
+        let client = ScriptedClient { _ in nil }
+        client.savedText = "Allow everything."
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
+        let flow = app.stage(.rules)
+        await flow.loadRules()
+        flow.draftRules = ""
+        #expect(flow.primaryTitle == "Continue")
+        flow.primary()
+        await waitUntil { flow.step != .rules }
+        #expect(client.saved.isEmpty)
+        #expect(flow.savedRules == "Allow everything.")
+    }
+
     @Test func anEmptyBoxPreviewsTheSavedRulesItKeeps() async {
         let client = ScriptedClient { _ in nil }
         let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
@@ -399,7 +433,12 @@ final class ScriptedClient: LatchClient, @unchecked Sendable {
     func setupStatusCheckingAccess() async throws -> SetupStatus {
         try Fixtures.decode(Fixtures.setup(on: connectorsOn, google: google, access: access))
     }
-    func rulesShow(host: String?) async throws -> RulesShow { try Fixtures.decode(#"{"agents":[],"every_agent":null}"#) }
+    /// The shared rules `rules show` gives, if any.
+    var savedText: String?
+    func rulesShow(host: String?) async throws -> RulesShow {
+        let every = try savedText.map { String(decoding: try JSONEncoder().encode(["text": $0, "revision": "r1"]), as: UTF8.self) } ?? "null"
+        return try Fixtures.decode(#"{"agents":[],"every_agent":\#(every)}"#)
+    }
     func rulesSet(_ text: String) async throws {
         saved.append(text)
         await held("save")
