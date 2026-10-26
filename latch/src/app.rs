@@ -8,8 +8,10 @@
 //!
 //! `open` hands arguments only to an app it starts: one already open just
 //! comes to the front, on the folder it has. The app shows one state
-//! folder and runs one copy, so a `latch app` naming another folder than
-//! the open app's is refused rather than said to have opened it.
+//! folder and runs one copy, so while it is open (LaunchServices knows it
+//! by its bundle id) a `latch app` naming a folder is refused unless the
+//! app is on that very folder: the one it remembers in its defaults
+//! (`StateDir`, PlowLatchApp.swift's `StateFolder`), else latch's default.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -34,10 +36,9 @@ pub fn open(state_dir: Option<PathBuf>) -> Result<Opened, Failure> {
         .map_err(|err| Failure::new(code::io_error, format!("can't find this latch: {err}")))?;
     let (opened, args) = opening(std::env::consts::OS, &exe, state_dir)?;
     if let Some(wanted) = &opened.state_dir {
-        let exe = std::fs::canonicalize(&exe).unwrap_or(exe);
         let default = StateDir::new(crate::cli::BUILD_STATE_DIR.map(PathBuf::from))?.path;
-        if let Some(other) = open_elsewhere(&running(&exe), wanted, &default) {
-            return Err(open_on(&opened.app, &other, wanted));
+        if let Some(why) = refused(&showing(&opened.app, &default), wanted) {
+            return Err(open_on(&opened.app, &why, wanted));
         }
     }
     let output = std::process::Command::new("open")
@@ -99,57 +100,127 @@ fn bundle_of(exe: &Path) -> Option<PathBuf> {
         .then(|| app.to_path_buf())
 }
 
-/// The state folders of this app's open copies, as `ps` lists them: a
-/// LaunchServices launch runs `exe` itself, with no arguments or exactly
-/// `--state-dir PATH`. `None` is one on no named folder.
-fn running(exe: &Path) -> Vec<Option<PathBuf>> {
-    let listing = std::process::Command::new("/bin/ps")
-        .args(["-axww", "-o", "command="])
-        .output()
-        .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
-        .unwrap_or_default();
-    copies(&listing, exe)
+/// Which state folder the app shows, if it is open.
+#[derive(Debug, PartialEq)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+enum Showing {
+    Closed,
+    On(PathBuf),
+    /// Open, on a folder latch could not read: why.
+    Unknown(String),
 }
 
-fn copies(listing: &str, exe: &Path) -> Vec<Option<PathBuf>> {
-    let exe = exe.to_string_lossy();
-    listing
-        .lines()
-        .filter_map(|line| {
-            let rest = line.trim().strip_prefix(exe.as_ref())?;
-            match rest.strip_prefix(" --state-dir ") {
-                _ if rest.is_empty() => Some(None),
-                Some(dir) => Some(Some(PathBuf::from(dir))),
-                None => None,
-            }
-        })
-        .collect()
-}
-
-/// The folder an open copy shows when it is not `wanted`, which `open`
-/// cannot change; `None` when none is open or one already shows `wanted`.
-/// A copy on no named folder shows `default`.
-fn open_elsewhere(running: &[Option<PathBuf>], wanted: &Path, default: &Path) -> Option<PathBuf> {
-    let same = |a: &Path| {
-        a == wanted || matches!((a.canonicalize(), wanted.canonicalize()), (Ok(a), Ok(b)) if a == b)
+#[cfg(target_os = "macos")]
+fn showing(app: &Path, default: &Path) -> Showing {
+    let Some(id) = bundle_id(app) else {
+        return Showing::Unknown("its Info.plist names no bundle id".into());
     };
-    let folders: Vec<&Path> = running
-        .iter()
-        .map(|dir| dir.as_deref().unwrap_or(default))
-        .collect();
-    match folders.iter().any(|dir| same(dir)) {
-        true => None,
-        false => folders.first().map(|dir| dir.to_path_buf()),
+    if !is_open(&id) {
+        return Showing::Closed;
+    }
+    // The app sets `StateDir` whenever it opens on a named folder and
+    // removes it when it opens on the default, so while it is open the
+    // key is the folder it runs on.
+    match remembered(&id) {
+        Ok(Some(dir)) => Showing::On(dir),
+        Ok(None) => Showing::On(default.to_path_buf()),
+        Err(why) => Showing::Unknown(why),
     }
 }
 
-fn open_on(app: &Path, other: &Path, wanted: &Path) -> Failure {
+/// The app's `StateDir` default, read as the app reads it.
+#[cfg(target_os = "macos")]
+fn remembered(id: &str) -> Result<Option<PathBuf>, String> {
+    use core_foundation::base::{CFType, CFTypeRef, TCFType};
+    use core_foundation::string::{CFString, CFStringRef};
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    unsafe extern "C" {
+        fn CFPreferencesCopyAppValue(key: CFStringRef, app: CFStringRef) -> CFTypeRef;
+    }
+    let (key, id) = (CFString::from_static_string("StateDir"), CFString::new(id));
+    // SAFETY: two live CFStrings; the value comes back retained, or null.
+    let value =
+        unsafe { CFPreferencesCopyAppValue(key.as_concrete_TypeRef(), id.as_concrete_TypeRef()) };
+    if value.is_null() {
+        return Ok(None);
+    }
+    // SAFETY: a retained CF object, released when this drops.
+    let value = unsafe { CFType::wrap_under_create_rule(value) };
+    match value.downcast::<CFString>() {
+        Some(dir) => Ok(Some(PathBuf::from(dir.to_string()))),
+        None => Err("its StateDir default is not a path".into()),
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn showing(_app: &Path, _default: &Path) -> Showing {
+    Showing::Closed
+}
+
+#[cfg(target_os = "macos")]
+fn bundle_id(app: &Path) -> Option<String> {
+    use core_foundation::bundle::CFBundle;
+    use core_foundation::url::CFURL;
+    crate::gui::own_id(&CFBundle::new(CFURL::from_path(app, true)?)?)
+}
+
+/// Whether LaunchServices has an app with this bundle id running: only an
+/// app it launched, never a latch command run from inside the bundle.
+#[cfg(target_os = "macos")]
+fn is_open(id: &str) -> bool {
+    use core_foundation::base::TCFType;
+    use core_foundation::string::CFString;
+    use objc2::msg_send;
+    use objc2::runtime::{AnyClass, AnyObject};
+
+    // Loaded here and not linked, as for the Camoufox handoff.
+    let appkit = c"/System/Library/Frameworks/AppKit.framework/AppKit";
+    // SAFETY: a NUL-terminated path; AppKit stays loaded once loaded.
+    if unsafe { libc::dlopen(appkit.as_ptr(), libc::RTLD_LAZY) }.is_null() {
+        return false;
+    }
+    let id = CFString::new(id);
+    objc2::rc::autoreleasepool(|_| {
+        let Some(class) = AnyClass::get(c"NSRunningApplication") else {
+            return false;
+        };
+        // A CFString is an NSString (toll-free bridged).
+        let id = id.as_concrete_TypeRef() as *const AnyObject;
+        // SAFETY: a class method taking an NSString and returning an
+        // autoreleased NSArray, never nil.
+        let apps: *mut AnyObject =
+            unsafe { msg_send![class, runningApplicationsWithBundleIdentifier: id] };
+        if apps.is_null() {
+            return false;
+        }
+        // SAFETY: `apps` is a live NSArray.
+        let count: usize = unsafe { msg_send![apps, count] };
+        count != 0
+    })
+}
+
+/// Why the app can't be opened on `wanted` as it is, or `None` when it can.
+fn refused(showing: &Showing, wanted: &Path) -> Option<String> {
+    let same = |a: &Path| {
+        a == wanted || matches!((a.canonicalize(), wanted.canonicalize()), (Ok(a), Ok(b)) if a == b)
+    };
+    match showing {
+        Showing::Closed => None,
+        Showing::On(dir) if same(dir) => None,
+        Showing::On(dir) => Some(format!("is already open on {}", dir.display())),
+        Showing::Unknown(why) => Some(format!(
+            "is already open, and which state folder it shows is unknown ({why})"
+        )),
+    }
+}
+
+fn open_on(app: &Path, why: &str, wanted: &Path) -> Failure {
     let mut failure = Failure::new(
         code::app_running,
         format!(
-            "{} is already open on {}; it shows one state folder at a time, and opening it again only brings it to the front",
-            app.display(),
-            other.display()
+            "{} {why}; it shows one state folder at a time, and opening it again only brings it to the front",
+            app.display()
         ),
     );
     failure.next = Some(
@@ -184,24 +255,19 @@ mod tests {
         exe
     }
 
+    /// The bundle around this latch, run directly or through a link as
+    /// `~/.local/bin/latch` is.
     #[test]
     fn the_app_is_the_bundle_around_this_latch() {
         let dir = tempfile::tempdir().unwrap();
         let exe = bundle(dir.path());
+        let link = dir.path().join("bin/latch");
+        std::fs::create_dir(dir.path().join("bin")).unwrap();
+        std::os::unix::fs::symlink(&exe, &link).unwrap();
         let app = std::fs::canonicalize(dir.path().join("Apps/Plow Latch.app")).unwrap();
-        assert_eq!(bundle_of(&exe), Some(app));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_link_into_the_app_leads_to_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let exe = bundle(dir.path());
-        let bin = dir.path().join("bin");
-        std::fs::create_dir(&bin).unwrap();
-        std::os::unix::fs::symlink(&exe, bin.join("latch")).unwrap();
-        let app = std::fs::canonicalize(dir.path().join("Apps/Plow Latch.app")).unwrap();
-        assert_eq!(bundle_of(&bin.join("latch")), Some(app));
+        for path in [&exe, &link] {
+            assert_eq!(bundle_of(path).as_ref(), Some(&app), "{}", path.display());
+        }
     }
 
     #[test]
@@ -243,44 +309,79 @@ mod tests {
     }
 
     #[test]
-    fn an_open_copy_is_found_with_its_folder() {
-        let exe = Path::new("/Users/me/Applications/Plow Latch.app/Contents/MacOS/latch");
-        let listing = "\
-/sbin/launchd
-/Users/me/Applications/Plow Latch.app/Contents/MacOS/latch
-  /Users/me/Applications/Plow Latch.app/Contents/MacOS/latch --state-dir /Users/me/dev state
-/Users/me/Applications/Plow Latch.app/Contents/MacOS/latch serve --foreground
-/Users/me/.local/bin/latch --state-dir /Users/me/x
-/Users/me/Applications/Plow Latch.app/Contents/MacOS/latchx --state-dir /y
-";
-        assert_eq!(
-            copies(listing, exe),
-            [None, Some(PathBuf::from("/Users/me/dev state"))]
-        );
-    }
-
-    #[test]
-    fn a_folder_other_than_the_open_copys_is_refused() {
+    fn a_folder_the_open_app_is_not_on_is_refused() {
         let default = Path::new("/Users/me/.latch");
         let (a, b) = (Path::new("/Users/me/a"), Path::new("/Users/me/b"));
-        // None open, or one on the folder asked for: open it.
-        assert_eq!(open_elsewhere(&[], b, default), None);
-        assert_eq!(open_elsewhere(&[Some(b.into())], b, default), None);
-        assert_eq!(open_elsewhere(&[None], default, default), None);
-        // One on another folder, named or not: `open` would only bring it
-        // forward there.
-        assert_eq!(
-            open_elsewhere(&[Some(a.into())], b, default),
-            Some(a.into())
-        );
-        assert_eq!(open_elsewhere(&[None], b, default), Some(default.into()));
-        let failure = open_on(Path::new("/Apps/Plow Latch.app"), a, b);
+        // Closed, or open on the folder asked for: open it.
+        assert_eq!(refused(&Showing::Closed, b), None);
+        assert_eq!(refused(&Showing::On(b.into()), b), None);
+        assert_eq!(refused(&Showing::On(default.into()), default), None);
+        // Opened with no arguments onto a folder it remembers: not the
+        // default, though nothing named one.
+        let why = refused(&Showing::On(a.into()), default).unwrap();
+        assert!(why.contains("/Users/me/a"), "{why}");
+        // On a folder latch could not read: never assumed to be the same.
+        assert!(refused(&Showing::Unknown("no defaults".into()), b).is_some());
+        let failure = open_on(Path::new("/Apps/Plow Latch.app"), &why, b);
         assert_eq!(failure.code, "app_running");
-        assert!(
-            failure.message.contains("/Users/me/a"),
-            "{}",
-            failure.message
+    }
+
+    /// A host run from inside the bundle (`serve --foreground`, as
+    /// launchd runs it), or `latch app` itself, is a command, not the app:
+    /// the app is open only when LaunchServices launched it.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_command_run_from_the_bundle_is_not_the_open_app() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = bundle(dir.path());
+        let app = exe.parent().unwrap().parent().unwrap().parent().unwrap();
+        let id = format!("co.plow.latch.tests.{}", std::process::id());
+        let plist = format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict>\
+             <key>CFBundleIdentifier</key><string>{id}</string>\
+             <key>CFBundleExecutable</key><string>latch</string></dict></plist>\n"
         );
+        std::fs::write(app.join("Contents/Info.plist"), plist).unwrap();
+        std::fs::copy("/usr/bin/yes", &exe).unwrap();
+        assert_eq!(bundle_id(app).as_deref(), Some(id.as_str()));
+        let mut commands = [
+            vec!["--state-dir", "/Users/me/b", "serve", "--foreground"],
+            vec!["--state-dir", "/Users/me/b", "app"],
+            vec![],
+        ]
+        .map(|args| {
+            std::process::Command::new(&exe)
+                .args(args)
+                .stdout(std::process::Stdio::null())
+                .spawn()
+                .unwrap()
+        });
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let showing = showing(app, Path::new("/Users/me/.latch"));
+        for command in &mut commands {
+            command.kill().unwrap();
+            command.wait().unwrap();
+        }
+        assert_eq!(showing, Showing::Closed);
+    }
+
+    /// The folder the app remembers is read from its own defaults, as the
+    /// app writes them; none written is none remembered.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_folder_the_app_remembers_is_read_from_its_defaults() {
+        let id = format!("co.plow.latch.tests.{}", std::process::id());
+        let defaults = |args: &[&str]| {
+            let status = std::process::Command::new("/usr/bin/defaults")
+                .args(args)
+                .status();
+            assert!(status.unwrap().success(), "{args:?}");
+        };
+        assert_eq!(remembered(&id), Ok(None));
+        defaults(&["write", &id, "StateDir", "/Users/me/dev state"]);
+        let read = remembered(&id);
+        defaults(&["delete", &id]);
+        assert_eq!(read, Ok(Some(PathBuf::from("/Users/me/dev state"))));
     }
 
     #[test]
