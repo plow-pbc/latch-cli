@@ -20,7 +20,7 @@ use tokio::task::JoinHandle;
 
 use crate::failure::{Failure, code};
 use crate::plow::Peer;
-use crate::state::StateDir;
+use crate::state::{HeldKey, KeyUse, StateDir};
 use crate::wire::{self, Request, Response};
 
 /// An iroh endpoint as latch makes them, client or host. In tests
@@ -41,7 +41,7 @@ pub fn endpoint() -> iroh::endpoint::Builder {
 }
 
 /// How long to try to reach a host before giving up with exit 3.
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// How long to wait for a host's answer to an operation without a time
 /// limit of its own. For a file transfer, it is the wait before the bytes
@@ -53,14 +53,16 @@ pub const ANSWER_WITHIN: Duration = Duration::from_secs(120);
 /// host to stop it, report, and the answer to travel back.
 pub const ANSWER_MARGIN: Duration = Duration::from_secs(30);
 
-/// An open connection to a host, and the local endpoint it runs on.
+/// An open connection to a host, and the local endpoint it runs on, with
+/// the key that endpoint holds.
 pub struct Link {
-    endpoint: Option<Endpoint>,
+    endpoint: Option<(Endpoint, Box<HeldKey>)>,
     pub connection: Connection,
 }
 
-/// Dials this state folder over its private socket, or another host over iroh.
-/// Failure here means nothing was sent: exit 3.
+/// Dials this state folder over its private socket, or another host over
+/// iroh: through this machine's host when one serves here, else from an
+/// endpoint of our own. Failure here means nothing was sent: exit 3.
 pub async fn connect(state: &StateDir, host: &Peer) -> Result<Link, Failure> {
     connect_within(state, host, CONNECT_TIMEOUT).await
 }
@@ -80,32 +82,54 @@ async fn connect_within(state: &StateDir, host: &Peer, within: Duration) -> Resu
             connection: Connection::Local(std::sync::Mutex::new(Some(socket))),
         });
     }
-    let key = state.load_key()?;
-    let (id, relay) = host_address(host)?;
+    let key = match state.use_key()? {
+        KeyUse::Direct(key) => key,
+        KeyUse::Host => {
+            let proxied = crate::proxy::connect(state, host).await?;
+            return Ok(Link {
+                endpoint: None,
+                connection: Connection::Proxied(proxied),
+            });
+        }
+    };
+    let (_, relay) = host_address(host)?;
     // Our own key is our identity: the host learns who we are from the
     // connection's handshake, not from anything we send. Our only relay is
     // the host's own, so a client contacts no relay the host did not choose.
-    let endpoint = endpoint()
-        .secret_key(key)
-        .relay_mode(RelayMode::custom([relay.clone()]))
+    let endpoint = key
+        .endpoint()
+        .relay_mode(RelayMode::custom([relay]))
         .bind()
         .await
         .map_err(|err| Failure::new(code::iroh, format!("could not start iroh: {err}")))?;
-    let address = EndpointAddr::new(id).with_relay_url(relay);
-    let failure = match tokio::time::timeout(within, endpoint.connect(address, wire::ALPN)).await {
-        Ok(Ok(connection)) => {
-            return Ok(Link {
-                endpoint: Some(endpoint),
-                connection: Connection::Remote(connection),
-            });
+    match connect_on(&endpoint, host, within).await {
+        Ok(connection) => Ok(Link {
+            endpoint: Some((endpoint, key)),
+            connection: Connection::Remote(connection),
+        }),
+        Err(failure) => {
+            // Nothing was sent, so there is nothing to drain: iroh would
+            // otherwise keep the dial attempt going for seconds past `within`.
+            let _ = tokio::time::timeout(CLOSE_WITHIN, endpoint.close()).await;
+            Err(failure)
         }
-        Ok(Err(err)) => not_connected(host, &err),
-        Err(_) => not_connected_within(host, within),
-    };
-    // Nothing was sent, so there is nothing to drain: iroh would otherwise
-    // keep the dial attempt going for seconds past `within`.
-    let _ = tokio::time::timeout(CLOSE_WITHIN, endpoint.close()).await;
-    Err(failure)
+    }
+}
+
+/// Connects `endpoint` to `host` within `within`, for a command's own
+/// endpoint or for the host that carries its call (`proxy.rs`).
+pub async fn connect_on(
+    endpoint: &Endpoint,
+    host: &Peer,
+    within: Duration,
+) -> Result<iroh::endpoint::Connection, Failure> {
+    let (id, relay) = host_address(host)?;
+    let address = EndpointAddr::new(id).with_relay_url(relay);
+    match tokio::time::timeout(within, endpoint.connect(address, wire::ALPN)).await {
+        Ok(Ok(connection)) => Ok(connection),
+        Ok(Err(err)) => Err(not_connected(host, &err)),
+        Err(_) => Err(not_connected_within(host, within)),
+    }
 }
 
 /// Plow lists `host` offline: it is not dialed.
@@ -198,14 +222,11 @@ pub async fn ask_each(
         .collect();
     relays.sort();
     relays.dedup();
-    let bound = match state.load_key() {
-        Ok(key) => {
-            let binding = endpoint()
-                .secret_key(key)
-                .relay_mode(RelayMode::custom(relays))
-                .bind();
+    let bound = match state.use_key() {
+        Ok(KeyUse::Direct(key)) => {
+            let binding = key.endpoint().relay_mode(RelayMode::custom(relays)).bind();
             match tokio::time::timeout_at(deadline, binding).await {
-                Ok(Ok(endpoint)) => Ok(endpoint),
+                Ok(Ok(endpoint)) => Ok(Some((endpoint, key))),
                 Ok(Err(err)) => Err(Failure::new(
                     code::iroh,
                     format!("could not start iroh: {err}"),
@@ -216,6 +237,8 @@ pub async fn ask_each(
                 )),
             }
         }
+        // Each host is asked through this machine's host instead.
+        Ok(KeyUse::Host) => Ok(None),
         Err(failure) => Err(failure),
     };
     let endpoint = match bound {
@@ -236,12 +259,26 @@ pub async fn ask_each(
     };
     let mut asking = tokio::task::JoinSet::new();
     for &(index, (id, ref relay)) in &dialing {
-        let (endpoint, request, host) = (endpoint.clone(), request.clone(), hosts[index].clone());
+        let (request, host) = (request.clone(), hosts[index].clone());
+        let endpoint = endpoint.as_ref().map(|(endpoint, _)| endpoint.clone());
+        let state = StateDir {
+            path: state.path.clone(),
+        };
         let address = EndpointAddr::new(id).with_relay_url(relay.clone());
         asking.spawn(async move {
-            let connection = match endpoint.connect(address, wire::ALPN).await {
-                Ok(connection) => Connection::Remote(connection),
-                Err(err) => return (index, Err(not_connected(&host, &err))),
+            let connected = match endpoint {
+                Some(endpoint) => endpoint
+                    .connect(address, wire::ALPN)
+                    .await
+                    .map(Connection::Remote)
+                    .map_err(|err| not_connected(&host, &err)),
+                None => crate::proxy::connect(&state, &host)
+                    .await
+                    .map(Connection::Proxied),
+            };
+            let connection = match connected {
+                Ok(connection) => connection,
+                Err(failure) => return (index, Err(failure)),
             };
             let answer = one_exchange(&connection, &request, within).await;
             connection.close(VarInt::from_u32(0), b"done");
@@ -260,7 +297,9 @@ pub async fn ask_each(
     for index in unanswered {
         each(index, Err(late(&hosts[index])));
     }
-    let _ = tokio::time::timeout(CLOSE_WITHIN, endpoint.close()).await;
+    if let Some((endpoint, _key)) = endpoint {
+        let _ = tokio::time::timeout(CLOSE_WITHIN, endpoint.close()).await;
+    }
 }
 
 /// An error and each error under it, outermost first: iroh's outer errors
@@ -309,13 +348,20 @@ impl Link {
     /// Closes the connection. The close goes out while the command prints
     /// its answer; `closed` gives it up to `CLOSE_WITHIN` before exit.
     pub fn close(self) {
-        if let Some(endpoint) = self.endpoint {
-            self.connection.close(VarInt::from_u32(0), b"done");
+        self.connection.close(VarInt::from_u32(0), b"done");
+        if let Some((endpoint, key)) = self.endpoint {
             let closing = tokio::spawn(async move {
                 let _ = tokio::time::timeout(CLOSE_WITHIN, endpoint.close()).await;
+                // A host may take the key once our endpoint is gone.
+                drop(key);
             });
             CLOSING.lock().expect("closing lock").push(closing);
         }
+    }
+
+    /// Whether this link has an endpoint of its own, holding the key.
+    pub fn direct(&self) -> bool {
+        self.endpoint.is_some()
     }
 }
 
@@ -351,7 +397,7 @@ async fn one_exchange(
 ) -> Result<Value, Failure> {
     let (mut send, mut recv) = start(connection, request).await?;
     // A local caller keeps its write half alive so EOF means it disconnected.
-    if matches!(connection, Connection::Remote(_)) {
+    if !matches!(connection, Connection::Local(_)) {
         send.finish().map_err(|_| lost(connection, true))?;
     }
     let result = answer(connection, &mut recv, answer_within).await;
@@ -422,10 +468,7 @@ fn host_address(host: &Peer) -> Result<(EndpointId, RelayUrl), Failure> {
 /// The connection failed us. Either the host closed it because it refused
 /// us, or it dropped: before the request went out (exit 3) or after (exit 5).
 pub fn lost(connection: &Connection, sent: bool) -> Failure {
-    if let Some(ConnectionError::ApplicationClosed(close)) = connection.close_reason()
-        && close.error_code == VarInt::from_u32(wire::CLOSE_DENIED)
-    {
-        let message = String::from_utf8_lossy(&close.reason).to_string();
+    if let Some(message) = connection.denied() {
         return Failure::new(code::caller_denied, message);
     }
     if sent {
@@ -500,7 +543,7 @@ mod tests {
         };
         let (own, _) = state.load_or_create_key().unwrap();
         let host = Peer {
-            key: key.unwrap_or_else(|| own.public().to_string()),
+            key: key.unwrap_or_else(|| own.to_string()),
             kind: "device".into(),
             name: "mac".into(),
             relay_url: Some(relay.into()),
@@ -608,7 +651,16 @@ mod tests {
                 .bind()
         };
         let host = bind(vec![wire::ALPN.to_vec()]).await.unwrap();
-        let client = bind(vec![]).await.unwrap();
+        let (_dir, state, _) = dialing(None, "http://127.0.0.1:9/");
+        let Ok(KeyUse::Direct(key)) = state.use_key() else {
+            panic!("no host serves here")
+        };
+        let client = key
+            .endpoint()
+            .relay_mode(RelayMode::Disabled)
+            .bind()
+            .await
+            .unwrap();
         // The host must be accepting for the client's handshake to finish.
         let accepting = host.accept();
         let (accepted, connection) =
@@ -616,7 +668,7 @@ mod tests {
                 client.connect(host.addr(), wire::ALPN).await.unwrap()
             },);
         let link = Link {
-            endpoint: Some(client),
+            endpoint: Some((client, key)),
             connection: connection.into(),
         };
 

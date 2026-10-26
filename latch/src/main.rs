@@ -41,6 +41,7 @@ mod overview;
 mod paint;
 mod plow;
 mod plugins;
+mod proxy;
 mod redact;
 mod remote;
 mod sandbox;

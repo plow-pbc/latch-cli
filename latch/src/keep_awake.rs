@@ -557,6 +557,7 @@ mod tests {
             run: Some(run.to_string()),
             error: None,
             attached: false,
+            waiting: None,
         };
         let status = |host: &Host| status(dir.path(), host).unwrap();
         let shown = |enabled, held, reason| KeepAwake {

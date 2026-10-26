@@ -43,7 +43,7 @@ use crate::heartbeat;
 use crate::lifecycle::{self, Phase};
 use crate::log::log;
 use crate::plow::{Identity, Plow};
-use crate::state::{Config, StateDir};
+use crate::state::{HeldKey, StateDir};
 use crate::vault::link;
 use crate::wire::{self, Request, Response};
 use crate::worker::WorkerSetup;
@@ -301,6 +301,29 @@ pub async fn run(state: &StateDir, args: &crate::cli::ServeArgs) -> Result<(), F
     result
 }
 
+/// The folder's key, once no command on this machine dials with it: a
+/// direct follow sees this host start and ends (`remote::stream`); any
+/// other call is waited for, and the wait is logged and recorded.
+async fn own_key(state: &StateDir, attached: bool) -> Result<HeldKey, Failure> {
+    let state = StateDir {
+        path: state.path.clone(),
+    };
+    let path = state.path.clone();
+    let waiting = move || {
+        let why = "waiting for latch commands on this machine that call other hosts with this \
+                   state folder's key to finish";
+        log(&format!(
+            "{why}: while this host serves, only it may use the key"
+        ));
+        if let Err(failure) = lifecycle::record_waiting(&path, attached, why) {
+            log(&format!("could not record the wait: {}", failure.message));
+        }
+    };
+    tokio::task::spawn_blocking(move || state.own_key(waiting))
+        .await
+        .expect("taking the key does not panic")
+}
+
 /// The workers a host on `state_dir` starts: this latch, confined.
 pub(crate) fn workers(state_dir: PathBuf) -> Result<WorkerSetup, Failure> {
     let program = std::env::current_exe()
@@ -354,10 +377,10 @@ async fn run_locked(
             failure.message
         )),
     }
-    let config = state.require_login()?;
+    let key = own_key(state, attached).await?;
     run_host(
         state,
-        config,
+        key,
         workers,
         headless_browsers,
         rules,
@@ -369,13 +392,14 @@ async fn run_locked(
 
 async fn run_host(
     state: &StateDir,
-    config: Config,
+    key: HeldKey,
     workers: WorkerSetup,
     headless_browsers: bool,
     rules: RuleFiles,
     deny_exec: DenyExec,
     lifetime: Lifetime,
 ) -> Result<(), Failure> {
+    let config = state.require_login()?;
     let binary = Binary::at(&workers.program)?;
     let plow = Plow::new(&config.api_url, &credential::token(state)?)?;
     let gatekeeper = Gatekeeper::new(
@@ -404,8 +428,8 @@ async fn run_host(
             RelayMode::custom([url])
         }
     };
-    let endpoint = crate::dial::endpoint()
-        .secret_key(state.load_key()?)
+    let endpoint = key
+        .endpoint()
         .relay_mode(relay_mode)
         .alpns(vec![wire::ALPN.to_vec(), link::ALPN.to_vec()])
         .bind()
@@ -1454,6 +1478,9 @@ async fn serve_local(host: Arc<Host>, socket: tokio::net::UnixStream) {
     if control::OPS.contains(&request.op.as_str()) {
         return control::serve(&host, &request, send, recv).await;
     }
+    if request.op == crate::proxy::OP {
+        return proxy::serve(&host, &request, send, recv).await;
+    }
     let caller = host.endpoint.id().to_string();
     log(&format!(
         "connect: {caller}: owner_on_host over Unix socket"
@@ -1770,6 +1797,7 @@ mod control;
 mod gated_tests;
 #[cfg(test)]
 mod plugins_tests;
+mod proxy;
 mod reads;
 #[cfg(test)]
 mod reads_tests;

@@ -118,7 +118,7 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
             .as_ref()
             .and_then(|config| config.peer.relay_url.clone());
         let registration = Registration {
-            key: key.public().to_string(),
+            key: key.to_string(),
             name,
             relay_url,
         };
@@ -190,7 +190,7 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
 pub async fn register_again(state: &StateDir) -> Result<(), Failure> {
     let config = state.require_login()?;
     let registration = Registration {
-        key: state.load_key()?.public().to_string(),
+        key: state.public_key()?.to_string(),
         name: Some(config.peer.name.clone()),
         relay_url: config.peer.relay_url.clone(),
     };

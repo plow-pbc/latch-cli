@@ -3891,7 +3891,7 @@ fn local_status_says_login_serving_and_how_the_host_ended_without_asking_plow() 
     assert_eq!(
         before["this_machine"]["hosting"],
         json!({"running": false, "ready": false, "configuring": false, "managed": false, "attached": false,
-               "state": "stopped", "pid": null, "blocked": null,
+               "state": "stopped", "pid": null, "blocked": null, "waiting": null,
                "deny_exec": {"every_agent": false, "agent_uids": []},
                "keep_awake": {"enabled": false, "held": false, "reason": "disabled"}})
     );
@@ -3910,7 +3910,7 @@ fn local_status_says_login_serving_and_how_the_host_ended_without_asking_plow() 
     assert_eq!(
         up["this_machine"]["hosting"],
         json!({"running": true, "ready": true, "configuring": false, "managed": false, "attached": false,
-               "state": "serving", "pid": pid, "blocked": null,
+               "state": "serving", "pid": pid, "blocked": null, "waiting": null,
                "deny_exec": {"every_agent": false, "agent_uids": []},
                "keep_awake": {"enabled": false, "held": false, "reason": "disabled"}})
     );
@@ -4196,6 +4196,595 @@ fn status_follow_says_each_change_of_the_host_through_a_restart() {
         first["this_machine"]["hosting"]["pid"]
     );
     assert!(status.close().success());
+}
+
+/// The owner's machines on one relay: `host` and `studio` serve, and
+/// `laptop` serves nothing. Calls from `studio` to `host` go through its
+/// own host, since both use its one key.
+struct Owners {
+    /// Plow, which answers as long as these machines live.
+    _plow: LivePlow,
+    _relay: tokio::runtime::Runtime,
+    relay: String,
+    dir: tempfile::TempDir,
+    host: PathBuf,
+    studio: PathBuf,
+    laptop: PathBuf,
+}
+
+impl Owners {
+    fn start() -> Owners {
+        let plow = LivePlow::start();
+        let (runtime, relay) = local_relay();
+        let dir = test_dir();
+        let host = owner_host_on(&plow, dir.path());
+        let token = dir.path().join("owner.token");
+        let login = |name: &str| {
+            let state = dir.path().join(name);
+            let args = [
+                "login",
+                "--api-url",
+                &plow.url,
+                "--token-file",
+                token.to_str().unwrap(),
+                "--name",
+                name,
+            ];
+            let login = latch(&state, &args, &[]);
+            assert_eq!(login.status.code(), Some(0), "{login:?}");
+            state
+        };
+        let (studio, laptop) = (login("studio"), login("laptop"));
+        Owners {
+            _plow: plow,
+            _relay: runtime,
+            relay,
+            dir,
+            host,
+            studio,
+            laptop,
+        }
+    }
+
+    fn serve(&self, state: &Path) -> Serving {
+        serving(state, &self.relay)
+    }
+
+    /// `serve`, keeping what the host logs.
+    fn serve_logged(&self, state: &Path) -> (Serving, Logged) {
+        let (serve, log, lines) = serving_with(serve_command(state, &self.relay));
+        let logged = Logged(std::sync::Arc::new(std::sync::Mutex::new(lines)));
+        let keep = logged.0.clone();
+        thread::spawn(move || {
+            for line in log.lines() {
+                keep.lock().unwrap().push(line.unwrap());
+            }
+        });
+        until_serving(state, &serve);
+        (serve, logged)
+    }
+
+    /// The audit records of `host`'s that `from`'s key made.
+    fn records_by(&self, host: &Path, from: &Path) -> Vec<Value> {
+        let config: Value =
+            serde_json::from_slice(&fs::read(from.join("config.json")).unwrap()).unwrap();
+        audit_records(host)
+            .into_iter()
+            .filter(|record| record["caller"] == config["peer"]["key"])
+            .collect()
+    }
+}
+
+/// Every line a host logged, as it logs them.
+#[derive(Clone)]
+struct Logged(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+
+impl Logged {
+    /// How many lines say `text`.
+    fn count(&self, text: &str) -> usize {
+        let lines = self.0.lock().unwrap();
+        lines.iter().filter(|line| line.contains(text)).count()
+    }
+}
+
+/// `answered`, without what each call has of its own: its audit id and
+/// how long it took.
+fn answered_alike(output: &Output) -> (Option<i32>, Value) {
+    let (code, mut answer) = answered(output);
+    if let Some(answer) = answer.as_object_mut() {
+        answer.remove("audit_id");
+        answer.remove("duration_ms");
+    }
+    (code, answer)
+}
+
+/// What a host's record says of its caller: who, as what, in which chat,
+/// and how it was judged, but for how long that took.
+fn caller_in(record: &Value) -> Value {
+    let mut gate = record["gate"].clone();
+    if let Some(gate) = gate.as_object_mut() {
+        gate.remove("latency_ms");
+    }
+    json!({"caller": record["caller"], "agent": record["agent"],
+           "caller_name": record["caller_name"], "gate": gate,
+           "op": record["op"], "decision": record["decision"]})
+}
+
+/// Signals `child`, then waits up to `limit` seconds for it to end.
+fn signalled(child: &mut std::process::Child, signal: i32, limit: u64) -> std::process::ExitStatus {
+    // SAFETY: signals our own child.
+    unsafe { libc::kill(child.id() as i32, signal) };
+    exits_within(child, limit)
+}
+
+/// `latch exec --host HOST -- true` from `from`, which must work.
+fn exec_true(from: &Path, host: &str) {
+    let started = std::time::Instant::now();
+    let output = latch(from, &["exec", "--host", host, "--", "true"], &[]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "after {:?}: {output:?}",
+        started.elapsed()
+    );
+}
+
+/// A command on a serving host's machine that follows another host used to
+/// take its own host's relay: callers of that host timed out until it ended.
+#[test]
+fn a_follow_of_another_host_leaves_this_hosts_callers_their_way_in() {
+    let owners = Owners::start();
+    let _host = owners.serve(&owners.host);
+    let _studio = owners.serve(&owners.studio);
+    let follow = Lines::start(&owners.studio, &["audit", "--follow", "--host", "host"]);
+    follow.opening();
+    for _ in 0..5 {
+        exec_true(&owners.laptop, "studio");
+    }
+    // The follow still runs.
+    exec_true(&owners.laptop, "host");
+    assert_eq!(follow.next_record()["record"]["op"], "exec");
+    assert!(follow.close().success());
+}
+
+/// Each call from a machine whose host serves goes through that host,
+/// and answers, exits and is recorded at the other host as it is with no
+/// host serving here, when the command dials directly.
+#[test]
+fn a_call_through_this_machines_host_answers_and_is_recorded_as_a_direct_one() {
+    let owners = Owners::start();
+    let _host = owners.serve(&owners.host);
+    let dir = owners.dir.path();
+    fs::write(dir.join("note.txt"), "hi").unwrap();
+    let (note, got) = (dir.join("note.txt"), dir.join("got"));
+    let calls: [Vec<&str>; 5] = [
+        vec!["exec", "--host", "host", "--", "echo", "hi"],
+        vec!["exec", "--host", "host", "--", "sh", "-c", "exit 3"],
+        vec![
+            "file",
+            "put",
+            "--host",
+            "host",
+            note.to_str().unwrap(),
+            "~/put.txt",
+        ],
+        vec![
+            "file",
+            "get",
+            "--host",
+            "host",
+            "/etc/hosts",
+            got.to_str().unwrap(),
+        ],
+        vec![
+            "file",
+            "get",
+            "--host",
+            "host",
+            "/no/such/file",
+            got.to_str().unwrap(),
+        ],
+    ];
+    let run_all = |from: &Path| -> Vec<(Option<i32>, Value)> {
+        calls
+            .iter()
+            .map(|args| {
+                let _ = fs::remove_file(dir.join("put.txt"));
+                let _ = fs::remove_file(&got);
+                answered_alike(&latch(from, args, &[]))
+            })
+            .collect()
+    };
+    // A follow's lines: the opening after a record, and the next record.
+    let cursor = |from: &Path| {
+        let output = latch(from, &["exec", "--host", "host", "--", "true"], &[]);
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()["audit_id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let after = cursor(&owners.laptop);
+    let followed = |from: &Path, word: &str| {
+        let follow = Lines::start(
+            from,
+            &["audit", "--follow", "--host", "host", "--after", &after],
+        );
+        let opening = follow.opening();
+        let said = latch(
+            &owners.laptop,
+            &["exec", "--host", "host", "--", "echo", word],
+            &[],
+        );
+        assert!(said.status.success(), "{said:?}");
+        let mut next = follow.next_record();
+        assert!(follow.close().success());
+        next.as_object_mut().unwrap().remove("cursor");
+        (opening.len(), next["record"]["details"]["args"].clone())
+    };
+
+    // No host serves on studio: its commands dial directly.
+    assert!(!owners.studio.join(format!("serve-v{}.sock", 4)).exists());
+    let direct = run_all(&owners.studio);
+    let direct_follow = followed(&owners.studio, "one");
+    let direct_records = owners.records_by(&owners.host, &owners.studio);
+
+    let (_studio, log) = owners.serve_logged(&owners.studio);
+    let proxied = run_all(&owners.studio);
+    assert_eq!(proxied, direct);
+    assert_eq!(direct[0].1["stdout"], "hi\n", "{direct:?}");
+    assert_eq!(
+        (direct[1].0, &direct[1].1["exit_code"]),
+        (Some(0), &json!(3))
+    );
+    assert_eq!(direct[4].0, Some(1), "{direct:?}");
+    let proxied_follow = followed(&owners.studio, "one");
+    assert_eq!(proxied_follow.1["argv"], direct_follow.1["argv"]);
+    for op in ["exec", "file_put", "file_get", "audit"] {
+        assert!(log.count(&format!("proxy: {op} to \"host\"")) > 0, "{op}");
+    }
+    // The other host saw the same caller each time.
+    let records = owners.records_by(&owners.host, &owners.studio);
+    let (direct_records, proxied_records) = records.split_at(direct_records.len());
+    let callers = |records: &[Value]| -> Vec<Value> {
+        records
+            .iter()
+            .filter(|record| record["op"] != "connect")
+            .map(caller_in)
+            .collect()
+    };
+    assert_eq!(callers(proxied_records), callers(direct_records));
+    assert!(!callers(direct_records).is_empty());
+}
+
+/// Follows through this machine's host each have a connection of their
+/// own: one open holds up no other call to the same host.
+#[test]
+fn a_follow_through_this_machines_host_holds_up_no_other_call_to_its_host() {
+    let owners = Owners::start();
+    let _host = owners.serve(&owners.host);
+    let _studio = owners.serve(&owners.studio);
+    let first = Lines::start(&owners.studio, &["audit", "--follow", "--host", "host"]);
+    first.opening();
+    exec_true(&owners.studio, "host");
+    let second = Lines::start(&owners.studio, &["audit", "--follow", "--host", "host"]);
+    second.opening();
+    exec_true(&owners.laptop, "host");
+    assert_eq!(first.next_record()["record"]["op"], "exec");
+    let laptops = first.next_record();
+    assert_eq!(second.next_record()["record"], laptops["record"]);
+    assert!(first.close().success());
+    assert!(second.close().success());
+}
+
+/// Until `follow` shows the record of `echo WORD`, run now from `from`.
+fn sees_echo(follow: &Lines, from: &Path, word: &str) {
+    let said = latch(from, &["exec", "--host", "host", "--", "echo", word], &[]);
+    assert!(said.status.success(), "{said:?}");
+    while follow.next_record()["record"]["details"]["args"]["argv"][1] != word {}
+}
+
+/// A call through this machine's host that ends early, however it ends,
+/// ends only itself: a follow beside it goes on.
+#[test]
+fn a_call_through_this_machines_host_that_ends_early_ends_only_itself() {
+    let owners = Owners::start();
+    let _host = owners.serve(&owners.host);
+    let _studio = owners.serve(&owners.studio);
+    let follow = ["audit", "--follow", "--host", "host"];
+    let kept = Lines::start(&owners.studio, &follow);
+    kept.opening();
+
+    // stdin closes on an idle follow.
+    let closed = Lines::start(&owners.studio, &follow);
+    closed.opening();
+    assert!(closed.close().success());
+    sees_echo(&kept, &owners.laptop, "after-close");
+
+    // SIGTERM on an idle follow.
+    let mut terminated = Lines::start(&owners.studio, &follow);
+    terminated.opening();
+    assert!(signalled(&mut terminated.child, libc::SIGTERM, 5).success());
+    sees_echo(&kept, &owners.laptop, "after-term");
+
+    // A follow whose output nobody reads, stopped while its opening is
+    // stuck: more records than every buffer on the way holds, its own
+    // queue's 64 lines among them, each small enough for the judge to read.
+    // From studio they may run at once: each has a connection of its own.
+    let big = "x".repeat(16 * 1024);
+    thread::scope(|scope| {
+        for _ in 0..8 {
+            scope.spawn(|| {
+                for _ in 0..16 {
+                    exec_true_with(
+                        &owners.studio,
+                        &["exec", "--host", "host", "--", "echo", &big],
+                    );
+                }
+            });
+        }
+    });
+    let mut stalled = latch_command(&owners.studio, &follow, &[])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    thread::sleep(std::time::Duration::from_secs(2));
+    drop(stalled.stdin.take());
+    exits_within(&mut stalled, 5);
+    sees_echo(&kept, &owners.laptop, "after-stall");
+
+    // An upload and a download killed midway.
+    let dir = owners.dir.path();
+    let large = dir.join("large");
+    fs::File::create(&large).unwrap().set_len(4 << 30).unwrap();
+    let put = [
+        "file",
+        "put",
+        "--host",
+        "host",
+        large.to_str().unwrap(),
+        "~/uploaded",
+    ];
+    let got = dir.join("downloaded");
+    let get = [
+        "file",
+        "get",
+        "--host",
+        "host",
+        "~/large",
+        got.to_str().unwrap(),
+    ];
+    for args in [&put[..], &get[..]] {
+        let mut moving = latch_command(&owners.studio, args, &[]).spawn().unwrap();
+        thread::sleep(std::time::Duration::from_millis(1500));
+        assert!(
+            matches!(moving.try_wait(), Ok(None)),
+            "{args:?} ended before it was killed"
+        );
+        signalled(&mut moving, libc::SIGKILL, 5);
+        sees_echo(&kept, &owners.laptop, args[1]);
+    }
+    assert!(!dir.join("uploaded").exists());
+    assert!(!got.exists());
+    assert!(kept.close().success());
+}
+
+/// `latch ARGS` from `from`, which must work.
+fn exec_true_with(from: &Path, args: &[&str]) {
+    let output = latch(from, args, &[]);
+    assert!(output.status.success(), "{output:?}");
+}
+
+/// An exec on `host` (whose home is `home`) that runs from when it makes
+/// `home/marks/NAME.running` until the test makes `NAME.release` beside it.
+struct Held {
+    running: PathBuf,
+    release: PathBuf,
+    child: std::process::Child,
+}
+
+impl Held {
+    fn start(from: &Path, home: &Path, name: &str) -> Held {
+        let marks = home.join("marks");
+        fs::create_dir_all(&marks).unwrap();
+        let mark = marks.join(name);
+        let script = r#"touch "$1.running"; while [ ! -e "$1.release" ]; do sleep 0.05; done"#;
+        let args = [
+            "exec",
+            "--host",
+            "host",
+            "--write",
+            marks.to_str().unwrap(),
+            "--timeout",
+            "300",
+            "--",
+            "sh",
+            "-c",
+            script,
+            "held",
+            mark.to_str().unwrap(),
+        ];
+        let child = latch_command(from, &args, &[])
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let held = Held {
+            running: mark.with_extension("running"),
+            release: mark.with_extension("release"),
+            child,
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while !held.running.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the held exec never ran"
+            );
+            thread::sleep(std::time::Duration::from_millis(20));
+        }
+        held
+    }
+
+    /// Lets it end; it must have worked.
+    fn release(mut self) {
+        fs::write(&self.release, "").unwrap();
+        assert!(exits_within(&mut self.child, 20).success());
+    }
+}
+
+/// A host that starts while a command on its machine dials another host
+/// directly waits for that call, saying why; a direct follow, which would
+/// never end, makes way for it within moments.
+#[test]
+fn a_starting_host_waits_for_a_direct_call_and_a_direct_follow_makes_way() {
+    let owners = Owners::start();
+    let _host = owners.serve(&owners.host);
+    let follow = ["audit", "--follow", "--host", "host"];
+    let mut direct_follow = latch_command(&owners.studio, &follow, &[])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut lines = BufReader::new(direct_follow.stdout.take().unwrap()).lines();
+    while !lines.next().unwrap().unwrap().contains("caught_up") {}
+    let direct_exec = Held::start(&owners.studio, owners.dir.path(), "direct");
+
+    let starting = std::time::Instant::now();
+    let studio = owners.studio.clone();
+    let owners_relay = owners.relay.clone();
+    let started = thread::spawn(move || {
+        let (serve, log, lines) = serving_with(serve_command(&studio, &owners_relay));
+        (serve, log, lines)
+    });
+    let ended = exits_within(&mut direct_follow, 5);
+    assert!(
+        starting.elapsed() < std::time::Duration::from_secs(3),
+        "{:?}",
+        starting.elapsed()
+    );
+    let mut stderr = String::new();
+    direct_follow
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut stderr)
+        .unwrap();
+    let error = &one_error_line(&stderr, Some(3))["error"];
+    assert_eq!(ended.code(), Some(3));
+    assert_eq!(error["code"], "host_unreachable", "{error}");
+    assert_eq!(
+        error["next"],
+        "run this again: it then goes through that host"
+    );
+    let waiting = latch(&owners.studio, &["status", "--local"], &[]);
+    let waiting: Value = serde_json::from_slice(&waiting.stdout).unwrap();
+    let hosting = &waiting["this_machine"]["hosting"];
+    assert_eq!(hosting["state"], "starting", "{hosting}");
+    assert!(
+        hosting["waiting"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("waiting for latch commands"),
+        "{hosting}"
+    );
+    direct_exec.release();
+    let (serve, _log, lines) = started.join().unwrap();
+    until_serving(&owners.studio, &serve);
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("waiting for latch commands")),
+        "{lines:?}"
+    );
+    let serving = latch(&owners.studio, &["status", "--local"], &[]);
+    let serving: Value = serde_json::from_slice(&serving.stdout).unwrap();
+    assert_eq!(serving["this_machine"]["hosting"]["waiting"], Value::Null);
+    // Run again, the follow goes through the host.
+    let again = Lines::start(&owners.studio, &follow);
+    again.opening();
+    sees_echo(&again, &owners.laptop, "through");
+    assert!(again.close().success());
+}
+
+/// While a host holds the folder's key and cannot take a call (starting,
+/// stopping, an older latch, not answering), a command fails at once and
+/// says so; it never dials around the host.
+#[test]
+fn a_command_never_dials_around_a_host_that_holds_the_key() {
+    let owners = Owners::start();
+    let _host = owners.serve(&owners.host);
+    let call = ["exec", "--host", "host", "--", "true"];
+    let refused = |why: &str| {
+        let started = std::time::Instant::now();
+        let output = latch(&owners.studio, &call, &[]);
+        let (code, answer) = answered(&output);
+        assert_eq!(code, Some(3), "{why}: {output:?}");
+        assert_eq!(
+            answer["error"]["code"], "host_unreachable",
+            "{why}: {answer}"
+        );
+        let message = answer["error"]["message"].as_str().unwrap();
+        assert!(message.contains("not taking calls now"), "{why}: {message}");
+        started.elapsed()
+    };
+    let lock = |name: &str| {
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(owners.studio.join(name))
+            .unwrap();
+        file.lock().unwrap();
+        file
+    };
+
+    // A host starting: it holds the key, and has no socket yet.
+    let key = lock("key.lock");
+    assert!(refused("starting") < std::time::Duration::from_secs(3));
+    // One not answering on its socket.
+    let socket =
+        std::os::unix::net::UnixListener::bind(owners.studio.join("serve-v4.sock")).unwrap();
+    refused("wedged");
+    drop(socket);
+    fs::remove_file(owners.studio.join("serve-v4.sock")).unwrap();
+    drop(key);
+    // A host of an older latch, which holds `serve.lock` alone.
+    let mut serve_lock = lock("serve.lock");
+    write!(
+        serve_lock,
+        "latch serve (pid {}, /old/latch)",
+        std::process::id()
+    )
+    .unwrap();
+    assert!(refused("older") < std::time::Duration::from_secs(3));
+    drop(serve_lock);
+
+    // A host stopping takes no new call. One it carries keeps it stopping
+    // until the drain cuts it off.
+    let (mut studio, log) = owners.serve_logged(&owners.studio);
+    let carried = Held::start(&owners.studio, owners.dir.path(), "carried");
+    // SAFETY: signals our own child.
+    unsafe { libc::kill(studio.0.id() as i32, libc::SIGTERM) };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while log.count("stopping: signal received") == 0 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the host never began to stop"
+        );
+        thread::sleep(std::time::Duration::from_millis(20));
+    }
+    refused("stopping");
+    let mut carried = carried.child;
+    assert_eq!(exits_within(&mut carried, 30).code(), Some(5));
+    exits_within(&mut studio.0, 30);
+
+    // The other host never heard from studio but for the carried call.
+    let records = owners.records_by(&owners.host, &owners.studio);
+    let execs: Vec<&Value> = records
+        .iter()
+        .filter(|record| record["op"] == "exec")
+        .collect();
+    assert_eq!(execs.len(), 1, "{records:?}");
 }
 
 /// A `login --events`' lines after its `hello`.
@@ -8125,6 +8714,75 @@ mod scenario {
 mod lifecycle {
     use super::*;
 
+    /// A detached host that waits past `serve -d`'s minute for a direct call
+    /// is left to start: `serve -d` says so, and it serves once the call ends.
+    #[test]
+    fn a_host_waiting_past_serve_d_for_a_direct_call_starts_once_it_ends() {
+        let owners = Owners::start();
+        let _host = owners.serve(&owners.host);
+        let _managed = Managed(owners.studio.clone());
+        let long = Held::start(&owners.studio, owners.dir.path(), "long");
+        let env = [("LATCH_TEST_RELAY_URL", Path::new(&owners.relay))];
+        let started = latch(&owners.studio, &["serve", "-d"], &env);
+        let error = &one_error_line(&String::from_utf8_lossy(&started.stderr), Some(1))["error"];
+        assert_eq!(error["code"], "serve_failed", "{error}");
+        let message = error["message"].as_str().unwrap();
+        assert!(
+            message.contains("starts by itself once they end"),
+            "{message}"
+        );
+        assert!(registered(&owners.studio), "its service was removed");
+        assert_eq!(local_serve(&owners.studio)["state"], "starting");
+
+        long.release();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while local_serve(&owners.studio)["state"] != "serving" {
+            assert!(std::time::Instant::now() < deadline, "it never started");
+            thread::sleep(std::time::Duration::from_millis(100));
+        }
+        exec_true(&owners.laptop, "studio");
+    }
+
+    /// An update restarts a managed host (`stop`, a gap, `serve -d
+    /// --again`) while a follow of another host runs through it, as the Mac
+    /// app's Activity does: the follow started again in the gap dials
+    /// directly, makes way for the new host, and the next one goes through
+    /// it, while callers reach the new host.
+    #[test]
+    fn an_update_restart_ends_with_a_follow_through_the_new_host() {
+        let owners = Owners::start();
+        let _host = owners.serve(&owners.host);
+        let _managed = Managed(owners.studio.clone());
+        let env = [("LATCH_TEST_RELAY_URL", Path::new(&owners.relay))];
+        let started = latch(&owners.studio, &["serve", "-d"], &env);
+        assert_eq!(started.status.code(), Some(0), "{started:?}");
+        let log = || fs::read_to_string(owners.studio.join("serve.log")).unwrap();
+        let carried = |log: &str| log.matches("proxy: audit to \"host\"").count();
+        let follow = ["audit", "--follow", "--host", "host"];
+
+        let mut through = Lines::start(&owners.studio, &follow);
+        through.opening();
+        assert_eq!(carried(&log()), 1);
+        let stopped = latch(&owners.studio, &["stop"], &[]);
+        assert_eq!(stopped.status.code(), Some(0), "{stopped:?}");
+        assert_eq!(exits_within(&mut through.child, 5).code(), Some(3));
+
+        // The gap: no host here, so the follow started again is direct.
+        let mut direct = Lines::start(&owners.studio, &follow);
+        direct.opening();
+        let again = latch(&owners.studio, &["serve", "-d", "--again"], &env);
+        assert_eq!(again.status.code(), Some(0), "{again:?}");
+        assert_eq!(exits_within(&mut direct.child, 5).code(), Some(3));
+        assert_eq!(carried(&log()), 1, "the direct follow went through a host");
+
+        let after = Lines::start(&owners.studio, &follow);
+        after.opening();
+        assert_eq!(carried(&log()), 2);
+        exec_true(&owners.laptop, "studio");
+        sees_echo(&after, &owners.laptop, "after-update");
+        assert!(after.close().success());
+    }
+
     #[test]
     fn an_attached_serve_whose_host_fails_says_why_and_leaves_nothing_running() {
         let plow = LivePlow::start();
@@ -8519,6 +9177,35 @@ mod lifecycle {
 #[cfg(target_os = "macos")]
 mod messages {
     use super::*;
+
+    /// A search from a machine whose own host serves goes through that
+    /// host and reads what a direct search reads.
+    #[test]
+    fn messages_through_this_machines_host_read_as_a_direct_call_does() {
+        let owners = Owners::start();
+        let home = owners.dir.path().join("home");
+        messages_home(&home);
+        let reader = owners
+            .host
+            .join("plugins/messages")
+            .join(env!("CARGO_PKG_VERSION"))
+            .join("latch-messages");
+        fs::create_dir_all(reader.parent().unwrap()).unwrap();
+        fs::copy(messages_reader(), &reader).unwrap();
+        let (_host, _) = serving_with_env(&owners.host, &owners.relay, &[("HOME", &home)]);
+        for name in ["messages", "contacts"] {
+            let enabled = latch(&owners.host, &["plugins", "enable", name], &[]);
+            assert!(enabled.status.success(), "{enabled:?}");
+        }
+        let search = ["messages", "search", "code", "--host", "host"];
+        let direct = answered_alike(&latch(&owners.studio, &search, &[]));
+        assert_eq!(direct.0, Some(0), "{direct:?}");
+        assert_eq!(direct.1["count"], 1, "{direct:?}");
+        let (_studio, log) = owners.serve_logged(&owners.studio);
+        let proxied = answered_alike(&latch(&owners.studio, &search, &[]));
+        assert_eq!(proxied, direct);
+        assert_eq!(log.count("proxy: messages to \"host\""), 1);
+    }
 
     #[test]
     fn messages_and_contacts_answer_from_a_hosts_messages_and_address_book() {
