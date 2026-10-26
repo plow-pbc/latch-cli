@@ -200,6 +200,84 @@ pub fn shot(
     .map_err(|_| missing())
 }
 
+/// The screenshot `shot` that the browser call audited as record `id`
+/// names, for the host's owner (`latch audit shot`): only a screenshot the
+/// record names, found by the record's session, request and shot, and only
+/// if its bytes are the ones the record's sha256 says were kept.
+pub fn audited(state_dir: &Path, id: &str, shot: &str) -> Result<Vec<u8>, Failure> {
+    let record = crate::audit::find(state_dir, id)?.ok_or_else(|| {
+        Failure::new(
+            code::no_such_record,
+            format!("this host's audit has no record {id}"),
+        )
+    })?;
+    let args = &record.args;
+    let unnamed = || {
+        Failure::new(
+            code::no_such_shot,
+            format!("record {id} names no screenshot {shot:?}"),
+        )
+    };
+    // A plan's final shot, and one after each action.
+    let steps = args["step_records"].as_array().into_iter().flatten();
+    let meta = std::iter::once(&args["screenshot"])
+        .chain(steps.map(|step| &step["screenshot"]))
+        .find(|meta| meta["shot"] == shot)
+        .filter(|_| record.op == "browser")
+        .ok_or_else(unnamed)?;
+    let (Some(session), Some(request), Some(sha256)) = (
+        args["session"].as_str(),
+        args["request"].as_str(),
+        meta["sha256"].as_str(),
+    ) else {
+        return Err(unnamed());
+    };
+    // The audit names a session by the first 6 bytes of its id's sha256,
+    // as letters (`a` for 0 to `p` for 15); its journal folder, by the
+    // first 8 in hex.
+    let prefix: Option<String> = session
+        .bytes()
+        .map(|letter| char::from_digit(u32::from(letter.wrapping_sub(b'a')), 16))
+        .collect();
+    let prefix = prefix.filter(|prefix| prefix.len() == 12);
+    let (Some(prefix), true, true) = (prefix, plain(request), plain(shot)) else {
+        return Err(unnamed());
+    };
+    let gone = || {
+        let mut failure = Failure::new(
+            code::no_such_shot,
+            format!("record {id}'s screenshot {shot} is no longer kept"),
+        );
+        failure.next = Some("a request's screenshots are kept on its host for 7 days".into());
+        failure
+    };
+    let mut changed = false;
+    for folder in fs::read_dir(state_dir.join("browser/journal"))
+        .map_err(|_| gone())?
+        .flatten()
+    {
+        if !folder.file_name().to_string_lossy().starts_with(&prefix) {
+            continue;
+        }
+        let Ok(png) = fs::read(folder.path().join(request).join(format!("{shot}.png"))) else {
+            continue;
+        };
+        if to_hex(&Sha256::digest(&png)) == sha256 {
+            return Ok(png);
+        }
+        changed = true;
+    }
+    match changed {
+        true => Err(Failure::new(
+            code::shot_changed,
+            format!(
+                "record {id}'s screenshot {shot} is not the one its record keeps the sha256 of"
+            ),
+        )),
+        false => Err(gone()),
+    }
+}
+
 /// Request `request`'s history, for its caller: its status, each step's
 /// outcome and each action's result.
 pub fn history(
@@ -387,5 +465,83 @@ mod tests {
         );
         assert!(!folder(dir.path(), "default").exists());
         assert!(history(dir.path(), "other", "k1", "r2", false).is_ok());
+    }
+
+    /// A browser call's audit record with `args`, in the log in `dir`: its id.
+    fn audited_call(dir: &Path, op: &str, args: Value) -> String {
+        let mut log = crate::audit::AuditLog::open(dir.join(crate::audit::FILE)).unwrap();
+        let mut record = crate::audit::record("k1", Some("agent-1".into()), op, "allow", "ok");
+        record.args = args;
+        log.append(record).unwrap()
+    }
+
+    /// A kept shot as the audit records it.
+    fn meta(shot: &str, png: &[u8]) -> Value {
+        json!({"shot": shot, "size": png.len(), "sha256": to_hex(&Sha256::digest(png))})
+    }
+
+    #[test]
+    fn the_owner_reads_only_a_shot_an_audit_record_names_with_the_bytes_it_audited() {
+        let dir = tempfile::tempdir().unwrap();
+        let (dir, session) = (dir.path(), "lkjhgfdsapoiuytrewqmnbvcxzlkjhgf");
+        let hash = crate::browser::host::hash_of(session);
+        save_shot(dir, session, "r1", "1", b"after the click").unwrap();
+        save_shot(dir, session, "r1", "final", b"the confirmation").unwrap();
+        let plan = audited_call(
+            dir,
+            "browser",
+            json!({"command": "do", "session": hash, "request": "r1",
+                   "step_records": [{"step": 1, "action": 1, "screenshot": meta("1", b"after the click")}],
+                   "screenshot": meta("final", b"the confirmation")}),
+        );
+        assert_eq!(audited(dir, &plan, "1").unwrap(), b"after the click");
+        assert_eq!(audited(dir, &plan, "final").unwrap(), b"the confirmation");
+
+        let code = |id: &str, shot: &str| audited(dir, id, shot).unwrap_err().code;
+        assert_eq!(code(&plan, "2"), "no_such_shot");
+        assert_eq!(code(&plan, "../r1/1"), "no_such_shot");
+        assert_eq!(code(&"0".repeat(64), "1"), "no_such_record");
+        // A standalone screenshot went to its caller and was never kept
+        // here: its record names no shot.
+        let standalone = audited_call(
+            dir,
+            "browser",
+            json!({"command": "screenshot", "session": hash, "size": 3, "sha256": "ab"}),
+        );
+        assert_eq!(code(&standalone, "final"), "no_such_shot");
+        // Only a browser call's shots.
+        let other = audited_call(
+            dir,
+            "exec",
+            json!({"session": hash, "request": "r1", "screenshot": meta("final", b"the confirmation")}),
+        );
+        assert_eq!(code(&other, "final"), "no_such_shot");
+        // Names that would lead out of the journal lead nowhere.
+        for (session, request) in [
+            ("../../../..", "r1"),
+            (hash.as_str(), "../r1"),
+            ("aaaaaaaaaaaa/", "r1"),
+        ] {
+            let tricky = audited_call(
+                dir,
+                "browser",
+                json!({"command": "do", "session": session, "request": request,
+                       "screenshot": meta("final", b"the confirmation")}),
+            );
+            assert_eq!(
+                code(&tricky, "final"),
+                "no_such_shot",
+                "{session} {request}"
+            );
+        }
+
+        // Bytes other than the ones audited are refused.
+        save_shot(dir, session, "r1", "1", b"another page").unwrap();
+        assert_eq!(code(&plan, "1"), "shot_changed");
+        // And a shot pruned with its request is gone.
+        fs::remove_dir_all(folder(dir, session).join("r1")).unwrap();
+        let gone = audited(dir, &plan, "final").unwrap_err();
+        assert_eq!(gone.code, "no_such_shot");
+        assert!(gone.next.unwrap().contains("7 days"));
     }
 }

@@ -1100,6 +1100,19 @@ pub enum AuditAction {
     Verify,
     /// Seal new records under a new key and keep every old one; a running `latch serve` uses it from its next record
     RotateKey,
+    /// A browser screenshot a record names, saved to --output: an action's number in a plan, or `final`
+    Shot {
+        /// The record's id (a record line's `cursor`)
+        record: String,
+        /// Which of its screenshots: an action's number, or `final`
+        shot: String,
+        /// Where to save the PNG
+        #[arg(long, short, value_name = "FILE")]
+        output: PathBuf,
+        /// Another serving machine of the owner's to read it from (owner devices only) [default: this machine's host]
+        #[arg(long)]
+        host: Option<String>,
+    },
 }
 
 #[derive(Args, Debug)]

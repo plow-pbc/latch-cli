@@ -534,8 +534,14 @@ restarted: an action whose result was never recorded reads `unknown`, never
 `not_sent`, and a request that never ended reads `interrupted`. An id is
 never run twice (`duplicate_request`). Only the caller that sent a request
 can read it, or fetch its screenshots with `do --history R --shot N
---output F`. A request's journal and screenshots are kept 7 days, after its
-session closes too.
+--output F`. The host's owner fetches any screenshot an audit record names
+with `latch audit shot RECORD N --output F` (`--host H` from another of
+their machines): the host finds it by the record's session hash, request
+and shot, and sends it only if its sha256 is the one the record kept. A
+request's journal and screenshots are kept 7 days, after its session
+closes too. latch doesn't redact a screenshot's pixels: it takes none
+while a value filled from the vault is on the page, and none of a fill
+step, but typed text and the rest of the page can show.
 
 **Removed forms.** `act` on a name or description, `act --expect`,
 `act --steps`, `act click --at X,Y`, `find "<description>"` and

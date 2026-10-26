@@ -1249,6 +1249,26 @@ const ENTRIES: &[Entry] = &[
         )],
     },
     Entry {
+        id: "audit.shot",
+        runs_on: |_| RunsOn::Either,
+        output: "The `record`, the `shot`, the `path` the PNG was saved to, its `size` and `sha256`. Only a screenshot a browser plan's record names (an action's number from its `step_records`, or `final`), and only the bytes that record's sha256 says were kept: a host keeps a request's screenshots 7 days (then `no_such_shot`). A standalone `browser screenshot` was saved on its caller's machine, not kept on the host. latch doesn't redact pixels: it takes no screenshot while a value filled from the vault is on the page, and none of a fill step, but typed text and the rest of the page can show.",
+        effect: ReadOnly,
+        owner_only: true,
+        connector: None,
+        examples: &[
+            ex(
+                "Save the screenshot after a plan's first action",
+                &["audit", "shot", "ID", "1", "--output", "step-1.png"],
+            ),
+            ex(
+                "Save the page a plan stopped on, from another host",
+                &[
+                    "audit", "shot", "ID", "final", "--output", "stop.png", "--host", "studio",
+                ],
+            ),
+        ],
+    },
+    Entry {
         id: "serve",
         runs_on: |_| RunsOn::Local,
         output: "With -d, the host once it answers: `state_dir`, `pid`, `run`, `version`, `log`. Otherwise the dashboard until Ctrl-C, then how the host stopped; with --foreground, log lines until stopped.",
