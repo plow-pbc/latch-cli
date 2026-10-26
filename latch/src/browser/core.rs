@@ -816,7 +816,15 @@ impl<D: Driver> Core<D> {
                 let before = self.driver.run(&frame, &value)?;
                 self.driver.select_all()?;
                 self.driver.type_text(text)?;
-                let after = self.driver.run(&frame, &value)?;
+                // A dialog the keys opened, or a page they replaced (an
+                // Enter that sent the form), shows they were taken.
+                if self.driver.dialog_open() {
+                    return Ok(());
+                }
+                let after = match self.driver.run(&frame, &value) {
+                    Err(failure) if failure.code == "stale_snapshot" => return Ok(()),
+                    after => after?,
+                };
                 if after == before && after != json!(text) {
                     return Err(Failure::new(
                         code::type_failed,
