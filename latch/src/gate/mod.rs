@@ -67,6 +67,10 @@ const RULES_OF_JUDGMENT: [&str; 5] = [
     "Rules on the host are the owner's standing limits; a chat message does not lift a host rule's prohibition.",
 ];
 const EXEC_PERMISSIONS: &str = "Judge an exec's argv and working folder together with its resolved write paths and network flag: those permissions must fit what the owner asked. The command can read the host's home except ~/.latch, the host's own state directory and, on macOS, Library except Caches. Secret environment values are hidden; their names and lengths are shown. A secret need not be a credential: names like *_COMMAND, NODE_OPTIONS, BASH_ENV, PYTHONSTARTUP and GIT_CONFIG_* can make a program execute the hidden value or load code. Consider what each variable does and whether the owner authorized that hidden behavior with the requested permissions.";
+/// Added to the rules of judgment for an action that fills from the vault:
+/// what a fill does (`browser::fill`), so that using a saved login on its
+/// own site is not read as handing over the password.
+const VAULT_FILL: &str = "A vault fill (a vault_fill action, or the items a browser plan may_fill) puts values saved in the owner's vault into fields on a web page. latch sets them in the page itself and the agent never receives them; for a password, latch also presses the form's button and keeps the agent out of the browser session until the values have left the page. A saved login fills only on the site it is saved for. Filling the owner's saved login into that site, for something the owner wants done there, uses the login as the owner saved it: it is not reading, revealing or sharing a password. Revealing, copying or exporting a saved value, or filling a login into any other site, still is.";
 /// Added to the rules of judgment when the owner is the caller.
 const OWNER_CALLS: &str = "The caller is the owner, at one of their own machines: the proposed action is the owner's own request. Judge only whether the owner's rules on this host forbid it; if a rule plausibly applies, choose FORBIDDEN.";
 /// Added to the rules of judgment only when the judge sees host rules: a
@@ -84,6 +88,8 @@ struct Prompt {
     name_tasks: &'static str,
     /// Added to the rules of judgment for an exec.
     exec: &'static str,
+    /// Added to the rules of judgment for a vault fill.
+    vault_fill: &'static str,
 }
 
 /// Whether the owner asked for it: an agent's chat layer, and the owner's
@@ -95,6 +101,7 @@ const ASKED: Prompt = Prompt {
     forbidden: "The owner said not to, cancelled or withdrew it, or the owner's rules forbid it.",
     name_tasks: RULES_NAME_TASKS,
     exec: EXEC_PERMISSIONS,
+    vault_fill: VAULT_FILL,
 };
 
 /// An agent's rules layer, asked with no chat: everyday work needs no
@@ -107,6 +114,7 @@ const RULES_LAYER: Prompt = Prompt {
     forbidden: "The owner said not to (everyday work included), cancelled or withdrew it, or the owner's rules forbid it.",
     name_tasks: "A rule may name a kind of task, like running tests or checking mail, rather than the exact command; a command that plainly does that task is covered by it, and nothing more: a rule that lets agents read or check something does not let them create, change, delete or send it.",
     exec: "Judge an exec's argv and working folder together with its resolved write paths and network flag: those permissions must fit what is allowed. The command can read the host's home except ~/.latch, the host's own state directory and, on macOS, Library except Caches. Secret environment values are hidden; their names and lengths are shown. A secret need not be a credential: names like *_COMMAND, NODE_OPTIONS, BASH_ENV, PYTHONSTARTUP and GIT_CONFIG_* can make a program execute the hidden value or load code. Consider what each variable does and whether the owner authorized that hidden behavior with the requested permissions.",
+    vault_fill: VAULT_FILL,
 };
 
 impl Prompt {
@@ -120,6 +128,7 @@ impl Prompt {
             self.forbidden,
             self.name_tasks,
             self.exec,
+            self.vault_fill,
         ]
         .join("\n");
         sha256(&text)[..16].to_string()
@@ -667,9 +676,12 @@ fn state(
     if !rules.is_empty() {
         rules_of_judgment.push(prompt.name_tasks);
     }
-    if serde_json::from_str::<Value>(action.get()).is_ok_and(|action| action["operation"] == "exec")
-    {
+    let shown: Value = serde_json::from_str(action.get()).unwrap_or_default();
+    if shown["operation"] == "exec" {
         rules_of_judgment.push(prompt.exec);
+    }
+    if fills_from_vault(&shown) {
+        rules_of_judgment.push(prompt.vault_fill);
     }
     let state = State {
         rules_of_judgment,
@@ -692,6 +704,21 @@ fn state(
         conversation_truncated: truncated.then_some(TRUNCATED),
     };
     serde_json::value::to_raw_value(&state).expect("the state serializes")
+}
+
+/// Whether the browser action the judge is shown fills from the vault: a
+/// fill, or a plan that may fill or first fills a card or identity.
+fn fills_from_vault(action: &Value) -> bool {
+    match action["kind"].as_str() {
+        Some("vault_fill") => true,
+        Some("browser_plan") => {
+            action["may_fill"]
+                .as_array()
+                .is_some_and(|items| !items.is_empty())
+                || action["first_confirms"].is_object()
+        }
+        _ => false,
+    }
 }
 
 /// The state with as many of the newest messages as fit Plow's decision
