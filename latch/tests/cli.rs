@@ -2804,7 +2804,11 @@ fn until_serving(host: &Path, serve: &Serving) {
 }
 
 fn serve_command(host: &Path, relay: &str) -> Command {
-    let mut command = latch_process();
+    configure_serve_command(latch_process(), host, relay)
+}
+
+/// `command`, a latch, set up as `serve_command` sets up the build's.
+fn configure_serve_command(mut command: Command, host: &Path, relay: &str) -> Command {
     command
         .env("HOME", host.parent().unwrap())
         .args([
@@ -5057,21 +5061,9 @@ fn a_host_run_from_an_installed_latch_keeps_an_execs_write() {
     let installed = dir.path().join(".local/bin/latch");
     fs::create_dir_all(installed.parent().unwrap()).unwrap();
     fs::copy(latch_bin(), &installed).unwrap();
-    let mut command = Command::new(&installed);
-    command
-        .env("LATCH_TEST_LOOPBACK", "1")
-        .env("HOME", dir.path())
-        .args([
-            "--state-dir",
-            host.to_str().unwrap(),
-            "serve",
-            "--foreground",
-        ])
-        .env("LATCH_TEST_RELAY_URL", &relay)
-        .env_remove("LATCH_HOST")
-        .env_remove("LATCH_TRACE")
-        .env_remove("LATCH_STATE_DIR");
-    let (serve, log, _) = serving_with(command);
+    let mut installed = Command::new(&installed);
+    installed.env("LATCH_TEST_LOOPBACK", "1");
+    let (serve, log, _) = serving_with(configure_serve_command(installed, &host, &relay));
     thread::spawn(move || std::io::copy(&mut BufReader::new(log), &mut std::io::sink()));
     until_serving(&host, &serve);
 
