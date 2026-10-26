@@ -101,10 +101,13 @@ fn loopback_endpoint() -> iroh::endpoint::Builder {
         .portmapper_config(iroh::endpoint::PortmapperConfig::Disabled)
 }
 
+/// A throwaway folder under `.dev/tests`, by its real path: one with `..`
+/// in it would pass through the crate's folder, which a Linux host's
+/// sandbox shows only when the running latch happens to sit inside it.
 fn test_dir() -> tempfile::TempDir {
     let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/tests");
     fs::create_dir_all(&parent).unwrap();
-    tempfile::tempdir_in(parent).unwrap()
+    tempfile::tempdir_in(parent.canonicalize().unwrap()).unwrap()
 }
 
 /// `latch --state-dir STATE ARGS...`, with none of the caller's latch or
@@ -5028,6 +5031,71 @@ fn a_login_with_events_whose_code_expires_says_so_and_fails() {
     let error: Value = serde_json::from_slice(&login.stderr).unwrap();
     assert_eq!(error["error"]["code"], "code_expired");
     server.join().unwrap();
+}
+
+/// A host run from where install.sh puts latch (`~/.local/bin`), not from
+/// the build: an exec's write, to the absolute path the caller named,
+/// lands where the caller looks.
+#[test]
+fn a_host_run_from_an_installed_latch_keeps_an_execs_write() {
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let client = dir.path().join("client");
+    let token = dir.path().join("owner.token");
+    let args = [
+        "login",
+        "--api-url",
+        &plow.url,
+        "--token-file",
+        token.to_str().unwrap(),
+        "--name",
+        "laptop",
+    ];
+    assert_eq!(latch(&client, &args, &[]).status.code(), Some(0));
+    let installed = dir.path().join(".local/bin/latch");
+    fs::create_dir_all(installed.parent().unwrap()).unwrap();
+    fs::copy(latch_bin(), &installed).unwrap();
+    let mut command = Command::new(&installed);
+    command
+        .env("LATCH_TEST_LOOPBACK", "1")
+        .env("HOME", dir.path())
+        .args([
+            "--state-dir",
+            host.to_str().unwrap(),
+            "serve",
+            "--foreground",
+        ])
+        .env("LATCH_TEST_RELAY_URL", &relay)
+        .env_remove("LATCH_HOST")
+        .env_remove("LATCH_TRACE")
+        .env_remove("LATCH_STATE_DIR");
+    let (serve, log, _) = serving_with(command);
+    thread::spawn(move || std::io::copy(&mut BufReader::new(log), &mut std::io::sink()));
+    until_serving(&host, &serve);
+
+    let share = dir.path().join("share");
+    fs::create_dir(&share).unwrap();
+    let written = share.join("written");
+    let args = [
+        "exec",
+        "--host",
+        "host",
+        "--write",
+        share.to_str().unwrap(),
+        "--",
+        "sh",
+        "-c",
+        r#"echo hi > "$1""#,
+        "write",
+        written.to_str().unwrap(),
+    ];
+    let output = latch(&client, &args, &[]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["exit_code"], 0, "{result}");
+    assert_eq!(fs::read_to_string(&written).unwrap(), "hi\n");
 }
 
 /// A host stopped (SIGTERM) while an exec runs: one that finishes within
