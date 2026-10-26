@@ -220,23 +220,18 @@ impl StateDir {
     }
 
     /// For `latch serve`: the key, held alone for as long as it serves.
-    /// While commands that dial directly hold it, this waits for them,
-    /// calling `waiting` once. A folder not logged in has none to hold.
+    /// While commands that dial directly hold it, this blocks until they
+    /// let go, calling `waiting` first. A folder not logged in has none.
     pub fn own_key(&self, waiting: impl FnOnce()) -> Result<HeldKey, Failure> {
         self.require_login()?;
         let lock = self.key_lock()?;
-        let mut waiting = Some(waiting);
-        loop {
-            match lock.try_lock() {
-                Ok(()) => break,
-                Err(fs::TryLockError::WouldBlock) => {
-                    if let Some(waiting) = waiting.take() {
-                        waiting();
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                }
-                Err(fs::TryLockError::Error(err)) => return Err(self.key_lock_failure(err)),
+        match lock.try_lock() {
+            Ok(()) => {}
+            Err(fs::TryLockError::WouldBlock) => {
+                waiting();
+                lock.lock().map_err(|err| self.key_lock_failure(err))?;
             }
+            Err(fs::TryLockError::Error(err)) => return Err(self.key_lock_failure(err)),
         }
         Ok(HeldKey {
             key: self.load_key()?,

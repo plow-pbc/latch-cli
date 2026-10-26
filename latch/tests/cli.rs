@@ -4575,6 +4575,62 @@ fn exec_true_with(from: &Path, args: &[&str]) {
     assert!(output.status.success(), "{output:?}");
 }
 
+/// An exec on `host` (whose home is `home`) that runs from when it makes
+/// `home/marks/NAME.running` until the test makes `NAME.release` beside it.
+struct Held {
+    running: PathBuf,
+    release: PathBuf,
+    child: std::process::Child,
+}
+
+impl Held {
+    fn start(from: &Path, home: &Path, name: &str) -> Held {
+        let marks = home.join("marks");
+        fs::create_dir_all(&marks).unwrap();
+        let mark = marks.join(name);
+        let script = r#"touch "$1.running"; while [ ! -e "$1.release" ]; do sleep 0.05; done"#;
+        let args = [
+            "exec",
+            "--host",
+            "host",
+            "--write",
+            marks.to_str().unwrap(),
+            "--timeout",
+            "300",
+            "--",
+            "sh",
+            "-c",
+            script,
+            "held",
+            mark.to_str().unwrap(),
+        ];
+        let child = latch_command(from, &args, &[])
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let held = Held {
+            running: mark.with_extension("running"),
+            release: mark.with_extension("release"),
+            child,
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while !held.running.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the held exec never ran"
+            );
+            thread::sleep(std::time::Duration::from_millis(20));
+        }
+        held
+    }
+
+    /// Lets it end; it must have worked.
+    fn release(mut self) {
+        fs::write(&self.release, "").unwrap();
+        assert!(exits_within(&mut self.child, 20).success());
+    }
+}
+
 /// A host that starts while a command on its machine dials another host
 /// directly waits for that call, saying why; a direct follow, which would
 /// never end, makes way for it within moments.
@@ -4591,15 +4647,7 @@ fn a_starting_host_waits_for_a_direct_call_and_a_direct_follow_makes_way() {
         .unwrap();
     let mut lines = BufReader::new(direct_follow.stdout.take().unwrap()).lines();
     while !lines.next().unwrap().unwrap().contains("caught_up") {}
-    let direct_exec = latch_command(
-        &owners.studio,
-        &["exec", "--host", "host", "--", "sleep", "5"],
-        &[],
-    )
-    .stdout(std::process::Stdio::piped())
-    .spawn()
-    .unwrap();
-    thread::sleep(std::time::Duration::from_millis(1000));
+    let direct_exec = Held::start(&owners.studio, owners.dir.path(), "direct");
 
     let starting = std::time::Instant::now();
     let studio = owners.studio.clone();
@@ -4639,8 +4687,7 @@ fn a_starting_host_waits_for_a_direct_call_and_a_direct_follow_makes_way() {
             .contains("waiting for latch commands"),
         "{hosting}"
     );
-    let exec = direct_exec.wait_with_output().unwrap();
-    assert!(exec.status.success(), "{exec:?}");
+    direct_exec.release();
     let (serve, _log, lines) = started.join().unwrap();
     until_serving(&owners.studio, &serve);
     assert!(
@@ -4712,22 +4759,23 @@ fn a_command_never_dials_around_a_host_that_holds_the_key() {
     assert!(refused("older") < std::time::Duration::from_secs(3));
     drop(serve_lock);
 
-    // A host stopping: it drains a call it is carrying, and takes no other.
-    let (mut studio, _) = owners.serve_logged(&owners.studio);
-    let mut carried = latch_command(
-        &owners.studio,
-        &["exec", "--host", "host", "--", "sleep", "4"],
-        &[],
-    )
-    .stdout(std::process::Stdio::piped())
-    .spawn()
-    .unwrap();
-    thread::sleep(std::time::Duration::from_millis(1500));
+    // A host stopping takes no new call. One it carries keeps it stopping
+    // until the drain cuts it off.
+    let (mut studio, log) = owners.serve_logged(&owners.studio);
+    let carried = Held::start(&owners.studio, owners.dir.path(), "carried");
     // SAFETY: signals our own child.
     unsafe { libc::kill(studio.0.id() as i32, libc::SIGTERM) };
-    thread::sleep(std::time::Duration::from_millis(300));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while log.count("stopping: signal received") == 0 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the host never began to stop"
+        );
+        thread::sleep(std::time::Duration::from_millis(20));
+    }
     refused("stopping");
-    assert!(carried.wait().unwrap().success());
+    let mut carried = carried.child;
+    assert_eq!(exits_within(&mut carried, 30).code(), Some(5));
     exits_within(&mut studio.0, 30);
 
     // The other host never heard from studio but for the carried call.
@@ -8653,6 +8701,35 @@ mod scenario {
 #[cfg(any(target_os = "macos", feature = "systemd-tests"))]
 mod lifecycle {
     use super::*;
+
+    /// A detached host that waits past `serve -d`'s minute for a direct call
+    /// is left to start: `serve -d` says so, and it serves once the call ends.
+    #[test]
+    fn a_host_waiting_past_serve_d_for_a_direct_call_starts_once_it_ends() {
+        let owners = Owners::start();
+        let _host = owners.serve(&owners.host);
+        let _managed = Managed(owners.studio.clone());
+        let long = Held::start(&owners.studio, owners.dir.path(), "long");
+        let env = [("LATCH_TEST_RELAY_URL", Path::new(&owners.relay))];
+        let started = latch(&owners.studio, &["serve", "-d"], &env);
+        let error = &one_error_line(&String::from_utf8_lossy(&started.stderr), Some(1))["error"];
+        assert_eq!(error["code"], "serve_failed", "{error}");
+        let message = error["message"].as_str().unwrap();
+        assert!(
+            message.contains("starts by itself once they end"),
+            "{message}"
+        );
+        assert!(registered(&owners.studio), "its service was removed");
+        assert_eq!(local_serve(&owners.studio)["state"], "starting");
+
+        long.release();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while local_serve(&owners.studio)["state"] != "serving" {
+            assert!(std::time::Instant::now() < deadline, "it never started");
+            thread::sleep(std::time::Duration::from_millis(100));
+        }
+        exec_true(&owners.laptop, "studio");
+    }
 
     /// An update restarts a managed host (`stop`, a gap, `serve -d
     /// --again`) while a follow of another host runs through it, as the Mac
