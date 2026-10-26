@@ -412,6 +412,47 @@ async fn the_four_sources_and_the_layers_that_read_them() {
     );
 }
 
+/// The decision model, noting the Plow requests already seen when the
+/// rules layer is asked.
+struct Watching {
+    model: Arc<Recorder>,
+    seen: Arc<Mutex<Vec<String>>>,
+    at_rules_layer: Mutex<Option<Vec<String>>>,
+}
+
+impl Provider for Watching {
+    fn ask<'a>(&'a self, _: &'a Value, _: &'a [Question]) -> Asked<'a> {
+        unreachable!("the gatekeeper sends its state as written")
+    }
+
+    fn ask_as_written<'a>(&'a self, state: &'a RawValue, questions: &'a [Question]) -> Asked<'a> {
+        if is_rules_layer(&system_one(questions)) {
+            *self.at_rules_layer.lock().unwrap() = Some(self.seen.lock().unwrap().clone());
+        }
+        self.model.ask_as_written(state, questions)
+    }
+}
+
+#[tokio::test]
+async fn the_rules_layer_is_asked_while_the_chat_is_read() {
+    let (plow, seen) = plow(one_chat());
+    let watching = Arc::new(Watching {
+        model: Recorder::answering(0.9, 0.05, 0.05),
+        seen: seen.clone(),
+        at_rules_layer: Mutex::new(None),
+    });
+    let judgment = Gatekeeper::new(plow, watching.clone(), Box::new(host_rules()))
+        .judge(AGENT_CALLER, &order())
+        .await;
+    assert!(judgment.verdict.is_ok());
+    assert!(seen.lock().unwrap().iter().any(|r| r.contains("/messages")));
+    let at_rules_layer = watching.at_rules_layer.lock().unwrap().clone().unwrap();
+    assert!(
+        !at_rules_layer.iter().any(|r| r.contains("/messages")),
+        "{at_rules_layer:?}"
+    );
+}
+
 #[tokio::test]
 async fn a_chat_must_be_named_when_there_are_several_and_must_be_the_agents() {
     let mut world = one_chat();
@@ -426,7 +467,8 @@ async fn a_chat_must_be_named_when_there_are_several_and_must_be_the_agents() {
         vec![message("e1", owner(), "buy it", 5)],
     );
 
-    // Several chats and none named: refused, rules or not, model unasked.
+    // Several chats and none named: refused, rules or not; the rules
+    // layer, asked meanwhile, unheeded.
     let model = Recorder::answering(0.9, 0.05, 0.05);
     let judgment = gatekeeper(world.clone(), &model, host_rules())
         .judge(AGENT_CALLER, &order())
@@ -449,7 +491,7 @@ async fn a_chat_must_be_named_when_there_are_several_and_must_be_the_agents() {
         "{}",
         failure.message
     );
-    assert_eq!(model.calls(), 0);
+    unheeded(&judgment.gate, &model);
 
     // Named: that chat is read.
     let judgment = gatekeeper(world.clone(), &model, host_rules())
@@ -478,7 +520,7 @@ async fn a_chat_must_be_named_when_there_are_several_and_must_be_the_agents() {
             )
             .await;
         assert_eq!(code(&judgment), "which_chat", "{wrong}");
-        assert_eq!(model.calls(), 0);
+        unheeded(&judgment.gate, &model);
     }
 }
 
@@ -497,7 +539,7 @@ async fn a_failed_read_refuses_and_never_falls_back_to_the_rules() {
             .await;
         assert_eq!(code(&judgment), "gatekeeper_unavailable", "{broken}");
         assert_eq!(judgment.verdict.unwrap_err().exit, Exit::Unreachable);
-        assert_eq!(model.calls(), 0, "{broken}");
+        unheeded(&judgment.gate, &model);
     }
 
     let model = Recorder::answering(0.9, 0.05, 0.05);
@@ -507,6 +549,36 @@ async fn a_failed_read_refuses_and_never_falls_back_to_the_rules() {
     assert_eq!(code(&judgment), "gatekeeper_unavailable");
     assert!(judgment.verdict.unwrap_err().message.contains("rules"));
     assert_eq!(model.calls(), 0);
+
+    // Neither readable: the chat's failure is the one reported.
+    let mut world = one_chat();
+    world.add("chat_b", LINE, vec![]);
+    let judgment = gatekeeper(world, &model, Unreadable)
+        .judge(AGENT_CALLER, &order())
+        .await;
+    assert_eq!(code(&judgment), "which_chat");
+    assert_eq!(model.calls(), 0);
+}
+
+/// A refusal for a chat that could not be read: only the rules layer was
+/// asked, while the chat was read, and its answer is in neither the
+/// verdict nor the record.
+fn unheeded(gate: &Value, model: &Recorder) {
+    let asked = model.asked.lock().unwrap();
+    assert!(
+        asked.iter().all(|(_, questions)| is_rules_layer(questions)),
+        "the chat layer is never asked"
+    );
+    for field in [
+        "layers",
+        "decided_by",
+        "p",
+        "source",
+        "rules",
+        "chat_read_ms",
+    ] {
+        assert!(gate.get(field).is_none(), "{field}: {gate}");
+    }
 }
 
 #[tokio::test]
@@ -808,16 +880,12 @@ async fn judge_held_out(
         agent: None,
     };
     let gatekeeper = Gatekeeper::new(plow, provider, Box::new(rules.clone()));
-    let intent = Intent {
-        owner: false,
-        conversation: chat::read(&gatekeeper.plow, AGENT, None).await.unwrap(),
-        rules,
-    };
+    let chat = chat::read(&gatekeeper.plow, AGENT, None);
     let action = RawValue::from_string(probe["action"].as_str().unwrap().to_string()).unwrap();
     let clock = probe["clock_text"].as_str().unwrap();
     let mut gate = json!({});
     let verdict = gatekeeper
-        .consider(&intent, now, clock, &action, &mut gate)
+        .consider(false, Ok(rules), Some(chat), now, clock, &action, &mut gate)
         .await;
     (verdict, gate)
 }

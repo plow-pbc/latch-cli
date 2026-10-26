@@ -281,81 +281,103 @@ impl Gatekeeper {
         action: &RawValue,
         gate: &mut Value,
     ) -> Result<(), Failure> {
-        let conversation = match caller {
-            Caller::Agent { uid, chat } => {
-                let reading = Instant::now();
-                let conversation = chat::read(&self.plow, uid, chat).await?;
-                gate["chat_read_ms"] = json!(reading.elapsed().as_millis() as u64);
-                conversation
-            }
-            Caller::Owner | Caller::OwnerOnHost | Caller::RulesLayer { .. } => None,
-        };
         // The owner's key is no agent uid: only the host's rules apply.
         let rules = self
             .rules
             .rules(caller.key())
-            .map_err(|why| unavailable(&format!("the owner's rules could not be read: {why}")))?;
-        let intent = Intent {
-            owner: matches!(caller, Caller::Owner | Caller::OwnerOnHost),
-            conversation,
-            rules,
+            .map_err(|why| unavailable(&format!("the owner's rules could not be read: {why}")));
+        let chat = match caller {
+            Caller::Agent { uid, chat } => Some(chat::read(&self.plow, uid, chat)),
+            Caller::Owner | Caller::OwnerOnHost | Caller::RulesLayer { .. } => None,
         };
+        let owner = matches!(caller, Caller::Owner | Caller::OwnerOnHost);
         let now = jiff::Zoned::now();
         let clock = now.strftime("%a %Y-%m-%d %H:%M %Z").to_string();
-        self.consider(&intent, now.timestamp(), &clock, action, gate)
+        self.consider(owner, rules, chat, now.timestamp(), &clock, action, gate)
             .await
     }
 
-    /// The verdict on `action` from `intent`, read at `now`: an owner's call
-    /// is asked once; an agent's in its layers, the rules layer always and
-    /// the chat layer when there is a chat.
+    /// The verdict on `action` by the owner or an agent with `rules`, read
+    /// at `now`: an owner's call is asked once; an agent's in its layers,
+    /// the rules layer always and the chat layer when `chat`, read while
+    /// the rules layer is asked, finds one. A chat that could not be read
+    /// refuses, whatever the rules layer says.
+    #[allow(clippy::too_many_arguments)]
     async fn consider(
         &self,
-        intent: &Intent,
+        owner: bool,
+        rules: Result<Rules, Failure>,
+        chat: Option<impl Future<Output = Result<Option<Conversation>, Failure>>>,
         now: Timestamp,
         clock: &str,
         action: &RawValue,
         gate: &mut Value,
     ) -> Result<(), Failure> {
-        let rules = &intent.rules;
-        if !rules.is_empty() {
-            gate["rules"] = json!({
+        let rules = match rules {
+            Ok(rules) => rules,
+            // The chat's failure, if it has one, is the one to report.
+            Err(failure) => {
+                if let Some(chat) = chat {
+                    read(chat, gate).await?;
+                }
+                return Err(failure);
+            }
+        };
+        let hashes = (!rules.is_empty()).then(|| {
+            json!({
                 "host": rules.host.as_deref().map(sha256),
                 "agent": rules.agent.as_deref().map(sha256),
-            });
-        }
-        if intent.owner {
+            })
+        });
+        if owner {
+            if let Some(hashes) = hashes {
+                gate["rules"] = hashes;
+            }
             gate["source"] = json!("owner_request");
-            let p = self.ask(intent, &ASKED, now, clock, action, gate).await?;
+            let intent = Intent {
+                owner: true,
+                conversation: None,
+                rules,
+            };
+            let p = self.ask(&intent, &ASKED, now, clock, action, gate).await?;
             return owner_verdict(p);
         }
-        gate["source"] = json!(match (&intent.conversation, rules.is_empty()) {
-            (Some(_), true) => "chat",
-            (Some(_), false) => "chat_and_rules",
-            (None, false) => "rules",
-            // Neither chat nor rules: the built-in policy alone.
-            (None, true) => "defaults",
-        });
         let alone = Intent {
             owner: false,
             conversation: None,
-            rules: rules.clone(),
+            rules,
         };
         let mut rules_call = json!({});
         let mut chat_call = json!({});
-        let (by_rules, by_chat) = match &intent.conversation {
-            None => {
-                let by_rules = self.ask(&alone, &RULES_LAYER, now, clock, action, &mut rules_call);
-                (by_rules.await, None)
-            }
-            Some(_) => {
-                let (by_rules, by_chat) = tokio::join!(
-                    self.ask(&alone, &RULES_LAYER, now, clock, action, &mut rules_call),
-                    self.ask(intent, &ASKED, now, clock, action, &mut chat_call),
-                );
-                (by_rules, Some(by_chat))
-            }
+        let by_rules = async {
+            Ok(self
+                .ask(&alone, &RULES_LAYER, now, clock, action, &mut rules_call)
+                .await)
         };
+        let by_chat = async {
+            let Some(chat) = chat else { return Ok(None) };
+            let Some(conversation) = read(chat, gate).await? else {
+                return Ok(None);
+            };
+            let intent = Intent {
+                owner: false,
+                conversation: Some(conversation),
+                rules: alone.rules.clone(),
+            };
+            let p = self.ask(&intent, &ASKED, now, clock, action, &mut chat_call);
+            Ok(Some(p.await))
+        };
+        let (by_rules, by_chat) = tokio::try_join!(by_rules, by_chat)?;
+        if let Some(hashes) = hashes {
+            gate["rules"] = hashes;
+        }
+        gate["source"] = json!(match (by_chat.is_some(), alone.rules.is_empty()) {
+            (true, true) => "chat",
+            (true, false) => "chat_and_rules",
+            (false, false) => "rules",
+            // Neither chat nor rules: the built-in policy alone.
+            (false, true) => "defaults",
+        });
 
         // The record: the chat shown, each layer's call, and their total.
         let mut layers = json!({"rules": rules_call});
@@ -477,6 +499,17 @@ impl Gatekeeper {
             json!({"COVERED": p.covered, "NOT_COVERED": p.not_covered, "FORBIDDEN": p.forbidden});
         Ok(p)
     }
+}
+
+/// The chat `chat` reads, its read time recorded in `gate`.
+async fn read(
+    chat: impl Future<Output = Result<Option<Conversation>, Failure>>,
+    gate: &mut Value,
+) -> Result<Option<Conversation>, Failure> {
+    let reading = Instant::now();
+    let conversation = chat.await?;
+    gate["chat_read_ms"] = json!(reading.elapsed().as_millis() as u64);
+    Ok(conversation)
 }
 
 /// One judgment's answer: the model's probabilities.
