@@ -345,7 +345,10 @@ fn pinned_helpers(state_dir: &Path) -> [PathBuf; 4] {
 /// a host (perhaps another latch's, using what this one would remove) or
 /// anything else: nothing is removed, and `held_by` says who holds it.
 pub fn prune_alone(state_dir: &Path) -> Result<Value, Failure> {
-    if !state_dir.join("plugins").is_dir() {
+    // A folder with no latch.json yet is a first install's: no host has run
+    // on it, and holding it would leave a serve.lock that its first login
+    // refuses as unmarked state.
+    if !state_dir.join("plugins").is_dir() || !state_dir.join("latch.json").is_file() {
         return Ok(json!({"removed": []}));
     }
     // Another command lets go once it is done; a host never does.
