@@ -342,9 +342,6 @@ final class ScreenController: NSViewController {
 /// The bar over a host's screen: its screen tabs, and the search of the
 /// screen showing, on Activity (its requests) and Vault (its items).
 final class ContentBar: NSView {
-    /// The tabs in Liquid Glass (`NSGlassEffectView`) instead of plain.
-    private static let glassTabs = false
-
     var pick: (HostScreen) -> Void = { _ in }
     var search: (String) -> Void = { _ in }
     private let tabs = NSSegmentedControl(labels: HostScreen.allCases.map(\.title), trackingMode: .selectOne, target: nil, action: nil)
@@ -358,14 +355,7 @@ final class ContentBar: NSView {
         tabs.refusesFirstResponder = true
         field.target = self
         field.action = #selector(searched)
-        var shown: NSView = tabs
-        if Self.glassTabs {
-            let glass = NSGlassEffectView()
-            glass.contentView = tabs
-            glass.cornerRadius = 16
-            shown = glass
-        }
-        for view in [shown, field] {
+        for view in [tabs, field] {
             view.translatesAutoresizingMaskIntoConstraints = false
             addSubview(view)
         }
@@ -376,11 +366,11 @@ final class ContentBar: NSView {
         preferred.priority = .defaultLow
         NSLayoutConstraint.activate([
             heightAnchor.constraint(equalToConstant: 40),
-            shown.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 20),
-            shown.centerYAnchor.constraint(equalTo: centerYAnchor),
+            tabs.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 20),
+            tabs.centerYAnchor.constraint(equalTo: centerYAnchor),
             field.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -20),
             field.centerYAnchor.constraint(equalTo: centerYAnchor),
-            field.leadingAnchor.constraint(greaterThanOrEqualTo: shown.trailingAnchor, constant: 12),
+            field.leadingAnchor.constraint(greaterThanOrEqualTo: tabs.trailingAnchor, constant: 12),
             field.widthAnchor.constraint(lessThanOrEqualToConstant: 200),
             preferred,
         ])
