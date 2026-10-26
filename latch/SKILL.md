@@ -109,15 +109,24 @@ shell-expanded arguments are visible in the trusted host's process list.
 ## The gatekeeper judges your calls
 
 Everyday work for the owner needs no request: looking things up
-(calendar, email, messages, contacts, files) and creating or editing their
-ordinary files. Anything riskier needs the owner's OK, in their rules on
-the host or their Plow chat with you: sending or posting, buying or paying,
-deleting, changing a calendar, an account or a shared system, installing or
-running software from the internet, giving a command network access,
-reading passwords, keys or other secrets, and sending files or data off the
-machine. An OK to read something isn't an OK to change it. Respect a "do
-not" in either, everyday work included. Connector, path and sandbox limits
-apply either way.
+(calendar, email, messages, contacts, files, the web); working on their own
+files and projects (creating, editing, moving and organizing files, running
+a project's builds, tests and scripts, installing the packages it already
+lists, with network); deleting temporary files and build output or moving
+files to the Trash; archiving email or marking it read; calendar entries
+that invite no one; drafts; and filling a saved login into its own site.
+Other work needs the owner's OK, in their rules on the host or their Plow
+chat with you: sending email or messages, inviting or answering people,
+posting, deleting or overwriting their other files, email or events, adding
+a package or installing software, pushing code, and changing settings,
+accounts or shared systems. Paying, reading secrets, sending their files or
+data off the machine, running downloaded code, deleting folders or many
+files, and mail rules that act later need an OK that names them. An OK to
+read something isn't an OK to change it, and a rule that allows one thing
+doesn't take everyday work away elsewhere. Respect a "do not", "never",
+"only" or "keep … inside" in either, everyday work included, and a "stop"
+or "wait for me" in chat. Connector, path and sandbox limits apply either
+way.
 An agent whose line has several Plow chats selects the one it acts for
 with `--plow-chat C` or `LATCH_PLOW_CHAT` on exec, file, Google, Messages,
 Contacts and browser session calls. Exit 2, `which_chat`, lists the choices;

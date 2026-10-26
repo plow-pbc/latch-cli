@@ -324,7 +324,7 @@ async fn a_chat_too_long_to_fit_keeps_its_newest_messages_and_says_so() {
     assert_eq!(window["last"], "m399", "the newest message is kept");
     assert_eq!(window["truncated"], true);
     assert!(window["count"].as_u64().unwrap() < 100);
-    assert!(request_size(&state, &questions(&ASKED)) <= REQUEST_BUDGET);
+    assert!(request_size(&state, &questions(&CHAT_LAYER)) <= REQUEST_BUDGET);
 }
 
 #[tokio::test]
@@ -522,7 +522,7 @@ async fn the_answer_decides_allow_ask_or_stop_and_a_failed_model_refuses() {
     assert_eq!(judgment.gate["decided_by"], "rules");
     let p = json!({"COVERED": 0.5, "NOT_COVERED": 0.3, "FORBIDDEN": 0.2});
     assert_eq!(judgment.gate["p"], p);
-    for (layer, prompt) in [("rules", &RULES_LAYER), ("chat", &ASKED)] {
+    for (layer, prompt) in [("rules", &RULES_LAYER), ("chat", &CHAT_LAYER)] {
         let call = &judgment.gate["layers"][layer];
         assert_eq!(call["p"], p, "{layer}");
         assert_eq!(call["says"], "allow", "{layer}");
@@ -531,10 +531,13 @@ async fn the_answer_decides_allow_ask_or_stop_and_a_failed_model_refuses() {
         assert_eq!(call["cost"], 0.0003, "{layer}");
         assert_eq!(call["prompt"], prompt.id(), "{layer}");
     }
-    assert_ne!(RULES_LAYER.id(), ASKED.id());
+    assert_ne!(RULES_LAYER.id(), CHAT_LAYER.id());
+    assert_ne!(CHAT_LAYER.id(), ASKED.id());
 
     for (p, reason) in [
-        ([0.45, 0.4, 0.15], "not_covered"),
+        ([0.45, 0.41, 0.14], "not_covered"),
+        // The chat layer's veto at 0.15 FORBIDDEN.
+        ([0.45, 0.4, 0.15], "owner_said_no"),
         ([0.2, 0.4, 0.4], "owner_said_no"),
     ] {
         let model = Recorder::answering(p[0], p[1], p[2]);
@@ -551,13 +554,13 @@ async fn the_answer_decides_allow_ask_or_stop_and_a_failed_model_refuses() {
     }
 
     // An agent is sent to the owner's chat.
-    let model = Recorder::answering(0.45, 0.4, 0.15);
+    let model = Recorder::answering(0.45, 0.41, 0.14);
     let judgment = gatekeeper(one_chat(), &model, Rules::default())
         .judge(AGENT_CALLER, &order())
         .await;
     assert_eq!(
         judgment.gate["rule"],
-        "refused when a layer forbids; else allowed when a layer is within instructions >= 0.50"
+        "refused when a layer forbids (chat also at forbidden >= 0.15); else allowed when a layer is within instructions >= 0.50"
     );
     assert!(
         judgment
@@ -589,6 +592,11 @@ async fn the_answer_decides_allow_ask_or_stop_and_a_failed_model_refuses() {
             assert!(
                 rules_of_judgment
                     .contains("Judge only whether the owner's rules on this host forbid it")
+            );
+            let asked = model.asked.lock().unwrap()[0].1.clone();
+            assert_eq!(
+                asked["decision"]["criteria"]["FORBIDDEN"], ASKED.forbidden,
+                "the owner's call is asked as before, not as an agent's chat"
             );
             // The record says the rule this was held to.
             assert_eq!(
@@ -644,6 +652,30 @@ fn a_layer_allows_at_one_half_and_vetoes_where_forbidden_outweighs_the_rest() {
 }
 
 #[test]
+fn the_chat_layer_allows_first_and_then_also_vetoes_at_fifteen_percent() {
+    let p = |covered, not_covered, forbidden| P {
+        covered,
+        not_covered,
+        forbidden,
+    };
+    assert_eq!(
+        p(0.5, 0.2, 0.3).chat_says(),
+        Says::Allow,
+        "0.50 allows first"
+    );
+    assert_eq!(p(0.5, 0.0, 0.5).chat_says(), Says::Allow);
+    assert_eq!(p(0.49, 0.36, 0.15).chat_says(), Says::Veto);
+    assert_eq!(
+        p(0.49, 0.36, 0.15).says(),
+        Says::Neither,
+        "only the chat layer vetoes at 0.15"
+    );
+    assert_eq!(p(0.49, 0.37, 0.14).chat_says(), Says::Neither);
+    assert_eq!(p(0.3, 0.35, 0.35).chat_says(), Says::Veto, "as any layer");
+    assert_eq!(p(0.0, 1.0, 0.0).chat_says(), Says::Neither);
+}
+
+#[test]
 fn either_layers_veto_refuses_before_either_layers_allow() {
     use Says::{Allow, Neither, Veto};
     let reason = |rules, chat| match agent_verdict(rules, chat) {
@@ -673,12 +705,18 @@ async fn the_layers_judge_apart_and_the_verdict_follows_the_rule() {
     let allow = [0.9, 0.05, 0.05];
     let neither = [0.2, 0.7, 0.1];
     let veto = [0.1, 0.2, 0.7];
+    // A stop the judge finds only possible, and an allow it is just sure of.
+    let unsure_stop = [0.3, 0.55, 0.15];
+    let allow_despite = [0.5, 0.2, 0.3];
     for (rules, chat, expected, decided_by) in [
         (allow, neither, "allow", "rules"),
         (neither, allow, "allow", "chat"),
         (neither, neither, "not_covered", "rules"),
         (veto, allow, "owner_said_no", "rules"),
         (allow, veto, "owner_said_no", "chat"),
+        (allow, unsure_stop, "owner_said_no", "chat"),
+        (unsure_stop, allow, "allow", "chat"),
+        (neither, allow_despite, "allow", "chat"),
     ] {
         let model = Recorder::layers(Some(rules), Some(chat));
         let judgment = gatekeeper(one_chat(), &model, host_rules())

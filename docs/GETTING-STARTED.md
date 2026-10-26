@@ -288,17 +288,24 @@ first, made on one of your free lines.
    every command the agent runs; latch does not copy the credential into the
    state folder.
 
-**What the agent gets.** Your agents can look things up in your calendar,
-email, messages and files, and create or edit ordinary files, without waiting
-for another request; what they read goes back to the agent. Riskier actions
-(sending, buying, deleting, changing calendars or shared systems, giving a
-program internet access, accessing secrets or sending data elsewhere) need
-permission in your rules or your Plow chat with the agent ("yes, email Jordan
-the update"). The gatekeeper checks your rules on their own, and separately
-what you've told the agent in chat. Your rules remain in force when you ask in
-chat, and they can restrict everyday work too ("Do not read or search this
-Mac's Messages"). Rules are owner only, run on the host itself or from one of
-your machines with `--host`:
+**What the agent gets.** Your agents do everyday work without waiting for
+another request: looking things up in your calendar, email, messages, files
+and on the web; working on your own files and projects, their builds, tests
+and listed packages included; clearing temporary files and build output;
+archiving email; adding calendar entries that invite no one; and writing
+drafts. What they read goes back to the agent. Sending, inviting, deleting or
+overwriting your other things, installing software, pushing code and changing
+settings need permission in your rules or your Plow chat with the agent ("yes,
+email Jordan the update"). Paying, reading secrets, sending your files or data
+elsewhere, running downloaded code and mass deletes need a rule or message
+that names them. The gatekeeper checks your rules on their own, and
+separately what you've told the agent in chat.
+
+A rule that allows something only adds: "Agents may run tests in ~/work"
+leaves tests elsewhere allowed. To restrict, say so ("Do not read or search
+this Mac's Messages", "Only change files in ~/work"); a restriction holds for
+everyday work too, and asking in chat doesn't lift it. Rules are owner only,
+run on the host itself or from one of your machines with `--host`:
 
 ```sh
 latch rules edit                          # opens $EDITOR; on the host itself
