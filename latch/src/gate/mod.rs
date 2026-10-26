@@ -67,10 +67,21 @@ const RULES_OF_JUDGMENT: [&str; 5] = [
     "Rules on the host are the owner's standing limits; a chat message does not lift a host rule's prohibition.",
 ];
 const EXEC_PERMISSIONS: &str = "Judge an exec's argv and working folder together with its resolved write paths and network flag: those permissions must fit what the owner asked. The command can read the host's home except ~/.latch, the host's own state directory and, on macOS, Library except Caches. Secret environment values are hidden; their names and lengths are shown. A secret need not be a credential: names like *_COMMAND, NODE_OPTIONS, BASH_ENV, PYTHONSTARTUP and GIT_CONFIG_* can make a program execute the hidden value or load code. Consider what each variable does and whether the owner authorized that hidden behavior with the requested permissions.";
-/// Added to the rules of judgment for an action that fills from the vault:
-/// what a fill does (`browser::fill`), so that using a saved login on its
+/// What a fill does (`browser::fill`), so that using a saved login on its
 /// own site is not read as handing over the password.
-const VAULT_FILL: &str = "A vault fill (a vault_fill action, or the items a browser plan may_fill) puts values saved in the owner's vault into fields on a web page. latch sets them in the page itself and the agent never receives them; for a password, latch also presses the form's button and keeps the agent out of the browser session until the values have left the page. An item's sites are the sites it is saved for, and a saved login fills only on them (or on a page under one of its other_top_sites). That says where a login may be filled, not that it may be used: a saved-login fill needs the owner's OK, from their rules or their own messages, and with no chat the rules decide. Filling the owner's saved login into one of its own sites, for something the owner wants done there, uses the login as the owner saved it: it is not reading, revealing or sharing a password. Revealing, copying or exporting a saved value, or filling a login into a site that is not one of its own, still is.";
+macro_rules! vault_fill {
+    () => {
+        "A vault fill (a vault_fill action, or the items a browser plan may_fill) puts values saved in the owner's vault into fields on a web page. latch sets them in the page itself and the agent never receives them; for a password, latch also presses the form's button and keeps the agent out of the browser session until the values have left the page. An item's sites are the sites it is saved for, and a saved login fills only on them (or on a page under one of its other_top_sites). That says where a login may be filled, not that it may be used: a saved-login fill needs the owner's OK, from their rules or their own messages, and with no chat the rules decide. Filling the owner's saved login into one of its own sites, for something the owner wants done there, uses the login as the owner saved it: it is not reading, revealing or sharing a password. Revealing, copying or exporting a saved value, or filling a login into a site that is not one of its own, still is."
+    };
+}
+/// Added to the rules of judgment for an action that fills from the vault.
+const VAULT_FILL: &str = vault_fill!();
+/// The same, for the owner's messages: asking for something done on a
+/// site is the OK to sign in there.
+const VAULT_FILL_ASKED: &str = concat!(
+    vault_fill!(),
+    " When the owner asked for something to be done on a site, signing in there with the login saved for it is a plain step of that request and covered by it, unless they said not to."
+);
 /// Added to the rules of judgment when the owner is the caller.
 const OWNER_CALLS: &str = "The caller is the owner, at one of their own machines: the proposed action is the owner's own request. Judge only whether the owner's rules on this host forbid it; if a rule plausibly applies, choose FORBIDDEN.";
 /// Added to the rules of judgment only when the judge sees host rules: a
@@ -101,7 +112,7 @@ const ASKED: Prompt = Prompt {
     forbidden: "The owner said not to, cancelled or withdrew it, or the owner's rules forbid it.",
     name_tasks: RULES_NAME_TASKS,
     exec: EXEC_PERMISSIONS,
-    vault_fill: VAULT_FILL,
+    vault_fill: VAULT_FILL_ASKED,
 };
 
 /// An agent's rules layer, asked with no chat: everyday work needs no

@@ -755,17 +755,23 @@ async fn a_fill_from_the_vault_is_judged_knowing_what_a_fill_does() {
         gatekeeper(one_chat(), &model, host_rules())
             .judge(AGENT_CALLER, &action)
             .await;
-        // Both layers are told, as the owner is.
-        for state in [model.rules_state(), model.chat_state()] {
-            let rules_of_judgment = state["rules_of_judgment"].to_string();
-            assert_eq!(rules_of_judgment.contains(VAULT_FILL), told, "{action}");
-        }
+        // Both layers are told, as the owner is; the owner's messages also
+        // that a request on a site covers signing in there.
+        let rules = model.rules_state()["rules_of_judgment"].to_string();
+        assert_eq!(rules.contains(VAULT_FILL), told, "{action}");
+        assert!(!rules.contains(VAULT_FILL_ASKED), "{action}");
+        let chat = model.chat_state()["rules_of_judgment"].to_string();
+        assert_eq!(chat.contains(VAULT_FILL_ASKED), told, "{action}");
         let model = Recorder::answering(0.9, 0.05, 0.05);
         gatekeeper(one_chat(), &model, host_rules())
             .judge(Caller::Owner, &action)
             .await;
         let rules_of_judgment = model.state()["rules_of_judgment"].to_string();
-        assert_eq!(rules_of_judgment.contains(VAULT_FILL), told, "{action}");
+        assert_eq!(
+            rules_of_judgment.contains(VAULT_FILL_ASKED),
+            told,
+            "{action}"
+        );
     }
 }
 

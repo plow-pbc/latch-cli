@@ -180,8 +180,9 @@ model, through Plow on the host's own Plow login, whether it may run.
   for and the fields mapped, never their values. It is told what a fill
   does: the agent never receives the values, and a saved login fills only
   on its own sites. A matching site says where a login may go, not that
-  it may be used: signing in still needs your OK, in a rule or the chat.
-  With that OK, signing in on the login's own site isn't judged as
+  it may be used: signing in still needs your OK, in a rule or the chat,
+  where asking for something to be done on a site covers signing in
+  there. With that OK, signing in on the login's own site isn't judged as
   sharing the password; revealing or copying a value, or filling it
   elsewhere, still is. For `--secret-env` it sees only names and lengths.
   It runs at Plow, so keep credentials out of arguments.
