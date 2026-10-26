@@ -5,6 +5,11 @@
 //! from a fixed folder. A state folder goes to the app as the installer
 //! passes it (`open APP --args --state-dir ABS`), absolute, since the app
 //! runs from another folder.
+//!
+//! `open` hands arguments only to an app it starts: one already open just
+//! comes to the front, on the folder it has. The app shows one state
+//! folder and runs one copy, so a `latch app` naming another folder than
+//! the open app's is refused rather than said to have opened it.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -12,6 +17,7 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 
 use crate::failure::{Failure, code};
+use crate::state::StateDir;
 
 /// What `latch app` prints: the app it opened, and the state folder it
 /// handed it, if any.
@@ -27,6 +33,13 @@ pub fn open(state_dir: Option<PathBuf>) -> Result<Opened, Failure> {
     let exe = std::env::current_exe()
         .map_err(|err| Failure::new(code::io_error, format!("can't find this latch: {err}")))?;
     let (opened, args) = opening(std::env::consts::OS, &exe, state_dir)?;
+    if let Some(wanted) = &opened.state_dir {
+        let exe = std::fs::canonicalize(&exe).unwrap_or(exe);
+        let default = StateDir::new(crate::cli::BUILD_STATE_DIR.map(PathBuf::from))?.path;
+        if let Some(other) = open_elsewhere(&running(&exe), wanted, &default) {
+            return Err(open_on(&opened.app, &other, wanted));
+        }
+    }
     let output = std::process::Command::new("open")
         .args(&args)
         .output()
@@ -84,6 +97,69 @@ fn bundle_of(exe: &Path) -> Option<PathBuf> {
     let is_app = app.extension().is_some_and(|ext| ext == "app");
     (macos.file_name()? == "MacOS" && contents.file_name()? == "Contents" && is_app)
         .then(|| app.to_path_buf())
+}
+
+/// The state folders of this app's open copies, as `ps` lists them: a
+/// LaunchServices launch runs `exe` itself, with no arguments or exactly
+/// `--state-dir PATH`. `None` is one on no named folder.
+fn running(exe: &Path) -> Vec<Option<PathBuf>> {
+    let listing = std::process::Command::new("/bin/ps")
+        .args(["-axww", "-o", "command="])
+        .output()
+        .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+        .unwrap_or_default();
+    copies(&listing, exe)
+}
+
+fn copies(listing: &str, exe: &Path) -> Vec<Option<PathBuf>> {
+    let exe = exe.to_string_lossy();
+    listing
+        .lines()
+        .filter_map(|line| {
+            let rest = line.trim().strip_prefix(exe.as_ref())?;
+            match rest.strip_prefix(" --state-dir ") {
+                _ if rest.is_empty() => Some(None),
+                Some(dir) => Some(Some(PathBuf::from(dir))),
+                None => None,
+            }
+        })
+        .collect()
+}
+
+/// The folder an open copy shows when it is not `wanted`, which `open`
+/// cannot change; `None` when none is open or one already shows `wanted`.
+/// A copy on no named folder shows `default`.
+fn open_elsewhere(running: &[Option<PathBuf>], wanted: &Path, default: &Path) -> Option<PathBuf> {
+    let same = |a: &Path| {
+        a == wanted || matches!((a.canonicalize(), wanted.canonicalize()), (Ok(a), Ok(b)) if a == b)
+    };
+    let folders: Vec<&Path> = running
+        .iter()
+        .map(|dir| dir.as_deref().unwrap_or(default))
+        .collect();
+    match folders.iter().any(|dir| same(dir)) {
+        true => None,
+        false => folders.first().map(|dir| dir.to_path_buf()),
+    }
+}
+
+fn open_on(app: &Path, other: &Path, wanted: &Path) -> Failure {
+    let mut failure = Failure::new(
+        code::app_running,
+        format!(
+            "{} is already open on {}; it shows one state folder at a time, and opening it again only brings it to the front",
+            app.display(),
+            other.display()
+        ),
+    );
+    failure.next = Some(
+        format!(
+            "quit Plow Latch, then run `latch app --state-dir {}` again",
+            wanted.display()
+        )
+        .into(),
+    );
+    failure
 }
 
 fn could_not_open(app: &Path, why: &str) -> Failure {
@@ -164,6 +240,47 @@ mod tests {
         );
         let (_, args) = opening("macos", &exe, None).unwrap();
         assert_eq!(args, [opened.app.into_os_string()]);
+    }
+
+    #[test]
+    fn an_open_copy_is_found_with_its_folder() {
+        let exe = Path::new("/Users/me/Applications/Plow Latch.app/Contents/MacOS/latch");
+        let listing = "\
+/sbin/launchd
+/Users/me/Applications/Plow Latch.app/Contents/MacOS/latch
+  /Users/me/Applications/Plow Latch.app/Contents/MacOS/latch --state-dir /Users/me/dev state
+/Users/me/Applications/Plow Latch.app/Contents/MacOS/latch serve --foreground
+/Users/me/.local/bin/latch --state-dir /Users/me/x
+/Users/me/Applications/Plow Latch.app/Contents/MacOS/latchx --state-dir /y
+";
+        assert_eq!(
+            copies(listing, exe),
+            [None, Some(PathBuf::from("/Users/me/dev state"))]
+        );
+    }
+
+    #[test]
+    fn a_folder_other_than_the_open_copys_is_refused() {
+        let default = Path::new("/Users/me/.latch");
+        let (a, b) = (Path::new("/Users/me/a"), Path::new("/Users/me/b"));
+        // None open, or one on the folder asked for: open it.
+        assert_eq!(open_elsewhere(&[], b, default), None);
+        assert_eq!(open_elsewhere(&[Some(b.into())], b, default), None);
+        assert_eq!(open_elsewhere(&[None], default, default), None);
+        // One on another folder, named or not: `open` would only bring it
+        // forward there.
+        assert_eq!(
+            open_elsewhere(&[Some(a.into())], b, default),
+            Some(a.into())
+        );
+        assert_eq!(open_elsewhere(&[None], b, default), Some(default.into()));
+        let failure = open_on(Path::new("/Apps/Plow Latch.app"), a, b);
+        assert_eq!(failure.code, "app_running");
+        assert!(
+            failure.message.contains("/Users/me/a"),
+            "{}",
+            failure.message
+        );
     }
 
     #[test]
