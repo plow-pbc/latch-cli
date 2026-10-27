@@ -43,7 +43,7 @@ use crate::heartbeat;
 use crate::lifecycle::{self, Phase};
 use crate::log::log;
 use crate::plow::{Identity, Plow};
-use crate::state::{Config, StateDir};
+use crate::state::{HeldKey, StateDir};
 use crate::vault::link;
 use crate::wire::{self, Request, Response};
 use crate::worker::WorkerSetup;
@@ -224,6 +224,35 @@ impl Done {
     pub fn worker(error: crate::worker::WorkerError, audit_args: Value) -> Done {
         Done::failure(Failure::reported(&error.code, error.message), audit_args)
     }
+
+    /// Sends a file to the client: `first` as its own answer, then the
+    /// bytes, then the last answer with their size and sha256, which the
+    /// audit record keeps too.
+    pub async fn send_bytes(
+        send: &mut crate::transport::SendStream,
+        first: Value,
+        bytes: &[u8],
+        mut audit: serde_json::Map<String, Value>,
+    ) -> Done {
+        use sha2::{Digest, Sha256};
+        use tokio::io::AsyncWriteExt;
+        let result = json!({
+            "size": bytes.len(),
+            "sha256": crate::state::to_hex(&Sha256::digest(bytes)),
+        });
+        audit.insert("size".into(), result["size"].clone());
+        audit.insert("sha256".into(), result["sha256"].clone());
+        let first = serde_json::to_vec(&Response::Ok(first)).expect("serializes");
+        if wire::write_frame(send, &first).await.is_err() || send.write_all(bytes).await.is_err() {
+            let message = "the client left".into();
+            return Done::failed(code::connection_lost, message, Value::Object(audit));
+        }
+        Done {
+            response: Response::Ok(result),
+            audit_args: Value::Object(audit),
+            outcome: "ok".into(),
+        }
+    }
 }
 
 /// How long the host waits for a relay connection when it starts.
@@ -270,6 +299,29 @@ pub async fn run(state: &StateDir, args: &crate::cli::ServeArgs) -> Result<(), F
         ));
     }
     result
+}
+
+/// The folder's key, once no command on this machine dials with it: a
+/// direct follow sees this host start and ends (`remote::stream`); any
+/// other call is waited for, and the wait is logged and recorded.
+async fn own_key(state: &StateDir, attached: bool) -> Result<HeldKey, Failure> {
+    let state = StateDir {
+        path: state.path.clone(),
+    };
+    let path = state.path.clone();
+    let waiting = move || {
+        let why = "waiting for latch commands on this machine that call other hosts with this \
+                   state folder's key to finish";
+        log(&format!(
+            "{why}: while this host serves, only it may use the key"
+        ));
+        if let Err(failure) = lifecycle::record_waiting(&path, attached, why) {
+            log(&format!("could not record the wait: {}", failure.message));
+        }
+    };
+    tokio::task::spawn_blocking(move || state.own_key(waiting))
+        .await
+        .expect("taking the key does not panic")
 }
 
 /// The workers a host on `state_dir` starts: this latch, confined.
@@ -325,10 +377,10 @@ async fn run_locked(
             failure.message
         )),
     }
-    let config = state.require_login()?;
+    let key = own_key(state, attached).await?;
     run_host(
         state,
-        config,
+        key,
         workers,
         headless_browsers,
         rules,
@@ -340,13 +392,14 @@ async fn run_locked(
 
 async fn run_host(
     state: &StateDir,
-    config: Config,
+    key: HeldKey,
     workers: WorkerSetup,
     headless_browsers: bool,
     rules: RuleFiles,
     deny_exec: DenyExec,
     lifetime: Lifetime,
 ) -> Result<(), Failure> {
+    let config = state.require_login()?;
     let binary = Binary::at(&workers.program)?;
     let plow = Plow::new(&config.api_url, &credential::token(state)?)?;
     let gatekeeper = Gatekeeper::new(
@@ -375,8 +428,8 @@ async fn run_host(
             RelayMode::custom([url])
         }
     };
-    let endpoint = crate::dial::endpoint()
-        .secret_key(state.load_key()?)
+    let endpoint = key
+        .endpoint()
         .relay_mode(relay_mode)
         .alpns(vec![wire::ALPN.to_vec(), link::ALPN.to_vec()])
         .bind()
@@ -446,6 +499,7 @@ async fn run_host(
     });
     watch_binary(&host, BINARY_CHECK_EVERY);
     sweep_browsers(&host);
+    crate::relay_link::watch(&endpoint);
     crate::update::watch(&state.path, &host.dashboard);
     let local_socket = crate::transport::LocalSocket::bind(&state.path)?;
     // Held while this host serves; it lets go as `run_host` returns.
@@ -1145,7 +1199,7 @@ async fn serve_request(
                         )
                         .await
                     }
-                    "status" | "audit" => {
+                    "status" | "audit" | "audit_shot" => {
                         reads::run(host, &identity.kind, op, &request.args, &mut send, cut_off)
                             .await
                     }
@@ -1424,6 +1478,9 @@ async fn serve_local(host: Arc<Host>, socket: tokio::net::UnixStream) {
     };
     if control::OPS.contains(&request.op.as_str()) {
         return control::serve(&host, &request, send, recv).await;
+    }
+    if request.op == crate::proxy::OP {
+        return proxy::serve(&host, &request, send, recv).await;
     }
     let caller = host.endpoint.id().to_string();
     log(&format!(
@@ -1741,6 +1798,7 @@ mod control;
 mod gated_tests;
 #[cfg(test)]
 mod plugins_tests;
+mod proxy;
 mod reads;
 #[cfg(test)]
 mod reads_tests;

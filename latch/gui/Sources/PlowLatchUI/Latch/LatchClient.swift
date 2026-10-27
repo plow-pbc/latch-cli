@@ -31,7 +31,7 @@ nonisolated protocol LatchClient: Sendable {
     /// `latch rules try`: the verdict `request` (as an agent would send it)
     /// would get on a host now, as `agent` (a uid), a new agent, or you;
     /// `draft` judges against unsaved rules for every agent.
-    func rulesTry(_ request: [String], host: String?, agent: String?, newAgent: Bool, draft: String?) async throws -> RulesTry
+    func rulesTry(_ request: TryRequest, host: String?, agent: String?, newAgent: Bool, draft: String?) async throws -> RulesTry
     /// `latch vault list`, on this Mac's host or, with `host`, another.
     func vaultList(host: String?) async throws -> VaultList
     /// `latch vault show ITEM`: its non-secret values.
@@ -65,6 +65,10 @@ nonisolated protocol LatchClient: Sendable {
     /// without it), then each new record; `after` picks up after that record
     /// instead, every record since. Stopping the iteration ends it.
     func auditFollow(host: String?, after: String?, last: Int?) -> AsyncThrowingStream<AuditLine, Error>
+    /// `latch audit shot ID SHOT`: the PNG a browser record names, from
+    /// this Mac's host or, with `host`, another's. Only its bytes come
+    /// back; no copy is left on disk.
+    func auditShot(_ record: String, shot: String, host: String?) async throws -> Data
     /// A setup step, as `setup --status` gives its words after `latch`.
     func perform(_ args: [String]) async throws
     /// `latch stop`: stops the host on this state folder.
@@ -94,6 +98,28 @@ nonisolated protocol LatchClient: Sendable {
 
 extension LatchClient {
     func rulesShow() async throws -> RulesShow { try await rulesShow(host: nil) }
+}
+
+/// What `latch rules try` is asked to judge: a request as an agent sends
+/// it, or a browser fill of a saved login, which has no such words.
+nonisolated enum TryRequest: Equatable, Sendable {
+    /// The words after `--`, e.g. `google -- gmail search is:unread`.
+    case words([String])
+    /// `--fill-login TITLE --url URL`: filling that saved login into the
+    /// site, judged only; nothing is opened or filled.
+    case fillLogin(title: String, url: String)
+
+    var arguments: [String] {
+        switch self {
+        case let .words(words): ["--"] + words
+        case let .fillLogin(title, url): ["--fill-login", title, "--url", url]
+        }
+    }
+
+    /// The words, for a request that has them.
+    var words: [String]? {
+        if case let .words(words) = self { words } else { nil }
+    }
 }
 
 /// The bundle's own latch, by absolute path, always with `--state-dir`.
@@ -137,6 +163,16 @@ nonisolated struct LiveLatchClient: LatchClient {
     func auditFollow(host: String?, after: String?, last: Int?) -> AsyncThrowingStream<AuditLine, Error> {
         let from = after.map { ["--after", $0] } ?? last.map { ["--last", String($0)] } ?? []
         return stream(["audit", "--follow"] + from + on(host)) { try decode(AuditLine.self, $0) }
+    }
+
+    /// latch saves it, readable only by this user, into a folder of its own
+    /// that is removed once the bytes are read.
+    func auditShot(_ record: String, shot: String, host: String?) async throws -> Data {
+        let folder = try ShotFolder.make()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let file = folder.appending(path: "shot.png")
+        _ = try await run(["audit", "shot", record, shot, "--output", file.path] + on(host))
+        return try Data(contentsOf: file)
     }
 
     /// Runs latch and yields each JSON line it prints (skipping those
@@ -196,12 +232,12 @@ nonisolated struct LiveLatchClient: LatchClient {
         try decode(AgentsList.self, try await run(["agents"] + on(host)))
     }
 
-    func rulesTry(_ request: [String], host: String?, agent: String?, newAgent: Bool, draft: String?) async throws -> RulesTry {
+    func rulesTry(_ request: TryRequest, host: String?, agent: String?, newAgent: Bool, draft: String?) async throws -> RulesTry {
         var arguments = ["rules", "try"] + on(host)
         if let agent { arguments += ["--agent", agent] }
         if newAgent { arguments.append("--new-agent") }
         if draft != nil { arguments += ["--draft", "-"] }
-        return try decode(RulesTry.self, try await run(arguments + ["--"] + request, input: draft.map { Data($0.utf8) }))
+        return try decode(RulesTry.self, try await run(arguments + request.arguments, input: draft.map { Data($0.utf8) }))
     }
 
 

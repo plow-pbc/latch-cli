@@ -1,0 +1,18 @@
+<!doctype html><title>latch code test: one-time-code field</title>
+<!-- The field a phone fills from a texted code: autocomplete=one-time-code,
+     numeric, six digits by its pattern; Verify is enabled while the field
+     is valid. -->
+<h1>Enter your code</h1>
+<form>
+  <p><input id="code" autocomplete="one-time-code" inputmode="numeric" pattern="\d{6}" maxlength="6" required aria-label="Code"></p>
+  <p><button id="go" disabled>Verify</button></p>
+</form>
+<p id="out">not verified</p>
+<script>
+  const [code, go] = [document.getElementById('code'), document.getElementById('go')];
+  code.addEventListener('input', () => { go.disabled = !code.checkValidity(); });
+  document.querySelector('form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    document.getElementById('out').textContent = `verified ${code.value}`;
+  });
+</script>

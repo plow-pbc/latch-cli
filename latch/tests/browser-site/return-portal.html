@@ -1,0 +1,116 @@
+<!doctype html><meta charset="utf-8"><title>Start a Return · Shop</title>
+<!-- A store's returns portal, rebuilt from one a live agent run went
+     through: look the order up, start a return, pick the items, then for
+     each item a reason, two explanations and an exchange offer, then how
+     to be paid back. Its checkboxes and radios are drawn as the portal
+     draws them: the whole card takes the click, and the input inside it,
+     with no name of its own, sits 0x0 and transparent in a span that takes
+     no clicks. Nothing leaves the page; `#out` says how far the return got. -->
+<style>
+  body { font-family: sans-serif; margin: 0; background: #f8f8f8; }
+  main { width: 640px; margin: 40px auto; }
+  .card { display: flex; flex-grow: 1; justify-content: space-between; align-items: center; background: white;
+          border: 1px solid #ddd; border-radius: 8px; padding: 16px; margin: 12px 0; cursor: pointer; }
+  .card[data-selected] { border-color: #000; }
+  .control { display: flex; position: relative; }
+  .input { cursor: inherit; height: 0; opacity: 0; position: absolute; width: 0; }
+  .box { width: 16px; height: 16px; border: 1px solid #888; border-radius: 4px; }
+  .circle { width: 16px; height: 16px; border: 1px solid #888; border-radius: 50%; }
+  [data-selected] .box, [data-selected] .circle { background: #000; }
+  footer { display: flex; justify-content: space-between; position: fixed; bottom: 0; left: 0; right: 0;
+           padding: 16px 40px; background: white; border-top: 1px solid #ddd; }
+  textarea { width: 100%; height: 100px; }
+</style>
+<main id="view"></main>
+<footer id="nav"></footer>
+<p id="out">not started</p>
+<script>
+  const ITEMS = ['Rib Tank, White / M', 'Rib Tank, White / L', 'Rib Tank, Grey / M', 'Slub Long Sleeve, Navy / M'];
+  const REASONS = ['Too small', 'Too big', 'Quality not as expected', 'Item is damaged/defective', 'Received wrong item', 'Other'];
+  const METHODS = ['Shop now with a bonus', 'Store credit with a bonus', 'Refund'];
+  const state = { picked: new Set(), item: 0, done: new Set(), reason: null, method: null };
+  const view = document.getElementById('view');
+  const nav = document.getElementById('nav');
+  let n = 0;
+
+  // A selection card: the card takes the click; its input only shows it.
+  // Picking one changes the cards in place, as the portal's do.
+  const card = (kind, title, selected, onPick) => {
+    const id = `pick-${++n}`;
+    const el = document.createElement('div');
+    el.className = 'card';
+    if (selected) el.dataset.selected = '';
+    el.innerHTML = `<span class="title"></span><span style="pointer-events: none"><label for="${id}"><span class="control">`
+      + `<input class="input" id="${id}" type="${kind}" ${selected ? 'checked' : ''}><span class="${kind === 'radio' ? 'circle' : 'box'}"></span>`
+      + `</span></label></span>`;
+    el.querySelector('.title').textContent = title;
+    el.addEventListener('click', () => onPick(el));
+    return el;
+  };
+  const mark = (el, on) => {
+    if (on) el.dataset.selected = ''; else delete el.dataset.selected;
+    el.querySelector('input').checked = on;
+  };
+  const button = (text, onClick, disabled = false) => {
+    const b = document.createElement('button');
+    b.textContent = text;
+    b.disabled = disabled;
+    b.addEventListener('click', onClick);
+    return b;
+  };
+  const show = (title, children, buttons) => {
+    view.replaceChildren(Object.assign(document.createElement('h2'), { textContent: title }), ...children);
+    nav.replaceChildren(...buttons);
+  };
+
+  const login = () => {
+    view.innerHTML = '<h2>Start a Return</h2><p><label>Email or Zip code <input id="who"></label></p>'
+      + '<p><label>Order Number <input id="order"></label></p>';
+    nav.replaceChildren(button('Search', () => {
+      if (document.getElementById('who').value && document.getElementById('order').value) order();
+    }));
+  };
+  const order = () => show('Order #1001', [], [button('Start a return', items)]);
+  const items = () => {
+    const go = button('Continue', overview, state.picked.size === 0);
+    show('Select items to return', ITEMS.map((item, i) => card('checkbox', item, state.picked.has(i), (el) => {
+      state.picked.has(i) ? state.picked.delete(i) : state.picked.add(i);
+      mark(el, state.picked.has(i));
+      go.disabled = state.picked.size === 0;
+    })), [button('Previous page', order), go]);
+  };
+  // One choice of `options`, kept in `key` of the state.
+  const choose = (title, options, key, back, next) => {
+    const go = button('Continue', next, !state[key]);
+    const cards = options.map((o) => card('radio', o, state[key] === o, (el) => {
+      state[key] = o;
+      cards.forEach((c) => mark(c, c === el));
+      go.disabled = false;
+    }));
+    show(title, cards, [button('Previous page', back), go]);
+  };
+  const overview = () => {
+    const left = [...state.picked].filter((i) => !state.done.has(i));
+    if (left.length === 0) return method();
+    state.item = left[0];
+    show('Add the return details for each item.', [Object.assign(document.createElement('p'), { textContent: ITEMS[state.item] })],
+      [button('Add details', () => { state.reason = null; reason(); })]);
+  };
+  const reason = () => choose('Why are you returning this item?', REASONS, 'reason', overview,
+    () => explain('Please explain in detail why you are returning this item.', () => explain('Anything else we should know?', offer)));
+  const explain = (ask, next) => {
+    view.innerHTML = `<h2>Why are you returning this item?</h2><p>${ask}</p><label>Return reason <textarea id="why"></textarea></label>`;
+    const go = button('Continue', next, true);
+    document.getElementById('why').addEventListener('input', (e) => { go.disabled = !e.target.value.trim(); });
+    nav.replaceChildren(button('Previous', reason), go);
+  };
+  const offer = () => show('More products we think you\'ll like', [], [button('Previous page', reason), button('No thanks', () => {
+    state.done.add(state.item);
+    document.getElementById('out').textContent = `details for ${state.done.size} of ${state.picked.size} items`;
+    overview();
+  })]);
+  const method = () => choose('Select your return method', METHODS, 'method', overview, () => {
+    document.getElementById('out').textContent = `ready to submit: ${state.done.size} items, ${state.method}`;
+  });
+  login();
+</script>

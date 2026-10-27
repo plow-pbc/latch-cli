@@ -264,14 +264,28 @@ it still names the same element (one no longer on the page is
 `no_such_target`). A target that is hidden, disabled, covered or still moving is
 refused with `covered_target`; a covered one's `covered_by` names what a
 click would land on instead (its role and name, or a frame's site), and
-one under a layer of the page around its frame says so. Input is the engine's own mouse and keys at a
+one under a layer of the page around its frame says so. A click that lands
+on the target's own container reaches it only for a checkbox or radio that
+itself has no box or takes no pointer events: a selection card whose whole
+box takes the click, over the input drawn inside it. A container hit for
+anything else covers it (a button that takes no pointer events), and so
+does a container that draws a ::before or ::after out of its flow, which
+can lie over the target and take its click (one that takes no pointer
+events is only drawn, and covers nothing).
+Such a checkbox or radio with no name of its own is named by its card's
+text. Input is the engine's own mouse and keys at a
 person's pace (`isTrusted` is true); `select` focuses the list and types
 the option's label, as a person picks one without opening it. `type`
 types what the agent gives it into any text field, a password or a
 one-time code field included; only a value from the vault (`fill`) stays
 out of the agent's sight. While a dialog is open, every call but `dialog` is refused with
 `dialog_open`. A key goes only to an element that takes the focus: a hidden
-or disabled one is refused (`not_focused`).
+or disabled one, or one a dialog keeps the focus from, is refused
+(`not_focused`). `type` into a field a dialog keeps the focus from (a
+dialog's focus lock left active under one stacked on it) sets the value
+as a page's own script would, with its input and change events, so not
+with trusted keys; `type` that leaves the field as it was, its keys turned
+away, is `type_failed`.
 
 `eval` runs the script's expression in the page's main frame, in the
 page's own world (a promise is awaited), and answers its JSON value (at
@@ -329,13 +343,19 @@ each before anything of it reaches the page:
   `goto URL` or `tab new URL` on another site;
 - each plan (`do`): its steps as written with each step's values, the
   page it starts on (URL and title), the sites it names and the vault
-  items it may fill (kind and title). Every `do` is judged, one of a
-  single step too; only `act`'s one click, keypress or scroll is not;
+  items it may fill (kind, title and saved sites). Every `do` is judged,
+  one of a single step too; only `act`'s one click, keypress or scroll is
+  not;
 - every vault fill: a `fill`, each fill a plan makes (a literal fill step
   or one a goal chose), and every `do --confirm` that releases a card or
-  identity: the item's kind and title, the fields and the site, never a
-  value. A refused fill in a plan stops the plan at that step, the reason
-  in its `stop`;
+  identity: the item's kind and title, the sites it is saved for, the
+  fields and the page's site, never a value. The judge is told that the
+  agent never receives the values and that a login fills only on its own
+  sites. A sign-in still needs the owner's OK, from a rule or the chat,
+  where asking for something to be done on a site covers signing in
+  there; with it, a sign-in on the login's own site isn't read as sharing the
+  password, while a login on any other site is. A refused fill in a plan
+  stops the plan at that step, the reason in its `stop`;
 - every `eval` (its script), upload and download (the file's name and
   size).
 
@@ -427,7 +447,7 @@ pass stops, in this order, at a CAPTCHA (`needs_owner`), a code stage
 or a passkey stage (`needs_fields`, before the model is asked; a code
 stage's stop names the way on: the vault's authenticator code with `fill`,
 a texted code found and typed as below ("A code sent by text"), else a
-handoff; a passkey
+handoff, or on a host with no screen, the owner asked for the code; a passkey
 stage goes on when a named item that fits holds a password, so the model
 can take the page's password path), `blocked`,
 `unconfirmed`, `stuck` or `already_true`, a budget (8 actions a step, 30 a
@@ -534,8 +554,14 @@ restarted: an action whose result was never recorded reads `unknown`, never
 `not_sent`, and a request that never ended reads `interrupted`. An id is
 never run twice (`duplicate_request`). Only the caller that sent a request
 can read it, or fetch its screenshots with `do --history R --shot N
---output F`. A request's journal and screenshots are kept 7 days, after its
-session closes too.
+--output F`. The host's owner fetches any screenshot an audit record names
+with `latch audit shot RECORD N --output F` (`--host H` from another of
+their machines): the host finds it by the record's session hash, request
+and shot, and sends it only if its sha256 is the one the record kept. A
+request's journal and screenshots are kept 7 days, after its session
+closes too. latch doesn't redact a screenshot's pixels: it takes none
+while a value filled from the vault is on the page, and none of a fill
+step, but typed text and the rest of the page can show.
 
 **Removed forms.** `act` on a name or description, `act --expect`,
 `act --steps`, `act click --at X,Y`, `find "<description>"` and
@@ -587,13 +613,15 @@ the code always comes from one of these:
 
 A code from an authenticator app in the vault is `fill --item vN --field
 otp=eN` instead, and a host that cannot read Messages hands the session to
-the owner: `handoff --reason 2fa`.
+the owner: `handoff --reason 2fa`. A host with no screen cannot (see
+"Handoff and screenless hosts"): ask the owner for the code, and enter it
+as above.
 
 ## For agents
 
 - **One session per task.** A session starts signed in nowhere and keeps
   its logins until it closes: sign in with `fill` (or `handoff` what only
-  the owner can do) once, and do the whole task in that session.
+  the owner can do, on a host with a screen) once, and do the whole task in that session.
 - **A hard block is not a challenge.** A challenge has something to click
   or type (a CAPTCHA, "confirm you are human", a code prompt); a hard
   block ("You have been blocked", "Access denied", a check that never
@@ -631,7 +659,11 @@ session is the agent's again (`timeout`), its old refs refused the same.
 
 A host with no screen a person could use (any Linux host, or any host
 started with `--headless-browsers`) answers `handoff` with `needs_owner`
-and `"reason": "no_screen"` at once. On Linux, each headed session
+and `"reason": "no_screen"` at once, and its message says what to do
+instead: for a code, ask the owner for it and type it; for anything else,
+stop and tell the owner what the page needs. The stops that name the owner
+as the way on (a CAPTCHA, a code or passkey stage, a fill the page would
+not keep) say the same on such a host, never to hand off. On Linux, each headed session
 runtime's worker starts a private Xvfb display (`-displayfd`)
 for its engine, up for as long as the runtime. It listens only on its
 socket file in the runtime's private `/tmp`: no TCP port and no abstract

@@ -11,7 +11,7 @@ final class RulesClient: LatchClient, @unchecked Sendable {
     let stateDir = "/s"
     var show = try! Fixtures.decode(Fixtures.rulesStudio) as RulesShow
     private(set) var sets: [(text: String, host: String?, agent: String?)] = []
-    private(set) var tries: [[String]] = []
+    private(set) var tries: [TryRequest] = []
 
     func localStatus() async throws -> LocalStatus { try Fixtures.decode(Fixtures.serving) }
     func accountStatus() async throws -> AccountStatus { try Fixtures.decode(Fixtures.studioHosts) }
@@ -41,7 +41,7 @@ final class RulesClient: LatchClient, @unchecked Sendable {
     func audit(host: String?, before: String?) async throws -> AuditPage { AuditPage(records: [], hasOlder: false) }
     func auditFollow(host: String?, after: String?, last: Int?) -> AsyncThrowingStream<AuditLine, Error> { AsyncThrowingStream { _ in } }
     func agents(host: String?) async throws -> AgentsList { try Fixtures.decode(host == nil ? Fixtures.agents : Fixtures.agentsStudio) }
-    func rulesTry(_ request: [String], host: String?, agent: String?, newAgent: Bool, draft: String?) async throws -> RulesTry {
+    func rulesTry(_ request: TryRequest, host: String?, agent: String?, newAgent: Bool, draft: String?) async throws -> RulesTry {
         tries.append(request)
         return try Fixtures.decode(Fixtures.tries["allow-owner"]!)
     }
@@ -130,6 +130,21 @@ struct RulesTests {
         #expect(ShellWords.split(#"exec -- cat "My Notes/a b.txt" 'it''s'"#) == ["exec", "--", "cat", "My Notes/a b.txt", "its"])
         #expect(ShellWords.split(#"exec -- echo a\ b"#) == ["exec", "--", "echo", "a b"])
         #expect(ShellWords.split(#"exec -- echo "open"#) == nil)
+    }
+
+    /// Each of the Examples menu's items fills the request field with
+    /// words that split back to the example's request.
+    @Test func everyExampleFillsTheRequestWithItsWords() {
+        // The Instacart sign-in is a saved login's fill, with no words.
+        #expect(Trial.examples.map(\.title) == Onboarding.examples.map(\.title).filter { !$0.contains("Instacart") })
+        #expect(Trial.examples.count == 9)
+        let trial = Trial()
+        for example in Trial.examples {
+            trial.use(example)
+            #expect(trial.words == example.request.words, "\(example.title): \(trial.request)")
+        }
+        let awkward = ["", "it's", #"say "hi""#, #"back\slash"#, "two\nlines", "plain"]
+        #expect(ShellWords.split(ShellWords.join(awkward)) == awkward)
     }
 
     @Test func everyVerdictHasItsWords() throws {

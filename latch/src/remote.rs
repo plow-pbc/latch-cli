@@ -56,6 +56,8 @@ const QUEUED: usize = 64;
 /// when stdin is a pipe, its closing), from its first line on; stopping
 /// closes the connection at once, so the host stops reading for us too. A
 /// read that ends by itself never looks at stdin: it always prints whole.
+/// A follow on an endpoint of its own ends when a host starts on this
+/// state folder, which waits for the key it holds (`StateDir::own_key`).
 pub async fn stream(
     state: &StateDir,
     host: &Peer,
@@ -66,9 +68,38 @@ pub async fn stream(
     let request = request(op, args);
     let link = dial::connect(state, host).await?;
     let stop = follow.then_some(stop_requested);
-    let printed = print_stream(&link.connection, host, &request, std::io::stdout(), stop).await;
+    let printing = print_stream(&link.connection, host, &request, std::io::stdout(), stop);
+    let printed = if follow && link.direct() {
+        tokio::select! {
+            printed = printing => printed,
+            () = host_started(state) => Err(host_took_key(host)),
+        }
+    } else {
+        printing.await
+    };
     link.close();
     printed
+}
+
+/// How often a direct follow looks for a host starting.
+const HOST_CHECK_EVERY: Duration = Duration::from_secs(1);
+
+/// Finishes once a host runs on this state folder.
+async fn host_started(state: &StateDir) {
+    while !crate::lifecycle::now(&state.path).running {
+        tokio::time::sleep(HOST_CHECK_EVERY).await;
+    }
+}
+
+fn host_took_key(host: &Peer) -> Failure {
+    let message = format!(
+        "a host started on this machine, and while it serves only it may use this state \
+         folder's key, so this follow of host {:?} ended to let it start",
+        host.name
+    );
+    let mut failure = Failure::new(code::host_unreachable, message);
+    failure.next = Some("run this again: it then goes through that host".into());
+    failure
 }
 
 /// Lines go through a printer thread, so a stop ends this even while a

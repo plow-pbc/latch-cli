@@ -53,6 +53,11 @@ fn gui_args(args: &[OsString]) -> Option<Option<PathBuf>> {
     }
 }
 
+/// The id of the app bundle this latch runs in, if it runs in one.
+pub fn bundle_id() -> Option<String> {
+    own_id(&CFBundle::main_bundle())
+}
+
 fn own_id(bundle: &CFBundle) -> Option<String> {
     let key = CFString::from_static_string("CFBundleIdentifier");
     let id = bundle

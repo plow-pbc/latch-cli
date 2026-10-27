@@ -199,6 +199,9 @@ nonisolated struct SyntheticLatchClient: LatchClient {
         try await wait()
         return AuditPage(records: [], hasOlder: false)
     }
+    func auditShot(_ record: String, shot: String, host: String?) async throws -> Data {
+        try await base.auditShot(record, shot: shot, host: host)
+    }
 
     /// The newest `last` records (all without it), or those after `after`,
     /// then a burst, then, with a rate, new ones until stopped.
@@ -255,7 +258,7 @@ nonisolated struct SyntheticLatchClient: LatchClient {
     }
     func rulesSet(_ text: String) async throws {}
     func rulesSet(_ text: String, host: String?, agent: String?, revision: String?) async throws {}
-    func rulesTry(_ request: [String], host: String?, agent: String?, newAgent: Bool, draft: String?) async throws -> RulesTry {
+    func rulesTry(_ request: TryRequest, host: String?, agent: String?, newAgent: Bool, draft: String?) async throws -> RulesTry {
         try await base.rulesTry(request, host: host, agent: agent, newAgent: newAgent, draft: draft)
     }
     func vaultAdd(_ draft: VaultDraft, host: String?) async throws -> VaultList.Item { try await base.vaultAdd(draft, host: host) }

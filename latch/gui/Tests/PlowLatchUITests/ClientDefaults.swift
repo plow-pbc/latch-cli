@@ -6,7 +6,7 @@ extension LatchClient {
     func hostStatus(_ host: String) async throws -> LocalStatus { throw LatchError.unreachable("not scripted") }
     func rulesSet(_ text: String, host: String?, agent: String?, revision: String?) async throws { throw LatchError.unreachable("not scripted") }
     func agents(host: String?) async throws -> AgentsList { throw LatchError.unreachable("not scripted") }
-    func rulesTry(_ request: [String], host: String?, agent: String?, newAgent: Bool, draft: String?) async throws -> RulesTry {
+    func rulesTry(_ request: TryRequest, host: String?, agent: String?, newAgent: Bool, draft: String?) async throws -> RulesTry {
         throw LatchError.unreachable("not scripted")
     }
     func vaultShow(_ item: String, host: String?) async throws -> VaultShow { throw LatchError.unreachable("not scripted") }
@@ -32,6 +32,7 @@ extension LatchClient {
     func removeAgent(_ uid: String) async throws { throw LatchError.unreachable("not scripted") }
     func vaultImportPreview(_ file: URL, host: String?) async throws -> ImportPreview { throw LatchError.unreachable("not scripted") }
     func vaultImport(_ file: URL, picks: [Int], expect: String, host: String?) async throws -> ImportResult { throw LatchError.unreachable("not scripted") }
+    func auditShot(_ record: String, shot: String, host: String?) async throws -> Data { throw LatchError.unreachable("not scripted") }
     // What a double that only follows or pages needs no script for.
     nonisolated var stateDir: String { "/s" }
     func localStatus() async throws -> LocalStatus { try Fixtures.decode(Fixtures.serving) }

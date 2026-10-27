@@ -8,6 +8,7 @@
 #![warn(clippy::undocumented_unsafe_blocks)]
 
 mod agents;
+mod app;
 mod audit;
 mod browser;
 mod cli;
@@ -31,6 +32,8 @@ mod keyart;
 mod lifecycle;
 mod log;
 mod login;
+#[cfg(target_os = "macos")]
+mod login_item;
 mod logo;
 mod logout;
 mod logs;
@@ -41,7 +44,9 @@ mod overview;
 mod paint;
 mod plow;
 mod plugins;
+mod proxy;
 mod redact;
+mod relay_link;
 mod remote;
 mod sandbox;
 mod seal;
@@ -73,7 +78,7 @@ use clap::{CommandFactory, FromArgMatches};
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use cli::{Cli, Command, DevicesAction, FileCommand, HostArg};
+use cli::{BrowserCommand, Cli, Command, DevicesAction, FileCommand, HandoffAction, HostArg};
 use failure::{Exit, Failure};
 use state::StateDir;
 use wire::Request;
@@ -156,6 +161,23 @@ fn main() -> ExitCode {
             print!("{}", help::skill());
             return ExitCode::SUCCESS;
         }
+        // Only opens the app, which picks its state folder itself: a
+        // folder named here (not just this build's default) is refused.
+        Command::App => {
+            let named = cli.state_dir.filter(|dir| {
+                Some(dir.as_path()) != cli::BUILD_STATE_DIR.map(std::path::Path::new)
+            });
+            return match app::open(named.as_deref()).and_then(|opened| json(cli.pretty, opened)) {
+                Ok(Printed(text)) => {
+                    println!("{text}");
+                    ExitCode::SUCCESS
+                }
+                Err(failure) => {
+                    report(&failure);
+                    failure.exit.into()
+                }
+            };
+        }
         command => command,
     };
     // Only the human commands still say a newer build is out: a regular
@@ -207,6 +229,33 @@ async fn run(
     state.check_format()?;
     let foreground = matches!(&command, Command::Serve(args) if args.foreground);
     trace::init(&state, foreground)?;
+    // An agent holding its own Plow credential logs in on its first command
+    // that needs Plow or a host; what answers here without one does not.
+    let needs_login = match &command {
+        Command::Status(args) => !args.local && (args.host.is_some() || !args.follow),
+        Command::Google(args) => !args.local_help(),
+        Command::Browser(args) => !matches!(
+            args.command,
+            BrowserCommand::Do { dry_run: true, .. }
+                | BrowserCommand::Setup { .. }
+                | BrowserCommand::Handoff {
+                    action: Some(HandoffAction::Done),
+                    ..
+                }
+        ),
+        Command::Exec(_)
+        | Command::File(_)
+        | Command::Messages(_)
+        | Command::Contacts(_)
+        | Command::Vault(_)
+        | Command::Rules(_)
+        | Command::Agents(_)
+        | Command::Devices(_) => true,
+        _ => false,
+    };
+    if needs_login {
+        login::agent_on_first_use(&state).await?;
+    }
     match command {
         Command::Login(args) if args.events => {
             login::event(stream::hello());
@@ -329,7 +378,7 @@ async fn run(
         Command::Audit(cli::AuditArgs {
             action: Some(action),
             ..
-        }) => json(pretty, audit::run(&state, action)?),
+        }) => json(pretty, audit::run(&state, action).await?),
         Command::Audit(args) => {
             let range = audit::Range {
                 last: args.last,
@@ -436,6 +485,15 @@ async fn run(
         }
         Command::PruneHelpers => json(pretty, plugins::prune_alone(&state.path)?),
         #[cfg(target_os = "macos")]
+        Command::LoginItem { again } => json(
+            pretty,
+            if again {
+                login_item::again()?
+            } else {
+                login_item::status()?
+            },
+        ),
+        #[cfg(target_os = "macos")]
         Command::AccessCheck { name } => {
             let connector = plugins::Connector::named(&name)?;
             json(
@@ -443,7 +501,11 @@ async fn run(
                 messages::access::check_here(&state, connector).await?,
             )
         }
-        Command::Worker(_) | Command::BrowserWorker(_) | Command::Help(_) | Command::Skill => {
+        Command::Worker(_)
+        | Command::BrowserWorker(_)
+        | Command::Help(_)
+        | Command::Skill
+        | Command::App => {
             unreachable!("handled in main")
         }
     }

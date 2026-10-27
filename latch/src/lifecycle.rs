@@ -50,6 +50,9 @@ struct Written {
     /// Held by the `latch serve` in a terminal that started it.
     #[serde(default)]
     attached: bool,
+    /// Why a starting host has not started yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    waiting: Option<String>,
 }
 
 /// How `serve.lock` begins while a `latch plugins` command holds it.
@@ -73,6 +76,8 @@ pub struct Host {
     pub error: Option<Problem>,
     /// It runs held by the `latch serve` in a terminal that started it.
     pub attached: bool,
+    /// Why it is still starting, while it waits for something.
+    pub waiting: Option<String>,
 }
 
 /// This process's run, set when it starts serving.
@@ -92,6 +97,21 @@ pub fn record(
     attached: bool,
     error: Option<&Failure>,
 ) -> Result<(), Failure> {
+    write(state_dir, phase, attached, error, None)
+}
+
+/// Records that this serve is starting and waits, for `why`.
+pub fn record_waiting(state_dir: &Path, attached: bool, why: &str) -> Result<(), Failure> {
+    write(state_dir, Phase::Starting, attached, None, Some(why))
+}
+
+fn write(
+    state_dir: &Path,
+    phase: Phase,
+    attached: bool,
+    error: Option<&Failure>,
+    waiting: Option<&str>,
+) -> Result<(), Failure> {
     let run = RUN.get_or_init(|| {
         let started = jiff::Timestamp::now().as_millisecond();
         format!("{}-{started}", std::process::id())
@@ -106,6 +126,7 @@ pub fn record(
             message: failure.message.clone(),
         }),
         attached,
+        waiting: waiting.map(String::from),
     };
     let path = state_dir.join("serve.json");
     let json = serde_json::to_string(&written).expect("a step serializes") + "\n";
@@ -145,6 +166,7 @@ pub fn now(state_dir: &Path) -> Host {
             run: None,
             error: None,
             attached: false,
+            waiting: None,
         };
     };
     let state = match (running, written.state) {
@@ -168,6 +190,9 @@ pub fn now(state_dir: &Path) -> Host {
         run: Some(written.run),
         error,
         attached: running && written.attached,
+        waiting: written
+            .waiting
+            .filter(|_| running && state == Phase::Starting),
     }
 }
 
@@ -243,6 +268,7 @@ mod tests {
             run: None,
             error: None,
             attached: false,
+            waiting: None,
         };
         assert_eq!(now(dir.path()), stopped);
         assert_eq!(now(&dir.path().join("missing")), stopped);
