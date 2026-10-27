@@ -176,33 +176,39 @@ struct SheetTests {
 
     // MARK: Questions
 
-    /// Each question, as the window asks it, and what its yes runs.
-    private static let questions: [(place: Place, ask: @MainActor (AppModel) async throws -> PlowLatchUI.Confirmation, latch: String)] = [
-        (.host(.home), { _ in .startHosting }, "serve -d --again"),
-        (.host(.settings), { _ in .stopHost }, "stop"),
+    /// Each question, as the window asks it, what its yes runs, and where
+    /// its screen says latch's refusal.
+    private static let questions: [(place: Place, ask: @MainActor (AppModel) async throws -> PlowLatchUI.Confirmation, latch: String,
+                                     said: @MainActor (AppModel) -> LatchError?)] = [
+        (.host(.home), { _ in .startHosting }, "serve -d --again", { $0.startHostError }),
+        (.host(.settings), { _ in .stopHost }, "stop", { $0.hostActionError }),
         (.account(.agents), { app in
             await waitUntil { app.agents != nil }
             return .removeAgent(try #require(app.agents?.last))
-        }, "agents remove "),
+        }, "agents remove ", { $0.agentRemoveError }),
         (.host(.vault), { app in
             await waitUntil { AppModel.held(app.summaries["pi-kitchen"]?.vault) }
             guard case let .success(vault)? = app.summaries["pi-kitchen"]?.vault else { throw LatchError.unreachable("no vault") }
             return .removeVaultItem(try #require(vault.items.first { $0.item == "v2" }), on: try #require(app.host))
-        }, "vault remove v2 --revision 1 --host pi-kitchen"),
+        }, "vault remove v2 --revision 1 --host pi-kitchen", { $0.vaultRemoveError }),
         (.account(.connections), { app in
             await waitUntil { app.loggedInDevices?.isEmpty == false }
             return .removeDevice(try #require(app.loggedInDevices?.first { $0.name == "laptop" }))
-        }, "devices remove laptop --yes"),
+        }, "devices remove laptop --yes", { $0.deviceRemoveError }),
     ]
+
+    enum Answer: CaseIterable { case yes, cancel, refused }
 
     // Remove…, Stop… and Start Hosting… ask over the window, in an alert
     // that names what it acts on. Its action runs on that, and only that;
-    // Cancel (or Escape) asks nothing of latch. Either way the question goes.
-    @Test(arguments: 0..<5, [true, false]) func aQuestionIsAnswered(_ index: Int, yes: Bool) async throws {
+    // Cancel (or Escape) asks nothing of latch; latch's refusal of a yes is
+    // kept where the question's screen says it. Either way the question goes.
+    @Test(arguments: 0..<5, Answer.allCases) func aQuestionIsAnswered(_ index: Int, answer: Answer) async throws {
         let question = Self.questions[index]
         let opened = try await open(question.place, host: question.place == .host(.vault) ? "pi-kitchen" : "studio")
         defer { opened.controller.close() }
         let confirmation = try await question.ask(opened.app)
+        if answer == .refused { opened.client.refuse(.failed(LatchFailure(code: "plow_unreachable", message: "Plow can't be reached"))) }
         opened.app.ask(confirmation)
         await waitUntil { opened.sheets.alert != nil }
         let alert = try #require(opened.sheets.alert?.alert)
@@ -210,40 +216,19 @@ struct SheetTests {
         #expect(alert.informativeText == confirmation.detail)
         #expect(alert.buttons.map(\.title) == [confirmation.action, "Cancel"])
         #expect(alert.buttons[0].hasDestructiveAction == confirmation.destructive)
-        opened.sheets.answer(yes ? .alertFirstButtonReturn : .alertSecondButtonReturn)
+        opened.sheets.answer(answer == .cancel ? .alertSecondButtonReturn : .alertFirstButtonReturn)
         #expect(opened.app.sheet == nil && opened.sheets.alert == nil)
-        if yes {
+        switch answer {
+        case .yes:
             await waitUntil { opened.client.asked.contains { $0.hasPrefix(question.latch) } }
             #expect(opened.client.asked.count == 1, "\(opened.client.asked)")
-        } else {
+            #expect(question.said(opened.app) == nil)
+        case .cancel:
             try await Task.sleep(for: .milliseconds(200))
             #expect(opened.client.asked.isEmpty)
-        }
-    }
-
-    // latch refuses: each question's refusal is kept where its screen says it.
-    @Test func aRefusedYesIsSaid() async throws {
-        let refusal = LatchError.failed(LatchFailure(code: "plow_unreachable", message: "Plow can't be reached"))
-        let saidBy: [(Int, @MainActor (AppModel) -> LatchError?)] = [
-            (0, { $0.startHostError }), (1, { _ in nil }), (2, { $0.agentRemoveError }), (3, { $0.vaultRemoveError }),
-            (4, { $0.deviceRemoveError }),
-        ]
-        for (index, said) in saidBy {
-            let question = Self.questions[index]
-            let opened = try await open(question.place, host: question.place == .host(.vault) ? "pi-kitchen" : "studio")
-            defer { opened.controller.close() }
-            let confirmation = try await question.ask(opened.app)
-            opened.client.refuse(refusal)
-            opened.app.ask(confirmation)
-            await waitUntil { opened.sheets.alert != nil }
-            opened.sheets.answer(.alertFirstButtonReturn)
-            await waitUntil { !opened.client.asked.isEmpty }
-            if case .stopHost = confirmation {
-                // Host Settings says a failed stop beside its buttons.
-                await waitUntil { opened.app.hostActionError?.code == "plow_unreachable" }
-            } else {
-                await waitUntil { said(opened.app)?.code == "plow_unreachable" }
-            }
+        case .refused:
+            await waitUntil { question.said(opened.app)?.code == "plow_unreachable" }
+            #expect(opened.client.asked.count == 1, "\(opened.client.asked)")
         }
     }
 
