@@ -208,8 +208,8 @@ pub async fn run(state: &StateDir, args: UpdateArgs) -> Result<Value, Failure> {
 
 /// Where the installer puts latch. On Linux, the folder this latch runs
 /// from, so the update replaces it there and not in the installer's default
-/// folder. On macOS, none: the installer replaces the app in
-/// ~/Applications, which every link to latch leads into.
+/// folder. On macOS, none: the installer replaces the app, in
+/// /Applications or ~/Applications, which every link to latch leads into.
 fn bin_dir() -> Option<PathBuf> {
     if cfg!(target_os = "macos") {
         return None;
@@ -347,7 +347,7 @@ async fn install(
     }
     let installed = installer
         .arg("--non-interactive")
-        .args(engines(&dir))
+        .args(helpers(&dir))
         .arg(setup.join("latch"))
         .stdin(Stdio::null())
         .stdout(out)
@@ -380,9 +380,13 @@ fn target() -> Result<&'static str, Failure> {
     }
 }
 
-/// The browser engines to keep up to date: those installed in `state`, or
-/// none.
-fn engines(state: &Path) -> Vec<&'static str> {
+/// What the installer puts in beside latch: nothing on a machine that
+/// `install-binary.sh --client-only` left latch alone on; else the host's
+/// helpers and the browser engines installed in `state`, or none.
+fn helpers(state: &Path) -> Vec<&'static str> {
+    if state.join("plugins/client-only").is_file() {
+        return vec!["--client-only"];
+    }
     let mut flags = Vec::new();
     if state.join("plugins/cft").is_dir() {
         flags.extend(["--browser", "chrome"]);

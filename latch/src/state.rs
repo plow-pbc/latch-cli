@@ -126,7 +126,8 @@ impl StateDir {
     }
 
     /// Refuses unmarked peer state and folders of another format.
-    /// Missing, empty or plugin-only folders are initialized only by `create`.
+    /// Missing, empty or plugin-only folders are initialized only by `create`;
+    /// an empty lock file a command left there holds no state either.
     pub fn check_format(&self) -> Result<(), Failure> {
         let path = self.path.join("latch.json");
         let text = match fs::read_to_string(&path) {
@@ -137,7 +138,11 @@ impl StateDir {
                     Ok(mut entries) => {
                         if entries.all(|entry| {
                             entry.is_ok_and(|entry| {
-                                entry.file_name() == "plugins" && entry.path().is_dir()
+                                let path = entry.path();
+                                (entry.file_name() == "plugins" && path.is_dir())
+                                    || (path.extension().is_some_and(|ext| ext == "lock")
+                                        && fs::symlink_metadata(&path)
+                                            .is_ok_and(|meta| meta.is_file() && meta.len() == 0))
                             })
                         }) {
                             return Ok(());
@@ -491,6 +496,31 @@ mod tests {
             assert!(refused.message.contains("9.9.9"), "{}", refused.message);
             assert_eq!(fs::read_to_string(&marker).unwrap(), other);
         }
+    }
+
+    #[test]
+    fn an_unmarked_folder_with_only_empty_lock_files_is_still_a_fresh_one() {
+        let dir = test_dir();
+        let state = StateDir::new(Some(dir.path().join("state"))).unwrap();
+        fs::create_dir_all(state.path.join("plugins")).unwrap();
+        fs::write(state.path.join("launch.lock"), "").unwrap();
+        fs::write(state.path.join("audit.lock"), "").unwrap();
+        state.check_format().unwrap();
+
+        // A lock file with something in it, or a folder named like one, is
+        // state this latch didn't mark.
+        let held = state.path.join("serve.lock");
+        fs::write(&held, "latch serve (pid 1)").unwrap();
+        assert_eq!(state.check_format().unwrap_err().code, "state_format");
+        assert_eq!(state.create().unwrap_err().code, "state_format");
+        fs::remove_file(&held).unwrap();
+        let folder = state.path.join("held.lock");
+        fs::create_dir(&folder).unwrap();
+        assert_eq!(state.check_format().unwrap_err().code, "state_format");
+        fs::remove_dir(&folder).unwrap();
+
+        state.create().unwrap();
+        assert!(state.path.join("latch.json").is_file());
     }
 
     #[test]

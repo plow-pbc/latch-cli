@@ -60,7 +60,7 @@ else
   echo 'Binary defaults to ~/.local/bin (override with --bin-dir); gog uses ~/.latch/plugins (override with --state-dir).'
 fi
 if [ "$(uname -s)" = Darwin ]; then
-  echo 'On macOS latch lives in ~/Applications/Plow Latch.app; ~/.local/bin/latch links to it.'
+  echo 'On macOS latch lives in /Applications/Plow Latch.app (~/Applications if you cannot write /Applications); ~/.local/bin/latch links to it.'
 fi
 [ -n "$client_only" ] || echo 'Linux hosting needs bubblewrap/user namespaces; setup may ask for sudo.'
 sh "$setup/install-binary.sh" "$@" "$setup/latch"

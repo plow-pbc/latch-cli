@@ -139,10 +139,12 @@ async fn stream(
     };
     tokio::pin!(stopping);
     let ended = loop {
+        // A stop ends it before the next line, however many are waiting.
         let line = tokio::select! {
-            line = queued.recv() => line,
+            biased;
             _ = &mut cut_off => break Ok(()),
             () = &mut stopping => break Err(stopped(&host.name)),
+            line = queued.recv() => line,
         };
         // The reader is done, and every line it gave was sent.
         let Some(line) = line else {
@@ -155,7 +157,9 @@ async fn stream(
         }
         // A frame cut off midway can't be followed by an answer: the
         // stream is reset instead, so the caller never reads half of one.
+        // A frame the caller takes at once is sent whole, stop or not.
         let cut = tokio::select! {
+            biased;
             sent = wire::write_frame(send, &json) => match sent {
                 Ok(()) => continue,
                 // The caller is gone.

@@ -17,6 +17,9 @@ clap = { version = "4.6.7", features = ["derive", "env"] }
 # features: those pull in `ring`, a second crypto library next to reqwest's
 # aws-lc-rs, and metrics we don't use.
 iroh = { version = "1.3.0", default-features = false, features = ["tls-aws-lc-rs", "portmapper", "fast-apple-datapath"] }
+# The relay's status messages, which a host names in its log
+# (src/relay_link.rs). iroh's own; no server.
+iroh-relay = { version = "1.3.0", default-features = false }
 # Time stamps (RFC 3339, UTC) in the audit log and the host's log.
 jiff = { version = "0.2.38", features = ["serde"] }
 # The C library: `killpg` to stop a timed-out program with everything it

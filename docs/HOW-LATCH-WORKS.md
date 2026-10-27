@@ -61,7 +61,11 @@ latch's commands and behavior here are `main`'s today.
   they would directly. A host that is starting or stopping takes none:
   they fail with `host_unreachable` and are not dialed around it. A host
   that starts waits for the direct calls already running, and a direct
-  `--follow` ends to let it start ("run this again").
+  `--follow` ends to let it start ("run this again"). If something else
+  with the key connects anyway (another machine with a copy of the
+  folder, an older latch), `serve.log` says so (`relay: another endpoint
+  with this host's key…`), and says when the relay delivers to the host
+  again; likewise when it loses the relay and has it back.
 - **Never copy a machine's state folder or Plow token to where an agent
   runs.** The host would take the agent for you, and judge its calls only
   against your rules.
@@ -72,7 +76,7 @@ latch's commands and behavior here are `main`'s today.
 |---|---|---|
 | Supported | Apple silicon and Intel | x86_64 and arm64 |
 | Sandbox for exec, files, Google and Messages | Seatbelt | bubblewrap and seccomp; needs bubblewrap and user namespaces (the installer may ask for sudo) |
-| `latch serve` runs as | a launchd job, using the `latch` inside `~/Applications/Plow Latch.app` | a systemd user service |
+| `latch serve` runs as | a launchd job, using the `latch` inside `Plow Latch.app` (in `/Applications`, else `~/Applications`) | a systemd user service |
 | Key, Plow login, vault and audit keys | Keychain, in the signed release app | files only you can read (0600) |
 | Messages and Contacts | Yes, once turned on and given Full Disk Access (for a release install, granted to Plow Latch.app) | No |
 | Chrome for Testing | Yes | arm64 and x86_64; x86_64 currently needs `--headless-browsers` |
@@ -308,7 +312,7 @@ The few commands that take `--host` but run only on this machine
   `curl -fsSLO https://releases.plow.co/latch-cli/install.sh && sh install.sh`.
   The installer checks the archive against the release's `SHA256SUMS`,
   installs `~/.local/bin/latch` (on a Mac, a link into
-  `~/Applications/Plow Latch.app`), gog for Google, and Chrome on a Mac or
+  `Plow Latch.app` in `/Applications`, else `~/Applications`), gog for Google, and Chrome on a Mac or
   Linux arm64/x86_64 (`--browser camoufox` for Camoufox, `--no-browser` for none).
   A first install at a terminal then runs `latch setup`: log in, connect
   Google, on a Mac turn on Messages and Contacts, then offer to start the

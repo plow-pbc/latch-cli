@@ -538,46 +538,75 @@ fn a_failed_registration_again_says_why() {
 #[test]
 fn a_cloud_agent_behind_plows_proxy_sends_no_credential() {
     // On exe.dev the agent's token never reaches the VM: `$PLOW_API_BASE`
-    // is a proxy that adds it. It wins over `$PLOW_API_URL`.
-    let (proxy, server) = fake_plow(vec![
-        me("agent"),
-        (200, peer(Value::Null, "agent", "agent", Value::Null)),
-        (
-            200,
-            json!({"data": [peer(json!("REGISTERED"), "agent", "agent", Value::Null)]}),
-        ),
-    ]);
-    let dir = test_dir();
-    let state = dir.path().join("state");
-    let env = [
-        ("PLOW_API_BASE", Path::new(&proxy)),
-        ("PLOW_API_URL", Path::new("http://127.0.0.1:9")),
-        ("PLOW_TOKEN_FILE", &dir.path().join("none")),
-    ];
+    // is a proxy that adds it. It wins over `$PLOW_API_URL`. The agent logs
+    // in with `latch login`, or else on its first command that needs a host;
+    // what answers here (Google's help, a browser dry run) asks no one.
+    for explicit in [true, false] {
+        let (proxy, server) = fake_plow(vec![
+            me("agent"),
+            (200, peer(Value::Null, "agent", "agent", Value::Null)),
+            (
+                200,
+                json!({"data": [peer(json!("REGISTERED"), "agent", "agent", Value::Null)]}),
+            ),
+        ]);
+        let dir = test_dir();
+        let state = dir.path().join("state");
+        let env = [
+            ("PLOW_API_BASE", Path::new(&proxy)),
+            ("PLOW_API_URL", Path::new("http://127.0.0.1:9")),
+            ("PLOW_TOKEN_FILE", &dir.path().join("none")),
+        ];
 
-    let login = latch(&state, &["login"], &env);
-    assert_eq!(login.status.code(), Some(0), "{login:?}");
-    let output: Value = serde_json::from_slice(&login.stdout).unwrap();
-    assert_eq!(output["peer"]["kind"], "agent");
-    assert!(!state.join("plow-token").exists());
-    let config: Value =
-        serde_json::from_slice(&fs::read(state.join("config.json")).unwrap()).unwrap();
-    assert_eq!(config["api_url"], proxy.as_str());
+        if explicit {
+            let login = latch(&state, &["login"], &env);
+            assert_eq!(login.status.code(), Some(0), "{login:?}");
+            let output: Value = serde_json::from_slice(&login.stdout).unwrap();
+            assert_eq!(output["peer"]["kind"], "agent");
+        } else {
+            for local in [
+                &["google", "--", "help"][..],
+                &["browser", "do", "--dry-run", "click e1"],
+            ] {
+                let output = latch(&state, local, &env);
+                assert_eq!(output.status.code(), Some(0), "{local:?}: {output:?}");
+            }
+            // `browser setup` runs here too: with no tools on its PATH it
+            // fails at once, never having logged in to be refused.
+            let mut setup = latch_command(&state, &["browser", "setup"], &env);
+            let setup = setup
+                .env("PATH", dir.path().join("no-tools"))
+                .output()
+                .unwrap();
+            let error: Value = serde_json::from_slice(&setup.stderr).unwrap();
+            assert_eq!(error["error"]["code"], "setup_failed", "{error}");
+            let local = latch(&state, &["status", "--local"], &env);
+            let local: Value = serde_json::from_slice(&local.stdout).unwrap();
+            assert_eq!(local["login"], Value::Null, "{local}");
+        }
 
-    // Later calls go to the proxy the same way.
-    let exec = latch(&state, &["exec", "--", "true"], &env);
-    let error: Value = serde_json::from_slice(&exec.stderr).unwrap();
-    assert_eq!(error["error"]["code"], "no_host");
+        // Calls go to the proxy the same way.
+        let exec = latch(&state, &["exec", "--", "true"], &env);
+        let error: Value = serde_json::from_slice(&exec.stderr).unwrap();
+        assert_eq!(error["error"]["code"], "no_host", "{error}");
+        assert!(!state.join("plow-token").exists());
+        let config: Value =
+            serde_json::from_slice(&fs::read(state.join("config.json")).unwrap()).unwrap();
+        assert_eq!(config["api_url"], proxy.as_str());
+        let local = latch(&state, &["status", "--local"], &env);
+        let local: Value = serde_json::from_slice(&local.stdout).unwrap();
+        assert_eq!(local["login"]["kind"], "agent", "{local}");
 
-    let requests = server.join().unwrap();
-    assert!(requests[0].starts_with("GET /v1/agents/me "));
-    assert!(requests[1].starts_with("POST /v1/latch/peers "));
-    assert!(requests[2].starts_with("GET /v1/latch/peers "));
-    for request in requests {
-        assert!(
-            !request.to_ascii_lowercase().contains("authorization"),
-            "{request}"
-        );
+        let requests = server.join().unwrap();
+        assert!(requests[0].starts_with("GET /v1/agents/me "));
+        assert!(requests[1].starts_with("POST /v1/latch/peers "));
+        assert!(requests[2].starts_with("GET /v1/latch/peers "));
+        for request in requests {
+            assert!(
+                !request.to_ascii_lowercase().contains("authorization"),
+                "{request}"
+            );
+        }
     }
 }
 
@@ -2896,6 +2925,69 @@ fn serving_with(
     (serve, log, lines)
 }
 
+/// With no `LATCH_TRACE`, a host's log says when another endpoint with
+/// its key takes its relay link over and when it has it back, and when it
+/// loses the relay and has it back: in each, clients cannot reach it,
+/// though Plow still lists it online.
+#[test]
+fn a_host_logs_its_relay_link_taken_over_or_lost_and_back() {
+    use iroh_relay::server::{RelayConfig, Server, ServerConfig};
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let relay = |port: u16| {
+        let mut config = ServerConfig::default();
+        config.relay = Some(RelayConfig::new(([127, 0, 0, 1], port)));
+        runtime.block_on(Server::spawn(config)).unwrap()
+    };
+    let server = relay(0);
+    let address = server.http_addr().unwrap();
+    let url = format!("http://{address}");
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let (serve, log, lines) = serving_with(serve_command(&host, &url));
+    let logged = Logged(std::sync::Arc::new(std::sync::Mutex::new(lines)));
+    let keep = logged.0.clone();
+    thread::spawn(move || {
+        for line in log.lines() {
+            keep.lock().unwrap().push(line.unwrap());
+        }
+    });
+    until_serving(&host, &serve);
+    let says = |text: &str| {
+        let said = eventually(30, || logged.count(text) == 1);
+        assert!(said, "no {text:?} in {:?}", logged.0.lock().unwrap());
+    };
+
+    // Another endpoint with the host's key, as a command dialing with it
+    // from beside the host would be.
+    let key: iroh::SecretKey = fs::read_to_string(host.join("key"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    let other = runtime.block_on(async {
+        let endpoint = loopback_endpoint()
+            .secret_key(key)
+            .relay_mode(iroh::RelayMode::custom([url.parse().unwrap()]))
+            .bind()
+            .await
+            .unwrap();
+        endpoint.online().await;
+        endpoint
+    });
+    says(&format!(
+        "relay: another endpoint with this host's key connected to {url}/, which now \
+         delivers to it instead; clients cannot connect until it goes"
+    ));
+    runtime.block_on(other.close());
+    says(&format!("relay: {url}/ delivers to this host again after "));
+
+    runtime.block_on(server.shutdown()).unwrap();
+    says(&format!("relay: lost {url}/"));
+    let _server = relay(address.port());
+    says(&format!("relay: connected again to {url}/ after "));
+}
+
 #[test]
 fn a_plain_serve_stopped_cleanly_prints_nothing_on_stdout() {
     let plow = LivePlow::start();
@@ -3096,6 +3188,26 @@ fn first_login_accepts_the_installers_plugin_directory() {
     fs::create_dir_all(dir.path().join("host/plugins/gog/1.0")).unwrap();
     let host = owner_host_on(&plow, dir.path());
     assert!(host.join("latch.json").is_file());
+}
+
+/// `latch stop` and `latch audit rotate-key` on a folder no login has
+/// marked yet leave their lock files there; the first login still takes it.
+#[test]
+fn lock_files_left_before_the_first_login_do_not_stop_it() {
+    let plow = LivePlow::start();
+    for (args, lock) in [
+        (&["stop"][..], "launch.lock"),
+        (&["audit", "rotate-key"], "audit.lock"),
+    ] {
+        let dir = test_dir();
+        let host = dir.path().join("host");
+        fs::create_dir_all(host.join("plugins")).unwrap();
+        latch(&host, args, &[]);
+        assert!(host.join(lock).is_file(), "{args:?}");
+        assert!(!host.join("latch.json").exists(), "{args:?}");
+        owner_host_on(&plow, dir.path());
+        assert!(host.join("latch.json").is_file(), "{args:?}");
+    }
 }
 
 /// A first install runs `prune-helpers` on a folder that holds only the
@@ -4352,24 +4464,6 @@ fn exec_true(from: &Path, host: &str) {
     );
 }
 
-/// A command on a serving host's machine that follows another host used to
-/// take its own host's relay: callers of that host timed out until it ended.
-#[test]
-fn a_follow_of_another_host_leaves_this_hosts_callers_their_way_in() {
-    let owners = Owners::start();
-    let _host = owners.serve(&owners.host);
-    let _studio = owners.serve(&owners.studio);
-    let follow = Lines::start(&owners.studio, &["audit", "--follow", "--host", "host"]);
-    follow.opening();
-    for _ in 0..5 {
-        exec_true(&owners.laptop, "studio");
-    }
-    // The follow still runs.
-    exec_true(&owners.laptop, "host");
-    assert_eq!(follow.next_record()["record"]["op"], "exec");
-    assert!(follow.close().success());
-}
-
 /// Each call from a machine whose host serves goes through that host,
 /// and answers, exits and is recorded at the other host as it is with no
 /// host serving here, when the command dials directly.
@@ -4492,17 +4586,26 @@ fn a_call_through_this_machines_host_answers_and_is_recorded_as_a_direct_one() {
     assert!(!callers(direct_records).is_empty());
 }
 
-/// Follows through this machine's host each have a connection of their
-/// own: one open holds up no other call to the same host.
+/// A follow from a machine whose host serves goes through that host, on a
+/// connection of its own. Dialing on its own, it used to take that host's
+/// relay, so its callers timed out until it ended; and one follow open
+/// holds up no other call to the host it follows.
 #[test]
 fn a_follow_through_this_machines_host_holds_up_no_other_call_to_its_host() {
     let owners = Owners::start();
     let _host = owners.serve(&owners.host);
     let _studio = owners.serve(&owners.studio);
-    let first = Lines::start(&owners.studio, &["audit", "--follow", "--host", "host"]);
+    let follow = ["audit", "--follow", "--host", "host"];
+    let first = Lines::start(&owners.studio, &follow);
     first.opening();
-    exec_true(&owners.studio, "host");
-    let second = Lines::start(&owners.studio, &["audit", "--follow", "--host", "host"]);
+    // Calls in to this machine's host, then out through it to the followed one.
+    let routes = [(&owners.laptop, "studio", 5), (&owners.studio, "host", 1)];
+    for (from, host, times) in routes {
+        for _ in 0..times {
+            exec_true(from, host);
+        }
+    }
+    let second = Lines::start(&owners.studio, &follow);
     second.opening();
     exec_true(&owners.laptop, "host");
     assert_eq!(first.next_record()["record"]["op"], "exec");
@@ -6137,6 +6240,45 @@ fn a_signed_latch_keeps_every_secret_in_the_keychain_and_none_in_files() {
     assert!(!host.exists() && !owner.exists());
 }
 
+#[test]
+#[ignore = "needs a latch signed for the Keychain in LATCH_TEST_BIN; the keychain workflow runs it"]
+fn a_signed_latch_logs_out_a_state_folder_deleted_by_hand() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let vault = latch(&host, &["vault", "list"], &[]);
+    assert_eq!(vault.status.code(), Some(0), "{vault:?}");
+    fs::remove_dir_all(&host).unwrap();
+
+    // Its config went with the folder, so logout learns Plow's URL as a
+    // login would, and still takes the machine out and deletes its login.
+    let env = [("PLOW_API_URL", Path::new(&plow.url))];
+    let logout = |args: &[&str]| -> Value {
+        let output = latch(&host, &[&["logout"], args].concat(), &env);
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        serde_json::from_slice(&output.stdout).unwrap()
+    };
+    let out = logout(&[]);
+    assert_eq!(out["from"], "keychain", "{out}");
+    assert_eq!(out["removed"], json!(["key", "plow-token"]), "{out}");
+    assert_eq!(
+        out["device"],
+        json!({"name": "host", "removed": true}),
+        "{out}"
+    );
+    assert!(plow.state.lock().unwrap().peers.is_empty());
+    assert!(!host.exists());
+    // --purge finds the vault and audit keys the folder left.
+    let purged = logout(&["--purge"]);
+    assert_eq!(
+        purged["removed"],
+        json!(["vault.key", "audit.keys"]),
+        "{purged}"
+    );
+    assert_eq!(purged["device"], Value::Null, "{purged}");
+    assert_eq!(logout(&["--purge"])["removed"], json!([]));
+}
+
 /// `latch logout ARGS` on `state`, which must work: what it printed.
 fn logout(state: &Path, args: &[&str]) -> Value {
     let output = latch(state, &[&["logout"], args].concat(), &[]);
@@ -6225,6 +6367,13 @@ fn logout_stops_the_host_and_deletes_only_the_login_so_the_vault_and_audit_still
         (&json!(true), &json!(true))
     );
     assert!(!host.exists());
+    // Once the folder is gone, logout finds nothing to delete.
+    let again = logout(&host, &["--purge"]);
+    assert_eq!(
+        (&again["removed"], &again["device"]),
+        (&json!([]), &Value::Null),
+        "{again}"
+    );
 }
 
 #[test]

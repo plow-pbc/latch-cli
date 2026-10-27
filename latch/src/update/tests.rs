@@ -484,14 +484,32 @@ fn only_a_release_tag_names_a_release() {
 fn the_installed_engines_are_the_ones_kept_up_to_date() {
     let world = World::new();
     let state = &world.state.path;
-    assert_eq!(engines(state), ["--no-browser"]);
+    assert_eq!(helpers(state), ["--no-browser"]);
     std::fs::create_dir_all(state.join("plugins/cft")).unwrap();
-    assert_eq!(engines(state), ["--browser", "chrome"]);
+    assert_eq!(helpers(state), ["--browser", "chrome"]);
     std::fs::create_dir_all(state.join("plugins/camoufox")).unwrap();
     assert_eq!(
-        engines(state),
+        helpers(state),
         ["--browser", "chrome", "--browser", "camoufox"]
     );
+}
+
+/// A machine installed with `--client-only` is updated the same way: latch
+/// alone, whatever else is in its state folder.
+#[tokio::test]
+async fn a_client_only_install_is_updated_client_only() {
+    let world = World::new();
+    let release = world.release(1328);
+    world.latest(&release);
+    let state = &world.state.path;
+    std::fs::create_dir_all(state.join("plugins/cft")).unwrap();
+    std::fs::write(state.join("plugins/client-only"), "").unwrap();
+    update(&world.state, &world.source(), Some(1327), None, None, false)
+        .await
+        .unwrap();
+    let arguments = world.arguments().expect("install-binary.sh ran");
+    assert_eq!(arguments[2..4], ["--non-interactive", "--client-only"]);
+    assert_eq!(arguments.len(), 5, "{arguments:?}");
 }
 
 #[tokio::test]

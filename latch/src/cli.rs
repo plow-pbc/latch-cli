@@ -242,6 +242,16 @@ pub enum Command {
     /// unless a host runs on the state folder; the installer runs it
     #[command(hide = true)]
     PruneHelpers,
+    /// Internal: the app's "Start when you log in" item, as ServiceManagement
+    /// reports it; with --again, registered again from this app, which the
+    /// installer does once it moves the app to another folder
+    #[cfg(target_os = "macos")]
+    #[command(hide = true)]
+    LoginItem {
+        /// Register it again from this app's bundle
+        #[arg(long)]
+        again: bool,
+    },
     /// Internal: Messages' or Contacts' Full Disk Access check, run as the
     /// app's own job when no host runs: `access` and `reason`, as JSON
     #[cfg(target_os = "macos")]
