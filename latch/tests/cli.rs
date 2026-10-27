@@ -538,46 +538,75 @@ fn a_failed_registration_again_says_why() {
 #[test]
 fn a_cloud_agent_behind_plows_proxy_sends_no_credential() {
     // On exe.dev the agent's token never reaches the VM: `$PLOW_API_BASE`
-    // is a proxy that adds it. It wins over `$PLOW_API_URL`.
-    let (proxy, server) = fake_plow(vec![
-        me("agent"),
-        (200, peer(Value::Null, "agent", "agent", Value::Null)),
-        (
-            200,
-            json!({"data": [peer(json!("REGISTERED"), "agent", "agent", Value::Null)]}),
-        ),
-    ]);
-    let dir = test_dir();
-    let state = dir.path().join("state");
-    let env = [
-        ("PLOW_API_BASE", Path::new(&proxy)),
-        ("PLOW_API_URL", Path::new("http://127.0.0.1:9")),
-        ("PLOW_TOKEN_FILE", &dir.path().join("none")),
-    ];
+    // is a proxy that adds it. It wins over `$PLOW_API_URL`. The agent logs
+    // in with `latch login`, or else on its first command that needs a host;
+    // what answers here (Google's help, a browser dry run) asks no one.
+    for explicit in [true, false] {
+        let (proxy, server) = fake_plow(vec![
+            me("agent"),
+            (200, peer(Value::Null, "agent", "agent", Value::Null)),
+            (
+                200,
+                json!({"data": [peer(json!("REGISTERED"), "agent", "agent", Value::Null)]}),
+            ),
+        ]);
+        let dir = test_dir();
+        let state = dir.path().join("state");
+        let env = [
+            ("PLOW_API_BASE", Path::new(&proxy)),
+            ("PLOW_API_URL", Path::new("http://127.0.0.1:9")),
+            ("PLOW_TOKEN_FILE", &dir.path().join("none")),
+        ];
 
-    let login = latch(&state, &["login"], &env);
-    assert_eq!(login.status.code(), Some(0), "{login:?}");
-    let output: Value = serde_json::from_slice(&login.stdout).unwrap();
-    assert_eq!(output["peer"]["kind"], "agent");
-    assert!(!state.join("plow-token").exists());
-    let config: Value =
-        serde_json::from_slice(&fs::read(state.join("config.json")).unwrap()).unwrap();
-    assert_eq!(config["api_url"], proxy.as_str());
+        if explicit {
+            let login = latch(&state, &["login"], &env);
+            assert_eq!(login.status.code(), Some(0), "{login:?}");
+            let output: Value = serde_json::from_slice(&login.stdout).unwrap();
+            assert_eq!(output["peer"]["kind"], "agent");
+        } else {
+            for local in [
+                &["google", "--", "help"][..],
+                &["browser", "do", "--dry-run", "click e1"],
+            ] {
+                let output = latch(&state, local, &env);
+                assert_eq!(output.status.code(), Some(0), "{local:?}: {output:?}");
+            }
+            // `browser setup` runs here too: with no tools on its PATH it
+            // fails at once, never having logged in to be refused.
+            let mut setup = latch_command(&state, &["browser", "setup"], &env);
+            let setup = setup
+                .env("PATH", dir.path().join("no-tools"))
+                .output()
+                .unwrap();
+            let error: Value = serde_json::from_slice(&setup.stderr).unwrap();
+            assert_eq!(error["error"]["code"], "setup_failed", "{error}");
+            let local = latch(&state, &["status", "--local"], &env);
+            let local: Value = serde_json::from_slice(&local.stdout).unwrap();
+            assert_eq!(local["login"], Value::Null, "{local}");
+        }
 
-    // Later calls go to the proxy the same way.
-    let exec = latch(&state, &["exec", "--", "true"], &env);
-    let error: Value = serde_json::from_slice(&exec.stderr).unwrap();
-    assert_eq!(error["error"]["code"], "no_host");
+        // Calls go to the proxy the same way.
+        let exec = latch(&state, &["exec", "--", "true"], &env);
+        let error: Value = serde_json::from_slice(&exec.stderr).unwrap();
+        assert_eq!(error["error"]["code"], "no_host", "{error}");
+        assert!(!state.join("plow-token").exists());
+        let config: Value =
+            serde_json::from_slice(&fs::read(state.join("config.json")).unwrap()).unwrap();
+        assert_eq!(config["api_url"], proxy.as_str());
+        let local = latch(&state, &["status", "--local"], &env);
+        let local: Value = serde_json::from_slice(&local.stdout).unwrap();
+        assert_eq!(local["login"]["kind"], "agent", "{local}");
 
-    let requests = server.join().unwrap();
-    assert!(requests[0].starts_with("GET /v1/agents/me "));
-    assert!(requests[1].starts_with("POST /v1/latch/peers "));
-    assert!(requests[2].starts_with("GET /v1/latch/peers "));
-    for request in requests {
-        assert!(
-            !request.to_ascii_lowercase().contains("authorization"),
-            "{request}"
-        );
+        let requests = server.join().unwrap();
+        assert!(requests[0].starts_with("GET /v1/agents/me "));
+        assert!(requests[1].starts_with("POST /v1/latch/peers "));
+        assert!(requests[2].starts_with("GET /v1/latch/peers "));
+        for request in requests {
+            assert!(
+                !request.to_ascii_lowercase().contains("authorization"),
+                "{request}"
+            );
+        }
     }
 }
 

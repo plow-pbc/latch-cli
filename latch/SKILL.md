@@ -20,7 +20,8 @@ when there is a next step), with an exit code you can branch on. Branch on
   host as its owner, through its gatekeeper and audit. That is how latch
   is meant to be used here.
 - **From another machine:** log in with your own credential (`latch login`
-  with no flags finds it). `latch status` shows your account, this machine
+  with no flags finds it; your first command that needs a host logs in
+  the same way if you haven't). `latch status` shows your account, this machine
   (`this_machine`), the account's hosts (`self` marks this one), the
   plugins each one has on (`plugins`; `null` with `plugins_reason` when it
   didn't say) and `default_host`, where a command without `--host` goes; name one with

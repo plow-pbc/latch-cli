@@ -78,7 +78,7 @@ use clap::{CommandFactory, FromArgMatches};
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use cli::{Cli, Command, DevicesAction, FileCommand, HostArg};
+use cli::{BrowserCommand, Cli, Command, DevicesAction, FileCommand, HandoffAction, HostArg};
 use failure::{Exit, Failure};
 use state::StateDir;
 use wire::Request;
@@ -229,6 +229,33 @@ async fn run(
     state.check_format()?;
     let foreground = matches!(&command, Command::Serve(args) if args.foreground);
     trace::init(&state, foreground)?;
+    // An agent holding its own Plow credential logs in on its first command
+    // that needs Plow or a host; what answers here without one does not.
+    let needs_login = match &command {
+        Command::Status(args) => !args.local && (args.host.is_some() || !args.follow),
+        Command::Google(args) => !args.local_help(),
+        Command::Browser(args) => !matches!(
+            args.command,
+            BrowserCommand::Do { dry_run: true, .. }
+                | BrowserCommand::Setup { .. }
+                | BrowserCommand::Handoff {
+                    action: Some(HandoffAction::Done),
+                    ..
+                }
+        ),
+        Command::Exec(_)
+        | Command::File(_)
+        | Command::Messages(_)
+        | Command::Contacts(_)
+        | Command::Vault(_)
+        | Command::Rules(_)
+        | Command::Agents(_)
+        | Command::Devices(_) => true,
+        _ => false,
+    };
+    if needs_login {
+        login::agent_on_first_use(&state).await?;
+    }
     match command {
         Command::Login(args) if args.events => {
             login::event(stream::hello());
