@@ -237,6 +237,7 @@ async fn run(
         Command::Browser(args) => !matches!(
             args.command,
             BrowserCommand::Do { dry_run: true, .. }
+                | BrowserCommand::Setup { .. }
                 | BrowserCommand::Handoff {
                     action: Some(HandoffAction::Done),
                     ..

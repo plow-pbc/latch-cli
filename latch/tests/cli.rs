@@ -571,6 +571,15 @@ fn a_cloud_agent_behind_plows_proxy_sends_no_credential() {
                 let output = latch(&state, local, &env);
                 assert_eq!(output.status.code(), Some(0), "{local:?}: {output:?}");
             }
+            // `browser setup` runs here too: with no tools on its PATH it
+            // fails at once, never having logged in to be refused.
+            let mut setup = latch_command(&state, &["browser", "setup"], &env);
+            let setup = setup
+                .env("PATH", dir.path().join("no-tools"))
+                .output()
+                .unwrap();
+            let error: Value = serde_json::from_slice(&setup.stderr).unwrap();
+            assert_eq!(error["error"]["code"], "setup_failed", "{error}");
             let local = latch(&state, &["status", "--local"], &env);
             let local: Value = serde_json::from_slice(&local.stdout).unwrap();
             assert_eq!(local["login"], Value::Null, "{local}");
