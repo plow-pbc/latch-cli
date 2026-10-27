@@ -162,8 +162,7 @@ impl Secrets {
 
     /// The item's account: the state folder's real path and the file name.
     fn account(&self, secret: Secret) -> String {
-        let dir = fs::canonicalize(&self.dir).unwrap_or_else(|_| self.dir.clone());
-        format!("{}/{}", dir.display(), secret.file())
+        format!("{}/{}", real_path(&self.dir).display(), secret.file())
     }
 
     fn refused(&self, what: &str, secret: Secret, why: &str) -> Failure {
@@ -174,6 +173,21 @@ impl Secrets {
             self.account(secret)
         );
         Failure::new(code::keychain_failed, message)
+    }
+}
+
+/// `dir`'s real path; for a folder that is gone, its real parent's, so its
+/// items are still found by the path they were filed under.
+fn real_path(dir: &Path) -> PathBuf {
+    let dir = std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf());
+    if let Ok(real) = fs::canonicalize(&dir) {
+        return real;
+    }
+    match (dir.parent(), dir.file_name()) {
+        (Some(parent), Some(name)) => fs::canonicalize(parent)
+            .map(|parent| parent.join(name))
+            .unwrap_or(dir),
+        _ => dir,
     }
 }
 
@@ -568,6 +582,27 @@ mod tests {
             fs::read(dir.path().join("plow-token")).unwrap(),
             b"dev-token"
         );
+    }
+
+    #[test]
+    fn a_deleted_folder_s_items_are_found_by_the_path_they_were_filed_under() {
+        let parent = tempfile::tempdir().unwrap();
+        let link = parent.path().join("link");
+        fs::create_dir(parent.path().join("real")).unwrap();
+        std::os::unix::fs::symlink("real", &link).unwrap();
+        let dir = link.join("state");
+        fs::create_dir(&dir).unwrap();
+        let memory = Memory::default();
+        in_memory(&dir, &memory)
+            .unwrap()
+            .create(Secret::Key, b"key")
+            .unwrap();
+        fs::remove_dir(&dir).unwrap();
+
+        let secrets = in_memory(&dir, &memory).unwrap();
+        assert_eq!(secrets.read(Secret::Key).unwrap().unwrap(), b"key");
+        assert_eq!(secrets.remove_each(&Secret::LOGIN).unwrap(), ["key"]);
+        assert!(memory.items.lock().unwrap().is_empty());
     }
 
     #[test]

@@ -151,6 +151,8 @@ No Homebrew tap is included.
   also deletes the vault and audit keys and the state folder itself. If Plow
   can't be reached, logout still deletes locally and says the machine is
   still listed: `latch devices remove` from another machine takes it out.
+  On a state folder deleted by hand, logout still takes the machine out of
+  Plow and deletes what the Keychain kept for it.
 - `latch agents` lists your account's agents (line, Plow status, when each
   last used its credential), from one of your own machines. `latch agents
   --host NAME` adds each one's standing on that host: whether it has rules

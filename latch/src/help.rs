@@ -111,7 +111,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "logout",
         runs_on: |_| RunsOn::Local,
-        output: "`removed` (what it deleted, by file name: the key, Plow token and config.json; with --purge every secret, then the folder), `from` (`keychain` or `files`), `stopped` (whether a host was running), `purged`, `device` (an owner's machine: its `name` and whether Plow `removed` it; if not, the `error` and the `next` step; null otherwise) and `state_dir`.",
+        output: "`removed` (what it deleted, by file name: the key, Plow token and config.json; with --purge every secret, then the folder), `from` (`keychain` or `files`), `stopped` (whether a host was running), `purged`, `device` (an owner's machine: its `name`, null if the state folder was already gone, and whether Plow `removed` it; if not, the `error` and the `next` step; null otherwise) and `state_dir`.",
         effect: Repeatable(
             "stops this state folder's host, takes this machine out of the Plow account and signs out its login, and deletes its key and Plow token; with --purge also its vault and audit keys and the folder itself",
         ),

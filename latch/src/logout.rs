@@ -11,6 +11,10 @@
 //! is still in the account, for `latch devices remove` from another of the
 //! owner's machines.
 //!
+//! A folder deleted by hand leaves its Keychain items behind: logout on a
+//! missing folder still takes the machine out of Plow, if its token is
+//! there, and deletes them.
+//!
 //! The folder is resolved once, and must be a latch state folder, not a
 //! link to one. From the stop on, logout holds `serve.lock` as a host
 //! would, so no host starts until it is done.
@@ -42,9 +46,7 @@ pub async fn run(state: &StateDir, purge: bool) -> Result<Value, Failure> {
     };
     match fs::symlink_metadata(&state.path) {
         Err(err) if err.kind() == io::ErrorKind::NotFound => {
-            return Ok(
-                json!({"removed": [], "stopped": false, "purged": false, "state_dir": state.path}),
-            );
+            return forget_missing(state, purge).await;
         }
         Err(err) => return Err(io_failure(&state.path, err)),
         Ok(found) if found.file_type().is_symlink() => {
@@ -127,6 +129,54 @@ async fn unregister(state: &StateDir) -> Value {
             "removed": false,
             "error": {"code": failure.code, "message": failure.message},
             "next": format!("`latch devices remove {}` on another of your machines", shell_quoted(&name)),
+        }),
+    }
+}
+
+/// Logout of a folder that is gone: no host runs on it and no config says
+/// which Plow it logged in to, but a signed latch's Keychain may still hold
+/// its secrets.
+async fn forget_missing(state: &StateDir, purge: bool) -> Result<Value, Failure> {
+    let device = match state.load_token()? {
+        Some(token) => unregister_by_token(&token).await,
+        None => Value::Null,
+    };
+    let secrets = Secrets::open(&state.path)?;
+    let removed = secrets.remove_each(if purge { &Secret::ALL } else { &Secret::LOGIN })?;
+    Ok(json!({
+        "removed": removed,
+        "from": if secrets.in_keychain() { "keychain" } else { "files" },
+        "stopped": false,
+        "purged": purge,
+        "device": device,
+        "state_dir": state.path,
+    }))
+}
+
+/// `unregister` with only the token: the Plow is the one a login with no
+/// saved URL would use, and the machine's name is what Plow says it removed.
+async fn unregister_by_token(token: &str) -> Value {
+    let api_url = crate::login::api_url(None, credential::env, None, crate::cli::BUILD_CHANNEL);
+    let removed = match api_url {
+        Some(api_url) => match Plow::new(&api_url, token) {
+            Ok(plow) => plow.remove_self().await,
+            Err(failure) => Err(failure),
+        },
+        None => Err(Failure::new(
+            code::not_configured,
+            "no Plow URL to take this machine out of".to_string(),
+        )),
+    };
+    match removed {
+        Ok(peers) => json!({
+            "name": peers.first().map(|peer| peer.name.clone()),
+            "removed": true,
+        }),
+        Err(failure) => json!({
+            "name": Value::Null,
+            "removed": false,
+            "error": {"code": failure.code, "message": failure.message},
+            "next": "`latch devices` on another of your machines lists it, and `latch devices remove NAME` takes it out",
         }),
     }
 }
