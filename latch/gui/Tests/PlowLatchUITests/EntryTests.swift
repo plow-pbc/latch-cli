@@ -45,7 +45,7 @@ final class CountingClient: LatchClient, @unchecked Sendable {
         await ran("audit --before", host: host)
         return AuditPage(records: [], hasOlder: true)
     }
-    nonisolated func auditFollow(host: String?, after: String?) -> AsyncThrowingStream<AuditLine, Error> {
+    nonisolated func auditFollow(host: String?, after: String?, last: Int?) -> AsyncThrowingStream<AuditLine, Error> {
         counted.withLock { $0.append(("audit --follow", host)) }
         // One connection, with more before it.
         return AsyncThrowingStream { continuation in
@@ -101,16 +101,14 @@ struct EntryTests {
         await app.enter(.host(.settings, mac))
         #expect(client.calls == ["rules show"])
         await app.enter(.host(.settings, kitchen))
-        #expect(Array(client.calls.dropFirst(1)) == ["rules show", "status --host"])
+        #expect(client.calls.dropFirst(1).sorted() == ["rules show", "status --host"])
         await app.enter(.host(.activity, mac))
         #expect(client.calls.count == 3)
         await app.enter(.host(.home, mac))
-        #expect(client.calls.last == "vault list")
-        #expect(client.calls.count == 4)
+        #expect(client.calls.dropFirst(3) == ["vault list"])
         // Another host's are in its status, which Settings already read.
         await app.enter(.host(.home, kitchen))
-        #expect(client.calls.last == "vault list")
-        #expect(client.calls.count == 5)
+        #expect(client.calls.dropFirst(4) == ["vault list"])
     }
 
     // Home on a host asks only that host, never the others it could: its
@@ -139,23 +137,25 @@ struct EntryTests {
         let app = try app(client)
         await app.enter(.host(.home, app.host))
         await app.enter(.host(.home, app.host), refresh: true)
-        #expect(client.calls == ["rules show", "vault list", "rules show", "vault list"])
+        #expect(client.calls.sorted() == ["rules show", "rules show", "vault list", "vault list"])
     }
 
-    // Leaving a screen while its read runs: what was held stays, nothing
-    // is called a failure, and the reads after it never start.
-    @Test func leavingCancelsTheReadAndTheOnesAfterIt() async throws {
+    // Leaving a screen while its reads run (side by side): what was held
+    // stays, and nothing they answer late is kept or called a failure.
+    @Test func leavingCancelsTheReadsUnderWay() async throws {
         let client = CountingClient()
         let gate = Gate()
         client.held["rules show"] = gate
+        client.held["vault list"] = gate
         let app = try app(client)
         let entering = Task { await app.enter(.host(.home, app.host)) }
-        await waitUntil { client.calls == ["rules show"] }
+        await waitUntil { client.calls.sorted() == ["rules show", "vault list"] }
         entering.cancel()
         gate.open()
         await entering.value
-        #expect(client.calls == ["rules show"])
+        #expect(client.calls.sorted() == ["rules show", "vault list"])
         #expect(app.summaries[app.hosts[0].name]?.rules == nil)
+        #expect(app.summaries[app.hosts[0].name]?.vault == nil)
     }
 
     @Test func aCancelledReadIsNoFailure() async {
@@ -183,7 +183,7 @@ struct EntryTests {
         await app.enter(.account(.agents))
         let reachable = app.hosts.filter { $0.isThisMac || $0.online != false }
         #expect(!reachable.isEmpty)
-        #expect(reachable.allSatisfy { AppModel.held(app.standings[$0.name]) })
+        #expect(reachable.allSatisfy { app.standings[$0.name] != nil })
     }
 
     @Test func homeAndActivityShareTheirHostsFeedAndOtherScreensHaveNone() throws {
@@ -209,7 +209,7 @@ struct FeedGraceTests {
         private let started = Mutex<[String?]>([])
         var afters: [String?] { started.withLock { $0 } }
 
-        func auditFollow(host: String?, after: String?) -> AsyncThrowingStream<AuditLine, Error> {
+        func auditFollow(host: String?, after: String?, last: Int?) -> AsyncThrowingStream<AuditLine, Error> {
             started.withLock { $0.append(after) }
             return AsyncThrowingStream { continuation in
                 continuation.yield(try! LatchJSON.decoder.decode(AuditLine.self, from: Data(PagedClient.line(after == nil ? 1 : 2, op: "exec").utf8)))
@@ -287,6 +287,25 @@ struct ActivationTests {
         #expect(again.contains(section == .vault ? "vault list" : "rules show"), "\(section): \(again)")
     }
 
+    // Agents asks every reachable host for its agents' standing at once,
+    // not one host after another.
+    @Test func agentsAsksEveryHostAtOnce() async throws {
+        let client = CountingClient()
+        let gate = Gate()
+        client.held["agents --host"] = gate
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
+        app.stage(status: try Fixtures.decode(Fixtures.serving))
+        app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
+        let reachable = app.hosts.filter { $0.isThisMac || $0.online != false }
+        #expect(reachable.count > 1)
+        let entering = Task { await app.enter(.account(.agents)) }
+        // All asked while the first answer is still held.
+        await waitUntil { client.calls.filter { $0 == "agents --host" }.count == reachable.count }
+        gate.open()
+        await entering.value
+        #expect(reachable.allSatisfy { AppModel.held(app.standings[$0.name]) })
+    }
+
     // Rules names the agents but doesn't show their standing on each host:
     // neither showing it nor coming back to the front asks each host.
     @Test func rulesReadsTheAgentListAndNoHostsStanding() async throws {
@@ -297,7 +316,7 @@ struct ActivationTests {
         app.place = .host(.rules)
         await app.enter(.host(.rules, app.host))
         await app.activated()
-        #expect(client.calls == ["agents", "rules show", "agents", "rules show"])
+        #expect(client.calls.sorted() == ["agents", "agents", "rules show", "rules show"])
         #expect(!client.calls.contains("agents --host"))
     }
 }

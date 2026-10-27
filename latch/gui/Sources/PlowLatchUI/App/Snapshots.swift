@@ -38,7 +38,7 @@ nonisolated struct FakeLatchClient: LatchClient {
         try AuditPage.parse(Data((host == nil ? Fixtures.studioAudit : Fixtures.kitchenAudit).utf8))
     }
     /// The fixture's lines, then nothing more until stopped.
-    func auditFollow(host: String?, after: String?) -> AsyncThrowingStream<AuditLine, Error> {
+    func auditFollow(host: String?, after: String?, last: Int?) -> AsyncThrowingStream<AuditLine, Error> {
         AsyncThrowingStream { continuation in
             for line in (host == nil ? Fixtures.studioAudit : Fixtures.kitchenAudit).split(separator: "\n") {
                 if let line = try? LatchJSON.decoder.decode(AuditLine.self, from: Data(line.utf8)) { continuation.yield(line) }
@@ -556,7 +556,7 @@ package enum SnapshotRunner {
             }
             // Activity: real records of each kind, a filter, the inspector,
             // another host's, and one Plow counts offline.
-            let activities: [(String, String, String, String?, ActivityView.Filter, (AuditRecord) -> Bool)] = [
+            let activities: [(String, String, String, String?, ActivityFilter, (AuditRecord) -> Bool)] = [
                 ("14-activity-studio-agent-allowed", Fixtures.serving, Fixtures.studioHosts, nil, .all,
                  { $0.callerName == "scout" && $0.decision == "allow" && $0.op == "exec" }),
                 ("14-activity-studio-refused-you-said-no", Fixtures.serving, Fixtures.studioHosts, nil, .refused,

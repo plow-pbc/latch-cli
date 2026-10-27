@@ -22,6 +22,9 @@ nonisolated struct SyntheticLatchClient: LatchClient {
         var agents = 2
         /// New records per second on each followed host, once caught up.
         var rate = 0
+        /// New records sent at once on each followed host, as fast as they
+        /// go, once caught up (before `rate`'s): a burst of arrivals.
+        var burst = 0
         /// Milliseconds every read takes, as a latch run would.
         var delay = 0
         /// Up to this many milliseconds more on each read, at random.
@@ -43,6 +46,7 @@ nonisolated struct SyntheticLatchClient: LatchClient {
                 case "vault": vault = value
                 case "agents": agents = value
                 case "rate": rate = value
+                case "burst": burst = value
                 case "delay": delay = value
                 case "jitter": jitter = value
                 case "connectors": connectors = value
@@ -199,9 +203,9 @@ nonisolated struct SyntheticLatchClient: LatchClient {
         try await base.auditShot(record, shot: shot, host: host)
     }
 
-    /// Every record at once, or those after `after`, then, with a rate, new
-    /// ones until stopped.
-    func auditFollow(host: String?, after: String?) -> AsyncThrowingStream<AuditLine, Error> {
+    /// The newest `last` records (all without it), or those after `after`,
+    /// then a burst, then, with a rate, new ones until stopped.
+    func auditFollow(host: String?, after: String?, last: Int?) -> AsyncThrowingStream<AuditLine, Error> {
         let host = self.host(host), client = self
         return AsyncThrowingStream { continuation in
             let task = Task {
@@ -210,15 +214,21 @@ nonisolated struct SyntheticLatchClient: LatchClient {
                 }
                 try? await client.wait()
                 let start = String(repeating: "0", count: 64)
-                var cursor = after ?? start
-                var n = after.flatMap { $0 == start ? nil : Int($0.suffix(8), radix: 16) }.map { $0 + 1 } ?? 0
-                send(#"{"cursor":"\#(cursor)","has_older":false,"type":"snapshot"}"#)
+                var n = after.flatMap { $0 == start ? nil : Int($0.suffix(8), radix: 16) }.map { $0 + 1 }
+                    ?? max(0, client.spec.records - (last ?? client.spec.records))
+                var cursor = after ?? (n == 0 ? start : client.recordID(n - 1, on: host))
+                let older = after == nil && n > 0
+                send(#"{"cursor":"\#(cursor)","has_older":\#(older),"type":"snapshot"}"#)
                 while n < client.spec.records {
                     send(client.record(n, on: host))
                     cursor = client.recordID(n, on: host)
                     n += 1
                 }
-                send(#"{"cursor":"\#(cursor)","has_older":false,"type":"caught_up"}"#)
+                send(#"{"cursor":"\#(cursor)","has_older":\#(older),"type":"caught_up"}"#)
+                for _ in 0..<client.spec.burst where !Task.isCancelled {
+                    send(client.record(n, on: host))
+                    n += 1
+                }
                 guard client.spec.rate > 0 else { return }
                 while !Task.isCancelled {
                     try? await Task.sleep(for: .seconds(1) / client.spec.rate)

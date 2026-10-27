@@ -91,16 +91,16 @@ struct TargetTests {
     @Test func aCancelledReadCantOverwriteAnotherTarget() async throws {
         let client = CountingClient()
         let gate = Gate()
-        client.held["rules show"] = gate
+        for command in ["rules show", "vault list", "status --host"] { client.held[command] = gate }
         let app = try app(client)
         app.stage(summary: HostSummary(), for: "studio")
         app.stage(summary: HostSummary(), for: "pi-kitchen")
         let mac = app.hosts[0], kitchen = app.hosts[1]
         let first = Task { await app.enter(.host(.home, kitchen)) }
-        await waitUntil { client.calls == ["rules show"] }
+        await waitUntil { client.calls.count == 3 }
         first.cancel()
         let second = Task { await app.enter(.host(.home, mac)) }
-        await waitUntil { client.calls == ["rules show", "rules show"] }
+        await waitUntil { client.calls.count == 5 }
         gate.open()
         await first.value
         await second.value

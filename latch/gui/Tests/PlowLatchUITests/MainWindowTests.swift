@@ -14,7 +14,7 @@ struct MainWindowTests {
         let statuses = AsyncThrowingStream<LocalStatus, Error>.makeStream()
         let lines = AsyncThrowingStream<AuditLine, Error>.makeStream()
         nonisolated func statusFollow() -> AsyncThrowingStream<LocalStatus, Error> { statuses.stream }
-        nonisolated func auditFollow(host: String?, after: String?) -> AsyncThrowingStream<AuditLine, Error> { lines.stream }
+        nonisolated func auditFollow(host: String?, after: String?, last: Int?) -> AsyncThrowingStream<AuditLine, Error> { lines.stream }
     }
 
     private func app(_ client: some LatchClient, progress: PlowLatchUI.Progress = PlowLatchUI.Progress(passed: [.welcome: .continued], finished: true)) throws -> AppModel {
@@ -72,19 +72,20 @@ struct MainWindowTests {
     @Test func aChangeOfPlaceCancelsTheLastPlacesReads() async throws {
         let client = CountingClient()
         let gate = Gate()
-        client.held["rules show"] = gate
+        for command in ["rules show", "vault list", "status --host"] { client.held[command] = gate }
         let app = try app(client)
         app.showHost("pi-kitchen")
         let controller = open(app)
         defer { controller.close() }
-        // Home on pi-kitchen reads its rules (held), then its vault.
-        await waitUntil { client.hostsAsked.contains("pi-kitchen") }
+        // Home on pi-kitchen reads its rules, vault and status (all held).
+        await waitUntil { ["rules show", "vault list", "status --host"].allSatisfy(client.calls.contains) }
         app.place = .account(.connections)
         await waitUntil { client.calls.contains("devices") }
         gate.open()
         try await Task.sleep(for: .milliseconds(100))
         #expect(app.summaries["pi-kitchen"]?.rules == nil)
-        #expect(!client.calls.contains("vault list"))
+        #expect(app.summaries["pi-kitchen"]?.vault == nil)
+        #expect(app.summaries["pi-kitchen"]?.status == nil)
     }
 
     @Test func aPlaceLeftAloneFinishesItsReads() async throws {

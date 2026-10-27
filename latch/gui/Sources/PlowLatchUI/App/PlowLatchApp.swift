@@ -117,12 +117,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard !TestHooks.headless else { return }
         #endif
         MenuBridge.shared.start()
+        // Quick Look's files a crash left.
+        QuickLookFiles.shared.removeAll()
         guard let model = PlowLatchApp.model, model.store.load().finished else { return }
         MainWindowController.open(model)
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         LatchProcess.terminateAll()
+        QuickLookFiles.shared.removeAll()
         ShotFolder.removeAll()
     }
 

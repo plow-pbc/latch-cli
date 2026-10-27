@@ -1,11 +1,14 @@
 import Observation
 import SwiftUI
 
-/// One host's audit as `latch audit --follow` streams it: the newest page,
-/// then each record as it's written. It runs while a screen showing it is
-/// on screen and for a grace after, so coming straight back doesn't start
-/// latch again, and picks up after the last record it got when it starts
-/// again.
+/// One host's audit as `latch audit --follow` streams it: the newest 500
+/// records, then each record as it's written, kept with no limit, so a
+/// selected record never goes from under the person. It runs while a screen
+/// showing it is on screen and for a grace after, so coming straight back
+/// doesn't start latch again, and picks up after the last record it got
+/// when it starts again: every record since, with none missed or twice.
+/// Records arrive in batches, at most one change every ~100 ms, however
+/// fast latch sends them.
 @Observable
 final class ActivityFeed {
     let client: any LatchClient
@@ -30,6 +33,14 @@ final class ActivityFeed {
     private var watchers = 0
     /// The earlier pages Home reads on its own looking for five requests.
     static let homePages = 2
+    /// How many of the newest records a first read (or one after latch
+    /// forgot where the last left off) starts with.
+    static let openingPage = 500
+    /// The least time between two changes to the records.
+    static let batchInterval: Duration = .milliseconds(100)
+    /// How long to wait before following again after the stream dropped;
+    /// twice as long each time after, up to a minute.
+    var firstRetry: Duration = .seconds(2)
 
     /// How long the stream keeps running after the last screen showing it
     /// goes.
@@ -84,6 +95,7 @@ final class ActivityFeed {
         watchers = 0
         task?.cancel()
         task = nil
+        dropPending()
         running = false
     }
 
@@ -92,18 +104,24 @@ final class ActivityFeed {
     /// time up to a minute; an error that won't change by waiting stops it.
     private func run() async {
         defer { if !Task.isCancelled { running = false } }
-        var wait = 2
+        var wait = firstRetry
         while !Task.isCancelled {
+            applied = .now
             do {
-                for try await line in client.auditFollow(host: host, after: cursor) {
-                    apply(line)
-                    wait = 2
+                for try await line in client.auditFollow(host: host, after: cursor, last: cursor == nil ? Self.openingPage : nil) {
+                    receive(line)
+                    wait = firstRetry
                 }
+                flushPending()
             } catch let failure as LatchError {
+                flushPending()
                 if failure.code == "cursor_expired" {
+                    // Starts again from the newest records.
                     cursor = nil
                     records = []
                     ids = []
+                    hasOlder = false
+                    caughtUp = false
                     continue
                 }
                 guard !Task.isCancelled else { return }
@@ -111,12 +129,50 @@ final class ActivityFeed {
                 caughtUp = false
                 if Self.final.contains(failure.code ?? "") { return }
             } catch {
+                dropPending()
                 return
             }
             guard !Task.isCancelled else { return }
-            try? await Task.sleep(for: .seconds(wait))
-            wait = min(wait * 2, 60)
+            try? await Task.sleep(for: wait)
+            wait = min(wait * 2, .seconds(60))
         }
+    }
+
+    /// Lines received since the records last changed, held until
+    /// `batchInterval` has passed since then (or the stream has caught up:
+    /// the opening page is all there), then applied together.
+    @ObservationIgnored private var pendingLines: [AuditLine] = []
+    @ObservationIgnored private var applied = ContinuousClock.now
+    @ObservationIgnored private var flushing: Task<Void, Never>?
+
+    private func receive(_ line: AuditLine) {
+        pendingLines.append(line)
+        if case .caughtUp = line { return flushPending() }
+        let due = applied + Self.batchInterval
+        if ContinuousClock.now >= due { return flushPending() }
+        // A later line may never come: those held go in on time.
+        guard flushing == nil else { return }
+        flushing = Task { [weak self] in
+            try? await Task.sleep(until: due)
+            guard !Task.isCancelled else { return }
+            self?.flushPending()
+        }
+    }
+
+    private func flushPending() {
+        flushing?.cancel()
+        flushing = nil
+        guard !pendingLines.isEmpty else { return }
+        let lines = pendingLines
+        pendingLines = []
+        apply(lines)
+        applied = .now
+    }
+
+    private func dropPending() {
+        flushing?.cancel()
+        flushing = nil
+        pendingLines = []
     }
 
     /// Errors that waiting won't fix; `no_host_here` until this Mac starts
@@ -125,23 +181,38 @@ final class ActivityFeed {
     private static let final: Set<String> = ["no_host_here", "owner_only", "usage", "audit_broken", "unknown_host", "not_logged_in",
                                              "record_too_large"]
 
-    func apply(_ line: AuditLine) {
-        switch line {
-        case let .snapshot(_, hasOlder):
-            if records.isEmpty { self.hasOlder = hasOlder }
-        case let .record(cursor, record):
-            self.cursor = cursor
-            error = nil
-            guard ids.insert(record.id).inserted else { return }
-            records.append(record)
-        case let .caughtUp(cursor, hasOlder):
-            self.cursor = cursor
-            if records.isEmpty { self.hasOlder = hasOlder }
-            caughtUp = true
-            error = nil
-        case .hello, .other:
-            break
+    /// Lines in the order sent, changing each of the feed's properties
+    /// once, however many there are.
+    func apply(_ lines: [AuditLine]) {
+        var added: [AuditRecord] = []
+        var cursor = cursor, hasOlder = hasOlder, caughtUp = caughtUp, cleared = false
+        let empty = records.isEmpty
+        for line in lines {
+            switch line {
+            case let .snapshot(_, older):
+                if empty, added.isEmpty { hasOlder = older }
+            case let .record(at, record):
+                cursor = at
+                cleared = true
+                if ids.insert(record.id).inserted { added.append(record) }
+            case let .caughtUp(at, older):
+                cursor = at
+                if empty, added.isEmpty { hasOlder = older }
+                caughtUp = true
+                cleared = true
+            case .hello, .other:
+                break
+            }
         }
+        if cursor != self.cursor { self.cursor = cursor }
+        if hasOlder != self.hasOlder { self.hasOlder = hasOlder }
+        if caughtUp != self.caughtUp { self.caughtUp = caughtUp }
+        if cleared, error != nil { error = nil }
+        if !added.isEmpty { records.append(contentsOf: added) }
+    }
+
+    func apply(_ line: AuditLine) {
+        apply([line])
     }
 
     /// "Load Earlier": the page before the first record held.
