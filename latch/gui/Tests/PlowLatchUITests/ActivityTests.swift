@@ -84,6 +84,29 @@ struct ActivityTests {
         #expect(feed.records.count == ActivityFeed.openingPage)
         #expect(turns < 50, "\(turns) turns")
     }
+
+    /// Lines that came while the feed was busy are taken as one batch when
+    /// it comes back, in order, and the next batch still waits its interval.
+    @Test func aFeedThatFellBehindTakesWhatCameMeanwhileAsOneBatch() async throws {
+        let (lines, latch) = AsyncThrowingStream<AuditLine, Error>.makeStream()
+        var batches = LineBatches.of(lines, every: .milliseconds(100)).makeAsyncIterator()
+        // Busy elsewhere while five lines come, each more than an interval
+        // after the last.
+        for n in 0..<5 {
+            latch.yield(HostLog.line(n))
+            try await Task.sleep(for: .milliseconds(120))
+        }
+        // Taken no earlier than this.
+        let asked = ContinuousClock.now
+        let behind = try #require(try await batches.next())
+        #expect(behind == (0..<5).map(HostLog.line))
+        latch.yield(HostLog.line(5))
+        let next = try #require(try await batches.next())
+        #expect(next == [HostLog.line(5)])
+        #expect(ContinuousClock.now - asked >= .milliseconds(100))
+        latch.finish()
+        #expect(try await batches.next() == nil)
+    }
 }
 
 /// Every stream the app reads opens with `hello` (and a newer latch may add

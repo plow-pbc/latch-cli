@@ -213,73 +213,140 @@ final class ActivityFeed {
     }
 }
 
-/// A follow's lines gathered off the main actor and handed over in
-/// batches, so a busy main thread takes one hop a batch rather than one a
-/// line: a batch goes once `interval` has passed since the last (the first
-/// counting from the start), at once when the stream has caught up, and
-/// before the stream's end or error. Stopping the iteration stops the lines.
-nonisolated final class LineBatches: Sendable {
-    private struct Held {
-        var lines: [AuditLine] = []
-        var sent = ContinuousClock.now
-        /// Sends lines held early when no later line comes in time.
-        var timer: Task<Void, Never>?
-    }
-    private let held = Mutex(Held())
+/// A follow's lines gathered off the main actor and taken a batch at a
+/// time, so a busy main thread takes one hop a batch rather than one a
+/// line. A batch is everything held when it's taken: `interval` after the
+/// last was taken (the first counting from the start), at once when the
+/// stream has caught up, and before the stream's end or error. A consumer
+/// that fell behind takes all that came meanwhile as one batch, never
+/// several back to back. Stopping the iteration stops the lines.
+nonisolated struct LineBatches: AsyncSequence {
+    private let lines: AsyncThrowingStream<AuditLine, Error>
     private let interval: Duration
-    private let out: AsyncThrowingStream<[AuditLine], Error>.Continuation
 
-    private init(interval: Duration, out: AsyncThrowingStream<[AuditLine], Error>.Continuation) {
-        self.interval = interval
-        self.out = out
+    static func of(_ lines: AsyncThrowingStream<AuditLine, Error>, every interval: Duration) -> LineBatches {
+        LineBatches(lines: lines, interval: interval)
     }
 
-    static func of(_ lines: AsyncThrowingStream<AuditLine, Error>, every interval: Duration)
-        -> AsyncThrowingStream<[AuditLine], Error> {
-        let (batches, out) = AsyncThrowingStream<[AuditLine], Error>.makeStream()
-        let batcher = LineBatches(interval: interval, out: out)
-        let reading = Task {
-            do {
-                for try await line in lines { batcher.receive(line) }
-                batcher.finish(throwing: nil)
-            } catch {
-                batcher.finish(throwing: error)
+    func makeAsyncIterator() -> Iterator {
+        Iterator(batcher: Batcher(lines, interval: interval))
+    }
+
+    struct Iterator: AsyncIteratorProtocol {
+        fileprivate let batcher: Batcher
+
+        mutating func next() async throws -> [AuditLine]? {
+            try await batcher.next()
+        }
+    }
+
+    fileprivate final class Batcher: Sendable {
+        private struct Held {
+            var lines: [AuditLine] = []
+            var taken = ContinuousClock.now
+            /// The lines held may be taken.
+            var due = false
+            /// How the stream ended: nil for its end, else its error.
+            var end: Error??
+            var waiting: CheckedContinuation<[AuditLine]?, Error>?
+            var cancelled = false
+            /// Makes the lines held due when no later line comes in time.
+            var timer: Task<Void, Never>?
+            var reading: Task<Void, Never>?
+        }
+        private let held = Mutex(Held())
+        private let interval: Duration
+
+        init(_ lines: AsyncThrowingStream<AuditLine, Error>, interval: Duration) {
+            self.interval = interval
+            let reading = Task { [weak self] in
+                do {
+                    for try await line in lines {
+                        guard let self else { return }
+                        self.receive(line)
+                    }
+                    self?.finish(nil)
+                } catch {
+                    self?.finish(error)
+                }
+            }
+            held.withLock { $0.reading = reading }
+        }
+
+        deinit {
+            held.withLock { held in
+                held.reading?.cancel()
+                held.timer?.cancel()
             }
         }
-        out.onTermination = { _ in reading.cancel() }
-        return batches
-    }
 
-    private func receive(_ line: AuditLine) {
-        held.withLock { held in
-            held.lines.append(line)
-            let due = held.sent + interval
-            if case .caughtUp = line { return send(&held) }
-            if ContinuousClock.now >= due { return send(&held) }
-            guard held.timer == nil else { return }
-            held.timer = Task { [self] in
-                try? await Task.sleep(until: due)
-                self.held.withLock { held in
-                    // Cancelled under the lock by a send that went first.
-                    guard !Task.isCancelled else { return }
-                    send(&held)
+        func next() async throws -> [AuditLine]? {
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { waiting in
+                    held.withLock { held in
+                        guard !held.cancelled else { return waiting.resume(returning: nil) }
+                        held.waiting = waiting
+                        hand(&held)
+                    }
+                }
+            } onCancel: {
+                held.withLock { held in
+                    held.cancelled = true
+                    held.reading?.cancel()
+                    held.waiting?.resume(returning: nil)
+                    held.waiting = nil
                 }
             }
         }
-    }
 
-    private func send(_ held: inout Held) {
-        held.timer?.cancel()
-        held.timer = nil
-        guard !held.lines.isEmpty else { return }
-        out.yield(held.lines)
-        held.lines = []
-        held.sent = .now
-    }
+        private func receive(_ line: AuditLine) {
+            held.withLock { held in
+                held.lines.append(line)
+                let due = held.taken + interval
+                if case .caughtUp = line { return makeDue(&held) }
+                if ContinuousClock.now >= due { return makeDue(&held) }
+                guard held.timer == nil else { return }
+                held.timer = Task { [weak self] in
+                    try? await Task.sleep(until: due)
+                    self?.held.withLock { held in
+                        // Cancelled under the lock by a batch that went first.
+                        guard !Task.isCancelled else { return }
+                        self?.makeDue(&held)
+                    }
+                }
+            }
+        }
 
-    private func finish(throwing error: Error?) {
-        held.withLock { send(&$0) }
-        out.finish(throwing: error)
+        private func finish(_ error: Error?) {
+            held.withLock { held in
+                held.end = .some(error)
+                makeDue(&held)
+            }
+        }
+
+        private func makeDue(_ held: inout Held) {
+            held.timer?.cancel()
+            held.timer = nil
+            held.due = true
+            hand(&held)
+        }
+
+        /// To the consumer waiting, if one is: the lines held if they're
+        /// due, else how the stream ended once nothing is held.
+        private func hand(_ held: inout Held) {
+            guard let waiting = held.waiting else { return }
+            if held.due, !held.lines.isEmpty {
+                waiting.resume(returning: held.lines)
+                held.lines = []
+                held.due = false
+                held.taken = .now
+            } else if held.lines.isEmpty, let end = held.end {
+                if let error = end { waiting.resume(throwing: error) } else { waiting.resume(returning: nil) }
+            } else {
+                return
+            }
+            held.waiting = nil
+        }
     }
 }
 
