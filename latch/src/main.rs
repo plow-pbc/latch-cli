@@ -44,6 +44,7 @@ mod plow;
 mod plugins;
 mod proxy;
 mod redact;
+mod relay_link;
 mod remote;
 mod sandbox;
 mod seal;
