@@ -120,16 +120,30 @@ final class AppModel {
     private var page: AccountPage?
     private(set) var screen: HostScreen = .home
     /// The host the workspace shows, as the sidebar picked it; nil until
-    /// one is picked. Picking another closes Stop…'s confirmation.
+    /// one is picked.
     var chosenHost: String? {
-        didSet {
-            dropRulesFocusLeft()
-            if chosenHost != oldValue { confirmingStop = false }
-        }
+        didSet { dropRulesFocusLeft() }
     }
 
-    /// Host Settings' Stop… is asking to confirm stopping this Mac's host.
-    var confirmingStop = false
+    /// What the main window shows over itself, until it's answered or
+    /// closed; nil for nothing.
+    var sheet: MainSheet?
+
+    /// Asks the person to confirm an action, over the main window.
+    func ask(_ confirmation: Confirmation) {
+        sheet = .confirm(confirmation)
+    }
+
+    /// The person's yes: the action, on what the question named.
+    func confirmed(_ confirmation: Confirmation) async {
+        switch confirmation {
+        case .startHosting: await startHosting()
+        case .stopHost: await stopHost()
+        case let .removeAgent(agent): await removeAgent(agent)
+        case let .removeVaultItem(item, host): await removeVaultItem(item, on: host)
+        case let .removeDevice(device): await removeDevice(device.name)
+        }
+    }
 
     /// A sidebar host row's click: that host's workspace, on the screen it
     /// was last on.
@@ -300,8 +314,6 @@ final class AppModel {
     /// item.
     var selectedVaultItem: OnHost?
     var vaultSearch = ""
-    /// The sheet over the Vault screen: New Item, Edit, or Import.
-    var vaultSheet: VaultSheet?
     private(set) var vaultShows: [String: [String: Result<VaultShow, LatchError>]] = [:]
 
     /// Reads a host's vault again (the Vault screen, after a change).
@@ -332,8 +344,8 @@ final class AppModel {
     func beginVaultEdit(_ item: VaultList.Item, on host: HostEntry) async {
         await showVaultItem(item.item, on: host)
         switch vaultShows[host.name]?[item.item] {
-        case let .success(show)?: vaultSheet = .editor(VaultEditor(editing: show, on: host))
-        case let .failure(error)?: vaultSheet = .editor(VaultEditor(failed: item, error, on: host))
+        case let .success(show)?: sheet = .vaultItem(VaultEditor(editing: show, on: host))
+        case let .failure(error)?: sheet = .vaultItem(VaultEditor(failed: item, error, on: host))
         case nil: break
         }
     }
@@ -369,26 +381,6 @@ final class AppModel {
         return vaultRows(VaultList(items: [item])).isEmpty ? nil : item
     }
 
-    /// The item whose removal is being confirmed, on the host it's on:
-    /// confirmed only on that host's Vault, whatever another host's shows.
-    private var removing: (host: String, item: VaultList.Item)?
-
-    /// Remove…: asks to confirm removing an item from a host's vault.
-    func askToRemove(_ item: VaultList.Item, on host: HostEntry) {
-        removing = (host.name, item)
-    }
-
-    /// The item a host's Vault asks to confirm removing; nil on any other
-    /// host.
-    func removal(on host: HostEntry) -> VaultList.Item? {
-        removing?.host == host.name ? removing?.item : nil
-    }
-
-    /// The confirmation went, removed or not.
-    func endRemoval() {
-        removing = nil
-    }
-
     /// Why the last removal from a vault failed, until it's dismissed.
     var vaultRemoveError: LatchError?
 
@@ -403,6 +395,13 @@ final class AppModel {
         } catch {
             vaultRemoveError = .from(error)
         }
+    }
+
+    /// Import…'s export, chosen: what it holds, in the import sheet.
+    func beginImport(_ file: URL, on host: HostEntry) {
+        let importer = VaultImport(file: file, on: host)
+        sheet = .vaultImport(importer)
+        Task { await importer.load(app: self) }
     }
 
     /// `latch vault import FILE --preview` on a host.
@@ -673,9 +672,6 @@ final class AppModel {
         logOutWarning = nil
         leaveMainIfLoggedOut()
     }
-
-    /// The New Agent sheet, while open.
-    var newAgent: NewAgent?
 
     /// How far down Agents was scrolled, for a return to it. Not observed:
     /// only Agents reads it, as it appears.
@@ -1040,9 +1036,7 @@ final class AppModel {
         leaveMainIfLoggedOut()
     }
 
-    /// "Start hosting on this Mac…" asked, awaiting the person's yes; and a
-    /// start from the main window, while it runs and how it failed.
-    var confirmingStartHosting = false
+    /// A start from the main window, while it runs and how it failed.
     private(set) var startingHost = false
     private(set) var startHostError: LatchError?
 

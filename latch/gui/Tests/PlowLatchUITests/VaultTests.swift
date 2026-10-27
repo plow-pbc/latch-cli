@@ -20,6 +20,8 @@ final class VaultClient: LatchClient, @unchecked Sendable {
     /// so at the next revision.
     var editedElsewhere = false
     var removals = false
+    /// Holds each `vault list` until opened.
+    var listGate: Gate?
 
     func localStatus() async throws -> LocalStatus { try Fixtures.decode(Fixtures.serving) }
     func accountStatus() async throws -> AccountStatus { try Fixtures.decode(Fixtures.studioHosts) }
@@ -29,6 +31,7 @@ final class VaultClient: LatchClient, @unchecked Sendable {
     func rulesShow(host: String?) async throws -> RulesShow { try Fixtures.decode(Fixtures.rulesStudio) }
     func rulesSet(_ text: String) async throws {}
     func vaultList(host: String?) async throws -> VaultList {
+        await listGate?.wait()
         lists += 1
         var vault: VaultList = try Fixtures.decode(Fixtures.vaultItems)
         if editedElsewhere { for index in vault.items.indices { vault.items[index].revision += 1 } }

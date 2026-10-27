@@ -31,7 +31,7 @@ struct MainWindowTests {
         let window = Offscreen(contentRect: CGRect(x: -4000, y: -4000, width: 1120, height: 700),
                                styleMask: [.titled, .closable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        let controller = MainWindowController(app: app, window: window, defaults: nil)
+        let controller = MainWindowController(app: app, window: window, defaults: nil, presenter: SheetRecorder())
         window.setFrameOrigin(CGPoint(x: -4000, y: -4000))
         window.orderFrontRegardless()
         return controller
@@ -170,6 +170,59 @@ struct MainWindowTests {
         await waitUntil { app.vaultShows["studio"]?["v1"] != nil }
     }
 
+    // At the window's narrowest, opening the inspector grows the window by
+    // the room it needs, as Finder's preview does; closing it leaves the
+    // window as it is.
+    @Test func openingTheInspectorAtTheNarrowestGrowsTheWindow() async throws {
+        let app = try app(LiveClient())
+        app.place = .host(.activity)
+        app.inspecting.remove(.activity)
+        let controller = open(app)
+        defer { controller.close() }
+        let window = try #require(controller.window)
+        let split = try #require(window.contentViewController as? MainSplitController)
+        window.setFrame(CGRect(x: -4000, y: -4000, width: 100, height: 600), display: true)
+        window.layoutIfNeeded()
+        let narrowest = window.frame.width
+        let sidebar = split.splitViewItems[0], content = split.splitViewItems[1], inspector = split.splitViewItems[2]
+        #expect(narrowest == sidebar.minimumThickness + content.minimumThickness)
+        split.toggleInspector(nil)
+        await waitUntil { !inspector.isCollapsed && window.frame.width == narrowest + inspector.minimumThickness }
+        #expect(split.splitView.arrangedSubviews[1].frame.width >= content.minimumThickness)
+        #expect(!NSScreen.screens.contains { $0.frame.intersects(window.frame) })
+        split.toggleInspector(nil)
+        await waitUntil { inspector.isCollapsed }
+        #expect(window.frame.width == narrowest + inspector.minimumThickness)
+    }
+
+    // Vault's New Item and Import… sit in the bar, enabled once its vault
+    // is read; no other screen has buttons there.
+    @Test func theBarHoldsTheScreensOwnButtons() async throws {
+        let gate = Gate()
+        let client = VaultClient()
+        client.listGate = gate
+        let app = try app(client)
+        app.place = .host(.home)
+        let controller = open(app)
+        defer { controller.close() }
+        let frame = try #require(controller.window?.contentView?.superview)
+        func bar() -> [NSButton] { buttons(in: frame).filter { ["New Item", "Import…"].contains($0.accessibilityLabel() ?? "") && !$0.isHiddenOrHasHiddenAncestor } }
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(bar().isEmpty)
+        app.place = .host(.vault)
+        await waitUntil { bar().count == 2 }
+        #expect(bar().allSatisfy { !$0.isEnabled })
+        gate.open()
+        await waitUntil { bar().allSatisfy(\.isEnabled) }
+        for place in [Place.host(.activity), .account(.agents)] {
+            app.place = place
+            await waitUntil { bar().isEmpty }
+        }
+        // Back to a vault already read: enabled as it shows.
+        app.place = .host(.vault)
+        await waitUntil { bar().count == 2 && bar().allSatisfy(\.isEnabled) }
+    }
+
     // The place, host and inspectors are the window's to keep: a new window
     // on the same defaults comes back to them.
     @Test func aNewWindowComesBackWhereTheLastWasLeft() async throws {
@@ -179,7 +232,7 @@ struct MainWindowTests {
         let window = Offscreen(contentRect: CGRect(x: -4000, y: -4000, width: 1120, height: 700), styleMask: [.titled, .closable],
                                backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        let controller = MainWindowController(app: first, window: window, defaults: defaults)
+        let controller = MainWindowController(app: first, window: window, defaults: defaults, presenter: SheetRecorder())
         first.showHost("pi-kitchen")
         first.place = .host(.vault)
         first.inspecting.remove(.vault)
@@ -188,7 +241,7 @@ struct MainWindowTests {
 
         let second = try app(client)
         let again = MainWindowController(app: second, window: Offscreen(contentRect: .zero, styleMask: [.titled], backing: .buffered, defer: false),
-                                         defaults: defaults)
+                                         defaults: defaults, presenter: SheetRecorder())
         defer { again.close() }
         #expect(second.route == .host(.vault, second.hosts.first { $0.name == "pi-kitchen" }))
         #expect(second.inspecting == [.activity])
@@ -259,9 +312,9 @@ extension MainWindowTests {
         controller.window?.makeFirstResponder(nil)
         await waitUntil { MenuBridge.state(MenuBridge.newItem, in: controller.window).enabled }
         MenuBridge.send(MenuBridge.newItem, in: controller.window)
-        guard case let .editor(editor)? = app.vaultSheet else { Issue.record("no New Item: \(String(describing: app.vaultSheet))"); return }
+        guard case let .vaultItem(editor)? = app.sheet else { Issue.record("no New Item: \(String(describing: app.sheet))"); return }
         #expect(editor.host.name == "studio")
-        app.vaultSheet = nil
+        app.sheet = nil
     }
 
     // ⌘S saves the focused editor's draft only, and only while an edited

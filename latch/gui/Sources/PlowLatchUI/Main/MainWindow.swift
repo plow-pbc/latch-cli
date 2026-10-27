@@ -8,7 +8,7 @@ import SwiftUI
 /// `AppModel`. While it's open it runs what the model reads and follows
 /// for the window: this Mac's status, Plow's hosts, the reads of the place
 /// showing (cancelled when it changes) and the selected host's activity;
-/// closing it ends them.
+/// closing it ends them. It presents the model's sheets and questions.
 final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolbarDelegate, NSUserInterfaceValidations {
     /// The open main window; the app has at most one.
     private(set) static var shown: MainWindowController?
@@ -35,6 +35,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     private let barItem = NSSplitViewItemAccessoryViewController()
     private let inspectorShows = WindowInspector.Shown()
     private let inspectorItem: NSSplitViewItem
+    let sheets: WindowSheets
     /// Where the window keeps its place, host and inspectors; nil for one
     /// that keeps nothing (a still, a test).
     private let defaults: UserDefaults?
@@ -48,12 +49,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     private var closed = false
 
     /// `window` is the one to build in, if not a new one (a still's, off
-    /// every display).
-    init(app: AppModel, window: NSWindow? = nil, defaults: UserDefaults? = .standard) {
+    /// every display); `presenter` shows its sheets (a test's answers them).
+    init(app: AppModel, window: NSWindow? = nil, defaults: UserDefaults? = .standard, presenter: any SheetPresenting = AppKitSheets()) {
         self.app = app
         self.defaults = defaults
         split = MainSplitController(app: app)
         screens = ScreenController(app: app)
+        sheets = WindowSheets(app: app, presenter: presenter)
         let own = window == nil
         let window = window ?? NSWindow(contentRect: CGRect(x: 0, y: 0, width: 1120, height: 700),
                                         styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
@@ -71,6 +73,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         sidebar.maximumThickness = 320
         let content = NSSplitViewItem(viewController: screens)
         content.automaticallyAdjustsSafeAreaInsets = true
+        // As narrow as the bar's tabs and Vault's buttons allow, its search
+        // field giving way.
+        content.minimumThickness = 500
         barItem.view = bar
         content.addTopAlignedAccessoryViewController(barItem)
         inspectorItem = NSSplitViewItem(inspectorWithViewController: Self.hosting(WindowInspector(shown: inspectorShows), app))
@@ -87,7 +92,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         // Tab goes through the screen showing, made after the window was.
         window.autorecalculatesKeyViewLoop = true
         window.contentViewController = split
-        window.contentMinSize = CGSize(width: 1040, height: 440)
+        // Narrowest with the sidebar and the screen; opening the inspector
+        // there grows the window to make room, as Finder's preview does.
+        window.contentMinSize = CGSize(width: sidebar.minimumThickness + content.minimumThickness, height: 440)
         if own {
             // Its content sized it to fit: back to its default size, then
             // its frame and column widths as AppKit kept them.
@@ -105,6 +112,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         window.toolbar = toolbar
 
         bar.pick = { [app] screen in app.place = .host(screen) }
+        bar.pageTarget = screens
         bar.search = { [app] text in
             switch app.place {
             case .host(.activity): app.activitySearch = text
@@ -162,6 +170,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         entering = nil
         following = nil
         app.endFeeds()
+        // What was over the window goes with it, unanswered.
+        if let window { sheets.end(over: window) }
+        app.sheet = nil
+        app.endGoogleSignIn()
     }
 
     func windowWillClose(_ notification: Notification) {
@@ -193,16 +205,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         if window.title != title { window.title = title }
         if window.subtitle != subtitle { window.subtitle = subtitle }
 
-        // The host's screen tabs and search; gone, not greyed, on a page of
-        // the account's.
-        if case let .host(screen) = app.place {
-            let search: (String, String)? = switch screen {
-            case .activity: ("Search requests", app.activitySearch)
-            case .vault: ("Search items", app.vaultSearch)
-            default: nil
-            }
-            bar.show(screen, search: search)
-        }
         let onHost = if case .host = app.place { true } else { false }
         if barItem.isHidden == onHost { Self.unanimated { barItem.isHidden = !onHost } }
 
@@ -241,6 +243,24 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             defaults.set(app.chosenHost, forKey: Self.hostKey)
             defaults.set(app.inspecting.map(\.rawValue).sorted(), forKey: Self.inspectingKey)
         }
+        // The host's screen tabs, the screen's own buttons and its search;
+        // gone, not greyed, on a page of the account's. Last: what lays the
+        // window out above can draw the screen, which sets its buttons'
+        // actions, and a change made during this pass isn't followed.
+        if case let .host(screen) = app.place {
+            let search: (String, String)? = switch screen {
+            case .activity: ("Search requests", app.activitySearch)
+            case .vault: ("Search items", app.vaultSearch)
+            default: nil
+            }
+            let actions = screens.actions
+            let pages: [(PageButton, Bool)] = switch screen {
+            case .vault: [(.newItem, actions?.newItem != nil), (.importItems, actions?.importItems != nil)]
+            default: []
+            }
+            bar.show(screen, pages: pages, search: search)
+        }
+        sheets.update(over: split)
         window.toolbar?.validateVisibleItems()
         MenuBridge.shared.setNeedsRefresh()
     }
@@ -339,6 +359,8 @@ final class MainSplitController: NSSplitViewController, NSToolbarItemValidation 
 final class ScreenController: NSViewController, NSUserInterfaceValidations {
     let app: AppModel
     private var shown: (place: Place, controller: NSViewController, actions: ScreenActions)?
+    /// What the screen showing can run.
+    var actions: ScreenActions? { shown?.actions }
 
     init(app: AppModel) {
         self.app = app
@@ -399,12 +421,31 @@ final class ScreenTabs: NSSegmentedControl {
     override var acceptsFirstResponder: Bool { NSApp.isFullKeyboardAccessEnabled && super.acceptsFirstResponder }
 }
 
-/// The bar over a host's screen: its screen tabs, and the search of the
-/// screen showing, on Activity (its requests) and Vault (its items).
+/// A screen's own button in the bar: the command its File menu item
+/// sends, to the same screen.
+struct PageButton {
+    var title: String
+    var symbol: String
+    var help: String
+    var action: Selector
+
+    static let newItem = PageButton(title: "New Item", symbol: "plus", help: "Add a login, card, identity or note",
+                                    action: MenuBridge.newItem)
+    static let importItems = PageButton(title: "Import…", symbol: "square.and.arrow.down",
+                                        help: "Import another password manager's export", action: MenuBridge.importItems)
+}
+
+/// The bar over a host's screen: its screen tabs, the screen's own
+/// buttons (Vault's New Item and Import…), and the search of the screen
+/// showing, on Activity (its requests) and Vault (its items).
 final class ContentBar: NSView {
     var pick: (HostScreen) -> Void = { _ in }
     var search: (String) -> Void = { _ in }
+    /// Where the screen's buttons send their commands: the content column.
+    weak var pageTarget: AnyObject?
     private let tabs = ScreenTabs(labels: HostScreen.allCases.map(\.title), trackingMode: .selectOne, target: nil, action: nil)
+    private let pages = NSStackView()
+    private var shownPages: [Selector] = []
     private let field = NSSearchField()
 
     init() {
@@ -413,7 +454,11 @@ final class ContentBar: NSView {
         tabs.action = #selector(picked)
         field.target = self
         field.action = #selector(searched)
-        for view in [tabs, field] {
+        pages.orientation = .horizontal
+        pages.spacing = 8
+        pages.setHuggingPriority(.required, for: .horizontal)
+        pages.setContentCompressionResistancePriority(.required, for: .horizontal)
+        for view in [tabs, pages, field] {
             view.translatesAutoresizingMaskIntoConstraints = false
             addSubview(view)
         }
@@ -428,7 +473,9 @@ final class ContentBar: NSView {
             tabs.centerYAnchor.constraint(equalTo: centerYAnchor),
             field.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -20),
             field.centerYAnchor.constraint(equalTo: centerYAnchor),
-            field.leadingAnchor.constraint(greaterThanOrEqualTo: tabs.trailingAnchor, constant: 12),
+            pages.centerYAnchor.constraint(equalTo: centerYAnchor),
+            pages.leadingAnchor.constraint(greaterThanOrEqualTo: tabs.trailingAnchor, constant: 12),
+            field.leadingAnchor.constraint(equalTo: pages.trailingAnchor, constant: 8),
             field.widthAnchor.constraint(lessThanOrEqualToConstant: 200),
             preferred,
         ])
@@ -436,10 +483,27 @@ final class ContentBar: NSView {
 
     required init?(coder: NSCoder) { nil }
 
-    /// `search`: the field's prompt and text, on a screen that has one.
-    func show(_ screen: HostScreen, search: (prompt: String, text: String)?) {
+    /// `pages`: the screen's buttons, each enabled while the screen can
+    /// run it; `search`: the field's prompt and text, on a screen that has
+    /// one.
+    func show(_ screen: HostScreen, pages: [(PageButton, enabled: Bool)], search: (prompt: String, text: String)?) {
         let index = HostScreen.allCases.firstIndex(of: screen) ?? 0
         if tabs.selectedSegment != index { tabs.selectedSegment = index }
+        if shownPages != pages.map(\.0.action) {
+            shownPages = pages.map(\.0.action)
+            self.pages.setViews(pages.map { page, _ in
+                // A symbol, as a toolbar button's: the tabs and the search
+                // field leave no room for words beside them.
+                let button = NSButton(image: NSImage(systemSymbolName: page.symbol, accessibilityDescription: page.title)!,
+                                      target: pageTarget, action: page.action)
+                button.setAccessibilityLabel(page.title)
+                button.toolTip = page.help
+                return button
+            }, in: .leading)
+        }
+        for (button, page) in zip(self.pages.views.compactMap { $0 as? NSButton }, pages) where button.isEnabled != page.enabled {
+            button.isEnabled = page.enabled
+        }
         field.isHidden = search == nil
         guard let search else { return }
         if field.placeholderString != search.prompt { field.placeholderString = search.prompt }
@@ -499,7 +563,7 @@ struct Inspector: View {
             if let item = app.inspectedVaultItem(on: host) {
                 VaultItemInspector(item: item, show: app.vaultShow(of: item, on: host), hostName: host.name,
                                    edit: { Task { await app.beginVaultEdit(item, on: host) } },
-                                   remove: { app.askToRemove(item, on: host) })
+                                   remove: { app.ask(.removeVaultItem(item, on: host)) })
                     // Read only while it shows: a closed inspector, or one
                     // left behind another screen, stays built (AppKit keeps
                     // a collapsed item's view) but asks latch for nothing.

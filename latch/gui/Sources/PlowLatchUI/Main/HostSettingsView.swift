@@ -35,16 +35,6 @@ struct HostSettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .confirmationDialog("Stop Latch on this Mac?", isPresented: stopping) {
-            Button("Stop", role: .destructive) { Task { await app.stopHost() } }
-        } message: {
-            Text("Your agents can't reach this Mac until you start it again.")
-        }
-    }
-
-    /// Only over this Mac's settings.
-    private var stopping: Binding<Bool> {
-        Binding { app.confirmingStop && app.host?.isThisMac == true } set: { app.confirmingStop = $0 }
     }
 }
 
@@ -72,7 +62,7 @@ private struct HostSection: View {
                     if app.status?.thisMachine.hosting.running == true {
                         Button("Restart") { Task { await app.restartHost() } }
                             .help("Stop Latch and start it again as it last ran")
-                        Button("Stop…") { app.confirmingStop = true }
+                        Button("Stop…") { app.ask(.stopHost) }
                     } else {
                         Button(app.startingHost ? "Starting…" : "Start Latch") { Task { await app.startHosting() } }
                             .disabled(app.startingHost)
