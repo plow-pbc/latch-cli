@@ -4,7 +4,9 @@
 //! A command's events go to `trace.log` in its state folder, so its stderr
 //! stays its one error line; a foreground host's go to its stderr, which is
 //! its log. Never to stdout, which carries the JSON. The audit log is not
-//! affected. The installers a command runs write to `trace.log` too.
+//! affected. The installers a command runs write to `trace.log` too. A
+//! host also logs its relay link's changes from iroh's events, set or not
+//! (`relay_link.rs`).
 
 use std::fs::{File, OpenOptions};
 use std::os::unix::fs::OpenOptionsExt;
@@ -13,6 +15,8 @@ use std::sync::Mutex;
 
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::format::FmtSpan;
+use tracing_subscriber::fmt::writer::BoxMakeWriter;
+use tracing_subscriber::prelude::*;
 
 use crate::failure::{Failure, code};
 use crate::state::StateDir;
@@ -20,27 +24,45 @@ use crate::state::StateDir;
 /// The file in the state folder a command's events are appended to.
 pub const FILE: &str = "trace.log";
 
-pub fn init(state: &StateDir, to_stderr: bool) -> Result<(), Failure> {
-    let Some(filter) = std::env::var_os("LATCH_TRACE") else {
-        return Ok(());
+/// Sets up where tracing events go: `LATCH_TRACE`'s, if set, and for a
+/// host (`host`, which logs to its stderr) the relay events it logs itself
+/// (`relay_link`).
+pub fn init(state: &StateDir, host: bool) -> Result<(), Failure> {
+    let filter = match std::env::var_os("LATCH_TRACE") {
+        None => None,
+        Some(filter) => {
+            let filter = filter.to_string_lossy();
+            Some(EnvFilter::builder().parse(&*filter).map_err(|err| {
+                Failure::new(
+                    code::bad_trace,
+                    format!("LATCH_TRACE {filter:?} is not a filter: {err}"),
+                )
+            })?)
+        }
     };
-    let filter = filter.to_string_lossy();
-    let filter = EnvFilter::builder().parse(&*filter).map_err(|err| {
-        Failure::new(
-            code::bad_trace,
-            format!("LATCH_TRACE {filter:?} is not a filter: {err}"),
-        )
-    })?;
-    let events = tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_ansi(false)
-        // A host operation's span says how long it took when it closes.
-        .with_span_events(FmtSpan::CLOSE);
-    if to_stderr {
-        events.with_writer(std::io::stderr).init();
+    if filter.is_none() && !host {
         return Ok(());
     }
-    events.with_writer(Mutex::new(file(state)?)).init();
+    let events = match filter {
+        None => None,
+        Some(filter) => {
+            let writer = if host {
+                BoxMakeWriter::new(std::io::stderr)
+            } else {
+                BoxMakeWriter::new(Mutex::new(file(state)?))
+            };
+            let events = tracing_subscriber::fmt::layer()
+                .with_ansi(false)
+                // A host operation's span says how long it took when it closes.
+                .with_span_events(FmtSpan::CLOSE)
+                .with_writer(writer);
+            Some(events.with_filter(filter))
+        }
+    };
+    tracing_subscriber::registry()
+        .with(events)
+        .with(host.then(crate::relay_link::layer))
+        .init();
     Ok(())
 }
 

@@ -2896,6 +2896,69 @@ fn serving_with(
     (serve, log, lines)
 }
 
+/// With no `LATCH_TRACE`, a host's log says when another endpoint with
+/// its key takes its relay link over and when it has it back, and when it
+/// loses the relay and has it back: in each, clients cannot reach it,
+/// though Plow still lists it online.
+#[test]
+fn a_host_logs_its_relay_link_taken_over_or_lost_and_back() {
+    use iroh_relay::server::{RelayConfig, Server, ServerConfig};
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let relay = |port: u16| {
+        let mut config = ServerConfig::default();
+        config.relay = Some(RelayConfig::new(([127, 0, 0, 1], port)));
+        runtime.block_on(Server::spawn(config)).unwrap()
+    };
+    let server = relay(0);
+    let address = server.http_addr().unwrap();
+    let url = format!("http://{address}");
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let (serve, log, lines) = serving_with(serve_command(&host, &url));
+    let logged = Logged(std::sync::Arc::new(std::sync::Mutex::new(lines)));
+    let keep = logged.0.clone();
+    thread::spawn(move || {
+        for line in log.lines() {
+            keep.lock().unwrap().push(line.unwrap());
+        }
+    });
+    until_serving(&host, &serve);
+    let says = |text: &str| {
+        let said = eventually(30, || logged.count(text) == 1);
+        assert!(said, "no {text:?} in {:?}", logged.0.lock().unwrap());
+    };
+
+    // Another endpoint with the host's key, as a command dialing with it
+    // from beside the host would be.
+    let key: iroh::SecretKey = fs::read_to_string(host.join("key"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    let other = runtime.block_on(async {
+        let endpoint = loopback_endpoint()
+            .secret_key(key)
+            .relay_mode(iroh::RelayMode::custom([url.parse().unwrap()]))
+            .bind()
+            .await
+            .unwrap();
+        endpoint.online().await;
+        endpoint
+    });
+    says(&format!(
+        "relay: another endpoint with this host's key connected to {url}/, which now \
+         delivers to it instead; clients cannot connect until it goes"
+    ));
+    runtime.block_on(other.close());
+    says(&format!("relay: {url}/ delivers to this host again after "));
+
+    runtime.block_on(server.shutdown()).unwrap();
+    says(&format!("relay: lost {url}/"));
+    let _server = relay(address.port());
+    says(&format!("relay: connected again to {url}/ after "));
+}
+
 #[test]
 fn a_plain_serve_stopped_cleanly_prints_nothing_on_stdout() {
     let plow = LivePlow::start();

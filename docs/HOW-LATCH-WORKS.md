@@ -61,7 +61,11 @@ latch's commands and behavior here are `main`'s today.
   they would directly. A host that is starting or stopping takes none:
   they fail with `host_unreachable` and are not dialed around it. A host
   that starts waits for the direct calls already running, and a direct
-  `--follow` ends to let it start ("run this again").
+  `--follow` ends to let it start ("run this again"). If something else
+  with the key connects anyway (another machine with a copy of the
+  folder, an older latch), `serve.log` says so (`relay: another endpoint
+  with this host's key…`), and says when the relay delivers to the host
+  again; likewise when it loses the relay and has it back.
 - **Never copy a machine's state folder or Plow token to where an agent
   runs.** The host would take the agent for you, and judge its calls only
   against your rules.
