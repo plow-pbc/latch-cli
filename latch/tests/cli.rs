@@ -4464,24 +4464,6 @@ fn exec_true(from: &Path, host: &str) {
     );
 }
 
-/// A command on a serving host's machine that follows another host used to
-/// take its own host's relay: callers of that host timed out until it ended.
-#[test]
-fn a_follow_of_another_host_leaves_this_hosts_callers_their_way_in() {
-    let owners = Owners::start();
-    let _host = owners.serve(&owners.host);
-    let _studio = owners.serve(&owners.studio);
-    let follow = Lines::start(&owners.studio, &["audit", "--follow", "--host", "host"]);
-    follow.opening();
-    for _ in 0..5 {
-        exec_true(&owners.laptop, "studio");
-    }
-    // The follow still runs.
-    exec_true(&owners.laptop, "host");
-    assert_eq!(follow.next_record()["record"]["op"], "exec");
-    assert!(follow.close().success());
-}
-
 /// Each call from a machine whose host serves goes through that host,
 /// and answers, exits and is recorded at the other host as it is with no
 /// host serving here, when the command dials directly.
@@ -4604,17 +4586,26 @@ fn a_call_through_this_machines_host_answers_and_is_recorded_as_a_direct_one() {
     assert!(!callers(direct_records).is_empty());
 }
 
-/// Follows through this machine's host each have a connection of their
-/// own: one open holds up no other call to the same host.
+/// A follow from a machine whose host serves goes through that host, on a
+/// connection of its own. Dialing on its own, it used to take that host's
+/// relay, so its callers timed out until it ended; and one follow open
+/// holds up no other call to the host it follows.
 #[test]
 fn a_follow_through_this_machines_host_holds_up_no_other_call_to_its_host() {
     let owners = Owners::start();
     let _host = owners.serve(&owners.host);
     let _studio = owners.serve(&owners.studio);
-    let first = Lines::start(&owners.studio, &["audit", "--follow", "--host", "host"]);
+    let follow = ["audit", "--follow", "--host", "host"];
+    let first = Lines::start(&owners.studio, &follow);
     first.opening();
-    exec_true(&owners.studio, "host");
-    let second = Lines::start(&owners.studio, &["audit", "--follow", "--host", "host"]);
+    // Calls in to this machine's host, then out through it to the followed one.
+    let routes = [(&owners.laptop, "studio", 5), (&owners.studio, "host", 1)];
+    for (from, host, times) in routes {
+        for _ in 0..times {
+            exec_true(from, host);
+        }
+    }
+    let second = Lines::start(&owners.studio, &follow);
     second.opening();
     exec_true(&owners.laptop, "host");
     assert_eq!(first.next_record()["record"]["op"], "exec");
