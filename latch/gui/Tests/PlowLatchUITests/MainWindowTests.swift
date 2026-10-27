@@ -171,6 +171,33 @@ struct MainWindowTests {
         await waitUntil { app.vaultShows["studio"]?["v1"] != nil }
     }
 
+    // At the window's narrowest, opening the inspector grows the window by
+    // the room it needs, as Finder's preview does; closing it leaves the
+    // window as it is.
+    @Test func openingTheInspectorAtTheNarrowestGrowsTheWindow() async throws {
+        let app = try app(LiveClient())
+        app.place = .host(.activity)
+        app.inspecting.remove(.activity)
+        let controller = open(app)
+        defer { controller.close() }
+        let window = try #require(controller.window)
+        let split = try #require(window.contentViewController as? MainSplitController)
+        window.setFrame(CGRect(x: -4000, y: -4000, width: 100, height: 600), display: true)
+        window.layoutIfNeeded()
+        let narrowest = window.frame.width
+        // The bar over the screen, as wide as before: the screen keeps its width.
+        let bar = try #require(searchFields(in: window.contentView!.superview!).first?.superview)
+        let content = bar.frame.width, inspector = split.splitViewItems[2]
+        split.toggleInspector(nil)
+        await waitUntil { !inspector.isCollapsed && window.frame.width == narrowest + inspector.minimumThickness }
+        window.layoutIfNeeded()
+        #expect(bar.frame.width == content)
+        #expect(!NSScreen.screens.contains { $0.frame.intersects(window.frame) })
+        split.toggleInspector(nil)
+        await waitUntil { inspector.isCollapsed }
+        #expect(window.frame.width == narrowest + inspector.minimumThickness)
+    }
+
     // At the window's narrowest, beside Vault's buttons, the bar's search
     // field still has room for its prompt and what's typed.
     @Test func theSearchFieldIsUsableAtTheNarrowest() async throws {

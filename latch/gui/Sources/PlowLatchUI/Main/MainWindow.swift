@@ -89,7 +89,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         // Tab goes through the screen showing, made after the window was.
         window.autorecalculatesKeyViewLoop = true
         window.contentViewController = split
-        window.contentMinSize = CGSize(width: 1040, height: 440)
+        // As narrow as the sidebar and the bar over the screen allow (the
+        // bar's constraints decide); opening the inspector there grows the
+        // window to make room, as Finder's preview does.
+        window.contentMinSize = CGSize(width: 0, height: 440)
         if own {
             // Its content sized it to fit: back to its default size, then
             // its frame and column widths as AppKit kept them.
