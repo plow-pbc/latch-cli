@@ -474,18 +474,20 @@ final class ScriptedClient: LatchClient, @unchecked Sendable {
 
 @MainActor
 struct ClosingTests {
-    @Test func cancellingARunStopsLatch() async throws {
+    /// Off the main actor, which the suite's other tests keep busy: the
+    /// time is latch stopping, not this test waiting its turn.
+    @Test nonisolated func cancellingARunStopsLatch() async throws {
         let started = FileManager.default.temporaryDirectory.appending(path: "started-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: started) }
         let process = LatchProcess(executable: URL(filePath: "/bin/sh"), arguments: ["-c", "touch '\(started.path)'; exec sleep 30"])
-        let began = ContinuousClock.now
         let run = Task { try await process.output() }
         // Running, not merely asked to start.
         await waitUntil { FileManager.default.fileExists(atPath: started.path) }
+        let cancelled = ContinuousClock.now
         run.cancel()
         let result = await run.result
         #expect(throws: CancellationError.self) { try result.get() }
-        #expect(ContinuousClock.now - began < .seconds(3))
+        #expect(ContinuousClock.now - cancelled < .seconds(3))
     }
 
     @Test func leavingContactsAndMessagesStopsItsChecks() async throws {
