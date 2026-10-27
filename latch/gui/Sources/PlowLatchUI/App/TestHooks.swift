@@ -173,7 +173,8 @@ enum TestHooks {
         // Vault, as a person clicks and types: search, select an item, open
         // New Item ("KIND") or an item's Edit, type "LABEL=VALUE" (title,
         // sites and other-sites too), save, remove an item, pick an export
-        // (a path, as the file chooser gives it), and import its picked rows.
+        // (a path, as the file chooser gives it, or in the file chooser
+        // itself), and import its picked rows.
         func vaultItem(_ id: String?) -> VaultList.Item? {
             guard let host = app.host, case let .success(vault)? = app.summaries[host.name]?.vault else { return nil }
             return vault.items.first { $0.item == id }
@@ -182,14 +183,14 @@ enum TestHooks {
         on("vault-select") { id in app.selectedVaultItem = app.host.flatMap { host in id.map { OnHost(host: host.name, id: $0) } } }
         on("vault-new") { kind in
             guard let host = app.host else { return }
-            app.vaultSheet = .editor(VaultEditor(kind: kind.flatMap(VaultKind.init(rawValue:)) ?? .login, on: host))
+            app.sheet = .vaultItem(VaultEditor(kind: kind.flatMap(VaultKind.init(rawValue:)) ?? .login, on: host))
         }
         on("vault-edit") { id in
             guard let item = vaultItem(id), let host = app.host else { return }
             Task { await app.beginVaultEdit(item, on: host) }
         }
         on("vault-type") { argument in
-            guard case let .editor(editor)? = app.vaultSheet, let argument, let equals = argument.firstIndex(of: "=") else { return }
+            guard case let .vaultItem(editor)? = app.sheet, let argument, let equals = argument.firstIndex(of: "=") else { return }
             let label = String(argument[..<equals]), value = String(argument[argument.index(after: equals)...])
             switch label {
             case "title": editor.title = value
@@ -199,27 +200,23 @@ enum TestHooks {
             }
         }
         on("vault-save") { _ in
-            guard case let .editor(editor)? = app.vaultSheet else { return }
-            Task { if await editor.save(app: app) { app.vaultSheet = nil } }
+            guard case let .vaultItem(editor)? = app.sheet else { return }
+            Task { await editor.save(app: app) }
         }
         on("vault-remove") { id in
             guard let item = vaultItem(id), let host = app.host else { return }
             Task { await app.removeVaultItem(item, on: host) }
         }
+        on("vault-choose") { _ in if let host = app.host { app.sheet = .choosingExport(host) } }
         on("vault-import") { path in
             guard let path, let host = app.host else { return }
-            let importer = VaultImport(file: URL(filePath: path), on: host)
-            app.vaultSheet = .importer(importer)
-            Task { await importer.load(app: app) }
+            app.beginImport(URL(filePath: path), on: host)
         }
         on("vault-import-run") { _ in
-            guard case let .importer(importer)? = app.vaultSheet else { return }
+            guard case let .vaultImport(importer)? = app.sheet else { return }
             Task { await importer.run(app: app) }
         }
-        on("sheet-close") { _ in
-            app.vaultSheet = nil
-            app.newAgent = nil
-        }
+        on("sheet-close") { _ in app.sheet = nil }
         // Host Settings' buttons and toggles, as a click (and its
         // confirmation) presses them: "NAME|1" turns a connector on.
         on("check-update") { _ in Task { await app.checkForUpdate() } }
@@ -237,9 +234,9 @@ enum TestHooks {
         on("logout") { _ in Task { try? await app.logOut() } }
         // New Agent: open it, fill "FIELD=VALUE" (kind own|cloud, name,
         // cloud, line, file: the path the save panel would give), create.
-        on("new-agent") { _ in app.newAgent = NewAgent() }
+        on("new-agent") { _ in app.sheet = .newAgent(NewAgent()) }
         on("agent-type") { argument in
-            guard let flow = app.newAgent, let argument, let equals = argument.firstIndex(of: "=") else { return }
+            guard case let .newAgent(flow)? = app.sheet, let argument, let equals = argument.firstIndex(of: "=") else { return }
             let value = String(argument[argument.index(after: equals)...])
             switch argument[..<equals] {
             case "kind": flow.kind = value == "own" ? .own : .cloud
@@ -251,7 +248,7 @@ enum TestHooks {
             }
         }
         on("agent-create") { _ in
-            guard let flow = app.newAgent else { return }
+            guard case let .newAgent(flow)? = app.sheet else { return }
             Task { await flow.create(app: app) }
         }
         // The main window's open sheet, as the window server shows it.

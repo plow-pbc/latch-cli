@@ -11,7 +11,6 @@ struct Sidebar: View {
     }
 
     var body: some View {
-        @Bindable var app = app
         List(selection: selection) {
             Section("Your account") {
                 ForEach(AccountPage.allCases) { page in
@@ -32,7 +31,7 @@ struct Sidebar: View {
                         .help(notice.detail)
                 }
                 if app.viewerOnly {
-                    Button("Start Hosting on This Mac…") { app.confirmingStartHosting = true }
+                    Button("Start Hosting on This Mac…") { app.ask(.startHosting) }
                         .help("This Mac isn't hosting; you're viewing your hosts")
                 }
             }
@@ -46,11 +45,6 @@ struct Sidebar: View {
                     .padding(.horizontal, 16)
                     .padding(.vertical, 10)
             }
-        }
-        .confirmationDialog("Start hosting on this Mac?", isPresented: $app.confirmingStartHosting) {
-            Button("Start Hosting") { Task { await app.startHosting() } }
-        } message: {
-            Text("Latch runs in the background, and your agents can reach this Mac, judged by your rules.")
         }
     }
 

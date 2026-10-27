@@ -1,16 +1,13 @@
 import SwiftUI
-import UniformTypeIdentifiers
 
 /// A host's vault: its items, never their secrets; an item opens in the
 /// window's inspector, and items are added, changed, removed and imported
-/// in sheets.
+/// in the window's sheets, each on the host it was opened for.
 struct VaultView: View {
     @Environment(AppModel.self) private var app
     @Environment(ScreenActions.self) private var actions: ScreenActions?
-    @State private var choosingExport = false
 
     var body: some View {
-        @Bindable var app = app
         VStack(spacing: 0) {
             // The page's own buttons, above it: the window's toolbar is the same on
             // every screen.
@@ -43,20 +40,6 @@ struct VaultView: View {
         }
         // File › New Item… and Import…, while this host's vault can change.
         .onChange(of: canChange, initial: true) { _, canChange in publish(canChange) }
-        .fileImporter(isPresented: $choosingExport, allowedContentTypes: [.commaSeparatedText, .json, .data]) { result in
-            guard case let .success(file) = result, let host = app.host else { return }
-            let importer = VaultImport(file: file, on: host)
-            app.vaultSheet = .importer(importer)
-            Task { await importer.load(app: app) }
-        }
-        // A sheet works on the host it was opened for, whatever the sidebar
-        // shows meanwhile.
-        .sheet(item: $app.vaultSheet) { sheet in
-            switch sheet {
-            case let .editor(editor): VaultItemSheet(editor: editor)
-            case let .importer(importer): ImportSheet(importer: importer)
-            }
-        }
     }
 
     /// Items can be added only once the host's vault has been read.
@@ -72,24 +55,11 @@ struct VaultView: View {
     }
 
     private func chooseImport() {
-        choosingExport = true
+        if let host = app.host { app.sheet = .choosingExport(host) }
     }
 
     private func newItem() {
-        if let host = app.host { app.vaultSheet = .editor(VaultEditor(on: host)) }
-    }
-}
-
-/// The sheet open over the Vault screen.
-enum VaultSheet: Identifiable {
-    case editor(VaultEditor)
-    case importer(VaultImport)
-
-    var id: ObjectIdentifier {
-        switch self {
-        case let .editor(editor): ObjectIdentifier(editor)
-        case let .importer(importer): ObjectIdentifier(importer)
-        }
+        if let host = app.host { app.sheet = .vaultItem(VaultEditor(on: host)) }
     }
 }
 
@@ -120,7 +90,7 @@ private struct HostVault: View {
                 } description: {
                     Text("Agents fill logins and cards from here without ever seeing them. Add an item, or import another password manager's export.")
                 } actions: {
-                    Button("New Item…") { app.vaultSheet = .editor(VaultEditor(on: host)) }
+                    Button("New Item…") { app.sheet = .vaultItem(VaultEditor(on: host)) }
                 }
             case let .success(vault)? where app.vaultRows(vault).isEmpty:
                 ContentUnavailableView.search(text: app.vaultSearch)
@@ -130,12 +100,12 @@ private struct HostVault: View {
                 }
                 // Delete, and Edit › Delete: the selected item, confirmed.
                 .onDeleteCommand {
-                    if let item = app.inspectedVaultItem(on: host) { app.askToRemove(item, on: host) }
+                    if let item = app.inspectedVaultItem(on: host) { app.ask(.removeVaultItem(item, on: host)) }
                 }
                 .contextMenu(forSelectionType: VaultList.Item.ID.self) { ids in
                     if let item = item(ids, in: vault) {
                         Button("Edit…", systemImage: "pencil") { edit(item) }
-                        Button("Remove…", systemImage: "trash", role: .destructive) { app.askToRemove(item, on: host) }
+                        Button("Remove…", systemImage: "trash", role: .destructive) { app.ask(.removeVaultItem(item, on: host)) }
                     }
                 } primaryAction: { ids in
                     if let item = item(ids, in: vault) { edit(item) }
@@ -163,18 +133,6 @@ private struct HostVault: View {
                 .background(.bar)
             }
         }
-        .confirmationDialog("Remove “\(app.removal(on: host)?.title ?? "")” from \(host.name)?", isPresented: removingBinding,
-                            presenting: app.removal(on: host)) { item in
-            Button("Remove", role: .destructive) {
-                Task { await app.removeVaultItem(item, on: host) }
-            }
-        } message: { _ in
-            Text("Agents can no longer fill it. This can't be undone.")
-        }
-    }
-
-    private var removingBinding: Binding<Bool> {
-        Binding { app.removal(on: host) != nil } set: { if !$0 { app.endRemoval() } }
     }
 
     /// The list's selection: an item on this host. Picked in the list, the
@@ -477,7 +435,9 @@ final class VaultEditor {
                           otherTopSites: kind == .login ? Self.split(otherTopSites) : [], values: changed)
     }
 
-    /// Saves on its host; true once saved.
+    /// Saves on its host; true once saved, and its sheet closes, unless
+    /// it was closed meanwhile (another may show by now).
+    @discardableResult
     func save(app: AppModel) async -> Bool {
         guard problem == nil, !saving else { return false }
         saving = true
@@ -489,6 +449,7 @@ final class VaultEditor {
                 try await app.addVaultItem(draft, on: host)
             }
             error = nil
+            app.close(.vaultItem(self))
             return true
         } catch {
             self.error = .from(error)
@@ -506,7 +467,6 @@ struct VaultItemSheet: View {
     var editor: VaultEditor
     private var host: HostEntry { editor.host }
     @Environment(AppModel.self) private var app
-    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         @Bindable var editor = editor
@@ -571,11 +531,11 @@ struct VaultItemSheet: View {
                         .font(.callout).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button("Cancel") { dismiss() }
+                Button("Cancel") { app.sheet = nil }
                     .keyboardShortcut(.cancelAction)
                 if editor.unreadable == nil {
                     Button(editor.saving ? "Saving…" : editor.isNew ? "Add" : "Save") {
-                        Task { if await editor.save(app: app) { dismiss() } }
+                        Task { await editor.save(app: app) }
                     }
                     .keyboardShortcut(.defaultAction)
                     .disabled(editor.saving || editor.problem != nil)
@@ -677,7 +637,6 @@ struct ImportSheet: View {
     var importer: VaultImport
     private var host: HostEntry { importer.host }
     @Environment(AppModel.self) private var app
-    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -696,13 +655,13 @@ struct ImportSheet: View {
                 }
                 Spacer()
                 if importer.result == nil {
-                    Button("Cancel") { dismiss() }
+                    Button("Cancel") { app.sheet = nil }
                         .keyboardShortcut(.cancelAction)
                     Button(importer.importing ? "Importing…" : "Import") { Task { await importer.run(app: app) } }
                         .keyboardShortcut(.defaultAction)
                         .disabled(importer.importing || importer.picked.isEmpty || !importer.checkable)
                 } else {
-                    Button("Done") { dismiss() }
+                    Button("Done") { app.sheet = nil }
                         .keyboardShortcut(.defaultAction)
                 }
             }

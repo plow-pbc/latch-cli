@@ -83,8 +83,9 @@ final class NewAgent {
 
 struct NewAgentSheet: View {
     var flow: NewAgent
+    /// Choose…: the window asks where to save the key, over this sheet.
+    var chooseKeyFile: () -> Void = {}
     @Environment(AppModel.self) private var app
-    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -112,7 +113,7 @@ struct NewAgentSheet: View {
                 }
                 Spacer()
                 if flow.created == nil {
-                    Button("Cancel") { dismiss() }
+                    Button("Cancel") { app.sheet = nil }
                         .keyboardShortcut(.cancelAction)
                     Button(flow.creating ? "Creating…" : flow.kind == .cloud ? "Start Agent" : "Create Agent") {
                         Task { await flow.create(app: app) }
@@ -121,7 +122,7 @@ struct NewAgentSheet: View {
                     .disabled(flow.creating || flow.problem != nil)
                     .help(flow.problem ?? "")
                 } else {
-                    Button("Done") { dismiss() }
+                    Button("Done") { app.sheet = nil }
                         .keyboardShortcut(.defaultAction)
                 }
             }
@@ -161,7 +162,7 @@ struct NewAgentSheet: View {
                             Text(flow.tokenFile.map { ($0.path as NSString).abbreviatingWithTildeInPath } ?? "Not chosen")
                                 .foregroundStyle(flow.tokenFile == nil ? .secondary : .primary)
                                 .lineLimit(1).truncationMode(.middle)
-                            Button("Choose…") { chooseKeyFile() }
+                            Button("Choose…", action: chooseKeyFile)
                         }
                     }
                 }
@@ -200,14 +201,14 @@ struct NewAgentSheet: View {
     }
 
     /// A save panel for a new file: latch writes the key there, private.
-    private func chooseKeyFile() {
+    static func keyFilePanel(name: String) -> NSSavePanel {
         let panel = NSSavePanel()
         panel.title = "Save the Agent's Key"
         panel.message = "Latch writes the key to a new file only you can read."
-        panel.nameFieldStringValue = "\(flow.name.isEmpty ? "agent" : flow.name).latch-key"
+        panel.nameFieldStringValue = "\(name.isEmpty ? "agent" : name).latch-key"
         panel.directoryURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
         panel.canCreateDirectories = true
-        if panel.runModal() == .OK { flow.tokenFile = panel.url }
+        return panel
     }
 }
 

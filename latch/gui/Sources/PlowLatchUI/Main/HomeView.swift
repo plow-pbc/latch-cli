@@ -73,7 +73,7 @@ private struct ViewerSection: View {
                     }
                 }
                 Spacer(minLength: 12)
-                Button(app.startingHost ? "Starting…" : "Start hosting on this Mac…") { app.confirmingStartHosting = true }
+                Button(app.startingHost ? "Starting…" : "Start hosting on this Mac…") { app.ask(.startHosting) }
                     .disabled(app.startingHost)
             }
         }
