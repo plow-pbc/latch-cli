@@ -120,9 +120,12 @@ one app has latch's bundle id; a link to latch that led into it, other than
 the one the installer makes, must be made again. macOS keeps "Start when you
 log in" for the copy it was turned on in, so when it was on there, the new
 copy's latch turns it on again (`latch login-item --again`, internal) once
-the host is started again, since turning it on runs it once. It keeps that
-copy only while a host from another latch version, which it could not stop, may run
-from it. `$LATCH_APPLICATIONS` names a folder to use in place of
+the host is started again, since turning it on runs it once. A window open
+from that copy runs that copy's latch by path, so the installer quits it
+(SIGTERM to the pid `lsappinfo` gives for it) before removing the copy, and
+opens the new copy once the install is done. It keeps that copy only while
+a host from another latch version, which it could not stop, may run from it,
+or a window from it has not quit 10 seconds on. `$LATCH_APPLICATIONS` names a folder to use in place of
 `/Applications`: the installer tests and dev installs use one, so they never
 touch the real one.
 
@@ -147,13 +150,15 @@ the link the installer checks is `~/.local/bin/latch`. The installer:
    the new one into its place, then removes the old one. If a move fails
    the old app goes back, still working;
 3. links `~/.local/bin/latch` into it, if the link is not there already,
-   and removes this user's copy in the other folder;
+   and removes this user's copy in the other folder, quitting a window
+   open from it first;
 4. installs what lives outside the bundle (below);
 5. starts a host that `serve -d` had started again, with what it was
    given. A host that ran in a terminal stays stopped, and the update says
    to run `latch serve` there again;
 6. turns "Start when you log in" on again for the new copy if it was on
-   for the one removed in step 3.
+   for the one removed in step 3, and opens the new copy if a window was
+   quit there.
 
 So on macOS the app is replaced as a unit and the binary is never copied
 anywhere else. Every install and update also writes these outside the

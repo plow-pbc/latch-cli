@@ -4,12 +4,15 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
+import signal
 import subprocess
 import tempfile
 import tarfile
 import termios
 import threading
+import time
 import unittest
 import zipfile
 
@@ -609,13 +612,14 @@ class MacAppFolder(unittest.TestCase):
     ~/Applications; and this user's copy in the other folder goes."""
 
     def install(self, shared="writable", own=None, host="none", cut_short=False,
-                login_item="not_registered"):
+                login_item="not_registered", window=None):
         """Installs an app whose latch says 0.1.0 (2), with `own` the version
         of a copy in ~/Applications already, if any (`cut_short`: moved aside
         by a run cut short), and `host` a host on the state folder ("none",
         "managed", or "other_version"), and the login item as the new app's
-        latch reports it. Returns the result, the stops and starts, HOME and
-        the stand-in /Applications."""
+        latch reports it. `window`, if given, is the pid macOS gives for a
+        window open from the ~/Applications copy. Returns the result, the
+        stops, starts and opens, HOME and the stand-in /Applications."""
         parent = ROOT / ".dev/tests"
         parent.mkdir(parents=True, exist_ok=True)
         directory = tempfile.TemporaryDirectory(dir=parent)
@@ -652,6 +656,16 @@ class MacAppFolder(unittest.TestCase):
             # A copy this user doesn't own: the root folder stands in for it.
             applications.mkdir()
             (applications / "Plow Latch.app").symlink_to("/")
+        # What macOS says is open from an app folder, and opening one.
+        own_app = home / "Applications/Plow Latch.app"
+        (tools / "lsappinfo").write_text(
+            '#!/bin/sh\n'
+            f'if [ "$1" = find ] && [ "$2" = {shlex.quote(f"bundlepath={own_app}")} ] '
+            f'&& [ -n "{window or ""}" ]; then echo \'ASN:0x0-0x1-"Plow_Latch":\'; fi\n'
+            f'if [ "$1" = info ]; then echo "    pid = {window} !cgsConnection"; fi\n')
+        (tools / "open").write_text(f'#!/bin/sh\necho "open $*" >> {shlex.quote(str(log))}\n')
+        for tool in ["lsappinfo", "open"]:
+            (tools / tool).chmod(0o755)
         env = {**os.environ, "HOME": str(home), "LATCH_APPLICATIONS": str(applications),
                "PATH": f"{tools}:{os.environ['PATH']}"}
         result = subprocess.run(["sh", str(setup / "install-binary.sh"), "--state-dir", str(state),
@@ -717,6 +731,45 @@ class MacAppFolder(unittest.TestCase):
                                  + (["0.1.0 (2) login-item --again"] if again else []))
                 said = f"Start when you log in now starts latch from {applications}/Plow Latch.app"
                 self.assertEqual(said in result.stdout, again, result.stdout)
+
+    def window(self, command):
+        """The pid of `command` run as an app is: not this test's child, so
+        launchd, not this test, reaps it once it ends."""
+        pid = int(subprocess.run(["sh", "-c", f"{command} >/dev/null 2>&1 & echo $!"],
+                                 capture_output=True, text=True, check=True).stdout)
+        self.addCleanup(lambda: self.is_running(pid) and os.kill(pid, signal.SIGKILL))
+        return pid
+
+    @staticmethod
+    def is_running(pid):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        return True
+
+    def test_a_window_open_from_the_copy_that_goes_is_quit_and_opened_from_the_new_one(self):
+        # The window runs its own copy's latch by path, so it would be left
+        # with a latch that is gone.
+        window = self.window("sleep 60")
+        result, calls, home, applications = self.install(own="0.1.0 (1)", host="managed",
+                                                         window=window)
+        self.assert_installed_in(applications, home, result)
+        self.assertFalse(self.is_running(window))
+        self.assertEqual(calls, ["0.1.0 (2) stop", "0.1.0 (2) serve -d --again",
+                                 f"open {applications}/Plow Latch.app --args --state-dir "
+                                 f"{home.parent}/state"])
+        self.assertFalse((home / "Applications/Plow Latch.app").exists())
+
+    def test_a_window_that_does_not_quit_keeps_the_copy_it_runs_from(self):
+        window = self.window("sh -c \"trap '' TERM; exec sleep 60\"")
+        time.sleep(0.2)
+        result, calls, home, applications = self.install(own="0.1.0 (1)", window=window)
+        self.assert_installed_in(applications, home, result)
+        self.assertTrue(self.is_running(window))
+        self.assertTrue((home / "Applications/Plow Latch.app/Contents/MacOS/latch").exists())
+        self.assertIn("since Latch's window from it did not quit", result.stdout)
+        self.assertFalse(any(call.startswith("open") for call in calls), calls)
 
     def test_a_copy_a_run_cut_short_left_aside_in_the_users_folder_goes_too(self):
         result, _, home, applications = self.install(own="0.1.0 (1)", cut_short=True)

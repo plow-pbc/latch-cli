@@ -32,7 +32,8 @@
 # inside it. This user's copy in the other folder, from an earlier install,
 # is removed once the new one is in place, so only one app has latch's
 # bundle id; "Start when you log in", if it was on for that copy, is turned
-# on again for the new one. $LATCH_APPLICATIONS names a folder to use in place of
+# on again for the new one, and a window open from it is quit first and the
+# new one opened in its place. $LATCH_APPLICATIONS names a folder to use in place of
 # /Applications (tests and dev installs, which never touch the real one).
 #
 # It also installs gog, the Google CLI a host runs for `latch google`: the
@@ -75,6 +76,29 @@ say() { printf 'install-binary.sh: %s\n' "$*"; }
 die() { say "$*" >&2; exit 1; }
 # One word for the shell, whatever it holds.
 quote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+
+# Quits each window open from the app at $1, by the pid macOS gives for it,
+# and waits for them to go; fails if one is still open after 10 seconds.
+quit_windows() {
+  command -v lsappinfo >/dev/null 2>&1 || return 0
+  pids=""
+  for asn in $(lsappinfo find bundlepath="$1"); do
+    pid=$(lsappinfo info -only pid "$asn" | sed -n 's/.*pid = \([0-9][0-9]*\).*/\1/p')
+    [ -n "$pid" ] && kill -TERM "$pid" 2>/dev/null && pids="$pids $pid"
+  done
+  [ -n "$pids" ] || return 0
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    open_still=""
+    for pid in $pids; do kill -0 "$pid" 2>/dev/null && open_still=1; done
+    if [ -z "$open_still" ]; then
+      reopen=1
+      say "quit Latch's window that ran from $1"
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
 
 usage="usage: sh install-binary.sh [--bin-dir DIR] [--state-dir DIR] [--browser chrome|camoufox]... [--no-browser] [--client-only] [--non-interactive] [path/to/latch]"
 # HOME=/ (a container's root) gives /.local/bin, not //.local/bin.
@@ -227,6 +251,7 @@ fi
 # explicit start.
 restart_host=""
 login_again=""
+reopen=""
 terminal_host=""
 left_running=""
 tmp=""
@@ -315,7 +340,9 @@ if [ -n "$app" ]; then
   # The copy in the other folder goes, with what a run cut short left
   # beside it, unless a host this latch could not stop may run from it.
   # macOS keeps "Start when you log in" for the copy it was turned on in, so
-  # the new copy turns it on again once that one is gone (step 8).
+  # the new copy turns it on again once that one is gone (step 8). A window
+  # open from that copy runs its latch by path, which would be gone: it is
+  # quit first, and the new copy's window opened in its place (step 9).
   if [ -n "$other" ] && { [ -e "$other" ] || [ -e "$other.new" ] || [ -e "$other.old" ]; }; then
     login_item=""
     case "$("$link" login-item 2>/dev/null)" in
@@ -323,6 +350,8 @@ if [ -n "$app" ]; then
     esac
     if [ -n "$left_running" ]; then
       say "left $other in place, since a host from another latch version may run from it; remove it once that host is stopped"
+    elif ! quit_windows "$other"; then
+      say "left $other in place, since Latch's window from it did not quit; quit it, then remove $other"
     elif rm -rf "$other" "$other.new" "$other.old" 2>/dev/null; then
       say "removed $other; $installed replaces it (relink any link to latch other than $dest)"
       [ -n "$login_item" ] && login_again=1
@@ -477,6 +506,20 @@ if [ -n "$login_again" ]; then
     *'"login_item":"enabled"'*) say "Start when you log in now starts latch from $installed" ;;
     *) say "could not turn Start when you log in on again for $installed; turn it on in Latch's window" ;;
   esac
+fi
+
+# 9. A window quit in step 1, opened again from the new copy.
+if [ -n "$reopen" ]; then
+  if [ -n "$state_given" ]; then
+    set -- "$installed" --args --state-dir "$(cd "$state_dir" && pwd)"
+  else
+    set -- "$installed"
+  fi
+  if open "$@"; then
+    say "opened $installed in place of the window that ran from $other"
+  else
+    say "could not open $installed; open Latch again"
+  fi
 fi
 
 # On a first install at a terminal, `latch setup` takes it from here,
