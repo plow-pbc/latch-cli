@@ -809,8 +809,49 @@ impl<D: Driver> Core<D> {
                     ));
                 }
                 self.driver.click(at.x, at.y)?;
+                // A dialog's focus lock left active under a dialog stacked on
+                // it puts the focus straight back where it was, and keys would
+                // go there: the value goes in as a page's own script sets one,
+                // with its input and change events.
+                if !self.takes_focus(&frame, snapshot, index)? {
+                    let held = self.driver.run(
+                        &frame,
+                        &format!("__latch.setText({snapshot:?}, {index}, {})", json!(text)),
+                    )?;
+                    if held != json!(text) {
+                        return Err(Failure::new(
+                            code::type_failed,
+                            "the field would not take the focus, nor keep the value set in it"
+                                .into(),
+                        ));
+                    }
+                    return Ok(());
+                }
+                let typed = format!("__latch.typedInto({snapshot:?}, {index})");
+                let before = self.driver.run(&frame, &typed)?;
                 self.driver.select_all()?;
-                self.driver.type_text(text)
+                self.driver.type_text(text)?;
+                // A dialog the keys opened, or a page they replaced (an
+                // Enter that sent the form), shows they were taken.
+                if self.driver.dialog_open() {
+                    return Ok(());
+                }
+                let after = match self.driver.run(&frame, &typed) {
+                    Err(failure) if failure.code == "stale_snapshot" => return Ok(()),
+                    after => after?,
+                };
+                // Keys the page moved on elsewhere were taken too.
+                if after["focused"] == true
+                    && after["value"] == before["value"]
+                    && after["value"] != json!(text)
+                {
+                    return Err(Failure::new(
+                        code::type_failed,
+                        "the typing left the field as it was: the page did not take the keys"
+                            .into(),
+                    ));
+                }
+                Ok(())
             }
             Action::Select => {
                 let choice = required(text, "select needs the option to choose")?;
@@ -860,20 +901,30 @@ impl<D: Driver> Core<D> {
     /// Gives the element the focus, so keys go to it; refused when it does
     /// not take it (hidden, disabled, or not focusable).
     fn focus(&mut self, frame: &Frame, snapshot: &str, index: usize) -> Result<(), Failure> {
+        if !self.takes_focus(frame, snapshot, index)? {
+            return Err(Failure::new(
+                code::not_focused,
+                "that element did not take the focus (hidden, disabled, not focusable, or a dialog keeps the focus to itself); no key was sent"
+                    .into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Whether the element has the focus, given it if it has not.
+    fn takes_focus(
+        &mut self,
+        frame: &Frame,
+        snapshot: &str,
+        index: usize,
+    ) -> Result<bool, Failure> {
         let focused = self
             .driver
             .run(frame, &format!("__latch.focus({snapshot:?}, {index})"))?;
         if focused.is_null() {
             return Err(stale());
         }
-        if focused != true {
-            return Err(Failure::new(
-                code::not_focused,
-                "that element did not take the focus (hidden, disabled or not focusable); nothing was pressed"
-                    .into(),
-            ));
-        }
-        Ok(())
+        Ok(focused == true)
     }
 
     /// Brings the element into view and finds a point that reaches it,

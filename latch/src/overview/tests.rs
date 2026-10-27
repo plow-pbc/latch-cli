@@ -37,6 +37,7 @@ fn facts() -> Facts {
                 state: Phase::Serving,
                 pid: Some(4242),
                 blocked: None,
+                waiting: None,
                 deny_exec: Some(crate::serve::DenyExec::from_flags(&[])),
                 keep_awake: None,
             },

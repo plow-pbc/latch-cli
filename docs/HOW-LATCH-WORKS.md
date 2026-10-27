@@ -45,7 +45,7 @@ latch's commands and behavior here are `main`'s today.
 |---|---|---|---|---|---|
 | **Owner** (your CLI) | A machine logged in with your own Plow login: by text, or with `--token-file`. | Yes, any host in your account. | Rules and vault on any host (`--host NAME`). Connectors: list them on any host; turn them on or off only on the host itself. | Yes. | As your own request: refused only where the host's rules forbid it. |
 | **Owner on the host** | Anything running as the host's OS user that uses the host's own state folder, with no `--host` or `LATCH_HOST` naming another machine. An agent running there counts. | That host, through its private local socket; other hosts as the owner. | Yes, on that host. Rules and vault work without `latch serve` or the decision model. | It is the host. | Exactly like the owner; recorded as `owner_on_host`. |
-| **Agent** | An agent logged in with its own Plow agent credential, in its own state folder. | Yes, but a host refuses its `status --host` and `audit --host` (`owner_only`, exit 4). | No: rules, vault and turning connectors on or off are refused (`owner_only`, exit 4). It sees the ones each host has on, in `latch status`. | Not today: with the usual agent credential, from the agent's environment, login saves no Plow token, so `latch serve` stops with `not_logged_in`. | Against your messages in your Plow chat with that agent, plus the host's rules. |
+| **Agent** | An agent logged in with its own Plow agent credential, in its own state folder. | Yes, but a host refuses its `status --host`, `audit --host` and `audit shot --host` (`owner_only`, exit 4). | No: rules, vault and turning connectors on or off are refused (`owner_only`, exit 4). It sees the ones each host has on, in `latch status`. | Not today: with the usual agent credential, from the agent's environment, login saves no Plow token, so `latch serve` stops with `not_logged_in`. | Against your messages in your Plow chat with that agent, plus the host's rules. |
 
 - **Every machine logged in with your own Plow login is the owner today.**
   There's no host-only or view-only login yet (see section 11).
@@ -54,6 +54,18 @@ latch's commands and behavior here are `main`'s today.
   refuses the call if Plow says no or can't be reached. Callers on the
   host's own socket are trusted as the owner by the socket's file
   permissions; Plow isn't asked.
+- **While a machine's host runs, that machine's calls to other hosts go
+  through it.** Both would use the state folder's one key, and the relay
+  delivers to the newest connection with a key, so a command dialing on
+  its own would make the host unreachable while it ran. Calls answer as
+  they would directly. A host that is starting or stopping takes none:
+  they fail with `host_unreachable` and are not dialed around it. A host
+  that starts waits for the direct calls already running, and a direct
+  `--follow` ends to let it start ("run this again"). If something else
+  with the key connects anyway (another machine with a copy of the
+  folder, an older latch), `serve.log` says so (`relay: another endpoint
+  with this host's key…`), and says when the relay delivers to the host
+  again; likewise when it loses the relay and has it back.
 - **Never copy a machine's state folder or Plow token to where an agent
   runs.** The host would take the agent for you, and judge its calls only
   against your rules.
@@ -64,7 +76,7 @@ latch's commands and behavior here are `main`'s today.
 |---|---|---|
 | Supported | Apple silicon and Intel | x86_64 and arm64 |
 | Sandbox for exec, files, Google and Messages | Seatbelt | bubblewrap and seccomp; needs bubblewrap and user namespaces (the installer may ask for sudo) |
-| `latch serve` runs as | a launchd job, using the `latch` inside `~/Applications/Plow Latch.app` | a systemd user service |
+| `latch serve` runs as | a launchd job, using the `latch` inside `Plow Latch.app` (in `/Applications`, else `~/Applications`) | a systemd user service |
 | Key, Plow login, vault and audit keys | Keychain, in the signed release app | files only you can read (0600) |
 | Messages and Contacts | Yes, once turned on and given Full Disk Access (for a release install, granted to Plow Latch.app) | No |
 | Chrome for Testing | Yes | arm64 and x86_64; x86_64 currently needs `--headless-browsers` |
@@ -176,9 +188,16 @@ model, through Plow on the host's own Plow login, whether it may run.
 - The judge sees what it's judging: exec arguments, folders, network and
   stdin; file paths, sizes and names; the full Google command with its
   arguments; a browser plan as written, with its values, and its site. For
-  a vault fill it sees the item's kind and title and the fields mapped,
-  never their values; for `--secret-env`, only names and lengths. It runs
-  at Plow, so keep credentials out of arguments.
+  a vault fill it sees the item's kind and title, the sites it's saved
+  for and the fields mapped, never their values. It is told what a fill
+  does: the agent never receives the values, and a saved login fills only
+  on its own sites. A matching site says where a login may go, not that
+  it may be used: signing in still needs your OK, in a rule or the chat,
+  where asking for something to be done on a site covers signing in
+  there. With that OK, signing in on the login's own site isn't judged as
+  sharing the password; revealing or copying a value, or filling it
+  elsewhere, still is. For `--secret-env` it sees only names and lengths.
+  It runs at Plow, so keep credentials out of arguments.
 
 **What's logged.** The host keeps a sealed audit log of the calls it
 handles, `audit.sealed.ndjson` in its state folder. Each record is
@@ -193,7 +212,11 @@ output, but a credential typed into arguments or a plan ends up in the
 record. The record is written after the call runs, so an `audit_failed`
 answer can come after the work was done; a refused caller's record is best
 effort. The dashboard and `serve.log` hide credential-looking values, best
-effort.
+effort. A browser plan's record also names the screenshots the host kept
+of it, one after each action, for 7 days; you can see them with `latch
+audit shot`. latch doesn't redact their pixels: it takes none while a
+value filled from the vault is on the page, and none of a fill step, but
+typed text and the rest of the page can show.
 
 ## 6. Managing a host
 
@@ -204,7 +227,7 @@ effort.
 | Connectors | `latch plugins enable\|disable google` (on a Mac, also `messages` and `contacts`); `latch status --local` lists them | `latch status` shows the ones each host has on; `latch status --host NAME` lists them all | Yes |
 | Refuse exec to agents | `latch serve --deny-exec` or `--deny-exec=AGENT_UID` | No | Set when the host starts |
 | Let the browser reach local addresses | `"allow_local_browsing": true` in `host.json` | No | — |
-| Audit log | `latch audit` (the newest records, args masked; `--before ID`, `--all`), `latch audit verify` (needs no key), `latch audit rotate-key` | `latch audit --host NAME` (`LATCH_HOST` doesn't apply); `verify` and `rotate-key` only on the host | Yes |
+| Audit log | `latch audit` (the newest records, args masked; `--before ID`, `--all`), `latch audit shot ID N --output F` (a screenshot a browser plan's record names), `latch audit verify` (needs no key), `latch audit rotate-key` | `latch audit --host NAME` and `latch audit shot … --host NAME` (`LATCH_HOST` doesn't apply); `verify` and `rotate-key` only on the host | Yes |
 | Watch it | `latch dashboard`, `latch logs`, `latch audit --follow`, `latch status --local --follow` | `latch audit --follow --host NAME`, `latch status --host NAME --follow` | Yes, except `dashboard` |
 
 - **Rules** are plain text in your own words: one text for every agent,
@@ -212,7 +235,8 @@ effort.
   they're at most 8 KiB. `latch rules show` reminds you they're judged, not
   guaranteed. `latch rules try` previews the verdict a request would get,
   without running it. `--fill-login TITLE --url URL` previews a browser
-  fill of a saved login: the fill's judgment only, not the whole sign-in
+  fill of a saved login, as saved for that page's site: the fill's
+  judgment only, not the whole sign-in
   (opening the site is judged on its own) nor whether the vault has that
   login. Nothing is opened or filled, and the vault isn't read.
 - **Vault** secrets never come from the command line or the environment:
@@ -288,7 +312,7 @@ The few commands that take `--host` but run only on this machine
   `curl -fsSLO https://releases.plow.co/latch-cli/install.sh && sh install.sh`.
   The installer checks the archive against the release's `SHA256SUMS`,
   installs `~/.local/bin/latch` (on a Mac, a link into
-  `~/Applications/Plow Latch.app`), gog for Google, and Chrome on a Mac or
+  `Plow Latch.app` in `/Applications`, else `~/Applications`), gog for Google, and Chrome on a Mac or
   Linux arm64/x86_64 (`--browser camoufox` for Camoufox, `--no-browser` for none).
   A first install at a terminal then runs `latch setup`: log in, connect
   Google, on a Mac turn on Messages and Contacts, then offer to start the

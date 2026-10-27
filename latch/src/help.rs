@@ -111,7 +111,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "logout",
         runs_on: |_| RunsOn::Local,
-        output: "`removed` (what it deleted, by file name: the key, Plow token and config.json; with --purge every secret, then the folder), `from` (`keychain` or `files`), `stopped` (whether a host was running), `purged`, `device` (an owner's machine: its `name` and whether Plow `removed` it; if not, the `error` and the `next` step; null otherwise) and `state_dir`.",
+        output: "`removed` (what it deleted, by file name: the key, Plow token and config.json; with --purge every secret, then the folder), `from` (`keychain` or `files`), `stopped` (whether a host was running), `purged`, `device` (an owner's machine: its `name`, null if the state folder was already gone, and whether Plow `removed` it; if not, the `error` and the `next` step; null otherwise) and `state_dir`.",
         effect: Repeatable(
             "stops this state folder's host, takes this machine out of the Plow account and signs out its login, and deletes its key and Plow token; with --purge also its vault and audit keys and the folder itself",
         ),
@@ -247,7 +247,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "status",
         runs_on: |_| RunsOn::Either,
-        output: "`account` (`owner_uid`, `display_name`), `login` (`kind`: device or agent), `this_machine` (its `name` and `key`, and `hosting`: `running`, `ready`, `configuring`, `managed`, `attached`, `state`, `pid`, `blocked`, `deny_exec` (`every_agent`, `agent_uids`) as the host runs or last ran, null if its saved flags are unreadable, and `keep_awake` (`enabled`, `held`, `reason`; see `settings set`), null if its saved settings are unreadable), `hosts` (the account's hosts as Plow lists them, this machine first: `name`, `key`, `self`, Plow's `online` and `last_seen_at`, and `plugins`, the ones it has on as `name` and `state` (enabled or needs_setup), asked of every host Plow lists online within 2 s in all; null when unknown, with `plugins_reason`: host_offline, host_unreachable, caller_denied, protocol_mismatch or the host's own code), `default_host` (where a command without --host goes; null with `default_host_reason`: unknown_host, no_host, host_required or not_logged_in), `plugins`, `update`, `last_error`, `api_url`, `state_dir`, `version` and `protocol`. Before login it asks no one: `login`, `account`, `hosts` and this machine's `name` and `key` are null. With --local, the same without `account`, `hosts` and `default_host*`, asking no one; with --host, that host's own `status --local` (owner devices only; a host on an older latch answers in that latch's shape); with --follow too, JSON lines: `hello`, then a `status` line, again each time it changes.",
+        output: "`account` (`owner_uid`, `display_name`), `login` (`kind`: device or agent), `this_machine` (its `name` and `key`, and `hosting`: `running`, `ready`, `configuring`, `managed`, `attached`, `state`, `pid`, `blocked`, `waiting` (what a starting host waits for, else null), `deny_exec` (`every_agent`, `agent_uids`) as the host runs or last ran, null if its saved flags are unreadable, and `keep_awake` (`enabled`, `held`, `reason`; see `settings set`), null if its saved settings are unreadable), `hosts` (the account's hosts as Plow lists them, this machine first: `name`, `key`, `self`, Plow's `online` and `last_seen_at`, and `plugins`, the ones it has on as `name` and `state` (enabled or needs_setup), asked of every host Plow lists online within 2 s in all; null when unknown, with `plugins_reason`: host_offline, host_unreachable, caller_denied, protocol_mismatch or the host's own code), `default_host` (where a command without --host goes; null with `default_host_reason`: unknown_host, no_host, host_required or not_logged_in), `plugins`, `update`, `last_error`, `api_url`, `state_dir`, `version` and `protocol`. Before login it asks no one: `login`, `account`, `hosts` and this machine's `name` and `key` are null. With --local, the same without `account`, `hosts` and `default_host*`, asking no one; with --host, that host's own `status --local` (owner devices only; a host on an older latch answers in that latch's shape); with --follow too, JSON lines: `hello`, then a `status` line, again each time it changes.",
         effect: ReadOnly,
         owner_only: false,
         connector: None,
@@ -1100,7 +1100,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "rules.try",
         runs_on: |_| RunsOn::Either,
-        output: "`verdict`: allow, not_covered, owner_said_no, or host_refused (a refusal the host makes without asking the judge, named in `refused`); `as` (owner, new_agent, or the agent), `request` (the operation, and the action as the judge was shown it: secret values and an exec's stdin masked) and `gate` (the judgment's details: probabilities, source, rule revisions, model, latency, cost). An agent's preview is its rules layer: the built-in policy (everyday work allowed, anything riskier needing a rule) and the rules, with no chat; a real call also judges its chat, which may add an OK or a no. A refusal is a preview that worked: exit 0. This machine's previews are judged by the calling latch, so they need no running host; another host's go to it. `--draft` judges against draft rules for every agent, never saved; `--new-agent` judges as a new agent, with no rules of its own, whatever connectors and --deny-exec the host has. `--fill-login TITLE --url URL` previews a browser fill of that saved login in place of REQUEST (`request` is op browser with the `vault_fill` action the judge sees): the fill's judgment only, not the whole sign-in (opening the site is judged on its own) nor whether the vault has that login; nothing is opened or filled and the vault is not read.",
+        output: "`verdict`: allow, not_covered, owner_said_no, or host_refused (a refusal the host makes without asking the judge, named in `refused`); `as` (owner, new_agent, or the agent), `request` (the operation, and the action as the judge was shown it: secret values and an exec's stdin masked) and `gate` (the judgment's details: probabilities, source, rule revisions, model, latency, cost). An agent's preview is its rules layer: the built-in policy (everyday work allowed, anything riskier needing a rule) and the rules, with no chat; a real call also judges its chat, which may add an OK or a no. A refusal is a preview that worked: exit 0. This machine's previews are judged by the calling latch, so they need no running host; another host's go to it. `--draft` judges against draft rules for every agent, never saved; `--new-agent` judges as a new agent, with no rules of its own, whatever connectors and --deny-exec the host has. `--fill-login TITLE --url URL` previews a browser fill of that saved login, as saved for the URL's site, in place of REQUEST (`request` is op browser with the `vault_fill` action the judge sees): the fill's judgment only, not the whole sign-in (opening the site is judged on its own) nor whether the vault has that login; nothing is opened or filled and the vault is not read.",
         effect: Repeatable(
             "asks the gatekeeper, billed to your Plow balance like a real judgment (about $0.0001); the request itself never runs, the draft is never saved, and the preview is not audited",
         ),
@@ -1249,6 +1249,26 @@ const ENTRIES: &[Entry] = &[
         )],
     },
     Entry {
+        id: "audit.shot",
+        runs_on: |_| RunsOn::Either,
+        output: "The `record`, the `shot`, the `path` the PNG was saved to, its `size` and `sha256`. Only a screenshot a browser plan's record names (an action's number from its `step_records`, or `final`), and only the bytes that record's sha256 says were kept: a host keeps a request's screenshots 7 days (then `no_such_shot`). A standalone `browser screenshot` was saved on its caller's machine, not kept on the host. latch doesn't redact pixels: it takes no screenshot while a value filled from the vault is on the page, and none of a fill step, but typed text and the rest of the page can show.",
+        effect: ReadOnly,
+        owner_only: true,
+        connector: None,
+        examples: &[
+            ex(
+                "Save the screenshot after a plan's first action",
+                &["audit", "shot", "ID", "1", "--output", "step-1.png"],
+            ),
+            ex(
+                "Save the page a plan stopped on, from another host",
+                &[
+                    "audit", "shot", "ID", "final", "--output", "stop.png", "--host", "studio",
+                ],
+            ),
+        ],
+    },
+    Entry {
         id: "serve",
         runs_on: |_| RunsOn::Local,
         output: "With -d, the host once it answers: `state_dir`, `pid`, `run`, `version`, `log`. Otherwise the dashboard until Ctrl-C, then how the host stopped; with --foreground, log lines until stopped.",
@@ -1302,6 +1322,15 @@ const ENTRIES: &[Entry] = &[
         owner_only: false,
         connector: None,
         examples: &[ex("Follow the host's log", &["logs", "--follow"])],
+    },
+    Entry {
+        id: "app",
+        runs_on: |_| RunsOn::Local,
+        output: "`app`, the Plow Latch.app it opened. Only on macOS, from the latch inside the app or a link to it: elsewhere `unsupported_platform`, and a latch outside an app `local_build`. The app picks its state folder itself: a folder --state-dir or LATCH_STATE_DIR names is refused (`bad_arguments`).",
+        effect: Repeatable("opens the Mac app's window, or brings it to the front"),
+        owner_only: false,
+        connector: None,
+        examples: &[ex("Open the Mac app", &["app"])],
     },
     Entry {
         id: "help",

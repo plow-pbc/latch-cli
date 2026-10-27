@@ -67,6 +67,21 @@ const RULES_OF_JUDGMENT: [&str; 5] = [
     "Rules on the host are the owner's standing limits; a chat message does not lift a host rule's prohibition.",
 ];
 const EXEC_PERMISSIONS: &str = "Judge an exec's argv and working folder together with its resolved write paths and network flag: those permissions must fit what the owner asked. The command can read the host's home except ~/.latch, the host's own state directory and, on macOS, Library except Caches. Secret environment values are hidden; their names and lengths are shown. A secret need not be a credential: names like *_COMMAND, NODE_OPTIONS, BASH_ENV, PYTHONSTARTUP and GIT_CONFIG_* can make a program execute the hidden value or load code. Consider what each variable does and whether the owner authorized that hidden behavior with the requested permissions.";
+/// What a fill does (`browser::fill`), so that using a saved login on its
+/// own site is not read as handing over the password.
+macro_rules! vault_fill {
+    () => {
+        "A vault fill (a vault_fill action, or the items a browser plan may_fill) puts values saved in the owner's vault into fields on a web page. latch sets them in the page itself and the agent never receives them; for a password, latch also presses the form's button and keeps the agent out of the browser session until the values have left the page. An item's sites are the sites it is saved for, and a saved login fills only on them (or on a page under one of its other_top_sites). That says where a login may be filled, not that it may be used: a saved-login fill needs the owner's OK, from their rules or their own messages, and with no chat the rules decide. Filling the owner's saved login into one of its own sites, for something the owner wants done there, uses the login as the owner saved it: it is not reading, revealing or sharing a password. Revealing, copying or exporting a saved value, or filling a login into a site that is not one of its own, still is."
+    };
+}
+/// Added to the rules of judgment for an action that fills from the vault.
+const VAULT_FILL: &str = vault_fill!();
+/// The same, for the owner's messages: asking for something done on a
+/// site is the OK to sign in there.
+const VAULT_FILL_ASKED: &str = concat!(
+    vault_fill!(),
+    " When the owner asked for something to be done on a site, signing in there with the login saved for it is a plain step of that request and covered by it, unless they said not to."
+);
 /// Added to the rules of judgment when the owner is the caller.
 const OWNER_CALLS: &str = "The caller is the owner, at one of their own machines: the proposed action is the owner's own request. Judge only whether the owner's rules on this host forbid it; if a rule plausibly applies, choose FORBIDDEN.";
 /// Added to the rules of judgment only when the judge sees host rules: a
@@ -84,6 +99,8 @@ struct Prompt {
     name_tasks: &'static str,
     /// Added to the rules of judgment for an exec.
     exec: &'static str,
+    /// Added to the rules of judgment for a vault fill.
+    vault_fill: &'static str,
 }
 
 /// Whether the owner asked for it: an agent's chat layer, and the owner's
@@ -95,6 +112,7 @@ const ASKED: Prompt = Prompt {
     forbidden: "The owner said not to, cancelled or withdrew it, or the owner's rules forbid it.",
     name_tasks: RULES_NAME_TASKS,
     exec: EXEC_PERMISSIONS,
+    vault_fill: VAULT_FILL_ASKED,
 };
 
 /// An agent's rules layer, asked with no chat: everyday work needs no
@@ -107,6 +125,7 @@ const RULES_LAYER: Prompt = Prompt {
     forbidden: "The owner said not to (everyday work included), cancelled or withdrew it, or the owner's rules forbid it.",
     name_tasks: "A rule may name a kind of task, like running tests or checking mail, rather than the exact command; a command that plainly does that task is covered by it, and nothing more: a rule that lets agents read or check something does not let them create, change, delete or send it.",
     exec: "Judge an exec's argv and working folder together with its resolved write paths and network flag: those permissions must fit what is allowed. The command can read the host's home except ~/.latch, the host's own state directory and, on macOS, Library except Caches. Secret environment values are hidden; their names and lengths are shown. A secret need not be a credential: names like *_COMMAND, NODE_OPTIONS, BASH_ENV, PYTHONSTARTUP and GIT_CONFIG_* can make a program execute the hidden value or load code. Consider what each variable does and whether the owner authorized that hidden behavior with the requested permissions.",
+    vault_fill: VAULT_FILL,
 };
 
 impl Prompt {
@@ -120,6 +139,7 @@ impl Prompt {
             self.forbidden,
             self.name_tasks,
             self.exec,
+            self.vault_fill,
         ]
         .join("\n");
         sha256(&text)[..16].to_string()
@@ -261,81 +281,106 @@ impl Gatekeeper {
         action: &RawValue,
         gate: &mut Value,
     ) -> Result<(), Failure> {
-        let conversation = match caller {
-            Caller::Agent { uid, chat } => {
-                let reading = Instant::now();
-                let conversation = chat::read(&self.plow, uid, chat).await?;
-                gate["chat_read_ms"] = json!(reading.elapsed().as_millis() as u64);
-                conversation
-            }
-            Caller::Owner | Caller::OwnerOnHost | Caller::RulesLayer { .. } => None,
-        };
         // The owner's key is no agent uid: only the host's rules apply.
         let rules = self
             .rules
             .rules(caller.key())
-            .map_err(|why| unavailable(&format!("the owner's rules could not be read: {why}")))?;
-        let intent = Intent {
-            owner: matches!(caller, Caller::Owner | Caller::OwnerOnHost),
-            conversation,
-            rules,
+            .map_err(|why| unavailable(&format!("the owner's rules could not be read: {why}")));
+        let chat = match caller {
+            // Boxed, as are the layers' calls below: held all at once,
+            // inline they would make every caller's future several times
+            // larger, deep in the browser's stack.
+            Caller::Agent { uid, chat } => Some(Box::pin(chat::read(&self.plow, uid, chat))),
+            Caller::Owner | Caller::OwnerOnHost | Caller::RulesLayer { .. } => None,
         };
+        let owner = matches!(caller, Caller::Owner | Caller::OwnerOnHost);
         let now = jiff::Zoned::now();
         let clock = now.strftime("%a %Y-%m-%d %H:%M %Z").to_string();
-        self.consider(&intent, now.timestamp(), &clock, action, gate)
+        self.consider(owner, rules, chat, now.timestamp(), &clock, action, gate)
             .await
     }
 
-    /// The verdict on `action` from `intent`, read at `now`: an owner's call
-    /// is asked once; an agent's in its layers, the rules layer always and
-    /// the chat layer when there is a chat.
+    /// The verdict on `action` by the owner or an agent with `rules`, read
+    /// at `now`: an owner's call is asked once; an agent's in its layers,
+    /// the rules layer always and the chat layer when `chat`, read while
+    /// the rules layer is asked, finds one. A chat that could not be read
+    /// refuses, whatever the rules layer says.
+    #[allow(clippy::too_many_arguments)]
     async fn consider(
         &self,
-        intent: &Intent,
+        owner: bool,
+        rules: Result<Rules, Failure>,
+        chat: Option<impl Future<Output = Result<Option<Conversation>, Failure>>>,
         now: Timestamp,
         clock: &str,
         action: &RawValue,
         gate: &mut Value,
     ) -> Result<(), Failure> {
-        let rules = &intent.rules;
-        if !rules.is_empty() {
-            gate["rules"] = json!({
+        let rules = match rules {
+            Ok(rules) => rules,
+            // The chat's failure, if it has one, is the one to report.
+            Err(failure) => {
+                if let Some(chat) = chat {
+                    read(chat, gate).await?;
+                }
+                return Err(failure);
+            }
+        };
+        let hashes = (!rules.is_empty()).then(|| {
+            json!({
                 "host": rules.host.as_deref().map(sha256),
                 "agent": rules.agent.as_deref().map(sha256),
-            });
-        }
-        if intent.owner {
+            })
+        });
+        if owner {
+            if let Some(hashes) = hashes {
+                gate["rules"] = hashes;
+            }
             gate["source"] = json!("owner_request");
-            let p = self.ask(intent, &ASKED, now, clock, action, gate).await?;
+            let intent = Intent {
+                owner: true,
+                conversation: None,
+                rules,
+            };
+            let p = self.ask(&intent, &ASKED, now, clock, action, gate).await?;
             return owner_verdict(p);
         }
-        gate["source"] = json!(match (&intent.conversation, rules.is_empty()) {
-            (Some(_), true) => "chat",
-            (Some(_), false) => "chat_and_rules",
-            (None, false) => "rules",
-            // Neither chat nor rules: the built-in policy alone.
-            (None, true) => "defaults",
-        });
         let alone = Intent {
             owner: false,
             conversation: None,
-            rules: rules.clone(),
+            rules,
         };
         let mut rules_call = json!({});
         let mut chat_call = json!({});
-        let (by_rules, by_chat) = match &intent.conversation {
-            None => {
-                let by_rules = self.ask(&alone, &RULES_LAYER, now, clock, action, &mut rules_call);
-                (by_rules.await, None)
-            }
-            Some(_) => {
-                let (by_rules, by_chat) = tokio::join!(
-                    self.ask(&alone, &RULES_LAYER, now, clock, action, &mut rules_call),
-                    self.ask(intent, &ASKED, now, clock, action, &mut chat_call),
-                );
-                (by_rules, Some(by_chat))
-            }
-        };
+        let by_rules = Box::pin(async {
+            Ok(self
+                .ask(&alone, &RULES_LAYER, now, clock, action, &mut rules_call)
+                .await)
+        });
+        let by_chat = Box::pin(async {
+            let Some(chat) = chat else { return Ok(None) };
+            let Some(conversation) = read(chat, gate).await? else {
+                return Ok(None);
+            };
+            let intent = Intent {
+                owner: false,
+                conversation: Some(conversation),
+                rules: alone.rules.clone(),
+            };
+            let p = self.ask(&intent, &ASKED, now, clock, action, &mut chat_call);
+            Ok(Some(p.await))
+        });
+        let (by_rules, by_chat) = tokio::try_join!(by_rules, by_chat)?;
+        if let Some(hashes) = hashes {
+            gate["rules"] = hashes;
+        }
+        gate["source"] = json!(match (by_chat.is_some(), alone.rules.is_empty()) {
+            (true, true) => "chat",
+            (true, false) => "chat_and_rules",
+            (false, false) => "rules",
+            // Neither chat nor rules: the built-in policy alone.
+            (false, true) => "defaults",
+        });
 
         // The record: the chat shown, each layer's call, and their total.
         let mut layers = json!({"rules": rules_call});
@@ -457,6 +502,17 @@ impl Gatekeeper {
             json!({"COVERED": p.covered, "NOT_COVERED": p.not_covered, "FORBIDDEN": p.forbidden});
         Ok(p)
     }
+}
+
+/// The chat `chat` reads, its read time recorded in `gate`.
+async fn read(
+    chat: impl Future<Output = Result<Option<Conversation>, Failure>>,
+    gate: &mut Value,
+) -> Result<Option<Conversation>, Failure> {
+    let reading = Instant::now();
+    let conversation = chat.await?;
+    gate["chat_read_ms"] = json!(reading.elapsed().as_millis() as u64);
+    Ok(conversation)
 }
 
 /// One judgment's answer: the model's probabilities.
@@ -667,9 +723,12 @@ fn state(
     if !rules.is_empty() {
         rules_of_judgment.push(prompt.name_tasks);
     }
-    if serde_json::from_str::<Value>(action.get()).is_ok_and(|action| action["operation"] == "exec")
-    {
+    let shown: Value = serde_json::from_str(action.get()).unwrap_or_default();
+    if shown["operation"] == "exec" {
         rules_of_judgment.push(prompt.exec);
+    }
+    if fills_from_vault(&shown) {
+        rules_of_judgment.push(prompt.vault_fill);
     }
     let state = State {
         rules_of_judgment,
@@ -692,6 +751,21 @@ fn state(
         conversation_truncated: truncated.then_some(TRUNCATED),
     };
     serde_json::value::to_raw_value(&state).expect("the state serializes")
+}
+
+/// Whether the browser action the judge is shown fills from the vault: a
+/// fill, or a plan that may fill or first fills a card or identity.
+fn fills_from_vault(action: &Value) -> bool {
+    match action["kind"].as_str() {
+        Some("vault_fill") => true,
+        Some("browser_plan") => {
+            action["may_fill"]
+                .as_array()
+                .is_some_and(|items| !items.is_empty())
+                || action["first_confirms"].is_object()
+        }
+        _ => false,
+    }
 }
 
 /// The state with as many of the newest messages as fit Plow's decision

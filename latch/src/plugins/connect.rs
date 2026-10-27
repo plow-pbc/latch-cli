@@ -13,7 +13,6 @@
 //! saved state, the audit or a log. `connect_url` stays Plow's public
 //! Connections page.
 
-use std::cell::RefCell;
 use std::future::Future;
 use std::io::Write;
 use std::time::{Duration, Instant};
@@ -50,7 +49,6 @@ where
     F: FnOnce() -> Fut,
     Fut: Future<Output = Result<Value, Failure>>,
 {
-    let deadline = Instant::now() + give_up_after();
     let at_terminal = !events && term::interactive();
     let adding = enabled.is_some();
     let again: Option<Vec<String>> = refused
@@ -63,10 +61,8 @@ where
         .and_then(|refused| refused.details["connect_url"].as_str())
         .map(String::from);
     let plow = Plow::from_state(state).map_err(|failure| with_page(failure, &page))?;
-    // What ends the wait, once Plow said which accounts it had.
-    let goal: RefCell<Option<Goal>> = RefCell::new(None);
-    // Everything up to an account appearing, Plow's answers included,
-    // within the one deadline.
+    // Everything up to an account appearing. Getting the first link takes
+    // as long as Plow takes to answer; the wait starts once it is offered.
     let connecting = async {
         let connectors = plow.connectors().await?;
         page = Some(connectors.connections_page());
@@ -74,7 +70,6 @@ where
             Some(accounts) => Goal::Working(accounts.clone()),
             None => Goal::New(accounts(&connectors)),
         };
-        *goal.borrow_mut() = Some(wanted.clone());
         let mut link = plow.google_connect_link().await?;
         if !events && !at_terminal {
             return Ok(Connecting::HandedOver(link));
@@ -85,47 +80,46 @@ where
         if !offer(&link, false) {
             return Ok(Connecting::Cancelled);
         }
-        loop {
-            tokio::time::sleep(POLL.min(deadline.saturating_duration_since(Instant::now()))).await;
-            // A mint or a look that fails ends the wait with its own failure.
-            if reached(&plow, &wanted).await? {
-                return Ok(Connecting::Appeared);
-            }
-            if expired(&link) {
-                link = plow.google_connect_link().await?;
-                if !offer(&link, true) {
-                    return Ok(Connecting::Cancelled);
+        let deadline = Instant::now() + give_up_after();
+        // Plow's answers during the wait, renewed links included, are
+        // within its deadline.
+        let waiting = async {
+            loop {
+                tokio::time::sleep(POLL.min(deadline.saturating_duration_since(Instant::now())))
+                    .await;
+                // A mint or a look that fails ends the wait with its own failure.
+                if reached(&plow, &wanted).await? {
+                    return Ok(Connecting::Appeared);
+                }
+                if expired(&link) {
+                    link = plow.google_connect_link().await?;
+                    if !offer(&link, true) {
+                        return Ok(Connecting::Cancelled);
+                    }
                 }
             }
-        }
-    };
-    let bounded = async {
-        match tokio::time::timeout_at(deadline.into(), connecting).await {
+        };
+        match tokio::time::timeout_at(deadline.into(), waiting).await {
             Ok(connected) => connected,
             // The deadline: one last look, so a sign-in finished in its
             // final second still counts; nothing is renewed or waited for.
-            Err(_) => {
-                let Some(wanted) = goal.borrow().clone() else {
-                    return Err(timed_out(again.as_deref()));
-                };
-                match tokio::time::timeout(LAST_LOOK, reached(&plow, &wanted)).await {
-                    Ok(Ok(true)) => Ok(Connecting::Appeared),
-                    _ => Err(timed_out(again.as_deref())),
-                }
-            }
+            Err(_) => match tokio::time::timeout(LAST_LOOK, reached(&plow, &wanted)).await {
+                Ok(Ok(true)) => Ok(Connecting::Appeared),
+                _ => Err(timed_out(again.as_deref())),
+            },
         }
     };
     // Only a wait can be stopped: a pipe's answer comes at once.
     let waits = events || at_terminal;
     let connected = if waits {
         tokio::select! {
-            connected = bounded => connected,
+            connected = connecting => connected,
             // Heard even while Plow is still answering a look or a link.
             () = crate::remote::stop_requested() => Ok(Connecting::Cancelled),
             () = reader_gone() => Ok(Connecting::Cancelled),
         }
     } else {
-        bounded.await
+        connecting.await
     };
     match connected.map_err(|failure| with_page(failure, &page))? {
         Connecting::Cancelled => Err(cancelled(adding)),
@@ -171,7 +165,6 @@ enum Connecting {
 }
 
 /// What a sign-in is waited for until.
-#[derive(Clone)]
 enum Goal {
     /// An account Plow did not have: these are the ones it had.
     New(Vec<String>),

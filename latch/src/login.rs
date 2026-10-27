@@ -118,7 +118,7 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
             .as_ref()
             .and_then(|config| config.peer.relay_url.clone());
         let registration = Registration {
-            key: key.public().to_string(),
+            key: key.to_string(),
             name,
             relay_url,
         };
@@ -184,13 +184,33 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
     registered.map_err(|failure| if texted { failure.told() } else { failure })
 }
 
+/// Logs an agent in on its first command that needs Plow or a host, as
+/// `latch login` would: one holding its own Plow credential (see
+/// `credential`), with no login here yet.
+pub async fn agent_on_first_use(state: &StateDir) -> Result<(), Failure> {
+    if state.load_config()?.is_some()
+        || state.load_token()?.is_some()
+        || credential::agent_token_if_present()?.is_none()
+    {
+        return Ok(());
+    }
+    let args = LoginArgs {
+        token_file: None,
+        api_url: None,
+        name: None,
+        events: false,
+        replace: false,
+    };
+    run(state, args).await.map(|_| ())
+}
+
 /// Registers this peer again as it last was, when Plow no longer lists it:
 /// an agent whose credential was rotated, say, which Plow forgets until it
 /// registers with the new one. Never takes a name over.
 pub async fn register_again(state: &StateDir) -> Result<(), Failure> {
     let config = state.require_login()?;
     let registration = Registration {
-        key: state.load_key()?.public().to_string(),
+        key: state.public_key()?.to_string(),
         name: Some(config.peer.name.clone()),
         relay_url: config.peer.relay_url.clone(),
     };

@@ -21,8 +21,8 @@ number counts release runs; `latch --version` shows it as `0.1.0 (1327)`.
 
 The installer selects macOS Apple Silicon/Intel or Linux x86_64/arm64, verifies
 its archive against the release's `SHA256SUMS`, and installs `~/.local/bin/latch`.
-On macOS that is a link into `~/Applications/Plow Latch.app`, the signed app
-latch runs in, which Full Disk Access is granted to; opened from the Finder,
+On macOS that is a link into `/Applications/Plow Latch.app` (`~/Applications`
+when this user can't write `/Applications`), the signed app latch runs in, which Full Disk Access is granted to; opened from the Finder,
 it shows its window (macOS 26 or later).
 Pass `--bin-dir DIR` (after the tag, if any) to choose another binary directory.
 The archive's executable `install-binary.sh` installs the adjacent `latch` with no
@@ -40,7 +40,8 @@ packages and may ask for sudo, including for Ubuntu's AppArmor profile;
 see [Docker hosting](latch/DOCKER.md).
 A machine that only asks hosts, such as an agent's image, installs with
 `sh install.sh --client-only`: latch alone, with no gog, browser engine,
-Messages reader or bubblewrap, no sudo, and no setup at the end.
+Messages reader or bubblewrap, no sudo, and no setup at the end. Its
+`latch update` installs latch alone again.
 
 Update with `latch update`: it installs the newest build, or `latch update TAG`
 that build (also how to go back to an older one); `latch update --check` only
@@ -48,7 +49,7 @@ says whether a newer one is out. It checks the release's `SHA256SUMS` against
 latch's release signing key and the archive against it (on macOS, also that
 the app is signed by Plow), then runs the release's own `install-binary.sh`:
 on Linux into the folder latch runs from, on macOS replacing the whole
-`Plow Latch.app` in `~/Applications` (see [macOS](latch/MACOS.md)). State
+`Plow Latch.app` (see [macOS](latch/MACOS.md)). State
 and versioned plugins stay in place, and the browser engines installed are
 brought up to date. A host `serve -d`
 started is stopped and started again with the new latch, with what it was
@@ -116,6 +117,11 @@ No Homebrew tap is included.
   where to connect it. On a Mac, `--check-access` adds whether Plow Latch
   already has Full Disk Access, checked as the host would, turning nothing
   on.
+- `latch app` opens Plow Latch.app, the app this latch is inside, wherever
+  it is (macOS). The app picks its state folder itself, so `latch app`
+  refuses one named with `--state-dir` or `LATCH_STATE_DIR`. A latch built
+  from a checkout is in no app and says so (`local_build`); off macOS it is
+  `unsupported_platform`.
 - `latch serve` starts this machine's host as a service of yours (a
   launchd agent on macOS, running the `latch` in `Plow Latch.app`; a systemd
   user service on Linux) and shows its dashboard: Ctrl-C there, or closing
@@ -145,6 +151,8 @@ No Homebrew tap is included.
   also deletes the vault and audit keys and the state folder itself. If Plow
   can't be reached, logout still deletes locally and says the machine is
   still listed: `latch devices remove` from another machine takes it out.
+  On a state folder deleted by hand, logout still takes the machine out of
+  Plow and deletes what the Keychain kept for it.
 - `latch agents` lists your account's agents (line, Plow status, when each
   last used its credential), from one of your own machines. `latch agents
   --host NAME` adds each one's standing on that host: whether it has rules

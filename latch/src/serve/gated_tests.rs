@@ -2025,7 +2025,7 @@ async fn local_vault_edits_reach_a_running_hosts_release_path() {
         path: t.state.clone(),
     };
     state.create().unwrap();
-    let key = state.load_or_create_key().unwrap().0.public().to_string();
+    let key = state.load_or_create_key().unwrap().0.to_string();
     state
         .save_config(&crate::state::Config {
             api_url: "http://127.0.0.1:9".into(),

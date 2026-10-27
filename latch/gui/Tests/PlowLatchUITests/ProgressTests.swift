@@ -128,7 +128,7 @@ struct DecodingTests {
 struct GatekeeperTests {
     @Test func examplesAreJudgedOnTheDraftAsANewAgent() async {
         let client = ScriptedClient { _ in nil }
-        client.verdict = { draft, request in draft.contains("Do not send email") && request.contains("send") ? "owner_said_no" : "allow" }
+        client.verdict = { draft, request in draft.contains("Never let it share") && request.words?.first == "exec" ? "owner_said_no" : "allow" }
         let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
         let flow = app.stage(.rules)
         flow.choose(Onboarding.decks[0])
@@ -136,9 +136,43 @@ struct GatekeeperTests {
         #expect(flow.deck.examples.allSatisfy { flow.previews[$0.id] == .checking })
         await waitUntil { !flow.reviewing }
         let verdicts = flow.deck.examples.map { if case let .verdict(answer)? = flow.previews[$0.id] { answer.verdict } else { "-" } }
-        #expect(verdicts == ["allow", "allow", "allow", "allow", "owner_said_no"])
+        #expect(verdicts == ["allow", "allow", "allow", "owner_said_no", "owner_said_no"])
         #expect(client.tries.allSatisfy { $0.draft == Onboarding.decks[0].rules })
         #expect(client.saved.isEmpty)
+    }
+
+    /// The box on arrival: the first default's on a first run, else the
+    /// saved rules; the deck is the default whose text that is, else the
+    /// last one shown.
+    @Test(arguments: [(nil, 0, 0), (Onboarding.decks[1].rules, 0, 1), ("Allow everything.", 1, 1)] as [(String?, Int, Int)])
+    func theBoxArrivesFilled(saved: String?, lastShown: Int, expected: Int) async {
+        let client = ScriptedClient { _ in nil }
+        client.savedText = saved
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
+        let flow = app.stage(.rules)
+        flow.deck = Onboarding.decks[lastShown]
+        await flow.loadRules()
+        #expect(flow.draftRules == saved ?? Onboarding.decks[0].rules)
+        #expect(flow.deck.name == Onboarding.decks[expected].name)
+        // A first run's box isn't saved yet; saved rules already are.
+        #expect(flow.primaryTitle == (saved == nil ? "Save rules" : "Continue"))
+        await waitUntil { !flow.reviewing }
+        #expect(client.tries.allSatisfy { $0.draft == saved ?? Onboarding.decks[0].rules })
+    }
+
+    /// An emptied box saves nothing and moves on; the saved rules stay.
+    @Test func anEmptiedBoxSavesNothing() async {
+        let client = ScriptedClient { _ in nil }
+        client.savedText = "Allow everything."
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
+        let flow = app.stage(.rules)
+        await flow.loadRules()
+        flow.draftRules = ""
+        #expect(flow.primaryTitle == "Continue")
+        flow.primary()
+        await waitUntil { flow.step != .rules }
+        #expect(client.saved.isEmpty)
+        #expect(flow.savedRules == "Allow everything.")
     }
 
     @Test func anEmptyBoxPreviewsTheSavedRulesItKeeps() async {
@@ -399,18 +433,23 @@ final class ScriptedClient: LatchClient, @unchecked Sendable {
     func setupStatusCheckingAccess() async throws -> SetupStatus {
         try Fixtures.decode(Fixtures.setup(on: connectorsOn, google: google, access: access))
     }
-    func rulesShow(host: String?) async throws -> RulesShow { try Fixtures.decode(#"{"agents":[],"every_agent":null}"#) }
+    /// The shared rules `rules show` gives, if any.
+    var savedText: String?
+    func rulesShow(host: String?) async throws -> RulesShow {
+        let every = try savedText.map { String(decoding: try JSONEncoder().encode(["text": $0, "revision": "r1"]), as: UTF8.self) } ?? "null"
+        return try Fixtures.decode(#"{"agents":[],"every_agent":\#(every)}"#)
+    }
     func rulesSet(_ text: String) async throws {
         saved.append(text)
         await held("save")
     }
     private(set) var saved: [String] = []
     /// What `rules try` answers for a draft and request, and what it was asked.
-    var verdict: @Sendable (String, [String]) -> String = { _, _ in "allow" }
+    var verdict: @Sendable (String, TryRequest) -> String = { _, _ in "allow" }
     /// `rules try` runs several at once.
-    private let asked = Mutex<[(draft: String, request: [String])]>([])
-    var tries: [(draft: String, request: [String])] { asked.withLock { $0 } }
-    func rulesTry(_ request: [String], host: String?, agent: String?, newAgent: Bool, draft: String?) async throws -> RulesTry {
+    private let asked = Mutex<[(draft: String, request: TryRequest)]>([])
+    var tries: [(draft: String, request: TryRequest)] { asked.withLock { $0 } }
+    func rulesTry(_ request: TryRequest, host: String?, agent: String?, newAgent: Bool, draft: String?) async throws -> RulesTry {
         let draft = draft ?? ""
         asked.withLock { $0.append((draft, request)) }
         await held("try \(draft)")
@@ -435,18 +474,20 @@ final class ScriptedClient: LatchClient, @unchecked Sendable {
 
 @MainActor
 struct ClosingTests {
-    @Test func cancellingARunStopsLatch() async throws {
+    /// Off the main actor, which the suite's other tests keep busy: the
+    /// time is latch stopping, not this test waiting its turn.
+    @Test nonisolated func cancellingARunStopsLatch() async throws {
         let started = FileManager.default.temporaryDirectory.appending(path: "started-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: started) }
         let process = LatchProcess(executable: URL(filePath: "/bin/sh"), arguments: ["-c", "touch '\(started.path)'; exec sleep 30"])
-        let began = ContinuousClock.now
         let run = Task { try await process.output() }
         // Running, not merely asked to start.
         await waitUntil { FileManager.default.fileExists(atPath: started.path) }
+        let cancelled = ContinuousClock.now
         run.cancel()
         let result = await run.result
         #expect(throws: CancellationError.self) { try result.get() }
-        #expect(ContinuousClock.now - began < .seconds(3))
+        #expect(ContinuousClock.now - cancelled < .seconds(3))
     }
 
     @Test func leavingContactsAndMessagesStopsItsChecks() async throws {
@@ -902,16 +943,15 @@ struct ClosingTests {
     }
 
     @Test func aRelaunchWithNoArgumentsKeepsTheStateFolder() throws {
-        let suite = "co.plow.latch.tests.\(UUID())"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
-        #expect(StateFolder.choose(given: "/Users/me/.latch", launched: .unnamed, defaults: defaults) == ("/Users/me/.latch", true))
-        #expect(StateFolder.choose(given: "/tmp/dev", launched: .other, defaults: defaults) == ("/tmp/dev", false))
-        // Quit & Reopen: no arguments, the same folder, and no login item.
-        #expect(StateFolder.choose(given: "/Users/me/.latch", launched: .unnamed, defaults: defaults) == ("/tmp/dev", false))
-        // Naming the default folder goes back to it for good.
-        #expect(StateFolder.choose(given: "/Users/me/.latch", launched: .defaultFolder, defaults: defaults) == ("/Users/me/.latch", true))
-        #expect(StateFolder.choose(given: "/Users/me/.latch", launched: .unnamed, defaults: defaults) == ("/Users/me/.latch", true))
+        try withScratchDefaults { defaults in
+            #expect(StateFolder.choose(given: "/Users/me/.latch", launched: .unnamed, defaults: defaults) == ("/Users/me/.latch", true))
+            #expect(StateFolder.choose(given: "/tmp/dev", launched: .other, defaults: defaults) == ("/tmp/dev", false))
+            // Quit & Reopen: no arguments, the same folder, and no login item.
+            #expect(StateFolder.choose(given: "/Users/me/.latch", launched: .unnamed, defaults: defaults) == ("/tmp/dev", false))
+            // Naming the default folder goes back to it for good.
+            #expect(StateFolder.choose(given: "/Users/me/.latch", launched: .defaultFolder, defaults: defaults) == ("/Users/me/.latch", true))
+            #expect(StateFolder.choose(given: "/Users/me/.latch", launched: .unnamed, defaults: defaults) == ("/Users/me/.latch", true))
+        }
     }
 
     @Test func aFailedRestartSaysTheHostIsStoppedAndWhyAndRetries() async {

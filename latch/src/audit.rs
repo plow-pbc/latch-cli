@@ -325,10 +325,49 @@ impl AuditLog {
 }
 
 /// `latch audit verify` and `latch audit rotate-key`, on this machine's
-/// host state.
-pub fn run(state: &StateDir, action: AuditAction) -> Result<Value, Failure> {
+/// host state, and `latch audit shot`, on this machine's host or another.
+pub async fn run(state: &StateDir, action: AuditAction) -> Result<Value, Failure> {
     let path = state.path.join(FILE);
     match action {
+        AuditAction::Shot {
+            record,
+            shot,
+            output,
+            host,
+        } => {
+            let (size, sha256) = match crate::remote::other_host(state, host).await? {
+                Some(host) => {
+                    let request = crate::wire::Request {
+                        op: "audit_shot".into(),
+                        args: json!({"record": record, "shot": shot}),
+                        chat: None,
+                    };
+                    let link = crate::dial::connect(state, &host).await?;
+                    let got = crate::transfer::download(&link.connection, &request, &output).await;
+                    link.close();
+                    let (start, _, sha256) = got?;
+                    (start["size"].clone(), sha256)
+                }
+                None => {
+                    let png = crate::browser::journal::audited(&state.path, &record, &shot)?;
+                    let staged = crate::transfer::Staged::beside(&output)?;
+                    let mut file = staged.file()?;
+                    let written = async {
+                        use tokio::io::AsyncWriteExt;
+                        file.write_all(&png).await?;
+                        file.flush().await
+                    };
+                    written.await.map_err(|err| {
+                        Failure::new(code::local_file, format!("{}: {err}", output.display()))
+                    })?;
+                    staged.place(&output)?;
+                    (json!(png.len()), to_hex(&Sha256::digest(&png)))
+                }
+            };
+            Ok(
+                json!({"record": record, "shot": shot, "path": output, "size": size, "sha256": sha256}),
+            )
+        }
         AuditAction::Verify => {
             let text = read_locked(&path)?;
             let (records, last) = verify(&text).map_err(|problem| broken(&path, &problem))?;
@@ -611,6 +650,25 @@ fn read_locked(path: &Path) -> Result<String, Failure> {
     }
 }
 
+/// Record `id` of the log in `dir`, if the log holds it: the lines up to
+/// it checked against the chain without the key, and only it opened.
+pub fn find(dir: &Path, id: &str) -> Result<Option<Record>, Failure> {
+    let path = dir.join(FILE);
+    let text = read_locked(&path)?;
+    let mut prev = GENESIS.to_string();
+    for (index, text) in text.lines().enumerate() {
+        let line = verify_line(&prev, text.as_bytes(), index + 1)
+            .map_err(|problem| broken(&path, &problem))?;
+        if line.hash == id {
+            let keys = Keys::existing(dir)?.ok_or_else(|| no_key(&path))?;
+            let record = keys.open(&line, index + 1);
+            return record.map(Some).map_err(|problem| broken(&path, &problem));
+        }
+        prev = line.hash;
+    }
+    Ok(None)
+}
+
 /// Every record of the log at `path`: the chain checked, each record opened.
 #[cfg(test)]
 pub fn read_all(path: &Path) -> Result<Vec<Record>, Failure> {
@@ -756,6 +814,52 @@ mod tests {
         entry
     }
 
+    /// `latch audit shot` on this machine's host state: the PNG a plan's
+    /// record names, saved where asked, with no host running.
+    #[tokio::test]
+    async fn a_shot_is_read_here_without_a_host() {
+        let dir = test_dir();
+        let state = StateDir {
+            path: dir.path().to_path_buf(),
+        };
+        let (session, png) = (
+            "lkjhgfdsapoiuytrewqmnbvcxzlkjhgf",
+            b"\x89PNG a synthetic page",
+        );
+        crate::browser::journal::save_shot(dir.path(), session, "r1", "final", png).unwrap();
+        let sha256 = to_hex(&Sha256::digest(png));
+        let mut plan = record(
+            "agent-key",
+            Some("agent-1".into()),
+            "browser",
+            "allow",
+            "ok",
+        );
+        plan.args = json!({"command": "do", "session": crate::browser::host::hash_of(session),
+                           "request": "r1", "screenshot": {"shot": "final", "size": png.len(), "sha256": sha256}});
+        let id = AuditLog::open(dir.path().join(FILE))
+            .unwrap()
+            .append(plan)
+            .unwrap();
+        let output = dir.path().join("stop.png");
+        let shot = |shot: &str| AuditAction::Shot {
+            record: id.clone(),
+            shot: shot.into(),
+            output: output.clone(),
+            host: None,
+        };
+        let got = run(&state, shot("final")).await.unwrap();
+        assert_eq!(fs::read(&output).unwrap(), png);
+        assert_eq!(
+            got,
+            json!({"record": id, "shot": "final", "path": output, "size": png.len(), "sha256": sha256})
+        );
+        assert_eq!(
+            run(&state, shot("1")).await.unwrap_err().code,
+            "no_such_shot"
+        );
+    }
+
     fn log_with_three_records() -> (tempfile::TempDir, PathBuf) {
         let dir = test_dir();
         let path = dir.path().join(FILE);
@@ -887,6 +991,36 @@ mod tests {
             refused
                 .message
                 .ends_with("chain broken at line 2: it does not follow line 1")
+        );
+    }
+
+    #[test]
+    fn find_opens_only_the_record_it_finds() {
+        let (dir, path) = log_with_three_records();
+        let dir = dir.path();
+        let records = read_all(&path).unwrap();
+        let found = find(dir, &records[1].hash).unwrap().unwrap();
+        assert_eq!(found.hash, records[1].hash);
+        assert_eq!(found.op, records[1].op);
+        assert!(find(dir, &"0".repeat(64)).unwrap().is_none());
+
+        // A later line that would not open is never opened; an earlier
+        // line changed still breaks the chain to it.
+        let text = fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        let mut last: Line = serde_json::from_str(lines[2]).unwrap();
+        last.kid = "gone".into();
+        last.hash = hash_of(&last);
+        let tail = serde_json::to_string(&last).unwrap();
+        fs::write(&path, [lines[0], lines[1], &tail].join("\n") + "\n").unwrap();
+        assert_eq!(
+            find(dir, &records[1].hash).unwrap().unwrap().hash,
+            records[1].hash
+        );
+        fs::write(&path, [lines[1], lines[2]].join("\n") + "\n").unwrap();
+        assert_eq!(
+            find(dir, &records[2].hash).unwrap_err().code,
+            "audit_broken"
         );
     }
 

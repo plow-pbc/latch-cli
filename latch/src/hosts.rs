@@ -33,7 +33,7 @@ pub async fn resolve(state: &StateDir, asked: Option<String>) -> Result<Peer, Fa
         });
     }
     let peers = Plow::from_state(state)?.list_peers().await?;
-    let own_key = state.load_key()?.public().to_string();
+    let own_key = state.public_key()?.to_string();
     if !peers.iter().any(|peer| peer.key == own_key) {
         login::register_again(state).await?;
     }

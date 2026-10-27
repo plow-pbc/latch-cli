@@ -35,10 +35,37 @@ pub(super) async fn run(
     cut_off: impl Future<Output = Code>,
 ) -> Done {
     let result = match crate::gate::owner::owner_only(kind, &format!("this host's {op}")) {
+        Ok(()) if op == "audit_shot" => return shot(host, args, send).await,
         Ok(()) => read(host, op, args, send, cut_off).await,
         Err(failure) => Err(failure),
     };
     crate::vault::host::done(result, Map::new())
+}
+
+/// `audit shot`: the browser screenshot an audit record names, as a file
+/// is sent: its size, its bytes, then their sha256.
+async fn shot(host: &Host, args: &Value, send: &mut SendStream) -> Done {
+    let (record, shot) = (args["record"].clone(), args["shot"].clone());
+    let audit = Map::from_iter([
+        ("record".into(), record.clone()),
+        ("shot".into(), shot.clone()),
+    ]);
+    let dir = host.workers.state_dir.clone();
+    let read = tokio::task::spawn_blocking(move || {
+        let (Some(record), Some(shot)) = (record.as_str(), shot.as_str()) else {
+            let message = "audit shot takes a record's id and a shot".to_string();
+            return Err(Failure::new(code::bad_request, message));
+        };
+        crate::browser::journal::audited(&dir, record, shot)
+    })
+    .await
+    .map_err(|err| Failure::new(code::read_failed, err.to_string()))
+    .flatten();
+    let png = match read {
+        Ok(png) => png,
+        Err(failure) => return crate::vault::host::done(Err(failure), audit),
+    };
+    Done::send_bytes(send, json!({"size": png.len()}), &png, audit).await
 }
 
 async fn read(
@@ -112,10 +139,12 @@ async fn stream(
     };
     tokio::pin!(stopping);
     let ended = loop {
+        // A stop ends it before the next line, however many are waiting.
         let line = tokio::select! {
-            line = queued.recv() => line,
+            biased;
             _ = &mut cut_off => break Ok(()),
             () = &mut stopping => break Err(stopped(&host.name)),
+            line = queued.recv() => line,
         };
         // The reader is done, and every line it gave was sent.
         let Some(line) = line else {
@@ -128,7 +157,9 @@ async fn stream(
         }
         // A frame cut off midway can't be followed by an answer: the
         // stream is reset instead, so the caller never reads half of one.
+        // A frame the caller takes at once is sent whole, stop or not.
         let cut = tokio::select! {
+            biased;
             sent = wire::write_frame(send, &json) => match sent {
                 Ok(()) => continue,
                 // The caller is gone.

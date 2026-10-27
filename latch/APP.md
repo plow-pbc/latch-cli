@@ -165,10 +165,38 @@ Errors:
 `latch audit verify` (the chain, checked without the key) and `latch audit
 rotate-key` are upkeep, on this machine only.
 
+## `latch audit shot`
+
+```
+latch audit shot ID SHOT --output FILE [--host NAME]
+```
+
+This saves a browser screenshot a record names to FILE, as a PNG, and
+prints `{"record", "shot", "path", "size", "sha256"}`. A plan's record
+(op `browser`) names its shots in `details.args`: one after each action,
+`step_records[].screenshot`, and `screenshot`, the page it stopped on for a
+confirmation or ended on with `--output`. Each is `{"shot", "size",
+"sha256"}`; SHOT is its `shot`, an action's number or `final`. The host
+sends only those bytes.
+
+Errors:
+
+- `no_such_record` (exit 2): the host's audit holds no record ID.
+- `no_such_shot` (exit 2): the record names no such shot, or the host no
+  longer keeps it: a request's screenshots are kept 7 days. A standalone
+  `browser screenshot` record names none: that image was saved on its
+  caller's machine.
+- `shot_changed` (exit 1): the file there is not the one the record kept
+  the sha256 of.
+
+latch doesn't redact a screenshot's pixels. It takes none while a value
+filled from the vault is on the page, and none of a fill step, but typed
+text and the rest of the page can show.
+
 ## Another host: `--host NAME`
 
-`latch status --host NAME [--follow]` and `latch audit --host NAME [...]`
-read another of the owner's hosts over latch's connection and print exactly
+`latch status --host NAME [--follow]`, `latch audit --host NAME [...]` and
+`latch audit shot ... --host NAME` read another of the owner's hosts over latch's connection and print exactly
 what that host's own `status --local [--follow]` and `audit` print there. Only the owner's own devices may
 read them; an agent's login gets exit 4 `owner_only`. Naming this machine
 reads it here.
@@ -179,8 +207,8 @@ updated with `latch update` there.
 
 - An offline host gives exit 3 `host_offline` at once; nothing is shown from
   elsewhere.
-- Each read is recorded in that host's audit, as `status` or `audit`, when
-  it ends.
+- Each read is recorded in that host's audit, as `status`, `audit` or
+  `audit_shot`, when it ends.
 - Each line travels in a frame of its own. A record too large for one (16 MiB)
   ends the read with exit 1 `record_too_large`, its `id`, `size` and `limit`
   in the error; it is never left out.

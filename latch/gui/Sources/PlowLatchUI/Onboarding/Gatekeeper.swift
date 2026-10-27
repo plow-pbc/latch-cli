@@ -30,7 +30,7 @@ struct RulesView: View {
                 ForEach(Onboarding.decks) { deck in
                     Button(deck.name) { flow.choose(deck) }
                         .buttonStyle(.plain)
-                        .foregroundStyle(flow.deck == deck && flow.draftRules == deck.rules ? Brand.volt : Brand.sage)
+                        .foregroundStyle(flow.deck.name == deck.name && flow.draftRules == deck.rules ? Brand.volt : Brand.sage)
                         .overlay(alignment: .bottom) { Rectangle().fill(Brand.sage.opacity(0.3)).frame(height: 1).offset(y: 2) }
                 }
             }
@@ -38,8 +38,6 @@ struct RulesView: View {
             .padding(.top, 10)
             if let error = flow.rulesError {
                 ErrorText(error: error, host: ErrorCopy.thisMac).foregroundStyle(Brand.clay).font(.callout).padding(.top, 8)
-            } else if flow.draftRules.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !(flow.savedRules ?? "").isEmpty {
-                Text("An empty box keeps your saved rules; the examples show them.").foregroundStyle(Brand.muted).font(.callout).padding(.top, 8)
             }
             Deck(flow: flow, reduceMotion: reduceMotion)
                 .padding(.top, 14)
@@ -62,16 +60,6 @@ struct RulesView: View {
             .writingToolsBehavior(.disabled)
             .background(Brand.surface, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(Brand.fieldBorder))
-            .overlay(alignment: .topLeading) {
-                if flow.draftRules.isEmpty {
-                    Text("Write your rules here (optional).")
-                        .font(.system(size: 13.5))
-                        .foregroundStyle(Brand.muted)
-                        .padding(.horizontal, 13)
-                        .padding(.vertical, 8)
-                        .allowsHitTesting(false)
-                }
-            }
             .accessibilityLabel("Your rules for agents on this Mac")
     }
 }
@@ -246,7 +234,7 @@ private struct Lane: View {
     /// app's words: one sentence, with no step to take from here.
     private var reason: String? {
         switch preview {
-        case let .failed(error): ErrorCopy.said(error, host: ErrorCopy.thisMac, place: .tryRequest(connector: example.request.first))
+        case let .failed(error): ErrorCopy.said(error, host: ErrorCopy.thisMac, place: .tryRequest(connector: example.request.words?.first))
         case let .verdict(answer):
             answer.refused.flatMap {
                 ErrorCopy.sentence(.failed($0), host: ErrorCopy.thisMac, place: .tryRequest(connector: answer.connector))
@@ -267,10 +255,9 @@ private struct Lane: View {
 
     private var detail: some View {
         VStack(alignment: .leading, spacing: 5) {
-            Text(example.shown)
-                .font(.system(size: 11.5, design: .monospaced))
+            Text(example.detail)
+                .font(.system(size: 12))
                 .foregroundStyle(Brand.text)
-                .textSelection(.enabled)
             (Text("Decision: ").fontWeight(.semibold).foregroundStyle(Brand.text)
                 + Text(verdictWord + (reason.map { ". \($0)" } ?? "")))
                 .font(.system(size: 12))

@@ -274,7 +274,8 @@ nonisolated struct DeviceList: Decodable, Equatable {
 /// account. A local logout succeeds even when Plow couldn't be told.
 nonisolated struct LogoutResult: Decodable, Equatable {
     struct Device: Decodable, Equatable {
-        var name: String
+        /// Nil when the state folder, and the name it kept, were gone.
+        var name: String?
         var removed: Bool
     }
     /// Nil when there was nothing to take out of the account.
