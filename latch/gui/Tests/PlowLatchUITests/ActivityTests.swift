@@ -66,6 +66,86 @@ struct ActivityTests {
         #expect(feed.records.contains { $0.gate?.source == "defaults" })
         feed.stop()
     }
+
+    /// The lines are gathered off the main actor: a busy main thread takes
+    /// the opening page in a turn or two, not one turn a line.
+    @Test func aBusyMainThreadTakesTheOpeningPageAtOnce() async throws {
+        let feed = ActivityFeed(client: HostLog(records: 2000), host: nil)
+        feed.start()
+        defer { feed.end() }
+        var turns = 0
+        while !feed.caughtUp, turns < 1000 {
+            // Busy for a moment each turn, the way other work on the main
+            // thread is.
+            usleep(1000)
+            turns += 1
+            await Task.yield()
+        }
+        #expect(feed.records.count == ActivityFeed.openingPage)
+        #expect(turns < 50, "\(turns) turns")
+    }
+
+    /// Lines that came while the feed was busy are taken as one batch when
+    /// it comes back, in order, and the next batch still waits its interval.
+    @Test func aFeedThatFellBehindTakesWhatCameMeanwhileAsOneBatch() async throws {
+        let (lines, latch) = AsyncThrowingStream<AuditLine, Error>.makeStream()
+        let batches = LineBatches(lines, every: .milliseconds(100))
+        // Busy elsewhere while five lines come, each more than an interval
+        // after the last.
+        for n in 0..<5 {
+            latch.yield(HostLog.line(n))
+            try await Task.sleep(for: .milliseconds(120))
+        }
+        #expect(try await batches.due())
+        let took = ContinuousClock.now
+        #expect(batches.take() == (0..<5).map(HostLog.line))
+        latch.yield(HostLog.line(5))
+        #expect(try await batches.due())
+        #expect(ContinuousClock.now - took >= .milliseconds(100))
+        #expect(batches.take() == [HostLog.line(5)])
+        latch.finish()
+        #expect(try await batches.due() == false)
+    }
+
+    /// A record that came after catching up but before the take doesn't
+    /// make the next batch due sooner than an interval after the take.
+    @Test func theNextBatchWaitsAnIntervalFromTheTake() async throws {
+        let (lines, latch) = AsyncThrowingStream<AuditLine, Error>.makeStream()
+        let batches = LineBatches(lines, every: .milliseconds(100))
+        latch.yield(HostLog.line(0))
+        latch.yield(.caughtUp(cursor: HostLog.id(0), hasOlder: false))
+        #expect(try await batches.due())
+        latch.yield(HostLog.line(1))
+        try await Task.sleep(for: .milliseconds(30))
+        let took = ContinuousClock.now
+        #expect(batches.take().first == HostLog.line(0))
+        latch.yield(HostLog.line(2))
+        #expect(try await batches.due())
+        #expect(ContinuousClock.now - took >= .milliseconds(100))
+        #expect(batches.take() == [HostLog.line(2)])
+    }
+
+    /// The feed already waiting when the main thread stalls: the line that
+    /// woke it and those that came during the stall go in as one batch.
+    @Test func aFeedWaitingWhenTheMainThreadStallsTakesWhatCameMeanwhileAsOneBatch() async throws {
+        let (lines, latch) = AsyncThrowingStream<AuditLine, Error>.makeStream()
+        let batches = LineBatches(lines, every: .milliseconds(100))
+        let applied = Task { @MainActor in
+            var applied: [[AuditLine]] = []
+            while try await batches.due() { applied.append(batches.take()) }
+            return applied
+        }
+        // Waiting, and an interval has passed: the next line is due at once.
+        try await Task.sleep(for: .milliseconds(150))
+        latch.yield(HostLog.line(0))
+        // The main thread stalls; four more lines come meanwhile, more than
+        // an interval after the first.
+        usleep(50_000)
+        for n in 1..<5 { latch.yield(HostLog.line(n)) }
+        usleep(200_000)
+        latch.finish()
+        #expect(try await applied.value == [(0..<5).map(HostLog.line)])
+    }
 }
 
 /// Every stream the app reads opens with `hello` (and a newer latch may add
