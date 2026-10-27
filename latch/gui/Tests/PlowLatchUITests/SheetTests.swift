@@ -140,30 +140,43 @@ struct SheetTests {
     private struct Opened {
         let app: AppModel
         let client: ChangesClient
-        let controller: MainWindowController
         let sheets: SheetRecorder
+        /// What presents them, and the window they're over.
+        let presenting: WindowSheets
+        let window: NSWindow
+        let close: () -> Void
     }
 
-    private func open(_ place: Place, host: String = "studio") async throws -> Opened {
+    /// The model on `place`, with what that place reads read once (a still's
+    /// model: nothing of its own runs, no status stream nor feed), and its
+    /// sheets presented by the window's `WindowSheets` as the model changes.
+    /// With `window`, inside the main window itself, for the menu's path
+    /// to them and its close; otherwise over a bare view, sparing each test
+    /// the window's screens (a real main window costs ~0.13 s of main-actor
+    /// time to build and lay out).
+    private func open(_ place: Place, host: String = "studio", window main: Bool = false) async throws -> Opened {
         let client = ChangesClient()
-        let store = ProgressStore(memory: .init(), stateDir: "/s")
-        store.save(PlowLatchUI.Progress(passed: [.welcome: .continued], finished: true))
-        let app = AppModel(client: client, store: store)
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
         app.open = { _ in }
         app.reveal = { _ in }
         await app.refreshStatus()
         await app.refreshAccount()
         app.showHost(host)
         app.place = place
-        let window = Offscreen(contentRect: CGRect(x: -4000, y: -4000, width: 1120, height: 700),
-                               styleMask: [.titled, .closable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
+        await app.enter(app.route)
         let sheets = SheetRecorder()
-        let controller = MainWindowController(app: app, window: window, defaults: nil, presenter: sheets)
-        window.setFrameOrigin(CGPoint(x: -4000, y: -4000))
-        window.orderFrontRegardless()
-        #expect(!NSScreen.screens.contains { $0.frame.intersects(window.frame) })
-        return Opened(app: app, client: client, controller: controller, sheets: sheets)
+        if main {
+            let window = Offscreen(contentRect: CGRect(x: -4000, y: -4000, width: 1120, height: 700),
+                                   styleMask: [.titled, .closable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            let controller = MainWindowController(app: app, window: window, defaults: nil, presenter: sheets)
+            window.setFrameOrigin(CGPoint(x: -4000, y: -4000))
+            window.orderFrontRegardless()
+            #expect(!NSScreen.screens.contains { $0.frame.intersects(window.frame) })
+            return Opened(app: app, client: client, sheets: sheets, presenting: controller.sheets, window: window, close: controller.close)
+        }
+        let bare = BareWindow(app: app, presenter: sheets)
+        return Opened(app: app, client: client, sheets: sheets, presenting: bare.sheets, window: bare.window, close: { bare.close() })
     }
 
     private func host(_ app: AppModel, _ name: String) throws -> HostEntry { try #require(app.hosts.first { $0.name == name }) }
@@ -206,7 +219,7 @@ struct SheetTests {
     @Test(arguments: 0..<5, Answer.allCases) func aQuestionIsAnswered(_ index: Int, answer: Answer) async throws {
         let question = Self.questions[index]
         let opened = try await open(question.place, host: question.place == .host(.vault) ? "pi-kitchen" : "studio")
-        defer { opened.controller.close() }
+        defer { opened.close() }
         let confirmation = try await question.ask(opened.app)
         if answer == .refused { opened.client.refuse(.failed(LatchFailure(code: "plow_unreachable", message: "Plow can't be reached"))) }
         opened.app.ask(confirmation)
@@ -224,7 +237,7 @@ struct SheetTests {
             #expect(opened.client.asked.count == 1, "\(opened.client.asked)")
             #expect(question.said(opened.app) == nil)
         case .cancel:
-            try await Task.sleep(for: .milliseconds(200))
+            try await Task.sleep(for: .milliseconds(50))
             #expect(opened.client.asked.isEmpty)
         case .refused:
             await waitUntil { question.said(opened.app)?.code == "plow_unreachable" }
@@ -234,10 +247,10 @@ struct SheetTests {
 
     // The question goes with the window, unanswered.
     @Test func closingTheWindowTakesAQuestionAway() async throws {
-        let opened = try await open(.host(.settings))
+        let opened = try await open(.host(.settings), window: true)
         opened.app.ask(.stopHost)
         await waitUntil { opened.sheets.alert != nil }
-        opened.controller.close()
+        opened.close()
         #expect(opened.sheets.alert == nil)
         #expect(opened.app.sheet == nil)
         try await Task.sleep(for: .milliseconds(100))
@@ -249,9 +262,9 @@ struct SheetTests {
     // New Item (File › New Item…) on pi-kitchen's Vault: added there.
     // Cancel adds nothing; a refusal is said in the sheet, which stays.
     @Test func newItemAddsToTheHostItWasOpenedFor() async throws {
-        let opened = try await open(.host(.vault), host: "pi-kitchen")
-        defer { opened.controller.close() }
-        let window = try #require(opened.controller.window)
+        let opened = try await open(.host(.vault), host: "pi-kitchen", window: true)
+        defer { opened.close() }
+        let window = opened.window
         await waitUntil { MenuBridge.state(MenuBridge.newItem, in: window).enabled }
         func newItem() async throws -> VaultEditor {
             MenuBridge.send(MenuBridge.newItem, in: window)
@@ -290,7 +303,7 @@ struct SheetTests {
     // done, closes nothing, and the sheet showing stays.
     @Test func aSaveFinishingAfterCancelLeavesTheNextSheet() async throws {
         let opened = try await open(.host(.vault), host: "pi-kitchen")
-        defer { opened.controller.close() }
+        defer { opened.close() }
         let gate = Gate()
         opened.client.addGate = gate
         let editor = VaultEditor(on: try host(opened.app, "pi-kitchen"))
@@ -308,7 +321,6 @@ struct SheetTests {
         let shown = opened.sheets.sheet
         gate.open()
         #expect(await saving.value)
-        try await Task.sleep(for: .milliseconds(100))
         #expect(opened.app.sheet == .vaultItem(next))
         #expect(opened.sheets.sheet === shown)
     }
@@ -316,7 +328,7 @@ struct SheetTests {
     // An item's Edit… changes that item on its host.
     @Test func editChangesTheItemItWasOpenedFor() async throws {
         let opened = try await open(.host(.vault), host: "pi-kitchen")
-        defer { opened.controller.close() }
+        defer { opened.close() }
         let item = try await vaultItem(opened.app, "v3", on: "pi-kitchen")
         await opened.app.beginVaultEdit(item, on: try host(opened.app, "pi-kitchen"))
         await waitUntil { opened.sheets.sheetName?.contains("VaultItemSheet") == true }
@@ -332,9 +344,9 @@ struct SheetTests {
     // nothing is read; an export chosen is previewed and imported into the
     // host it was chosen for; a refused import is said in the sheet.
     @Test func importChoosesAnExportAndImportsIntoItsHost() async throws {
-        let opened = try await open(.host(.vault), host: "pi-kitchen")
-        defer { opened.controller.close() }
-        let window = try #require(opened.controller.window)
+        let opened = try await open(.host(.vault), host: "pi-kitchen", window: true)
+        defer { opened.close() }
+        let window = opened.window
         await waitUntil { MenuBridge.state(MenuBridge.importItems, in: window).enabled }
         MenuBridge.send(MenuBridge.importItems, in: window)
         await waitUntil { opened.sheets.panel != nil }
@@ -372,7 +384,7 @@ struct SheetTests {
     // Import's Cancel imports nothing.
     @Test func importsCancelImportsNothing() async throws {
         let opened = try await open(.host(.vault), host: "pi-kitchen")
-        defer { opened.controller.close() }
+        defer { opened.close() }
         opened.app.beginImport(URL(filePath: "/tmp/passwords.csv"), on: try host(opened.app, "pi-kitchen"))
         await waitUntil { opened.sheets.sheetName?.contains("ImportSheet") == true }
         opened.app.sheet = nil
@@ -384,7 +396,7 @@ struct SheetTests {
     // agent is created with it; Cancel creates nothing; a refusal is said.
     @Test func newAgentCreatesAnAgent() async throws {
         let opened = try await open(.account(.agents))
-        defer { opened.controller.close() }
+        defer { opened.close() }
         // Cancel.
         opened.app.sheet = .newAgent(NewAgent())
         await waitUntil { opened.sheets.sheetName?.contains("NewAgentSheet") == true }
@@ -398,10 +410,10 @@ struct SheetTests {
         await flow.load(app: opened.app)
         flow.kind = .own
         flow.name = "tinker"
-        opened.controller.sheets.chooseKeyFile(for: flow)
+        opened.presenting.chooseKeyFile(for: flow)
         let panel = try #require(opened.sheets.panel)
         #expect(panel.over === opened.sheets.sheet?.view.window)
-        #expect(panel.over !== opened.controller.window)
+        #expect(panel.over !== opened.window)
         #expect(panel.panel.nameFieldStringValue == "tinker.latch-key")
         opened.sheets.choose(URL(filePath: "/tmp/tinker.latch-key"))
         #expect(flow.tokenFile == URL(filePath: "/tmp/tinker.latch-key"))
@@ -423,7 +435,7 @@ struct SheetTests {
     // the sheet.
     @Test func googleSignInShowsWhileItWaits() async throws {
         let opened = try await open(.account(.connections))
-        defer { opened.controller.close() }
+        defer { opened.close() }
         opened.app.connectGoogle(adding: true)
         await waitUntil { opened.sheets.sheetName?.contains("GoogleSignInSheet") == true }
         await waitUntil { opened.app.googleSignIn == nil }
@@ -447,11 +459,43 @@ struct SheetTests {
     // One at a time: a sheet the model replaces goes before the next shows.
     @Test func aReplacedSheetGoesFirst() async throws {
         let opened = try await open(.host(.vault))
-        defer { opened.controller.close() }
+        defer { opened.close() }
         opened.app.sheet = .newAgent(NewAgent())
         await waitUntil { opened.sheets.sheetName?.contains("NewAgentSheet") == true }
         opened.app.ask(.stopHost)
         await waitUntil { opened.sheets.alert != nil }
         #expect(opened.sheets.sheet == nil)
+    }
+}
+
+/// `WindowSheets` over a bare view in a window that never shows, updated
+/// on each change of the model as the main window updates it.
+@MainActor private final class BareWindow {
+    let window = Offscreen(contentRect: CGRect(x: -4000, y: -4000, width: 200, height: 200), styleMask: [.titled],
+                           backing: .buffered, defer: true)
+    let sheets: WindowSheets
+    private let host = NSViewController()
+    private var closed = false
+
+    init(app: AppModel, presenter: SheetRecorder) {
+        sheets = WindowSheets(app: app, presenter: presenter)
+        host.view = NSView()
+        window.isReleasedWhenClosed = false
+        window.contentViewController = host
+        follow()
+    }
+
+    private func follow() {
+        withObservationTracking { sheets.update(over: host) } onChange: { [weak self] in
+            Task { @MainActor in
+                guard let self, !self.closed else { return }
+                self.follow()
+            }
+        }
+    }
+
+    func close() {
+        closed = true
+        sheets.end(over: window)
     }
 }
