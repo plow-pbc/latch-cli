@@ -1,0 +1,50 @@
+<!doctype html><title>latch code test: stacked dialogs</title>
+<!-- A sign-in dialog with a code dialog stacked over it, each rendered at
+     the end of the body as modal libraries do; the code is a number field.
+     Each dialog's focus lock works as a common modal library's does: while
+     it is the active lock, focus that leaves its dialog is put straight
+     back on the element that lost it. Only the top dialog's lock is active;
+     with ?trap the sign-in dialog's lock stays active under the code dialog
+     (its lock never learned of the second one), so a click on the code
+     field leaves the focus where it was, in the sign-in dialog.
+     `selected` is how much of the page is selected, and `input` whether
+     the code field held the focus as its value came. -->
+<style>
+  .back { position: fixed; inset: 0; background: #0006; display: grid; place-items: center; }
+  .box { background: white; padding: 24px; width: 420px; }
+</style>
+<nav><a href="#">Home</a> · <a href="#">Grocery</a> · <a href="#">Retail</a></nav>
+<p id="out">not verified</p>
+<p id="selected">selected: 0</p>
+<p id="input">input: none</p>
+<script>
+  const dialog = (label, html) => {
+    const back = document.createElement('div');
+    back.className = 'back';
+    back.innerHTML = `<div class="box" role="dialog" aria-modal="true" aria-label="${label}" tabindex="-1">${html}</div>`;
+    document.body.append(back);
+    return back.firstChild;
+  };
+  const signIn = dialog('Sign in', `<h2>Sign in or Sign up</h2>
+    <p><label>Password <input type="password" value="hunter22"></label></p><p><button>Sign in</button></p>`);
+  const verify = dialog('2-Step Verification', `<h2>2-Step Verification</h2>
+    <p>We sent a code to your phone.</p>
+    <p><label>Enter your 6-digit code <input id="code" type="number"></label></p>
+    <p><button>Cancel</button> <button id="go" disabled>Submit</button></p>`);
+  const active = location.search === '?trap' ? signIn : verify;
+  for (const box of [signIn, verify]) {
+    box.addEventListener('focusout', (e) => {
+      if (box === active && !box.contains(e.relatedTarget)) e.target.focus();
+    }, true);
+  }
+  active.focus();
+  const [code, go] = [document.getElementById('code'), document.getElementById('go')];
+  code.addEventListener('input', () => {
+    go.disabled = !/^\d{6}$/.test(code.value);
+    document.getElementById('input').textContent = `input: ${document.activeElement === code ? 'focused' : 'unfocused'}`;
+  });
+  go.addEventListener('click', () => { document.getElementById('out').textContent = `verified ${code.value}`; });
+  document.addEventListener('selectionchange', () => {
+    document.getElementById('selected').textContent = `selected: ${document.getSelection().toString().length}`;
+  });
+</script>

@@ -4,6 +4,7 @@
 //! in files (see `secrets.rs`):
 //!
 //! - `key`*: this peer's ed25519 secret key, as hex. It never leaves the machine.
+//! - `key.lock`: held by whatever puts that key on the network (see `KeyUse`).
 //! - `plow-token`*: the Plow credential `login --token-file` was given (a
 //!   host's owner token). An agent's own credential is not copied here; see
 //!   `credential.rs`.
@@ -36,7 +37,7 @@ use std::io::{ErrorKind, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
-use iroh::SecretKey;
+use iroh::{PublicKey, SecretKey};
 use serde::{Deserialize, Serialize};
 
 use crate::failure::{Failure, code};
@@ -61,6 +62,28 @@ const FORMAT: u32 = 2;
 struct Marker {
     format: u32,
     written_by: String,
+}
+
+/// Who puts this folder's key on the network now (`StateDir::use_key`).
+pub enum KeyUse {
+    /// No host does: dial with the key, holding it until the endpoint closes.
+    Direct(Box<HeldKey>),
+    /// A host runs on this folder, and only it uses the key: go through it.
+    Host,
+}
+
+/// The folder's secret key and its `key.lock`, held while an endpoint
+/// bound with it is open; the only way to bind one with it.
+pub struct HeldKey {
+    key: SecretKey,
+    _lock: fs::File,
+}
+
+impl HeldKey {
+    /// An endpoint builder with this key.
+    pub fn endpoint(&self) -> iroh::endpoint::Builder {
+        crate::dial::endpoint().secret_key(self.key.clone())
+    }
 }
 
 pub struct StateDir {
@@ -158,18 +181,83 @@ impl StateDir {
     }
 
     /// Loads this peer's key, generating and saving it on first use.
-    /// Returns the key and whether it was just created.
-    pub fn load_or_create_key(&self) -> Result<(SecretKey, bool), Failure> {
+    /// Returns its public half and whether it was just created.
+    pub fn load_or_create_key(&self) -> Result<(PublicKey, bool), Failure> {
         let key = SecretKey::generate();
         let hex = to_hex(&key.to_bytes());
         if self.secrets()?.create(Secret::Key, hex.as_bytes())? {
-            Ok((key, true))
+            Ok((key.public(), true))
         } else {
-            Ok((self.load_key()?, false))
+            Ok((self.public_key()?, false))
         }
     }
 
-    pub fn load_key(&self) -> Result<SecretKey, Failure> {
+    /// This peer's public key: who it is to Plow and to hosts.
+    pub fn public_key(&self) -> Result<PublicKey, Failure> {
+        Ok(self.load_key()?.public())
+    }
+
+    /// For a command about to dial another host: the key, held with any
+    /// other such command's, or `Host` when a host runs on this folder.
+    /// The relay delivers to the newest endpoint of a key, so an endpoint
+    /// bound beside the host's would take the host's callers from it. A
+    /// host from another latch takes no key lock, but holds `serve.lock`;
+    /// so does one waiting in `own_key` for this command to finish.
+    pub fn use_key(&self) -> Result<KeyUse, Failure> {
+        let lock = self.key_lock()?;
+        match lock.try_lock_shared() {
+            Ok(()) => {}
+            Err(fs::TryLockError::WouldBlock) => return Ok(KeyUse::Host),
+            Err(fs::TryLockError::Error(err)) => return Err(self.key_lock_failure(err)),
+        }
+        if crate::lifecycle::now(&self.path).running {
+            return Ok(KeyUse::Host);
+        }
+        Ok(KeyUse::Direct(Box::new(HeldKey {
+            key: self.load_key()?,
+            _lock: lock,
+        })))
+    }
+
+    /// For `latch serve`: the key, held alone for as long as it serves.
+    /// While commands that dial directly hold it, this blocks until they
+    /// let go, calling `waiting` first. A folder not logged in has none.
+    pub fn own_key(&self, waiting: impl FnOnce()) -> Result<HeldKey, Failure> {
+        self.require_login()?;
+        let lock = self.key_lock()?;
+        match lock.try_lock() {
+            Ok(()) => {}
+            Err(fs::TryLockError::WouldBlock) => {
+                waiting();
+                lock.lock().map_err(|err| self.key_lock_failure(err))?;
+            }
+            Err(fs::TryLockError::Error(err)) => return Err(self.key_lock_failure(err)),
+        }
+        Ok(HeldKey {
+            key: self.load_key()?,
+            _lock: lock,
+        })
+    }
+
+    fn key_lock(&self) -> Result<fs::File, Failure> {
+        use std::os::unix::fs::OpenOptionsExt;
+        fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .open(self.path.join("key.lock"))
+            .map_err(|err| self.key_lock_failure(err))
+    }
+
+    fn key_lock_failure(&self, err: std::io::Error) -> Failure {
+        let path = self.path.join("key.lock");
+        Failure::new(code::state_io, format!("{}: {err}", path.display()))
+    }
+
+    /// The secret key, which only a `HeldKey` hands on.
+    fn load_key(&self) -> Result<SecretKey, Failure> {
         let Some(bytes) = self.secrets()?.read(Secret::Key)? else {
             let message = format!(
                 "{} has no key; run `latch login` first",
@@ -261,7 +349,7 @@ impl StateDir {
     /// at a host.
     pub fn require_login(&self) -> Result<Config, Failure> {
         let config = self.require_config()?;
-        if self.load_key()?.public().to_string() != config.peer.key {
+        if self.public_key()?.to_string() != config.peer.key {
             let message = format!(
                 "{}: the key does not match the key this instance registered with Plow",
                 self.path.display()
@@ -321,6 +409,49 @@ mod tests {
         let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/tests");
         fs::create_dir_all(&parent).unwrap();
         tempfile::tempdir_in(parent).unwrap()
+    }
+
+    #[test]
+    fn a_host_takes_the_key_alone_once_the_commands_dialing_with_it_let_go() {
+        let dir = test_dir();
+        let state = StateDir {
+            path: dir.path().to_path_buf(),
+        };
+        let (key, _) = state.load_or_create_key().unwrap();
+        let peer = crate::plow::Peer {
+            key: key.to_string(),
+            kind: "device".into(),
+            name: "studio".into(),
+            relay_url: None,
+            last_seen_at: None,
+            online: None,
+            this_machine: false,
+        };
+        let api_url = "http://127.0.0.1:9".to_string();
+        state.save_config(&Config { api_url, peer }).unwrap();
+        let direct = |state: &StateDir| match state.use_key().unwrap() {
+            KeyUse::Direct(key) => key,
+            KeyUse::Host => panic!("no host holds the key"),
+        };
+        // Commands share it.
+        let (first, second) = (direct(&state), direct(&state));
+        let (waited, waiting) = std::sync::mpsc::channel();
+        let path = state.path.clone();
+        let host =
+            std::thread::spawn(move || StateDir { path }.own_key(move || waited.send(()).unwrap()));
+        waiting.recv().unwrap();
+        drop(first);
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(
+            !host.is_finished(),
+            "the host took a key a command still held"
+        );
+        drop(second);
+        let held = host.join().unwrap().unwrap();
+        // While the host holds it, a command goes through the host.
+        assert!(matches!(state.use_key().unwrap(), KeyUse::Host));
+        drop(held);
+        direct(&state);
     }
 
     #[test]
@@ -400,7 +531,7 @@ mod tests {
         assert!(created);
         let (again, created_again) = state.load_or_create_key().unwrap();
         assert!(!created_again);
-        assert_eq!(first.public(), again.public());
+        assert_eq!(first, again);
 
         let mode = fs::metadata(state.path.join("key"))
             .unwrap()

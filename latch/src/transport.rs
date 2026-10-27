@@ -9,7 +9,7 @@ use std::sync::Mutex;
 use std::task::{Context, Poll};
 
 use iroh::endpoint::{ConnectionError, VarInt};
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::io::{AsyncRead, AsyncWrite, DuplexStream, ReadBuf};
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{UnixListener, UnixStream};
 
@@ -18,6 +18,8 @@ use crate::failure::{Failure, code};
 pub enum Connection {
     Remote(iroh::endpoint::Connection),
     Local(Mutex<Option<UnixStream>>),
+    /// Another host, through this machine's host (see `proxy.rs`).
+    Proxied(crate::proxy::Proxied),
 }
 
 impl From<iroh::endpoint::Connection> for Connection {
@@ -43,20 +45,38 @@ impl Connection {
                 let (recv, send) = socket.into_split();
                 Ok((SendStream::Local(Some(send)), RecvStream::Local(recv)))
             }
+            Self::Proxied(proxied) => proxied.open_bi(),
         }
     }
 
-    pub fn close_reason(&self) -> Option<ConnectionError> {
+    /// Why the host refused us, once it closed the connection for it.
+    pub fn denied(&self) -> Option<String> {
         match self {
-            Self::Remote(connection) => connection.close_reason(),
+            Self::Remote(connection) => refusal(connection),
             Self::Local(_) => None,
+            Self::Proxied(proxied) => proxied.denied(),
         }
     }
 
     pub fn close(&self, code: VarInt, reason: &[u8]) {
-        if let Self::Remote(connection) = self {
-            connection.close(code, reason);
+        match self {
+            Self::Remote(connection) => connection.close(code, reason),
+            Self::Local(_) => {}
+            Self::Proxied(proxied) => proxied.close(),
         }
+    }
+}
+
+/// Why a host refused us, once it closed `connection` for it: the reason
+/// it closed it with the "denied" code.
+pub fn refusal(connection: &iroh::endpoint::Connection) -> Option<String> {
+    match connection.close_reason() {
+        Some(ConnectionError::ApplicationClosed(close))
+            if close.error_code == VarInt::from_u32(crate::wire::CLOSE_DENIED) =>
+        {
+            Some(String::from_utf8_lossy(&close.reason).to_string())
+        }
+        _ => None,
     }
 }
 
@@ -64,6 +84,8 @@ pub enum SendStream {
     Remote(iroh::endpoint::SendStream),
     // Dropping the owned half shuts down writes while the reader stays live.
     Local(Option<OwnedWriteHalf>),
+    // Dropping it finishes the stream.
+    Proxied(Option<DuplexStream>),
 }
 
 impl From<iroh::endpoint::SendStream> for SendStream {
@@ -80,6 +102,10 @@ impl SendStream {
                 send.take();
                 Ok(())
             }
+            Self::Proxied(send) => {
+                send.take();
+                Ok(())
+            }
         }
     }
 
@@ -90,6 +116,7 @@ impl SendStream {
                 send.take();
                 Ok(())
             }
+            Self::Proxied(_) => Err(io::Error::other("a proxied stream is not reset")),
         }
     }
 }
@@ -103,21 +130,26 @@ impl AsyncWrite for SendStream {
         match self.get_mut() {
             Self::Remote(send) => AsyncWrite::poll_write(Pin::new(send), cx, bytes),
             Self::Local(Some(send)) => Pin::new(send).poll_write(cx, bytes),
-            Self::Local(None) => Poll::Ready(Err(io::ErrorKind::BrokenPipe.into())),
+            Self::Proxied(Some(send)) => Pin::new(send).poll_write(cx, bytes),
+            Self::Local(None) | Self::Proxied(None) => {
+                Poll::Ready(Err(io::ErrorKind::BrokenPipe.into()))
+            }
         }
     }
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         match self.get_mut() {
             Self::Remote(send) => Pin::new(send).poll_flush(cx),
             Self::Local(Some(send)) => Pin::new(send).poll_flush(cx),
-            Self::Local(None) => Poll::Ready(Ok(())),
+            Self::Proxied(Some(send)) => Pin::new(send).poll_flush(cx),
+            Self::Local(None) | Self::Proxied(None) => Poll::Ready(Ok(())),
         }
     }
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         match self.get_mut() {
             Self::Remote(send) => Pin::new(send).poll_shutdown(cx),
             Self::Local(Some(send)) => Pin::new(send).poll_shutdown(cx),
-            Self::Local(None) => Poll::Ready(Ok(())),
+            Self::Proxied(Some(send)) => Pin::new(send).poll_shutdown(cx),
+            Self::Local(None) | Self::Proxied(None) => Poll::Ready(Ok(())),
         }
     }
 }
@@ -125,6 +157,7 @@ impl AsyncWrite for SendStream {
 pub enum RecvStream {
     Remote(iroh::endpoint::RecvStream),
     Local(OwnedReadHalf),
+    Proxied(DuplexStream),
 }
 impl From<iroh::endpoint::RecvStream> for RecvStream {
     fn from(stream: iroh::endpoint::RecvStream) -> Self {
@@ -140,6 +173,7 @@ impl AsyncRead for RecvStream {
         match self.get_mut() {
             Self::Remote(recv) => Pin::new(recv).poll_read(cx, buf),
             Self::Local(recv) => Pin::new(recv).poll_read(cx, buf),
+            Self::Proxied(recv) => Pin::new(recv).poll_read(cx, buf),
         }
     }
 }

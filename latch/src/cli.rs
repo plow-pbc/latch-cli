@@ -216,6 +216,9 @@ pub enum Command {
     Dashboard,
     /// The host's diagnostics (serve.log)
     Logs(FollowArgs),
+    /// Open Plow Latch.app, the Mac app this latch belongs to (macOS); the
+    /// app picks its state folder itself
+    App,
     /// Help for a command, its examples, or every command as JSON
     Help(HelpArgs),
     /// Print SKILL.md, which teaches an agent how to use latch
@@ -865,9 +868,9 @@ pub enum RulesCommand {
         #[arg(long, value_name = "F")]
         draft: Option<PathBuf>,
         /// Preview a browser fill of the saved login TITLE on --url instead
-        /// of REQUEST. It previews the fill's judgment only, not the whole
-        /// sign-in (opening the site is judged on its own) nor whether the
-        /// vault has that login
+        /// of REQUEST, as a login saved for that page's site. It previews
+        /// the fill's judgment only, not the whole sign-in (opening the site
+        /// is judged on its own) nor whether the vault has that login
         #[arg(long, value_name = "TITLE", requires = "url")]
         fill_login: Option<String>,
         /// The page --fill-login fills the login on
@@ -1100,6 +1103,19 @@ pub enum AuditAction {
     Verify,
     /// Seal new records under a new key and keep every old one; a running `latch serve` uses it from its next record
     RotateKey,
+    /// A browser screenshot a record names, saved to --output: an action's number in a plan, or `final`
+    Shot {
+        /// The record's id (a record line's `cursor`)
+        record: String,
+        /// Which of its screenshots: an action's number, or `final`
+        shot: String,
+        /// Where to save the PNG
+        #[arg(long, short, value_name = "FILE")]
+        output: PathBuf,
+        /// Another serving machine of the owner's to read it from (owner devices only) [default: this machine's host]
+        #[arg(long)]
+        host: Option<String>,
+    },
 }
 
 #[derive(Args, Debug)]

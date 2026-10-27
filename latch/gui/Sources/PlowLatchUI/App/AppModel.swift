@@ -906,7 +906,7 @@ final class AppModel {
 
     /// `latch rules try` on a host.
     func tryRequest(_ request: [String], on host: HostEntry, agent: String?, newAgent: Bool, draft: String?) async throws -> RulesTry {
-        try await client.rulesTry(request, host: host.isThisMac ? nil : host.name, agent: agent, newAgent: newAgent, draft: draft)
+        try await client.rulesTry(.words(request), host: host.isThisMac ? nil : host.name, agent: agent, newAgent: newAgent, draft: draft)
     }
 
     /// For snapshots: as `latch agents` said.

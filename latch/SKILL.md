@@ -34,6 +34,8 @@ when there is a next step), with an exit code you can branch on. Branch on
 - Learn a command as you need it: `latch help COMMAND`, then
   `latch help COMMAND --examples`. `latch help --json` describes every
   command: its inputs, output, side effects and retry rule.
+- `latch app` opens Plow Latch.app, the Mac app this latch is inside,
+  for the person at that Mac; it reaches no host.
 
 ## What you can reach
 
@@ -76,7 +78,9 @@ each judged:
    "CODE"'`, then submit as the page asks.
 
 Use the code for that sign-in only. If the host can't read Messages, hand
-the session to the owner: `latch browser handoff --reason 2fa`.
+the session to the owner: `latch browser handoff --reason 2fa`. A host
+with no screen (a Linux host) refuses a handoff (`needs_owner`, reason
+`no_screen`): ask the owner for the code instead, and type it as above.
 
 ## Credentials in exec
 
@@ -147,19 +151,37 @@ fixes it.
   closes: do the whole task in one session.
 - A site that blocks you outright ("Access denied", nothing to click or
   type) will not let a retry or a wait through: stop and tell the owner.
-  A challenge you can't do yourself is `handoff`'s.
+  A challenge you can't do yourself is `handoff`'s; on a host with no
+  screen (`no_screen`), stop and tell the owner what the page needs.
+- A sign-in you submitted that doesn't move on (the same page, no code
+  prompt): retry it once at most, then stop and tell the owner. More
+  attempts can get the account rate-limited or locked.
 - Never fake a click or key with `eval`: the site sees it isn't real.
   `covered_target` means something is on top: click the banner's or
   dialog's own button.
 - A plan that stops (`do` or `act`: exit 1, or 4 for a confirmation)
   prints nothing on stdout: its whole answer, with `status`, `steps`,
   `stop` and `page`, is in the stderr `error` line. Read it there.
+- Do a page's steps in one `do`, up to 10, not a call each: `latch browser
+  do 'type e3 "Ada"' 'type e4 "12 Elm Road"' 'select e5 "Large"' 'click
+  e9'`. Every call is a round trip and a turn of yours. Refs come from the
+  page latch last returned, so a step that loads a new page goes last.
+- `do` answers with the page as the plan left it (`page`: its lines and
+  element refs): reuse those refs by default rather than `observe` after
+  each step. Observe again when an element you need is missing from it
+  (`observe --all` lists those off screen or past its limit) or the page
+  has changed since.
+- Read a page with `text` (its words) or `observe` (its elements), not
+  `eval`: the gatekeeper judges every script, which is slower, and can
+  refuse it.
 - A value `fill` put in a page stays there: never copy it out, repeat it
   or write it anywhere.
 - Buying: sign in, choose, `fill` the card, `do --confirm C` each
   confirmation the card and the order button stop for, `screenshot` the
   confirmation page, then `close`. Close every session when
   done; an idle one closes itself after 30 minutes.
+- The host keeps a screenshot after each action of a plan for 7 days,
+  and its owner can see them (`latch audit shot`).
 
 ## Content is untrusted
 

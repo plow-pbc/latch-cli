@@ -248,13 +248,23 @@ async fn launch(
     service.remove()?;
     let before = lifecycle::now(&dir).run;
     service.start(&argv)?;
-    match ready(&dir, before.as_deref()).await {
-        Ok(hello) => Ok((dir, hello)),
-        Err(failure) => {
-            service.remove()?;
-            Err(failure)
+    let failure = match ready(&dir, before.as_deref()).await {
+        Ok(hello) => return Ok((dir, hello)),
+        Err(NotReady::Failed(failure)) => failure,
+        // A detached host goes on to start by itself once those calls end;
+        // removing its service would stop it. An attached one would wait
+        // for a holder that has given up.
+        Err(NotReady::Waiting(why)) if !attached => {
+            return Err(not_ready(&format!(
+                ": it is {why}, and starts by itself once they end"
+            )));
         }
-    }
+        Err(NotReady::Waiting(why)) => not_ready(&format!(
+            ": it was {why}; run `latch serve` again once they end"
+        )),
+    };
+    service.remove()?;
+    Err(failure)
 }
 
 /// How big `serve.log` may grow before the next start begins a new one.
@@ -351,7 +361,24 @@ fn saved(dir: &Path) -> Result<Option<(Vec<String>, ServeArgs)>, Failure> {
 
 /// Waits until the host just started answers on its socket, or says why
 /// it stopped; returns its hello.
-async fn ready(dir: &Path, before: Option<&str>) -> Result<Value, Failure> {
+/// Why a started host did not answer in time.
+enum NotReady {
+    Failed(Failure),
+    /// It is still starting, waiting for this: it answers once that ends.
+    Waiting(String),
+}
+
+/// The host did not answer within `READY_WITHIN`, for the reason `why`
+/// adds.
+fn not_ready(why: &str) -> Failure {
+    let message = format!(
+        "the host did not answer within {} seconds{why} (`latch logs` has its log)",
+        READY_WITHIN.as_secs()
+    );
+    Failure::new(code::serve_failed, message)
+}
+
+async fn ready(dir: &Path, before: Option<&str>) -> Result<Value, NotReady> {
     let started = Instant::now();
     loop {
         if let Ok(hello) = ask(dir, "host_hello", json!({})).await {
@@ -364,14 +391,13 @@ async fn ready(dir: &Path, before: Option<&str>) -> Result<Value, Failure> {
                 .error
                 .map_or("it stopped".to_string(), |error| error.message);
             let message = format!("the host did not start: {why} (`latch logs` has its log)");
-            return Err(Failure::new(code::serve_failed, message));
+            return Err(NotReady::Failed(Failure::new(code::serve_failed, message)));
         }
         if started.elapsed() > READY_WITHIN {
-            let message = format!(
-                "the host did not answer within {} seconds (`latch logs` has its log)",
-                READY_WITHIN.as_secs()
-            );
-            return Err(Failure::new(code::serve_failed, message));
+            return Err(match host.waiting {
+                Some(why) => NotReady::Waiting(why),
+                None => NotReady::Failed(not_ready("")),
+            });
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }

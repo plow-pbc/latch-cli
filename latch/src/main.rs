@@ -8,6 +8,7 @@
 #![warn(clippy::undocumented_unsafe_blocks)]
 
 mod agents;
+mod app;
 mod audit;
 mod browser;
 mod cli;
@@ -41,6 +42,7 @@ mod overview;
 mod paint;
 mod plow;
 mod plugins;
+mod proxy;
 mod redact;
 mod remote;
 mod sandbox;
@@ -155,6 +157,23 @@ fn main() -> ExitCode {
         Command::Skill => {
             print!("{}", help::skill());
             return ExitCode::SUCCESS;
+        }
+        // Only opens the app, which picks its state folder itself: a
+        // folder named here (not just this build's default) is refused.
+        Command::App => {
+            let named = cli.state_dir.filter(|dir| {
+                Some(dir.as_path()) != cli::BUILD_STATE_DIR.map(std::path::Path::new)
+            });
+            return match app::open(named.as_deref()).and_then(|opened| json(cli.pretty, opened)) {
+                Ok(Printed(text)) => {
+                    println!("{text}");
+                    ExitCode::SUCCESS
+                }
+                Err(failure) => {
+                    report(&failure);
+                    failure.exit.into()
+                }
+            };
         }
         command => command,
     };
@@ -329,7 +348,7 @@ async fn run(
         Command::Audit(cli::AuditArgs {
             action: Some(action),
             ..
-        }) => json(pretty, audit::run(&state, action)?),
+        }) => json(pretty, audit::run(&state, action).await?),
         Command::Audit(args) => {
             let range = audit::Range {
                 last: args.last,
@@ -443,7 +462,11 @@ async fn run(
                 messages::access::check_here(&state, connector).await?,
             )
         }
-        Command::Worker(_) | Command::BrowserWorker(_) | Command::Help(_) | Command::Skill => {
+        Command::Worker(_)
+        | Command::BrowserWorker(_)
+        | Command::Help(_)
+        | Command::Skill
+        | Command::App => {
             unreachable!("handled in main")
         }
     }

@@ -1,0 +1,18 @@
+<!doctype html><title>latch code test: controlled field</title>
+<!-- A field controlled as a React one is: its value is the page's state,
+     written back after every input event, so only what its handler kept
+     stays; a value set by script, with no input event, is undone on the
+     next render. Verify is enabled from the state, not the field. -->
+<h1>Enter your code</h1>
+<p><input id="code" inputmode="numeric" aria-label="Code"></p>
+<p><button id="go" disabled>Verify</button></p>
+<p id="out">not verified</p>
+<script>
+  const [code, go] = [document.getElementById('code'), document.getElementById('go')];
+  let state = '';
+  const render = () => { code.value = state; go.disabled = state.length !== 6; };
+  code.addEventListener('input', () => { state = code.value.replace(/\D/g, '').slice(0, 6); render(); });
+  code.addEventListener('blur', render);
+  go.addEventListener('click', () => { document.getElementById('out').textContent = `verified ${state}`; });
+  render();
+</script>

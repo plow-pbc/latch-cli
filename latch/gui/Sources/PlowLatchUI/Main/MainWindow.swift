@@ -490,7 +490,8 @@ struct Inspector: View {
         case let .host(.activity, host?):
             if let record = app.inspectedRecord(on: host) {
                 RecordInspector(record: record, caller: record.callerLabel(hostKey: app.key(of: host), hostName: host.name,
-                                                                          isThisMac: host.isThisMac), hostName: host.name)
+                                                                          isThisMac: host.isThisMac), hostName: host.name,
+                                host: host.isThisMac ? nil : host.name)
             } else {
                 ContentUnavailableView("No Selection", systemImage: "doc.text.magnifyingglass",
                                        description: Text("Select a request to see who asked, why it was allowed or refused, and what ran."))

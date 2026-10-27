@@ -214,6 +214,7 @@ private struct TryPanel: View {
     var host: HostEntry
     var everyAgentSaved: String
     @Environment(AppModel.self) private var app
+    @FocusState private var editingRequest: Bool
 
     var body: some View {
         @Bindable var trial = app.trial
@@ -222,9 +223,23 @@ private struct TryPanel: View {
                 ForEach(app.agents ?? []) { Text($0.name).tag(Caller.agent($0.uid)) }
                 Text("A new agent").tag(Caller.newAgent)
             }
-            TextField("Request", text: $trial.request, prompt: Text("exec -- ls ~/Projects"))
-                .font(.body.monospaced())
-                .onSubmit { Task { await trial.run(on: host, app: app) } }
+            HStack {
+                    TextField("Request", text: $trial.request, prompt: Text("exec -- ls ~/Projects"))
+                        .font(.body.monospaced())
+                        .focused($editingRequest)
+                        .onSubmit { Task { await trial.run(on: host, app: app) } }
+                    Menu("Examples") {
+                        ForEach(Trial.examples) { example in
+                            Button {
+                                trial.use(example)
+                                editingRequest = true
+                            } label: {
+                                Label(example.title, systemImage: example.symbol)
+                            }
+                        }
+                    }
+                    .fixedSize()
+            }
             Toggle("Judge against draft rules for every agent", isOn: $trial.useDraft)
             if trial.useDraft {
                 TextEditor(text: $trial.draft)
@@ -276,6 +291,15 @@ final class Trial {
     private(set) var results: [String: Result<RulesTry, LatchError>] = [:]
 
     var words: [String]? { ShellWords.split(request) }
+
+    /// The rules screen's examples that are words to edit: the Instacart
+    /// sign-in, a saved login's fill, has none.
+    static var examples: [Onboarding.Example] { Onboarding.examples.filter { $0.request.words != nil } }
+
+    /// An example from the rules screen, in the request field to edit.
+    func use(_ example: Onboarding.Example) {
+        request = ShellWords.join(example.request.words ?? [])
+    }
 
     func run(on host: HostEntry, app: AppModel) async {
         guard let words, !words.isEmpty else { return }
@@ -386,5 +410,17 @@ enum ShellWords {
         guard quote == nil, !escaped else { return nil }
         if inWord { words.append(word) }
         return words
+    }
+
+    /// The words as one line that `split` gives back: bare when plain,
+    /// else in single quotes, or double quotes with `\` escapes for one
+    /// holding a single quote.
+    static func join(_ words: [String]) -> String {
+        words.map { word in
+            if !word.isEmpty, !word.contains(where: { $0.isWhitespace || "'\"\\".contains($0) }) { return word }
+            if !word.contains("'") { return "'\(word)'" }
+            return "\"" + word.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
+        }
+        .joined(separator: " ")
     }
 }

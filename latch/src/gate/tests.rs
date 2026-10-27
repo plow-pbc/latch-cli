@@ -412,6 +412,47 @@ async fn the_four_sources_and_the_layers_that_read_them() {
     );
 }
 
+/// The decision model, noting the Plow requests already seen when the
+/// rules layer is asked.
+struct Watching {
+    model: Arc<Recorder>,
+    seen: Arc<Mutex<Vec<String>>>,
+    at_rules_layer: Mutex<Option<Vec<String>>>,
+}
+
+impl Provider for Watching {
+    fn ask<'a>(&'a self, _: &'a Value, _: &'a [Question]) -> Asked<'a> {
+        unreachable!("the gatekeeper sends its state as written")
+    }
+
+    fn ask_as_written<'a>(&'a self, state: &'a RawValue, questions: &'a [Question]) -> Asked<'a> {
+        if is_rules_layer(&system_one(questions)) {
+            *self.at_rules_layer.lock().unwrap() = Some(self.seen.lock().unwrap().clone());
+        }
+        self.model.ask_as_written(state, questions)
+    }
+}
+
+#[tokio::test]
+async fn the_rules_layer_is_asked_while_the_chat_is_read() {
+    let (plow, seen) = plow(one_chat());
+    let watching = Arc::new(Watching {
+        model: Recorder::answering(0.9, 0.05, 0.05),
+        seen: seen.clone(),
+        at_rules_layer: Mutex::new(None),
+    });
+    let judgment = Gatekeeper::new(plow, watching.clone(), Box::new(host_rules()))
+        .judge(AGENT_CALLER, &order())
+        .await;
+    assert!(judgment.verdict.is_ok());
+    assert!(seen.lock().unwrap().iter().any(|r| r.contains("/messages")));
+    let at_rules_layer = watching.at_rules_layer.lock().unwrap().clone().unwrap();
+    assert!(
+        !at_rules_layer.iter().any(|r| r.contains("/messages")),
+        "{at_rules_layer:?}"
+    );
+}
+
 #[tokio::test]
 async fn a_chat_must_be_named_when_there_are_several_and_must_be_the_agents() {
     let mut world = one_chat();
@@ -426,7 +467,8 @@ async fn a_chat_must_be_named_when_there_are_several_and_must_be_the_agents() {
         vec![message("e1", owner(), "buy it", 5)],
     );
 
-    // Several chats and none named: refused, rules or not, model unasked.
+    // Several chats and none named: refused, rules or not; the rules
+    // layer, asked meanwhile, unheeded.
     let model = Recorder::answering(0.9, 0.05, 0.05);
     let judgment = gatekeeper(world.clone(), &model, host_rules())
         .judge(AGENT_CALLER, &order())
@@ -449,7 +491,7 @@ async fn a_chat_must_be_named_when_there_are_several_and_must_be_the_agents() {
         "{}",
         failure.message
     );
-    assert_eq!(model.calls(), 0);
+    unheeded(&judgment.gate, &model);
 
     // Named: that chat is read.
     let judgment = gatekeeper(world.clone(), &model, host_rules())
@@ -478,7 +520,7 @@ async fn a_chat_must_be_named_when_there_are_several_and_must_be_the_agents() {
             )
             .await;
         assert_eq!(code(&judgment), "which_chat", "{wrong}");
-        assert_eq!(model.calls(), 0);
+        unheeded(&judgment.gate, &model);
     }
 }
 
@@ -497,7 +539,7 @@ async fn a_failed_read_refuses_and_never_falls_back_to_the_rules() {
             .await;
         assert_eq!(code(&judgment), "gatekeeper_unavailable", "{broken}");
         assert_eq!(judgment.verdict.unwrap_err().exit, Exit::Unreachable);
-        assert_eq!(model.calls(), 0, "{broken}");
+        unheeded(&judgment.gate, &model);
     }
 
     let model = Recorder::answering(0.9, 0.05, 0.05);
@@ -507,6 +549,36 @@ async fn a_failed_read_refuses_and_never_falls_back_to_the_rules() {
     assert_eq!(code(&judgment), "gatekeeper_unavailable");
     assert!(judgment.verdict.unwrap_err().message.contains("rules"));
     assert_eq!(model.calls(), 0);
+
+    // Neither readable: the chat's failure is the one reported.
+    let mut world = one_chat();
+    world.add("chat_b", LINE, vec![]);
+    let judgment = gatekeeper(world, &model, Unreadable)
+        .judge(AGENT_CALLER, &order())
+        .await;
+    assert_eq!(code(&judgment), "which_chat");
+    assert_eq!(model.calls(), 0);
+}
+
+/// A refusal for a chat that could not be read: only the rules layer was
+/// asked, while the chat was read, and its answer is in neither the
+/// verdict nor the record.
+fn unheeded(gate: &Value, model: &Recorder) {
+    let asked = model.asked.lock().unwrap();
+    assert!(
+        asked.iter().all(|(_, questions)| is_rules_layer(questions)),
+        "the chat layer is never asked"
+    );
+    for field in [
+        "layers",
+        "decided_by",
+        "p",
+        "source",
+        "rules",
+        "chat_read_ms",
+    ] {
+        assert!(gate.get(field).is_none(), "{field}: {gate}");
+    }
 }
 
 #[tokio::test]
@@ -729,6 +801,52 @@ async fn no_chat_is_neither_but_a_layer_that_fails_refuses() {
     }
 }
 
+#[tokio::test]
+async fn a_fill_from_the_vault_is_judged_knowing_what_a_fill_does() {
+    let fill = crate::browser::previewed_fill(
+        "https://www.instacart.com/login",
+        "login",
+        "Instacart",
+        vec!["username".into(), "password".into()],
+    );
+    let plan = |may_fill: Value| {
+        json!({"kind": "browser_plan",
+               "page": {"url": "https://www.instacart.com/login", "title": "Log in"},
+               "steps": [{"step": "Sign in"}], "may_fill": may_fill})
+    };
+    let script = json!({"kind": "run_script", "site": "instacart.com", "script": "return 1"});
+    for (action, told) in [
+        (serde_json::to_value(&fill).unwrap(), true),
+        (plan(json!([{"kind": "login", "title": "Instacart"}])), true),
+        (plan(json!([])), false),
+        (script, false),
+        (serde_json::from_str(order().get()).unwrap(), false),
+    ] {
+        let action = serde_json::value::to_raw_value(&action).unwrap();
+        let model = Recorder::answering(0.9, 0.05, 0.05);
+        gatekeeper(one_chat(), &model, host_rules())
+            .judge(AGENT_CALLER, &action)
+            .await;
+        // Both layers are told, as the owner is; the owner's messages also
+        // that a request on a site covers signing in there.
+        let rules = model.rules_state()["rules_of_judgment"].to_string();
+        assert_eq!(rules.contains(VAULT_FILL), told, "{action}");
+        assert!(!rules.contains(VAULT_FILL_ASKED), "{action}");
+        let chat = model.chat_state()["rules_of_judgment"].to_string();
+        assert_eq!(chat.contains(VAULT_FILL_ASKED), told, "{action}");
+        let model = Recorder::answering(0.9, 0.05, 0.05);
+        gatekeeper(one_chat(), &model, host_rules())
+            .judge(Caller::Owner, &action)
+            .await;
+        let rules_of_judgment = model.state()["rules_of_judgment"].to_string();
+        assert_eq!(
+            rules_of_judgment.contains(VAULT_FILL_ASKED),
+            told,
+            "{action}"
+        );
+    }
+}
+
 fn held_out() -> Value {
     serde_json::from_str(include_str!("../../tests/fixtures/gatekeeper/heldout.json")).unwrap()
 }
@@ -762,16 +880,12 @@ async fn judge_held_out(
         agent: None,
     };
     let gatekeeper = Gatekeeper::new(plow, provider, Box::new(rules.clone()));
-    let intent = Intent {
-        owner: false,
-        conversation: chat::read(&gatekeeper.plow, AGENT, None).await.unwrap(),
-        rules,
-    };
+    let chat = chat::read(&gatekeeper.plow, AGENT, None);
     let action = RawValue::from_string(probe["action"].as_str().unwrap().to_string()).unwrap();
     let clock = probe["clock_text"].as_str().unwrap();
     let mut gate = json!({});
     let verdict = gatekeeper
-        .consider(&intent, now, clock, &action, &mut gate)
+        .consider(false, Ok(rules), Some(chat), now, clock, &action, &mut gate)
         .await;
     (verdict, gate)
 }
@@ -1072,4 +1186,17 @@ async fn live_owner_calls_are_judged_against_the_rules_alone() {
             judgment.gate
         );
     }
+}
+
+/// The judge's future, which every gated call holds inline (the browser's
+/// deep in its stack), stays small: its concurrent reads and calls are
+/// boxed.
+#[tokio::test]
+async fn the_judgment_future_stays_small() {
+    let model = Recorder::answering(0.9, 0.05, 0.05);
+    let keeper = gatekeeper(one_chat(), &model, host_rules());
+    let action = order();
+    let judging = keeper.judge(AGENT_CALLER, &action);
+    let size = std::mem::size_of_val(&judging);
+    assert!(size <= 4096, "{size} bytes");
 }

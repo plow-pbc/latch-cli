@@ -14,7 +14,8 @@
 //!
 //! A `fill` in place of the request previews a vault login fill
 //! (`previewed_fill`): the judgment the agent's fill would get, built from
-//! the item's kind and title as given. Only the judge is asked: no browser
+//! the item's kind and title as given, as a login saved for the URL's site.
+//! Only the judge is asked: no browser
 //! is started and the vault is never opened. The site's own judgment and
 //! the host's checks on the fill are not previewed.
 //!

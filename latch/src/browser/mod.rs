@@ -39,7 +39,7 @@ pub mod engine;
 mod fill;
 pub mod handoff;
 pub mod host;
-mod journal;
+pub(crate) mod journal;
 mod judged;
 pub(crate) use judged::previewed_fill;
 pub mod model;

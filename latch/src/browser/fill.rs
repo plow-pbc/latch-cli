@@ -738,7 +738,8 @@ async fn stage_ended(
         Failure::new(
             code::needs_fields,
             format!(
-                "latch submitted the first stage and stopped: {why}. Map this stage's fields in a new fill, or hand off to the owner"
+                "latch submitted the first stage and stopped: {why}. Map this stage's fields in a new fill, or {}",
+                super::handoff::to_owner(browsers.screen(), "signin")
             ),
         )
     };
@@ -929,7 +930,10 @@ async fn release_and_set(
             if answer["held"] != true || dropped && boxes.len() > 1 {
                 return Err(Failure::new(
                     code::needs_owner,
-                    "the page would not keep the value latch set; this site needs the owner (handoff)".into(),
+                    format!(
+                        "the page would not keep the value latch set; this site needs the owner: {}",
+                        super::handoff::to_owner(browsers.screen(), "signin")
+                    ),
                 ));
             }
             // Worth fixing in the vault, though the fill went through.

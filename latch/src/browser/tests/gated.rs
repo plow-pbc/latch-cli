@@ -585,7 +585,7 @@ async fn a_refused_command_sends_nothing_to_the_page(engine: &str) {
     assert_eq!(
         shown,
         json!({"kind": "vault_fill", "site": "shop.example",
-               "item": {"kind": "login", "title": "Test site"},
+               "item": {"kind": "login", "title": "Test site", "sites": ["shop.example"]},
                "fields": ["username", "password"]})
     );
     let values = host
