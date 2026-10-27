@@ -282,6 +282,31 @@ async fn a_stopping_host_ends_a_followed_stream_and_says_so() {
     assert_eq!((exit, code), (Exit::Unreachable, "host_stopped"));
 }
 
+/// Lines waiting to go when the host stops: it answers before the next
+/// one, and never resets a stream whose caller takes each frame as it
+/// comes. Between ready branches, `select!` picks at random unless told an
+/// order, so ten hosts each meet the same tie.
+#[tokio::test]
+async fn a_host_stopping_with_lines_waiting_still_says_so() {
+    for _ in 0..10 {
+        let t = start(World::default()).await;
+        let device = t.caller("device").await;
+        let mut audit = Stream::open(&t, &device, "audit", json!({"follow": true})).await;
+        while audit.line().await["type"] != "caught_up" {}
+        for _ in 0..3 {
+            let record = crate::audit::record("k1", None, "file_get", "allow", "ok");
+            t.host.append(record).await.unwrap();
+        }
+        // This test's one thread is the host's too: held, the host sends
+        // nothing while the log's reader queues the new lines.
+        std::thread::sleep(Duration::from_millis(300));
+        t.host.stopping.send_replace(Stopping::Draining);
+        let answer = audit.refusal().await;
+        let (exit, code, _) = refusal(&answer);
+        assert_eq!((exit, code), (Exit::Unreachable, "host_stopped"));
+    }
+}
+
 #[tokio::test]
 async fn a_stopping_host_ends_a_stream_whose_caller_stopped_reading() {
     let t = start(World::default()).await;
