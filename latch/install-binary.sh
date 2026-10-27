@@ -226,6 +226,7 @@ fi
 # before one `serve -d` started runs again, show the command for one
 # explicit start.
 restart_host=""
+login_again=""
 terminal_host=""
 left_running=""
 tmp=""
@@ -314,7 +315,7 @@ if [ -n "$app" ]; then
   # The copy in the other folder goes, with what a run cut short left
   # beside it, unless a host this latch could not stop may run from it.
   # macOS keeps "Start when you log in" for the copy it was turned on in, so
-  # the new copy turns it on again once that one is gone.
+  # the new copy turns it on again once that one is gone (step 8).
   if [ -n "$other" ] && { [ -e "$other" ] || [ -e "$other.new" ] || [ -e "$other.old" ]; }; then
     login_item=""
     case "$("$link" login-item 2>/dev/null)" in
@@ -324,12 +325,7 @@ if [ -n "$app" ]; then
       say "left $other in place, since a host from another latch version may run from it; remove it once that host is stopped"
     elif rm -rf "$other" "$other.new" "$other.old" 2>/dev/null; then
       say "removed $other; $installed replaces it (relink any link to latch other than $dest)"
-      if [ -n "$login_item" ]; then
-        case "$("$link" login-item --again 2>/dev/null)" in
-          *'"login_item":"enabled"'*) say "Start when you log in now starts latch from $installed" ;;
-          *) say "could not turn Start when you log in on again for $installed; turn it on in Latch's window" ;;
-        esac
-      fi
+      [ -n "$login_item" ] && login_again=1
     else
       say "could not remove $other; remove it, so only one $name is left"
     fi
@@ -471,6 +467,16 @@ if [ -n "$restart_host" ]; then
 fi
 if [ -n "$terminal_host" ]; then
   say "the host on $state_dir ran in a terminal and was stopped: run \`latch serve\` there again to start it with the new latch"
+fi
+
+# 8. "Start when you log in", on for the copy removed in step 1, turned on
+# for the new one. Turning it on runs it once, as at login, so this comes
+# after step 7: run first, it would start the host step 7 then finds running.
+if [ -n "$login_again" ]; then
+  case "$("$link" login-item --again 2>/dev/null)" in
+    *'"login_item":"enabled"'*) say "Start when you log in now starts latch from $installed" ;;
+    *) say "could not turn Start when you log in on again for $installed; turn it on in Latch's window" ;;
+  esac
 fi
 
 # On a first install at a terminal, `latch setup` takes it from here,

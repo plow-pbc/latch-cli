@@ -705,15 +705,16 @@ class MacAppFolder(unittest.TestCase):
                 self.assertEqual([path.name for path in applications.iterdir()], ["Plow Latch.app"])
 
     def test_a_login_item_on_for_the_copy_that_goes_is_turned_on_again_for_the_new_one(self):
-        # macOS keeps it for the copy it was turned on in.
+        # macOS keeps it for the copy it was turned on in. Turning it on runs
+        # it once, so it comes after the host is started again.
         for login_item, again in [("enabled", True), ("not_registered", False),
                                   ("requires_approval", False)]:
             with self.subTest(login_item=login_item):
                 result, calls, home, applications = self.install(own="0.1.0 (1)", host="managed",
                                                                  login_item=login_item)
                 self.assert_installed_in(applications, home, result)
-                self.assertEqual(calls, ["0.1.0 (2) stop"] + (["0.1.0 (2) login-item --again"] if again else [])
-                                 + ["0.1.0 (2) serve -d --again"])
+                self.assertEqual(calls, ["0.1.0 (2) stop", "0.1.0 (2) serve -d --again"]
+                                 + (["0.1.0 (2) login-item --again"] if again else []))
                 said = f"Start when you log in now starts latch from {applications}/Plow Latch.app"
                 self.assertEqual(said in result.stdout, again, result.stdout)
 
