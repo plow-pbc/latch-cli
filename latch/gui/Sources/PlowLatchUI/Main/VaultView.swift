@@ -8,37 +8,24 @@ struct VaultView: View {
     @Environment(ScreenActions.self) private var actions: ScreenActions?
 
     var body: some View {
-        VStack(spacing: 0) {
-            // The page's own buttons, above it: the window's toolbar is the same on
-            // every screen.
-            HStack {
-                Spacer()
-                Button("New Item", systemImage: "plus", action: newItem)
-                    .help("Add a login, card, identity or note")
-                Button("Import…", systemImage: "square.and.arrow.down", action: chooseImport)
-                    .help("Import another password manager's export")
-            }
-            .disabled(!canChange)
-            .padding(.horizontal, 20)
-            .padding(.top, 10)
-            Group {
-                if let host = app.host {
-                    if !host.isThisMac, host.online == false {
-                        ContentUnavailableView {
-                            Label("\(host.name) is offline", systemImage: "wifi.slash")
-                        } description: {
-                            Text("Its vault is kept on \(host.name). Start Latch there to see and change it.")
-                        }
-                    } else {
-                        HostVault(host: host).id(host.id)
+        Group {
+            if let host = app.host {
+                if !host.isThisMac, host.online == false {
+                    ContentUnavailableView {
+                        Label("\(host.name) is offline", systemImage: "wifi.slash")
+                    } description: {
+                        Text("Its vault is kept on \(host.name). Start Latch there to see and change it.")
                     }
                 } else {
-                    ContentUnavailableView("No host", systemImage: "lock.rectangle.stack",
-                                           description: Text("A vault is kept on each host. Pick one in the sidebar."))
+                    HostVault(host: host).id(host.id)
                 }
+            } else {
+                ContentUnavailableView("No host", systemImage: "lock.rectangle.stack",
+                                       description: Text("A vault is kept on each host. Pick one in the sidebar."))
             }
         }
-        // File › New Item… and Import…, while this host's vault can change.
+        // New Item and Import…, in the bar and the File menu, while this
+        // host's vault can change.
         .onChange(of: canChange, initial: true) { _, canChange in publish(canChange) }
     }
 

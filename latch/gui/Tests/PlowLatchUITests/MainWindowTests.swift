@@ -171,6 +171,53 @@ struct MainWindowTests {
         await waitUntil { app.vaultShows["studio"]?["v1"] != nil }
     }
 
+    // At the window's narrowest, beside Vault's buttons, the bar's search
+    // field still has room for its prompt and what's typed.
+    @Test func theSearchFieldIsUsableAtTheNarrowest() async throws {
+        let app = try app(VaultClient())
+        app.place = .host(.vault)
+        app.inspecting.remove(.vault)
+        let controller = open(app)
+        defer { controller.close() }
+        let window = try #require(controller.window)
+        window.setFrame(CGRect(x: -4000, y: -4000, width: 100, height: 600), display: true)
+        let frame = try #require(window.contentView?.superview)
+        let field = try #require(searchFields(in: frame).first)
+        await waitUntil { buttons(in: frame).contains { $0.accessibilityLabel() == "Import…" } }
+        window.layoutIfNeeded()
+        #expect(field.frame.width >= 120, "\(field.frame.width)")
+        let importButton = try #require(buttons(in: frame).first { $0.accessibilityLabel() == "Import…" })
+        #expect(importButton.convert(importButton.bounds, to: nil).maxX <= field.convert(field.bounds, to: nil).minX)
+    }
+
+    // Vault's New Item and Import… sit in the bar, enabled once its vault
+    // is read; no other screen has buttons there.
+    @Test func theBarHoldsTheScreensOwnButtons() async throws {
+        let gate = Gate()
+        let client = VaultClient()
+        client.listGate = gate
+        let app = try app(client)
+        app.place = .host(.home)
+        let controller = open(app)
+        defer { controller.close() }
+        let frame = try #require(controller.window?.contentView?.superview)
+        func bar() -> [NSButton] { buttons(in: frame).filter { ["New Item", "Import…"].contains($0.accessibilityLabel() ?? "") && !$0.isHiddenOrHasHiddenAncestor } }
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(bar().isEmpty)
+        app.place = .host(.vault)
+        await waitUntil { bar().count == 2 }
+        #expect(bar().allSatisfy { !$0.isEnabled })
+        gate.open()
+        await waitUntil { bar().allSatisfy(\.isEnabled) }
+        for place in [Place.host(.activity), .account(.agents)] {
+            app.place = place
+            await waitUntil { bar().isEmpty }
+        }
+        // Back to a vault already read: enabled as it shows.
+        app.place = .host(.vault)
+        await waitUntil { bar().count == 2 && bar().allSatisfy(\.isEnabled) }
+    }
+
     // The place, host and inspectors are the window's to keep: a new window
     // on the same defaults comes back to them.
     @Test func aNewWindowComesBackWhereTheLastWasLeft() async throws {
@@ -356,4 +403,9 @@ extension MainWindowTests {
 @MainActor
 private func searchFields(in view: NSView) -> [NSSearchField] {
     (view as? NSSearchField).map { [$0] } ?? view.subviews.flatMap(searchFields)
+}
+
+@MainActor
+func buttons(in view: NSView) -> [NSButton] {
+    (view as? NSButton).map { [$0] } ?? view.subviews.flatMap(buttons)
 }

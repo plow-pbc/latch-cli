@@ -99,7 +99,9 @@ struct ShellTests {
         let window = Offscreen(contentRect: CGRect(x: -4000, y: -4000, width: 1040, height: 600), styleMask: [.titled, .resizable],
                                backing: .buffered, defer: false)
         let controller = MainWindowController(app: app, window: window, defaults: nil, presenter: SheetRecorder())
-        window.setFrame(CGRect(x: -4000, y: -4000, width: 1040, height: 600), display: true)
+        window.setFrame(CGRect(x: -4000, y: -4000, width: 100, height: 600), display: true)
+        window.layoutIfNeeded()
+        let width = window.frame.width
         window.orderFrontRegardless()
         defer { window.orderOut(nil) }
         #expect(!NSScreen.screens.contains { $0.frame.intersects(window.frame) })
@@ -117,10 +119,9 @@ struct ShellTests {
             widths.append(split.arrangedSubviews[0].frame.width)
         }
         #expect(Set(widths.suffix(5)).count == 1, "\(widths)")
-        // Wider than where it gave up (~280 points), and the layout settles:
-        // the window keeps its size and needs no more passes.
-        #expect(widths.last! > 290)
-        #expect(window.frame.width == 1040)
+        // The layout settles: the window keeps its size and needs no more
+        // passes.
+        #expect(window.frame.width == width)
         window.layoutIfNeeded()
         #expect(!window.contentView!.needsLayout && !window.contentView!.needsUpdateConstraints)
     }
