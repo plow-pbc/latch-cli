@@ -198,7 +198,7 @@ struct ActivityTableTests {
         defer { close(window, feed) }
         await waitUntil { feed.caughtUp && controller.shown.records == 500 }
         let studio = try #require(app.host)
-        let picked = controller.rows[10]
+        let picked = try #require(controller.rows.dropFirst(10).first)
         controller.table.selectRowIndexes([10], byExtendingSelection: false)
         #expect(app.selectedRecord == OnHost(host: studio.name, id: picked.id))
         client.add(600)

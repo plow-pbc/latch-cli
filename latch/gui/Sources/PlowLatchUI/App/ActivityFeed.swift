@@ -1,5 +1,6 @@
 import Observation
 import SwiftUI
+import Synchronization
 
 /// One host's audit as `latch audit --follow` streams it: the newest 500
 /// records, then each record as it's written, kept with no limit, so a
@@ -95,7 +96,6 @@ final class ActivityFeed {
         watchers = 0
         task?.cancel()
         task = nil
-        dropPending()
         running = false
     }
 
@@ -106,15 +106,13 @@ final class ActivityFeed {
         defer { if !Task.isCancelled { running = false } }
         var wait = firstRetry
         while !Task.isCancelled {
-            applied = .now
             do {
-                for try await line in client.auditFollow(host: host, after: cursor, last: cursor == nil ? Self.openingPage : nil) {
-                    receive(line)
+                let lines = client.auditFollow(host: host, after: cursor, last: cursor == nil ? Self.openingPage : nil)
+                for try await batch in LineBatches.of(lines, every: Self.batchInterval) {
+                    apply(batch)
                     wait = firstRetry
                 }
-                flushPending()
             } catch let failure as LatchError {
-                flushPending()
                 if failure.code == "cursor_expired" {
                     // Starts again from the newest records.
                     cursor = nil
@@ -129,50 +127,12 @@ final class ActivityFeed {
                 caughtUp = false
                 if Self.final.contains(failure.code ?? "") { return }
             } catch {
-                dropPending()
                 return
             }
             guard !Task.isCancelled else { return }
             try? await Task.sleep(for: wait)
             wait = min(wait * 2, .seconds(60))
         }
-    }
-
-    /// Lines received since the records last changed, held until
-    /// `batchInterval` has passed since then (or the stream has caught up:
-    /// the opening page is all there), then applied together.
-    @ObservationIgnored private var pendingLines: [AuditLine] = []
-    @ObservationIgnored private var applied = ContinuousClock.now
-    @ObservationIgnored private var flushing: Task<Void, Never>?
-
-    private func receive(_ line: AuditLine) {
-        pendingLines.append(line)
-        if case .caughtUp = line { return flushPending() }
-        let due = applied + Self.batchInterval
-        if ContinuousClock.now >= due { return flushPending() }
-        // A later line may never come: those held go in on time.
-        guard flushing == nil else { return }
-        flushing = Task { [weak self] in
-            try? await Task.sleep(until: due)
-            guard !Task.isCancelled else { return }
-            self?.flushPending()
-        }
-    }
-
-    private func flushPending() {
-        flushing?.cancel()
-        flushing = nil
-        guard !pendingLines.isEmpty else { return }
-        let lines = pendingLines
-        pendingLines = []
-        apply(lines)
-        applied = .now
-    }
-
-    private func dropPending() {
-        flushing?.cancel()
-        flushing = nil
-        pendingLines = []
     }
 
     /// Errors that waiting won't fix; `no_host_here` until this Mac starts
@@ -250,6 +210,76 @@ final class ActivityFeed {
             if let line = try? LatchJSON.decoder.decode(AuditLine.self, from: Data(line.utf8)) { apply(line) }
         }
         self.error = error
+    }
+}
+
+/// A follow's lines gathered off the main actor and handed over in
+/// batches, so a busy main thread takes one hop a batch rather than one a
+/// line: a batch goes once `interval` has passed since the last (the first
+/// counting from the start), at once when the stream has caught up, and
+/// before the stream's end or error. Stopping the iteration stops the lines.
+nonisolated final class LineBatches: Sendable {
+    private struct Held {
+        var lines: [AuditLine] = []
+        var sent = ContinuousClock.now
+        /// Sends lines held early when no later line comes in time.
+        var timer: Task<Void, Never>?
+    }
+    private let held = Mutex(Held())
+    private let interval: Duration
+    private let out: AsyncThrowingStream<[AuditLine], Error>.Continuation
+
+    private init(interval: Duration, out: AsyncThrowingStream<[AuditLine], Error>.Continuation) {
+        self.interval = interval
+        self.out = out
+    }
+
+    static func of(_ lines: AsyncThrowingStream<AuditLine, Error>, every interval: Duration)
+        -> AsyncThrowingStream<[AuditLine], Error> {
+        let (batches, out) = AsyncThrowingStream<[AuditLine], Error>.makeStream()
+        let batcher = LineBatches(interval: interval, out: out)
+        let reading = Task {
+            do {
+                for try await line in lines { batcher.receive(line) }
+                batcher.finish(throwing: nil)
+            } catch {
+                batcher.finish(throwing: error)
+            }
+        }
+        out.onTermination = { _ in reading.cancel() }
+        return batches
+    }
+
+    private func receive(_ line: AuditLine) {
+        held.withLock { held in
+            held.lines.append(line)
+            let due = held.sent + interval
+            if case .caughtUp = line { return send(&held) }
+            if ContinuousClock.now >= due { return send(&held) }
+            guard held.timer == nil else { return }
+            held.timer = Task { [self] in
+                try? await Task.sleep(until: due)
+                self.held.withLock { held in
+                    // Cancelled under the lock by a send that went first.
+                    guard !Task.isCancelled else { return }
+                    send(&held)
+                }
+            }
+        }
+    }
+
+    private func send(_ held: inout Held) {
+        held.timer?.cancel()
+        held.timer = nil
+        guard !held.lines.isEmpty else { return }
+        out.yield(held.lines)
+        held.lines = []
+        held.sent = .now
+    }
+
+    private func finish(throwing error: Error?) {
+        held.withLock { send(&$0) }
+        out.finish(throwing: error)
     }
 }
 

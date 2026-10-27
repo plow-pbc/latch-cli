@@ -66,6 +66,24 @@ struct ActivityTests {
         #expect(feed.records.contains { $0.gate?.source == "defaults" })
         feed.stop()
     }
+
+    /// The lines are gathered off the main actor: a busy main thread takes
+    /// the opening page in a turn or two, not one turn a line.
+    @Test func aBusyMainThreadTakesTheOpeningPageAtOnce() async throws {
+        let feed = ActivityFeed(client: HostLog(records: 2000), host: nil)
+        feed.start()
+        defer { feed.end() }
+        var turns = 0
+        while !feed.caughtUp, turns < 1000 {
+            // Busy for a moment each turn, the way other work on the main
+            // thread is.
+            usleep(1000)
+            turns += 1
+            await Task.yield()
+        }
+        #expect(feed.records.count == ActivityFeed.openingPage)
+        #expect(turns < 50, "\(turns) turns")
+    }
 }
 
 /// Every stream the app reads opens with `hello` (and a newer latch may add
