@@ -181,6 +181,8 @@ final class AccountClient: LatchClient, @unchecked Sendable {
     private(set) var loggedOut = false
     /// Whether Plow takes the Mac out of the account at logout.
     var plowRemoves = false
+    /// What `latch logout` answers instead, when set.
+    var logoutAnswer: String?
 
     func localStatus() async throws -> LocalStatus { try Fixtures.decode(loggedOut ? Fixtures.loggedOut : Fixtures.serving) }
     func accountStatus() async throws -> AccountStatus { try Fixtures.decode(Fixtures.studioHosts) }
@@ -204,6 +206,7 @@ final class AccountClient: LatchClient, @unchecked Sendable {
     }
     func logout() async throws -> LogoutResult {
         loggedOut = true
+        if let logoutAnswer { return try Fixtures.decode(logoutAnswer) }
         if plowRemoves { return try Fixtures.decode(#"{"device":{"name":"studio","removed":true},"purged":false,"stopped":true}"#) }
         return try Fixtures.decode(#"{"device":{"name":"studio","removed":false,"error":{"code":"plow_unreachable","message":"could not reach Plow"},"next":"`latch devices remove studio` on another of your machines"},"purged":false,"stopped":true}"#)
     }
@@ -219,6 +222,17 @@ struct AccountTests {
         #expect(app.onboarding == nil)
         app.acknowledgeLogOutWarning()
         #expect(app.onboarding != nil)
+    }
+
+    /// A state folder deleted by hand: logout found its login in the
+    /// Keychain, but not the machine's name, and Plow couldn't be told.
+    @Test func aLogoutWithoutTheMachinesNameStillSaysPlowWasntTold() async throws {
+        let client = AccountClient()
+        client.logoutAnswer = #"{"removed":["key","plow-token"],"from":"keychain","stopped":false,"purged":false,"device":{"name":null,"removed":false,"error":{"code":"plow_unreachable","message":"could not reach Plow"},"next":"`latch devices` on another of your machines lists it, and `latch devices remove NAME` takes it out"},"state_dir":"/s"}"#
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
+        app.stage(status: try Fixtures.decode(Fixtures.serving))
+        try await app.logOut()
+        #expect(app.logOutWarning == "This Mac is logged out, but Plow couldn't take it out of your account. It may still be listed until Plow can be reached.")
     }
 
     /// The status stream said "logged out" while the logout still ran.
