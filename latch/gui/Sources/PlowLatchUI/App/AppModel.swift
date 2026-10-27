@@ -187,28 +187,18 @@ final class AppModel {
     private(set) var summaries: [String: HostSummary] = [:]
 
     /// Reads a host's summary: this Mac's from its own state folder,
-    /// another host's with `--host`. One read at a time (a remote read in
-    /// parallel is no faster), each shown as it answers; only what isn't
-    /// held yet unless `refresh`, and the vault only when `vault`. Another
-    /// host Plow counts offline isn't asked; this Mac always is.
+    /// another host's with `--host`. Its rules and its vault side by side
+    /// (each a read over latch's connection), each shown as it answers;
+    /// only what isn't held yet unless `refresh`, and the vault only when
+    /// `vault`. Another host Plow counts offline isn't asked; this Mac
+    /// always is.
     private func readSummary(of host: HostEntry, vault: Bool, refresh: Bool) async {
         guard host.isThisMac || host.online != false else { return }
-        // Side by side: each is a read over latch's connection.
-        async let rules: Void = readSummaryRules(of: host, refresh: refresh)
-        async let items: Void = vault ? readSummaryVault(of: host, refresh: refresh) : ()
+        let readRules = refresh || !Self.held(summaries[host.name]?.rules)
+        let readVault = vault && (refresh || !Self.held(summaries[host.name]?.vault))
+        async let rules: Void = readRules ? refreshRules(on: host) : ()
+        async let items: Void = readVault ? refreshVault(on: host) : ()
         _ = await (rules, items)
-    }
-
-    private func readSummaryRules(of host: HostEntry, refresh: Bool) async {
-        guard refresh || !Self.held(summaries[host.name]?.rules),
-              let rules = await Self.result({ try await self.client.rulesShow(host: host.isThisMac ? nil : host.name) }) else { return }
-        summaries[host.name, default: HostSummary()].rules = rules
-    }
-
-    private func readSummaryVault(of host: HostEntry, refresh: Bool) async {
-        guard refresh || !Self.held(summaries[host.name]?.vault),
-              let items = await Self.result({ try await self.client.vaultList(host: host.isThisMac ? nil : host.name) }) else { return }
-        summaries[host.name, default: HostSummary()].vault = items
     }
 
     /// A host's plugins, each with whether it's on: this Mac's from its own

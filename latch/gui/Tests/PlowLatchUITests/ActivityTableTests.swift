@@ -212,6 +212,55 @@ struct ActivityTableTests {
         #expect(app.inspectedRecord(on: studio)?.id == picked.id)
     }
 
+    @Test func aSearchChangedAsRecordsArriveRedrawsEveryRow() async throws {
+        let client = HostLog(records: 0)
+        let app = try app(client)
+        let (controller, window, feed) = open(app)
+        defer { close(window, feed) }
+        // Room for the rows, so their cells are made and kept.
+        window.setContentSize(CGSize(width: 900, height: 600))
+        await waitUntil { feed.caughtUp }
+        func line(_ n: Int, _ command: String) -> AuditLine {
+            let text = #"{"type":"record","cursor":"\#(HostLog.id(n))","record":{"id":"\#(HostLog.id(n))","time":"\#(HostLog.time(n).formatted(.iso8601))","agent":null,"caller":"k","caller_name":"laptop","decision":"allow","outcome":"ok","details":null,"op":"exec","command":"\#(command) \#(n)"}}"#
+            return try! LatchJSON.decoder.decode(AuditLine.self, from: Data(text.utf8))
+        }
+        app.activitySearch = "keep"
+        feed.apply([line(1, "keep show"), line(2, "keep"), line(3, "show"), line(4, "keep show")])
+        await waitUntil { controller.rows.map(\.id) == [4, 2, 1].map(HostLog.id) }
+        controller.view.layoutSubtreeIfNeeded()
+        // At once: two arrive on top, and the search keeps 4 and 1 but swaps 2 for 3.
+        feed.apply([line(5, "show"), line(6, "show")])
+        app.activitySearch = "show"
+        await waitUntil { controller.rows.map(\.id) == [6, 5, 4, 3, 1].map(HostLog.id) }
+        controller.view.layoutSubtreeIfNeeded()
+        // The cells on screen, not ones made afresh for the question.
+        let request = controller.table.column(withIdentifier: .init("request"))
+        let shown = (0..<5).map { row in
+            (controller.table.view(atColumn: request, row: row, makeIfNecessary: false) as? NSTableCellView)?.textField?.stringValue ?? ""
+        }
+        #expect(shown.map { $0.split(separator: " ").last.map(String.init) } == ["6", "5", "4", "3", "1"], "\(shown)")
+    }
+
+    @Test func aNarrowerFilterKeepsTheSelectedRecordAndItsInspector() async throws {
+        let client = HostLog(records: 600)
+        let app = try app(client)
+        let (controller, window, feed) = open(app)
+        defer { close(window, feed) }
+        window.setContentSize(CGSize(width: 900, height: 600))
+        await waitUntil { feed.caughtUp && controller.shown.records == 500 }
+        let studio = try #require(app.host)
+        // A refused record far enough down that its row is past the end of the refused rows.
+        let row = try #require(controller.rows.indices.last { controller.rows[$0].decision != "allow" })
+        let picked = controller.rows[row]
+        controller.table.selectRowIndexes([row], byExtendingSelection: false)
+        app.activityFilter = .refused
+        await waitUntil { controller.rows.allSatisfy { $0.decision != "allow" } }
+        #expect(controller.rows.count <= row)
+        #expect(app.selectedRecord == OnHost(host: studio.name, id: picked.id))
+        #expect(app.inspectedRecord(on: studio)?.id == picked.id)
+        #expect(controller.table.selectedRow == controller.rows.firstIndex { $0.id == picked.id })
+    }
+
     @Test func afterADropItPicksUpEveryRecordMissedOnce() async throws {
         let client = HostLog(records: 1000)
         let app = try app(client)

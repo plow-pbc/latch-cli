@@ -177,7 +177,8 @@ final class ActivityController: NSViewController, NSTableViewDataSource, NSTable
         // Records arrived on top of those shown: those shown stay where they
         // are on screen, unless the top is in view.
         let added = new.count - old.count
-        if sameHost, added > 0, let first = old.first, new[added].id == first.id, new.last?.id == old.last?.id {
+        // Only rows above every row shown, in their order: any other change reloads.
+        if sameHost, added > 0, !old.isEmpty, new.dropFirst(added).map(\.id) == old.map(\.id) {
             let clip = table.enclosingScrollView?.contentView
             let atTop = (clip?.bounds.minY ?? 0) <= table.rect(ofRow: 0).minY + 1
             selecting = true
@@ -189,7 +190,11 @@ final class ActivityController: NSViewController, NSTableViewDataSource, NSTable
                 table.enclosingScrollView?.reflectScrolledClipView(clip)
             }
         } else if new.map(\.id) != old.map(\.id) {
+            // A row index past the new rows loses AppKit's selection; the
+            // record selected is still the person's, picked again below.
+            selecting = true
             table.reloadData()
+            selecting = false
             // Another order, filter or host: the selected record in view.
             if let selected, let row = new.firstIndex(where: { $0.id == selected }) {
                 select(row)
