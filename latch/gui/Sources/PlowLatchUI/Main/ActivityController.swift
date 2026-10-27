@@ -56,7 +56,7 @@ final class ActivityController: NSViewController, NSTableViewDataSource, NSTable
         var widths: (min: CGFloat, ideal: CGFloat, max: CGFloat) {
             switch self {
             case .time: (95, 100, 130)
-            case .status: (140, 210, 280)
+            case .status: (140, 180, 280)
             case .request: (160, 260, 10_000)
             case .caller: (110, 140, 240)
             }
@@ -68,8 +68,9 @@ final class ActivityController: NSViewController, NSTableViewDataSource, NSTable
             let item = NSTableColumn(identifier: .init(column.rawValue))
             item.title = column.title
             (item.minWidth, item.width, item.maxWidth) = column.widths
-            // Only Request takes up a change in the table's width.
-            item.resizingMask = column == .request ? [.autoresizingMask, .userResizingMask] : .userResizingMask
+            // A change in the table's width is shared out by all but Time, so the columns fit the pane (down to
+            // their minimums) before the table scrolls sideways.
+            item.resizingMask = column == .time ? .userResizingMask : [.autoresizingMask, .userResizingMask]
             item.sortDescriptorPrototype = NSSortDescriptor(key: column.rawValue, ascending: column != .time)
             table.addTableColumn(item)
         }
