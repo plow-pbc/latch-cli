@@ -107,6 +107,24 @@ struct ActivityTests {
         #expect(try await batches.due() == false)
     }
 
+    /// A record that came after catching up but before the take doesn't
+    /// make the next batch due sooner than an interval after the take.
+    @Test func theNextBatchWaitsAnIntervalFromTheTake() async throws {
+        let (lines, latch) = AsyncThrowingStream<AuditLine, Error>.makeStream()
+        let batches = LineBatches(lines, every: .milliseconds(100))
+        latch.yield(HostLog.line(0))
+        latch.yield(.caughtUp(cursor: HostLog.id(0), hasOlder: false))
+        #expect(try await batches.due())
+        latch.yield(HostLog.line(1))
+        try await Task.sleep(for: .milliseconds(30))
+        let took = ContinuousClock.now
+        #expect(batches.take().first == HostLog.line(0))
+        latch.yield(HostLog.line(2))
+        #expect(try await batches.due())
+        #expect(ContinuousClock.now - took >= .milliseconds(100))
+        #expect(batches.take() == [HostLog.line(2)])
+    }
+
     /// The feed already waiting when the main thread stalls: the line that
     /// woke it and those that came during the stall go in as one batch.
     @Test func aFeedWaitingWhenTheMainThreadStallsTakesWhatCameMeanwhileAsOneBatch() async throws {

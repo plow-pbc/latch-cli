@@ -289,6 +289,10 @@ nonisolated final class LineBatches: Sendable {
     func take() -> [AuditLine] {
         held.withLock { held in
             defer {
+                // A timer set before this take would make the next batch
+                // due too soon.
+                held.timer?.cancel()
+                held.timer = nil
                 held.lines = []
                 held.due = false
                 held.taken = .now
