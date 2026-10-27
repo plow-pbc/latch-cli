@@ -51,15 +51,19 @@ const HOLD_WITHIN: Duration = Duration::from_secs(30);
 pub struct Lifetime {
     /// Held by the `latch serve` that started it, until that one detaches.
     pub attached: AtomicBool,
+    /// Started by `latch serve -d`: nobody waits at a terminal, so it keeps
+    /// trying to reach a relay instead of giving up.
+    pub managed: bool,
     held: AtomicBool,
     /// Ends the host's serving loop.
     pub stop: Notify,
 }
 
 impl Lifetime {
-    pub fn new(attached: bool) -> Lifetime {
+    pub fn new(attached: bool, managed: bool) -> Lifetime {
         Lifetime {
             attached: AtomicBool::new(attached),
+            managed,
             held: AtomicBool::new(false),
             stop: Notify::new(),
         }

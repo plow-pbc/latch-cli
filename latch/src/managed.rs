@@ -45,7 +45,8 @@ use crate::transport;
 use crate::wire::{self, Request, Response};
 
 /// How long a starting host has to answer on its socket: past the relay's
-/// 15 seconds and the sandbox probe.
+/// first 15 seconds and the sandbox probe. One still waiting then for a
+/// relay, or for calls with its key, starts by itself once it can.
 const READY_WITHIN: Duration = Duration::from_secs(60);
 /// How long a stopping host has to let go of its state folder: its own
 /// shutdown is bounded well inside this.
@@ -237,9 +238,7 @@ async fn launch(
         "serve".into(),
         "--foreground".into(),
     ];
-    if attached {
-        argv.push("--attached".into());
-    }
+    argv.push(if attached { "--attached" } else { "--managed" }.into());
     argv.extend(given.into_iter().map(OsString::from));
 
     rotate_log(&dir)?;
@@ -256,7 +255,7 @@ async fn launch(
         // for a holder that has given up.
         Err(NotReady::Waiting(why)) if !attached => {
             return Err(not_ready(&format!(
-                ": it is {why}, and starts by itself once they end"
+                ": it is {why}, and starts by itself once that ends"
             )));
         }
         Err(NotReady::Waiting(why)) => not_ready(&format!(

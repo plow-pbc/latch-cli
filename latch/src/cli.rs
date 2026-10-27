@@ -1174,6 +1174,16 @@ pub struct ServeArgs {
     #[arg(long, hide = true, requires = "foreground")]
     pub attached: bool,
 
+    /// Internal: the host `latch serve -d` started, which keeps trying to
+    /// reach a relay rather than give up
+    #[arg(
+        long,
+        hide = true,
+        requires = "foreground",
+        conflicts_with = "attached"
+    )]
+    pub managed: bool,
+
     /// Run every browser session with no window, in Chrome's headless mode:
     /// for a test host nobody watches. Sites block headless browsers far
     /// more often, so a host people use runs them headed (the default)

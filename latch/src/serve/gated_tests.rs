@@ -117,7 +117,7 @@ pub(super) async fn start_with(
             AuditLog::open(state.join(crate::audit::FILE)).unwrap(),
         )),
         dashboard: Dashboard::new("test-host"),
-        lifetime: super::Lifetime::new(false),
+        lifetime: super::Lifetime::new(false, false),
         workers: WorkerSetup {
             home: home.clone(),
             areas: vec![],
