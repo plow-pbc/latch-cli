@@ -3161,6 +3161,26 @@ fn first_login_accepts_the_installers_plugin_directory() {
     assert!(host.join("latch.json").is_file());
 }
 
+/// `latch stop` and `latch audit rotate-key` on a folder no login has
+/// marked yet leave their lock files there; the first login still takes it.
+#[test]
+fn lock_files_left_before_the_first_login_do_not_stop_it() {
+    let plow = LivePlow::start();
+    for (args, lock) in [
+        (&["stop"][..], "launch.lock"),
+        (&["audit", "rotate-key"], "audit.lock"),
+    ] {
+        let dir = test_dir();
+        let host = dir.path().join("host");
+        fs::create_dir_all(host.join("plugins")).unwrap();
+        latch(&host, args, &[]);
+        assert!(host.join(lock).is_file(), "{args:?}");
+        assert!(!host.join("latch.json").exists(), "{args:?}");
+        owner_host_on(&plow, dir.path());
+        assert!(host.join("latch.json").is_file(), "{args:?}");
+    }
+}
+
 /// A first install runs `prune-helpers` on a folder that holds only the
 /// plugins it just put there: it leaves the folder as it was, so the first
 /// login still takes it.
