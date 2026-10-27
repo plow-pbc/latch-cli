@@ -6220,6 +6220,45 @@ fn a_signed_latch_keeps_every_secret_in_the_keychain_and_none_in_files() {
     assert!(!host.exists() && !owner.exists());
 }
 
+#[test]
+#[ignore = "needs a latch signed for the Keychain in LATCH_TEST_BIN; the keychain workflow runs it"]
+fn a_signed_latch_logs_out_a_state_folder_deleted_by_hand() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let vault = latch(&host, &["vault", "list"], &[]);
+    assert_eq!(vault.status.code(), Some(0), "{vault:?}");
+    fs::remove_dir_all(&host).unwrap();
+
+    // Its config went with the folder, so logout learns Plow's URL as a
+    // login would, and still takes the machine out and deletes its login.
+    let env = [("PLOW_API_URL", Path::new(&plow.url))];
+    let logout = |args: &[&str]| -> Value {
+        let output = latch(&host, &[&["logout"], args].concat(), &env);
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        serde_json::from_slice(&output.stdout).unwrap()
+    };
+    let out = logout(&[]);
+    assert_eq!(out["from"], "keychain", "{out}");
+    assert_eq!(out["removed"], json!(["key", "plow-token"]), "{out}");
+    assert_eq!(
+        out["device"],
+        json!({"name": "host", "removed": true}),
+        "{out}"
+    );
+    assert!(plow.state.lock().unwrap().peers.is_empty());
+    assert!(!host.exists());
+    // --purge finds the vault and audit keys the folder left.
+    let purged = logout(&["--purge"]);
+    assert_eq!(
+        purged["removed"],
+        json!(["vault.key", "audit.keys"]),
+        "{purged}"
+    );
+    assert_eq!(purged["device"], Value::Null, "{purged}");
+    assert_eq!(logout(&["--purge"])["removed"], json!([]));
+}
+
 /// `latch logout ARGS` on `state`, which must work: what it printed.
 fn logout(state: &Path, args: &[&str]) -> Value {
     let output = latch(state, &[&["logout"], args].concat(), &[]);
@@ -6308,6 +6347,13 @@ fn logout_stops_the_host_and_deletes_only_the_login_so_the_vault_and_audit_still
         (&json!(true), &json!(true))
     );
     assert!(!host.exists());
+    // Once the folder is gone, logout finds nothing to delete.
+    let again = logout(&host, &["--purge"]);
+    assert_eq!(
+        (&again["removed"], &again["device"]),
+        (&json!([]), &Value::Null),
+        "{again}"
+    );
 }
 
 #[test]
