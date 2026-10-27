@@ -44,7 +44,7 @@ starts no setup, and ends by saying to run `latch login` (see
 
 | What | Where |
 |---|---|
-| The `latch` binary | `~/.local/bin/latch`. If that folder isn't on your `PATH`, the installer says so; add it. On macOS it links into `~/Applications/Plow Latch.app`. |
+| The `latch` binary | `~/.local/bin/latch`. If that folder isn't on your `PATH`, the installer says so; add it. On macOS it links into `/Applications/Plow Latch.app`, or `~/Applications/Plow Latch.app` when you can't write `/Applications`. |
 | Your machine's state: its key, Plow login, config, audit log | `~/.latch` (made by the installer, filled in by `latch login`) |
 | gog, the Google CLI a host runs for `latch google` | `~/.latch/plugins/gog/<version>/` |
 | Chrome for Testing, the browser a host runs for `latch browser` (macOS, Linux arm64/x86_64; about 200 MB), unless `--no-browser` | `~/.latch/plugins/cft/<version>/` |

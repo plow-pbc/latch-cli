@@ -32,6 +32,8 @@ mod keyart;
 mod lifecycle;
 mod log;
 mod login;
+#[cfg(target_os = "macos")]
+mod login_item;
 mod logo;
 mod logout;
 mod logs;
@@ -455,6 +457,15 @@ async fn run(
             Ok(Printed(String::new()))
         }
         Command::PruneHelpers => json(pretty, plugins::prune_alone(&state.path)?),
+        #[cfg(target_os = "macos")]
+        Command::LoginItem { again } => json(
+            pretty,
+            if again {
+                login_item::again()?
+            } else {
+                login_item::status()?
+            },
+        ),
         #[cfg(target_os = "macos")]
         Command::AccessCheck { name } => {
             let connector = plugins::Connector::named(&name)?;

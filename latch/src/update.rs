@@ -208,8 +208,8 @@ pub async fn run(state: &StateDir, args: UpdateArgs) -> Result<Value, Failure> {
 
 /// Where the installer puts latch. On Linux, the folder this latch runs
 /// from, so the update replaces it there and not in the installer's default
-/// folder. On macOS, none: the installer replaces the app in
-/// ~/Applications, which every link to latch leads into.
+/// folder. On macOS, none: the installer replaces the app, in
+/// /Applications or ~/Applications, which every link to latch leads into.
 fn bin_dir() -> Option<PathBuf> {
     if cfg!(target_os = "macos") {
         return None;
