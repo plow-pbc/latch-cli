@@ -151,7 +151,6 @@ struct GoogleSignIn: Equatable {
 /// window's title is the page's.
 struct ConnectionsView: View {
     @Environment(AppModel.self) private var app
-    @State private var removingDevice: DeviceList.Device?
 
     var body: some View {
         Form {
@@ -159,17 +158,6 @@ struct ConnectionsView: View {
             devicesSection
         }
         .formStyle(.grouped)
-        .sheet(isPresented: signingInBinding) {
-            GoogleSignInSheet()
-        }
-        .confirmationDialog("Remove “\(removingDevice?.name ?? "")” from your account?", isPresented: removingBinding,
-                            presenting: removingDevice) { device in
-            Button("Remove", role: .destructive) {
-                Task { await app.removeDevice(device.name) }
-            }
-        } message: { device in
-            Text("\(device.name) is logged out of Plow and can no longer send requests as you.")
-        }
     }
 
     private var googleSection: some View {
@@ -220,7 +208,7 @@ struct ConnectionsView: View {
                             Text(seen(device)).font(.callout).foregroundStyle(.secondary)
                         }
                         Spacer()
-                        Button("Remove…") { removingDevice = device }
+                        Button("Remove…") { app.ask(.removeDevice(device)) }
                             .disabled(thisMac)
                             .help(thisMac ? "Log out this Mac in Settings instead" : "Remove it from your account")
                     }
@@ -232,14 +220,6 @@ struct ConnectionsView: View {
         } footer: {
             Text("Logged-in devices can send requests as you but don't host.").foregroundStyle(.secondary)
         }
-    }
-
-    private var signingInBinding: Binding<Bool> {
-        Binding { app.googleSignIn != nil } set: { if !$0 { app.endGoogleSignIn() } }
-    }
-
-    private var removingBinding: Binding<Bool> {
-        Binding { removingDevice != nil } set: { if !$0 { removingDevice = nil } }
     }
 
     private func seen(_ device: DeviceList.Device) -> String {

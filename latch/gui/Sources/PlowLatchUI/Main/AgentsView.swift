@@ -5,17 +5,15 @@ import SwiftUI
 /// on that host. New Agent and Remove… are here too.
 struct AgentsView: View {
     @Environment(AppModel.self) private var app
-    @State private var removing: AgentsList.Agent?
     @State private var position = ScrollPosition()
 
     var body: some View {
-        @Bindable var app = app
         VStack(spacing: 0) {
             // The page's own button, above it: the window's toolbar is the same on
             // every page.
             HStack {
                 Spacer()
-                Button("New Agent", systemImage: "plus") { app.newAgent = NewAgent() }
+                Button("New Agent", systemImage: "plus") { app.sheet = .newAgent(NewAgent()) }
                     .help("Create a cloud agent or your own")
             }
             .padding(.horizontal, 20)
@@ -44,7 +42,7 @@ struct AgentsView: View {
                                 }
                             }
                             ForEach(agents) { agent in
-                                AgentSection(agent: agent, remove: { removing = agent })
+                                AgentSection(agent: agent, remove: { app.ask(.removeAgent(agent)) })
                             }
                         }
                         .formStyle(.grouped)
@@ -76,21 +74,8 @@ struct AgentsView: View {
                 }
             }
         }
-        .sheet(item: $app.newAgent) { NewAgentSheet(flow: $0) }
-        .confirmationDialog("Remove \(removing?.name ?? "")?", isPresented: removingBinding, presenting: removing) { agent in
-            Button("Remove", role: .destructive) { Task { await app.removeAgent(agent) } }
-        } message: { agent in
-            Text("Its credential stops working at once, its phone line is freed and its chats are closed."
-                 + (agent.kind == "cloud" ? "" : " The program you run for it keeps running until you stop it."))
-        }
-    }
-
-    private var removingBinding: Binding<Bool> {
-        Binding { removing != nil } set: { if !$0 { removing = nil } }
     }
 }
-
-extension NewAgent: Identifiable {}
 
 /// One agent: who it is, then a row for each host.
 private struct AgentSection: View {

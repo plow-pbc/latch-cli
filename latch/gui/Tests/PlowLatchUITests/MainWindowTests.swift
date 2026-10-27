@@ -31,7 +31,7 @@ struct MainWindowTests {
         let window = Offscreen(contentRect: CGRect(x: -4000, y: -4000, width: 1120, height: 700),
                                styleMask: [.titled, .closable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        let controller = MainWindowController(app: app, window: window, defaults: nil)
+        let controller = MainWindowController(app: app, window: window, defaults: nil, presenter: SheetRecorder())
         window.setFrameOrigin(CGPoint(x: -4000, y: -4000))
         window.orderFrontRegardless()
         return controller
@@ -180,7 +180,7 @@ struct MainWindowTests {
         let window = Offscreen(contentRect: CGRect(x: -4000, y: -4000, width: 1120, height: 700), styleMask: [.titled, .closable],
                                backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        let controller = MainWindowController(app: first, window: window, defaults: defaults)
+        let controller = MainWindowController(app: first, window: window, defaults: defaults, presenter: SheetRecorder())
         first.showHost("pi-kitchen")
         first.place = .host(.vault)
         first.inspecting.remove(.vault)
@@ -189,7 +189,7 @@ struct MainWindowTests {
 
         let second = try app(client)
         let again = MainWindowController(app: second, window: Offscreen(contentRect: .zero, styleMask: [.titled], backing: .buffered, defer: false),
-                                         defaults: defaults)
+                                         defaults: defaults, presenter: SheetRecorder())
         defer { again.close() }
         #expect(second.route == .host(.vault, second.hosts.first { $0.name == "pi-kitchen" }))
         #expect(second.inspecting == [.activity])
@@ -260,9 +260,9 @@ extension MainWindowTests {
         controller.window?.makeFirstResponder(nil)
         await waitUntil { MenuBridge.state(MenuBridge.newItem, in: controller.window).enabled }
         MenuBridge.send(MenuBridge.newItem, in: controller.window)
-        guard case let .editor(editor)? = app.vaultSheet else { Issue.record("no New Item: \(String(describing: app.vaultSheet))"); return }
+        guard case let .vaultItem(editor)? = app.sheet else { Issue.record("no New Item: \(String(describing: app.sheet))"); return }
         #expect(editor.host.name == "studio")
-        app.vaultSheet = nil
+        app.sheet = nil
     }
 
     // ⌘S saves the focused editor's draft only, and only while an edited

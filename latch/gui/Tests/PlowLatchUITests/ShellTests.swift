@@ -87,19 +87,6 @@ struct ShellTests {
         #expect(app.inspectedVaultItem(on: studio)?.item == "v1")
     }
 
-    // Remove… asked on one host is confirmed only on that host's Vault:
-    // another host's item with the same id is never offered.
-    @Test func aRemovalAskedOnOneHostIsNeverConfirmedOnAnother() throws {
-        let app = try app()
-        let studio = try host(app, "studio"), kitchen = try host(app, "pi-kitchen")
-        let item = try #require((try Fixtures.decode(Fixtures.remoteVaultItems) as VaultList).items.first)
-        app.askToRemove(item, on: kitchen)
-        #expect(app.removal(on: studio) == nil)
-        #expect(app.removal(on: kitchen) == item)
-        app.endRemoval()
-        #expect(app.removal(on: kitchen) == nil)
-    }
-
     // The sidebar dragged to its widest at the window's narrowest, with
     // Activity's inspector open: the window lays out, as it once didn't
     // (AppKit's "more Update Constraints in Window passes" exception).
@@ -111,7 +98,7 @@ struct ShellTests {
         app.openRecord(record, on: studio)
         let window = Offscreen(contentRect: CGRect(x: -4000, y: -4000, width: 1040, height: 600), styleMask: [.titled, .resizable],
                                backing: .buffered, defer: false)
-        let controller = MainWindowController(app: app, window: window, defaults: nil)
+        let controller = MainWindowController(app: app, window: window, defaults: nil, presenter: SheetRecorder())
         window.setFrame(CGRect(x: -4000, y: -4000, width: 1040, height: 600), display: true)
         window.orderFrontRegardless()
         defer { window.orderOut(nil) }

@@ -8,7 +8,7 @@ import SwiftUI
 /// `AppModel`. While it's open it runs what the model reads and follows
 /// for the window: this Mac's status, Plow's hosts, the reads of the place
 /// showing (cancelled when it changes) and the selected host's activity;
-/// closing it ends them.
+/// closing it ends them. It presents the model's sheets and questions.
 final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolbarDelegate, NSUserInterfaceValidations {
     /// The open main window; the app has at most one.
     private(set) static var shown: MainWindowController?
@@ -35,6 +35,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     private let barItem = NSSplitViewItemAccessoryViewController()
     private let inspectorShows = WindowInspector.Shown()
     private let inspectorItem: NSSplitViewItem
+    let sheets: WindowSheets
     /// Where the window keeps its place, host and inspectors; nil for one
     /// that keeps nothing (a still, a test).
     private let defaults: UserDefaults?
@@ -48,12 +49,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     private var closed = false
 
     /// `window` is the one to build in, if not a new one (a still's, off
-    /// every display).
-    init(app: AppModel, window: NSWindow? = nil, defaults: UserDefaults? = .standard) {
+    /// every display); `presenter` shows its sheets (a test's answers them).
+    init(app: AppModel, window: NSWindow? = nil, defaults: UserDefaults? = .standard, presenter: any SheetPresenting = AppKitSheets()) {
         self.app = app
         self.defaults = defaults
         split = MainSplitController(app: app)
         screens = ScreenController(app: app, autosave: defaults != nil && !app.still)
+        sheets = WindowSheets(app: app, presenter: presenter)
         let own = window == nil
         let window = window ?? NSWindow(contentRect: CGRect(x: 0, y: 0, width: 1120, height: 700),
                                         styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
@@ -162,6 +164,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         entering = nil
         following = nil
         app.endFeeds()
+        // What was over the window goes with it, unanswered.
+        if let window { sheets.end(over: window) }
+        app.sheet = nil
+        app.endGoogleSignIn()
     }
 
     func windowWillClose(_ notification: Notification) {
@@ -241,6 +247,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             defaults.set(app.chosenHost, forKey: Self.hostKey)
             defaults.set(app.inspecting.map(\.rawValue).sorted(), forKey: Self.inspectingKey)
         }
+        sheets.update(over: split)
         window.toolbar?.validateVisibleItems()
         MenuBridge.shared.setNeedsRefresh()
     }
@@ -506,7 +513,7 @@ struct Inspector: View {
             if let item = app.inspectedVaultItem(on: host) {
                 VaultItemInspector(item: item, show: app.vaultShow(of: item, on: host), hostName: host.name,
                                    edit: { Task { await app.beginVaultEdit(item, on: host) } },
-                                   remove: { app.askToRemove(item, on: host) })
+                                   remove: { app.ask(.removeVaultItem(item, on: host)) })
                     // Read only while it shows: a closed inspector, or one
                     // left behind another screen, stays built (AppKit keeps
                     // a collapsed item's view) but asks latch for nothing.
