@@ -418,10 +418,12 @@ class BinaryInstall(unittest.TestCase):
 
 
 def fake_latch(version, log, managed=True, stop_ok=True, start_ok=True, running=True,
-               attached=False, other_version=False, stop=None, prune="echo '{\"removed\":[]}'"):
+               attached=False, other_version=False, stop=None, prune="echo '{\"removed\":[]}'",
+               login_item="not_registered"):
     """A latch that says `version`, reports a host (managed or not, attached
-    or not, another version's or not) on `status --local`, and writes each
-    stop and start it does to `log`. `stop`, if given, is its whole stop;
+    or not, another version's or not) on `status --local` and its app's
+    login item as `login_item`, and writes each stop, start and login item
+    registered again to `log`. `stop`, if given, is its whole stop;
     `prune`, its whole `prune-helpers`."""
     blocked = '{"code":"other_version","message":"a host from another latch version"}'
     serve = '{"this_machine":{"hosting":{"running":%s,"ready":%s,"managed":%s,"attached":%s,"blocked":%s}}}' % (
@@ -438,6 +440,8 @@ case "$*" in
   *" stop") {stop} ;;
   *" prune-helpers") {prune} ;;
   *"serve -d --again") echo "{version} serve -d --again" >> "{log}"; {start} ;;
+  "login-item --again") echo "{version} login-item --again" >> "{log}"; echo '{{"login_item":"enabled"}}' ;;
+  "login-item") echo '{{"login_item":"{login_item}"}}' ;;
   *) exit 2 ;;
 esac
 """
@@ -604,12 +608,14 @@ class MacAppFolder(unittest.TestCase):
     this user can write there and no other user's copy is there, else
     ~/Applications; and this user's copy in the other folder goes."""
 
-    def install(self, shared="writable", own=None, host="none", cut_short=False):
+    def install(self, shared="writable", own=None, host="none", cut_short=False,
+                login_item="not_registered"):
         """Installs an app whose latch says 0.1.0 (2), with `own` the version
         of a copy in ~/Applications already, if any (`cut_short`: moved aside
         by a run cut short), and `host` a host on the state folder ("none",
-        "managed", or "other_version"). Returns the result, the stops and
-        starts, HOME and the stand-in /Applications."""
+        "managed", or "other_version"), and the login item as the new app's
+        latch reports it. Returns the result, the stops and starts, HOME and
+        the stand-in /Applications."""
         parent = ROOT / ".dev/tests"
         parent.mkdir(parents=True, exist_ok=True)
         directory = tempfile.TemporaryDirectory(dir=parent)
@@ -625,7 +631,7 @@ class MacAppFolder(unittest.TestCase):
         (state / "plugins/cft/1.0").mkdir(parents=True)
         (state / "plugins/cft/1.0/manifest.json").write_text(cft_pin)
         new = fake_latch("0.1.0 (2)", log, running=host != "none", managed=host == "managed",
-                         other_version=host == "other_version")
+                         other_version=host == "other_version", login_item=login_item)
         apps = [(setup / "Plow Latch.app", new)]
         if own:
             apps.append((home / "Applications/Plow Latch.app",
@@ -697,6 +703,19 @@ class MacAppFolder(unittest.TestCase):
                 self.assertEqual(list((home / "Applications").iterdir()), [])
                 self.assertIn(f"removed {home}/Applications/Plow Latch.app", result.stdout)
                 self.assertEqual([path.name for path in applications.iterdir()], ["Plow Latch.app"])
+
+    def test_a_login_item_on_for_the_copy_that_goes_is_turned_on_again_for_the_new_one(self):
+        # macOS keeps it for the copy it was turned on in.
+        for login_item, again in [("enabled", True), ("not_registered", False),
+                                  ("requires_approval", False)]:
+            with self.subTest(login_item=login_item):
+                result, calls, home, applications = self.install(own="0.1.0 (1)", host="managed",
+                                                                 login_item=login_item)
+                self.assert_installed_in(applications, home, result)
+                self.assertEqual(calls, ["0.1.0 (2) stop"] + (["0.1.0 (2) login-item --again"] if again else [])
+                                 + ["0.1.0 (2) serve -d --again"])
+                said = f"Start when you log in now starts latch from {applications}/Plow Latch.app"
+                self.assertEqual(said in result.stdout, again, result.stdout)
 
     def test_a_copy_a_run_cut_short_left_aside_in_the_users_folder_goes_too(self):
         result, _, home, applications = self.install(own="0.1.0 (1)", cut_short=True)

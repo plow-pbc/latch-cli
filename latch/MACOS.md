@@ -117,7 +117,9 @@ window with the same latch is a new app), and makes `~/.local/bin/latch` (or
 folder. Once the new copy is in place it removes this user's copy in the
 other folder, such as one an earlier latch put in `~/Applications`, so only
 one app has latch's bundle id; a link to latch that led into it, other than
-the one the installer makes, must be made again. It keeps that copy only
+the one the installer makes, must be made again. macOS keeps "Start when you
+log in" for the copy it was turned on in, so when it was on there, the new
+copy's latch turns it on again (`latch login-item --again`, internal). It keeps that copy only
 while a host from another latch version, which it could not stop, may run
 from it. `$LATCH_APPLICATIONS` names a folder to use in place of
 `/Applications`: the installer tests and dev installs use one, so they never
@@ -144,7 +146,8 @@ the link the installer checks is `~/.local/bin/latch`. The installer:
    the new one into its place, then removes the old one. If a move fails
    the old app goes back, still working;
 3. links `~/.local/bin/latch` into it, if the link is not there already,
-   and removes this user's copy in the other folder;
+   and removes this user's copy in the other folder, turning "Start when
+   you log in" on again for the new copy if it was on;
 4. installs what lives outside the bundle (below);
 5. starts a host that `serve -d` had started again, with what it was
    given. A host that ran in a terminal stays stopped, and the update says

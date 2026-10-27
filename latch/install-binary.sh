@@ -31,7 +31,8 @@
 # Full Disk Access, and ~/.local/bin/latch becomes a link to the latch
 # inside it. This user's copy in the other folder, from an earlier install,
 # is removed once the new one is in place, so only one app has latch's
-# bundle id. $LATCH_APPLICATIONS names a folder to use in place of
+# bundle id; "Start when you log in", if it was on for that copy, is turned
+# on again for the new one. $LATCH_APPLICATIONS names a folder to use in place of
 # /Applications (tests and dev installs, which never touch the real one).
 #
 # It also installs gog, the Google CLI a host runs for `latch google`: the
@@ -312,11 +313,23 @@ if [ -n "$app" ]; then
   fi
   # The copy in the other folder goes, with what a run cut short left
   # beside it, unless a host this latch could not stop may run from it.
+  # macOS keeps "Start when you log in" for the copy it was turned on in, so
+  # the new copy turns it on again once that one is gone.
   if [ -n "$other" ] && { [ -e "$other" ] || [ -e "$other.new" ] || [ -e "$other.old" ]; }; then
+    login_item=""
+    case "$("$link" login-item 2>/dev/null)" in
+      *'"login_item":"enabled"'*) login_item=1 ;;
+    esac
     if [ -n "$left_running" ]; then
       say "left $other in place, since a host from another latch version may run from it; remove it once that host is stopped"
     elif rm -rf "$other" "$other.new" "$other.old" 2>/dev/null; then
       say "removed $other; $installed replaces it (relink any link to latch other than $dest)"
+      if [ -n "$login_item" ]; then
+        case "$("$link" login-item --again 2>/dev/null)" in
+          *'"login_item":"enabled"'*) say "Start when you log in now starts latch from $installed" ;;
+          *) say "could not turn Start when you log in on again for $installed; turn it on in Latch's window" ;;
+        esac
+      fi
     else
       say "could not remove $other; remove it, so only one $name is left"
     fi
