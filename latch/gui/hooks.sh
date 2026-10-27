@@ -13,9 +13,10 @@
 #                               SPEC is "hosts=3,records=50,vault=100,agents=2"
 #                               (the defaults) plus "rate=N" new records a
 #                               second, "delay=MS" per read (and up to
-#                               "jitter=MS" more, at random) and
+#                               "jitter=MS" more, at random),
 #                               "connectors=MS" a plugin change or Google
-#                               sign-in takes, which then hold
+#                               sign-in takes, which then hold, and
+#                               "viewer=1" for this Mac viewing, not hosting
 #   hooks.sh send COMMAND [ARG] one hook (TestHooks.swift lists them)
 #   hooks.sh state              prints the flow's state as the app records it
 #   hooks.sh quit               quits it and deletes its preferences

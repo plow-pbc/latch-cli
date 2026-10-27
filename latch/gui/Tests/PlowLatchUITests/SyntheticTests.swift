@@ -18,6 +18,16 @@ struct SyntheticTests {
         #expect(SyntheticLatchClient.Spec("records=-1") == nil)
     }
 
+    // A viewer: this Mac logged in but not hosting, Plow listing the rest.
+    @Test func aViewerMacOffersToStartHosting() async throws {
+        let client = SyntheticLatchClient(try #require(.init("hosts=3,viewer=1")), stateDir: "/s")
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
+        await app.refreshStatus()
+        await app.refreshAccount()
+        #expect(app.viewerOnly)
+        #expect(app.hosts.map(\.name) == ["pi-kitchen", "sidecar"])
+    }
+
     @Test func eightHostsInEveryStateWithTheirRecordsVaultAndAgents() async throws {
         let client = SyntheticLatchClient(try #require(.init("hosts=8,records=10000,vault=1000,agents=5")), stateDir: "/s")
         let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)

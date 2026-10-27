@@ -29,6 +29,9 @@ nonisolated struct SyntheticLatchClient: LatchClient {
         /// Milliseconds a plugin change or a Google sign-in takes; with it,
         /// changes hold and Google has an account that works.
         var connectors = 0
+        /// 1: this Mac only views the hosts, not hosting (Plow lists the
+        /// others), so it offers to start hosting.
+        var viewer = 0
 
         init() {}
 
@@ -46,6 +49,7 @@ nonisolated struct SyntheticLatchClient: LatchClient {
                 case "delay": delay = value
                 case "jitter": jitter = value
                 case "connectors": connectors = value
+                case "viewer": viewer = value
                 default: return nil
                 }
             }
@@ -99,7 +103,10 @@ nonisolated struct SyntheticLatchClient: LatchClient {
     }
 
     func localStatus() async throws -> LocalStatus {
-        try await read(Fixtures.status(#"{"login":{"kind":"device"},"this_machine":{"name":"\#(hostNames[0])","key":"\#(key(hostNames[0]))","hosting":{"running":true,"ready":true,"configuring":false,"managed":true,"attached":false,"state":"serving","pid":4100,"blocked":null,"keep_awake":{"enabled":false,"held":false,"reason":"disabled"}}},"update":{"available":false,"build":null,"checked_at":null},"last_error":null,"state_dir":"\#(stateDir)","version":"0.1.0","protocol":2}"#, plugins: plugins))
+        let hosting = spec.viewer > 0
+            ? #""running":false,"ready":false,"configuring":false,"managed":false,"attached":false,"state":"stopped","pid":null"#
+            : #""running":true,"ready":true,"configuring":false,"managed":true,"attached":false,"state":"serving","pid":4100"#
+        return try await read(Fixtures.status(#"{"login":{"kind":"device"},"this_machine":{"name":"\#(hostNames[0])","key":"\#(key(hostNames[0]))","hosting":{\#(hosting),"blocked":null,"keep_awake":{"enabled":false,"held":false,"reason":"disabled"}}},"update":{"available":false,"build":null,"checked_at":null},"last_error":null,"state_dir":"\#(stateDir)","version":"0.1.0","protocol":2}"#, plugins: plugins))
     }
 
     /// This Mac's plugins: off, or, with `connectors`, as changed.
@@ -123,7 +130,7 @@ nonisolated struct SyntheticLatchClient: LatchClient {
     }
 
     func accountStatus() async throws -> AccountStatus {
-        let hosts = hostNames.enumerated().map { index, name in
+        let hosts = hostNames.enumerated().filter { $0.offset > 0 || spec.viewer == 0 }.map { index, name in
             let online = switch name {
             case "sidecar": #""online":false,"last_seen_at":null"#
             case "nas": #""online":null,"last_seen_at":null"#
