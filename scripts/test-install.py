@@ -369,7 +369,10 @@ class BinaryInstall(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, system)
                 self.assertEqual(installed.read_text(), latch, system)
                 self.assertTrue((home / ".local/bin/latch").exists(), system)
-                self.assertFalse(state.exists(), system)
+                # Only the record that `latch update` installs latch alone again.
+                self.assertEqual(sorted(p.relative_to(state).as_posix() for p in state.rglob("*")),
+                                 ["plugins", "plugins/client-only"], system)
+                self.assertEqual(state.stat().st_mode & 0o777, 0o700, system)
                 self.assertFalse(asked.exists(), asked.read_text() if asked.exists() else system)
                 self.assertFalse(called.exists(), system)
 
@@ -380,6 +383,49 @@ class BinaryInstall(unittest.TestCase):
                 self.assertEqual(said.returncode, 0, said.stderr)
                 self.assertIn("next: run `latch login` to log in", said.stdout)
                 self.assertNotIn("setup", said.stdout)
+
+    def test_an_update_of_a_client_only_install_on_linux_without_root_stays_client_only(self):
+        # A Linux agent image: a user who isn't root, with no sudo. `latch
+        # update` runs the new build's installer with --client-only, as the
+        # first install left on record: nothing needs root, no helper goes in.
+        # An install without --client-only then makes it a host.
+        parent = ROOT / ".dev/tests"
+        parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=parent) as directory:
+            root = Path(directory)
+            state = root / "home/.latch"
+            setup, binary, tools = fixture(root, state, "#!/bin/sh\necho installed-fixture\n",
+                                           system="Linux")
+            shutil.rmtree(state)
+            link_basic_tools(tools)
+            for name in ["readlink", "basename", "ln", "diff"]:
+                (tools / name).symlink_to(shutil.which(name))
+            asked = root / "asked"
+            tool(tools, "apt-get", f'echo "apt-get $*" >> "{asked}"\n')
+            env = {**os.environ, "HOME": str(root / "home"), "PATH": str(tools)}
+            install = ["sh", str(setup / "install-binary.sh"), "--state-dir", str(state),
+                       "--non-interactive"]
+            first = subprocess.run([*install, "--client-only", str(binary)], cwd=root, env=env,
+                                   capture_output=True, text=True)
+            self.assertEqual(first.returncode, 0, first.stderr)
+            (setup / "latch").write_text("#!/bin/sh\necho newer-fixture\n")
+            updated = subprocess.run([*install, "--client-only", str(binary)], cwd=root, env=env,
+                                     capture_output=True, text=True)
+            self.assertEqual(updated.returncode, 0, updated.stderr)
+            self.assertEqual((root / "home/.local/bin/latch").read_text(),
+                             "#!/bin/sh\necho newer-fixture\n")
+            self.assertEqual(sorted(p.relative_to(state).as_posix() for p in state.rglob("*")),
+                             ["plugins", "plugins/client-only"])
+            self.assertFalse(asked.exists(), asked.read_text() if asked.exists() else "")
+            self.assertNotIn("bubblewrap", updated.stdout + updated.stderr)
+
+            seed_gog(setup, state)
+            tool(tools, "bwrap", "")
+            host = subprocess.run([*install, "--no-browser", str(binary)], cwd=root, env=env,
+                                  capture_output=True, text=True)
+            self.assertEqual(host.returncode, 0, host.stderr)
+            self.assertFalse((state / "plugins/client-only").exists())
+            self.assertIn("gog 1.0 already installed", host.stdout)
 
     def test_a_home_this_user_cannot_write_is_refused_with_the_options_that_fix_it(self):
         # As for a user whose HOME is / in a container: no ~/.local/bin to make.

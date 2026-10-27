@@ -40,7 +40,8 @@ packages and may ask for sudo, including for Ubuntu's AppArmor profile;
 see [Docker hosting](latch/DOCKER.md).
 A machine that only asks hosts, such as an agent's image, installs with
 `sh install.sh --client-only`: latch alone, with no gog, browser engine,
-Messages reader or bubblewrap, no sudo, and no setup at the end.
+Messages reader or bubblewrap, no sudo, and no setup at the end. Its
+`latch update` installs latch alone again.
 
 Update with `latch update`: it installs the newest build, or `latch update TAG`
 that build (also how to go back to an older one); `latch update --check` only
