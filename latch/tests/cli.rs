@@ -1388,6 +1388,22 @@ fn secret_env_validation_never_echoes_the_value() {
     }
 }
 
+/// A latch built from a checkout is in no app: `latch app` says so, and
+/// opens nothing; off macOS there is no app at all.
+#[test]
+fn app_from_a_latch_outside_the_app_opens_nothing() {
+    let dir = test_dir();
+    let output = latch(&dir.path().join("none"), &["app"], &[]);
+    let code = if cfg!(target_os = "macos") {
+        "local_build"
+    } else {
+        "unsupported_platform"
+    };
+    let error = one_error_line(&String::from_utf8_lossy(&output.stderr), Some(1));
+    assert_eq!(error["error"]["code"], code, "{error}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+}
+
 #[test]
 fn help_and_skill_need_no_login_and_carry_this_version() {
     let dir = test_dir();

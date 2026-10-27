@@ -34,6 +34,8 @@ when there is a next step), with an exit code you can branch on. Branch on
 - Learn a command as you need it: `latch help COMMAND`, then
   `latch help COMMAND --examples`. `latch help --json` describes every
   command: its inputs, output, side effects and retry rule.
+- `latch app` opens Plow Latch.app, the Mac app this latch is inside,
+  for the person at that Mac; it reaches no host.
 
 ## What you can reach
 
