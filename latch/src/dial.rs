@@ -27,9 +27,10 @@ use crate::wire::{self, Request, Response};
 /// (`LATCH_TEST_LOOPBACK`, which the test harness sets, and this crate's own
 /// tests) it binds 127.0.0.1 only and never probes the router for port
 /// mappings, so a test touches nothing on the local network, and macOS
-/// never asks to let latch find devices there.
+/// never asks to let latch find devices there. Names are looked up as the
+/// system looks them up (see `system_dns.rs`).
 pub fn endpoint() -> iroh::endpoint::Builder {
-    let builder = Endpoint::builder(presets::Minimal);
+    let builder = Endpoint::builder(presets::Minimal).dns_resolver(crate::system_dns::resolver());
     if !(cfg!(test) || std::env::var_os("LATCH_TEST_LOOPBACK").is_some()) {
         return builder;
     }

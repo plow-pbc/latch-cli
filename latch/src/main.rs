@@ -57,6 +57,7 @@ mod setup;
 mod state;
 mod status;
 mod stream;
+mod system_dns;
 mod term;
 mod trace;
 mod transfer;

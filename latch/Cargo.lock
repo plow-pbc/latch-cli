@@ -1965,6 +1965,7 @@ dependencies = [
  "libc",
  "minisign",
  "minisign-verify",
+ "n0-error",
  "objc2",
  "psl",
  "qrcode",
