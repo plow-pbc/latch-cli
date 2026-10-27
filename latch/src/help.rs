@@ -1326,7 +1326,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "app",
         runs_on: |_| RunsOn::Local,
-        output: "`app` (the Plow Latch.app it opened) and `state_dir` (the absolute state folder it handed the app, or null). Only on macOS, from the latch inside the app or a link to it: elsewhere `unsupported_platform`, and a latch outside an app `local_build`. With a state folder, `app_running` when the app is already open on another one: `open` would only bring it to the front there.",
+        output: "`app`, the Plow Latch.app it opened. Only on macOS, from the latch inside the app or a link to it: elsewhere `unsupported_platform`, and a latch outside an app `local_build`. The app picks its state folder itself: a folder --state-dir or LATCH_STATE_DIR names is refused (`bad_arguments`).",
         effect: Repeatable("opens the Mac app's window, or brings it to the front"),
         owner_only: false,
         connector: None,

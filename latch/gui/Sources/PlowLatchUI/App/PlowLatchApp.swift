@@ -33,9 +33,7 @@ enum LaunchedOn: Int32 {
 /// The state folder the app runs on. A launch with no arguments goes back
 /// to the last `--state-dir` the app was opened with: macOS's Quit &
 /// Reopen (after Full Disk Access is granted) relaunches with none. Naming
-/// latch's default folder forgets it. So while the app is open, `StateDir`
-/// is the folder it runs on, or latch's default when unset: `latch app`
-/// reads it to tell whether the open app is on the folder it was asked for.
+/// latch's default folder forgets it.
 enum StateFolder {
     static let key = "StateDir"
 

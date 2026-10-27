@@ -216,8 +216,8 @@ pub enum Command {
     Dashboard,
     /// The host's diagnostics (serve.log)
     Logs(FollowArgs),
-    /// Open Plow Latch.app, the Mac app this latch belongs to, on this
-    /// state folder when --state-dir or LATCH_STATE_DIR names one (macOS)
+    /// Open Plow Latch.app, the Mac app this latch belongs to (macOS); the
+    /// app picks its state folder itself
     App,
     /// Help for a command, its examples, or every command as JSON
     Help(HelpArgs),

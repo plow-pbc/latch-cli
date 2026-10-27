@@ -53,7 +53,7 @@ fn gui_args(args: &[OsString]) -> Option<Option<PathBuf>> {
     }
 }
 
-pub(crate) fn own_id(bundle: &CFBundle) -> Option<String> {
+fn own_id(bundle: &CFBundle) -> Option<String> {
     let key = CFString::from_static_string("CFBundleIdentifier");
     let id = bundle
         .info_dictionary()

@@ -217,7 +217,6 @@ codes! {
     ambiguous_chat: Usage,
     ambiguous_target: Failed,
     app_broken: Failed,
-    app_running: Failed,
     audit_broken: Failed,
     audit_failed: Failed,
     audit_io: Failed,

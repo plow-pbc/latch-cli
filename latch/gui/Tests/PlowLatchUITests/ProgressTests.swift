@@ -953,18 +953,6 @@ struct ClosingTests {
         #expect(StateFolder.choose(given: "/Users/me/.latch", launched: .unnamed, defaults: defaults) == ("/Users/me/.latch", true))
     }
 
-    /// `latch app` reads `StateDir` as the folder the open app runs on.
-    @Test func theRememberedFolderIsTheOneTheAppRunsOn() throws {
-        let suite = "co.plow.latch.tests.\(UUID())"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
-        let home = "/Users/me/.latch"
-        for (given, launched) in [(home, LaunchedOn.unnamed), ("/tmp/dev", .other), (home, .unnamed), (home, .defaultFolder), (home, .unnamed)] {
-            let (folder, _) = StateFolder.choose(given: given, launched: launched, defaults: defaults)
-            #expect((defaults.string(forKey: StateFolder.key) ?? home) == folder)
-        }
-    }
-
     @Test func aFailedRestartSaysTheHostIsStoppedAndWhyAndRetries() async {
         let (client, app, flow) = await accessFlow(attached: false)
         client.serveFailure = LatchFailure(code: "serve_failed", message: "the host did not answer within 30 s; see serve.log")

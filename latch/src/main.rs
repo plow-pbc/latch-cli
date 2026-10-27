@@ -158,9 +158,13 @@ fn main() -> ExitCode {
             print!("{}", help::skill());
             return ExitCode::SUCCESS;
         }
-        // Only opens the app, which reads the state folder itself.
+        // Only opens the app, which picks its state folder itself: a
+        // folder named here (not just this build's default) is refused.
         Command::App => {
-            return match app::open(cli.state_dir).and_then(|opened| json(cli.pretty, opened)) {
+            let named = cli.state_dir.filter(|dir| {
+                Some(dir.as_path()) != cli::BUILD_STATE_DIR.map(std::path::Path::new)
+            });
+            return match app::open(named.as_deref()).and_then(|opened| json(cli.pretty, opened)) {
                 Ok(Printed(text)) => {
                     println!("{text}");
                     ExitCode::SUCCESS
