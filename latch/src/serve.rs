@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use iroh::endpoint::{Connection, Incoming, VarInt};
-use iroh::{Endpoint, RelayMode};
+use iroh::{Endpoint, RelayMode, Watcher};
 use serde_json::{Value, json};
 use tokio::io::AsyncReadExt;
 use tokio::signal::unix::{Signal, SignalKind, signal};
@@ -258,12 +258,134 @@ impl Done {
 /// How long the host waits for a relay connection when it starts.
 const ONLINE_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// Waits for the endpoint's relay connection. A host `serve -d` started
+/// waits as long as it takes, saying each `ONLINE_TIMEOUT` what is wrong;
+/// any other fails after the first.
+async fn come_online(
+    endpoint: &Endpoint,
+    state_dir: &Path,
+    lifetime: &Lifetime,
+    relays: &[String],
+) -> Result<(), Failure> {
+    loop {
+        if tokio::time::timeout(ONLINE_TIMEOUT, endpoint.online())
+            .await
+            .is_ok()
+        {
+            return Ok(());
+        }
+        let homes: Vec<(String, Option<String>)> = endpoint
+            .home_relay_status()
+            .get()
+            .iter()
+            .map(|status| {
+                let error = status.last_error().map(|error| format!("{error:#}"));
+                (status.url().to_string(), error)
+            })
+            .collect();
+        let probes = if homes.is_empty() {
+            ping_relays(relays).await
+        } else {
+            Vec::new()
+        };
+        let trouble = relay_trouble(&homes, &probes);
+        if !lifetime.managed {
+            let message = format!(
+                "no iroh relay connection within {} seconds: {trouble}",
+                ONLINE_TIMEOUT.as_secs()
+            );
+            return Err(Failure::new(code::relay_unreachable, message));
+        }
+        log(&format!("relay: {trouble}; still trying"));
+        let why = format!("trying to reach a relay ({trouble})");
+        let attached = lifetime.attached.load(Ordering::SeqCst);
+        if let Err(failure) = lifecycle::record_waiting(state_dir, attached, &why) {
+            log(&format!("could not record the wait: {}", failure.message));
+        }
+    }
+}
+
+/// What keeps the host off its relay: each home relay iroh chose, with the
+/// last error it had connecting; or, before it chose one, each relay it
+/// could choose from, as an HTTPS check of it went.
+fn relay_trouble(
+    homes: &[(String, Option<String>)],
+    probes: &[(String, Result<(), String>)],
+) -> String {
+    if homes.is_empty() {
+        let checked: Vec<String> = probes
+            .iter()
+            .map(|(url, probe)| match probe {
+                Ok(()) => format!("{url} answers HTTPS"),
+                Err(why) => format!("{url} failed: {why}"),
+            })
+            .collect();
+        return format!("iroh reached none of its relays: {}", checked.join("; "));
+    }
+    homes
+        .iter()
+        .map(|(url, error)| match error {
+            Some(error) => format!("{url} failed: {error}"),
+            None => format!("{url} has not connected yet"),
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// An HTTPS check of each relay (its `/ping`), for when iroh has no error
+/// to show: how each went, in `relays`' order.
+async fn ping_relays(relays: &[String]) -> Vec<(String, Result<(), String>)> {
+    let client = match crate::plow::http(reqwest::Client::builder().timeout(Duration::from_secs(5)))
+    {
+        Ok(client) => client,
+        Err(failure) => {
+            let why = failure.message;
+            return relays
+                .iter()
+                .map(|url| (url.clone(), Err(why.clone())))
+                .collect();
+        }
+    };
+    let mut pings = tokio::task::JoinSet::new();
+    for (index, url) in relays.iter().enumerate() {
+        let ping = client.get(format!("{}/ping", url.trim_end_matches('/')));
+        pings.spawn(async move {
+            let result = match ping.send().await {
+                Ok(answer) if answer.status().is_success() => Ok(()),
+                Ok(answer) => Err(format!("its /ping answered {}", answer.status())),
+                Err(err) => Err(error_chain(&err)),
+            };
+            (index, result)
+        });
+    }
+    let mut results: Vec<_> = relays
+        .iter()
+        .map(|url| (url.clone(), Err("its check did not finish".to_string())))
+        .collect();
+    while let Some(Ok((index, result))) = pings.join_next().await {
+        results[index].1 = result;
+    }
+    results
+}
+
+/// `err` and each error under it, in one line.
+fn error_chain(err: &dyn std::error::Error) -> String {
+    let mut reasons = vec![err.to_string()];
+    let mut source = err.source();
+    while let Some(err) = source {
+        reasons.push(err.to_string());
+        source = err.source();
+    }
+    reasons.join(": ")
+}
+
 /// Runs the host until it is asked to stop. With `headless_browsers`,
 /// every browser session runs with no window. An `attached` host stops
 /// when the `latch serve` that started it goes away (see
 /// `serve/control.rs`).
 pub async fn run(state: &StateDir, args: &crate::cli::ServeArgs) -> Result<(), Failure> {
     let (headless_browsers, attached) = (args.headless_browsers, args.attached);
+    let lifetime = Lifetime::new(attached, args.managed);
     let deny_exec = DenyExec::from_flags(&args.deny_exec);
     // A host that could not sandbox its workers would refuse every call;
     // say so once, now, instead of starting. The quick check names a
@@ -287,7 +409,7 @@ pub async fn run(state: &StateDir, args: &crate::cli::ServeArgs) -> Result<(), F
     crate::managed::save_given(&state.path, &crate::managed::given_now(args))?;
     // From here on, other processes see this host's steps (`lifecycle.rs`).
     lifecycle::record(&state.path, Phase::Starting, attached, None)?;
-    let result = run_locked(state, headless_browsers, deny_exec, attached, state_dir).await;
+    let result = run_locked(state, headless_browsers, deny_exec, lifetime, state_dir).await;
     let (phase, error) = match &result {
         Ok(()) => (Phase::Stopped, None),
         Err(failure) => (Phase::Error, Some(failure)),
@@ -351,7 +473,7 @@ async fn run_locked(
     state: &StateDir,
     headless_browsers: bool,
     deny_exec: DenyExec,
-    attached: bool,
+    lifetime: Lifetime,
     state_dir: PathBuf,
 ) -> Result<(), Failure> {
     let workers = workers(state_dir)?;
@@ -377,7 +499,7 @@ async fn run_locked(
             failure.message
         )),
     }
-    let key = own_key(state, attached).await?;
+    let key = own_key(state, lifetime.attached.load(Ordering::SeqCst)).await?;
     run_host(
         state,
         key,
@@ -385,7 +507,7 @@ async fn run_locked(
         headless_browsers,
         rules,
         deny_exec,
-        Lifetime::new(attached),
+        lifetime,
     )
     .await
 }
@@ -428,6 +550,12 @@ async fn run_host(
             RelayMode::custom([url])
         }
     };
+    let relays: Vec<String> = relay_mode
+        .relay_map()
+        .urls::<Vec<_>>()
+        .iter()
+        .map(ToString::to_string)
+        .collect();
     let endpoint = key
         .endpoint()
         .relay_mode(relay_mode)
@@ -453,13 +581,9 @@ async fn run_host(
             .collect(),
     );
     dashboard.step("connecting to the relay…");
-    if tokio::time::timeout(ONLINE_TIMEOUT, endpoint.online())
-        .await
-        .is_err()
-    {
+    if let Err(failure) = come_online(&endpoint, &state.path, &lifetime, &relays).await {
         endpoint.close().await;
-        let message = "no iroh relay connection within 15 seconds".to_string();
-        return Err(Failure::new(code::relay_unreachable, message));
+        return Err(failure);
     }
     dashboard.step("registering with Plow…");
     let terminate = signal(SignalKind::terminate())
@@ -1827,6 +1951,34 @@ mod tests {
                 "latch was updated; restart to use the new build"
             );
         }
+    }
+
+    /// Before iroh picks a relay it has no error to show: each relay is
+    /// checked over HTTPS, in order, and a relay that answers is told apart
+    /// from one that does not.
+    #[tokio::test]
+    async fn a_host_off_its_relays_says_how_each_answered() {
+        use iroh_relay::server::{RelayConfig, Server, ServerConfig};
+        let mut config = ServerConfig::default();
+        config.relay = Some(RelayConfig::new(([127, 0, 0, 1], 0)));
+        let server = Server::spawn(config).await.unwrap();
+        let up = format!("http://{}/", server.http_addr().unwrap());
+        let dead = "http://127.0.0.1:9/".to_string();
+
+        let probes = ping_relays(&[dead.clone(), up.clone()]).await;
+        let said = relay_trouble(&[], &probes);
+        assert!(
+            said.starts_with(&format!("iroh reached none of its relays: {dead} failed: ")),
+            "{said}"
+        );
+        assert!(said.ends_with(&format!("; {up} answers HTTPS")), "{said}");
+
+        // Once iroh has picked one, its own last error is the reason.
+        let homes = [(up.clone(), Some("tls: access denied".to_string()))];
+        assert_eq!(
+            relay_trouble(&homes, &[]),
+            format!("{up} failed: tls: access denied")
+        );
     }
 
     fn caller(kind: &str, name: &str, uid: Option<&str>) -> Identity {

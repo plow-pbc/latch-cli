@@ -2765,10 +2765,21 @@ fn counted_relay() -> (
     String,
     std::sync::Arc<iroh_relay::server::Metrics>,
 ) {
+    relay_on(0)
+}
+
+/// `counted_relay`, on `port` (0: any free one).
+fn relay_on(
+    port: u16,
+) -> (
+    tokio::runtime::Runtime,
+    String,
+    std::sync::Arc<iroh_relay::server::Metrics>,
+) {
     use iroh_relay::server::{RelayConfig, Server, ServerConfig};
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let mut config = ServerConfig::default();
-    config.relay = Some(RelayConfig::new(([127, 0, 0, 1], 0)));
+    config.relay = Some(RelayConfig::new(([127, 0, 0, 1], port)));
     let server = runtime.block_on(Server::spawn(config)).unwrap();
     let url = format!("http://{}", server.http_addr().unwrap());
     let metrics = server.metrics().server.clone();
@@ -8999,7 +9010,7 @@ mod lifecycle {
         assert_eq!(error["code"], "serve_failed", "{error}");
         let message = error["message"].as_str().unwrap();
         assert!(
-            message.contains("starts by itself once they end"),
+            message.contains("starts by itself once that ends"),
             "{message}"
         );
         assert!(registered(&owners.studio), "its service was removed");
@@ -9069,6 +9080,8 @@ mod lifecycle {
             shown.contains("the host did not start") && shown.contains("no iroh relay connection"),
             "{shown}"
         );
+        // It names the relay it tried.
+        assert!(shown.contains("127.0.0.1:9"), "{shown}");
         assert!(
             !shown.contains("\x1b[?1049h"),
             "no dashboard for a host that never served"
@@ -9077,6 +9090,50 @@ mod lifecycle {
         assert!(log.contains("relay_unreachable"), "{log}");
         assert_eq!(local_serve(&host)["running"], false);
         assert!(!registered(&host));
+    }
+
+    /// A host `serve -d` started keeps trying a relay that does not answer:
+    /// `serve -d` names the relay and says the host goes on, and the host
+    /// serves once the relay is up.
+    #[test]
+    fn a_detached_host_keeps_trying_its_relay_and_serves_once_it_answers() {
+        let plow = LivePlow::start();
+        let dir = test_dir();
+        let host = owner_host_on(&plow, dir.path());
+        let _managed = Managed(host.clone());
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let relay = format!("http://127.0.0.1:{port}/");
+        let env = [("LATCH_TEST_RELAY_URL", Path::new(&relay))];
+
+        let started = latch(&host, &["serve", "-d"], &env);
+        let error = &one_error_line(&String::from_utf8_lossy(&started.stderr), Some(1))["error"];
+        assert_eq!(error["code"], "serve_failed", "{error}");
+        let message = error["message"].as_str().unwrap();
+        for said in [
+            "it is trying to reach a relay",
+            &format!("{relay} failed: "),
+            "starts by itself once that ends",
+        ] {
+            assert!(message.contains(said), "{said:?} in {message}");
+        }
+        assert!(registered(&host), "its service was removed");
+        let hosting = local_serve(&host);
+        assert_eq!(hosting["state"], "starting", "{hosting}");
+        assert!(
+            hosting["waiting"].as_str().unwrap().contains(&relay),
+            "{hosting}"
+        );
+
+        let (_relay, _, _) = relay_on(port);
+        assert!(
+            eventually(60, || local_serve(&host)["state"] == "serving"),
+            "it never served: {}",
+            fs::read_to_string(host.join("serve.log")).unwrap()
+        );
     }
 
     /// A relative `LATCH_STATE_DIR` names a folder from where `serve -d`
