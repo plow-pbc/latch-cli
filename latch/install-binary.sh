@@ -69,7 +69,8 @@
 # --client-only installs latch alone, for a machine that only asks other
 # hosts, such as an agent's image: no gog, Messages reader, bubblewrap or
 # browser engine, and no setup or app window at the end, only the word to
-# run `latch login`.
+# run `latch login`. It leaves plugins/client-only in the state folder, so
+# `latch update` installs latch alone again.
 set -eu
 
 say() { printf 'install-binary.sh: %s\n' "$*"; }
@@ -372,6 +373,17 @@ case ":$PATH:" in
   *":$bin_dir:"*) ;;
   *) say "add $bin_dir to your PATH to run latch by name" ;;
 esac
+# Whether latch is installed alone, kept where `latch update` looks, so it
+# installs the next build the same way. An install without --client-only
+# makes this machine a host from then on.
+client_record="$state_dir/plugins/client-only"
+if [ -n "$client_only" ]; then
+  (umask 077 && mkdir -p "$state_dir")
+  mkdir -p "$state_dir/plugins"
+  : > "$client_record"
+else
+  rm -f "$client_record"
+fi
 
 # 2. The pinned gog, which only a host runs. The pin is JSON, but its shape
 # is fixed: one version string and a list of sha256 hashes, one for each OS
