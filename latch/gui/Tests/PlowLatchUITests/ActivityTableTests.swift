@@ -307,8 +307,10 @@ struct ActivityTableTests {
         await waitUntil(within: .seconds(30)) { feed.records.count == 10_500 }
         let took = ContinuousClock.now - began
         let seconds = Double(took.components.seconds) + Double(took.components.attoseconds) / 1e18
+        // A change is counted a turn after it's made: one batch may not be
+        // yet.
+        await waitUntil { changes.count >= 1 }
         let count = changes.count
-        #expect(count >= 1)
         #expect(Double(count) <= max(2, seconds * 11), "\(count) changes in \(seconds) s")
     }
 

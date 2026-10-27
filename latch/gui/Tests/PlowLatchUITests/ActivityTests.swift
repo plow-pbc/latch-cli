@@ -89,23 +89,44 @@ struct ActivityTests {
     /// it comes back, in order, and the next batch still waits its interval.
     @Test func aFeedThatFellBehindTakesWhatCameMeanwhileAsOneBatch() async throws {
         let (lines, latch) = AsyncThrowingStream<AuditLine, Error>.makeStream()
-        var batches = LineBatches.of(lines, every: .milliseconds(100)).makeAsyncIterator()
+        let batches = LineBatches(lines, every: .milliseconds(100))
         // Busy elsewhere while five lines come, each more than an interval
         // after the last.
         for n in 0..<5 {
             latch.yield(HostLog.line(n))
             try await Task.sleep(for: .milliseconds(120))
         }
-        // Taken no earlier than this.
-        let asked = ContinuousClock.now
-        let behind = try #require(try await batches.next())
-        #expect(behind == (0..<5).map(HostLog.line))
+        #expect(try await batches.due())
+        let took = ContinuousClock.now
+        #expect(batches.take() == (0..<5).map(HostLog.line))
         latch.yield(HostLog.line(5))
-        let next = try #require(try await batches.next())
-        #expect(next == [HostLog.line(5)])
-        #expect(ContinuousClock.now - asked >= .milliseconds(100))
+        #expect(try await batches.due())
+        #expect(ContinuousClock.now - took >= .milliseconds(100))
+        #expect(batches.take() == [HostLog.line(5)])
         latch.finish()
-        #expect(try await batches.next() == nil)
+        #expect(try await batches.due() == false)
+    }
+
+    /// The feed already waiting when the main thread stalls: the line that
+    /// woke it and those that came during the stall go in as one batch.
+    @Test func aFeedWaitingWhenTheMainThreadStallsTakesWhatCameMeanwhileAsOneBatch() async throws {
+        let (lines, latch) = AsyncThrowingStream<AuditLine, Error>.makeStream()
+        let batches = LineBatches(lines, every: .milliseconds(100))
+        let applied = Task { @MainActor in
+            var applied: [[AuditLine]] = []
+            while try await batches.due() { applied.append(batches.take()) }
+            return applied
+        }
+        // Waiting, and an interval has passed: the next line is due at once.
+        try await Task.sleep(for: .milliseconds(150))
+        latch.yield(HostLog.line(0))
+        // The main thread stalls; four more lines come meanwhile, more than
+        // an interval after the first.
+        usleep(50_000)
+        for n in 1..<5 { latch.yield(HostLog.line(n)) }
+        usleep(200_000)
+        latch.finish()
+        #expect(try await applied.value == [(0..<5).map(HostLog.line)])
     }
 }
 
