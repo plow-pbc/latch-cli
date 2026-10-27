@@ -582,6 +582,42 @@ fn a_cloud_agent_behind_plows_proxy_sends_no_credential() {
 }
 
 #[test]
+fn a_cloud_agent_logs_in_on_its_first_command() {
+    // Behind Plow's proxy, with no `latch login` run: the first command that
+    // needs a host registers the agent, as `latch login` would.
+    let (proxy, server) = fake_plow(vec![
+        me("agent"),
+        (200, peer(Value::Null, "agent", "agent", Value::Null)),
+        (
+            200,
+            json!({"data": [peer(json!("REGISTERED"), "agent", "agent", Value::Null)]}),
+        ),
+    ]);
+    let dir = test_dir();
+    let state = dir.path().join("state");
+    let env = [
+        ("PLOW_API_BASE", Path::new(&proxy)),
+        ("PLOW_TOKEN_FILE", &dir.path().join("none")),
+    ];
+    let local = latch(&state, &["status", "--local"], &env);
+    let local: Value = serde_json::from_slice(&local.stdout).unwrap();
+    assert_eq!(local["login"], Value::Null, "{local}");
+
+    let exec = latch(&state, &["exec", "--", "true"], &env);
+    let error: Value = serde_json::from_slice(&exec.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "no_host", "{error}");
+    let local = latch(&state, &["status", "--local"], &env);
+    let local: Value = serde_json::from_slice(&local.stdout).unwrap();
+    assert_eq!(local["login"]["kind"], "agent", "{local}");
+    assert_eq!(local["this_machine"]["name"], "agent", "{local}");
+
+    let requests = server.join().unwrap();
+    assert!(requests[0].starts_with("GET /v1/agents/me "));
+    assert!(requests[1].starts_with("POST /v1/latch/peers "));
+    assert!(requests[2].starts_with("GET /v1/latch/peers "));
+}
+
+#[test]
 fn a_cloud_agent_given_its_token_sends_it() {
     let (base, server) = fake_plow(vec![
         me("agent"),

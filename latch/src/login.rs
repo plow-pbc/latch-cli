@@ -184,6 +184,26 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
     registered.map_err(|failure| if texted { failure.told() } else { failure })
 }
 
+/// Logs an agent in on its first command that needs Plow or a host, as
+/// `latch login` would: one holding its own Plow credential (see
+/// `credential`), with no login here yet.
+pub async fn agent_on_first_use(state: &StateDir) -> Result<(), Failure> {
+    if state.load_config()?.is_some()
+        || state.load_token()?.is_some()
+        || credential::agent_token_if_present()?.is_none()
+    {
+        return Ok(());
+    }
+    let args = LoginArgs {
+        token_file: None,
+        api_url: None,
+        name: None,
+        events: false,
+        replace: false,
+    };
+    run(state, args).await.map(|_| ())
+}
+
 /// Registers this peer again as it last was, when Plow no longer lists it:
 /// an agent whose credential was rotated, say, which Plow forgets until it
 /// registers with the new one. Never takes a name over.

@@ -229,6 +229,25 @@ async fn run(
     state.check_format()?;
     let foreground = matches!(&command, Command::Serve(args) if args.foreground);
     trace::init(&state, foreground)?;
+    // An agent holding its own Plow credential logs in on its first command
+    // that needs Plow or a host.
+    let needs_login = match &command {
+        Command::Status(args) => !args.local && (args.host.is_some() || !args.follow),
+        Command::Exec(_)
+        | Command::File(_)
+        | Command::Google(_)
+        | Command::Messages(_)
+        | Command::Contacts(_)
+        | Command::Browser(_)
+        | Command::Vault(_)
+        | Command::Rules(_)
+        | Command::Agents(_)
+        | Command::Devices(_) => true,
+        _ => false,
+    };
+    if needs_login {
+        login::agent_on_first_use(&state).await?;
+    }
     match command {
         Command::Login(args) if args.events => {
             login::event(stream::hello());
