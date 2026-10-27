@@ -12,7 +12,6 @@ import tempfile
 import tarfile
 import termios
 import threading
-import time
 import unittest
 import zipfile
 
@@ -762,8 +761,7 @@ class MacAppFolder(unittest.TestCase):
         self.assertFalse((home / "Applications/Plow Latch.app").exists())
 
     def test_a_window_that_does_not_quit_keeps_the_copy_it_runs_from(self):
-        window = self.window("sh -c \"trap '' TERM; exec sleep 60\"")
-        time.sleep(0.2)
+        window = self.window("trap '' TERM; sleep 60")
         result, calls, home, applications = self.install(own="0.1.0 (1)", window=window)
         self.assert_installed_in(applications, home, result)
         self.assertTrue(self.is_running(window))
