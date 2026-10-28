@@ -37,23 +37,15 @@ struct AgentsHubTests {
         return app
     }
 
-    @Test func removingAnAgentNamesItByUidAndListsTheAgentsAgain() async throws {
+    // Removed, then listed again, or the list can't be read again: either
+    // way the removed agent isn't still shown with its buttons.
+    @Test(arguments: [false, true])
+    func removingAnAgentNamesItsUidAndRemovesIt(_ listingFails: Bool) async throws {
         let client = TwinsClient()
         let app = try await app(client)
-        let second = try #require(app.agents?.last)
-        await app.removeAgent(second)
-        #expect(client.removals == ["00000000000000000000000000000002"])
-        #expect(app.agents?.map(\.uid) == ["00000000000000000000000000000001"])
-        #expect(app.agentRemoveError == nil)
-    }
-
-    // Removed, then the list can't be read again: the removed agent isn't
-    // still shown with its buttons.
-    @Test func aRemovedAgentGoesEvenWhenTheListCantBeReadAgain() async throws {
-        let client = TwinsClient()
-        let app = try await app(client)
-        client.listing = .unreachable("Plow didn't answer")
+        client.listing = listingFails ? .unreachable("Plow didn't answer") : nil
         await app.removeAgent(try #require(app.agents?.last))
+        #expect(client.removals == ["00000000000000000000000000000002"])
         #expect(app.agents?.map(\.uid) == ["00000000000000000000000000000001"])
         #expect(app.agentRemoveError == nil)
     }

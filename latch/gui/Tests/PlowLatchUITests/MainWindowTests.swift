@@ -134,7 +134,8 @@ struct MainWindowTests {
         app.showHost("pi-kitchen")
         let controller = open(app)
         defer { controller.close() }
-        await waitUntil { app.summaries["pi-kitchen"]?.vault != nil }
+        await waitUntil { AppModel.held(app.summaries["pi-kitchen"]?.vault) && AppModel.held(app.summaries["pi-kitchen"]?.rules) }
+        #expect(AppModel.held(app.summaries["pi-kitchen"]?.vault))
         #expect(AppModel.held(app.summaries["pi-kitchen"]?.rules))
     }
 
