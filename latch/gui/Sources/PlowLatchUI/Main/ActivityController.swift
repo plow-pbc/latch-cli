@@ -301,11 +301,12 @@ final class ActivityController: NSViewController, NSTableViewDataSource, NSTable
         cell.textField = text
         var leading = cell.leadingAnchor
         if column == .status {
-            // The status's dot before its words, which carry it all.
+            // The status's dot before its words, which carry it all. Out of
+            // VoiceOver: an image view's accessibility element is its cell.
             let dot = NSImageView(image: NSImage(systemSymbolName: "circle.fill", accessibilityDescription: nil)!
                 .withSymbolConfiguration(.init(pointSize: 7, weight: .regular))!)
             dot.translatesAutoresizingMaskIntoConstraints = false
-            dot.setAccessibilityElement(false)
+            dot.cell?.setAccessibilityElement(false)
             // Its own size, however wide the column: the words follow it.
             dot.setContentHuggingPriority(.required, for: .horizontal)
             cell.addSubview(dot)

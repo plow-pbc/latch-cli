@@ -79,13 +79,28 @@ struct MainWindowTests {
         defer { controller.close() }
         let toolbar = try #require(controller.window?.toolbar)
         let split = try #require(controller.window?.contentViewController as? NSSplitViewController)
-        func names() -> [String] {
-            toolbar.validateVisibleItems()
-            return [NSToolbarItem.Identifier.toggleSidebar, .toggleInspector].compactMap { id in
-                toolbar.items.first { $0.itemIdentifier == id }.map { item in
-                    "\(item.title)|\(item.toolTip ?? "")|\(item.view?.accessibilityLabel() ?? "")"
+        let frame = try #require(controller.window?.contentView?.superview)
+        // What VoiceOver reads: the toolbar's buttons in the window's
+        // accessibility tree, not the items' own views.
+        func spoken() -> [String] {
+            var stack: [Any] = [frame], found: [String] = []
+            while let e = stack.popLast() {
+                guard let e = e as? NSAccessibilityProtocol & NSObject else { continue }
+                if e.accessibilityRole() == .toolbar {
+                    found += (e.accessibilityChildren() ?? []).compactMap { $0 as? NSAccessibilityProtocol }
+                        .filter { $0.accessibilityRole() == .button }.map { $0.accessibilityLabel() ?? "" }
+                } else {
+                    stack += e.accessibilityChildren() ?? []
                 }
             }
+            return found
+        }
+        func names() -> [String] {
+            toolbar.validateVisibleItems()
+            let shown = [NSToolbarItem.Identifier.toggleSidebar, .toggleInspector].compactMap { id in
+                toolbar.items.first { $0.itemIdentifier == id }.map { "\($0.title)|\($0.toolTip ?? "")" }
+            }
+            return zip(shown, spoken()).map { "\($0)|\($1)" }
         }
         #expect(names() == ["|Hide Sidebar|Hide Sidebar", "|Hide Inspector|Hide Inspector"])
         split.toggleSidebar(nil)

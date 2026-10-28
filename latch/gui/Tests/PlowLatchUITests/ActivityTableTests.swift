@@ -368,6 +368,21 @@ struct ActivityTableTests {
         previews.removeAll()
         #expect(!FileManager.default.fileExists(atPath: dir.path))
     }
+
+    // A row speaks its status in words; the dot before them is decoration
+    // and isn't read.
+    @Test func theStatusDotIsNotRead() async throws {
+        let client = HostLog(records: 20)
+        let app = try app(client)
+        let (controller, window, feed) = open(app)
+        defer { close(window, feed) }
+        await waitUntil { feed.caughtUp && controller.table.numberOfRows > 0 }
+        let status = controller.table.column(withIdentifier: .init("status"))
+        let cell = try #require(controller.table.view(atColumn: status, row: 0, makeIfNecessary: true))
+        let read = NSAccessibility.unignoredChildren(from: cell.accessibilityChildren() ?? []).compactMap { $0 as? NSAccessibilityProtocol }
+        #expect(read.map { $0.accessibilityRole() } == [.staticText])
+        #expect(read.map { $0.accessibilityValue() as? String } == [controller.rows[0].status.title])
+    }
 }
 
 /// Counts each change to a feed's records, from now.
