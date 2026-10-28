@@ -369,6 +369,20 @@ struct ActivityTableTests {
         #expect(!FileManager.default.fileExists(atPath: dir.path))
     }
 
+    // Quick Look opened by the inspector on a screenshot stays the
+    // screenshot's: the table, though it has the keyboard and a request
+    // selected, takes the panel only when it opened it.
+    @Test func quickLookIsTheTablesOnlyWhenItOpenedIt() async throws {
+        let client = HostLog(records: 20)
+        let app = try app(client)
+        let (controller, window, feed) = open(app)
+        defer { close(window, feed) }
+        await waitUntil { feed.caughtUp && !controller.rows.isEmpty }
+        controller.table.selectRowIndexes([0], byExtendingSelection: false)
+        window.makeFirstResponder(controller.table)
+        #expect(!controller.acceptsPreviewPanelControl(nil))
+    }
+
     // A row speaks its status in words; the dot before them is decoration
     // and isn't read.
     @Test func theStatusDotIsNotRead() async throws {

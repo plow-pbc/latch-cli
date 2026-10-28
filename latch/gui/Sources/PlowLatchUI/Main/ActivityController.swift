@@ -25,6 +25,10 @@ final class ActivityController: NSViewController, NSTableViewDataSource, NSTable
     private let previews: QuickLookFiles
     /// The file Quick Look shows, while it shows one.
     private(set) var preview: URL?
+    /// Quick Look was opened here, on the selected request: only then is
+    /// the panel this table's. One the inspector opens on a screenshot is
+    /// the inspector's, though the table has the keyboard.
+    private var quickLooking = false
 
     private lazy var heading = Self.hosting(ActivityHeading(shown: shown), app, sizing: [.intrinsicContentSize])
     private lazy var states = Self.hosting(ActivityStates(shown: shown), app)
@@ -402,6 +406,7 @@ final class ActivityController: NSViewController, NSTableViewDataSource, NSTable
         if QLPreviewPanel.sharedPreviewPanelExists(), QLPreviewPanel.shared().isVisible {
             QLPreviewPanel.shared().orderOut(nil)
         } else if selectedRecord != nil {
+            quickLooking = true
             QLPreviewPanel.shared().makeKeyAndOrderFront(nil)
         }
     }
@@ -434,7 +439,9 @@ final class ActivityController: NSViewController, NSTableViewDataSource, NSTable
     }
 
     // Quick Look asks these on the main thread, as AppKit does.
-    nonisolated override func acceptsPreviewPanelControl(_ panel: QLPreviewPanel!) -> Bool { true }
+    nonisolated override func acceptsPreviewPanelControl(_ panel: QLPreviewPanel!) -> Bool {
+        MainActor.assumeIsolated { quickLooking }
+    }
 
     nonisolated override func beginPreviewPanelControl(_ panel: QLPreviewPanel!) {
         MainActor.assumeIsolated {
@@ -448,6 +455,7 @@ final class ActivityController: NSViewController, NSTableViewDataSource, NSTable
         MainActor.assumeIsolated {
             panel.dataSource = nil
             panel.delegate = nil
+            quickLooking = false
             endQuickLook()
         }
     }
