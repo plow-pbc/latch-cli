@@ -29,6 +29,7 @@ extension LatchClient {
         throw LatchError.unreachable("not scripted")
     }
     func agentShow(_ uid: String) async throws -> AgentsList.Agent { throw LatchError.unreachable("not scripted") }
+    func removeAgent(_ uid: String) async throws { throw LatchError.unreachable("not scripted") }
     func vaultImportPreview(_ file: URL, host: String?) async throws -> ImportPreview { throw LatchError.unreachable("not scripted") }
     func vaultImport(_ file: URL, picks: [Int], expect: String, host: String?) async throws -> ImportResult { throw LatchError.unreachable("not scripted") }
     func auditShot(_ record: String, shot: String, host: String?) async throws -> Data { throw LatchError.unreachable("not scripted") }
@@ -45,7 +46,7 @@ extension LatchClient {
     func enable(_ plugin: String) async throws -> GoogleEnabled? { nil }
     nonisolated func statusFollow() -> AsyncThrowingStream<LocalStatus, Error> { AsyncThrowingStream { _ in } }
     func audit(host: String?, before: String?) async throws -> AuditPage { AuditPage(records: [], hasOlder: false) }
-    nonisolated func auditFollow(host: String?, after: String?) -> AsyncThrowingStream<AuditLine, Error> { AsyncThrowingStream { _ in } }
+    nonisolated func auditFollow(host: String?, after: String?, last: Int?) -> AsyncThrowingStream<AuditLine, Error> { AsyncThrowingStream { _ in } }
     func perform(_ args: [String]) async throws {}
     func stop() async throws {}
 }

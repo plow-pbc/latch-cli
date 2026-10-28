@@ -13,6 +13,7 @@ nonisolated public func latchGUIMain(_ executable: UnsafePointer<CChar>, _ state
         let client = LiveLatchClient(executable: latch, stateDir: state)
         PlowLatchApp.model = AppModel(client: client, loginItemOffered: isDefault)
         #if LATCH_TEST_HOOKS
+        if let fixture = TestHooks.fixture(stateDir: state) { PlowLatchApp.model = fixture }
         TestHooks.install(PlowLatchApp.model)
         #endif
         PlowLatchApp.main()
@@ -78,16 +79,15 @@ struct PlowLatchApp: App {
         .restorationBehavior(.disabled)
         .defaultLaunchBehavior(windowed && !finished ? .presented : .suppressed)
 
-        Window("Latch", id: AppModel.mainWindow) {
-            MainView()
-                .environment(model)
-                .installWindowActions(model)
+        // The main window is AppKit's (`MainWindowController`), opened by
+        // the app delegate at launch once set up. Its commands go along its
+        // responder chain: one Save, the rules editor with the keyboard
+        // focus; New Item and Import on the Vault; Find, the sidebar and
+        // the inspector. And a shortcut for each host screen.
+        .commands {
+            WindowCommands(menu: .shared)
+            ScreenCommands(app: model)
         }
-        .defaultSize(width: 1120, height: 700)
-        .restorationBehavior(.disabled)
-        .defaultLaunchBehavior(windowed && finished ? .presented : .suppressed)
-        // One Save: the rules editor with the keyboard focus.
-        .commands { RulesCommands() }
 
         Settings {
             AppSettingsView()
@@ -96,9 +96,36 @@ struct PlowLatchApp: App {
     }
 }
 
+/// View › a host screen, ⌘1 to ⌘5: the selected host's workspace on it.
+private struct ScreenCommands: Commands {
+    var app: AppModel
+
+    var body: some Commands {
+        CommandGroup(after: .sidebar) {
+            ForEach(Array(HostScreen.allCases.enumerated()), id: \.element) { index, screen in
+                Button(screen.title) { app.place = .host(screen) }
+                    .keyboardShortcut(KeyEquivalent(Character(String(index + 1))), modifiers: .command)
+            }
+        }
+    }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    /// Set up: the main window, where the app left it.
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        #if LATCH_TEST_HOOKS
+        guard !TestHooks.headless else { return }
+        #endif
+        MenuBridge.shared.start()
+        // Quick Look's files a crash left.
+        QuickLookFiles.shared.removeAll()
+        guard let model = PlowLatchApp.model, model.store.load().finished else { return }
+        MainWindowController.open(model)
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         LatchProcess.terminateAll()
+        QuickLookFiles.shared.removeAll()
         ShotFolder.removeAll()
     }
 
@@ -122,8 +149,12 @@ private struct WindowActions: ViewModifier {
     func body(content: Content) -> some View {
         content
             .onAppear {
-                model.openWindow = { openWindow(id: $0) }
-                model.dismissWindow = { dismissWindow(id: $0) }
+                model.openWindow = { id in
+                    if id == AppModel.mainWindow { MainWindowController.open(model) } else { openWindow(id: id) }
+                }
+                model.dismissWindow = { id in
+                    if id == AppModel.mainWindow { MainWindowController.dismiss() } else { dismissWindow(id: id) }
+                }
             }
             .background(WindowReader { FirstWindow.bringForward($0) })
     }

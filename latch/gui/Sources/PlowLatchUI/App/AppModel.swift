@@ -1,4 +1,5 @@
 import Observation
+import os
 import SwiftUI
 
 /// The app's state: this Mac's latch as `status --local` last said, and the
@@ -100,19 +101,101 @@ final class AppModel {
         }
     }
 
-    /// What Home and the picker say while `latch status` fails.
+    /// What Home and the sidebar say while `latch status` fails.
     var plowNotice: PlowNotice? { accountError.map { PlowNotice(error: $0, listed: account != nil) } }
 
-    /// The main window's place: a sidebar item, and the host the host tier
-    /// shows (the picker's choice; nil until the person picks one).
-    var section: SidebarItem = .home
-    var chosenHost: String?
+    /// The main window's place: an account page, or a screen of the host
+    /// workspace, which keeps its screen while an account page shows and
+    /// as hosts change.
+    var place: Place {
+        get { page.map(Place.account) ?? .host(screen) }
+        set {
+            switch newValue {
+            case let .account(page): self.page = page
+            case let .host(screen): (page, self.screen) = (nil, screen)
+            }
+            dropRulesFocusLeft()
+        }
+    }
+    private var page: AccountPage?
+    private(set) var screen: HostScreen = .home
+    /// The host the workspace shows, as the sidebar picked it; nil until
+    /// one is picked.
+    var chosenHost: String? {
+        didSet { dropRulesFocusLeft() }
+    }
 
-    /// The picker's hosts, this Mac first.
+    /// What the main window shows over itself, until it's answered or
+    /// closed; nil for nothing.
+    var sheet: MainSheet?
+
+    /// Closes `sheet`, if it's still the one showing: a flow that ends
+    /// after the person left it never closes what came next.
+    func close(_ sheet: MainSheet) {
+        if self.sheet == sheet { self.sheet = nil }
+    }
+
+    /// Asks the person to confirm an action, over the main window.
+    func ask(_ confirmation: Confirmation) {
+        sheet = .confirm(confirmation)
+    }
+
+    /// The person's yes: the action, on what the question named.
+    func confirmed(_ confirmation: Confirmation) async {
+        switch confirmation {
+        case .startHosting: await startHosting()
+        case .stopHost: await stopHost()
+        case let .removeAgent(agent): await removeAgent(agent)
+        case let .removeVaultItem(item, host): await removeVaultItem(item, on: host)
+        case let .removeDevice(device): await removeDevice(device.name)
+        }
+    }
+
+    /// A sidebar host row's click: that host's workspace, on the screen it
+    /// was last on.
+    func showHost(_ name: String) {
+        chosenHost = name
+        place = .host(screen)
+    }
+
+    /// The window's place and host as the window last saved them (its
+    /// scene state): a place no longer known is Home, and a host no longer
+    /// listed falls back as `host` does.
+    func restore(place saved: String, host: String?) {
+        place = Place(rawValue: saved) ?? .host(.home)
+        chosenHost = host
+    }
+
+    /// What the main window shows: an account page carries no host.
+    var route: Route {
+        switch place {
+        case let .account(page): .account(page)
+        case let .host(screen): .host(screen, host)
+        }
+    }
+
+    /// What a screen's reads depend on, which the window keys them by: a
+    /// host's screen, its host and whether Plow counts it online; Agents,
+    /// every host it can ask; Connections, no host.
+    struct Entry: Hashable {
+        var place: Place
+        var hosts: [String] = []
+        var online: Bool?
+    }
+
+    var entry: Entry {
+        switch route {
+        case .account(.agents): Entry(place: place, hosts: hosts.filter { $0.isThisMac || $0.online != false }.map(\.name))
+        case .account: Entry(place: place)
+        case let .host(_, host): Entry(place: place, hosts: host.map { [$0.name] } ?? [], online: host?.online)
+        }
+    }
+
+    /// The sidebar's hosts, this Mac first.
     var hosts: [HostEntry] { HostEntry.list(local: status, account: account) }
 
-    /// The host the host tier shows: the one picked, else this Mac when it
-    /// hosts, else the first other host.
+    /// The host the workspace shows: the one picked while it's listed,
+    /// else this Mac when it hosts, else the first other host.
     var host: HostEntry? { hosts.first { $0.name == chosenHost } ?? hosts.first }
 
     /// Logged in, with nothing served here: this Mac only views its hosts.
@@ -124,21 +207,18 @@ final class AppModel {
     private(set) var summaries: [String: HostSummary] = [:]
 
     /// Reads a host's summary: this Mac's from its own state folder,
-    /// another host's with `--host`. One read at a time (a remote read in
-    /// parallel is no faster), each shown as it answers; only what isn't
-    /// held yet unless `refresh`, and the vault only when `vault`. Another
-    /// host Plow counts offline isn't asked; this Mac always is.
+    /// another host's with `--host`. Its rules and its vault side by side
+    /// (each a read over latch's connection), each shown as it answers;
+    /// only what isn't held yet unless `refresh`, and the vault only when
+    /// `vault`. Another host Plow counts offline isn't asked; this Mac
+    /// always is.
     private func readSummary(of host: HostEntry, vault: Bool, refresh: Bool) async {
         guard host.isThisMac || host.online != false else { return }
-        let target = host.isThisMac ? nil : host.name
-        if refresh || !Self.held(summaries[host.name]?.rules) {
-            guard let rules = await Self.result({ try await self.client.rulesShow(host: target) }) else { return }
-            summaries[host.name, default: HostSummary()].rules = rules
-        }
-        if vault, refresh || !Self.held(summaries[host.name]?.vault) {
-            guard let items = await Self.result({ try await self.client.vaultList(host: target) }) else { return }
-            summaries[host.name, default: HostSummary()].vault = items
-        }
+        let readRules = refresh || !Self.held(summaries[host.name]?.rules)
+        let readVault = vault && (refresh || !Self.held(summaries[host.name]?.vault))
+        async let rules: Void = readRules ? refreshRules(on: host) : ()
+        async let items: Void = readVault ? refreshVault(on: host) : ()
+        _ = await (rules, items)
     }
 
     /// A host's plugins, each with whether it's on: this Mac's from its own
@@ -159,38 +239,44 @@ final class AppModel {
     /// What a screen reads when it shows, decided here, not by the screen:
     /// only what it uses, and only what isn't held yet, so coming back to
     /// a screen reads nothing again (`refresh` reads it all again). Run in
-    /// a task that's cancelled when the screen or host changes: a cancelled
-    /// read keeps what was held, and the reads after it don't start.
-    func enter(_ section: SidebarItem, host: HostEntry?, refresh: Bool = false) async {
-        switch section {
-        case .home:
+    /// a task that's cancelled when the route changes: a cancelled read
+    /// keeps what was held, and the reads after it don't start.
+    func enter(_ route: Route, refresh: Bool = false) async {
+        let interval = Self.signposter.beginInterval("enter", id: Self.signposter.makeSignpostID(), "\(route.title, privacy: .public)")
+        defer { Self.signposter.endInterval("enter", interval) }
+        switch route {
+        case let .host(.home, host):
             guard let host else { return }
-            await readSummary(of: host, vault: true, refresh: refresh)
-            await readHostStatus(of: host, refresh: refresh)
-        case .settings:
+            async let summary: Void = readSummary(of: host, vault: true, refresh: refresh)
+            async let status: Void = readHostStatus(of: host, refresh: refresh)
+            _ = await (summary, status)
+        case let .host(.settings, host):
             guard let host else { return }
-            await readSummary(of: host, vault: false, refresh: refresh)
-            await readHostStatus(of: host, refresh: refresh)
-        case .rules:
+            async let summary: Void = readSummary(of: host, vault: false, refresh: refresh)
+            async let status: Void = readHostStatus(of: host, refresh: refresh)
+            _ = await (summary, status)
+        case let .host(.rules, host):
             guard let host, host.isThisMac || host.online != false else { return }
             // Its editors name the agents; their standing on each host isn't
             // shown here.
-            if refresh || agents == nil { await refreshAgentList() }
-            if refresh || !Self.held(summaries[host.name]?.rules) { await refreshRules(on: host) }
-        case .vault:
+            let list = refresh || agents == nil, read = refresh || !Self.held(summaries[host.name]?.rules)
+            async let agentList = list ? refreshAgentList() : true
+            async let rules: Void = read ? refreshRules(on: host) : ()
+            _ = await (agentList, rules)
+        case let .host(.vault, host):
             guard let host, host.isThisMac || host.online != false else { return }
             if refresh || !Self.held(summaries[host.name]?.vault) { await refreshVault(on: host) }
-        case .agents:
+        case .account(.agents):
             if refresh { await refreshAgents() } else {
                 if agents == nil, await !refreshAgentList() { return }
                 // Each host's standing it doesn't have yet, as when a visit
                 // was left before reading them all.
                 await readStandings(missing: true)
             }
-        case .connections:
+        case .account(.connections):
             if refresh || connections == nil { await refreshConnections() }
             if refresh || !Self.held(devices) { await refreshDevices() }
-        case .activity:
+        case .host(.activity, _):
             // Its feed is the window's (`activityFeed`).
             break
         }
@@ -202,8 +288,12 @@ final class AppModel {
     /// Plow's hosts and the screen showing.
     func activated() async {
         await refreshAccount()
-        await enter(section, host: host, refresh: true)
+        await enter(route, refresh: true)
     }
+
+    /// Marks screen entries (and a test build's timed hooks) for
+    /// Instruments' Points of Interest.
+    static let signposter = OSSignposter(subsystem: "co.plow.latch", category: .pointsOfInterest)
 
     /// A read's answer, or nil when the task asking was cancelled: a
     /// cancelled read is no failure, and it leaves what was held as it was.
@@ -226,11 +316,11 @@ final class AppModel {
         summaries[host] = summary
     }
 
-    /// The Vault screen's selected item, and what `vault show` said of
-    /// items, by host name then item.
-    var selectedVaultItem: VaultList.Item.ID?
-    /// The sheet over the Vault screen: New Item, Edit, or Import.
-    var vaultSheet: VaultSheet?
+    /// The Vault screen's selected item, on the host it was selected on,
+    /// its search, and what `vault show` said of items, by host name then
+    /// item.
+    var selectedVaultItem: OnHost?
+    var vaultSearch = ""
     private(set) var vaultShows: [String: [String: Result<VaultShow, LatchError>]] = [:]
 
     /// Reads a host's vault again (the Vault screen, after a change).
@@ -239,18 +329,30 @@ final class AppModel {
         summaries[host.name, default: HostSummary()].vault = vault
     }
 
-    /// Reads an item's non-secret values.
+    /// Reads an item's non-secret values; if it changed since the vault was
+    /// listed, the vault is read again, so the item listed is the one shown.
     func showVaultItem(_ item: String, on host: HostEntry) async {
         guard let show = await Self.result({ try await self.client.vaultShow(item, host: host.isThisMac ? nil : host.name) }) else { return }
         vaultShows[host.name, default: [:]][item] = show
+        guard case let .success(shown) = show, case let .success(vault)? = summaries[host.name]?.vault,
+              let listed = vault.items.first(where: { $0.item == item }), listed.revision < shown.item.revision else { return }
+        await refreshVault(on: host)
+    }
+
+    /// What `vault show` said of an item at the revision listed; nil while
+    /// that revision is read (a show of an older one is not its values).
+    func vaultShow(of item: VaultList.Item, on host: HostEntry) -> Result<VaultShow, LatchError>? {
+        let show = vaultShows[host.name]?[item.item]
+        if case let .success(shown)? = show, shown.item.revision != item.revision { return nil }
+        return show
     }
 
     /// Opens an item's Edit sheet, from the item as it is now.
     func beginVaultEdit(_ item: VaultList.Item, on host: HostEntry) async {
         await showVaultItem(item.item, on: host)
         switch vaultShows[host.name]?[item.item] {
-        case let .success(show)?: vaultSheet = .editor(VaultEditor(editing: show, on: host))
-        case let .failure(error)?: vaultSheet = .editor(VaultEditor(failed: item, error, on: host))
+        case let .success(show)?: sheet = .vaultItem(VaultEditor(editing: show, on: host))
+        case let .failure(error)?: sheet = .vaultItem(VaultEditor(failed: item, error, on: host))
         case nil: break
         }
     }
@@ -258,7 +360,7 @@ final class AppModel {
     /// Adds an item to a host's vault and selects it.
     func addVaultItem(_ draft: VaultDraft, on host: HostEntry) async throws {
         let item = try await vaultChange(on: host) { try await self.client.vaultAdd(draft, host: $0) }
-        selectedVaultItem = item.item
+        selectedVaultItem = OnHost(host: host.name, id: item.item)
     }
 
     /// Changes an item at the revision the person saw: an item changed
@@ -266,6 +368,24 @@ final class AppModel {
     func editVaultItem(_ item: VaultList.Item, _ draft: VaultDraft, on host: HostEntry) async throws {
         _ = try await vaultChange(on: host) { try await self.client.vaultEdit(item.item, revision: item.revision, draft, host: $0) }
         await showVaultItem(item.item, on: host)
+    }
+
+    /// The items a host's Vault lists: those its search matches.
+    func vaultRows(_ vault: VaultList) -> [VaultList.Item] {
+        let query = vaultSearch.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !query.isEmpty else { return vault.items }
+        return vault.items.filter { item in
+            ([item.title, item.kind, item.username ?? ""] + item.sites).contains { $0.lowercased().contains(query) }
+        }
+    }
+
+    /// The item the inspector shows on a host: the one selected there,
+    /// while the Vault lists it.
+    func inspectedVaultItem(on host: HostEntry) -> VaultList.Item? {
+        guard let selected = selectedVaultItem, selected.host == host.name,
+              case let .success(vault)? = summaries[host.name]?.vault,
+              let item = vault.items.first(where: { $0.item == selected.id }) else { return nil }
+        return vaultRows(VaultList(items: [item])).isEmpty ? nil : item
     }
 
     /// Why the last removal from a vault failed, until it's dismissed.
@@ -277,11 +397,18 @@ final class AppModel {
         do {
             try await vaultChange(on: host) { try await self.client.vaultRemove(item.item, revision: item.revision, host: $0) }
             vaultRemoveError = nil
-            if selectedVaultItem == item.item { selectedVaultItem = nil }
+            if selectedVaultItem == OnHost(host: host.name, id: item.item) { selectedVaultItem = nil }
             vaultShows[host.name]?[item.item] = nil
         } catch {
             vaultRemoveError = .from(error)
         }
+    }
+
+    /// Import…'s export, chosen: what it holds, in the import sheet.
+    func beginImport(_ file: URL, on host: HostEntry) {
+        let importer = VaultImport(file: file, on: host)
+        sheet = .vaultImport(importer)
+        Task { await importer.load(app: self) }
     }
 
     /// `latch vault import FILE --preview` on a host.
@@ -377,10 +504,12 @@ final class AppModel {
 
     /// Signs in with Google through latch: the first link it gives opens in
     /// the browser, and each is handed to `newLink` for opening again.
-    /// latch's enable once Google is on; nil if latch stopped before.
+    /// latch's enable once Google is on; nil if latch stopped before. Once
+    /// the wait is stopped, a line latch printed before it ends goes nowhere.
     func signInWithGoogle(addAccount: Bool, newLink: (URL) -> Void) async throws -> GoogleEnabled? {
         var opened = false
         for try await event in client.signInGoogle(addAccount: addAccount) {
+            try Task.checkCancellation()
             switch event {
             case let .link(url):
                 newLink(url)
@@ -403,7 +532,7 @@ final class AppModel {
 
     /// A plugin's "Manage accounts…": the account's connections.
     func manageAccounts() {
-        section = .connections
+        place = .account(.connections)
     }
 
     /// For snapshots: what `setup --status` said of Google.
@@ -493,15 +622,32 @@ final class AppModel {
         await refreshStatus()
     }
 
-    /// Turns a plugin on this Mac's host on or off, then reads this Mac's
-    /// status, its plugins among it, again. A refusal is thrown in the
-    /// app's words.
-    func setConnector(_ name: String, on: Bool) async throws {
+    /// Host Settings: a plugin of this Mac's being turned on or off while
+    /// latch does it, and why the last change failed, in the app's words.
+    /// Only this Mac's plugins change here, whichever host shows; another
+    /// host's are turned on there.
+    private(set) var connectorChange: ConnectorChange?
+    private(set) var connectorError: LatchError?
+
+    struct ConnectorChange: Equatable {
+        var plugin: String
+        var on: Bool
+    }
+
+    /// Turns a plugin on this Mac's host on or off, one at a time, then
+    /// reads this Mac's status, its plugins among it, again.
+    func setConnector(_ name: String, on: Bool) async {
+        guard connectorChange == nil, hosts.contains(where: \.isThisMac) else { return }
+        connectorChange = ConnectorChange(plugin: name, on: on)
+        connectorError = nil
+        defer { connectorChange = nil }
         guard let changed = await Self.result({
             if on { _ = try await self.client.enable(name) } else { try await self.client.disable(name) }
-        }) else { throw CancellationError() }
+        }) else { return }
         await refreshStatus()
-        if case let .failure(error) = changed { throw LatchError.unreachable(PluginCopy.refusal(error, plugin: name, on: on), detail: error.details) }
+        if case let .failure(error) = changed {
+            connectorError = .unreachable(PluginCopy.refusal(error, plugin: name, on: on), detail: error.details)
+        }
     }
 
     /// While `latch logout` runs, and after it if Plow couldn't take this
@@ -534,8 +680,9 @@ final class AppModel {
         leaveMainIfLoggedOut()
     }
 
-    /// The New Agent sheet, while open.
-    var newAgent: NewAgent?
+    /// How far down Agents was scrolled, for a return to it. Not observed:
+    /// only Agents reads it, as it appears.
+    @ObservationIgnored var agentsScrolled: CGFloat = 0
 
     func agentCatalog() async throws -> AgentCatalog { try await client.agentCatalog() }
     func agentLines() async throws -> AgentLines { try await client.agentLines() }
@@ -587,13 +734,14 @@ final class AppModel {
         await readStandings(missing: false)
     }
 
-    /// Each reachable host's standing, or only those not held yet.
+    /// Each reachable host's standing, or only those not held yet, all at
+    /// once: each is a read over latch's connection to that host.
     private func readStandings(missing: Bool) async {
-        // One host at a time: each is a read over latch's connection.
-        for host in hosts where host.isThisMac || host.online != false {
-            guard !Task.isCancelled else { return }
-            if missing, Self.held(standings[host.name]) { continue }
-            await refreshStanding(on: host)
+        await withTaskGroup { group in
+            for host in hosts where host.isThisMac || host.online != false {
+                if missing, Self.held(standings[host.name]) { continue }
+                group.addTask { await self.refreshStanding(on: host) }
+            }
         }
     }
 
@@ -603,18 +751,59 @@ final class AppModel {
                                                         uniquingKeysWith: { first, _ in first }) }
     }
 
-    /// The Agents page's path: an agent's uid opens its page.
-    var agentsPath: [String] = []
-    /// The agent whose rules the Rules screen brings into view.
-    var rulesFocus: String?
+    /// Why the last removal of an agent failed, until it's dismissed.
+    var agentRemoveError: LatchError?
+
+    /// Removes an agent by its uid (never its name, which another agent
+    /// may share), once the person has confirmed it; then the account's
+    /// agents are read again, removed or not. A refusal is kept for Agents
+    /// to say.
+    func removeAgent(_ agent: AgentsList.Agent) async {
+        guard let removed = await Self.result({ try await self.client.removeAgent(agent.uid) }) else { return }
+        // Gone even if the list can't be read again just now.
+        if case .success = removed { agents?.removeAll { $0.uid == agent.uid } }
+        await refreshAgentList()
+        if case let .failure(error) = removed { agentRemoveError = error } else { agentRemoveError = nil }
+    }
+
+    /// The agent whose rules the Rules screen brings into view and focuses,
+    /// on the one host it was asked for, until its editor takes it or that
+    /// host's Rules goes.
+    private(set) var rulesFocus: AgentTarget?
+
+    /// An agent's rules on a host: that host's Rules, its editor brought
+    /// into view.
+    func openRules(_ host: HostEntry, agent uid: String) {
+        chosenHost = host.name
+        place = .host(.rules)
+        rulesFocus = AgentTarget(host: host.name, agent: uid)
+    }
+
+    /// An agent's editor on a host's Rules: the request is its, so it's
+    /// done; true only for the request it matches, so a request for another
+    /// host or agent is left for that one.
+    func takeRulesFocus(_ target: AgentTarget) -> Bool {
+        guard rulesFocus == target else { return false }
+        rulesFocus = nil
+        return true
+    }
+
+    /// The window left the Rules a request was for, before its editor
+    /// took it, whatever that Rules showed (offline, unavailable, loading):
+    /// the request goes, so it can't take the focus, or begin a draft, when
+    /// that Rules is next shown.
+    private func dropRulesFocusLeft() {
+        guard let focus = rulesFocus, place != .host(.rules) || host?.name != focus.host else { return }
+        rulesFocus = nil
+    }
 
     /// The agent's rules to scroll to on a host's Rules screen: the one
-    /// asked for, once its editor exists (the host's rules read and the
-    /// agent listed); nil until then.
+    /// asked for on that host, once its editor exists (the host's rules
+    /// read and the agent listed); nil until then.
     func rulesScrollTarget(on host: HostEntry) -> String? {
-        guard let uid = rulesFocus, case .success? = summaries[host.name]?.rules,
-              agents?.contains(where: { $0.uid == uid }) == true else { return nil }
-        return uid
+        guard let focus = rulesFocus, focus.host == host.name, case .success? = summaries[host.name]?.rules,
+              agents?.contains(where: { $0.uid == focus.agent }) == true else { return nil }
+        return focus.agent
     }
     /// Rules' Try a request.
     let trial = Trial()
@@ -738,7 +927,8 @@ final class AppModel {
     /// The feed Home or Activity shows for the selected host, while one of
     /// them is the screen; the window runs it.
     var activityFeed: ActivityFeed? {
-        guard section == .home || section == .activity, let host, host.isThisMac || host.online != false else { return nil }
+        guard case let .host(screen, host?) = route, screen == .home || screen == .activity,
+              host.isThisMac || host.online != false else { return nil }
         return feed(for: host)
     }
 
@@ -760,12 +950,79 @@ final class AppModel {
         host.isThisMac ? status?.thisMachine.key ?? host.key : host.key
     }
 
-    /// The record Activity's inspector shows; Home's recent rows set it.
-    var selectedRecord: AuditRecord.ID?
-    /// Activity's filters, kept as hosts change; `showConnections` also
-    /// shows the owner's reads.
-    var activityFilter = ActivityView.Filter.all
+    /// The record Activity's inspector shows, on the host it was selected
+    /// on; Home's recent rows set it.
+    var selectedRecord: OnHost?
+    /// Activity's filters, kept as hosts change: its outcome, connections
+    /// and the owner's reads shown too, text to search for, and the one
+    /// agent asked for on one host.
+    var activityFilter = ActivityFilter.all
     var showConnections = false
+    var activitySearch = ""
+    var activityAgent: AgentTarget?
+
+    /// A host's requests, or one agent's there: that host's Activity with
+    /// every outcome, or the one asked for, no search, and no connections or
+    /// owner's reads, which Home's counts leave out.
+    func openActivity(_ host: HostEntry, agent uid: String? = nil, showing filter: ActivityFilter = .all) {
+        chosenHost = host.name
+        place = .host(.activity)
+        activityAgent = uid.map { AgentTarget(host: host.name, agent: $0) }
+        activityFilter = filter
+        activitySearch = ""
+        showConnections = false
+    }
+
+    /// One request on a host: that host's Activity, the request selected
+    /// and shown in the inspector, opened if it was closed. Filters it
+    /// passes are kept; if one would hide it, the outcome, search and agent
+    /// filters go.
+    func openRecord(_ record: AuditRecord, on host: HostEntry) {
+        if activityRows([record], on: host).isEmpty {
+            openActivity(host)
+        } else {
+            chosenHost = host.name
+            place = .host(.activity)
+        }
+        selectedRecord = OnHost(host: host.name, id: record.id)
+        inspecting.insert(.activity)
+    }
+
+    /// The record the inspector shows on a host: the one selected there,
+    /// while Activity lists it.
+    func inspectedRecord(on host: HostEntry) -> AuditRecord? {
+        guard let selected = selectedRecord, selected.host == host.name,
+              let record = feeds[host.name]?.records.last(where: { $0.id == selected.id }) else { return nil }
+        return activityRows([record], on: host).isEmpty ? nil : record
+    }
+
+    /// Which of the screens with an inspector show it; each keeps its own.
+    var inspecting: Set<HostScreen> = [.activity, .vault]
+
+    /// The agent Activity narrows to on a host: only the one asked for
+    /// there.
+    func activityAgent(on host: HostEntry) -> String? {
+        activityAgent?.host == host.name ? activityAgent?.agent : nil
+    }
+
+    /// What Activity lists of a host's loaded records, newest first: those
+    /// its filters all match. The agent is matched by uid, never by name.
+    func activityRows(_ records: [AuditRecord], on host: HostEntry) -> [AuditRecord] {
+        let agent = activityAgent(on: host), hostKey = key(of: host)
+        let query = activitySearch.trimmingCharacters(in: .whitespaces).lowercased()
+        return records.reversed().filter { record in
+            guard showConnections || !record.isBackground else { return false }
+            if let agent, record.agent != agent { return false }
+            switch activityFilter {
+            case .all: break
+            case .allowed: guard record.decision == "allow" else { return false }
+            case .refused: guard record.isRefused else { return false }
+            }
+            guard !query.isEmpty else { return true }
+            let caller = record.callerLabel(hostKey: hostKey, hostName: host.name, isThisMac: host.isThisMac)
+            return [record.command ?? "", caller.who, caller.kind, record.status.title].contains { $0.lowercased().contains(query) }
+        }
+    }
 
     /// Follows `status --local --follow` until the main window closes, so
     /// this Mac's state is always latch's latest without asking again.
@@ -787,9 +1044,7 @@ final class AppModel {
         leaveMainIfLoggedOut()
     }
 
-    /// "Start hosting on this Mac…" asked, awaiting the person's yes; and a
-    /// start from the main window, while it runs and how it failed.
-    var confirmingStartHosting = false
+    /// A start from the main window, while it runs and how it failed.
     private(set) var startingHost = false
     private(set) var startHostError: LatchError?
 

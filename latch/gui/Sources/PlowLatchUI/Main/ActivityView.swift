@@ -1,19 +1,91 @@
 import SwiftUI
 
-/// The selected host's audit, newest first, live while on screen; a record
-/// opens in the inspector.
-struct ActivityView: View {
-    @Environment(AppModel.self) private var app
-    @State private var search = ""
-    @State private var inspecting = true
+/// Activity's outcome filter.
+enum ActivityFilter: String, CaseIterable, Identifiable {
+    case all = "All", allowed = "Allowed", refused = "Refused"
+    var id: Self { self }
+}
 
-    enum Filter: String, CaseIterable, Identifiable {
-        case all = "All", allowed = "Allowed", refused = "Refused"
-        var id: Self { self }
+/// What Activity's heading, states and footer show of the feed, set by the
+/// table's controller when it reloads (once a batch at most), not read from
+/// the feed by each: reading it, they redrew for every record.
+@Observable final class ActivityShown {
+    /// The host showing, if its activity can be shown.
+    var host: HostEntry?
+    /// Rows matching the filters, and records loaded.
+    var rows = 0
+    var records = 0
+    var caughtUp = false
+    var error: LatchError?
+    /// The oldest record loaded, while older ones are on the host.
+    var since: Date?
+    /// The agent asked for, by the name on its records.
+    var agentName: String?
+
+    func set<T: Equatable>(_ path: ReferenceWritableKeyPath<ActivityShown, T>, _ value: T) {
+        if self[keyPath: path] != value { self[keyPath: path] = value }
     }
+}
+
+/// Activity's heading, then its scope bar: the outcome, the agent asked for
+/// (a click removes it) and Show Connections and Reads. Too narrow for one
+/// line, they stack, and the outcome's segments narrow to fit.
+struct ActivityHeading: View {
+    var shown: ActivityShown
+    @Environment(AppModel.self) private var app
 
     var body: some View {
         @Bindable var app = app
+        let outcome = Picker("Show", selection: $app.activityFilter) {
+            ForEach(ActivityFilter.allCases) { Text($0.rawValue).tag($0) }
+        }
+        .pickerStyle(.segmented)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Activity").font(.title2.bold())
+                Spacer()
+                Toggle("Show Connections and Reads", systemImage: "point.3.connected.trianglepath.dotted", isOn: $app.showConnections)
+                    .toggleStyle(.button)
+                    .labelStyle(.iconOnly)
+                    .help("Also show when callers connected, and your own reads (rules, vault, status, activity)")
+            }
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 12) {
+                    outcome.fixedSize()
+                    agentFilter
+                }
+                VStack(alignment: .leading, spacing: 8) {
+                    outcome
+                    agentFilter
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+    }
+
+    @ViewBuilder private var agentFilter: some View {
+        if let host = shown.host, let uid = app.activityAgent(on: host) {
+            let name = app.agents?.first(where: { $0.uid == uid })?.name ?? shown.agentName ?? "Unnamed agent"
+            Button {
+                app.activityAgent = nil
+            } label: {
+                Label("Agent: \(name)", systemImage: "xmark.circle.fill")
+            }
+            .buttonStyle(.bordered)
+            .help("Show every agent's requests")
+            .accessibilityLabel("Remove filter: agent \(name)")
+        }
+    }
+}
+
+/// Where Activity has no rows to list, why: no host, offline, couldn't
+/// read, reading, nothing yet, nothing matching.
+struct ActivityStates: View {
+    var shown: ActivityShown
+    @Environment(AppModel.self) private var app
+
+    var body: some View {
         Group {
             if let host = app.host {
                 if !host.isThisMac, host.online == false {
@@ -22,134 +94,53 @@ struct ActivityView: View {
                     } description: {
                         Text("Its activity is kept on \(host.name). Start Latch there to see it.")
                     }
+                } else if shown.records == 0, let error = shown.error {
+                    Unavailable(error: error, host: host)
+                } else if shown.records == 0, !shown.caughtUp {
+                    ProgressView("Reading \(host.isThisMac ? "this Mac's" : "\(host.name)'s") activity…")
+                } else if shown.records == 0 {
+                    ContentUnavailableView("No activity yet", systemImage: "tray",
+                                           description: Text("Every request to \(host.name), allowed or refused, shows up here."))
                 } else {
-                    Records(feed: app.feed(for: host), host: host, filter: app.activityFilter, showConnections: app.showConnections,
-                            search: search, inspecting: $inspecting)
-                        .id(host.id)
+                    ContentUnavailableView("No matching requests in the loaded history", systemImage: "line.3.horizontal.decrease.circle",
+                                           description: Text("Try another filter."))
                 }
             } else {
                 ContentUnavailableView("No host", systemImage: "waveform.path.ecg",
                                        description: Text("Activity is kept on each host. Pick one in the sidebar."))
             }
         }
-        .navigationTitle("Activity")
-        .navigationSubtitle(app.host?.name ?? "")
-        .searchable(text: $search, placement: .toolbar, prompt: "Search requests")
-        .toolbar {
-            ToolbarItem {
-                Picker("Show", selection: $app.activityFilter) {
-                    ForEach(Filter.allCases) { Text($0.rawValue).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-            }
-            ToolbarItem {
-                Toggle("Show Connections and Reads", systemImage: "point.3.connected.trianglepath.dotted", isOn: $app.showConnections)
-                    .help("Also show when callers connected, and your own reads (rules, vault, status, activity)")
-            }
-            ToolbarItem {
-                Button("Inspector", systemImage: "sidebar.trailing") { inspecting.toggle() }
-                    .help(inspecting ? "Hide the inspector" : "Show the inspector")
-            }
-        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(.background)
     }
 }
 
-/// The table of one host's records, and its states while there are none.
-private struct Records: View {
-    var feed: ActivityFeed
-    var host: HostEntry
-    var filter: ActivityView.Filter
-    var showConnections: Bool
-    var search: String
-    @Binding var inspecting: Bool
-    @Environment(AppModel.self) private var app
+/// From when the records loaded go back, while there are older ones (there
+/// is no loading more), and how many of those loaded match.
+struct ActivityFooter: View {
+    var shown: ActivityShown
 
     var body: some View {
-        @Bindable var app = app
-        let rows = rows
-        Group {
-            if feed.records.isEmpty, let error = feed.error {
-                Unavailable(error: error, host: host)
-            } else if feed.records.isEmpty, !feed.caughtUp {
-                ProgressView("Reading \(host.isThisMac ? "this Mac's" : "\(host.name)'s") activity…")
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if feed.records.isEmpty {
-                ContentUnavailableView("No activity yet", systemImage: "tray",
-                                       description: Text("Every request to \(host.name), allowed or refused, shows up here."))
-            } else {
-                Table(rows, selection: $app.selectedRecord) {
-                    TableColumn("Time") { record in
-                        Text(record.time, format: .dateTime.hour().minute().second()).foregroundStyle(.secondary)
-                    }
-                    .width(min: 95, ideal: 100, max: 130)
-                    TableColumn("Status") { record in StatusLabel(status: record.status).help(record.status.title) }
-                        .width(min: 140, ideal: 210, max: 280)
-                    TableColumn("Request") { record in
-                        Text(record.command ?? "—").font(.body.monospaced()).lineLimit(1).truncationMode(.middle)
-                            .help(record.command ?? "A connection")
-                    }
-                    .width(min: 160, ideal: 200)
-                    TableColumn("Caller") { record in
-                        let caller = callerLabel(record)
-                        Text("\(caller.who) \(Text("· \(caller.kind)").foregroundStyle(.secondary))")
-                    }
-                    .width(min: 110, ideal: 140, max: 240)
+        if let host = shown.host {
+            HStack {
+                if let since = shown.since {
+                    Text("Showing since \(since.formatted(date: .abbreviated, time: .shortened))").foregroundStyle(.secondary)
                 }
-                .safeAreaInset(edge: .bottom, spacing: 0) { footer }
-                .inspector(isPresented: $inspecting) {
-                    Group {
-                        if let record = feed.records.first(where: { $0.id == app.selectedRecord }) {
-                            RecordInspector(record: record, caller: callerLabel(record), hostName: host.name, host: feed.host)
-                        } else {
-                            ContentUnavailableView("No Selection", systemImage: "doc.text.magnifyingglass",
-                                                   description: Text("Select a request to see who asked, why it was allowed or refused, and what ran."))
-                        }
-                    }
-                    .inspectorColumnWidth(min: 260, ideal: 320, max: 460)
+                Spacer()
+                if let error = shown.error {
+                    Label(ErrorCopy.short(error, host: host.spoken), systemImage: "exclamationmark.triangle").foregroundStyle(.secondary).lineLimit(1)
+                } else {
+                    let rows = shown.rows, records = shown.records
+                    Text("\(rows) \(rows == 1 ? "match" : "matches") · \(records) \(records == 1 ? "record" : "records") loaded\(shown.caughtUp ? "" : " · reading…")")
+                        .foregroundStyle(.secondary)
                 }
             }
+            .font(.callout)
+            .controlSize(.small)
+            .padding(.horizontal, 12)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(.bar)
         }
-    }
-
-    /// Load Earlier, and whether the list is live.
-    private var footer: some View {
-        HStack {
-            if feed.hasOlder {
-                Button(feed.loadingOlder ? "Loading…" : "Load Earlier") { Task { await feed.loadOlder() } }
-                    .disabled(feed.loadingOlder)
-            }
-            Spacer()
-            if let error = feed.error {
-                Label(ErrorCopy.short(error, host: host.spoken), systemImage: "exclamationmark.triangle").foregroundStyle(.secondary).lineLimit(1)
-            } else {
-                Text("\(feed.records.count) records\(feed.caughtUp ? "" : " · reading…")").foregroundStyle(.secondary)
-            }
-        }
-        .font(.callout)
-        .controlSize(.small)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
-        .background(.bar)
-    }
-
-    private var rows: [AuditRecord] {
-        let query = search.trimmingCharacters(in: .whitespaces).lowercased()
-        return feed.records.reversed().filter { record in
-            guard showConnections || !record.isBackground else { return false }
-            switch filter {
-            case .all: break
-            case .allowed: guard record.decision == "allow" else { return false }
-            case .refused: guard record.isRefused else { return false }
-            }
-            guard !query.isEmpty else { return true }
-            let caller = callerLabel(record)
-            return [record.command ?? "", caller.who, caller.kind, record.status.title].contains { $0.lowercased().contains(query) }
-        }
-    }
-
-    private func callerLabel(_ record: AuditRecord) -> (who: String, kind: String) {
-        record.callerLabel(hostKey: app.key(of: host), hostName: host.name, isThisMac: host.isThisMac)
     }
 }
 
@@ -209,23 +200,6 @@ private struct DotLabelStyle: LabelStyle {
         HStack(spacing: 6) {
             configuration.icon.accessibilityHidden(true)
             configuration.title
-        }
-    }
-}
-
-extension View {
-    /// Runs `feed`'s stream while this view is on screen, and for its grace
-    /// after.
-    func following(_ feed: ActivityFeed?, still: Bool) -> some View {
-        task(id: feed.map(ObjectIdentifier.init)) {
-            guard let feed, !still else { return }
-            feed.start()
-            // Until this view goes away: a stream nothing is sent on ends
-            // only when the task is cancelled.
-            let (untilGone, open) = AsyncStream<Never>.makeStream()
-            for await _ in untilGone {}
-            withExtendedLifetime(open) {}
-            feed.stop()
         }
     }
 }

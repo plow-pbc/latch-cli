@@ -1,4 +1,4 @@
-#if DEBUG
+#if DEBUG || LATCH_TEST_HOOKS
 import AppKit
 import SwiftUI
 
@@ -38,7 +38,7 @@ nonisolated struct FakeLatchClient: LatchClient {
         try AuditPage.parse(Data((host == nil ? Fixtures.studioAudit : Fixtures.kitchenAudit).utf8))
     }
     /// The fixture's lines, then nothing more until stopped.
-    func auditFollow(host: String?, after: String?) -> AsyncThrowingStream<AuditLine, Error> {
+    func auditFollow(host: String?, after: String?, last: Int?) -> AsyncThrowingStream<AuditLine, Error> {
         AsyncThrowingStream { continuation in
             for line in (host == nil ? Fixtures.studioAudit : Fixtures.kitchenAudit).split(separator: "\n") {
                 if let line = try? LatchJSON.decoder.decode(AuditLine.self, from: Data(line.utf8)) { continuation.yield(line) }
@@ -85,6 +85,7 @@ nonisolated struct FakeLatchClient: LatchClient {
         throw LatchError.unreachable("a still")
     }
     func agentShow(_ uid: String) async throws -> AgentsList.Agent { throw LatchError.unreachable("a still") }
+    func removeAgent(_ uid: String) async throws {}
 }
 
 extension Fixtures {
@@ -157,14 +158,15 @@ nonisolated enum Fixtures {
         return #"{"step":"google","state":"needed","reason":"Google is connected in Plow (\#(accounts.joined(separator: ", "))); the Google connector is off.","args":["plugins","enable","google"],"enabled":false,"ready":false,"accounts":\#(list(accounts))\#(again)}"#
     }
 
-    /// `status`, its host's keep-awake switch as latch says it.
+    /// `status`, its host's keep-awake switch as latch says it (off, as
+    /// latch starts, in the statuses below).
     static func keepAwake(_ keepAwake: String, in status: String = serving) -> String {
-        status.replacingOccurrences(of: #""blocked":null"#, with: #""blocked":null,"keep_awake":\#(keepAwake)"#)
+        status.replacingOccurrences(of: #""keep_awake":{"enabled":false,"held":false,"reason":"disabled"}"#, with: #""keep_awake":\#(keepAwake)"#)
     }
-    static let serving = #"{"login":{"kind":"device"},"this_machine":{"name":"studio","key":"6b55a78f","hosting":{"running":true,"ready":true,"configuring":false,"managed":true,"attached":false,"state":"serving","pid":32250,"blocked":null}},"update":{"available":false,"build":null,"checked_at":null},"last_error":null,"state_dir":"/Users/me/.latch","version":"0.1.0","protocol":2}"#
-    static let stopped = #"{"login":{"kind":"device"},"this_machine":{"name":"studio","key":"6b55a78f","hosting":{"running":false,"ready":false,"configuring":false,"managed":false,"attached":false,"state":"stopped","pid":null,"blocked":null}},"update":{"available":true,"build":1342,"checked_at":"2026-10-22T22:07:54.186472Z"},"last_error":null,"state_dir":"/Users/me/.latch","version":"0.1.0","protocol":2}"#
-    static let loggedOut = #"{"login":null,"this_machine":{"name":null,"key":null,"hosting":{"running":false,"ready":false,"configuring":false,"managed":false,"attached":false,"state":"stopped","pid":null,"blocked":null}},"update":{"available":false,"build":null,"checked_at":null},"last_error":null,"state_dir":"/Users/me/.latch","version":"0.1.0","protocol":2}"#
-    static let servingAttached = #"{"login":{"kind":"device"},"this_machine":{"name":"studio","key":"6b55a78f","hosting":{"running":true,"ready":true,"configuring":false,"managed":true,"attached":true,"state":"serving","pid":32250,"blocked":null}},"update":{"available":false,"build":null,"checked_at":null},"last_error":null,"state_dir":"/Users/me/.latch","version":"0.1.0","protocol":2}"#
+    static let serving = #"{"login":{"kind":"device"},"this_machine":{"name":"studio","key":"6b55a78f","hosting":{"running":true,"ready":true,"configuring":false,"managed":true,"attached":false,"state":"serving","pid":32250,"blocked":null,"keep_awake":{"enabled":false,"held":false,"reason":"disabled"}}},"update":{"available":false,"build":null,"checked_at":null},"last_error":null,"state_dir":"/Users/me/.latch","version":"0.1.0","protocol":2}"#
+    static let stopped = #"{"login":{"kind":"device"},"this_machine":{"name":"studio","key":"6b55a78f","hosting":{"running":false,"ready":false,"configuring":false,"managed":false,"attached":false,"state":"stopped","pid":null,"blocked":null,"keep_awake":{"enabled":false,"held":false,"reason":"disabled"}}},"update":{"available":true,"build":1342,"checked_at":"2026-10-22T22:07:54.186472Z"},"last_error":null,"state_dir":"/Users/me/.latch","version":"0.1.0","protocol":2}"#
+    static let loggedOut = #"{"login":null,"this_machine":{"name":null,"key":null,"hosting":{"running":false,"ready":false,"configuring":false,"managed":false,"attached":false,"state":"stopped","pid":null,"blocked":null,"keep_awake":{"enabled":false,"held":false,"reason":"disabled"}}},"update":{"available":false,"build":null,"checked_at":null},"last_error":null,"state_dir":"/Users/me/.latch","version":"0.1.0","protocol":2}"#
+    static let servingAttached = #"{"login":{"kind":"device"},"this_machine":{"name":"studio","key":"6b55a78f","hosting":{"running":true,"ready":true,"configuring":false,"managed":true,"attached":true,"state":"serving","pid":32250,"blocked":null,"keep_awake":{"enabled":false,"held":false,"reason":"disabled"}}},"update":{"available":false,"build":null,"checked_at":null},"last_error":null,"state_dir":"/Users/me/.latch","version":"0.1.0","protocol":2}"#
     static let otherVersion = #"{"login":{"kind":"device"},"this_machine":{"name":"studio","key":"6b55a78f","hosting":{"running":true,"ready":false,"configuring":false,"managed":true,"attached":false,"state":"serving","pid":4242,"blocked":{"code":"other_version","message":"a host from another latch version (pid 4242) holds this state folder; stop it with `kill 4242`, then start latch again"}}},"update":{"available":false,"build":null,"checked_at":null},"last_error":null,"state_dir":"/Users/me/.latch","version":"0.1.0","protocol":2}"#
     static let laptop = #"{"login":{"kind":"device"},"this_machine":{"name":"laptop","key":"0cdaf3c7601ab886e37b9835cfe9902617aeed88ffd3d066b11bc77eef548b29","hosting":{"running":false,"ready":false,"configuring":false,"managed":false,"attached":false,"state":"stopped","pid":null,"blocked":null}},"update":{"available":false,"build":null,"checked_at":null},"last_error":null,"state_dir":"/Users/me/.latch","version":"0.1.0 (commit 6031e5a50, built 2026-10-22 22:03 UTC, local build, protocol plow/latch/2)","protocol":2}"#
     // `latch status` on studio (a host) and on laptop (never served), and
@@ -473,43 +475,55 @@ package enum SnapshotRunner {
                 app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
                 app.stage(rulesSaved: rulesSaved, setup: try on.map { try Fixtures.decode(Fixtures.setup(on: $0)) })
                 _ = app.stage(.done, progress: progress)
-                try await renderWindow(MainView().environment(app), size: mainSize, dark: dark,
+                try await renderWindow(app, size: mainSize, dark: dark,
                                  file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
             }
-            // The main window's host tier: each kind of host, and switching.
+            // The main window's host workspace: each kind of host, and switching.
             let plowDown = LatchError.failed(LatchFailure(code: "plow_unreachable", message: "could not reach Plow at http://127.0.0.1:18934: error sending request for url (http://127.0.0.1:18934/v1/latch/peers)"))
-            let homes: [(String, String, String?, String?, SidebarItem)] = [
-                ("10-home-this-mac-serving", Fixtures.serving, Fixtures.studioHosts, nil, .home),
-                ("10-home-this-mac-terminal", Fixtures.servingAttached, Fixtures.studioHosts, nil, .home),
-                ("10-home-this-mac-stopped-update", Fixtures.stopped, Fixtures.studioHosts, nil, .home),
-                ("10-home-this-mac-other-version", Fixtures.otherVersion, Fixtures.studioHosts, nil, .home),
-                ("10-home-this-mac-plow-unreachable", Fixtures.serving, nil, nil, .home),
-                ("10-home-this-mac-stopped-plow-unreachable", Fixtures.stopped, nil, nil, .home),
-                ("11-home-viewer-only", Fixtures.laptop, Fixtures.laptopHosts, nil, .home),
-                ("11-home-viewer-only-no-hosts", Fixtures.laptop, Fixtures.noHosts, nil, .home),
-                ("12-home-remote-online", Fixtures.serving, Fixtures.studioHosts, "pi-kitchen", .home),
-                ("12-home-remote-offline-viewer", Fixtures.laptop, Fixtures.laptopHostsPiOffline, "pi-kitchen", .home),
-                ("13-agents-on-studio", Fixtures.serving, Fixtures.studioHosts, nil, .agents),
-                ("13-agents-after-switch-to-pi-kitchen", Fixtures.serving, Fixtures.studioHosts, "pi-kitchen", .agents),
-                ("13-rules-on-pi-kitchen", Fixtures.serving, Fixtures.studioHosts, "pi-kitchen", .rules),
+            let homes: [(String, String, String?, String?, Place)] = [
+                ("10-home-this-mac-serving", Fixtures.serving, Fixtures.studioHosts, nil, .host(.home)),
+                ("10-home-this-mac-terminal", Fixtures.servingAttached, Fixtures.studioHosts, nil, .host(.home)),
+                ("10-home-this-mac-stopped-update", Fixtures.stopped, Fixtures.studioHosts, nil, .host(.home)),
+                ("10-home-this-mac-other-version", Fixtures.otherVersion, Fixtures.studioHosts, nil, .host(.home)),
+                ("10-home-this-mac-plow-unreachable", Fixtures.serving, nil, nil, .host(.home)),
+                ("10-home-this-mac-stopped-plow-unreachable", Fixtures.stopped, nil, nil, .host(.home)),
+                ("11-home-viewer-only", Fixtures.laptop, Fixtures.laptopHosts, nil, .host(.home)),
+                ("11-home-viewer-only-no-hosts", Fixtures.laptop, Fixtures.noHosts, nil, .host(.home)),
+                ("12-home-remote-online", Fixtures.serving, Fixtures.studioHosts, "pi-kitchen", .host(.home)),
+                ("12-home-remote-offline-viewer", Fixtures.laptop, Fixtures.laptopHostsPiOffline, "pi-kitchen", .host(.home)),
+                ("13-agents-on-studio", Fixtures.serving, Fixtures.studioHosts, nil, .account(.agents)),
+                ("13-agents-after-switch-to-pi-kitchen", Fixtures.serving, Fixtures.studioHosts, "pi-kitchen", .account(.agents)),
+                ("13-rules-on-pi-kitchen", Fixtures.serving, Fixtures.studioHosts, "pi-kitchen", .host(.rules)),
             ]
-            for (name, status, account, chosen, section) in homes {
+            for (name, status, account, chosen, place) in homes {
                 let app = AppModel(client: FakeLatchClient(), still: true)
                 app.stage(status: try Fixtures.decode(Fixtures.status(status, plugins: Fixtures.studioPlugins)))
                 app.stage(account: try account.map { try Fixtures.decode($0) }, error: account == nil ? plowDown : nil)
-                app.stage(summary: HostSummary(rules: .success(try Fixtures.decode(Fixtures.studioRules)),
-                                               vault: .success(try Fixtures.decode(Fixtures.studioVault))),
-                          for: "studio")
-                app.stage(summary: HostSummary(status: .success(try Fixtures.decode(Fixtures.status(Fixtures.piStatus, plugins: Fixtures.piPlugins))),
-                                               rules: .success(try Fixtures.decode(Fixtures.piRules)),
-                                               vault: .success(try Fixtures.decode(Fixtures.piVault))),
-                          for: "pi-kitchen")
+                try stageSummaries(app)
                 app.chosenHost = chosen
-                app.section = section
+                app.place = place
                 stageActivity(app)
                 _ = app.stage(.done, progress: full)
-                try await renderWindow(MainView().environment(app), size: mainSize, dark: dark,
+                try await renderWindow(app, size: mainSize, dark: dark,
                                  file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
+            }
+            // Home at the default and narrowest sizes, on this Mac and
+            // another host, Connections already read.
+            for chosen in ["studio", "pi-kitchen"] {
+                for (label, size) in [("default", CGSize(width: 1120, height: 640)), ("narrow", narrowSize)] {
+                    let file = output.appending(path: "24-home-\(chosen)-\(label)-\(dark ? "dark" : "light").png")
+                    guard wanted(file) else { continue }
+                    let app = AppModel(client: FakeLatchClient(), still: true)
+                    app.stage(status: try Fixtures.decode(Fixtures.status(Fixtures.serving, plugins: Fixtures.studioPlugins)))
+                    app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
+                    try stageSummaries(app)
+                    app.stage(connections: Connections(try Fixtures.decode(Fixtures.setup(on: [], google: Fixtures.googleNotConnected)) as SetupStatus))
+                    app.chosenHost = chosen
+                    app.place = .host(.home)
+                    stageActivity(app)
+                    _ = app.stage(.done, progress: full)
+                    try await renderWindow(app, size: size, dark: dark, file: file)
+                }
             }
             // latch's errors in the app's words, latch's own under Details:
             // a host out of reach, one stopped while Activity follows it,
@@ -518,29 +532,31 @@ package enum SnapshotRunner {
                                                              message: #"could not connect to host "pi-kitchen"; nothing was sent"#))
             let stopped = LatchError.failed(LatchFailure(code: "host_stopped", message: #"host "pi-kitchen" stopped serving"#))
             let busy = LatchError.failed(LatchFailure(code: "state_busy", message: "another latch is changing /Users/me/.latch; try again"))
-            let errors: [(String, String?, SidebarItem, HostSummary)] = [
+            let errors: [(String, String?, HostScreen, HostSummary)] = [
                 ("23-error-rules-pi-kitchen-unreachable", "pi-kitchen", .rules, HostSummary(rules: .failure(unreachable))),
                 ("23-error-activity-pi-kitchen-stopped", "pi-kitchen", .activity, HostSummary()),
                 ("23-error-rules-unknown-code", nil, .rules, HostSummary(rules: .failure(busy))),
+                ("23-error-home-pi-kitchen-rules-unreachable", "pi-kitchen", .home,
+                 HostSummary(rules: .failure(unreachable), vault: .success(try Fixtures.decode(Fixtures.piVault)))),
             ]
-            for (name, chosen, section, summary) in errors {
+            for (name, chosen, screen, summary) in errors {
                 let app = AppModel(client: FakeLatchClient(), still: true)
                 app.stage(status: try Fixtures.decode(Fixtures.serving))
                 app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
                 app.stage(summary: summary, for: chosen ?? "studio")
                 app.chosenHost = chosen
-                app.section = section
+                app.place = .host(screen)
                 stageActivity(app)
                 if let kitchen = app.hosts.first(where: { $0.name == "pi-kitchen" }) {
                     app.feed(for: kitchen).stage("", error: stopped)
                 }
                 _ = app.stage(.done, progress: full)
-                try await renderWindow(MainView().environment(app), size: mainSize, dark: dark,
+                try await renderWindow(app, size: mainSize, dark: dark,
                                  file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
             }
             // Activity: real records of each kind, a filter, the inspector,
             // another host's, and one Plow counts offline.
-            let activities: [(String, String, String, String?, ActivityView.Filter, (AuditRecord) -> Bool)] = [
+            let activities: [(String, String, String, String?, ActivityFilter, (AuditRecord) -> Bool)] = [
                 ("14-activity-studio-agent-allowed", Fixtures.serving, Fixtures.studioHosts, nil, .all,
                  { $0.callerName == "scout" && $0.decision == "allow" && $0.op == "exec" }),
                 ("14-activity-studio-refused-you-said-no", Fixtures.serving, Fixtures.studioHosts, nil, .refused,
@@ -555,13 +571,101 @@ package enum SnapshotRunner {
                 app.stage(status: try Fixtures.decode(status))
                 app.stage(account: try Fixtures.decode(account))
                 app.chosenHost = chosen
-                app.section = .activity
+                app.place = .host(.activity)
                 app.activityFilter = filter
                 stageActivity(app)
-                app.selectedRecord = app.host.flatMap { app.feed(for: $0).records.last(where: pick)?.id }
+                if let host = app.host, let record = app.feed(for: host).records.last(where: pick) {
+                    app.selectedRecord = OnHost(host: host.name, id: record.id)
+                }
                 _ = app.stage(.done, progress: full)
-                try await renderWindow(MainView().environment(app), size: CGSize(width: 1180, height: 640), dark: dark,
+                try await renderWindow(app, size: CGSize(width: 1180, height: 640), dark: dark,
                                  file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
+            }
+            // Activity's scope bar at the default and narrowest sizes: an
+            // agent's link (its chip), no match in what's loaded, reading,
+            // a host out of reach, and a read that failed.
+            let scout = "a74f38668570a45ddc4b762ba0465d74"
+            let scopes: [(String, (AppModel, HostEntry) -> Void)] = [
+                ("24-activity-agent-chip", { app, studio in
+                    app.feed(for: studio).stage(Fixtures.studioAudit)
+                    app.openActivity(studio, agent: scout)
+                }),
+                ("24-activity-no-match", { app, studio in
+                    app.feed(for: studio).stage(Fixtures.studioAudit)
+                    app.openActivity(studio, agent: scout)
+                    app.activitySearch = "Taxes"
+                }),
+                ("24-activity-reading", { _, _ in }),
+                ("24-activity-unreachable", { app, studio in app.feed(for: studio).stage("", error: unreachable) }),
+                ("24-activity-read-failure", { app, studio in app.feed(for: studio).stage("", error: busy) }),
+            ]
+            // The shell: a host's workspace with its inspector (a record
+            // selected, none selected, closed on Vault), and an account
+            // page, which has no host.
+            let shells: [(String, (AppModel, HostEntry) -> Void)] = [
+                ("25-shell-activity-inspector", { app, studio in
+                    app.feed(for: studio).stage(Fixtures.studioAudit)
+                    app.place = .host(.activity)
+                    if let record = app.feed(for: studio).records.last(where: { $0.callerName == "scout" && $0.op == "exec" }) {
+                        app.selectedRecord = OnHost(host: studio.name, id: record.id)
+                    }
+                }),
+                ("25-shell-activity-no-selection", { app, studio in
+                    app.feed(for: studio).stage(Fixtures.studioAudit)
+                    app.place = .host(.activity)
+                }),
+                ("25-shell-vault-inspector-closed", { app, studio in
+                    app.stage(summary: HostSummary(vault: .success(try! Fixtures.decode(Fixtures.vaultItems))), for: studio.name)
+                    app.place = .host(.vault)
+                    app.inspecting.remove(.vault)
+                }),
+                ("25-shell-account-connections", { app, _ in
+                    app.stage(connections: Connections(try! Fixtures.decode(Fixtures.setup(on: [])) as SetupStatus))
+                    app.stage(devices: try! Fixtures.decode(Fixtures.devices), update: nil)
+                    app.place = .account(.connections)
+                }),
+            ]
+            // The sidebar and the inspector on their own, which the window
+            // captures above leave out (the window server draws them):
+            // 3 and 8 hosts, and a record in the inspector.
+            let eight = Fixtures.studioHosts.replacingOccurrences(of: #"],"default_host""#, with: ","
+                + ["build-server-in-the-garage-closet", "nas", "mini", "travel-air", "lab-linux"].enumerated().map { index, name in
+                    #"{"name":"\#(name)","key":"k\#(index)","self":false,"online":\#(name == "nas" ? "null" : "true"),"last_seen_at":null}"#
+                }.joined(separator: ",") + #"],"default_host""#)
+            for (name, account) in [("25-shell-sidebar-3-hosts", Fixtures.studioHosts), ("25-shell-sidebar-8-hosts", eight)] {
+                let app = AppModel(client: FakeLatchClient(), still: true)
+                app.stage(status: try Fixtures.decode(Fixtures.serving))
+                app.stage(account: try Fixtures.decode(account))
+                app.showHost("pi-kitchen")
+                try await render(Sidebar().environment(app), size: CGSize(width: 230, height: 560), dark: dark,
+                                 file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
+            }
+            do {
+                let app = AppModel(client: FakeLatchClient(), still: true)
+                app.stage(status: try Fixtures.decode(Fixtures.serving))
+                app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
+                app.place = .host(.activity)
+                if let studio = app.host {
+                    app.feed(for: studio).stage(Fixtures.studioAudit)
+                    if let record = app.feed(for: studio).records.last(where: { $0.callerName == "scout" && $0.op == "exec" }) {
+                        app.selectedRecord = OnHost(host: studio.name, id: record.id)
+                    }
+                }
+                try await render(Inspector(route: app.route).environment(app), size: CGSize(width: 320, height: 600), dark: dark,
+                                 file: output.appending(path: "25-shell-inspector-record-\(dark ? "dark" : "light").png"))
+            }
+            for (name, stage) in shells + scopes {
+                for (label, size) in [("default", CGSize(width: 1120, height: 640)), ("narrow", narrowSize)] {
+                    let app = AppModel(client: FakeLatchClient(), still: true)
+                    app.stage(status: try Fixtures.decode(Fixtures.serving))
+                    app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
+                    app.place = .host(.activity)
+                    guard let studio = app.host else { continue }
+                    stage(app, studio)
+                    _ = app.stage(.done, progress: full)
+                    try await renderWindow(app, size: size, dark: dark,
+                                           file: output.appending(path: "\(name)-\(label)-\(dark ? "dark" : "light").png"))
+                }
             }
             // A browser plan's screenshots in the inspector, kept and gone,
             // and a standalone screenshot, which the host never keeps: the
@@ -591,39 +695,41 @@ package enum SnapshotRunner {
                                  dark: dark, background: false, file: output.appending(path: "10-fda-helper-\(name)-\(dark ? "dark" : "light").png"))
             }
         }
-        // Agents and Rules: real agents and standings (sidecar offline), an
-        // agent's page, a host's rules, and Try a request's verdicts.
+        // Agents and Rules: real agents and standings (sidecar offline), a
+        // removal that failed, a host's rules, and Try a request's verdicts.
         for dark in [false, true] {
             let sidecarOffline = Fixtures.studioHosts.replacingOccurrences(
                 of: #""self":false,"online":true,"last_seen_at":"2026-10-22T22:06:33.384336Z""#,
                 with: #""self":false,"online":false,"last_seen_at":null"#)
             let scout = "ba3c0b3ad1eba7a9a1eb04b67c9db0dd", helper = "3971582e59baad83250141c8dcc95855"
-            let screens: [(String, SidebarItem, String?, [String], (AppModel) throws -> Void)] = [
-                ("15-agents-pills", .agents, nil, [], { _ in }),
-                ("15-agent-page-helper", .agents, nil, [helper], { _ in }),
-                ("16-rules-studio-scout-try-allowed", .rules, nil, [], { app in
-                    app.rulesFocus = scout
+            let screens: [(String, Place, String?, (AppModel) throws -> Void)] = [
+                ("15-agents-hub", .account(.agents), nil, { _ in }),
+                ("15-agents-remove-failed", .account(.agents), nil, { app in
+                    app.agentRemoveError = .failed(LatchFailure(code: "outcome_unknown", message: "Plow may or may not have removed helper"))
+                }),
+                ("16-rules-studio-scout-try-allowed", .host(.rules), nil, { app in
+                    if let studio = app.host { app.openRules(studio, agent: scout) }
                     app.trial.stage(try Fixtures.decode(Fixtures.tries["allow-scout"]!), request: "exec --workdir ~/Projects/latch-demo -- make test",
                                     caller: .agent(scout), on: "studio")
                 }),
-                ("16-rules-studio-try-you-said-no", .rules, nil, [], { app in
+                ("16-rules-studio-try-you-said-no", .host(.rules), nil, { app in
                     app.trial.stage(try Fixtures.decode(Fixtures.tries["said-no"]!), request: "exec -- cat Finance/2026.csv",
                                     caller: .agent(scout), on: "studio")
                 }),
                 // An item picked from Try a request's Examples menu, to edit.
-                ("16-rules-studio-try-example-filled", .rules, nil, [], { app in app.trial.use(Trial.examples[1]) }),
-                ("16-rules-studio-unsaved-draft", .rules, nil, [], { app in
+                ("16-rules-studio-try-example-filled", .host(.rules), nil, { app in app.trial.use(Trial.examples[1]) }),
+                ("16-rules-studio-unsaved-draft", .host(.rules), nil, { app in
                     let key = AppModel.RulesKey(host: "studio", agent: nil)
                     let saved = app.savedRules(key)
                     app.rulesDrafts[key] = .init(text: (saved?.text ?? "") + "Never send email without asking me.", base: saved?.revision)
                 }),
-                ("16-rules-pi-kitchen-helper-exec-refused", .rules, "pi-kitchen", [], { app in
-                    app.rulesFocus = helper
+                ("16-rules-pi-kitchen-helper-exec-refused", .host(.rules), "pi-kitchen", { app in
+                    if let kitchen = app.host { app.openRules(kitchen, agent: helper) }
                     app.trial.stage(try Fixtures.decode(Fixtures.tries["host-refused"]!), request: "exec -- ls",
                                     caller: .agent(helper), on: "pi-kitchen")
                 }),
             ]
-            for (name, section, chosen, path, stage) in screens {
+            for (name, place, chosen, stage) in screens {
                 let app = AppModel(client: FakeLatchClient(), still: true)
                 app.stage(status: try Fixtures.decode(Fixtures.serving))
                 app.stage(account: try Fixtures.decode(sidecarOffline))
@@ -634,22 +740,41 @@ package enum SnapshotRunner {
                 app.stage(summary: HostSummary(rules: .success(try Fixtures.decode(Fixtures.rulesStudio))), for: "studio")
                 app.stage(summary: HostSummary(rules: .success(try Fixtures.decode(Fixtures.rulesKitchen))), for: "pi-kitchen")
                 app.chosenHost = chosen
-                app.section = section
-                app.agentsPath = path
+                app.place = place
                 try stage(app)
                 _ = app.stage(.done, progress: full)
-                try await renderWindow(MainView().environment(app), size: CGSize(width: 1120, height: 700), dark: dark,
+                try await renderWindow(app, size: CGSize(width: 1120, height: 700), dark: dark,
                                        file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
             }
         }
-        // Vault: this Mac's items with each kind in the inspector, the empty
-        // state, another host's, one offline, and the sheets.
+        // The Agents hub at 5 agents × 8 hosts, every one of its 40 rows,
+        // on the synthetic latch the measured test app runs on.
+        for dark in [false, true] {
+            if wanted(output.appending(path: "15-agents-hub-5x8-\(dark ? "dark" : "light").png")),
+               let spec = SyntheticLatchClient.Spec("hosts=8,agents=5") {
+                let app = AppModel(client: SyntheticLatchClient(spec, stateDir: "/s"), still: true)
+                await app.refreshStatus()
+                await app.refreshAccount()
+                await app.refreshAgents()
+                app.place = .account(.agents)
+                try await render(AgentsView().environment(app), size: CGSize(width: 760, height: 2600), dark: dark,
+                                 file: output.appending(path: "15-agents-hub-5x8-\(dark ? "dark" : "light").png"))
+            }
+        }
+        // Vault: this Mac's items with each kind selected, none selected,
+        // none matching a search, the empty state, a failed read, another
+        // host's, one offline, at the default and narrow sizes; the
+        // inspector on its own (the window captures leave it out); and the
+        // sheets.
         for dark in [false, true] {
             let piOffline = Fixtures.studioHosts.replacingOccurrences(
                 of: #""self":false,"online":true,"last_seen_at":"2026-10-22T22:06:30.037004Z""#,
                 with: #""self":false,"online":false,"last_seen_at":null"#)
             let screens: [(String, String?, String, String?, String)] = [
                 ("17-vault-login-2fa", nil, Fixtures.vaultItems, "v1", Fixtures.studioHosts),
+                ("17-vault-no-selection", nil, Fixtures.vaultItems, nil, Fixtures.studioHosts),
+                ("17-vault-search-no-match", nil, Fixtures.vaultItems, nil, Fixtures.studioHosts),
+                ("17-vault-read-failed", nil, Fixtures.vaultItems, nil, Fixtures.studioHosts),
                 ("17-vault-card", nil, Fixtures.vaultItems, "v3", Fixtures.studioHosts),
                 ("17-vault-identity", nil, Fixtures.vaultItems, "v4", Fixtures.studioHosts),
                 ("17-vault-login-also-inside", nil, Fixtures.vaultItems, "v6", Fixtures.studioHosts),
@@ -666,14 +791,25 @@ package enum SnapshotRunner {
                 let shows = chosen == nil ? Array(Fixtures.vaultShows.values) : [Fixtures.remoteVaultShow]
                 for show in shows { app.stage(vaultShow: try Fixtures.decode(show), on: chosen ?? "studio") }
                 app.chosenHost = chosen
-                app.section = .vault
-                app.selectedVaultItem = selected
+                app.place = .host(.vault)
+                app.selectedVaultItem = selected.map { OnHost(host: chosen ?? "studio", id: $0) }
                 if name.hasSuffix("remove-failed") {
                     app.vaultRemoveError = .failed(LatchFailure(code: "state_busy", message: "another latch is changing /Users/me/.latch; try again"))
                 }
+                if name.hasSuffix("search-no-match") { app.vaultSearch = "bank" }
+                if name.hasSuffix("read-failed") {
+                    app.stage(summary: HostSummary(vault: .failure(.failed(LatchFailure(code: "state_busy",
+                        message: "another latch is changing /Users/me/.latch; try again")))), for: "studio")
+                }
                 _ = app.stage(.done, progress: full)
-                try await renderWindow(MainView().environment(app), size: CGSize(width: 1020, height: 620), dark: dark,
-                                       file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
+                for (label, size) in [("default", CGSize(width: 1120, height: 640)), ("narrow", narrowSize)] {
+                    try await renderWindow(app, size: size, dark: dark,
+                                           file: output.appending(path: "\(name)-\(label)-\(dark ? "dark" : "light").png"))
+                }
+                if selected != nil || name.hasSuffix("no-selection") {
+                    try await render(Inspector(route: app.route).environment(app), size: CGSize(width: 320, height: 600), dark: dark,
+                                     file: output.appending(path: "\(name)-inspector-\(dark ? "dark" : "light").png"))
+                }
             }
             let app = AppModel(client: FakeLatchClient(), still: true)
             app.stage(status: try Fixtures.decode(Fixtures.serving))
@@ -707,8 +843,10 @@ package enum SnapshotRunner {
                                  file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
             }
         }
-        // Host Settings: this Mac serving, stopped with an update, another
+        // Host Settings at the default and narrowest sizes: this Mac
+        // serving, stopped with an update, blocked by another latch, another
         // host online and offline, viewer-only; and the New Agent sheet.
+        let sizes = [("default", CGSize(width: 1120, height: 640)), ("narrow", narrowSize)]
         for dark in [false, true] {
             let piOffline = Fixtures.studioHosts.replacingOccurrences(
                 of: #""self":false,"online":true,"last_seen_at":"2026-10-22T22:06:30.037004Z""#,
@@ -718,6 +856,7 @@ package enum SnapshotRunner {
                 ("19-settings-this-mac-keep-awake-on-battery", Fixtures.keepAwake(#"{"enabled":true,"held":false,"reason":"on_battery"}"#),
                  Fixtures.studioHosts, nil, false),
                 ("19-settings-this-mac-stopped-update", Fixtures.stopped, Fixtures.studioHosts, nil, true),
+                ("19-settings-this-mac-blocked", Fixtures.otherVersion, Fixtures.studioHosts, nil, false),
                 ("19-settings-remote-online", Fixtures.serving, Fixtures.studioHosts, "pi-kitchen", false),
                 ("19-settings-remote-offline", Fixtures.serving, piOffline, "pi-kitchen", false),
                 ("19-settings-viewer-only", Fixtures.laptop, Fixtures.laptopHosts, nil, false),
@@ -734,20 +873,24 @@ package enum SnapshotRunner {
                 app.stage(devices: try Fixtures.decode(Fixtures.devices), update: checked ? try Fixtures.decode(Fixtures.updateCheck) : nil)
                 app.stage(connections: Connections(try Fixtures.decode(Fixtures.setup(on: [], google: google)) as SetupStatus))
                 app.chosenHost = chosen
-                app.section = .settings
+                app.place = .host(.settings)
                 _ = app.stage(.done, progress: full)
                 return app
             }
             for (name, status, account, chosen, checked) in screens {
                 let app = try settingsApp(status: status, account: account, chosen: chosen, checked: checked)
-                try await renderWindow(MainView().environment(app), size: CGSize(width: 900, height: 900), dark: dark,
-                                       file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
+                for (label, size) in sizes {
+                    try await renderWindow(app, size: size, dark: dark,
+                                           file: output.appending(path: "\(name)-\(label)-\(dark ? "dark" : "light").png"))
+                }
             }
             // This Mac with Google on and Messages needing Full Disk Access.
             let setUp = try settingsApp(status: Fixtures.serving, account: Fixtures.studioHosts, chosen: nil, checked: false,
                                         plugins: Fixtures.studioPluginsSetUp)
-            try await renderWindow(MainView().environment(setUp), size: CGSize(width: 900, height: 900), dark: dark,
-                                   file: output.appending(path: "19-settings-this-mac-plugins-\(dark ? "dark" : "light").png"))
+            for (label, size) in sizes {
+                try await renderWindow(setUp, size: size, dark: dark,
+                                       file: output.appending(path: "19-settings-this-mac-plugins-\(label)-\(dark ? "dark" : "light").png"))
+            }
             // Your account › Connections: no Google account, one, two, Plow
             // out of reach; and where a plugin's Manage Accounts… lands.
             let connections: [(String, String)] = [
@@ -761,9 +904,11 @@ package enum SnapshotRunner {
             ]
             for (name, google) in connections {
                 let app = try settingsApp(status: Fixtures.serving, account: Fixtures.studioHosts, chosen: nil, checked: false, google: google)
-                app.section = .connections
-                try await renderWindow(MainView().environment(app), size: CGSize(width: 900, height: 700), dark: dark,
-                                       file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
+                app.place = .account(.connections)
+                for (label, size) in sizes {
+                    try await renderWindow(app, size: size, dark: dark,
+                                           file: output.appending(path: "\(name)-\(label)-\(dark ? "dark" : "light").png"))
+                }
             }
             // Its sign-in sheet: adding an account, connecting a first, and
             // a wait that saw no new account.
@@ -780,8 +925,10 @@ package enum SnapshotRunner {
             let managing = try settingsApp(status: Fixtures.serving, account: Fixtures.studioHosts, chosen: "pi-kitchen", checked: false,
                                            google: Fixtures.googleConnected(["ada@example.com"]))
             managing.manageAccounts()
-            try await renderWindow(MainView().environment(managing), size: CGSize(width: 900, height: 700), dark: dark,
-                                   file: output.appending(path: "21-connections-from-manage-accounts-\(dark ? "dark" : "light").png"))
+            for (label, size) in sizes {
+                try await renderWindow(managing, size: size, dark: dark,
+                                       file: output.appending(path: "21-connections-from-manage-accounts-\(label)-\(dark ? "dark" : "light").png"))
+            }
             // The Settings window: up to date, and a build available.
             for (name, status, checked) in [("22-app-settings", Fixtures.serving, true), ("22-app-settings-update", Fixtures.stopped, false)] {
                 let app = try settingsApp(status: status, account: Fixtures.studioHosts, chosen: nil, checked: checked)
@@ -820,6 +967,19 @@ package enum SnapshotRunner {
     }
 
     private static let mainSize = CGSize(width: 860, height: 560)
+    /// studio's and pi-kitchen's rules and vault, and pi-kitchen's status.
+    private static func stageSummaries(_ app: AppModel) throws {
+        app.stage(summary: HostSummary(rules: .success(try Fixtures.decode(Fixtures.studioRules)),
+                                       vault: .success(try Fixtures.decode(Fixtures.studioVault))),
+                  for: "studio")
+        app.stage(summary: HostSummary(status: .success(try Fixtures.decode(Fixtures.status(Fixtures.piStatus, plugins: Fixtures.piPlugins))),
+                                       rules: .success(try Fixtures.decode(Fixtures.piRules)),
+                                       vault: .success(try Fixtures.decode(Fixtures.piVault))),
+                  for: "pi-kitchen")
+    }
+
+    /// The main window at its narrowest (its minimum width).
+    private static let narrowSize = CGSize(width: 1040, height: 600)
 
     /// What `setup --status` says of Google for each Connect Google still.
     private static let google: [String: String] = [
@@ -845,18 +1005,32 @@ package enum SnapshotRunner {
     /// The main window, title bar included, drawn off every display from its
     /// own views: the window server composites nothing there, so it has no
     /// image of it (nor of the sidebar's materials) to give.
+    private static func renderWindow(_ app: AppModel, size: CGSize, dark: Bool, file: URL) async throws {
+        try await renderWindow(size: size, dark: dark, file: file) { MainWindowController(app: app, window: $0, defaults: nil) }
+    }
+
+    /// Another window (Settings) the same way, its content `view`.
     private static func renderWindow(_ view: some View, size: CGSize, dark: Bool, file: URL) async throws {
+        try await renderWindow(size: size, dark: dark, file: file) { window -> AnyObject? in
+            window.contentViewController = NSHostingController(rootView: view)
+            return nil
+        }
+    }
+
+    /// `build` fills the window, returning what must stay alive while it's drawn.
+    private static func renderWindow(size: CGSize, dark: Bool, file: URL, build: (NSWindow) -> AnyObject?) async throws {
         guard wanted(file) else { return }
         let window = Offscreen(contentRect: CGRect(origin: CGPoint(x: -4000, y: -4000), size: size),
                                styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                                backing: .buffered, defer: false)
         window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
-        window.contentViewController = NSHostingController(rootView: view)
+        let owner = build(window)
         window.setFrame(CGRect(origin: CGPoint(x: -4000, y: -4000), size: size), display: true)
         window.orderFrontRegardless()
         try await Task.sleep(for: .milliseconds(600))
         try Render.frame(window, to: file)
         window.orderOut(nil)
+        withExtendedLifetime(owner) {}
         print(file.path)
     }
 

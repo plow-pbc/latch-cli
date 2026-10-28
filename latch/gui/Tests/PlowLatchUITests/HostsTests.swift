@@ -23,10 +23,10 @@ struct HostsTests {
 
     @Test func pickingAHostChangesTheHostTierOnly() throws {
         let app = try app(status: Fixtures.serving, account: Fixtures.studioHosts)
-        app.section = .rules
+        app.place = .host(.rules)
         app.chosenHost = "pi-kitchen"
         #expect(app.host?.name == "pi-kitchen")
-        #expect(app.section == .rules)
+        #expect(app.place == .host(.rules))
     }
 
     // A stopped Mac is this Mac's host whether Plow is unreachable (only
@@ -42,7 +42,7 @@ struct HostsTests {
         app.stage(account: plowAnswered ? offline : nil, error: plowAnswered ? nil : unreachable)
         #expect(app.hosts.map(\.name) == (plowAnswered ? ["studio", "pi-kitchen", "sidecar"] : ["studio"]))
         #expect(app.host?.isThisMac == true && !app.viewerOnly)
-        await app.enter(.home, host: app.host)
+        await app.enter(.host(.home, app.host))
         #expect(app.summaries["studio"]?.rules != nil)
         #expect(app.summaries["studio"]?.vault != nil)
     }
@@ -128,21 +128,58 @@ struct HostSettingsTests {
         await app.refreshStatus()
         await app.refreshAccount()
         app.chosenHost = "pi-kitchen"
-        await app.enter(.settings, host: app.host)
+        await app.enter(.host(.settings, app.host))
         #expect(try app.summaries["pi-kitchen"]?.status?.get().version?.hasPrefix("0.1.0 (138)") == true)
         app.chosenHost = "sidecar"
-        await app.enter(.settings, host: app.host)
+        await app.enter(.host(.settings, app.host))
         #expect(app.summaries["sidecar"]?.status == nil)
         app.chosenHost = "studio"
-        await app.enter(.settings, host: app.host)
+        await app.enter(.host(.settings, app.host))
         #expect(app.summaries["studio"]?.status == nil)
+    }
+
+    /// A plugin is turned on on this Mac, one change at a time, whichever
+    /// host shows by the time latch answers: its answer and refusal are
+    /// this Mac's, and another host's plugins are left as they were.
+    @Test func aConnectorChangeIsThisMacsWhicheverHostShows() async throws {
+        let client = CountingClient()
+        let gate = Gate()
+        client.held["plugins enable contacts"] = gate
+        client.enableRefusal = LatchFailure(code: "serve_required", message: "start `latch serve` on this state folder")
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
+        app.stage(status: try Fixtures.decode(Fixtures.serving))
+        app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
+        app.place = .host(.settings)
+        let change = Task { await app.setConnector("contacts", on: true) }
+        await waitUntil { client.calls == ["plugins enable contacts"] }
+        #expect(app.connectorChange == AppModel.ConnectorChange(plugin: "contacts", on: true))
+        app.chosenHost = "pi-kitchen"
+        await app.setConnector("messages", on: true)
+        #expect(client.calls == ["plugins enable contacts"])
+        gate.open()
+        await change.value
+        #expect(client.calls == ["plugins enable contacts", "status --local"])
+        #expect(app.connectorChange == nil)
+        #expect(app.connectorError?.message == "Couldn't turn Contacts on.")
+        #expect(app.summaries["pi-kitchen"] == nil)
+    }
+
+    /// A Mac that only views its hosts has no plugins of its own to change.
+    @Test func aViewingMacChangesNoPlugins() async throws {
+        let client = CountingClient()
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
+        app.stage(status: try Fixtures.decode(Fixtures.laptop))
+        app.stage(account: try Fixtures.decode(Fixtures.laptopHosts))
+        app.place = .host(.settings)
+        await app.setConnector("messages", on: true)
+        #expect(client.calls.isEmpty && app.connectorChange == nil)
     }
 
     @Test func manageAccountsOpensConnections() throws {
         let app = AppModel(client: FakeLatchClient(), store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
-        app.section = .settings
+        app.place = .host(.settings)
         app.manageAccounts()
-        #expect(app.section == .connections)
+        #expect(app.place == .account(.connections))
     }
 
     /// latch's reasons and refusals name commands and pages; the Plugins
@@ -195,7 +232,7 @@ final class AccountClient: LatchClient, @unchecked Sendable {
     func enable(_ plugin: String) async throws -> GoogleEnabled? { nil }
     func statusFollow() -> AsyncThrowingStream<LocalStatus, Error> { AsyncThrowingStream { _ in } }
     func audit(host: String?, before: String?) async throws -> AuditPage { AuditPage(records: [], hasOlder: false) }
-    func auditFollow(host: String?, after: String?) -> AsyncThrowingStream<AuditLine, Error> { AsyncThrowingStream { _ in } }
+    func auditFollow(host: String?, after: String?, last: Int?) -> AsyncThrowingStream<AuditLine, Error> { AsyncThrowingStream { _ in } }
     func perform(_ args: [String]) async throws {}
     func stop() async throws {}
     func agents(host: String?) async throws -> AgentsList { try Fixtures.decode(Fixtures.agents) }

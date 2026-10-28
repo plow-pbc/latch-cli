@@ -1,16 +1,16 @@
 import SwiftUI
 
 /// The selected host's settings, and only that host's: its state (and, for
-/// this Mac, restart and stop), its version (another host's as it says), what it refuses agents, and its
-/// plugins (on and off only here, for this Mac).
+/// this Mac, restart and stop), its version (another host's as it says),
+/// what it refuses agents, and its plugins (on and off only here, for this
+/// Mac). The window's title names the host.
 struct HostSettingsView: View {
     @Environment(AppModel.self) private var app
-    @State private var stopping = false
 
     var body: some View {
         Form {
             if let host = app.host {
-                HostSection(host: host, stopping: $stopping)
+                HostSection(host: host)
                 if host.isThisMac {
                     Section("Sleep") {
                         Toggle(isOn: app.keepAwakeBinding) {
@@ -18,6 +18,7 @@ struct HostSettingsView: View {
                             Text(KeepAwakeSwitch.detail)
                         }
                         .toggleStyle(.switch)
+                        .accessibilityLabel(KeepAwakeSwitch.title)
                         .disabled(!app.canSetKeepAwake)
                         KeepAwakeSwitch.Said().foregroundStyle(.secondary)
                     }
@@ -34,26 +35,17 @@ struct HostSettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .navigationTitle("Host Settings")
-        .navigationSubtitle(app.host?.name ?? "")
-        .confirmationDialog("Stop Latch on this Mac?", isPresented: $stopping) {
-            Button("Stop", role: .destructive) { Task { await app.stopHost() } }
-        } message: {
-            Text("Your agents can't reach this Mac until you start it again.")
-        }
     }
 }
 
-/// The host's name and state; this Mac's restarts and stops here.
+/// The host's state; this Mac's restarts and stops here.
 private struct HostSection: View {
     var host: HostEntry
-    @Binding var stopping: Bool
     @Environment(AppModel.self) private var app
 
     var body: some View {
         let state = HostState(host, local: app.status)
         Section(host.isThisMac ? "This Mac's host" : "Host") {
-            LabeledContent("Name", value: host.isThisMac ? "\(host.name) (this Mac)" : host.name)
             LabeledContent("State") {
                 HStack(spacing: 6) {
                     StateDot(state: state)
@@ -70,7 +62,7 @@ private struct HostSection: View {
                     if app.status?.thisMachine.hosting.running == true {
                         Button("Restart") { Task { await app.restartHost() } }
                             .help("Stop Latch and start it again as it last ran")
-                        Button("Stop…") { stopping = true }
+                        Button("Stop…") { app.ask(.stopHost) }
                     } else {
                         Button(app.startingHost ? "Starting…" : "Start Latch") { Task { await app.startHosting() } }
                             .disabled(app.startingHost)
@@ -140,13 +132,12 @@ private struct ExecSection: View {
     }
 }
 
-/// The host's plugins: on and off here for this Mac; another host's are
-/// turned on there. Google's accounts are the account's, in Connections.
+/// The host's plugins: on and off here for this Mac, a change at a time;
+/// another host's are turned on there. Google's accounts are the
+/// account's, in Connections.
 private struct PluginsSection: View {
     var host: HostEntry
     @Environment(AppModel.self) private var app
-    @State private var changing: String?
-    @State private var error: LatchError?
 
     var body: some View {
         Section {
@@ -177,38 +168,26 @@ private struct PluginsSection: View {
                         if host.isThisMac {
                             Toggle(PluginCopy.title(plugin.name), isOn: binding(plugin))
                                 .labelsHidden()
-                                .disabled(changing != nil)
+                                .disabled(app.connectorChange != nil)
                         } else {
                             Text(plugin.state == "enabled" ? "On" : "Off").foregroundStyle(.secondary)
                         }
                     }
                 }
-                if let error { ErrorText(error: error, host: host.spoken).foregroundStyle(.red) }
+                if host.isThisMac, let error = app.connectorError { ErrorText(error: error, host: host.spoken).foregroundStyle(.red) }
             }
         } header: {
             Text("Plugins")
         } footer: {
-            if let changing { Text("Turning \(PluginCopy.title(changing)) \(isOn(changing) ? "off" : "on")…").foregroundStyle(.secondary) }
+            if host.isThisMac, let change = app.connectorChange {
+                Text("Turning \(PluginCopy.title(change.plugin)) \(change.on ? "on" : "off")…").foregroundStyle(.secondary)
+            }
         }
-    }
-
-    private func isOn(_ name: String) -> Bool {
-        guard case let .success(list)? = app.plugins(of: host) else { return false }
-        return list.first { $0.name == name }?.state == "enabled"
     }
 
     private func binding(_ plugin: Plugin) -> Binding<Bool> {
         Binding { plugin.state == "enabled" } set: { on in
-            changing = plugin.name
-            Task {
-                defer { changing = nil }
-                do {
-                    try await app.setConnector(plugin.name, on: on)
-                    error = nil
-                } catch {
-                    self.error = .from(error)
-                }
-            }
+            Task { await app.setConnector(plugin.name, on: on) }
         }
     }
 }

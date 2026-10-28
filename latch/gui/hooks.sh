@@ -6,7 +6,18 @@
 # involved, so this is not a click test.
 #
 #   hooks.sh build [--window]   the test app, .dev/hooks/Plow Latch Hooks.app
-#   hooks.sh open               opens it on a fresh .dev/tests/hooks/state
+#   hooks.sh open [--fixture SPEC]
+#                               opens it on a fresh .dev/tests/hooks/state;
+#                               with a fixture, on made-up data instead of
+#                               latch's, in the main window (needs --window):
+#                               SPEC is "hosts=3,records=50,vault=100,agents=2"
+#                               (the defaults) plus "burst=N" new records
+#                               at once and "rate=N" a second after the
+#                               first read, "delay=MS" per read (and up to
+#                               "jitter=MS" more, at random),
+#                               "connectors=MS" a plugin change or Google
+#                               sign-in takes, which then hold, and
+#                               "viewer=1" for this Mac viewing, not hosting
 #   hooks.sh send COMMAND [ARG] one hook (TestHooks.swift lists them)
 #   hooks.sh state              prints the flow's state as the app records it
 #   hooks.sh quit               quits it and deletes its preferences
@@ -30,11 +41,13 @@ die() { echo "hooks.sh: $*" >&2; exit 1; }
 # The app itself; its latch's commands run the same binary with more words.
 pid() { pgrep -fx "$exe --state-dir $state" || true; }
 send() { "$dir/hooks" post "$id" "$@"; }
-# The test app's preferences (which screens were passed), and the empty
-# file cfprefsd leaves behind once they are deleted.
+# The test app's preferences (which screens were passed), the empty file
+# cfprefsd leaves behind once they are deleted, and its windows' saved
+# state.
 forget() {
   defaults delete "$id" >/dev/null 2>&1 || true
   rm -f "$HOME/Library/Preferences/$id.plist"
+  rm -rf "$HOME/Library/Saved Application State/$id.savedState"
 }
 # The flow's state, asked for again until it comes: the app hears nothing
 # until it has set up its hooks.
@@ -65,13 +78,19 @@ build)
   echo "$app"
   ;;
 open)
+  fixture=""
+  if [ $# -eq 3 ] && [ "$2" = --fixture ]; then fixture=$3; else [ $# -eq 1 ] || die "usage: hooks.sh open [--fixture SPEC]"; fi
   [ -d "$app" ] || die "no test app: run hooks.sh build first"
   [ -z "$(pid)" ] || die "the test app is already open: hooks.sh quit first"
   rm -rf "$state" "$state.json"
   mkdir -p "$state"
   chmod 700 "$state"
   forget
-  open -g "$app" --args --state-dir "$state"
+  if [ -n "$fixture" ]; then
+    open -g "$app" --env "LATCH_HOOKS_FIXTURE=$fixture" --args --state-dir "$state"
+  else
+    open -g "$app" --args --state-dir "$state"
+  fi
   for _ in $(seq 50); do
     [ -z "$(pid)" ] || break
     sleep 0.1

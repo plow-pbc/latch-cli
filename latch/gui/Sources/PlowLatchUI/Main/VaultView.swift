@@ -1,16 +1,13 @@
 import SwiftUI
-import UniformTypeIdentifiers
 
 /// A host's vault: its items, never their secrets; an item opens in the
-/// inspector, and items are added, changed, removed and imported in sheets.
+/// window's inspector, and items are added, changed, removed and imported
+/// in the window's sheets, each on the host it was opened for.
 struct VaultView: View {
     @Environment(AppModel.self) private var app
-    @State private var search = ""
-    @State private var inspecting = true
-    @State private var choosingExport = false
+    @Environment(ScreenActions.self) private var actions: ScreenActions?
 
     var body: some View {
-        @Bindable var app = app
         Group {
             if let host = app.host {
                 if !host.isThisMac, host.online == false {
@@ -20,46 +17,16 @@ struct VaultView: View {
                         Text("Its vault is kept on \(host.name). Start Latch there to see and change it.")
                     }
                 } else {
-                    HostVault(host: host, search: search, inspecting: $inspecting).id(host.id)
+                    HostVault(host: host).id(host.id)
                 }
             } else {
                 ContentUnavailableView("No host", systemImage: "lock.rectangle.stack",
                                        description: Text("A vault is kept on each host. Pick one in the sidebar."))
             }
         }
-        .navigationTitle("Vault")
-        .navigationSubtitle(subtitle)
-        .searchable(text: $search, placement: .toolbar, prompt: "Search items")
-        .toolbar {
-            ToolbarItemGroup {
-                Button("New Item", systemImage: "plus") {
-                    if let host = app.host { app.vaultSheet = .editor(VaultEditor(on: host)) }
-                }
-                    .help("Add a login, card, identity or note")
-                    .disabled(!canChange)
-                Button("Import…", systemImage: "square.and.arrow.down") { choosingExport = true }
-                    .help("Import another password manager's export")
-                    .disabled(!canChange)
-            }
-            ToolbarItem {
-                Button("Inspector", systemImage: "sidebar.trailing") { inspecting.toggle() }
-                    .help(inspecting ? "Hide the inspector" : "Show the inspector")
-            }
-        }
-        .fileImporter(isPresented: $choosingExport, allowedContentTypes: [.commaSeparatedText, .json, .data]) { result in
-            guard case let .success(file) = result, let host = app.host else { return }
-            let importer = VaultImport(file: file, on: host)
-            app.vaultSheet = .importer(importer)
-            Task { await importer.load(app: app) }
-        }
-        // A sheet works on the host it was opened for, whatever the picker
-        // shows meanwhile.
-        .sheet(item: $app.vaultSheet) { sheet in
-            switch sheet {
-            case let .editor(editor): VaultItemSheet(editor: editor)
-            case let .importer(importer): ImportSheet(importer: importer)
-            }
-        }
+        // New Item and Import…, in the bar and the File menu, while this
+        // host's vault can change.
+        .onChange(of: canChange, initial: true) { _, canChange in publish(canChange) }
     }
 
     /// Items can be added only once the host's vault has been read.
@@ -68,36 +35,30 @@ struct VaultView: View {
         return true
     }
 
-    private var subtitle: String {
-        guard let host = app.host else { return "" }
-        guard case let .success(vault)? = app.summaries[host.name]?.vault else { return host.name }
-        return "\(host.name) · \(vault.items.count) item\(vault.items.count == 1 ? "" : "s")"
+    private func publish(_ canChange: Bool) {
+        guard let actions else { return }
+        actions.newItem = canChange ? { newItem() } : nil
+        actions.importItems = canChange ? { chooseImport() } : nil
     }
-}
 
-/// The sheet open over the Vault screen.
-enum VaultSheet: Identifiable {
-    case editor(VaultEditor)
-    case importer(VaultImport)
+    private func chooseImport() {
+        if let host = app.host { app.sheet = .choosingExport(host) }
+    }
 
-    var id: ObjectIdentifier {
-        switch self {
-        case let .editor(editor): ObjectIdentifier(editor)
-        case let .importer(importer): ObjectIdentifier(importer)
-        }
+    private func newItem() {
+        if let host = app.host { app.sheet = .vaultItem(VaultEditor(on: host)) }
     }
 }
 
 /// One host's items, and their states while there are none.
 private struct HostVault: View {
     var host: HostEntry
-    var search: String
-    @Binding var inspecting: Bool
     @Environment(AppModel.self) private var app
-    @State private var removing: VaultList.Item?
+    /// Set by an item picked in the list: SwiftUI leaves the keyboard
+    /// focus where it was (the sidebar), so the arrow keys moved that.
+    @FocusState private var listFocused: Bool
 
     var body: some View {
-        @Bindable var app = app
         Group {
             switch app.summaries[host.name]?.vault {
             case nil:
@@ -116,36 +77,27 @@ private struct HostVault: View {
                 } description: {
                     Text("Agents fill logins and cards from here without ever seeing them. Add an item, or import another password manager's export.")
                 } actions: {
-                    Button("New Item…") { app.vaultSheet = .editor(VaultEditor(on: host)) }
+                    Button("New Item…") { app.sheet = .vaultItem(VaultEditor(on: host)) }
                 }
+            case let .success(vault)? where app.vaultRows(vault).isEmpty:
+                ContentUnavailableView.search(text: app.vaultSearch)
             case let .success(vault)?:
-                List(rows(vault), selection: $app.selectedVaultItem) { item in
+                List(app.vaultRows(vault), selection: selection) { item in
                     VaultRow(item: item)
+                }
+                // Delete, and Edit › Delete: the selected item, confirmed.
+                .onDeleteCommand {
+                    if let item = app.inspectedVaultItem(on: host) { app.ask(.removeVaultItem(item, on: host)) }
                 }
                 .contextMenu(forSelectionType: VaultList.Item.ID.self) { ids in
                     if let item = item(ids, in: vault) {
                         Button("Edit…", systemImage: "pencil") { edit(item) }
-                        Button("Remove…", systemImage: "trash", role: .destructive) { removing = item }
+                        Button("Remove…", systemImage: "trash", role: .destructive) { app.ask(.removeVaultItem(item, on: host)) }
                     }
                 } primaryAction: { ids in
                     if let item = item(ids, in: vault) { edit(item) }
                 }
-                .inspector(isPresented: $inspecting) {
-                    Group {
-                        if let item = vault.items.first(where: { $0.item == app.selectedVaultItem }) {
-                            VaultItemInspector(item: item, show: app.vaultShows[host.name]?[item.item], hostName: host.name,
-                                               edit: { edit(item) }, remove: { removing = item })
-                                .task(id: "\(item.item)@\(item.revision)") {
-                                    guard !app.still else { return }
-                                    await app.showVaultItem(item.item, on: host)
-                                }
-                        } else {
-                            ContentUnavailableView("No Selection", systemImage: "lock.rectangle",
-                                                   description: Text("Select an item to see what it holds. Secret values are never shown."))
-                        }
-                    }
-                    .inspectorColumnWidth(min: 260, ideal: 320, max: 460)
-                }
+                .focused($listFocused)
             }
         }
         // Said above the list, where latch's reason can sit under Details
@@ -168,17 +120,17 @@ private struct HostVault: View {
                 .background(.bar)
             }
         }
-        .confirmationDialog("Remove “\(removing?.title ?? "")” from \(host.name)?", isPresented: removingBinding, presenting: removing) { item in
-            Button("Remove", role: .destructive) {
-                Task { await app.removeVaultItem(item, on: host) }
-            }
-        } message: { _ in
-            Text("Agents can no longer fill it. This can't be undone.")
-        }
     }
 
-    private var removingBinding: Binding<Bool> {
-        Binding { removing != nil } set: { if !$0 { removing = nil } }
+    /// The list's selection: an item on this host. Picked in the list, the
+    /// list takes the keyboard focus.
+    private var selection: Binding<VaultList.Item.ID?> {
+        Binding { app.selectedVaultItem?.host == host.name ? app.selectedVaultItem?.id : nil }
+            set: { id in
+                app.selectedVaultItem = id.map { OnHost(host: host.name, id: $0) }
+                // A pick, not SwiftUI clearing a row a search or new data hid.
+                if id != nil { listFocused = true }
+            }
     }
 
     private func item(_ ids: Set<VaultList.Item.ID>, in vault: VaultList) -> VaultList.Item? {
@@ -188,14 +140,6 @@ private struct HostVault: View {
 
     private func edit(_ item: VaultList.Item) {
         Task { await app.beginVaultEdit(item, on: host) }
-    }
-
-    private func rows(_ vault: VaultList) -> [VaultList.Item] {
-        let query = search.trimmingCharacters(in: .whitespaces).lowercased()
-        guard !query.isEmpty else { return vault.items }
-        return vault.items.filter { item in
-            ([item.title, item.kind, item.username ?? ""] + item.sites).contains { $0.lowercased().contains(query) }
-        }
     }
 }
 
@@ -215,9 +159,9 @@ private struct VaultRow: View {
             }
             Spacer(minLength: 8)
             if item.totp {
-                Text("2FA").font(.caption).foregroundStyle(.secondary)
-                    .padding(.horizontal, 6).padding(.vertical, 1)
-                    .overlay(Capsule().strokeBorder(.tertiary))
+                Label("2FA", systemImage: "lock.shield")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
                     .help("Its authenticator code is filled at sign-in")
             }
         }
@@ -301,6 +245,7 @@ struct VaultItemInspector: View {
             Section {
                 HStack {
                     Button("Remove…", role: .destructive, action: remove)
+                        .accessibilityLabel("Remove \(item.title)…")
                     Spacer()
                     Button("Edit…", action: edit)
                 }
@@ -478,7 +423,9 @@ final class VaultEditor {
                           otherTopSites: kind == .login ? Self.split(otherTopSites) : [], values: changed)
     }
 
-    /// Saves on its host; true once saved.
+    /// Saves on its host; true once saved, and its sheet closes, unless
+    /// it was closed meanwhile (another may show by now).
+    @discardableResult
     func save(app: AppModel) async -> Bool {
         guard problem == nil, !saving else { return false }
         saving = true
@@ -490,6 +437,7 @@ final class VaultEditor {
                 try await app.addVaultItem(draft, on: host)
             }
             error = nil
+            app.close(.vaultItem(self))
             return true
         } catch {
             self.error = .from(error)
@@ -507,7 +455,6 @@ struct VaultItemSheet: View {
     var editor: VaultEditor
     private var host: HostEntry { editor.host }
     @Environment(AppModel.self) private var app
-    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         @Bindable var editor = editor
@@ -572,11 +519,11 @@ struct VaultItemSheet: View {
                         .font(.callout).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button("Cancel") { dismiss() }
+                Button("Cancel") { app.sheet = nil }
                     .keyboardShortcut(.cancelAction)
                 if editor.unreadable == nil {
                     Button(editor.saving ? "Saving…" : editor.isNew ? "Add" : "Save") {
-                        Task { if await editor.save(app: app) { dismiss() } }
+                        Task { await editor.save(app: app) }
                     }
                     .keyboardShortcut(.defaultAction)
                     .disabled(editor.saving || editor.problem != nil)
@@ -678,7 +625,6 @@ struct ImportSheet: View {
     var importer: VaultImport
     private var host: HostEntry { importer.host }
     @Environment(AppModel.self) private var app
-    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -697,13 +643,13 @@ struct ImportSheet: View {
                 }
                 Spacer()
                 if importer.result == nil {
-                    Button("Cancel") { dismiss() }
+                    Button("Cancel") { app.sheet = nil }
                         .keyboardShortcut(.cancelAction)
                     Button(importer.importing ? "Importing…" : "Import") { Task { await importer.run(app: app) } }
                         .keyboardShortcut(.defaultAction)
                         .disabled(importer.importing || importer.picked.isEmpty || !importer.checkable)
                 } else {
-                    Button("Done") { dismiss() }
+                    Button("Done") { app.sheet = nil }
                         .keyboardShortcut(.defaultAction)
                 }
             }

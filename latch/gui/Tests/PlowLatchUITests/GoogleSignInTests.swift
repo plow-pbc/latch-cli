@@ -17,6 +17,8 @@ final class SignInClient: LatchClient, @unchecked Sendable {
     private(set) var enabled: [String] = []
     /// latch's refusal of a plain enable, when a test gives one.
     var enableRefusal: LatchFailure?
+    /// A link latch has printed by the time the app reads its first line.
+    var printed: URL?
 
     func signInGoogle(addAccount: Bool) -> AsyncThrowingStream<GoogleSignInEvent, Error> {
         signIns.append(addAccount)
@@ -25,6 +27,7 @@ final class SignInClient: LatchClient, @unchecked Sendable {
             if case .cancelled = end { self?.stops.withLock { $0 += 1 } }
         }
         events = continuation
+        if let printed { continuation.yield(.link(printed)) }
         return stream
     }
 
@@ -49,7 +52,7 @@ final class SignInClient: LatchClient, @unchecked Sendable {
     func vaultList(host: String?) async throws -> VaultList { try Fixtures.decode(#"{"items":[]}"#) }
     func statusFollow() -> AsyncThrowingStream<LocalStatus, Error> { AsyncThrowingStream { _ in } }
     func audit(host: String?, before: String?) async throws -> AuditPage { AuditPage(records: [], hasOlder: false) }
-    func auditFollow(host: String?, after: String?) -> AsyncThrowingStream<AuditLine, Error> { AsyncThrowingStream { _ in } }
+    func auditFollow(host: String?, after: String?, last: Int?) -> AsyncThrowingStream<AuditLine, Error> { AsyncThrowingStream { _ in } }
     func perform(_ args: [String]) async throws {}
     func stop() async throws {}
 }
@@ -292,6 +295,24 @@ struct GoogleSignInTests {
                         GoogleSignIn.problem(unreachable, adding: false)] {
             #expect(!problem.contains("latch ") && !problem.contains("http") && !problem.contains("`"))
         }
+    }
+
+    /// A sign-in stopped before the app read latch's first link opens
+    /// nothing, and the next sign-in's sheet never gets that link.
+    @Test func aStoppedSignInsLinkGoesNowhere() async {
+        let client = SignInClient()
+        client.printed = canary
+        let (app, _, opened) = app(client)
+        app.connectGoogle(adding: false)
+        app.endGoogleSignIn()
+        await waitUntil { client.stopped == 1 }
+        client.printed = nil
+        app.connectGoogle(adding: false)
+        await waitUntil { client.signIns.count == 2 }
+        await Task.yield()
+        #expect(opened().isEmpty)
+        #expect(!app.canOpenGoogleSignInAgain)
+        #expect(app.googleSignIn == GoogleSignIn(adding: false))
     }
 
     /// Back from the browser with Plow out of reach, Connections can't list

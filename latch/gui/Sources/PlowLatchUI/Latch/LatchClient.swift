@@ -61,10 +61,10 @@ nonisolated protocol LatchClient: Sendable {
     /// `latch audit [--before ID]`: a page of a host's audit, this Mac's or,
     /// with `host`, another's.
     func audit(host: String?, before: String?) async throws -> AuditPage
-    /// `latch audit --follow`: the newest page, then each new record;
-    /// `after` picks up after that record instead. Stopping the iteration
-    /// ends it.
-    func auditFollow(host: String?, after: String?) -> AsyncThrowingStream<AuditLine, Error>
+    /// `latch audit --follow`: the newest `last` records (latch's page
+    /// without it), then each new record; `after` picks up after that record
+    /// instead, every record since. Stopping the iteration ends it.
+    func auditFollow(host: String?, after: String?, last: Int?) -> AsyncThrowingStream<AuditLine, Error>
     /// `latch audit shot ID SHOT`: the PNG a browser record names, from
     /// this Mac's host or, with `host`, another's. Only its bytes come
     /// back; no copy is left on disk.
@@ -91,6 +91,9 @@ nonisolated protocol LatchClient: Sendable {
     func newAgent(name: String, cloud: String?, tokenFile: URL?, line: String) async throws -> AgentCreated
     /// `latch agents show UID`.
     func agentShow(_ uid: String) async throws -> AgentsList.Agent
+    /// `latch agents remove UID --yes`: its credential stops working and
+    /// its line is freed. Always by uid: names need not be unique.
+    func removeAgent(_ uid: String) async throws
 }
 
 extension LatchClient {
@@ -157,8 +160,9 @@ nonisolated struct LiveLatchClient: LatchClient {
         }
     }
 
-    func auditFollow(host: String?, after: String?) -> AsyncThrowingStream<AuditLine, Error> {
-        stream(["audit", "--follow"] + (after.map { ["--after", $0] } ?? []) + on(host)) { try decode(AuditLine.self, $0) }
+    func auditFollow(host: String?, after: String?, last: Int?) -> AsyncThrowingStream<AuditLine, Error> {
+        let from = after.map { ["--after", $0] } ?? last.map { ["--last", String($0)] } ?? []
+        return stream(["audit", "--follow"] + from + on(host)) { try decode(AuditLine.self, $0) }
     }
 
     /// latch saves it, readable only by this user, into a folder of its own
@@ -333,6 +337,10 @@ nonisolated struct LiveLatchClient: LatchClient {
 
     func agentShow(_ uid: String) async throws -> AgentsList.Agent {
         try decode(AgentAnswer.self, try await run(["agents", "show", uid])).agent
+    }
+
+    func removeAgent(_ uid: String) async throws {
+        _ = try await run(["agents", "remove", uid, "--yes"])
     }
 
     private func run(_ arguments: [String], input: Data? = nil) async throws -> Data {

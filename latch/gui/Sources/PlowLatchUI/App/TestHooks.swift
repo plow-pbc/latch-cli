@@ -1,5 +1,6 @@
-#if LATCH_TEST_HOOKS
+#if DEBUG || LATCH_TEST_HOOKS
 import AppKit
+import QuartzCore
 
 /// A test build's remote control (`gui/build.sh --test-hooks`): distributed
 /// notifications `co.plow.latch.test.BUNDLE_ID.COMMAND`, with an argument
@@ -30,6 +31,24 @@ enum TestHooks {
         return "\(url.scheme ?? "")://\(url.host ?? "")\(url.port.map { ":\($0)" } ?? "")\(url.path[..<code.upperBound])…"
     }
 
+    /// The app on `SyntheticLatchClient`'s data instead of latch's, set up
+    /// and in the main window, when opened with `LATCH_HOOKS_FIXTURE` set
+    /// to its spec (`hooks.sh open --fixture SPEC`).
+    static func fixture(stateDir: String) -> AppModel? {
+        guard let text = ProcessInfo.processInfo.environment["LATCH_HOOKS_FIXTURE"] else { return nil }
+        guard let spec = SyntheticLatchClient.Spec(text) else {
+            FileHandle.standardError.write(Data("LATCH_HOOKS_FIXTURE: no such spec: \(text)\n".utf8))
+            exit(2)
+        }
+        let store = ProgressStore(memory: .init(), stateDir: stateDir)
+        store.save(Progress(passed: [:], finished: true))
+        return AppModel(client: SyntheticLatchClient(spec, stateDir: stateDir), store: store, loginItemOffered: false)
+    }
+
+    /// Where `measure` appends each hook's time to the window's next frame;
+    /// nil when not measuring.
+    static var timings: URL?
+
     static func install(_ app: AppModel) {
         // Nothing leaves the app: links and Finder reveals are recorded.
         app.open = { opened.append("open \(recorded($0))") }
@@ -54,9 +73,11 @@ enum TestHooks {
         func on(_ command: String, _ act: @escaping @MainActor (String?) -> Void) {
             center.addObserver(forName: .init("co.plow.latch.test.\(Bundle.main.bundleIdentifier ?? "").\(command)"), object: nil, queue: .main) { note in
                 let argument = note.object as? String
-                MainActor.assumeIsolated { act(argument) }
+                MainActor.assumeIsolated { run(command, argument, act) }
             }
         }
+        // Times each hook after it, until "measure" with no path (`run`).
+        on("measure") { path in timings = path.map { URL(filePath: $0) } }
         on("primary") { _ in app.onboarding?.primary() }
         on("skip") { _ in app.onboarding?.skip() }
         on("back") { _ in app.onboarding?.back() }
@@ -89,13 +110,27 @@ enum TestHooks {
                   let window = NSApp.windows.first(where: { $0.isVisible && $0.canBecomeMain }) else { return }
             window.setFrame(CGRect(origin: window.frame.origin, size: CGSize(width: parts[0], height: parts[1])), display: true)
         }
-        // The main window's host picker and sidebar, as a click picks them.
-        on("host") { name in app.chosenHost = name }
-        on("section") { item in if let item = item.flatMap(SidebarItem.init(rawValue:)) { app.section = item } }
+        // The main window's sidebar and screen picker, as a click picks
+        // them; the inspector of the screen showing, "1" shown, as its
+        // toolbar button.
+        on("host") { name in if let name { app.showHost(name) } }
+        on("section") { name in if let place = name.flatMap(Place.init(rawValue:)) { app.place = place } }
         // Activity's selection and filter, as a click sets them.
-        on("record") { id in app.selectedRecord = id }
-        on("filter") { name in if let filter = name.flatMap(ActivityView.Filter.init(rawValue:)) { app.activityFilter = filter } }
+        on("inspector") { value in
+            guard case let .host(screen) = app.place, HostScreen.inspected.contains(screen) else { return }
+            if value == "1" { app.inspecting.insert(screen) } else { app.inspecting.remove(screen) }
+        }
+        on("record") { id in app.selectedRecord = app.host.flatMap { host in id.map { OnHost(host: host.name, id: $0) } } }
+        on("filter") { name in if let filter = name.flatMap(ActivityFilter.init(rawValue:)) { app.activityFilter = filter } }
         on("connections") { value in app.showConnections = value == "1" }
+        on("search") { text in app.activitySearch = text ?? "" }
+        // An agent's Activity link: "HOST|UID"; with no argument, the
+        // agent chip's click.
+        on("activity") { argument in
+            guard let parts = argument?.split(separator: "|"), parts.count == 2,
+                  let host = app.hosts.first(where: { $0.name == parts[0] }) else { return app.activityAgent = nil }
+            app.openActivity(host, agent: String(parts[1]))
+        }
         // Try a request: "AS|REQUEST", AS being new or an agent's uid.
         on("try") { argument in
             guard let argument, let bar = argument.firstIndex(of: "|"), let host = app.host else { return }
@@ -104,14 +139,20 @@ enum TestHooks {
             app.trial.request = String(argument[argument.index(after: bar)...])
             Task { await app.trial.run(on: host, app: app) }
         }
-        on("focus") { uid in app.rulesFocus = uid }
-        on("agent") { uid in app.agentsPath = uid.map { [$0] } ?? [] }
-        // A host pill's click: "HOST|UID".
-        on("pill") { argument in
-            guard let parts = argument?.split(separator: "|"), parts.count == 2 else { return }
-            app.chosenHost = String(parts[0])
-            app.rulesFocus = String(parts[1])
-            app.section = .rules
+        // Agents' buttons on a host's row, "HOST|UID": Rules, Activity;
+        // and Remove…, confirmed: "UID".
+        func onAgentRow(_ command: String, _ act: @escaping @MainActor (HostEntry, String) -> Void) {
+            on(command) { argument in
+                guard let parts = argument?.split(separator: "|"), parts.count == 2,
+                      let host = app.hosts.first(where: { $0.name == parts[0] }) else { return }
+                act(host, String(parts[1]))
+            }
+        }
+        onAgentRow("agent-rules") { host, uid in app.openRules(host, agent: uid) }
+        onAgentRow("agent-activity") { host, uid in app.openActivity(host, agent: uid) }
+        on("agent-remove") { uid in
+            guard let agent = app.agents?.first(where: { $0.uid == uid }) else { return }
+            Task { await app.removeAgent(agent) }
         }
         // Saves "UID|TEXT" (UID empty: every agent's) on the selected host
         // as Save does, over the revision on screen.
@@ -129,25 +170,27 @@ enum TestHooks {
                 }
             }
         }
-        // Vault, as a person clicks and types: select an item, open New
-        // Item ("KIND") or an item's Edit, type "LABEL=VALUE" (title, sites
-        // and other-sites too), save, remove an item, pick an export (a
-        // path, as the file chooser gives it), and import its picked rows.
+        // Vault, as a person clicks and types: search, select an item, open
+        // New Item ("KIND") or an item's Edit, type "LABEL=VALUE" (title,
+        // sites and other-sites too), save, remove an item, pick an export
+        // (a path, as the file chooser gives it, or in the file chooser
+        // itself), and import its picked rows.
         func vaultItem(_ id: String?) -> VaultList.Item? {
             guard let host = app.host, case let .success(vault)? = app.summaries[host.name]?.vault else { return nil }
             return vault.items.first { $0.item == id }
         }
-        on("vault-select") { id in app.selectedVaultItem = id }
+        on("vault-search") { text in app.vaultSearch = text ?? "" }
+        on("vault-select") { id in app.selectedVaultItem = app.host.flatMap { host in id.map { OnHost(host: host.name, id: $0) } } }
         on("vault-new") { kind in
             guard let host = app.host else { return }
-            app.vaultSheet = .editor(VaultEditor(kind: kind.flatMap(VaultKind.init(rawValue:)) ?? .login, on: host))
+            app.sheet = .vaultItem(VaultEditor(kind: kind.flatMap(VaultKind.init(rawValue:)) ?? .login, on: host))
         }
         on("vault-edit") { id in
             guard let item = vaultItem(id), let host = app.host else { return }
             Task { await app.beginVaultEdit(item, on: host) }
         }
         on("vault-type") { argument in
-            guard case let .editor(editor)? = app.vaultSheet, let argument, let equals = argument.firstIndex(of: "=") else { return }
+            guard case let .vaultItem(editor)? = app.sheet, let argument, let equals = argument.firstIndex(of: "=") else { return }
             let label = String(argument[..<equals]), value = String(argument[argument.index(after: equals)...])
             switch label {
             case "title": editor.title = value
@@ -157,27 +200,23 @@ enum TestHooks {
             }
         }
         on("vault-save") { _ in
-            guard case let .editor(editor)? = app.vaultSheet else { return }
-            Task { if await editor.save(app: app) { app.vaultSheet = nil } }
+            guard case let .vaultItem(editor)? = app.sheet else { return }
+            Task { await editor.save(app: app) }
         }
         on("vault-remove") { id in
             guard let item = vaultItem(id), let host = app.host else { return }
             Task { await app.removeVaultItem(item, on: host) }
         }
+        on("vault-choose") { _ in if let host = app.host { app.sheet = .choosingExport(host) } }
         on("vault-import") { path in
             guard let path, let host = app.host else { return }
-            let importer = VaultImport(file: URL(filePath: path), on: host)
-            app.vaultSheet = .importer(importer)
-            Task { await importer.load(app: app) }
+            app.beginImport(URL(filePath: path), on: host)
         }
         on("vault-import-run") { _ in
-            guard case let .importer(importer)? = app.vaultSheet else { return }
+            guard case let .vaultImport(importer)? = app.sheet else { return }
             Task { await importer.run(app: app) }
         }
-        on("sheet-close") { _ in
-            app.vaultSheet = nil
-            app.newAgent = nil
-        }
+        on("sheet-close") { _ in app.sheet = nil }
         // Host Settings' buttons and toggles, as a click (and its
         // confirmation) presses them: "NAME|1" turns a connector on.
         on("check-update") { _ in Task { await app.checkForUpdate() } }
@@ -186,7 +225,7 @@ enum TestHooks {
         on("start") { _ in Task { await app.startHosting() } }
         on("connector") { argument in
             guard let parts = argument?.split(separator: "|"), parts.count == 2 else { return }
-            Task { try? await app.setConnector(String(parts[0]), on: parts[1] == "1") }
+            Task { await app.setConnector(String(parts[0]), on: parts[1] == "1") }
         }
         on("device-remove") { name in
             guard let name else { return }
@@ -195,9 +234,9 @@ enum TestHooks {
         on("logout") { _ in Task { try? await app.logOut() } }
         // New Agent: open it, fill "FIELD=VALUE" (kind own|cloud, name,
         // cloud, line, file: the path the save panel would give), create.
-        on("new-agent") { _ in app.newAgent = NewAgent() }
+        on("new-agent") { _ in app.sheet = .newAgent(NewAgent()) }
         on("agent-type") { argument in
-            guard let flow = app.newAgent, let argument, let equals = argument.firstIndex(of: "=") else { return }
+            guard case let .newAgent(flow)? = app.sheet, let argument, let equals = argument.firstIndex(of: "=") else { return }
             let value = String(argument[argument.index(after: equals)...])
             switch argument[..<equals] {
             case "kind": flow.kind = value == "own" ? .own : .cloud
@@ -209,7 +248,7 @@ enum TestHooks {
             }
         }
         on("agent-create") { _ in
-            guard let flow = app.newAgent else { return }
+            guard case let .newAgent(flow)? = app.sheet else { return }
             Task { await flow.create(app: app) }
         }
         // The main window's open sheet, as the window server shows it.
@@ -291,6 +330,79 @@ enum TestHooks {
             ]
             try? JSONSerialization.data(withJSONObject: state, options: [.prettyPrinted, .sortedKeys]).write(to: URL(filePath: path))
         }
+    }
+}
+
+extension TestHooks {
+    /// A hook's action, timed while measuring: one JSON line per action
+    /// appended to `timings`, with the hook's name and never its argument,
+    /// which may be a value typed into the vault.
+    static func run(_ command: String, _ argument: String?, _ act: @MainActor (String?) -> Void) {
+        guard let timings, command != "measure" else { return act(argument) }
+        measure(command, to: timings) { act(argument) }
+    }
+
+    /// Runs an action and times it two ways, from just before it:
+    /// `next_refresh_ms`, when the display refresh after it is due (a
+    /// scheduling proxy: it doesn't show the change made that refresh), and
+    /// `visible_ms`, when the window server's image of the window first
+    /// differs from the one before the action, looked at on each refresh
+    /// for up to two seconds (null if nothing changed, both null with no
+    /// window on a display). Signposted too,
+    /// for Instruments' Points of Interest.
+    private static func measure(_ command: String, to file: URL, _ act: () -> Void) {
+        // On a display: a window off every display never refreshes.
+        let window = NSApp?.windows.first { $0.isVisible && $0.canBecomeMain && $0.screen != nil }
+        let before = window.flatMap(Render.image)
+        let start = CACurrentMediaTime()
+        let interval = AppModel.signposter.beginInterval("hook", id: AppModel.signposter.makeSignpostID(), "\(command, privacy: .public)")
+        act()
+        func ms(_ seconds: CFTimeInterval) -> Double { (seconds * 1000 * 10).rounded() / 10 }
+        guard let window, let view = window.contentView, let before else {
+            AppModel.signposter.endInterval("hook", interval)
+            return append(["command": command, "next_refresh_ms": NSNull(), "visible_ms": NSNull()], to: file)
+        }
+        var refresh: Double?
+        Refreshes.each(view) { link in
+            if refresh == nil { refresh = ms(link.targetTimestamp - start) }
+            let now = CACurrentMediaTime()
+            let changed = Render.image(window).map { $0.dataProvider?.data != before.dataProvider?.data } ?? false
+            guard changed || now - start > 2 else { return false }
+            AppModel.signposter.endInterval("hook", interval)
+            append(["command": command, "next_refresh_ms": refresh ?? NSNull(), "visible_ms": changed ? ms(now - start) : NSNull()], to: file)
+            return true
+        }
+    }
+
+    private static func append(_ line: [String: Any], to file: URL) {
+        guard var data = try? JSONSerialization.data(withJSONObject: line, options: [.sortedKeys]) else { return }
+        data.append(UInt8(ascii: "\n"))
+        if let handle = try? FileHandle(forWritingTo: file) {
+            handle.seekToEndOfFile()
+            handle.write(data)
+            try? handle.close()
+        } else {
+            try? data.write(to: file)
+        }
+    }
+}
+
+/// A window's display refreshes: its display link's ticks, each handed
+/// over until one says it's done.
+private final class Refreshes: NSObject {
+    private let tick: (CADisplayLink) -> Bool
+
+    private init(_ tick: @escaping (CADisplayLink) -> Bool) {
+        self.tick = tick
+    }
+
+    static func each(_ view: NSView, _ tick: @escaping (CADisplayLink) -> Bool) {
+        // The display link holds it until it's invalidated.
+        view.displayLink(target: Refreshes(tick), selector: #selector(ticked)).add(to: .main, forMode: .common)
+    }
+
+    @objc private func ticked(_ link: CADisplayLink) {
+        if tick(link) { link.invalidate() }
     }
 }
 #endif

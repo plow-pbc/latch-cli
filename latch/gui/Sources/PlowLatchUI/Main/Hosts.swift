@@ -1,23 +1,15 @@
 import Foundation
 
-/// The main window's sidebar: the account tier (Agents, Connections), then
-/// the selected host's screens.
-enum SidebarItem: String, CaseIterable, Identifiable {
-    case agents, connections, home, activity, rules, vault, settings
+/// The account's own pages: no host owns them.
+enum AccountPage: String, CaseIterable, Identifiable {
+    case agents, connections
 
     var id: String { rawValue }
-    static let account: [SidebarItem] = [.agents, .connections]
-    static let host: [SidebarItem] = [.home, .activity, .rules, .vault, .settings]
 
     var title: String {
         switch self {
         case .agents: "Agents"
         case .connections: "Connections"
-        case .home: "Home"
-        case .activity: "Activity"
-        case .rules: "Rules"
-        case .vault: "Vault"
-        case .settings: "Host Settings"
         }
     }
 
@@ -25,16 +17,79 @@ enum SidebarItem: String, CaseIterable, Identifiable {
         switch self {
         case .agents: "person.2"
         case .connections: "link"
-        case .home: "house"
-        case .activity: "waveform.path.ecg"
-        case .rules: "list.bullet.rectangle"
-        case .vault: "lock.rectangle.stack"
-        case .settings: "gearshape"
         }
     }
 }
 
-/// A host the picker offers: this Mac, or another of the account's hosts.
+/// A host's screens, each shown for one host.
+enum HostScreen: String, CaseIterable, Identifiable {
+    case home, activity, rules, vault, settings
+
+    var id: String { rawValue }
+    /// The screens with an inspector.
+    static let inspected: Set<HostScreen> = [.activity, .vault]
+
+    var title: String {
+        switch self {
+        case .home: "Home"
+        case .activity: "Activity"
+        case .rules: "Rules"
+        case .vault: "Vault"
+        case .settings: "Host Settings"
+        }
+    }
+}
+
+/// The main window's place: an account page, or one of the host
+/// workspace's screens. As text ("agents", "home"), it's what the window's
+/// scene state keeps.
+enum Place: Hashable, RawRepresentable {
+    case account(AccountPage)
+    case host(HostScreen)
+
+    init?(rawValue: String) {
+        if let page = AccountPage(rawValue: rawValue) { self = .account(page) }
+        else if let screen = HostScreen(rawValue: rawValue) { self = .host(screen) }
+        else { return nil }
+    }
+
+    var rawValue: String {
+        switch self {
+        case let .account(page): page.rawValue
+        case let .host(screen): screen.rawValue
+        }
+    }
+}
+
+/// What the main window shows: an account page, with no host, or a host's
+/// screen on the one host it shows (nil while there's none).
+enum Route: Equatable {
+    case account(AccountPage)
+    case host(HostScreen, HostEntry?)
+
+    var title: String {
+        switch self {
+        case let .account(page): page.title
+        case let .host(screen, _): screen.title
+        }
+    }
+}
+
+/// An agent on a host, as a link to its rules or activity there names it.
+struct AgentTarget: Equatable {
+    var host: String
+    var agent: String
+}
+
+/// Something selected on one host (a record, a vault item): it's shown only
+/// while that host is.
+struct OnHost: Equatable {
+    var host: String
+    var id: String
+}
+
+/// One of the account's hosts, as the sidebar lists them: this Mac, or
+/// another.
 struct HostEntry: Equatable, Identifiable {
     var name: String
     var isThisMac: Bool
@@ -69,7 +124,7 @@ extension HostEntry {
     var spoken: String { isThisMac ? ErrorCopy.thisMac : name }
 }
 
-/// A host's state in a word or two, as the picker and Home show it.
+/// A host's state in a word or two, as the sidebar and Home show it.
 enum HostState: Equatable {
     case serving, notReady, starting, stopped, failed, blocked
     case online, offline, unknown

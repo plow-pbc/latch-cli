@@ -39,7 +39,7 @@ final class RulesClient: LatchClient, @unchecked Sendable {
     func enable(_ plugin: String) async throws -> GoogleEnabled? { nil }
     func statusFollow() -> AsyncThrowingStream<LocalStatus, Error> { AsyncThrowingStream { _ in } }
     func audit(host: String?, before: String?) async throws -> AuditPage { AuditPage(records: [], hasOlder: false) }
-    func auditFollow(host: String?, after: String?) -> AsyncThrowingStream<AuditLine, Error> { AsyncThrowingStream { _ in } }
+    func auditFollow(host: String?, after: String?, last: Int?) -> AsyncThrowingStream<AuditLine, Error> { AsyncThrowingStream { _ in } }
     func agents(host: String?) async throws -> AgentsList { try Fixtures.decode(host == nil ? Fixtures.agents : Fixtures.agentsStudio) }
     func rulesTry(_ request: TryRequest, host: String?, agent: String?, newAgent: Bool, draft: String?) async throws -> RulesTry {
         tries.append(request)
@@ -164,8 +164,9 @@ struct RulesTests {
 
 @MainActor
 struct RulesScrollTests {
-    // A pill sets the agent before its host's rules have loaded; the scroll
-    // waits for the editor rather than firing at nothing.
+    // Agents' Rules button asks for an agent before its host's rules have
+    // loaded; the scroll waits for the editor rather than firing at
+    // nothing, and the request stays until the editor takes it.
     @Test func aPillScrollsOnceTheRulesHaveLoaded() async throws {
         let client = RulesClient()
         let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
@@ -173,25 +174,94 @@ struct RulesScrollTests {
         app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
         let host = try #require(app.host)
         let scout = try #require(client.show.agents?.first?.agentUid)
-        app.rulesFocus = scout
+        app.openRules(host, agent: scout)
         #expect(app.rulesScrollTarget(on: host) == nil)
         await app.refreshRules(on: host)
         #expect(app.rulesScrollTarget(on: host) == nil)
+        // The request waits for its editor however the reads go: nothing
+        // but the editor taking it, or its Rules going, ends it.
         await app.refreshAgents()
         #expect(app.rulesScrollTarget(on: host) == scout)
+        await app.refreshRules(on: host)
+        #expect(app.rulesScrollTarget(on: host) == scout)
+        #expect(app.takeRulesFocus(AgentTarget(host: host.name, agent: scout)))
+        #expect(app.rulesScrollTarget(on: host) == nil)
+    }
+
+    // In a real (offscreen) window too short to show it, Agents' Rules
+    // button for helper, who has no rules of its own on studio: its editor
+    // is scrolled into view, takes the request, begins an empty draft and
+    // has the keyboard focus.
+    @Test func anAskedForEditorBelowTheFoldIsRevealedAndFocused() async throws {
+        let client = RulesClient()
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
+        app.stage(status: try Fixtures.decode(Fixtures.serving))
+        app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
+        let host = try #require(app.host)
+        await app.refreshRules(on: host)
+        await app.refreshAgents()
+        let helper = try #require(app.agents?.first { $0.name == "helper" }?.uid)
+        let key = AppModel.RulesKey(host: host.name, agent: helper)
+        #expect(app.savedRules(key) == nil)
+        let window = Offscreen(contentRect: CGRect(x: -4000, y: -4000, width: 600, height: 260), styleMask: [.titled],
+                               backing: .buffered, defer: false)
+        window.contentView = NSHostingView(rootView: HostRulesView().environment(app))
+        // Setting its content can move the window onto a display: back.
+        window.setFrameOrigin(CGPoint(x: -4000, y: -4000))
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+        #expect(!NSScreen.screens.contains { $0.frame.intersects(window.frame) })
+        await waitUntil { !textViews(in: window.contentView!).isEmpty }
+        app.openRules(host, agent: helper)
+        await waitUntil { app.rulesFocus == nil }
+        #expect(app.rulesDrafts[key]?.text == "")
+        await waitUntil { window.firstResponder is NSTextView }
+        let editor = try #require(window.firstResponder as? NSTextView)
+        // helper's: the only editor with no text (the rules for every
+        // agent and scout's own have theirs).
+        #expect(editor.string.isEmpty)
+        #expect(textViews(in: window.contentView!).filter { !$0.string.isEmpty }.count == 2)
+        #expect(!editor.visibleRect.isEmpty)
+    }
+
+    // Rules asked for on a host Plow counts offline (its Rules says so and
+    // shows no editor), then another host or screen: the request goes, so
+    // the agent's editor doesn't take the focus, or begin a draft, once
+    // that host is back.
+    @Test func leavingRulesInAnyStateDropsItsRequest() throws {
+        let app = AppModel(client: RulesClient(), store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
+        app.stage(status: try Fixtures.decode(Fixtures.serving))
+        app.stage(account: try Fixtures.decode(Fixtures.studioHosts.replacingOccurrences(
+            of: #""self":false,"online":true,"last_seen_at":"2026-10-22T22:06:30.037004Z""#,
+            with: #""self":false,"online":false,"last_seen_at":null"#)))
+        let kitchen = try #require(app.hosts.first { $0.name == "pi-kitchen" })
+        #expect(kitchen.online == false)
+        let helper = AgentTarget(host: "pi-kitchen", agent: "3971582e59baad83250141c8dcc95855")
+        app.openRules(kitchen, agent: helper.agent)
+        #expect(app.rulesFocus == helper)
+        app.showHost("studio")
+        #expect(app.rulesFocus == nil)
+        #expect(!app.takeRulesFocus(helper))
+        app.openRules(kitchen, agent: helper.agent)
+        app.place = .account(.agents)
+        #expect(app.rulesFocus == nil)
+        app.openRules(kitchen, agent: helper.agent)
+        app.place = .host(.vault)
+        #expect(app.rulesFocus == nil)
     }
 }
 
-/// Rules being edited stay while the person goes elsewhere, and Save (⌘S)
-/// saves the focused editor's only.
+/// Rules being edited stay while the person goes elsewhere, and are saved
+/// only over what was there. (Save, ⌘S, is the focused editor's:
+/// `MainWindowTests`.)
 @MainActor
 struct RulesDraftTests {
     private func app(_ client: RulesClient) async throws -> AppModel {
         let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
         app.stage(status: try Fixtures.decode(Fixtures.serving))
         app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
-        app.section = .rules
-        await app.enter(.rules, host: app.host)
+        app.place = .host(.rules)
+        await app.enter(.host(.rules, app.host))
         return app
     }
 
@@ -201,10 +271,10 @@ struct RulesDraftTests {
         let key = AppModel.RulesKey(host: "studio", agent: nil)
         let saved = try #require(app.savedRules(key))
         app.rulesDrafts[key] = .init(text: saved.text + " Never touch ~/Taxes.", base: saved.revision)
-        for (section, host) in [(SidebarItem.home, "studio"), (.activity, "pi-kitchen"), (.rules, "pi-kitchen"), (.rules, "studio")] {
-            app.section = section
+        for (screen, host) in [(HostScreen.home, "studio"), (.activity, "pi-kitchen"), (.rules, "pi-kitchen"), (.rules, "studio")] {
+            app.place = .host(screen)
             app.chosenHost = host
-            await app.enter(section, host: app.host)
+            await app.enter(app.route)
         }
         #expect(app.rulesDrafts[key]?.text.hasSuffix(" Never touch ~/Taxes.") == true)
         #expect(app.rulesChanged(key))
@@ -228,40 +298,6 @@ struct RulesDraftTests {
         #expect(app.rulesDrafts[every]?.text == "Agents may read ~/Projects and ~/Docs.")
     }
 
-    // The menu's Save runs what the focused editor publishes: in a real
-    // window, focusing the second of two edited editors makes Save its.
-    @Test func saveIsTheFocusedEditorsOnly() async throws {
-        let client = RulesClient()
-        let app = try await app(client)
-        let host = try #require(app.host)
-        let every = AppModel.RulesKey(host: "studio", agent: nil)
-        let scout = AppModel.RulesKey(host: "studio", agent: "ba3c0b3ad1eba7a9a1eb04b67c9db0dd")
-        let scoutAgent = try #require(app.agents?.first { $0.uid == scout.agent })
-        app.typeRules("Agents may read ~/Projects.", at: every, from: app.savedRules(every))
-        app.typeRules("scout may run make test.", at: scout, from: app.savedRules(scout))
-        let seen = SavePublished()
-        let window = Offscreen(contentRect: CGRect(x: -4000, y: -4000, width: 600, height: 500), styleMask: [.titled],
-                               backing: .buffered, defer: false)
-        window.contentView = NSHostingView(rootView: Form {
-            RulesEditor(title: "every", note: "", saved: app.savedRules(every), host: host, agent: nil)
-            RulesEditor(title: "scout", note: "", saved: app.savedRules(scout), host: host, agent: scoutAgent)
-            SaveProbe(seen: seen)
-        }.environment(app))
-        // Setting its content can move the window onto a display: back.
-        window.setFrameOrigin(CGPoint(x: -4000, y: -4000))
-        window.makeKeyAndOrderFront(nil)
-        defer { window.orderOut(nil) }
-        #expect(!NSScreen.screens.contains { $0.frame.intersects(window.frame) }, "\(window.frame) \(NSScreen.screens.map(\.frame))")
-        await waitUntil { textViews(in: window.contentView!).count == 2 }
-        #expect(seen.key == nil)
-        window.makeFirstResponder(textViews(in: window.contentView!)[1])
-        await waitUntil { seen.key == scout }
-        seen.save?.run()
-        await waitUntil { !client.sets.isEmpty }
-        #expect(client.sets.map(\.agent) == [scout.agent])
-        #expect(app.rulesDrafts[every] != nil)
-    }
-
     @Test func aDraftOverRulesChangedElsewhereStaysWithWhy() async throws {
         let client = RulesClient()
         let app = try await app(client)
@@ -274,28 +310,4 @@ struct RulesDraftTests {
         await app.revertRules(key)
         #expect(app.rulesDrafts[key] == nil && app.rulesErrors[key] == nil)
     }
-}
-
-/// What the menu's Save would run, as a window's focus publishes it.
-@MainActor
-final class SavePublished {
-    var key: AppModel.RulesKey?
-    var save: RulesSave?
-}
-
-private struct SaveProbe: View {
-    let seen: SavePublished
-    @FocusedValue(\.rulesSave) private var save
-
-    var body: some View {
-        Color.clear.frame(height: 1).onChange(of: save?.key, initial: true) {
-            seen.key = save?.key
-            seen.save = save
-        }
-    }
-}
-
-@MainActor
-private func textViews(in view: NSView) -> [NSTextView] {
-    (view as? NSTextView).map { [$0] } ?? view.subviews.flatMap(textViews)
 }

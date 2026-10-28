@@ -1,11 +1,15 @@
 import Observation
 import SwiftUI
+import Synchronization
 
-/// One host's audit as `latch audit --follow` streams it: the newest page,
-/// then each record as it's written. It runs while a screen showing it is
-/// on screen and for a grace after, so coming straight back doesn't start
-/// latch again, and picks up after the last record it got when it starts
-/// again.
+/// One host's audit as `latch audit --follow` streams it: the newest 500
+/// records, then each record as it's written, kept with no limit, so a
+/// selected record never goes from under the person. It runs while a screen
+/// showing it is on screen and for a grace after, so coming straight back
+/// doesn't start latch again, and picks up after the last record it got
+/// when it starts again: every record since, with none missed or twice.
+/// Records arrive in batches, at most one change every ~100 ms, however
+/// fast latch sends them.
 @Observable
 final class ActivityFeed {
     let client: any LatchClient
@@ -30,6 +34,14 @@ final class ActivityFeed {
     private var watchers = 0
     /// The earlier pages Home reads on its own looking for five requests.
     static let homePages = 2
+    /// How many of the newest records a first read (or one after latch
+    /// forgot where the last left off) starts with.
+    static let openingPage = 500
+    /// The least time between two changes to the records.
+    static let batchInterval: Duration = .milliseconds(100)
+    /// How long to wait before following again after the stream dropped;
+    /// twice as long each time after, up to a minute.
+    var firstRetry: Duration = .seconds(2)
 
     /// How long the stream keeps running after the last screen showing it
     /// goes.
@@ -92,18 +104,23 @@ final class ActivityFeed {
     /// time up to a minute; an error that won't change by waiting stops it.
     private func run() async {
         defer { if !Task.isCancelled { running = false } }
-        var wait = 2
+        var wait = firstRetry
         while !Task.isCancelled {
             do {
-                for try await line in client.auditFollow(host: host, after: cursor) {
-                    apply(line)
-                    wait = 2
+                let lines = client.auditFollow(host: host, after: cursor, last: cursor == nil ? Self.openingPage : nil)
+                let batches = LineBatches(lines, every: Self.batchInterval)
+                while try await batches.due() {
+                    apply(batches.take())
+                    wait = firstRetry
                 }
             } catch let failure as LatchError {
                 if failure.code == "cursor_expired" {
+                    // Starts again from the newest records.
                     cursor = nil
                     records = []
                     ids = []
+                    hasOlder = false
+                    caughtUp = false
                     continue
                 }
                 guard !Task.isCancelled else { return }
@@ -114,8 +131,8 @@ final class ActivityFeed {
                 return
             }
             guard !Task.isCancelled else { return }
-            try? await Task.sleep(for: .seconds(wait))
-            wait = min(wait * 2, 60)
+            try? await Task.sleep(for: wait)
+            wait = min(wait * 2, .seconds(60))
         }
     }
 
@@ -125,23 +142,38 @@ final class ActivityFeed {
     private static let final: Set<String> = ["no_host_here", "owner_only", "usage", "audit_broken", "unknown_host", "not_logged_in",
                                              "record_too_large"]
 
-    func apply(_ line: AuditLine) {
-        switch line {
-        case let .snapshot(_, hasOlder):
-            if records.isEmpty { self.hasOlder = hasOlder }
-        case let .record(cursor, record):
-            self.cursor = cursor
-            error = nil
-            guard ids.insert(record.id).inserted else { return }
-            records.append(record)
-        case let .caughtUp(cursor, hasOlder):
-            self.cursor = cursor
-            if records.isEmpty { self.hasOlder = hasOlder }
-            caughtUp = true
-            error = nil
-        case .hello, .other:
-            break
+    /// Lines in the order sent, changing each of the feed's properties
+    /// once, however many there are.
+    func apply(_ lines: [AuditLine]) {
+        var added: [AuditRecord] = []
+        var cursor = cursor, hasOlder = hasOlder, caughtUp = caughtUp, cleared = false
+        let empty = records.isEmpty
+        for line in lines {
+            switch line {
+            case let .snapshot(_, older):
+                if empty, added.isEmpty { hasOlder = older }
+            case let .record(at, record):
+                cursor = at
+                cleared = true
+                if ids.insert(record.id).inserted { added.append(record) }
+            case let .caughtUp(at, older):
+                cursor = at
+                if empty, added.isEmpty { hasOlder = older }
+                caughtUp = true
+                cleared = true
+            case .hello, .other:
+                break
+            }
         }
+        if cursor != self.cursor { self.cursor = cursor }
+        if hasOlder != self.hasOlder { self.hasOlder = hasOlder }
+        if caughtUp != self.caughtUp { self.caughtUp = caughtUp }
+        if cleared, error != nil { error = nil }
+        if !added.isEmpty { records.append(contentsOf: added) }
+    }
+
+    func apply(_ line: AuditLine) {
+        apply([line])
     }
 
     /// "Load Earlier": the page before the first record held.
@@ -179,6 +211,140 @@ final class ActivityFeed {
             if let line = try? LatchJSON.decoder.decode(AuditLine.self, from: Data(line.utf8)) { apply(line) }
         }
         self.error = error
+    }
+}
+
+/// A follow's lines gathered off the main actor and taken a batch at a
+/// time, so a busy main thread takes one hop a batch rather than one a
+/// line. `due` waits until a batch may be taken: `interval` after the last
+/// was taken (the first counting from the start), at once when the stream
+/// has caught up, and before the stream's end or error. `take` then takes
+/// every line held when it's called, so a consumer that came back late
+/// takes all that came meanwhile as one batch, and the next waits its
+/// interval from there. Dropping it stops the lines.
+nonisolated final class LineBatches: Sendable {
+    private struct Held {
+        var lines: [AuditLine] = []
+        var taken = ContinuousClock.now
+        /// The lines held may be taken.
+        var due = false
+        /// How the stream ended: nil for its end, else its error.
+        var end: Error??
+        var waiting: CheckedContinuation<Bool, Error>?
+        var cancelled = false
+        /// Makes the lines held due when no later line comes in time.
+        var timer: Task<Void, Never>?
+        var reading: Task<Void, Never>?
+    }
+    private let held = Mutex(Held())
+    private let interval: Duration
+
+    init(_ lines: AsyncThrowingStream<AuditLine, Error>, every interval: Duration) {
+        self.interval = interval
+        let reading = Task { [weak self] in
+            do {
+                for try await line in lines {
+                    guard let self else { return }
+                    self.receive(line)
+                }
+                self?.finish(nil)
+            } catch {
+                self?.finish(error)
+            }
+        }
+        held.withLock { $0.reading = reading }
+    }
+
+    deinit {
+        held.withLock { held in
+            held.reading?.cancel()
+            held.timer?.cancel()
+        }
+    }
+
+    /// Waits until a batch may be taken: true then, false once the stream
+    /// has ended with every line taken (or the wait was cancelled), and the
+    /// stream's error once every line before it was taken.
+    func due() async throws -> Bool {
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { waiting in
+                held.withLock { held in
+                    guard !held.cancelled else { return waiting.resume(returning: false) }
+                    held.waiting = waiting
+                    wake(&held)
+                }
+            }
+        } onCancel: {
+            held.withLock { held in
+                held.cancelled = true
+                held.reading?.cancel()
+                held.waiting?.resume(returning: false)
+                held.waiting = nil
+            }
+        }
+    }
+
+    /// Every line held, oldest first; the next batch is due `interval`
+    /// from now.
+    func take() -> [AuditLine] {
+        held.withLock { held in
+            defer {
+                // A timer set before this take would make the next batch
+                // due too soon.
+                held.timer?.cancel()
+                held.timer = nil
+                held.lines = []
+                held.due = false
+                held.taken = .now
+            }
+            return held.lines
+        }
+    }
+
+    private func receive(_ line: AuditLine) {
+        held.withLock { held in
+            held.lines.append(line)
+            let due = held.taken + interval
+            if case .caughtUp = line { return makeDue(&held) }
+            if ContinuousClock.now >= due { return makeDue(&held) }
+            guard held.timer == nil else { return }
+            held.timer = Task { [weak self] in
+                try? await Task.sleep(until: due)
+                self?.held.withLock { held in
+                    // Cancelled under the lock by a batch that went first.
+                    guard !Task.isCancelled else { return }
+                    self?.makeDue(&held)
+                }
+            }
+        }
+    }
+
+    private func finish(_ error: Error?) {
+        held.withLock { held in
+            held.end = .some(error)
+            makeDue(&held)
+        }
+    }
+
+    private func makeDue(_ held: inout Held) {
+        held.timer?.cancel()
+        held.timer = nil
+        held.due = true
+        wake(&held)
+    }
+
+    /// Wakes the consumer waiting, if one is: when lines held are due, or
+    /// with how the stream ended once nothing is held.
+    private func wake(_ held: inout Held) {
+        guard let waiting = held.waiting else { return }
+        if held.due, !held.lines.isEmpty {
+            waiting.resume(returning: true)
+        } else if held.lines.isEmpty, let end = held.end {
+            if let error = end { waiting.resume(throwing: error) } else { waiting.resume(returning: false) }
+        } else {
+            return
+        }
+        held.waiting = nil
     }
 }
 
