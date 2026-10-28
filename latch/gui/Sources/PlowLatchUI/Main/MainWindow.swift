@@ -147,6 +147,19 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             await app.followStatus()
         })
         tasks.append(Task { [app] in await app.refreshAccount() })
+        // SwiftUI's empty state is slow to make the first time in a process
+        // on a Mac that hasn't drawn one lately: up to a third of a second on
+        // the main thread, which the first screen to show one (Activity, with
+        // its inspector's No Selection) paid in the middle of a click. One
+        // made unseen while the window sits idle after it opens pays it.
+        tasks.append(Task { [weak self] in
+            try? await Task.sleep(for: .seconds(1))
+            guard let self, !self.closed else { return }
+            let empty = NSHostingView(rootView: ContentUnavailableView("No Selection", systemImage: "doc.text.magnifyingglass",
+                                                                       description: Text("Nothing selected.")))
+            empty.frame = CGRect(x: 0, y: 0, width: 320, height: 240)
+            empty.layoutSubtreeIfNeeded()
+        })
         activation = NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil,
                                                             queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
