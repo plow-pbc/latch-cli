@@ -101,6 +101,7 @@ private struct AgentSection: View {
                 Spacer()
                 Button("Remove…", role: .destructive, action: remove)
                     .help("Remove \(agent.name) from your account")
+                    .accessibilityLabel("Remove \(agent.name)…")
             }
         }
     }
