@@ -147,6 +147,19 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             await app.followStatus()
         })
         tasks.append(Task { [app] in await app.refreshAccount() })
+        // SwiftUI's empty state is slow to make the first time in a process
+        // on a Mac that hasn't drawn one lately: up to a third of a second on
+        // the main thread, which the first screen to show one (Activity, with
+        // its inspector's No Selection) paid in the middle of a click. One
+        // made unseen while the window sits idle after it opens pays it.
+        tasks.append(Task { [weak self] in
+            try? await Task.sleep(for: .seconds(1))
+            guard let self, !self.closed else { return }
+            let empty = NSHostingView(rootView: ContentUnavailableView("No Selection", systemImage: "doc.text.magnifyingglass",
+                                                                       description: Text("Nothing selected.")))
+            empty.frame = CGRect(x: 0, y: 0, width: 320, height: 240)
+            empty.layoutSubtreeIfNeeded()
+        })
         activation = NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil,
                                                             queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
@@ -205,6 +218,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
         let onHost = if case .host = app.place { true } else { false }
         if barItem.isHidden == onHost { Self.unanimated { barItem.isHidden = !onHost } }
+        // The accessory only folds away; hidden, the bar's tabs and field
+        // leave the key loop and what VoiceOver reads as well.
+        if bar.isHidden == onHost { bar.isHidden = !onHost }
 
         // The inspector on the screens that have one, as each was left;
         // shown or hidden by a change of place at once, not slid.
@@ -344,11 +360,32 @@ final class MainSplitController: NSSplitViewController, NSToolbarItemValidation 
         return inspected != nil
     }
 
-    /// What the toolbar's toggle asks, as the menu's asks the method above:
-    /// greyed, not hidden, where there's no inspector, as Finder greys Show
-    /// Preview where there's no preview.
+    /// What the toolbar's toggles ask: each is named for what it does now,
+    /// as the menu's are, and the inspector's is greyed, not hidden, where
+    /// there's no inspector, as Finder greys Show Preview where there's no
+    /// preview. Not the split view's own answer: that writes the menu's
+    /// title onto the toolbar button, which then draws it over the icon.
     func validateToolbarItem(_ item: NSToolbarItem) -> Bool {
-        validateUserInterfaceItem(item)
+        switch item.action {
+        case #selector(toggleSidebar(_:)):
+            let open = splitViewItems.first { $0.behavior == .sidebar }.map { !$0.isCollapsed } ?? false
+            Self.name(item, open ? "Hide Sidebar" : "Show Sidebar")
+            return true
+        case #selector(toggleInspector(_:)):
+            let open = inspected.map(app.inspecting.contains) ?? false
+            Self.name(item, open ? "Hide Inspector" : "Show Inspector")
+            return inspected != nil
+        default:
+            return validateUserInterfaceItem(item)
+        }
+    }
+
+    /// The name a toggle's help tag and VoiceOver give; the button itself
+    /// shows only its icon.
+    private static func name(_ item: NSToolbarItem, _ name: String) {
+        item.title = ""
+        item.toolTip = name
+        item.view?.setAccessibilityLabel(name)
     }
 }
 

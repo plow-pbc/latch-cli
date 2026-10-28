@@ -69,6 +69,31 @@ struct MainWindowTests {
         }
     }
 
+    // The toolbar's toggles show only their icons, and their help tag and
+    // VoiceOver name say what a click does now: Hide while open, Show
+    // while closed, as the menu's do.
+    @Test func theTogglesAreNamedForWhatTheyDo() async throws {
+        let app = try app(LiveClient())
+        app.place = .host(.activity)
+        let controller = open(app)
+        defer { controller.close() }
+        let toolbar = try #require(controller.window?.toolbar)
+        let split = try #require(controller.window?.contentViewController as? NSSplitViewController)
+        func names() -> [String] {
+            toolbar.validateVisibleItems()
+            return [NSToolbarItem.Identifier.toggleSidebar, .toggleInspector].compactMap { id in
+                toolbar.items.first { $0.itemIdentifier == id }.map { item in
+                    "\(item.title)|\(item.toolTip ?? "")|\(item.view?.accessibilityLabel() ?? "")"
+                }
+            }
+        }
+        #expect(names() == ["|Hide Sidebar|Hide Sidebar", "|Hide Inspector|Hide Inspector"])
+        split.toggleSidebar(nil)
+        app.inspecting.remove(.activity)
+        await waitUntil { names() == ["|Show Sidebar|Show Sidebar", "|Show Inspector|Show Inspector"] }
+        #expect(names() == ["|Show Sidebar|Show Sidebar", "|Show Inspector|Show Inspector"])
+    }
+
     @Test func aChangeOfPlaceCancelsTheLastPlacesReads() async throws {
         let client = CountingClient()
         let gate = Gate()
@@ -402,6 +427,47 @@ extension MainWindowTests {
                 "\(String(describing: reached))")
     }
 
+    // An account page hides the bar whole: Tab never lands in it, nor does
+    // VoiceOver find its tabs or the search field the last host screen left.
+    @Test func aHiddenBarIsOutOfTheKeyLoopAndAccessibility() async throws {
+        let app = try app(LiveClient())
+        app.place = .host(.activity)
+        let controller = open(app)
+        defer { controller.close() }
+        let window = try #require(controller.window)
+        let bar = try #require(views(in: window.contentView!).first { $0 is ContentBar })
+        // A responder or accessibility element in the bar: a view, the
+        // field editor of its search field, or a cell or segment of one.
+        func inBar(_ object: Any?) -> Bool {
+            var object = object
+            for _ in 0..<8 {
+                if let editor = object as? NSTextView, editor.isFieldEditor { object = editor.delegate }
+                if let view = object as? NSView { return view.isDescendant(of: bar) }
+                object = (object as? NSCell)?.controlView ?? (object as? NSAccessibilityProtocol)?.accessibilityParent()
+            }
+            return false
+        }
+        func reachable(_ element: Any, depth: Int = 0) -> [Any] {
+            guard depth < 40, let element = element as? NSAccessibilityProtocol else { return [] }
+            return [element] + (element.accessibilityChildren() ?? []).flatMap { reachable($0, depth: depth + 1) }
+        }
+        await waitUntil { searchFields(in: bar).first?.placeholderString == "Search requests" }
+        #expect(reachable(window).contains(where: inBar))
+        for page in [AccountPage.agents, .connections] {
+            app.place = .account(page)
+            await waitUntil { window.title == page.title }
+            window.recalculateKeyViewLoop()
+            window.makeFirstResponder(nil)
+            var reached: [Any?] = []
+            for _ in 0..<40 {
+                window.selectNextKeyView(nil)
+                reached.append(window.firstResponder)
+            }
+            #expect(!reached.contains(where: inBar), "\(page): \(reached.filter(inBar))")
+            #expect(!reachable(window).contains(where: inBar), "\(page)")
+        }
+    }
+
     // The bar's search field holds each screen's own search.
     @Test func eachScreenKeepsItsOwnSearch() async throws {
         let app = try app(LiveClient())
@@ -430,6 +496,11 @@ extension MainWindowTests {
 @MainActor
 private func searchFields(in view: NSView) -> [NSSearchField] {
     (view as? NSSearchField).map { [$0] } ?? view.subviews.flatMap(searchFields)
+}
+
+@MainActor
+private func views(in view: NSView) -> [NSView] {
+    [view] + view.subviews.flatMap(views)
 }
 
 @MainActor
