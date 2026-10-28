@@ -70,6 +70,9 @@ nonisolated struct SyntheticLatchClient: LatchClient {
     let stateDir: String
     private let base = FakeLatchClient()
     private let connectors = Connectors()
+    /// Whether this Mac is logged in: `logout` logs it out, `login` back in.
+    private let session = Session()
+    private final class Session: Sendable { let loggedIn = Mutex(true) }
 
     /// This Mac's plugins that are on and the account's Google accounts, as
     /// the last change left them.
@@ -110,7 +113,8 @@ nonisolated struct SyntheticLatchClient: LatchClient {
         let hosting = spec.viewer > 0
             ? #""running":false,"ready":false,"configuring":false,"managed":false,"attached":false,"state":"stopped","pid":null"#
             : #""running":true,"ready":true,"configuring":false,"managed":true,"attached":false,"state":"serving","pid":4100"#
-        return try await read(Fixtures.status(#"{"login":{"kind":"device"},"this_machine":{"name":"\#(hostNames[0])","key":"\#(key(hostNames[0]))","hosting":{\#(hosting),"blocked":null,"keep_awake":{"enabled":false,"held":false,"reason":"disabled"}}},"update":{"available":false,"build":null,"checked_at":null},"last_error":null,"state_dir":"\#(stateDir)","version":"0.1.0","protocol":2}"#, plugins: plugins))
+        let login = session.loggedIn.withLock { $0 } ? #"{"kind":"device"}"# : "null"
+        return try await read(Fixtures.status(#"{"login":\#(login),"this_machine":{"name":"\#(hostNames[0])","key":"\#(key(hostNames[0]))","hosting":{\#(hosting),"blocked":null,"keep_awake":{"enabled":false,"held":false,"reason":"disabled"}}},"update":{"available":false,"build":null,"checked_at":null},"last_error":null,"state_dir":"\#(stateDir)","version":"0.1.0","protocol":2}"#, plugins: plugins))
     }
 
     /// This Mac's plugins: off, or, with `connectors`, as changed.
@@ -258,6 +262,7 @@ nonisolated struct SyntheticLatchClient: LatchClient {
     /// Logged in already, as latch says at once.
     func login(name: String?, replace: Bool) -> AsyncThrowingStream<LoginEvent, Error> {
         let name = hostNames[0]
+        session.loggedIn.withLock { $0 = true }
         return AsyncThrowingStream { continuation in
             continuation.yield(.verified(name: name))
             continuation.finish()
@@ -318,7 +323,10 @@ nonisolated struct SyntheticLatchClient: LatchClient {
     func devices() async throws -> DeviceList { try await read(Fixtures.devices) }
     func removeDevice(_ name: String) async throws {}
     func updateCheck() async throws -> UpdateCheck { try await read(Fixtures.updateCheck) }
-    func logout() async throws -> LogoutResult { LogoutResult(device: nil) }
+    func logout() async throws -> LogoutResult {
+        session.loggedIn.withLock { $0 = false }
+        return LogoutResult(device: nil)
+    }
     func agentCatalog() async throws -> AgentCatalog { try await read(Fixtures.catalog) }
     func agentLines() async throws -> AgentLines { try await read(Fixtures.lines) }
     func newAgent(name: String, cloud: String?, tokenFile: URL?, line: String) async throws -> AgentCreated {
