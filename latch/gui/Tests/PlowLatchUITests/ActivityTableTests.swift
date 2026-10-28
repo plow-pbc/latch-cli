@@ -353,7 +353,7 @@ struct ActivityTableTests {
         let first = try #require(controller.preview)
         #expect(mode(first) == 0o600)
         #expect(mode(dir) == 0o700)
-        #expect(try String(contentsOf: first, encoding: .utf8).hasPrefix(controller.rows[0].command ?? ""))
+        #expect(try String(contentsOf: first, encoding: .utf8).hasPrefix(controller.rows[0].command ?? "A connection"))
         // Moving to another request: its file, the last one's gone.
         controller.table.selectRowIndexes([1], byExtendingSelection: false)
         await waitUntil { controller.preview != nil && controller.preview != first }
