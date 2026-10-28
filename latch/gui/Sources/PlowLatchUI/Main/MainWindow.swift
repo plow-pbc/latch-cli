@@ -381,11 +381,12 @@ final class MainSplitController: NSSplitViewController, NSToolbarItemValidation 
     }
 
     /// The name a toggle's help tag and VoiceOver give; the button itself
-    /// shows only its icon.
+    /// shows only its icon. VoiceOver speaks the item's label, which isn't
+    /// drawn with icons only.
     private static func name(_ item: NSToolbarItem, _ name: String) {
         item.title = ""
         item.toolTip = name
-        item.view?.setAccessibilityLabel(name)
+        if item.label != name { item.label = name }
     }
 }
 
