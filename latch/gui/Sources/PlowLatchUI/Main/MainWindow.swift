@@ -205,6 +205,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
         let onHost = if case .host = app.place { true } else { false }
         if barItem.isHidden == onHost { Self.unanimated { barItem.isHidden = !onHost } }
+        // The accessory only folds away; hidden, the bar's tabs and field
+        // leave the key loop and what VoiceOver reads as well.
+        if bar.isHidden == onHost { bar.isHidden = !onHost }
 
         // The inspector on the screens that have one, as each was left;
         // shown or hidden by a change of place at once, not slid.
