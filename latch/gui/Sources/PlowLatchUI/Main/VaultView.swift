@@ -245,6 +245,7 @@ struct VaultItemInspector: View {
             Section {
                 HStack {
                     Button("Remove…", role: .destructive, action: remove)
+                        .accessibilityLabel("Remove \(item.title)…")
                     Spacer()
                     Button("Edit…", action: edit)
                 }
