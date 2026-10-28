@@ -210,7 +210,7 @@ struct ConnectionsView: View {
                         Spacer()
                         Button("Remove…") { app.ask(.removeDevice(device)) }
                             .disabled(thisMac)
-                            .help(thisMac ? "Log out this Mac in Settings instead" : "Remove it from your account")
+                            .help(thisMac ? "Log out this Mac in Settings instead" : "Remove \(device.name) from your account")
                     }
                 }
             }
