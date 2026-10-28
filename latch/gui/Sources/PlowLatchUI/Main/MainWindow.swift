@@ -344,11 +344,32 @@ final class MainSplitController: NSSplitViewController, NSToolbarItemValidation 
         return inspected != nil
     }
 
-    /// What the toolbar's toggle asks, as the menu's asks the method above:
-    /// greyed, not hidden, where there's no inspector, as Finder greys Show
-    /// Preview where there's no preview.
+    /// What the toolbar's toggles ask: each is named for what it does now,
+    /// as the menu's are, and the inspector's is greyed, not hidden, where
+    /// there's no inspector, as Finder greys Show Preview where there's no
+    /// preview. Not the split view's own answer: that writes the menu's
+    /// title onto the toolbar button, which then draws it over the icon.
     func validateToolbarItem(_ item: NSToolbarItem) -> Bool {
-        validateUserInterfaceItem(item)
+        switch item.action {
+        case #selector(toggleSidebar(_:)):
+            let open = splitViewItems.first { $0.behavior == .sidebar }.map { !$0.isCollapsed } ?? false
+            Self.name(item, open ? "Hide Sidebar" : "Show Sidebar")
+            return true
+        case #selector(toggleInspector(_:)):
+            let open = inspected.map(app.inspecting.contains) ?? false
+            Self.name(item, open ? "Hide Inspector" : "Show Inspector")
+            return inspected != nil
+        default:
+            return validateUserInterfaceItem(item)
+        }
+    }
+
+    /// The name a toggle's help tag and VoiceOver give; the button itself
+    /// shows only its icon.
+    private static func name(_ item: NSToolbarItem, _ name: String) {
+        item.title = ""
+        item.toolTip = name
+        item.view?.setAccessibilityLabel(name)
     }
 }
 

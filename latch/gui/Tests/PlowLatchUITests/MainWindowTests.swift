@@ -69,6 +69,31 @@ struct MainWindowTests {
         }
     }
 
+    // The toolbar's toggles show only their icons, and their help tag and
+    // VoiceOver name say what a click does now: Hide while open, Show
+    // while closed, as the menu's do.
+    @Test func theTogglesAreNamedForWhatTheyDo() async throws {
+        let app = try app(LiveClient())
+        app.place = .host(.activity)
+        let controller = open(app)
+        defer { controller.close() }
+        let toolbar = try #require(controller.window?.toolbar)
+        let split = try #require(controller.window?.contentViewController as? NSSplitViewController)
+        func names() -> [String] {
+            toolbar.validateVisibleItems()
+            return [NSToolbarItem.Identifier.toggleSidebar, .toggleInspector].compactMap { id in
+                toolbar.items.first { $0.itemIdentifier == id }.map { item in
+                    "\(item.title)|\(item.toolTip ?? "")|\(item.view?.accessibilityLabel() ?? "")"
+                }
+            }
+        }
+        #expect(names() == ["|Hide Sidebar|Hide Sidebar", "|Hide Inspector|Hide Inspector"])
+        split.toggleSidebar(nil)
+        app.inspecting.remove(.activity)
+        await waitUntil { names() == ["|Show Sidebar|Show Sidebar", "|Show Inspector|Show Inspector"] }
+        #expect(names() == ["|Show Sidebar|Show Sidebar", "|Show Inspector|Show Inspector"])
+    }
+
     @Test func aChangeOfPlaceCancelsTheLastPlacesReads() async throws {
         let client = CountingClient()
         let gate = Gate()
