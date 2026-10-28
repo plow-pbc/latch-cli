@@ -8628,6 +8628,124 @@ mod pinned {
         }
     }
 
+    /// A session that a restart of its host ended, by `latch stop` or by
+    /// SIGKILL, answers `session_ended`: when the host restarted and what
+    /// to do next, for 7 days. Its plan's history and screenshots still
+    /// read; an id that never was a session is still `no_such_session`.
+    #[test]
+    fn a_session_a_host_restart_ended_says_so_and_its_history_still_reads() {
+        let plow = LivePlow::start();
+        let (_runtime, relay) = local_relay();
+        let dir = test_dir();
+        let host = owner_host_on(&plow, dir.path());
+        let installed = std::env::var_os("LATCH_CFT_STATE")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/cft-state"));
+        let plugins = installed.canonicalize().unwrap().join("plugins");
+        std::os::unix::fs::symlink(plugins, host.join("plugins")).unwrap();
+        fs::write(host.join("host.json"), r#"{"allow_local_browsing":true}"#).unwrap();
+        let serve = || {
+            let mut command = serve_command(&host, &relay);
+            command.arg("--headless-browsers");
+            let (serve, mut log, _) = serving_with(command);
+            thread::spawn(move || std::io::copy(&mut log, &mut std::io::sink()));
+            until_serving(&host, &serve);
+            serve
+        };
+        let run = |args: &[&str]| {
+            let output = latch(&host, args, &[]);
+            assert!(output.status.success(), "{args:?}: {output:?}");
+            serde_json::from_slice::<Value>(&output.stdout).unwrap()
+        };
+        let refused = |args: &[&str]| {
+            let (code, answer) = answered(&latch(&host, args, &[]));
+            assert_eq!(code, Some(1), "{args:?}: {answer}");
+            answer["error"].clone()
+        };
+        let ended = |session: &str, since: jiff::Timestamp| {
+            for command in [&["text"][..], &["goto", "https://example.com/"], &["close"]] {
+                let args = [&["browser", "--session", session][..], command].concat();
+                let error = refused(&args);
+                assert_eq!(error["code"], "session_ended", "{command:?}: {error}");
+                assert_eq!(error["next"], "latch browser open URL", "{error}");
+                let at: jiff::Timestamp = error["host_restarted_at"]
+                    .as_str()
+                    .unwrap()
+                    .parse()
+                    .unwrap();
+                assert!(
+                    at.as_second() >= since.as_second() && at <= jiff::Timestamp::now(),
+                    "{error}"
+                );
+                let message = error["message"].as_str().unwrap();
+                assert!(message.contains(&format!("restarted at {at}")), "{message}");
+            }
+        };
+        let url = format!("{}/socket-page", plow.url);
+
+        // Cleanly: `latch stop` says the open session ends with the host.
+        let mut first_host = serve();
+        let first = run(&["browser", "open", &url])["session"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let acted = run(&["browser", "--session", &first, "act", "scroll", "down"]);
+        let request = acted["request"].as_str().unwrap().to_string();
+        let stop = latch(&host, &["stop", "--pretty"], &[]);
+        assert!(stop.status.success(), "{stop:?}");
+        let printed = String::from_utf8(stop.stdout).unwrap();
+        assert!(
+            printed.contains("\n  \"browser_sessions_ended\": 1"),
+            "{printed}"
+        );
+        let stopped: Value = serde_json::from_str(&printed).unwrap();
+        assert_eq!(stopped["stopped"], true, "{stopped}");
+        assert!(first_host.0.wait().unwrap().success());
+
+        let since = jiff::Timestamp::now();
+        let mut second_host = serve();
+        ended(&first, since);
+        let history = run(&["browser", "--session", &first, "do", "--history", &request]);
+        assert_eq!(history["request"], request.as_str(), "{history}");
+        let shot = dir.path().join("shot.png");
+        let shot_args = ["browser", "--session", &first, "do", "--history", &request];
+        let output = ["--shot", "1", "--output", shot.to_str().unwrap()];
+        run(&[&shot_args[..], &output].concat());
+        assert!(fs::read(&shot).unwrap().starts_with(b"\x89PNG"));
+        let unknown = refused(&["browser", "--session", "snotasessionatall", "text"]);
+        assert_eq!(unknown["code"], "no_such_session", "{unknown}");
+
+        // By SIGKILL: nothing of the host's ran as it ended.
+        let records = || {
+            fs::read_dir(host.join("browser/opened"))
+                .unwrap()
+                .map(|record| record.unwrap().path())
+                .collect::<Vec<_>>()
+        };
+        let [first_record] = records().try_into().unwrap();
+        let second = run(&["browser", "open", &url])["session"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        // SAFETY: signals our own child.
+        unsafe { libc::kill(second_host.0.id() as i32, libc::SIGKILL) };
+        second_host.0.wait().unwrap();
+        let since = jiff::Timestamp::now();
+        let _third_host = serve();
+        ended(&second, since);
+
+        // A week on, an ended session is no session at all.
+        let eight_days = std::time::Duration::from_secs(8 * 24 * 60 * 60);
+        fs::File::options()
+            .write(true)
+            .open(&first_record)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - eight_days)
+            .unwrap();
+        let old = refused(&["browser", "--session", &first, "text"]);
+        assert_eq!(old["code"], "no_such_session", "{old}");
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn an_agent_signs_in_with_a_code_texted_to_the_owner() {

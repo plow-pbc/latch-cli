@@ -13,6 +13,8 @@
 //! - `steps.rs`: the host's step executor: `do`, `act`, confirmations,
 //!   `find` and `wait`.
 //! - `journal.rs`: each plan request's journal, for `do --history`.
+//! - `opened.rs`: the sessions opened on the state folder, so one a host
+//!   restart ended is told from one that never was.
 //! - `model.rs`: the decision model, behind a swappable provider.
 //! - `runtime.rs`: a session's browser worker, as the host starts and calls it.
 //! - `session.rs`: one session's handle on its worker.
@@ -43,6 +45,7 @@ pub(crate) mod journal;
 mod judged;
 pub(crate) use judged::previewed_fill;
 pub mod model;
+mod opened;
 pub mod plan;
 pub mod profile;
 pub mod runtime;

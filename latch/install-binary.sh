@@ -294,6 +294,12 @@ case "$host" in
         else
           say "stopped the host on $state_dir; it starts again with the new latch once the install is done"
         fi
+        sessions=$(printf '%s\n' "$stopped" | sed -n 's/.*"browser_sessions_ended":\([0-9]*\).*/\1/p')
+        case "$sessions" in
+          ''|0) ;;
+          1) say "1 browser session was open on the host and ended with it; its caller must open a new one" ;;
+          *) say "$sessions browser sessions were open on the host and ended with it; their callers must open new ones" ;;
+        esac
         ;;
     esac
     ;;

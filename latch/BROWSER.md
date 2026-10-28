@@ -218,7 +218,17 @@ and a session whose id is lost closes itself after 30 idle minutes. The id is a 
 with it and only by the caller (client key) that opened it: an id the
 caller has no session for gets `no_such_session` (exit 1), another
 caller's session `not_owner` (exit 4), and nothing reaches the session
-either way. So two tasks under one client key each `open` their own
+either way. A session that ended because its host restarted (`latch stop`
+and a start, an update, a crash, a kill or a reboot) gets
+`session_ended` (exit 1) instead, for 7 days: its `host_restarted_at` says
+when the host started again, and `next` says to `open` a new session,
+since no retry brings the old one back. `do --history` and its
+screenshots still read for it. The host keeps
+`<state-dir>/browser/opened/<hash>` (the id's hash and its caller's key)
+while a session is open; a session ended while the host runs (`close`,
+idle, its browser gone) leaves none. `latch stop` answers how many browser
+sessions it ended (`browser_sessions_ended`), and an install that restarts
+the host says so too. So two tasks under one client key each `open` their own
 session, and neither can reach the other's without its id. `sessions` lists
 the caller's sessions without their ids: task label (`open --task`),
 engine, the site it was last on, its state and how long since its last

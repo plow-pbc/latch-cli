@@ -541,6 +541,21 @@ class HostUpgrade(unittest.TestCase):
         self.assertNotIn("is stopped", result.stderr)
         self.assertIn('"0.1.0 (2)"', subprocess.check_output([str(dest), "--version"], text=True))
 
+    def test_the_browser_sessions_a_stop_ended_are_counted(self):
+        for ended, said in [(0, None), (1, "1 browser session was open on the host and ended"),
+                            (3, "3 browser sessions were open on the host and ended")]:
+            with self.subTest(ended=ended):
+                log = self.log()
+                stop = (f'echo "0.1.0 (2) stop" >> "{log}"; '
+                        f"""echo '{{"stopped":true,"browser_sessions_ended":{ended}}}'""")
+                new = fake_latch("0.1.0 (2)", log, stop=stop)
+                result, _, _ = self.upgrade(fake_latch("0.1.0 (1)", log), new, log)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                if said:
+                    self.assertIn(said, result.stdout)
+                else:
+                    self.assertNotIn("browser session", result.stdout)
+
     def mac_upgrade(self, old_version, new_version, log, old_window="", new_window=""):
         """Installs an app whose latch says `new_version` over one whose
         latch says `old_version`, with no latch in the bin folder (the link

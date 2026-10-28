@@ -101,8 +101,11 @@ pub async fn serve(host: &Host, request: &Request, mut send: OwnedWriteHalf, rec
             let message = "this stop was for another host on this state folder".to_string();
             answer(&mut send, &failed(code::not_this_host, message)).await;
         }
+        // Its answer says how many browser sessions the stop ends.
         "host_stop" => {
-            answer(&mut send, &hello).await;
+            let mut stopping = self::hello(host);
+            stopping["browser_sessions"] = json!(host.browsers.open_sessions().await);
+            answer(&mut send, &Response::Ok(stopping)).await;
             host.lifetime.stop("asked to by `latch stop`");
         }
         "host_watch" => {
