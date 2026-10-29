@@ -94,7 +94,7 @@ quit, the connection drops, or you pick nothing within 15 minutes, it is
 dropped and nothing is saved. A local import reads the file in place;
 neither path deletes your original export.
 
-## From your phone: a link (prototype)
+## From your phone: a link
 
 `latch vault link` needs a running `serve`, including on this machine: the
 phone needs its live receiver. Without one, the command says to start
