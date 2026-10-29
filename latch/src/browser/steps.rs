@@ -1564,6 +1564,20 @@ pub async fn confirm_fill(
     fill["guard"] = json!({"fingerprint": fingerprint(&reviewed)});
     // Its values go only where they were confirmed to go.
     fill["confirmed"] = json!({"frames": frames, "revision": revision});
+    // What the gatekeeper is shown of the checkout when it is confirmed.
+    let top = super::judged::site(browsers, entry).await.ok().flatten();
+    let touched: Vec<String> = frames
+        .iter()
+        .filter_map(|frame| crate::vault::sites::site_of(frame))
+        .chain(top)
+        .collect();
+    fill["review"] = json!({
+        "title": reviewed["title"],
+        "frames": frames,
+        "press": reviewed["element"]["name"],
+        "lines": reviewed["lines"],
+        "agent_code_before_fill": entry.runtime.agent_code_on(&touched),
+    });
     entry
         .confirmations
         .lock()

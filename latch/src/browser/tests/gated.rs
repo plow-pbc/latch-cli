@@ -719,11 +719,18 @@ async fn a_refused_command_sends_nothing_to_the_page(engine: &str) {
         )
         .await;
     refused(&released, "not_covered", &chat);
+    // The release is judged on the checkout the confirmation bound: the
+    // page, the sites the values go to, the button and the lines around
+    // it, the card's last four digits.
     assert_eq!(
         judge.last_action(),
         json!({"kind": "vault_fill", "site": "shop.example",
                "item": {"kind": "card", "title": "Test Visa"},
-               "fields": ["number", "expiry", "cvv"], "confirmed": true})
+               "fields": ["number", "expiry", "cvv"], "confirmed": true,
+               "checkout": {"page_title": "latch checkout test",
+                            "field_sites": ["https://shop.example"], "press": "Pay",
+                            "lines": ["Name on card", "Card number", "Expiry", "CVV", "Pay"],
+                            "card_last4": "4242", "agent_code_before_fill": false}})
     );
     let values = host
         .look(

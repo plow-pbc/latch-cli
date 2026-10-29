@@ -9,7 +9,8 @@
 //! Each is judged before anything of it is sent to the page. A refusal
 //! sends nothing; the audit gets the judgment's `gate` object either way.
 //! The judge sees an item's kind, title and the sites it is saved for, and
-//! the fields a fill maps, never a value.
+//! the fields a fill maps, never a value; a confirmed card fill adds the
+//! checkout it pays on and the card's last four digits.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -53,6 +54,9 @@ pub(super) enum Action {
         /// A card or identity secret released on the agent's confirmation.
         #[serde(skip_serializing_if = "std::ops::Not::not")]
         confirmed: bool,
+        /// A confirmed card fill: the checkout it pays on.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        checkout: Option<Checkout>,
     },
     /// The agent's own JavaScript, run in the page.
     RunScript {
@@ -97,6 +101,27 @@ pub(super) struct ItemShown {
     /// Other top-level sites a login may be filled under.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     other_top_sites: Vec<String>,
+}
+
+/// What a confirmed card fill pays on, as the agent's confirmation bound
+/// it: never the number.
+#[derive(Serialize, Clone, Debug)]
+pub(super) struct Checkout {
+    /// The page's title.
+    page_title: String,
+    /// The site of each frame a value goes into: a payment provider's, say.
+    field_sites: Vec<String>,
+    /// The button pressed, and the lines around it (the amount, as a page
+    /// shows it there).
+    press: String,
+    lines: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    card_brand: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    card_last4: Option<String>,
+    /// The agent's own script ran on one of these sites earlier in the
+    /// session; what it left could read the card.
+    agent_code_before_fill: bool,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -200,11 +225,51 @@ pub(super) fn fill(
         .flatten()
         .filter_map(|pair| pair[0].as_str().map(str::to_string))
         .collect();
+    let checkout = (confirmed && item.kind == "card" && args["review"].is_object())
+        .then(|| checkout(browsers, args));
     Action::VaultFill {
         site,
         item,
         fields,
         confirmed,
+        checkout,
+    }
+}
+
+/// The checkout a confirmed card fill's `review` describes, with the
+/// card's brand and last four digits.
+fn checkout(browsers: &Browsers, args: &Value) -> Checkout {
+    let review = &args["review"];
+    let strings = |value: &Value| -> Vec<String> {
+        value
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect()
+    };
+    let raw = browsers
+        .vault
+        .with(|store| Ok(store.item(args["item"].as_str().unwrap_or_default())))
+        .ok()
+        .flatten()
+        .map(|item| item.raw);
+    let read = |label: &str| {
+        raw.as_ref()
+            .and_then(|raw| crate::vault::classify::read(raw, label))
+    };
+    let digits: Option<String> =
+        read("number").map(|number| number.chars().filter(char::is_ascii_digit).collect());
+    Checkout {
+        page_title: review["title"].as_str().unwrap_or_default().to_string(),
+        field_sites: strings(&review["frames"]),
+        press: review["press"].as_str().unwrap_or_default().to_string(),
+        lines: strings(&review["lines"]),
+        card_brand: read("brand").filter(|brand| !brand.is_empty()),
+        card_last4: digits
+            .filter(|digits| digits.len() >= 4)
+            .map(|digits| digits[digits.len() - 4..].to_string()),
+        agent_code_before_fill: review["agent_code_before_fill"] == true,
     }
 }
 
@@ -228,6 +293,7 @@ pub(crate) fn previewed_fill(
         site,
         fields,
         confirmed: false,
+        checkout: None,
     }
 }
 
