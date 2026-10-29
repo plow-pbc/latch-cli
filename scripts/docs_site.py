@@ -195,9 +195,10 @@ def pill_html(name):
 
 def code_block(info, lines):
     lang, *tags = info.split()
-    # A command block says who runs it: exactly one of host or agent.
-    if lang == "sh" and (len(tags) != 1 or tags[0] not in PILLS):
-        raise SystemExit(f"docs_site.py: a sh block needs one tag, host or agent: {info!r}")
+    # A command block says who runs it: host or agent, or both where the
+    # same command works on either (a check, an update), and nowhere else.
+    if lang == "sh" and tags not in (["host"], ["agent"], ["host", "agent"]):
+        raise SystemExit(f"docs_site.py: a sh block needs host, agent, or host agent: {info!r}")
     if lang != "sh" and tags:
         raise SystemExit(f"docs_site.py: only a sh block takes a tag: {info!r}")
     body = "\n".join(highlight(line) for line in lines) if lang == "sh" else html.escape("\n".join(lines), quote=False)
@@ -210,7 +211,8 @@ def code_block(info, lines):
              f"<pre><code>{body}</code></pre></div>")
     if not tags:
         return panel
-    return f'<div class="code-block"><span class="code-tab pill-{tags[0]}">{PILLS[tags[0]]}</span>{panel}</div>'
+    tabs = "".join(f'<span class="code-tab pill-{t}">{PILLS[t]}</span>' for t in tags)
+    return f'<div class="code-block"><div class="code-tabs">{tabs}</div>{panel}</div>'
 
 
 def table(lines):

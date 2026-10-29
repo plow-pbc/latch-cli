@@ -45,15 +45,9 @@ The Mac app runs on the `latch` command: anything it does, `latch` can do.
 
 ## Check it worked
 
-On a host, see it at a glance:
+On a host or an agent's computer, see its login and the hosts it can reach:
 
-```sh host
-latch
-```
-
-On an agent's computer, see its login and the hosts it can reach:
-
-```sh agent
+```sh host agent
 latch status
 ```
 

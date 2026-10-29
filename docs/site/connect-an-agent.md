@@ -9,17 +9,12 @@ what you told it in your Plow chat.
 
 ## An agent Plow runs
 
-There's nothing to set up: Plow gives each agent it runs its own credential.
-Start one with New Agent in the Plow Latch app, or from one of your own
-computers:
+**Agents built on Plow's OpenClaw or Hermes images:** nothing to set up.
+`latch` comes installed and signed in.
 
-```sh host
-latch agents catalog
-latch agents new --cloud KIND --name NAME --line LINE
-```
-
-`KIND` comes from `latch agents catalog`, and `LINE` from
-`latch agents lines`.
+**Any other agent on Plow:** its credential already works with `latch`.
+Install it yourself with the [Agent install](index.md#install-on-an-agent),
+then run `latch login` there.
 
 ## Your own agent
 
