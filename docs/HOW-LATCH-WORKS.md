@@ -36,7 +36,7 @@ guides cover the [browser](../latch/BROWSER.md), [vault](../latch/VAULT.md),
 |---|---|---|---|---|---|
 | **Owner** | One of your machines, logged in with your own Plow login: by text, or with `--token-file`. | Yes, any host in your account. | Rules and vault on any host (`--host NAME`). Connectors: listed on any host, turned on or off only on the host itself. | Yes. | As your own request: refused only where the host's rules forbid it. |
 | **Owner on the host** | Anything running as the host's OS user that uses the host's own state folder, with no `--host` naming another machine. An agent running there counts. | That host, through its private local socket. Other hosts, as the owner. | Yes, on that host. Rules and vault work even while the host is stopped. | It is the host. | Exactly like the owner. The audit records it as `owner_on_host`. |
-| **Agent** | An agent logged in with its own Plow agent credential, in its own state folder. | Yes. | No: `owner_only` (exit 4). It may run `vault list`, which shows each item's id, title and saved sites, and it sees which connectors each host has on. | No: its login saves no Plow token, so `latch serve` stops with `not_logged_in`. | Against your rules and your messages in your Plow chat with that agent. |
+| **Agent** | An agent logged in with its own Plow agent credential, in its own state folder. | Yes. | No: `owner_only` (exit 4). It may run `vault list`, which shows each item's id, title and saved sites, and it sees which connectors each host has on. On its own computer, where latch is installed alone, it runs `latch update`. | No: its login saves no Plow token, so `latch serve` stops with `not_logged_in`. | Against your rules and your messages in your Plow chat with that agent. |
 
 - **A host knows a remote caller only by its key.** It asks Plow who that
   key is when the caller connects, and again before every operation. If
@@ -299,7 +299,9 @@ For how to report a vulnerability, see [SECURITY.md](../SECURITY.md).
   macOS app is signed with Plow's Developer ID and notarized by Apple.
 - **Update:** `latch update` installs the newest release, `latch update TAG`
   a given one (also how to go back), and `latch update --check` only says
-  whether there's a newer one.
+  whether there's a newer one. The owner runs it, and so does an agent on its
+  own computer, where latch is installed alone (`--client-only`); an agent
+  gets `owner_only` on a host.
   - It checks the release's `SHA256SUMS` against Latch's release signing
     key, and on a Mac that Plow signed the app.
   - The state folder stays as it is, and the browser engines are brought up

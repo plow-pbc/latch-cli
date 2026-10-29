@@ -560,6 +560,61 @@ async fn a_client_only_install_is_updated_client_only() {
     assert_eq!(arguments.len(), 5, "{arguments:?}");
 }
 
+/// An agent updates its own computer, where latch is installed alone; on a
+/// host it gets `owner_only` before anything is downloaded. The owner's
+/// login updates either.
+#[tokio::test]
+async fn an_agent_updates_only_its_own_client_only_computer() {
+    let login = |world: &World, kind: &str| {
+        let peer = crate::plow::Peer {
+            key: "a".repeat(64),
+            kind: kind.into(),
+            name: "research-agent".into(),
+            relay_url: None,
+            last_seen_at: None,
+            online: None,
+            this_machine: false,
+        };
+        let api_url = "http://127.0.0.1:9".to_string();
+        let config = crate::state::Config { api_url, peer };
+        world.state.create().unwrap();
+        world.state.save_config(&config).unwrap();
+    };
+    let client_only = |world: &World| {
+        std::fs::create_dir_all(world.state.path.join("plugins")).unwrap();
+        std::fs::write(world.state.path.join("plugins/client-only"), "").unwrap();
+    };
+
+    let host = World::new();
+    host.latest(&host.release(1328));
+    login(&host, "agent");
+    for check in [false, true] {
+        let failure = update(&host.state, &host.source(), Some(1327), None, None, check)
+            .await
+            .unwrap_err();
+        assert_eq!(failure.code, "owner_only", "{failure:?}");
+        assert!(failure.message.contains("--client-only"), "{failure:?}");
+    }
+    assert_eq!(*host.server.requests.lock().unwrap(), 0);
+    assert_eq!(host.arguments(), None);
+    login(&host, "device");
+    update(&host.state, &host.source(), Some(1327), None, None, false)
+        .await
+        .unwrap();
+    assert!(host.arguments().is_some(), "the owner updates a host");
+
+    let own = World::new();
+    own.latest(&own.release(1328));
+    login(&own, "agent");
+    client_only(&own);
+    let answer = update(&own.state, &own.source(), Some(1327), None, None, false)
+        .await
+        .unwrap();
+    assert_eq!(answer["updated"], true, "{answer}");
+    let arguments = own.arguments().expect("install-binary.sh ran");
+    assert_eq!(arguments[2..4], ["--non-interactive", "--client-only"]);
+}
+
 #[tokio::test]
 async fn a_look_finds_a_newer_build_for_status_and_the_dashboard() {
     let world = World::new();

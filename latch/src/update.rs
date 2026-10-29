@@ -10,7 +10,8 @@
 //! own `install-binary.sh`, which replaces latch and restarts a host just as
 //! running `install.sh` again would.
 //!
-//! Nothing installs unless the owner runs `latch update`. A host only
+//! Nothing installs unless the owner runs `latch update`, or an agent runs
+//! it on its own computer, where latch is installed alone. A host only
 //! looks, once a day, and the newer build shows up in
 //! `status --local` and on its dashboard.
 
@@ -191,15 +192,6 @@ pub fn current() -> Option<u64> {
 
 /// `latch update [--check] [TAG]`.
 pub async fn run(state: &StateDir, args: UpdateArgs) -> Result<Value, Failure> {
-    // An update restarts the host other callers use: only the owner's own
-    // login runs one. No host operation starts one, so no caller reaches it
-    // through a host.
-    if let Some(config) = state.load_config()?
-        && config.peer.kind != "device"
-    {
-        let message = "latch is updated by the owner of this machine, never by an agent";
-        return Err(Failure::new(code::owner_only, message.into()));
-    }
     let source = Source::releases();
     let bin = bin_dir();
     let tag = args.tag.as_deref();
@@ -228,6 +220,7 @@ async fn update(
     tag: Option<&str>,
     check: bool,
 ) -> Result<Value, Failure> {
+    may_update(state)?;
     // A local build has no number to update from: refused before anything
     // is downloaded.
     if current.is_none() && !check {
@@ -264,6 +257,28 @@ async fn update(
         answer["host"] = host;
     }
     Ok(answer)
+}
+
+/// Whether this login may update this machine's latch. An update restarts
+/// the host other callers use, so on a host only the owner's own login runs
+/// one. An agent may update its own computer, where latch is installed alone
+/// (`install-binary.sh --client-only`) and no host runs: nothing else depends
+/// on it there. No host operation starts an update, so no caller reaches one
+/// through a host.
+fn may_update(state: &StateDir) -> Result<(), Failure> {
+    let Some(config) = state.load_config()? else {
+        return Ok(());
+    };
+    if config.peer.kind == "device" {
+        return Ok(());
+    }
+    let client_only = state.path.join("plugins/client-only").is_file();
+    if client_only && !crate::status::local(state)?.this_machine.hosting.running {
+        return Ok(());
+    }
+    let message = "this machine is a host, and a host's latch is updated by its owner; \
+                   an agent updates latch only on its own computer, installed with install.sh --client-only";
+    Err(Failure::new(code::owner_only, message.into()))
 }
 
 /// What an update did to the host on this state folder, when one ran. The

@@ -313,6 +313,10 @@ A host running in a terminal stops, and the update tells you to start it
 again. A running host checks for a new release once a day and shows it in
 `latch` and on its dashboard. Nothing installs on its own.
 
+An agent runs `latch update` on its own computer too, where latch is
+installed alone (`install.sh --client-only`). An agent's login can't update
+a host: the owner does.
+
 ## 6. Troubleshooting
 
 | You see | What it means | What to do |

@@ -2176,22 +2176,39 @@ fn an_agent_gets_owner_only_for_browser_setup_and_nothing_is_downloaded() {
     assert!(!state.join("plugins").exists());
 }
 
+/// An agent's login updates only its own computer, where latch is installed
+/// alone: on a host it gets owner_only, and there is no `--host` to aim it at
+/// another. This latch is a local build, so on its own computer the update
+/// stops at `local_build`, past the agent's check and before any download.
 #[test]
-fn an_agent_gets_owner_only_for_update_and_nothing_is_installed() {
+fn an_agent_updates_only_its_own_client_only_computer() {
     let (dir, token, server) = logged_in_agent(vec![]);
     server.join().unwrap();
     let state = dir.path().join("state");
+    let env = [("PLOW_TOKEN_FILE", token.as_path())];
     for args in [
         &["update"][..],
         &["update", "--check"],
         &["update", "v0.1.0-1"],
     ] {
-        let output = latch(&state, args, &[("PLOW_TOKEN_FILE", token.as_path())]);
+        let output = latch(&state, args, &env);
         assert_eq!(output.status.code(), Some(4), "{args:?}: {output:?}");
         let error: Value = serde_json::from_slice(&output.stderr).unwrap();
         assert_eq!(error["error"]["code"], "owner_only");
     }
     assert!(!dir.path().join(".local").exists());
+    let aimed = latch(&state, &["update", "--host", "studio"], &env);
+    assert_eq!(aimed.status.code(), Some(2), "{aimed:?}");
+    fs::create_dir_all(state.join("plugins")).unwrap();
+    fs::write(state.join("plugins/client-only"), "").unwrap();
+    for args in [&["update"][..], &["update", "v0.1.0-1"]] {
+        let output = latch(&state, args, &env);
+        let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(
+            error["error"]["code"], "local_build",
+            "{args:?}: {output:?}"
+        );
+    }
 }
 
 /// A newer build the host found shows in `status --local`, and a piped
