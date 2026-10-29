@@ -94,6 +94,44 @@ pub async fn named(browsers: &Browsers, entry: &Entry, args: &Value) -> Result<V
     Ok(named)
 }
 
+/// A `do`'s `args` with its plan's items as their ids, found as `named`
+/// finds a fill's, before any of the plan is judged: the items it may fill
+/// from, by id or title, and each fill step's, a step naming none taking
+/// the login saved for the page's site, the page its refs are on.
+pub async fn named_in_plan(
+    browsers: &Browsers,
+    entry: &Entry,
+    args: &Value,
+) -> Result<Value, Failure> {
+    let mut named = args.clone();
+    let Some(plan) = named.get_mut("plan") else {
+        return Ok(named);
+    };
+    if let Some(items) = plan.get_mut("items").and_then(Value::as_array_mut) {
+        for item in items {
+            if let Some(given) = item.as_str() {
+                *item = json!(titled(browsers, given)?);
+            }
+        }
+    }
+    let mut here: Option<String> = None;
+    let steps = plan.get_mut("steps").and_then(Value::as_array_mut);
+    for step in steps.into_iter().flatten() {
+        let Some(literal) = step.get_mut("literal").filter(|l| l["op"] == "fill") else {
+            continue;
+        };
+        let id = match literal["item"].as_str() {
+            Some(given) => titled(browsers, given)?,
+            None => match &here {
+                Some(id) => id.clone(),
+                None => here.insert(saved_here(browsers, entry).await?).clone(),
+            },
+        };
+        literal["item"] = json!(id);
+    }
+    Ok(named)
+}
+
 /// The item `given` names: its id, or the title of exactly one item.
 fn titled(browsers: &Browsers, given: &str) -> Result<String, Failure> {
     browsers.vault.with(|store| {

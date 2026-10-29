@@ -654,6 +654,15 @@ async fn answer(
     {
         off_web(browsers, url).await?;
     }
+    // A plan's items are found before any of it is judged, as a fill's are.
+    let planned;
+    let args = match command {
+        "do" => {
+            planned = super::fill::named_in_plan(browsers, &entry, args).await?;
+            &planned
+        }
+        _ => args,
+    };
     if caller.gate.is_some()
         && let Some(action) = judged_action(browsers, &entry, command, args).await?
     {

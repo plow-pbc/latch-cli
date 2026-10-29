@@ -387,7 +387,8 @@ operation and its target among those the page offers.
 **The plan command** (`do`) runs up to 10 steps in order, within
 `--within S` (default 120, at most 300). In the short form each argument is
 one step: `click|type|select|press eN ["text"]`, or
-`fill --item vN (--field F=eN… | --suggested S) [--press eN]`; text to type goes in double
+`fill [--item ITEM] (--field F=eN… | --suggested S) [--press eN]`, the item by its id or
+exact title, or with none the login saved for the page's site, as for `fill`; text to type goes in double
 quotes (straight or curly). A step's check follows its last ` -> ` outside
 quotes, so `type e3 "A -> B"` has none. These are the examples `do
 --help` shows, one step per argument, each in single quotes so the shell
@@ -429,8 +430,8 @@ latest); each is pinned to its snapshot before anything runs.
 the plan's facts (`--fact NAME=TEXT`) it names as `{NAME}` outside quotes,
 are the only texts it may type (a `{NAME}` the plan has no fact for is
 refused before anything runs), and a quoted URL is the only place it may
-`navigate` to. `--item vN` names a
-vault item the plan may fill from: the model may then choose one of
+`navigate` to. `--item ITEM` names a
+vault item the plan may fill from, by its id or exact title: the model may then choose one of
 latch's suggestions for it (item, mapping and button, or `none`), never a
 field or a ref of its own; a plan that names none never fills. `--dry-run` prints the canonical plan
 and sends nothing; `--output F` writes the page as the plan ended (or

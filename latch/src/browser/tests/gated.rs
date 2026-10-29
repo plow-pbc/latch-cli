@@ -36,6 +36,7 @@ conformance!(
     an_owner_stop_refuses_the_next_plan,
     a_fill_inside_a_plan_is_judged_as_a_fill,
     a_fill_finds_its_item_by_title_or_the_pages_site,
+    a_plan_finds_its_items_by_title_or_the_pages_site,
     a_one_step_do_plan_is_judged_and_act_is_not,
     a_host_out_of_plow_credits_says_its_account_owner_must_add_them,
     goto_on_a_new_site_is_judged_as_a_tab_there_is,
@@ -1059,6 +1060,122 @@ async fn a_fill_finds_its_item_by_title_or_the_pages_site(engine: &str) {
                {"item": work, "title": "Test site (work)"}])
     );
     assert!(!several.message.contains("Elsewhere"), "{several:?}");
+    assert_eq!(judge.judged(), asked, "the judge was asked");
+    let values = host
+        .look(
+            "eval",
+            &id,
+            json!({"script": "[...document.querySelectorAll('input')].map(i => i.value)"}),
+        )
+        .await;
+    assert_eq!(values["value"], json!(["", ""]));
+    host.browsers.close_all().await;
+}
+
+/// A plan's items are found as a fill's are, before any of it is judged:
+/// the items it may fill from by title, in any case, and a fill step's by
+/// title or, naming none, the login saved for the page's site. The plan's
+/// judgment and its fill step's are both shown the item as the vault holds
+/// it. A name that finds none stops the plan before the judge is asked.
+async fn a_plan_finds_its_items_by_title_or_the_pages_site(engine: &str) {
+    use crate::browser::plan::{Plan, short_step};
+    let (_dir, state, _area) = test_state(engine);
+    let (site, _hits) = serve_site();
+    let chat = vec![message("m1", true, "sign in to my test site", 10)];
+    // Plans are covered; a vault fill is not, so nothing is filled.
+    let judge = Judge::new(|state| match state["proposed_action"]["kind"].as_str() {
+        Some("vault_fill") => NOT_COVERED,
+        _ => COVERED,
+    });
+    let host = Host::start(&state, &site, &judge, chat.clone());
+    let (page, _) = host
+        .agent(
+            "open",
+            named(engine),
+            json!({"url": format!("{site}/login.html")}),
+            None,
+        )
+        .await;
+    let page = page.unwrap();
+    let id = page["session"].as_str().unwrap().to_string();
+    let saved = host
+        .browsers
+        .vault
+        .with(|store| {
+            store.add(Item {
+                id: String::new(),
+                revision: 0,
+                sites: vec!["shop.example".into()],
+                other_top_sites: vec![],
+                raw: Raw::from_labels(
+                    LOGIN,
+                    "Test site",
+                    &[
+                        ("username".into(), "morgan@example.com".into()),
+                        ("password".into(), PASSWORD.into()),
+                    ],
+                )
+                .unwrap(),
+            })
+        })
+        .unwrap()
+        .item;
+    let step = |item: Option<&str>| {
+        let mut step = short_step(&format!(
+            "fill --item x --field username={} --field password={} --press {}",
+            find(&page, "textbox", "Email"),
+            find(&page, "textbox", "Password"),
+            find(&page, "button", "Sign in"),
+        ))
+        .unwrap();
+        step.literal.as_mut().unwrap().item = item.map(str::to_string);
+        step
+    };
+    let shown = json!({"kind": "login", "title": "Test site", "sites": ["shop.example"]});
+    for (n, (items, item)) in [
+        (vec!["TEST SITE".to_string()], Some("test site")),
+        (vec![], None),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let plan = json!({
+            "request": format!("r-plan-{n}"),
+            "plan": Plan { steps: vec![step(item)], items, ..Default::default() },
+        });
+        let (result, audit) = host.agent("do", &id, plan, None).await;
+        assert_eq!(audit["gate"]["verdict"], "allow", "{audit:?}");
+        let failure = result.unwrap_err();
+        assert_eq!(
+            failure.details["stop"]["reason"], "not_covered",
+            "{failure:?}"
+        );
+        let judged_plan = judge
+            .shown
+            .lock()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|state| state["proposed_action"]["kind"] == "browser_plan")
+            .unwrap()["proposed_action"]
+            .clone();
+        assert_eq!(judged_plan["may_fill"], json!([shown]), "{item:?}");
+        let written = judged_plan["steps"][0]["step"].as_str().unwrap();
+        assert!(
+            written.starts_with(&format!("fill --item {saved} ")),
+            "{written}"
+        );
+        assert_eq!(judge.last_action()["kind"], "vault_fill");
+        assert_eq!(judge.last_action()["item"], shown, "{item:?}");
+    }
+
+    let asked = judge.judged();
+    let plan = json!({"request": "r-plan-missing",
+                      "plan": Plan { steps: vec![step(Some("Elsewhere"))], ..Default::default() }});
+    let (result, audit) = host.agent("do", &id, plan, None).await;
+    let failure = result.unwrap_err();
+    assert_eq!(failure.code, "no_such_item", "{failure:?}");
+    assert!(!audit.contains_key("gate"), "{audit:?}");
     assert_eq!(judge.judged(), asked, "the judge was asked");
     let values = host
         .look(

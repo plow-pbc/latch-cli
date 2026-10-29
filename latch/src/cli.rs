@@ -353,7 +353,7 @@ pub enum BrowserCommand {
         output: PathBuf,
     },
     /// The plan command: up to 10 steps in order, each `click|type|select|press
-    /// eN ["text"]`, `fill --item vN --field F=eN… [--press eN]`, or a goal in
+    /// eN ["text"]`, `fill [--item ITEM] --field F=eN… [--press eN]`, or a goal in
     /// words with its texts in double quotes, with an optional check after
     /// ` -> `: `do 'click e7 -> path: /cart' 'add the note "Ring twice"'`
     #[command(after_help = DO_HELP)]
@@ -378,8 +378,9 @@ pub enum BrowserCommand {
         /// A text every step may type, as NAME=TEXT (repeatable)
         #[arg(long, value_name = "NAME=TEXT", conflicts_with = "history")]
         fact: Vec<String>,
-        /// A vault item the plan may fill from (repeatable)
-        #[arg(long, value_name = "vN", conflicts_with = "history")]
+        /// A vault item the plan may fill from, by its exact title or its id
+        /// (repeatable)
+        #[arg(long, value_name = "ITEM", conflicts_with = "history")]
         item: Vec<String>,
         /// Print the plan as it would be sent, and send nothing
         #[arg(long, conflicts_with = "history")]
