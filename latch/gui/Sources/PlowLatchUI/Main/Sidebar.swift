@@ -90,6 +90,5 @@ struct StateDot: View {
         Circle()
             .fill(state?.isUp == true ? Color.green : state?.isProblem == true ? Color.red : Color.secondary)
             .frame(width: 8, height: 8)
-            .accessibilityHidden(true)
     }
 }

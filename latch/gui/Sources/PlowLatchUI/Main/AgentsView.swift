@@ -1,4 +1,3 @@
-import AppKit
 import SwiftUI
 
 /// The account's agents: a list of them, and the one picked in full, with
@@ -139,7 +138,7 @@ struct AgentDetail: View {
                 }
                 Spacer(minLength: 8)
                 if let sms = agent.number?.sms {
-                    Button("Message") { NSWorkspace.shared.open(sms) }
+                    Button("Message") { app.open(sms) }
                         .buttonStyle(.borderedProminent)
                         .help("Message \(agent.displayName) in Messages")
                 }
@@ -184,16 +183,11 @@ struct AgentMenuItems: View {
 
     var body: some View {
         if let number = agent.line?.number, agent.number != nil {
-            Button("Copy Phone Number") { copy(number) }
+            Button("Copy Phone Number") { app.copy(number) }
         }
-        Button("Copy Handle") { copy(agent.name) }
+        Button("Copy Handle") { app.copy(agent.name) }
         Divider()
         Button("Remove \(agent.displayName)…", role: .destructive) { app.ask(.removeAgent(agent)) }
-    }
-
-    private func copy(_ text: String) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
     }
 }
 
@@ -223,8 +217,7 @@ private struct AgentHostRow: View {
             }
         } label: {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                StatusDot(tint: state.isUp ? .green : state.isProblem ? .red : .gray)
-                    .accessibilityLabel(state.title)
+                StateDot(state: state).accessibilityLabel(state.title)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(host.isThisMac ? "\(host.name) (this Mac)" : host.name)
                     if !offline, case let .failure(error)? = app.standings[host.name] {
@@ -265,14 +258,6 @@ struct Monogram: View {
                 .offset(x: size * 0.08, y: size * 0.08)
         }
         .accessibilityHidden(true)
-    }
-}
-
-private struct StatusDot: View {
-    var tint: Color
-
-    var body: some View {
-        Circle().fill(tint).frame(width: 8, height: 8)
     }
 }
 

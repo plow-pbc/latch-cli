@@ -73,15 +73,16 @@ struct AgentsHubTests {
         #expect(app.shownAgent?.uid == "00000000000000000000000000000001")
     }
 
-    // A line's name in Plow, else the handle, else the number.
+    // A line's name in Plow, else the handle, else the number (nil: as
+    // this Mac's region writes it).
     @Test(arguments: [
         (#"{"name":"Aspen","number":"+16505550136"}"#, "openclaw-test2", "Aspen"),
         (#"{"name":"  ","number":"+16505550136"}"#, "openclaw-test2", "openclaw-test2"),
-        (#"{"name":null,"number":"+16505550136"}"#, "", "(650) 555-0136"),
+        (#"{"name":null,"number":"+16505550136"}"#, "", nil),
     ])
-    func anAgentIsCalledByItsLinesNameThenItsHandleThenItsNumber(_ line: String, _ handle: String, _ shown: String) throws {
+    func anAgentIsCalledByItsLinesNameThenItsHandleThenItsNumber(_ line: String, _ handle: String, _ shown: String?) throws {
         let agent: AgentsList.Agent = try Fixtures.decode(#"{"uid":"u1","name":"\#(handle)","kind":"cloud","line":\#(line)}"#)
-        #expect(agent.displayName == shown)
+        #expect(agent.displayName == shown ?? PhoneNumber("+16505550136")?.formatted())
     }
 
     @Test func phoneNumbersAreWrittenAsTheirRegionWritesThem() {
