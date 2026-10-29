@@ -1286,7 +1286,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "update",
         runs_on: |_| RunsOn::Local,
-        output: "`updated` and the build installed (`to`), and when a host ran here, `host`: `running` again, or stopped with the `next` command that starts it; with --check, `current`, `latest` and `available`.",
+        output: "`updated` and the build installed (`to`); `repaired`, the helpers this build runs that were missing (an update cut off part way), when that is why this build installed again; and when a host ran here, `host`: `running` again, or stopped with the `next` command that starts it; with --check, `current`, `latest` and `available`.",
         effect: Repeatable(
             "installs another latch build on this machine and restarts a `serve -d` host on it",
         ),
@@ -1430,7 +1430,7 @@ pub fn run(args: HelpArgs, pretty: bool) -> ExitCode {
         return Exit::Usage.into();
     };
     if !args.examples && !args.json && gog_words.is_empty() {
-        print!("{}", command.render_long_help());
+        crate::term::print_out(&command.render_long_help().to_string());
         return ExitCode::SUCCESS;
     }
     let mut runnable = Vec::new();
@@ -1440,7 +1440,7 @@ pub fn run(args: HelpArgs, pretty: bool) -> ExitCode {
     let mut listed: Vec<Action> = runnable.iter().map(|(id, cmd)| describe(id, cmd)).collect();
     let google = find(&mut root, &["google".to_string()]).expect("latch google");
     listed.extend(gog.iter().map(|allowed| describe_gog(allowed, google)));
-    if args.json {
+    let text = if args.json {
         let help = Help {
             version: crate::cli::version(),
             exit_codes: Exit::ALL
@@ -1463,43 +1463,45 @@ pub fn run(args: HelpArgs, pretty: bool) -> ExitCode {
             true => serde_json::to_string_pretty(&help),
             false => serde_json::to_string(&help),
         };
-        println!("{}", help.expect("help serializes"));
+        format!("{}\n", help.expect("help serializes"))
     } else if args.examples {
-        for action in &listed {
-            println!("{}", action.usage);
-            for example in &action.examples {
-                println!("  # {}\n  {}", example.what, example.command);
-            }
-            println!();
-        }
+        let examples = |action: &Action| -> String {
+            (action.examples.iter())
+                .map(|example| format!("  # {}\n  {}\n", example.what, example.command))
+                .collect()
+        };
+        (listed.iter())
+            .map(|action| format!("{}\n{}\n", action.usage, examples(action)))
+            .collect()
     } else {
-        for (allowed, action) in gog.iter().zip(&listed) {
-            print_gog(allowed, action);
-        }
-    }
+        (gog.iter().zip(&listed))
+            .map(|(allowed, action)| gog_help(allowed, action))
+            .collect()
+    };
+    crate::term::print_out(&text);
     ExitCode::SUCCESS
 }
 
 /// A gog command's help: its words, what it changes, its flags, and where
 /// gog's own usage is.
-fn print_gog(allowed: &Allowed, action: &Action) {
+fn gog_help(allowed: &Allowed, action: &Action) -> String {
     let words = allowed.words.join(" ");
-    println!("{}", action.usage);
+    let mut text = format!("{}\n", action.usage);
     if !allowed.aliases.is_empty() {
-        println!("  Also typed as: {}", allowed.aliases.join(", "));
+        text += &format!("  Also typed as: {}\n", allowed.aliases.join(", "));
     }
-    match action.side_effects {
-        None => println!("  Reads only: changes nothing at Google."),
-        Some(what) => println!("  Side effects: {what}."),
-    }
+    text += &match action.side_effects {
+        None => "  Reads only: changes nothing at Google.\n".to_string(),
+        Some(what) => format!("  Side effects: {what}.\n"),
+    };
     let flags: Vec<String> = (allowed.flags.iter())
         .map(|(name, value)| match value {
             true => format!("--{name} VALUE"),
             false => format!("--{name}"),
         })
         .collect();
-    println!("  Flags: {}", flags.join(" "));
-    println!("  `latch google --host H -- {words} --help` prints gog's own usage.\n");
+    text += &format!("  Flags: {}\n", flags.join(" "));
+    text + &format!("  `latch google --host H -- {words} --help` prints gog's own usage.\n\n")
 }
 
 /// The subcommand `path` names, from the root.

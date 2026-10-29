@@ -1505,6 +1505,32 @@ fn help_and_skill_need_no_login_and_carry_this_version() {
     );
 }
 
+/// A reader that stops reading early (`latch help | head`) is no error:
+/// latch ends as it would have, with nothing on stderr.
+#[test]
+fn output_to_a_reader_that_went_away_ends_quietly() {
+    let dir = test_dir();
+    let state = dir.path().join("none");
+    for args in [
+        &["help"][..],
+        &["help", "--json"],
+        &["skill"],
+        &["--version"],
+        &["status"],
+    ] {
+        let mut child = latch_command(&state, args, &[])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        drop(child.stdout.take());
+        let output = child.wait_with_output().unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(0), "{args:?}: {stderr}");
+        assert!(stderr.is_empty(), "{args:?}: {stderr}");
+    }
+}
+
 #[test]
 fn status_names_the_account_this_machine_and_each_host_once() {
     let plow = LivePlow::start();

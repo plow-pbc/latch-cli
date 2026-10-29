@@ -79,10 +79,10 @@ latch's commands and behavior here are `main`'s today.
 | `latch serve` runs as | a launchd job, using the `latch` inside `Plow Latch.app` (in `/Applications`, else `~/Applications`) | a systemd user service |
 | Key, Plow login, vault and audit keys | Keychain, in the signed release app | files only you can read (0600) |
 | Messages and Contacts | Yes, once turned on and given Full Disk Access (for a release install, granted to Plow Latch.app) | No |
-| Chrome for Testing | Yes | arm64 and x86_64; x86_64 currently needs `--headless-browsers` |
-| Camoufox | Yes | Yes; x86_64 currently needs `--headless-browsers` |
+| Chrome for Testing | Yes | arm64 and x86_64 |
+| Camoufox | Yes | Yes |
 | The browser's sandbox | the engine's own (Chrome's or Camoufox's); the engine runs outside latch's Seatbelt | inside latch's bubblewrap, with the engine's own sandbox nested inside |
-| Browser windows | on your screen; `browser handoff` works | x86_64 currently runs headless; otherwise a private virtual display. `browser handoff` answers `needs_owner` (`no_screen`) |
+| Browser windows | on your screen; `browser handoff` works | a private virtual display, or none with `--headless-browsers`. `browser handoff` answers `needs_owner` (`no_screen`) |
 
 - A host that can't set up its sandbox refuses to start. There's no
   unsandboxed mode.
@@ -347,7 +347,6 @@ The few commands that take `--host` but run only on this machine
 | Scripting other apps (AppleScript, System Events) | Left out on purpose |
 | Google beyond Gmail and Calendar | Not supported |
 | Messages and Contacts on a Linux host | Not supported (`unsupported_platform`) |
-| Headed browsers on Linux x86_64 | Private Xvfb startup fails; use `--headless-browsers` |
 | Browser handoff on a Linux host or with `--headless-browsers` | Not supported |
 | A host with no sandbox; Windows | Not supported |
 | An agent's login running a host | Doesn't work today: with the usual agent credential, login saves no Plow token, so `latch serve` stops with `not_logged_in` |

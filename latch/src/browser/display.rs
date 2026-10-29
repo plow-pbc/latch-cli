@@ -3,19 +3,26 @@
 //! The runtime's sessions are windows on it; closing one session leaves it
 //! up while another still uses the runtime, and each runtime has its own.
 //!
-//! Xvfb picks a free display number itself (`-displayfd`) and listens only
-//! on its socket file in the worker's private `/tmp`: no TCP port, and no
-//! abstract socket, which anything sharing the host's network could reach.
-//! The engine is given that file's path, never `:N`, which X clients look
-//! up as an abstract socket first and would find another server's there.
-//! A Linux host never gives the engine its own `DISPLAY`, screen or not; a
-//! Mac needs no display.
+//! Xvfb picks a free display number itself (`-displayfd`) and listens on
+//! its socket file in the worker's private `/tmp` and on the abstract
+//! socket of the same name, never on TCP. The engine is given `:N`, which
+//! X clients look up as that abstract socket first: Xvfb holding it means
+//! no other server's can answer, since `-displayfd` skips a number another
+//! server holds. A socket file's path as `DISPLAY` would avoid the abstract
+//! socket, but Ubuntu 24.04's libxcb (1.15) can't parse one. Anything
+//! sharing the host's network can reach the abstract socket, so Xvfb lets
+//! in only a client with the runtime's cookie (`XAUTHORITY`), which only the
+//! worker and its engine see. A Linux host never gives the engine its own
+//! `DISPLAY`, screen or not; a Mac needs no display.
 
-use std::io::Read;
+use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::process::CommandExt;
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
+
+use tempfile::NamedTempFile;
 
 use crate::failure::{Failure, code};
 
@@ -30,14 +37,18 @@ const READY: Duration = Duration::from_secs(10);
 
 pub struct Display {
     child: Child,
-    /// The display's socket file, for the engine's `DISPLAY`.
-    pub name: String,
+    /// The display, `:N`.
+    name: String,
+    /// The Xauthority file with the cookie Xvfb asks for.
+    cookie: NamedTempFile,
 }
 
 impl Display {
     /// Starts Xvfb on a free display, and waits until it is ready.
     pub fn start() -> Result<Display, Failure> {
         let failed = |why: String| Failure::new(code::display_failed, why);
+        let cookie = cookie_file()
+            .map_err(|err| failed(format!("the display's cookie could not be written: {err}")))?;
         let mut fds = [0; 2];
         // SAFETY: `pipe` fills both fds, which are owned from here on.
         if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
@@ -49,7 +60,7 @@ impl Display {
         let write_fd = writes.as_raw_fd();
         let mut command = Command::new("Xvfb");
         command
-            .args(arguments(write_fd))
+            .args(arguments(write_fd, cookie.path()))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -72,6 +83,7 @@ impl Display {
         let mut display = Display {
             child,
             name: String::new(),
+            cookie,
         };
         let mut reads = std::fs::File::from(reads);
         let deadline = Instant::now() + READY;
@@ -87,6 +99,15 @@ impl Display {
         display.name = display_name(&said)
             .ok_or_else(|| failed("Xvfb did not say which display it took".into()))?;
         Ok(display)
+    }
+
+    /// What the engine's environment needs to reach the display: `DISPLAY`
+    /// and `XAUTHORITY`.
+    pub fn env(&self) -> [(&'static str, String); 2] {
+        [
+            ("DISPLAY", self.name.clone()),
+            ("XAUTHORITY", self.cookie.path().display().to_string()),
+        ]
     }
 }
 
@@ -121,32 +142,54 @@ fn bound(command: &mut Command) {
     let _ = command;
 }
 
-/// Xvfb's command line: one screen, no TCP or abstract socket, and the
-/// display number written to `fd` once it is ready.
-fn arguments(fd: i32) -> Vec<String> {
+/// Xvfb's command line: one screen, no TCP, only clients with the cookie in
+/// `cookie`, and the display number written to `fd` once it is ready. No
+/// reset when its last client leaves: a server resetting drops a client
+/// that connects meanwhile, such as an engine's next connection.
+fn arguments(fd: i32, cookie: &Path) -> Vec<String> {
     [
         "-displayfd",
         &fd.to_string(),
+        "-auth",
+        &cookie.display().to_string(),
         "-screen",
         "0",
         "1280x800x24",
         "-nolisten",
         "tcp",
-        "-nolisten",
-        "local",
+        "-noreset",
     ]
     .iter()
     .map(|s| s.to_string())
     .collect()
 }
 
-/// Display N's socket file, from what Xvfb wrote to its display fd.
+/// An Xauthority file of one entry: a random MIT cookie for any address and
+/// any display number, so it can be written before Xvfb picks one. Xvfb
+/// reads its cookie from it, and the engine's X library what to show.
+fn cookie_file() -> std::io::Result<NamedTempFile> {
+    fn field(bytes: &[u8]) -> Vec<u8> {
+        let length = u16::try_from(bytes.len()).expect("a short field");
+        [&length.to_be_bytes(), bytes].concat()
+    }
+    const FAMILY_WILD: u16 = 0xffff;
+    let entry = [
+        FAMILY_WILD.to_be_bytes().to_vec(),
+        field(b""),
+        field(b""),
+        field(b"MIT-MAGIC-COOKIE-1"),
+        field(&rand::random::<[u8; 16]>()),
+    ]
+    .concat();
+    let mut file = NamedTempFile::new()?;
+    file.write_all(&entry)?;
+    Ok(file)
+}
+
+/// Display N, `:N`, from what Xvfb wrote to its display fd.
 fn display_name(said: &[u8]) -> Option<String> {
     let number = std::str::from_utf8(said).ok()?.trim();
-    number
-        .parse::<u32>()
-        .ok()
-        .map(|n| format!("/tmp/.X11-unix/X{n}"))
+    number.parse::<u32>().ok().map(|n| format!(":{n}"))
 }
 
 #[cfg(test)]
@@ -221,12 +264,12 @@ mod tests {
     }
 
     #[test]
-    fn xvfb_takes_a_free_display_and_no_tcp_or_abstract_socket() {
-        let args = arguments(7);
-        assert_eq!(args[..2], ["-displayfd", "7"]);
+    fn xvfb_takes_a_free_display_with_a_cookie_and_no_tcp() {
+        let args = arguments(7, Path::new("/tmp/cookie"));
+        assert_eq!(args[..4], ["-displayfd", "7", "-auth", "/tmp/cookie"]);
         assert!(args.windows(2).any(|w| w == ["-nolisten", "tcp"]));
-        assert!(args.windows(2).any(|w| w == ["-nolisten", "local"]));
-        assert_eq!(display_name(b"12"), Some("/tmp/.X11-unix/X12".into()));
+        assert!(args.iter().any(|arg| arg == "-noreset"));
+        assert_eq!(display_name(b"12"), Some(":12".into()));
         assert_eq!(display_name(b"x"), None);
     }
 }
