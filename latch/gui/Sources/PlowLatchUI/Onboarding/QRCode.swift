@@ -10,8 +10,12 @@ enum QRCode {
         filter.message = Data(payload.utf8)
         filter.correctionLevel = "M"
         guard let output = filter.outputImage?.transformed(by: CGAffineTransform(scaleX: 12, y: 12)) else { return nil }
-        return CIContext().createCGImage(output, from: output.extent)
+        return context.createCGImage(output, from: output.extent)
     }
+
+    /// Made once: making a context costs more than drawing with it, and a
+    /// view asks for its code each time it's drawn.
+    private static let context = CIContext()
 }
 
 /// The QR code for `payload`, drawn crisp at any size.

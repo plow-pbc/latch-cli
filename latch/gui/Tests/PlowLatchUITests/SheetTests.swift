@@ -151,7 +151,6 @@ struct SheetTests {
         let client = ChangesClient()
         let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
         app.open = { _ in }
-        app.reveal = { _ in }
         await app.refreshStatus()
         await app.refreshAccount()
         app.showHost(host)

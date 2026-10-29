@@ -30,14 +30,17 @@ final class NewAgent {
     /// It runs in the sheet's own task, so it stops when the sheet closes.
     func watch(app: AppModel, waits: [Duration] = NewAgent.waits) async {
         if app.agents == nil, await !app.refreshAgentList() { return }
-        let known = Set((app.agents ?? []).map(\.uid))
+        // Without a first list, every agent would look new.
+        guard let agents = app.agents else { return }
+        let known = Set(agents.map(\.uid))
         for wait in waits {
             try? await Task.sleep(for: wait)
             guard !Task.isCancelled, await app.refreshAgentList() else { return }
             if let new = app.agents?.first(where: { !known.contains($0.uid) }) {
                 app.selectedAgent = new.uid
-                app.sheet = nil
+                // Closing the sheet ends this task: its standings first.
                 await app.refreshAgents()
+                app.sheet = nil
                 return
             }
         }

@@ -167,29 +167,20 @@ struct NewAgentWaitTests {
         return app
     }
 
-    @Test func theSheetClosesOnTheNewAgentOnceItIsListed() async throws {
-        let client = TextedClient(after: 4)
+    // A new agent listed on the fourth read after Agents' own: the sheet
+    // closes on it once its standings are read (one more read). None: the
+    // sheet stays open and the reads stop with the schedule.
+    @Test(arguments: [(4, 10, 6, true), (Int.max, 3, 4, false)])
+    func watchingStopsWithTheExpectedSelection(_ after: Int, _ polls: Int, _ reads: Int, _ found: Bool) async throws {
+        let client = TextedClient(after: after)
         let app = try await app(client)
         let flow = NewAgent()
         app.sheet = .newAgent(flow)
-        await flow.watch(app: app, waits: Array(repeating: .zero, count: 10))
-        #expect(app.sheet == nil)
-        #expect(app.selectedAgent == "00000000000000000000000000000009")
-        #expect(app.shownAgent?.displayName == "Willow")
-        // Found on the fourth read after the one Agents made, then read once
-        // more with each host's standing; no more.
-        #expect(client.listed == 5 + 1)
-    }
-
-    @Test func noNewAgentLeavesTheSheetOpenAndStopsReading() async throws {
-        let client = TextedClient(after: .max)
-        let app = try await app(client)
-        let flow = NewAgent()
-        app.sheet = .newAgent(flow)
-        await flow.watch(app: app, waits: Array(repeating: .zero, count: 3))
-        #expect(app.sheet == .newAgent(flow))
-        #expect(app.selectedAgent == nil)
-        #expect(client.listed == 1 + 3)
+        await flow.watch(app: app, waits: Array(repeating: .zero, count: polls))
+        #expect(app.sheet == (found ? nil : .newAgent(flow)))
+        #expect(app.selectedAgent == (found ? "00000000000000000000000000000009" : nil))
+        #expect(app.shownAgent?.displayName == (found ? "Willow" : "scout"))
+        #expect(client.listed == reads)
     }
 
     // Plow's own choice is offered first; the phrase and links are latch's.

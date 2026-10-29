@@ -22,11 +22,8 @@ final class AppModel {
     /// only ever on a person's click. A test build records them instead, so
     /// a run never opens anything.
     var open: (URL) -> Void = { NSWorkspace.shared.open($0) }
-    /// Shows a file in the Finder (the New Agent sheet's key file); only on
-    /// a click. A test build records it.
-    var reveal: (URL) -> Void = { NSWorkspace.shared.activateFileViewerSelecting([$0]) }
-    /// Puts text on the clipboard (the New Agent sheet's login
-    /// instructions); only on a click. A test build records it.
+    /// Puts text on the clipboard (a number, a handle, a message to send);
+    /// only on a click. A test build records it.
     var copy: (String) -> Void = { text in
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
