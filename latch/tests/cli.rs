@@ -3656,31 +3656,22 @@ fn phone_request(
 /// An agent asks its owner for a login with a phone link, judged and
 /// audited like its other work. It sends no secret and gets none back:
 /// only the link, then whether the login is saved and its id. The owner
-/// types the password on the phone, once.
+/// types the password on the phone, once, on the page its host names.
 #[test]
 fn an_agent_asks_for_a_login_by_phone_link_and_learns_only_its_state() {
     let plow = LivePlow::start();
     let (runtime, relay) = local_relay();
     let dir = test_dir();
-    let owner_token = dir.path().join("owner.token");
-    fs::write(&owner_token, "owner-login\n").unwrap();
+    let host = owner_host_on(&plow, dir.path());
     let agent_token = dir.path().join("agent.token");
     fs::write(&agent_token, "agent-credential\n").unwrap();
-    let (host, agent) = (dir.path().join("host"), dir.path().join("agent"));
-    let args = [
-        "login",
-        "--api-url",
-        &plow.url,
-        "--token-file",
-        owner_token.to_str().unwrap(),
-        "--name",
-        "host",
-    ];
-    assert_eq!(latch(&host, &args, &[]).status.code(), Some(0));
+    let agent = dir.path().join("agent");
     let agent_env = [("PLOW_TOKEN_FILE", agent_token.as_path())];
     let login = latch(&agent, &["login", "--api-url", &plow.url], &agent_env);
     assert_eq!(login.status.code(), Some(0), "{login:?}");
-    let (serve, mut log, _) = serving_with(serve_command(&host, &relay));
+    let mut serve = serve_command(&host, &relay);
+    serve.env("LATCH_PHONE_PAGE", "https://phone.example/latch");
+    let (serve, mut log, _) = serving_with(serve);
     until_serving(&host, &serve);
 
     let secret = "made-up-pass-3e7d";
@@ -3707,8 +3698,6 @@ fn an_agent_asks_for_a_login_by_phone_link_and_learns_only_its_state() {
             "shop.example",
             "--field",
             field,
-            "--page",
-            "https://example.invalid/",
         ]
     };
 
@@ -3717,6 +3706,19 @@ fn an_agent_asks_for_a_login_by_phone_link_and_learns_only_its_state() {
     assert_eq!(code, Some(0), "{opened}");
     let url = opened["url"].as_str().unwrap().to_string();
     let link = opened["link"].as_str().unwrap().to_string();
+    // It opens the page the host names, which the agent cannot choose.
+    assert!(url.starts_with("https://phone.example/latch#h="), "{url}");
+    let elsewhere = [
+        &ask("login", "username=ada@shop.example")[..],
+        &["--page", "https://agent.example/"],
+    ]
+    .concat();
+    let (code, refused) = run(&elsewhere);
+    assert_eq!(
+        (code, &refused["error"]["code"]),
+        (Some(2), &json!("bad_arguments")),
+        "{refused}"
+    );
     let judged = plow
         .state
         .lock()
@@ -3787,6 +3789,23 @@ fn an_agent_asks_for_a_login_by_phone_link_and_learns_only_its_state() {
         listed["items"][0]["sites"],
         json!(["shop.example"]),
         "{listed}"
+    );
+
+    // The owner's own vault takes no agent chat.
+    let local = latch(
+        &host,
+        &[
+            &["vault", "--plow-chat", "chat_a"][..],
+            &ask("login", "username=ada")[5..],
+        ]
+        .concat(),
+        &[],
+    );
+    let (code, refused) = answered(&local);
+    assert_eq!(
+        (code, &refused["error"]["code"]),
+        (Some(2), &json!("plow_chat_not_supported")),
+        "{refused}"
     );
 
     // The owner's rules can forbid it: refused, and nothing opened.

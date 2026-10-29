@@ -39,6 +39,11 @@ pub const ALPN: &[u8] = b"plow/latch-phone/1";
 /// How long a link stays open.
 const OPEN_FOR: Duration = Duration::from_secs(15 * 60);
 
+/// The phone page a link opens unless the host's `$LATCH_PHONE_PAGE`
+/// names another. An agent's link always uses the host's: the page sees
+/// what the owner types, so the agent never chooses it.
+const PAGE_URL: &str = "https://plow.co/latch/phone";
+
 /// The form the phone page shows, served by the host itself.
 const PAGE: &str = include_str!("phone.html");
 
@@ -50,8 +55,7 @@ pub struct Request {
     sites: Vec<String>,
     fields: Vec<Field>,
     made: Instant,
-    used: bool,
-    /// The item the link saved, once it has.
+    /// The item the link saved, once it has; a saved link is used up.
     saved: Option<String>,
 }
 
@@ -103,7 +107,6 @@ pub fn open(
         sites: item.sites.clone(),
         fields,
         made: Instant::now(),
-        used: false,
         saved: None,
     };
     vault
@@ -123,6 +126,7 @@ pub fn open(
         "host": here.key,
         "relay": page_relay(relay),
         "code": code,
+        "page": crate::credential::env("LATCH_PHONE_PAGE").unwrap_or_else(|| PAGE_URL.into()),
         "expires_in": OPEN_FOR.as_secs(),
     }))
 }
@@ -224,7 +228,7 @@ fn usable<'a>(
     let request = links
         .get_mut(&hash(code))
         .ok_or_else(|| refused(code::no_such_link, "this link is not one this machine made"))?;
-    if request.used {
+    if request.saved.is_some() {
         return Err(refused(code::link_used, "this link has already been used"));
     }
     if request.made.elapsed() >= OPEN_FOR {
@@ -303,7 +307,6 @@ pub fn submit(
         "values": values,
     });
     let saved = add(vault, &item, audit)?;
-    request.used = true;
     request.saved = saved["item"]["item"].as_str().map(str::to_string);
     Ok(saved)
 }

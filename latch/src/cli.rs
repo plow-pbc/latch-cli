@@ -719,10 +719,10 @@ pub enum VaultCommand {
         /// note's text are always asked for
         #[arg(long)]
         ask: Vec<String>,
-        /// The phone page's address (see `phone/`); the link adds the rest
-        /// after `#`
-        #[arg(long, env = "LATCH_PHONE_PAGE")]
-        page: String,
+        /// The phone page's address (see `phone/`), for the owner only; the
+        /// link adds the rest after `#` [default: the host's page]
+        #[arg(long)]
+        page: Option<String>,
     },
     /// Whether a phone link is still pending, saved (with the new item's
     /// id) or expired; never a value

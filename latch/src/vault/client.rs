@@ -35,11 +35,16 @@ pub async fn run(state: &StateDir, args: VaultArgs) -> Result<Value, Failure> {
         chat: None,
     };
     match args.command {
-        // An agent's list is judged in the chat it names, as its other calls are.
-        VaultCommand::List if target.host.is_none() && args.plow_chat.is_some() => Err(Failure::new(
+        // An agent's list or link is judged in the chat it names, as its
+        // other calls are.
+        VaultCommand::List | VaultCommand::Link { .. }
+            if target.host.is_none() && args.plow_chat.is_some() =>
+        {
+            Err(Failure::new(
             code::plow_chat_not_supported,
             "--plow-chat and LATCH_PLOW_CHAT select an agent's Plow chat on a host; this machine's own vault takes none: omit them".into(),
-        )),
+            ))
+        }
         VaultCommand::List => {
             target
                 .call(Request {
@@ -150,6 +155,14 @@ pub async fn run(state: &StateDir, args: VaultArgs) -> Result<Value, Failure> {
             ask,
             page,
         } => {
+            // The page sees what the owner types: an agent's link always
+            // opens the one its host sets.
+            if page.is_some() && state.require_config()?.peer.kind == "agent" {
+                return Err(Failure::new(
+                    code::bad_arguments,
+                    "an agent's link opens the phone page its host sets; omit --page".into(),
+                ));
+            }
             let values = given(&kind, &field)?;
             let request = Request {
                 chat: args.plow_chat,
@@ -163,7 +176,8 @@ pub async fn run(state: &StateDir, args: VaultArgs) -> Result<Value, Failure> {
                 }))
             };
             let opened = target.call(request).await?;
-            let url = link_url(&page, &opened);
+            let page = page.as_deref().or(opened["page"].as_str()).unwrap_or_default();
+            let url = link_url(page, &opened);
             if term::interactive() {
                 eprintln!("{}", term::qr(&url));
                 eprintln!("Open on your phone; it works once, for 15 minutes.");

@@ -129,8 +129,12 @@ latch vault link --host my-mac --kind login --title Shop --site shop.example \
 - **An agent may ask for a login:** `latch vault link --kind login` from an
   agent is judged by the host's gatekeeper like its other work, on the
   site, title and username it names, and recorded in the audit; it sends
-  the link to the owner. Any other kind, and any secret `--field`, is
-  refused. `latch vault link-state LINK` then says whether the link is
+  the link to the owner. Any other kind, any secret `--field`, and
+  `--page` are refused: an agent's link always opens the page its host
+  sets (`$LATCH_PHONE_PAGE` where `latch serve` runs, else
+  `https://plow.co/latch/phone`), since that page sees what the owner
+  types. An agent could still send the owner a different link; the website
+  and machine name the page shows are the owner's check. `latch vault link-state LINK` then says whether the link is
   `pending`, `saved` (with the new item's id) or `expired`; never a value.
 - **Audit:** `vault_link` records (`page`, `submit`) name the link and the
   item, never a value.
