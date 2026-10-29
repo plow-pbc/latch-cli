@@ -19,6 +19,15 @@ function say(text, bad) {
   status.className = bad ? "bad" : "";
 }
 
+// The computer's name, as it gives it over the connection. Nothing here
+// checks that the computer is the owner's: the name and the website are
+// what the person checks.
+function connected(name, before) {
+  status.replaceChildren("Connecting to a computer named ", Object.assign(document.createElement("b"), { textContent: name }), ". ",
+    before === name ? "This phone has reached it under this name before." : "This phone has not reached it before.");
+  status.className = "";
+}
+
 // Machines this phone has reached before, by key, so a key it has seen
 // under that name before says so.
 function remember(name) {
@@ -43,10 +52,10 @@ async function main() {
   const opened = await call("page", {});
   if (opened.error) return say(opened.error.message, true);
   const request = opened.ok.request;
-  const before = remember(request.host);
-  const short = hostKey.slice(0, 8) + "…" + hostKey.slice(-4);
-  say(`Connected to ${request.host}, key ${short}: ` +
-    (before === request.host ? "the same machine as last time." : "first time on this phone."));
+  connected(request.host, remember(request.host));
+  document.getElementById("what").textContent = request.kind === "login" ? "Your password" : "What you type here";
+  for (const el of document.querySelectorAll(".host")) el.textContent = request.host;
+  document.getElementById("privacy").hidden = false;
 
   window.addEventListener("message", async (event) => {
     if (event.source !== frame.contentWindow) return;

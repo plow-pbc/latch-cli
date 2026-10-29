@@ -18,4 +18,10 @@ rm -rf dist
 "$tools/bin/wasm-bindgen" target/wasm32-unknown-unknown/release/latch_phone.wasm \
     --out-dir dist --target web --no-typescript
 cp web/* dist/
+# A page served under a path with no trailing slash (plow.co/latch/phone)
+# names its folder as its base, so its files load from there: BASE=/latch/phone/.
+if [ -n "${BASE:-}" ]; then
+    awk -v base="$BASE" '{ print } /<head>/ { print "<base href=\"" base "\">" }' dist/index.html > dist/index.html.new
+    mv dist/index.html.new dist/index.html
+fi
 ls -l dist

@@ -6,14 +6,19 @@
 <meta name="referrer" content="no-referrer">
 <!-- The host's form runs in a srcdoc frame, which inherits this policy, so
      inline script and style are allowed; nothing but this page's own files
-     and the host's form ever load. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; connect-src 'self' https: wss:; style-src 'self' 'unsafe-inline'; frame-src 'self'; base-uri 'none'; form-action 'none'">
-<title>latch</title>
+     and the host's form ever load, and nothing connects anywhere but an
+     iroh relay. The server that hosts the page sends the same policy. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; connect-src 'self' https://*.relay.n0.iroh.link wss://*.relay.n0.iroh.link; style-src 'self' 'unsafe-inline'; frame-src 'self'; base-uri 'self'; form-action 'none'">
+<title>Add to latch</title>
 <link rel="stylesheet" href="shim.css">
 </head>
 <body>
 <header id="status">Connecting…</header>
 <iframe id="page" title="latch" sandbox="allow-scripts allow-forms" hidden></iframe>
+<footer id="privacy" hidden>
+  <p><span id="what"></span> goes straight to <b class="host"></b>, encrypted. Plow and your agent never see it.</p>
+  <p><a href="how.html" target="_blank" rel="noopener">How this works</a></p>
+</footer>
 <script type="module" src="shim.js"></script>
 </body>
 </html>

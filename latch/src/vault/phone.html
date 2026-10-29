@@ -47,11 +47,12 @@
   <label>Title <input id="title"></label>
 </form>
 <p class="result" id="result" hidden></p>
-<p class="note">Goes straight to <b class="host"></b> over latch's encrypted connection. Plow can't read it. This link works once and expires in <span id="left"></span>.</p>
+<p class="note">This link works once and expires in <span id="left"></span>.</p>
 <div class="machine">Saving to <b class="host"></b>, the machine with this key picture:<pre id="art"></pre></div>
 <script>
   // Runs in a sandboxed frame: the shim page around it owns the connection
-  // to the host, and passes messages both ways.
+  // to the host, passes messages both ways, and says which computer this
+  // is and where what is typed goes.
   const $ = (id) => document.getElementById(id);
   const form = $("form");
   let left = 0;

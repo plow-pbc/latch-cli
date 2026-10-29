@@ -119,7 +119,10 @@ latch vault link --host my-mac --kind login --title Shop --site shop.example \
   (a browser cannot connect directly), on its own protocol name,
   `plow/latch-phone/1`, with a throwaway key. The handshake proves it
   reached the key in the link. The host sends the form itself, which the
-  shim shows in a sandboxed frame.
+  shim shows in a sandboxed frame. The shim says which computer it
+  reached, by the name that computer gives (it does not check the computer
+  is the owner's), says that what is typed goes straight there, encrypted,
+  and links to how it works (`how.html`).
 - **What the phone may do:** fetch its link's form and save its link's item.
   The code lets it in; Plow is not asked who the phone is. Secret fields are
   typed on the phone; the owner's non-secret `--field`s come filled in. The
@@ -149,10 +152,13 @@ latch vault link --host my-mac --kind login --title Shop --site shop.example \
   `pending`, `saved` (with the new item's id) or `expired`; never a value.
 - **Audit:** `vault_link` records (`page`, `submit`) name the link and the
   item, never a value.
-- **Hosting the page:** `just phone-serve` serves it on this machine, for a
-  browser here or on the network. A phone away from home needs it on a
-  public HTTPS address; whoever serves it could change what it does, so
-  that choice is the owner's.
+- **Hosting the page:** plow.co serves it at `https://plow.co/latch/phone`,
+  the page a link opens by default, built with
+  `BASE=/latch/phone/ phone/build.sh`. Its policy lets it load only its own
+  files and connect only to itself and the iroh relays. Whoever serves it
+  could change what it does; the page is this open source code, so a change
+  can be seen. `just phone-serve` serves it on this machine instead, for a
+  browser here or on the network.
 
 
 Both the field's frame and the top-level page must be HTTPS with a real
