@@ -175,12 +175,14 @@ fixes it.
 - Read a page with `text` (its words) or `observe` (its elements), not
   `eval`: the gatekeeper judges every script, which is slower, and can
   refuse it.
-- Signing in with a login the owner saved: open the site's sign-in page,
-  `observe`, then `fill --field username=eN --field password=eN --press
-  eN` with no `--item`: latch uses the login saved for that site. If
-  several are saved there it refuses `which_item` and lists them; repeat
-  with `--item` and the one you want, by its id or exact title. You can't
-  list the vault; `vault` commands are the owner's.
+- Signing in with a login the owner saved: `latch vault list` shows what
+  the owner saved, each item's id, title and sites, never a value (the
+  gatekeeper judges it, like your other work). Open the item's site's
+  sign-in page, `observe`, then `fill --field username=eN --field
+  password=eN --press eN` with no `--item`: latch uses the login saved
+  for that site. If several are saved there it refuses `which_item` and
+  lists them; repeat with `--item vN`, the one you want. `--item` takes an
+  id only, never a title. The vault's other commands are the owner's.
 - A value `fill` put in a page stays there: never copy it out, repeat it
   or write it anywhere.
 - Buying: sign in, choose, `fill` the card, `do --confirm C` each

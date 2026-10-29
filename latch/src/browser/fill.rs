@@ -42,6 +42,7 @@ use std::sync::atomic::Ordering;
 use serde_json::{Map, Value, json};
 
 use super::host::{Browsers, Entry, paused, take_audit};
+use super::plan::Op;
 use super::session::Session;
 use super::suggest::{self, Control};
 use crate::failure::{Failure, code};
@@ -79,14 +80,13 @@ fn item_of(browsers: &Browsers, args: &Value) -> Result<Item, Failure> {
     })
 }
 
-/// `args` with its `--item` as the item's id: an item's id, else the title
-/// of exactly one item, whole and in any case; with no `--item`, the one
-/// login saved for the site of the session's page. Anything else is
-/// refused before the fill is judged, so the judge is shown the item as
-/// the vault holds it.
+/// `args` with its `--item` as the item's id: an item's id, checked; with
+/// no `--item`, the one login saved for the site of the session's page.
+/// Anything else is refused before the fill is judged, so the judge is
+/// shown the item as the vault holds it.
 pub async fn named(browsers: &Browsers, entry: &Entry, args: &Value) -> Result<Value, Failure> {
     let id = match args["item"].as_str() {
-        Some(given) => titled(browsers, given)?,
+        Some(given) => known(browsers, given)?,
         None => saved_here(browsers, entry).await?,
     };
     let mut named = args.clone();
@@ -94,74 +94,57 @@ pub async fn named(browsers: &Browsers, entry: &Entry, args: &Value) -> Result<V
     Ok(named)
 }
 
-/// A `do`'s `args` with its plan's items as their ids, found as `named`
-/// finds a fill's, before any of the plan is judged: the items it may fill
-/// from, by id or title, and each fill step's, a step naming none taking
-/// the login saved for the page's site, the page its refs are on.
+/// A `do`'s `args` with its plan's items checked as `named` checks a
+/// fill's, before any of the plan is judged: the items it may fill from,
+/// and each fill step's, a step naming none taking the login saved for the
+/// page's site, the page its refs are on.
 pub async fn named_in_plan(
     browsers: &Browsers,
     entry: &Entry,
     args: &Value,
 ) -> Result<Value, Failure> {
-    let mut named = args.clone();
-    let Some(plan) = named.get_mut("plan") else {
-        return Ok(named);
-    };
-    if let Some(items) = plan.get_mut("items").and_then(Value::as_array_mut) {
-        for item in items {
-            if let Some(given) = item.as_str() {
-                *item = json!(titled(browsers, given)?);
-            }
-        }
+    let mut plan: super::plan::Plan =
+        serde_json::from_value(args["plan"].clone()).map_err(|err| {
+            Failure::new(code::bad_arguments, format!("the plan is malformed: {err}"))
+        })?;
+    for item in &plan.items {
+        known(browsers, item)?;
     }
     let mut here: Option<String> = None;
-    let steps = plan.get_mut("steps").and_then(Value::as_array_mut);
-    for step in steps.into_iter().flatten() {
-        let Some(literal) = step.get_mut("literal").filter(|l| l["op"] == "fill") else {
+    let fills = plan
+        .steps
+        .iter_mut()
+        .filter_map(|step| step.literal.as_mut())
+        .filter(|literal| literal.op == Op::Fill);
+    for literal in fills {
+        if let Some(given) = &literal.item {
+            known(browsers, given)?;
             continue;
-        };
-        let id = match literal["item"].as_str() {
-            Some(given) => titled(browsers, given)?,
-            None => match &here {
-                Some(id) => id.clone(),
-                None => here.insert(saved_here(browsers, entry).await?).clone(),
-            },
-        };
-        literal["item"] = json!(id);
+        }
+        literal.item = Some(match &here {
+            Some(id) => id.clone(),
+            None => here.insert(saved_here(browsers, entry).await?).clone(),
+        });
     }
+    let mut named = args.clone();
+    named["plan"] = serde_json::to_value(&plan).expect("a plan serializes");
     Ok(named)
 }
 
-/// The item `given` names: its id, or the title of exactly one item.
-fn titled(browsers: &Browsers, given: &str) -> Result<String, Failure> {
+/// Where a caller finds an item's id.
+const LISTED: &str = "`latch vault list` shows each item's id, title and saved sites";
+
+/// `given`, if it is an item's id.
+fn known(browsers: &Browsers, given: &str) -> Result<String, Failure> {
     browsers.vault.with(|store| {
-        if store.item(given).is_some() {
-            return Ok(given.to_string());
-        }
-        let title = given.to_lowercase();
-        let titled: Vec<String> = store
-            .list()
-            .into_iter()
-            .filter(|meta| meta.title.to_lowercase() == title)
-            .map(|meta| meta.item)
-            .collect();
-        match titled.as_slice() {
-            [id] => Ok(id.clone()),
-            [] => Err(Failure::new(
+        store.item(given).map(|_| given.to_string()).ok_or_else(|| {
+            Failure::new(
                 code::no_such_item,
                 format!(
-                    "there is no vault item {given}: give its exact title or its id (vN), or leave out --item on the site's page to use the login saved for that site"
+                    "there is no vault item {given}: name an item by its id (vN); {LISTED}. Or leave out --item on a site's sign-in page to use the login saved for that site"
                 ),
-            )),
-            several => Err(Failure::new(
-                code::which_item,
-                format!(
-                    "{} vault items are titled {given}: name one by its id ({})",
-                    several.len(),
-                    several.join(", ")
-                ),
-            )),
-        }
+            )
+        })
     })
 }
 
@@ -190,7 +173,7 @@ async fn saved_here(browsers: &Browsers, entry: &Entry) -> Result<String, Failur
         [] => Err(Failure::new(
             code::no_such_item,
             format!(
-                "no login in the vault is saved for {site}: open the site's sign-in page first, or name the item with --item, by its exact title or its id (vN)"
+                "no login in the vault is saved for {site}: {LISTED}; open the sign-in page of a site one is saved for, or name the item with --item and its id"
             ),
         )),
         several => {
@@ -1175,59 +1158,44 @@ mod tests {
     use crate::failure::Exit;
     use crate::vault::item::{Custom, LOGIN, Raw};
 
-    /// `--item` finds an item by its id, else by the title of exactly one
-    /// item, whole and in any case; anything else is refused, naming the
-    /// ids only of the items titled as given.
+    /// `--item` names an item by its id, and only by it: a title, whole or
+    /// in part, is refused, pointing at `vault list`.
     #[test]
-    fn an_item_is_named_by_its_id_or_one_title_in_any_case() {
+    fn an_item_is_named_by_its_id_only() {
         let dir = tempfile::tempdir().unwrap();
         let state = dir.path().to_path_buf();
         let browsers = Browsers::new(state.clone(), crate::vault::host::Vault::new(state), true);
-        let add = |title: &str| {
-            browsers
-                .vault
-                .with(|store| {
-                    store.add(Item {
-                        id: String::new(),
-                        revision: 0,
-                        sites: vec!["parentsquare.com".into()],
-                        other_top_sites: vec![],
-                        raw: Raw::from_labels(
-                            LOGIN,
-                            title,
-                            &[("password".into(), "made-up-pass-5e1a".into())],
-                        )
-                        .unwrap(),
-                    })
+        let school = browsers
+            .vault
+            .with(|store| {
+                store.add(Item {
+                    id: String::new(),
+                    revision: 0,
+                    sites: vec!["parentsquare.com".into()],
+                    other_top_sites: vec![],
+                    raw: Raw::from_labels(
+                        LOGIN,
+                        "Parentsquare",
+                        &[("password".into(), "made-up-pass-5e1a".into())],
+                    )
+                    .unwrap(),
                 })
-                .unwrap()
-                .item
-        };
-        let school = add("Parentsquare");
-        assert_eq!(titled(&browsers, &school).unwrap(), school);
-        assert_eq!(titled(&browsers, "ParentSquare").unwrap(), school);
-        assert_eq!(titled(&browsers, "PARENTSQUARE").unwrap(), school);
-
-        let missing = titled(&browsers, "Parent Square").unwrap_err();
-        assert_eq!(
-            (missing.exit, missing.code.as_str()),
-            (Exit::Usage, "no_such_item")
-        );
-        assert!(missing.message.contains("leave out --item"), "{missing:?}");
-
-        let other = add("parentsquare");
-        let several = titled(&browsers, "ParentSquare").unwrap_err();
-        assert_eq!(several.code, "which_item");
-        assert!(
-            several.message.contains(&school) && several.message.contains(&other),
-            "{several:?}"
-        );
-        // Its id still names either one; part of a title names none.
-        assert_eq!(titled(&browsers, &other).unwrap(), other);
-        assert_eq!(
-            titled(&browsers, "Parent").unwrap_err().code,
-            "no_such_item"
-        );
+            })
+            .unwrap()
+            .item;
+        assert_eq!(known(&browsers, &school).unwrap(), school);
+        for given in ["Parentsquare", "ParentSquare", "parentsquare.com", "v9", ""] {
+            let refused = known(&browsers, given).unwrap_err();
+            assert_eq!(
+                (refused.exit, refused.code.as_str()),
+                (Exit::Usage, "no_such_item"),
+                "{given}"
+            );
+            assert!(
+                refused.message.contains("`latch vault list`"),
+                "{refused:?}"
+            );
+        }
     }
 
     /// The resume's events go through the same filter as the presses' and

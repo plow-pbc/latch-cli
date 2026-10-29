@@ -70,7 +70,8 @@ impl Vault {
     }
 }
 
-/// `vault`: one owner command. `kind` is the caller's kind as Plow says.
+/// `vault`: one owner command, or an agent's list. `kind` is the caller's
+/// kind as Plow says.
 pub async fn run(
     vault: &Vault,
     here: &Here,
@@ -82,6 +83,10 @@ pub async fn run(
     let command = args["command"].as_str().unwrap_or_default().to_string();
     let mut audit = Map::new();
     audit.insert("command".into(), json!(command));
+    // The gatekeeper has judged an agent's list before it gets here.
+    if kind == "agent" && command == "list" {
+        return done(vault.with(|store| Ok(for_agent(&store.list()))), audit);
+    }
     if let Err(failure) = owner_only(kind) {
         return done(Err(failure), audit);
     }
@@ -112,15 +117,31 @@ pub(super) fn manage(
     }
 }
 
-/// Only the owner's own devices may use the vault's commands; an agent's
-/// key, whoever's agent, gets exit 4, and how to sign in without them.
+/// How an agent signs in with a login the owner saved.
+const SIGN_IN: &str = "To sign in with a saved login, open the sign-in page of a site it is saved for and run `latch browser fill` there without --item: latch uses the login saved for that site, or lists the ones saved there to choose from; --item takes an item's id (vN), never its title. No value is ever shown: a fill puts it in the page";
+
+/// The vault as an agent sees it: each item's id, title and saved sites,
+/// never a value or a username, and how to sign in with one.
+fn for_agent(items: &[super::item::Meta]) -> Value {
+    let items: Vec<Value> = items
+        .iter()
+        .map(|meta| json!({"item": meta.item, "title": meta.title, "sites": meta.sites}))
+        .collect();
+    json!({"items": items, "next": SIGN_IN})
+}
+
+/// Only the owner's own devices may use the vault's commands, but for an
+/// agent's list; an agent's key, whoever's agent, gets exit 4, and how to
+/// sign in without them.
 pub(super) fn owner_only(kind: &str) -> Result<(), Failure> {
     if kind == "device" {
         return Ok(());
     }
     Err(Failure::new(
         code::owner_only,
-        "the vault takes commands from the owner's own devices only. To sign in with a login the owner saved, run `latch browser fill` on the site's sign-in page without --item: latch uses the login saved for that site, or lists the ones saved there to choose from; --item also takes an item's exact title".into(),
+        format!(
+            "the vault takes commands from the owner's own devices only, but for an agent's `latch vault list --host HOST`: each item's id, title and saved sites. {SIGN_IN}"
+        ),
     ))
 }
 
@@ -517,11 +538,12 @@ mod tests {
                 (refused.exit, refused.code.as_str()),
                 (Exit::Denied, "owner_only")
             );
-            // How an agent signs in without the vault's commands.
+            // What an agent may do instead: list, and fill by the page's site.
             assert!(
-                refused
-                    .message
-                    .contains("`latch browser fill` on the site's sign-in page without --item"),
+                refused.message.contains("`latch vault list --host HOST`")
+                    && refused
+                        .message
+                        .contains("run `latch browser fill` there without --item"),
                 "{refused:?}"
             );
         }

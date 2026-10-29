@@ -847,6 +847,36 @@ async fn a_fill_from_the_vault_is_judged_knowing_what_a_fill_does() {
     }
 }
 
+#[tokio::test]
+async fn an_agents_vault_list_is_judged_knowing_what_it_shows() {
+    let list = crate::gate::gated("vault", &json!({"command": "list"}))
+        .unwrap()
+        .action;
+    assert_eq!(list.get(), r#"{"operation":"vault.list"}"#);
+    // Only the list is an agent's to ask for; the rest is never judged.
+    for command in ["show", "add", "edit", "remove", "import", "link"] {
+        assert!(crate::gate::gated("vault", &json!({"command": command})).is_none());
+    }
+    let fill = serde_json::value::to_raw_value(&crate::browser::previewed_fill(
+        "https://www.parentsquare.com/signin",
+        "login",
+        "ParentSquare",
+        vec!["username".into(), "password".into()],
+    ))
+    .unwrap();
+    for (action, told) in [(list, true), (fill, false), (order(), false)] {
+        let model = Recorder::answering(0.9, 0.05, 0.05);
+        gatekeeper(one_chat(), &model, host_rules())
+            .judge(AGENT_CALLER, &action)
+            .await;
+        // Both layers are told what a list shows and when it is covered.
+        for state in [model.rules_state(), model.chat_state()] {
+            let rules = state["rules_of_judgment"].to_string();
+            assert_eq!(rules.contains(VAULT_LIST), told, "{action}");
+        }
+    }
+}
+
 fn held_out() -> Value {
     serde_json::from_str(include_str!("../../tests/fixtures/gatekeeper/heldout.json")).unwrap()
 }

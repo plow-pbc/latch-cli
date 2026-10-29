@@ -25,9 +25,18 @@ passport number, hidden custom fields.
 
 With no `--host` (or naming this peer), manage this state folder's vault
 locally, with or without `serve`. Use the existing device login; no second
-state folder or login is needed. Agents are refused with exit 4. To manage
-another host, pass `--host NAME` (or set `LATCH_HOST`); it must be serving,
-and a failed remote call never falls back to the local vault.
+state folder or login is needed. Agents are refused with exit 4, but for
+`list` (below). To manage another host, pass `--host NAME` (or set
+`LATCH_HOST`); it must be serving, and a failed remote call never falls
+back to the local vault.
+
+**An agent's `vault list`.** An agent may run `latch vault list --host
+NAME`, judged by the gatekeeper like its other work, with guidance of its
+own: listing is covered whenever the owner lets agents browse or sign in,
+or asked for a task that needs a saved login. It answers each item's id,
+title and saved sites, never a username, a field or a value, and `next`,
+how to sign in with one (Filling, below). The audit keeps the judgment.
+The owner's own list is never judged and shows each item's metadata.
 
 ```sh
 latch vault add --kind login --title Shop --site shop.example \
@@ -148,15 +157,15 @@ page in the address.
 
 ## Filling
 
-One command fills every kind: `latch browser fill --item ITEM` with the
-agent's mapping. `--item` takes the item's id (`vN`) or its exact title,
-in any case. Left out, the fill uses the login saved for the site of the
-page the session is on: when several are saved there, it is refused
-`which_item`, listing their ids and titles and no other item, and the
-agent names one. An agent cannot list the vault, so this is how it finds a
-login. Either way the item is found before the fill is judged, so the
-judge sees its real kind and sites, and a name that finds none is refused
-`no_such_item` with nothing judged or filled. The mapping is
+One command fills every kind: `latch browser fill --item vN` with the
+agent's mapping. `--item` takes the item's id only, never its title.
+Left out, the fill uses the login saved for the site of the page the
+session is on: when several are saved there, it is refused `which_item`,
+listing their ids and titles and no other item, and the agent names one.
+Either way the item is found before the fill is judged, so the judge sees
+its real kind and sites, and an id the vault lacks is refused
+`no_such_item`, pointing at `vault list`, with nothing judged or filled.
+The mapping is
 `--field FIELD=eN` for each item field (`username`,
 `password`, `otp` for a login's current authenticator code, computed on
 the host; a card's `number`, `expiry`, `cvv`, …; an identity's or a note's

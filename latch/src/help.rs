@@ -877,9 +877,9 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "vault.list",
         runs_on: |_| RunsOn::Either,
-        output: "Every item's metadata: id, kind, title, a login's username, sites, field labels, revision; never a secret value.",
+        output: "For the owner, every item's metadata: id, kind, title, a login's username, sites, field labels, revision. For an agent, judged by the gatekeeper like its other work: each item's id, title and saved sites, and `next`, how to sign in with one. Never a secret value.",
         effect: ReadOnly,
-        owner_only: true,
+        owner_only: false,
         connector: None,
         examples: &[ex("List the items", &["vault", "--host", "mac", "list"])],
     },

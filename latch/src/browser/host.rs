@@ -524,8 +524,8 @@ pub async fn run(
     Done::send_bytes(send, result, &bytes, audit).await
 }
 
-/// A `fill`: its item, named by id or title or left to the page's site,
-/// becomes the item's id; a suggestion taken by its id becomes the mapping
+/// A `fill`: its item, named by id or left to the page's site, is found
+/// before it is judged; a suggestion taken by its id becomes the mapping
 /// it stands for; one that releases a card or identity secret stops for
 /// the agent's confirmation before any value is released.
 pub(super) async fn fill(

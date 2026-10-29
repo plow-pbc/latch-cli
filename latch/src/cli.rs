@@ -353,7 +353,7 @@ pub enum BrowserCommand {
         output: PathBuf,
     },
     /// The plan command: up to 10 steps in order, each `click|type|select|press
-    /// eN ["text"]`, `fill [--item ITEM] --field F=eN… [--press eN]`, or a goal in
+    /// eN ["text"]`, `fill [--item vN] --field F=eN… [--press eN]`, or a goal in
     /// words with its texts in double quotes, with an optional check after
     /// ` -> `: `do 'click e7 -> path: /cart' 'add the note "Ring twice"'`
     #[command(after_help = DO_HELP)]
@@ -378,9 +378,9 @@ pub enum BrowserCommand {
         /// A text every step may type, as NAME=TEXT (repeatable)
         #[arg(long, value_name = "NAME=TEXT", conflicts_with = "history")]
         fact: Vec<String>,
-        /// A vault item the plan may fill from, by its exact title or its id
-        /// (repeatable)
-        #[arg(long, value_name = "ITEM", conflicts_with = "history")]
+        /// A vault item the plan may fill from, by its id, which `vault list`
+        /// shows (repeatable)
+        #[arg(long, value_name = "vN", conflicts_with = "history")]
         item: Vec<String>,
         /// Print the plan as it would be sent, and send nothing
         #[arg(long, conflicts_with = "history")]
@@ -494,8 +494,8 @@ pub enum BrowserCommand {
     Fill {
         #[arg(long)]
         snapshot: Option<String>,
-        /// The vault item, by its exact title or its id (vN); left out, the
-        /// login saved for the site of the page
+        /// The vault item's id, which `vault list` shows; left out, the login
+        /// saved for the site of the page
         #[arg(long)]
         item: Option<String>,
         /// FIELD=eN, or FIELD=eN,eN,… to split it across boxes
