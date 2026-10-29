@@ -36,6 +36,9 @@ struct RulesView: View {
             }
             .font(.system(size: 12.5))
             .padding(.top, 10)
+            if let note = flow.rulesNote {
+                Text(note).font(.system(size: 12.5)).foregroundStyle(Brand.muted).padding(.top, 6)
+            }
             if let error = flow.rulesError {
                 ErrorText(error: error, host: ErrorCopy.thisMac).foregroundStyle(Brand.clay).font(.callout).padding(.top, 8)
             }

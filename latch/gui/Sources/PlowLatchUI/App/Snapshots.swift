@@ -349,8 +349,13 @@ package enum SnapshotRunner {
             ("04-rules-first-run", .rules, Fixtures.stopped, Progress(), {
                 await $0.loadRules(); $0.stopWork(); $0.previews = [:]
             }),
+            // Rules already on this Mac: read into the box, said to be them.
             ("04-rules-rerun-prefilled", .rules, Fixtures.stopped, Progress(), {
                 $0.savedRules = rules; $0.draftRules = rules
+            }),
+            // Changed from them: Save rules says it replaces them.
+            ("04-rules-rerun-changed", .rules, Fixtures.stopped, Progress(), {
+                $0.savedRules = rules; $0.draftRules = Onboarding.decks[1].rules; $0.deck = Onboarding.decks[1]
             }),
             ("04-rules-checking", .rules, Fixtures.serving, Progress(), {
                 $0.savedRules = rules; $0.draftRules = rules; $0.reviewing = true

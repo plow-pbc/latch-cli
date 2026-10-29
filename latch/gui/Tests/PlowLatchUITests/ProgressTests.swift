@@ -175,6 +175,33 @@ struct GatekeeperTests {
         #expect(flow.savedRules == "Allow everything.")
     }
 
+    /// Rules already on this Mac stay unless the person changes them: the
+    /// box says they're the current ones; Continue and Skip write nothing;
+    /// a default replaces the text only when clicked, and only Save rules
+    /// then writes it, saying so first.
+    @Test func rulesAlreadyHereAreKeptUnlessChanged() async {
+        let client = ScriptedClient { _ in nil }
+        client.savedText = "Agents may read ~/Projects."
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
+        let flow = app.stage(.rules)
+        await flow.loadRules()
+        #expect(flow.draftRules == "Agents may read ~/Projects.")
+        #expect(flow.rulesNote == "These are your current rules on this Mac.")
+        flow.skip()
+        #expect(flow.step != .rules)
+        #expect(client.saved.isEmpty)
+
+        let again = app.stage(.rules)
+        await again.loadRules()
+        again.choose(Onboarding.decks[0])
+        #expect(again.draftRules == Onboarding.decks[0].rules)
+        #expect(again.rulesNote == "Save rules replaces your current rules on this Mac.")
+        #expect(client.saved.isEmpty)
+        again.primary()
+        await waitUntil { again.step != .rules }
+        #expect(client.saved == [Onboarding.decks[0].rules])
+    }
+
     @Test func anEmptyBoxPreviewsTheSavedRulesItKeeps() async {
         let client = ScriptedClient { _ in nil }
         let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)

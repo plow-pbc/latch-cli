@@ -367,6 +367,13 @@ final class Onboarding {
         return draft.isEmpty ? savedRules?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "" : draft
     }
 
+    /// Whose rules the box holds, when this Mac already has some: those, or
+    /// a change Save rules would put in their place.
+    var rulesNote: String? {
+        guard let saved = savedRules?.trimmingCharacters(in: .whitespacesAndNewlines), !saved.isEmpty else { return nil }
+        return rulesChanged ? "Save rules replaces your current rules on this Mac." : "These are your current rules on this Mac."
+    }
+
     var rulesChanged: Bool {
         let draft = draftRules.trimmingCharacters(in: .whitespacesAndNewlines)
         return !draft.isEmpty && draft != savedRules?.trimmingCharacters(in: .whitespacesAndNewlines)
