@@ -244,13 +244,21 @@ async fn update(
         return Ok(json!({"current": current, "latest": release, "available": available}));
     }
     let current = current.expect("a local build was refused above");
-    // Only a named tag goes back to an older build, or installs this one again.
-    if tag.is_none() && release.build <= current {
+    // Only a named tag goes back to an older build. This build installs
+    // again, unnamed, when helpers it runs are missing.
+    let repair = match tag.is_none() && release.build == current {
+        true => missing_helpers(&state.path),
+        false => Vec::new(),
+    };
+    if tag.is_none() && release.build <= current && repair.is_empty() {
         return Ok(json!({"updated": false, "current": current, "latest": release}));
     }
     let before = crate::status::local(state)?.this_machine.hosting;
     install(state, source, &release, bin).await?;
     let mut answer = json!({"updated": true, "from": current, "to": release});
+    if !repair.is_empty() {
+        answer["repaired"] = json!(repair);
+    }
     let after = crate::status::local(state)?.this_machine.hosting.running;
     if let Some(host) = host_after(before.running, before.attached, after) {
         answer["host"] = host;
@@ -398,6 +406,30 @@ fn helpers(state: &Path) -> Vec<&'static str> {
         flags.push("--no-browser");
     }
     flags
+}
+
+/// The helpers `helpers` has the installer keep up to date whose versions
+/// this latch runs are not installed: what an update cut off after the
+/// installer replaced latch, before it fetched the new pins, leaves out.
+fn missing_helpers(state: &Path) -> Vec<&'static str> {
+    if state.join("plugins/client-only").is_file() {
+        return Vec::new();
+    }
+    let not_installed = |engine: &str| {
+        crate::browser::engine::verify(state, engine)
+            .is_err_and(|failure| failure.code == code::engine_not_installed.name)
+    };
+    let mut missing = Vec::new();
+    if crate::google::host::gog_program(state, &crate::google::PIN.version).is_err() {
+        missing.push("gog");
+    }
+    if state.join("plugins/cft").is_dir() && not_installed("cft") {
+        missing.push("chrome");
+    }
+    if state.join("plugins/camoufox").is_dir() && not_installed("camoufox") {
+        missing.push("camoufox");
+    }
+    missing
 }
 
 impl Signer {

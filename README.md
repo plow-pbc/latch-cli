@@ -45,7 +45,9 @@ Messages reader or bubblewrap, no sudo, and no setup at the end. Its
 
 Update with `latch update`: it installs the newest build, or `latch update TAG`
 that build (also how to go back to an older one); `latch update --check` only
-says whether a newer one is out. It checks the release's `SHA256SUMS` against
+says whether a newer one is out. When this build is the newest but a helper
+it runs is missing (an update cut off before it installed a browser engine
+or gog), `latch update` installs it again. It checks the release's `SHA256SUMS` against
 latch's release signing key and the archive against it (on macOS, also that
 the app is signed by Plow), then runs the release's own `install-binary.sh`:
 on Linux into the folder latch runs from, on macOS replacing the whole
