@@ -122,7 +122,10 @@ def inline(text):
     out = []
     for part in parts:
         if part.startswith("`") and part.endswith("`") and len(part) > 1:
-            out.append(f"<code>{html.escape(part[1:-1], quote=False)}</code>")
+            code = part[1:-1]
+            # One word (`--pretty`, `~/.latch`) never breaks at its hyphens or slashes.
+            tag = "<code>" if " " in code else '<code class="word">'
+            out.append(f"{tag}{html.escape(code, quote=False)}</code>")
             continue
         part = html.escape(part, quote=False)
         part = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", part)
