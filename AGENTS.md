@@ -16,7 +16,7 @@ The goal is strong engineering judgment with low ceremony.
 - `latch/` is the latch CLI, one Rust crate (and the root of its Cargo workspace): a peer that lets an agent reach the files, programs, Google accounts and browser on a machine its owner trusts, over Plow's directory.
 - `latch/tests/` holds the integration tests, their fixtures, and `browser-site/`, the local site the browser tests drive.
 - `latch/*.md` documents each area: `BROWSER.md`, `VAULT.md`, `GOOGLE.md`, `GOOGLE-AGENT-GUIDE.md`, `DOCKER.md`, `MACOS.md`, `DEPENDENCIES.md`. `latch/SKILL.md` is the agents' guide `latch skill` prints.
-- Plow's side of latch (the peer directory API in `api/plow/latch.py`, its model and migration) lives in [`plow-pbc/plow`](https://github.com/plow-pbc/plow), not here. latch reaches it over HTTP.
+- Plow's side of latch (the peer directory API in `api/plow/latch.py`, its model and migration) lives in Plow's own repository, which is not public, not here. latch reaches it over HTTP.
 
 ## Read First
 
@@ -29,7 +29,7 @@ Before making meaningful changes, read:
 
 - All dev and test state lives under the gitignored `.dev/` at the repo root, passed with `--state-dir`. Tests make their throwaway folders in `.dev/tests/`.
 - `just test browser` (and the gate, `just test`) installs the pinned browser engines into `.dev/cft-state` first, where the browser tests look for them.
-- `just build` builds the checkout for hand testing into `.dev/bin/latch`, with `.dev/state` and the local Plow stack (see Local Plow For Development) baked in as its defaults, so it never touches `~/.latch`, an installed latch or production Plow (`just build api=https://api.plow.co` targets it, for the chef's release smoke only: such a build uses `.dev/state-prod` instead and logs in as `<hostname>-dev`, so it never mixes with the local login or asks to replace the installed latch's machine). `just app` makes the same latch a dev Mac app and installs gog, the Messages reader and Chrome for Testing into its state folder. `just dev-login` logs `.dev/state` in to the local stack; `just gatekeeper` asks the real decision model on that login.
+- `just build` builds the checkout for hand testing into `.dev/bin/latch`, with `.dev/state` and the local Plow stack (see Local Plow For Development) baked in as its defaults, so it never touches `~/.latch`, an installed latch or production Plow (`just build api=https://api.plow.co` targets it, for a release smoke test only: such a build uses `.dev/state-prod` instead and logs in as `<hostname>-dev`, so it never mixes with the local login or asks to replace the installed latch's machine). `just app` makes the same latch a dev Mac app and installs gog, the Messages reader and Chrome for Testing into its state folder. `just dev-login` logs `.dev/state` in to the local stack; `just gatekeeper` asks the real decision model on that login.
 - A binary built with `LATCH_BUILD_STATE_DIR` set has that state folder as its default. Running hosts and clients may depend on it: do not move, copy, or delete another peer's state folder, and do not stop or restart a running `latch serve`, unless asked.
 - Never print a token, key, or vault value. Credentials stay in their files with mode 600.
 

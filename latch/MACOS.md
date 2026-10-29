@@ -99,7 +99,7 @@ evidence for a visible-response budget alongside `visible_ms`.
 latch/gui/hooks.sh build --window
 latch/gui/hooks.sh open --fixture hosts=8,records=10000,vault=1000,agents=5
 latch/gui/hooks.sh send measure "$PWD/.dev/tests/timings.jsonl"
-latch/gui/hooks.sh send host pi-kitchen
+latch/gui/hooks.sh send host my-pi
 latch/gui/hooks.sh send section activity   # {"command":"section","next_refresh_ms":…,"visible_ms":…}
 latch/gui/hooks.sh quit
 ```

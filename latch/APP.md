@@ -90,7 +90,7 @@ The same as `status --local`, plus what Plow says of the account:
  …the fields of status --local…,
  "hosts":[{"name":"studio","key":"5b66c591…","self":true,"online":true,"last_seen_at":"2026-10-23T19:41:50.229474Z",
            "plugins":[{"name":"google","state":"enabled"},{"name":"messages","state":"needs_setup"}],"plugins_reason":null},
-          {"name":"pi-kitchen","key":"ea6a25b3…","self":false,"online":true,"last_seen_at":"2026-10-23T19:41:58.723159Z",
+          {"name":"my-pi","key":"ea6a25b3…","self":false,"online":true,"last_seen_at":"2026-10-23T19:41:58.723159Z",
            "plugins":null,"plugins_reason":"host_unreachable"}],
  "default_host":"studio","default_host_reason":null}
 ```
