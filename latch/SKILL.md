@@ -66,22 +66,37 @@ when there is a next step), with an exit code you can branch on. Branch on
   Any latch can ask, on Linux too; a host that isn't a Mac answers
   `unsupported_platform`.
 
-## A sign-in code sent by text
+## A sign-in code
 
-When a site asks for a code it texted to the owner (a goal in words stops
-there with `needs_fields`) and the host reads Messages, it is two steps,
-each judged:
+When a site asks for a one-time code (`observe`'s `fill.page_offers` has
+`code`; a goal in words stops there with `needs_fields`), get the code
+yourself, in this order, each call judged:
 
-1. `latch messages search --host H --since 10m code`: take the code from
-   the newest message that is plainly that site's sign-in code (none yet:
-   wait a few seconds, search again).
-2. Type it into the code field from `observe`: `latch browser do 'type eN
-   "CODE"'`, then submit as the page asks.
+1. **The vault's authenticator code**, if the site's login in `observe`'s
+   `fill.items` has an `otp` field: `latch browser fill --item vN --field
+   otp=eN --press eN`. The host computes the code and types it; you never
+   see it. Done.
+2. **The code the site sent**, searched where the page says it went, on a
+   host with that plugin on (`latch status`: the host's `plugins` has
+   `google` or `messages` `enabled`); both when the page doesn't say:
+   - email: `latch google --host G -- gmail search 'from:shop.example
+     newer_than:1d' --max 5`, with the site's domain. Take the newest row
+     that arrived in the last few minutes (`internalDateIso`); when its
+     subject doesn't hold the code, read it with `latch google --host G --
+     gmail thread get ID --sanitize-content --account A` (the row's `id`
+     and `account`).
+   - text: `latch messages search --host M --since 10m code`.
 
-Use the code for that sign-in only. If the host can't read Messages, hand
-the session to the owner: `latch browser handoff --reason 2fa`. A host
-with no screen (a Linux host) refuses a handoff (`needs_owner`, reason
-`no_screen`): ask the owner for the code instead, and type it as above.
+   Take the code only from a message that is plainly that site's sign-in
+   code (none yet: wait a few seconds, search again).
+3. **Type it** into the code field from `observe`: `latch browser do 'type
+   eN "CODE"'`, then submit as the page asks.
+
+Use the code for that sign-in only. Ask the owner only when none of these
+finds it: hand them the session, `latch browser handoff --reason 2fa`. A
+host with no screen (a Linux host) refuses a handoff (`needs_owner`,
+reason `no_screen`): ask the owner for the code in your Plow chat instead,
+and type it as in step 3.
 
 ## Credentials in exec
 
