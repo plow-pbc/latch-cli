@@ -16,8 +16,13 @@
 //! a new item; it never edits or removes one.
 //!
 //! An agent may open a link for a login too, judged by the gatekeeper like
-//! its other work, and send it to the owner. It learns only the link's
-//! state (`state`): pending, saved with the new item's id, or expired.
+//! its other work, and send it to the owner. Its link carries no code,
+//! only the request's id: the phone page signs the owner in to Plow with a
+//! texted code, and Plow vouches for the page's key for that request (a
+//! grant), which the host asks Plow about before it serves the request.
+//! So holding the link lets no one, the agent included, see the form or
+//! save anything. The agent learns only the link's state (`state`):
+//! pending, saved with the new item's id, or expired.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -47,9 +52,12 @@ const PAGE_URL: &str = "https://plow.co/latch/phone";
 /// The form the phone page shows, served by the host itself.
 const PAGE: &str = include_str!("phone.html");
 
-/// One open link, by the sha256 of its code.
+/// One open link, by its id.
 pub struct Request {
     id: String,
+    /// The sha256 of an owner's link's code; an agent's link has none, and
+    /// is opened only with Plow's grant.
+    code: Option<String>,
     kind: String,
     title: String,
     sites: Vec<String>,
@@ -71,18 +79,22 @@ pub struct Field {
     value: Option<String>,
 }
 
-/// Where the phone dials: the host's key, name and relay.
+/// Where the phone dials: the host's key, name and relay, and the Plow
+/// the page signs the owner in to.
 pub struct Here {
     pub key: String,
     pub name: String,
     pub relay: Option<RelayUrl>,
+    pub plow: String,
 }
 
-/// `vault link`: opens a request and returns what the link carries.
+/// `vault link`: opens a request and returns what the link carries: for an
+/// owner's link a one-time code, for an agent's (`by_agent`) none.
 pub fn open(
     vault: &Vault,
     here: &Here,
     args: &Value,
+    by_agent: bool,
     audit: &mut Map<String, Value>,
 ) -> Result<Value, Failure> {
     let relay = here.relay.as_ref().ok_or_else(|| {
@@ -97,11 +109,11 @@ pub fn open(
     item.validate()?;
     let kind = args["kind"].as_str().unwrap_or_default().to_string();
     let fields = fields(&kind, &args["values"], &args["ask"])?;
-    let code: [u8; 16] = rand::random();
-    let code = to_hex(&code);
+    let code = (!by_agent).then(|| to_hex(&rand::random::<[u8; 16]>()));
     let id = format!("l{:08x}", rand::random::<u32>());
     let request = Request {
         id: id.clone(),
+        code: code.as_deref().map(hash),
         kind,
         title: item.raw.name.clone(),
         sites: item.sites.clone(),
@@ -113,7 +125,7 @@ pub fn open(
         .links
         .lock()
         .expect("links lock")
-        .insert(hash(&code), request);
+        .insert(id.clone(), request);
     audit.insert("link".into(), json!(id));
     audit.insert("kind".into(), json!(args["kind"]));
     audit.insert("title".into(), json!(item.raw.name));
@@ -121,14 +133,18 @@ pub fn open(
     if let Some(username) = args["values"]["username"].as_str() {
         audit.insert("username".into(), json!(username));
     }
-    Ok(json!({
+    let mut opened = json!({
         "link": id,
         "host": here.key,
         "relay": page_relay(relay),
-        "code": code,
+        "plow": here.plow,
         "page": crate::credential::env("LATCH_PHONE_PAGE").unwrap_or_else(|| PAGE_URL.into()),
         "expires_in": OPEN_FOR.as_secs(),
-    }))
+    });
+    if let Some(code) = code {
+        opened["code"] = json!(code);
+    }
+    Ok(opened)
 }
 
 /// The fields the phone shows: the owner's non-secret ones, filled in;
@@ -220,14 +236,38 @@ fn refused(code: Code, message: &str) -> Failure {
     Failure::new(code, message.into())
 }
 
-/// The open request a code names, or why it is not usable.
+/// The open request a phone asks for, or why it may not have it: an
+/// owner's link by its `code`, an agent's by its id (`link`), only for a
+/// phone Plow vouches is the owner for that request (`granted`).
 fn usable<'a>(
     links: &'a mut HashMap<String, Request>,
-    code: &str,
+    args: &Value,
+    granted: Option<&str>,
 ) -> Result<&'a mut Request, Failure> {
-    let request = links
-        .get_mut(&hash(code))
-        .ok_or_else(|| refused(code::no_such_link, "this link is not one this machine made"))?;
+    let unknown = || refused(code::no_such_link, "this link is not one this machine made");
+    let request = match (args["code"].as_str(), args["link"].as_str()) {
+        (Some(code), _) => {
+            let code = Some(hash(code));
+            links
+                .values_mut()
+                .find(|r| r.code == code)
+                .ok_or_else(unknown)?
+        }
+        (None, Some(id)) => {
+            let request = links
+                .get_mut(id)
+                .filter(|r| r.code.is_none())
+                .ok_or_else(unknown)?;
+            if granted != Some(id) {
+                return Err(refused(
+                    code::phone_not_signed_in,
+                    "sign in to Plow on this page to open this link",
+                ));
+            }
+            request
+        }
+        (None, None) => return Err(unknown()),
+    };
     if request.saved.is_some() {
         return Err(refused(code::link_used, "this link has already been used"));
     }
@@ -242,11 +282,11 @@ pub fn page(
     vault: &Vault,
     here: &Here,
     args: &Value,
+    granted: Option<&str>,
     audit: &mut Map<String, Value>,
 ) -> Result<Value, Failure> {
-    let code = args["code"].as_str().unwrap_or_default();
     let mut links = vault.links.lock().expect("links lock");
-    let request = usable(&mut links, code)?;
+    let request = usable(&mut links, args, granted)?;
     audit.insert("link".into(), json!(request.id));
     let left = OPEN_FOR.saturating_sub(request.made.elapsed());
     Ok(json!({
@@ -270,11 +310,11 @@ pub fn page(
 pub fn submit(
     vault: &Vault,
     args: &Value,
+    granted: Option<&str>,
     audit: &mut Map<String, Value>,
 ) -> Result<Value, Failure> {
-    let code = args["code"].as_str().unwrap_or_default();
     let mut links = vault.links.lock().expect("links lock");
-    let request = usable(&mut links, code)?;
+    let request = usable(&mut links, args, granted)?;
     audit.insert("link".into(), json!(request.id));
     let mut values = Map::new();
     for field in &request.fields {
@@ -385,7 +425,7 @@ pub fn state(
     let id = args["link"].as_str().unwrap_or_default();
     audit.insert("link".into(), json!(id));
     let links = vault.links.lock().expect("links lock");
-    let request = links.values().find(|r| r.id == id).ok_or_else(|| {
+    let request = links.get(id).ok_or_else(|| {
         refused(
             code::no_such_link,
             "this host holds no such link; a restart drops open links, so ask for a new one",
@@ -413,6 +453,7 @@ mod tests {
             key: "ab".repeat(32),
             name: "kitchen".into(),
             relay: Some("https://usw1-1.relay.n0.iroh.link./".parse().unwrap()),
+            plow: "https://api.plow.co".into(),
         }
     }
 
@@ -421,7 +462,7 @@ mod tests {
             "kind": "login", "title": "Shop", "sites": ["shop.example"],
             "values": {"username": "ada@shop.example"},
         });
-        let link = open(vault, &here(), &args, &mut Map::new()).unwrap();
+        let link = open(vault, &here(), &args, false, &mut Map::new()).unwrap();
         link["code"].as_str().unwrap().to_string()
     }
 
@@ -429,6 +470,7 @@ mod tests {
         submit(
             vault,
             &json!({"code": code, "values": values}),
+            None,
             &mut Map::new(),
         )
     }
@@ -438,7 +480,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let vault = Vault::new(dir.path().into());
         let args = json!({"kind": "login", "title": "Shop", "sites": ["shop.example"]});
-        let link = open(&vault, &here(), &args, &mut Map::new()).unwrap();
+        let link = open(&vault, &here(), &args, false, &mut Map::new()).unwrap();
         assert_eq!(link["relay"], "https://usw1-1.relay.n0.iroh.link/");
         assert_eq!(link["code"].as_str().unwrap().len(), 32);
     }
@@ -449,7 +491,14 @@ mod tests {
         let vault = Vault::new(dir.path().into());
         let code = opened(&vault);
 
-        let shown = page(&vault, &here(), &json!({"code": code}), &mut Map::new()).unwrap();
+        let shown = page(
+            &vault,
+            &here(),
+            &json!({"code": code}),
+            None,
+            &mut Map::new(),
+        )
+        .unwrap();
         let fields = &shown["request"]["fields"];
         assert_eq!(fields[0]["value"], "ada@shop.example");
         assert_eq!(
@@ -465,7 +514,13 @@ mod tests {
             (refused.exit, refused.code.as_str()),
             (Exit::Denied, "link_used")
         );
-        let page_again = page(&vault, &here(), &json!({"code": code}), &mut Map::new());
+        let page_again = page(
+            &vault,
+            &here(),
+            &json!({"code": code}),
+            None,
+            &mut Map::new(),
+        );
         assert_eq!(page_again.unwrap_err().code, "link_used");
 
         let items = vault.with(|store| Ok(store.list())).unwrap();
@@ -498,9 +553,16 @@ mod tests {
             "kind": "identity", "title": "Me",
             "values": {"first name": "Ada"}, "ask": ["ssn", "passport number"],
         });
-        let link = open(&vault, &here(), &args, &mut Map::new()).unwrap();
+        let link = open(&vault, &here(), &args, false, &mut Map::new()).unwrap();
         let code = link["code"].as_str().unwrap();
-        let shown = page(&vault, &here(), &json!({"code": code}), &mut Map::new()).unwrap();
+        let shown = page(
+            &vault,
+            &here(),
+            &json!({"code": code}),
+            None,
+            &mut Map::new(),
+        )
+        .unwrap();
         assert_eq!(
             shown["request"]["fields"],
             json!([
@@ -513,7 +575,7 @@ mod tests {
         submitted(&vault, code, values).unwrap();
 
         let args = json!({"kind": "note", "title": "Wifi"});
-        let link = open(&vault, &here(), &args, &mut Map::new()).unwrap();
+        let link = open(&vault, &here(), &args, false, &mut Map::new()).unwrap();
         let code = link["code"].as_str().unwrap();
         submitted(&vault, code, json!({"notes": "made-up text"})).unwrap();
 
@@ -533,7 +595,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let vault = Vault::new(dir.path().into());
         let args = json!({"kind": "identity", "title": "Me", "ask": ["cvv"]});
-        let refused = open(&vault, &here(), &args, &mut Map::new()).unwrap_err();
+        let refused = open(&vault, &here(), &args, false, &mut Map::new()).unwrap_err();
         assert_eq!(refused.code, "bad_item");
         assert!(vault.links.lock().unwrap().is_empty());
     }
@@ -554,6 +616,7 @@ mod tests {
             &vault,
             &here(),
             &json!({"kind": "note", "title": "Wifi"}),
+            false,
             &mut Map::new(),
         )
         .unwrap();
@@ -565,11 +628,19 @@ mod tests {
             &vault,
             &here(),
             &json!({"kind": "note", "title": "Wifi", "values": {"notes": ""}}),
+            false,
             &mut Map::new(),
         )
         .unwrap();
         let given = given["code"].as_str().unwrap();
-        let shown = page(&vault, &here(), &json!({"code": given}), &mut Map::new()).unwrap();
+        let shown = page(
+            &vault,
+            &here(),
+            &json!({"code": given}),
+            None,
+            &mut Map::new(),
+        )
+        .unwrap();
         assert_eq!(shown["request"]["fields"][0]["required"], true);
         for values in [json!({}), json!({"notes": ""})] {
             let refused = submitted(&vault, given, values).unwrap_err();
@@ -594,7 +665,7 @@ mod tests {
             "values": {"username": "ada@shop.example"},
         });
         let mut audit = Map::new();
-        let opened = open(&vault, &here(), &args, &mut audit).unwrap();
+        let opened = open(&vault, &here(), &args, false, &mut audit).unwrap();
         // The audit keeps what the rules can name: the site, title and username.
         assert_eq!(audit["title"], "Shop");
         assert_eq!(audit["sites"], json!(["shop.example"]));
@@ -629,7 +700,7 @@ mod tests {
             "kind": "login", "title": "Amazon", "sites": ["amazon.co"],
             "values": {"username": "ada@exmaple.com"},
         });
-        let opened = open(&vault, &here(), &args, &mut Map::new()).unwrap();
+        let opened = open(&vault, &here(), &args, false, &mut Map::new()).unwrap();
         let code = opened["code"].as_str().unwrap();
         let mut audit = Map::new();
         let saved = submit(
@@ -640,6 +711,7 @@ mod tests {
                 "sites": ["https://www.amazon.com/ap/signin"],
                 "values": {"username": "ada@example.com", "password": "made-up-pass-1c4f"},
             }),
+            None,
             &mut audit,
         )
         .unwrap();
@@ -680,7 +752,7 @@ mod tests {
             (json!([]), "a login needs its site"),
         ] {
             let edit = json!({"code": code, "sites": sites, "values": password});
-            let refused = submit(&vault, &edit, &mut Map::new()).unwrap_err();
+            let refused = submit(&vault, &edit, None, &mut Map::new()).unwrap_err();
             assert_eq!(refused.code, "bad_item", "{sites}");
             assert!(
                 refused.message.contains(says),
@@ -689,7 +761,7 @@ mod tests {
             );
         }
         let edit = json!({"code": code, "title": "", "values": password});
-        let refused = submit(&vault, &edit, &mut Map::new()).unwrap_err();
+        let refused = submit(&vault, &edit, None, &mut Map::new()).unwrap_err();
         assert!(
             refused.message.contains("needs a title"),
             "{}",
@@ -699,10 +771,71 @@ mod tests {
         let edit =
             json!({"code": code, "sites": ["https://shop.example/login"], "values": password});
         let mut audit = Map::new();
-        let saved = submit(&vault, &edit, &mut audit).unwrap();
+        let saved = submit(&vault, &edit, None, &mut audit).unwrap();
         assert_eq!(saved["item"]["sites"], json!(["shop.example"]));
         // The same site, written another way, is no edit.
         assert!(!audit.contains_key("edited"), "{audit:?}");
+    }
+
+    #[test]
+    fn an_agents_link_carries_no_code_and_opens_only_with_plows_grant_for_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = Vault::new(dir.path().into());
+        let args = json!({"kind": "login", "title": "Shop", "sites": ["shop.example"]});
+        let asked = open(&vault, &here(), &args, true, &mut Map::new()).unwrap();
+        assert!(asked.get("code").is_none(), "{asked}");
+        assert_eq!(asked["plow"], "https://api.plow.co");
+        let id = asked["link"].as_str().unwrap();
+        let by_id = json!({"link": id, "values": {"password": "made-up-pass-6b2e"}});
+
+        // No grant, or one for another request: refused before the form.
+        for granted in [None, Some("l00000000")] {
+            let refused = page(&vault, &here(), &by_id, granted, &mut Map::new()).unwrap_err();
+            assert_eq!(
+                (refused.exit, refused.code.as_str()),
+                (Exit::Denied, "phone_not_signed_in")
+            );
+            let refused = submit(&vault, &by_id, granted, &mut Map::new()).unwrap_err();
+            assert_eq!(refused.code, "phone_not_signed_in");
+        }
+        assert!(vault.list_if_present().is_empty());
+
+        // With Plow's grant for it, the owner sees the form and saves, once.
+        let shown = page(&vault, &here(), &by_id, Some(id), &mut Map::new()).unwrap();
+        assert_eq!(shown["request"]["sites"], json!(["shop.example"]));
+        submit(&vault, &by_id, Some(id), &mut Map::new()).unwrap();
+        let again = submit(&vault, &by_id, Some(id), &mut Map::new()).unwrap_err();
+        assert_eq!(again.code, "link_used");
+
+        // An owner's link opens only with its code, never by its id.
+        let code = opened(&vault);
+        let owners = vault
+            .links
+            .lock()
+            .unwrap()
+            .values()
+            .find(|r| r.code.is_some())
+            .unwrap()
+            .id
+            .clone();
+        let refused = page(
+            &vault,
+            &here(),
+            &json!({"link": owners}),
+            Some(&owners),
+            &mut Map::new(),
+        );
+        assert_eq!(refused.unwrap_err().code, "no_such_link");
+        assert!(
+            page(
+                &vault,
+                &here(),
+                &json!({"code": code}),
+                None,
+                &mut Map::new()
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -713,7 +846,7 @@ mod tests {
             "kind": "login", "title": "Shop", "sites": ["shop.example"],
             "values": {"password": "made-up-pass-90ab"},
         });
-        let refused = open(&vault, &here(), &args, &mut Map::new()).unwrap_err();
+        let refused = open(&vault, &here(), &args, false, &mut Map::new()).unwrap_err();
         assert_eq!(
             (refused.exit, refused.code.as_str()),
             (Exit::Usage, "secret_in_argv")
@@ -753,7 +886,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let vault = Vault::new(dir.path().into());
         let args = json!({"kind": "login", "title": "Shop", "sites": []});
-        let refused = open(&vault, &here(), &args, &mut Map::new()).unwrap_err();
+        let refused = open(&vault, &here(), &args, false, &mut Map::new()).unwrap_err();
         assert_eq!(refused.code, "bad_item");
         assert!(vault.links.lock().unwrap().is_empty());
     }

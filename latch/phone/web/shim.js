@@ -12,6 +12,10 @@ const status = document.getElementById("status");
 const frame = document.getElementById("page");
 const link = new URLSearchParams(location.hash.slice(1));
 const code = link.get("c");
+// An agent's link names its request instead of carrying a code: the owner
+// signs in to Plow here, and Plow vouches for this page's key for it.
+const requestId = link.get("l");
+const plow = link.get("p") || "https://api.plow.co";
 const hostKey = link.get("h");
 
 function say(text, bad) {
@@ -41,13 +45,59 @@ function remember(name) {
   return before;
 }
 
+// Signs the owner in to Plow with a code Plow texts them, and has Plow
+// vouch for this page's `key`, for this request only. No login is kept.
+function signIn(key) {
+  const form = document.getElementById("signin");
+  const phone = document.getElementById("phone");
+  const otp = document.getElementById("otp");
+  const note = document.getElementById("signin-note");
+  const tell = (text, bad) => { note.textContent = text; note.className = bad ? "note bad" : "note"; };
+  const post = (path, body) => fetch(plow + path, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+  });
+  say("Sign in to Plow to see what this request is for.");
+  form.hidden = false;
+  phone.focus();
+  document.getElementById("send").addEventListener("click", async () => {
+    if (!phone.reportValidity()) return;
+    tell("Texting a code…");
+    try {
+      await post("/v1/auth/otp/request", { phone: phone.value });
+    } catch {
+      return tell("Could not reach Plow; try again.", true);
+    }
+    document.getElementById("entry").hidden = false;
+    tell("If that number is on a Plow account, a code is on its way. It lasts 5 minutes.");
+    otp.focus();
+  });
+  return new Promise((resolve) => {
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      tell("Signing in…");
+      let answer;
+      try {
+        answer = await post("/v1/latch/phone-grants", { phone: phone.value, code: otp.value.trim(), key, request: requestId });
+      } catch {
+        return tell("Could not reach Plow; try again.", true);
+      }
+      if (!answer.ok) return tell("That code didn't work. Check it, or text yourself a new one.", true);
+      form.hidden = true;
+      otp.value = "";
+      resolve();
+    });
+  });
+}
+
 async function main() {
-  if (!code || !hostKey || !link.get("r")) {
+  if ((!code && !requestId) || !hostKey || !link.get("r")) {
     return say("This link is incomplete. Open the whole link from latch.", true);
   }
   await init();
   const host = await connect(hostKey, link.get("r"));
-  const call = async (op, args) => JSON.parse(await host.call(JSON.stringify({ op, args: { code, ...args } })));
+  const which = code ? { code } : { link: requestId };
+  const call = async (op, args) => JSON.parse(await host.call(JSON.stringify({ op, args: { ...which, ...args } })));
+  if (!code) await signIn(host.key());
 
   const opened = await call("page", {});
   if (opened.error) return say(opened.error.message, true);

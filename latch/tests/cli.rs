@@ -2353,6 +2353,8 @@ struct LiveState {
     google: Option<String>,
     /// Google accounts added after that one, listed by `GET /v1/connectors`.
     added_google: Vec<String>,
+    /// Phone page keys Plow vouches for, each with the request it may open.
+    phone_grants: Vec<(String, String)>,
     /// Connected accounts Google wants signed in again: minted no token.
     google_reauth: Vec<String>,
     /// How long a Google sign-in link lasts, in seconds (Plow's is 120).
@@ -2385,6 +2387,7 @@ impl LivePlow {
                 seen: Vec::new(),
                 google: None,
                 added_google: Vec::new(),
+                phone_grants: Vec::new(),
                 google_reauth: Vec::new(),
                 sign_in_for: 120,
                 sign_in_refused: false,
@@ -2652,6 +2655,16 @@ impl LivePlow {
                 200,
                 json!({"agent": {"uid": AGENT_UID, "name": "Research bot"}}),
             ),
+            ("GET", path) if path.starts_with("/v1/latch/phone-grants/") && kind == "device" => {
+                let key = &path["/v1/latch/phone-grants/".len()..];
+                match state.phone_grants.iter().rev().find(|(k, _)| k == key) {
+                    Some((_, request)) => (
+                        200,
+                        json!({"key": key, "request": request, "expires_at": "2026-10-29T12:10:00Z"}),
+                    ),
+                    None => (404, json!({})),
+                }
+            }
             ("GET", path) if path.starts_with("/v1/latch/peers/") => {
                 let key = &path["/v1/latch/peers/".len()..];
                 let found = state
@@ -3607,12 +3620,13 @@ fn an_agents_vault_list_names_its_plow_chat() {
 }
 
 /// One request on a phone link's own protocol, as the phone page sends it
-/// to the host the link `url` names, through `relay`: the link's code and
-/// `args`.
+/// with its key `phone` to the host the link `url` names, through `relay`:
+/// `args`, and the link's code or, for an agent's link, its request id.
 fn phone_request(
     runtime: &tokio::runtime::Runtime,
     relay: &str,
     url: &str,
+    phone: &iroh::SecretKey,
     op: &str,
     mut args: Value,
 ) -> Value {
@@ -3625,6 +3639,7 @@ fn phone_request(
     runtime.block_on(async {
         tokio::time::timeout(std::time::Duration::from_secs(15), async {
             let endpoint = loopback_endpoint()
+                .secret_key(phone.clone())
                 .relay_mode(iroh::RelayMode::custom([relay.parse().unwrap()]))
                 .bind()
                 .await
@@ -3633,7 +3648,10 @@ fn phone_request(
                 .with_relay_url(relay.parse().unwrap());
             let connection = endpoint.connect(addr, b"plow/latch-phone/1").await.unwrap();
             let (mut send, mut recv) = connection.open_bi().await.unwrap();
-            args["code"] = json!(parts["c"]);
+            match parts.get("c") {
+                Some(code) => args["code"] = json!(code),
+                None => args["link"] = json!(parts["l"]),
+            }
             let bytes = serde_json::to_vec(&json!({"op": op, "args": args})).unwrap();
             send.write_all(&(bytes.len() as u32).to_be_bytes())
                 .await
@@ -3756,8 +3774,32 @@ fn an_agent_asks_for_a_login_by_phone_link_and_learns_only_its_state() {
         "{refused}"
     );
 
-    // The owner types the password on the phone, once.
-    let shown = phone_request(&runtime, &relay, &url, "page", json!({}));
+    // The agent's link carries no code: only the request's id.
+    assert!(
+        !url.contains("&c=") && url.contains(&format!("&l={link}")),
+        "{url}"
+    );
+    assert!(opened.get("code").is_none(), "{opened}");
+    // Without Plow vouching for the phone's key as the owner, for this
+    // request, the host shows nothing.
+    let phone = iroh::SecretKey::generate();
+    let page_key = phone.public().to_string();
+    let refused = phone_request(&runtime, &relay, &url, &phone, "page", json!({}));
+    assert_eq!(refused["error"]["code"], "phone_not_signed_in", "{refused}");
+    let grant = |request: &str| {
+        plow.state
+            .lock()
+            .unwrap()
+            .phone_grants
+            .push((page_key.clone(), request.to_string()));
+    };
+    grant("l00000000");
+    let refused = phone_request(&runtime, &relay, &url, &phone, "page", json!({}));
+    assert_eq!(refused["error"]["code"], "phone_not_signed_in", "{refused}");
+
+    // Signed in on the page, the owner types the password on the phone, once.
+    grant(&link);
+    let shown = phone_request(&runtime, &relay, &url, &phone, "page", json!({}));
     assert_eq!(
         shown["ok"]["request"]["sites"],
         json!(["shop.example"]),
@@ -3770,6 +3812,7 @@ fn an_agent_asks_for_a_login_by_phone_link_and_learns_only_its_state() {
         &runtime,
         &relay,
         &url,
+        &phone,
         "submit",
         edit(json!(["http://shop.example"])),
     );
@@ -3785,6 +3828,7 @@ fn an_agent_asks_for_a_login_by_phone_link_and_learns_only_its_state() {
         &runtime,
         &relay,
         &url,
+        &phone,
         "submit",
         edit(json!(["https://www.shop.example/login"])),
     );
@@ -3793,6 +3837,7 @@ fn an_agent_asks_for_a_login_by_phone_link_and_learns_only_its_state() {
         &runtime,
         &relay,
         &url,
+        &phone,
         "submit",
         json!({"values": {"password": "x"}}),
     );

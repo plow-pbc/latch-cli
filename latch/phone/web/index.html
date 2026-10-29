@@ -7,13 +7,26 @@
 <!-- The host's form runs in a srcdoc frame, which inherits this policy, so
      inline script and style are allowed; nothing but this page's own files
      and the host's form ever load, and nothing connects anywhere but an
-     iroh relay. The server that hosts the page sends the same policy. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; connect-src 'self' https://*.relay.n0.iroh.link wss://*.relay.n0.iroh.link; style-src 'self' 'unsafe-inline'; frame-src 'self'; base-uri 'self'; form-action 'none'">
+     iroh relay and Plow, for signing in. The server that hosts the page
+     sends the same policy. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; connect-src 'self' https://api.plow.co https://*.relay.n0.iroh.link wss://*.relay.n0.iroh.link; style-src 'self' 'unsafe-inline'; frame-src 'self'; base-uri 'self'; form-action 'none'">
 <title>Add to latch</title>
 <link rel="stylesheet" href="shim.css">
 </head>
 <body>
 <header id="status">Connecting…</header>
+<form id="signin" hidden>
+  <p>Sign in to Plow to open this request. Plow texts a code to the phone number on your Plow account.</p>
+  <label for="phone">Your Plow phone number</label>
+  <input id="phone" type="tel" autocomplete="tel" inputmode="tel" required>
+  <button id="send" type="button">Text me a code</button>
+  <div id="entry" hidden>
+    <label for="otp">Code</label>
+    <input id="otp" autocomplete="one-time-code" inputmode="numeric" maxlength="12">
+    <button id="verify" type="submit">Sign in</button>
+  </div>
+  <p id="signin-note" class="note"></p>
+</form>
 <iframe id="page" title="latch" sandbox="allow-scripts allow-forms" hidden></iframe>
 <footer id="privacy" hidden>
   <p><span id="what"></span> goes straight to <b class="host"></b>, encrypted. Plow and your agent never see it.</p>

@@ -432,13 +432,26 @@ fn prompted(kind: &str, asked: &[String], required: bool) -> Result<Map<String, 
     Ok(values)
 }
 
-/// The phone link: the page's address, then the host's key, its relay and
-/// the code after `#`, which a browser never sends to the page's server.
+/// The phone link: the page's address, then after `#`, which a browser
+/// never sends to the page's server, the host's key, its relay and an
+/// owner's link's code, or for an agent's link the request's id and the
+/// Plow the page signs the owner in to, when it is not Plow's own.
 fn link_url(page: &str, opened: &Value) -> String {
     let page = page.split('#').next().unwrap_or_default();
-    let part = |key: &str| opened[key].as_str().unwrap_or_default().to_string();
-    let relay: String = url::form_urlencoded::byte_serialize(part("relay").as_bytes()).collect();
-    format!("{page}#h={}&r={relay}&c={}", part("host"), part("code"))
+    let part = |key: &str| {
+        let value = opened[key].as_str().unwrap_or_default();
+        url::form_urlencoded::byte_serialize(value.as_bytes()).collect::<String>()
+    };
+    let mut url = format!("{page}#h={}&r={}", part("host"), part("relay"));
+    if opened["code"].is_string() {
+        url += &format!("&c={}", part("code"));
+    } else {
+        url += &format!("&l={}", part("link"));
+        if opened["plow"] != "https://api.plow.co" {
+            url += &format!("&p={}", part("plow"));
+        }
+    }
+    url
 }
 
 /// Sends the export and gets the preview; with `preview` that is the

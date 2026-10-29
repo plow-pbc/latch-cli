@@ -97,7 +97,7 @@ pub async fn run(
             );
             return done(Err(failure), audit);
         }
-        ("agent", "link") => return done(link::open(vault, here, &args, &mut audit), audit),
+        ("agent", "link") => return done(link::open(vault, here, &args, true, &mut audit), audit),
         (_, "link_state") => return done(link::state(vault, &args, &mut audit), audit),
         _ => {}
     }
@@ -105,7 +105,7 @@ pub async fn run(
         return done(Err(failure), audit);
     }
     let result = match command.as_str() {
-        "link" => link::open(vault, here, &args, &mut audit),
+        "link" => link::open(vault, here, &args, false, &mut audit),
         "import" => import(vault, &args, send, recv, &mut audit).await,
         _ => manage(vault, &args, &mut audit),
     };

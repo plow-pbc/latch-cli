@@ -10,4 +10,12 @@ header b, footer b { color: var(--fg); }
 footer { padding: 12px 16px 20px; border-top: 1px solid var(--line); color: var(--muted); }
 footer p { margin: 0 0 8px; }
 footer a { color: inherit; }
+#signin { padding: 16px; display: flex; flex-direction: column; gap: 8px; font-size: 16px; }
+#signin p { margin: 0 0 4px; }
+#signin label { color: var(--muted); font-size: 14px; }
+#signin input { font: inherit; font-size: 18px; padding: 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); color: var(--fg); }
+#signin button { font: inherit; font-weight: 600; padding: 12px; border: 0; border-radius: 12px; background: var(--fg); color: var(--bg); }
+#signin #entry { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+#signin[hidden], #signin #entry[hidden] { display: none; }
+#signin .note.bad { color: var(--bad); }
 iframe { flex: 1; width: 100%; border: 0; }
