@@ -37,7 +37,7 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
 use super::core::{Action, fingerprint};
-use super::host::{Browsers, Entry, paused, take_audit};
+use super::host::{Browsers, Entry, paused, settle_for, take_audit};
 use super::journal::{self, Journal};
 use super::judged;
 use super::model::{self, CHECKABLE_P, RISKY_P};
@@ -115,7 +115,7 @@ async fn poll(
         if ended || left.is_zero() {
             return Ok(waited);
         }
-        tokio::time::sleep(left.min(WAIT_POLL)).await;
+        settle_for(left.min(WAIT_POLL)).await;
     }
 }
 
@@ -711,7 +711,9 @@ impl<'a> Run<'a> {
         };
         let site = judged::site(self.browsers, self.entry).await?;
         let action = judged::fill(self.browsers, args, site, false);
+        let judging = Instant::now();
         let judgment = gate.judge(&action).await;
+        super::host::add_time(|phases| &mut phases.gate_ms, judging.elapsed());
         let record = judgment.gate;
         match judgment.verdict {
             Ok(()) => {
@@ -1319,7 +1321,7 @@ impl Run<'_> {
             if verdict.result == "met" || Instant::now() + JUDGE_EVERY > deadline {
                 break verdict;
             }
-            tokio::time::sleep(JUDGE_EVERY).await;
+            settle_for(JUDGE_EVERY).await;
         };
         let mut evidence = verdict.to_json();
         evidence["check"] = json!("sentence");

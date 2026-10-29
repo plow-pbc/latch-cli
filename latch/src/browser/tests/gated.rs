@@ -116,6 +116,8 @@ struct Judge {
     shown: Mutex<Vec<Value>>,
     /// The model fails every call.
     down: std::sync::atomic::AtomicBool,
+    /// Milliseconds each answer takes.
+    slow: std::sync::atomic::AtomicU64,
 }
 
 impl Judge {
@@ -124,6 +126,7 @@ impl Judge {
             answers: Mutex::new(Box::new(answers)),
             shown: Mutex::new(Vec::new()),
             down: Default::default(),
+            slow: Default::default(),
         })
     }
 
@@ -160,7 +163,9 @@ impl Provider for Judge {
         let [c, n, f] = (self.answers.lock().unwrap())(&state);
         self.shown.lock().unwrap().push(state);
         let down = self.down.load(std::sync::atomic::Ordering::SeqCst);
+        let slow = self.slow.load(std::sync::atomic::Ordering::SeqCst);
         Box::pin(async move {
+            tokio::time::sleep(Duration::from_millis(slow)).await;
             if down {
                 return Err(CallFailed::new("http_503", "the model is down"));
             }
@@ -954,6 +959,9 @@ async fn a_fill_inside_a_plan_is_judged_as_a_fill(engine: &str) {
                "plan": Plan { steps: vec![step], items, ..Default::default() }})
     };
     let shown = json!({"kind": "login", "title": "Test site", "sites": ["shop.example"]});
+    // Each judgment takes the judge 300 ms: the plan's and its fill's are
+    // both the call's gatekeeper time.
+    judge.slow.store(300, std::sync::atomic::Ordering::SeqCst);
     // Named by id, and left to the page's site.
     for (n, (items, item)) in [
         (&[login.as_str()][..], Some(login.as_str())),
@@ -962,7 +970,9 @@ async fn a_fill_inside_a_plan_is_judged_as_a_fill(engine: &str) {
     .into_iter()
     .enumerate()
     {
-        let (result, audit) = host.agent("do", &id, plan(n, items, item), None).await;
+        let ((result, audit), took) =
+            crate::browser::host::timed(host.agent("do", &id, plan(n, items, item), None)).await;
+        assert!(took.gate_ms.unwrap_or_default() >= 600, "{took:?}");
         // The plan was judged and let through; its fill was judged and
         // refused, which stops the plan at that step, the reason in its stop.
         assert_eq!(audit["gate"]["verdict"], "allow");
@@ -999,6 +1009,7 @@ async fn a_fill_inside_a_plan_is_judged_as_a_fill(engine: &str) {
         assert_eq!(fill["gate"]["verdict"], "not_covered");
         assert_eq!(fill["dispatch"], "refused");
     }
+    judge.slow.store(0, std::sync::atomic::Ordering::SeqCst);
     // A title, as an item the plan may fill from or as a step's, is no id.
     let asked = judge.judged();
     for (n, (items, item)) in [

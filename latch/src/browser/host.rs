@@ -37,6 +37,7 @@ use super::plan::Op;
 use super::runtime::Runtime;
 use super::session::Session;
 use super::tags;
+use crate::audit::Timings;
 use crate::failure::{Failure, code};
 use crate::gate::Gate;
 use crate::serve::Done;
@@ -51,6 +52,28 @@ const MAX_SCRIPT_AUDIT: usize = 4096;
 const MAX_UPLOAD: u64 = 100 * 1024 * 1024;
 /// How long a closing runtime may take before its worker is killed.
 const CLOSING: Duration = Duration::from_secs(15);
+
+tokio::task_local! {
+    /// Where the request this task answers has spent its time so far.
+    static PHASES: std::cell::RefCell<Timings>;
+}
+
+/// Adds `took` to the phase of the request this task answers that `pick`
+/// chooses; outside one (the browser's own tests), nothing.
+pub(super) fn add_time(pick: fn(&mut Timings) -> &mut Option<u64>, took: Duration) {
+    let _ = PHASES.try_with(|phases| {
+        let mut phases = phases.borrow_mut();
+        let phase = pick(&mut phases);
+        *phase = Some(phase.unwrap_or_default() + took.as_millis() as u64);
+    });
+}
+
+/// Sleeps for `took`, waiting for the page: it counts as `settle_ms`.
+pub(super) async fn settle_for(took: Duration) {
+    let sleeping = Instant::now();
+    tokio::time::sleep(took).await;
+    add_time(|phases| &mut phases.settle_ms, sleeping.elapsed());
+}
 
 pub struct Browsers {
     state_dir: PathBuf,
@@ -327,7 +350,10 @@ impl Browsers {
         caller: &str,
         task: Option<&str>,
     ) -> Result<(String, Arc<Entry>), Failure> {
-        let runtime = Arc::new(self.start(engine).await?);
+        let launching = Instant::now();
+        let started = self.start(engine).await;
+        add_time(|phases| &mut phases.launch_ms, launching.elapsed());
+        let runtime = Arc::new(started?);
         let session = Session::new(runtime.clone());
         let id = format!("s{}", letters(&rand::random::<[u8; 16]>()));
         if let Err(failure) = super::opened::record(&self.state_dir, &hash_of(&id), caller) {
@@ -494,8 +520,31 @@ impl Browsers {
     }
 }
 
-/// `browser`: one `latch browser` command.
+/// `browser`: one `latch browser` command, and the time it spent in each
+/// phase (`add_time`), for its record.
 pub async fn run(
+    browsers: &Browsers,
+    caller: &str,
+    kind: &str,
+    gate: Option<Gate<'_>>,
+    args: Value,
+    send: &mut SendStream,
+    recv: &mut RecvStream,
+) -> (Done, Timings) {
+    timed(run_command(browsers, caller, kind, gate, args, send, recv)).await
+}
+
+/// What `work` gives, and the time it spent in each phase (`add_time`).
+pub(super) async fn timed<T>(work: impl Future<Output = T>) -> (T, Timings) {
+    PHASES
+        .scope(Default::default(), async {
+            let done = work.await;
+            (done, PHASES.with(|phases| *phases.borrow()))
+        })
+        .await
+}
+
+async fn run_command(
     browsers: &Browsers,
     caller: &str,
     kind: &str,

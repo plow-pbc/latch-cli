@@ -1041,6 +1041,7 @@ async fn serve_caller(host: &Host, caller: &str, connection: &Connection) {
     let checked = host.check(caller).await;
     let timings = Some(audit::Timings {
         caller_check_ms: checking.elapsed().as_millis() as u64,
+        ..audit::Timings::default()
     });
     let refusal = match checked {
         Ok(identity) => {
@@ -1182,8 +1183,10 @@ async fn serve_request(
     } else {
         host.check(caller).await
     };
+    let caller_check_ms = checking.elapsed().as_millis() as u64;
     let timings = (!local).then(|| audit::Timings {
-        caller_check_ms: checking.elapsed().as_millis() as u64,
+        caller_check_ms,
+        ..audit::Timings::default()
     });
     let response = match identity {
         Err(denial) => {
@@ -1242,6 +1245,7 @@ async fn serve_request(
                 judgment,
                 stop,
             } = check(&checks, &identity, gate, chat.as_deref(), &mut request).await;
+            let mut phases = None;
             let done = if let Some(stop) = stop {
                 stop.done()
             } else {
@@ -1296,7 +1300,7 @@ async fn serve_request(
                     }
                     "browser" => match &gate {
                         Ok(gate) => {
-                            crate::browser::host::run(
+                            let (done, took) = crate::browser::host::run(
                                 &host.browsers,
                                 caller,
                                 &identity.kind,
@@ -1305,7 +1309,9 @@ async fn serve_request(
                                 &mut send,
                                 &mut recv,
                             )
-                            .await
+                            .await;
+                            phases = Some(took);
+                            done
                         }
                         Err(failure) => Done {
                             response: Response::error(failure),
@@ -1345,6 +1351,15 @@ async fn serve_request(
                         Value::Null,
                     ),
                 }
+            };
+            // A browser call's record has its phases, the owner's included.
+            let timings = match phases {
+                Some(browser) => Some(audit::Timings {
+                    caller_check_ms,
+                    total_ms: Some(started.elapsed().as_millis() as u64),
+                    ..browser
+                }),
+                None => timings,
             };
             let decision = decision(&done.response);
             log(&format!(

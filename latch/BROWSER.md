@@ -24,7 +24,11 @@ latch logged in as an agent. On Linux, installing Chrome either way first
 installs unzip, Xvfb and its runtime libraries if they are missing, asking for sudo once. An agent's browser call never downloads anything: with no engine it
 fails with `engine_not_installed`, whose `details.setup` is the owner's
 command (`latch browser setup --engine chrome`; an `open` that names no
-engine also mentions `--engine camoufox`).
+engine also mentions `--engine camoufox`). Its `details.installed` lists the
+engines the host does have (`chrome`, `camoufox`; empty with none) and
+`details.default` the one an `open` that names no engine runs on (null with
+none), and its message says the same: an agent can `open` again on one of
+those rather than wait for the owner.
 
 A build may add launch arguments of its own (`args`) after the recipe's.
 The macOS builds add `--disable-crashpad-for-testing`, which the pinned
@@ -176,7 +180,7 @@ latch browser --host my-mac act back
 latch browser --host my-mac find --role button --name Download
 latch browser --host my-mac wait --text "Saved" | --ref e4 --state hidden | --url-path /done
 latch browser --host my-mac screenshot page.png
-latch browser --host my-mac goto https://example.com/next   # the active tab loads it
+latch browser --host my-mac goto https://example.com/next   # the active tab loads it (an empty URL is bad_arguments, exit 2, sent nowhere)
 latch browser --host my-mac text | tab new URL | tab switch t2 | tab close
 latch browser --host my-mac dialog accept | dismiss
 latch browser --host my-mac eval --script-file check.js   # its JSON value
@@ -232,7 +236,10 @@ session, and neither can reach the other's without its id. `sessions` lists
 the caller's sessions without their ids: task label (`open --task`),
 engine, the site it was last on, its state and how long since its last
 call. The audit records a short hash of an id, never the id, with the
-task label, and the host's dashboard shows that hash on each row. An owner
+task label, and the host's dashboard shows that hash on each row. Each
+browser call's record also says where its time went (`timings`, in ms):
+`gate_ms`, `launch_ms`, `action_ms`, `settle_ms` and `total_ms`, a part
+left out when the call had none (`latch audit --help`). An owner
 device (a `device`-kind client of the host's account) ends any session by
 it: `latch browser close --session <hash>`; for anyone else a hash is no
 id.

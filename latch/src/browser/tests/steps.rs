@@ -36,6 +36,7 @@ conformance!(
     typing_a_code_reaches_the_fields_one_time_code_pages_use,
     a_return_goes_through_selection_cards_in_batched_plans,
     a_container_drawn_over_its_target_still_covers_it,
+    waiting_for_the_page_counts_as_settle_time,
 );
 
 /// The test site, plus the answers to its expense and order forms.
@@ -120,7 +121,10 @@ struct Fake {
 }
 
 const FAKE_RISKY: [&str; 1] = ["Place order"];
-const FAKE_FACTS: [(&str, &str); 1] = [("the draft was saved", "Draft saved")];
+const FAKE_FACTS: [(&str, &str); 2] = [
+    ("the draft was saved", "Draft saved"),
+    ("the total is $100.00", "$100.00"),
+];
 const FAKE_VAGUE: [&str; 1] = ["finish the expense report"];
 
 impl Provider for Fake {
@@ -1134,5 +1138,37 @@ async fn a_container_drawn_over_its_target_still_covers_it(engine: &str) {
     let picked = h.short(&[&format!("click {card}")]).await.unwrap();
     assert_eq!(picked["status"], "dispatched", "{picked}");
     assert!(h.text().await.contains("card picked"));
+    h.close().await;
+}
+
+/// The time a call spends waiting for the page is its `settle_ms`: a
+/// `wait`'s polling, and a sentence check's turns between judgments, on a
+/// total that changes two seconds after its click.
+async fn waiting_for_the_page_counts_as_settle_time(engine: &str) {
+    let (_dir, state, _area) = test_state(engine);
+    let site = site();
+    let mut h = Harness::start(&state, engine, Some(Arc::new(Fake::default()))).await;
+    let page = h.open(&format!("{site}/order.html")).await;
+    let soon = find(&page, "button", "Reprice in a moment");
+
+    h.act(ActAction::Click, &[&soon], None).await.unwrap();
+    let waiting = std::time::Instant::now();
+    let (waited, took) = host::timed(h.call("wait", json!({"text": "$100.00", "within": 5}))).await;
+    let waited_ms = waiting.elapsed().as_millis() as u64;
+    println!("wait: {waited} in {waited_ms} ms: {took:?}");
+    assert_eq!(waited["met"], true);
+    assert!(waited_ms > 1000, "{waited_ms}");
+    let settled = took.settle_ms.unwrap_or_default();
+    assert!(settled + 300 >= waited_ms, "{settled} of {waited_ms}");
+
+    let page = h.open(&format!("{site}/order.html")).await;
+    let soon = find(&page, "button", "Reprice in a moment");
+    let (checked, took) =
+        host::timed(h.short(&[&format!("click {soon} -> the total is $100.00")])).await;
+    println!("sentence check: {took:?}");
+    assert_eq!(checked.unwrap()["steps"][0]["outcome"], "model_assessed");
+    // Two seconds to the new total: at least one judgment came too soon,
+    // and the second between it and the next was spent waiting.
+    assert!(took.settle_ms.unwrap_or_default() >= 1000, "{took:?}");
     h.close().await;
 }

@@ -231,7 +231,7 @@ impl<D: Driver> Core<D> {
         // submission among it.
         let mut events = Vec::new();
         loop {
-            events.extend(self.driver.settle().unwrap_or_default());
+            events.extend(self.settle().unwrap_or_default());
             if let Ok((mark, asks)) = self.stage_now()
                 && mark != before
             {
@@ -453,7 +453,7 @@ impl<D: Driver> Core<D> {
         let (snapshot, position) = self.bound(prepared.as_deref(), target)?;
         let at = self.locate(&snapshot, position)?;
         self.driver.click(at.x, at.y)?;
-        let events = self.driver.settle()?;
+        let events = self.settle()?;
         self.no_secret_sent()?;
         Ok(json!({"pressed": target, "events": events}))
     }
@@ -478,7 +478,7 @@ impl<D: Driver> Core<D> {
                 break;
             }
             std::thread::sleep(Duration::from_millis(200));
-            events.extend(self.driver.settle().unwrap_or_default());
+            events.extend(self.settle().unwrap_or_default());
         }
         for (_, frame) in self.live_filled()?.here {
             let _ = self.driver.run(&frame, "__latch.clearFilled()");
@@ -505,7 +505,7 @@ impl<D: Driver> Core<D> {
         self.paused = false;
         let before = Map::new();
         let mut result = Map::new();
-        let events = self.driver.settle()?;
+        let events = self.settle()?;
         self.after(&before, events, &mut result)?;
         result.extend(self.page(audit)?);
         Ok(Value::Object(result))

@@ -245,12 +245,47 @@ impl Pin {
 }
 
 /// Checks the installed build of `engine` (`cft` or `camoufox`) against its
-/// pin, as a launch does.
+/// pin, as a launch does. One not installed is refused naming the engines
+/// the host has (`with_installed`).
 pub fn verify(state_dir: &Path, engine: &str) -> Result<(), Failure> {
-    match engine {
+    let verified = match engine {
         "camoufox" => CAMOUFOX.verified(state_dir).map(drop),
         _ => CFT.verified(state_dir).map(drop),
+    };
+    verified.map_err(|failure| with_installed(state_dir, failure))
+}
+
+/// The engines whose builds check out here, as the commands name them, the
+/// default (`default`'s choice) first.
+fn installed(state_dir: &Path) -> Vec<&'static str> {
+    let mut installed = Vec::new();
+    if CFT.verified(state_dir).is_ok() {
+        installed.push("chrome");
     }
+    if CAMOUFOX.verified(state_dir).is_ok() {
+        installed.push("camoufox");
+    }
+    installed
+}
+
+/// An `engine_not_installed` refusal, saying which engines the host has
+/// and which of them an `open` that names none runs on (`details.installed`
+/// and `details.default`, none when it has none). Any other failure as it is.
+fn with_installed(state_dir: &Path, mut failure: Failure) -> Failure {
+    if failure.code != code::engine_not_installed.name {
+        return failure;
+    }
+    let installed = installed(state_dir);
+    let default = installed.first().copied();
+    // The engine asked for is missing, so the host has the other one at most.
+    let has = match default {
+        None => "this host has no browser engine installed".to_string(),
+        Some(only) => format!("this host has {only}, its default"),
+    };
+    failure.message = format!("{}; {has}", failure.message);
+    failure.details["installed"] = serde_json::json!(installed);
+    failure.details["default"] = serde_json::json!(default);
+    failure
 }
 
 /// The engine an `open` that names none runs on: Chrome when its build
@@ -279,7 +314,7 @@ pub fn default(state_dir: &Path) -> Result<&'static str, Failure> {
              (or `--engine camoufox`) on the host"
         ),
     );
-    failure.details = serde_json::json!({"setup": setup});
+    failure.details = serde_json::json!({"setup": setup, "installed": [], "default": null});
     Err(failure)
 }
 
@@ -599,6 +634,10 @@ mod tests {
         let missing = default(none.path()).unwrap_err();
         assert_eq!(missing.code, "engine_not_installed");
         assert_eq!(
+            (&missing.details["installed"], &missing.details["default"]),
+            (&serde_json::json!([]), &serde_json::Value::Null)
+        );
+        assert_eq!(
             missing.details["setup"],
             "latch browser setup --engine chrome"
         );
@@ -635,6 +674,49 @@ mod tests {
         )
         .unwrap();
         assert_eq!(default(alone.path()).unwrap_err().code, "engine_unverified");
+    }
+
+    #[test]
+    fn a_missing_engine_names_the_ones_the_host_has_its_default_and_its_setup() {
+        let state = tempfile::tempdir().unwrap();
+        let none = verify(state.path(), "camoufox").unwrap_err();
+        assert_eq!(none.code, "engine_not_installed");
+        assert_eq!(
+            none.details,
+            serde_json::json!({"engine": "camoufox", "setup": "latch browser setup --engine camoufox",
+                   "installed": [], "default": null})
+        );
+        assert!(
+            none.message
+                .contains("this host has no browser engine installed"),
+            "{}",
+            none.message
+        );
+
+        fake_install(state.path(), "cft");
+        let fox = verify(state.path(), "camoufox").unwrap_err();
+        assert_eq!(
+            fox.details,
+            serde_json::json!({"engine": "camoufox", "setup": "latch browser setup --engine camoufox",
+                   "installed": ["chrome"], "default": "chrome"})
+        );
+        assert!(
+            fox.message
+                .contains("`latch browser setup --engine camoufox`")
+                && fox.message.contains("this host has chrome, its default"),
+            "{}",
+            fox.message
+        );
+
+        let other = tempfile::tempdir().unwrap();
+        fake_install(other.path(), "camoufox");
+        let chrome = verify(other.path(), "cft").unwrap_err();
+        assert_eq!(chrome.details["installed"], serde_json::json!(["camoufox"]));
+        assert_eq!(chrome.details["default"], "camoufox");
+        assert_eq!(
+            chrome.details["setup"],
+            "latch browser setup --engine chrome"
+        );
     }
 
     #[test]

@@ -483,7 +483,7 @@ impl Run<'_> {
                         format!("step {n} waited {STEP_WAITS} times already"),
                     ));
                 }
-                tokio::time::sleep(WAIT.min(self.left())).await;
+                settle_for(WAIT.min(self.left())).await;
                 lines.push("waited".into());
                 continue;
             }

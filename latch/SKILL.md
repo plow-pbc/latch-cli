@@ -179,6 +179,10 @@ fixes it.
 
 - Each `open` starts signed in nowhere, and its logins last until it
   closes: do the whole task in one session.
+- `engine_not_installed`: `details.installed` lists the engines the host
+  has, and `details.default` the one an `open` with no `--engine` uses. If
+  the task can use one of them, `open` again on it; else tell the owner the
+  `details.setup` command.
 - `session_ended`: the host restarted, and the session went with it. Never
   retry it: `open` a new session and carry on from the first page you need.
 - A site that blocks you outright ("Access denied", nothing to click or
