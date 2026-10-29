@@ -4126,6 +4126,59 @@ fn the_owners_rules_commands_reach_a_host_and_an_agents_never_do() {
     );
 }
 
+/// `~/.latch` holding what an older install left (other apps' files beside
+/// the installer's plugins) is moved aside on the first command, which says
+/// so and goes on; a folder named with --state-dir elsewhere is refused with
+/// the command that moves its leftovers.
+#[test]
+fn leftovers_in_the_home_state_folder_are_moved_aside_and_elsewhere_refused() {
+    let dir = test_dir();
+    let state = dir.path().join(".latch");
+    let other = dir.path().join("other");
+    for folder in [&state, &other] {
+        fs::create_dir_all(folder.join("plugins")).unwrap();
+        fs::write(folder.join("dev.json"), "{}").unwrap();
+        fs::write(folder.join("mba.json"), "{}").unwrap();
+    }
+
+    let moved = latch_command(&state, &["prune-helpers"], &[])
+        .output()
+        .unwrap();
+    assert!(moved.status.success(), "{moved:?}");
+    assert_eq!(
+        serde_json::from_slice::<Value>(&moved.stdout).unwrap(),
+        json!({"removed": []})
+    );
+    let aside = dir
+        .path()
+        .join(format!(".latch-before-{}", jiff::Zoned::now().date()));
+    let said = String::from_utf8_lossy(&moved.stderr);
+    assert_eq!(
+        said.trim_end(),
+        format!(
+            "latch: {} held what an older install left (dev.json, mba.json); moved them to {}",
+            state.display(),
+            aside.display()
+        )
+    );
+    assert!(aside.join("dev.json").is_file() && aside.join("mba.json").is_file());
+    assert!(state.join("plugins").is_dir() && !state.join("dev.json").exists());
+    // From then on, a fresh folder: the next command says nothing.
+    latch(&state, &["prune-helpers"], &[]);
+
+    let refused = latch(&other, &["prune-helpers"], &[]);
+    assert_eq!(refused.status.code(), Some(1), "{refused:?}");
+    let error = one_error_line(&String::from_utf8_lossy(&refused.stderr), Some(1));
+    assert_eq!(error["error"]["code"], "state_format", "{error}");
+    assert_eq!(
+        error["error"]["found"],
+        json!(["dev.json", "mba.json"]),
+        "{error}"
+    );
+    let next = error["error"]["next"].as_str().unwrap();
+    assert!(next.starts_with("mkdir -m 700 "), "{next}");
+    assert!(other.join("dev.json").exists(), "nothing moved");
+}
 #[test]
 fn a_state_folder_from_a_newer_latch_is_refused_before_anything_is_read() {
     let dir = test_dir();

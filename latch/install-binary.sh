@@ -268,7 +268,11 @@ trap on_exit EXIT
 # `stop`, or to reach a host of a latch older still.
 host=""
 if [ -x "$old" ] && { [ -n "$replace" ] || [ -n "$moving" ]; }; then
-  host=$("$src" --state-dir "$state_dir" status --local 2>/dev/null) || host=""
+  # Its errors stay quiet; what it moved aside from the state folder is said.
+  said=$(mktemp)
+  host=$("$src" --state-dir "$state_dir" status --local 2>"$said") || host=""
+  sed -n '/^latch: /p' "$said" >&2
+  rm -f "$said"
   case "$host" in
     # A host this latch cannot reach: its owner is told how to stop it,
     # and the install goes on.
@@ -499,10 +503,19 @@ fi
 
 # 6. The helper versions an older latch installed and this one does not
 # run. The host was stopped in step 0; one this latch could not stop keeps
-# them, and removes them itself once it starts again on this latch.
+# them, and removes them itself once it starts again on this latch. A state
+# folder latch refuses stops the install here, before a setup that could
+# only fail.
 if [ -z "$client_only" ]; then
-  "$dest" --state-dir "$state_dir" prune-helpers > /dev/null ||
+  if ! said=$("$dest" --state-dir "$state_dir" prune-helpers 2>&1 > /dev/null); then
+    printf '%s\n' "$said" >&2
+    case "$said" in
+      *'"code":"state_format"'*) die "latch can't use $state_dir as it is: clear it as the line above says, then run \`latch setup\`" ;;
+    esac
     say "could not remove older helper versions from $state_dir/plugins (see above)"
+  elif [ -n "$said" ]; then
+    printf '%s\n' "$said" >&2
+  fi
 fi
 
 # 7. The host stopped in step 0, started again by the new latch.
@@ -538,6 +551,12 @@ if [ -n "$reopen" ]; then
   else
     say "could not open $installed; open Latch again"
   fi
+fi
+
+# What this macOS can't run, said before setup.
+if [ -n "${macos:-}" ] && [ -z "$client_only" ]; then
+  [ "$macos" -ge 15 ] || say "macOS $macos_version: Google accounts (gog) need macOS 15 or later and won't work on this Mac"
+  [ "$macos" -ge 26 ] || say "macOS $macos_version: Latch's window needs macOS 26 or later; set up in Terminal with \`latch setup\`"
 fi
 
 # On a first install at a terminal, `latch setup` takes it from here,

@@ -257,6 +257,62 @@ class BinaryInstall(unittest.TestCase):
             self.assertIn("latch needs macOS 13 or later, and this Mac runs macOS 12.7.6", result.stderr)
             self.assertFalse(home.exists())
 
+    def test_an_older_mac_is_told_what_it_cannot_run_before_setup(self):
+        parent = ROOT / ".dev/tests"
+        parent.mkdir(parents=True, exist_ok=True)
+        gog = "macOS {}: Google accounts (gog) need macOS 15 or later and won't work on this Mac"
+        window = "macOS {}: Latch's window needs macOS 26 or later; set up in Terminal with `latch setup`"
+        for macos, said in [("14.6", [gog, window]), ("15.7.1", [window]), ("26.0", [])]:
+            with tempfile.TemporaryDirectory(dir=parent) as directory:
+                root = Path(directory)
+                state = root / "state"
+                setup, binary, tools = fixture(root, state, "", system="Darwin", machine="arm64",
+                                               macos=macos)
+                env = {**os.environ, "HOME": str(root / "home"),
+                       "PATH": f"{tools}:{os.environ['PATH']}"}
+                result = subprocess.run(["sh", str(setup / "install-binary.sh"), "--state-dir",
+                                         str(state), "--no-browser", "--non-interactive",
+                                         str(binary)],
+                                        cwd=root, env=env, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                lines = result.stdout.splitlines()
+                for line in (gog, window):
+                    shown = f"install-binary.sh: {line.format(macos)}"
+                    self.assertEqual(shown in lines, line in said, (macos, result.stdout))
+                if said:
+                    # Before what setup says next.
+                    self.assertLess(lines.index(f"install-binary.sh: {said[-1].format(macos)}"),
+                                    lines.index("install-binary.sh: next: run `latch setup` to log in and set up the rest"))
+
+    def test_a_state_folder_latch_refuses_stops_the_install_before_setup(self):
+        parent = ROOT / ".dev/tests"
+        parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=parent) as directory:
+            root = Path(directory)
+            state = root / "state"
+            called = root / "called"
+            refusal = ('{"error":{"code":"state_format","exit":1,"message":"state holds what latch '
+                       'did not put there (dev.json)","next":"mkdir -m 700 x && mv state/dev.json x/"}}')
+            setup, binary, tools = fixture(root, state, (
+                f'#!/bin/sh\necho "$@" >> "{called}"\n'
+                f'case "$*" in *prune-helpers*) echo \'{refusal}\' >&2; exit 1;; esac\n'))
+            env = {**os.environ, "HOME": str(root / "home"),
+                   "PATH": f"{tools}:{os.environ['PATH']}"}
+            result = at_terminal(["sh", str(setup / "install-binary.sh"), "--state-dir", str(state),
+                                  "--no-browser", str(binary)], root, env)
+            self.assertNotEqual(result.returncode, 0)
+            # Setup never ran.
+            self.assertEqual(called.read_text(), f"--state-dir {state} prune-helpers\n")
+            result = subprocess.run(["sh", str(setup / "install-binary.sh"), "--state-dir", str(state),
+                                     "--no-browser", str(binary)],
+                                    cwd=root, env=env, capture_output=True, text=True,
+                                    stdin=subprocess.DEVNULL)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(refusal, result.stderr)
+            self.assertIn(f"install-binary.sh: latch can't use {state} as it is: clear it as the line "
+                          "above says, then run `latch setup`", result.stderr)
+            self.assertNotIn("could not remove older helper versions", result.stderr + result.stdout)
+
     def test_macos_release_installs_the_app_and_updates_it_in_place(self):
         parent = ROOT / ".dev/tests"
         parent.mkdir(parents=True, exist_ok=True)
