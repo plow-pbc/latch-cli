@@ -25,6 +25,7 @@ extension LatchClient {
     func logout() async throws -> LogoutResult { throw LatchError.unreachable("not scripted") }
     func agentCatalog() async throws -> AgentCatalog { throw LatchError.unreachable("not scripted") }
     func agentStartByText() async throws -> AgentStartByText { throw LatchError.unreachable("not scripted") }
+    func agentCard(_ uid: String) async throws -> Data { throw LatchError.unreachable("not scripted") }
     func removeAgent(_ uid: String) async throws { throw LatchError.unreachable("not scripted") }
     func vaultImportPreview(_ file: URL, host: String?) async throws -> ImportPreview { throw LatchError.unreachable("not scripted") }
     func vaultImport(_ file: URL, picks: [Int], expect: String, host: String?) async throws -> ImportResult { throw LatchError.unreachable("not scripted") }

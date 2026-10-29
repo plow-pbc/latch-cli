@@ -62,6 +62,8 @@ pub struct AgentShown {
 pub struct LineShown {
     pub number: String,
     pub name: Option<String>,
+    /// Its persona's contact card, for `agents card`.
+    pub card_url: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -111,6 +113,7 @@ async fn managed(
             line,
             ..
         }) => new(plow, api_url, cloud, token_file, &name, &line).await?,
+        Some(AgentsAction::Card { agent, output }) => card(plow, api_url, &agent, &output).await?,
         Some(AgentsAction::Remove { agent, yes }) => remove(plow, &agent, yes).await?,
     })
 }
@@ -250,6 +253,7 @@ fn agent_shown(agent: ListedAgent, standing: Option<Standing>) -> AgentShown {
         line: LineShown {
             number: agent.line.provider_key,
             name: agent.line.display_name,
+            card_url: agent.line.card_url,
         },
         created_at: agent.created_at,
         status: agent.status,
@@ -327,6 +331,29 @@ async fn start_by_text(api_url: &str) -> Result<Value, Failure> {
         })
         .collect();
     Ok(json!({"number": number, "default": signup.default_provider, "kinds": kinds}))
+}
+
+/// Saves the contact card of `named`'s line to `output`, fetched from
+/// where Plow says it is without the owner's credential: it is public.
+async fn card(plow: &Plow, api_url: &str, named: &str, output: &Path) -> Result<Value, Failure> {
+    let agent = resolve(plow, named).await?;
+    let Some(url) = agent.line.card_url else {
+        let message = format!("{}'s line has no contact card", agent.name);
+        return Err(Failure::new(code::no_card, message));
+    };
+    let vcard = Plow::anonymous(api_url)?.fetch(&url).await?;
+    let staged = crate::transfer::Staged::beside(output)?;
+    let mut file = staged.file()?;
+    let written = async {
+        use tokio::io::AsyncWriteExt;
+        file.write_all(&vcard).await?;
+        file.flush().await
+    };
+    written
+        .await
+        .map_err(|err| Failure::new(code::local_file, format!("{}: {err}", output.display())))?;
+    staged.place(output)?;
+    Ok(json!({"agent": agent.uid, "card_url": url, "path": output, "size": vcard.len()}))
 }
 
 /// Plow's provider id for an agent its owner runs.

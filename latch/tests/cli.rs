@@ -2475,6 +2475,14 @@ impl LivePlow {
                            {"id": "exe:quiet", "name": "Quiet", "phrases": []}]}),
             );
         }
+        // The research line's contact card, public: asked with a
+        // credential, it refuses, so a test sees none is sent.
+        if request.line().starts_with("GET /cards/research.vcf ") {
+            return match bearer {
+                Some(_) => (400, json!({"detail": "sent a credential"})),
+                None => (200, json!("BEGIN:VCARD\nFN:Research line\nEND:VCARD")),
+            };
+        }
         let token = bearer.unwrap_or_default();
         let kind = if token == state.owner {
             "device"
@@ -2652,7 +2660,8 @@ impl LivePlow {
                 200,
                 json!([{"uid": AGENT_UID, "name": "Research bot", "provider": "self_hosted",
                         "line": {"uid": "line_agent", "object": "line", "provider_type": "imessage",
-                                 "provider_key": "+14155550123", "display_name": "Research line"},
+                                 "provider_key": "+14155550123", "display_name": "Research line",
+                                 "card_url": format!("{}/cards/research.vcf", self.url)},
                         "mailbox": null, "created_at": "2026-10-20T10:00:00Z", "url": null,
                         "image": null, "status": null, "failure_code": null, "settings": {},
                         "credential": {"id": 7, "name": null, "scopes": [], "connected": false,
@@ -3710,7 +3719,8 @@ fn agents_are_listed_for_the_owner_with_their_standing_on_a_host() {
     assert_eq!(
         listed,
         json!({"host": null, "agents": [{"uid": AGENT_UID, "name": "Research bot", "kind": "own",
-               "cloud_kind": null, "line": {"number": "+14155550123", "name": "Research line"},
+               "cloud_kind": null, "line": {"number": "+14155550123", "name": "Research line",
+                                            "card_url": format!("{}/cards/research.vcf", plow.url)},
                "created_at": "2026-10-20T10:00:00Z", "status": null, "failure_code": null,
                "last_seen_at": "2026-10-22T09:00:00Z", "standing": null}]})
     );
@@ -3808,6 +3818,26 @@ fn agents_are_shown_created_and_removed_by_their_owner() {
         "no mailbox"
     );
     assert_eq!(lines["lines"][1]["available"], false);
+
+    // Its line's contact card: named in the list, saved by `agents card`
+    // without the owner's credential.
+    let (code, listed, _) = run(&["agents"]);
+    assert_eq!(code, Some(0), "{listed}");
+    let card_url = format!("{}/cards/research.vcf", plow.url);
+    assert_eq!(listed["agents"][0]["line"]["card_url"], card_url.as_str());
+    let card_file = dir.path().join("research.vcf");
+    let card_path = card_file.to_str().unwrap();
+    let (code, saved, _) = run(&["agents", "card", "Research bot", "--output", card_path]);
+    assert_eq!(code, Some(0), "{saved}");
+    let vcard = fs::read_to_string(&card_file).unwrap();
+    assert!(
+        vcard.contains("BEGIN:VCARD") && vcard.contains("FN:Research line"),
+        "{vcard}"
+    );
+    assert_eq!(
+        saved,
+        json!({"agent": AGENT_UID, "card_url": card_url, "path": card_path, "size": vcard.len()})
+    );
 
     let (code, shown, _) = run(&["agents", "show", "Research bot"]);
     assert_eq!(code, Some(0), "{shown}");

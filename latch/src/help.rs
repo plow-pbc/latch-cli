@@ -128,7 +128,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "agents",
         runs_on: |_| RunsOn::Either,
-        output: "`host` (with --host: its `name` and whether it is `online`; else null) and `agents`, in Plow's order: each one's `uid`, `name`, `kind` (cloud or own), `cloud_kind`, `line` (`number`, `name`), `created_at`, `status` (a cloud agent's phase in Plow; null for own agents), `failure_code`, `last_seen_at` (its credential's last use, not proof it runs) and `standing` on the host (`own_rules`, `exec_blocked`; null without --host).",
+        output: "`host` (with --host: its `name` and whether it is `online`; else null) and `agents`, in Plow's order: each one's `uid`, `name`, `kind` (cloud or own), `cloud_kind`, `line` (`number`, `name`, `card_url`: its persona's contact card, null for an unnamed line), `created_at`, `status` (a cloud agent's phase in Plow; null for own agents), `failure_code`, `last_seen_at` (its credential's last use, not proof it runs) and `standing` on the host (`own_rules`, `exec_blocked`; null without --host).",
         effect: ReadOnly,
         owner_only: true,
         connector: None,
@@ -220,6 +220,18 @@ const ENTRIES: &[Entry] = &[
                 ],
             ),
         ],
+    },
+    Entry {
+        id: "agents.card",
+        runs_on: |_| RunsOn::Local,
+        output: "`agent` (its uid), `card_url`, the `path` the vCard was saved to and its `size`. The card is the one Plow names for the agent's line (its persona's, photo included), fetched without your credential; an unnamed line has none (`no_card`).",
+        effect: ReadOnly,
+        owner_only: true,
+        connector: None,
+        examples: &[ex(
+            "Save an agent's contact card",
+            &["agents", "card", "Willow", "--output", "willow.vcf"],
+        )],
     },
     Entry {
         id: "agents.remove",

@@ -178,7 +178,13 @@ nonisolated struct RulesShow: Decodable, Equatable {
 /// each one's standing there.
 nonisolated struct AgentsList: Decodable, Equatable {
     struct Agent: Decodable, Equatable, Identifiable {
-        struct Line: Decodable, Equatable { var number: String?; var name: String? }
+        struct Line: Decodable, Equatable {
+            var number: String?
+            var name: String?
+            /// Its persona's contact card (a vCard, photo included); nil
+            /// for an unnamed line.
+            var cardUrl: String?
+        }
         struct Standing: Decodable, Equatable {
             /// It has rules of its own on that host.
             var ownRules: Bool?
