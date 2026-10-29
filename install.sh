@@ -21,7 +21,9 @@ esac
 releases=https://releases.plow.co/latch-cli
 # The minisign public key (id DA695E5C4D2D36B9) releases are signed with, as
 # latch update checks them: nothing installs unless the release's SHA256SUMS,
-# and the latest.json that names it, are signed with this key.
+# and the latest.json that names it, are signed with this key. A signed
+# latest.json names a promoted release, not necessarily the newest: an older
+# one, served again, still checks out.
 release_key=RWS5Ni1NXF5p2g7U9HvReN/6scLD8gpzhEZVW//t8Dkn4SyhqAdExFTu
 command -v curl >/dev/null || { echo 'install curl first' >&2; exit 1; }
 case "$(uname -s)/$(uname -m)" in
@@ -37,14 +39,17 @@ esac
 caller=$(pwd)
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
+# The release's files, apart from where its archive is unpacked: nothing the
+# archive carries can stand in for one of them.
+mkdir "$tmp/release" "$tmp/unpacked"
 download() {
-  curl -fsSL --proto '=https' -o "$tmp/${1##*/}" "$releases/$1" || { echo "could not download $1" >&2; exit 1; }
+  curl -fsSL --proto '=https' -o "$tmp/release/${1##*/}" "$releases/$1" || { echo "could not download $1" >&2; exit 1; }
 }
 # `latest` is the release latest.json names: the newest promoted one.
 if [ "$version" = latest ]; then
   download latest.json
   download latest.json.minisig
-  version=$(sed -n 's/.*"tag": *"\([^"]*\)".*/\1/p' "$tmp/latest.json")
+  version=$(sed -n 's/.*"tag": *"\([^"]*\)".*/\1/p' "$tmp/release/latest.json")
 fi
 printf '%s\n' "$version" | LC_ALL=C grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?$' || { echo 'expected a release tag such as v0.1.0-1327, or latest' >&2; exit 1; }
 archive="latch-$version-$target.tar.gz"
@@ -52,20 +57,15 @@ for file in "$archive" SHA256SUMS SHA256SUMS.minisig; do
   download "releases/$version/$file"
 done
 cd "$tmp"
-# Verify only the selected archive; other targets need not be downloaded.
-awk -v name="$archive" '$2 == name {print; found=1} END {if (!found) exit 1}' SHA256SUMS > selected.sha256
-if command -v sha256sum >/dev/null 2>&1; then
-  sha256sum -c selected.sha256
-else
-  shasum -a 256 -c selected.sha256
-fi
-tar -xzf "$archive"
-setup="$tmp/latch-$version-$target"
-# Nothing in the archive runs until these check out. A Mac has no tool for
-# minisign's signatures, so there the release's own latch checks them, once
-# codesign and Gatekeeper vouch that Plow signed its app. On Linux, openssl
-# checks minisign's Ed25519 signature of the file's BLAKE2b-512 hash.
+setup="$tmp/unpacked/latch-$version-$target"
+# Nothing in the archive runs until SHA256SUMS is signed with the release key
+# and lists the archive. A Mac has no tool for minisign's signatures, so there
+# the release's own latch checks them, once codesign and Gatekeeper vouch that
+# Plow signed its app: a Mac unpacks the archive first, to reach that app. On
+# Linux, openssl checks minisign's Ed25519 signature of the file's BLAKE2b-512
+# hash, and the archive is unpacked only once it checks out.
 if [ "$(uname -s)" = Darwin ]; then
+  tar -xzf "release/$archive" -C unpacked
   app="$setup/Plow Latch.app"
   codesign --verify --deep --strict \
     -R='anchor apple generic and identifier "co.plow.latch.cli" and certificate leaf[subject.OU] = "3559PD337Z"' "$app" &&
@@ -74,20 +74,30 @@ if [ "$(uname -s)" = Darwin ]; then
 fi
 signed() {
   if [ "$(uname -s)" = Darwin ]; then
-    "$app/Contents/MacOS/latch" verify-signature --key "$release_key" "$1" >/dev/null
+    "$app/Contents/MacOS/latch" verify-signature --key "$release_key" "release/$1" >/dev/null
   else
     printf '%s\n' "$release_key" | openssl base64 -d -A > release.key &&
-      sed -n 2p "$1.minisig" | openssl base64 -d -A > signature &&
+      sed -n 2p "release/$1.minisig" | openssl base64 -d -A > signature &&
       # The key and signature bytes follow minisign's 2-byte algorithm and
       # 8-byte key id; the DER header makes the key one openssl reads.
       { printf '\060\052\060\005\006\003\053\145\160\003\041\000'; dd if=release.key bs=1 skip=10 2>/dev/null; } > release.der &&
       dd if=signature of=signature.ed25519 bs=1 skip=10 2>/dev/null &&
-      openssl dgst -blake2b512 -binary "$1" > "$1.blake2b" &&
-      openssl pkeyutl -verify -pubin -keyform DER -inkey release.der -rawin -in "$1.blake2b" -sigfile signature.ed25519 >/dev/null
+      openssl dgst -blake2b512 -binary "release/$1" > hash &&
+      openssl pkeyutl -verify -pubin -keyform DER -inkey release.der -rawin -in hash -sigfile signature.ed25519 >/dev/null
   fi || { echo "$1 is not signed with latch's release key; nothing installed" >&2; exit 1; }
 }
 signed SHA256SUMS
-[ ! -e latest.json ] || signed latest.json
+[ ! -e release/latest.json ] || signed latest.json
+# Verify only the selected archive; other targets need not be downloaded.
+cd release
+awk -v name="$archive" '$2 == name {print; found=1} END {if (!found) exit 1}' SHA256SUMS > ../selected.sha256
+if command -v sha256sum >/dev/null 2>&1; then
+  sha256sum -c ../selected.sha256
+else
+  shasum -a 256 -c ../selected.sha256
+fi
+cd "$tmp"
+[ "$(uname -s)" = Darwin ] || tar -xzf "release/$archive" -C unpacked
 cd "$caller"
 client_only=""
 for option in "$@"; do

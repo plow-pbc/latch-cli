@@ -88,7 +88,7 @@ OTHER = Key(b"another key")
 class ReleaseInstall(unittest.TestCase):
     def run_install(self, machine, target, corrupt=False, relative_state=False,
                     relative_bin=False, release="v0.1.0", client_only=False, sums_key=RELEASE,
-                    latest_key=RELEASE, sums_signed=True, app_signed=True):
+                    latest_key=RELEASE, sums_signed=True, app_signed=True, smuggled=None):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             caller = root / "caller"
@@ -119,6 +119,11 @@ fi
                     info = tarfile.TarInfo(f"{folder}/{name}")
                     data = body.encode()
                     info.size, info.mode = len(data), 0o755
+                    tar.addfile(info, io.BytesIO(data))
+                # Files at the archive's top level, beside the release's own downloads.
+                for name, data in (smuggled or {}).items():
+                    info = tarfile.TarInfo(name)
+                    info.size = len(data)
                     tar.addfile(info, io.BytesIO(data))
                 if SYSTEM == "Darwin":
                     app = tarfile.TarInfo(f"{folder}/Plow Latch.app/Contents/MacOS/latch")
@@ -228,6 +233,14 @@ esac
             with self.subTest(client_only=client_only):
                 result = self.install(sums_key=OTHER, client_only=client_only)
                 self.assertRefused(result, "SHA256SUMS is not signed with latch's release key")
+
+    def test_an_archive_carrying_a_signed_sums_of_its_own_never_runs_setup(self):
+        # A genuine SHA256SUMS of another release, signed with the release key,
+        # inside an archive whose served SHA256SUMS no release key signed.
+        genuine = f"{'1' * 64}  latch-v0.0.9-any.tar.gz\n".encode()
+        smuggled = {"SHA256SUMS": genuine, "SHA256SUMS.minisig": RELEASE.sign(genuine).encode()}
+        result = self.install(sums_key=OTHER, smuggled=smuggled)
+        self.assertRefused(result, "SHA256SUMS is not signed with latch's release key")
 
     def test_unsigned_sums_never_run_setup(self):
         self.assertRefused(self.install(sums_signed=False), "could not download releases/v0.1.0/SHA256SUMS.minisig")
