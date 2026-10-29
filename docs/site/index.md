@@ -1,8 +1,8 @@
 # Install and first run
 
-Latch lets your AI agents use a machine you trust: its files, programs and
+Latch lets your AI agents use a computer you trust: its files, programs and
 browser, your Google account, and on a Mac its Messages and Contacts. That
-machine runs a Latch host. Its gatekeeper checks every request from your
+computer runs a Latch host. Its gatekeeper checks every request from your
 agents against your rules before it runs.
 
 Latch runs on macOS 13 or later and on 64-bit Linux. You need a Plow account.
@@ -20,52 +20,47 @@ the sandbox.
 If `latch` isn't found afterwards, open a new terminal. The installer puts
 `~/.local/bin` on your `PATH`, or says what to add for your shell.
 
-| Your Mac runs | What happens next |
-|---|---|
-| macOS 26 or later | The Plow Latch app opens and takes you through setup. |
-| macOS 15 to 25 | Setup runs in the terminal. |
-| macOS 13 or 14 | Setup runs in the terminal. Google needs macOS 15, so it is left out. |
-
 ## Two kinds of install
 
-**A host** protects what's on its machine and does your agents' work. Install
-it on the place you trust: your Mac, a Linux server or a Raspberry Pi.
+**This computer hosts.** It protects what's on it and does your agents' work.
+Install it on the place you trust: your Mac, a Linux server or a Raspberry
+Pi. That's the install above.
 
-```sh
-sh install.sh
-```
-
-**An agent's machine** needs only the `latch` command. It calls your hosts,
-and protects nothing itself.
+**Client only: you just want to reach your other hosts.** This computer hosts
+nothing, so it needs only the `latch` command:
 
 ```sh
 sh install.sh --client-only
 ```
 
-Then [connect the agent](connect-an-agent.md).
-
 ## First run
+
+On a Mac with macOS 26 or later, the installer opens the Plow Latch app,
+which walks you through these steps. Everywhere else, setup runs in the
+terminal. To run it again yourself:
 
 ```sh
 latch setup
 ```
 
-Setup takes these steps. Each one is skipped once it's done, so you can run
-setup again at any time.
-
 1. **Log in to Plow.** Text the code it shows from your Plow phone, or scan
    the QR code.
-2. **Connect Google.** Optional.
+2. **Connect Google.** Optional. On a Mac, Google needs macOS 15 or later.
 3. **Turn on Messages and Contacts.** Mac only. Grant Full Disk Access to
    Plow Latch, not to Terminal.
-4. **Start the host.** This machine now answers your agents.
+4. **Start the host.** This computer now answers your agents.
+
+Each step is skipped once it's done, so you can run setup again at any time.
 
 Then write your rules: what your agents may and may not do, in your own
-words.
+words. See [How Latch works](how-latch-works.md#the-gatekeeper-and-rules).
 
-```sh
+```sh host
 latch rules edit
 ```
+
+The Mac app is built entirely on the `latch` command: anything you do in the
+app, you can do with `latch`.
 
 ## Check it worked
 
@@ -73,7 +68,7 @@ latch rules edit
 latch
 ```
 
-It shows this machine at a glance: your account, whether it is hosting, your
+It shows this computer at a glance: your account, whether it is hosting, your
 hosts, its connectors and one next step.
 
 ## Update

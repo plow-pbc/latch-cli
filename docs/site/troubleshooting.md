@@ -1,6 +1,6 @@
 # Troubleshooting
 
-Start with these two. The first shows this machine's state, even offline.
+Start with these two. The first shows this computer's state, even offline.
 The second follows the host's log as it's written.
 
 ```sh
@@ -13,11 +13,11 @@ latch logs -f
 | You see | Means | Do |
 |---|---|---|
 | `command not found: latch` | `~/.local/bin` isn't on your `PATH` yet. | Open a new terminal. |
-| `not_logged_in` | This machine has no login. | `latch login` |
+| `not_logged_in` | This computer has no login. | `latch login` |
 | `host_offline` | That host isn't running. | Run `latch serve -d` there. |
 | `host_unreachable` | Couldn't connect. Nothing was sent. | Retry. |
 | `host_required` | You have several hosts and named none. | Add `--host NAME`. |
-| `serve_required` | This machine's host isn't running. | `latch serve -d` |
+| `serve_required` | This computer's host isn't running. | `latch serve -d` |
 | `gatekeeper_unavailable` | The host couldn't judge the request, so that step didn't run. In a browser plan, earlier steps may already have acted. | Read the answer's `steps`, then retry later only what didn't happen. If the error says the account is out of credits, add Plow credits. |
 | `gatekeeper_denied` | The gatekeeper refused. | For `not_covered`, ask in your Plow chat, then retry. |
 | `exec_denied` | This host doesn't let agents run programs. | Asking again won't help. |

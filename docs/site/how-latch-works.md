@@ -5,11 +5,11 @@ vault and audit log keep your secrets and a record of what happened.
 
 ## Hosts, owners and agents
 
-**A host** is a machine that runs `latch serve`. It does the work: it runs
+**A host** is a computer that runs `latch serve`. It does the work: it runs
 programs, copies files and drives a browser. It also holds your vault and the
 audit log.
 
-**You are the owner.** Every machine you log in with your own Plow login acts
+**You are the owner.** Every computer you log in with your own Plow login acts
 as you. From any of them you can manage the rules and the vault on any of your
 hosts.
 
@@ -19,7 +19,7 @@ connectors on.
 
 **Plow is the directory.** It says who each caller is and where your hosts
 are. A file's bytes and a program's output go straight between the two
-machines, encrypted, and never through Plow. What the gatekeeper judges does
+computers, encrypted, and never through Plow. What the gatekeeper judges does
 go to Plow: the request, your rules and your chat with the agent.
 
 ## The gatekeeper and rules
@@ -28,7 +28,6 @@ Before a host runs work that matters, its gatekeeper asks a model whether it
 may run. It judges programs, file copies, Google, Messages, Contacts and the
 browser's risky steps.
 
-- **Your own requests** run unless your rules forbid them.
 - **An agent's requests** are judged against your rules and what you told the
   agent in your Plow chat. Everyday lookups and ordinary file edits are
   allowed. Riskier actions need your OK.
@@ -37,8 +36,19 @@ browser's risky steps.
 - **It fails closed.** If the host can't judge a step, that step doesn't run.
   Earlier steps of a browser plan may already have acted.
 
-A model judges the rules, so they aren't a guarantee. `latch serve --deny-exec`
-is: no agent runs a program on that host.
+**Your rules** are plain words, kept on each host: one text for every agent,
+and one for each agent. Edit them on the host, or from another of your
+computers with `--host`:
+
+```sh host
+latch rules edit
+latch rules edit --agent my-agent
+latch rules edit --host my-mac
+```
+
+`latch rules try` previews the verdict a request would get, without running
+it. A model judges the rules, so they aren't a guarantee.
+`latch serve --deny-exec` is: no agent runs a program on that host.
 
 ## The vault
 

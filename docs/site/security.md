@@ -1,6 +1,6 @@
 # Security
 
-Latch lets an agent work on your machine without handing it the keys.
+Latch lets an agent work on your computer without handing it the keys.
 
 ## How it protects you
 

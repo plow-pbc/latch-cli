@@ -1,40 +1,52 @@
 # Connect an agent
 
-Each agent logs in with its own Plow credential. Your hosts then judge each of
-its requests as that agent's: against your rules, and what you told it in your
-Plow chat.
+Every agent needs its own Plow credential. Your hosts recognize the agent by
+it, and judge each of its requests as that agent's: against your rules, and
+what you told it in your Plow chat.
 
-> Never copy your `~/.latch` folder, or its token, to an agent. A host would
-> take the agent's requests for yours.
+> Never copy your own `~/.latch` folder, or its token, to an agent. A host
+> would take the agent's requests for yours.
 
-## An agent on Plow
+## An agent Plow runs
 
-An agent that Plow runs already has its own credential. Run this where the
-agent runs:
+There's nothing to set up: Plow gives each agent it runs its own credential.
+Start one with New Agent in the Plow Latch app, or from one of your own
+computers:
 
 ```sh
-curl -fsSLO https://releases.plow.co/latch-cli/install.sh && sh install.sh --client-only
-~/.local/bin/latch login
+latch agents catalog
+latch agents new --cloud KIND --name NAME --line LINE
 ```
 
-There is no code to text: the login uses the agent's credential. You only
-run it once.
+`KIND` comes from `latch agents catalog`, and `LINE` from
+`latch agents lines`.
 
 ## Your own agent
 
-Make the agent from one of your own machines. It needs a free phone line:
+An agent you run yourself, anywhere: your laptop, a server or a container.
+It gets its credential in three steps.
+
+**1. Pick a phone line.** Each agent answers on one of your Plow phone lines.
+That's where you chat with it. From one of your own computers:
 
 ```sh
 latch agents lines
+```
+
+**2. Register the agent.** This tells Plow about an agent you run yourself
+(that's what `--own` means), on that line, and writes its credential to a new
+file that only you can read:
+
+```sh
 latch agents new --own --name my-agent --line LINE --token-file my-agent.token
 ```
 
-`LINE` is a line's number from `latch agents lines`. The agent's credential
-goes into the new file `my-agent.token`, which only you can read. Treat it
-like a password.
+`LINE` is a line's number from `latch agents lines`. Treat
+`my-agent.token` like a password.
 
-Give the file to your agent. Its program logs in with it, in a state folder
-of its own:
+**3. Give the agent its credential.** Copy the file to the agent's computer,
+and give it Latch with the [client-only install](index.md#two-kinds-of-install).
+Then log in, in a state folder of its own:
 
 ```sh
 export PLOW_TOKEN_FILE=~/my-agent.token
@@ -42,8 +54,15 @@ export LATCH_STATE_DIR=~/latch-agent
 latch login
 ```
 
-Keep both set for every command the agent runs. To revoke the agent, run
-`latch agents remove my-agent`.
+`latch` reads the agent's credential from the file `PLOW_TOKEN_FILE` names,
+or from `PLOW_AGENT_TOKEN` if you set the token itself. Keep them set for
+every command the agent runs: `latch` never copies the credential into its
+state folder.
+
+Use a state folder of its own. A folder that already holds your own login
+uses yours, whatever the agent's credential says.
+
+To revoke the agent, run `latch agents remove my-agent`.
 
 ## What an agent may do
 
@@ -53,22 +72,8 @@ and create or edit ordinary files, without asking first.
 Riskier actions need your OK, in your rules or in your Plow chat with the
 agent: sending, buying, deleting, changing calendars or shared systems,
 giving a program internet access, using secrets, and sending data elsewhere.
-
-Write your rules in your own words, for every agent or for one:
-
-```sh
-latch rules edit
-latch rules edit --agent my-agent
-```
-
-To see what an agent would be allowed to do, without running it:
-
-```sh
-latch rules try --agent my-agent -- exec -- ls '~/code'
-```
-
-A model judges the rules, so they aren't a guarantee. For a hard stop, start
-the host with `latch serve --deny-exec`: then no agent can run programs there.
+Each host keeps its own rules: see
+[How Latch works](how-latch-works.md#the-gatekeeper-and-rules).
 
 ## Built for agents
 
@@ -76,7 +81,12 @@ Every command prints one JSON object, and errors print as JSON too.
 
 - `latch skill` prints the guide written for agents.
 - `latch help COMMAND --examples` shows how to call a command.
-- `--host NAME`, or `LATCH_HOST`, picks the host.
+- `--host NAME`, or `LATCH_HOST`, picks the host. See
+  [Choosing a host](commands.md#choosing-a-host).
+
+```sh agent
+latch exec --host my-mac -- ls -la
+```
 
 | Exit code | Means | Do |
 |---|---|---|

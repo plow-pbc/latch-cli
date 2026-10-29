@@ -46,9 +46,36 @@ Every command prints one JSON object. Add `--pretty` to read it yourself.
 `latch help COMMAND` lists a command's options, and
 `latch help COMMAND --examples` shows how to call it.
 
-Commands marked "Owner only" work from your own machines, never for an
+| For | Means |
+|---|---|
+| Host | For managing a host. Run it on that computer, or from another of your computers with `--host NAME`. |
+| Agent | What an agent runs to ask a host for something. |
+
+Commands marked "Owner only" work from your own computers, never for an
 agent.
+
+## Choosing a host
+
+`--host NAME` sends a command to that host, over the encrypted connection
+between the two computers. Without it, an Agent command goes to the host
+`LATCH_HOST` names; else to this computer, if it hosts; else to your only
+host. With several hosts and none named, it stops with `host_required`. A
+Host command without `--host` works on this computer's own host.
+
+```sh
+latch status --host my-pi
+latch browser open --host my-mac https://example.com
+```
 """
+
+# The pill each command carries, from what `latch help --json` says of it:
+# Host for the owner's commands that work on a host (they take --host), Agent
+# for what an agent can send to a host. The rest carry none.
+def pill(action):
+    takes_host = any(i.get("flag") and "--host" in i["flag"] for i in action["inputs"])
+    if not takes_host:
+        return ""
+    return "Host" if action["owner_only"] else "Agent"
 
 
 def url(page):
@@ -90,8 +117,9 @@ def commands_markdown(help_json):
             if first["command"] != command:
                 label = first["what"] if first["what"].endswith(("?", ".")) else first["what"] + ":"
                 example = f"<br>{cell(label)} `{cell(first['command'])}`"
-            rows.append(f"| `{command}` | {cell(what)}{example} |")
-        out.append(f"## {title}\n\n| Command | What it does, and an example |\n|---|---|\n" + "\n".join(rows) + "\n")
+            rows.append(f"| `{command}` | {pill(action)} | {cell(what)}{example} |")
+        out.append(f"## {title}\n\n| Command | For | What it does, and an example |\n|---|---|---|\n"
+                   + "\n".join(rows) + "\n")
     return "\n".join(out)
 
 
@@ -128,8 +156,9 @@ def inline(text):
     for part in parts:
         if part.startswith("`") and part.endswith("`") and len(part) > 1:
             code = part[1:-1]
-            # One word (`--pretty`, `~/.latch`) never breaks at its hyphens or slashes.
-            tag = "<code>" if " " in code else '<code class="word">'
+            # A word or a short phrase (`--pretty`, `--host NAME`) never breaks at
+            # its hyphens or slashes.
+            tag = '<code class="word">' if " " not in code or len(code) <= 24 else "<code>"
             out.append(f"{tag}{html.escape(code, quote=False)}</code>")
             continue
         part = html.escape(part, quote=False)
@@ -153,14 +182,26 @@ def highlight(line):
     return code + (f'<span class="c">{html.escape(comment, quote=False)}</span>' if comment else "")
 
 
-def code_block(lang, lines):
+PILLS = {"host": "Host", "agent": "Agent"}
+
+
+def pill_html(name):
+    return f'<span class="pill pill-{name.lower()}">{html.escape(name)}</span>'
+
+
+def code_block(info, lines):
+    lang, *tags = info.split()
+    if any(t not in PILLS for t in tags):
+        raise SystemExit(f"docs_site.py: a code block's tag is not host or agent: {info!r}")
     body = "\n".join(highlight(line) for line in lines) if lang == "sh" else html.escape("\n".join(lines), quote=False)
     label = {"sh": "terminal", "json": "output", "text": "output"}.get(lang)
     if label is None:
         raise SystemExit(f"docs_site.py: code block language {lang!r} is not sh, json or text")
     copy = ('<button class="code-copy" type="button" aria-label="Copy code"><i class="ph-bold ph-copy"></i></button>'
             if lang == "sh" else "")
-    return (f'<div class="code" data-lang="{lang}"><div class="code-bar"><span class="fn">{label}</span>{copy}</div>'
+    pills = "".join(pill_html(PILLS[t]) for t in tags)
+    head = f'<div class="code-pills">{pills}</div>' if pills else ""
+    return (f'{head}<div class="code" data-lang="{lang}"><div class="code-bar"><span class="fn">{label}</span>{copy}</div>'
             f"<pre><code>{body}</code></pre></div>")
 
 
@@ -170,13 +211,18 @@ def table(lines):
     head, rows = cells(lines[0]), [cells(line) for line in lines[2:]]
     if not re.fullmatch(r"\|(\s*:?-+:?\s*\|)+", lines[1].strip()):
         raise SystemExit(f"docs_site.py: a table's second line must be its divider: {lines[1]!r}")
-    def td(c):
+    def td(c, column):
+        if head[column] == "For":
+            if c and c not in PILLS.values():
+                raise SystemExit(f"docs_site.py: a For cell is not Host or Agent: {c!r}")
+            return pill_html(c) if c else ""
         # A cell's lines, as `<br>` splits them on GitHub too.
         return "<br>".join(inline(part) for part in c.split("<br>"))
     th = "".join(f"<th>{inline(c)}</th>" for c in head)
     # Each cell carries its column's name, which a phone shows above it.
     labels = [html.escape(re.sub(r"[`*]", "", c)) for c in head]
-    trs = "".join("<tr>" + "".join(f'<td data-label="{label}">{td(c)}</td>' for label, c in zip(labels, row))
+    trs = "".join("<tr>" + "".join(f'<td data-label="{label}">{td(c, i)}</td>'
+                                   for i, (label, c) in enumerate(zip(labels, row)))
                   + "</tr>" for row in rows)
     return f'<div class="table-wrap"><table><thead><tr>{th}</tr></thead><tbody>{trs}</tbody></table></div>'
 
