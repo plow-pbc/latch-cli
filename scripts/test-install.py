@@ -892,6 +892,112 @@ def tool(folder, name, body):
     path.chmod(0o755)
 
 
+class PathProfile(unittest.TestCase):
+    """The binary directory put on PATH by one line in the shell's login
+    profile, when it isn't there already and nothing says to leave it."""
+
+    LINE = 'export PATH="$HOME/.local/bin:$PATH"  # added by latch\'s installer'
+
+    def setUp(self):
+        parent = ROOT / ".dev/tests"
+        parent.mkdir(parents=True, exist_ok=True)
+        self.directory = tempfile.TemporaryDirectory(dir=parent)
+        self.root = Path(self.directory.name)
+        self.home = self.root / "home"
+        self.home.mkdir()
+
+    def tearDown(self):
+        self.directory.cleanup()
+
+    def install(self, *options, system="Darwin", shell="/bin/zsh", path=None):
+        """A first install on a fresh `system` whose login shell is `shell`."""
+        root = self.root / f"run-{len(list(self.root.glob('run-*')))}"
+        root.mkdir()
+        state = root / "state"
+        setup, binary, tools = fixture(root, state, "#!/bin/sh\necho installed-fixture\n",
+                                       system=system, macos="15.0")
+        tool(tools, "bwrap", "")
+        env = {**os.environ, "HOME": str(self.home), "SHELL": shell,
+               "PATH": f"{tools}:{path or os.environ['PATH']}"}
+        env.pop("ZDOTDIR", None)
+        result = subprocess.run(["sh", str(setup / "install-binary.sh"), "--state-dir", str(state),
+                                 "--no-browser", *options, str(binary)],
+                                cwd=root, env=env, capture_output=True, text=True,
+                                stdin=subprocess.DEVNULL)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result
+
+    def profiles(self):
+        return sorted(p.name for p in self.home.iterdir() if p.is_file())
+
+    def runs_latch(self, profile):
+        """A login shell that reads `profile` finds the installed latch by name."""
+        found = subprocess.run(["sh", "-c", f'. "{profile}" && command -v latch'],
+                               env={"HOME": str(self.home), "PATH": "/usr/bin:/bin"},
+                               capture_output=True, text=True)
+        self.assertEqual(found.stdout.strip(), str(self.home / ".local/bin/latch"), found.stderr)
+
+    def test_a_fresh_mac_gets_a_zprofile_with_the_line_once(self):
+        first = self.install()
+        zprofile = self.home / ".zprofile"
+        self.assertEqual(zprofile.read_text(), self.LINE + "\n")
+        self.assertIn(f"added {self.home}/.local/bin to your PATH in {zprofile}", first.stdout)
+        self.assertIn('to run latch in this terminal now: export PATH="$HOME/.local/bin:$PATH"',
+                      first.stdout)
+        self.runs_latch(zprofile)
+
+        again = self.install()
+        self.assertEqual(zprofile.read_text(), self.LINE + "\n")
+        self.assertIn(f"{zprofile} already puts", again.stdout)
+
+    def test_a_profile_without_a_last_newline_keeps_its_last_line(self):
+        zprofile = self.home / ".zprofile"
+        zprofile.write_text("alias ll='ls -l'")
+        self.install()
+        self.assertEqual(zprofile.read_text(), "alias ll='ls -l'\n" + self.LINE + "\n")
+
+    def test_nothing_changes_when_told_not_to_or_already_on_path(self):
+        for options, path in [(["--no-modify-path"], None), (["--client-only"], None),
+                              (["--non-interactive"], None),
+                              ([], f"{self.home}/.local/bin:{os.environ['PATH']}")]:
+            result = self.install(*options, path=path)
+            self.assertEqual(self.profiles(), [], options)
+            said = 'add {}/.local/bin to your PATH to run latch by name: export PATH="$HOME/.local/bin:$PATH"'
+            self.assertEqual(said.format(self.home) in result.stdout, path is None, options)
+
+    def test_linux_bash_gets_the_line_in_bashrc_and_its_login_profile(self):
+        self.install(system="Linux", shell="/bin/bash")
+        self.assertEqual(self.profiles(), [".bashrc", ".profile"])
+        for name in self.profiles():
+            self.assertEqual((self.home / name).read_text(), self.LINE + "\n")
+        self.runs_latch(self.home / ".profile")
+        self.install(system="Linux", shell="/bin/bash")
+        for name in self.profiles():
+            self.assertEqual((self.home / name).read_text().count(self.LINE), 1, name)
+
+    def test_linux_bash_with_a_bash_profile_uses_it_in_place_of_profile(self):
+        (self.home / ".bash_profile").write_text("# mine\n")
+        self.install(system="Linux", shell="/bin/bash")
+        self.assertEqual(self.profiles(), [".bash_profile", ".bashrc"])
+        self.assertEqual((self.home / ".bash_profile").read_text(), "# mine\n" + self.LINE + "\n")
+
+    def test_another_shell_is_told_what_to_add(self):
+        result = self.install(system="Linux", shell="/usr/bin/fish")
+        self.assertEqual(self.profiles(), [])
+        self.assertIn(f"add {self.home}/.local/bin to your PATH to run latch by name", result.stdout)
+
+    def test_a_bin_directory_outside_home_is_written_as_itself_quoted(self):
+        bin_dir = self.root / 'odd $dir "x"'
+        result = self.install("--bin-dir", str(bin_dir))
+        line = (self.home / ".zprofile").read_text()
+        self.assertEqual(line, 'export PATH="{}:$PATH"  # added by latch\'s installer\n'.format(
+            str(bin_dir).replace("$", "\\$").replace('"', '\\"')), result.stdout)
+        found = subprocess.run(["sh", "-c", f'. "{self.home}/.zprofile" && command -v latch'],
+                               env={"HOME": str(self.home), "PATH": "/usr/bin:/bin"},
+                               capture_output=True, text=True)
+        self.assertEqual(found.stdout.strip(), str(bin_dir / "latch"), found.stderr)
+
+
 class BrowserEngines(unittest.TestCase):
     """install-binary.sh's engine choice, and browser-engines.sh installing Chrome for
     Testing from a local, hash-checked fixture."""

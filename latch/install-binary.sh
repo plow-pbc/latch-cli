@@ -1,7 +1,7 @@
 #!/bin/sh
 # Installs a latch binary you already have into ~/.local/bin, or --bin-dir.
 #
-#   sh install-binary.sh [--bin-dir DIR] [--state-dir DIR] [--browser chrome|camoufox]... [--no-browser] [--client-only] [--non-interactive] [path/to/latch]
+#   sh install-binary.sh [--bin-dir DIR] [--state-dir DIR] [--browser chrome|camoufox]... [--no-browser] [--client-only] [--non-interactive] [--no-modify-path] [path/to/latch]
 #
 # A first install (no login in the state directory yet) at a terminal ends
 # by running `latch setup` (log in, connect Google, and so on), or, when it
@@ -9,6 +9,13 @@
 # window does the same; --non-interactive, or no terminal, leaves that for
 # later. An upgrade never runs either: setup could start a host the upgrade
 # did not mean to. On macOS it refuses anything before macOS 13.
+#
+# When the binary directory isn't on PATH, it adds one line that puts it
+# there to the login profile of the user's shell: ~/.zprofile for zsh, and
+# ~/.bashrc and the login profile for bash on Linux. For any other shell it
+# says what to add. --no-modify-path, --client-only (an image sets its own
+# PATH) and --non-interactive (`latch update`, dev builds) leave profiles
+# alone.
 #
 # With no binary path, installs the latch next to this script. Options can
 # appear before or after the path. --help prints usage without installing.
@@ -101,7 +108,7 @@ quit_windows() {
   return 1
 }
 
-usage="usage: sh install-binary.sh [--bin-dir DIR] [--state-dir DIR] [--browser chrome|camoufox]... [--no-browser] [--client-only] [--non-interactive] [path/to/latch]"
+usage="usage: sh install-binary.sh [--bin-dir DIR] [--state-dir DIR] [--browser chrome|camoufox]... [--no-browser] [--client-only] [--non-interactive] [--no-modify-path] [path/to/latch]"
 # HOME=/ (a container's root) gives /.local/bin, not //.local/bin.
 bin_dir="${HOME%/}/.local/bin"
 state_dir=${LATCH_STATE_DIR:-"${HOME%/}/.latch"}
@@ -109,6 +116,7 @@ browsers=""
 no_browser=""
 client_only=""
 non_interactive=""
+modify_path=1
 state_given=${LATCH_STATE_DIR:+1}
 src="$(dirname "$0")/latch"
 given_src=""
@@ -121,7 +129,8 @@ while [ $# -gt 0 ]; do
         'Binary directory defaults to ~/.local/bin; state and plugins default to $LATCH_STATE_DIR, else ~/.latch.' \
         'The browser engine defaults to Chrome for Testing; --browser chrome|camoufox' \
         'names the engines instead (repeat it for both), --no-browser installs none.' \
-        '--client-only installs latch alone, for a machine that only asks hosts.'
+        '--client-only installs latch alone, for a machine that only asks hosts.' \
+        '--no-modify-path leaves your shell profile alone when the binary directory is not on PATH.'
       exit 0
       ;;
     --bin-dir)
@@ -152,6 +161,10 @@ while [ $# -gt 0 ]; do
       ;;
     --non-interactive)
       non_interactive=1
+      shift
+      ;;
+    --no-modify-path)
+      modify_path=""
       shift
       ;;
     -*) die "$usage" ;;
@@ -375,9 +388,66 @@ else
   mv "$dest.tmp" "$dest"
   say "installed latch to $dest"
 fi
+# The binary directory on PATH, by one line in the shell's login profile.
+# The line names it under $HOME when it is there, so it reads the same in
+# every profile and holds if the home moves.
+bin_abs=$(cd "$bin_dir" && pwd)
+home=${HOME%/}
+case "$bin_abs" in
+  "$home"/*) bin_word="\$HOME/$(printf '%s' "${bin_abs#"$home"/}" | sed 's/[\\"$`]/\\&/g')" ;;
+  *) bin_word=$(printf '%s' "$bin_abs" | sed 's/[\\"$`]/\\&/g') ;;
+esac
+path_line="export PATH=\"$bin_word:\$PATH\"  # added by latch's installer"
+now="to run latch in this terminal now: export PATH=\"$bin_word:\$PATH\""
+# Adds the line to profile $1 once; fails if it can't be written.
+add_path_line() {
+  if [ -f "$1" ] && grep -qxF "$path_line" "$1"; then
+    say "$1 already puts $bin_dir on your PATH"
+    return 0
+  fi
+  {
+    # A profile that doesn't end in a newline gets one first.
+    if [ -s "$1" ] && [ -n "$(tail -c 1 "$1")" ]; then echo; fi
+    printf '%s\n' "$path_line"
+  } 2>/dev/null >> "$1" || return 1
+  say "added $bin_dir to your PATH in $1"
+}
 case ":$PATH:" in
-  *":$bin_dir:"*) ;;
-  *) say "add $bin_dir to your PATH to run latch by name" ;;
+  *":$bin_dir:"* | *":$bin_abs:"*) ;;
+  *)
+    profiles=""
+    if [ -n "$modify_path" ] && [ -z "$client_only" ] && [ -z "$non_interactive" ]; then
+      case "$(uname -s)/$(basename "${SHELL:-}")" in
+        Darwin/zsh | Linux/zsh) profiles="${ZDOTDIR:-$home}/.zprofile" ;;
+        # A login shell reads the first of these three; an interactive one
+        # that isn't a login, ~/.bashrc.
+        Linux/bash)
+          login="$home/.profile"
+          [ -f "$home/.bash_login" ] && login="$home/.bash_login"
+          [ -f "$home/.bash_profile" ] && login="$home/.bash_profile"
+          profiles="$home/.bashrc
+$login"
+          ;;
+      esac
+    fi
+    if [ -z "$profiles" ]; then
+      say "add $bin_dir to your PATH to run latch by name: export PATH=\"$bin_word:\$PATH\""
+    else
+      added=1
+      old_ifs=$IFS
+      IFS='
+'
+      for profile in $profiles; do
+        add_path_line "$profile" || { say "could not write $profile"; added=""; }
+      done
+      IFS=$old_ifs
+      if [ -n "$added" ]; then
+        say "$now"
+      else
+        say "add $bin_dir to your PATH to run latch by name: export PATH=\"$bin_word:\$PATH\""
+      fi
+    fi
+    ;;
 esac
 # Whether latch is installed alone, kept where `latch update` looks, so it
 # installs the next build the same way. An install without --client-only

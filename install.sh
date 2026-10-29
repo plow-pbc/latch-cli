@@ -4,12 +4,12 @@
 # Once installed, `latch update` installs newer builds. --client-only
 # installs latch alone, for a machine that only asks hosts (an agent's image).
 #
-#   sh install.sh [TAG|latest] [--bin-dir DIR] [--state-dir DIR] [--browser chrome|camoufox]... [--no-browser] [--client-only] [--non-interactive]
+#   sh install.sh [TAG|latest] [--bin-dir DIR] [--state-dir DIR] [--browser chrome|camoufox]... [--no-browser] [--client-only] [--non-interactive] [--no-modify-path]
 set -eu
 version=latest
 case "${1:-}" in
   -h | --help)
-    echo 'usage: install.sh [TAG|latest] [--bin-dir DIR] [--state-dir DIR] [--browser chrome|camoufox]... [--no-browser] [--client-only] [--non-interactive]'
+    echo 'usage: install.sh [TAG|latest] [--bin-dir DIR] [--state-dir DIR] [--browser chrome|camoufox]... [--no-browser] [--client-only] [--non-interactive] [--no-modify-path]'
     exit 0
     ;;
   "" | -*) ;;
