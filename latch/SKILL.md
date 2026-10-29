@@ -147,7 +147,7 @@ not" in either, everyday work included. Connector, path and sandbox limits
 apply either way.
 An agent whose line has several Plow chats selects the one it acts for
 with `--plow-chat C` or `LATCH_PLOW_CHAT` on exec, file, Google, Messages,
-Contacts and browser session calls. Exit 2, `which_chat`, lists the choices;
+Contacts, browser session calls and `vault list`. Exit 2, `which_chat`, lists the choices;
 only chats on that agent's line can be selected. Owner calls and local modes
 (such as `browser setup`) refuse the selector. `messages --chat-id` names an
 iMessage conversation, separately.

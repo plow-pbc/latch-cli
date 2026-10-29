@@ -612,6 +612,11 @@ pub struct VaultArgs {
     /// Host to use (default: this machine's vault; naming this peer is local too)
     #[arg(long, env = "LATCH_HOST", global = true)]
     pub host: Option<String>,
+    /// The owner's Plow chat an agent's `list` acts for, when its line has
+    /// more than one: the host's gatekeeper reads what the owner asked
+    /// there. Refused on owner calls, local modes and every other command
+    #[arg(long, env = "LATCH_PLOW_CHAT", global = true)]
+    pub plow_chat: Option<String>,
     #[command(subcommand)]
     pub command: VaultCommand,
 }

@@ -35,7 +35,19 @@ pub async fn run(state: &StateDir, args: VaultArgs) -> Result<Value, Failure> {
         chat: None,
     };
     match args.command {
-        VaultCommand::List => target.call(call(json!({"command": "list"}))).await,
+        // An agent's list is judged in the chat it names, as its other calls are.
+        VaultCommand::List if target.host.is_none() && args.plow_chat.is_some() => Err(Failure::new(
+            code::plow_chat_not_supported,
+            "--plow-chat and LATCH_PLOW_CHAT select an agent's Plow chat on a host; this machine's own vault takes none: omit them".into(),
+        )),
+        VaultCommand::List => {
+            target
+                .call(Request {
+                    chat: args.plow_chat,
+                    ..call(json!({"command": "list"}))
+                })
+                .await
+        }
         VaultCommand::Show { item } => {
             target
                 .call(call(json!({"command": "show", "item": item})))
