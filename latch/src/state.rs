@@ -29,12 +29,14 @@
 //! - `plugins/`, on a host: the pinned engines, the Google CLI and the
 //!   Messages reader, a folder per version; a starting host removes the
 //!   versions it does not run.
+//! - `leftovers/`: what an older install left in an unmarked `~/.latch`,
+//!   moved there, a folder per run (see `check_format`).
 //! - `latch.json`: the folder's format (see `FORMAT`), which every command
 //!   checks before it reads or writes anything else.
 
 use std::fs;
 use std::io::{ErrorKind, Write};
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use iroh::{PublicKey, SecretKey};
@@ -127,36 +129,49 @@ impl StateDir {
 
     /// Refuses unmarked peer state and folders of another format.
     /// Missing, empty or plugin-only folders are initialized only by `create`;
-    /// an empty lock file a command left there holds no state either.
+    /// an empty lock file a command left there holds no state either, nor
+    /// does the Finder's `.DS_Store`, nor `leftovers/`. In the default
+    /// folder, anything else without a marker is what an older install left:
+    /// it is moved into `leftovers/` (`move_aside`), never read or deleted,
+    /// and the command goes on.
     pub fn check_format(&self) -> Result<(), Failure> {
+        let default = StateDir::new(crate::cli::BUILD_STATE_DIR.map(PathBuf::from))
+            .is_ok_and(|default| default.path == self.path);
+        self.check_format_moving(default)
+    }
+
+    fn check_format_moving(&self, move_leftovers: bool) -> Result<(), Failure> {
         let path = self.path.join("latch.json");
         let text = match fs::read_to_string(&path) {
             Ok(text) => text,
             Err(err) if err.kind() == ErrorKind::NotFound => {
-                match fs::read_dir(&self.path) {
+                let found = match self.leftovers() {
+                    Ok(found) if found.is_empty() => return Ok(()),
+                    Ok(found) => found,
                     Err(err) if err.kind() == ErrorKind::NotFound => return Ok(()),
-                    Ok(mut entries) => {
-                        if entries.all(|entry| {
-                            entry.is_ok_and(|entry| {
-                                let path = entry.path();
-                                (entry.file_name() == "plugins" && path.is_dir())
-                                    || (path.extension().is_some_and(|ext| ext == "lock")
-                                        && fs::symlink_metadata(&path)
-                                            .is_ok_and(|meta| meta.is_file() && meta.len() == 0))
-                            })
-                        }) {
-                            return Ok(());
-                        }
-                    }
                     Err(err) => return Err(self.io_failure(&self.path, err)),
+                };
+                if move_leftovers {
+                    return self.move_aside(&found);
                 }
-                return Err(Failure::new(
+                let aside = shell_word(&self.aside());
+                let moved: Vec<String> = found
+                    .iter()
+                    .map(|name| shell_word(&self.path.join(name)))
+                    .collect();
+                let command = format!("mkdir -p -m 700 {aside} && mv {} {aside}/", moved.join(" "));
+                let mut failure = Failure::new(
                     code::state_format,
                     format!(
-                        "{} has no latch.json format marker; pass a fresh --state-dir. Nothing was read or changed",
-                        self.path.display()
+                        "{} has no latch.json format marker and holds what latch did not put there ({}). \
+                         Nothing was read or changed: move them aside with `{command}`, or pass another --state-dir",
+                        self.path.display(),
+                        found.join(", "),
                     ),
-                ));
+                );
+                failure.next = Some(command.into());
+                failure.details = serde_json::json!({ "found": found });
+                return Err(failure);
             }
             Err(err) => return Err(self.io_failure(&path, err)),
         };
@@ -178,6 +193,65 @@ impl StateDir {
             crate::cli::version(),
         );
         Err(Failure::new(code::state_format, message))
+    }
+
+    /// What an unmarked folder holds that latch neither made nor ignores:
+    /// not the plugins or leftovers folder, an empty lock file or a
+    /// `.DS_Store`.
+    fn leftovers(&self) -> std::io::Result<Vec<String>> {
+        let mut found = Vec::new();
+        for entry in fs::read_dir(&self.path)? {
+            let entry = entry?;
+            let path = entry.path();
+            let ours = (["plugins", "leftovers"]
+                .map(std::ffi::OsStr::new)
+                .contains(&&*entry.file_name())
+                && path.is_dir())
+                || entry.file_name() == ".DS_Store"
+                || (path.extension().is_some_and(|ext| ext == "lock")
+                    && fs::symlink_metadata(&path)
+                        .is_ok_and(|meta| meta.is_file() && meta.len() == 0));
+            if !ours {
+                found.push(entry.file_name().to_string_lossy().into_owned());
+            }
+        }
+        found.sort();
+        Ok(found)
+    }
+
+    /// A folder in `leftovers/` no one has used yet: `leftovers/DATE`, then
+    /// `DATE-2` and on. Inside the state folder, so what it keeps is as
+    /// hidden from workers as the rest of it.
+    fn aside(&self) -> PathBuf {
+        let first = jiff::Zoned::now().date().to_string();
+        std::iter::once(first.clone())
+            .chain((2..).map(|n| format!("{first}-{n}")))
+            .map(|name| self.path.join("leftovers").join(name))
+            .find(|path| fs::symlink_metadata(path).is_err())
+            .expect("a name not taken")
+    }
+
+    /// Moves `found` into a new folder in `leftovers/` (owner-only), and says
+    /// so on stderr.
+    fn move_aside(&self, found: &[String]) -> Result<(), Failure> {
+        let aside = self.aside();
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .recursive(true)
+            .create(self.path.join("leftovers"))
+            .and_then(|()| fs::DirBuilder::new().mode(0o700).create(&aside))
+            .map_err(|err| self.io_failure(&aside, err))?;
+        for name in found {
+            fs::rename(self.path.join(name), aside.join(name))
+                .map_err(|err| self.io_failure(&self.path.join(name), err))?;
+        }
+        eprintln!(
+            "latch: {} held what an older install left ({}); moved them to {}",
+            self.path.display(),
+            found.join(", "),
+            aside.display()
+        );
+        Ok(())
     }
 
     /// Where this folder keeps its secrets (see `secrets.rs`).
@@ -373,6 +447,11 @@ impl StateDir {
     }
 }
 
+/// A path as one word for the shell.
+fn shell_word(path: &Path) -> String {
+    crate::login::shell_quoted(&path.to_string_lossy())
+}
+
 /// Writes a file only its owner can read, atomically and durably: into a
 /// temporary file of this write's own beside it (0600), synced, renamed
 /// over it, and the folder synced, so the new file is on disk before
@@ -521,6 +600,90 @@ mod tests {
 
         state.create().unwrap();
         assert!(state.path.join("latch.json").is_file());
+    }
+
+    /// What an older install left in the default folder (another app's
+    /// files beside the installer's plugins) is moved into its `leftovers/`,
+    /// whole, and the folder is then a fresh one; anywhere else it is refused, with the
+    /// command that moves it. The Finder's `.DS_Store` is never in the way.
+    #[test]
+    fn leftovers_in_the_default_folder_are_moved_aside_and_elsewhere_refused() {
+        let dir = test_dir();
+        let state = StateDir::new(Some(dir.path().join(".latch"))).unwrap();
+        let leave = |state: &StateDir| {
+            fs::create_dir_all(state.path.join("plugins/gog")).unwrap();
+            fs::write(state.path.join("dev.json"), "{\"mcpServers\": {}}").unwrap();
+            fs::write(state.path.join("mba.json"), "{\"mcpServers\": {}}").unwrap();
+            fs::write(state.path.join(".DS_Store"), "finder").unwrap();
+        };
+        leave(&state);
+
+        let refused = state.check_format_moving(false).unwrap_err();
+        assert_eq!(refused.code, "state_format");
+        assert_eq!(
+            refused.details["found"],
+            serde_json::json!(["dev.json", "mba.json"])
+        );
+        let command = refused.next.as_deref().unwrap();
+        assert!(refused.message.contains(command), "{}", refused.message);
+        assert!(state.path.join("dev.json").exists(), "nothing moved");
+        // The command it gives moves them, and the folder is a fresh one.
+        let ran = std::process::Command::new("sh")
+            .args(["-c", command])
+            .status()
+            .unwrap();
+        assert!(ran.success(), "{command}");
+        state.check_format_moving(false).unwrap();
+        fs::remove_dir_all(&state.path).unwrap();
+
+        leave(&state);
+        state.check_format_moving(true).unwrap();
+        let aside = state
+            .path
+            .join(format!("leftovers/{}", jiff::Zoned::now().date()));
+        // Where workers can't read them, as with the rest of the folder.
+        assert!(
+            crate::sandbox::never_readable(dir.path())
+                .iter()
+                .any(|hidden| aside.starts_with(hidden)),
+            "{}",
+            aside.display()
+        );
+        let mut moved: Vec<_> = fs::read_dir(&aside)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        moved.sort();
+        assert_eq!(moved, ["dev.json", "mba.json"]);
+        assert_eq!(
+            fs::read_to_string(aside.join("dev.json")).unwrap(),
+            "{\"mcpServers\": {}}"
+        );
+        let mode = fs::metadata(&aside).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700);
+        assert!(state.path.join("plugins/gog").is_dir());
+        assert!(state.path.join(".DS_Store").is_file());
+        state.create().unwrap();
+        assert!(state.path.join("latch.json").is_file());
+
+        // Leftovers found again go beside the first ones, never over them.
+        fs::remove_file(state.path.join("latch.json")).unwrap();
+        fs::write(state.path.join("dev.json"), "again").unwrap();
+        state.check_format_moving(true).unwrap();
+        let second = aside.with_file_name(format!(
+            "{}-2",
+            aside.file_name().unwrap().to_string_lossy()
+        ));
+        assert_eq!(
+            fs::read_to_string(second.join("dev.json")).unwrap(),
+            "again"
+        );
+
+        // A `.DS_Store` alone is no leftover: nothing moved, nothing refused.
+        let finder = StateDir::new(Some(dir.path().join("finder"))).unwrap();
+        fs::create_dir(&finder.path).unwrap();
+        fs::write(finder.path.join(".DS_Store"), "finder").unwrap();
+        finder.check_format_moving(false).unwrap();
     }
 
     #[test]

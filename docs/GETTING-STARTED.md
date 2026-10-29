@@ -366,6 +366,11 @@ settings (`rules`, `vault`) work without it.
 latch … reads only format 1".** That state folder was set up by a newer latch
 (update this one) or an older one (use that one). Nothing was read or
 changed. Don't edit `latch.json` by hand.
+"… has no latch.json format marker and holds what latch did not put there
+(…)": a folder named with `--state-dir` that holds other files. Run the
+command the error gives (also its `next`), which moves them aside, or pass
+another folder. In `~/.latch`, latch moves such leftovers aside itself, into
+`~/.latch/leftovers/DATE` (or `-2` and on, never over one), and says so.
 
 **`not_configured` (exit 2) on the first login: "latch doesn't know which
 Plow to use"**. A release build always knows; a latch built from a
