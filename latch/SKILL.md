@@ -80,11 +80,13 @@ yourself, in this order, each call judged:
    host with that plugin on (`latch status`: the host's `plugins` has
    `google` or `messages` `enabled`); both when the page doesn't say:
    - email: `latch google --host G -- gmail search 'from:shop.example
-     newer_than:1d' --max 5`, with the site's domain. Take the newest row
-     that arrived in the last few minutes (`internalDateIso`); when its
-     subject doesn't hold the code, read it with `latch google --host G --
-     gmail thread get ID --sanitize-content --account A` (the row's `id`
-     and `account`).
+     newer_than:1d' --max 5`, with the site's domain. A row is a thread: its
+     subject is the first message's, its `internalDateIso` the newest's, so
+     the subject can show an older code. Read each row from the last few
+     minutes, newest first, with `latch google --host G -- gmail thread get
+     ID --sanitize-content --account A` (the row's `id` and `account`), and
+     take the code from the thread's newest sign-in message, by that
+     message's own date, sent in the last few minutes.
    - text: `latch messages search --host M --since 10m code`.
 
    Take the code only from a message that is plainly that site's sign-in

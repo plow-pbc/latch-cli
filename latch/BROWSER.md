@@ -610,10 +610,13 @@ itself, in this order:
    doesn't say:
    - email: `latch google --host my-mac -- gmail search 'from:shop.example
      newer_than:1d' --max 5`, with the site's domain. Gmail's `newer_than:`
-     counts days, not minutes, so take the newest row that arrived in the
-     last few minutes (its `internalDateIso`); when its subject doesn't hold
-     the code, read the thread with `gmail thread get ID --sanitize-content
-     --account A` (the row's `id` and `account`).
+     counts days, not minutes, and a row is a thread: its subject is the
+     first message's and its `internalDateIso` the newest's, so the subject
+     can show an older code. Read each row from the last few minutes, newest
+     first, with `gmail thread get ID --sanitize-content --account A` (the
+     row's `id` and `account`), and take the code from the thread's newest
+     sign-in message, by that message's own date, sent in the last few
+     minutes.
    - text, on a Mac host that reads the owner's Messages (Full Disk
      Access): `latch messages search --host my-mac --since 10m code`.
 

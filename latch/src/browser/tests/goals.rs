@@ -1142,10 +1142,12 @@ async fn fills_inside_plans_take_latchs_suggestions_or_stop() {
     );
     assert_eq!(code, "needs_fields");
     // The stop says each way on: the vault's code, an emailed or texted one
-    // found and typed, then the owner.
+    // found and typed, then the owner. An email's code is read from its
+    // thread, since a search row's subject is the thread's first message.
     for way in [
         "--field otp=eN",
         "gmail search",
+        "gmail thread get",
         "latch messages search",
         "type eN",
         "handoff --reason 2fa",
