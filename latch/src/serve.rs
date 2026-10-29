@@ -1040,7 +1040,8 @@ async fn serve_caller(host: &Host, caller: &str, connection: &Connection) {
     let checking = Instant::now();
     let checked = host.check(caller).await;
     let timings = Some(audit::Timings {
-        caller_check_ms: checking.elapsed().as_millis() as u64,
+        caller_check_ms: Some(checking.elapsed().as_millis() as u64),
+        ..audit::Timings::default()
     });
     let refusal = match checked {
         Ok(identity) => {
@@ -1183,7 +1184,8 @@ async fn serve_request(
         host.check(caller).await
     };
     let timings = (!local).then(|| audit::Timings {
-        caller_check_ms: checking.elapsed().as_millis() as u64,
+        caller_check_ms: Some(checking.elapsed().as_millis() as u64),
+        ..audit::Timings::default()
     });
     let response = match identity {
         Err(denial) => {
@@ -1242,7 +1244,7 @@ async fn serve_request(
                 judgment,
                 stop,
             } = check(&checks, &identity, gate, chat.as_deref(), &mut request).await;
-            let done = if let Some(stop) = stop {
+            let mut done = if let Some(stop) = stop {
                 stop.done()
             } else {
                 match op {
@@ -1345,6 +1347,19 @@ async fn serve_request(
                         Value::Null,
                     ),
                 }
+            };
+            // A browser call's phases ride in its audit arguments as far as
+            // here; its record keeps them with its other timings.
+            let timings = match done.audit_args.as_object_mut() {
+                Some(args) if op == "browser" => {
+                    let phases = args.remove("timings").unwrap_or_default();
+                    let mut browser: audit::Timings =
+                        serde_json::from_value(phases).unwrap_or_default();
+                    browser.caller_check_ms = timings.and_then(|t| t.caller_check_ms);
+                    browser.total_ms = Some(started.elapsed().as_millis() as u64);
+                    Some(browser)
+                }
+                _ => timings,
             };
             let decision = decision(&done.response);
             log(&format!(

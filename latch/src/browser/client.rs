@@ -352,6 +352,15 @@ fn fill(request: &mut Value, command: BrowserCommand) -> Result<(), Failure> {
             "wait"
         }
         BrowserCommand::Goto { url } => {
+            // Refused here, before any host is reached: nothing to load.
+            if url.trim().is_empty() {
+                return Err(Failure::new(
+                    code::bad_arguments,
+                    "goto takes the URL to load, and this one is empty: \
+                     `latch browser goto https://example.com/`"
+                        .into(),
+                ));
+            }
             set(request, "url", json!(url));
             "goto"
         }

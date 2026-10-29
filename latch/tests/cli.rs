@@ -1001,6 +1001,59 @@ fn browser_text_has_no_raw_mode() {
     assert_eq!(error["error"]["code"], "usage");
 }
 
+/// A `goto` with no URL to load is the caller's mistake: refused before
+/// any host is reached, so its host neither answers nor audits it.
+#[test]
+fn browser_goto_with_no_url_is_a_usage_error_that_reaches_no_host() {
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let _serve = serving(&host, &relay);
+    let before = audit_records(&host).len();
+    for url in ["", "   "] {
+        let goto = latch(
+            &host,
+            &["browser", "--session", "sanysession", "goto", url],
+            &[],
+        );
+        let error = one_error_line(&String::from_utf8_lossy(&goto.stderr), Some(2));
+        assert_eq!(error["error"]["code"], "bad_arguments", "{url:?}: {error}");
+        assert!(
+            error["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("goto takes the URL"),
+            "{error}"
+        );
+    }
+    // Not even its connection was made, so the audit holds nothing new.
+    assert_eq!(audit_records(&host).len(), before);
+    // A goto with a URL does reach the host, which answers and audits it.
+    let sent = latch(
+        &host,
+        &[
+            "browser",
+            "--session",
+            "sanysession",
+            "goto",
+            "https://example.com/",
+        ],
+        &[],
+    );
+    let error = one_error_line(&String::from_utf8_lossy(&sent.stderr), Some(1));
+    assert_eq!(error["error"]["code"], "no_such_session", "{error}");
+    let records = audit_records(&host);
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| record["op"] == "browser")
+            .count(),
+        1,
+        "{records:#?}"
+    );
+}
+
 #[test]
 fn bad_arguments_exit_2_in_one_json_line_for_every_command() {
     let dir = test_dir();
@@ -8554,6 +8607,107 @@ fn a_linux_latch_asks_for_messages_and_a_linux_host_says_it_cannot_read_them() {
 #[cfg(any(target_os = "macos", feature = "linux-browser-tests"))]
 mod pinned {
     use super::*;
+
+    /// Every browser call's record says where its time went: the
+    /// gatekeeper, starting the browser, the browser acting and pages
+    /// settling, each only when the call had it, and its total, within the
+    /// time the command took.
+    #[test]
+    fn browser_records_time_each_phase_of_open_goto_eval_and_a_plan() {
+        let plow = LivePlow::start();
+        let (_runtime, relay) = local_relay();
+        let dir = test_dir();
+        let host = owner_host_on(&plow, dir.path());
+        let installed = std::env::var_os("LATCH_CFT_STATE")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/cft-state"));
+        let plugins = installed.canonicalize().unwrap().join("plugins");
+        std::os::unix::fs::symlink(plugins, host.join("plugins")).unwrap();
+        fs::write(host.join("host.json"), r#"{"allow_local_browsing":true}"#).unwrap();
+        let mut command = serve_command(&host, &relay);
+        command.arg("--headless-browsers");
+        let (_serve, mut log, _) = serving_with(command);
+        thread::spawn(move || std::io::copy(&mut log, &mut std::io::sink()));
+        until_serving(&host, &_serve);
+        // Each command, and how long it took the client end to end.
+        let run = |args: &[&str]| {
+            let began = std::time::Instant::now();
+            let output = latch(&host, args, &[]);
+            let wall = began.elapsed().as_millis() as u64;
+            assert!(output.status.success(), "{args:?}: {output:?}");
+            (
+                serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+                wall,
+            )
+        };
+        let url = format!("{}/socket-page", plow.url);
+        let (opened, open_wall) = run(&["browser", "open", &url]);
+        let session = opened["session"].as_str().unwrap().to_string();
+        let browse = |rest: &[&str]| run(&[&["browser", "--session", &session][..], rest].concat());
+        let (_, goto_wall) = browse(&["goto", &format!("{url}?again")]);
+        let script = dir.path().join("title.js");
+        fs::write(&script, "document.title").unwrap();
+        let (_, eval_wall) = browse(&["eval", "--script-file", script.to_str().unwrap()]);
+        let plan = dir.path().join("plan.json");
+        fs::write(
+            &plan,
+            r#"{"steps": [{"literal": {"op": "scroll", "text": "down"}}]}"#,
+        )
+        .unwrap();
+        let (_, do_wall) = browse(&["do", "--plan-file", plan.to_str().unwrap()]);
+
+        let records: Vec<Value> = audit_records(&host)
+            .into_iter()
+            .filter(|record| record["op"] == "browser")
+            .collect();
+        let phases = ["gate_ms", "launch_ms", "action_ms", "settle_ms"];
+        let expected = [
+            // A page's load is the navigation's own: no settling after it.
+            (
+                "open",
+                open_wall,
+                &["gate_ms", "launch_ms", "action_ms"][..],
+            ),
+            // The session's site was judged when it opened.
+            ("goto", goto_wall, &["action_ms"]),
+            // A script's page settles after it, as an action's does.
+            ("eval", eval_wall, &["gate_ms", "action_ms", "settle_ms"]),
+            ("do", do_wall, &["gate_ms", "action_ms", "settle_ms"]),
+        ];
+        assert_eq!(records.len(), expected.len(), "{records:#?}");
+        for (record, (command, wall, present)) in records.iter().zip(expected) {
+            assert_eq!(record["args"]["command"], command, "{record}");
+            let timings = &record["timings"];
+            println!("{command}: {timings} (the command took {wall} ms)");
+            for phase in phases {
+                assert_eq!(
+                    timings[phase].is_u64(),
+                    present.contains(&phase),
+                    "{command} {phase}: {timings}"
+                );
+            }
+            assert!(record["args"].get("timings").is_none(), "{record}");
+            let total = timings["total_ms"].as_u64().unwrap();
+            let parts: u64 = phases.iter().filter_map(|p| timings[*p].as_u64()).sum();
+            // Each part is rounded down, and the whole is inside the client's.
+            assert!(parts <= total + phases.len() as u64, "{command}: {timings}");
+            assert!(total <= wall, "{command}: {timings}, {wall} ms");
+        }
+
+        // A stream stays one line per object, with or without --pretty.
+        let pretty = latch(&host, &["audit", "--pretty"], &[]);
+        assert!(pretty.status.success(), "{pretty:?}");
+        let shown = String::from_utf8(pretty.stdout).unwrap();
+        let line = shown
+            .lines()
+            .find(|line| line.contains(r#""command":"latch browser goto"#))
+            .unwrap_or_else(|| panic!("{shown}"));
+        let record: Value = serde_json::from_str(line).unwrap();
+        assert_eq!(
+            record["record"]["details"]["timings"], records[1]["timings"],
+            "{line}"
+        );
+    }
 
     #[test]
     fn local_socket_browser_open_observe_close_uses_one_host_and_owner_audit() {

@@ -35,6 +35,7 @@ use super::plan::Op;
 use super::runtime::Runtime;
 use super::session::Session;
 use super::tags;
+use crate::audit::Timings;
 use crate::failure::{Failure, code};
 use crate::gate::Gate;
 use crate::serve::Done;
@@ -49,6 +50,21 @@ const MAX_SCRIPT_AUDIT: usize = 4096;
 const MAX_UPLOAD: u64 = 100 * 1024 * 1024;
 /// How long a closing runtime may take before its worker is killed.
 const CLOSING: Duration = Duration::from_secs(15);
+
+tokio::task_local! {
+    /// Where the request this task answers has spent its time so far.
+    static PHASES: std::cell::RefCell<Timings>;
+}
+
+/// Adds `took` to the phase of the request this task answers that `pick`
+/// chooses; outside one (the browser's own tests), nothing.
+pub(super) fn add_time(pick: fn(&mut Timings) -> &mut Option<u64>, took: Duration) {
+    let _ = PHASES.try_with(|phases| {
+        let mut phases = phases.borrow_mut();
+        let phase = pick(&mut phases);
+        *phase = Some(phase.unwrap_or_default() + took.as_millis() as u64);
+    });
+}
 
 pub struct Browsers {
     state_dir: PathBuf,
@@ -299,7 +315,10 @@ impl Browsers {
         caller: &str,
         task: Option<&str>,
     ) -> Result<(String, Arc<Entry>), Failure> {
-        let runtime = Arc::new(self.start(engine).await?);
+        let launching = Instant::now();
+        let started = self.start(engine).await;
+        add_time(|phases| &mut phases.launch_ms, launching.elapsed());
+        let runtime = Arc::new(started?);
         let session = Session::new(runtime.clone());
         let id = format!("s{}", letters(&rand::random::<[u8; 16]>()));
         let entry = Arc::new(Entry {
@@ -447,8 +466,31 @@ impl Browsers {
     }
 }
 
-/// `browser`: one `latch browser` command.
+/// `browser`: one `latch browser` command. Its audit arguments carry the
+/// time it spent in each phase (`add_time`), under `timings`, for the host to
+/// move into the record's own.
 pub async fn run(
+    browsers: &Browsers,
+    caller: &str,
+    kind: &str,
+    gate: Option<Gate<'_>>,
+    args: Value,
+    send: &mut SendStream,
+    recv: &mut RecvStream,
+) -> Done {
+    let (mut done, timings) = PHASES
+        .scope(Default::default(), async {
+            let done = run_command(browsers, caller, kind, gate, args, send, recv).await;
+            (done, PHASES.with(|phases| *phases.borrow()))
+        })
+        .await;
+    if let Some(args) = done.audit_args.as_object_mut() {
+        args.insert("timings".into(), json!(timings));
+    }
+    done
+}
+
+async fn run_command(
     browsers: &Browsers,
     caller: &str,
     kind: &str,

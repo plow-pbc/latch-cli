@@ -79,7 +79,8 @@ pub struct Record {
     /// revisions. Never chat or rules text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gate: Option<Value>,
-    /// How long parts of it took, for a remote caller.
+    /// How long parts of it took: for a remote caller, and for every
+    /// `browser` call.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timings: Option<Timings>,
     /// The line's `prev`.
@@ -90,12 +91,29 @@ pub struct Record {
     pub hash: String,
 }
 
-/// How long parts of an operation took, in milliseconds.
-#[derive(Serialize, Deserialize, Clone, Copy, Debug)]
+/// How long parts of an operation took, in milliseconds. A part the
+/// operation did not have is left out.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default)]
 pub struct Timings {
     /// Plow saying who the caller is: on connect, and again before each
     /// operation.
-    pub caller_check_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller_check_ms: Option<u64>,
+    /// `browser`: the gatekeeper judging the call (each judgment, added up).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate_ms: Option<u64>,
+    /// `browser`: starting a new session's browser.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launch_ms: Option<u64>,
+    /// `browser`: the browser loading pages and acting, but for `settle_ms`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action_ms: Option<u64>,
+    /// `browser`: waiting for pages to settle, and a `wait`'s waiting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settle_ms: Option<u64>,
+    /// `browser`: the whole call, from its request to its answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_ms: Option<u64>,
 }
 
 /// One line on disk.

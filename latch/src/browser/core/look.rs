@@ -394,7 +394,7 @@ impl<D: Driver> Core<D> {
                 return Ok(Value::Object(result));
             }
             std::thread::sleep(POLL);
-            events.extend(self.driver.settle()?);
+            events.extend(self.settle()?);
         }
     }
 

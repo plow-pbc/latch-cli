@@ -295,6 +295,9 @@ pub struct Core<D: Driver> {
     next_number: usize,
     /// When the current call's reading stops starting frames.
     read_until: Option<Instant>,
+    /// How long the current call has waited for pages to settle (and a
+    /// `wait` for its condition), if it has: its audit's `settle_ms`.
+    settled: Option<Duration>,
 }
 
 /// Where a ref's element is, ready for input.
@@ -320,7 +323,16 @@ impl<D: Driver> Core<D> {
             numbers: HashMap::new(),
             next_number: 0,
             read_until: None,
+            settled: None,
         }
+    }
+
+    /// The driver's `settle`, its time counted in the call's `settle_ms`.
+    fn settle(&mut self) -> Result<Vec<Event>, Failure> {
+        let settling = Instant::now();
+        let events = self.driver.settle();
+        self.settled = Some(self.settled.unwrap_or_default() + settling.elapsed());
+        events
     }
 
     /// Bounds the call about to run (`Driver::limit`). A reading stops
@@ -338,6 +350,7 @@ impl<D: Driver> Core<D> {
     /// `input` is an upload's bytes.
     pub fn call(&mut self, call: Call, input: Option<Vec<u8>>) -> Result<Answer, Failure> {
         let mut audit = Map::new();
+        self.settled = None;
         let fill_step = matches!(
             call,
             Call::PrepareFill(_)
@@ -384,7 +397,13 @@ impl<D: Driver> Core<D> {
             Call::Wait {
                 condition,
                 within_ms,
-            } => self.wait(condition, within_ms, &mut audit),
+            } => {
+                let waiting = Instant::now();
+                let waited = self.wait(condition, within_ms, &mut audit);
+                // All of it is waiting, its own settling included.
+                self.settled = Some(waiting.elapsed());
+                waited
+            }
             Call::FillInventory { snapshot } => self.fill_inventory(snapshot.as_deref()),
             Call::PrepareFill(prepare) => self.prepare_fill(prepare, &mut audit),
             Call::NextStage => self.next_stage(),
@@ -445,6 +464,9 @@ impl<D: Driver> Core<D> {
             Call::DownloadGet { download } => self.download_get(&download, &mut audit),
             Call::Close => unreachable!("the worker closes the browser"),
         };
+        if let Some(settled) = self.settled {
+            audit.insert("settle_ms".into(), json!(settled.as_millis() as u64));
+        }
         match result {
             Ok(result) => Ok(Answer {
                 bytes: self.bytes.take(),
@@ -524,7 +546,7 @@ impl<D: Driver> Core<D> {
             .run(&main, &format!("__latch.text({PREVIEW_CHARS})"))?;
         result.insert("text".into(), text["text"].clone());
         result.insert("tabs".into(), json!(self.driver.tabs()?));
-        let events = self.driver.settle()?;
+        let events = self.settle()?;
         if !events.is_empty() {
             result.insert("events".into(), json!(events));
         }
@@ -564,7 +586,7 @@ impl<D: Driver> Core<D> {
                 format!("the script's result is {size} bytes; the limit is {MAX_EVAL_RESULT}"),
             ));
         }
-        let events = self.driver.settle()?;
+        let events = self.settle()?;
         let mut result = Map::new();
         result.insert("value".into(), value);
         if !events.is_empty() {
@@ -618,7 +640,7 @@ impl<D: Driver> Core<D> {
             &format!("__latch.elementAt({snapshot:?}, {index})"),
             &[folder.join(&name)],
         )?;
-        let events = self.driver.settle()?;
+        let events = self.settle()?;
         let mut result = Map::new();
         result.insert("action".into(), json!("upload"));
         result.insert("target".into(), json!({"ref": target}));
@@ -745,7 +767,7 @@ impl<D: Driver> Core<D> {
             }
         }
         result.insert("dispatched".into(), json!(true));
-        let events = self.driver.settle()?;
+        let events = self.settle()?;
         self.no_secret_sent()?;
         self.after(&before, events, &mut result)?;
         Ok(Value::Object(result))
@@ -1039,7 +1061,7 @@ impl<D: Driver> Core<D> {
             json!(if accept { "accept" } else { "dismiss" }),
         );
         self.driver.answer_dialog(accept, text)?;
-        let events = self.driver.settle()?;
+        let events = self.settle()?;
         let before = Map::new();
         let mut result = Map::new();
         result.insert(

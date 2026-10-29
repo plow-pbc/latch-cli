@@ -121,7 +121,9 @@ pub(super) async fn judge(
         "judged".into(),
         serde_json::to_value(&action).expect("an action serializes"),
     );
+    let judging = std::time::Instant::now();
     let judgment = gate.judge(&action).await;
+    super::host::add_time(|phases| &mut phases.gate_ms, judging.elapsed());
     audit.insert("gate".into(), judgment.gate);
     judgment.verdict
 }

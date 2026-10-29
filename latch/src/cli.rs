@@ -1214,8 +1214,13 @@ What it prints, as JSON lines, with or without --follow:
       has_older says whether there are older records than this page.
   {\"type\":\"record\",\"cursor\":ID,\"record\":{...}}, one line per record:
       id, time, caller, caller_name, agent, op, decision, outcome, and
-      details: started, args, gate. A record's id is the audit_id its
-      caller got back.
+      details: started, args, gate, timings. A record's id is the audit_id
+      its caller got back. timings is in milliseconds, each part only when
+      the call had it: caller_check_ms (Plow checking a remote caller) and,
+      for a browser call, gate_ms (the gatekeeper), launch_ms (starting a
+      session's browser), action_ms (the browser loading and acting),
+      settle_ms (waiting for pages to settle, and a wait's waiting) and
+      total_ms (the whole call).
   {\"type\":\"caught_up\",\"cursor\":ID,\"has_older\":BOOL}
       The page is complete here; ID is the last record shown.
   With --follow, then one record line for each new record.

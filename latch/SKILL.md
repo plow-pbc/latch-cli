@@ -150,6 +150,10 @@ fixes it.
 
 - Each `open` starts signed in nowhere, and its logins last until it
   closes: do the whole task in one session.
+- `engine_not_installed`: `details.installed` lists the engines the host
+  has, and `details.default` the one an `open` with no `--engine` uses. If
+  the task can use one of them, `open` again on it; else tell the owner the
+  `details.setup` command.
 - A site that blocks you outright ("Access denied", nothing to click or
   type) will not let a retry or a wait through: stop and tell the owner.
   A challenge you can't do yourself is `handoff`'s; on a host with no
