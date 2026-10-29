@@ -3,7 +3,7 @@
 Start with these two. The first shows this computer's state, even offline.
 The second follows the host's log as it's written.
 
-```sh
+```sh host
 latch status --local --pretty
 latch logs -f
 ```

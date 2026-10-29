@@ -13,7 +13,7 @@ There's nothing to set up: Plow gives each agent it runs its own credential.
 Start one with New Agent in the Plow Latch app, or from one of your own
 computers:
 
-```sh
+```sh host
 latch agents catalog
 latch agents new --cloud KIND --name NAME --line LINE
 ```
@@ -29,7 +29,7 @@ It gets its credential in three steps.
 **1. Pick a phone line.** Each agent answers on one of your Plow phone lines.
 That's where you chat with it. From one of your own computers:
 
-```sh
+```sh host
 latch agents lines
 ```
 
@@ -37,7 +37,7 @@ latch agents lines
 (that's what `--own` means), on that line, and writes its credential to a new
 file that only you can read:
 
-```sh
+```sh host
 latch agents new --own --name my-agent --line LINE --token-file my-agent.token
 ```
 
@@ -45,10 +45,10 @@ latch agents new --own --name my-agent --line LINE --token-file my-agent.token
 `my-agent.token` like a password.
 
 **3. Give the agent its credential.** Copy the file to the agent's computer,
-and give it Latch with the [client-only install](index.md#two-kinds-of-install).
+and give it Latch with the [Agent install](index.md#install).
 Then log in, in a state folder of its own:
 
-```sh
+```sh agent
 export PLOW_TOKEN_FILE=~/my-agent.token
 export LATCH_STATE_DIR=~/latch-agent
 latch login

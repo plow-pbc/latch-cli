@@ -68,7 +68,7 @@ Your agents use them without seeing them.
 The host keeps a sealed record of every request: who asked, for what, the
 gatekeeper's verdict and the outcome.
 
-```sh
+```sh host
 latch audit
 latch audit verify
 ```

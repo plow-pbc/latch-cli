@@ -20,8 +20,11 @@ between the two computers. Without it, an Agent command goes to the host
 host. With several hosts and none named, it stops with `host_required`. A
 Host command without `--host` works on this computer's own host.
 
-```sh
-latch status --host my-pi
+```sh host
+latch rules show --host my-pi
+```
+
+```sh agent
 latch browser open --host my-mac https://example.com
 ```
 

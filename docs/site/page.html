@@ -48,7 +48,16 @@
   text-transform:uppercase;line-height:1;padding:5px 8px 4px;border-radius:var(--r-pill);white-space:nowrap;vertical-align:1px;}
 .pill-host{background:#E8EDE8;color:#3F5A3F;}
 .pill-agent{background:#ECEAFF;color:#4B3FA8;}
-.doc .code-pills{display:flex;gap:6px;margin-bottom:-6px;}
+/* A code block's Host or Agent pill: a tab on its top edge. */
+.doc .code-block{display:flex;flex-wrap:wrap;gap:0 4px;align-items:flex-end;}
+.doc .code-block .code{flex-basis:100%;margin-top:0;border-top-left-radius:0;}
+.code-tab{font-family:var(--mono);font-size:10.5px;font-weight:500;letter-spacing:.1em;text-transform:uppercase;line-height:1;
+  padding:6px 10px 5px;border-radius:8px 8px 0 0;}
+.doc .two-up{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;}
+.doc .two-up .panel{min-width:0;display:flex;flex-direction:column;gap:12px;background:var(--paper);border:1px solid var(--line);
+  border-radius:var(--r-md);padding:16px;}
+.doc .two-up .panel p{font-size:15px;}
+@media(max-width:860px){ .doc .two-up{grid-template-columns:minmax(0,1fr);} }
 .doc .code{margin-top:2px;}
 .doc .code-bar{position:absolute;top:7px;right:8px;padding:0;border:0;}
 .doc .code-bar .fn{display:none;}

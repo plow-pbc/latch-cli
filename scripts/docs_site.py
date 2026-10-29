@@ -62,8 +62,11 @@ between the two computers. Without it, an Agent command goes to the host
 host. With several hosts and none named, it stops with `host_required`. A
 Host command without `--host` works on this computer's own host.
 
-```sh
-latch status --host my-pi
+```sh host
+latch rules show --host my-pi
+```
+
+```sh agent
 latch browser open --host my-mac https://example.com
 ```
 """
@@ -199,10 +202,10 @@ def code_block(info, lines):
         raise SystemExit(f"docs_site.py: code block language {lang!r} is not sh, json or text")
     copy = ('<button class="code-copy" type="button" aria-label="Copy code"><i class="ph-bold ph-copy"></i></button>'
             if lang == "sh" else "")
-    pills = "".join(pill_html(PILLS[t]) for t in tags)
-    head = f'<div class="code-pills">{pills}</div>' if pills else ""
-    return (f'{head}<div class="code" data-lang="{lang}"><div class="code-bar"><span class="fn">{label}</span>{copy}</div>'
-            f"<pre><code>{body}</code></pre></div>")
+    tabs = "".join(f'<span class="code-tab pill-{t}">{PILLS[t]}</span>' for t in tags)
+    panel = (f'<div class="code" data-lang="{lang}"><div class="code-bar"><span class="fn">{label}</span>{copy}</div>'
+             f"<pre><code>{body}</code></pre></div>")
+    return f'<div class="code-block">{tabs}{panel}</div>' if tabs else panel
 
 
 def table(lines):
@@ -227,14 +230,48 @@ def table(lines):
     return f'<div class="table-wrap"><table><thead><tr>{th}</tr></thead><tbody>{trs}</tbody></table></div>'
 
 
+TWO_UP, NEXT, END = "<!-- two-up -->", "<!-- next -->", "<!-- /two-up -->"
+
+
 def render(markdown):
     """The page's title and its body as HTML."""
-    lines = markdown.splitlines()
-    out, title, i = [], None, 0
+    titles = []
+    body = blocks(markdown.splitlines(), titles)
+    if len(titles) != 1:
+        raise SystemExit("docs_site.py: a page needs one # title")
+    return titles[0], body
+
+
+def blocks(lines, titles):
+    """Blocks of Markdown as HTML. Between `<!-- two-up -->` and
+    `<!-- /two-up -->`, `<!-- next -->` splits two panels side by side
+    (invisible on GitHub)."""
+    out, i = [], 0
     while i < len(lines):
         line = lines[i]
         if not line.strip():
             i += 1
+        elif line.strip() == TWO_UP:
+            end = i + 1
+            while end < len(lines) and lines[end].strip() != END:
+                end += 1
+            if end == len(lines):
+                raise SystemExit("docs_site.py: a two-up block is not closed")
+            parts, part = [], []
+            for inner in lines[i + 1:end]:
+                if inner.strip() == NEXT:
+                    parts.append(part)
+                    part = []
+                else:
+                    part.append(inner)
+            parts.append(part)
+            if len(parts) != 2:
+                raise SystemExit("docs_site.py: a two-up block has two panels")
+            out.append('<div class="two-up">' + "".join(
+                f'<div class="panel">{blocks(part, titles)}</div>' for part in parts) + "</div>")
+            i = end + 1
+        elif line.lstrip().startswith("<!--"):
+            raise SystemExit(f"docs_site.py: {line.strip()!r} outside a two-up block")
         elif line.startswith("```"):
             lang, end = line[3:].strip(), i + 1
             while end < len(lines) and lines[end] != "```":
@@ -246,9 +283,7 @@ def render(markdown):
         elif m := re.match(r"(#{1,3}) (.+)", line):
             level, text = len(m.group(1)), m.group(2)
             if level == 1:
-                if title:
-                    raise SystemExit("docs_site.py: a page has one # title")
-                title = text
+                titles.append(text)
                 out.append(f"<h1>{inline(text)}</h1>")
             else:
                 out.append(f'<h{level} id="{slug(text)}">{inline(text)}</h{level}>')
@@ -279,13 +314,11 @@ def render(markdown):
             out.append(f"<{tag}>" + "".join(f"<li>{inline(item)}</li>" for item in items) + f"</{tag}>")
         else:
             end = i
-            while end < len(lines) and lines[end].strip() and not re.match(r"(```|#|\||> |- |\d+\. )", lines[end]):
+            while end < len(lines) and lines[end].strip() and not re.match(r"(```|#|\||> |- |\d+\. |<!--)", lines[end]):
                 end += 1
             out.append(f"<p>{inline(' '.join(l.strip() for l in lines[i:end]))}</p>")
             i = end
-    if not title:
-        raise SystemExit("docs_site.py: a page needs a # title")
-    return title, "\n".join(out)
+    return "\n".join(out)
 
 
 def description(body):
