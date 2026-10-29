@@ -232,25 +232,8 @@ enum TestHooks {
             Task { await app.removeDevice(name) }
         }
         on("logout") { _ in Task { try? await app.logOut() } }
-        // New Agent: open it, fill "FIELD=VALUE" (kind own|cloud, name,
-        // cloud, line, file: the path the save panel would give), create.
+        // New Agent: open it.
         on("new-agent") { _ in app.sheet = .newAgent(NewAgent()) }
-        on("agent-type") { argument in
-            guard case let .newAgent(flow)? = app.sheet, let argument, let equals = argument.firstIndex(of: "=") else { return }
-            let value = String(argument[argument.index(after: equals)...])
-            switch argument[..<equals] {
-            case "kind": flow.kind = value == "own" ? .own : .cloud
-            case "name": flow.name = value
-            case "cloud": flow.cloudKind = value
-            case "line": flow.line = value
-            case "file": flow.tokenFile = URL(filePath: value)
-            default: break
-            }
-        }
-        on("agent-create") { _ in
-            guard case let .newAgent(flow)? = app.sheet else { return }
-            Task { await flow.create(app: app) }
-        }
         // The main window's open sheet, as the window server shows it.
         on("snapshot-sheet") { path in
             guard let path, let sheet = NSApp.windows.first(where: { $0.isVisible && $0.canBecomeMain })?.attachedSheet else { return }

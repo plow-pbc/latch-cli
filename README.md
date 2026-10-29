@@ -166,9 +166,13 @@ No Homebrew tap is included.
   last used its credential), from one of your own machines. `latch agents
   --host NAME` adds each one's standing on that host: whether it has rules
   of its own there and whether the host refuses it `exec`. Audit records
-  name each caller as it was then (`caller_name`). `latch agents catalog`
-  and `latch agents lines` list the cloud agents Plow runs and its phone
-  lines; `latch agents new --line LINE --name NAME` creates one, either
+  name each caller as it was then (`caller_name`). `latch agents
+  start-by-text` says what to text Plow's number from a phone to start a
+  cloud agent (the phrase, a QR code's contents and an `sms:` link): Plow
+  sets it up on a line of its own and texts back, as the Mac app's New
+  Agent shows it. `latch agents catalog` and `latch agents lines` list the
+  cloud agents Plow runs and its phone lines; `latch agents new --line LINE
+  --name NAME` creates one directly, either
   `--cloud KIND` or `--own --token-file FILE` (the credential goes only to
   that new file, mode 600; its program logs in with
   `PLOW_TOKEN_FILE=FILE latch login`); `latch agents show AGENT` follows a

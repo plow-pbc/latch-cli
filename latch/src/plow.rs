@@ -179,6 +179,25 @@ pub struct AgentKind {
     pub name: String,
 }
 
+/// How a cloud agent is started by text: Plow's managed number, and the
+/// phrases that start each kind it offers.
+#[derive(Deserialize, Debug)]
+pub struct Signup {
+    pub managed_phone: String,
+    pub providers: Vec<SignupProvider>,
+    /// The kind Plow's own pages and clients offer without asking which.
+    pub default_provider: Option<String>,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct SignupProvider {
+    /// `exe:SLUG`, as in the catalog.
+    pub id: String,
+    pub name: String,
+    /// The texts that start it; a client offers the first.
+    pub phrases: Vec<String>,
+}
+
 /// One of Plow's phone lines.
 #[derive(Deserialize, Debug)]
 pub struct PlowLine {
@@ -497,6 +516,13 @@ impl Plow {
     /// The kinds of agent Plow can run, its own `self_hosted` among them.
     pub async fn agent_kinds(&self) -> Result<Vec<AgentKind>, Failure> {
         let url = format!("{}/v1/agents/providers", self.api_url);
+        let response = self.send(self.http.get(url)).await?;
+        response.json().await.map_err(|_| bad_answer())
+    }
+
+    /// How to start a cloud agent by texting Plow's managed number.
+    pub async fn signup(&self) -> Result<Signup, Failure> {
+        let url = format!("{}/v1/signup", self.api_url);
         let response = self.send(self.http.get(url)).await?;
         response.json().await.map_err(|_| bad_answer())
     }
