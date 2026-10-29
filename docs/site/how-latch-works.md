@@ -18,8 +18,9 @@ your hosts. It can't change your rules, read your vault's secrets or turn
 connectors on.
 
 **Plow is the directory.** It says who each caller is and where your hosts
-are. The data itself goes straight between the two machines, encrypted, and
-never through Plow.
+are. A file's bytes and a program's output go straight between the two
+machines, encrypted, and never through Plow. What the gatekeeper judges does
+go to Plow: the request, your rules and your chat with the agent.
 
 ## The gatekeeper and rules
 

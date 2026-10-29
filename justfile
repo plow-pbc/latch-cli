@@ -27,7 +27,7 @@ gatekeeper *args:
 # The docs site for plow.co/latch/docs: docs/site/commands.md from this checkout's `latch help --json`, then every page as HTML into OUT (a plow checkout's plow.co/latch/docs).
 docs-site out:
     cd latch && cargo build --quiet --locked
-    python3 scripts/docs_site.py write --latch "${CARGO_TARGET_DIR:-latch/target}/debug/latch" --out "{{out}}"
+    t="${CARGO_TARGET_DIR:-target}"; case "$t" in /*) ;; *) t="latch/$t" ;; esac; python3 scripts/docs_site.py write --latch "$t/debug/latch" --out "{{out}}"
 
 # This checkout as a dev Mac app (.dev/app/Plow Latch Dev.app), on `just build`'s latch, with gog, the Messages reader and Chrome for Testing.
 app *args:

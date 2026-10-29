@@ -299,7 +299,7 @@ def steps(where, suites, gate, shard, archive=None, ci=False, only=None):
         out.append(("test.py", ["core"], ["python3", "scripts/test_test.py"], ROOT))
         # The Commands page says what this build's `latch help --json` says.
         out.append(("docs site", ["core"], ["python3", "scripts/docs_site.py", "check", "--latch",
-                                            str(target_dir(where) / "debug/latch")], ROOT))
+                                            str(LATCH / target_dir(where) / "debug/latch")], ROOT))
     if "installer" in suites and first_shard:
         out.append(("install.sh", ["installer"], ["python3", "scripts/test-install-release.py"], ROOT))
         out.append(("install-binary.sh", ["installer"], ["python3", "scripts/test-install.py"], ROOT))
