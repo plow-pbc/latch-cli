@@ -34,6 +34,20 @@ def seed_gog(setup, state):
         "version": "1.0", "sha256": hashlib.sha256(gog.read_bytes()).hexdigest()}, indent=2))
 
 
+def seed_cft(setup, state):
+    """Chrome for Testing already in `state`, as `setup`'s pin names it for a
+    Mac on arm64: nothing to download."""
+    pin = setup / "src/browser/cft.json"
+    pin.parent.mkdir(parents=True, exist_ok=True)
+    # The pin's fixed shape, as browser-engines.sh reads it with sed.
+    pin.write_text('{\n  "version": "1.0",\n  "builds": {\n    "mac_arm64": {\n'
+                   '      "folder": "chrome-mac-arm64",\n      "executable": "chrome"\n    }\n  }\n}\n')
+    installed = state / "plugins/cft/1.0"
+    (installed / "chrome-mac-arm64").mkdir(parents=True)
+    (installed / "chrome-mac-arm64/chrome").write_bytes(b"")
+    shutil.copyfile(pin, installed / "manifest.json")
+
+
 def fixture(root, state, binary_script, system="FixtureOS", machine="x86_64", macos="26.0"):
     """install-binary.sh, with the scripts it runs, beside a fake latch, with
     a local gog pinned in `state`, a `uname` that names `system` and
@@ -264,10 +278,7 @@ class BinaryInstall(unittest.TestCase):
             state = root / "state"
             seed_gog(setup, state)
             # Chrome for Testing already in place, so nothing is downloaded.
-            cft_pin = '{\n  "version": "1.0"\n}\n'
-            (setup / "src/browser/cft.json").write_text(cft_pin)
-            (state / "plugins/cft/1.0").mkdir(parents=True)
-            (state / "plugins/cft/1.0/manifest.json").write_text(cft_pin)
+            seed_cft(setup, state)
             tools = root / "tools"
             tools.mkdir()
             uname = tools / "uname"
@@ -570,11 +581,7 @@ class HostUpgrade(unittest.TestCase):
         setup, _, tools = fixture(root, state, "", system="Darwin", machine="arm64")
         (setup / "latch").unlink()
         # Chrome for Testing already in place, so nothing is downloaded.
-        cft_pin = '{\n  "version": "1.0"\n}\n'
-        (setup / "src/browser").mkdir(parents=True)
-        (setup / "src/browser/cft.json").write_text(cft_pin)
-        (state / "plugins/cft/1.0").mkdir(parents=True)
-        (state / "plugins/cft/1.0/manifest.json").write_text(cft_pin)
+        seed_cft(setup, state)
         for app, version, window in [(setup / "Plow Latch.app", new_version, new_window),
                                      (home / "Applications/Plow Latch.app", old_version, old_window)]:
             (app / "Contents/MacOS").mkdir(parents=True)
@@ -689,11 +696,7 @@ class MacAppFolder(unittest.TestCase):
         log = root / "calls"
         setup, _, tools = fixture(root, state, "", system="Darwin", machine="arm64")
         (setup / "latch").unlink()
-        cft_pin = '{\n  "version": "1.0"\n}\n'
-        (setup / "src/browser").mkdir(parents=True)
-        (setup / "src/browser/cft.json").write_text(cft_pin)
-        (state / "plugins/cft/1.0").mkdir(parents=True)
-        (state / "plugins/cft/1.0/manifest.json").write_text(cft_pin)
+        seed_cft(setup, state)
         new = fake_latch("0.1.0 (2)", log, running=host != "none", managed=host == "managed",
                          other_version=host == "other_version", login_item=login_item)
         apps = [(setup / "Plow Latch.app", new)]
@@ -855,11 +858,7 @@ class MessagesReaderInstall(unittest.TestCase):
             setup, _, tools = fixture(root, state, script, system="Darwin", machine="arm64")
             (setup / "latch-messages").write_bytes(b"reader-fixture")
             # A Mac install also puts Chrome for Testing in place: one already there.
-            pin = '{\n  "version": "1.0"\n}\n'
-            (setup / "src/browser").mkdir()
-            (setup / "src/browser/cft.json").write_text(pin)
-            (state / "plugins/cft/1.0").mkdir(parents=True)
-            (state / "plugins/cft/1.0/manifest.json").write_text(pin)
+            seed_cft(setup, state)
             args = ["sh", str(setup / "install-binary.sh"), "--state-dir", str(state),
                     "--bin-dir", str(root / "bin")]
             env = {**os.environ, "HOME": str(root / "home"), "PATH": f"{tools}:{os.environ['PATH']}"}
