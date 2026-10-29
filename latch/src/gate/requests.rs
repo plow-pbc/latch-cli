@@ -148,6 +148,14 @@ pub fn read(state_dir: &Path, id: &str, raw: bool) -> Result<Value, Failure> {
         }
         crate::redact::hide_in(&mut kept["request"]);
         crate::redact::hide_in(&mut kept["answer"]);
+        // The owner's own request is the action as text: written again from
+        // the action as hidden, not hidden word by word.
+        if let Some(state) = kept.pointer_mut("/request/state")
+            && state["conversation"][0]["id"] == "request"
+        {
+            let action = state["proposed_action"].to_string();
+            state["conversation"][0]["text"] = format!("Do this now: {action}").into();
+        }
     }
     Ok(kept)
 }

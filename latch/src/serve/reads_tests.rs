@@ -530,6 +530,26 @@ async fn the_owner_reads_back_each_gatekeeper_call_as_sent_and_an_agent_cannot()
 }
 
 #[tokio::test]
+async fn the_owners_request_is_shown_as_its_hidden_action() {
+    let world = World {
+        decide: Some(always_covered),
+        ..World::default()
+    };
+    let t = start(world).await;
+    let device = t.caller("device").await;
+    let exec = json!({"argv": ["true", "--password", "short-secret"]});
+    let (answer, _) = t.call(&device, "exec", exec).await;
+    assert!(matches!(answer, Response::Ok(_)), "{answer:?}");
+    let shown = judge(&t, &device, &execs(&t)[0]["gate"]["kept_request"], false).await;
+    assert!(!shown.to_string().contains("short-secret"), "{shown}");
+    let state = &shown["request"]["state"];
+    let argv = &state["proposed_action"]["argv"];
+    assert_eq!(argv, &json!(["true", "--password", "[redacted]"]));
+    let text = format!("Do this now: {}", state["proposed_action"]);
+    assert_eq!(state["conversation"][0]["text"], text);
+}
+
+#[tokio::test]
 async fn a_call_plow_never_answered_is_kept_for_7_days() {
     let t = start(World::default()).await;
     let (device, agent) = (t.caller("device").await, t.caller("agent").await);
