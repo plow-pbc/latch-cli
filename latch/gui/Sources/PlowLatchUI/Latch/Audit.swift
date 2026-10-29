@@ -136,12 +136,12 @@ nonisolated struct AuditRecord: Decodable, Equatable, Identifiable {
     var isRefused: Bool { decision != "allow" }
 
     /// The owner looking, not acting: `rules show`, `vault list`/`show`,
-    /// `plugins list`, `status`, `audit` and its screenshots (the app's own reads among them).
+    /// `plugins list`, `status`, `audit`, its screenshots and gatekeeper requests (the app's own reads among them).
     /// Home leaves them out; Activity shows them with connections.
     var isOwnerRead: Bool {
         guard agent == nil else { return false }
         switch op {
-        case "status", "audit", "audit_shot": return true
+        case "status", "audit", "audit_shot", "audit_judge": return true
         case "rules": return args?.command == "show"
         case "vault": return ["list", "show"].contains(args?.command)
         case "plugins": return args?.command == "list"

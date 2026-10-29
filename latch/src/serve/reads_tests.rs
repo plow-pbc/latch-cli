@@ -473,6 +473,23 @@ async fn the_owner_reads_back_each_gatekeeper_call_as_sent_and_an_agent_cannot()
         }
     }
 
+    // Each read is audited as the owner's, as `latch audit judge` names it.
+    let reads: Vec<Value> = t
+        .audit()
+        .into_iter()
+        .filter(|r| r["op"] == "audit_judge")
+        .collect();
+    assert_eq!(reads.len(), 3);
+    assert_eq!(
+        reads[0]["args"],
+        json!({"request": by_owner["kept_request"]})
+    );
+    let line = crate::audit::read_all(&t.state.join(crate::audit::FILE)).unwrap();
+    let line = line.iter().find(|r| r.op == "audit_judge").unwrap();
+    assert_eq!(
+        crate::dashboard::recorded_command(line).as_deref(),
+        Some("latch audit judge")
+    );
     let id = json!({"request": by_owner["kept_request"]});
     let (answer, _) = t.call(&agent, "audit_judge", id).await;
     assert_eq!(refusal(&answer).1, "owner_only");

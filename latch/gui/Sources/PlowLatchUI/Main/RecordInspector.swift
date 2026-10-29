@@ -17,6 +17,8 @@ struct RecordInspector: View {
     @State private var preview: URL?
     /// Why the gatekeeper's request could not be read.
     @State private var judgeFailure: String?
+    /// The read of the record shown; another record's is cancelled.
+    @State private var judging: Task<Void, Never>?
 
     var body: some View {
         Form {
@@ -71,7 +73,10 @@ struct RecordInspector: View {
                 Why(gate: gate, caller: caller.who)
                 if !gate.keptRequests.isEmpty {
                     Section {
-                        Button("Gatekeeper request") { Task { await openJudged(gate.keptRequests) } }
+                        Button("Gatekeeper request") {
+                            judging?.cancel()
+                            judging = Task { await openJudged(gate.keptRequests) }
+                        }
                         if let judgeFailure { Text(judgeFailure).foregroundStyle(.secondary) }
                     }
                 }
@@ -92,6 +97,7 @@ struct RecordInspector: View {
         .controlSize(.small)
         // Read when the record is opened, and again only for another.
         .task(id: record.id) {
+            judging?.cancel()
             preview = nil
             judgeFailure = nil
             shots = record.shots.isEmpty ? nil : RecordShots(client: app.client, host: host, record: record)
@@ -99,7 +105,10 @@ struct RecordInspector: View {
         }
         .quickLookPreview($preview)
         .onChange(of: preview) { closed, _ in closed.map(QuickLookFiles.shared.remove) }
-        .onDisappear { preview.map(QuickLookFiles.shared.remove) }
+        .onDisappear {
+            judging?.cancel()
+            preview.map(QuickLookFiles.shared.remove)
+        }
     }
 
     /// A screenshot in Quick Look, from a file only this user can read
@@ -111,13 +120,27 @@ struct RecordInspector: View {
 
     /// What the gatekeeper sent and got back for this record, in Quick Look.
     private func openJudged(_ ids: [String]) async {
-        do {
-            let text = try await Self.judged(ids, client: app.client, host: host)
+        switch await Self.read(ids, client: app.client, host: host) {
+        case let .success(text)?:
             judgeFailure = nil
             preview = QuickLookFiles.shared.write(text, name: "Gatekeeper request.json")
-        } catch {
-            judgeFailure = LatchError.from(error).message
+        case let .failure(failure)?:
+            judgeFailure = failure.message
+        case nil:
+            break
         }
+    }
+
+    /// `judged`, or why not; nil once cancelled, as the record it was read
+    /// for is no longer the one shown.
+    static func read(_ ids: [String], client: any LatchClient, host: String?) async -> Result<String, LatchError>? {
+        let read: Result<String, LatchError>
+        do {
+            read = .success(try await judged(ids, client: client, host: host))
+        } catch {
+            read = .failure(.from(error))
+        }
+        return Task.isCancelled ? nil : read
     }
 
     /// Each kept call, as latch prints it; an agent's two layers as one
