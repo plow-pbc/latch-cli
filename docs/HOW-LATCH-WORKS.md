@@ -297,6 +297,9 @@ For how to report a vulnerability, see [SECURITY.md](../SECURITY.md).
   See [Getting started](GETTING-STARTED.md#1-install) for what it puts
   where and its options. A release logs in to `https://api.plow.co`. The
   macOS app is signed with Plow's Developer ID and notarized by Apple.
+  - It checks the release's `SHA256SUMS` against Latch's release signing
+    key, which it carries, and on a Mac that Plow signed the app, before it
+    runs anything the release contains.
 - **Update:** `latch update` installs the newest release, `latch update TAG`
   a given one (also how to go back), and `latch update --check` only says
   whether there's a newer one.
