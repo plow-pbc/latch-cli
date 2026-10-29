@@ -360,7 +360,7 @@ struct GoogleSignInTests {
         printf '%s\\n' "$@" > '\(folder.path)/args'
         echo '{"type":"hello","schema":1}'
         echo '{"type":"link","url":"\(first.absoluteString)","expires_at":"2026-10-23T18:02:00Z"}'
-        exec sleep 30
+        exec sleep 600
         """.write(to: script, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
         let client = LiveLatchClient(executable: script, stateDir: "/s")

@@ -342,12 +342,12 @@ pub fn event(line: Value) {
 /// What the QR code holds: a phone's camera opens its messaging app with
 /// `text` (the code) ready to send to `send_to`. SMSTO takes the text as it is,
 /// unencoded.
-fn smsto(send_to: &str, text: &str) -> String {
+pub(crate) fn smsto(send_to: &str, text: &str) -> String {
     format!("SMSTO:{send_to}:{text}")
 }
 
 /// The same as a link, for Messages on a Mac, which reads `sms:` links.
-fn sms_link(send_to: &str, text: &str) -> String {
+pub(crate) fn sms_link(send_to: &str, text: &str) -> String {
     format!("sms:{send_to}?&body={}", escape(text))
 }
 

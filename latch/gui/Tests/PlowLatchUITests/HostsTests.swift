@@ -236,11 +236,6 @@ final class AccountClient: LatchClient, @unchecked Sendable {
     func perform(_ args: [String]) async throws {}
     func stop() async throws {}
     func agents(host: String?) async throws -> AgentsList { try Fixtures.decode(Fixtures.agents) }
-    func agentShow(_ uid: String) async throws -> AgentsList.Agent {
-        var agent = try #require((try Fixtures.decode(Fixtures.agents) as AgentsList).agents.first { $0.uid == uid })
-        agent.status = "running"
-        return agent
-    }
     func logout() async throws -> LogoutResult {
         loggedOut = true
         if let logoutAnswer { return try Fixtures.decode(logoutAnswer) }
@@ -281,13 +276,5 @@ struct AccountTests {
         try await app.logOut()
         #expect(app.logOutWarning == nil)
         #expect(app.onboarding != nil)
-    }
-
-    @Test func aStartingAgentsNewStatusReachesTheAgentsList() async throws {
-        let app = AppModel(client: AccountClient(), store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
-        await app.refreshAgents()
-        let scout = try #require(app.agents?.first)
-        _ = try await app.agentStatus(scout.uid)
-        #expect(app.agents?.first?.status == "running")
     }
 }

@@ -136,3 +136,65 @@ struct AgentsHubTests {
         #expect(!app.takeRulesFocus(AgentTarget(host: "pi-kitchen", agent: helper)))
     }
 }
+
+/// New Agent starts an agent by text, elsewhere: the sheet reads the
+/// account's agents until a new one appears, then closes on it.
+@MainActor
+struct NewAgentWaitTests {
+    /// scout, then also a texted-for agent once it has been listed `after`
+    /// times; counts the reads of the list (not of a host's standing).
+    final class TextedClient: LatchClient, @unchecked Sendable {
+        let stateDir = "/s"
+        let after: Int
+        private let reads = Mutex(0)
+        var listed: Int { reads.withLock { $0 } }
+        init(after: Int) { self.after = after }
+
+        func agents(host: String?) async throws -> AgentsList {
+            let count = host != nil ? listed : reads.withLock { $0 += 1; return $0 }
+            let scout = #"{"kind":"own","line":{"name":null,"number":"+15550000002"},"name":"scout","uid":"00000000000000000000000000000001"}"#
+            let willow = #"{"kind":"cloud","line":{"name":"Willow","number":"+15550000003"},"name":"willow","status":"provisioning","uid":"00000000000000000000000000000009"}"#
+            return try Fixtures.decode(#"{"agents":[\#(scout)\#(count > after ? "," + willow : "")]}"#)
+        }
+        func agentStartByText() async throws -> AgentStartByText { try Fixtures.decode(Fixtures.startByText) }
+    }
+
+    private func app(_ client: TextedClient) async throws -> AppModel {
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
+        app.stage(status: try Fixtures.decode(Fixtures.serving))
+        app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
+        await app.refreshAgentList()
+        return app
+    }
+
+    // A new agent listed on the fourth read after Agents' own: the sheet
+    // closes on it once its standings are read (one more read). None: the
+    // sheet stays open and the reads stop with the schedule.
+    @Test(arguments: [(4, 10, 6, true), (Int.max, 3, 4, false)])
+    func watchingStopsWithTheExpectedSelection(_ after: Int, _ polls: Int, _ reads: Int, _ found: Bool) async throws {
+        let client = TextedClient(after: after)
+        let app = try await app(client)
+        let flow = NewAgent()
+        app.sheet = .newAgent(flow)
+        await flow.watch(app: app, waits: Array(repeating: .zero, count: polls))
+        #expect(app.sheet == (found ? nil : .newAgent(flow)))
+        #expect(app.selectedAgent == (found ? "00000000000000000000000000000009" : nil))
+        #expect(app.shownAgent?.displayName == (found ? "Willow" : "scout"))
+        #expect(client.listed == reads)
+    }
+
+    // Plow's own choice is offered first; the phrase and links are latch's.
+    @Test func plowsDefaultKindIsPicked() async throws {
+        let app = try await app(TextedClient(after: .max))
+        let flow = NewAgent()
+        await flow.load(app: app)
+        #expect(flow.picked?.id == "exe:openclaw")
+        flow.kind = "exe:life"
+        #expect(flow.picked?.smsLink == "sms:+16504359440?&body=Set%20this%20up%20for%20me%3A%20aiworthusing.com%2Fagent-index%2Flife")
+    }
+
+    @Test func theWaitBacksOffAndEnds() {
+        #expect(NewAgent.waits.first == .seconds(3) && NewAgent.waits.last == .seconds(10))
+        #expect(NewAgent.waits.reduce(.zero, +) == .seconds(600))
+    }
+}

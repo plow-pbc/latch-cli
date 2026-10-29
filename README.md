@@ -46,8 +46,10 @@ Then run `latch` alone to see this machine at a glance.
 
 ## Connect an agent
 
-- **An agent that runs on Plow** has its own credential in its environment.
-  If its machine has no Latch yet, install it there with
+- **An agent that runs on Plow** starts when you text Plow's number from your
+  phone: `latch agents start-by-text` says what to send, and the Mac app's
+  New Agent shows it as a QR code. It has its own credential in its
+  environment. If its machine has no Latch yet, install it there with
   `sh install.sh --client-only`, then run `latch login`.
 - **An agent you run yourself** gets its own credential from Plow:
 

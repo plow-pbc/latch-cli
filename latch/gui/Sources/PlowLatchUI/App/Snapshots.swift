@@ -83,11 +83,7 @@ nonisolated struct FakeLatchClient: LatchClient {
     func updateCheck() async throws -> UpdateCheck { try Fixtures.decode(Fixtures.updateCheck) }
     func logout() async throws -> LogoutResult { LogoutResult(device: nil) }
     func agentCatalog() async throws -> AgentCatalog { try Fixtures.decode(Fixtures.catalog) }
-    func agentLines() async throws -> AgentLines { try Fixtures.decode(Fixtures.lines) }
-    func newAgent(name: String, cloud: String?, tokenFile: URL?, line: String) async throws -> AgentCreated {
-        throw LatchError.unreachable("a still")
-    }
-    func agentShow(_ uid: String) async throws -> AgentsList.Agent { throw LatchError.unreachable("a still") }
+    func agentStartByText() async throws -> AgentStartByText { try Fixtures.decode(Fixtures.startByText) }
     func removeAgent(_ uid: String) async throws {}
 }
 
@@ -202,11 +198,14 @@ nonisolated enum Fixtures {
     static let remoteVaultItems = #"{"audit_id":"7eff2d3d62fc8f3d16f422e2e19ea204fdf62d80e9d9ed0eee14bf1f6e9400d7","items":[{"fields":[{"alias":false,"custom":false,"hidden":false,"label":"username"},{"alias":false,"custom":false,"hidden":true,"label":"password"}],"item":"v1","kind":"login","revision":1,"sites":["router.example"],"title":"Router (test)","totp":false,"username":"admin"}]}"#
     static let remoteVaultShow = #"{"audit_id":"004c3cca9d220ff417c05d233f61fe3741a745079edd629be94432757a376f70","item":{"fields":[{"alias":false,"custom":false,"hidden":false,"label":"username"},{"alias":false,"custom":false,"hidden":true,"label":"password"}],"item":"v1","kind":"login","revision":1,"sites":["router.example"],"title":"Router (test)","totp":false,"username":"admin"},"values":{"username":"admin"}}"#
     // `latch devices` (the studio account's, laptop logged in without hosting),
-    // `update --check`, `agents catalog` and `agents lines`: real runs.
+    // `update --check` and `agents catalog`: real runs.
     static let devices = #"{"devices":[{"key":"0cdaf3c7601ab886e37b9835cfe9902617aeed88ffd3d066b11bc77eef548b29","kind":"device","name":"laptop","relay_url":null,"last_seen_at":"2026-10-22T22:05:50.582906Z","online":true},{"key":"78d8cd12e343e28d70b1da3ac8a0bb8c37593b5f8d535a58b716b776a91f2edc","kind":"device","name":"pi-kitchen","relay_url":"https://usw1-1.relay.n0.iroh.link./","last_seen_at":"2026-10-22T22:06:30.037004Z","online":true},{"key":"b58ac41605d91211b1d5c052addea8d6e7b81702d4902f746e6d639e38909364","kind":"device","name":"sidecar","relay_url":"https://usw1-1.relay.n0.iroh.link./","last_seen_at":"2026-10-22T22:06:33.384336Z","online":true},{"key":"6b55a78fcd1400f6ac14f129cd1825744125406e25a2892be4abda157baaa23f","kind":"device","name":"studio","relay_url":"https://usw1-1.relay.n0.iroh.link./","last_seen_at":"2026-10-22T22:06:26.724881Z","online":true}]}"#
     static let updateCheck = #"{"available":false,"current":null,"latest":{"build":138,"tag":"v0.1.0-138"}}"#
     static let catalog = #"{"kinds":[{"id":"exe:checkpoint","name":"Checkpoint"},{"id":"exe:clip-warden","name":"Clip Warden"},{"id":"exe:dailies","name":"Video Cuts"},{"id":"exe:danedelattre-x-manager","name":"X Manager"},{"id":"exe:fandom","name":"Fandom"},{"id":"exe:fipe","name":"Fipe"},{"id":"exe:founder-agent","name":"Founder Agent"},{"id":"exe:galahad-hackathon","name":"Joust"},{"id":"exe:hermes","name":"Hermes"},{"id":"exe:hermes-cat-paw","name":"Hermes Cat Paw"},{"id":"exe:instagram-social-selling","name":"Instagram Social Selling"},{"id":"exe:life","name":"Life Assistant"},{"id":"exe:mako","name":"Mako"},{"id":"exe:meals-planner","name":"Meals Planner"},{"id":"exe:memory-vault","name":"Memory Vault"},{"id":"exe:metabolix","name":"Metabolix"},{"id":"exe:nutrilatch","name":"NutriLatch"},{"id":"exe:parley","name":"Parley"},{"id":"exe:phoneflow-agent","name":"PhoneFlow"},{"id":"exe:pm-second-brain","name":"PM Agent"},{"id":"exe:pruce","name":"Prucê"},{"id":"exe:radar","name":"RadaR"},{"id":"exe:receiptsnap","name":"ReceiptSnap"},{"id":"exe:repro-relay","name":"Repro Relay"},{"id":"exe:saved","name":"Saved"},{"id":"exe:text-me","name":"text-me"},{"id":"exe:the-commish","name":"The Commish"},{"id":"exe:theplowtimes","name":"The Plow Times"},{"id":"exe:vela","name":"Vela"},{"id":"exe:vigia","name":"Vigia"},{"id":"exe:your-mother","name":"Your Mother"},{"id":"exe:zoen","name":"Zoen"}]}"#
-    static let lines = #"{"lines":[{"agent_uid":null,"available":true,"name":null,"number":"+15550000002","uid":"ln_p1"},{"agent_uid":null,"available":true,"name":null,"number":"+15550000003","uid":"ln_p2"},{"agent_uid":null,"available":true,"name":null,"number":"+15550000004","uid":"ln_p3"},{"agent_uid":null,"available":true,"name":null,"number":"+15550000005","uid":"ln_p4"},{"agent_uid":null,"available":true,"name":null,"number":"+15550000006","uid":"ln_p5"}]}"#
+    // `agents start-by-text`, as latch builds it from Plow's /v1/signup:
+    // the public number and phrases plow.co and Plow's catalog give (the
+    // stock agent's id stands in for whichever kind holds the default).
+    static let startByText = #"{"default":"exe:openclaw","kinds":[{"id":"exe:openclaw","name":"OpenClaw","phrase":"Create an agent for me","sms_link":"sms:+16504359440?&body=Create%20an%20agent%20for%20me","smsto":"SMSTO:+16504359440:Create an agent for me"},{"id":"exe:hermes","name":"Hermes","phrase":"Set this up for me: Hermes","sms_link":"sms:+16504359440?&body=Set%20this%20up%20for%20me%3A%20Hermes","smsto":"SMSTO:+16504359440:Set this up for me: Hermes"},{"id":"exe:life","name":"Life Assistant","phrase":"Set this up for me: aiworthusing.com/agent-index/life","sms_link":"sms:+16504359440?&body=Set%20this%20up%20for%20me%3A%20aiworthusing.com%2Fagent-index%2Flife","smsto":"SMSTO:+16504359440:Set this up for me: aiworthusing.com/agent-index/life"}],"number":"+16504359440"}"#
     // An import's preview of a Chrome export (one row updating a password)
     // and that import, at the preview's `expect`: real runs.
     static let importPreview = #"{"preview":{"expect":"20b372fbab51d631bac7849e16bd8e97fa8545e1df8a297e3f458f995437038a","items":[{"changed":["password"],"duplicate":false,"has_password":true,"has_totp":false,"kind":"login","pick":1,"title":"shop.example","url":"https://shop.example/login","username":"ada","warnings":[]},{"changed":[],"duplicate":false,"has_password":true,"has_totp":false,"kind":"login","pick":2,"title":"grocer.example","url":"https://grocer.example","username":"ada@example.com","warnings":[]}],"skipped":[{"reason":"has no website address; add it by hand as a new item if you still use it","title":"nosite"}],"source":"Chrome","vaults":[]}}"#
@@ -997,24 +996,16 @@ package enum SnapshotRunner {
             let app = AppModel(client: FakeLatchClient(), still: true)
             app.stage(status: try Fixtures.decode(Fixtures.serving))
             app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
-            let catalog: AgentCatalog = try Fixtures.decode(Fixtures.catalog)
-            let lines: AgentLines = try Fixtures.decode(Fixtures.lines)
-            let agent = #"{"cloud_kind":null,"created_at":"2026-10-23T05:37:45.397426","failure_code":null,"kind":"own","last_seen_at":null,"line":{"name":null,"number":"+15550000002"},"name":"scout","standing":null,"status":null,"uid":"ba3c0b3ad1eba7a9a1eb04b67c9db0dd"}"#
-            let cloud = NewAgent()
-            cloud.name = "Meals"; cloud.cloudKind = "exe:meals-planner"
-            cloud.stage(catalog: catalog, lines: lines)
-            let own = NewAgent()
-            own.kind = .own; own.name = "scout"; own.tokenFile = URL(filePath: "/Users/me/Documents/scout.latch-key")
-            own.stage(catalog: catalog, lines: lines)
-            let ownDone = NewAgent()
-            ownDone.stage(catalog: catalog, lines: lines, created: try Fixtures.decode(
-                #"{"agent":\#(agent),"api_url":"http://127.0.0.1:18934","token_file":"/Users/me/Documents/scout.latch-key"}"#))
-            let cloudAgent = #"{"cloud_kind":"exe:meals-planner","created_at":"2026-10-23T05:37:45.397426","failure_code":null,"kind":"cloud","last_seen_at":null,"line":{"name":null,"number":"+15550000003"},"name":"Meals","standing":null,"status":"provisioning","uid":"3971582e59baad83250141c8dcc95855"}"#
-            let cloudStarting = NewAgent()
-            cloudStarting.stage(catalog: catalog, lines: lines, created: try Fixtures.decode(#"{"agent":\#(cloudAgent),"api_url":null,"token_file":null}"#))
-            for (name, flow) in [("20-new-agent-cloud", cloud), ("20-new-agent-own", own), ("20-new-agent-own-created", ownDone),
-                                 ("20-new-agent-cloud-starting", cloudStarting)] {
-                try await render(NewAgentSheet(flow: flow).environment(app), size: CGSize(width: 520, height: 500), dark: dark,
+            let start: AgentStartByText = try Fixtures.decode(Fixtures.startByText)
+            let stock = NewAgent()
+            stock.stage(start)
+            let life = NewAgent()
+            life.stage(start)
+            life.kind = "exe:life"
+            let failed = NewAgent()
+            failed.fail(.failed(LatchFailure(code: "plow_unreachable", message: "could not reach Plow")))
+            for (name, flow) in [("20-new-agent-text", stock), ("20-new-agent-text-community", life), ("20-new-agent-text-failed", failed)] {
+                try await render(NewAgentSheet(flow: flow).environment(app), size: CGSize(width: 560, height: 460), dark: dark,
                                  file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
             }
         }
