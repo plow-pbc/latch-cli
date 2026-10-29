@@ -373,7 +373,8 @@ struct GoogleSignInTests {
         let args = try String(contentsOf: folder.appending(path: "args"), encoding: .utf8)
         #expect(args == "--state-dir\n/s\nplugins\nenable\ngoogle\n--events\n--add-account\n")
         let pid = try #require(pid_t(try String(contentsOf: folder.appending(path: "pid"), encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)))
-        await waitUntil { kill(pid, 0) != 0 }
+        // Well short of its 30 s sleep, which would end it anyway.
+        await waitUntil(within: .seconds(20)) { kill(pid, 0) != 0 }
         #expect(kill(pid, 0) != 0)
     }
 }
