@@ -5,6 +5,8 @@ pages for plow.co/latch/docs. commands.md is written from `latch help
 
     docs_site.py write --latch LATCH --out DIR   commands.md from LATCH, then every page into DIR
     docs_site.py check --latch LATCH             fails if commands.md is not what LATCH says
+    docs_site.py publish --latch LATCH [PLOW] [--dry-run]
+                                                 every page into plow's plow.co/latch/docs, as a plow PR
 
 The Markdown is the small subset the pages use: headings, paragraphs, lists,
 tables, quotes, fenced code and inline code, bold and links. Anything else
@@ -20,7 +22,11 @@ import subprocess
 import sys
 import tempfile
 
-SITE = Path(__file__).resolve().parent.parent / "docs" / "site"
+ROOT = Path(__file__).resolve().parent.parent
+SITE = ROOT / "docs" / "site"
+PLOW = "plow-pbc/plow"
+# Where the pages live in a plow checkout.
+PLOW_DOCS = "plow.co/latch/docs"
 BASE = "/latch/docs"
 SOURCE = "https://github.com/plow-pbc/latch-cli/blob/main/docs/site"
 # The pages, in the order the sidebar lists them.
@@ -340,12 +346,76 @@ def site(out):
         (out / f"{page}.html").write_text(text)
 
 
+# --- Publishing into plow -----------------------------------------------------
+
+def git(where, *args):
+    return subprocess.run(["git", "-C", str(where), *args], check=True, capture_output=True, text=True).stdout.strip()
+
+
+def publish(plow, dry_run):
+    """Every page into a plow checkout of origin/main, committed on a new
+    branch and opened as a plow PR. Without PLOW, a fresh shallow clone."""
+    sha = git(ROOT, "rev-parse", "--short", "HEAD")
+    # The PR says which latch the pages came from, so they must be that commit's.
+    if not dry_run and git(ROOT, "status", "--porcelain", "--", "docs/site", "scripts/docs_site.py"):
+        raise SystemExit("docs_site.py: docs/site or scripts/docs_site.py has uncommitted changes: commit them first")
+    with tempfile.TemporaryDirectory(prefix="latch-docs-") as temp:
+        work = Path(temp) / "plow"
+        if plow:
+            if git(plow, "status", "--porcelain"):
+                raise SystemExit(f"docs_site.py: {plow} has uncommitted changes")
+            git(plow, "fetch", "--quiet", "origin", "main")
+            git(plow, "worktree", "add", "--quiet", "--detach", str(work), "FETCH_HEAD")
+        else:
+            subprocess.run(["gh", "repo", "clone", PLOW, str(work), "--", "--depth", "1", "--quiet"], check=True)
+        try:
+            return commit_and_open(work, sha, dry_run)
+        finally:
+            if plow:
+                git(plow, "worktree", "remove", "--force", str(work))
+
+
+def commit_and_open(work, sha, dry_run):
+    docs = work / PLOW_DOCS
+    # A page dropped from PAGES goes from plow too.
+    for old in docs.glob("*.html"):
+        old.unlink()
+    docs.mkdir(parents=True, exist_ok=True)
+    site(docs)
+    git(work, "add", "--all", "--", PLOW_DOCS)
+    if subprocess.run(["git", "-C", str(work), "diff", "--cached", "--quiet"]).returncode == 0:
+        print(f"docs_site.py: {PLOW_DOCS} already matches latch {sha}: no PR")
+        return 0
+    print(git(work, "diff", "--cached", "--stat"))
+    if dry_run:
+        print("docs_site.py: dry run: nothing committed or pushed")
+        return 0
+    branch = f"latch-docs-{sha}"
+    title = f"{PLOW_DOCS}: update from latch {sha}"
+    full = git(ROOT, "rev-parse", "HEAD")
+    body = (f"The pages of plow.co/latch/docs, rendered from latch-cli's `docs/site` at "
+            f"[{sha}](https://github.com/plow-pbc/latch-cli/tree/{full}/docs/site) by `just docs-publish`. "
+            f"Edit them there, not here.")
+    git(work, "commit", "--quiet", "-m", title)
+    git(work, "push", "--quiet", "origin", f"HEAD:refs/heads/{branch}")
+    pr = subprocess.run(["gh", "pr", "create", "--base", "main", "--head", branch, "--title", title, "--body", body],
+                        cwd=work, check=True, capture_output=True, text=True).stdout.strip()
+    print(pr)
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("mode", choices=["write", "check"])
+    parser.add_argument("mode", choices=["write", "check", "publish"])
+    parser.add_argument("plow", nargs="?", type=Path,
+                        help="with publish: a clean plow checkout (default: a fresh clone of plow-pbc/plow)")
     parser.add_argument("--latch", required=True, help="the latch binary whose help the Commands page shows")
     parser.add_argument("--out", type=Path, help="with write: where the HTML pages go")
-    args = parser.parse_args()
+    parser.add_argument("--dry-run", action="store_true",
+                        help="with publish: stop before committing and print what would change")
+    args = parser.parse_intermixed_args()
+    if args.mode != "publish" and (args.plow or args.dry_run):
+        parser.error("a plow checkout and --dry-run go with publish")
     commands = commands_markdown(help_json(args.latch))
     if args.mode == "write":
         if not args.out:
@@ -359,6 +429,8 @@ def main():
         print("docs_site.py: docs/site/commands.md is not what `latch help --json` says: "
               "run `just docs-site OUT` and commit it", file=sys.stderr)
         return 1
+    if args.mode == "publish":
+        return publish(args.plow, args.dry_run)
     with tempfile.TemporaryDirectory() as out:
         site(Path(out))
     print("docs_site.py: commands.md is current and every page renders")

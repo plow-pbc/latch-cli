@@ -300,6 +300,8 @@ def steps(where, suites, gate, shard, archive=None, ci=False, only=None):
         # The Commands page says what this build's `latch help --json` says.
         out.append(("docs site", ["core"], ["python3", "scripts/docs_site.py", "check", "--latch",
                                             str(LATCH / target_dir(where) / "debug/latch")], ROOT))
+        out.append(("docs publish", ["core"], ["python3", "scripts/test_docs_site.py",
+                                               str(LATCH / target_dir(where) / "debug/latch")], ROOT))
     if "installer" in suites and first_shard:
         latch = LATCH / target_dir(where) / "debug/latch"
         install = ["python3", "scripts/test-install-release.py"]
