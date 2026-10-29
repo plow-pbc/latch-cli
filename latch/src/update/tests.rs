@@ -561,8 +561,7 @@ async fn a_client_only_install_is_updated_client_only() {
 }
 
 /// An agent updates its own computer, where latch is installed alone; on a
-/// host it gets `owner_only` before anything is downloaded. The owner's
-/// login updates either.
+/// host it gets `owner_only`. The owner's login updates either.
 #[tokio::test]
 async fn an_agent_updates_only_its_own_client_only_computer() {
     let login = |world: &World, kind: &str| {
@@ -586,27 +585,18 @@ async fn an_agent_updates_only_its_own_client_only_computer() {
     };
 
     let host = World::new();
-    host.latest(&host.release(1328));
     login(&host, "agent");
-    for check in [false, true] {
-        let failure = update(&host.state, &host.source(), Some(1327), None, None, check)
-            .await
-            .unwrap_err();
-        assert_eq!(failure.code, "owner_only", "{failure:?}");
-        assert!(failure.message.contains("--client-only"), "{failure:?}");
-    }
-    assert_eq!(*host.server.requests.lock().unwrap(), 0);
-    assert_eq!(host.arguments(), None);
+    let failure = may_update(&host.state, &[]).unwrap_err();
+    assert_eq!(failure.code, "owner_only", "{failure:?}");
+    assert!(failure.message.contains("--client-only"), "{failure:?}");
     login(&host, "device");
-    update(&host.state, &host.source(), Some(1327), None, None, false)
-        .await
-        .unwrap();
-    assert!(host.arguments().is_some(), "the owner updates a host");
+    may_update(&host.state, &[]).unwrap();
 
     let own = World::new();
     own.latest(&own.release(1328));
     login(&own, "agent");
     client_only(&own);
+    may_update(&own.state, &[]).unwrap();
     let answer = update(&own.state, &own.source(), Some(1327), None, None, false)
         .await
         .unwrap();

@@ -300,8 +300,8 @@ For how to report a vulnerability, see [SECURITY.md](../SECURITY.md).
 - **Update:** `latch update` installs the newest release, `latch update TAG`
   a given one (also how to go back), and `latch update --check` only says
   whether there's a newer one. The owner runs it, and so does an agent on its
-  own computer, where latch is installed alone (`--client-only`); an agent
-  gets `owner_only` on a host.
+  own computer, where latch is installed alone (`--client-only`) and no host
+  runs from that latch; elsewhere an agent gets `owner_only`.
   - It checks the release's `SHA256SUMS` against Latch's release signing
     key, and on a Mac that Plow signed the app.
   - The state folder stays as it is, and the browser engines are brought up
@@ -310,7 +310,6 @@ For how to report a vulnerability, see [SECURITY.md](../SECURITY.md).
   - A host started with `latch serve -d` restarts on the new version with
     the same flags. A host running in a terminal stops, and you're told to
     start it again.
-  - Only the owner can update: an agent's login is refused.
   - A running host looks for a new release once a day, and shows it in
     `latch status --local` and on its dashboard. Nothing installs on its
     own. `LATCH_NO_UPDATE_CHECK=1` turns the looking off.
