@@ -481,6 +481,8 @@ struct RecordShotsTests {
         // The app's own reads of them are the owner's reads, as `audit` is.
         let read = try LatchJSON.decoder.decode(AuditRecord.self, from: Data(#"{"agent":null,"caller":"k","command":"latch audit shot","decision":"allow","details":null,"id":"e2","op":"audit_shot","outcome":"ok","time":"2026-10-23T22:50:02Z"}"#.utf8))
         #expect(read.isOwnerRead && read.isBackground)
+        let judged = try LatchJSON.decoder.decode(AuditRecord.self, from: Data(#"{"agent":null,"caller":"k","command":"latch audit judge","decision":"allow","details":{"args":{"request":"g1"}},"id":"e3","op":"audit_judge","outcome":"ok","time":"2026-10-29T01:00:00Z"}"#.utf8))
+        #expect(judged.isOwnerRead && judged.isBackground)
     }
 
     /// Nothing is read until the record is opened; then each shot once,
@@ -547,5 +549,78 @@ struct RecordShotsTests {
         #expect(savedIn.contains("latch-shot-"))
         #expect(!FileManager.default.fileExists(atPath: savedIn))
         #expect(try String(contentsOf: folder.appending(path: "mode"), encoding: .utf8) == "700\n")
+    }
+}
+
+/// Answers `latch audit judge` with each call's id, and remembers each ask.
+final class JudgeClient: LatchClient, @unchecked Sendable {
+    let stateDir = "/s"
+    private(set) var asked: [String] = []
+
+    func auditJudge(_ id: String, host: String?) async throws -> String {
+        asked.append("\(id) \(host ?? "-")")
+        return "{\n  \"id\": \"\(id)\"\n}\n"
+    }
+}
+
+/// Answers `latch audit judge` once released, saying when it was asked.
+nonisolated final class HeldJudgeClient: LatchClient, @unchecked Sendable {
+    let stateDir = "/s"
+    let (asked, asking) = AsyncStream.makeStream(of: Void.self)
+    let (released, release) = AsyncStream.makeStream(of: Void.self)
+
+    func auditJudge(_ id: String, host: String?) async throws -> String {
+        asking.yield()
+        for await _ in released { break }
+        return "{}"
+    }
+}
+
+@MainActor
+struct GatekeeperRequestTests {
+    /// The owner's call is kept as one; an agent's as its rules layer, then
+    /// its chat layer. Records from before have none.
+    @Test func aJudgedRecordNamesTheCallsItsHostKept() throws {
+        let decode = { (gate: String) in try LatchJSON.decoder.decode(AuditRecord.Gate.self, from: Data(gate.utf8)) }
+        #expect(try decode(#"{"verdict":"allow","kept_request":"g1"}"#).keptRequests == ["g1"])
+        let agent = #"{"layers":{"chat":{"kept_request":"g3"},"rules":{"kept_request":"g2"}}}"#
+        #expect(try decode(agent).keptRequests == ["g2", "g3"])
+        #expect(try decode(#"{"verdict":"allow"}"#).keptRequests.isEmpty)
+    }
+
+    /// Each is read from the record's own host; an agent's two as one JSON list.
+    @Test func theRequestsReadAsOneJSONDocument() async throws {
+        let client = JudgeClient()
+        let one = try await RecordInspector.judged(["g1"], client: client, host: nil)
+        #expect(try JSONSerialization.jsonObject(with: Data(one.utf8)) as? [String: String] == ["id": "g1"])
+        let both = try await RecordInspector.judged(["g2", "g3"], client: client, host: "pi-kitchen")
+        let list = try #require(try JSONSerialization.jsonObject(with: Data(both.utf8)) as? [[String: String]])
+        #expect(list.map { $0["id"] } == ["g2", "g3"])
+        #expect(client.asked == ["g1 -", "g2 pi-kitchen", "g3 pi-kitchen"])
+    }
+
+    /// A read still going when its record is left gives nothing to show:
+    /// neither its file nor its failure.
+    @Test func aReadCancelledWithItsRecordPublishesNothing() async throws {
+        let client = HeldJudgeClient()
+        let read = Task { await RecordInspector.read(["g1"], client: client, host: nil) }
+        for await _ in client.asked { break }
+        read.cancel()
+        client.release.yield()
+        #expect(await read.value == nil)
+        #expect(await RecordInspector.read(["g1"], client: JudgeClient(), host: nil) == .success("{\n  \"id\": \"g1\"\n}"))
+    }
+
+    /// A screenshot's bytes go where every preview goes: the owner's own
+    /// file in the folder the app clears at launch, so a crash leaves none.
+    @Test func aPreviewedScreenshotIsTheOwnersAndInTheClearedFolder() throws {
+        let dir = FileManager.default.temporaryDirectory.appending(path: "GatekeeperRequestTests-\(UUID().uuidString)", directoryHint: .isDirectory)
+        let previews = QuickLookFiles(dir: dir)
+        let file = try #require(previews.write(Data("png".utf8), name: "After action 1.png"))
+        #expect(file.deletingLastPathComponent().standardizedFileURL == dir.standardizedFileURL)
+        #expect(try Data(contentsOf: file) == Data("png".utf8))
+        #expect((try FileManager.default.attributesOfItem(atPath: file.path))[.posixPermissions] as? Int == 0o600)
+        previews.removeAll()
+        #expect(!FileManager.default.fileExists(atPath: dir.path))
     }
 }

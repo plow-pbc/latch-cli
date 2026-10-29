@@ -29,7 +29,7 @@ pub fn shown(op: &str, args: &Value) -> Value {
 }
 
 /// Hides the credential-looking words of every string in `value`.
-fn hide_in(value: &mut Value) {
+pub fn hide_in(value: &mut Value) {
     match value {
         Value::String(words) => {
             let split: Vec<String> = words.split_whitespace().map(str::to_string).collect();

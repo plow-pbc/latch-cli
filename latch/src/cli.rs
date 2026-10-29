@@ -1121,6 +1121,17 @@ pub enum AuditAction {
     Verify,
     /// Seal new records under a new key and keep every old one; a running `latch serve` uses it from its next record
     RotateKey,
+    /// What the gatekeeper sent Plow for one judgment call, and what it answered: rules, chat and action as the judge saw them
+    Judge {
+        /// The call's id: a record's `kept_request`, in `details.gate` or its `layers`
+        request: String,
+        /// Exactly as sent, credential-looking values included [default: hidden, as `latch audit` hides them]
+        #[arg(long)]
+        raw: bool,
+        /// Another serving machine of the owner's to read it from (owner devices only) [default: this machine's host]
+        #[arg(long)]
+        host: Option<String>,
+    },
     /// A browser screenshot a record names, saved to --output: an action's number in a plan, or `final`
     Shot {
         /// The record's id (a record line's `cursor`)

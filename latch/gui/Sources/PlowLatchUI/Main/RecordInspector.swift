@@ -13,8 +13,12 @@ struct RecordInspector: View {
     @Environment(AppModel.self) private var app
     /// A browser plan's screenshots, for the record shown.
     @State private var shots: RecordShots?
-    /// The screenshot open in Quick Look.
+    /// The screenshot or gatekeeper request open in Quick Look.
     @State private var preview: URL?
+    /// Why the gatekeeper's request could not be read.
+    @State private var judgeFailure: String?
+    /// The read of the record shown; another record's is cancelled.
+    @State private var judging: Task<Void, Never>?
 
     var body: some View {
         Form {
@@ -67,6 +71,15 @@ struct RecordInspector: View {
             }
             if let gate = record.gate {
                 Why(gate: gate, caller: caller.who)
+                if !gate.keptRequests.isEmpty {
+                    Section {
+                        Button("Gatekeeper request") {
+                            judging?.cancel()
+                            judging = Task { await openJudged(gate.keptRequests) }
+                        }
+                        if let judgeFailure { Text(judgeFailure).foregroundStyle(.secondary) }
+                    }
+                }
             }
             if let args = record.args, args.exitCode != nil || args.durationMs != nil {
                 Section("Ran") {
@@ -84,30 +97,56 @@ struct RecordInspector: View {
         .controlSize(.small)
         // Read when the record is opened, and again only for another.
         .task(id: record.id) {
+            judging?.cancel()
             preview = nil
+            judgeFailure = nil
             shots = record.shots.isEmpty ? nil : RecordShots(client: app.client, host: host, record: record)
             await shots?.load()
         }
         .quickLookPreview($preview)
-        .onChange(of: preview) { closed, _ in closed.map(Self.remove) }
-        .onDisappear { preview.map(Self.remove) }
-    }
-
-    /// A screenshot in Quick Look, from a file only this user can read,
-    /// removed once it closes.
-    private func open(_ shot: RecordShots.Shot) {
-        guard case let .loaded(png) = shot.state, let folder = try? ShotFolder.make() else { return }
-        let file = folder.appending(path: "\(shot.title).png")
-        guard FileManager.default.createFile(atPath: file.path, contents: png, attributes: [.posixPermissions: 0o600]) else {
-            Self.remove(file)
-            return
+        .onChange(of: preview) { closed, _ in closed.map(QuickLookFiles.shared.remove) }
+        .onDisappear {
+            judging?.cancel()
+            preview.map(QuickLookFiles.shared.remove)
         }
-        preview = file
     }
 
-    private static func remove(_ file: URL) {
-        try? FileManager.default.removeItem(at: file.deletingLastPathComponent())
+    /// A screenshot in Quick Look, from a file only this user can read
+    /// (`QuickLookFiles`), removed once it closes.
+    private func open(_ shot: RecordShots.Shot) {
+        guard case let .loaded(png) = shot.state else { return }
+        preview = QuickLookFiles.shared.write(png, name: "\(shot.title).png")
     }
+
+    /// What the gatekeeper sent and got back for this record, in Quick Look.
+    private func openJudged(_ ids: [String]) async {
+        switch await Self.read(ids, client: app.client, host: host) {
+        case let .success(text)?:
+            judgeFailure = nil
+            preview = QuickLookFiles.shared.write(text, name: "Gatekeeper request.json")
+        case let .failure(failure)?:
+            judgeFailure = failure.message
+        case nil:
+            break
+        }
+    }
+
+    /// `judged`, or why not; nil once cancelled, as the record it was read
+    /// for is no longer the one shown.
+    static func read(_ ids: [String], client: any LatchClient, host: String?) async -> Result<String, LatchError>? {
+        await AppModel.result { try await judged(ids, client: client, host: host) }
+    }
+
+    /// Each kept call, as latch prints it; an agent's two layers as one
+    /// JSON list.
+    static func judged(_ ids: [String], client: any LatchClient, host: String?) async throws -> String {
+        var calls: [String] = []
+        for id in ids {
+            calls.append(try await client.auditJudge(id, host: host).trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        return calls.count == 1 ? calls[0] : "[\n" + calls.joined(separator: ",\n") + "\n]"
+    }
+
 
     /// Everything else the record holds, by key: each op's own args, and
     /// any detail beyond args, the judgment and the start time. Exec's

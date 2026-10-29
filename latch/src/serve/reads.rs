@@ -1,6 +1,7 @@
-//! The `status` and `audit` operations: what this host's owner reads from
-//! another machine with `--host`, the same output as `latch status --local
-//! [--follow]` and `latch audit` give on the host itself. From the owner's
+//! The `status`, `audit`, `audit_shot` and `audit_judge` operations: what
+//! this host's owner reads from another machine with `--host`, the same
+//! output as `latch status --local [--follow]`, `latch audit`, `latch audit
+//! shot` and `latch audit judge` give on the host itself. From the owner's
 //! own devices only; an agent's key gets exit 4 `owner_only`.
 //!
 //! `audit` and `status` with `follow` stream: each line goes to the caller
@@ -36,6 +37,7 @@ pub(super) async fn run(
 ) -> Done {
     let result = match crate::gate::owner::owner_only(kind, &format!("this host's {op}")) {
         Ok(()) if op == "audit_shot" => return shot(host, args, send).await,
+        Ok(()) if op == "audit_judge" => return judge(host, args).await,
         Ok(()) => read(host, op, args, send, cut_off).await,
         Err(failure) => Err(failure),
     };
@@ -66,6 +68,27 @@ async fn shot(host: &Host, args: &Value, send: &mut SendStream) -> Done {
         Err(failure) => return crate::vault::host::done(Err(failure), audit),
     };
     Done::send_bytes(send, json!({"size": png.len()}), &png, audit).await
+}
+
+/// `audit judge`: what the gatekeeper sent for one call and what it was
+/// answered.
+async fn judge(host: &Host, args: &Value) -> Done {
+    let request = args["request"].clone();
+    let raw = args["raw"] == true;
+    let audit = Map::from_iter([
+        ("request".into(), request.clone()),
+        ("raw".into(), raw.into()),
+    ]);
+    let dir = host.workers.state_dir.clone();
+    let read = blocking(move || {
+        let Some(request) = request.as_str() else {
+            let message = "audit judge takes a request id".to_string();
+            return Err(Failure::new(code::bad_request, message));
+        };
+        crate::gate::requests::read(&dir, request, raw)
+    })
+    .await;
+    crate::vault::host::done(read, audit)
 }
 
 async fn read(

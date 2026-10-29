@@ -98,11 +98,25 @@ nonisolated struct AuditRecord: Decodable, Equatable, Identifiable {
         var latencyMs: Int?
         var cost: Double?
         var rule: String?
+        /// The owner's call as the host kept it (`latch audit judge`).
+        var keptRequest: String?
+        /// An agent's layers, `rules` and `chat`, each kept on its own.
+        var layers: [String: Layer]?
 
         struct Rules: Decodable, Equatable {
             /// Revisions of the rules for every agent and the agent's own.
             var host: String?
             var agent: String?
+        }
+
+        struct Layer: Decodable, Equatable {
+            var keptRequest: String?
+        }
+
+        /// Each call the host kept of this judgment: the owner's one, or an
+        /// agent's rules layer, then its chat layer.
+        var keptRequests: [String] {
+            [keptRequest, layers?["rules"]?.keptRequest, layers?["chat"]?.keptRequest].compactMap { $0 }
         }
     }
 
@@ -122,12 +136,12 @@ nonisolated struct AuditRecord: Decodable, Equatable, Identifiable {
     var isRefused: Bool { decision != "allow" }
 
     /// The owner looking, not acting: `rules show`, `vault list`/`show`,
-    /// `plugins list`, `status`, `audit` and its screenshots (the app's own reads among them).
+    /// `plugins list`, `status`, `audit`, its screenshots and gatekeeper requests (the app's own reads among them).
     /// Home leaves them out; Activity shows them with connections.
     var isOwnerRead: Bool {
         guard agent == nil else { return false }
         switch op {
-        case "status", "audit", "audit_shot": return true
+        case "status", "audit", "audit_shot", "audit_judge": return true
         case "rules": return args?.command == "show"
         case "vault": return ["list", "show"].contains(args?.command)
         case "plugins": return args?.command == "list"

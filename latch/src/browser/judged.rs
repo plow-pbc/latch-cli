@@ -427,6 +427,63 @@ mod tests {
         super::plan(browsers, plan, page, None)
     }
 
+    /// What the gatekeeper keeps of a vault fill it judged holds the
+    /// item's kind, title and sites, never a value.
+    #[tokio::test]
+    async fn a_kept_vault_fill_holds_no_vault_value() {
+        use crate::gate::{Caller, Gatekeeper, fake, rules::RuleFiles};
+        use crate::vault::item::{Item, LOGIN, Raw};
+        let parent = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/tests");
+        std::fs::create_dir_all(&parent).unwrap();
+        let dir = tempfile::tempdir_in(parent).unwrap();
+        let state = dir.path().to_path_buf();
+        // The host's audit key, which seals what is kept.
+        crate::audit::AuditLog::open(state.join(crate::audit::FILE)).unwrap();
+        let browsers = Browsers::new(
+            state.clone(),
+            crate::vault::host::Vault::new(state.clone()),
+            true,
+        );
+        let (username, password) = ("morgan@example.com", "made-up-pass-3f81");
+        let fields = [
+            ("username".into(), username.into()),
+            ("password".into(), password.into()),
+        ];
+        let raw = Raw::from_labels(LOGIN, "Shop login", &fields).unwrap();
+        let item = Item {
+            id: String::new(),
+            revision: 0,
+            sites: vec!["shop.example".into()],
+            other_top_sites: vec![],
+            raw,
+        };
+        let added = browsers.vault.with(|store| store.add(item)).unwrap();
+        let args =
+            json!({"item": added.item, "fields": [["username", ["e1"]], ["password", ["e2"]]]});
+        let action = fill(&browsers, &args, Some("shop.example".into()), false);
+
+        let world = fake::World {
+            decide: Some(|_| Some([0.9, 0.08, 0.02])),
+            ..Default::default()
+        };
+        let plow = fake::serve(world);
+        let provider = crate::model::Plow::new(&plow.url, "made-up-login".into());
+        let rules = Box::new(RuleFiles::new(&state).unwrap());
+        let keeper = Gatekeeper::new(plow.client(), std::sync::Arc::new(provider), rules)
+            .keeping_requests(&state);
+        let action = serde_json::value::to_raw_value(&action).unwrap();
+        let judgment = keeper.judge(Caller::Owner, &action).await;
+        let id = judgment.gate["kept_request"].as_str().unwrap();
+        let kept = crate::gate::requests::read(&state, id, true)
+            .unwrap()
+            .to_string();
+        assert!(kept.contains("Shop login"), "{kept}");
+        assert!(
+            !kept.contains(password) && !kept.contains(username),
+            "{kept}"
+        );
+    }
+
     #[test]
     fn an_action_names_its_kind_first() {
         let action = Action::OpenSite {

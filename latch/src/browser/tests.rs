@@ -2046,6 +2046,7 @@ impl crate::model::Provider for Calm {
             request_id: None,
             latency_ms: 0,
             cost: None,
+            exchange: None,
         };
         Box::pin(async move { Ok((answers, meta)) })
     }

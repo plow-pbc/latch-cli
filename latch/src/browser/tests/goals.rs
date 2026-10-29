@@ -231,6 +231,7 @@ impl Provider for Told {
             request_id: None,
             latency_ms: 1,
             cost: None,
+            exchange: None,
         };
         Box::pin(async move { Ok((answers, meta)) })
     }

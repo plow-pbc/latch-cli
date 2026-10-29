@@ -224,6 +224,30 @@ impl Keys {
         line
     }
 
+    /// Seals `plain` under the current key, bound to `aad`, for what the
+    /// host keeps beside its log: the key's id and the sealed value.
+    pub fn seal_bytes(&self, plain: &[u8], aad: &str) -> (String, crate::seal::Sealed) {
+        let key = &self.keys[&self.current];
+        let sealed = crate::seal::seal(key, plain, format!("{aad}|{}", self.current).as_bytes());
+        (self.current.clone(), sealed)
+    }
+
+    /// What `seal_bytes` sealed under key `kid`, or `None`.
+    pub fn open_bytes(
+        &self,
+        kid: &str,
+        sealed: &crate::seal::Sealed,
+        aad: &str,
+    ) -> Option<Vec<u8>> {
+        let aad = format!("{aad}|{kid}");
+        crate::seal::open(
+            self.keys.get(kid)?,
+            &sealed.nonce,
+            &sealed.ciphertext,
+            aad.as_bytes(),
+        )
+    }
+
     /// The record a verified line holds, by number for messages.
     fn open(&self, line: &Line, number: usize) -> Result<Record, String> {
         let Some(key) = self.keys.get(&line.kid) else {
@@ -343,10 +367,30 @@ impl AuditLog {
 }
 
 /// `latch audit verify` and `latch audit rotate-key`, on this machine's
-/// host state, and `latch audit shot`, on this machine's host or another.
+/// host state, and `latch audit judge` and `latch audit shot`, on this
+/// machine's host or another.
 pub async fn run(state: &StateDir, action: AuditAction) -> Result<Value, Failure> {
     let path = state.path.join(FILE);
     match action {
+        AuditAction::Judge { request, raw, host } => match crate::remote::other_host(state, host)
+            .await?
+        {
+            Some(host) => {
+                let request = crate::wire::Request {
+                    op: "audit_judge".into(),
+                    args: json!({"request": request, "raw": raw}),
+                    chat: None,
+                };
+                let mut kept =
+                    crate::dial::call(state, &host, &request, crate::dial::ANSWER_WITHIN).await?;
+                // Printed as the host prints it, without its record of this read.
+                if let Some(kept) = kept.as_object_mut() {
+                    kept.remove("audit_id");
+                }
+                Ok(kept)
+            }
+            None => crate::gate::requests::read(&state.path, &request, raw),
+        },
         AuditAction::Shot {
             record,
             shot,

@@ -733,6 +733,7 @@ pub mod tests {
                         request_id: Some("req_1".into()),
                         latency_ms: 3,
                         cost: None,
+                        exchange: None,
                     },
                 ))
             })
@@ -857,6 +858,7 @@ pub mod tests {
                         request_id: None,
                         latency_ms: 1,
                         cost: None,
+                        exchange: None,
                     },
                 ))
             })

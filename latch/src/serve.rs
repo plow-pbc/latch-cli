@@ -529,7 +529,8 @@ async fn run_host(
         Gatekeeper::provider_for_host(&state.path)
             .map_err(|why| Failure::new(code::not_logged_in, why))?,
         Box::new(rules),
-    );
+    )
+    .keeping_requests(&state.path);
     let mut audit = AuditLog::open(state.path.join(crate::audit::FILE))?;
     log(&format!("audit log verified: {} records", audit.len()));
     let home = std::env::home_dir().unwrap_or_default();
@@ -1329,7 +1330,7 @@ async fn serve_request(
                         )
                         .await
                     }
-                    "status" | "audit" | "audit_shot" => {
+                    "status" | "audit" | "audit_shot" | "audit_judge" => {
                         reads::run(host, &identity.kind, op, &request.args, &mut send, cut_off)
                             .await
                     }

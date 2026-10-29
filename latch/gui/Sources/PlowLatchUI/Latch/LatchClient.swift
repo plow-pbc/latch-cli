@@ -69,6 +69,10 @@ nonisolated protocol LatchClient: Sendable {
     /// this Mac's host or, with `host`, another's. Only its bytes come
     /// back; no copy is left on disk.
     func auditShot(_ record: String, shot: String, host: String?) async throws -> Data
+    /// `latch --pretty audit judge ID`: what the gatekeeper sent Plow for
+    /// one call and what it answered, as indented JSON, credential-looking
+    /// values hidden, from this Mac's host or, with `host`, another's.
+    func auditJudge(_ id: String, host: String?) async throws -> String
     /// A setup step, as `setup --status` gives its words after `latch`.
     func perform(_ args: [String]) async throws
     /// `latch stop`: stops the host on this state folder.
@@ -173,6 +177,10 @@ nonisolated struct LiveLatchClient: LatchClient {
         let file = folder.appending(path: "shot.png")
         _ = try await run(["audit", "shot", record, shot, "--output", file.path] + on(host))
         return try Data(contentsOf: file)
+    }
+
+    func auditJudge(_ id: String, host: String?) async throws -> String {
+        String(decoding: try await run(["--pretty", "audit", "judge", id] + on(host)), as: UTF8.self)
     }
 
     /// Runs latch and yields each JSON line it prints (skipping those

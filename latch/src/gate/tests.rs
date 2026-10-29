@@ -134,6 +134,7 @@ impl Provider for Recorder {
                 request_id: Some("req_made_up".into()),
                 latency_ms: 1,
                 cost: Some(0.0003),
+                exchange: None,
             };
             Ok((HashMap::from([("decision".to_string(), answer)]), meta))
         })
@@ -718,7 +719,7 @@ fn a_layer_allows_at_one_half_and_vetoes_where_forbidden_outweighs_the_rest() {
 #[test]
 fn either_layers_veto_refuses_before_either_layers_allow() {
     use Says::{Allow, Neither, Veto};
-    let reason = |rules, chat| match agent_verdict(rules, chat) {
+    let reason = |rules, chat| match agent_verdict(rules, chat, false) {
         Ok(()) => "allow".to_string(),
         Err(failure) => failure.details["reason"].as_str().unwrap().to_string(),
     };

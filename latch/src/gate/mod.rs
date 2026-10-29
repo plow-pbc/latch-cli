@@ -24,7 +24,8 @@
 //!
 //! Every judgment reads the chat and the rules fresh, so an owner's "stop"
 //! counts at once. The audit gets the `gate` object [`Judgment::gate`]:
-//! never chat text, rules text or a secret.
+//! never chat text, rules text or a secret. The host keeps each call's
+//! request and answer apart from it, for its owner (`requests.rs`).
 
 mod action;
 mod chat;
@@ -32,10 +33,12 @@ pub mod client;
 #[cfg(test)]
 pub mod fake;
 pub(crate) mod owner;
+pub mod requests;
 pub mod rules;
 #[cfg(test)]
 mod tests;
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -46,7 +49,9 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::failure::{Failure, code};
-use crate::model::{self, Answer, Kind, Model, Provider, Question, REQUEST_BUDGET, request_size};
+use crate::model::{
+    self, Answer, Exchange, Kind, Model, Provider, Question, REQUEST_BUDGET, request_size,
+};
 use crate::plow::Plow;
 use crate::state::to_hex;
 pub use action::{Gated, gated};
@@ -158,11 +163,13 @@ impl Prompt {
 const TRUNCATED: &str = "Older messages in this chat were left out to fit. An earlier instruction, or an earlier \"no\", may be among them.";
 
 /// The host's gatekeeper: its Plow login (to read chats), the decision
-/// model and the owner's rules.
+/// model and the owner's rules, and the state folder it keeps each call's
+/// request in.
 pub struct Gatekeeper {
     plow: Plow,
     provider: Arc<dyn Provider>,
     rules: Box<dyn RulesSource>,
+    requests: Option<PathBuf>,
 }
 
 /// One judgment: `Ok` to run the operation or the failure the agent gets,
@@ -240,6 +247,16 @@ impl Gatekeeper {
             plow,
             provider,
             rules,
+            requests: None,
+        }
+    }
+
+    /// This gatekeeper, keeping each call's request and answer in
+    /// `state_dir` (`requests.rs`).
+    pub fn keeping_requests(self, state_dir: &Path) -> Self {
+        Gatekeeper {
+            requests: Some(state_dir.to_path_buf()),
+            ..self
         }
     }
 
@@ -262,11 +279,12 @@ impl Gatekeeper {
             .rules(caller.key())
             .map_err(|why| unavailable(&format!("the owner's rules could not be read: {why}")))?;
         rules.host = draft;
-        Ok(Gatekeeper::new(
-            self.plow.clone(),
-            self.provider.clone(),
-            Box::new(rules),
-        ))
+        Ok(Gatekeeper {
+            plow: self.plow.clone(),
+            provider: self.provider.clone(),
+            rules: Box::new(rules),
+            requests: self.requests.clone(),
+        })
     }
 
     /// Whether `action` by `caller` may run.
@@ -351,8 +369,12 @@ impl Gatekeeper {
                 conversation: None,
                 rules,
             };
-            let p = self.ask(&intent, &ASKED, now, clock, action, gate).await?;
-            return owner_verdict(p);
+            let mut exchange = None;
+            let p = self
+                .ask(&intent, &ASKED, now, clock, action, gate, &mut exchange)
+                .await;
+            self.keep(gate, "owner", exchange);
+            return owner_verdict(p?);
         }
         let alone = Intent {
             owner: false,
@@ -361,10 +383,19 @@ impl Gatekeeper {
         };
         let mut rules_call = json!({});
         let mut chat_call = json!({});
+        let (mut rules_exchange, mut chat_exchange) = (None, None);
+        let looked = chat.is_some();
         let by_rules = Box::pin(async {
-            Ok(self
-                .ask(&alone, &RULES_LAYER, now, clock, action, &mut rules_call)
-                .await)
+            self.ask(
+                &alone,
+                &RULES_LAYER,
+                now,
+                clock,
+                action,
+                &mut rules_call,
+                &mut rules_exchange,
+            )
+            .await
         });
         let by_chat = Box::pin(async {
             let Some(chat) = chat else { return Ok(None) };
@@ -376,10 +407,32 @@ impl Gatekeeper {
                 conversation: Some(conversation),
                 rules: alone.rules.clone(),
             };
-            let p = self.ask(&intent, &ASKED, now, clock, action, &mut chat_call);
+            let p = self.ask(
+                &intent,
+                &ASKED,
+                now,
+                clock,
+                action,
+                &mut chat_call,
+                &mut chat_exchange,
+            );
             Ok(Some(p.await))
         });
-        let (by_rules, by_chat) = tokio::try_join!(by_rules, by_chat)?;
+        let (by_rules, by_chat) = tokio::join!(by_rules, by_chat);
+        self.keep(&mut rules_call, "rules", rules_exchange);
+        self.keep(&mut chat_call, "chat", chat_exchange);
+        // A chat that could not be read refuses, the rules layer unheeded:
+        // the record names only where that layer's call was kept.
+        let by_chat = by_chat.inspect_err(|_| {
+            if let Some(id) = rules_call.get("kept_request") {
+                gate["layers"] = json!({"rules": {"kept_request": id}});
+            }
+        })?;
+        if looked {
+            // Whether the host found a chat for the agent: with none, the
+            // owner's messages were never read.
+            gate["chat_lookup"] = json!(if by_chat.is_some() { "found" } else { "none" });
+        }
         if let Some(hashes) = hashes {
             gate["rules"] = hashes;
         }
@@ -438,13 +491,14 @@ impl Gatekeeper {
         gate["decided_by"] = json!(decided_by);
         gate["p"] = layers[decided_by]["p"].clone();
         gate["layers"] = layers;
-        agent_verdict(says.0, says.1)
+        agent_verdict(says.0, says.1, looked && says.1.is_none())
     }
 
     /// Asks the model about `action` against `intent` with `prompt`. `call`
     /// gets what the audit keeps of it: the chat shown, the prompt and
     /// model, the model's request id, cost and probabilities, and why it
-    /// failed.
+    /// failed; `exchange`, the request and answer themselves.
+    #[allow(clippy::too_many_arguments)]
     async fn ask(
         &self,
         intent: &Intent,
@@ -453,6 +507,7 @@ impl Gatekeeper {
         clock: &str,
         action: &RawValue,
         call: &mut Value,
+        exchange: &mut Option<Exchange>,
     ) -> Result<P, Failure> {
         let (state, shown) = fit(intent, prompt, now, clock, action)?;
         if let Some(c) = &intent.conversation {
@@ -492,6 +547,7 @@ impl Gatekeeper {
                 call["model_failed"] = reason.clone();
             }
         }
+        *exchange = model.exchanges.pop();
         let answers = asked.map_err(|why| unavailable(&why))?;
         let Some(Answer::Chose { probabilities, .. }) = answers.get("decision") else {
             return Err(unavailable("the decision model gave no answer"));
@@ -510,6 +566,21 @@ impl Gatekeeper {
         call["p"] =
             json!({"COVERED": p.covered, "NOT_COVERED": p.not_covered, "FORBIDDEN": p.forbidden});
         Ok(p)
+    }
+
+    /// Keeps the request and any answer of `call`, as `layer` asked it,
+    /// and names it in `call` as `kept_request`: best effort, what can't be
+    /// kept goes to the host's log.
+    fn keep(&self, call: &mut Value, layer: &'static str, exchange: Option<Exchange>) {
+        let (Some(dir), Some(exchange)) = (&self.requests, exchange) else {
+            return;
+        };
+        let id = requests::new_id();
+        match requests::keep(dir, &id, layer, &exchange) {
+            Ok(true) => call["kept_request"] = json!(id),
+            Ok(false) => {}
+            Err(why) => crate::log::log(&format!("gatekeeper: {why}")),
+        }
     }
 }
 
@@ -592,8 +663,9 @@ fn owner_verdict(p: P) -> Result<(), Failure> {
 
 /// An agent's verdict from its layers: the rules layer, and the chat layer
 /// when it has a chat. Either one's veto refuses; else either one's allow
-/// allows. No chat says neither.
-fn agent_verdict(rules: Says, chat: Option<Says>) -> Result<(), Failure> {
+/// allows. No chat says neither, and a refusal says when the host found
+/// none for the agent (`no_chat`).
+fn agent_verdict(rules: Says, chat: Option<Says>, no_chat: bool) -> Result<(), Failure> {
     let says = [Some(rules), chat];
     if says.contains(&Some(Says::Veto)) {
         return Err(denied(
@@ -604,9 +676,17 @@ fn agent_verdict(rules: Says, chat: Option<Says>) -> Result<(), Failure> {
     if says.contains(&Some(Says::Allow)) {
         return Ok(());
     }
+    let found = match no_chat {
+        true => {
+            " This host found no Plow chat between you and the owner, so it read none of their messages."
+        }
+        false => "",
+    };
     Err(denied(
         "not_covered",
-        "Neither the owner's rules nor their messages allow this. Ask the owner in chat, saying exactly what you will do (item, total, recipient), then retry.".to_string(),
+        format!(
+            "Neither the owner's rules nor their messages allow this.{found} Ask the owner in chat, saying exactly what you will do (item, total, recipient), then retry."
+        ),
     ))
 }
 

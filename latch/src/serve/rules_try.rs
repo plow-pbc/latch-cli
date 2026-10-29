@@ -47,7 +47,8 @@ pub(crate) async fn preview_here(state: &StateDir, args: &Value) -> Result<Value
         plow.clone(),
         provider,
         Box::new(RuleFiles::new(&state.path)?),
-    );
+    )
+    .keeping_requests(&state.path);
     let state_dir = state
         .path
         .canonicalize()

@@ -1251,6 +1251,28 @@ const ENTRIES: &[Entry] = &[
         )],
     },
     Entry {
+        id: "audit.judge",
+        runs_on: |_| RunsOn::Either,
+        output: "One gatekeeper call, by its id (a record's `kept_request`, in `details.gate` or its `layers`): `id`, `time`, `layer` (`owner`, or an agent's `rules` or `chat`), `request` (the body sent to Plow's decision route: model, state, questions; the rules, the chat and the action as the judge saw them) and `answer` (Plow's reply, null when none came). Kept sealed with the host's audit key, exactly as sent; printed with credential-looking values hidden, as `latch audit` hides them, best effort, or with `--raw` exactly as sent, a credential typed into a command included. The judge is never shown a vault or secret value. A host keeps them 7 days (then `no_such_request`), on that host only.",
+        effect: ReadOnly,
+        owner_only: true,
+        connector: None,
+        examples: &[
+            ex(
+                "See what the gatekeeper was asked and answered",
+                &["--pretty", "audit", "judge", "REQUEST"],
+            ),
+            ex(
+                "Exactly what the judge saw, credentials included",
+                &["--pretty", "audit", "judge", "REQUEST", "--raw"],
+            ),
+            ex(
+                "The same, from another host",
+                &["audit", "judge", "REQUEST", "--host", "studio"],
+            ),
+        ],
+    },
+    Entry {
         id: "audit.shot",
         runs_on: |_| RunsOn::Either,
         output: "The `record`, the `shot`, the `path` the PNG was saved to, its `size` and `sha256`. Only a screenshot a browser plan's record names (an action's number from its `step_records`, or `final`), and only the bytes that record's sha256 says were kept: a host keeps a request's screenshots 7 days (then `no_such_shot`). A standalone `browser screenshot` was saved on its caller's machine, not kept on the host. latch doesn't redact pixels: it takes no screenshot while a value filled from the vault is on the page, and none of a fill step, but typed text and the rest of the page can show.",

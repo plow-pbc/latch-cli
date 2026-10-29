@@ -700,8 +700,14 @@ async fn a_login_fill_is_judged_as_the_browser_judges_it_and_nothing_is_opened()
     assert_eq!(tried["request"], json!({"op": "browser", "action": shown}));
     assert_eq!(t.judged(), 1);
     // No vault opened or made, no key read or written, no browser
-    // session, and nothing audited.
-    assert_eq!(state_files(&t), before);
+    // session, and nothing audited: only what the judge was sent is kept,
+    // as for every judgment.
+    let kept = tried["gate"]["kept_request"].as_str().unwrap();
+    let kept = crate::gate::requests::read(&t.state, kept, true).unwrap();
+    assert_eq!(kept["request"]["state"]["proposed_action"], shown);
+    let mut after = state_files(&t);
+    after.retain(|name| name != "gatekeeper");
+    assert_eq!(after, before);
     assert!(
         !before.iter().any(|name| name.starts_with("vault")),
         "{before:?}"

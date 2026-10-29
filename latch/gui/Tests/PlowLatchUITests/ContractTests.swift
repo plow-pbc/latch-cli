@@ -64,6 +64,17 @@ final class ContractTests {
         #expect(latchRuns(on: state.path, doing: "status --local --follow") == 0)
     }
 
+    /// The app's `audit judge` is a command latch takes: a host that kept
+    /// no such call says so by its code.
+    @Test func auditJudgeOfACallNeverKept() async throws {
+        do {
+            _ = try await client.auditJudge("g0", host: nil)
+            Issue.record("latch printed a call it never kept")
+        } catch let failure as LatchError {
+            #expect(failure.code == "no_such_request", "\(failure)")
+        }
+    }
+
     @Test func setupStatusOfAFreshStateFolder() async throws {
         let setup = try await client.setupStatus()
         #expect(setup.step("login")?.state == "needed")
