@@ -1632,6 +1632,10 @@ struct Action {
     /// The first line of `about`, as `latch --help` lists the command.
     summary: String,
     about: String,
+    /// Where its first example runs: `local` (this computer), `host` (the
+    /// selected host) or `either` (this computer's own state, or a host's
+    /// with --host).
+    runs_on: &'static str,
     inputs: Vec<Input>,
     output: &'static str,
     /// The answer's top-level fields, where they are known.
@@ -1677,6 +1681,22 @@ struct Input {
     about: String,
 }
 
+/// Where `entry`'s first example runs, as its own command line routes it.
+fn runs_on(entry: &Entry) -> &'static str {
+    let example = entry
+        .examples
+        .first()
+        .expect("every command has an example");
+    let matches = Cli::command()
+        .try_get_matches_from(std::iter::once("latch").chain(example.args.iter().copied()))
+        .expect("every example parses");
+    match (entry.runs_on)(selected(&matches).1) {
+        RunsOn::Local => "local",
+        RunsOn::Host => "host",
+        RunsOn::Either => "either",
+    }
+}
+
 fn describe(id: &str, command: &clap::Command) -> Action {
     let entry = entry(id);
     let about = command
@@ -1692,6 +1712,7 @@ fn describe(id: &str, command: &clap::Command) -> Action {
             .map(ToString::to_string)
             .unwrap_or_default(),
         about,
+        runs_on: runs_on(entry),
         inputs: inputs(command),
         output: entry.output,
         output_fields: OUTPUT_FIELDS
@@ -1734,6 +1755,7 @@ fn describe_gog(allowed: &Allowed, google: &clap::Command) -> Action {
         usage: format!("latch google [OPTIONS] -- {words} [GOG_ARGS]..."),
         summary: format!("Run `{words}` on a host's Google account"),
         about: format!("Run `{words}` on a host's Google account"),
+        runs_on: "host",
         inputs,
         output: "gog's JSON answer.",
         output_fields: None,

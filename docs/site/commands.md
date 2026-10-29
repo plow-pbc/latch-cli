@@ -6,19 +6,24 @@ Every command prints one JSON object. Add `--pretty` to read it yourself.
 
 | For | Means |
 |---|---|
-| Host | For managing a host. Run it on that computer, or from another of your computers with `--host NAME`. |
-| Agent | What an agent runs to ask a host for something. |
+| Host | You, the owner, run it. |
+| Agent | Your agent runs it, to ask a host for something. |
 
 Commands marked "Owner only" work from your own computers, never for an
 agent.
 
 ## Choosing a host
 
-`--host NAME` sends a command to that host, over the encrypted connection
-between the two computers. Without it, an Agent command goes to the host
-`LATCH_HOST` names; else to this computer, if it hosts; else to your only
-host. With several hosts and none named, it stops with `host_required`. A
-Host command without `--host` works on this computer's own host.
+`--host NAME` sends an Agent command to that host, over the encrypted
+connection between the two computers. Without it, the command goes to the
+host `LATCH_HOST` names; else to this computer, if it hosts; else to your only
+host. With several hosts and none named, it stops with `host_required`.
+
+`rules`, `vault` and `audit` work on this computer's own host, or on another
+of your hosts with `--host NAME`. Bare `latch status` reports this computer
+and ignores `LATCH_HOST`; `latch status --host NAME` reports another host, for
+you only, never for an agent. `latch browser setup` runs only on the computer
+you're at: with `--host` it stops with `host_not_supported`.
 
 ```sh host
 latch rules show --host my-pi
@@ -32,37 +37,37 @@ latch browser open --host my-mac https://example.com
 
 | Command | For | What it does, and an example |
 |---|---|---|
-| `latch setup` |  | Set this machine up, step by step, at a terminal. |
-| `latch login` |  | Log this machine or agent in to Plow: create its key if missing and register it. |
-| `latch logout` |  | Log this machine out of Plow. |
-| `latch status` | Agent | Print this machine, its login and account, and the account's hosts. |
-| `latch devices` |  | List this account's machines, online or not, or remove one. |
-| `latch devices remove` |  | Remove a machine and sign out the Plow login it registered with. Owner only.<br>Remove the old Pi without a prompt: `latch devices remove old-pi --yes` |
-| `latch update` |  | Install the newest latch, or the build TAG names. Owner only. |
-| `latch app` |  | Open the Plow Latch app this latch belongs to (macOS). |
-| `latch help` |  | Help for a command, its examples, or every command as JSON.<br>Help for one command: `latch help browser open` |
-| `latch skill` |  | Print SKILL.md, which teaches an agent how to use latch. |
+| `latch setup` | Host | Set this machine up, step by step, at a terminal. |
+| `latch login` | Host | Log this machine or agent in to Plow: create its key if missing and register it. |
+| `latch logout` | Host | Log this machine out of Plow. |
+| `latch status` | Host | Print this machine, its login and account, and the account's hosts. |
+| `latch devices` | Host | List this account's machines, online or not, or remove one. |
+| `latch devices remove` | Host | Remove a machine and sign out the Plow login it registered with. Owner only.<br>Remove the old Pi without a prompt: `latch devices remove old-pi --yes` |
+| `latch update` | Host | Install the newest latch, or the build TAG names. Owner only. |
+| `latch app` | Host | Open the Plow Latch app this latch belongs to (macOS). |
+| `latch help` | Host | Help for a command, its examples, or every command as JSON.<br>Help for one command: `latch help browser open` |
+| `latch skill` | Host | Print SKILL.md, which teaches an agent how to use latch. |
 
 ## Run a host
 
 | Command | For | What it does, and an example |
 |---|---|---|
-| `latch serve` |  | Run this machine as a host. |
-| `latch stop` |  | Stop the host on this state folder; its state is kept. |
-| `latch dashboard` |  | View the running host; Ctrl-C closes only the view. |
-| `latch logs` |  | The host's diagnostics (serve.log).<br>Follow the host's log: `latch logs --follow` |
-| `latch settings set` |  | Save a setting for this machine's host; needs no login, host or restart.<br>Keep this Mac awake while plugged in, for its host: `latch settings set --keep-awake on` |
+| `latch serve` | Host | Run this machine as a host. |
+| `latch stop` | Host | Stop the host on this state folder; its state is kept. |
+| `latch dashboard` | Host | View the running host; Ctrl-C closes only the view. |
+| `latch logs` | Host | The host's diagnostics (serve.log).<br>Follow the host's log: `latch logs --follow` |
+| `latch settings set` | Host | Save a setting for this machine's host; needs no login, host or restart.<br>Keep this Mac awake while plugged in, for its host: `latch settings set --keep-awake on` |
 
 ## Agents
 
 | Command | For | What it does, and an example |
 |---|---|---|
 | `latch agents` | Host | List your agents, with their lines and Plow status. Owner only. |
-| `latch agents show` |  | Show one agent, by its uid or its exact name. Owner only.<br>One agent, by its name: `latch agents show Scout` |
-| `latch agents catalog` |  | The kinds of cloud agent Plow can run, for `agents new --cloud`. Owner only. |
-| `latch agents lines` |  | Plow's phone lines, and which are free for a new agent. Owner only. |
-| `latch agents new` |  | Create an agent on a free phone line. Owner only.<br>An agent you run yourself: `latch agents new --own --token-file scout.token --name Scout --line +15550000002` |
-| `latch agents remove` |  | Remove an agent, by its uid or its exact name. Owner only.<br>Remove an agent without asking: `latch agents remove Scout --yes` |
+| `latch agents show` | Host | Show one agent, by its uid or its exact name. Owner only.<br>One agent, by its name: `latch agents show Scout` |
+| `latch agents catalog` | Host | The kinds of cloud agent Plow can run, for `agents new --cloud`. Owner only. |
+| `latch agents lines` | Host | Plow's phone lines, and which are free for a new agent. Owner only. |
+| `latch agents new` | Host | Create an agent on a free phone line. Owner only.<br>An agent you run yourself: `latch agents new --own --token-file scout.token --name Scout --line +15550000002` |
+| `latch agents remove` | Host | Remove an agent, by its uid or its exact name. Owner only.<br>Remove an agent without asking: `latch agents remove Scout --yes` |
 
 ## Programs and files
 
@@ -103,7 +108,7 @@ latch browser open --host my-mac https://example.com
 
 | Command | For | What it does, and an example |
 |---|---|---|
-| `latch vault list` | Agent | Every item's metadata, a login's username included (never a secret value).<br>List the items: `latch vault --host mac list` |
+| `latch vault list` | Host | Every item's metadata, a login's username included (never a secret value).<br>List the items: `latch vault --host mac list` |
 | `latch vault show` | Host | One item's metadata and its non-secret values (never a secret one). Owner only.<br>Show an item: `latch vault --host mac show v3` |
 | `latch vault add` | Host | Add an item to the vault. Owner only.<br>Add a login with its password as JSON on stdin: `latch vault add --kind login --title Shop --site shop.example --field username=ada --stdin` |
 | `latch vault edit` | Host | Change an item's title, sites or fields, at its current revision. Owner only.<br>Change a login's password, given as JSON on stdin: `latch vault edit v1 --revision 2 --stdin` |
@@ -125,8 +130,8 @@ latch browser open --host my-mac https://example.com
 
 | Command | For | What it does, and an example |
 |---|---|---|
-| `latch plugins enable` |  | Turn a connector on, if its setup succeeds. Owner only.<br>Turn Google on here: `latch plugins enable google` |
-| `latch plugins disable` |  | Turn a connector off. Owner only.<br>Turn Google off here: `latch plugins disable google` |
+| `latch plugins enable` | Host | Turn a connector on, if its setup succeeds. Owner only.<br>Turn Google on here: `latch plugins enable google` |
+| `latch plugins disable` | Host | Turn a connector off. Owner only.<br>Turn Google off here: `latch plugins disable google` |
 | `latch google -- COMMAND` | Agent | Run one allowed command on a host's Google account. Calendar: `calendars`, `conflicts`, `create`, `delete`, `event`, `events`, `freebusy`, `move`, `respond`, `search`, `update`. Gmail: `archive`, `attachment`, `drafts create`, `drafts delete`, `drafts forward`, `drafts get`, `drafts list`, `drafts reply`, `drafts reply-all`, `drafts send`, `drafts update`, `forward`, `get`, `labels list`, `mark-read`, `messages modify`, `messages search`, `reply`, `reply-all`, `search`, `send`, `thread get`, `unread`.<br>Search one account's mail: `latch google --host mac --account ada@example.com -- gmail search 'from:grace newer_than:7d'` |
 | `latch messages search` | Agent | Search messages for PHRASE, newest first.<br>Find a sign-in code texted in the last ten minutes: `latch messages search --host mac --since 10m code` |
 | `latch messages thread` | Agent | One conversation, oldest first, ending with its newest message.<br>The direct conversation with one handle: `latch messages thread --host mac --with +15550000001` |
@@ -140,7 +145,7 @@ latch browser open --host my-mac https://example.com
 | Command | For | What it does, and an example |
 |---|---|---|
 | `latch audit` | Host | Read a host's sealed audit log. Owner only. |
-| `latch audit verify` |  | Check every record's place in the chain, without the key. |
-| `latch audit rotate-key` |  | Seal new records under a new key. |
+| `latch audit verify` | Host | Check every record's place in the chain, without the key. |
+| `latch audit rotate-key` | Host | Seal new records under a new key. |
 | `latch audit judge` | Host | Show what the gatekeeper asked Plow for one judgment, and the answer. Owner only.<br>See what the gatekeeper was asked and answered: `latch --pretty audit judge REQUEST` |
 | `latch audit shot` | Host | Save a browser screenshot an audit record names. Owner only.<br>Save the screenshot after a plan's first action: `latch audit shot ID 1 --output step-1.png` |

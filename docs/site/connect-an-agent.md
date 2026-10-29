@@ -45,7 +45,7 @@ latch agents new --own --name my-agent --line LINE --token-file my-agent.token
 `my-agent.token` like a password.
 
 **3. Give the agent its credential.** Copy the file to the agent's computer,
-and give it Latch with the [Agent install](index.md#install).
+and give it Latch with the [agent install](index.md#install-on-an-agent).
 Then log in, in a state folder of its own:
 
 ```sh agent

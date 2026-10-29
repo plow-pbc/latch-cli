@@ -48,19 +48,24 @@ Every command prints one JSON object. Add `--pretty` to read it yourself.
 
 | For | Means |
 |---|---|
-| Host | For managing a host. Run it on that computer, or from another of your computers with `--host NAME`. |
-| Agent | What an agent runs to ask a host for something. |
+| Host | You, the owner, run it. |
+| Agent | Your agent runs it, to ask a host for something. |
 
 Commands marked "Owner only" work from your own computers, never for an
 agent.
 
 ## Choosing a host
 
-`--host NAME` sends a command to that host, over the encrypted connection
-between the two computers. Without it, an Agent command goes to the host
-`LATCH_HOST` names; else to this computer, if it hosts; else to your only
-host. With several hosts and none named, it stops with `host_required`. A
-Host command without `--host` works on this computer's own host.
+`--host NAME` sends an Agent command to that host, over the encrypted
+connection between the two computers. Without it, the command goes to the
+host `LATCH_HOST` names; else to this computer, if it hosts; else to your only
+host. With several hosts and none named, it stops with `host_required`.
+
+`rules`, `vault` and `audit` work on this computer's own host, or on another
+of your hosts with `--host NAME`. Bare `latch status` reports this computer
+and ignores `LATCH_HOST`; `latch status --host NAME` reports another host, for
+you only, never for an agent. `latch browser setup` runs only on the computer
+you're at: with `--host` it stops with `host_not_supported`.
 
 ```sh host
 latch rules show --host my-pi
@@ -71,14 +76,10 @@ latch browser open --host my-mac https://example.com
 ```
 """
 
-# The pill each command carries, from what `latch help --json` says of it:
-# Host for the owner's commands that work on a host (they take --host), Agent
-# for what an agent can send to a host. The rest carry none.
+# Who runs a command, from what `latch help --json` says of it: Agent for a
+# request an agent may send to a host, Host for everything you, the owner, run.
 def pill(action):
-    takes_host = any(i.get("flag") and "--host" in i["flag"] for i in action["inputs"])
-    if not takes_host:
-        return ""
-    return "Host" if action["owner_only"] else "Agent"
+    return "Agent" if action["runs_on"] == "host" and not action["owner_only"] else "Host"
 
 
 def url(page):
@@ -194,18 +195,22 @@ def pill_html(name):
 
 def code_block(info, lines):
     lang, *tags = info.split()
-    if any(t not in PILLS for t in tags):
-        raise SystemExit(f"docs_site.py: a code block's tag is not host or agent: {info!r}")
+    # A command block says who runs it: exactly one of host or agent.
+    if lang == "sh" and (len(tags) != 1 or tags[0] not in PILLS):
+        raise SystemExit(f"docs_site.py: a sh block needs one tag, host or agent: {info!r}")
+    if lang != "sh" and tags:
+        raise SystemExit(f"docs_site.py: only a sh block takes a tag: {info!r}")
     body = "\n".join(highlight(line) for line in lines) if lang == "sh" else html.escape("\n".join(lines), quote=False)
     label = {"sh": "terminal", "json": "output", "text": "output"}.get(lang)
     if label is None:
         raise SystemExit(f"docs_site.py: code block language {lang!r} is not sh, json or text")
     copy = ('<button class="code-copy" type="button" aria-label="Copy code"><i class="ph-bold ph-copy"></i></button>'
             if lang == "sh" else "")
-    tabs = "".join(f'<span class="code-tab pill-{t}">{PILLS[t]}</span>' for t in tags)
     panel = (f'<div class="code" data-lang="{lang}"><div class="code-bar"><span class="fn">{label}</span>{copy}</div>'
              f"<pre><code>{body}</code></pre></div>")
-    return f'<div class="code-block">{tabs}{panel}</div>' if tabs else panel
+    if not tags:
+        return panel
+    return f'<div class="code-block"><span class="code-tab pill-{tags[0]}">{PILLS[tags[0]]}</span>{panel}</div>'
 
 
 def table(lines):
@@ -230,9 +235,6 @@ def table(lines):
     return f'<div class="table-wrap"><table><thead><tr>{th}</tr></thead><tbody>{trs}</tbody></table></div>'
 
 
-TWO_UP, NEXT, END = "<!-- two-up -->", "<!-- next -->", "<!-- /two-up -->"
-
-
 def render(markdown):
     """The page's title and its body as HTML."""
     titles = []
@@ -243,35 +245,12 @@ def render(markdown):
 
 
 def blocks(lines, titles):
-    """Blocks of Markdown as HTML. Between `<!-- two-up -->` and
-    `<!-- /two-up -->`, `<!-- next -->` splits two panels side by side
-    (invisible on GitHub)."""
+    """Blocks of Markdown as HTML."""
     out, i = [], 0
     while i < len(lines):
         line = lines[i]
         if not line.strip():
             i += 1
-        elif line.strip() == TWO_UP:
-            end = i + 1
-            while end < len(lines) and lines[end].strip() != END:
-                end += 1
-            if end == len(lines):
-                raise SystemExit("docs_site.py: a two-up block is not closed")
-            parts, part = [], []
-            for inner in lines[i + 1:end]:
-                if inner.strip() == NEXT:
-                    parts.append(part)
-                    part = []
-                else:
-                    part.append(inner)
-            parts.append(part)
-            if len(parts) != 2:
-                raise SystemExit("docs_site.py: a two-up block has two panels")
-            out.append('<div class="two-up">' + "".join(
-                f'<div class="panel">{blocks(part, titles)}</div>' for part in parts) + "</div>")
-            i = end + 1
-        elif line.lstrip().startswith("<!--"):
-            raise SystemExit(f"docs_site.py: {line.strip()!r} outside a two-up block")
         elif line.startswith("```"):
             lang, end = line[3:].strip(), i + 1
             while end < len(lines) and lines[end] != "```":
@@ -314,7 +293,7 @@ def blocks(lines, titles):
             out.append(f"<{tag}>" + "".join(f"<li>{inline(item)}</li>" for item in items) + f"</{tag}>")
         else:
             end = i
-            while end < len(lines) and lines[end].strip() and not re.match(r"(```|#|\||> |- |\d+\. |<!--)", lines[end]):
+            while end < len(lines) and lines[end].strip() and not re.match(r"(```|#|\||> |- |\d+\. )", lines[end]):
                 end += 1
             out.append(f"<p>{inline(' '.join(l.strip() for l in lines[i:end]))}</p>")
             i = end
