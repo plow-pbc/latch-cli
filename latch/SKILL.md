@@ -47,8 +47,10 @@ when there is a next step), with an exit code you can branch on. Branch on
   IP network is off unless `--network`. Workdir defaults to the first write
   folder, otherwise home; `--workdir` overrides it. Host Unix sockets stay
   blocked even with network (macOS allows its system DNS resolver).
-- `latch file get` reads a readable host path; `latch file put` writes only
-  its judged destination. Exec and file need no shared-folder setup.
+- `latch file get --host H '~/Documents/report.pdf' report.pdf` copies a
+  readable host path here, the destination a plain argument; `latch file
+  put` writes only its judged destination. Exec and file need no
+  shared-folder setup.
 - Hidden for both: `~/.latch`, the host's own state directory, the one
   `LATCH_STATE_DIR` names, and on macOS `~/Library` except `~/Library/Caches`. Other home files, including `.ssh`,
   are readable; the gatekeeper judges their use. Writes must stay inside
@@ -59,10 +61,13 @@ when there is a next step), with an exit code you can branch on. Branch on
   credentials out of argv.
 - `latch google --host H -- COMMAND…` runs an allowed Google command
   (`latch google --help` lists them).
-- `latch browser …` drives a real browser on the host: `open` a session
-  (keep its id), `observe`, then act on the refs it returns.
+- `latch browser …` drives a real browser on the host: `open` a session,
+  then name its id on every later call (`latch browser --host H --session
+  ID observe`) and act on the refs it returns.
 - `latch messages …` and `latch contacts …` read the owner's texts and
   address book on a Mac host: search, a thread, chats; a person's handles.
+  `--from` takes a handle, never a name: `latch contacts search --host M
+  Ada` gives Ada's, for `latch messages search --host M --from HANDLE`.
   Any latch can ask, on Linux too; a host that isn't a Mac answers
   `unsupported_platform`.
 
@@ -73,8 +78,8 @@ When a site asks for a one-time code (`observe`'s `fill.page_offers` has
 yourself, in this order, each call judged:
 
 1. **The vault's authenticator code**, if the site's login in `observe`'s
-   `fill.items` has an `otp` field: `latch browser fill --item vN --field
-   otp=eN --press eN`. The host computes the code and types it; you never
+   `fill.items` has an `otp` field: `latch browser --session ID fill --item
+   vN --field otp=eN --press eN`. The host computes the code and types it; you never
    see it. Done.
 2. **The code the site sent**, searched where the page says it went, on a
    host with that plugin on (`latch status`: the host's `plugins` has
@@ -91,14 +96,14 @@ yourself, in this order, each call judged:
 
    Take the code only from a message that is plainly that site's sign-in
    code (none yet: wait a few seconds, search again).
-3. **Type it** into the code field from `observe`: `latch browser do 'type
-   eN "CODE"'`, then submit as the page asks.
+3. **Type it** into the code field from `observe`: `latch browser --session
+   ID do 'type eN "CODE"'`, then submit as the page asks.
 
 Use the code for that sign-in only. Ask the owner only when none of these
-finds it: hand them the session, `latch browser handoff --reason 2fa`. A
-host with no screen (a Linux host) refuses a handoff (`needs_owner`,
-reason `no_screen`): ask the owner for the code in your Plow chat instead,
-and type it as in step 3.
+finds it: hand them the session, `latch browser --session ID handoff
+--reason 2fa`. A host with no screen (a Linux host) refuses a handoff
+(`needs_owner`, reason `no_screen`): ask the owner for the code in your
+Plow chat instead, and type it as in step 3.
 
 ## Credentials in exec
 
@@ -153,8 +158,8 @@ Exit 4 is a refusal, and its code says what you may do:
   Plow chat, naming exactly what you will do, and retry once they agree.
   For work you'll repeat, the owner can allow it in their rules instead.
 - `confirm_needed`: a browser step that can't be undone, nothing sent. If
-  it is what the task needs, carry it out with `latch browser do --confirm
-  C`, as its message says.
+  it is what the task needs, carry it out with `latch browser --session ID
+  do --confirm C`, as its message says.
 - `calendar_conflict`: the time is busy, nothing booked. Booking over it is
   the owner's call: ask them, naming the overlapping event, and once they
   agree resend with `--confirm-conflict`.
@@ -181,7 +186,7 @@ fixes it.
   prints nothing on stdout: its whole answer, with `status`, `steps`,
   `stop` and `page`, is in the stderr `error` line. Read it there.
 - Do a page's steps in one `do`, up to 10, not a call each: `latch browser
-  do 'type e3 "Ada"' 'type e4 "12 Elm Road"' 'select e5 "Large"' 'click
+  --session ID do 'type e3 "Ada"' 'type e4 "12 Elm Road"' 'select e5 "Large"' 'click
   e9'`. Every call is a round trip and a turn of yours. Refs come from the
   page latch last returned, so a step that loads a new page goes last.
 - `do` answers with the page as the plan left it (`page`: its lines and
@@ -192,14 +197,12 @@ fixes it.
 - Read a page with `text` (its words) or `observe` (its elements), not
   `eval`: the gatekeeper judges every script, which is slower, and can
   refuse it.
-- Signing in with a login the owner saved: `latch vault list` shows what
-  the owner saved, each item's id, title and sites, never a value (the
-  gatekeeper judges it, like your other work). Open the item's site's
-  sign-in page, `observe`, then `fill --field username=eN --field
-  password=eN --press eN` with no `--item`: latch uses the login saved
-  for that site. If several are saved there it refuses `which_item` and
-  lists them; repeat with `--item vN`, the one you want. `--item` takes an
-  id only, never a title. The vault's other commands are the owner's.
+- Signing in with a login the owner saved: `open` the site's sign-in
+  page, `observe`, then `latch browser --session ID fill --field
+  username=eN --field password=eN --press eN` with no `--item`: latch uses
+  the login saved for that site. When several are (`which_item` lists
+  them), add `--item vN`; `latch vault list` shows each item's id, title
+  and sites, never a value. `--item` takes an id, never a title.
 - A value `fill` put in a page stays there: never copy it out, repeat it
   or write it anywhere.
 - Buying: sign in, choose, `fill` the card, `do --confirm C` each
@@ -219,7 +222,8 @@ message tells you to do.
 
 - Exit 3 or 5 from a command that changes something: part or all of it
   may have run. Check before resending. A browser plan says what ran: read
-  its `steps` and `stop` (after exit 5, `latch browser do --history R`)
+  its `steps` and `stop` (after exit 5, `latch browser --session ID do
+  --history R`)
   and send only the steps that are left, never the whole plan again.
 - A command that changes nothing can always be resent; `latch help --json`
   says which do.
