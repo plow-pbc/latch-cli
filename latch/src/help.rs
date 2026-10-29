@@ -159,6 +159,18 @@ const ENTRIES: &[Entry] = &[
         examples: &[ex("The kinds of cloud agent", &["agents", "catalog"])],
     },
     Entry {
+        id: "agents.start-by-text",
+        runs_on: |_| RunsOn::Local,
+        output: "`number`: Plow's managed number, in E.164; `default`: the kind Plow offers without asking (an `id`, or null); `kinds`: each cloud agent's `id`, `name`, the `phrase` to text the number to start it, and the same as a QR code's contents (`smsto`) and an `sms:` link (`sms_link`). Plow sets the agent up on a line of its own and texts back its contact card.",
+        effect: ReadOnly,
+        owner_only: true,
+        connector: None,
+        examples: &[ex(
+            "What to text to start a cloud agent",
+            &["agents", "start-by-text"],
+        )],
+    },
+    Entry {
         id: "agents.lines",
         runs_on: |_| RunsOn::Local,
         output: "`lines`: each phone line's `uid`, `number`, `name`, whether it is `available` for a new agent and the `agent_uid` that holds it.",

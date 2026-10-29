@@ -20,6 +20,7 @@ use crate::cli::{AgentsAction, AgentsArgs};
 use crate::dial::{self, ANSWER_WITHIN};
 use crate::failure::{Failure, code};
 use crate::hosts;
+use crate::login;
 use crate::plow::{ListedAgent, Plow};
 use crate::state::StateDir;
 use crate::term;
@@ -101,6 +102,7 @@ async fn managed(
             json!({"agent": agent_shown(agent, None)})
         }
         Some(AgentsAction::Catalog) => catalog(plow).await?,
+        Some(AgentsAction::StartByText) => start_by_text(api_url).await?,
         Some(AgentsAction::Lines) => lines(plow).await?,
         Some(AgentsAction::New {
             cloud,
@@ -305,6 +307,26 @@ async fn catalog(plow: &Plow) -> Result<Value, Failure> {
         .map(|kind| json!({"id": kind.id, "name": kind.name}))
         .collect();
     Ok(json!({"kinds": kinds}))
+}
+
+/// What to text Plow's managed number to start each kind of cloud agent:
+/// the kind's first phrase, which Plow's own pages offer too, ready for a
+/// phone's camera (`smsto`) and for Messages on a Mac (`sms_link`).
+async fn start_by_text(api_url: &str) -> Result<Value, Failure> {
+    // Public, so it's asked without the owner's credential.
+    let signup = Plow::anonymous(api_url)?.signup().await?;
+    let number = signup.managed_phone;
+    let kinds: Vec<Value> = signup
+        .providers
+        .into_iter()
+        .filter_map(|kind| {
+            let phrase = kind.phrases.into_iter().next()?;
+            Some(json!({"id": kind.id, "name": kind.name,
+                        "smsto": login::smsto(&number, &phrase),
+                        "sms_link": login::sms_link(&number, &phrase), "phrase": phrase}))
+        })
+        .collect();
+    Ok(json!({"number": number, "default": signup.default_provider, "kinds": kinds}))
 }
 
 /// Plow's provider id for an agent its owner runs.

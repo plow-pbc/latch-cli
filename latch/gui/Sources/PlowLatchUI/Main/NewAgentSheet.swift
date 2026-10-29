@@ -1,261 +1,171 @@
-import AppKit
 import SwiftUI
 
-/// The New Agent sheet's state: a cloud agent from Plow's catalog or your
-/// own, its name and phone line, then the agent latch created.
+/// The New Agent sheet's state: what to text Plow's number to start a cloud
+/// agent, and the wait for the agent Plow sets up.
 @Observable
 final class NewAgent {
-    enum Kind: Hashable { case cloud, own }
+    private(set) var start: Result<AgentStartByText, LatchError>?
+    /// The kind picked, by its id.
+    var kind: String?
 
-    var kind = Kind.cloud
-    var name = ""
-    /// The catalog kind's id, for a cloud agent.
-    var cloudKind: String?
-    /// The line's uid.
-    var line: String?
-    /// Where your own agent's key is written: a new file.
-    var tokenFile: URL?
-    private(set) var catalog: Result<AgentCatalog, LatchError>?
-    private(set) var lines: Result<AgentLines, LatchError>?
-    private(set) var creating = false
-    var error: LatchError?
-    private(set) var created: AgentCreated?
-
-    var freeLines: [AgentLines.Line] {
-        guard case let .success(lines)? = lines else { return [] }
-        return lines.lines.filter(\.available)
+    var picked: AgentStartByText.Kind? {
+        guard case let .success(start)? = start else { return nil }
+        return start.kinds.first { $0.id == kind } ?? start.kinds.first
     }
 
-    /// What stops a create, in words; nil when it can go.
-    var problem: String? {
-        if name.trimmingCharacters(in: .whitespaces).isEmpty { return "Give it a name." }
-        if kind == .cloud, cloudKind == nil { return "Pick which cloud agent." }
-        if kind == .own, tokenFile == nil { return "Choose where to save its key." }
-        if line == nil { return "Pick a free phone line." }
-        return nil
-    }
-
-    /// Reads Plow's catalog and the account's lines; the first free line
-    /// is picked.
+    /// Reads what to text; Plow's own choice is picked.
     func load(app: AppModel) async {
-        guard let catalog = await AppModel.result({ try await app.agentCatalog() }) else { return }
-        self.catalog = catalog
-        guard let lines = await AppModel.result({ try await app.agentLines() }) else { return }
-        self.lines = lines
-        if line == nil { line = freeLines.first?.uid }
+        guard let start = await AppModel.result({ try await app.agentStartByText() }) else { return }
+        self.start = start
+        if kind == nil, case let .success(read) = start { kind = read.default ?? read.kinds.first?.id }
     }
 
-    func create(app: AppModel) async {
-        guard problem == nil, !creating, let line else { return }
-        creating = true
-        defer { creating = false }
-        do {
-            created = try await app.createAgent(name: name.trimmingCharacters(in: .whitespaces),
-                                                cloud: kind == .cloud ? cloudKind : nil,
-                                                tokenFile: kind == .own ? tokenFile : nil, line: line)
-            error = nil
-        } catch {
-            self.error = .from(error)
-        }
-    }
+    /// How long to wait before each read of the account's agents: every
+    /// 3 seconds for the first minute, while a text is likely on its way,
+    /// then every 10 seconds for nine more. Plow has no stream to follow.
+    static let waits: [Duration] = Array(repeating: .seconds(3), count: 20) + Array(repeating: .seconds(10), count: 54)
 
-    /// While the sheet shows a cloud agent Plow is still starting, its
-    /// status is read again every 3 seconds, 60 times at most (3 minutes):
-    /// Plow has no stream to follow. It runs in the sheet's own task, so it
-    /// stops the moment the sheet closes.
-    func followStart(app: AppModel) async {
-        for _ in 0..<60 {
-            guard let agent = created?.agent, agent.kind == "cloud", agent.status == "provisioning" else { return }
-            try? await Task.sleep(for: .seconds(3))
-            guard !Task.isCancelled else { return }
-            if let now = try? await app.agentStatus(agent.uid) { created?.agent = now }
+    /// Reads the account's agents until one appears that wasn't there when
+    /// the sheet opened; then the sheet closes on Agents with it picked.
+    /// It runs in the sheet's own task, so it stops when the sheet closes.
+    func watch(app: AppModel, waits: [Duration] = NewAgent.waits) async {
+        if app.agents == nil, await !app.refreshAgentList() { return }
+        // Without a first list, every agent would look new.
+        guard let agents = app.agents else { return }
+        let known = Set(agents.map(\.uid))
+        for wait in waits {
+            try? await Task.sleep(for: wait)
+            guard !Task.isCancelled, await app.refreshAgentList() else { return }
+            if let new = app.agents?.first(where: { !known.contains($0.uid) }) {
+                app.selectedAgent = new.uid
+                // Closing the sheet ends this task: its standings first.
+                await app.refreshAgents()
+                app.sheet = nil
+                return
+            }
         }
     }
 
     /// For snapshots: as latch said.
-    func stage(catalog: AgentCatalog, lines: AgentLines, created: AgentCreated? = nil) {
-        self.catalog = .success(catalog)
-        self.lines = .success(lines)
-        if line == nil { line = freeLines.first?.uid }
-        self.created = created
+    func stage(_ start: AgentStartByText) {
+        self.start = .success(start)
+        kind = start.default ?? start.kinds.first?.id
     }
+
+    func fail(_ error: LatchError) { start = .failure(error) }
 }
 
 struct NewAgentSheet: View {
     var flow: NewAgent
-    /// Choose…: the window asks where to save the key, over this sheet.
-    var chooseKeyFile: () -> Void = {}
     @Environment(AppModel.self) private var app
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("New Agent").font(.headline)
-                Text("An agent has its own phone line and a chat with you.").font(.callout).foregroundStyle(.secondary)
+                Text("Start a cloud agent by texting Plow from your phone.").font(.callout).foregroundStyle(.secondary)
             }
             .padding()
             Divider()
-            if let created = flow.created {
-                CreatedView(created: created)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .task(id: created.agent.uid) {
-                        guard !app.still else { return }
-                        await flow.followStart(app: app)
+            Group {
+                switch flow.start {
+                case nil:
+                    ProgressView()
+                case let .failure(error)?:
+                    ContentUnavailableView {
+                        Label("Couldn't read how to start an agent", systemImage: "exclamationmark.triangle")
+                    } description: {
+                        ErrorText(error: error, titled: true)
+                    } actions: {
+                        Button("Try Again") { Task { await flow.load(app: app) } }
                     }
-            } else {
-                form
+                case let .success(start)?:
+                    if let picked = flow.picked {
+                        TextToStart(start: start, picked: picked, flow: flow)
+                    } else {
+                        ContentUnavailableView("Plow offers no cloud agents right now", systemImage: "cloud")
+                    }
+                }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             Divider()
             HStack {
-                if let error = flow.error {
-                    Label { ErrorText(error: error) } icon: { Image(systemName: "exclamationmark.triangle") }
-                        .font(.callout).foregroundStyle(.red)
+                if flow.picked != nil {
+                    ProgressView().controlSize(.small)
+                    Text("It shows up in Agents once Plow sets it up.").font(.callout).foregroundStyle(.secondary)
                 }
                 Spacer()
-                if flow.created == nil {
-                    Button("Cancel") { app.sheet = nil }
-                        .keyboardShortcut(.cancelAction)
-                    Button(flow.creating ? "Creating…" : flow.kind == .cloud ? "Start Agent" : "Create Agent") {
-                        Task { await flow.create(app: app) }
-                    }
+                Button("Done") { app.sheet = nil }
                     .keyboardShortcut(.defaultAction)
-                    .disabled(flow.creating || flow.problem != nil)
-                    .help(flow.problem ?? "")
-                } else {
-                    Button("Done") { app.sheet = nil }
-                        .keyboardShortcut(.defaultAction)
-                }
             }
             .padding()
         }
-        .frame(width: 520, height: 500)
+        .frame(width: 560, height: 460)
         .task {
             guard !app.still else { return }
             await flow.load(app: app)
+            await flow.watch(app: app)
         }
-    }
-
-    private var form: some View {
-        @Bindable var flow = flow
-        return Form {
-            Section {
-                Picker("Kind", selection: $flow.kind) {
-                    Text("Cloud agent").tag(NewAgent.Kind.cloud)
-                    Text("Your own agent").tag(NewAgent.Kind.own)
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                TextField("Name", text: $flow.name, prompt: Text("Required"))
-                if flow.kind == .cloud {
-                    switch flow.catalog {
-                    case nil: LabeledContent("Agent") { ProgressView().controlSize(.small) }
-                    case let .failure(error)?: LabeledContent("Agent") { ErrorText(error: error).foregroundStyle(.red) }
-                    case let .success(catalog)?:
-                        Picker("Agent", selection: $flow.cloudKind) {
-                            Text("Choose…").tag(String?.none)
-                            ForEach(catalog.kinds) { Text($0.name).tag(Optional($0.id)) }
-                        }
-                    }
-                } else {
-                    LabeledContent("Save key to") {
-                        HStack {
-                            Text(flow.tokenFile.map { ($0.path as NSString).abbreviatingWithTildeInPath } ?? "Not chosen")
-                                .foregroundStyle(flow.tokenFile == nil ? .secondary : .primary)
-                                .lineLimit(1).truncationMode(.middle)
-                            Button("Choose…", action: chooseKeyFile)
-                        }
-                    }
-                }
-                switch flow.lines {
-                case nil: LabeledContent("Phone line") { ProgressView().controlSize(.small) }
-                case let .failure(error)?: LabeledContent("Phone line") { ErrorText(error: error).foregroundStyle(.red) }
-                case .success?:
-                    if flow.freeLines.isEmpty {
-                        LabeledContent("Phone line") { Text("No free lines").foregroundStyle(.secondary) }
-                    } else {
-                        Picker("Phone line", selection: $flow.line) {
-                            ForEach(flow.freeLines) { line in
-                                Text(line.name.map { "\($0) · \(line.number)" } ?? line.number).tag(Optional(line.uid))
-                            }
-                        }
-                    }
-                }
-            } footer: {
-                Text(flow.kind == .cloud ? "Plow starts it and runs it for you. You text it on its line."
-                     : "Latch saves the agent's key to this file and never shows it. Give the file to your agent so it can log in. You get the key only once.")
-                    .foregroundStyle(.secondary)
-            }
-            Section {
-                Label {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("It can reach all your hosts.").font(.headline)
-                        Text("\(app.hosts.map(\.name).joined(separator: ", ")). It starts with each host's rules for every agent and no rules of its own; add rules for it on any host later.")
-                            .foregroundStyle(.secondary)
-                    }
-                } icon: {
-                    Image(systemName: "person.2")
-                }
-            }
-        }
-        .formStyle(.grouped)
-    }
-
-    /// A save panel for a new file: latch writes the key there, private.
-    static func keyFilePanel(name: String) -> NSSavePanel {
-        let panel = NSSavePanel()
-        panel.title = "Save the Agent's Key"
-        panel.message = "Latch writes the key to a new file only you can read."
-        panel.nameFieldStringValue = "\(name.isEmpty ? "agent" : name).latch-key"
-        panel.directoryURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
-        panel.canCreateDirectories = true
-        return panel
     }
 }
 
-/// The agent latch created: your own agent's key file, or a cloud agent's
-/// start.
-struct CreatedView: View {
-    var created: AgentCreated
+/// The text to send: a QR code for a phone's camera, and the number and
+/// the text to type or copy.
+private struct TextToStart: View {
+    var start: AgentStartByText
+    var picked: AgentStartByText.Kind
+    var flow: NewAgent
     @Environment(AppModel.self) private var app
 
-    /// Where the key is, by the file's name alone.
-    static func keySaved(_ file: String) -> String {
-        "Its key is saved in “\(URL(filePath: file).lastPathComponent)”. Give your agent the file and the login instructions."
-    }
-
-    /// For the agent, on the clipboard: how to use the key file wherever it
-    /// ends up, never the key nor this Mac's path to it.
-    static let loginInstructions = "Use the key file your owner supplied as your Plow agent credential. "
-        + "Set PLOW_TOKEN_FILE to the file's path on the computer where you run Latch, and keep it set for every Latch call. "
-        + "Then run latch login."
-
     var body: some View {
-        let agent = created.agent
-        VStack(spacing: 14) {
-            Image(systemName: agent.kind == "cloud" ? "cloud" : "checkmark.circle")
-                .font(.system(size: 40)).foregroundStyle(.secondary)
-                .accessibilityHidden(true)
-            Text("\(agent.name) is created").font(.title3.weight(.semibold))
-            Text("Its phone line is \(agent.line?.number ?? "not assigned yet"). It can reach all your hosts.")
-                .foregroundStyle(.secondary)
-            if let file = created.tokenFile {
-                VStack(spacing: 8) {
-                    Text(Self.keySaved(file))
-                        .multilineTextAlignment(.center)
-                    HStack {
-                        Button("Copy Login Instructions") { app.copy(Self.loginInstructions) }
-                        Button("Show in Finder") { app.reveal(URL(filePath: file)) }
+        @Bindable var flow = flow
+        HStack(alignment: .top, spacing: 24) {
+            QRCodeView(payload: picked.smsto)
+                .frame(width: 180, height: 180)
+                .padding(10)
+                .background(.white, in: .rect(cornerRadius: 10))
+                .accessibilityLabel("QR code: text “\(picked.phrase)” to \(number)")
+            VStack(alignment: .leading, spacing: 14) {
+                if start.kinds.count > 1 {
+                    Picker("Agent", selection: $flow.kind) {
+                        ForEach(start.kinds) { Text($0.name).tag(Optional($0.id)) }
                     }
+                    .fixedSize()
                 }
-            } else if let status = agent.status {
-                HStack(spacing: 8) {
-                    if status == "provisioning" { ProgressView().controlSize(.small) }
-                    Text(status == "provisioning" ? "Plow is starting it…" : "Status in Plow: \(status)")
+                Copyable(title: "Text", value: number) { app.copy(start.number) }
+                Copyable(title: "Message", value: picked.phrase) { app.copy(picked.phrase) }
+                Text("Scan the code with your phone's camera, or text this from your phone. Plow sets the agent up on a number of its own and texts you back.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let link = URL(string: picked.smsLink) {
+                    Button("Open in Messages") { app.open(link) }
+                        .help("Messages sends it from this Mac, as your phone would")
                 }
-                .foregroundStyle(.secondary)
             }
         }
-        .multilineTextAlignment(.center)
         .padding(24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private var number: String { PhoneNumber(start.number)?.formatted() ?? start.number }
+}
+
+/// A value to read or copy, under its title.
+private struct Copyable: View {
+    var title: String
+    var value: String
+    var copy: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title).font(.caption).foregroundStyle(.secondary)
+            HStack(alignment: .firstTextBaseline) {
+                Text(value).font(.body.monospaced()).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 8)
+                Button("Copy", action: copy).controlSize(.small)
+                    .accessibilityLabel("Copy \(title.lowercased())")
+            }
+        }
     }
 }

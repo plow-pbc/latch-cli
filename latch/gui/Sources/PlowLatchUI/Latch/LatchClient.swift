@@ -87,14 +87,10 @@ nonisolated protocol LatchClient: Sendable {
     func updateCheck() async throws -> UpdateCheck
     /// `latch logout`: this Mac leaves the account; its vault stays.
     func logout() async throws -> LogoutResult
-    /// `latch agents catalog`, `latch agents lines`.
+    /// `latch agents catalog`.
     func agentCatalog() async throws -> AgentCatalog
-    func agentLines() async throws -> AgentLines
-    /// `latch agents new`: a cloud agent of `cloud`'s kind, or (nil) your
-    /// own, its credential written to `tokenFile`.
-    func newAgent(name: String, cloud: String?, tokenFile: URL?, line: String) async throws -> AgentCreated
-    /// `latch agents show UID`.
-    func agentShow(_ uid: String) async throws -> AgentsList.Agent
+    /// `latch agents start-by-text`: what to text Plow to start an agent.
+    func agentStartByText() async throws -> AgentStartByText
     /// `latch agents remove UID --yes`: its credential stops working and
     /// its line is freed. Always by uid: names need not be unique.
     func removeAgent(_ uid: String) async throws
@@ -334,17 +330,8 @@ nonisolated struct LiveLatchClient: LatchClient {
         try decode(AgentCatalog.self, try await run(["agents", "catalog"]))
     }
 
-    func agentLines() async throws -> AgentLines {
-        try decode(AgentLines.self, try await run(["agents", "lines"]))
-    }
-
-    func newAgent(name: String, cloud: String?, tokenFile: URL?, line: String) async throws -> AgentCreated {
-        let kind = cloud.map { ["--cloud", $0] } ?? ["--own", "--token-file", tokenFile?.path ?? ""]
-        return try decode(AgentCreated.self, try await run(["agents", "new", "--name", name, "--line", line] + kind))
-    }
-
-    func agentShow(_ uid: String) async throws -> AgentsList.Agent {
-        try decode(AgentAnswer.self, try await run(["agents", "show", uid])).agent
+    func agentStartByText() async throws -> AgentStartByText {
+        try decode(AgentStartByText.self, try await run(["agents", "start-by-text"]))
     }
 
     func removeAgent(_ uid: String) async throws {
@@ -376,7 +363,6 @@ nonisolated struct LiveLatchClient: LatchClient {
 
 /// `vault add`'s and `vault edit`'s answer: the item as saved.
 nonisolated private struct VaultItemAnswer: Decodable { var item: VaultList.Item }
-nonisolated private struct AgentAnswer: Decodable { var agent: AgentsList.Agent }
 nonisolated private struct ImportPreviewAnswer: Decodable { var preview: ImportPreview }
 
 nonisolated private func decode<T: Decodable>(_ type: T.Type, _ data: Data) throws -> T {

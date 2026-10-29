@@ -2459,6 +2459,22 @@ impl LivePlow {
         if request.line().starts_with("GET /socket-page ") {
             return (200, json!({"fixture": "Local socket browser page"}));
         }
+        // How to start an agent by text, public: asked with a credential,
+        // it refuses, so a test sees none is sent. One kind with two
+        // phrases, one whose phrase needs escaping, and one with none.
+        if request.line().starts_with("GET /v1/signup ") {
+            if bearer.is_some() {
+                return (400, json!({"detail": "sent a credential"}));
+            }
+            return (
+                200,
+                json!({"managed_phone": "+15550000001", "default_provider": "exe:hermes",
+                       "providers": [
+                           {"id": "exe:hermes", "name": "Hermes", "phrases": ["Create an agent for me", "Set this up for me: Hermes"]},
+                           {"id": "exe:life", "name": "Life Assistant", "phrases": ["Set this up for me: aiworthusing.com/agent-index/life"]},
+                           {"id": "exe:quiet", "name": "Quiet", "phrases": []}]}),
+            );
+        }
         let token = bearer.unwrap_or_default();
         let kind = if token == state.owner {
             "device"
@@ -3762,6 +3778,22 @@ fn agents_are_shown_created_and_removed_by_their_owner() {
     assert_eq!(
         catalog,
         json!({"kinds": [{"id": "exe:hermes", "name": "Hermes"}]})
+    );
+    // What to text Plow's number: each kind's first phrase, as a QR code's
+    // SMSTO (taken as it is) and an sms: link (escaped); a kind with no
+    // phrase can't be started by text.
+    let (code, by_text, _) = run(&["agents", "start-by-text"]);
+    assert_eq!(code, Some(0), "{by_text}");
+    assert_eq!(
+        by_text,
+        json!({"number": "+15550000001", "default": "exe:hermes", "kinds": [
+            {"id": "exe:hermes", "name": "Hermes", "phrase": "Create an agent for me",
+             "smsto": "SMSTO:+15550000001:Create an agent for me",
+             "sms_link": "sms:+15550000001?&body=Create%20an%20agent%20for%20me"},
+            {"id": "exe:life", "name": "Life Assistant",
+             "phrase": "Set this up for me: aiworthusing.com/agent-index/life",
+             "smsto": "SMSTO:+15550000001:Set this up for me: aiworthusing.com/agent-index/life",
+             "sms_link": "sms:+15550000001?&body=Set%20this%20up%20for%20me%3A%20aiworthusing.com%2Fagent-index%2Flife"}]})
     );
     let (_, lines, _) = run(&["agents", "lines"]);
     let numbers: Vec<&Value> = lines["lines"]
