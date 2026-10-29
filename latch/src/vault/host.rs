@@ -118,7 +118,7 @@ pub(super) fn manage(
 }
 
 /// How an agent signs in with a login the owner saved.
-const SIGN_IN: &str = "To sign in with a saved login, open the sign-in page of a site it is saved for and run `latch browser fill` there without --item: latch uses the login saved for that site, or lists the ones saved there to choose from; --item takes an item's id (vN), never its title. No value is ever shown: a fill puts it in the page";
+const SIGN_IN: &str = "To sign in with one, run `latch browser fill` without --item on its site's sign-in page (`latch skill`, \"Signing in\")";
 
 /// The vault as an agent sees it: each item's id, title and saved sites,
 /// never a value or a username, and how to sign in with one.
@@ -543,7 +543,7 @@ mod tests {
                 refused.message.contains("`latch vault list --host HOST`")
                     && refused
                         .message
-                        .contains("run `latch browser fill` there without --item"),
+                        .contains("run `latch browser fill` without --item"),
                 "{refused:?}"
             );
         }

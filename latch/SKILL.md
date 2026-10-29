@@ -71,16 +71,23 @@ when there is a next step), with an exit code you can branch on. Branch on
   Any latch can ask, on Linux too; a host that isn't a Mac answers
   `unsupported_platform`.
 
-## A sign-in code
+## Signing in
 
-When a site asks for a one-time code (`observe`'s `fill.page_offers` has
-`code`; a goal in words stops there with `needs_fields`), get the code
-yourself, in this order, each call judged:
+With a login the owner saved: `open` the site's sign-in page, `observe`,
+then `latch browser --session ID fill --field username=eN --field
+password=eN --press eN` with no `--item`: latch uses the login saved for
+that site. When several are (`which_item` lists them), add `--item vN`;
+`latch vault list` shows each item's id, title and sites, never a value.
+`--item` takes an id, never a title.
+
+When the site then asks for a one-time code (`observe`'s
+`fill.page_offers` has `code`; a goal in words stops there with
+`needs_fields`), get the code yourself, in this order, each call judged:
 
 1. **The vault's authenticator code**, if the site's login in `observe`'s
-   `fill.items` has an `otp` field: `latch browser --session ID fill --item
-   vN --field otp=eN --press eN`. The host computes the code and types it; you never
-   see it. Done.
+   `fill.items` has an `otp` field: `latch browser --session ID fill
+   --field otp=eN --press eN`. The host computes the code and types it; you
+   never see it. Done.
 2. **The code the site sent**, searched where the page says it went, on a
    host with that plugin on (`latch status`: the host's `plugins` has
    `google` or `messages` `enabled`); both when the page doesn't say:
@@ -197,12 +204,6 @@ fixes it.
 - Read a page with `text` (its words) or `observe` (its elements), not
   `eval`: the gatekeeper judges every script, which is slower, and can
   refuse it.
-- Signing in with a login the owner saved: `open` the site's sign-in
-  page, `observe`, then `latch browser --session ID fill --field
-  username=eN --field password=eN --press eN` with no `--item`: latch uses
-  the login saved for that site. When several are (`which_item` lists
-  them), add `--item vN`; `latch vault list` shows each item's id, title
-  and sites, never a value. `--item` takes an id, never a title.
 - A value `fill` put in a page stays there: never copy it out, repeat it
   or write it anywhere.
 - Buying: sign in, choose, `fill` the card, `do --confirm C` each

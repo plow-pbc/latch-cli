@@ -30,13 +30,9 @@ state folder or login is needed. Agents are refused with exit 4, but for
 `LATCH_HOST`); it must be serving, and a failed remote call never falls
 back to the local vault.
 
-**An agent's `vault list`.** An agent may run `latch vault list --host
-NAME`, judged by the gatekeeper like its other work, with guidance of its
-own: listing is covered whenever the owner lets agents browse or sign in,
-or asked for a task that needs a saved login. It answers each item's id,
-title and saved sites, never a username, a field or a value, and `next`,
-how to sign in with one (Filling, below). The audit keeps the judgment.
-The owner's own list is never judged and shows each item's metadata.
+**An agent's `vault list --host NAME`** is judged like its other work and
+answers each item's id, title and saved sites only, never a username or a
+value. The owner's list is never judged.
 
 ```sh
 latch vault add --kind login --title Shop --site shop.example \
@@ -158,14 +154,10 @@ page in the address.
 ## Filling
 
 One command fills every kind: `latch browser fill --item vN` with the
-agent's mapping. `--item` takes the item's id only, never its title.
-Left out, the fill uses the login saved for the site of the page the
-session is on: when several are saved there, it is refused `which_item`,
-listing their ids and titles and no other item, and the agent names one.
-Either way the item is found before the fill is judged, so the judge sees
-its real kind and sites, and an id the vault lacks is refused
-`no_such_item`, pointing at `vault list`, with nothing judged or filled.
-The mapping is
+agent's mapping; with no `--item`, the login saved for the page's site
+(several there: refused `which_item`, listing them). The item is found
+before the fill is judged, so the judge sees its kind and sites; an id the
+vault lacks is refused `no_such_item`. The mapping is
 `--field FIELD=eN` for each item field (`username`,
 `password`, `otp` for a login's current authenticator code, computed on
 the host; a card's `number`, `expiry`, `cvv`, …; an identity's or a note's

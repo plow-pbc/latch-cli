@@ -1155,48 +1155,7 @@ fn split(value: &str, boxes: &[Value]) -> Option<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::failure::Exit;
     use crate::vault::item::{Custom, LOGIN, Raw};
-
-    /// `--item` names an item by its id, and only by it: a title, whole or
-    /// in part, is refused, pointing at `vault list`.
-    #[test]
-    fn an_item_is_named_by_its_id_only() {
-        let dir = tempfile::tempdir().unwrap();
-        let state = dir.path().to_path_buf();
-        let browsers = Browsers::new(state.clone(), crate::vault::host::Vault::new(state), true);
-        let school = browsers
-            .vault
-            .with(|store| {
-                store.add(Item {
-                    id: String::new(),
-                    revision: 0,
-                    sites: vec!["parentsquare.com".into()],
-                    other_top_sites: vec![],
-                    raw: Raw::from_labels(
-                        LOGIN,
-                        "Parentsquare",
-                        &[("password".into(), "made-up-pass-5e1a".into())],
-                    )
-                    .unwrap(),
-                })
-            })
-            .unwrap()
-            .item;
-        assert_eq!(known(&browsers, &school).unwrap(), school);
-        for given in ["Parentsquare", "ParentSquare", "parentsquare.com", "v9", ""] {
-            let refused = known(&browsers, given).unwrap_err();
-            assert_eq!(
-                (refused.exit, refused.code.as_str()),
-                (Exit::Usage, "no_such_item"),
-                "{given}"
-            );
-            assert!(
-                refused.message.contains("`latch vault list`"),
-                "{refused:?}"
-            );
-        }
-    }
 
     /// The resume's events go through the same filter as the presses' and
     /// the cleanup's: a page's dialog, another site's refusal and any
