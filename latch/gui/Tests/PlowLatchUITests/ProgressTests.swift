@@ -369,7 +369,8 @@ final class FakeGuide: GrantGuide {
 /// A latch whose `plugins enable` answers as a test says and counts its
 /// calls. A call answers at once unless the test holds it (`holds`): the
 /// nth `enable N`, the nth `look N` of `setup --status`, `try DRAFT` of
-/// `rules try`, or `save` of `rules set`.
+/// `rules try`, `save` of `rules set`, or a command it performs, by its
+/// words (`settings set --keep-awake on`).
 final class ScriptedClient: LatchClient, @unchecked Sendable {
     let stateDir = "/Users/me/.latch"
     var status = Fixtures.stopped
@@ -459,6 +460,7 @@ final class ScriptedClient: LatchClient, @unchecked Sendable {
     var serveFailure: LatchFailure?
     func perform(_ args: [String]) async throws {
         performed.append(args)
+        await held(args.joined(separator: " "))
         if let serveFailure { throw LatchError.failed(serveFailure) }
     }
     func stop() async throws {

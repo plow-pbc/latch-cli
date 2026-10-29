@@ -300,8 +300,8 @@ came from (a suggestion's id, or the agent), the stages, both origins, any
 agent code (`eval`) ran on those sites earlier in the session
 (`agent_code_before_fill`), and the outcome: never a value. An agent script
 that ran on the site before a fill could read the value it puts on the
-page, through what it left behind (a service worker, stored script): an
-accepted risk for now, flagged on every such fill. What a script left goes
+page, through what it left behind (a service worker, a stored script).
+Latch can't prevent that, so it flags every such fill. What a script left goes
 with the session's profile, so a new session starts unflagged.
 
 ## Storage
@@ -318,5 +318,5 @@ any other build keeps it in `vault.key` (0600) beside the vault. `exec` and
 file workers can read neither (the state directory is denied to them). On
 macOS the browser engine runs as the owner outside latch's sandbox, so a
 compromised engine could read `vault.json`, and `vault.key` in a build that
-keeps files: an accepted risk. In a signed latch the custody key is in the
+keeps files: a known limit (see [SECURITY.md](../SECURITY.md)). In a signed latch the custody key is in the
 Keychain, which only a program signed with latch's keychain group can read.

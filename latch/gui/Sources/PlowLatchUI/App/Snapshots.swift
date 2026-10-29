@@ -83,11 +83,7 @@ nonisolated struct FakeLatchClient: LatchClient {
     func updateCheck() async throws -> UpdateCheck { try Fixtures.decode(Fixtures.updateCheck) }
     func logout() async throws -> LogoutResult { LogoutResult(device: nil) }
     func agentCatalog() async throws -> AgentCatalog { try Fixtures.decode(Fixtures.catalog) }
-    func agentLines() async throws -> AgentLines { try Fixtures.decode(Fixtures.lines) }
-    func newAgent(name: String, cloud: String?, tokenFile: URL?, line: String) async throws -> AgentCreated {
-        throw LatchError.unreachable("a still")
-    }
-    func agentShow(_ uid: String) async throws -> AgentsList.Agent { throw LatchError.unreachable("a still") }
+    func agentStartByText() async throws -> AgentStartByText { try Fixtures.decode(Fixtures.startByText) }
     func removeAgent(_ uid: String) async throws {}
 }
 
@@ -202,11 +198,14 @@ nonisolated enum Fixtures {
     static let remoteVaultItems = #"{"audit_id":"7eff2d3d62fc8f3d16f422e2e19ea204fdf62d80e9d9ed0eee14bf1f6e9400d7","items":[{"fields":[{"alias":false,"custom":false,"hidden":false,"label":"username"},{"alias":false,"custom":false,"hidden":true,"label":"password"}],"item":"v1","kind":"login","revision":1,"sites":["router.example"],"title":"Router (test)","totp":false,"username":"admin"}]}"#
     static let remoteVaultShow = #"{"audit_id":"004c3cca9d220ff417c05d233f61fe3741a745079edd629be94432757a376f70","item":{"fields":[{"alias":false,"custom":false,"hidden":false,"label":"username"},{"alias":false,"custom":false,"hidden":true,"label":"password"}],"item":"v1","kind":"login","revision":1,"sites":["router.example"],"title":"Router (test)","totp":false,"username":"admin"},"values":{"username":"admin"}}"#
     // `latch devices` (the studio account's, laptop logged in without hosting),
-    // `update --check`, `agents catalog` and `agents lines`: real runs.
+    // `update --check` and `agents catalog`: real runs.
     static let devices = #"{"devices":[{"key":"0cdaf3c7601ab886e37b9835cfe9902617aeed88ffd3d066b11bc77eef548b29","kind":"device","name":"laptop","relay_url":null,"last_seen_at":"2026-10-22T22:05:50.582906Z","online":true},{"key":"78d8cd12e343e28d70b1da3ac8a0bb8c37593b5f8d535a58b716b776a91f2edc","kind":"device","name":"pi-kitchen","relay_url":"https://usw1-1.relay.n0.iroh.link./","last_seen_at":"2026-10-22T22:06:30.037004Z","online":true},{"key":"b58ac41605d91211b1d5c052addea8d6e7b81702d4902f746e6d639e38909364","kind":"device","name":"sidecar","relay_url":"https://usw1-1.relay.n0.iroh.link./","last_seen_at":"2026-10-22T22:06:33.384336Z","online":true},{"key":"6b55a78fcd1400f6ac14f129cd1825744125406e25a2892be4abda157baaa23f","kind":"device","name":"studio","relay_url":"https://usw1-1.relay.n0.iroh.link./","last_seen_at":"2026-10-22T22:06:26.724881Z","online":true}]}"#
     static let updateCheck = #"{"available":false,"current":null,"latest":{"build":138,"tag":"v0.1.0-138"}}"#
     static let catalog = #"{"kinds":[{"id":"exe:checkpoint","name":"Checkpoint"},{"id":"exe:clip-warden","name":"Clip Warden"},{"id":"exe:dailies","name":"Video Cuts"},{"id":"exe:danedelattre-x-manager","name":"X Manager"},{"id":"exe:fandom","name":"Fandom"},{"id":"exe:fipe","name":"Fipe"},{"id":"exe:founder-agent","name":"Founder Agent"},{"id":"exe:galahad-hackathon","name":"Joust"},{"id":"exe:hermes","name":"Hermes"},{"id":"exe:hermes-cat-paw","name":"Hermes Cat Paw"},{"id":"exe:instagram-social-selling","name":"Instagram Social Selling"},{"id":"exe:life","name":"Life Assistant"},{"id":"exe:mako","name":"Mako"},{"id":"exe:meals-planner","name":"Meals Planner"},{"id":"exe:memory-vault","name":"Memory Vault"},{"id":"exe:metabolix","name":"Metabolix"},{"id":"exe:nutrilatch","name":"NutriLatch"},{"id":"exe:parley","name":"Parley"},{"id":"exe:phoneflow-agent","name":"PhoneFlow"},{"id":"exe:pm-second-brain","name":"PM Agent"},{"id":"exe:pruce","name":"Prucê"},{"id":"exe:radar","name":"RadaR"},{"id":"exe:receiptsnap","name":"ReceiptSnap"},{"id":"exe:repro-relay","name":"Repro Relay"},{"id":"exe:saved","name":"Saved"},{"id":"exe:text-me","name":"text-me"},{"id":"exe:the-commish","name":"The Commish"},{"id":"exe:theplowtimes","name":"The Plow Times"},{"id":"exe:vela","name":"Vela"},{"id":"exe:vigia","name":"Vigia"},{"id":"exe:your-mother","name":"Your Mother"},{"id":"exe:zoen","name":"Zoen"}]}"#
-    static let lines = #"{"lines":[{"agent_uid":null,"available":true,"name":null,"number":"+15550000002","uid":"ln_p1"},{"agent_uid":null,"available":true,"name":null,"number":"+15550000003","uid":"ln_p2"},{"agent_uid":null,"available":true,"name":null,"number":"+15550000004","uid":"ln_p3"},{"agent_uid":null,"available":true,"name":null,"number":"+15550000005","uid":"ln_p4"},{"agent_uid":null,"available":true,"name":null,"number":"+15550000006","uid":"ln_p5"}]}"#
+    // `agents start-by-text`, as latch builds it from Plow's /v1/signup:
+    // the public number and phrases plow.co and Plow's catalog give (the
+    // stock agent's id stands in for whichever kind holds the default).
+    static let startByText = #"{"default":"exe:openclaw","kinds":[{"id":"exe:openclaw","name":"OpenClaw","phrase":"Create an agent for me","sms_link":"sms:+16504359440?&body=Create%20an%20agent%20for%20me","smsto":"SMSTO:+16504359440:Create an agent for me"},{"id":"exe:hermes","name":"Hermes","phrase":"Set this up for me: Hermes","sms_link":"sms:+16504359440?&body=Set%20this%20up%20for%20me%3A%20Hermes","smsto":"SMSTO:+16504359440:Set this up for me: Hermes"},{"id":"exe:life","name":"Life Assistant","phrase":"Set this up for me: aiworthusing.com/agent-index/life","sms_link":"sms:+16504359440?&body=Set%20this%20up%20for%20me%3A%20aiworthusing.com%2Fagent-index%2Flife","smsto":"SMSTO:+16504359440:Set this up for me: aiworthusing.com/agent-index/life"}],"number":"+16504359440"}"#
     // An import's preview of a Chrome export (one row updating a password)
     // and that import, at the preview's `expect`: real runs.
     static let importPreview = #"{"preview":{"expect":"20b372fbab51d631bac7849e16bd8e97fa8545e1df8a297e3f458f995437038a","items":[{"changed":["password"],"duplicate":false,"has_password":true,"has_totp":false,"kind":"login","pick":1,"title":"shop.example","url":"https://shop.example/login","username":"ada","warnings":[]},{"changed":[],"duplicate":false,"has_password":true,"has_totp":false,"kind":"login","pick":2,"title":"grocer.example","url":"https://grocer.example","username":"ada@example.com","warnings":[]}],"skipped":[{"reason":"has no website address; add it by hand as a new item if you still use it","title":"nosite"}],"source":"Chrome","vaults":[]}}"#
@@ -269,6 +268,12 @@ nonisolated enum Fixtures {
     static let agents = #"{"agents":[{"cloud_kind":null,"created_at":"2026-10-23T05:37:45.397426","failure_code":null,"kind":"own","last_seen_at":"2026-10-23T05:37:45.523892","line":{"name":null,"number":"+15550000002"},"name":"scout","standing":null,"status":null,"uid":"ba3c0b3ad1eba7a9a1eb04b67c9db0dd"},{"cloud_kind":null,"created_at":"2026-10-23T05:37:45.569323","failure_code":null,"kind":"own","last_seen_at":"2026-10-23T05:37:45.604826","line":{"name":null,"number":"+15550000003"},"name":"helper","standing":null,"status":null,"uid":"3971582e59baad83250141c8dcc95855"}],"host":null}"#
     static let agentsStudio = #"{"agents":[{"cloud_kind":null,"created_at":"2026-10-23T05:37:45.397426","failure_code":null,"kind":"own","last_seen_at":"2026-10-23T05:37:45.523892","line":{"name":null,"number":"+15550000002"},"name":"scout","standing":{"exec_blocked":false,"own_rules":true},"status":null,"uid":"ba3c0b3ad1eba7a9a1eb04b67c9db0dd"},{"cloud_kind":null,"created_at":"2026-10-23T05:37:45.569323","failure_code":null,"kind":"own","last_seen_at":"2026-10-23T05:37:45.604826","line":{"name":null,"number":"+15550000003"},"name":"helper","standing":{"exec_blocked":false,"own_rules":false},"status":null,"uid":"3971582e59baad83250141c8dcc95855"}],"host":{"name":"studio","online":true}}"#
     static let agentsKitchen = #"{"agents":[{"cloud_kind":null,"created_at":"2026-10-23T05:37:45.397426","failure_code":null,"kind":"own","last_seen_at":"2026-10-23T05:37:45.523892","line":{"name":null,"number":"+15550000002"},"name":"scout","standing":{"exec_blocked":false,"own_rules":false},"status":null,"uid":"ba3c0b3ad1eba7a9a1eb04b67c9db0dd"},{"cloud_kind":null,"created_at":"2026-10-23T05:37:45.569323","failure_code":null,"kind":"own","last_seen_at":"2026-10-23T05:37:45.604826","line":{"name":null,"number":"+15550000003"},"name":"helper","standing":{"exec_blocked":true,"own_rules":false},"status":null,"uid":"3971582e59baad83250141c8dcc95855"}],"host":{"name":"pi-kitchen","online":true}}"#
+    // Three agents as `latch agents` prints them, two with lines named in
+    // Plow and one without, and their standing on studio and pi-kitchen
+    // (which refuses Aspen exec); numbers from the fictional 555-01xx range.
+    static let trio = #"{"agents":[{"cloud_kind":"exe:hermes","created_at":"2026-10-21T17:02:11.204518","failure_code":null,"kind":"cloud","last_seen_at":null,"line":{"name":"Aspen","number":"+16505550136"},"name":"openclaw-test2","standing":null,"status":"running","uid":"a5be0c1d2e3f40516273849506a7b8c9"},{"cloud_kind":null,"created_at":"2026-10-22T09:41:57.880113","failure_code":null,"kind":"own","last_seen_at":null,"line":{"name":null,"number":"+16505550104"},"name":"grok-bot","standing":null,"status":null,"uid":"e1f0d2c3b4a5968778695a4b3c2d1e0f"},{"cloud_kind":"exe:meals-planner","created_at":"2026-10-24T12:15:03.551920","failure_code":null,"kind":"cloud","last_seen_at":null,"line":{"name":"Willow","number":"+16505550171"},"name":"willow-meals","standing":null,"status":"running","uid":"77a1b2c3d4e5f60718293a4b5c6d7e8f"}],"host":null}"#
+    static let trioStudio = #"{"agents":[{"cloud_kind":"exe:hermes","created_at":"2026-10-21T17:02:11.204518","failure_code":null,"kind":"cloud","last_seen_at":null,"line":{"name":"Aspen","number":"+16505550136"},"name":"openclaw-test2","standing":{"exec_blocked":false,"own_rules":false},"status":"running","uid":"a5be0c1d2e3f40516273849506a7b8c9"},{"cloud_kind":null,"created_at":"2026-10-22T09:41:57.880113","failure_code":null,"kind":"own","last_seen_at":null,"line":{"name":null,"number":"+16505550104"},"name":"grok-bot","standing":{"exec_blocked":false,"own_rules":true},"status":null,"uid":"e1f0d2c3b4a5968778695a4b3c2d1e0f"},{"cloud_kind":"exe:meals-planner","created_at":"2026-10-24T12:15:03.551920","failure_code":null,"kind":"cloud","last_seen_at":null,"line":{"name":"Willow","number":"+16505550171"},"name":"willow-meals","standing":{"exec_blocked":false,"own_rules":false},"status":"running","uid":"77a1b2c3d4e5f60718293a4b5c6d7e8f"}],"host":{"name":"studio","online":true}}"#
+    static let trioKitchen = #"{"agents":[{"cloud_kind":"exe:hermes","created_at":"2026-10-21T17:02:11.204518","failure_code":null,"kind":"cloud","last_seen_at":null,"line":{"name":"Aspen","number":"+16505550136"},"name":"openclaw-test2","standing":{"exec_blocked":true,"own_rules":false},"status":"running","uid":"a5be0c1d2e3f40516273849506a7b8c9"},{"cloud_kind":null,"created_at":"2026-10-22T09:41:57.880113","failure_code":null,"kind":"own","last_seen_at":null,"line":{"name":null,"number":"+16505550104"},"name":"grok-bot","standing":{"exec_blocked":false,"own_rules":false},"status":null,"uid":"e1f0d2c3b4a5968778695a4b3c2d1e0f"},{"cloud_kind":"exe:meals-planner","created_at":"2026-10-24T12:15:03.551920","failure_code":null,"kind":"cloud","last_seen_at":null,"line":{"name":"Willow","number":"+16505550171"},"name":"willow-meals","standing":{"exec_blocked":false,"own_rules":false},"status":"running","uid":"77a1b2c3d4e5f60718293a4b5c6d7e8f"}],"host":{"name":"pi-kitchen","online":true}}"#
     static let agentsKitchenOffline = #"{"error":{"code":"host_offline","message":"host \"pi-kitchen\" is offline; nothing was sent. Start `latch serve` there"}}"#
     static let rulesStudio = #"{"agents":[{"agent_name":"scout","agent_uid":"ba3c0b3ad1eba7a9a1eb04b67c9db0dd","revision":"a33189e9c51bcecdd839cfc226d392a7ce6c00eb700b08ce25fa325e2c29f780","text":"scout may run builds and tests in ~/Projects/latch-demo."}],"audit_id":"94b02a5438b53063f41edeb8a2babaaefb3ffaefee225dbfe5e94a2ddff078bf","deny_exec":{"agent_uids":[],"every_agent":false},"every_agent":{"revision":"ea4ac6c6bd9184d7479f8312f4ebca18db1804f21bba03212ac8f0dc80f35c7c","text":"Agents may list and read files in ~/Projects. Never delete anything, and never touch ~/Finance.\n"},"host":"studio","warning":"Freeform rules are judged, not guaranteed. --deny-exec is enforced in code."}"#
     static let rulesKitchen = #"{"agents":[],"audit_id":"d5776f75782524ce226a62a46607b95c3382c957b8b44a342456171d2345fd49","deny_exec":{"agent_uids":["3971582e59baad83250141c8dcc95855"],"every_agent":false},"every_agent":null,"host":"pi-kitchen","warning":"Freeform rules are judged, not guaranteed. --deny-exec is enforced in code."}"#
@@ -431,6 +436,8 @@ package enum SnapshotRunner {
             ("07-start-background-off", .start, Fixtures.stopped, Progress(), { $0.runInBackground = false }),
             ("07-start-already-running", .start, Fixtures.serving, Progress(), { _ in }),
             ("07-start-keep-awake-held", .start, Fixtures.keepAwake(#"{"enabled":true,"held":true,"reason":null}"#), Progress(), { _ in }),
+            // Kept awake once it runs; Run Latch now is on but not yet done.
+            ("07-start-keep-awake-not-running", .start, Fixtures.keepAwake(#"{"enabled":true,"held":false,"reason":"not_serving"}"#, in: Fixtures.stopped), Progress(), { _ in }),
             ("07-start-keep-awake-off", .start, Fixtures.keepAwake(#"{"enabled":false,"held":false,"reason":"disabled"}"#, in: Fixtures.stopped), Progress(), { _ in }),
             ("07-start-other-version", .start, Fixtures.otherVersion, Progress(), { _ in }),
             ("07-start-error", .start, Fixtures.stopped, Progress(), {
@@ -709,18 +716,57 @@ package enum SnapshotRunner {
                                  dark: dark, background: false, file: output.appending(path: "10-fda-helper-\(name)-\(dark ? "dark" : "light").png"))
             }
         }
-        // Agents and Rules: real agents and standings (sidecar offline), a
-        // removal that failed, a host's rules, and Try a request's verdicts.
+        // Agents: three agents, sidecar offline, a cloud one picked and your
+        // own; a removal that failed; none yet; and the ⋯ menu, drawn from
+        // its items (an open menu isn't part of any window to draw).
+        for dark in [false, true] {
+            let sidecarOffline = Fixtures.studioHosts.replacingOccurrences(
+                of: #""self":false,"online":true,"last_seen_at":"2026-10-22T22:06:33.384336Z""#,
+                with: #""self":false,"online":false,"last_seen_at":null"#)
+            func app(_ agents: String) async throws -> AppModel {
+                let app = AppModel(client: FakeLatchClient(), still: true)
+                app.stage(status: try Fixtures.decode(Fixtures.serving))
+                app.stage(account: try Fixtures.decode(sidecarOffline))
+                app.stage(agents: try Fixtures.decode(agents), standings: [
+                    "studio": .success(try Fixtures.decode(Fixtures.trioStudio)),
+                    "pi-kitchen": .success(try Fixtures.decode(Fixtures.trioKitchen)),
+                ])
+                await app.refreshAgentKinds()
+                app.place = .account(.agents)
+                _ = app.stage(.done, progress: full)
+                return app
+            }
+            let mode = dark ? "dark" : "light"
+            let screens: [(String, String, (AppModel) -> Void)] = [
+                ("15-agents-list", Fixtures.trio, { _ in }),
+                ("15-agents-own-picked", Fixtures.trio, { $0.selectedAgent = "e1f0d2c3b4a5968778695a4b3c2d1e0f" }),
+                ("15-agents-remove-failed", Fixtures.trio, { app in
+                    app.agentRemoveError = .failed(LatchFailure(code: "outcome_unknown", message: "Plow may or may not have removed Willow"))
+                }),
+                ("15-agents-empty", #"{"agents":[],"host":null}"#, { _ in }),
+            ]
+            for (name, agents, stage) in screens where wanted(output.appending(path: "\(name)-\(mode).png")) {
+                let app = try await app(agents)
+                stage(app)
+                try await renderWindow(app, size: CGSize(width: 1120, height: 700), dark: dark, file: output.appending(path: "\(name)-\(mode).png"))
+            }
+            let menu = output.appending(path: "15-agents-menu-\(mode).png")
+            if wanted(menu) {
+                let app = try await app(Fixtures.trio)
+                guard let aspen = app.agents?.first else { throw LatchError.unreachable("no agent to draw") }
+                try await render(AgentDetail(agent: aspen)
+                    .overlay(alignment: .topTrailing) { MenuStill { AgentMenuItems(agent: aspen) }.padding(.top, 62).padding(.trailing, 14) }
+                    .environment(app), size: CGSize(width: 640, height: 500), dark: dark, file: menu)
+            }
+        }
+        // Rules: real agents and standings (sidecar offline), a host's
+        // rules, and Try a request's verdicts.
         for dark in [false, true] {
             let sidecarOffline = Fixtures.studioHosts.replacingOccurrences(
                 of: #""self":false,"online":true,"last_seen_at":"2026-10-22T22:06:33.384336Z""#,
                 with: #""self":false,"online":false,"last_seen_at":null"#)
             let scout = "ba3c0b3ad1eba7a9a1eb04b67c9db0dd", helper = "3971582e59baad83250141c8dcc95855"
             let screens: [(String, Place, String?, (AppModel) throws -> Void)] = [
-                ("15-agents-hub", .account(.agents), nil, { _ in }),
-                ("15-agents-remove-failed", .account(.agents), nil, { app in
-                    app.agentRemoveError = .failed(LatchFailure(code: "outcome_unknown", message: "Plow may or may not have removed helper"))
-                }),
                 ("16-rules-studio-scout-try-allowed", .host(.rules), nil, { app in
                     if let studio = app.host { app.openRules(studio, agent: scout) }
                     app.trial.stage(try Fixtures.decode(Fixtures.tries["allow-scout"]!), request: "exec --workdir ~/Projects/latch-demo -- make test",
@@ -771,7 +817,7 @@ package enum SnapshotRunner {
                 await app.refreshAccount()
                 await app.refreshAgents()
                 app.place = .account(.agents)
-                try await render(AgentsView().environment(app), size: CGSize(width: 760, height: 2600), dark: dark,
+                try await render(AgentsView().environment(app), size: CGSize(width: 900, height: 900), dark: dark,
                                  file: output.appending(path: "15-agents-hub-5x8-\(dark ? "dark" : "light").png"))
             }
         }
@@ -952,24 +998,16 @@ package enum SnapshotRunner {
             let app = AppModel(client: FakeLatchClient(), still: true)
             app.stage(status: try Fixtures.decode(Fixtures.serving))
             app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
-            let catalog: AgentCatalog = try Fixtures.decode(Fixtures.catalog)
-            let lines: AgentLines = try Fixtures.decode(Fixtures.lines)
-            let agent = #"{"cloud_kind":null,"created_at":"2026-10-23T05:37:45.397426","failure_code":null,"kind":"own","last_seen_at":null,"line":{"name":null,"number":"+15550000002"},"name":"scout","standing":null,"status":null,"uid":"ba3c0b3ad1eba7a9a1eb04b67c9db0dd"}"#
-            let cloud = NewAgent()
-            cloud.name = "Meals"; cloud.cloudKind = "exe:meals-planner"
-            cloud.stage(catalog: catalog, lines: lines)
-            let own = NewAgent()
-            own.kind = .own; own.name = "scout"; own.tokenFile = URL(filePath: "/Users/me/Documents/scout.latch-key")
-            own.stage(catalog: catalog, lines: lines)
-            let ownDone = NewAgent()
-            ownDone.stage(catalog: catalog, lines: lines, created: try Fixtures.decode(
-                #"{"agent":\#(agent),"api_url":"http://127.0.0.1:18934","token_file":"/Users/me/Documents/scout.latch-key"}"#))
-            let cloudAgent = #"{"cloud_kind":"exe:meals-planner","created_at":"2026-10-23T05:37:45.397426","failure_code":null,"kind":"cloud","last_seen_at":null,"line":{"name":null,"number":"+15550000003"},"name":"Meals","standing":null,"status":"provisioning","uid":"3971582e59baad83250141c8dcc95855"}"#
-            let cloudStarting = NewAgent()
-            cloudStarting.stage(catalog: catalog, lines: lines, created: try Fixtures.decode(#"{"agent":\#(cloudAgent),"api_url":null,"token_file":null}"#))
-            for (name, flow) in [("20-new-agent-cloud", cloud), ("20-new-agent-own", own), ("20-new-agent-own-created", ownDone),
-                                 ("20-new-agent-cloud-starting", cloudStarting)] {
-                try await render(NewAgentSheet(flow: flow).environment(app), size: CGSize(width: 520, height: 500), dark: dark,
+            let start: AgentStartByText = try Fixtures.decode(Fixtures.startByText)
+            let stock = NewAgent()
+            stock.stage(start)
+            let life = NewAgent()
+            life.stage(start)
+            life.kind = "exe:life"
+            let failed = NewAgent()
+            failed.fail(.failed(LatchFailure(code: "plow_unreachable", message: "could not reach Plow")))
+            for (name, flow) in [("20-new-agent-text", stock), ("20-new-agent-text-community", life), ("20-new-agent-text-failed", failed)] {
+                try await render(NewAgentSheet(flow: flow).environment(app), size: CGSize(width: 560, height: 460), dark: dark,
                                  file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
             }
         }
@@ -1069,6 +1107,31 @@ package enum SnapshotRunner {
         print(file.path)
     }
 }
+/// A menu's items as an open menu shows them, for a still.
+private struct MenuStill<Items: View>: View {
+    @ViewBuilder var items: Items
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) { items }
+            .buttonStyle(Item())
+            .padding(5)
+            .frame(width: 210, alignment: .leading)
+            .background(.regularMaterial, in: .rect(cornerRadius: 10))
+            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.separator))
+            .shadow(color: .black.opacity(0.2), radius: 12, y: 6)
+    }
+
+    struct Item: ButtonStyle {
+        func makeBody(configuration: Configuration) -> some View {
+            configuration.label
+                .foregroundStyle(configuration.role == .destructive ? AnyShapeStyle(.red) : AnyShapeStyle(.primary))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 4)
+        }
+    }
+}
+
 /// A window for a still or a test, which never shows: kept off every
 /// display (a titled window is otherwise moved onto one, such as a display
 /// left of the main one) and transparent. The stills draw its views, not

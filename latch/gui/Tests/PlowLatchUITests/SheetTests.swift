@@ -35,8 +35,7 @@ final class ChangesClient: LatchClient, @unchecked Sendable {
     func setupStatus() async throws -> SetupStatus { try Fixtures.decode(Fixtures.setup(on: [], google: Fixtures.googleConnected(["morgan@example.com"]))) }
     func devices() async throws -> DeviceList { try await synthetic.devices() }
     func agentCatalog() async throws -> AgentCatalog { try await synthetic.agentCatalog() }
-    func agentLines() async throws -> AgentLines { try await synthetic.agentLines() }
-    func agentShow(_ uid: String) async throws -> AgentsList.Agent { try await synthetic.agentShow(uid) }
+    func agentStartByText() async throws -> AgentStartByText { try await synthetic.agentStartByText() }
 
     func vaultAdd(_ draft: VaultDraft, host: String?) async throws -> VaultList.Item {
         await addGate?.wait()
@@ -55,12 +54,6 @@ final class ChangesClient: LatchClient, @unchecked Sendable {
     func vaultImport(_ file: URL, picks: [Int], expect: String, host: String?) async throws -> ImportResult {
         try change("vault import \(file.lastPathComponent) --pick \(picks.map(String.init).joined(separator: ","))", on: host)
         return try await synthetic.vaultImport(file, picks: picks, expect: expect, host: host)
-    }
-    func newAgent(name: String, cloud: String?, tokenFile: URL?, line: String) async throws -> AgentCreated {
-        try change("agents new --name \(name) --line \(line)" + (cloud.map { " --cloud \($0)" } ?? "")
-                   + (tokenFile.map { " --token-file \($0.path)" } ?? ""))
-        let agent = #"{"kind":"own","line":{"name":null,"number":"+15550000002"},"name":"\#(name)","status":null,"uid":"00000000000000000000000000000009"}"#
-        return try Fixtures.decode(#"{"agent":\#(agent),"token_file":"\#(tokenFile?.path ?? "")"}"#)
     }
     func removeAgent(_ uid: String) async throws { try change("agents remove \(uid) --yes") }
     func removeDevice(_ name: String) async throws { try change("devices remove \(name) --yes") }
@@ -158,7 +151,6 @@ struct SheetTests {
         let client = ChangesClient()
         let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
         app.open = { _ in }
-        app.reveal = { _ in }
         await app.refreshStatus()
         await app.refreshAccount()
         app.showHost(host)
@@ -392,42 +384,19 @@ struct SheetTests {
         #expect(opened.client.asked.isEmpty)
     }
 
-    // New Agent: Choose… asks where to save the key over the sheet, and the
-    // agent is created with it; Cancel creates nothing; a refusal is said.
-    @Test func newAgentCreatesAnAgent() async throws {
+    // New Agent shows what to text Plow, and changes nothing itself: no
+    // agent is created from this Mac.
+    @Test func newAgentCreatesNothing() async throws {
         let opened = try await open(.account(.agents))
         defer { opened.close() }
-        // Cancel.
-        opened.app.sheet = .newAgent(NewAgent())
-        await waitUntil { opened.sheets.sheetName?.contains("NewAgentSheet") == true }
-        opened.app.sheet = nil
-        await waitUntil { opened.sheets.sheet == nil }
-        #expect(opened.client.asked.isEmpty)
-
         let flow = NewAgent()
         opened.app.sheet = .newAgent(flow)
         await waitUntil { opened.sheets.sheetName?.contains("NewAgentSheet") == true }
         await flow.load(app: opened.app)
-        flow.kind = .own
-        flow.name = "tinker"
-        opened.presenting.chooseKeyFile(for: flow)
-        let panel = try #require(opened.sheets.panel)
-        #expect(panel.over === opened.sheets.sheet?.view.window)
-        #expect(panel.over !== opened.window)
-        #expect(panel.panel.nameFieldStringValue == "tinker.latch-key")
-        opened.sheets.choose(URL(filePath: "/tmp/tinker.latch-key"))
-        #expect(flow.tokenFile == URL(filePath: "/tmp/tinker.latch-key"))
-        // Refused: said in the sheet.
-        opened.client.refuse(.failed(LatchFailure(code: "plow_unreachable", message: "Plow can't be reached")))
-        await flow.create(app: opened.app)
-        #expect(flow.error?.code == "plow_unreachable" && flow.created == nil)
-        // Created.
-        opened.client.refuse(nil)
-        await flow.create(app: opened.app)
-        #expect(flow.created?.agent.name == "tinker")
-        #expect(opened.client.asked.last == "agents new --name tinker --line \(flow.line ?? "") --token-file /tmp/tinker.latch-key")
+        #expect(flow.picked?.phrase == "Create an agent for me")
         opened.app.sheet = nil
         await waitUntil { opened.sheets.sheet == nil }
+        #expect(opened.client.asked.isEmpty)
     }
 
     // Connect Google: the sign-in sheet over the window while latch waits,

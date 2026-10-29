@@ -46,11 +46,12 @@ nonisolated struct LocalStatus: Decodable, Equatable {
         var reason: String?
 
         /// What the host is doing about it, in words; nil when the switch
-        /// says it all.
-        var said: String? {
+        /// says it all. `willRun`: a host not running yet is about to start.
+        func said(willRun: Bool = false) -> String? {
             guard enabled, held != nil else { return nil }
             if held == true { return "Latch is keeping this Mac awake while it's plugged in." }
             return switch reason {
+            case "not_serving" where willRun: "Once Latch is running, it keeps this Mac awake while it's plugged in."
             case "not_serving": "Latch isn't running, so this Mac sleeps as usual."
             case "on_battery": "On battery, this Mac sleeps as usual."
             case "refused": "macOS didn't let Latch keep this Mac awake."
@@ -238,24 +239,22 @@ nonisolated struct AgentCatalog: Decodable, Equatable {
     var kinds: [Kind]
 }
 
-/// `latch agents lines`: the account's phone lines, and which are free.
-nonisolated struct AgentLines: Decodable, Equatable {
-    struct Line: Decodable, Equatable, Identifiable {
-        var uid: String
-        var number: String
-        var name: String?
-        var available: Bool
-        var id: String { uid }
+/// `latch agents start-by-text`: Plow's number, and what to text it to
+/// start each kind of cloud agent.
+nonisolated struct AgentStartByText: Decodable, Equatable {
+    struct Kind: Decodable, Equatable, Identifiable {
+        var id: String
+        var name: String
+        var phrase: String
+        /// For a QR code: a phone's camera opens a text of `phrase` to the number.
+        var smsto: String
+        /// The same for Messages on a Mac.
+        var smsLink: String
     }
-    var lines: [Line]
-}
-
-/// `latch agents new`'s answer: the agent, and for your own agent the file
-/// its credential was written to (never the credential).
-nonisolated struct AgentCreated: Decodable, Equatable {
-    var agent: AgentsList.Agent
-    var tokenFile: String?
-    var apiUrl: String?
+    var number: String
+    /// The kind Plow offers without asking which.
+    var `default`: String?
+    var kinds: [Kind]
 }
 
 /// `latch devices`: every machine logged in to the account.

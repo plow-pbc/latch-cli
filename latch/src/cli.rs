@@ -1043,6 +1043,11 @@ pub enum AgentsAction {
     Show { agent: String },
     /// The kinds of cloud agent Plow can run, for `agents new --cloud`
     Catalog,
+    /// How to start a cloud agent from a phone: Plow's number and, for each
+    /// kind, the text to send it, as a QR code's contents and an `sms:` link.
+    /// Plow sets the agent up on a line of its own and texts back its contact
+    /// card
+    StartByText,
     /// Plow's phone lines, and which are free for a new agent
     Lines,
     /// Create an agent on a free phone line: a cloud agent Plow runs, or

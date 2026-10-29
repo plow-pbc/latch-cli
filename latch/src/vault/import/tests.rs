@@ -42,8 +42,8 @@ fn csv_rows_read_rfc_4180() {
 }
 
 const APPLE: &str = "Title,URL,Username,Password,Notes,OTPAuth\n\
-    Notion,https://notion.so,jon@tumult.com,\"pw,with\"\"quote\",a note,\n\
-    Dropbox,https://dropbox.com,so@plow.co,drop-secret,,otpauth://totp/Dropbox:so%40plow.co?secret=JBSWY3DPEHPK3PXP&issuer=Dropbox";
+    Notion,https://notion.so,jon@example.com,\"pw,with\"\"quote\",a note,\n\
+    Dropbox,https://dropbox.com,so@example.com,drop-secret,,otpauth://totp/Dropbox:so%40example.com?secret=JBSWY3DPEHPK3PXP&issuer=Dropbox";
 
 #[test]
 fn apple_passwords_csv() {
@@ -126,7 +126,7 @@ fn chrome_csv_and_any_header_order() {
     let any = parse_text("Password,Username,Title,URL\npw,jon,Site,https://s.example").unwrap();
     assert_eq!(any.source, "CSV");
     assert_eq!(login_of(&any.items[0]).username.as_deref(), Some("jon"));
-    let refused = parse_text("name,email\njon,jon@tumult.com").err().unwrap();
+    let refused = parse_text("name,email\njon,jon@example.com").err().unwrap();
     assert!(
         refused
             .message
@@ -158,7 +158,7 @@ fn onepassword_item(overrides: Value) -> String {
         "details": {
             "fields": [
                 {"value": "drop-secret", "name": "password", "type": "P", "designation": "password"},
-                {"value": "so@plow.co", "name": "username", "type": "T", "designation": "username"},
+                {"value": "so@example.com", "name": "username", "type": "T", "designation": "username"},
             ],
             "sections": [{"name": "add more", "fields": [
                 {"t": "one-time password", "n": "TOTP_varaero3oygcxrfk5bdco4kqjm", "k": "concealed", "v": TOTP_KEY}
@@ -178,7 +178,7 @@ fn onepassword_item_json() {
     let parsed = parse_text(&onepassword_item(json!({}))).unwrap();
     assert_eq!(parsed.source, "1Password item");
     let row = &parsed.items[0];
-    assert_eq!(login_of(row).username.as_deref(), Some("so@plow.co"));
+    assert_eq!(login_of(row).username.as_deref(), Some("so@example.com"));
     assert_eq!(login_of(row).totp.as_deref(), Some(TOTP_KEY));
     assert!(row.warnings.is_empty());
 
@@ -520,7 +520,7 @@ fn a_changed_password_or_key_updates_that_item_only() {
         .into_iter()
         .find(|m| m.title == "Dropbox")
         .unwrap();
-    assert_eq!(stored.username.as_deref(), Some("so@plow.co"));
+    assert_eq!(stored.username.as_deref(), Some("so@example.com"));
     assert_eq!(
         vault.release(&stored.item, "password").unwrap(),
         "drop-rotated"
@@ -529,7 +529,7 @@ fn a_changed_password_or_key_updates_that_item_only() {
     // One key in two spellings is no change; a different key updates only it.
     let respelled = APPLE
         .replace(
-            &format!("otpauth://totp/Dropbox:so%40plow.co?secret={TOTP_KEY}&issuer=Dropbox"),
+            &format!("otpauth://totp/Dropbox:so%40example.com?secret={TOTP_KEY}&issuer=Dropbox"),
             TOTP_KEY,
         )
         .replace("drop-secret", "drop-rotated");
@@ -561,7 +561,7 @@ fn a_changed_password_or_key_updates_that_item_only() {
     // A source without a key does not read as removing the stored one.
     let (parsed, _) = run(
         &mut vault,
-        "name,url,username,password,note\nDropbox,https://dropbox.com,so@plow.co,drop-rotated,",
+        "name,url,username,password,note\nDropbox,https://dropbox.com,so@example.com,drop-rotated,",
     );
     assert!(parsed.items[0].duplicate);
     assert!(vault.release(&stored.item, "totp").is_ok());

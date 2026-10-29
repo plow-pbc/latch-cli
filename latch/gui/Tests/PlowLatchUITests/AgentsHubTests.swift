@@ -1,12 +1,12 @@
-import AppKit
+import Foundation
 import Synchronization
-import SwiftUI
 import Testing
 @testable import PlowLatchUI
 
 /// Agents' Remove… and Rules buttons: a removal names the agent by uid, and
 /// a request for an agent's rules is taken only by that host's editor. And
-/// Agents itself, back where it was left.
+/// how Agents names an agent, writes its number and says its standing on
+/// each host.
 @MainActor
 struct AgentsHubTests {
     /// Two agents both called scout; records each removal's uid.
@@ -59,25 +59,60 @@ struct AgentsHubTests {
         #expect(app.agents?.count == 2)
     }
 
-    // Left scrolled down, then returned to (a new view of it): Agents
-    // opens where it was, once its rows are laid out, and stays there.
-    @Test func agentsOpensWhereItWasLeft() async throws {
-        let app = try await app(TwinsClient())
-        app.agentsScrolled = 120
-        let window = Offscreen(contentRect: CGRect(x: -4000, y: -4000, width: 700, height: 300), styleMask: [.titled],
-                               backing: .buffered, defer: false)
-        window.contentView = NSHostingView(rootView: AgentsView().environment(app))
-        // Setting its content can move the window onto a display: back.
-        window.setFrameOrigin(CGPoint(x: -4000, y: -4000))
-        window.orderFrontRegardless()
-        defer { window.orderOut(nil) }
-        #expect(!NSScreen.screens.contains { $0.frame.intersects(window.frame) })
-        func scrollers(_ view: NSView) -> [NSScrollView] { ((view as? NSScrollView).map { [$0] } ?? []) + view.subviews.flatMap(scrollers) }
-        func shown() -> CGFloat? { scrollers(window.contentView!).first?.documentVisibleRect.minY }
-        await waitUntil { shown() == 120 }
-        try await Task.sleep(for: .milliseconds(300))
-        #expect(shown() == 120)
-        #expect(app.agentsScrolled == 120)
+    // The one picked stays picked on a return to Agents; with none picked,
+    // or the picked one gone, the first is shown.
+    @Test func agentsShowsThePickedAgentWhileItsListed() async throws {
+        let client = TwinsClient()
+        let app = try await app(client)
+        #expect(app.shownAgent?.uid == "00000000000000000000000000000001")
+        app.selectedAgent = "00000000000000000000000000000002"
+        app.place = .host(.home)
+        app.place = .account(.agents)
+        #expect(app.shownAgent?.uid == "00000000000000000000000000000002")
+        await app.removeAgent(try #require(app.shownAgent))
+        #expect(app.shownAgent?.uid == "00000000000000000000000000000001")
+    }
+
+    // A line's name in Plow, else the handle, else the number (nil: as
+    // this Mac's region writes it).
+    @Test(arguments: [
+        (#"{"name":"Aspen","number":"+16505550136"}"#, "openclaw-test2", "Aspen"),
+        (#"{"name":"  ","number":"+16505550136"}"#, "openclaw-test2", "openclaw-test2"),
+        (#"{"name":null,"number":"+16505550136"}"#, "", nil),
+    ])
+    func anAgentIsCalledByItsLinesNameThenItsHandleThenItsNumber(_ line: String, _ handle: String, _ shown: String?) throws {
+        let agent: AgentsList.Agent = try Fixtures.decode(#"{"uid":"u1","name":"\#(handle)","kind":"cloud","line":\#(line)}"#)
+        #expect(agent.displayName == shown ?? PhoneNumber("+16505550136")?.formatted())
+    }
+
+    @Test func phoneNumbersAreWrittenAsTheirRegionWritesThem() {
+        #expect(PhoneNumber("+16505550136")?.formatted(region: "US") == "(650) 555-0136")
+        #expect(PhoneNumber("+16505550136")?.formatted(region: "GB") == "+1 650-555-0136")
+        #expect(PhoneNumber("+442079460958")?.formatted(region: "US") == "+44 20 7946 0958")
+        #expect(PhoneNumber("+442079460958")?.formatted(region: "GB") == "020 7946 0958")
+        #expect(PhoneNumber("+5511987654321")?.formatted(region: "US") == "+55 11 98765-4321")
+        #expect(PhoneNumber("+5511987654321")?.sms == URL(string: "sms:+5511987654321"))
+        #expect(PhoneNumber("agent@plow.co") == nil)
+        #expect(PhoneNumber("16505550136") == nil)
+    }
+
+    // Each host's row says what's known of the agent there: offline (this
+    // Mac never is), not read yet, unreadable, or its rules and exec.
+    @Test func eachHostRowSaysTheAgentsStandingThere() throws {
+        let agent: AgentsList.Agent = try Fixtures.decode(#"{"uid":"u1","name":"scout","kind":"own"}"#)
+        let pi = HostEntry(name: "pi", isThisMac: false, online: true), mac = HostEntry(name: "mac", isThisMac: true, online: false)
+        func standing(own: Bool, blocked: Bool) -> Result<[String: AgentsList.Agent.Standing], LatchError> {
+            .success(["u1": .init(ownRules: own, execBlocked: blocked)])
+        }
+        #expect(agent.standing(on: HostEntry(name: "pi", isThisMac: false, online: false), standing(own: true, blocked: false))
+            == "Offline, so its rules there can't be checked")
+        #expect(agent.standing(on: pi, nil) == "Checking…")
+        #expect(agent.standing(on: mac, standing(own: false, blocked: false)) == "Shared rules only")
+        #expect(agent.standing(on: pi, standing(own: true, blocked: false)) == "Shared rules + own rules")
+        #expect(agent.standing(on: pi, standing(own: false, blocked: true)) == "Shared rules · can't run programs")
+        #expect(agent.standing(on: pi, standing(own: true, blocked: true)) == "Shared rules + own rules · can't run programs")
+        #expect(agent.standing(on: pi, .success([:])) == "Shared rules only")
+        #expect(agent.standing(on: pi, .failure(.unreachable("no answer"))) == ErrorCopy.said(.unreachable("no answer"), host: "pi"))
     }
 
     // A request for helper's rules on pi-kitchen: taken only by
@@ -99,5 +134,67 @@ struct AgentsHubTests {
         app.showHost("studio")
         #expect(app.rulesFocus == nil)
         #expect(!app.takeRulesFocus(AgentTarget(host: "pi-kitchen", agent: helper)))
+    }
+}
+
+/// New Agent starts an agent by text, elsewhere: the sheet reads the
+/// account's agents until a new one appears, then closes on it.
+@MainActor
+struct NewAgentWaitTests {
+    /// scout, then also a texted-for agent once it has been listed `after`
+    /// times; counts the reads of the list (not of a host's standing).
+    final class TextedClient: LatchClient, @unchecked Sendable {
+        let stateDir = "/s"
+        let after: Int
+        private let reads = Mutex(0)
+        var listed: Int { reads.withLock { $0 } }
+        init(after: Int) { self.after = after }
+
+        func agents(host: String?) async throws -> AgentsList {
+            let count = host != nil ? listed : reads.withLock { $0 += 1; return $0 }
+            let scout = #"{"kind":"own","line":{"name":null,"number":"+15550000002"},"name":"scout","uid":"00000000000000000000000000000001"}"#
+            let willow = #"{"kind":"cloud","line":{"name":"Willow","number":"+15550000003"},"name":"willow","status":"provisioning","uid":"00000000000000000000000000000009"}"#
+            return try Fixtures.decode(#"{"agents":[\#(scout)\#(count > after ? "," + willow : "")]}"#)
+        }
+        func agentStartByText() async throws -> AgentStartByText { try Fixtures.decode(Fixtures.startByText) }
+    }
+
+    private func app(_ client: TextedClient) async throws -> AppModel {
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
+        app.stage(status: try Fixtures.decode(Fixtures.serving))
+        app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
+        await app.refreshAgentList()
+        return app
+    }
+
+    // A new agent listed on the fourth read after Agents' own: the sheet
+    // closes on it once its standings are read (one more read). None: the
+    // sheet stays open and the reads stop with the schedule.
+    @Test(arguments: [(4, 10, 6, true), (Int.max, 3, 4, false)])
+    func watchingStopsWithTheExpectedSelection(_ after: Int, _ polls: Int, _ reads: Int, _ found: Bool) async throws {
+        let client = TextedClient(after: after)
+        let app = try await app(client)
+        let flow = NewAgent()
+        app.sheet = .newAgent(flow)
+        await flow.watch(app: app, waits: Array(repeating: .zero, count: polls))
+        #expect(app.sheet == (found ? nil : .newAgent(flow)))
+        #expect(app.selectedAgent == (found ? "00000000000000000000000000000009" : nil))
+        #expect(app.shownAgent?.displayName == (found ? "Willow" : "scout"))
+        #expect(client.listed == reads)
+    }
+
+    // Plow's own choice is offered first; the phrase and links are latch's.
+    @Test func plowsDefaultKindIsPicked() async throws {
+        let app = try await app(TextedClient(after: .max))
+        let flow = NewAgent()
+        await flow.load(app: app)
+        #expect(flow.picked?.id == "exe:openclaw")
+        flow.kind = "exe:life"
+        #expect(flow.picked?.smsLink == "sms:+16504359440?&body=Set%20this%20up%20for%20me%3A%20aiworthusing.com%2Fagent-index%2Flife")
+    }
+
+    @Test func theWaitBacksOffAndEnds() {
+        #expect(NewAgent.waits.first == .seconds(3) && NewAgent.waits.last == .seconds(10))
+        #expect(NewAgent.waits.reduce(.zero, +) == .seconds(600))
     }
 }

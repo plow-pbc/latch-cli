@@ -22,11 +22,8 @@ final class AppModel {
     /// only ever on a person's click. A test build records them instead, so
     /// a run never opens anything.
     var open: (URL) -> Void = { NSWorkspace.shared.open($0) }
-    /// Shows a file in the Finder (the New Agent sheet's key file); only on
-    /// a click. A test build records it.
-    var reveal: (URL) -> Void = { NSWorkspace.shared.activateFileViewerSelecting([$0]) }
-    /// Puts text on the clipboard (the New Agent sheet's login
-    /// instructions); only on a click. A test build records it.
+    /// Puts text on the clipboard (a number, a handle, a message to send);
+    /// only on a click. A test build records it.
     var copy: (String) -> Void = { text in
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
@@ -267,12 +264,17 @@ final class AppModel {
             guard let host, host.isThisMac || host.online != false else { return }
             if refresh || !Self.held(summaries[host.name]?.vault) { await refreshVault(on: host) }
         case .account(.agents):
+            // The catalog only names each cloud agent's kind; without it
+            // the page says less, so a failed read isn't shown.
+            let readKinds = refresh || agentKinds == nil
+            async let kinds: Void = readKinds ? refreshAgentKinds() : ()
             if refresh { await refreshAgents() } else {
                 if agents == nil, await !refreshAgentList() { return }
                 // Each host's standing it doesn't have yet, as when a visit
                 // was left before reading them all.
                 await readStandings(missing: true)
             }
+            await kinds
         case .account(.connections):
             if refresh || connections == nil { await refreshConnections() }
             if refresh || !Self.held(devices) { await refreshDevices() }
@@ -587,6 +589,8 @@ final class AppModel {
     private(set) var keepAwakeError: LatchError?
 
     func setKeepAwake(_ on: Bool) async {
+        // One save at a time; a click meanwhile is dropped.
+        guard !settingKeepAwake else { return }
         settingKeepAwake = true
         defer { settingKeepAwake = false }
         do {
@@ -680,26 +684,21 @@ final class AppModel {
         leaveMainIfLoggedOut()
     }
 
-    /// How far down Agents was scrolled, for a return to it. Not observed:
-    /// only Agents reads it, as it appears.
-    @ObservationIgnored var agentsScrolled: CGFloat = 0
+    /// The agent Agents shows, by uid, kept for a return to it.
+    var selectedAgent: String?
 
-    func agentCatalog() async throws -> AgentCatalog { try await client.agentCatalog() }
-    func agentLines() async throws -> AgentLines { try await client.agentLines() }
-    /// `latch agents show`, kept in the account's agents too, so the
-    /// Agents page shows what the New Agent sheet saw.
-    func agentStatus(_ uid: String) async throws -> AgentsList.Agent {
-        let agent = try await client.agentShow(uid)
-        if let at = agents?.firstIndex(where: { $0.uid == uid }) { agents?[at] = agent }
-        return agent
+    /// The one picked, while it's listed; else the first.
+    var shownAgent: AgentsList.Agent? { agents?.first { $0.uid == selectedAgent } ?? agents?.first }
+
+    /// Each cloud agent kind's name in Plow's catalog, by its id.
+    private(set) var agentKinds: [String: String]?
+
+    func refreshAgentKinds() async {
+        guard case let .success(catalog)? = await Self.result({ try await self.client.agentCatalog() }) else { return }
+        agentKinds = Dictionary(catalog.kinds.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
     }
 
-    /// Creates an agent, then lists the account's agents again.
-    func createAgent(name: String, cloud: String?, tokenFile: URL?, line: String) async throws -> AgentCreated {
-        let created = try await client.newAgent(name: name, cloud: cloud, tokenFile: tokenFile, line: line)
-        await refreshAgents()
-        return created
-    }
+    func agentStartByText() async throws -> AgentStartByText { try await client.agentStartByText() }
 
     /// For snapshots: as latch said.
     func stage(devices: DeviceList?, update: UpdateCheck?) {
