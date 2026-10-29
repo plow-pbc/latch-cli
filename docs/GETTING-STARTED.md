@@ -32,7 +32,7 @@ machine (Apple silicon or Intel Mac, Linux x86_64 or arm64, including a
 Raspberry Pi), checks it against the release's `SHA256SUMS`, and installs
 it. Options after the tag (or alone) go to the installer: `--bin-dir DIR`,
 `--state-dir DIR`, `--browser chrome|camoufox` (repeat it for both),
-`--no-browser` and `--client-only`.
+`--no-browser`, `--client-only` and `--no-modify-path`.
 
 **An agent's machine or image** only asks hosts, so it needs latch and
 nothing else: `sh install.sh --client-only` installs the binary alone (no
@@ -44,7 +44,7 @@ starts no setup, and ends by saying to run `latch login` (see
 
 | What | Where |
 |---|---|
-| The `latch` binary | `~/.local/bin/latch`. If that folder isn't on your `PATH`, the installer says so; add it. On macOS it links into `/Applications/Plow Latch.app`, or `~/Applications/Plow Latch.app` when you can't write `/Applications`. |
+| The `latch` binary | `~/.local/bin/latch`. If that folder isn't on your `PATH`, the installer adds one line to your shell's login profile (`~/.zprofile` for zsh; `~/.bashrc` and your login profile for bash on Linux) and prints the `export` for the terminal you're in; for another shell, or with `--no-modify-path`, `--client-only` or `--non-interactive`, it only says what to add. On macOS it links into `/Applications/Plow Latch.app`, or `~/Applications/Plow Latch.app` when you can't write `/Applications`. |
 | Your machine's state: its key, Plow login, config, audit log | `~/.latch` (made by the installer, filled in by `latch login`) |
 | gog, the Google CLI a host runs for `latch google` | `~/.latch/plugins/gog/<version>/` |
 | Chrome for Testing, the browser a host runs for `latch browser` (macOS, Linux arm64/x86_64; about 200 MB), unless `--no-browser` | `~/.latch/plugins/cft/<version>/` |

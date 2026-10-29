@@ -15,6 +15,13 @@ export PATH="$HOME/.local/bin:$PATH"
 latch --version
 ```
 
+When `~/.local/bin` isn't on your `PATH`, the installer adds one line that puts
+it there to your shell's login profile (`~/.zprofile` for zsh; `~/.bashrc` and
+`~/.profile` or `~/.bash_profile` for bash on Linux) and says so; for another
+shell it says what to add. The `export` above covers the terminal you
+installed from. `--no-modify-path` leaves your profile alone, as do
+`--client-only` and `--non-interactive`.
+
 Releases are tagged `v<version>-<build>`, e.g. `v0.1.0-1327`, where the build
 number counts release runs; `latch --version` shows it as `0.1.0 (1327)`.
 `sh install.sh TAG` installs that release instead.
