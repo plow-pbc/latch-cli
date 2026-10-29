@@ -13,10 +13,8 @@ no engine; `--browser camoufox` installs Camoufox instead (name both
 engines with `--browser chrome --browser camoufox`).
 
 On Linux x86_64, both engines are verified in headless mode: start the host
-with `latch serve --headless-browsers`. Headed startup currently fails with
-the pathname `DISPLAY` latch supplies for its private Xvfb display (Chrome
-reports "Missing X server or $DISPLAY"). Installing a `linux64` build does
-not fix that display limitation.
+with `latch serve --headless-browsers`. Headed, each runtime's engine draws
+on a private Xvfb display of its own (see "Handoff and screenless hosts").
 
 The download is `browser-engines.sh`'s, beside `install-binary.sh`, which
 `install.sh` runs. `latch browser setup [--engine chrome|camoufox]` runs a
@@ -656,13 +654,18 @@ stop and tell the owner what the page needs. The stops that name the owner
 as the way on (a CAPTCHA, a code or passkey stage, a fill the page would
 not keep) say the same on such a host, never to hand off. On Linux, each headed session
 runtime's worker starts a private Xvfb display (`-displayfd`)
-for its engine, up for as long as the runtime. It listens only on its
-socket file in the runtime's private `/tmp`: no TCP port and no abstract
-socket, which anything on the host's network namespace could reach. The
-engine's `DISPLAY` is that file's path, not `:N`, which X clients look up
-as an abstract socket first and could find another server's there. A
-Linux host never gives the engine its own `DISPLAY`, even with a monitor
-attached: its desktop is outside the runtime's bubblewrap.
+for its engine, up for as long as the runtime. It listens on its socket
+file in the runtime's private `/tmp` and on the abstract socket of the same
+name, never on TCP. The engine's `DISPLAY` is `:N`, which X clients look up
+as that abstract socket first: Xvfb holds it, and `-displayfd` skips a
+number another server holds, so no other server can answer. (A socket
+file's path as `DISPLAY` would avoid the abstract socket, but Ubuntu
+24.04's libxcb can't parse one.) Anything on the host's network namespace
+can reach the abstract socket, so Xvfb lets in only a client with the
+runtime's random cookie, in an Xauthority file only the worker and its
+engine see (`XAUTHORITY`). A Linux host never gives the engine its own
+`DISPLAY`, even with a monitor attached: its desktop is outside the
+runtime's bubblewrap.
 
 ## The engine is not inside latch's Seatbelt
 
@@ -745,7 +748,7 @@ one exception is Ubuntu 23.10 and later (below). The runtime sees:
   still refuses mounts, `ptrace` and VM sockets.
 
 It sees no areas. The worker's environment is still only `PATH`, and the
-engine's the four variables above (and `DISPLAY`).
+engine's the four variables above (and `DISPLAY` and `XAUTHORITY`).
 
 ### Ubuntu 23.10 and later: page isolation off
 

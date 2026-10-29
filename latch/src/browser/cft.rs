@@ -24,6 +24,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use super::cdp::{self, Cdp, Pipes};
+use super::display::Display;
 use super::driver::{self, Download, Driver, Event, Frame, HTTP_ERRORS, KEY_NAMES, Runtime, Tab};
 use super::engine::{CFT, Engine};
 use super::profile;
@@ -123,7 +124,7 @@ impl Cft {
         profile: &Path,
         scratch: &Path,
         headless: bool,
-        display: Option<&str>,
+        display: Option<&Display>,
         proxy: &str,
         page_isolation_off: bool,
     ) -> Result<Self, Failure> {
@@ -1745,7 +1746,7 @@ fn start(
     data: &Path,
     scratch: &Path,
     headless: bool,
-    display: Option<&str>,
+    display: Option<&Display>,
     proxy: &str,
     page_isolation_off: bool,
     reads: &impl AsRawFd,
@@ -1786,8 +1787,8 @@ fn start(
         .stdout(Stdio::null())
         .stderr(log)
         .process_group(0);
-    if let Some(display) = display {
-        command.env("DISPLAY", display);
+    for (name, value) in display.map(Display::env).into_iter().flatten() {
+        command.env(name, value);
     }
     // SAFETY: between fork and exec, only async-signal-safe calls: the two
     // ends are first copied above fd 4 (so neither is overwritten by the

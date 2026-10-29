@@ -20,6 +20,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 use super::cdp;
+use super::display::Display;
 use super::driver::{self, Download, Driver, Event, Frame, KEY_NAMES, Runtime, Tab};
 use super::engine::CAMOUFOX;
 use super::profile;
@@ -69,7 +70,7 @@ impl Camoufox {
         profile: &Path,
         scratch: &Path,
         headless: bool,
-        display: Option<&str>,
+        display: Option<&Display>,
         proxy: &str,
     ) -> Result<Self, Failure> {
         if CAMOUFOX.driver_contract != driver::CONTRACT {
@@ -152,8 +153,8 @@ impl Camoufox {
                     .join(&CAMOUFOX.fingerprint_os)
             );
         }
-        if let Some(display) = display {
-            env["DISPLAY"] = json!(display);
+        for (name, value) in display.map(Display::env).into_iter().flatten() {
+            env[name] = json!(value);
         }
         let launched = browser.request::<Value>(
             "launch",
