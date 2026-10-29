@@ -33,7 +33,8 @@ browser's risky steps.
   allowed. Riskier actions need your OK.
 - **Only you give permission.** What the agent says, other people's messages
   and web pages are never permission.
-- **It fails closed.** If the host can't judge a request, nothing runs.
+- **It fails closed.** If the host can't judge a step, that step doesn't run.
+  Earlier steps of a browser plan may already have acted.
 
 A model judges the rules, so they aren't a guarantee. `latch serve --deny-exec`
 is: no agent runs a program on that host.

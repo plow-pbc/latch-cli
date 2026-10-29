@@ -83,9 +83,14 @@ def commands_markdown(help_json):
                 for service, name in (("calendar", "Calendar"), ("gmail", "Gmail")):
                     words = [" ".join(rest) for first, *rest in allowed if first == service]
                     what += f" {name}: " + ", ".join(f"`{w}`" for w in words) + "."
-            # The first example that shows more than the bare command, if any.
-            example = next((e["command"] for e in action["examples"] if e["command"] != command), None)
-            rows.append(f"| `{command}` | {cell(what)}" + (f"<br>`{cell(example)}`" if example else "") + " |")
+            # The command's first example, with what it does, when it shows more
+            # than the bare command.
+            first = action["examples"][0]
+            example = ""
+            if first["command"] != command:
+                label = first["what"] if first["what"].endswith(("?", ".")) else first["what"] + ":"
+                example = f"<br>{cell(label)} `{cell(first['command'])}`"
+            rows.append(f"| `{command}` | {cell(what)}{example} |")
         out.append(f"## {title}\n\n| Command | What it does, and an example |\n|---|---|\n" + "\n".join(rows) + "\n")
     return "\n".join(out)
 

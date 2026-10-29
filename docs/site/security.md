@@ -8,7 +8,7 @@ Latch lets an agent work on your machine without handing it the keys.
   operation. A name is only a label.
 - **Work is judged first.** Programs, file copies, Google, Messages, Contacts
   and risky browser steps go to the gatekeeper before they run. If it can't
-  judge a request, nothing runs.
+  judge a step, that step doesn't run.
 - **Work runs in a sandbox:** Seatbelt on macOS, bubblewrap on Linux. A
   program can't read the host's state folder. It writes only to the folders
   the request names, its own temp folder and existing tool caches, and it has
