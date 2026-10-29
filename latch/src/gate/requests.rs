@@ -141,6 +141,11 @@ pub fn read(state_dir: &Path, id: &str, raw: bool) -> Result<Value, Failure> {
         .ok_or_else(unreadable)?;
     let mut kept: Value = serde_json::from_slice(&plain).map_err(|_| unreadable())?;
     if !raw {
+        // An action's argv as a whole, as `latch audit` shows an exec's,
+        // so a credential after its flag is hidden too.
+        if let Some(action) = kept.pointer_mut("/request/state/proposed_action") {
+            *action = crate::redact::shown("exec", action);
+        }
         crate::redact::hide_in(&mut kept["request"]);
         crate::redact::hide_in(&mut kept["answer"]);
     }

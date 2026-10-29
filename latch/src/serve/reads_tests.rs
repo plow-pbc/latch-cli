@@ -413,7 +413,9 @@ async fn the_owner_reads_back_each_gatekeeper_call_as_sent_and_an_agent_cannot()
     let secret = "synthetic-secret-env-value-5b3e";
     let bearer = "synthetic-bearer-9f2c";
     let header = format!("Authorization: Bearer {bearer}");
-    let exec = json!({"argv": ["true", "-H", header], "secret_env": {"TOKEN": secret}});
+    // A credential in an argument of its own, after its flag, too.
+    let argv = json!(["true", "-H", header, "--password", "short-secret"]);
+    let exec = json!({"argv": argv, "secret_env": {"TOKEN": secret}});
     for caller in [&device, &agent] {
         assert!(matches!(
             t.call(caller, "exec", exec.clone()).await.0,
@@ -433,9 +435,20 @@ async fn the_owner_reads_back_each_gatekeeper_call_as_sent_and_an_agent_cannot()
         // By default, credential-looking values are hidden, as in `latch
         // audit`: in the action and in the owner's request.
         let shown = judge(&t, &device, &call["kept_request"], false).await;
-        assert!(!shown.to_string().contains(bearer), "{shown}");
-        let argv = &shown["request"]["state"]["proposed_action"]["argv"];
-        assert_eq!(argv[2], "Authorization: [redacted] [redacted]");
+        for hidden in [bearer, "short-secret"] {
+            assert!(!shown.to_string().contains(hidden), "{shown}");
+        }
+        let shown_argv = &shown["request"]["state"]["proposed_action"]["argv"];
+        assert_eq!(
+            shown_argv,
+            &json!([
+                "true",
+                "-H",
+                "Authorization: [redacted]",
+                "--password",
+                "[redacted]"
+            ])
+        );
         assert_eq!(shown["answer"]["id"], call["model_request"]);
         let kept = judge(&t, &device, &call["kept_request"], true).await;
         assert_eq!(
@@ -447,21 +460,23 @@ async fn the_owner_reads_back_each_gatekeeper_call_as_sent_and_an_agent_cannot()
         assert!(!kept.to_string().contains(secret), "{kept}");
         // Raw, the owner reads exactly what the judge saw, a credential
         // typed into the command included.
-        let argv = &kept["request"]["state"]["proposed_action"]["argv"];
-        assert_eq!(argv, &json!(["true", "-H", header]));
+        assert_eq!(kept["request"]["state"]["proposed_action"]["argv"], argv);
         sent.push(kept["request"]["state"].clone());
         hidden.push(shown["request"]["state"].clone());
     }
     let owners = sent[0]["conversation"][0]["text"].as_str().unwrap();
     assert!(
-        owners.starts_with("Do this now: ") && owners.contains(bearer),
+        owners.starts_with("Do this now: ")
+            && owners.contains(bearer)
+            && owners.contains("short-secret"),
         "{owners}"
     );
     let owners = hidden[0]["conversation"][0]["text"].as_str().unwrap();
     assert!(
         owners.starts_with("Do this now: ")
             && owners.contains("Authorization: [redacted]")
-            && !owners.contains(bearer),
+            && !owners.contains(bearer)
+            && !owners.contains("short-secret"),
         "{owners}"
     );
     // Each state the decision route was sent, chat text and all.
