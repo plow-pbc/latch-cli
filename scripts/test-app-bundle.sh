@@ -16,4 +16,7 @@ codesign --verify --deep --strict --verbose=2 "$app"
 for arch in arm64 x86_64; do
   lipo "$app/Contents/Frameworks/libPlowLatchUI.dylib" -verify_arch "$arch"
 done
+for text in LICENSE NOTICE "$root"/latch/LICENSE-*; do
+  test -f "$app/Contents/Resources/$(basename "$text")"
+done
 "$app/Contents/MacOS/latch" --version

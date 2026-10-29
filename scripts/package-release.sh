@@ -37,6 +37,8 @@ if [ -f latch/messages-reader/dist/latch-messages ]; then
   cp latch/messages-reader/dist/latch-messages "$out/"
 fi
 cp latch/DOCKER.md "$out/"
+# The license, its NOTICE and the license texts NOTICE names.
+cp LICENSE latch/NOTICE latch/LICENSE-* "$out/"
 mkdir -p "$out/docker"
 cp latch/docker/seccomp.json latch/docker/latch-bwrap.apparmor "$out/docker/"
 [ -L "$out/latch" ] || chmod 755 "$out/latch"

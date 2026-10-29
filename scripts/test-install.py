@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import shutil
 import signal
@@ -867,6 +868,30 @@ class MessagesReaderInstall(unittest.TestCase):
             reader = state / "plugins/messages/9.9.9/latch-messages"
             self.assertEqual(reader.read_bytes(), b"reader-fixture")
             self.assertTrue(os.access(reader, os.X_OK))
+
+
+class ReleaseArchive(unittest.TestCase):
+    def test_an_archive_carries_the_license_its_notice_and_the_texts_notice_names(self):
+        version, target = "v0.0.0-license-test", "x86_64-unknown-linux-musl"
+        folder = f"latch-{version}-{target}"
+        self.addCleanup(shutil.rmtree, ROOT / "dist" / folder, ignore_errors=True)
+        self.addCleanup(lambda: (ROOT / "dist" / f"{folder}.tar.gz").unlink(missing_ok=True))
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / "latch"
+            binary.write_bytes(b"latch-fixture")
+            result = subprocess.run(["sh", str(ROOT / "scripts/package-release.sh"), version, target, str(binary)],
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+        with tarfile.open(ROOT / "dist" / f"{folder}.tar.gz") as tar:
+            names = set(tar.getnames())
+            texts = ["LICENSE", "NOTICE"] + sorted(p.name for p in (ROOT / "latch").glob("LICENSE-*"))
+            for name in texts:
+                self.assertIn(f"{folder}/{name}", names)
+            self.assertEqual(tar.extractfile(f"{folder}/LICENSE").read(), (ROOT / "LICENSE").read_bytes())
+            notice = tar.extractfile(f"{folder}/NOTICE").read().decode()
+        # Every license text NOTICE names is in the archive beside it.
+        for named in set(re.findall(r"LICENSE-[A-Za-z]+", notice)):
+            self.assertIn(f"{folder}/{named}", names)
 
 
 def link_basic_tools(folder):

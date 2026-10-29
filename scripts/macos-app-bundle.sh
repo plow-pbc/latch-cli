@@ -2,8 +2,9 @@
 # Wraps a macOS latch binary in Plow Latch.app: Contents/MacOS/latch, its
 # executable; the app's window, latch/gui's library (gui/build.sh), in
 # Contents/Frameworks, which latch loads when the app is opened (src/gui.rs);
-# the icon; the bundle id (latch/macos/identity.sh) that Full Disk Access and
-# the Developer ID signature name; and the Developer ID provisioning profile
+# the icon, with LICENSE, NOTICE and the license texts NOTICE names; the
+# bundle id (latch/macos/identity.sh) that Full Disk Access and the
+# Developer ID signature name; and the Developer ID provisioning profile
 # that lets a signature claim latch's keychain group; and the launch agent
 # the app registers for "Start when you log in", which runs its latch's
 # `serve -d --again` at login (Contents/Library/LaunchAgents/ID.login.plist,
@@ -42,6 +43,7 @@ cp "$binary" "$bundle/Contents/MacOS/latch"
 chmod 755 "$bundle/Contents/MacOS/latch"
 cp "$gui" "$bundle/Contents/Frameworks/"
 cp "$here/latch/macos/AppIcon.icns" "$bundle/Contents/Resources/AppIcon.icns"
+cp "$here/LICENSE" "$here/latch/NOTICE" "$here"/latch/LICENSE-* "$bundle/Contents/Resources/"
 cp "$here/latch/macos/PlowLatchCLI-DeveloperID.provisionprofile" "$bundle/Contents/embedded.provisionprofile"
 cat > "$bundle/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

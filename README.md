@@ -246,3 +246,13 @@ through the same gatekeeper and audit as remote calls, recorded as
 
 Local `vault` and `rules` configuration works without `serve` or
 the decision model. Vault edits and rules apply to the running receiver's next operation.
+
+## License
+
+Apache-2.0: see [LICENSE](LICENSE) and [latch/NOTICE](latch/NOTICE).
+Copyright 2026 The Plow Collective, Inc. Code adapted from other projects
+keeps its own license, named in NOTICE beside its text (`latch/LICENSE-*`).
+Release archives and Plow Latch.app carry LICENSE, NOTICE and those texts.
+
+"Plow" and the Plow logo are trademarks of The Plow Collective, Inc. The
+license grants no trademark rights.
