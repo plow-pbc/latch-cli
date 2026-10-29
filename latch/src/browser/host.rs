@@ -68,6 +68,13 @@ pub(super) fn add_time(pick: fn(&mut Timings) -> &mut Option<u64>, took: Duratio
     });
 }
 
+/// Sleeps for `took`, waiting for the page: it counts as `settle_ms`.
+pub(super) async fn settle_for(took: Duration) {
+    let sleeping = Instant::now();
+    tokio::time::sleep(took).await;
+    add_time(|phases| &mut phases.settle_ms, sleeping.elapsed());
+}
+
 pub struct Browsers {
     state_dir: PathBuf,
     /// Every session's engine runs with no window (`serve --headless-browsers`).
@@ -513,9 +520,8 @@ impl Browsers {
     }
 }
 
-/// `browser`: one `latch browser` command. Its audit arguments carry the
-/// time it spent in each phase (`add_time`), under `timings`, for the host to
-/// move into the record's own.
+/// `browser`: one `latch browser` command, and the time it spent in each
+/// phase (`add_time`), for its record.
 pub async fn run(
     browsers: &Browsers,
     caller: &str,
@@ -524,17 +530,18 @@ pub async fn run(
     args: Value,
     send: &mut SendStream,
     recv: &mut RecvStream,
-) -> Done {
-    let (mut done, timings) = PHASES
+) -> (Done, Timings) {
+    timed(run_command(browsers, caller, kind, gate, args, send, recv)).await
+}
+
+/// What `work` gives, and the time it spent in each phase (`add_time`).
+pub(super) async fn timed<T>(work: impl Future<Output = T>) -> (T, Timings) {
+    PHASES
         .scope(Default::default(), async {
-            let done = run_command(browsers, caller, kind, gate, args, send, recv).await;
+            let done = work.await;
             (done, PHASES.with(|phases| *phases.borrow()))
         })
-        .await;
-    if let Some(args) = done.audit_args.as_object_mut() {
-        args.insert("timings".into(), json!(timings));
-    }
-    done
+        .await
 }
 
 async fn run_command(

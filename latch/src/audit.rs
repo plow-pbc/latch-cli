@@ -96,9 +96,9 @@ pub struct Record {
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, Default)]
 pub struct Timings {
     /// Plow saying who the caller is: on connect, and again before each
-    /// operation.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub caller_check_ms: Option<u64>,
+    /// operation; about 0 for the owner on the host, who needs no Plow.
+    #[serde(default)]
+    pub caller_check_ms: u64,
     /// `browser`: the gatekeeper judging the call (each judgment, added up).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gate_ms: Option<u64>,
@@ -928,6 +928,29 @@ mod tests {
         assert_eq!(record_line(&connect)["record"]["command"], Value::Null);
         let audit = record("caller-one", None, "audit", "allow", "ok");
         assert_eq!(record_line(&audit)["record"]["command"], "latch audit");
+    }
+
+    /// A browser call's timings, the owner's on the host included, still
+    /// read as an older latch reads them: it requires `caller_check_ms`.
+    #[test]
+    fn timings_read_as_an_older_latch_reads_them() {
+        #[derive(Deserialize)]
+        #[allow(dead_code)]
+        struct Older {
+            caller_check_ms: u64,
+        }
+        let browser = Timings {
+            gate_ms: Some(3),
+            total_ms: Some(9),
+            ..Timings::default()
+        };
+        let written = serde_json::to_value(browser).unwrap();
+        assert!(
+            serde_json::from_value::<Older>(written.clone()).is_ok(),
+            "{written}"
+        );
+        let older: Timings = serde_json::from_value(json!({"caller_check_ms": 44})).unwrap();
+        assert_eq!((older.caller_check_ms, older.total_ms), (44, None));
     }
 
     #[test]

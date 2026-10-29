@@ -277,13 +277,10 @@ fn with_installed(state_dir: &Path, mut failure: Failure) -> Failure {
     }
     let installed = installed(state_dir);
     let default = installed.first().copied();
-    let has = match installed.as_slice() {
-        [] => "this host has no browser engine installed".to_string(),
-        [only] => format!("this host has {only}, its default"),
-        [first, rest @ ..] => format!(
-            "this host has {first} (its default) and {}",
-            rest.join(" and ")
-        ),
+    // The engine asked for is missing, so the host has the other one at most.
+    let has = match default {
+        None => "this host has no browser engine installed".to_string(),
+        Some(only) => format!("this host has {only}, its default"),
     };
     failure.message = format!("{}; {has}", failure.message);
     failure.details["installed"] = serde_json::json!(installed);

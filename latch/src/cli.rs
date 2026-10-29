@@ -1224,7 +1224,8 @@ What it prints, as JSON lines, with or without --follow:
       id, time, caller, caller_name, agent, op, decision, outcome, and
       details: started, args, gate, timings. A record's id is the audit_id
       its caller got back. timings is in milliseconds, each part only when
-      the call had it: caller_check_ms (Plow checking a remote caller) and,
+      the call had it: caller_check_ms (Plow checking a remote caller; on
+      every browser call, 0 for the owner on the host) and,
       for a browser call, gate_ms (the gatekeeper), launch_ms (starting a
       session's browser), action_ms (the browser loading and acting),
       settle_ms (waiting for pages to settle, and a wait's waiting) and
