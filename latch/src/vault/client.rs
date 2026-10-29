@@ -151,14 +151,17 @@ pub async fn run(state: &StateDir, args: VaultArgs) -> Result<Value, Failure> {
             page,
         } => {
             let values = given(&kind, &field)?;
-            let request = call(json!({
-                "command": "link",
-                "kind": kind,
-                "title": title,
-                "sites": site,
-                "values": values,
-                "ask": ask,
-            }));
+            let request = Request {
+                chat: args.plow_chat,
+                ..call(json!({
+                    "command": "link",
+                    "kind": kind,
+                    "title": title,
+                    "sites": site,
+                    "values": values,
+                    "ask": ask,
+                }))
+            };
             let opened = target.call(request).await?;
             let url = link_url(&page, &opened);
             if term::interactive() {
@@ -166,6 +169,10 @@ pub async fn run(state: &StateDir, args: VaultArgs) -> Result<Value, Failure> {
                 eprintln!("Open on your phone; it works once, for 15 minutes.");
             }
             Ok(json!({"url": url, "link": opened["link"], "expires_in": opened["expires_in"]}))
+        }
+        VaultCommand::LinkState { link } => {
+            let request = call(json!({"command": "link_state", "link": link}));
+            target.call(request).await
         }
         VaultCommand::Import {
             file,
@@ -219,7 +226,8 @@ impl Target<'_> {
         if let Some(host) = &self.host {
             return dial::call(self.state, host, &request, ANSWER_WITHIN).await;
         }
-        if request.args["command"] == "link" {
+        // Open links live in the running host's memory.
+        if ["link", "link_state"].contains(&request.args["command"].as_str().unwrap_or_default()) {
             super::local::link(self.state, request.args).await
         } else {
             super::local::call(self.state, request.args)

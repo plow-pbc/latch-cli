@@ -14,6 +14,10 @@
 //! On that protocol a code can only fetch its own form (`page`) and save
 //! its own item once (`submit`), within 15 minutes. A link only ever adds
 //! a new item; it never edits or removes one.
+//!
+//! An agent may open a link for a login too, judged by the gatekeeper like
+//! its other work, and send it to the owner. It learns only the link's
+//! state (`state`): pending, saved with the new item's id, or expired.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -47,6 +51,8 @@ pub struct Request {
     fields: Vec<Field>,
     made: Instant,
     used: bool,
+    /// The item the link saved, once it has.
+    saved: Option<String>,
 }
 
 /// A field the phone shows: a non-secret one the owner gave comes filled
@@ -98,6 +104,7 @@ pub fn open(
         fields,
         made: Instant::now(),
         used: false,
+        saved: None,
     };
     vault
         .links
@@ -106,6 +113,11 @@ pub fn open(
         .insert(hash(&code), request);
     audit.insert("link".into(), json!(id));
     audit.insert("kind".into(), json!(args["kind"]));
+    audit.insert("title".into(), json!(item.raw.name));
+    audit.insert("sites".into(), json!(item.sites));
+    if let Some(username) = args["values"]["username"].as_str() {
+        audit.insert("username".into(), json!(username));
+    }
     Ok(json!({
         "link": id,
         "host": here.key,
@@ -121,6 +133,18 @@ pub fn open(
 /// with `--ask` (an identity's ssn, say), typed on the phone.
 fn fields(kind: &str, given: &Value, ask: &Value) -> Result<Vec<Field>, Failure> {
     let labels = kind_code(kind).map(entry_labels).unwrap_or_default();
+    // A secret is typed on the phone only, never given with the request.
+    let given_secret = given
+        .as_object()
+        .into_iter()
+        .flatten()
+        .find(|(label, _)| labels.iter().any(|(l, secret)| l == label && *secret));
+    if let Some((label, _)) = given_secret {
+        return Err(Failure::new(
+            code::secret_in_argv,
+            format!("{label} is secret: it is typed on the phone, never sent with the link"),
+        ));
+    }
     let mut fields: Vec<Field> = given
         .as_object()
         .into_iter()
@@ -280,7 +304,35 @@ pub fn submit(
     });
     let saved = add(vault, &item, audit)?;
     request.used = true;
+    request.saved = saved["item"]["item"].as_str().map(str::to_string);
     Ok(saved)
+}
+
+/// `link_state`: how the link `args["link"]` names is doing, by its id, never
+/// its code. Saved, it names the new item; never a value.
+pub fn state(
+    vault: &Vault,
+    args: &Value,
+    audit: &mut Map<String, Value>,
+) -> Result<Value, Failure> {
+    let id = args["link"].as_str().unwrap_or_default();
+    audit.insert("link".into(), json!(id));
+    let links = vault.links.lock().expect("links lock");
+    let request = links.values().find(|r| r.id == id).ok_or_else(|| {
+        refused(
+            code::no_such_link,
+            "this host holds no such link; a restart drops open links, so ask for a new one",
+        )
+    })?;
+    Ok(match (&request.saved, request.made.elapsed() >= OPEN_FOR) {
+        (Some(item), _) => json!({"link": id, "state": "saved", "item": item}),
+        (None, true) => json!({"link": id, "state": "expired"}),
+        (None, false) => json!({
+            "link": id,
+            "state": "pending",
+            "expires_in": OPEN_FOR.saturating_sub(request.made.elapsed()).as_secs(),
+        }),
+    })
 }
 
 #[cfg(test)]
@@ -462,6 +514,63 @@ mod tests {
         assert!(submitted(&vault, note, json!({"notes": "made-up text"})).is_ok());
     }
 
+    fn link_state(vault: &Vault, link: &Value) -> Value {
+        state(vault, &json!({"link": link}), &mut Map::new()).unwrap()
+    }
+
+    #[test]
+    fn a_links_state_goes_from_pending_to_saved_naming_only_the_new_item() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = Vault::new(dir.path().into());
+        let args = json!({
+            "kind": "login", "title": "Shop", "sites": ["shop.example"],
+            "values": {"username": "ada@shop.example"},
+        });
+        let mut audit = Map::new();
+        let opened = open(&vault, &here(), &args, &mut audit).unwrap();
+        // The audit keeps what the rules can name: the site, title and username.
+        assert_eq!(audit["title"], "Shop");
+        assert_eq!(audit["sites"], json!(["shop.example"]));
+        assert_eq!(audit["username"], "ada@shop.example");
+        let id = &opened["link"];
+        let pending = link_state(&vault, id);
+        assert_eq!(pending["state"], "pending");
+        assert!(pending["expires_in"].as_u64().unwrap() <= OPEN_FOR.as_secs());
+
+        let code = opened["code"].as_str().unwrap();
+        submitted(&vault, code, json!({"password": "made-up-pass-5d0e"})).unwrap();
+        let saved = link_state(&vault, id);
+        assert_eq!(saved, json!({"link": id, "state": "saved", "item": "v1"}));
+        // Used once, it stays saved, whatever else is tried with it.
+        assert_eq!(
+            submitted(&vault, code, json!({"password": "x"}))
+                .unwrap_err()
+                .code,
+            "link_used"
+        );
+        assert_eq!(link_state(&vault, id), saved);
+
+        let unknown = state(&vault, &json!({"link": "l00000000"}), &mut Map::new());
+        assert_eq!(unknown.unwrap_err().code, "no_such_link");
+    }
+
+    #[test]
+    fn a_link_never_takes_a_secret_from_whoever_opens_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = Vault::new(dir.path().into());
+        let args = json!({
+            "kind": "login", "title": "Shop", "sites": ["shop.example"],
+            "values": {"password": "made-up-pass-90ab"},
+        });
+        let refused = open(&vault, &here(), &args, &mut Map::new()).unwrap_err();
+        assert_eq!(
+            (refused.exit, refused.code.as_str()),
+            (Exit::Usage, "secret_in_argv")
+        );
+        assert!(!refused.message.contains("made-up-pass-90ab"));
+        assert!(vault.links.lock().unwrap().is_empty());
+    }
+
     #[test]
     fn an_old_link_is_expired() {
         let dir = tempfile::tempdir().unwrap();
@@ -473,6 +582,19 @@ mod tests {
         let refused = submitted(&vault, &code, json!({"password": "made-up"})).unwrap_err();
         assert_eq!(refused.code, "link_expired");
         assert!(vault.list_if_present().is_empty());
+        let id = vault
+            .links
+            .lock()
+            .unwrap()
+            .values()
+            .next()
+            .unwrap()
+            .id
+            .clone();
+        assert_eq!(
+            link_state(&vault, &json!(id)),
+            json!({"link": id, "state": "expired"})
+        );
     }
 
     #[test]

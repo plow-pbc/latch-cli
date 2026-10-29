@@ -126,6 +126,12 @@ latch vault link --host my-mac --kind login --title Shop --site shop.example \
   login's username and password, a card's number and code and a note's
   text are always asked for; `--ask LABEL` asks for any other field the
   kind has (`--kind identity --ask ssn --ask "passport number"`).
+- **An agent may ask for a login:** `latch vault link --kind login` from an
+  agent is judged by the host's gatekeeper like its other work, on the
+  site, title and username it names, and recorded in the audit; it sends
+  the link to the owner. Any other kind, and any secret `--field`, is
+  refused. `latch vault link-state LINK` then says whether the link is
+  `pending`, `saved` (with the new item's id) or `expired`; never a value.
 - **Audit:** `vault_link` records (`page`, `submit`) name the link and the
   item, never a value.
 - **Hosting the page:** `just phone-serve` serves it on this machine, for a

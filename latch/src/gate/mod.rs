@@ -91,6 +91,9 @@ const VAULT_FILL_ASKED: &str = concat!(
 /// what is saved where (`vault::host`), so that it is not read as
 /// reading secrets.
 const VAULT_LIST: &str = "A vault list (the vault.list operation) shows the agent the ids, titles and saved sites of the items in the owner's vault, never a value: no username, password, code or card number. Listing them is covered whenever the owner lets agents browse the web or sign in to sites, in their rules or their own messages, or asked for a task that needs one of their saved logins. It does not let the agent use an item: each fill is judged on its own.";
+/// Added to the rules of judgment for an agent's phone link, so that it is
+/// read for what it does: the agent never gets the login's secrets.
+const VAULT_LINK: &str = "A vault link (the vault.link operation) makes a one-time link the agent sends the owner, asking them to type a login for the named site into the vault on this host themselves, on their phone. The agent never sees the password or anything typed; it learns only whether the login was saved, and its id. Saving a login does not let the agent use it: each fill is judged on its own.";
 /// Added to the rules of judgment when the owner is the caller.
 const OWNER_CALLS: &str = "The caller is the owner, at one of their own machines: the proposed action is the owner's own request. Judge only whether the owner's rules on this host forbid it; if a rule plausibly applies, choose FORBIDDEN.";
 /// Added to the rules of judgment only when the judge sees host rules: a
@@ -821,6 +824,9 @@ fn state(
     }
     if shown["operation"] == "vault.list" {
         rules_of_judgment.push(prompt.vault_list);
+    }
+    if shown["operation"] == "vault.link" {
+        rules_of_judgment.push(VAULT_LINK);
     }
     let state = State {
         rules_of_judgment,
