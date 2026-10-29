@@ -187,6 +187,7 @@ latch browser --host my-mac downloads                    # d1, d2, …
 latch browser --host my-mac download get d1 --output report.csv
 latch browser --host my-mac fill --item v1 --suggested s3f2a1c09bd   # a mapping observe suggested
 latch browser --host my-mac fill --item v1 --field username=e4 --field password=e5 --press e6
+latch browser --host my-mac fill --field username=e4 --field password=e5 --press e6   # the login saved for this page's site
 latch browser --host my-mac fill --item v1 --field otp=e7 --press e8   # the current authenticator code
 latch browser --host my-mac fill --item v2 --field number=e4 --field expiry=e5 --field cvv=e6 --press e7   # stops for a confirmation
 latch browser --host my-mac handoff --reason captcha      # the owner takes over; waits until handed back

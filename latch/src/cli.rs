@@ -493,8 +493,10 @@ pub enum BrowserCommand {
     Fill {
         #[arg(long)]
         snapshot: Option<String>,
+        /// The vault item, by its exact title or its id (vN); left out, the
+        /// login saved for the site of the page
         #[arg(long)]
-        item: String,
+        item: Option<String>,
         /// FIELD=eN, or FIELD=eN,eN,… to split it across boxes
         #[arg(
             long = "field",

@@ -113,14 +113,14 @@ pub(super) fn manage(
 }
 
 /// Only the owner's own devices may use the vault's commands; an agent's
-/// key, whoever's agent, gets exit 4.
+/// key, whoever's agent, gets exit 4, and how to sign in without them.
 pub(super) fn owner_only(kind: &str) -> Result<(), Failure> {
     if kind == "device" {
         return Ok(());
     }
     Err(Failure::new(
         code::owner_only,
-        "the vault takes commands from the owner's own devices only".into(),
+        "the vault takes commands from the owner's own devices only. To sign in with a login the owner saved, run `latch browser fill` on the site's sign-in page without --item: latch uses the login saved for that site, or lists the ones saved there to choose from; --item also takes an item's exact title".into(),
     ))
 }
 
@@ -516,6 +516,13 @@ mod tests {
             assert_eq!(
                 (refused.exit, refused.code.as_str()),
                 (Exit::Denied, "owner_only")
+            );
+            // How an agent signs in without the vault's commands.
+            assert!(
+                refused
+                    .message
+                    .contains("`latch browser fill` on the site's sign-in page without --item"),
+                "{refused:?}"
             );
         }
     }

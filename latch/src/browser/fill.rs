@@ -79,6 +79,105 @@ fn item_of(browsers: &Browsers, args: &Value) -> Result<Item, Failure> {
     })
 }
 
+/// `args` with its `--item` as the item's id: an item's id, else the title
+/// of exactly one item, whole and in any case; with no `--item`, the one
+/// login saved for the site of the session's page. Anything else is
+/// refused before the fill is judged, so the judge is shown the item as
+/// the vault holds it.
+pub async fn named(browsers: &Browsers, entry: &Entry, args: &Value) -> Result<Value, Failure> {
+    let id = match args["item"].as_str() {
+        Some(given) => titled(browsers, given)?,
+        None => saved_here(browsers, entry).await?,
+    };
+    let mut named = args.clone();
+    named["item"] = json!(id);
+    Ok(named)
+}
+
+/// The item `given` names: its id, or the title of exactly one item.
+fn titled(browsers: &Browsers, given: &str) -> Result<String, Failure> {
+    browsers.vault.with(|store| {
+        if store.item(given).is_some() {
+            return Ok(given.to_string());
+        }
+        let title = given.to_lowercase();
+        let titled: Vec<String> = store
+            .list()
+            .into_iter()
+            .filter(|meta| meta.title.to_lowercase() == title)
+            .map(|meta| meta.item)
+            .collect();
+        match titled.as_slice() {
+            [id] => Ok(id.clone()),
+            [] => Err(Failure::new(
+                code::no_such_item,
+                format!(
+                    "there is no vault item {given}: give its exact title or its id (vN), or leave out --item on the site's page to use the login saved for that site"
+                ),
+            )),
+            several => Err(Failure::new(
+                code::which_item,
+                format!(
+                    "{} vault items are titled {given}: name one by its id ({})",
+                    several.len(),
+                    several.join(", ")
+                ),
+            )),
+        }
+    })
+}
+
+/// The one login saved for the site of the session's page, by the login
+/// site rule. With several, the refusal lists them, id and title, for the
+/// agent to name one; no other item is named.
+async fn saved_here(browsers: &Browsers, entry: &Entry) -> Result<String, Failure> {
+    let page = super::judged::page(browsers, entry).await?;
+    let origin = url::Url::parse(&page.url)
+        .ok()
+        .map(|url| url.origin().ascii_serialization());
+    let saved: Vec<Meta> = browsers
+        .vault
+        .list_if_present()
+        .into_iter()
+        .filter(|meta| {
+            meta.kind == "login"
+                && origin
+                    .as_deref()
+                    .is_some_and(|origin| sites::allows(meta, origin, origin).is_ok())
+        })
+        .collect();
+    let site = sites::site_of(&page.url).unwrap_or(page.url);
+    match saved.as_slice() {
+        [meta] => Ok(meta.item.clone()),
+        [] => Err(Failure::new(
+            code::no_such_item,
+            format!(
+                "no login in the vault is saved for {site}: open the site's sign-in page first, or name the item with --item, by its exact title or its id (vN)"
+            ),
+        )),
+        several => {
+            let listed: Vec<Value> = several
+                .iter()
+                .map(|meta| json!({"item": meta.item, "title": meta.title}))
+                .collect();
+            let names: Vec<String> = several
+                .iter()
+                .map(|meta| format!("{} ({})", meta.item, meta.title))
+                .collect();
+            let mut failure = Failure::new(
+                code::which_item,
+                format!(
+                    "{} logins are saved for {site}: name one with --item: {}",
+                    several.len(),
+                    names.join(", ")
+                ),
+            );
+            failure.details = json!({"items": listed});
+            Err(failure)
+        }
+    }
+}
+
 /// What a fill could use on a page, for `observe`, a `needs_fields` and a
 /// plan's pass: the vault items that fit it (by their kind's site rule for
 /// a frame holding a field, under the top-level page), each with the fields
@@ -1035,7 +1134,63 @@ fn split(value: &str, boxes: &[Value]) -> Option<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::failure::Exit;
     use crate::vault::item::{Custom, LOGIN, Raw};
+
+    /// `--item` finds an item by its id, else by the title of exactly one
+    /// item, whole and in any case; anything else is refused, naming the
+    /// ids only of the items titled as given.
+    #[test]
+    fn an_item_is_named_by_its_id_or_one_title_in_any_case() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().to_path_buf();
+        let browsers = Browsers::new(state.clone(), crate::vault::host::Vault::new(state), true);
+        let add = |title: &str| {
+            browsers
+                .vault
+                .with(|store| {
+                    store.add(Item {
+                        id: String::new(),
+                        revision: 0,
+                        sites: vec!["parentsquare.com".into()],
+                        other_top_sites: vec![],
+                        raw: Raw::from_labels(
+                            LOGIN,
+                            title,
+                            &[("password".into(), "made-up-pass-5e1a".into())],
+                        )
+                        .unwrap(),
+                    })
+                })
+                .unwrap()
+                .item
+        };
+        let school = add("Parentsquare");
+        assert_eq!(titled(&browsers, &school).unwrap(), school);
+        assert_eq!(titled(&browsers, "ParentSquare").unwrap(), school);
+        assert_eq!(titled(&browsers, "PARENTSQUARE").unwrap(), school);
+
+        let missing = titled(&browsers, "Parent Square").unwrap_err();
+        assert_eq!(
+            (missing.exit, missing.code.as_str()),
+            (Exit::Usage, "no_such_item")
+        );
+        assert!(missing.message.contains("leave out --item"), "{missing:?}");
+
+        let other = add("parentsquare");
+        let several = titled(&browsers, "ParentSquare").unwrap_err();
+        assert_eq!(several.code, "which_item");
+        assert!(
+            several.message.contains(&school) && several.message.contains(&other),
+            "{several:?}"
+        );
+        // Its id still names either one; part of a title names none.
+        assert_eq!(titled(&browsers, &other).unwrap(), other);
+        assert_eq!(
+            titled(&browsers, "Parent").unwrap_err().code,
+            "no_such_item"
+        );
+    }
 
     /// The resume's events go through the same filter as the presses' and
     /// the cleanup's: a page's dialog, another site's refusal and any

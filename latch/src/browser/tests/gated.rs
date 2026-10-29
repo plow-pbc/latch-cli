@@ -35,6 +35,7 @@ conformance!(
     clicks_and_reads_in_an_allowed_session_ask_the_judge_nothing,
     an_owner_stop_refuses_the_next_plan,
     a_fill_inside_a_plan_is_judged_as_a_fill,
+    a_fill_finds_its_item_by_title_or_the_pages_site,
     a_one_step_do_plan_is_judged_and_act_is_not,
     a_host_out_of_plow_credits_says_its_account_owner_must_add_them,
     goto_on_a_new_site_is_judged_as_a_tab_there_is,
@@ -950,6 +951,123 @@ async fn a_fill_inside_a_plan_is_judged_as_a_fill(engine: &str) {
         !fetched(&hits).contains(&"/welcome".to_string()),
         "the form was sent"
     );
+    host.browsers.close_all().await;
+}
+
+/// A fill names its item by title, in any case, or leaves it to the login
+/// saved for the page's site; either way the judge is shown the item as
+/// the vault holds it. A name that finds no item, or a site with several
+/// logins, is refused before the judge is asked, the latter listing only
+/// that site's logins.
+async fn a_fill_finds_its_item_by_title_or_the_pages_site(engine: &str) {
+    let (_dir, state, _area) = test_state(engine);
+    let (site, _hits) = serve_site();
+    let chat = vec![message("m1", true, "sign in to my test site", 10)];
+    let judge = Judge::new(|state| match state["proposed_action"]["kind"].as_str() {
+        Some("vault_fill") => NOT_COVERED,
+        _ => COVERED,
+    });
+    let host = Host::start(&state, &site, &judge, chat.clone());
+    let (page, _) = host
+        .agent(
+            "open",
+            named(engine),
+            json!({"url": format!("{site}/login.html")}),
+            None,
+        )
+        .await;
+    let id = page.unwrap()["session"].as_str().unwrap().to_string();
+    let add = |kind, title: &str, sites: &[&str], values: &[(&str, &str)]| {
+        host.browsers
+            .vault
+            .with(|store| {
+                store.add(Item {
+                    id: String::new(),
+                    revision: 0,
+                    sites: sites.iter().map(|s| s.to_string()).collect(),
+                    other_top_sites: vec![],
+                    raw: Raw::from_labels(
+                        kind,
+                        title,
+                        &values
+                            .iter()
+                            .map(|(l, v)| (l.to_string(), v.to_string()))
+                            .collect::<Vec<_>>(),
+                    )
+                    .unwrap(),
+                })
+            })
+            .unwrap()
+            .item
+    };
+    let login = [("username", "morgan@example.com"), ("password", PASSWORD)];
+    let saved = add(LOGIN, "Test site", &["shop.example"], &login);
+    // Neither is saved for this site as a login: neither is ever offered.
+    add(LOGIN, "Elsewhere", &["elsewhere.example"], &login);
+    add(
+        CARD,
+        "Test Visa",
+        &[],
+        &[
+            ("number", NUMBER),
+            ("expiry month", "4"),
+            ("expiry year", "2031"),
+            ("code", "319"),
+        ],
+    );
+    let form = host.agent("observe", &id, json!({}), None).await.0.unwrap();
+    let fill = |item: Option<&str>| {
+        let mut args = json!({"snapshot": form["snapshot"], "fields": [
+            ["username", [find(&form, "textbox", "Email")]],
+            ["password", [find(&form, "textbox", "Password")]],
+        ]});
+        if let Some(item) = item {
+            args["item"] = json!(item);
+        }
+        args
+    };
+    let shown = json!({"kind": "vault_fill", "site": "shop.example",
+                       "item": {"kind": "login", "title": "Test site", "sites": ["shop.example"]},
+                       "fields": ["username", "password"]});
+    for item in [Some("TEST SITE"), None] {
+        let filled = host.agent("fill", &id, fill(item), None).await;
+        refused(&filled, "not_covered", &chat);
+        assert_eq!(filled.1["item"], json!(saved), "{item:?}");
+        assert_eq!(judge.last_action(), shown, "{item:?}");
+    }
+
+    let asked = judge.judged();
+    let (missing, audit) = host.agent("fill", &id, fill(Some("Test")), None).await;
+    let missing = missing.unwrap_err();
+    assert_eq!(
+        (missing.exit, missing.code.as_str()),
+        (Exit::Usage, "no_such_item"),
+        "{missing:?}"
+    );
+    assert!(!audit.contains_key("gate"), "{audit:?}");
+    let work = add(LOGIN, "Test site (work)", &["shop.example"], &login);
+    let (several, _) = host.agent("fill", &id, fill(None), None).await;
+    let several = several.unwrap_err();
+    assert_eq!(
+        (several.exit, several.code.as_str()),
+        (Exit::Usage, "which_item"),
+        "{several:?}"
+    );
+    assert_eq!(
+        several.details["items"],
+        json!([{"item": saved, "title": "Test site"},
+               {"item": work, "title": "Test site (work)"}])
+    );
+    assert!(!several.message.contains("Elsewhere"), "{several:?}");
+    assert_eq!(judge.judged(), asked, "the judge was asked");
+    let values = host
+        .look(
+            "eval",
+            &id,
+            json!({"script": "[...document.querySelectorAll('input')].map(i => i.value)"}),
+        )
+        .await;
+    assert_eq!(values["value"], json!(["", ""]));
     host.browsers.close_all().await;
 }
 

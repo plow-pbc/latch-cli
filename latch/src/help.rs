@@ -804,14 +804,12 @@ const ENTRIES: &[Entry] = &[
         connector: None,
         examples: &[
             ex(
-                "Sign in with a vault login",
+                "Sign in with the login saved for the page's site",
                 &[
                     "browser",
                     "--host",
                     "mac",
                     "fill",
-                    "--item",
-                    "v1",
                     "--field",
                     "username=e4",
                     "--field",

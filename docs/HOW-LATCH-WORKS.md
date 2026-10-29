@@ -115,7 +115,10 @@ or downloads. A session's logins last
 until it closes, with `browser close` or after 30 idle minutes, and then
 its profile is deleted. So a session starts signed in nowhere: sign in by
 filling from the vault or, on a Mac host with a screen, by handing the
-session to the owner (`browser handoff`). On Linux x86_64, which has no
+session to the owner (`browser handoff`). A fill with no `--item` uses the
+login saved for the page's site; with several saved there it is refused
+`which_item`, listing them, and `--item` names one by its exact title or
+its id. On Linux x86_64, which has no
 Chrome build, the installer sets up no browser: the host's owner installs
 Camoufox on the host (`latch browser setup --engine camoufox`), which
 sessions then open on by default.

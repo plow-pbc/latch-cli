@@ -524,9 +524,10 @@ pub async fn run(
     Done::send_bytes(send, result, &bytes, audit).await
 }
 
-/// A `fill`: a suggestion taken by its id becomes the mapping it stands
-/// for; one that releases a card or identity secret stops for the agent's
-/// confirmation before any value is released.
+/// A `fill`: its item, named by id or title or left to the page's site,
+/// becomes the item's id; a suggestion taken by its id becomes the mapping
+/// it stands for; one that releases a card or identity secret stops for
+/// the agent's confirmation before any value is released.
 pub(super) async fn fill(
     browsers: &Browsers,
     entry: &Entry,
@@ -536,7 +537,9 @@ pub(super) async fn fill(
     audit: &mut Map<String, Value>,
 ) -> Result<Value, Failure> {
     audit.insert("item".into(), args["item"].clone());
-    let args = super::fill::resolve(browsers, entry, args).await?;
+    let args = super::fill::named(browsers, entry, args).await?;
+    audit.insert("item".into(), args["item"].clone());
+    let args = super::fill::resolve(browsers, entry, &args).await?;
     if caller.gate.is_some() {
         let site = judged::site(browsers, entry).await?;
         judged::judge(

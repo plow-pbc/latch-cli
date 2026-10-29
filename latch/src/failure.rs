@@ -482,6 +482,7 @@ codes! {
     watch_failed: Failed,
     which_chat: Usage,
     which_handoff: Usage,
+    which_item: Usage,
     workdir_outside_areas: Denied,
     worker_failed: Failed,
     write_path_failed: Failed,
