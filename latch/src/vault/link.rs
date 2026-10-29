@@ -310,17 +310,6 @@ pub fn submit(
         Value::Null => request.sites.clone(),
         sites => edited_sites(sites)?,
     };
-    // The audit names what the owner changed, never a value.
-    let edited: Vec<&str> = [
-        ("title", title != request.title),
-        ("sites", sites != request.sites),
-    ]
-    .into_iter()
-    .filter_map(|(name, changed)| changed.then_some(name))
-    .collect();
-    if !edited.is_empty() {
-        audit.insert("edited".into(), json!(edited));
-    }
     let item = json!({
         "kind": request.kind,
         "title": title,
@@ -329,6 +318,30 @@ pub fn submit(
     });
     // The vault's own check refuses a site latch never fills on.
     let saved = add(vault, &item, audit)?;
+    // The audit names every field the save changed from the request (as
+    // the vault keeps it, so `https://www.shop.example/login` for
+    // `shop.example` is no change), never a value.
+    let mut edited = Vec::new();
+    if saved["item"]["title"] != json!(request.title) {
+        edited.push("title".to_string());
+    }
+    if saved["item"]["sites"] != json!(request.sites) {
+        edited.push("sites".to_string());
+    }
+    for field in request.fields.iter().filter(|f| !f.secret) {
+        let given = field.value.as_deref().unwrap_or_default();
+        if values
+            .get(&field.label)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            != given
+        {
+            edited.push(field.label.clone());
+        }
+    }
+    if !edited.is_empty() {
+        audit.insert("edited".into(), json!(edited));
+    }
     request.saved = saved["item"]["item"].as_str().map(str::to_string);
     Ok(saved)
 }
@@ -633,7 +646,7 @@ mod tests {
         assert_eq!(saved["item"]["title"], "Amazon (US)");
         assert_eq!(saved["item"]["sites"], json!(["amazon.com"]));
         assert_eq!(saved["item"]["username"], "ada@example.com");
-        assert_eq!(audit["edited"], json!(["title", "sites"]));
+        assert_eq!(audit["edited"], json!(["title", "sites", "username"]));
         assert!(
             !serde_json::to_string(&audit)
                 .unwrap()
@@ -685,8 +698,11 @@ mod tests {
         assert!(vault.list_if_present().is_empty());
         let edit =
             json!({"code": code, "sites": ["https://shop.example/login"], "values": password});
-        let saved = submit(&vault, &edit, &mut Map::new()).unwrap();
+        let mut audit = Map::new();
+        let saved = submit(&vault, &edit, &mut audit).unwrap();
         assert_eq!(saved["item"]["sites"], json!(["shop.example"]));
+        // The same site, written another way, is no edit.
+        assert!(!audit.contains_key("edited"), "{audit:?}");
     }
 
     #[test]

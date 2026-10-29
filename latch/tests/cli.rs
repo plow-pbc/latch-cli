@@ -3867,6 +3867,13 @@ fn an_agent_asks_for_a_login_by_phone_link_and_learns_only_its_state() {
         "{:?}",
         links[0]
     );
+    // The save names what the owner changed: the title, not the site,
+    // which is the same site written another way.
+    let submit = records
+        .iter()
+        .find(|r| r["args"]["command"] == "submit" && r["outcome"] == "ok")
+        .unwrap();
+    assert_eq!(submit["args"]["edited"], json!(["title"]), "{submit}");
     let audit = serde_json::to_string(&records).unwrap();
     drop(serve);
     let mut host_log = String::new();

@@ -125,7 +125,15 @@ latch vault link --host my-mac --kind login --title Shop --site shop.example \
   typed on the phone; the owner's non-secret `--field`s come filled in. The
   website, title and username come filled in too, and the owner can change
   them before saving; the vault's own rules apply to what is saved, and a
-  site named with a scheme other than `https://` is refused. A
+  site named with a scheme other than `https://` is refused. The audit's
+  `submit` record names every field the save changed from the request
+  (`edited`), never a value.
+- **Whoever holds the code can save any login under any site.** The code
+  is the only thing the host checks, and the agent that asked for the
+  link holds it too. So the agent, or anyone it passes the link to, can
+  use the link first and save a login of its own choosing, for any site,
+  in place of the owner's. The `edited` field in the audit shows what
+  differed from the request; nothing else stops it. A
   login's username and password, a card's number and code and a note's
   text are always asked for; `--ask LABEL` asks for any other field the
   kind has (`--kind identity --ask ssn --ask "passport number"`).
