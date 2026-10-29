@@ -4127,7 +4127,7 @@ fn the_owners_rules_commands_reach_a_host_and_an_agents_never_do() {
 }
 
 /// `~/.latch` holding what an older install left (other apps' files beside
-/// the installer's plugins) is moved aside on the first command, which says
+/// the installer's plugins) is moved into its `leftovers/` on the first command, which says
 /// so and goes on; a folder named with --state-dir elsewhere is refused with
 /// the command that moves its leftovers.
 #[test]
@@ -4149,9 +4149,7 @@ fn leftovers_in_the_home_state_folder_are_moved_aside_and_elsewhere_refused() {
         serde_json::from_slice::<Value>(&moved.stdout).unwrap(),
         json!({"removed": []})
     );
-    let aside = dir
-        .path()
-        .join(format!(".latch-before-{}", jiff::Zoned::now().date()));
+    let aside = state.join(format!("leftovers/{}", jiff::Zoned::now().date()));
     let said = String::from_utf8_lossy(&moved.stderr);
     assert_eq!(
         said.trim_end(),
@@ -4176,9 +4174,10 @@ fn leftovers_in_the_home_state_folder_are_moved_aside_and_elsewhere_refused() {
         "{error}"
     );
     let next = error["error"]["next"].as_str().unwrap();
-    assert!(next.starts_with("mkdir -m 700 "), "{next}");
+    assert!(next.starts_with("mkdir -p -m 700 "), "{next}");
     assert!(other.join("dev.json").exists(), "nothing moved");
 }
+
 #[test]
 fn a_state_folder_from_a_newer_latch_is_refused_before_anything_is_read() {
     let dir = test_dir();

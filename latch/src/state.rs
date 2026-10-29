@@ -29,6 +29,8 @@
 //! - `plugins/`, on a host: the pinned engines, the Google CLI and the
 //!   Messages reader, a folder per version; a starting host removes the
 //!   versions it does not run.
+//! - `leftovers/`: what an older install left in an unmarked `~/.latch`,
+//!   moved there, a folder per run (see `check_format`).
 //! - `latch.json`: the folder's format (see `FORMAT`), which every command
 //!   checks before it reads or writes anything else.
 
@@ -128,9 +130,10 @@ impl StateDir {
     /// Refuses unmarked peer state and folders of another format.
     /// Missing, empty or plugin-only folders are initialized only by `create`;
     /// an empty lock file a command left there holds no state either, nor
-    /// does the Finder's `.DS_Store`. In the default folder, anything else
-    /// without a marker is what an older install left: it is moved aside
-    /// (`move_aside`), never read or deleted, and the command goes on.
+    /// does the Finder's `.DS_Store`, nor `leftovers/`. In the default
+    /// folder, anything else without a marker is what an older install left:
+    /// it is moved into `leftovers/` (`move_aside`), never read or deleted,
+    /// and the command goes on.
     pub fn check_format(&self) -> Result<(), Failure> {
         let default = StateDir::new(crate::cli::BUILD_STATE_DIR.map(PathBuf::from))
             .is_ok_and(|default| default.path == self.path);
@@ -156,7 +159,7 @@ impl StateDir {
                     .iter()
                     .map(|name| shell_word(&self.path.join(name)))
                     .collect();
-                let command = format!("mkdir -m 700 {aside} && mv {} {aside}/", moved.join(" "));
+                let command = format!("mkdir -p -m 700 {aside} && mv {} {aside}/", moved.join(" "));
                 let mut failure = Failure::new(
                     code::state_format,
                     format!(
@@ -193,13 +196,17 @@ impl StateDir {
     }
 
     /// What an unmarked folder holds that latch neither made nor ignores:
-    /// not the plugins folder, an empty lock file or a `.DS_Store`.
+    /// not the plugins or leftovers folder, an empty lock file or a
+    /// `.DS_Store`.
     fn leftovers(&self) -> std::io::Result<Vec<String>> {
         let mut found = Vec::new();
         for entry in fs::read_dir(&self.path)? {
             let entry = entry?;
             let path = entry.path();
-            let ours = (entry.file_name() == "plugins" && path.is_dir())
+            let ours = (["plugins", "leftovers"]
+                .map(std::ffi::OsStr::new)
+                .contains(&&*entry.file_name())
+                && path.is_dir())
                 || entry.file_name() == ".DS_Store"
                 || (path.extension().is_some_and(|ext| ext == "lock")
                     && fs::symlink_metadata(&path)
@@ -212,25 +219,27 @@ impl StateDir {
         Ok(found)
     }
 
-    /// A sibling no one has used yet: `~/.latch-before-DATE`, then `-2`
-    /// and on.
+    /// A folder in `leftovers/` no one has used yet: `leftovers/DATE`, then
+    /// `DATE-2` and on. Inside the state folder, so what it keeps is as
+    /// hidden from workers as the rest of it.
     fn aside(&self) -> PathBuf {
-        let name = self.path.file_name().unwrap_or_default().to_string_lossy();
-        let first = format!("{name}-before-{}", jiff::Zoned::now().date());
+        let first = jiff::Zoned::now().date().to_string();
         std::iter::once(first.clone())
             .chain((2..).map(|n| format!("{first}-{n}")))
-            .map(|name| self.path.with_file_name(name))
+            .map(|name| self.path.join("leftovers").join(name))
             .find(|path| fs::symlink_metadata(path).is_err())
             .expect("a name not taken")
     }
 
-    /// Moves `found` into a new folder beside this one (owner-only), and says
+    /// Moves `found` into a new folder in `leftovers/` (owner-only), and says
     /// so on stderr.
     fn move_aside(&self, found: &[String]) -> Result<(), Failure> {
         let aside = self.aside();
         fs::DirBuilder::new()
             .mode(0o700)
-            .create(&aside)
+            .recursive(true)
+            .create(self.path.join("leftovers"))
+            .and_then(|()| fs::DirBuilder::new().mode(0o700).create(&aside))
             .map_err(|err| self.io_failure(&aside, err))?;
         for name in found {
             fs::rename(self.path.join(name), aside.join(name))
@@ -594,8 +603,8 @@ mod tests {
     }
 
     /// What an older install left in the default folder (another app's
-    /// files beside the installer's plugins) is moved aside, whole, and the
-    /// folder is then a fresh one; anywhere else it is refused, with the
+    /// files beside the installer's plugins) is moved into its `leftovers/`,
+    /// whole, and the folder is then a fresh one; anywhere else it is refused, with the
     /// command that moves it. The Finder's `.DS_Store` is never in the way.
     #[test]
     fn leftovers_in_the_default_folder_are_moved_aside_and_elsewhere_refused() {
@@ -626,15 +635,20 @@ mod tests {
         assert!(ran.success(), "{command}");
         state.check_format_moving(false).unwrap();
         fs::remove_dir_all(&state.path).unwrap();
-        for entry in fs::read_dir(dir.path()).unwrap() {
-            fs::remove_dir_all(entry.unwrap().path()).unwrap();
-        }
 
         leave(&state);
         state.check_format_moving(true).unwrap();
-        let aside = dir
-            .path()
-            .join(format!(".latch-before-{}", jiff::Zoned::now().date()));
+        let aside = state
+            .path
+            .join(format!("leftovers/{}", jiff::Zoned::now().date()));
+        // Where workers can't read them, as with the rest of the folder.
+        assert!(
+            crate::sandbox::never_readable(dir.path())
+                .iter()
+                .any(|hidden| aside.starts_with(hidden)),
+            "{}",
+            aside.display()
+        );
         let mut moved: Vec<_> = fs::read_dir(&aside)
             .unwrap()
             .map(|entry| entry.unwrap().file_name().into_string().unwrap())
