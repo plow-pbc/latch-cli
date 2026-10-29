@@ -434,6 +434,15 @@ pub async fn run(
     let item = item_of(browsers, args)?;
     audit.insert("item".into(), json!(item.id));
     let meta = item.meta();
+    if meta.kind == "card"
+        && let Ok(number) = release(&item, "number")
+    {
+        let digits: String = number.chars().filter(char::is_ascii_digit).collect();
+        let mut cards = entry.cards.lock().expect("cards lock");
+        if !digits.is_empty() && !cards.contains(&digits) {
+            cards.push(digits);
+        }
+    }
     audit.insert("kind".into(), json!(meta.kind));
     audit.insert("revision".into(), json!(meta.revision));
     audit.insert(

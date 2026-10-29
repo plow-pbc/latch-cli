@@ -6,6 +6,9 @@
 //! the ref of one left out works as soon as `observe --all` (or a scroll
 //! and an `observe`) shows it; the audit, the gatekeeper and reservations
 //! read full addresses from the page, never from this.
+//!
+//! A card number a session filled is shown in its answers by its last four
+//! digits only (`mask_cards`), wherever the page put it.
 
 use serde_json::{Map, Value, json};
 
@@ -117,9 +120,78 @@ fn short(url: &str) -> String {
     shown
 }
 
+/// Every string in `value` with each card number in `cards` (digits only)
+/// shown by its last four digits.
+pub fn mask_cards(value: &mut Value, cards: &[String]) {
+    match value {
+        Value::String(text) => *text = masked(text, cards),
+        Value::Array(values) => values.iter_mut().for_each(|v| mask_cards(v, cards)),
+        Value::Object(values) => values.values_mut().for_each(|v| mask_cards(v, cards)),
+        _ => {}
+    }
+}
+
+/// `text` with each run of digits that holds a card number in `cards`
+/// (spaces, dots or dashes between its digits, as a page spaces it) put as
+/// `•••• 4242`.
+pub fn masked(text: &str, cards: &[String]) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::new();
+    let mut at = 0;
+    while at < chars.len() {
+        if !chars[at].is_ascii_digit() {
+            out.push(chars[at]);
+            at += 1;
+            continue;
+        }
+        let (mut end, mut digits) = (at, String::new());
+        let mut next = at;
+        while next < chars.len() {
+            if chars[next].is_ascii_digit() {
+                digits.push(chars[next]);
+                end = next + 1;
+            } else if !matches!(chars[next], ' ' | '.' | '-')
+                || !chars.get(next + 1).is_some_and(char::is_ascii_digit)
+            {
+                break;
+            }
+            next += 1;
+        }
+        match cards.iter().find(|card| digits.contains(card.as_str())) {
+            Some(card) => {
+                out.push_str("•••• ");
+                out.push_str(&card[card.len().saturating_sub(4)..]);
+            }
+            None => out.extend(&chars[at..end]),
+        }
+        at = end;
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_card_number_shows_as_its_last_four_however_the_page_spaces_it() {
+        let cards = ["4242424242424242".to_string()];
+        let mut answer = json!({
+            "lines": ["Paid with 4242 4242 4242 4242.", "Card 4242-4242-4242-4242 or 4242424242424242"],
+            "elements": [{"value": "4242424242424242 04/31"}],
+            "order": "Order 1234567890123, total $10.00",
+        });
+        // Digits spaced on from the number's run go with it.
+        mask_cards(&mut answer, &cards);
+        assert_eq!(
+            answer,
+            json!({
+                "lines": ["Paid with •••• 4242.", "Card •••• 4242 or •••• 4242"],
+                "elements": [{"value": "•••• 4242/31"}],
+                "order": "Order 1234567890123, total $10.00",
+            })
+        );
+    }
 
     #[test]
     fn a_page_shows_its_on_screen_elements_and_their_frames_and_says_what_it_left_out() {

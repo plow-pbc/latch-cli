@@ -593,7 +593,8 @@ pub async fn run(
 /// `name` (`final`, or an action's number), taken by worker call `op`: its
 /// handle, which `do --history R --shot <name>` fetches, and what the audit
 /// records of it. None if the page could not be shot, or (`shot`) a value
-/// latch filled from the vault is on it.
+/// latch filled from the vault is on it, or it shows a card number filled
+/// in the session.
 async fn keep_shot(
     browsers: &Browsers,
     entry: &Entry,
@@ -602,13 +603,12 @@ async fn keep_shot(
     name: &str,
     op: &str,
 ) -> Option<(Value, Value)> {
-    let reply = entry
-        .agent_session()
-        .await
-        .ok()?
-        .call(json!({"op": op}))
-        .await
-        .ok()?;
+    let mut worker = entry.agent_session().await.ok()?;
+    if super::host::shows_a_card(entry, &mut worker).await {
+        return None;
+    }
+    let reply = worker.call(json!({"op": op})).await.ok()?;
+    drop(worker);
     let png = reply.bytes?;
     journal::save_shot(&browsers.state_dir(), session, request, name, &png).ok()?;
     let meta = json!({"shot": name, "size": png.len(), "sha256": to_hex(&Sha256::digest(&png))});

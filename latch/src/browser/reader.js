@@ -19,7 +19,7 @@
     '[role=slider]', '[role=spinbutton]', '[role=treeitem]',
   ].join(',');
   const ROWS = 'tr, li, [role=row], [role=listitem], [role=gridcell], article, dd';
-  const SECRET = /pass|secret|token|otp|one-time|cvv|cvc|\bpin\b/i;
+  const SECRET = /pass|secret|token|otp|one-time|cvv|cvc|cc-number|cc-csc|\bpin\b/i;
 
   const clean = (text, max = MAX_TEXT) => {
     const flat = (text || '').replace(/\s+/g, ' ').trim();
@@ -708,6 +708,14 @@
     text: (max) => {
       const body = document.body ? document.body.innerText : '';
       return { text: body.length > max ? body.slice(0, max) : body, truncated: body.length > max };
+    },
+    // Every run of 12 or more digits in the text and the fields, spaces,
+    // dots and dashes left out: for the host to check for a card number it
+    // filled. Never shown to the agent.
+    numbers: () => {
+      const fields = [...document.querySelectorAll('input, textarea')].map((el) => el.value);
+      const all = [document.body ? document.body.innerText : '', ...fields].join('\n');
+      return [...all.matchAll(/\d(?:[ .-]?\d){11,}/g)].map((run) => run[0].replace(/\D/g, ''));
     },
     controls,
     stageMark,

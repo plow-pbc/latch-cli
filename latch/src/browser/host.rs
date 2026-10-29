@@ -152,6 +152,9 @@ pub(super) struct Entry {
     handing: std::sync::atomic::AtomicBool,
     /// The sites the gatekeeper let this session go to.
     judged_sites: std::sync::Mutex<HashSet<String>>,
+    /// The numbers of the cards filled in this session, digits only: what
+    /// its answers and pictures are checked for.
+    pub(super) cards: std::sync::Mutex<Vec<String>>,
 }
 
 impl Entry {
@@ -372,6 +375,7 @@ impl Browsers {
             confirmations: Default::default(),
             handing: Default::default(),
             judged_sites: Default::default(),
+            cards: Default::default(),
         });
         self.sessions.lock().await.insert(id.clone(), entry.clone());
         Ok((id, entry))
@@ -764,7 +768,7 @@ async fn answer(
     {
         judged::judge(caller.gate, action, audit).await?;
     }
-    let result = match command {
+    let mut result = match command {
         "close" => browsers.close(name, key).await.map(|closed| (closed, None)),
         "fill" => fill(browsers, &entry, name, caller, args, audit)
             .await
@@ -795,6 +799,18 @@ async fn answer(
     }
     if result.is_ok() {
         last_site(&entry, audit);
+    }
+    // A page may show a card number it was given (a confirmation that
+    // repeats it): the agent gets its last four digits only.
+    let cards = entry.cards.lock().expect("cards lock").clone();
+    if !cards.is_empty() {
+        match &mut result {
+            Ok((answer, _)) => super::shown::mask_cards(answer, &cards),
+            Err(failure) => {
+                failure.message = super::shown::masked(&failure.message, &cards);
+                super::shown::mask_cards(&mut failure.details, &cards);
+            }
+        }
     }
     result
 }
@@ -993,6 +1009,12 @@ async fn worker(
         return Err(paused());
     }
     let mut session = entry.agent_session().await?;
+    if command == "screenshot" && shows_a_card(entry, &mut session).await {
+        return Err(Failure::new(
+            code::secret_on_page,
+            "the page shows a card number latch filled from the vault; a screenshot waits until it is gone".into(),
+        ));
+    }
     let reply = match session.call_with(call, input).await {
         Ok(reply) => {
             if let Some(worker) = reply.audit.as_object() {
@@ -1051,6 +1073,26 @@ fn letters(bytes: &[u8]) -> String {
         .flat_map(|byte| [byte >> 4, byte & 15])
         .map(|nibble| char::from(b'a' + nibble))
         .collect()
+}
+
+/// Whether the page shows the number of a card filled in this session,
+/// in any frame's text or field, however spaced. A page that can't be read
+/// counts as showing it.
+pub(super) async fn shows_a_card(entry: &Entry, session: &mut Session) -> bool {
+    let cards = entry.cards.lock().expect("cards lock").clone();
+    if cards.is_empty() {
+        return false;
+    }
+    let Ok(reply) = session.call(json!({"op": "numbers"})).await else {
+        return true;
+    };
+    reply
+        .result
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .any(|run| cards.iter().any(|card| run.contains(card.as_str())))
 }
 
 /// The worker's call for a client command: the command's own arguments,

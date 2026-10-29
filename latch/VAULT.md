@@ -291,7 +291,12 @@ session that filled is closed. Closing it never lets its pages send what
 they hold: on Chrome for Testing the guard stands until the browser exits;
 on Camoufox the browser is killed. No reading is taken while a fill holds the
 browser, and an element list marks a field holding a filled value as
-`filled`, never showing the value. While a filled value may be on a page,
+`filled`, never showing the value. A page may show a card's number back
+(a confirmation that repeats it, a field it draws again): every answer in
+the session that filled it shows that number only as its last four digits
+(`•••• 4242`), however the page spaces it, and a screenshot, or a plan's
+picture, is refused (`secret_on_page`) or left out while any frame shows
+it. While a filled value may be on a page,
 in whichever of the session's tabs, `eval` and screenshots are refused
 (`secret_on_page`) until it is gone or its tab is closed. The result says
 `submitted`, not "logged in" or "paid", with each field's outcome, the

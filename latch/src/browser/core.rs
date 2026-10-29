@@ -101,6 +101,8 @@ pub enum Call {
     Page,
     /// The page's lines and its non-secret field values, for a judgement.
     Lines,
+    /// Every frame's runs of digits, for the host's card number check.
+    Numbers,
     /// The page as one pass of an instruction step sees it; with `step`,
     /// which lines on screen were written since that step began (`begin`
     /// starts it here).
@@ -375,6 +377,7 @@ impl<D: Driver> Core<D> {
             Call::Act { quiet: true, .. }
                 | Call::Resolve { .. }
                 | Call::Lines
+                | Call::Numbers
                 | Call::View { .. }
                 | Call::Shot
                 | Call::Wait { .. }
@@ -393,6 +396,7 @@ impl<D: Driver> Core<D> {
             Call::Glance => self.glance(&mut audit),
             Call::Page => self.page(&mut audit).map(Value::Object),
             Call::Lines => self.lines(&mut audit),
+            Call::Numbers => self.numbers(),
             Call::View { step, begin } => self.view(step.as_deref(), begin, &mut audit),
             Call::Wait {
                 condition,
