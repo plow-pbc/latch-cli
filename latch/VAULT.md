@@ -309,8 +309,10 @@ agent code (`eval`) ran on those sites earlier in the session
 (`agent_code_before_fill`), and the outcome: never a value. An agent script
 that ran on the site before a fill could read the value it puts on the
 page, through what it left behind (a service worker, a stored script).
-Latch can't prevent that, so it flags every such fill. What a script left goes
-with the session's profile, so a new session starts unflagged.
+Latch can't prevent that, so it flags every such fill, and refuses a card's
+(`agent_code_on_site`, exit 4) before any value is released. What a script
+left goes with the session's profile, so a new session starts unflagged:
+fill the card there.
 
 ## Storage
 
