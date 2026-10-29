@@ -312,7 +312,7 @@ impl Run<'_> {
                 let screen = self.browsers.screen();
                 let recovery = if suggest::code_stage(&offers) {
                     format!(
-                        "a one-time code; nothing was sent. If it is the saved login's authenticator code, send `fill --item vN --field otp=eN --press eN`. If the site texted it to the owner and the host reads Messages, find it with `latch messages search --since 10m code` and enter it as a literal step, `do 'type eN \"CODE\"'`, then submit as the page asks. If neither works, {}",
+                        "a one-time code; nothing was sent. If the saved login has an authenticator code, send `fill --item vN --field otp=eN --press eN`. Otherwise find the code the site sent, where the page says it went, on a host with that plugin on (`latch status`): an email with `latch google --host G -- gmail search 'from:SITE newer_than:1d' --max 5`, the newest row from the last few minutes; a text with `latch messages search --host M --since 10m code`. Enter it as a literal step, `do 'type eN \"CODE\"'`, then submit as the page asks. If none of these finds it, {}",
                         handoff::to_owner(screen, "2fa")
                     )
                 } else {
