@@ -392,10 +392,11 @@ fn execs(t: &TestHost) -> Vec<Value> {
 }
 
 /// The kept call `id`, as the owner reads it from another machine: what
-/// the host itself reads.
-async fn judge(t: &TestHost, device: &Endpoint, id: &Value) -> Value {
-    let here = crate::gate::requests::read(&t.state, id.as_str().unwrap()).unwrap();
-    let (answer, _) = t.call(device, "audit_judge", json!({"request": id})).await;
+/// the host itself reads, `raw` or with credentials hidden.
+async fn judge(t: &TestHost, device: &Endpoint, id: &Value, raw: bool) -> Value {
+    let here = crate::gate::requests::read(&t.state, id.as_str().unwrap(), raw).unwrap();
+    let args = json!({"request": id, "raw": raw});
+    let (answer, _) = t.call(device, "audit_judge", args).await;
     let mut there = ok(answer);
     there.as_object_mut().unwrap().remove("audit_id");
     assert_eq!(there, here);
@@ -423,13 +424,20 @@ async fn the_owner_reads_back_each_gatekeeper_call_as_sent_and_an_agent_cannot()
     let (by_owner, by_agent) = (&records[0]["gate"], &records[1]["gate"]);
     assert_eq!(by_agent["chat_lookup"], "found");
     let layers = &by_agent["layers"];
-    let mut sent = Vec::new();
+    let (mut sent, mut hidden) = (Vec::new(), Vec::new());
     for (layer, call) in [
         ("owner", by_owner),
         ("rules", &layers["rules"]),
         ("chat", &layers["chat"]),
     ] {
-        let kept = judge(&t, &device, &call["kept_request"]).await;
+        // By default, credential-looking values are hidden, as in `latch
+        // audit`: in the action and in the owner's request.
+        let shown = judge(&t, &device, &call["kept_request"], false).await;
+        assert!(!shown.to_string().contains(bearer), "{shown}");
+        let argv = &shown["request"]["state"]["proposed_action"]["argv"];
+        assert_eq!(argv[2], "Authorization: [redacted] [redacted]");
+        assert_eq!(shown["answer"]["id"], call["model_request"]);
+        let kept = judge(&t, &device, &call["kept_request"], true).await;
         assert_eq!(
             (&kept["id"], &kept["layer"]),
             (&call["kept_request"], &json!(layer))
@@ -437,15 +445,23 @@ async fn the_owner_reads_back_each_gatekeeper_call_as_sent_and_an_agent_cannot()
         assert_eq!(kept["request"]["model"], gate::MODEL);
         assert_eq!(kept["answer"]["id"], call["model_request"]);
         assert!(!kept.to_string().contains(secret), "{kept}");
-        // The owner reads exactly what the judge saw, a credential typed
-        // into the command included: in the action and the owner's request.
+        // Raw, the owner reads exactly what the judge saw, a credential
+        // typed into the command included.
         let argv = &kept["request"]["state"]["proposed_action"]["argv"];
         assert_eq!(argv, &json!(["true", "-H", header]));
         sent.push(kept["request"]["state"].clone());
+        hidden.push(shown["request"]["state"].clone());
     }
     let owners = sent[0]["conversation"][0]["text"].as_str().unwrap();
     assert!(
         owners.starts_with("Do this now: ") && owners.contains(bearer),
+        "{owners}"
+    );
+    let owners = hidden[0]["conversation"][0]["text"].as_str().unwrap();
+    assert!(
+        owners.starts_with("Do this now: ")
+            && owners.contains("Authorization: [redacted]")
+            && !owners.contains(bearer),
         "{owners}"
     );
     // Each state the decision route was sent, chat text and all.
@@ -479,10 +495,13 @@ async fn the_owner_reads_back_each_gatekeeper_call_as_sent_and_an_agent_cannot()
         .into_iter()
         .filter(|r| r["op"] == "audit_judge")
         .collect();
-    assert_eq!(reads.len(), 3);
+    assert_eq!(reads.len(), 6);
     assert_eq!(
-        reads[0]["args"],
-        json!({"request": by_owner["kept_request"]})
+        reads[..2].iter().map(|r| &r["args"]).collect::<Vec<_>>(),
+        [
+            &json!({"request": by_owner["kept_request"], "raw": false}),
+            &json!({"request": by_owner["kept_request"], "raw": true}),
+        ]
     );
     let line = crate::audit::read_all(&t.state.join(crate::audit::FILE)).unwrap();
     let line = line.iter().find(|r| r.op == "audit_judge").unwrap();
@@ -502,7 +521,7 @@ async fn a_call_plow_never_answered_is_kept_for_7_days() {
     let (answer, _) = t.call(&agent, "exec", json!({"argv": ["true"]})).await;
     assert_eq!(refusal(&answer).1, "gatekeeper_unavailable");
     let id = &execs(&t)[0]["gate"]["layers"]["rules"]["kept_request"];
-    let kept = judge(&t, &device, id).await;
+    let kept = judge(&t, &device, id, true).await;
     assert_eq!(kept["request"]["state"]["conversation"], "(no chat)");
     assert_eq!(
         kept["answer"],
@@ -550,7 +569,7 @@ async fn a_rules_layer_asked_before_the_chat_failed_is_kept_and_named() {
     assert_eq!(refusal(&answer).1, "gatekeeper_unavailable");
     let gate = &execs(&t)[0]["gate"];
     let id = &gate["layers"]["rules"]["kept_request"];
-    let kept = judge(&t, &device, id).await;
+    let kept = judge(&t, &device, id, true).await;
     assert_eq!(kept["layer"], "rules");
     assert!(kept["answer"]["answers"].is_object(), "{kept}");
 }

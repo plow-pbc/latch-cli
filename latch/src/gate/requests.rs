@@ -10,7 +10,9 @@
 //! and reply exactly as they went: chat and rules text, never a vault or
 //! secret value, as the judge is never shown one, though a credential
 //! typed into a command or plan is in them, as in the audit. Reading one
-//! back shows it whole: exactly what the judge saw. Each is kept 7 days.
+//! back hides credential-looking values as `latch audit` does
+//! (`redact.rs`), or, raw, shows it whole: exactly what the judge saw.
+//! Each is kept 7 days.
 //! Keeping it is best effort: a call that can't be kept is still judged,
 //! and the host's log says why.
 
@@ -113,9 +115,10 @@ pub fn keep(
     Ok(true)
 }
 
-/// The call `id` names, opened with the audit key: exactly what the
-/// judge was sent, for the owner.
-pub fn read(state_dir: &Path, id: &str) -> Result<Value, Failure> {
+/// The call `id` names, opened with the audit key, for the owner: its
+/// request and answer with credential-looking values hidden, or, `raw`,
+/// exactly as they went.
+pub fn read(state_dir: &Path, id: &str, raw: bool) -> Result<Value, Failure> {
     prune(state_dir);
     let text = fs::read(file(state_dir, id)).map_err(|_| {
         let mut failure = Failure::new(
@@ -136,7 +139,11 @@ pub fn read(state_dir: &Path, id: &str) -> Result<Value, Failure> {
     let plain = keys
         .open_bytes(&sealed.kid, &sealed.sealed, &aad(id))
         .ok_or_else(unreadable)?;
-    let kept: Value = serde_json::from_slice(&plain).map_err(|_| unreadable())?;
+    let mut kept: Value = serde_json::from_slice(&plain).map_err(|_| unreadable())?;
+    if !raw {
+        crate::redact::hide_in(&mut kept["request"]);
+        crate::redact::hide_in(&mut kept["answer"]);
+    }
     Ok(kept)
 }
 

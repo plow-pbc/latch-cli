@@ -74,14 +74,18 @@ async fn shot(host: &Host, args: &Value, send: &mut SendStream) -> Done {
 /// answered.
 async fn judge(host: &Host, args: &Value) -> Done {
     let request = args["request"].clone();
-    let audit = Map::from_iter([("request".into(), request.clone())]);
+    let raw = args["raw"] == true;
+    let audit = Map::from_iter([
+        ("request".into(), request.clone()),
+        ("raw".into(), raw.into()),
+    ]);
     let dir = host.workers.state_dir.clone();
     let read = blocking(move || {
         let Some(request) = request.as_str() else {
             let message = "audit judge takes a request id".to_string();
             return Err(Failure::new(code::bad_request, message));
         };
-        crate::gate::requests::read(&dir, request)
+        crate::gate::requests::read(&dir, request, raw)
     })
     .await;
     crate::vault::host::done(read, audit)

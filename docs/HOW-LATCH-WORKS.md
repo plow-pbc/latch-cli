@@ -222,8 +222,9 @@ typed text and the rest of the page can show.
 gatekeeper call's request and Plow's answer for 7 days, sealed with the
 audit key like the log: the rules, the chat and the action exactly as the
 judge saw them. You can read one with `latch audit judge ID`, ID being the
-record's `kept_request`: exactly what the model was sent, so a
-credential typed into a command shows there too. Agents can't read them.
+record's `kept_request`, credential-looking values hidden as in `latch
+audit`; with `--raw`, exactly what the model was sent, so a credential
+typed into a command shows there too. Agents can't read them.
 They never hold a vault or secret value.
 
 ## 6. Managing a host

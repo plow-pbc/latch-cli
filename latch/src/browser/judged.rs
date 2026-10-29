@@ -472,7 +472,9 @@ mod tests {
         let action = serde_json::value::to_raw_value(&action).unwrap();
         let judgment = keeper.judge(Caller::Owner, &action).await;
         let id = judgment.gate["kept_request"].as_str().unwrap();
-        let kept = crate::gate::requests::read(&state, id).unwrap().to_string();
+        let kept = crate::gate::requests::read(&state, id, true)
+            .unwrap()
+            .to_string();
         assert!(kept.contains("Shop login"), "{kept}");
         assert!(
             !kept.contains(password) && !kept.contains(username),

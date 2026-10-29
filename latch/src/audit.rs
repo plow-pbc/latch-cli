@@ -354,12 +354,13 @@ impl AuditLog {
 pub async fn run(state: &StateDir, action: AuditAction) -> Result<Value, Failure> {
     let path = state.path.join(FILE);
     match action {
-        AuditAction::Judge { request, host } => match crate::remote::other_host(state, host).await?
+        AuditAction::Judge { request, raw, host } => match crate::remote::other_host(state, host)
+            .await?
         {
             Some(host) => {
                 let request = crate::wire::Request {
                     op: "audit_judge".into(),
-                    args: json!({"request": request}),
+                    args: json!({"request": request, "raw": raw}),
                     chat: None,
                 };
                 let mut kept =
@@ -370,7 +371,7 @@ pub async fn run(state: &StateDir, action: AuditAction) -> Result<Value, Failure
                 }
                 Ok(kept)
             }
-            None => crate::gate::requests::read(&state.path, &request),
+            None => crate::gate::requests::read(&state.path, &request, raw),
         },
         AuditAction::Shot {
             record,

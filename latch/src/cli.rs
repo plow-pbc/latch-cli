@@ -1125,6 +1125,9 @@ pub enum AuditAction {
     Judge {
         /// The call's id: a record's `kept_request`, in `details.gate` or its `layers`
         request: String,
+        /// Exactly as sent, credential-looking values included [default: hidden, as `latch audit` hides them]
+        #[arg(long)]
+        raw: bool,
         /// Another serving machine of the owner's to read it from (owner devices only) [default: this machine's host]
         #[arg(long)]
         host: Option<String>,

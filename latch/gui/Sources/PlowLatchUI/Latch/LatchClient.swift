@@ -70,8 +70,8 @@ nonisolated protocol LatchClient: Sendable {
     /// back; no copy is left on disk.
     func auditShot(_ record: String, shot: String, host: String?) async throws -> Data
     /// `latch --pretty audit judge ID`: what the gatekeeper sent Plow for
-    /// one call and what it answered, as indented JSON, from this Mac's host
-    /// or, with `host`, another's.
+    /// one call and what it answered, as indented JSON, credential-looking
+    /// values hidden, from this Mac's host or, with `host`, another's.
     func auditJudge(_ id: String, host: String?) async throws -> String
     /// A setup step, as `setup --status` gives its words after `latch`.
     func perform(_ args: [String]) async throws

@@ -196,7 +196,7 @@ text and the rest of the page can show.
 ## `latch audit judge`
 
 ```
-latch audit judge ID [--host NAME]
+latch audit judge ID [--raw] [--host NAME]
 ```
 
 This prints one gatekeeper call the host kept: what it sent Plow's
@@ -218,8 +218,9 @@ An agent's record also says `details.gate.chat_lookup`: `found`, or
 the owner's messages; a refusal then says so too.
 
 A host keeps a call 7 days, on that host only, sealed with its audit key.
-It prints exactly what the model was sent, a credential typed into a
-command included; the judge is never shown a vault or secret value, so
+It prints the request and answer with credential-looking values hidden,
+as `latch audit` hides them (best effort); `--raw` prints exactly what
+the model was sent, a credential typed into a command included. The judge is never shown a vault or secret value, so
 none is kept. When an agent's chat could not be read, its rules layer
 is still kept and named in `details.gate.layers.rules`. Errors: `no_such_request` (exit
 2), the host keeps no call ID.

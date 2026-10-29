@@ -134,13 +134,7 @@ struct RecordInspector: View {
     /// `judged`, or why not; nil once cancelled, as the record it was read
     /// for is no longer the one shown.
     static func read(_ ids: [String], client: any LatchClient, host: String?) async -> Result<String, LatchError>? {
-        let read: Result<String, LatchError>
-        do {
-            read = .success(try await judged(ids, client: client, host: host))
-        } catch {
-            read = .failure(.from(error))
-        }
-        return Task.isCancelled ? nil : read
+        await AppModel.result { try await judged(ids, client: client, host: host) }
     }
 
     /// Each kept call, as latch prints it; an agent's two layers as one
