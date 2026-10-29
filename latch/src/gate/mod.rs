@@ -82,6 +82,10 @@ const VAULT_FILL_ASKED: &str = concat!(
     vault_fill!(),
     " When the owner asked for something to be done on a site, signing in there with the login saved for it is a plain step of that request and covered by it, unless they said not to."
 );
+/// Added to the rules of judgment for an agent's vault list, which shows
+/// what is saved where (`vault::host`), so that it is not read as
+/// reading secrets.
+const VAULT_LIST: &str = "A vault list (the vault.list operation) shows the agent the ids, titles and saved sites of the items in the owner's vault, never a value: no username, password, code or card number. Listing them is covered whenever the owner lets agents browse the web or sign in to sites, in their rules or their own messages, or asked for a task that needs one of their saved logins. It does not let the agent use an item: each fill is judged on its own.";
 /// Added to the rules of judgment when the owner is the caller.
 const OWNER_CALLS: &str = "The caller is the owner, at one of their own machines: the proposed action is the owner's own request. Judge only whether the owner's rules on this host forbid it; if a rule plausibly applies, choose FORBIDDEN.";
 /// Added to the rules of judgment only when the judge sees host rules: a
@@ -101,6 +105,8 @@ struct Prompt {
     exec: &'static str,
     /// Added to the rules of judgment for a vault fill.
     vault_fill: &'static str,
+    /// Added to the rules of judgment for a vault list.
+    vault_list: &'static str,
 }
 
 /// Whether the owner asked for it: an agent's chat layer, and the owner's
@@ -113,6 +119,7 @@ const ASKED: Prompt = Prompt {
     name_tasks: RULES_NAME_TASKS,
     exec: EXEC_PERMISSIONS,
     vault_fill: VAULT_FILL_ASKED,
+    vault_list: VAULT_LIST,
 };
 
 /// An agent's rules layer, asked with no chat: everyday work needs no
@@ -126,6 +133,7 @@ const RULES_LAYER: Prompt = Prompt {
     name_tasks: "A rule may name a kind of task, like running tests or checking mail, rather than the exact command; a command that plainly does that task is covered by it, and nothing more: a rule that lets agents read or check something does not let them create, change, delete or send it.",
     exec: "Judge an exec's argv and working folder together with its resolved write paths and network flag: those permissions must fit what is allowed. The command can read the host's home except ~/.latch, the host's own state directory and, on macOS, Library except Caches. Secret environment values are hidden; their names and lengths are shown. A secret need not be a credential: names like *_COMMAND, NODE_OPTIONS, BASH_ENV, PYTHONSTARTUP and GIT_CONFIG_* can make a program execute the hidden value or load code. Consider what each variable does and whether the owner authorized that hidden behavior with the requested permissions.",
     vault_fill: VAULT_FILL,
+    vault_list: VAULT_LIST,
 };
 
 impl Prompt {
@@ -140,6 +148,7 @@ impl Prompt {
             self.name_tasks,
             self.exec,
             self.vault_fill,
+            self.vault_list,
         ]
         .join("\n");
         sha256(&text)[..16].to_string()
@@ -729,6 +738,9 @@ fn state(
     }
     if fills_from_vault(&shown) {
         rules_of_judgment.push(prompt.vault_fill);
+    }
+    if shown["operation"] == "vault.list" {
+        rules_of_judgment.push(prompt.vault_list);
     }
     let state = State {
         rules_of_judgment,

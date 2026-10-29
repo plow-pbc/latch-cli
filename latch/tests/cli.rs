@@ -206,6 +206,7 @@ fn owner_calls_refuse_a_plow_chat() {
         &["exec", "--", "echo", "must-not-run"][..],
         &["browser", "sessions"],
         &["google", "--", "gmail", "search", "invoice"],
+        &["vault", "list"],
     ] {
         for from_env in [false, true] {
             let mut argv = args.to_vec();
@@ -3463,6 +3464,67 @@ fn a_rotated_agent_registers_again_and_its_next_call_runs() {
         again.is_some(),
         "no registration with the new credential: {seen:?}"
     );
+}
+
+/// An agent's `vault list` names the Plow chat it acts for, as its other
+/// calls do, from the flag or the environment: the host reads a chat on
+/// the agent's line, and refuses one that isn't (`which_chat`).
+#[test]
+fn an_agents_vault_list_names_its_plow_chat() {
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let owner_token = dir.path().join("owner.token");
+    fs::write(&owner_token, "owner-login\n").unwrap();
+    let agent_token = dir.path().join("agent.token");
+    fs::write(&agent_token, "agent-credential\n").unwrap();
+    let (host, agent) = (dir.path().join("host"), dir.path().join("agent"));
+    let owner = owner_token.to_str().unwrap();
+    let args = [
+        "login",
+        "--api-url",
+        &plow.url,
+        "--token-file",
+        owner,
+        "--name",
+        "host",
+    ];
+    assert_eq!(latch(&host, &args, &[]).status.code(), Some(0));
+    let agent_env = [("PLOW_TOKEN_FILE", agent_token.as_path())];
+    let login = latch(&agent, &["login", "--api-url", &plow.url], &agent_env);
+    assert_eq!(login.status.code(), Some(0), "{login:?}");
+    let _serve = serving(&host, &relay);
+
+    let listed = latch(
+        &agent,
+        &["vault", "--host", "host", "--plow-chat", "chat_a", "list"],
+        &agent_env,
+    );
+    assert_eq!(listed.status.code(), Some(0), "{listed:?}");
+    let answer: Value = serde_json::from_slice(&listed.stdout).unwrap();
+    assert_eq!(answer["items"], json!([]), "{answer}");
+    // Its chat layer read chat_a.
+    let decisions = plow.state.lock().unwrap().decisions.clone();
+    assert!(
+        decisions
+            .iter()
+            .any(|d| d["state"]["conversation"].is_array()),
+        "{decisions:?}"
+    );
+
+    for from_env in [false, true] {
+        let mut argv = vec!["vault", "--host", "host", "list"];
+        let mut env = agent_env.to_vec();
+        if from_env {
+            env.push(("LATCH_PLOW_CHAT", Path::new("chat_z")));
+        } else {
+            argv.splice(3..3, ["--plow-chat", "chat_z"]);
+        }
+        let refused = latch(&agent, &argv, &env);
+        assert_eq!(refused.status.code(), Some(2), "{refused:?}");
+        let error: Value = serde_json::from_slice(&refused.stderr).unwrap();
+        assert_eq!(error["error"]["code"], "which_chat", "{error}");
+    }
 }
 
 #[test]

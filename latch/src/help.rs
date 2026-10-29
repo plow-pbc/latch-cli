@@ -804,14 +804,12 @@ const ENTRIES: &[Entry] = &[
         connector: None,
         examples: &[
             ex(
-                "Sign in with a vault login",
+                "Sign in with the login saved for the page's site",
                 &[
                     "browser",
                     "--host",
                     "mac",
                     "fill",
-                    "--item",
-                    "v1",
                     "--field",
                     "username=e4",
                     "--field",
@@ -878,10 +876,14 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "vault.list",
-        runs_on: |_| RunsOn::Either,
-        output: "Every item's metadata: id, kind, title, a login's username, sites, field labels, revision; never a secret value.",
+        // An agent's list, the one that names a chat, goes to a host.
+        runs_on: |args| match args.try_get_one::<String>("plow_chat") {
+            Ok(Some(_)) => RunsOn::Host,
+            _ => RunsOn::Either,
+        },
+        output: "For the owner, every item's metadata: id, kind, title, a login's username, sites, field labels, revision. For an agent, judged by the gatekeeper like its other work: each item's id, title and saved sites, and `next`, how to sign in with one. Never a secret value.",
         effect: ReadOnly,
-        owner_only: true,
+        owner_only: false,
         connector: None,
         examples: &[ex("List the items", &["vault", "--host", "mac", "list"])],
     },

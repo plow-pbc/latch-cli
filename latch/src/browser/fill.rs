@@ -42,6 +42,7 @@ use std::sync::atomic::Ordering;
 use serde_json::{Map, Value, json};
 
 use super::host::{Browsers, Entry, paused, take_audit};
+use super::plan::Op;
 use super::session::Session;
 use super::suggest::{self, Control};
 use crate::failure::{Failure, code};
@@ -77,6 +78,125 @@ fn item_of(browsers: &Browsers, args: &Value) -> Result<Item, Failure> {
             .item(id)
             .ok_or_else(|| Failure::new(code::no_such_item, format!("there is no vault item {id}")))
     })
+}
+
+/// `args` with its `--item` as the item's id: an item's id, checked; with
+/// no `--item`, the one login saved for the site of the session's page.
+/// Anything else is refused before the fill is judged, so the judge is
+/// shown the item as the vault holds it.
+pub async fn named(browsers: &Browsers, entry: &Entry, args: &Value) -> Result<Value, Failure> {
+    let id = match args["item"].as_str() {
+        Some(given) => known(browsers, given)?,
+        None => saved_here(browsers, entry).await?,
+    };
+    let mut named = args.clone();
+    named["item"] = json!(id);
+    Ok(named)
+}
+
+/// A `do`'s `args` with its plan's items checked as `named` checks a
+/// fill's, before any of the plan is judged: the items it may fill from,
+/// and each fill step's, a step naming none taking the login saved for the
+/// page's site, the page its refs are on.
+pub async fn named_in_plan(
+    browsers: &Browsers,
+    entry: &Entry,
+    args: &Value,
+) -> Result<Value, Failure> {
+    let mut plan: super::plan::Plan =
+        serde_json::from_value(args["plan"].clone()).map_err(|err| {
+            Failure::new(code::bad_arguments, format!("the plan is malformed: {err}"))
+        })?;
+    for item in &plan.items {
+        known(browsers, item)?;
+    }
+    let mut here: Option<String> = None;
+    let fills = plan
+        .steps
+        .iter_mut()
+        .filter_map(|step| step.literal.as_mut())
+        .filter(|literal| literal.op == Op::Fill);
+    for literal in fills {
+        if let Some(given) = &literal.item {
+            known(browsers, given)?;
+            continue;
+        }
+        literal.item = Some(match &here {
+            Some(id) => id.clone(),
+            None => here.insert(saved_here(browsers, entry).await?).clone(),
+        });
+    }
+    let mut named = args.clone();
+    named["plan"] = serde_json::to_value(&plan).expect("a plan serializes");
+    Ok(named)
+}
+
+/// Where a caller finds an item's id.
+const LISTED: &str = "`latch vault list` shows each item's id, title and saved sites";
+
+/// `given`, if it is an item's id.
+fn known(browsers: &Browsers, given: &str) -> Result<String, Failure> {
+    browsers.vault.with(|store| {
+        store.item(given).map(|_| given.to_string()).ok_or_else(|| {
+            Failure::new(
+                code::no_such_item,
+                format!(
+                    "there is no vault item {given}: name an item by its id (vN); {LISTED}. Or leave out --item on a site's sign-in page to use the login saved for that site"
+                ),
+            )
+        })
+    })
+}
+
+/// The one login saved for the site of the session's page, by the login
+/// site rule. With several, the refusal lists them, id and title, for the
+/// agent to name one; no other item is named.
+async fn saved_here(browsers: &Browsers, entry: &Entry) -> Result<String, Failure> {
+    let page = super::judged::page(browsers, entry).await?;
+    let origin = url::Url::parse(&page.url)
+        .ok()
+        .map(|url| url.origin().ascii_serialization());
+    let saved: Vec<Meta> = browsers
+        .vault
+        .list_if_present()
+        .into_iter()
+        .filter(|meta| {
+            meta.kind == "login"
+                && origin
+                    .as_deref()
+                    .is_some_and(|origin| sites::allows(meta, origin, origin).is_ok())
+        })
+        .collect();
+    let site = sites::site_of(&page.url).unwrap_or(page.url);
+    match saved.as_slice() {
+        [meta] => Ok(meta.item.clone()),
+        [] => Err(Failure::new(
+            code::no_such_item,
+            format!(
+                "no login in the vault is saved for {site}: {LISTED}; open the sign-in page of a site one is saved for, or name the item with --item and its id"
+            ),
+        )),
+        several => {
+            let listed: Vec<Value> = several
+                .iter()
+                .map(|meta| json!({"item": meta.item, "title": meta.title}))
+                .collect();
+            let names: Vec<String> = several
+                .iter()
+                .map(|meta| format!("{} ({})", meta.item, meta.title))
+                .collect();
+            let mut failure = Failure::new(
+                code::which_item,
+                format!(
+                    "{} logins are saved for {site}: name one with --item: {}",
+                    several.len(),
+                    names.join(", ")
+                ),
+            );
+            failure.details = json!({"items": listed});
+            Err(failure)
+        }
+    }
 }
 
 /// What a fill could use on a page, for `observe`, a `needs_fields` and a
