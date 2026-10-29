@@ -12,6 +12,10 @@ You need macOS 13 or later, or 64-bit Linux, and a Plow account.
 curl -fsSLO https://releases.plow.co/latch-cli/install.sh && sh install.sh
 ```
 
+On a Mac, Latch installs `/Applications/Plow Latch.app` and links `latch` to it
+at `~/.local/bin/latch`; on Linux, `latch` goes in `~/.local/bin`.
+The installer adds `~/.local/bin` to your `PATH`: open a new terminal to pick it up.
+
 ## Install on an agent
 
 On the computer your agent runs on. Then [connect the agent](connect-an-agent.md).
@@ -20,9 +24,12 @@ On the computer your agent runs on. Then [connect the agent](connect-an-agent.md
 curl -fsSLO https://releases.plow.co/latch-cli/install.sh && sh install.sh --client-only
 ```
 
-On a Mac, Latch installs `/Applications/Plow Latch.app` and links `latch` to it
-at `~/.local/bin/latch`; on Linux, `latch` goes in `~/.local/bin`.
-The installer adds `~/.local/bin` to your `PATH`: open a new terminal to pick it up.
+This install leaves your `PATH` alone. Put `~/.local/bin` on it where your
+agent runs:
+
+```sh agent
+export PATH="$HOME/.local/bin:$PATH"
+```
 
 ## First run
 

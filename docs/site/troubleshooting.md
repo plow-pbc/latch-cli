@@ -12,7 +12,7 @@ latch logs -f
 
 | You see | Means | Do |
 |---|---|---|
-| `command not found: latch` | `~/.local/bin` isn't on your `PATH` yet. | Open a new terminal. |
+| `command not found: latch` | `~/.local/bin` isn't on your `PATH` yet. | After a host install, open a new terminal. After an agent install, add it: `export PATH="$HOME/.local/bin:$PATH"`. |
 | `not_logged_in` | This computer has no login. | `latch login` |
 | `host_offline` | That host isn't running. | Run `latch serve -d` there. |
 | `host_unreachable` | Couldn't connect. Nothing was sent. | Retry. |
