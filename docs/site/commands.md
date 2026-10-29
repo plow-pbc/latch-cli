@@ -65,6 +65,7 @@ latch browser open --host my-mac https://example.com
 | `latch agents` | Host | List your agents, with their lines and Plow status. Owner only. |
 | `latch agents show` | Host | Show one agent, by its uid or its exact name. Owner only.<br>One agent, by its name: `latch agents show Scout` |
 | `latch agents catalog` | Host | The kinds of cloud agent Plow can run, for `agents new --cloud`. Owner only. |
+| `latch agents start-by-text` | Host | How to start a cloud agent from a phone: Plow's number and, for each kind, the text to send it, as a QR code's contents and an `sms:` link. Plow sets the agent up on a line of its own and texts back its contact card. Owner only. |
 | `latch agents lines` | Host | Plow's phone lines, and which are free for a new agent. Owner only. |
 | `latch agents new` | Host | Create an agent on a free phone line. Owner only.<br>An agent you run yourself: `latch agents new --own --token-file scout.token --name Scout --line +15550000002` |
 | `latch agents remove` | Host | Remove an agent, by its uid or its exact name. Owner only.<br>Remove an agent without asking: `latch agents remove Scout --yes` |
