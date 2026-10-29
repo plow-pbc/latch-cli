@@ -5,8 +5,8 @@
 //! write (and any CSV with Title, URL, Username and Password columns),
 //! 1Password's "Copy item JSON", 1Password's 1PUX export, and Bitwarden's
 //! JSON export. Logins first; Bitwarden's exports also carry cards,
-//! identities and notes, which come along, and every other kind is set
-//! aside with its reason, never squeezed into a login.
+//! identities and notes, and a 1PUX credit cards, which come along; every
+//! other kind is set aside with its reason, never squeezed into a login.
 //!
 //! The owner picks what to import from a preview; nothing is picked by
 //! default. A rule that holds everywhere here: no preview, warning, skip
@@ -215,6 +215,16 @@ fn parse_csv(text: &str) -> Result<Parsed, Failure> {
         }
         if truthy(&get("archived")) {
             skip(&mut parsed, &title, "archived in 1Password", None);
+            continue;
+        }
+        // 1Password's CSV lists its cards with none of their fields.
+        if source == "1Password" && url.is_empty() && username.is_empty() && password.is_empty() {
+            skip(
+                &mut parsed,
+                &title,
+                "has no login fields; a 1Password CSV carries no card details, so export a 1PUX to bring a card",
+                None,
+            );
             continue;
         }
         // Bitwarden's CSV may list several sites in one cell.
@@ -557,6 +567,10 @@ fn onepux_item(parsed: &mut Parsed, item: &Value, from: &Source) {
         .to_string();
     let vault = Some(from.clone());
     let category = item["categoryUuid"].as_str().unwrap_or("");
+    if category == "002" && item["state"] != "archived" {
+        onepux_card(parsed, item, &raw_title, vault);
+        return;
+    }
     if category != "001" {
         let reason = format!("{}, not a login", category_name(category));
         skip(parsed, &raw_title, &reason, vault);
@@ -624,6 +638,83 @@ fn onepux_item(parsed: &mut Parsed, item: &Value, from: &Source) {
         vault,
         Vec::new(),
     );
+}
+
+/// A 1PUX credit card as a vault card: its cardholder, brand, number,
+/// code and expiry, from the fields 1Password names them by.
+fn onepux_card(parsed: &mut Parsed, item: &Value, title: &str, vault: Option<Source>) {
+    let mut card = blank(
+        CARD,
+        if title.is_empty() {
+            "(untitled)"
+        } else {
+            title
+        },
+    );
+    let mut warnings = Vec::new();
+    let mut put = |label: &str, value: &str| {
+        let _ = card.raw.set(label, value.trim());
+    };
+    for section in item["details"]["sections"].as_array().into_iter().flatten() {
+        for field in section["fields"].as_array().into_iter().flatten() {
+            let value = &field["value"];
+            match field["id"].as_str().unwrap_or("") {
+                "cardholder" => put("cardholder name", value["string"].as_str().unwrap_or("")),
+                "type" => put(
+                    "brand",
+                    &card_brand(value["creditCardType"].as_str().unwrap_or("")),
+                ),
+                "ccnum" => put(
+                    "number",
+                    &value["creditCardNumber"]
+                        .as_str()
+                        .unwrap_or("")
+                        .replace([' ', '-'], ""),
+                ),
+                "cvv" => put("code", value["concealed"].as_str().unwrap_or("")),
+                // YYYYMM, as 1Password writes a month and year.
+                "expiry" => match value["monthYear"].as_u64() {
+                    Some(at) if (1..=12).contains(&(at % 100)) => {
+                        put("expiry month", &(at % 100).to_string());
+                        put("expiry year", &(at / 100).to_string());
+                    }
+                    _ => warnings
+                        .push("its expiry date could not be read and was left off".to_string()),
+                },
+                _ => {}
+            }
+        }
+    }
+    if card.raw.get("number").is_none() {
+        warnings.push("the export holds no card number for it".into());
+    }
+    card.raw.notes = item["details"]["notesPlain"]
+        .as_str()
+        .map(str::to_string)
+        .filter(|n| !n.is_empty());
+    parsed.items.push(Imported {
+        item: card,
+        url: String::new(),
+        warnings,
+        vault,
+        duplicate: false,
+        update: None,
+    });
+}
+
+/// A card's brand as Bitwarden names it, from 1Password's card type.
+fn card_brand(kind: &str) -> String {
+    match kind.to_lowercase().as_str() {
+        "visa" | "visaelectron" => "Visa".into(),
+        "mc" | "mastercard" => "Mastercard".into(),
+        "amex" => "Amex".into(),
+        "discover" => "Discover".into(),
+        "diners" => "Diners Club".into(),
+        "jcb" => "JCB".into(),
+        "maestro" => "Maestro".into(),
+        "unionpay" => "UnionPay".into(),
+        _ => kind.to_string(),
+    }
 }
 
 /// Bitwarden's unencrypted JSON export: its items are already this
