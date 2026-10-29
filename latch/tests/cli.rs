@@ -3607,13 +3607,14 @@ fn an_agents_vault_list_names_its_plow_chat() {
 }
 
 /// One request on a phone link's own protocol, as the phone page sends it
-/// to the host the link `url` names, through `relay`.
+/// to the host the link `url` names, through `relay`: the link's code and
+/// `args`.
 fn phone_request(
     runtime: &tokio::runtime::Runtime,
     relay: &str,
     url: &str,
     op: &str,
-    values: Value,
+    mut args: Value,
 ) -> Value {
     use tokio::io::AsyncReadExt;
     let url = url::Url::parse(url).unwrap();
@@ -3632,10 +3633,8 @@ fn phone_request(
                 .with_relay_url(relay.parse().unwrap());
             let connection = endpoint.connect(addr, b"plow/latch-phone/1").await.unwrap();
             let (mut send, mut recv) = connection.open_bi().await.unwrap();
-            let bytes = serde_json::to_vec(
-                &json!({"op": op, "args": {"code": parts["c"], "values": values}}),
-            )
-            .unwrap();
+            args["code"] = json!(parts["c"]);
+            let bytes = serde_json::to_vec(&json!({"op": op, "args": args})).unwrap();
             send.write_all(&(bytes.len() as u32).to_be_bytes())
                 .await
                 .unwrap();
@@ -3764,15 +3763,39 @@ fn an_agent_asks_for_a_login_by_phone_link_and_learns_only_its_state() {
         json!(["shop.example"]),
         "{shown}"
     );
+    // The owner corrects the website and title there; a site latch never
+    // fills on is refused, and the link stays open.
+    let edit = |sites: Value| json!({"title": "Shop (US)", "sites": sites, "values": {"password": secret}});
+    let refused = phone_request(
+        &runtime,
+        &relay,
+        &url,
+        "submit",
+        edit(json!(["http://shop.example"])),
+    );
+    assert_eq!(refused["error"]["code"], "bad_item", "{refused}");
+    assert!(
+        refused["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("https://"),
+        "{refused}"
+    );
     let saved = phone_request(
         &runtime,
         &relay,
         &url,
         "submit",
-        json!({"password": secret}),
+        edit(json!(["https://www.shop.example/login"])),
     );
     assert!(saved.get("ok").is_some(), "{saved}");
-    let again = phone_request(&runtime, &relay, &url, "submit", json!({"password": "x"}));
+    let again = phone_request(
+        &runtime,
+        &relay,
+        &url,
+        "submit",
+        json!({"values": {"password": "x"}}),
+    );
     assert!(again.to_string().contains("link_used"), "{again}");
 
     // The agent learns it is saved, and the new item's id: no value.
@@ -3786,8 +3809,8 @@ fn an_agent_asks_for_a_login_by_phone_link_and_learns_only_its_state() {
     let (code, listed) = run(&["vault", "--host", "host", "--plow-chat", "chat_a", "list"]);
     assert_eq!(code, Some(0), "{listed}");
     assert_eq!(
-        listed["items"][0]["sites"],
-        json!(["shop.example"]),
+        listed["items"],
+        json!([{"item": "v1", "title": "Shop (US)", "sites": ["shop.example"]}]),
         "{listed}"
     );
 

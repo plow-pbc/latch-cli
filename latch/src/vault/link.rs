@@ -264,8 +264,9 @@ pub fn page(
 }
 
 /// `submit`: saves the item once, with every required field (secrets, a
-/// note's text) filled in. The link stays locked while it saves, so two taps cannot
-/// save twice; a save that fails leaves it open.
+/// note's text) filled in, under the title and sites the phone sends, if
+/// the owner changed them there. The link stays locked while it saves, so
+/// two taps cannot save twice; a save that fails leaves it open.
 pub fn submit(
     vault: &Vault,
     args: &Value,
@@ -300,15 +301,65 @@ pub fn submit(
             format!("fill in the {}", field.label),
         ));
     }
+    let title = match &args["title"] {
+        Value::Null => request.title.clone(),
+        Value::String(title) => title.clone(),
+        _ => return Err(Failure::new(code::bad_item, "the title is text".into())),
+    };
+    let sites = match &args["sites"] {
+        Value::Null => request.sites.clone(),
+        sites => edited_sites(sites)?,
+    };
+    // The audit names what the owner changed, never a value.
+    let edited: Vec<&str> = [
+        ("title", title != request.title),
+        ("sites", sites != request.sites),
+    ]
+    .into_iter()
+    .filter_map(|(name, changed)| changed.then_some(name))
+    .collect();
+    if !edited.is_empty() {
+        audit.insert("edited".into(), json!(edited));
+    }
     let item = json!({
         "kind": request.kind,
-        "title": request.title,
-        "sites": request.sites,
+        "title": title,
+        "sites": sites,
         "values": values,
     });
+    // The vault's own check refuses a site latch never fills on.
     let saved = add(vault, &item, audit)?;
     request.saved = saved["item"]["item"].as_str().map(str::to_string);
     Ok(saved)
+}
+
+/// The sites the owner typed on the phone, as the vault keeps them. A site
+/// is reached over HTTPS only, so one named with another scheme is refused
+/// rather than quietly saved for HTTPS.
+fn edited_sites(sites: &Value) -> Result<Vec<String>, Failure> {
+    let bad = |message: String| Failure::new(code::bad_item, message);
+    let sites = sites
+        .as_array()
+        .ok_or_else(|| bad("the sites are a list".into()))?;
+    let mut kept = Vec::new();
+    for site in sites {
+        let site = site
+            .as_str()
+            .ok_or_else(|| bad("a site is text".into()))?
+            .trim();
+        if site.is_empty() {
+            continue;
+        }
+        if let Some((scheme, _)) = site.split_once("://")
+            && !scheme.eq_ignore_ascii_case("https")
+        {
+            return Err(bad(format!(
+                "{site:?} is not an https:// address; latch fills logins over HTTPS only"
+            )));
+        }
+        kept.push(site.to_string());
+    }
+    Ok(kept)
 }
 
 /// `link_state`: how the link `args["link"]` names is doing, by its id, never
@@ -555,6 +606,87 @@ mod tests {
 
         let unknown = state(&vault, &json!({"link": "l00000000"}), &mut Map::new());
         assert_eq!(unknown.unwrap_err().code, "no_such_link");
+    }
+
+    #[test]
+    fn the_owner_saves_under_the_site_title_and_username_they_corrected_on_the_phone() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = Vault::new(dir.path().into());
+        let args = json!({
+            "kind": "login", "title": "Amazon", "sites": ["amazon.co"],
+            "values": {"username": "ada@exmaple.com"},
+        });
+        let opened = open(&vault, &here(), &args, &mut Map::new()).unwrap();
+        let code = opened["code"].as_str().unwrap();
+        let mut audit = Map::new();
+        let saved = submit(
+            &vault,
+            &json!({
+                "code": code,
+                "title": "Amazon (US)",
+                "sites": ["https://www.amazon.com/ap/signin"],
+                "values": {"username": "ada@example.com", "password": "made-up-pass-1c4f"},
+            }),
+            &mut audit,
+        )
+        .unwrap();
+        assert_eq!(saved["item"]["title"], "Amazon (US)");
+        assert_eq!(saved["item"]["sites"], json!(["amazon.com"]));
+        assert_eq!(saved["item"]["username"], "ada@example.com");
+        assert_eq!(audit["edited"], json!(["title", "sites"]));
+        assert!(
+            !serde_json::to_string(&audit)
+                .unwrap()
+                .contains("made-up-pass-1c4f")
+        );
+        // What the agent learns is the item as saved: its id, and in its
+        // list the corrected site.
+        let state = link_state(&vault, &opened["link"]);
+        assert_eq!(
+            (&state["state"], &state["item"]),
+            (&json!("saved"), &json!("v1"))
+        );
+        let items = vault.with(|store| Ok(store.list())).unwrap();
+        assert_eq!(
+            (items[0].title.as_str(), &items[0].sites[..]),
+            ("Amazon (US)", &["amazon.com".to_string()][..])
+        );
+    }
+
+    #[test]
+    fn a_site_latch_never_fills_on_is_refused_and_the_link_stays_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = Vault::new(dir.path().into());
+        let code = opened(&vault);
+        let password = json!({"password": "made-up-pass-77aa"});
+        for (sites, says) in [
+            (json!(["http://shop.example"]), "not an https:// address"),
+            (json!(["192.168.1.20"]), "an IP address is never a site"),
+            (json!(["localhost"]), "a local host is never a site"),
+            (json!(["co.uk"]), "public suffix"),
+            (json!([]), "a login needs its site"),
+        ] {
+            let edit = json!({"code": code, "sites": sites, "values": password});
+            let refused = submit(&vault, &edit, &mut Map::new()).unwrap_err();
+            assert_eq!(refused.code, "bad_item", "{sites}");
+            assert!(
+                refused.message.contains(says),
+                "{sites}: {}",
+                refused.message
+            );
+        }
+        let edit = json!({"code": code, "title": "", "values": password});
+        let refused = submit(&vault, &edit, &mut Map::new()).unwrap_err();
+        assert!(
+            refused.message.contains("needs a title"),
+            "{}",
+            refused.message
+        );
+        assert!(vault.list_if_present().is_empty());
+        let edit =
+            json!({"code": code, "sites": ["https://shop.example/login"], "values": password});
+        let saved = submit(&vault, &edit, &mut Map::new()).unwrap();
+        assert_eq!(saved["item"]["sites"], json!(["shop.example"]));
     }
 
     #[test]

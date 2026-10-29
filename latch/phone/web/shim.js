@@ -57,7 +57,7 @@ async function main() {
     if (message.type === "submit") {
       let answer;
       try {
-        answer = await call("submit", { values: message.values });
+        answer = await call("submit", { values: message.values, title: message.title, sites: message.sites });
       } catch (err) {
         answer = { error: { code: "connection_lost", message: "The connection dropped; check on the machine before trying again." } };
       }
