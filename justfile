@@ -24,6 +24,11 @@ test-plan *args:
 gatekeeper *args:
     @just --justfile latch/justfile gatekeeper {{args}}
 
+# The docs site for plow.co/latch/docs: docs/site/commands.md from this checkout's `latch help --json`, then every page as HTML into OUT (a plow checkout's plow.co/latch/docs).
+docs-site out:
+    cd latch && cargo build --quiet --locked
+    python3 scripts/docs_site.py write --latch "${CARGO_TARGET_DIR:-latch/target}/debug/latch" --out "{{out}}"
+
 # This checkout as a dev Mac app (.dev/app/Plow Latch Dev.app), on `just build`'s latch, with gog, the Messages reader and Chrome for Testing.
 app *args:
     @just --justfile latch/justfile app {{args}}

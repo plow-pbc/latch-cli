@@ -10678,7 +10678,7 @@ fn rules_try_says_what_is_missing_before_reaching_a_host() {
         (Some(2), &json!("not_previewable"))
     );
 
-    let help = latch(&fresh, &["rules", "try", "-h"], &[]);
+    let help = latch(&fresh, &["rules", "try", "--help"], &[]);
     let help = String::from_utf8(help.stdout).unwrap();
     assert!(help.contains("about $0.0001"), "{help}");
     assert!(help.contains("`gate.p` shows how sure it was"), "{help}");

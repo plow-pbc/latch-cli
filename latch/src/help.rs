@@ -281,7 +281,7 @@ const ENTRIES: &[Entry] = &[
         owner_only: false,
         connector: None,
         examples: &[ex(
-            "Send a script into the Pi's shared folder",
+            "Send a script into ~/scripts on the Pi",
             &["file", "put", "--host", "pi", "./check.sh", "scripts/"],
         )],
     },
@@ -446,7 +446,7 @@ const ENTRIES: &[Entry] = &[
                 ],
             ),
             ex(
-                "Use a credential through the program's environment, away from the remote judge",
+                "Use a credential through the program's environment, away from the gatekeeper",
                 &[
                     "exec",
                     "--host",
@@ -1629,6 +1629,8 @@ struct ErrorCodeHelp {
 struct Action {
     id: String,
     usage: String,
+    /// The first line of `about`, as `latch --help` lists the command.
+    summary: String,
     about: String,
     inputs: Vec<Input>,
     output: &'static str,
@@ -1685,6 +1687,10 @@ fn describe(id: &str, command: &clap::Command) -> Action {
     Action {
         id: id.to_string(),
         usage: usage(command),
+        summary: command
+            .get_about()
+            .map(ToString::to_string)
+            .unwrap_or_default(),
         about,
         inputs: inputs(command),
         output: entry.output,
@@ -1726,7 +1732,8 @@ fn describe_gog(allowed: &Allowed, google: &clap::Command) -> Action {
     Action {
         id: format!("google.{}", allowed.command),
         usage: format!("latch google [OPTIONS] -- {words} [GOG_ARGS]..."),
-        about: format!("gog's `{words}`, run on a host's Google account"),
+        summary: format!("Run `{words}` on a host's Google account"),
+        about: format!("Run `{words}` on a host's Google account"),
         inputs,
         output: "gog's JSON answer.",
         output_fields: None,
@@ -1743,7 +1750,7 @@ fn describe_gog(allowed: &Allowed, google: &clap::Command) -> Action {
                 .collect(),
         ),
         examples: vec![ExampleHelp {
-            what: format!("gog's own usage for `{words}`"),
+            what: format!("The usage of `{words}`"),
             command: format!("latch {}", quoted(&help_args)),
         }],
     }
