@@ -267,12 +267,17 @@ final class AppModel {
             guard let host, host.isThisMac || host.online != false else { return }
             if refresh || !Self.held(summaries[host.name]?.vault) { await refreshVault(on: host) }
         case .account(.agents):
+            // The catalog only names each cloud agent's kind; without it
+            // the page says less, so a failed read isn't shown.
+            let readKinds = refresh || agentKinds == nil
+            async let kinds: Void = readKinds ? refreshAgentKinds() : ()
             if refresh { await refreshAgents() } else {
                 if agents == nil, await !refreshAgentList() { return }
                 // Each host's standing it doesn't have yet, as when a visit
                 // was left before reading them all.
                 await readStandings(missing: true)
             }
+            await kinds
         case .account(.connections):
             if refresh || connections == nil { await refreshConnections() }
             if refresh || !Self.held(devices) { await refreshDevices() }
@@ -680,9 +685,19 @@ final class AppModel {
         leaveMainIfLoggedOut()
     }
 
-    /// How far down Agents was scrolled, for a return to it. Not observed:
-    /// only Agents reads it, as it appears.
-    @ObservationIgnored var agentsScrolled: CGFloat = 0
+    /// The agent Agents shows, by uid, kept for a return to it.
+    var selectedAgent: String?
+
+    /// The one picked, while it's listed; else the first.
+    var shownAgent: AgentsList.Agent? { agents?.first { $0.uid == selectedAgent } ?? agents?.first }
+
+    /// Each cloud agent kind's name in Plow's catalog, by its id.
+    private(set) var agentKinds: [String: String]?
+
+    func refreshAgentKinds() async {
+        guard case let .success(catalog)? = await Self.result({ try await self.client.agentCatalog() }) else { return }
+        agentKinds = Dictionary(catalog.kinds.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
+    }
 
     func agentCatalog() async throws -> AgentCatalog { try await client.agentCatalog() }
     func agentLines() async throws -> AgentLines { try await client.agentLines() }
