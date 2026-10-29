@@ -325,10 +325,29 @@ impl AuditLog {
 }
 
 /// `latch audit verify` and `latch audit rotate-key`, on this machine's
-/// host state, and `latch audit shot`, on this machine's host or another.
+/// host state, and `latch audit judge` and `latch audit shot`, on this
+/// machine's host or another.
 pub async fn run(state: &StateDir, action: AuditAction) -> Result<Value, Failure> {
     let path = state.path.join(FILE);
     match action {
+        AuditAction::Judge { request, host } => match crate::remote::other_host(state, host).await?
+        {
+            Some(host) => {
+                let request = crate::wire::Request {
+                    op: "audit_judge".into(),
+                    args: json!({"request": request}),
+                    chat: None,
+                };
+                let mut kept =
+                    crate::dial::call(state, &host, &request, crate::dial::ANSWER_WITHIN).await?;
+                // Printed as the host prints it, without its record of this read.
+                if let Some(kept) = kept.as_object_mut() {
+                    kept.remove("audit_id");
+                }
+                Ok(kept)
+            }
+            None => crate::gate::requests::read(&state.path, &request),
+        },
         AuditAction::Shot {
             record,
             shot,

@@ -4450,6 +4450,7 @@ fn caller_in(record: &Value) -> Value {
     let mut gate = record["gate"].clone();
     if let Some(gate) = gate.as_object_mut() {
         gate.remove("latency_ms");
+        gate.remove("kept_request");
     }
     json!({"caller": record["caller"], "agent": record["agent"],
            "caller_name": record["caller_name"], "gate": gate,

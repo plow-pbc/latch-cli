@@ -193,10 +193,38 @@ latch doesn't redact a screenshot's pixels. It takes none while a value
 filled from the vault is on the page, and none of a fill step, but typed
 text and the rest of the page can show.
 
+## `latch audit judge`
+
+```
+latch audit judge ID [--host NAME]
+```
+
+This prints one gatekeeper call the host kept: what it sent Plow's
+decision route and what came back. ID is a record's `kept_request`: in
+`details.gate` for the owner's own call, in `details.gate.layers.rules`
+and `details.gate.layers.chat` for an agent's. It prints `{"id", "time",
+"layer", "request", "answer"}`:
+
+- `layer`: `owner`, `rules` or `chat`.
+- `request`: the body as sent, `{"model", "state", "questions"}`. The
+  state holds the rules of judgment, the conversation as the judge saw it
+  (`"(no chat)"` when there was none), the owner's rules and the proposed
+  action. Keys print sorted.
+- `answer`: Plow's reply, or null when none came (the record's
+  `model_failed` says why).
+
+An agent's record also says `details.gate.chat_lookup`: `found`, or
+`none` when the host found no Plow chat for the agent, so it read none of
+the owner's messages; a refusal then says so too.
+
+A host keeps a call 7 days, on that host only. The judge is never shown a
+vault or secret value, so none is kept. Errors: `no_such_request` (exit
+2), the host keeps no call ID.
+
 ## Another host: `--host NAME`
 
-`latch status --host NAME [--follow]`, `latch audit --host NAME [...]` and
-`latch audit shot ... --host NAME` read another of the owner's hosts over latch's connection and print exactly
+`latch status --host NAME [--follow]`, `latch audit --host NAME [...]`,
+`latch audit judge ... --host NAME` and `latch audit shot ... --host NAME` read another of the owner's hosts over latch's connection and print exactly
 what that host's own `status --local [--follow]` and `audit` print there. Only the owner's own devices may
 read them; an agent's login gets exit 4 `owner_only`. Naming this machine
 reads it here.

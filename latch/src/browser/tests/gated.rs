@@ -185,6 +185,7 @@ impl Provider for Judge {
                 request_id: Some("req_made_up".into()),
                 latency_ms: 1,
                 cost: Some(0.0003),
+                exchange: None,
             };
             Ok((
                 std::collections::HashMap::from([("decision".to_string(), answer)]),

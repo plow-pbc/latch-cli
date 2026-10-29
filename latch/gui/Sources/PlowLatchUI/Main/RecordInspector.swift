@@ -13,8 +13,10 @@ struct RecordInspector: View {
     @Environment(AppModel.self) private var app
     /// A browser plan's screenshots, for the record shown.
     @State private var shots: RecordShots?
-    /// The screenshot open in Quick Look.
+    /// The screenshot or gatekeeper request open in Quick Look.
     @State private var preview: URL?
+    /// Why the gatekeeper's request could not be read.
+    @State private var judgeFailure: String?
 
     var body: some View {
         Form {
@@ -67,6 +69,12 @@ struct RecordInspector: View {
             }
             if let gate = record.gate {
                 Why(gate: gate, caller: caller.who)
+                if !gate.keptRequests.isEmpty {
+                    Section {
+                        Button("Gatekeeper request") { Task { await openJudged(gate.keptRequests) } }
+                        if let judgeFailure { Text(judgeFailure).foregroundStyle(.secondary) }
+                    }
+                }
             }
             if let args = record.args, args.exitCode != nil || args.durationMs != nil {
                 Section("Ran") {
@@ -85,6 +93,7 @@ struct RecordInspector: View {
         // Read when the record is opened, and again only for another.
         .task(id: record.id) {
             preview = nil
+            judgeFailure = nil
             shots = record.shots.isEmpty ? nil : RecordShots(client: app.client, host: host, record: record)
             await shots?.load()
         }
@@ -96,9 +105,35 @@ struct RecordInspector: View {
     /// A screenshot in Quick Look, from a file only this user can read,
     /// removed once it closes.
     private func open(_ shot: RecordShots.Shot) {
-        guard case let .loaded(png) = shot.state, let folder = try? ShotFolder.make() else { return }
-        let file = folder.appending(path: "\(shot.title).png")
-        guard FileManager.default.createFile(atPath: file.path, contents: png, attributes: [.posixPermissions: 0o600]) else {
+        guard case let .loaded(png) = shot.state else { return }
+        show(png, name: "\(shot.title).png")
+    }
+
+    /// What the gatekeeper sent and got back for this record, in Quick Look.
+    private func openJudged(_ ids: [String]) async {
+        do {
+            let text = try await Self.judged(ids, client: app.client, host: host)
+            judgeFailure = nil
+            show(Data(text.utf8), name: "Gatekeeper request.json")
+        } catch {
+            judgeFailure = LatchError.from(error).message
+        }
+    }
+
+    /// Each kept call, as latch prints it; an agent's two layers as one
+    /// JSON list.
+    static func judged(_ ids: [String], client: any LatchClient, host: String?) async throws -> String {
+        var calls: [String] = []
+        for id in ids {
+            calls.append(try await client.auditJudge(id, host: host).trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        return calls.count == 1 ? calls[0] : "[\n" + calls.joined(separator: ",\n") + "\n]"
+    }
+
+    private func show(_ data: Data, name: String) {
+        guard let folder = try? ShotFolder.make() else { return }
+        let file = folder.appending(path: name)
+        guard FileManager.default.createFile(atPath: file.path, contents: data, attributes: [.posixPermissions: 0o600]) else {
             Self.remove(file)
             return
         }

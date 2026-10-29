@@ -213,6 +213,9 @@ nonisolated struct SyntheticLatchClient: LatchClient {
     func auditShot(_ record: String, shot: String, host: String?) async throws -> Data {
         try await base.auditShot(record, shot: shot, host: host)
     }
+    func auditJudge(_ id: String, host: String?) async throws -> String {
+        try await base.auditJudge(id, host: host)
+    }
 
     /// The newest `last` records (all without it), or those after `after`,
     /// then a burst, then, with a rate, new ones until stopped.

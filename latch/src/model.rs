@@ -54,6 +54,17 @@ pub struct CallMeta {
     pub latency_ms: u64,
     /// What the call cost in US dollars, when the provider says.
     pub cost: Option<f64>,
+    /// The call as sent and answered, for the gatekeeper's request log on
+    /// the host: never for the audit.
+    pub exchange: Option<Exchange>,
+}
+
+/// One call's request body, exactly as sent, and the reply, exactly as
+/// received, if one came: chat and rules text included.
+#[derive(Debug, Clone)]
+pub struct Exchange {
+    pub request: Box<RawValue>,
+    pub answer: Option<Box<RawValue>>,
 }
 
 /// Why a call failed: a short code the audit and the journal keep, such as
@@ -63,6 +74,9 @@ pub struct CallMeta {
 pub struct CallFailed {
     pub reason: String,
     pub message: String,
+    /// What was sent, for the gatekeeper's request log on the host: never
+    /// for the audit or the agent.
+    pub exchange: Option<Exchange>,
 }
 
 impl CallFailed {
@@ -70,6 +84,18 @@ impl CallFailed {
         CallFailed {
             reason: reason.to_string(),
             message: message.into(),
+            exchange: None,
+        }
+    }
+
+    /// This failure, with the request that was sent and got no answer.
+    fn sent(self, request: &RawValue) -> CallFailed {
+        CallFailed {
+            exchange: Some(Exchange {
+                request: request.to_owned(),
+                answer: None,
+            }),
+            ..self
         }
     }
 }
@@ -126,6 +152,8 @@ pub struct Model {
     /// The same as a short code, for the audit and the journal.
     reason: Option<String>,
     pub calls: Vec<Value>,
+    /// Each call's exchange, when its provider gave one.
+    pub exchanges: Vec<Exchange>,
 }
 
 impl Model {
@@ -135,6 +163,7 @@ impl Model {
             off: String::new(),
             reason: None,
             calls: Vec::new(),
+            exchanges: Vec::new(),
         }
     }
 
@@ -144,6 +173,7 @@ impl Model {
             off: why.to_string(),
             reason: Some("no_model".to_string()),
             calls: Vec::new(),
+            exchanges: Vec::new(),
         }
     }
 
@@ -196,12 +226,19 @@ impl Model {
             return Err(self.off.clone());
         };
         let started = Instant::now();
-        let asked = provider.ask_as_written(&state, &questions).await;
+        let asked = provider
+            .ask_as_written(&state, &questions)
+            .await
+            .map_err(|mut failed| {
+                self.exchanges.extend(failed.exchange.take());
+                failed
+            });
         let mut record = json!({"purpose": purpose, "sent": sent});
         if !provider.name().is_empty() {
             record["provider"] = json!(provider.name());
         }
         let outcome = asked.and_then(|(mut answers, meta)| {
+            self.exchanges.extend(meta.exchange);
             record["provider"] = json!(meta.provider);
             record["model"] = json!(meta.model);
             record["model_request"] = json!(meta.request_id);
@@ -471,12 +508,15 @@ impl Provider for Plow {
     fn ask_as_written<'a>(&'a self, state: &'a RawValue, questions: &'a [Question]) -> Asked<'a> {
         Box::pin(async move {
             let body = Body::new(&self.model, state, questions);
+            let request =
+                serde_json::value::to_raw_value(&body).expect("a request body serializes");
             let started = Instant::now();
             let response = self
                 .http
                 .post(&self.url)
                 .bearer_auth(&self.token)
-                .json(&body)
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .body(request.get().to_string())
                 .send()
                 .await
                 .map_err(|_| {
@@ -485,6 +525,7 @@ impl Provider for Plow {
                         "Plow's decision route could not be reached from this host; retry once \
                          its network and Plow are up",
                     )
+                    .sent(&request)
                 })?;
             let latency_ms = started.elapsed().as_millis() as u64;
             let status = response.status();
@@ -511,20 +552,29 @@ impl Provider for Plow {
                         &format!("http_{code}"),
                         format!("Plow's decision route answered HTTP {code}; retry later"),
                     ),
-                });
+                }
+                .sent(&request));
             }
-            let reply: Value = response.json().await.map_err(|_| {
+            let not_json = || {
                 CallFailed::new(
                     "not_json",
                     "Plow's decision route did not answer JSON; retry later",
                 )
-            })?;
+                .sent(&request)
+            };
+            let text = response.text().await.map_err(|_| not_json())?;
+            let answer: Box<RawValue> = serde_json::from_str(&text).map_err(|_| not_json())?;
+            let reply: Value = serde_json::from_str(answer.get()).map_err(|_| not_json())?;
             let meta = CallMeta {
                 provider: "plow",
                 model: reply["model"].as_str().unwrap_or(&self.model).to_string(),
                 request_id: reply["id"].as_str().map(str::to_string),
                 latency_ms,
                 cost: reply["usage"]["cost"].as_f64(),
+                exchange: Some(Exchange {
+                    request,
+                    answer: Some(answer),
+                }),
             };
             Ok((system_one_answers(&reply, questions), meta))
         })
@@ -581,6 +631,40 @@ pub mod tests {
             .unwrap();
         });
         (url, seen)
+    }
+
+    #[tokio::test]
+    async fn a_call_keeps_its_request_and_reply_exactly_as_they_went() {
+        let reply = json!({"id": "req_1", "model": "jev", "answers": {"q": {"noul": 0.9}}});
+        let (url, seen) = plow_route(200, reply.clone());
+        let mut m = Model::new(Box::new(Plow::new(&url, "made-up-login".into())));
+        let question = Question {
+            id: "q".into(),
+            instructions: json!({"question": "Is it so?"}),
+            kind: Kind::YesNo,
+        };
+        let state = RawValue::from_string(r#"{"zebra":1,"apple":{"y":2,"b":3}}"#.into()).unwrap();
+        m.ask_as_written("test", &[], state, vec![question])
+            .await
+            .unwrap();
+        let sent = seen.recv().unwrap();
+        let (head, body) = sent.split_once("\r\n\r\n").unwrap();
+        assert!(
+            head.to_ascii_lowercase()
+                .contains("content-type: application/json"),
+            "{head}"
+        );
+        let exchange = &m.exchanges[0];
+        assert_eq!(exchange.request.get(), body);
+        assert!(
+            body.contains(r#""state":{"zebra":1,"apple":{"y":2,"b":3}}"#),
+            "{body}"
+        );
+        assert_eq!(exchange.answer.as_ref().unwrap().get(), reply.to_string());
+        assert!(
+            !m.calls[0].to_string().contains("zebra"),
+            "the audit's record keeps no content"
+        );
     }
 
     #[tokio::test]

@@ -192,6 +192,7 @@ impl Provider for Fake {
             request_id: Some("fake".into()),
             latency_ms: 1,
             cost: None,
+            exchange: None,
         };
         let slow = if answers.contains_key("risky") {
             self.slow.load(Ordering::SeqCst)

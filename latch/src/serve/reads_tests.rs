@@ -6,11 +6,11 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use super::gated_tests::{TestHost, refusal, start};
+use super::gated_tests::{TestHost, always_covered, refusal, start};
 use super::*;
 use crate::audit::Range;
 use crate::failure::Exit;
-use crate::gate::fake::World;
+use crate::gate::fake::{World, message, owner};
 
 fn ok(response: Response) -> Value {
     match response {
@@ -119,6 +119,7 @@ async fn an_agent_is_refused_each_read_and_nothing_is_streamed() {
             "audit_shot",
             json!({"record": "f".repeat(64), "shot": "final"}),
         ),
+        ("audit_judge", json!({"request": "g0"})),
     ] {
         let mut stream = Stream::open(&t, &agent, op, args).await;
         let answer = stream.next().await;
@@ -382,4 +383,118 @@ async fn a_record_too_large_for_one_frame_ends_the_read_and_is_never_left_out() 
     assert_eq!((exit, code), (Exit::Failed, "record_too_large"));
     assert_eq!(details["id"], id);
     assert_eq!(details["limit"], wire::MAX_FRAME);
+}
+
+/// Each exec's record, in order.
+fn execs(t: &TestHost) -> Vec<Value> {
+    let records = t.audit().into_iter();
+    records.filter(|record| record["op"] == "exec").collect()
+}
+
+/// The kept call `id`, as the owner reads it from another machine: what
+/// the host itself reads.
+async fn judge(t: &TestHost, device: &Endpoint, id: &Value) -> Value {
+    let here = crate::gate::requests::read(&t.state, id.as_str().unwrap()).unwrap();
+    let (answer, _) = t.call(device, "audit_judge", json!({"request": id})).await;
+    let mut there = ok(answer);
+    there.as_object_mut().unwrap().remove("audit_id");
+    assert_eq!(there, here);
+    here
+}
+
+#[tokio::test]
+async fn the_owner_reads_back_each_gatekeeper_call_as_sent_and_an_agent_cannot() {
+    let chat = vec![message("m1", owner(), "run what you need", 5)];
+    let mut world = World::with_chat("chat_a", chat);
+    world.decide = Some(always_covered);
+    let t = start(world).await;
+    let (device, agent) = (t.caller("device").await, t.caller("agent").await);
+    let secret = "synthetic-secret-env-value-5b3e";
+    let exec = json!({"argv": ["true"], "secret_env": {"TOKEN": secret}});
+    for caller in [&device, &agent] {
+        assert!(matches!(
+            t.call(caller, "exec", exec.clone()).await.0,
+            Response::Ok(_)
+        ));
+    }
+    let records = execs(&t);
+    let (by_owner, by_agent) = (&records[0]["gate"], &records[1]["gate"]);
+    assert_eq!(by_agent["chat_lookup"], "found");
+    let layers = &by_agent["layers"];
+    let mut sent = Vec::new();
+    for (layer, call) in [
+        ("owner", by_owner),
+        ("rules", &layers["rules"]),
+        ("chat", &layers["chat"]),
+    ] {
+        let kept = judge(&t, &device, &call["kept_request"]).await;
+        assert_eq!(
+            (&kept["id"], &kept["layer"]),
+            (&call["kept_request"], &json!(layer))
+        );
+        assert_eq!(kept["request"]["model"], gate::MODEL);
+        assert_eq!(kept["answer"]["id"], call["model_request"]);
+        assert!(!kept.to_string().contains(secret), "{kept}");
+        sent.push(kept["request"]["state"].clone());
+    }
+    // Each state the decision route was sent, chat text and all.
+    let mut asked = t.plow.world.lock().unwrap().asked.clone();
+    asked.sort_by_key(Value::to_string);
+    sent.sort_by_key(Value::to_string);
+    assert_eq!(sent, asked);
+    assert!(
+        sent.iter()
+            .any(|s| s["conversation"][0]["text"] == "run what you need")
+    );
+    // Private to the host's user.
+    use std::os::unix::fs::PermissionsExt;
+    let folder = t.state.join("gatekeeper/requests");
+    let mode = |path: &std::path::Path| std::fs::metadata(path).unwrap().permissions().mode();
+    assert_eq!(mode(&folder) & 0o777, 0o700);
+    for file in std::fs::read_dir(&folder).unwrap() {
+        assert_eq!(mode(&file.unwrap().path()) & 0o777, 0o600);
+    }
+
+    let id = json!({"request": by_owner["kept_request"]});
+    let (answer, _) = t.call(&agent, "audit_judge", id).await;
+    assert_eq!(refusal(&answer).1, "owner_only");
+}
+
+#[tokio::test]
+async fn a_call_plow_never_answered_is_kept_for_7_days() {
+    let t = start(World::default()).await;
+    let (device, agent) = (t.caller("device").await, t.caller("agent").await);
+    let (answer, _) = t.call(&agent, "exec", json!({"argv": ["true"]})).await;
+    assert_eq!(refusal(&answer).1, "gatekeeper_unavailable");
+    let id = &execs(&t)[0]["gate"]["layers"]["rules"]["kept_request"];
+    let kept = judge(&t, &device, id).await;
+    assert_eq!(kept["request"]["state"]["conversation"], "(no chat)");
+    assert_eq!(kept["answer"], Value::Null);
+
+    let file = std::fs::read_dir(t.state.join("gatekeeper/requests"));
+    let file = file.unwrap().next().unwrap().unwrap().path();
+    let old = std::time::SystemTime::now() - Duration::from_secs(7 * 24 * 60 * 60 + 60);
+    let set = std::fs::File::options().write(true).open(&file).unwrap();
+    set.set_modified(old).unwrap();
+    let (answer, _) = t.call(&device, "audit_judge", json!({"request": id})).await;
+    assert_eq!(refusal(&answer).1, "no_such_request");
+    assert!(!file.exists());
+}
+
+#[tokio::test]
+async fn a_call_that_cannot_be_kept_is_still_judged() {
+    let world = World {
+        decide: Some(always_covered),
+        ..World::default()
+    };
+    let t = start(world).await;
+    std::fs::create_dir_all(t.state.join("gatekeeper")).unwrap();
+    std::fs::write(t.state.join("gatekeeper/requests"), "not a folder").unwrap();
+    let agent = t.caller("agent").await;
+    let (answer, _) = t.call(&agent, "exec", json!({"argv": ["true"]})).await;
+    assert!(matches!(answer, Response::Ok(_)), "{answer:?}");
+    let call = &execs(&t)[0]["gate"]["layers"]["rules"];
+    assert!(call.get("kept_request").is_none(), "{call}");
+    let logged = crate::log::captured();
+    assert!(logged.iter().any(|line| line.contains("could not be kept")));
 }

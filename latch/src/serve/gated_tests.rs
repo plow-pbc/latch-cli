@@ -130,7 +130,8 @@ pub(super) async fn start_with(
         vault,
         endpoint: endpoint.clone(),
         name: "test-host".into(),
-        gatekeeper: Gatekeeper::new(plow.client(), provider, Box::new(rules)),
+        gatekeeper: Gatekeeper::new(plow.client(), provider, Box::new(rules))
+            .keeping_requests(&state),
         deny_exec,
         binary: Binary::at(&binary).unwrap(),
         plugins: crate::plugins::Plugins::load(
@@ -1224,6 +1225,13 @@ async fn an_agent_with_no_chat_and_no_rules_is_judged_by_the_built_in_policy() {
     let agent = t.caller("agent").await;
     let (answer, _) = t.call(&agent, "exec", exec("touch made")).await;
     assert_eq!(refusal(&answer).2["reason"], "not_covered");
+    let Response::Error { message, .. } = &answer else {
+        unreachable!()
+    };
+    assert!(
+        message.contains("found no Plow chat between you and the owner"),
+        "{message}"
+    );
     assert!(!t.area.join("made").exists());
     let asked = t.judgments();
     assert_eq!(asked.len(), 1);
@@ -1234,6 +1242,7 @@ async fn an_agent_with_no_chat_and_no_rules_is_judged_by_the_built_in_policy() {
     let gate = &t.audit()[0]["gate"];
     assert_eq!(gate["source"], "defaults");
     assert_eq!(gate["verdict"], "not_covered");
+    assert_eq!(gate["chat_lookup"], "none");
     assert!(gate["layers"].get("chat").is_none());
 }
 
