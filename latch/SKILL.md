@@ -150,6 +150,8 @@ fixes it.
 
 - Each `open` starts signed in nowhere, and its logins last until it
   closes: do the whole task in one session.
+- `session_ended`: the host restarted, and the session went with it. Never
+  retry it: `open` a new session and carry on from the first page you need.
 - A site that blocks you outright ("Access denied", nothing to click or
   type) will not let a retry or a wait through: stop and tell the owner.
   A challenge you can't do yourself is `handoff`'s; on a host with no

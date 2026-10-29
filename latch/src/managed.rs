@@ -423,6 +423,9 @@ async fn stop_dir(dir: &Path, only: Option<u32>) -> Result<Value, Failure> {
     // The host holding the folder now, by pid: a later one is not stopped.
     let mut target = host.pid;
     let (mut asked, mut removed) = (false, false);
+    // How many browser sessions the host said the stop ends, once it
+    // answered: their callers must open new ones.
+    let mut sessions = None;
     loop {
         let host = lifecycle::now(dir);
         if !host.running {
@@ -436,8 +439,12 @@ async fn stop_dir(dir: &Path, only: Option<u32>) -> Result<Value, Failure> {
         // A host that answers stops itself. One that does not yet (it is
         // starting) is stopped by its service manager if it has one, and
         // asked again until it answers.
-        if !asked && let Some(pid) = target {
-            asked = ask(dir, "host_stop", json!({"pid": pid})).await.is_ok();
+        if !asked
+            && let Some(pid) = target
+            && let Ok(stopping) = ask(dir, "host_stop", json!({"pid": pid})).await
+        {
+            asked = true;
+            sessions = stopping["browser_sessions"].as_u64();
         }
         // A host of another latch never answers on this one's socket: its
         // service manager stops it if it has one; otherwise its owner does.
@@ -467,7 +474,12 @@ async fn stop_dir(dir: &Path, only: Option<u32>) -> Result<Value, Failure> {
     }
     service.remove()?;
     let host = lifecycle::now(dir);
-    Ok(json!({"stopped": was, "state_dir": dir, "state": host.state, "error": host.error}))
+    let mut stopped =
+        json!({"stopped": was, "state_dir": dir, "state": host.state, "error": host.error});
+    if let Some(sessions) = sessions {
+        stopped["browser_sessions_ended"] = json!(sessions);
+    }
+    Ok(stopped)
 }
 
 /// The refusal of a second host, saying how to see or stop the one there,

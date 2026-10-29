@@ -1299,7 +1299,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "stop",
         runs_on: |_| RunsOn::Local,
-        output: "`stopped` (whether a host was running), `state_dir`, `state` and, if it failed, `error`.",
+        output: "`stopped` (whether a host was running), `state_dir`, `state`, `browser_sessions_ended` (the browser sessions open when the host stopped; they end with it) and, if it failed, `error`.",
         effect: Repeatable("stops this state folder's host and removes its service"),
         owner_only: false,
         connector: None,

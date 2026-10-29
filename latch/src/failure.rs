@@ -429,6 +429,7 @@ codes! {
     serve_failed: Failed,
     serve_required: Unreachable,
     service_failed: Failed,
+    session_ended: Failed,
     session_paused: Failed,
     setup_failed: Failed,
     setup_superseded: Failed,
