@@ -48,8 +48,9 @@ model up.
   macOS, bubblewrap and seccomp on Linux. A host that can't set up its
   sandbox refuses to start.
 - A program reads home and the system's own files, but never the host's
-  state folder. It writes only to the folders the call names. It has no
-  network unless the call asks for it.
+  state folder. It writes only to the folders the call names, its own
+  private temp folder, and tool caches that already exist, such as
+  `~/.cache` and `~/.npm`. It has no network unless the call asks for it.
 - Vault values go into a web page without reaching the agent. A saved login
   fills only on its own sites.
 

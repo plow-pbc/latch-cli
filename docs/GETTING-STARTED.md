@@ -175,8 +175,9 @@ latch exec --host my-mac --write '~/code/my-project' -- sh -c 'pwd; uname -s'
 ```
 
 The program can read your home folder and the system's own files. It can
-write only to the folders you name with `--write`. It has no network unless
-you add `--network`.
+write only to the folders you name with `--write`, its own private temp
+folder, and tool caches that already exist, such as `~/.cache` and `~/.npm`.
+It has no network unless you add `--network`.
 
 **Copy a file.** Paths on the host are in its home folder. Quote a leading
 `~` so your own shell leaves it alone:
