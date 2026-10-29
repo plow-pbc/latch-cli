@@ -11,7 +11,9 @@
 //! has no session for is `no_such_session`, another caller's is
 //! `not_owner`, and nothing reaches the session either way. `sessions`
 //! lists the caller's sessions without their ids. The audit holds a short
-//! hash of an id, never the id.
+//! hash of an id, never the id. A session a host restart ended answers
+//! `session_ended` for 7 days (`opened.rs`), so its caller opens another
+//! rather than retry it.
 //!
 //! The audit record of each call holds what the worker reports (tab,
 //! origin and path, snapshot, target ref and role, how it was resolved),
@@ -77,6 +79,8 @@ pub struct Browsers {
     pub(super) screen: Option<bool>,
     /// Open sessions, by id.
     sessions: Mutex<HashMap<String, Arc<Entry>>>,
+    /// When this host started: when the sessions open before it ended.
+    started: jiff::Timestamp,
     /// Browsers closing after their sessions ended, which nothing waits on
     /// but a host that is stopping.
     closing: std::sync::Mutex<tokio::task::JoinSet<()>>,
@@ -188,8 +192,10 @@ impl Browsers {
         // Handoffs and sessions end with the host: none is left in a new one.
         let _ = std::fs::remove_dir_all(super::handoff::folder(&state_dir));
         super::profile::reap(&state_dir);
+        super::opened::prune(&state_dir);
         Browsers {
             state_dir,
+            started: jiff::Timestamp::now(),
             headless,
             dashboard: Default::default(),
             #[cfg(test)]
@@ -285,6 +291,7 @@ impl Browsers {
         let entry = sessions.get(id)?.clone();
         if !entry.runtime.alive() {
             sessions.remove(id);
+            super::opened::forget(&self.state_dir, &entry.hash);
             return None;
         }
         Some(entry)
@@ -298,12 +305,33 @@ impl Browsers {
 
     /// The running session `id`, if `caller` opened it.
     pub(super) async fn session(&self, id: &str, caller: &str) -> Result<Arc<Entry>, Failure> {
-        let entry = self.get(id).await.ok_or_else(no_such_session)?;
+        let Some(entry) = self.get(id).await else {
+            return Err(self.not_live(id, caller));
+        };
         if entry.owner != caller {
             return Err(not_owner());
         }
         entry.seen.lock().expect("seen lock").0 = Instant::now();
         Ok(entry)
+    }
+
+    /// Why `caller` has no live session `id`: a restart of the host ended
+    /// it, or it was never one of theirs (or it closed, or idled out).
+    fn not_live(&self, id: &str, caller: &str) -> Failure {
+        match super::opened::ended(&self.state_dir, &hash_of(id)) {
+            Some(owner) if owner == caller => session_ended(self.started),
+            Some(_) => not_owner(),
+            None => no_such_session(),
+        }
+    }
+
+    /// How many sessions are open: what a host that stops ends.
+    pub async fn open_sessions(&self) -> usize {
+        let sessions = self.sessions.lock().await;
+        sessions
+            .values()
+            .filter(|entry| entry.runtime.alive())
+            .count()
     }
 
     /// A new session on `engine` (`cft` or `camoufox`) for `caller`, in a
@@ -321,6 +349,10 @@ impl Browsers {
         let runtime = Arc::new(started?);
         let session = Session::new(runtime.clone());
         let id = format!("s{}", letters(&rand::random::<[u8; 16]>()));
+        if let Err(failure) = super::opened::record(&self.state_dir, &hash_of(&id), caller) {
+            let _ = tokio::time::timeout(CLOSING, runtime.close()).await;
+            return Err(failure);
+        }
         let entry = Arc::new(Entry {
             session: Mutex::new(session),
             runtime,
@@ -368,10 +400,16 @@ impl Browsers {
         }
     }
 
-    /// Closes every runtime at once, for a host that is stopping.
+    /// Closes every runtime at once, for a host that is stopping. The
+    /// records of those still live stay: the next host answers that a
+    /// restart ended them.
     pub async fn close_all(&self) {
         for (_, entry) in self.sessions.lock().await.drain() {
-            self.end(entry);
+            if entry.runtime.alive() {
+                self.close_browser(entry);
+            } else {
+                self.end(entry);
+            }
         }
         let closing = std::mem::take(&mut *self.closing.lock().expect("closing lock"));
         closing.join_all().await;
@@ -413,7 +451,9 @@ impl Browsers {
     pub(super) async fn close(&self, id: &str, caller: &str) -> Result<Value, Failure> {
         let entry = {
             let mut sessions = self.sessions.lock().await;
-            let entry = sessions.get(id).ok_or_else(no_such_session)?;
+            let Some(entry) = sessions.get(id) else {
+                return Err(self.not_live(id, caller));
+            };
             if entry.owner != caller {
                 return Err(not_owner());
             }
@@ -450,11 +490,18 @@ impl Browsers {
         closing.join_all().await;
     }
 
+    /// A session the map no longer has, ended while the host runs: its
+    /// record goes, and its browser closes (`close_browser`).
+    fn end(&self, entry: Arc<Entry>) -> Value {
+        super::opened::forget(&self.state_dir, &entry.hash);
+        self.close_browser(entry)
+    }
+
     /// A session the map no longer has: its browser closes once every
     /// request under way in it has answered (a `wait` or a plan, not only
     /// the worker call in flight), and its profile goes with it. Neither
     /// waits: the answer is at once.
-    fn end(&self, entry: Arc<Entry>) -> Value {
+    fn close_browser(&self, entry: Arc<Entry>) -> Value {
         let mut closing = self.closing.lock().expect("closing lock");
         while closing.try_join_next().is_some() {}
         closing.spawn(async move {
@@ -566,9 +613,10 @@ async fn run_command(
     Done::send_bytes(send, result, &bytes, audit).await
 }
 
-/// A `fill`: a suggestion taken by its id becomes the mapping it stands
-/// for; one that releases a card or identity secret stops for the agent's
-/// confirmation before any value is released.
+/// A `fill`: its item, named by id or left to the page's site, is found
+/// before it is judged; a suggestion taken by its id becomes the mapping
+/// it stands for; one that releases a card or identity secret stops for
+/// the agent's confirmation before any value is released.
 pub(super) async fn fill(
     browsers: &Browsers,
     entry: &Entry,
@@ -578,7 +626,9 @@ pub(super) async fn fill(
     audit: &mut Map<String, Value>,
 ) -> Result<Value, Failure> {
     audit.insert("item".into(), args["item"].clone());
-    let args = super::fill::resolve(browsers, entry, args).await?;
+    let args = super::fill::named(browsers, entry, args).await?;
+    audit.insert("item".into(), args["item"].clone());
+    let args = super::fill::resolve(browsers, entry, &args).await?;
     if caller.gate.is_some() {
         let site = judged::site(browsers, entry).await?;
         judged::judge(
@@ -693,6 +743,15 @@ async fn answer(
     {
         off_web(browsers, url).await?;
     }
+    // A plan's items are found before any of it is judged, as a fill's are.
+    let planned;
+    let args = match command {
+        "do" => {
+            planned = super::fill::named_in_plan(browsers, &entry, args).await?;
+            &planned
+        }
+        _ => args,
+    };
     if caller.gate.is_some()
         && let Some(action) = judged_action(browsers, &entry, command, args).await?
     {
@@ -1102,6 +1161,21 @@ fn not_owner() -> Failure {
          open a session of your own with `latch browser open`"
             .into(),
     )
+}
+
+fn session_ended(started: jiff::Timestamp) -> Failure {
+    let at = jiff::Timestamp::from_second(started.as_second()).unwrap_or(started);
+    let mut failure = Failure::new(
+        code::session_ended,
+        format!(
+            "this session ended when the host restarted at {at}: its tabs and sign-ins are gone, \
+             and no retry brings it back; open a new session with `latch browser open URL` \
+             and carry on from there"
+        ),
+    );
+    failure.next = Some("latch browser open URL".into());
+    failure.details = json!({"host_restarted_at": at.to_string()});
+    failure
 }
 
 fn no_such_session() -> Failure {

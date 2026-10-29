@@ -322,8 +322,10 @@ impl Literal {
                             .into(),
                     );
                 }
-                if self.item.as_deref().is_none_or(str::is_empty) {
-                    return Err("fill needs --item".into());
+                // With no --item, the host fills the login saved for the
+                // page's site (`fill::named_in_plan`).
+                if self.item.as_deref().is_some_and(str::is_empty) {
+                    return Err("fill's --item names no item".into());
                 }
                 match (&self.suggestion, self.fields.is_empty()) {
                     (None, true) => {
@@ -595,6 +597,9 @@ mod tests {
         let literal = step.literal.unwrap();
         assert_eq!(literal.fields["expiry"], ["e5", "e6"]);
         assert_eq!(literal.press.unwrap(), "e9");
+        // With no --item, the host finds the login saved for the page's site.
+        let step = short_step("fill --field password=e4 --press e5").unwrap();
+        assert_eq!(step.literal.unwrap().item, None);
         let step =
             short_step(r#"open "https://shop.example/cart" and remove "Sharp Objects""#).unwrap();
         assert!(step.goal.is_some());

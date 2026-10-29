@@ -159,7 +159,7 @@ fn main() -> ExitCode {
         // Help is in latch itself: no state folder, no host.
         Command::Help(args) => return help::run(args, cli.pretty),
         Command::Skill => {
-            print!("{}", help::skill());
+            term::print_out(&help::skill());
             return ExitCode::SUCCESS;
         }
         // Only opens the app, which picks its state folder itself: a
@@ -170,7 +170,7 @@ fn main() -> ExitCode {
             });
             return match app::open(named.as_deref()).and_then(|opened| json(cli.pretty, opened)) {
                 Ok(Printed(text)) => {
-                    println!("{text}");
+                    term::print_out(&format!("{text}\n"));
                     ExitCode::SUCCESS
                 }
                 Err(failure) => {
@@ -202,7 +202,7 @@ async fn run_async(state_dir: Option<PathBuf>, command: Command, pretty: bool) -
     let exit = match run(state_dir, command, pretty).await {
         Ok(Printed(text)) => {
             if !text.is_empty() {
-                println!("{text}");
+                term::print_out(&format!("{text}\n"));
             }
             ExitCode::SUCCESS
         }
@@ -586,7 +586,7 @@ fn usage_error(err: clap::Error) -> ExitCode {
         // clap stops at `--version`, so `--pretty` is looked for by hand.
         let pretty = std::env::args().any(|word| word == "--pretty");
         let version = json!({ "version": cli::version() });
-        let _ = json(pretty, version).map(|Printed(text)| println!("{text}"));
+        let _ = json(pretty, version).map(|Printed(text)| term::print_out(&format!("{text}\n")));
         return ExitCode::SUCCESS;
     }
     let message = err.to_string().trim_end().to_string();

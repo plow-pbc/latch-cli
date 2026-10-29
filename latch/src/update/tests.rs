@@ -480,6 +480,54 @@ fn only_a_release_tag_names_a_release() {
     }
 }
 
+/// An update cut off after the installer replaced latch, before it fetched
+/// the new pins, leaves this build current with its helpers missing: the
+/// next plain update installs this build again, and one with every helper
+/// in place does nothing.
+#[tokio::test]
+async fn a_cut_off_update_is_finished_by_the_next_one() {
+    let world = World::new();
+    let release = world.release(1328);
+    world.latest(&release);
+    let state = &world.state.path;
+    // An older Camoufox and gog, from the latch the cut-off update replaced.
+    std::fs::create_dir_all(state.join("plugins/camoufox/0.0.1")).unwrap();
+    std::fs::create_dir_all(state.join("plugins/gog/0.0.1")).unwrap();
+    let answer = update(&world.state, &world.source(), Some(1328), None, None, false)
+        .await
+        .unwrap();
+    assert_eq!(answer["updated"], true, "{answer}");
+    assert_eq!(answer["to"]["build"], 1328);
+    assert_eq!(answer["repaired"], json!(["gog", "camoufox"]));
+    let arguments = world.arguments().expect("install-binary.sh ran");
+    assert_eq!(
+        arguments[2..5],
+        ["--non-interactive", "--browser", "camoufox"]
+    );
+
+    let complete = World::new();
+    complete.latest(&complete.release(1328));
+    let gog = complete
+        .state
+        .path
+        .join("plugins/gog")
+        .join(&crate::google::PIN.version);
+    std::fs::create_dir_all(&gog).unwrap();
+    std::fs::write(gog.join("gog"), "").unwrap();
+    let answer = update(
+        &complete.state,
+        &complete.source(),
+        Some(1328),
+        None,
+        None,
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(answer["updated"], false, "{answer}");
+    assert_eq!(complete.arguments(), None);
+}
+
 #[test]
 fn the_installed_engines_are_the_ones_kept_up_to_date() {
     let world = World::new();

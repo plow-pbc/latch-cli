@@ -45,7 +45,7 @@ latch's commands and behavior here are `main`'s today.
 |---|---|---|---|---|---|
 | **Owner** (your CLI) | A machine logged in with your own Plow login: by text, or with `--token-file`. | Yes, any host in your account. | Rules and vault on any host (`--host NAME`). Connectors: list them on any host; turn them on or off only on the host itself. | Yes. | As your own request: refused only where the host's rules forbid it. |
 | **Owner on the host** | Anything running as the host's OS user that uses the host's own state folder, with no `--host` or `LATCH_HOST` naming another machine. An agent running there counts. | That host, through its private local socket; other hosts as the owner. | Yes, on that host. Rules and vault work without `latch serve` or the decision model. | It is the host. | Exactly like the owner; recorded as `owner_on_host`. |
-| **Agent** | An agent logged in with its own Plow agent credential, in its own state folder. | Yes, but a host refuses its `status --host`, `audit --host` and `audit shot --host` (`owner_only`, exit 4). | No: rules, vault and turning connectors on or off are refused (`owner_only`, exit 4). It sees the ones each host has on, in `latch status`. | Not today: with the usual agent credential, from the agent's environment, login saves no Plow token, so `latch serve` stops with `not_logged_in`. | Against your messages in your Plow chat with that agent, plus the host's rules. |
+| **Agent** | An agent logged in with its own Plow agent credential, in its own state folder. | Yes, but a host refuses its `status --host`, `audit --host` and `audit shot --host` (`owner_only`, exit 4). | No: rules, vault and turning connectors on or off are refused (`owner_only`, exit 4), but for `vault list`, which shows each item's id, title and saved sites. It sees the ones each host has on, in `latch status`. | Not today: with the usual agent credential, from the agent's environment, login saves no Plow token, so `latch serve` stops with `not_logged_in`. | Against your messages in your Plow chat with that agent, plus the host's rules. |
 
 - **Every machine logged in with your own Plow login is the owner today.**
   There's no host-only or view-only login yet (see section 11).
@@ -79,10 +79,10 @@ latch's commands and behavior here are `main`'s today.
 | `latch serve` runs as | a launchd job, using the `latch` inside `Plow Latch.app` (in `/Applications`, else `~/Applications`) | a systemd user service |
 | Key, Plow login, vault and audit keys | Keychain, in the signed release app | files only you can read (0600) |
 | Messages and Contacts | Yes, once turned on and given Full Disk Access (for a release install, granted to Plow Latch.app) | No |
-| Chrome for Testing | Yes | arm64 and x86_64; x86_64 currently needs `--headless-browsers` |
-| Camoufox | Yes | Yes; x86_64 currently needs `--headless-browsers` |
+| Chrome for Testing | Yes | arm64 and x86_64 |
+| Camoufox | Yes | Yes |
 | The browser's sandbox | the engine's own (Chrome's or Camoufox's); the engine runs outside latch's Seatbelt | inside latch's bubblewrap, with the engine's own sandbox nested inside |
-| Browser windows | on your screen; `browser handoff` works | x86_64 currently runs headless; otherwise a private virtual display. `browser handoff` answers `needs_owner` (`no_screen`) |
+| Browser windows | on your screen; `browser handoff` works | a private virtual display, or none with `--headless-browsers`. `browser handoff` answers `needs_owner` (`no_screen`) |
 
 - A host that can't set up its sandbox refuses to start. There's no
   unsandboxed mode.
@@ -122,7 +122,7 @@ sessions then open on by default.
 
 **What an agent can't do:**
 
-- Read or change the vault or the rules (`owner_only`, exit 4).
+- Read or change the rules, or change or read into the vault (`owner_only`, exit 4). An agent may list it: `vault list` answers each item's id, title and saved sites, and is judged.
 - Turn connectors on or off.
 - Update latch, remove machines, or install a browser engine.
 - Run `exec` on a host started with `latch serve --deny-exec` (every
@@ -141,7 +141,7 @@ model, through Plow on the host's own Plow login, whether it may run.
 |---|---|
 | `exec`, `file get`, `file put`, `google`, `messages`, `contacts` | Every call, owner's and agents' alike. |
 | `browser` | Going to a site the session hasn't been judged for, every `do` plan with steps, every fill, a card or identity fill's confirmation, scripts, uploads and downloads. Reading a page, screenshots, a single `act` step and a `do --confirm` that only confirms a click aren't. Separately, the browser's own risk check stops a click or Enter it judges consequential (paying, sending, deleting) until the caller confirms it with `browser do --confirm`. |
-| `vault`, `rules`, `plugins` | Never. Only the owner can use them, except the list of plugins each host has on, which `latch status` asks every host for. |
+| `vault`, `rules`, `plugins` | Never, but for an agent's `vault list`, judged like its other work. Only the owner can use them, except that list and the list of plugins each host has on, which `latch status` asks every host for. |
 
 **Owner and agent are judged differently.**
 
@@ -347,7 +347,6 @@ The few commands that take `--host` but run only on this machine
 | Scripting other apps (AppleScript, System Events) | Left out on purpose |
 | Google beyond Gmail and Calendar | Not supported |
 | Messages and Contacts on a Linux host | Not supported (`unsupported_platform`) |
-| Headed browsers on Linux x86_64 | Private Xvfb startup fails; use `--headless-browsers` |
 | Browser handoff on a Linux host or with `--headless-browsers` | Not supported |
 | A host with no sandbox; Windows | Not supported |
 | An agent's login running a host | Doesn't work today: with the usual agent credential, login saves no Plow token, so `latch serve` stops with `not_logged_in` |

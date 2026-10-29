@@ -206,6 +206,7 @@ fn owner_calls_refuse_a_plow_chat() {
         &["exec", "--", "echo", "must-not-run"][..],
         &["browser", "sessions"],
         &["google", "--", "gmail", "search", "invoice"],
+        &["vault", "list"],
     ] {
         for from_env in [false, true] {
             let mut argv = args.to_vec();
@@ -1555,6 +1556,32 @@ fn help_and_skill_need_no_login_and_carry_this_version() {
         text.contains(&format!("  version: \"{version}\"\n---\n")),
         "{text}"
     );
+}
+
+/// A reader that stops reading early (`latch help | head`) is no error:
+/// latch ends as it would have, with nothing on stderr.
+#[test]
+fn output_to_a_reader_that_went_away_ends_quietly() {
+    let dir = test_dir();
+    let state = dir.path().join("none");
+    for args in [
+        &["help"][..],
+        &["help", "--json"],
+        &["skill"],
+        &["--version"],
+        &["status"],
+    ] {
+        let mut child = latch_command(&state, args, &[])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        drop(child.stdout.take());
+        let output = child.wait_with_output().unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(0), "{args:?}: {stderr}");
+        assert!(stderr.is_empty(), "{args:?}: {stderr}");
+    }
 }
 
 #[test]
@@ -3516,6 +3543,67 @@ fn a_rotated_agent_registers_again_and_its_next_call_runs() {
         again.is_some(),
         "no registration with the new credential: {seen:?}"
     );
+}
+
+/// An agent's `vault list` names the Plow chat it acts for, as its other
+/// calls do, from the flag or the environment: the host reads a chat on
+/// the agent's line, and refuses one that isn't (`which_chat`).
+#[test]
+fn an_agents_vault_list_names_its_plow_chat() {
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let owner_token = dir.path().join("owner.token");
+    fs::write(&owner_token, "owner-login\n").unwrap();
+    let agent_token = dir.path().join("agent.token");
+    fs::write(&agent_token, "agent-credential\n").unwrap();
+    let (host, agent) = (dir.path().join("host"), dir.path().join("agent"));
+    let owner = owner_token.to_str().unwrap();
+    let args = [
+        "login",
+        "--api-url",
+        &plow.url,
+        "--token-file",
+        owner,
+        "--name",
+        "host",
+    ];
+    assert_eq!(latch(&host, &args, &[]).status.code(), Some(0));
+    let agent_env = [("PLOW_TOKEN_FILE", agent_token.as_path())];
+    let login = latch(&agent, &["login", "--api-url", &plow.url], &agent_env);
+    assert_eq!(login.status.code(), Some(0), "{login:?}");
+    let _serve = serving(&host, &relay);
+
+    let listed = latch(
+        &agent,
+        &["vault", "--host", "host", "--plow-chat", "chat_a", "list"],
+        &agent_env,
+    );
+    assert_eq!(listed.status.code(), Some(0), "{listed:?}");
+    let answer: Value = serde_json::from_slice(&listed.stdout).unwrap();
+    assert_eq!(answer["items"], json!([]), "{answer}");
+    // Its chat layer read chat_a.
+    let decisions = plow.state.lock().unwrap().decisions.clone();
+    assert!(
+        decisions
+            .iter()
+            .any(|d| d["state"]["conversation"].is_array()),
+        "{decisions:?}"
+    );
+
+    for from_env in [false, true] {
+        let mut argv = vec!["vault", "--host", "host", "list"];
+        let mut env = agent_env.to_vec();
+        if from_env {
+            env.push(("LATCH_PLOW_CHAT", Path::new("chat_z")));
+        } else {
+            argv.splice(3..3, ["--plow-chat", "chat_z"]);
+        }
+        let refused = latch(&agent, &argv, &env);
+        assert_eq!(refused.status.code(), Some(2), "{refused:?}");
+        let error: Value = serde_json::from_slice(&refused.stderr).unwrap();
+        assert_eq!(error["error"]["code"], "which_chat", "{error}");
+    }
 }
 
 #[test]
@@ -8780,6 +8868,124 @@ mod pinned {
                 record["args"]["command"], record["gate"]["caller"], gate
             );
         }
+    }
+
+    /// A session that a restart of its host ended, by `latch stop` or by
+    /// SIGKILL, answers `session_ended`: when the host restarted and what
+    /// to do next, for 7 days. Its plan's history and screenshots still
+    /// read; an id that never was a session is still `no_such_session`.
+    #[test]
+    fn a_session_a_host_restart_ended_says_so_and_its_history_still_reads() {
+        let plow = LivePlow::start();
+        let (_runtime, relay) = local_relay();
+        let dir = test_dir();
+        let host = owner_host_on(&plow, dir.path());
+        let installed = std::env::var_os("LATCH_CFT_STATE")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/cft-state"));
+        let plugins = installed.canonicalize().unwrap().join("plugins");
+        std::os::unix::fs::symlink(plugins, host.join("plugins")).unwrap();
+        fs::write(host.join("host.json"), r#"{"allow_local_browsing":true}"#).unwrap();
+        let serve = || {
+            let mut command = serve_command(&host, &relay);
+            command.arg("--headless-browsers");
+            let (serve, mut log, _) = serving_with(command);
+            thread::spawn(move || std::io::copy(&mut log, &mut std::io::sink()));
+            until_serving(&host, &serve);
+            serve
+        };
+        let run = |args: &[&str]| {
+            let output = latch(&host, args, &[]);
+            assert!(output.status.success(), "{args:?}: {output:?}");
+            serde_json::from_slice::<Value>(&output.stdout).unwrap()
+        };
+        let refused = |args: &[&str]| {
+            let (code, answer) = answered(&latch(&host, args, &[]));
+            assert_eq!(code, Some(1), "{args:?}: {answer}");
+            answer["error"].clone()
+        };
+        let ended = |session: &str, since: jiff::Timestamp| {
+            for command in [&["text"][..], &["goto", "https://example.com/"], &["close"]] {
+                let args = [&["browser", "--session", session][..], command].concat();
+                let error = refused(&args);
+                assert_eq!(error["code"], "session_ended", "{command:?}: {error}");
+                assert_eq!(error["next"], "latch browser open URL", "{error}");
+                let at: jiff::Timestamp = error["host_restarted_at"]
+                    .as_str()
+                    .unwrap()
+                    .parse()
+                    .unwrap();
+                assert!(
+                    at.as_second() >= since.as_second() && at <= jiff::Timestamp::now(),
+                    "{error}"
+                );
+                let message = error["message"].as_str().unwrap();
+                assert!(message.contains(&format!("restarted at {at}")), "{message}");
+            }
+        };
+        let url = format!("{}/socket-page", plow.url);
+
+        // Cleanly: `latch stop` says the open session ends with the host.
+        let mut first_host = serve();
+        let first = run(&["browser", "open", &url])["session"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let acted = run(&["browser", "--session", &first, "act", "scroll", "down"]);
+        let request = acted["request"].as_str().unwrap().to_string();
+        let stop = latch(&host, &["stop", "--pretty"], &[]);
+        assert!(stop.status.success(), "{stop:?}");
+        let printed = String::from_utf8(stop.stdout).unwrap();
+        assert!(
+            printed.contains("\n  \"browser_sessions_ended\": 1"),
+            "{printed}"
+        );
+        let stopped: Value = serde_json::from_str(&printed).unwrap();
+        assert_eq!(stopped["stopped"], true, "{stopped}");
+        assert!(first_host.0.wait().unwrap().success());
+
+        let since = jiff::Timestamp::now();
+        let mut second_host = serve();
+        ended(&first, since);
+        let history = run(&["browser", "--session", &first, "do", "--history", &request]);
+        assert_eq!(history["request"], request.as_str(), "{history}");
+        let shot = dir.path().join("shot.png");
+        let shot_args = ["browser", "--session", &first, "do", "--history", &request];
+        let output = ["--shot", "1", "--output", shot.to_str().unwrap()];
+        run(&[&shot_args[..], &output].concat());
+        assert!(fs::read(&shot).unwrap().starts_with(b"\x89PNG"));
+        let unknown = refused(&["browser", "--session", "snotasessionatall", "text"]);
+        assert_eq!(unknown["code"], "no_such_session", "{unknown}");
+
+        // By SIGKILL: nothing of the host's ran as it ended.
+        let records = || {
+            fs::read_dir(host.join("browser/opened"))
+                .unwrap()
+                .map(|record| record.unwrap().path())
+                .collect::<Vec<_>>()
+        };
+        let [first_record] = records().try_into().unwrap();
+        let second = run(&["browser", "open", &url])["session"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        // SAFETY: signals our own child.
+        unsafe { libc::kill(second_host.0.id() as i32, libc::SIGKILL) };
+        second_host.0.wait().unwrap();
+        let since = jiff::Timestamp::now();
+        let _third_host = serve();
+        ended(&second, since);
+
+        // A week on, an ended session is no session at all.
+        let eight_days = std::time::Duration::from_secs(8 * 24 * 60 * 60);
+        fs::File::options()
+            .write(true)
+            .open(&first_record)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - eight_days)
+            .unwrap();
+        let old = refused(&["browser", "--session", &first, "text"]);
+        assert_eq!(old["code"], "no_such_session", "{old}");
     }
 
     #[cfg(target_os = "macos")]

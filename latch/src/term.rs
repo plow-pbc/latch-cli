@@ -3,7 +3,7 @@
 //! for no color, its size, and the few escape codes the dashboard uses. Plain ANSI escape sequences, which
 //! every terminal latch runs in understands.
 
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Write};
 
 /// Switch to the terminal's second screen (what full-screen programs like
 /// `less` or `top` draw on), and back, leaving the person's scrollback alone.
@@ -26,6 +26,18 @@ pub const SYNC_END: &str = "\x1b[?2026l";
 /// latch's stdout through a pipe.
 pub fn stdout_is_terminal() -> bool {
     std::io::stdout().is_terminal()
+}
+
+/// Writes a command's output, `text`, to stdout. A reader that stopped
+/// reading (`latch help | head`) is no error: the command did its work, and
+/// latch ends as it would have.
+pub fn print_out(text: &str) {
+    let mut out = std::io::stdout().lock();
+    if let Err(err) = out.write_all(text.as_bytes()).and_then(|()| out.flush())
+        && err.kind() != std::io::ErrorKind::BrokenPipe
+    {
+        panic!("failed printing to stdout: {err}");
+    }
 }
 
 /// Whether a person reads latch's errors, rather than a program.

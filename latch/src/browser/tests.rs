@@ -842,6 +842,56 @@ async fn the_engine_runs_from_the_host_with_its_own_sandbox_and_leaves_nothing(e
     assert!(!scratch.exists() && !profile.exists());
 }
 
+/// A headed runtime's display is `:N`, which every libxcb resolves (Ubuntu
+/// 24.04's can't parse a socket file's path), and only a client showing the
+/// runtime's cookie gets in, though anything on the host's network can
+/// reach `:N`'s abstract socket. Each try is X11's connection setup on that
+/// socket, the one libxcb tries first.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_private_display_is_reached_as_its_number_and_only_with_its_cookie() {
+    use std::os::linux::net::SocketAddrExt;
+    use std::os::unix::net::{SocketAddr, UnixStream};
+
+    let display = super::display::Display::start().unwrap();
+    let env: std::collections::HashMap<_, _> = display.env().into_iter().collect();
+    let number = env["DISPLAY"]
+        .strip_prefix(':')
+        .expect("DISPLAY is :N")
+        .to_string();
+    let entry = fs::read(&env["XAUTHORITY"]).unwrap();
+    let cookie = &entry[entry.len() - 16..];
+    // X11's connection setup, little-endian: the server's first byte is 1
+    // when it lets the client in.
+    let setup = |name: &[u8], data: &[u8]| {
+        let socket = format!("/tmp/.X11-unix/X{number}");
+        let address = SocketAddr::from_abstract_name(socket.as_bytes()).unwrap();
+        let mut stream = UnixStream::connect_addr(&address).unwrap();
+        let padded = |bytes: &[u8]| [bytes, &vec![0; (4 - bytes.len() % 4) % 4]].concat();
+        let mut request = vec![b'l', 0, 11, 0, 0, 0];
+        request.extend((name.len() as u16).to_le_bytes());
+        request.extend((data.len() as u16).to_le_bytes());
+        request.extend([0, 0]);
+        request.extend(padded(name));
+        request.extend(padded(data));
+        stream.write_all(&request).unwrap();
+        let mut answer = [0u8; 1];
+        stream.read_exact(&mut answer).unwrap();
+        answer[0]
+    };
+    assert_eq!(
+        setup(b"MIT-MAGIC-COOKIE-1", cookie),
+        1,
+        "the cookie gets in"
+    );
+    assert_eq!(setup(b"", b""), 0, "no cookie is refused");
+    assert_eq!(
+        setup(b"MIT-MAGIC-COOKIE-1", &[0; 16]),
+        0,
+        "another cookie is refused"
+    );
+}
+
 /// Linux: no app is in front of an Xvfb display or a headless browser.
 #[cfg(target_os = "linux")]
 fn front_apps() -> std::sync::Arc<std::sync::Mutex<Vec<u32>>> {

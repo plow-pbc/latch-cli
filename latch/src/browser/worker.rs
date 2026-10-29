@@ -156,7 +156,7 @@ pub fn run(
     } else {
         None
     };
-    let display = private.as_ref().map(|d| d.name.as_str());
+    let display = private.as_ref();
     // The engine reaches the network only through this proxy.
     let proxy = match egress::Proxy::start(local) {
         Ok(proxy) => proxy.url(),

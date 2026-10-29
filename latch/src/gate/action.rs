@@ -1,5 +1,5 @@
-//! What the judge is shown of a caller's exec, file or Google operation,
-//! and what the audit keeps of one the judge refused.
+//! What the judge is shown of a caller's exec, file, Google, connector or
+//! vault list operation, and what the audit keeps of one the judge refused.
 
 use serde::Serialize;
 use serde_json::value::RawValue;
@@ -68,6 +68,7 @@ pub fn gated(op: &str, args: &Value) -> Option<Gated> {
     // A connector's action is judged by its stable id: `messages.search`.
     let operation = match op {
         "messages" | "contacts" => format!("{op}.{}", args["action"].as_str().unwrap_or("unknown")),
+        "vault" => format!("vault.{}", args["command"].as_str().unwrap_or("unknown")),
         _ => op.to_string(),
     };
     let none = Action {
@@ -147,6 +148,9 @@ pub fn gated(op: &str, args: &Value) -> Option<Gated> {
             let audit = crate::messages::host::audit(op, name, &args["args"], &args["plan"]);
             (action, audit)
         }
+        // The one vault command an agent may give; the rest are the
+        // owner's, never judged.
+        "vault" if args["command"] == "list" => (none, json!({"command": "list"})),
         _ => return None,
     };
     Some(Gated {

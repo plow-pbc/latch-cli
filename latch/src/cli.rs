@@ -353,7 +353,7 @@ pub enum BrowserCommand {
         output: PathBuf,
     },
     /// The plan command: up to 10 steps in order, each `click|type|select|press
-    /// eN ["text"]`, `fill --item vN --field F=eN… [--press eN]`, or a goal in
+    /// eN ["text"]`, `fill [--item vN] --field F=eN… [--press eN]`, or a goal in
     /// words with its texts in double quotes, with an optional check after
     /// ` -> `: `do 'click e7 -> path: /cart' 'add the note "Ring twice"'`
     #[command(after_help = DO_HELP)]
@@ -378,7 +378,8 @@ pub enum BrowserCommand {
         /// A text every step may type, as NAME=TEXT (repeatable)
         #[arg(long, value_name = "NAME=TEXT", conflicts_with = "history")]
         fact: Vec<String>,
-        /// A vault item the plan may fill from (repeatable)
+        /// A vault item the plan may fill from, by its id, which `vault list`
+        /// shows (repeatable)
         #[arg(long, value_name = "vN", conflicts_with = "history")]
         item: Vec<String>,
         /// Print the plan as it would be sent, and send nothing
@@ -493,8 +494,10 @@ pub enum BrowserCommand {
     Fill {
         #[arg(long)]
         snapshot: Option<String>,
+        /// The vault item's id, which `vault list` shows; left out, the login
+        /// saved for the site of the page
         #[arg(long)]
-        item: String,
+        item: Option<String>,
         /// FIELD=eN, or FIELD=eN,eN,… to split it across boxes
         #[arg(
             long = "field",
@@ -609,6 +612,11 @@ pub struct VaultArgs {
     /// Host to use (default: this machine's vault; naming this peer is local too)
     #[arg(long, env = "LATCH_HOST", global = true)]
     pub host: Option<String>,
+    /// The owner's Plow chat an agent's `list` acts for, when its line has
+    /// more than one: the host's gatekeeper reads what the owner asked
+    /// there. Refused on owner calls, local modes and every other command
+    #[arg(long, env = "LATCH_PLOW_CHAT", global = true)]
+    pub plow_chat: Option<String>,
     #[command(subcommand)]
     pub command: VaultCommand,
 }

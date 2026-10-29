@@ -1533,8 +1533,10 @@ async fn check<'a>(
             Err(done) => unplanned = Some(*done),
         }
     }
+    // The vault is the owner's own setting: only an agent's list is judged.
     let gated = gate::gated(op, &request.args).filter(|_| {
-        !denied_exec
+        (op != "vault" || identity.kind == "agent")
+            && !denied_exec
             && !upgraded
             && not_enabled.is_none()
             && exec_failure.is_none()

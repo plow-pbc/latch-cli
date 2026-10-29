@@ -32,8 +32,8 @@ It downloads pinned gog into `~/.latch/plugins`, and Chrome for Testing for
 `latch browser` on macOS and Linux arm64/x86_64: `--browser camoufox` installs Camoufox
 instead (name both with `--browser chrome --browser camoufox`), `--no-browser`
 none, and `latch browser setup --engine chrome|camoufox` installs one later.
-Browsers on Linux x86_64 currently need `latch serve --headless-browsers`;
-see [browser setup](latch/BROWSER.md).
+On Linux, each browser runtime draws on a private virtual display, or on
+none with `latch serve --headless-browsers`; see [browser setup](latch/BROWSER.md).
 Setup requires curl, tar and SHA-256 tools.
 Linux hosting needs bubblewrap and usable user namespaces; setup explains missing
 packages and may ask for sudo, including for Ubuntu's AppArmor profile;
@@ -45,7 +45,9 @@ Messages reader or bubblewrap, no sudo, and no setup at the end. Its
 
 Update with `latch update`: it installs the newest build, or `latch update TAG`
 that build (also how to go back to an older one); `latch update --check` only
-says whether a newer one is out. It checks the release's `SHA256SUMS` against
+says whether a newer one is out. When this build is the newest but a helper
+it runs is missing (an update cut off before it installed a browser engine
+or gog), `latch update` installs it again. It checks the release's `SHA256SUMS` against
 latch's release signing key and the archive against it (on macOS, also that
 the app is signed by Plow), then runs the release's own `install-binary.sh`:
 on Linux into the folder latch runs from, on macOS replacing the whole
