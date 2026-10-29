@@ -881,11 +881,31 @@ const ENTRIES: &[Entry] = &[
             Ok(Some(_)) => RunsOn::Host,
             _ => RunsOn::Either,
         },
-        output: "For the owner, every item's metadata: id, kind, title, a login's username, sites, field labels, revision. For an agent, judged by the gatekeeper like its other work: each item's id, title and saved sites, and `next`, how to sign in with one. Never a secret value.",
+        output: "`items`: for the owner, each item's metadata: id, kind, title, a login's username, sites, field labels, revision; for an agent, judged by the gatekeeper like its other work, each item's id, kind, title and saved sites, and `next`, how to use one. The first 50 that match --site, --search and --kind (every one with --all), `total`, how many matched, and `more` when some are left out. Never a secret value.",
         effect: ReadOnly,
         owner_only: false,
         connector: None,
-        examples: &[ex("List the items", &["vault", "--host", "mac", "list"])],
+        examples: &[
+            ex(
+                "The items saved for a site",
+                &[
+                    "vault",
+                    "--host",
+                    "mac",
+                    "list",
+                    "--site",
+                    "crateandbarrel.com",
+                ],
+            ),
+            ex(
+                "The cards",
+                &["vault", "--host", "mac", "list", "--kind", "card"],
+            ),
+            ex(
+                "Items whose title or site has a word",
+                &["vault", "--host", "mac", "list", "--search", "costco"],
+            ),
+        ],
     },
     Entry {
         id: "vault.show",

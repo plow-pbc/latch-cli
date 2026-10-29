@@ -494,8 +494,9 @@ pub enum BrowserCommand {
     Fill {
         #[arg(long)]
         snapshot: Option<String>,
-        /// The vault item's id, which `vault list` shows; left out, the login
-        /// saved for the site of the page
+        /// The vault item's id, which `vault list` shows: a card's at a
+        /// checkout, which `observe` lists under `fill.items`; left out, the
+        /// login saved for the site of the page
         #[arg(long)]
         item: Option<String>,
         /// FIELD=eN, or FIELD=eN,eN,… to split it across boxes
@@ -623,8 +624,27 @@ pub struct VaultArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum VaultCommand {
-    /// Every item's metadata, a login's username included (never a secret value)
-    List,
+    /// The items' metadata, a login's username included (never a secret
+    /// value): the first 50 unless --all, narrowed by --site, --search and
+    /// --kind
+    List {
+        /// Only items saved for this site: a domain or URL, matched by its
+        /// registrable domain (www.shop.example finds shop.example)
+        #[arg(long)]
+        site: Option<String>,
+        /// Only items whose title or a site contains this text, any case
+        #[arg(long)]
+        search: Option<String>,
+        /// Only items of this kind: login, card, identity or note
+        #[arg(long)]
+        kind: Option<String>,
+        /// Show at most this many of the matching items
+        #[arg(long, default_value_t = 50, conflicts_with = "all")]
+        limit: usize,
+        /// Show every matching item
+        #[arg(long)]
+        all: bool,
+    },
     /// One item's metadata and its non-secret values (never a secret one)
     Show { item: String },
     /// Add an item; its secrets are asked for at a prompt, or read from

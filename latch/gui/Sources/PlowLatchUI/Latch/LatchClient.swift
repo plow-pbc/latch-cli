@@ -250,7 +250,7 @@ nonisolated struct LiveLatchClient: LatchClient {
 
 
     func vaultList(host: String?) async throws -> VaultList {
-        try decode(VaultList.self, try await run(["vault", "list"] + on(host)))
+        try decode(VaultList.self, try await run(["vault", "list", "--all"] + on(host)))
     }
 
     func vaultShow(_ item: String, host: String?) async throws -> VaultShow {

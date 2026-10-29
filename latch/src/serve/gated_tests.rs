@@ -1299,8 +1299,8 @@ async fn an_agents_vault_list_is_judged_and_shows_ids_titles_and_sites_only() {
     assert_eq!(
         listed["items"],
         json!([
-            {"item": "v1", "title": "Parentsquare", "sites": ["parentsquare.com"]},
-            {"item": "v2", "title": "Visa", "sites": []},
+            {"item": "v1", "kind": "login", "title": "Parentsquare", "sites": ["parentsquare.com"]},
+            {"item": "v2", "kind": "card", "title": "Visa", "sites": []},
         ])
     );
     let next = listed["next"].as_str().unwrap();
