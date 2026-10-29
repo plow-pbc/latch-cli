@@ -143,7 +143,9 @@ fn bound(command: &mut Command) {
 }
 
 /// Xvfb's command line: one screen, no TCP, only clients with the cookie in
-/// `cookie`, and the display number written to `fd` once it is ready.
+/// `cookie`, and the display number written to `fd` once it is ready. No
+/// reset when its last client leaves: a server resetting drops a client
+/// that connects meanwhile, such as an engine's next connection.
 fn arguments(fd: i32, cookie: &Path) -> Vec<String> {
     [
         "-displayfd",
@@ -155,6 +157,7 @@ fn arguments(fd: i32, cookie: &Path) -> Vec<String> {
         "1280x800x24",
         "-nolisten",
         "tcp",
+        "-noreset",
     ]
     .iter()
     .map(|s| s.to_string())
@@ -265,6 +268,7 @@ mod tests {
         let args = arguments(7, Path::new("/tmp/cookie"));
         assert_eq!(args[..4], ["-displayfd", "7", "-auth", "/tmp/cookie"]);
         assert!(args.windows(2).any(|w| w == ["-nolisten", "tcp"]));
+        assert!(args.iter().any(|arg| arg == "-noreset"));
         assert_eq!(display_name(b"12"), Some(":12".into()));
         assert_eq!(display_name(b"x"), None);
     }
