@@ -360,7 +360,7 @@ struct GoogleSignInTests {
         printf '%s\\n' "$@" > '\(folder.path)/args'
         echo '{"type":"hello","schema":1}'
         echo '{"type":"link","url":"\(first.absoluteString)","expires_at":"2026-10-23T18:02:00Z"}'
-        exec sleep 30
+        exec sleep 600
         """.write(to: script, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
         let client = LiveLatchClient(executable: script, stateDir: "/s")
@@ -373,8 +373,7 @@ struct GoogleSignInTests {
         let args = try String(contentsOf: folder.appending(path: "args"), encoding: .utf8)
         #expect(args == "--state-dir\n/s\nplugins\nenable\ngoogle\n--events\n--add-account\n")
         let pid = try #require(pid_t(try String(contentsOf: folder.appending(path: "pid"), encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)))
-        // Well short of its 30 s sleep, which would end it anyway.
-        await waitUntil(within: .seconds(20)) { kill(pid, 0) != 0 }
+        await waitUntil { kill(pid, 0) != 0 }
         #expect(kill(pid, 0) != 0)
     }
 }
