@@ -12,9 +12,9 @@ installs Xvfb, for hosts with no screen. `install.sh --no-browser` installs
 no engine; `--browser camoufox` installs Camoufox instead (name both
 engines with `--browser chrome --browser camoufox`).
 
-On Linux x86_64, both engines are verified in headless mode: start the host
-with `latch serve --headless-browsers`. Headed, each runtime's engine draws
-on a private Xvfb display of its own (see "Handoff and screenless hosts").
+On Linux, each runtime's engine draws on a private Xvfb display of its own
+(see "Handoff and screenless hosts"), or on none with `latch serve
+--headless-browsers`.
 
 The download is `browser-engines.sh`'s, beside `install-binary.sh`, which
 `install.sh` runs. `latch browser setup [--engine chrome|camoufox]` runs a

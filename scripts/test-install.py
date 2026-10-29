@@ -964,7 +964,8 @@ class BrowserEngines(unittest.TestCase):
     "{key}": {{
       "url": "https://example.invalid/cft.zip",
       "zip_sha256": "{digest}",
-      "folder": "{folder}"
+      "folder": "{folder}",
+      "executable": "chrome"
     }}
   }}
 }}
@@ -1016,6 +1017,15 @@ cp "{archive}" "$out"
         self.assertEqual(again.returncode, 0, again.stderr)
         self.assertIn("already installed", again.stdout)
         self.assertEqual(fetched.read_text().count("\n"), 1, "downloaded once")
+
+        # One whose executable is gone, which latch refuses as not
+        # installed, is installed again, though its manifest is the pin.
+        (installed / "chrome-linux-arm64/chrome").unlink()
+        repaired = run()
+        self.assertEqual(repaired.returncode, 0, repaired.stderr)
+        self.assertNotIn("already installed", repaired.stdout)
+        self.assertTrue((installed / "chrome-linux-arm64/chrome").is_file())
+        self.assertEqual(fetched.read_text().count("\n"), 2, "downloaded again")
 
         # A download whose hash isn't the pin's installs nothing.
         shutil.rmtree(state)

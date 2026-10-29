@@ -60,7 +60,8 @@ trap 'rm -rf ${cft_tmp:+"$cft_tmp"} ${fox_tmp:+"$fox_tmp"}' EXIT
 # build is one block of "key": "value" lines, which sed reads. This checks
 # the zip's sha256; latch hashes the whole unpacked build before every
 # launch. The manifest goes in last, so a folder without it is a half-made
-# install, made again.
+# install, made again; so is one whose executable is gone, which latch
+# refuses as not installed.
 chrome() {
   case "$(uname -s)/$(uname -m)" in
     Darwin/arm64) cft_build=mac_arm64 ;;
@@ -83,14 +84,15 @@ chrome() {
   cft_version=$(sed -n 's/^  "version": *"\([^"]*\)".*/\1/p' "$cft_pin")
   [ -n "$cft_version" ] || die "$cft_pin has no version"
   cft_dir="$state_dir/plugins/cft/$cft_version"
-  if [ -f "$cft_dir/manifest.json" ] && [ "$(cksum < "$cft_pin")" = "$(cksum < "$cft_dir/manifest.json")" ]; then
+  cft_folder=$(cft folder)
+  if [ -f "$cft_dir/manifest.json" ] && [ "$(cksum < "$cft_pin")" = "$(cksum < "$cft_dir/manifest.json")" ] &&
+    [ -f "$cft_dir/$cft_folder/$(cft executable)" ]; then
     say "Chrome for Testing $cft_version already installed in $cft_dir"
     return 0
   fi
   command -v curl >/dev/null 2>&1 || die "need curl to download Chrome for Testing"
   cft_url=$(cft url)
   cft_zip_sha256=$(cft zip_sha256)
-  cft_folder=$(cft folder)
   (umask 077 && mkdir -p "$state_dir")
   mkdir -p "$cft_dir"
   cft_tmp=$(mktemp -d "$cft_dir/.download.XXXXXX")
