@@ -100,22 +100,3 @@ nonisolated struct ErrorCopyTests {
             "The Contacts connector is off on this Mac.")
     }
 }
-
-/// The New Agent sheet hands your own agent its key: by the file's name on
-/// screen, and with instructions on the clipboard that hold no path or
-/// name of this Mac's.
-struct NewAgentKeyTests {
-    @Test(arguments: ["/Users/ada/Documents/scout.latch-key", "/Users/ada/My Agents/Kitchen Helper.latch-key"])
-    func theKeyIsNamedByItsFileAlone(_ file: String) {
-        let said = CreatedView.keySaved(file)
-        #expect(said.contains("“\(URL(filePath: file).lastPathComponent)”"))
-        #expect(!said.contains("/"))
-    }
-
-    @Test func theCopiedInstructionsWorkWhateverTheAgentOrFileIsCalled() {
-        let copied = CreatedView.loginInstructions
-        #expect(copied.contains("PLOW_TOKEN_FILE"))
-        #expect(copied.hasSuffix("Then run latch login."))
-        for leak in ["/Users", "~/", ".latch-key", "Kitchen Helper", "scout"] { #expect(!copied.contains(leak)) }
-    }
-}

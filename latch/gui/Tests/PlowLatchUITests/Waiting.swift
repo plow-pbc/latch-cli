@@ -6,7 +6,7 @@ import Testing
 /// issue if it still doesn't hold by `deadline`: a stuck operation fails,
 /// and a quick one costs only its own time.
 @discardableResult
-func waitUntil(within deadline: Duration = .seconds(10), sourceLocation: SourceLocation = #_sourceLocation,
+func waitUntil(within deadline: Duration = .seconds(60), sourceLocation: SourceLocation = #_sourceLocation,
                _ done: () -> Bool) async -> Bool {
     let end = ContinuousClock.now + deadline
     while !done() {

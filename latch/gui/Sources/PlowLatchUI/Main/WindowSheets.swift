@@ -119,8 +119,7 @@ struct AppKitSheets: SheetPresenting {
         guard let wanted else { return }
         switch wanted {
         case .googleSignIn: present(GoogleSignInSheet(), wanted, over: controller)
-        case let .sheet(.newAgent(flow)):
-            present(NewAgentSheet(flow: flow, chooseKeyFile: { [weak self] in self?.chooseKeyFile(for: flow) }), wanted, over: controller)
+        case let .sheet(.newAgent(flow)): present(NewAgentSheet(flow: flow), wanted, over: controller)
         case let .sheet(.vaultItem(editor)): present(VaultItemSheet(editor: editor), wanted, over: controller)
         case let .sheet(.vaultImport(importer)): present(ImportSheet(importer: importer), wanted, over: controller)
         case let .sheet(.choosingExport(host)): chooseExport(on: host, wanted, over: window)
@@ -165,14 +164,6 @@ struct AppKitSheets: SheetPresenting {
         presenter.choose(panel, over: window) { [weak self] file in
             guard let self, self.answered(what) else { return }
             if let file { self.app.beginImport(file, on: host) }
-        }
-    }
-
-    /// New Agent's Choose…: where to save the key, over its sheet.
-    func chooseKeyFile(for flow: NewAgent) {
-        guard let sheet = shown?.controller?.view.window else { return }
-        presenter.choose(NewAgentSheet.keyFilePanel(name: flow.name), over: sheet) { file in
-            if let file { flow.tokenFile = file }
         }
     }
 

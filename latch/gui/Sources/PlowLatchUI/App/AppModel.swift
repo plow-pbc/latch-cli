@@ -22,11 +22,8 @@ final class AppModel {
     /// only ever on a person's click. A test build records them instead, so
     /// a run never opens anything.
     var open: (URL) -> Void = { NSWorkspace.shared.open($0) }
-    /// Shows a file in the Finder (the New Agent sheet's key file); only on
-    /// a click. A test build records it.
-    var reveal: (URL) -> Void = { NSWorkspace.shared.activateFileViewerSelecting([$0]) }
-    /// Puts text on the clipboard (the New Agent sheet's login
-    /// instructions); only on a click. A test build records it.
+    /// Puts text on the clipboard (a number, a handle, a message to send);
+    /// only on a click. A test build records it.
     var copy: (String) -> Void = { text in
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
@@ -701,22 +698,7 @@ final class AppModel {
         agentKinds = Dictionary(catalog.kinds.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
     }
 
-    func agentCatalog() async throws -> AgentCatalog { try await client.agentCatalog() }
-    func agentLines() async throws -> AgentLines { try await client.agentLines() }
-    /// `latch agents show`, kept in the account's agents too, so the
-    /// Agents page shows what the New Agent sheet saw.
-    func agentStatus(_ uid: String) async throws -> AgentsList.Agent {
-        let agent = try await client.agentShow(uid)
-        if let at = agents?.firstIndex(where: { $0.uid == uid }) { agents?[at] = agent }
-        return agent
-    }
-
-    /// Creates an agent, then lists the account's agents again.
-    func createAgent(name: String, cloud: String?, tokenFile: URL?, line: String) async throws -> AgentCreated {
-        let created = try await client.newAgent(name: name, cloud: cloud, tokenFile: tokenFile, line: line)
-        await refreshAgents()
-        return created
-    }
+    func agentStartByText() async throws -> AgentStartByText { try await client.agentStartByText() }
 
     /// For snapshots: as latch said.
     func stage(devices: DeviceList?, update: UpdateCheck?) {

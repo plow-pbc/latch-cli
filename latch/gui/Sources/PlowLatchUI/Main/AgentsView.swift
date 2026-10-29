@@ -13,7 +13,7 @@ struct AgentsView: View {
             HStack {
                 Spacer()
                 Button("New Agent", systemImage: "plus") { app.sheet = .newAgent(NewAgent()) }
-                    .help("Create a cloud agent or your own")
+                    .help("Start a cloud agent by text")
             }
             .padding(.horizontal, 20)
             .padding(.vertical, 10)
