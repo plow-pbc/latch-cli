@@ -48,7 +48,7 @@ private struct HostSection: View {
         Section(host.isThisMac ? "This Mac's host" : "Host") {
             LabeledContent("State") {
                 HStack(spacing: 6) {
-                    StateDot(state: state)
+                    StateDot(state: state).accessibilityHidden(true)
                     Text(stateText(state))
                 }
             }

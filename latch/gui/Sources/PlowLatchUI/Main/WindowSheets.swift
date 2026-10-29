@@ -38,7 +38,7 @@ enum Confirmation: Equatable {
         switch self {
         case .startHosting: "Start hosting on this Mac?"
         case .stopHost: "Stop Latch on this Mac?"
-        case let .removeAgent(agent): "Remove \(agent.name)?"
+        case let .removeAgent(agent): "Remove \(agent.displayName)?"
         case let .removeVaultItem(item, host): "Remove “\(item.title)” from \(host.name)?"
         case let .removeDevice(device): "Remove “\(device.name)” from your account?"
         }
