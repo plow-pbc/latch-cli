@@ -1,380 +1,336 @@
-# Getting started with latch
+# Getting started with Latch
 
-latch lets you, and agents you allow, reach the files, programs and browser
-on your own machines. You log each machine in with your Plow account. One
-machine *serves* exec, files and connectors. Your other machines and your
-agents *call* it.
+This guide takes about 10 minutes. You will:
 
-This guide takes you from nothing to a Mac serving calls and a second
-machine calling it, in about 10 minutes.
+1. Install Latch on the machine your agents will use.
+2. Log it in to Plow and start its host.
+3. Call the host from another of your machines.
+4. Give an agent a login of its own.
 
-Every regular command prints one JSON object on stdout, at a terminal or
-not (`--pretty` indents it), and a failure one `{"error": …}` line on
-stderr. Streams print JSON lines, each with a `type`, the first `hello`:
-`login --events`, `audit`, `status --local --follow` and `logs`. `setup`,
-`login` by text, `serve` without `-d` and the dashboard are for a person;
-`help` and `skill` print text.
+Below, the host is `my-mac`, your second machine is `my-laptop` and the agent
+is `my-agent`. Use your own names.
 
-Exit codes: 0 ok, 1 failed, 2 usage, 3 host unreachable, 4 denied,
-5 connection lost after sending.
+**How commands answer.** Each command prints one JSON object on stdout.
+When it fails, it prints one `{"error": …}` line on stderr instead.
+`--pretty` indents the JSON. `latch` alone, `latch setup`, `latch serve` and
+`latch dashboard` are for a person at a terminal.
+
+| Exit code | Meaning |
+|---|---|
+| 0 | Done. |
+| 1 | Failed. Read the error. |
+| 2 | The command is wrong, or the host is unknown or ambiguous. |
+| 3 | The host could not be reached, or could not judge the call. |
+| 4 | Refused. |
+| 5 | The request was sent, but the answer was lost. Check what happened before you send it again. |
 
 ## 1. Install
-
-This installs the newest release from `releases.plow.co`:
 
 ```sh
 curl -fsSLO https://releases.plow.co/latch-cli/install.sh && sh install.sh
 ```
 
-`sh install.sh TAG` installs that release instead (tags look like
-`v0.1.0-1327`). The installer picks the archive for your
-machine (Apple silicon or Intel Mac, Linux x86_64 or arm64, including a
-Raspberry Pi), checks it against the release's `SHA256SUMS`, and installs
-it. Options after the tag (or alone) go to the installer: `--bin-dir DIR`,
-`--state-dir DIR`, `--browser chrome|camoufox` (repeat it for both),
-`--no-browser`, `--client-only` and `--no-modify-path`.
-
-**An agent's machine or image** only asks hosts, so it needs latch and
-nothing else: `sh install.sh --client-only` installs the binary alone (no
-gog, browser engine, Messages reader, bubblewrap or root), asks nothing and
-starts no setup, and ends by saying to run `latch login` (see
-[section 5](#5-give-an-agent-access-the-right-way)).
-
-**What it puts where:**
+The installer downloads the newest release for your machine, checks it
+against the release's `SHA256SUMS` and installs it. You need `curl`, `tar`
+and a SHA-256 tool, which most systems have.
 
 | What | Where |
 |---|---|
-| The `latch` binary | `~/.local/bin/latch`. If that folder isn't on your `PATH`, the installer adds one line to your shell's login profile (`~/.zprofile` for zsh; `~/.bashrc` and your login profile for bash on Linux) and prints the `export` for the terminal you're in; for another shell, or with `--no-modify-path`, `--client-only` or `--non-interactive`, it only says what to add. On macOS it links into `/Applications/Plow Latch.app`, or `~/Applications/Plow Latch.app` when you can't write `/Applications`. |
-| Your machine's state: its key, Plow login, config, audit log | `~/.latch` (made by the installer, filled in by `latch login`) |
-| gog, the Google CLI a host runs for `latch google` | `~/.latch/plugins/gog/<version>/` |
-| Chrome for Testing, the browser a host runs for `latch browser` (macOS, Linux arm64/x86_64; about 200 MB), unless `--no-browser` | `~/.latch/plugins/cft/<version>/` |
-| Camoufox, with `--browser camoufox` (macOS, Linux arm64 and x86_64; about 1 GB on macOS, 1.5 GB on Linux) | `~/.latch/plugins/camoufox/<version>/` |
+| The `latch` command | `~/.local/bin/latch` |
+| The Plow Latch app (Mac only) | `/Applications/Plow Latch.app`, or `~/Applications` if you can't write to `/Applications`. On a Mac, `~/.local/bin/latch` is a link into the app. |
+| Latch's state folder: its key, Plow login, settings, vault and audit log | `~/.latch` |
+| Chrome for Testing, the browser a host drives for agents | `~/.latch/plugins/cft/` |
+| The tool a host runs for Gmail and Calendar | `~/.latch/plugins/gog/` |
 
-`latch browser setup --engine chrome|camoufox` installs an engine later, on
-the host.
+**PATH.** If `~/.local/bin` isn't on your `PATH`, the installer adds it in
+your shell's login profile: `~/.zprofile` for zsh, or `~/.bashrc` and your
+login profile for bash on Linux. It also prints the line that fixes the
+terminal you are in:
 
-`--state-dir DIR` on the installer puts the plugins in another state folder
-instead; pass the same `--state-dir DIR` to every `latch` command then, or
-set `LATCH_STATE_DIR=DIR`, which the installer and every command read.
+```text
+install-binary.sh: added /Users/you/.local/bin to your PATH in /Users/you/.zprofile
+install-binary.sh: to run latch in this terminal now: export PATH="$HOME/.local/bin:$PATH"
+```
 
-**Update:** run `latch update` (`latch update --check` only says whether a
-newer build is out; `latch update TAG` installs that build, also how to go
-back). It replaces the binary (on macOS, the whole `Plow Latch.app`) and
-skips anything already installed at the pinned version. A host that
-`latch serve -d` started is stopped and started again with the new latch,
-with the same flags. A host running in a terminal (`latch serve`) is
-stopped, and the update says to run `latch serve` there again.
+For any other shell, it prints the line to add yourself.
 
-If the previous host was started with folder arguments, automatic restart
-is refused. Start once with `latch serve -d`, adding any `--deny-exec` or
-`--headless-browsers` flags you need. This saves the current flags for later
-restarts.
+**On a Mac.** What happens next depends on your macOS version:
 
-Check it:
+| macOS | What happens |
+|---|---|
+| 26 or later | The installer opens the Plow Latch app, which takes you through setup. |
+| 15 to 25 | Setup runs in the terminal. The app's window needs macOS 26. |
+| 13 or 14 | Setup runs in the terminal. Google doesn't work: it needs macOS 15. |
+| 12 or earlier | Not supported. The installer stops and installs nothing. |
+
+The installer never asks for your password on a Mac.
+
+**On Linux.** A host runs its work in a sandbox, which needs bubblewrap and
+user namespaces. If a package is missing, the installer installs it with
+`apt-get`, `dnf`, `apk` or `pacman`, and asks for your password (`sudo`)
+once. On Ubuntu 24.04 and later it also loads the AppArmor profile that lets
+bubblewrap work. For Docker, see [DOCKER.md](../latch/DOCKER.md).
+
+**Options.** Put them after `sh install.sh`:
+
+| Option | What it does |
+|---|---|
+| `TAG` | Installs that release instead of the newest, for example `v0.1.0-151`. Put it first. |
+| `--client-only` | Installs `latch` for a machine that only calls hosts, such as an agent's: no browser, no Google tool, no Messages reader and no Linux sandbox packages. It never asks for `sudo` and runs no setup. |
+| `--bin-dir FOLDER` | Puts `latch` in `FOLDER`. |
+| `--state-dir FOLDER` | Uses `FOLDER` as the state folder. Then pass the same `--state-dir FOLDER` to every `latch` command, or set `LATCH_STATE_DIR=FOLDER`. |
+| `--browser chrome`, `--browser camoufox` | Chooses the browser to install. Repeat it to install both. |
+| `--no-browser` | Installs no browser. `latch browser setup --engine chrome` adds one later. |
+| `--non-interactive` | Doesn't start setup at the end, and leaves your shell profile alone. |
+| `--no-modify-path` | Leaves your shell profile alone. |
+
+**Check it worked:**
 
 ```sh
 latch --version
-# latch 0.1.0 (1327): commit …, built …, standalone tag v0.1.0-1327, protocol plow/latch/4
 ```
 
-**Linux:** a host sandboxes what it runs with bubblewrap. The installer
-installs it (and, on Ubuntu 24.04 and later, loads the AppArmor profile that
-lets it work), asking for `sudo` once, only if something is missing. A Pi
-also gets Xvfb and unzip for Chrome.
+```json
+{"version":"0.1.0 (151): commit …, protocol plow/latch/4"}
+```
 
-## 2. Log in
+## 2. Log in and start the host
+
+A first install starts setup. To run it yourself:
 
 ```sh
-latch login
+latch setup
 ```
 
-A release build logs in to `https://api.plow.co` by default; `--api-url
-URL` names another Plow, and latch saves it. The machine is
-named after its hostname; `--name NAME` picks another. Names are unique in your
-account. If another of your machines holds the name, latch asks:
+Setup takes these steps. Each one shows the `latch` command it runs, and
+each is skipped once done, so you can run setup again at any time:
 
-```
-A machine named "mac" already exists (last seen 2026-10-15T01:30:12Z). Replace it (this signs it out of Plow)? [y/N]
-```
+1. **Log in** to Plow (`latch login`).
+2. **Connect Google** (`latch plugins enable google`). If your Plow account
+   has no Google account yet, it shows a link and a QR code to sign in.
+3. **On a Mac, turn on Messages and Contacts.** These need Full Disk Access
+   for the Plow Latch app.
+4. **Start the host** (`latch serve -d`), if you say yes.
 
-`y` removes the old machine (which signs it out of Plow) and finishes the login
-under its name. `n` or Enter asks `New name for this machine:` and finishes
-under the name you type, asking again if that one is taken too; an empty name
-stops the login. Either way you don't text again. Without a terminal to ask
-at, the login stops with `conflict` and says what to run: `latch login --name
-OTHER`, or `latch login --name NAME` (the name you asked for) again at a
-terminal to replace the old machine.
-`latch devices` lists your machines.
+`latch setup --status` lists the same steps as JSON and changes nothing.
 
-**What you see:** a QR code, then
+**Logging in by text.** `latch login` shows a QR code and a line like this:
 
-```
-sms:+1…?&body=GHCIA
-Text GHCIA to +1 555-…
+```text
+Text GHCIA to +1 555-000-0100
 ```
 
-Text that code to that number from the phone your Plow account uses (or scan
-the QR with the phone's camera, which opens Messages with the text ready).
-latch checks every 3 seconds and then prints `Logged in as <name>.`
+Text that code from the phone your Plow account uses, or scan the QR code
+with the phone's camera. Latch waits for the text, then prints
+`Logged in as my-mac.`
 
-Check it:
+The machine is named after its hostname. `latch login --name NAME` picks
+another name. Names are unique in your account. If another of your machines
+has the name, the login asks whether to replace that machine or which name to
+use instead. `latch devices` lists your machines.
+
+**See this machine at a glance:**
 
 ```sh
-latch status            # JSON: your account, this machine, and the account's hosts
-latch status --pretty   # the same, indented
-latch status --local    # only this machine: login, whether it hosts, state folder. Works offline
+latch
 ```
 
-## 3. Serve this machine
+It shows your account, whether this machine is hosting, your hosts, its
+connectors and one next step. `latch status` gives the same as JSON, and
+`latch status --local` only this machine, without asking Plow.
 
-Exec and file calls need no shared-folder setup:
+**Start the host** if setup didn't:
 
 ```sh
 latch serve
 ```
 
-`latch serve` shows a live dashboard; each call shows up as a row. Ctrl-C
-stops the host. Leave it running in its own terminal, or use `latch serve -d`
-to start it detached and `latch stop` to stop it.
+`latch serve` starts the host and shows its dashboard, with a row for each
+call. `q` closes the dashboard and leaves the host running. Ctrl-C stops the
+host. To start it in the background instead, run `latch serve -d`. To stop
+it, run `latch stop`.
 
-What a caller from one of your machines can reach:
+## 3. Call the host from another machine
 
-- **Files:** `file get` reads what exec can: your home folder and the
-  system's own files (`latch file get --host mac /etc/hosts` works). `file
-  put` writes anywhere in your home folder. Neither touches latch's own
-  state or, on macOS, `~/Library` (its Caches excepted); anything else is
-  refused (`bad_path`, exit 4). A put replaces the file only once all of it
-  has arrived, and keeps the old file's permissions.
-- **Exec:** reads home and system files, with the same hidden places as file
-  calls. It writes only repeated `--write PATH` grants, private temp and
-  existing plain tool-cache folders. IP networking is off unless `--network`
-  is given. Workdir defaults to the first write folder, otherwise home;
-  `--workdir` overrides it.
-
-## 4. Call the host from another of your machines
-
-On the second machine: install (step 1) and log in (step 2) with **the same
-phone**, so it joins the same Plow account. Give it its own name. Below, the
-host is `my-mac`; use the name your host logged in with.
+On your second machine, install Latch and log in with **the same phone**, so
+it joins the same Plow account. Give it its own name:
 
 ```sh
 latch login --name my-laptop
-latch status    # "hosts":[{"name":"my-mac",…,"online":true,…}]
+latch status
 ```
 
-To try it on the serving machine, use the same state folder as `latch serve`;
-no second login is needed. Leave out `--host` to use its private local
-receiver, or name this host explicitly. If you started serve with
-`--state-dir DIR`, pass that same option to each command:
+`latch status` lists your hosts, with `"online":true` for `my-mac`.
 
-```sh
-latch --state-dir DIR exec -- ls -la
-```
-
-Your own machines are you, and the host's gatekeeper judges their calls
-too: `exec`, `file`, `google`, `messages` and `contacts` run only as your own
-request within your rules on that host, so they need the decision model (see
-6). The browser's judged actions need it too: opening a new site, plans, vault
-fills, scripts, uploads and downloads (see [the browser gatekeeper](../latch/BROWSER.md#the-gatekeeper)).
-Your settings (`rules`, `vault`) are never judged. Set
-`LATCH_HOST=my-mac` to leave out `--host`.
-
-**Run a program.** No shell is involved unless you run one. The JSON has
+**Run a program.** No shell runs unless you name one. The answer has
 `stdout`, `stderr` and `exit_code`:
 
 ```sh
 latch exec --host my-mac -- ls -la
 latch exec --host my-mac --write '~/code/my-project' -- sh -c 'pwd; uname -s'
-# {"exit_code":0,"stdout":"/Users/you/code/my-project\nDarwin\n",…}
 ```
 
-**Copy a file.** Paths on the host are in its home folder: `'~/…'` (quoted,
-so your shell leaves the `~` alone) or relative to home:
+```json
+{"exit_code":0,"stdout":"/Users/you/code/my-project\nDarwin\n",…}
+```
+
+The program can read your home folder and the system's own files. It can
+write only to the folders you name with `--write`. It has no network unless
+you add `--network`.
+
+**Copy a file.** Paths on the host are in its home folder. Quote a leading
+`~` so your own shell leaves it alone:
 
 ```sh
-latch file get --host my-mac '~/hello.txt'             # to ./hello.txt
-echo "note from my laptop" > notes.txt
-latch file put --host my-mac notes.txt '~/Documents'   # as ~/Documents/notes.txt
+latch file get --host my-mac '~/hello.txt'
+latch file put --host my-mac notes.txt '~/Documents'
 ```
 
-**Drive a browser on the host** (the host needs a browser engine; see 1).
-`open` answers a session id that every
-later command needs; `LATCH_BROWSER_SESSION` carries it. On a Mac the window
-opens behind yours and never takes focus.
+The first saves `./hello.txt`. The second writes `~/Documents/notes.txt` on
+the host. Neither reaches Latch's state folder or, on a Mac, `~/Library`:
+those are refused with `bad_path`.
+
+**Drive a browser on the host.** `browser open` answers with a session id,
+which later commands read from `LATCH_BROWSER_SESSION`:
 
 ```sh
 export LATCH_HOST=my-mac
 latch browser open https://example.com > open.json
 export LATCH_BROWSER_SESSION=$(jq -r .session open.json)
-latch browser text                          # the page's text
-latch browser screenshot page.png  # a PNG on this machine
-latch browser observe --all                 # elements with refs (e1, e2, …); without --all, on-screen ones only
-latch browser act click e1                  # needs the decision model (see 6)
+latch browser text
+latch browser screenshot page.png
+latch browser observe --all
+latch browser act click e1
 latch browser close
 ```
 
-See `latch browser --help` for `do`, `fill`, tabs and handoff, and
-[latch/BROWSER.md](../latch/BROWSER.md).
+`LATCH_HOST` saves typing `--host` each time. `observe` lists the page's
+elements as `e1`, `e2` and so on. See [BROWSER.md](../latch/BROWSER.md).
 
-## 5. Give an agent access, the right way
+**On the host itself,** leave out `--host`, and use the same state folder as
+`latch serve`. Calls such as `exec` then go to the running host directly.
+`rules` and `vault` work there even when the host is stopped.
 
-An agent gets **its own login, with its own Plow agent credential, in its own
-state folder**. The host then judges each of the agent's calls (its
-*gatekeeper*) against your rules on that host and, separately, against what
-you've told that agent in your Plow chat with it.
+**Your own calls are judged too.** The gatekeeper checks `exec`, `file`,
+`google`, `messages`, `contacts` and the browser's risky steps against your
+rules on that host. Your settings commands (`rules`, `vault`) are never
+judged.
 
-> **Never copy a device login (a machine's state folder, or its
-> `plow-token`) to an agent.** That login is you: the host sees one of your
-> own machines, and the gatekeeper judges the call as your own request
-> instead of judging it as that agent's. A copied laptop state runs `exec` on your
-> host as if you had asked for it.
+## 4. Give an agent its own login
 
-**An agent already running on Plow** has its credential and Plow's address
-in its environment (`$PLOW_AGENT_TOKEN`, the file `$PLOW_TOKEN_FILE` or
-`/config/secrets/plow-api-token`, and `$PLOW_API_BASE`, the proxy that adds the
-credential). Install latch there with `sh install.sh --client-only`, then
-run, in that environment as it is:
+An agent always logs in with **its own** Plow credential, in its own state
+folder. The host then judges each of its calls as that agent's.
+
+> **Never copy your own login to an agent.** Your login is a machine's state
+> folder, or its Plow token. A host treats that login as you, so it would
+> judge the agent's calls as your own requests.
+
+**An agent that runs on Plow** has its credential and Plow's address in its
+environment (`PLOW_AGENT_TOKEN`, `PLOW_TOKEN_FILE` or `PLOW_API_BASE`). If
+its machine has no Latch yet, install it with
+`sh install.sh --client-only`. Then, in that same environment:
 
 ```sh
-latch --state-dir ~/latch-agent login
-# {"peer":{"kind":"agent","name":"my-agent",…},"key_created":true}
-latch --state-dir ~/latch-agent status    # "kind":"agent", and your hosts
+latch login
+latch status
 ```
 
-Don't add `--api-url` or a token file: the agent's own environment already
-says where Plow is and who it is. Keep that environment for every command the
-agent runs; latch does not copy the credential into the state folder.
+`latch status` shows `"kind":"agent"` and your hosts. Keep that environment
+for every command the agent runs: Latch doesn't copy the credential into its
+state folder.
 
-**A new agent you run yourself** needs a *self-hosted* agent credential
-first, made on one of your free lines.
-
-1. Create it. This needs your own Plow login in the shell, made the way
-   Plow's account page makes one: Plow texts you a code, and the code buys a
-   login token. (latch keeps its own login where only latch reads it: in the
-   Keychain on a signed Mac.) The agent's token is shown once; this writes it
-   to a 0600 file and prints only the agent's uid and name:
-
-   ```sh
-   printf 'Your phone, as +15551234567: '; read -r P
-   curl -s -X POST https://api.plow.co/v1/auth/otp/request \
-     -H 'content-type: application/json' -d "{\"phone\":\"$P\"}" >/dev/null
-   printf 'The code Plow texted you: '; read -r C
-   T=$(curl -s -X POST https://api.plow.co/v1/auth/otp/verify \
-     -H 'content-type: application/json' -d "{\"phone\":\"$P\",\"code\":\"$C\"}" | jq -r .token)
-   curl -s https://api.plow.co/v1/lines -H "Authorization: Bearer $T" | jq -c '.data[] | {uid, available}'
-   umask 077
-   curl -s -X POST https://api.plow.co/v1/agents -H "Authorization: Bearer $T" \
-     -H 'content-type: application/json' \
-     -d '{"line_uid":"LINE_UID","provider":"self_hosted","name":"my-agent"}' \
-     | tee >(jq -r .token > ~/my-agent.token) | jq -c '.agent | {uid, name}'
-   ```
-
-   Treat `~/my-agent.token` like a password: it carries the agent's full Plow
-   scopes. To revoke it, with `$T` from above (or a new one made the same
-   way): `curl -X DELETE https://api.plow.co/v1/agents/AGENT_UID -H
-   "Authorization: Bearer $T"`. `$T` is your own login: `unset T` when done.
-
-2. Log it in, in its own state folder, with the token file and Plow's public
-   address:
-
-   ```sh
-   export PLOW_TOKEN_FILE=~/my-agent.token
-   latch --state-dir ~/latch-agent login --api-url https://api.plow.co
-   # {"peer":{"kind":"agent","name":"my-agent",…},"key_created":true}
-   latch --state-dir ~/latch-agent status    # "kind":"agent", and your hosts
-   ```
-
-   The agent registers under its Plow name. Keep `PLOW_TOKEN_FILE` set for
-   every command the agent runs; latch does not copy the credential into the
-   state folder.
-
-**What the agent gets.** Your agents can look things up in your calendar,
-email, messages and files, and create or edit ordinary files, without waiting
-for another request; what they read goes back to the agent. Riskier actions
-(sending, buying, deleting, changing calendars or shared systems, giving a
-program internet access, accessing secrets or sending data elsewhere) need
-permission in your rules or your Plow chat with the agent ("yes, email Jordan
-the update"). The gatekeeper checks your rules on their own, and separately
-what you've told the agent in chat. Your rules remain in force when you ask in
-chat, and they can restrict everyday work too ("Do not read or search this
-Mac's Messages"). Rules are owner only, run on the host itself or from one of
-your machines with `--host`:
+**An agent you run yourself** needs a free phone line in your account. From
+one of your own machines:
 
 ```sh
-latch rules edit                          # opens $EDITOR; on the host itself
-latch rules edit --host my-mac            # from another of your machines
-latch rules edit --agent my-agent         # rules for one agent only
+latch agents lines
+latch agents new --own --name my-agent --line LINE --token-file my-agent.token
+```
+
+- `LINE` is a line's number or uid from `latch agents lines`.
+- `my-agent.token` is a new file. Latch makes it private (mode 600) and
+  never overwrites a file.
+
+Treat the file like a password. Give it to the agent. Its program logs in
+with it, in a state folder of its own:
+
+```sh
+export PLOW_TOKEN_FILE=~/my-agent.token
+latch --state-dir ~/latch-agent login
+```
+
+Keep `PLOW_TOKEN_FILE` set for every command the agent runs.
+
+To revoke the agent, run `latch agents remove my-agent`. It asks you to
+confirm (`--yes` skips the question). The agent's credential stops working at
+once and its line is freed.
+
+**What an agent may do.** Your agents can look things up in your calendar,
+email, messages and files, and create or edit ordinary files, without asking
+first. What they read goes back to the agent. Riskier actions need your
+permission, in your rules or in your Plow chat with the agent. These include
+sending, buying, deleting, changing calendars or shared systems, giving a
+program internet access, using secrets, and sending data elsewhere.
+
+**Rules** are plain text in your own words. There is one text for every
+agent, and one for each agent. Only you can read or change them:
+
+```sh
+latch rules edit                     # on the host itself
+latch rules edit --host my-mac       # from another of your machines
+latch rules edit --agent my-agent    # rules for one agent only
 latch rules show
 ```
 
-Rules are judged by a model, not guaranteed. For a hard stop, serve with
-`latch serve --deny-exec` (every agent) or `--deny-exec=AGENT_UID`.
+`latch rules set TEXT` sets them without an editor. Your rules stay in force
+when you ask in chat, and they can restrict everyday work too, for example
+"Do not read or search this Mac's Messages."
 
-What the agent sees when refused (exit 4, `gatekeeper_denied`):
-`not_covered` means ask you in chat, naming exactly what it will do, then
-retry once you agree. `owner_said_no` and `exec_denied` mean no.
+A model judges the rules, so they are not a guarantee. For a hard stop, start
+the host with `latch serve --deny-exec`: no agent can run programs there.
+`--deny-exec=AGENT_UID` stops one agent.
+
+**When an agent is refused** (exit 4, `gatekeeper_denied`):
+
+- `not_covered`: the agent asks you in chat, saying exactly what it will do,
+  and tries again once you agree.
+- `owner_said_no` or `exec_denied`: the answer is no.
+
+## 5. Update
+
+```sh
+latch update
+```
+
+This installs the newest release. `latch update --check` only says whether
+there is a newer one. `latch update TAG` installs a given release, which is
+also how you go back to an older one.
+
+Latch checks the release's signature first, and on a Mac that Plow signed
+the app. A host started with `latch serve -d` restarts on the new version.
+A host running in a terminal stops, and the update tells you to start it
+again. A running host checks for a new release once a day and shows it in
+`latch` and on its dashboard. Nothing installs on its own.
 
 ## 6. Troubleshooting
 
-**`host_offline` (exit 3): "host … is offline".** Plow lists the host
-offline: it isn't serving. Start `latch serve` there. Nothing was sent.
+| You see | What it means | What to do |
+|---|---|---|
+| `command not found: latch` | `~/.local/bin` isn't on your `PATH` in this terminal. | Open a new terminal, or run the `export PATH=…` line the installer printed. |
+| `host_offline` (exit 3) | Plow doesn't list the host as online. Nothing was sent. | Start `latch serve` on the host. |
+| `host_unreachable` (exit 3) | No connection to the host within 15 seconds, or the connection failed. Nothing was sent. | Try again. A host that stopped without telling Plow stays listed as online for up to 25 minutes. |
+| `outcome_unknown` (exit 5) | The request was sent, but the answer was lost. | Check whether it happened before you send it again. |
+| `serve_required` (exit 3) | This machine's host isn't running. | Start `latch serve` with the same state folder. |
+| `host_required` (exit 2) | You have several hosts and didn't name one. | Add `--host NAME`, or set `LATCH_HOST`. |
+| `gatekeeper_unavailable` (exit 3) | The host couldn't reach Plow or its decision model, so the call didn't run. | Try again later. If the message says the host's Plow account is out of credits, the host's owner must add credits. For a browser plan, read its `steps` first: earlier steps may have run. |
+| `model_unavailable` (exit 1) | A browser step needed the decision model and couldn't get it. Earlier steps may have acted. | Read `steps` and `trail` in the answer, and retry only what didn't happen. |
+| `not_logged_in` (exit 2) | This state folder isn't logged in. | Run `latch login`, with the same `--state-dir` if you use one. |
+| `not_configured` (exit 2) | A Latch built from source doesn't know which Plow to use. | Pass `--api-url https://api.plow.co` to `latch login`. |
+| `state_format` (exit 1) | The state folder belongs to another version of Latch, or holds files Latch didn't put there. Nothing was read or changed. | Update Latch, or use the version that made it. For a folder with other files, run the command in the error's `next`, which moves them aside, or use another folder. |
 
-**`host_unreachable` (exit 3): "could not connect to host …; nothing was
-sent".**
-- Plow still lists the host online, but it doesn't answer: it may have
-  stopped without saying so. Plow lists it offline once its heartbeat runs
-  out; until then a call takes about 18 seconds to fail.
-- Several calls at once from the same machine (or the same agent) can fail
-  this way even though the host is up: in a test, 3 of 8 parallel `exec`s
-  failed. Nothing was sent, so it's safe to retry; run calls from one
-  identity one at a time where you can.
-- `outcome_unknown` (exit 5) is different: the connection dropped *after* the
-  request was sent. Check whether it happened before you resend.
+In `~/.latch`, Latch moves files it didn't put there into
+`~/.latch/leftovers/DATE` by itself, and says so.
 
-**`gatekeeper_unavailable` (exit 3).** The host's gatekeeper couldn't reach
-Plow or its decision model, whether an agent or one of your own machines
-made the call. The action needing that judgment was not run. Retrying starts
-the call again; for a browser plan, inspect its `steps` and `trail` first,
-since earlier actions may already have happened.
-
-**`model_unavailable` (exit 1, browser).** A browser step needed the decision
-model (a click's risk, a goal in words, a sentence check) and couldn't get it,
-and the plan stopped there. It never undoes or replays anything, and actions
-may already have gone out:
-- earlier steps in the same `do` may have clicked, typed or submitted;
-- the failed step itself may have acted first: a goal in words runs several
-  actions before the call that failed, and a step's check (` -> …`) runs
-  after its action was sent.
-
-Before retrying, read `steps` (each step's `outcome`) and `trail` (each action
-sent, with its `result`) in the answer, including the failed step's own
-entries, and retry only what didn't happen.
-
-For either one, the message says why the model couldn't answer:
-- "out of credits for the decision model": the **host's** Plow account is out
-  of credits. Every retry fails the same way until the host's owner adds
-  credits.
-- "Plow's decision route answered HTTP 503; retry later": retry later.
-
-Your own machines need the model for every judged call (`exec`, `file`,
-`google`, `messages`, `contacts`) and the browser's judged actions, including
-`browser open` and `do`. Browser goals and sentence checks also need the
-model. Page reads (`text`, `screenshot`) in an existing session and your
-settings (`rules`, `vault`) work without it.
-
-**`state_format` (exit 1): "… is in state format 2, set up by latch …; this
-latch … reads only format 1".** That state folder was set up by a newer latch
-(update this one) or an older one (use that one). Nothing was read or
-changed. Don't edit `latch.json` by hand.
-"… has no latch.json format marker and holds what latch did not put there
-(…)": a folder named with `--state-dir` that holds other files. Run the
-command the error gives (also its `next`), which moves them aside, or pass
-another folder. In `~/.latch`, latch moves such leftovers aside itself, into
-`~/.latch/leftovers/DATE` (or `-2` and on, never over one), and says so.
-
-**`not_configured` (exit 2) on the first login: "latch doesn't know which
-Plow to use"**. A release build always knows; a latch built from a
-checkout may not. Pass `--api-url URL` (step 2).
-
-**`not_logged_in` (exit 2).** Run `latch login`, with the same `--state-dir`
-if you use one.
+**Connection problems.** Set `LATCH_TRACE=iroh=debug,latch=info` on the
+calling machine, the host or both. A command writes its trace to `trace.log`
+in its state folder. The host writes it to its log (`latch logs`).

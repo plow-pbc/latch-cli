@@ -592,8 +592,8 @@ keeps that answer's option ids and probabilities (`corrected`). Calls send
 element names, row text, page lines, the title and non-secret field
 values; never cookies, vault values, seeds or screenshots. The host holds
 no model key: it asks Plow's decision route (`POST /v1/decisions`) with
-its own Plow login, and Plow asks Jev (`typesafe/jev-1.13`) on OpenRouter
-with zero data retention and bills the call to the host's Plow account, as
+its own Plow login, and Plow asks its decision model on OpenRouter,
+with zero data retention, and bills the call to the host's Plow account, as
 for any model call; the audit records provider `plow`, the model and Plow's
 request id. A host not logged in to Plow, an account out of credits,
 or a route that fails or can't be reached, means what needs a decision
