@@ -33,14 +33,19 @@ latch/target/debug/latch --state-dir .dev/state-mine login --api-url https://api
 
 ```sh
 just test             # everything a merge needs, on this OS
-just test --linux     # the same on Linux, in a Docker container
+just test --linux sandbox  # one suite on Linux, in a Docker container
 just test core        # one suite: the quick loop
 just test-list        # every suite, what it covers and what it needs
 ```
 
 The gate is `cargo fmt`, `cargo clippy` with warnings as errors, and the
-tests, on macOS and on Linux. CI runs the same commands. A suite that can't
-run where you asked fails and says why: nothing is skipped.
+tests, on macOS and on Linux. CI runs the same commands, and runs the whole
+Linux gate on every pull request that changes code. Run `just test --linux` yourself only for a
+Linux-specific change (the bubblewrap sandbox, the Linux browser code, the
+installer's Linux paths, systemd) or to reproduce a Linux failure from CI,
+and then only that suite or test (`just test --linux --only NAME`; the
+systemd tests run in CI and on a Linux machine, not in the container). A suite
+that can't run where you asked fails and says why: nothing is skipped.
 
 Some checks call a real Plow stack or the decision model (`just dev-login`,
 `just gatekeeper`). They aren't part of the gate. Maintainers run them by
@@ -56,8 +61,8 @@ hand.
    The pages of plow.co/latch/docs are in [docs/site/](docs/site/), and
    `docs/site/commands.md` is written from `latch help --json` by
    `just docs-site OUT`; `just test` fails when it is out of date.
-4. Run `just test`, and `just test --linux` if you can. Say in the pull
-   request which ones you ran.
+4. Run `just test`; CI runs the Linux gate. Say in the pull request which
+   ones you ran.
 5. Write the pull request's title and description so that someone who hasn't
    seen the discussion can follow them.
 
