@@ -1,3 +1,8 @@
+Plow Latch
+Copyright 2026 The Plow Collective, Inc
+
+This product includes software developed at The Plow Collective, Inc (https://plow.co).
+
 The Linux sandbox launch structure and AF_VSOCK seccomp rule in
 src/sandbox/linux.rs are adapted from OpenAI Codex, commit
 97ebf2d94d62e2ff2045f3ea17b6e11eae9a21fb:
