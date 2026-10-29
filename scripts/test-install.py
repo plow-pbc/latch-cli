@@ -912,6 +912,32 @@ class MacAppFolder(unittest.TestCase):
         self.assertIn("since Latch's window from it did not quit", result.stdout)
         self.assertFalse(any(call.startswith("open") for call in calls), calls)
 
+    def test_a_window_open_from_the_app_replaced_in_place_is_quit_and_opened_again(self):
+        # The window keeps running the app it was opened from, so a new
+        # window would show only once it is opened again. An app installed
+        # again unchanged leaves it alone.
+        for own, replaced in [("0.1.0 (1)", True), ("0.1.0 (2)", False)]:
+            with self.subTest(own=own):
+                window = self.window("sleep 60")
+                result, calls, home, _ = self.install(shared="absent", own=own, host="managed",
+                                                      window=window)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                installed = home / "Applications/Plow Latch.app"
+                self.assertEqual(self.is_running(window), not replaced)
+                opened = f"open {installed} --args --state-dir {home.parent}/state"
+                self.assertEqual(opened in calls, replaced, calls)
+                self.assertEqual(f"opened Latch's window again from {installed}" in result.stdout,
+                                 replaced, result.stdout)
+
+    def test_a_window_that_does_not_quit_for_an_in_place_update_is_left_to_the_user(self):
+        window = self.window("trap '' TERM; sleep 60")
+        result, calls, home, _ = self.install(shared="absent", own="0.1.0 (1)", window=window)
+        self.assert_installed_in(home / "Applications", home, result)
+        self.assertTrue(self.is_running(window))
+        self.assertIn("Latch's window did not quit; quit it and open Latch again to see the new version",
+                      result.stdout)
+        self.assertFalse(any(call.startswith("open") for call in calls), calls)
+
     def test_a_copy_a_run_cut_short_left_aside_in_the_users_folder_goes_too(self):
         result, _, home, applications = self.install(own="0.1.0 (1)", cut_short=True)
         self.assert_installed_in(applications, home, result)
