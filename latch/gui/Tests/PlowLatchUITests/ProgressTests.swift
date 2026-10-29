@@ -202,6 +202,32 @@ struct GatekeeperTests {
         #expect(client.saved == [Onboarding.decks[0].rules])
     }
 
+    /// Rules that couldn't be read can't be saved over: a default may be
+    /// picked, but Save rules is off until a read works; Skip still goes on.
+    @Test func unreadRulesCantBeSavedOver() async {
+        let client = ScriptedClient { _ in nil }
+        client.showFailure = LatchFailure(code: "state_busy", message: "the state folder is busy")
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
+        let flow = app.stage(.rules)
+        await flow.loadRules()
+        #expect(flow.rulesUnreadable && !flow.primaryEnabled)
+        flow.choose(Onboarding.decks[0])
+        flow.primary()
+        await flow.saveRules()
+        #expect(client.saved.isEmpty)
+        // Read again: saving works once the rules are known.
+        client.showFailure = nil
+        client.savedText = "Agents may read ~/Projects."
+        await flow.loadRules()
+        #expect(!flow.rulesUnreadable && flow.primaryEnabled)
+        let skipped = app.stage(.rules)
+        client.showFailure = LatchFailure(code: "state_busy", message: "the state folder is busy")
+        await skipped.loadRules()
+        skipped.skip()
+        #expect(skipped.step != .rules)
+        #expect(client.saved.isEmpty)
+    }
+
     @Test func anEmptyBoxPreviewsTheSavedRulesItKeeps() async {
         let client = ScriptedClient { _ in nil }
         let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
@@ -463,7 +489,10 @@ final class ScriptedClient: LatchClient, @unchecked Sendable {
     }
     /// The shared rules `rules show` gives, if any.
     var savedText: String?
+    /// `rules show` fails with this.
+    var showFailure: LatchFailure?
     func rulesShow(host: String?) async throws -> RulesShow {
+        if let showFailure { throw LatchError.failed(showFailure) }
         let every = try savedText.map { String(decoding: try JSONEncoder().encode(["text": $0, "revision": "r1"]), as: UTF8.self) } ?? "null"
         return try Fixtures.decode(#"{"agents":[],"every_agent":\#(every)}"#)
     }

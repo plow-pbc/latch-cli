@@ -353,6 +353,10 @@ package enum SnapshotRunner {
             ("04-rules-rerun-prefilled", .rules, Fixtures.stopped, Progress(), {
                 $0.savedRules = rules; $0.draftRules = rules
             }),
+            // They couldn't be read: nothing can be saved over them.
+            ("04-rules-read-failed", .rules, Fixtures.stopped, Progress(), {
+                $0.stage(rulesUnreadable: LatchError.failed(LatchFailure(code: "state_busy", message: "the state folder is busy")))
+            }),
             // Changed from them: Save rules says it replaces them.
             ("04-rules-rerun-changed", .rules, Fixtures.stopped, Progress(), {
                 $0.savedRules = rules; $0.draftRules = Onboarding.decks[1].rules; $0.deck = Onboarding.decks[1]
