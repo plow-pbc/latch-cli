@@ -78,8 +78,10 @@ and the new revision, never a value.
 `import` reads 1Password's 1PUX, CSV and "Copy item JSON", Apple Passwords'
 CSV, Chrome's CSV and Bitwarden's CSV and unencrypted JSON. It shows every
 row (values reduced to whether they are there), marks rows the vault
-already holds or that would update a changed password, and imports only
-the rows you pick; nothing is picked by default. Without a prompt,
+already holds (a login by its title, username, site and secrets; a card by
+its title, brand and last four digits; a note by its title and text) or
+that would update a changed password, and imports only the rows you pick,
+writing the vault once; nothing is picked by default. Without a prompt,
 `--preview` returns that preview as JSON, imports nothing and, like a
 rules preview, is not audited; and `--pick
 1,3-5` (or `all`) imports those rows of it. That pick reads the vault
