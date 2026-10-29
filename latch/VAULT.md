@@ -25,9 +25,14 @@ passport number, hidden custom fields.
 
 With no `--host` (or naming this peer), manage this state folder's vault
 locally, with or without `serve`. Use the existing device login; no second
-state folder or login is needed. Agents are refused with exit 4. To manage
-another host, pass `--host NAME` (or set `LATCH_HOST`); it must be serving,
-and a failed remote call never falls back to the local vault.
+state folder or login is needed. Agents are refused with exit 4, but for
+`list` (below). To manage another host, pass `--host NAME` (or set
+`LATCH_HOST`); it must be serving, and a failed remote call never falls
+back to the local vault.
+
+**An agent's `vault list --host NAME`** is judged like its other work and
+answers each item's id, title and saved sites only, never a username or a
+value. The owner's list is never judged.
 
 ```sh
 latch vault add --kind login --title Shop --site shop.example \
@@ -149,15 +154,20 @@ page in the address.
 ## Filling
 
 One command fills every kind: `latch browser fill --item vN` with the
-agent's mapping, `--field FIELD=eN` for each item field (`username`,
+agent's mapping; with no `--item`, the login saved for the page's site
+(several there: refused `which_item`, listing them). The item is found
+before the fill is judged, so the judge sees its kind and sites; an id the
+vault lacks is refused `no_such_item`. The mapping is
+`--field FIELD=eN` for each item field (`username`,
 `password`, `otp` for a login's current authenticator code, computed on
 the host; a card's `number`, `expiry`, `cvv`, …; an identity's or a note's
 fields), `--field number=e4,e5,e6,e7` for a value split across boxes; or
 `--suggested S`, a mapping latch suggested. Dates and expiries are
 reshaped to the field's own format. A mapping that includes a secret (a
 password, a code, a card or identity secret) needs `--press eN`, the button
-that submits it (given, or in the suggestion). latch never maps, picks an
-item or finds a button on its own.
+that submits it (given, or in the suggestion). latch never maps or finds a
+button on its own, and picks an item only as above: the one login saved
+for the page's site.
 
 `observe` shows what a fill could use, never a value: `fill.items`, the
 items whose site rule allows them on the page, each with the fields it

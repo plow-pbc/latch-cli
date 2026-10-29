@@ -1142,12 +1142,11 @@ async fn fills_inside_plans_take_latchs_suggestions_or_stop() {
         stopped.message, details["stop"]
     );
     assert_eq!(code, "needs_fields");
-    // The stop says each way on: the vault's code, a texted one found and
-    // typed, then the owner.
+    // The stop says each way on, pointing to the skill for the details:
+    // the vault's code, one the site sent, typed, then the owner.
     for way in [
         "--field otp=eN",
-        "the host reads Messages",
-        "latch messages search",
+        "`latch skill`",
         "type eN",
         "handoff --reason 2fa",
     ] {

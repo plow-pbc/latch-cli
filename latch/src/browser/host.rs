@@ -571,9 +571,10 @@ pub async fn run(
     Done::send_bytes(send, result, &bytes, audit).await
 }
 
-/// A `fill`: a suggestion taken by its id becomes the mapping it stands
-/// for; one that releases a card or identity secret stops for the agent's
-/// confirmation before any value is released.
+/// A `fill`: its item, named by id or left to the page's site, is found
+/// before it is judged; a suggestion taken by its id becomes the mapping
+/// it stands for; one that releases a card or identity secret stops for
+/// the agent's confirmation before any value is released.
 pub(super) async fn fill(
     browsers: &Browsers,
     entry: &Entry,
@@ -583,7 +584,9 @@ pub(super) async fn fill(
     audit: &mut Map<String, Value>,
 ) -> Result<Value, Failure> {
     audit.insert("item".into(), args["item"].clone());
-    let args = super::fill::resolve(browsers, entry, args).await?;
+    let args = super::fill::named(browsers, entry, args).await?;
+    audit.insert("item".into(), args["item"].clone());
+    let args = super::fill::resolve(browsers, entry, &args).await?;
     if caller.gate.is_some() {
         let site = judged::site(browsers, entry).await?;
         judged::judge(
@@ -698,6 +701,15 @@ async fn answer(
     {
         off_web(browsers, url).await?;
     }
+    // A plan's items are found before any of it is judged, as a fill's are.
+    let planned;
+    let args = match command {
+        "do" => {
+            planned = super::fill::named_in_plan(browsers, &entry, args).await?;
+            &planned
+        }
+        _ => args,
+    };
     if caller.gate.is_some()
         && let Some(action) = judged_action(browsers, &entry, command, args).await?
     {
