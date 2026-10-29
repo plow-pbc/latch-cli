@@ -44,3 +44,5 @@ It links PhoneNumberKit (PhoneNumberKit/PhoneNumberKit 5.0.12), whose
 metadata is embedded in the binary. Copyright (c) 2018 Roy Marmelstein,
 Copyright (c) 2026 Bruno Guidolim and contributors. Licensed under the MIT
 license (LICENSE-PhoneNumberKit).
+The Mac app's window (gui/) links it too, to write agents' phone numbers,
+its metadata embedded the same way.

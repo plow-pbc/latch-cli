@@ -87,9 +87,9 @@ struct AgentsHubTests {
     @Test func phoneNumbersAreWrittenAsTheirRegionWritesThem() {
         #expect(PhoneNumber("+16505550136")?.formatted(region: "US") == "(650) 555-0136")
         #expect(PhoneNumber("+16505550136")?.formatted(region: "GB") == "+1 650-555-0136")
-        #expect(PhoneNumber("+442079460958")?.formatted(region: "US") == "+44 207 946 0958")
-        #expect(PhoneNumber("+5511987654321")?.formatted(region: "BR") == "+55 1198 765 4321")
-        #expect(PhoneNumber("+6581234567")?.formatted(region: "SG") == "+65 8123 4567")
+        #expect(PhoneNumber("+442079460958")?.formatted(region: "US") == "+44 20 7946 0958")
+        #expect(PhoneNumber("+442079460958")?.formatted(region: "GB") == "020 7946 0958")
+        #expect(PhoneNumber("+5511987654321")?.formatted(region: "US") == "+55 11 98765-4321")
         #expect(PhoneNumber("+5511987654321")?.sms == URL(string: "sms:+5511987654321"))
         #expect(PhoneNumber("agent@plow.co") == nil)
         #expect(PhoneNumber("16505550136") == nil)

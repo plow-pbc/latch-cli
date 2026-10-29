@@ -12,13 +12,26 @@ let live = ProcessInfo.processInfo.environment["LATCH_LIVE_TESTS"] != nil
 // The scaling measurements take seconds; they're built only when asked
 // for: `LATCH_SCALING=1 swift test --filter ActivityScalingTests`.
 let scaling = ProcessInfo.processInfo.environment["LATCH_SCALING"] != nil
+// PhoneNumberKit's metadata, linked into each image that holds PlowLatchUI
+// (section __DATA,__phonemeta), as the Messages reader links it: no resource
+// bundle to find beside the library.
+let metadata = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+    .appendingPathComponent(".build/checkouts/PhoneNumberKit/Sources/PhoneNumberKit/Resources/PhoneNumberMetadata.json")
+    .path
+let embedMetadata: [LinkerSetting] = [
+    .unsafeFlags(["-Xlinker", "-sectcreate", "-Xlinker", "__DATA", "-Xlinker", "__phonemeta", "-Xlinker", metadata]),
+]
 
 let package = Package(
     name: "PlowLatchUI",
     platforms: [.macOS(.v26)],
     products: [.library(name: "PlowLatchUI", type: .dynamic, targets: ["PlowLatchUI"])],
+    dependencies: [
+        .package(url: "https://github.com/PhoneNumberKit/PhoneNumberKit.git", exact: "5.0.12")
+    ],
     targets: [
-        .target(name: "PlowLatchUI", swiftSettings: isolated),
+        .target(name: "PlowLatchUI", dependencies: [.product(name: "PhoneNumberKit", package: "PhoneNumberKit")],
+                swiftSettings: isolated, linkerSettings: embedMetadata),
         // Renders every onboarding screen and state, light and dark, on the
         // sample latch to PNGs: `swift run Snapshots OUTPUT_DIR`.
         .executableTarget(name: "Snapshots", dependencies: ["PlowLatchUI"], swiftSettings: isolated),

@@ -66,3 +66,8 @@ bundle ships with it.
 | Package | Used for | Stars | Owner | Version (released) | License |
 |---|---|---|---|---|---|
 | `PhoneNumberKit` | Phone numbers as one canonical handle each, region-aware | 63 (5.4k at its old home, `marmelroy/PhoneNumberKit`, which points here) | PhoneNumberKit org (its original authors) | 5.0.12 (2026-10-08) | MIT |
+
+The Mac app's window (`gui/`) depends on the same package at the same
+version, pinned in `gui/Package.swift`, to write an agent's number as its
+region writes it; its metadata is linked into `libPlowLatchUI.dylib` the
+same way.
