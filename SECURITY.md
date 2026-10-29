@@ -32,8 +32,12 @@ model up.
   their Plow chat with that agent.
 - **It fails closed.** If the gatekeeper can't judge, nothing runs.
 - **Settings are the owner's alone.** Only the owner's own machines can read
-  or change a host's rules and vault, or turn its connectors on and off.
-  Agents are refused.
+  or change a host's rules, change its vault, or turn its connectors on and
+  off. Agents are refused.
+- **An agent can list the vault, but never read its secrets.** `vault list`
+  shows an agent each item's id, title and saved sites, and the gatekeeper
+  judges that request like the agent's other work. No username or secret
+  value reaches the agent.
 - **The gatekeeper is not a guarantee.** It is a model, and models make
   mistakes. Rules are judged, not enforced. `latch serve --deny-exec` is
   enforced in code: no agent runs a program on that host.
@@ -71,6 +75,12 @@ are welcome.
   that runs as that user.
 - **An owner's login placed where an agent runs is judged as the owner.**
   The host can't tell. Give each agent a login of its own.
+- **A script the agent ran on a page can catch a value filled there later.**
+  If an agent ran its own script on a site earlier in a browser session,
+  what that script left behind (a service worker, a stored script) can read
+  a vault value that Latch fills there. Latch can't prevent this. Its audit
+  marks every such fill (`agent_code_before_fill`). A new browser session
+  starts clean.
 - **On macOS, the browser engine runs outside Latch's sandbox**, in its own
   sandbox. A compromised engine could read the host's state folder.
 - **Outside the signed macOS app, secrets are files** that only the OS user
