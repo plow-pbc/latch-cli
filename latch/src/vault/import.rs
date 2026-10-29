@@ -566,18 +566,18 @@ fn onepux_item(parsed: &mut Parsed, item: &Value, from: &Source) {
         .trim()
         .to_string();
     let vault = Some(from.clone());
+    if item["state"] == "archived" {
+        skip(parsed, &raw_title, "archived in 1Password", vault);
+        return;
+    }
     let category = item["categoryUuid"].as_str().unwrap_or("");
-    if category == "002" && item["state"] != "archived" {
+    if category == "002" {
         onepux_card(parsed, item, &raw_title, vault);
         return;
     }
     if category != "001" {
         let reason = format!("{}, not a login", category_name(category));
         skip(parsed, &raw_title, &reason, vault);
-        return;
-    }
-    if item["state"] == "archived" {
-        skip(parsed, &raw_title, "archived in 1Password", vault);
         return;
     }
     let overview = &item["overview"];

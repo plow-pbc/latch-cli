@@ -405,7 +405,13 @@ fn onepux_credit_cards_come_along_as_cards() {
             ("Shop", "login")
         ]
     );
-    assert_eq!(parsed.skipped[0].title, "Old card");
+    assert_eq!(
+        (
+            parsed.skipped[0].title.as_str(),
+            parsed.skipped[0].reason.as_str()
+        ),
+        ("Old card", "archived in 1Password")
+    );
     let card = &parsed.items[0].item.raw;
     for (label, value) in [
         ("cardholder name", "Ada Lovelace"),
@@ -415,7 +421,8 @@ fn onepux_credit_cards_come_along_as_cards() {
         ("expiry month", "4"),
         ("expiry year", "2031"),
     ] {
-        assert_eq!(card.get(label).as_deref(), Some(value), "{label}");
+        // Compared, never printed: a card's number and code are secrets.
+        assert!(card.get(label).as_deref() == Some(value), "{label}");
     }
     assert_eq!(card.notes.as_deref(), Some("company card"));
     assert!(parsed.items[0].warnings.is_empty());
@@ -426,16 +433,13 @@ fn onepux_credit_cards_come_along_as_cards() {
     let shown = preview(&parsed);
     assert_eq!(shown["items"][0]["kind"], "card");
     let text = shown.to_string();
-    assert!(
-        !text.contains("5555555555554444") && !text.contains("737"),
-        "{text}"
-    );
+    assert!(!text.contains("5555555555554444") && !text.contains("737"));
 
     // Saved, it is a card the vault keeps its number and code secret in.
     let (_dir, mut vault) = store();
     mark_against(&vault, &mut parsed).unwrap();
     let outcome = commit(&mut vault, &parsed, &[1]);
-    assert_eq!(outcome.saved, 1, "{:?}", outcome.failed);
+    assert_eq!(outcome.saved, 1);
     let meta = &vault.list()[0];
     assert_eq!((meta.kind, meta.title.as_str()), ("card", "Plow card"));
     let secret: Vec<&str> = meta
@@ -445,27 +449,19 @@ fn onepux_credit_cards_come_along_as_cards() {
         .map(|f| f.label.as_str())
         .collect();
     assert_eq!(secret, ["number", "code"]);
-    assert_eq!(
-        vault.release(&meta.item, "number").unwrap(),
-        "5555555555554444"
-    );
+    assert!(vault.release(&meta.item, "number").unwrap() == "5555555555554444");
 }
 
 #[test]
 fn a_onepassword_csv_card_row_says_to_export_a_1pux() {
     let parsed = parse_text(
-        "Title,Url,Username,Password,OTPAuth,Favorite,Archived,Tags,Notes
-         Plow card,,,,,false,false,,company card
-",
+        "Title,Url,Username,Password,OTPAuth,Favorite,Archived,Tags,Notes\n\
+         Plow card,,,,,false,false,,company card\n",
     )
     .unwrap();
     assert!(parsed.items.is_empty());
     assert_eq!(parsed.skipped[0].title, "Plow card");
-    assert!(
-        parsed.skipped[0].reason.contains("export a 1PUX"),
-        "{:?}",
-        parsed.skipped
-    );
+    assert!(parsed.skipped[0].reason.contains("export a 1PUX"));
 }
 
 #[test]
