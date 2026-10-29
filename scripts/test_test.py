@@ -4,6 +4,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -91,8 +92,11 @@ class Suites(unittest.TestCase):
         return self.listed(runner.filterset(suite, where))
 
     def listed(self, expression):
+        # Its own target folder: in the container CARGO_TARGET_DIR names the
+        # real build's, whose latch this stub would replace.
+        env = {**os.environ, "CARGO_TARGET_DIR": str(self.crate / "target")}
         listed = subprocess.run(["cargo", "nextest", "list", "--message-format", "json", "-E", expression],
-                                cwd=self.crate, check=True, capture_output=True, text=True)
+                                cwd=self.crate, check=True, capture_output=True, text=True, env=env)
         return {f"{binary['binary-name']}:{name}"
                 for binary in json.loads(listed.stdout)["rust-suites"].values()
                 for name, case in binary["testcases"].items()
