@@ -611,7 +611,7 @@ async fn a_refused_command_sends_nothing_to_the_page(engine: &str) {
         let missing = missing.unwrap_err();
         assert_eq!(missing.code, "no_such_item", "{missing:?}");
         assert!(
-            missing.message.contains("`latch vault list`"),
+            missing.message.contains("`latch vault list --site SITE`"),
             "{missing:?}"
         );
         assert!(!audit.contains_key("gate"), "{audit:?}");
@@ -1024,7 +1024,7 @@ async fn a_fill_inside_a_plan_is_judged_as_a_fill(engine: &str) {
         let failure = result.unwrap_err();
         assert_eq!(failure.code, "no_such_item", "{failure:?}");
         assert!(
-            failure.message.contains("`latch vault list`"),
+            failure.message.contains("`latch vault list --site SITE`"),
             "{failure:?}"
         );
         assert!(!audit.contains_key("gate"), "{audit:?}");
