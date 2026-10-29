@@ -3,15 +3,11 @@
 A host does your agents' work. Its gatekeeper checks each request, and its
 vault and audit log keep your secrets and a record of what happened.
 
-## Hosts, owners and agents
+## Hosts and agents
 
 **A host** is a computer that runs `latch serve`. It does the work: it runs
 programs, copies files and drives a browser. It also holds your vault and the
 audit log.
-
-**You are the owner.** Every computer you log in with your own Plow login acts
-as you. From any of them you can manage the rules and the vault on any of your
-hosts.
 
 **An agent** logs in with its own Plow credential. It can send requests to
 your hosts. It can't change your rules, read your vault's secrets or turn
@@ -29,8 +25,9 @@ may run. It judges programs, file copies, Google, Messages, Contacts and the
 browser's risky steps.
 
 - **An agent's requests** are judged against your rules and what you told the
-  agent in your Plow chat. Everyday lookups and ordinary file edits are
-  allowed. Riskier actions need your OK.
+  agent in your Plow chat. By default, everyday lookups and ordinary file
+  edits are allowed and riskier actions need your OK; your rules can change
+  either.
 - **Only you give permission.** What the agent says, other people's messages
   and web pages are never permission.
 - **It fails closed.** If the host can't judge a step, that step doesn't run.

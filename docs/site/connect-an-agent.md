@@ -9,12 +9,12 @@ what you told it in your Plow chat.
 
 ## An agent Plow runs
 
-**Agents built on Plow's OpenClaw or Hermes images:** nothing to set up.
-`latch` comes installed and signed in.
+**Agents built on Plow's [OpenClaw](https://github.com/plow-pbc/plow-openclaw-agent)
+or [Hermes](https://github.com/plow-pbc/plow-hermes-agent) images:** nothing to
+set up. `latch` comes installed and signed in.
 
-**Any other agent on Plow:** its credential already works with `latch`.
-Install it yourself with the [Agent install](index.md#install-on-an-agent),
-then run `latch login` there.
+**Any other agent on Plow:** its credential already works with `latch`. Give
+it the [Agent install](index.md#install-on-an-agent), then `latch login`.
 
 ## Your own agent
 
@@ -61,12 +61,19 @@ To revoke the agent, run `latch agents remove my-agent`.
 
 ## What an agent may do
 
-Your agents can look things up in your calendar, email, messages and files,
-and create or edit ordinary files, without asking first.
+By default, your agents may look things up in your calendar, email, messages
+and files, and create or edit ordinary files, without asking. Riskier actions
+need your OK, in your rules or your Plow chat: sending, buying, deleting,
+changing calendars or shared systems, giving a program internet access, using
+secrets, and sending data elsewhere.
 
-Riskier actions need your OK, in your rules or in your Plow chat with the
-agent: sending, buying, deleting, changing calendars or shared systems,
-giving a program internet access, using secrets, and sending data elsewhere.
+These are defaults. Your rules change them either way: forbid something
+agents could otherwise do, or allow something that would otherwise need your
+OK. For example:
+
+- "Do not read or search this Mac's Messages."
+- "Agents may email the people in my contacts."
+
 Each host keeps its own rules: see
 [How Latch works](how-latch-works.md#the-gatekeeper-and-rules).
 
