@@ -108,7 +108,7 @@ Important:
 A skipped test is a lie — it tells you the suite is green when it is not. Skipping accumulates quietly until the suite is meaningless.
 
 - **Do not skip tests because credentials or keys are missing.** Get them. If you don't have them, ask the user — do not `#[ignore]` your way past the failure.
-- **Do not skip tests because the environment is not set up.** Set up the environment: install the engines (`just test browser` does), start Docker for `just test --linux`. The test is telling you what needs to be true — make it true.
+- **Do not skip tests because the environment is not set up.** Set up the environment: install the engines (`just test browser` does), start Docker when you need `just test --linux`. The test is telling you what needs to be true — make it true.
 - **Do not comment out failing assertions.** That is the same as deleting the test but pretending you didn't.
 - **Do not weaken assertions to make tests pass.** The fix is in the code, not in the assertion.
 
@@ -128,11 +128,11 @@ When you encounter a failing test:
 
 ## Validation
 
-The gate is fmt, clippy with `-D warnings`, and the tests, on macOS and on Linux. From the repo root:
+The gate is fmt, clippy with `-D warnings`, and the tests, on macOS and on Linux. CI runs the full Linux gate on every pull request that changes code; locally, run the gate for your machine. From the repo root:
 
 ```bash
 just test             # the gate for this machine's OS
-just test --linux     # the Linux gate, in the Linux test container (Docker)
+just test --linux SUITE   # one suite in the Linux test container (Docker); see below
 just test core        # one suite: the quick loop
 just test --only NAME # just the tests with NAME in their names, in whichever suites hold them
 just test-list        # the suites: what each covers and needs, and where it runs
@@ -143,9 +143,11 @@ A suite that cannot run where you asked fails and says why; nothing is skipped. 
 
 `just gatekeeper` runs the checks that ask the decision model for real, through Plow on the login of `.dev/state` (not tests).
 
+Run `just test --linux` on a Mac only for a Linux-specific change (the bubblewrap sandbox, the Linux browser code, the installer's Linux paths, systemd) or to reproduce a Linux failure from CI, and then only the suite or test it touches: `just test --linux sandbox`, `just test --linux --only NAME`. The systemd tests (`lifecycle`) don't run in the container; CI and a Linux machine run them. The full Linux gate uses every core for about ten minutes, and CI runs it anyway.
+
 Rules:
 
-- Run both gates before presenting changed code. If you could run only one, say which.
+- Run your machine's gate before presenting changed code, and leave the full Linux gate to CI. Say which gates and suites you ran.
 - Do not claim "tests pass" for a gate you did not run.
 - If you only changed docs, say that tests were not run.
 
