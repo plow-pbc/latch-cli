@@ -1,0 +1,19 @@
+<!doctype html><title>latch card form test</title>
+<!-- A shop's own card form: name, number, expiry, CVC and ZIP. Posts to
+     /pay, which says which card fields matched the test card. With ?bare
+     the fields lose their autocomplete hints, as many shops' have none. -->
+<h1>Checkout</h1>
+<p>Total $10.00</p>
+<form method="post" action="pay">
+  <p><label>Name on card <input name="cc-name" autocomplete="cc-name"></label></p>
+  <p><label>Card number <input name="cc-number" autocomplete="cc-number" inputmode="numeric"></label></p>
+  <p><label>Expiry <input name="cc-exp" autocomplete="cc-exp" placeholder="MM / YY"></label></p>
+  <p><label>CVC <input name="cc-csc" autocomplete="cc-csc" maxlength="4"></label></p>
+  <p><label>ZIP <input name="zip" autocomplete="postal-code"></label></p>
+  <p><button type="submit">Pay $10.00</button></p>
+</form>
+<script>
+  if (new URLSearchParams(location.search).has('bare')) {
+    for (const field of document.querySelectorAll('[autocomplete]')) field.removeAttribute('autocomplete');
+  }
+</script>

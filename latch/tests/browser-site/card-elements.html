@@ -1,0 +1,27 @@
+<!doctype html><title>latch hosted card fields test</title>
+<!-- A checkout shaped like a payment provider's hosted fields: each card
+     field is its own frame from the provider (open with ?frame=PORT; the
+     frames come from http://localhost:PORT/card-element.html), and the Pay
+     button is the shop's. Pay asks the number's frame, a moment later as a
+     provider's script would, to send the card to the provider's /pay. -->
+<h1>Checkout</h1>
+<p>Total $10.00</p>
+<form id="checkout">
+  <p><label>Name on card <input name="cc-name" autocomplete="cc-name"></label></p>
+  <p>Card number <iframe name="number" width="260" height="40"></iframe></p>
+  <p>Expiry <iframe name="expiry" width="120" height="40"></iframe>
+     CVC <iframe name="cvc" width="120" height="40"></iframe></p>
+  <p><button type="submit">Pay $10.00</button></p>
+</form>
+<script>
+  const port = new URLSearchParams(location.search).get('frame');
+  for (const name of ['number', 'expiry', 'cvc']) {
+    document.querySelector(`iframe[name=${name}]`).src =
+      `http://localhost:${port}/card-element.html?field=${name}`;
+  }
+  document.getElementById('checkout').addEventListener('submit', (event) => {
+    event.preventDefault();
+    const name = document.querySelector('[name=cc-name]').value;
+    setTimeout(() => frames.number.postMessage({ pay: name }, '*'), 300);
+  });
+</script>
