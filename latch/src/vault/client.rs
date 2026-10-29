@@ -54,7 +54,7 @@ pub async fn run(state: &StateDir, args: VaultArgs) -> Result<Value, Failure> {
                     ..call(json!({"command": "list"}))
                 })
                 .await?;
-            Ok(narrow.apply(listed))
+            narrow.apply(listed)
         }
         VaultCommand::Show { item } => {
             target
@@ -277,8 +277,21 @@ impl Narrow {
         site && search && kind
     }
 
-    fn apply(&self, mut listed: Value) -> Value {
+    fn apply(&self, mut listed: Value) -> Result<Value, Failure> {
         let items = listed["items"].as_array().cloned().unwrap_or_default();
+        // A host that predates kinds in an agent's list would match none.
+        if self.kind.is_some() && items.iter().any(|item| item["kind"].is_null()) {
+            let mut outdated = Failure::new(
+                code::host_outdated,
+                "that host's latch doesn't say each item's kind, so --kind can't narrow its list"
+                    .into(),
+            );
+            outdated.next = Some(
+                "ask the owner to update latch on that host, or narrow with --site or --search"
+                    .into(),
+            );
+            return Err(outdated);
+        }
         let matched: Vec<Value> = items.into_iter().filter(|item| self.keeps(item)).collect();
         let total = matched.len();
         let shown: Vec<Value> = matched
@@ -293,7 +306,7 @@ impl Narrow {
                 "{more} more; narrow with --site SITE, --search TEXT or --kind KIND, or show them with --all"
             ));
         }
-        listed
+        Ok(listed)
     }
 }
 
@@ -788,6 +801,7 @@ mod tests {
         Narrow::new(own(site), own(search), own(kind), limit)
             .unwrap()
             .apply(two_thousand())
+            .unwrap()
     }
 
     fn ids(listed: &Value) -> Vec<&str> {
@@ -821,6 +835,29 @@ mod tests {
         let both = narrow(None, Some("shop 19"), Some("login"), Some(3));
         assert_eq!(ids(&both), ["v1901", "v1902", "v1903"]);
         assert_eq!(both["total"], 98);
+    }
+
+    /// An older host's list for an agent has no kinds: --kind says the
+    /// host needs updating rather than reporting an empty vault.
+    #[test]
+    fn kind_against_a_host_that_lists_no_kinds_says_to_update_it() {
+        let older = json!({"items": [
+            {"item": "v1", "title": "Plow card", "sites": []},
+            {"item": "v2", "title": "Shop", "sites": ["shop.example"]},
+        ], "next": "how to sign in"});
+        let kind = |listed: Value| {
+            Narrow::new(None, None, Some("card".into()), Some(50))
+                .unwrap()
+                .apply(listed)
+        };
+        let refused = kind(older.clone()).err().unwrap();
+        assert_eq!(refused.code, "host_outdated");
+        assert!(refused.next.unwrap().contains("update latch on that host"));
+        // The other filters still read it.
+        let site = Narrow::new(Some("shop.example".into()), None, None, Some(50)).unwrap();
+        assert_eq!(site.apply(older).unwrap()["total"], 1);
+        // An empty list has nothing to tell kinds by, and is empty.
+        assert_eq!(kind(json!({"items": []})).unwrap()["total"], 0);
     }
 
     #[test]
