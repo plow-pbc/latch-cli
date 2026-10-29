@@ -2459,6 +2459,22 @@ impl LivePlow {
         if request.line().starts_with("GET /socket-page ") {
             return (200, json!({"fixture": "Local socket browser page"}));
         }
+        // How to start an agent by text, public: asked with a credential,
+        // it refuses, so a test sees none is sent. One kind with two
+        // phrases, one whose phrase needs escaping, and one with none.
+        if request.line().starts_with("GET /v1/signup ") {
+            if bearer.is_some() {
+                return (400, json!({"detail": "sent a credential"}));
+            }
+            return (
+                200,
+                json!({"managed_phone": "+15550000001", "default_provider": "exe:hermes",
+                       "providers": [
+                           {"id": "exe:hermes", "name": "Hermes", "phrases": ["Create an agent for me", "Set this up for me: Hermes"]},
+                           {"id": "exe:life", "name": "Life Assistant", "phrases": ["Set this up for me: aiworthusing.com/agent-index/life"]},
+                           {"id": "exe:quiet", "name": "Quiet", "phrases": []}]}),
+            );
+        }
         let token = bearer.unwrap_or_default();
         let kind = if token == state.owner {
             "device"
@@ -2587,16 +2603,6 @@ impl LivePlow {
                 200,
                 json!([{"id": "exe:hermes", "name": "Hermes", "image": "img", "settings": {}},
                        {"id": "self_hosted", "name": "Self-hosted", "image": null, "settings": {}}]),
-            ),
-            // How to start an agent by text: one kind with two phrases, one
-            // whose phrase needs escaping, and one with none.
-            ("GET", "/v1/signup") if kind == "device" => (
-                200,
-                json!({"managed_phone": "+15550000001", "default_provider": "exe:hermes",
-                       "providers": [
-                           {"id": "exe:hermes", "name": "Hermes", "phrases": ["Create an agent for me", "Set this up for me: Hermes"]},
-                           {"id": "exe:life", "name": "Life Assistant", "phrases": ["Set this up for me: aiworthusing.com/agent-index/life"]},
-                           {"id": "exe:quiet", "name": "Quiet", "phrases": []}]}),
             ),
             // Plow's lines: one free, one held, one whose create is lost, and a mailbox.
             ("GET", "/v1/lines") if kind == "device" => {

@@ -520,7 +520,8 @@ impl Plow {
         response.json().await.map_err(|_| bad_answer())
     }
 
-    /// How to start a cloud agent by texting Plow's managed number.
+    /// How to start a cloud agent by texting Plow's managed number: public,
+    /// so asked of an `anonymous` client.
     pub async fn signup(&self) -> Result<Signup, Failure> {
         let url = format!("{}/v1/signup", self.api_url);
         let response = self.send(self.http.get(url)).await?;
