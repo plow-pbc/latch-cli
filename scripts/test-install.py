@@ -284,6 +284,28 @@ class BinaryInstall(unittest.TestCase):
                     self.assertLess(lines.index(f"install-binary.sh: {said[-1].format(macos)}"),
                                     lines.index("install-binary.sh: next: run `latch setup` to log in and set up the rest"))
 
+    def test_a_login_an_older_install_left_and_latch_moved_aside_is_still_a_first_install(self):
+        parent = ROOT / ".dev/tests"
+        parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=parent) as directory:
+            root = Path(directory)
+            state = root / "state"
+            called = root / "called"
+            # As latch does with an unmarked folder's leftovers: moved aside
+            # on its first command, here the prune.
+            setup, binary, tools = fixture(root, state, (
+                f'#!/bin/sh\necho "$@" >> "{called}"\n'
+                f'case "$*" in *prune-helpers*) mkdir -p "{root}/aside" && '
+                f'mv "{state}/config.json" "{root}/aside/";; esac\n'))
+            (state / "config.json").write_text("{}")
+            env = {**os.environ, "HOME": str(root / "home"),
+                   "PATH": f"{tools}:{os.environ['PATH']}"}
+            result = at_terminal(["sh", str(setup / "install-binary.sh"), "--state-dir", str(state),
+                                  "--no-browser", str(binary)], root, env)
+            self.assertEqual(result.returncode, 0)
+            self.assertEqual(called.read_text(),
+                             f"--state-dir {state} prune-helpers\n--state-dir {state} setup\n")
+
     def test_a_state_folder_latch_refuses_stops_the_install_before_setup(self):
         parent = ROOT / ".dev/tests"
         parent.mkdir(parents=True, exist_ok=True)

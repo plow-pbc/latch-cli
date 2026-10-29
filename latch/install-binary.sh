@@ -225,9 +225,6 @@ if [ -n "$app" ]; then
     old="$other/Contents/MacOS/$(basename "$inner")"
   fi
 fi
-# A first install: no login in the state directory yet.
-first_install=""
-[ -f "$state_dir/config.json" ] || first_install=1
 # Whether the install replaces the latch there. On macOS the whole app
 # counts: a new window with the same latch is a new app. cksum, unlike cmp,
 # is on every system.
@@ -552,6 +549,11 @@ if [ -n "$reopen" ]; then
     say "could not open $installed; open Latch again"
   fi
 fi
+
+# A first install: no login in the state directory yet, once latch has
+# moved aside what an older install left there (a config.json among it).
+first_install=""
+[ -f "$state_dir/config.json" ] || first_install=1
 
 # What this macOS can't run, said before setup.
 if [ -n "${macos:-}" ] && [ -z "$client_only" ]; then
