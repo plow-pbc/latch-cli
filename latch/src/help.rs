@@ -1251,7 +1251,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "audit.judge",
         runs_on: |_| RunsOn::Either,
-        output: "One gatekeeper call, by its id (a record's `kept_request`, in `details.gate` or its `layers`): `id`, `time`, `layer` (`owner`, or an agent's `rules` or `chat`), `request` (the body sent to Plow's decision route: model, state, questions; the rules, the chat and the action as the judge saw them) and `answer` (Plow's reply, null when none came). The judge is never shown a vault or secret value. A host keeps them 7 days (then `no_such_request`), on that host only.",
+        output: "One gatekeeper call, by its id (a record's `kept_request`, in `details.gate` or its `layers`): `id`, `time`, `layer` (`owner`, or an agent's `rules` or `chat`), `request` (the body sent to Plow's decision route: model, state, questions; the rules, the chat and the action as the judge saw them) and `answer` (Plow's reply, null when none came). Kept sealed with the host's audit key, and printed exactly as sent, a credential typed into a command included. The judge is never shown a vault or secret value. A host keeps them 7 days (then `no_such_request`), on that host only.",
         effect: ReadOnly,
         owner_only: true,
         connector: None,

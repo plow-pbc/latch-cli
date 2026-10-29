@@ -219,11 +219,12 @@ value filled from the vault is on the page, and none of a fill step, but
 typed text and the rest of the page can show.
 
 **What the gatekeeper saw.** Beside the audit, the host keeps each
-gatekeeper call's request and Plow's answer for 7 days, readable by the
-host's user only: the rules, the chat and the action exactly as the judge
-saw them. You can read one with `latch audit judge ID`, ID being the
-record's `kept_request`. Agents can't read them. They hold chat and rules
-text, never a vault or secret value.
+gatekeeper call's request and Plow's answer for 7 days, sealed with the
+audit key like the log: the rules, the chat and the action exactly as the
+judge saw them. You can read one with `latch audit judge ID`, ID being the
+record's `kept_request`: exactly what the model was sent, so a
+credential typed into a command shows there too. Agents can't read them.
+They never hold a vault or secret value.
 
 ## 6. Managing a host
 

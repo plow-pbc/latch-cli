@@ -88,12 +88,12 @@ impl CallFailed {
         }
     }
 
-    /// This failure, with the request that was sent and got no answer.
-    fn sent(self, request: &RawValue) -> CallFailed {
+    /// This failure, with the request that was sent and any JSON reply.
+    fn sent(self, request: &RawValue, answer: Option<Box<RawValue>>) -> CallFailed {
         CallFailed {
             exchange: Some(Exchange {
                 request: request.to_owned(),
-                answer: None,
+                answer,
             }),
             ..self
         }
@@ -525,10 +525,13 @@ impl Provider for Plow {
                         "Plow's decision route could not be reached from this host; retry once \
                          its network and Plow are up",
                     )
-                    .sent(&request)
+                    .sent(&request, None)
                 })?;
             let latency_ms = started.elapsed().as_millis() as u64;
             let status = response.status();
+            let text = response.text().await;
+            let answer: Option<Box<RawValue>> =
+                text.ok().and_then(|text| serde_json::from_str(&text).ok());
             if !status.is_success() {
                 return Err(match status.as_u16() {
                     402 => CallFailed::new(
@@ -553,18 +556,16 @@ impl Provider for Plow {
                         format!("Plow's decision route answered HTTP {code}; retry later"),
                     ),
                 }
-                .sent(&request));
+                .sent(&request, answer));
             }
-            let not_json = || {
-                CallFailed::new(
-                    "not_json",
-                    "Plow's decision route did not answer JSON; retry later",
-                )
-                .sent(&request)
+            let not_json = CallFailed::new(
+                "not_json",
+                "Plow's decision route did not answer JSON; retry later",
+            );
+            let Some(answer) = answer else {
+                return Err(not_json.sent(&request, None));
             };
-            let text = response.text().await.map_err(|_| not_json())?;
-            let answer: Box<RawValue> = serde_json::from_str(&text).map_err(|_| not_json())?;
-            let reply: Value = serde_json::from_str(answer.get()).map_err(|_| not_json())?;
+            let reply: Value = serde_json::from_str(answer.get()).expect("a reply read as JSON");
             let meta = CallMeta {
                 provider: "plow",
                 model: reply["model"].as_str().unwrap_or(&self.model).to_string(),

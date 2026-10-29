@@ -206,6 +206,30 @@ impl Keys {
         line
     }
 
+    /// Seals `plain` under the current key, bound to `aad`, for what the
+    /// host keeps beside its log: the key's id and the sealed value.
+    pub fn seal_bytes(&self, plain: &[u8], aad: &str) -> (String, crate::seal::Sealed) {
+        let key = &self.keys[&self.current];
+        let sealed = crate::seal::seal(key, plain, format!("{aad}|{}", self.current).as_bytes());
+        (self.current.clone(), sealed)
+    }
+
+    /// What `seal_bytes` sealed under key `kid`, or `None`.
+    pub fn open_bytes(
+        &self,
+        kid: &str,
+        sealed: &crate::seal::Sealed,
+        aad: &str,
+    ) -> Option<Vec<u8>> {
+        let aad = format!("{aad}|{kid}");
+        crate::seal::open(
+            self.keys.get(kid)?,
+            &sealed.nonce,
+            &sealed.ciphertext,
+            aad.as_bytes(),
+        )
+    }
+
     /// The record a verified line holds, by number for messages.
     fn open(&self, line: &Line, number: usize) -> Result<Record, String> {
         let Some(key) = self.keys.get(&line.kid) else {

@@ -210,15 +210,18 @@ and `details.gate.layers.chat` for an agent's. It prints `{"id", "time",
   state holds the rules of judgment, the conversation as the judge saw it
   (`"(no chat)"` when there was none), the owner's rules and the proposed
   action. Keys print sorted.
-- `answer`: Plow's reply, or null when none came (the record's
-  `model_failed` says why).
+- `answer`: Plow's reply, an error's included, or null when none came
+  (the record's `model_failed` says why).
 
 An agent's record also says `details.gate.chat_lookup`: `found`, or
 `none` when the host found no Plow chat for the agent, so it read none of
 the owner's messages; a refusal then says so too.
 
-A host keeps a call 7 days, on that host only. The judge is never shown a
-vault or secret value, so none is kept. Errors: `no_such_request` (exit
+A host keeps a call 7 days, on that host only, sealed with its audit key.
+It prints exactly what the model was sent, a credential typed into a
+command included; the judge is never shown a vault or secret value, so
+none is kept. When an agent's chat could not be read, its rules layer
+is still kept and named in `details.gate.layers.rules`. Errors: `no_such_request` (exit
 2), the host keeps no call ID.
 
 ## Another host: `--host NAME`

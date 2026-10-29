@@ -435,6 +435,8 @@ mod tests {
         std::fs::create_dir_all(&parent).unwrap();
         let dir = tempfile::tempdir_in(parent).unwrap();
         let state = dir.path().to_path_buf();
+        // The host's audit key, which seals what is kept.
+        crate::audit::AuditLog::open(state.join(crate::audit::FILE)).unwrap();
         let browsers = Browsers::new(
             state.clone(),
             crate::vault::host::Vault::new(state.clone()),

@@ -410,7 +410,9 @@ async fn the_owner_reads_back_each_gatekeeper_call_as_sent_and_an_agent_cannot()
     let t = start(world).await;
     let (device, agent) = (t.caller("device").await, t.caller("agent").await);
     let secret = "synthetic-secret-env-value-5b3e";
-    let exec = json!({"argv": ["true"], "secret_env": {"TOKEN": secret}});
+    let bearer = "synthetic-bearer-9f2c";
+    let header = format!("Authorization: Bearer {bearer}");
+    let exec = json!({"argv": ["true", "-H", header], "secret_env": {"TOKEN": secret}});
     for caller in [&device, &agent] {
         assert!(matches!(
             t.call(caller, "exec", exec.clone()).await.0,
@@ -435,8 +437,17 @@ async fn the_owner_reads_back_each_gatekeeper_call_as_sent_and_an_agent_cannot()
         assert_eq!(kept["request"]["model"], gate::MODEL);
         assert_eq!(kept["answer"]["id"], call["model_request"]);
         assert!(!kept.to_string().contains(secret), "{kept}");
+        // The owner reads exactly what the judge saw, a credential typed
+        // into the command included: in the action and the owner's request.
+        let argv = &kept["request"]["state"]["proposed_action"]["argv"];
+        assert_eq!(argv, &json!(["true", "-H", header]));
         sent.push(kept["request"]["state"].clone());
     }
+    let owners = sent[0]["conversation"][0]["text"].as_str().unwrap();
+    assert!(
+        owners.starts_with("Do this now: ") && owners.contains(bearer),
+        "{owners}"
+    );
     // Each state the decision route was sent, chat text and all.
     let mut asked = t.plow.world.lock().unwrap().asked.clone();
     asked.sort_by_key(Value::to_string);
@@ -451,8 +462,15 @@ async fn the_owner_reads_back_each_gatekeeper_call_as_sent_and_an_agent_cannot()
     let folder = t.state.join("gatekeeper/requests");
     let mode = |path: &std::path::Path| std::fs::metadata(path).unwrap().permissions().mode();
     assert_eq!(mode(&folder) & 0o777, 0o700);
+    // Sealed with the audit key: neither the credential nor the chat is
+    // on disk in the clear.
     for file in std::fs::read_dir(&folder).unwrap() {
-        assert_eq!(mode(&file.unwrap().path()) & 0o777, 0o600);
+        let file = file.unwrap().path();
+        assert_eq!(mode(&file) & 0o777, 0o600);
+        let text = std::fs::read_to_string(&file).unwrap();
+        for clear in [bearer, "run what you need", "Authorization"] {
+            assert!(!text.contains(clear), "{text}");
+        }
     }
 
     let id = json!({"request": by_owner["kept_request"]});
@@ -469,7 +487,11 @@ async fn a_call_plow_never_answered_is_kept_for_7_days() {
     let id = &execs(&t)[0]["gate"]["layers"]["rules"]["kept_request"];
     let kept = judge(&t, &device, id).await;
     assert_eq!(kept["request"]["state"]["conversation"], "(no chat)");
-    assert_eq!(kept["answer"], Value::Null);
+    assert_eq!(
+        kept["answer"],
+        json!({"detail": "unavailable"}),
+        "the reply as it came"
+    );
 
     let file = std::fs::read_dir(t.state.join("gatekeeper/requests"));
     let file = file.unwrap().next().unwrap().unwrap().path();
@@ -497,4 +519,21 @@ async fn a_call_that_cannot_be_kept_is_still_judged() {
     assert!(call.get("kept_request").is_none(), "{call}");
     let logged = crate::log::captured();
     assert!(logged.iter().any(|line| line.contains("could not be kept")));
+}
+
+#[tokio::test]
+async fn a_rules_layer_asked_before_the_chat_failed_is_kept_and_named() {
+    let chat = vec![message("m1", owner(), "run what you need", 5)];
+    let mut world = World::with_chat("chat_a", chat);
+    world.decide = Some(always_covered);
+    world.broken = Some("/v1/chats".into());
+    let t = start(world).await;
+    let (device, agent) = (t.caller("device").await, t.caller("agent").await);
+    let (answer, _) = t.call(&agent, "exec", json!({"argv": ["true"]})).await;
+    assert_eq!(refusal(&answer).1, "gatekeeper_unavailable");
+    let gate = &execs(&t)[0]["gate"];
+    let id = &gate["layers"]["rules"]["kept_request"];
+    let kept = judge(&t, &device, id).await;
+    assert_eq!(kept["layer"], "rules");
+    assert!(kept["answer"]["answers"].is_object(), "{kept}");
 }

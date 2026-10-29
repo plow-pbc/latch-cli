@@ -67,8 +67,8 @@ final class RecordShots {
     static let standalone = "Saved on the caller's machine; the host doesn't keep it."
 }
 
-/// The folders a screenshot or a gatekeeper request passes through on its
-/// way to the screen: one each, readable only by this user, named for this app's process, and
+/// The folders a screenshot passes through on its way to the screen: one
+/// each, readable only by this user, named for this app's process, and
 /// removed once read, or when the app quits.
 nonisolated enum ShotFolder {
     private static var prefix: String { "latch-shot-\(ProcessInfo.processInfo.processIdentifier)-" }

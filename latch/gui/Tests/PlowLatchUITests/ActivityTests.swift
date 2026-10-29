@@ -583,4 +583,17 @@ struct GatekeeperRequestTests {
         #expect(list.map { $0["id"] } == ["g2", "g3"])
         #expect(client.asked == ["g1 -", "g2 pi-kitchen", "g3 pi-kitchen"])
     }
+
+    /// A screenshot's bytes go where every preview goes: the owner's own
+    /// file in the folder the app clears at launch, so a crash leaves none.
+    @Test func aPreviewedScreenshotIsTheOwnersAndInTheClearedFolder() throws {
+        let dir = FileManager.default.temporaryDirectory.appending(path: "GatekeeperRequestTests-\(UUID().uuidString)", directoryHint: .isDirectory)
+        let previews = QuickLookFiles(dir: dir)
+        let file = try #require(previews.write(Data("png".utf8), name: "After action 1.png"))
+        #expect(file.deletingLastPathComponent().standardizedFileURL == dir.standardizedFileURL)
+        #expect(try Data(contentsOf: file) == Data("png".utf8))
+        #expect((try FileManager.default.attributesOfItem(atPath: file.path))[.posixPermissions] as? Int == 0o600)
+        previews.removeAll()
+        #expect(!FileManager.default.fileExists(atPath: dir.path))
+    }
 }

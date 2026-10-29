@@ -98,15 +98,15 @@ struct RecordInspector: View {
             await shots?.load()
         }
         .quickLookPreview($preview)
-        .onChange(of: preview) { closed, _ in closed.map(Self.remove) }
-        .onDisappear { preview.map(Self.remove) }
+        .onChange(of: preview) { closed, _ in closed.map(QuickLookFiles.shared.remove) }
+        .onDisappear { preview.map(QuickLookFiles.shared.remove) }
     }
 
-    /// A screenshot in Quick Look, from a file only this user can read,
-    /// removed once it closes.
+    /// A screenshot in Quick Look, from a file only this user can read
+    /// (`QuickLookFiles`), removed once it closes.
     private func open(_ shot: RecordShots.Shot) {
         guard case let .loaded(png) = shot.state else { return }
-        show(png, name: "\(shot.title).png")
+        preview = QuickLookFiles.shared.write(png, name: "\(shot.title).png")
     }
 
     /// What the gatekeeper sent and got back for this record, in Quick Look.
@@ -114,7 +114,7 @@ struct RecordInspector: View {
         do {
             let text = try await Self.judged(ids, client: app.client, host: host)
             judgeFailure = nil
-            show(Data(text.utf8), name: "Gatekeeper request.json")
+            preview = QuickLookFiles.shared.write(text, name: "Gatekeeper request.json")
         } catch {
             judgeFailure = LatchError.from(error).message
         }
@@ -130,19 +130,6 @@ struct RecordInspector: View {
         return calls.count == 1 ? calls[0] : "[\n" + calls.joined(separator: ",\n") + "\n]"
     }
 
-    private func show(_ data: Data, name: String) {
-        guard let folder = try? ShotFolder.make() else { return }
-        let file = folder.appending(path: name)
-        guard FileManager.default.createFile(atPath: file.path, contents: data, attributes: [.posixPermissions: 0o600]) else {
-            Self.remove(file)
-            return
-        }
-        preview = file
-    }
-
-    private static func remove(_ file: URL) {
-        try? FileManager.default.removeItem(at: file.deletingLastPathComponent())
-    }
 
     /// Everything else the record holds, by key: each op's own args, and
     /// any detail beyond args, the judgment and the start time. Exec's

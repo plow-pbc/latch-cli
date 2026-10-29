@@ -377,17 +377,16 @@ impl Gatekeeper {
         let (mut rules_exchange, mut chat_exchange) = (None, None);
         let looked = chat.is_some();
         let by_rules = Box::pin(async {
-            Ok(self
-                .ask(
-                    &alone,
-                    &RULES_LAYER,
-                    now,
-                    clock,
-                    action,
-                    &mut rules_call,
-                    &mut rules_exchange,
-                )
-                .await)
+            self.ask(
+                &alone,
+                &RULES_LAYER,
+                now,
+                clock,
+                action,
+                &mut rules_call,
+                &mut rules_exchange,
+            )
+            .await
         });
         let by_chat = Box::pin(async {
             let Some(chat) = chat else { return Ok(None) };
@@ -410,9 +409,16 @@ impl Gatekeeper {
             );
             Ok(Some(p.await))
         });
-        let (by_rules, by_chat) = tokio::try_join!(by_rules, by_chat)?;
+        let (by_rules, by_chat) = tokio::join!(by_rules, by_chat);
         self.keep(&mut rules_call, "rules", rules_exchange);
         self.keep(&mut chat_call, "chat", chat_exchange);
+        // A chat that could not be read refuses, the rules layer unheeded:
+        // the record names only where that layer's call was kept.
+        let by_chat = by_chat.inspect_err(|_| {
+            if let Some(id) = rules_call.get("kept_request") {
+                gate["layers"] = json!({"rules": {"kept_request": id}});
+            }
+        })?;
         if looked {
             // Whether the host found a chat for the agent: with none, the
             // owner's messages were never read.
@@ -562,7 +568,8 @@ impl Gatekeeper {
         };
         let id = requests::new_id();
         match requests::keep(dir, &id, layer, &exchange) {
-            Ok(()) => call["kept_request"] = json!(id),
+            Ok(true) => call["kept_request"] = json!(id),
+            Ok(false) => {}
             Err(why) => crate::log::log(&format!("gatekeeper: {why}")),
         }
     }

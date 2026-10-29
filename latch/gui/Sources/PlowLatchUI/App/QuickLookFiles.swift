@@ -1,6 +1,7 @@
 import Foundation
 
-/// Quick Look shows files, so a request previewed is written to one: only
+/// Quick Look shows files, so what is previewed (a request, a screenshot,
+/// what the gatekeeper was sent) is written to one: only
 /// the owner's (0600), in a folder only the owner's (0700) in the per-user
 /// temporary directory. Each goes when its preview closes or moves to
 /// another request; the folder goes at quit, and at launch for whatever a
@@ -13,6 +14,11 @@ struct QuickLookFiles {
 
     /// `text` as a file named `name`, or nil if it couldn't be written.
     func write(_ text: String, name: String) -> URL? {
+        write(Data(text.utf8), name: name)
+    }
+
+    /// `data` as a file named `name`, or nil if it couldn't be written.
+    func write(_ data: Data, name: String) -> URL? {
         let files = FileManager.default
         do {
             try files.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -24,7 +30,7 @@ struct QuickLookFiles {
         let url = dir.appending(path: name)
         try? files.removeItem(at: url)
         // Made with its mode, never readable by another even for a moment.
-        guard files.createFile(atPath: url.path, contents: Data(text.utf8), attributes: [.posixPermissions: 0o600]) else { return nil }
+        guard files.createFile(atPath: url.path, contents: data, attributes: [.posixPermissions: 0o600]) else { return nil }
         return url
     }
 
