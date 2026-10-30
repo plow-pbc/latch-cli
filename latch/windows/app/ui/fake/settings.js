@@ -61,7 +61,8 @@ function account() {
   return one("studioHosts");
 }
 
-const setup = () => ({
+// Host Settings' own stills only; setup's are fake/setup.js's.
+const setup = () => !still ? undefined : ({
   steps: [still === "settings-start-blocked"
     ? { step: "host", state: "blocked", reason: "a host from another latch version (pid 4242) holds this state folder; stop it with `taskkill /PID 4242`, then start latch again", args: null }
     : { step: "host", state: "needed", reason: "latch is not serving on this machine", args: ["serve", "-d"] }],

@@ -52,7 +52,7 @@ const answers = [
 
 // Each page's own answers (fake/<page>.js, exporting `answers` in the shape
 // above), tried first.
-for (const name of ["activity", "rules", "vault", "settings", "agents", "connections", "app-settings"]) {
+for (const name of ["activity", "rules", "vault", "settings", "agents", "connections", "app-settings", "setup"]) {
   try {
     answers.unshift(...(await import(`./fake/${name}.js`)).answers);
   } catch {}

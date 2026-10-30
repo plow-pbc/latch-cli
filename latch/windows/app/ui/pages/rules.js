@@ -719,7 +719,7 @@ const GLYPHS = {
   branch: '<circle cx="5.8" cy="4.8" r="1.8"/><circle cx="5.8" cy="15.2" r="1.8"/><circle cx="14.2" cy="6.4" r="1.8"/><path d="M5.8 6.6v6.8M14.2 8.2c0 3.4-8.4 2.4-8.4 5.2"/>',
 };
 
-function glyph(name, className = "glyph") {
+export function glyph(name, className = "glyph") {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("viewBox", "0 0 20 20");
   svg.setAttribute("class", className);
