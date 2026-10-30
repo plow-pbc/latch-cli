@@ -86,6 +86,13 @@ pub enum Call {
         snapshot: Option<String>,
         target: String,
     },
+    /// Each target's role and name as its snapshot (`snapshot`, else the
+    /// latest shown) listed them, read from nothing on the page now: what
+    /// the judge is shown beside a plan step's ref. `null` for one it
+    /// doesn't hold.
+    Named {
+        targets: Vec<Named>,
+    },
     /// What a click (or, with `enter`, an Enter in a field) would act on,
     /// and the lines around it: what the host judges the action's
     /// consequence on, and binds a confirmation to.
@@ -234,12 +241,25 @@ struct Ref {
     index: usize,
     /// Its ref's number: `e7` is 7.
     number: usize,
+    /// Its role and accessible name, as the reading listed them: text the
+    /// page wrote.
+    role: String,
+    name: String,
 }
 
 struct Snapshot {
     id: String,
     tab: String,
     refs: Vec<Ref>,
+}
+
+/// A ref in the snapshot it is read in (else the latest shown), for
+/// `Call::Named`.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Named {
+    #[serde(default)]
+    pub snapshot: Option<String>,
+    pub target: String,
 }
 
 /// A fresh reading of the active tab, as the agent sees it.
@@ -379,12 +399,14 @@ impl<D: Driver> Core<D> {
                 | Call::Shot
                 | Call::Wait { .. }
                 | Call::Pin { .. }
+                | Call::Named { .. }
                 | Call::Review { .. }
                 | Call::FillInventory { .. }
         );
         let result = match call {
             Call::Resolve { role, name } => self.resolve(&role, &name, &mut audit),
             Call::Pin { snapshot, target } => self.pin(snapshot.as_deref(), &target),
+            Call::Named { targets } => Ok(self.named(&targets)),
             Call::Review {
                 snapshot,
                 target,
@@ -1208,6 +1230,8 @@ impl<D: Driver> Core<D> {
                     frame: frame.clone(),
                     index,
                     number,
+                    role: element["role"].as_str().unwrap_or_default().to_string(),
+                    name: element["name"].as_str().unwrap_or_default().to_string(),
                 });
                 elements.push(element);
             }

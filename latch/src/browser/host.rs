@@ -881,7 +881,8 @@ async fn judged_action(
                 Some(mut plan) if !plan.steps.is_empty() && !one_action(&plan) => {
                     plan.resolve_facts();
                     let page = judged::page(browsers, entry).await?;
-                    judged::plan(browsers, &plan, page, confirmed)
+                    let names = judged::names(entry, &plan).await;
+                    judged::plan(browsers, &plan, page, &names, confirmed)
                 }
                 _ => match confirmed {
                     Some(fill) => fill,

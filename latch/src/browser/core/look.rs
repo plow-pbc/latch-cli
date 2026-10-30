@@ -121,6 +121,24 @@ impl<D: Driver> Core<D> {
         Ok(Value::Object(result))
     }
 
+    /// Each of `targets` as its snapshot listed it: `{"role", "name"}`, or
+    /// `null` for a ref or snapshot it doesn't know.
+    pub(super) fn named(&self, targets: &[super::Named]) -> Value {
+        let latest = self.last_shown.clone();
+        let named: Vec<Value> = targets
+            .iter()
+            .map(|named| {
+                let number = named.target.strip_prefix('e')?.parse::<usize>().ok()?;
+                let id = named.snapshot.as_deref().or(latest.as_deref())?;
+                let found = self.snapshot(id).ok()?;
+                let r = found.refs.iter().find(|r| r.number == number)?;
+                Some(json!({"role": r.role, "name": r.name}))
+            })
+            .map(|named| named.unwrap_or(Value::Null))
+            .collect();
+        json!({"named": named})
+    }
+
     /// The snapshot `target` is read in, if it holds that ref. The page
     /// may have moved on since; that is checked when the step runs.
     pub(super) fn pin(&mut self, snapshot: Option<&str>, target: &str) -> Result<Value, Failure> {
