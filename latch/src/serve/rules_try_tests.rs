@@ -59,6 +59,11 @@ fn untouched() -> (Vec<String>, Vec<String>) {
     (Vec::new(), Vec::new())
 }
 
+/// A host path as the judge is shown it (`exec::shown`).
+fn shown(path: &std::path::Path) -> String {
+    crate::exec::shown(&path.to_string_lossy())
+}
+
 #[tokio::test]
 async fn an_exec_preview_is_judged_and_runs_nothing() {
     let t = start(chat_with(always_covered)).await;
@@ -77,7 +82,7 @@ async fn an_exec_preview_is_judged_and_runs_nothing() {
     assert_eq!(tried["gate"]["verdict"], "allow");
     assert!(tried["gate"]["p"].is_object(), "{tried}");
     let action = &tried["request"]["action"];
-    assert_eq!(action["writes"], json!([fresh]));
+    assert_eq!(action["writes"], json!([shown(&fresh)]));
     assert_eq!(action["network"], true);
     assert_eq!(action["secret_env"][0]["name"], "API_TOKEN");
     assert!(!tried.to_string().contains("s3cret-value"), "{tried}");
@@ -378,8 +383,11 @@ async fn the_answer_shows_the_action_as_the_judge_saw_it() {
     assert_eq!(action["operation"], "file_put");
     assert_eq!(action["file_name"], "new.txt");
     assert_eq!(action["size"], 5);
+    // As a person reads it: resolved, with no `\\?\` on Windows.
+    let new = std::path::Path::new("area").join("new.txt");
+    let path = action["path"].as_str().unwrap();
     assert!(
-        action["path"].as_str().unwrap().ends_with("area/new.txt"),
+        path.ends_with(&*new.to_string_lossy()) && !path.starts_with(r"\\?\"),
         "{action}"
     );
     assert!(!t.area.join("new.txt").exists());
@@ -483,10 +491,13 @@ async fn every_verdict_has_one_answer_shape() {
     assert_eq!(host_refused["verdict"], "host_refused");
     assert_eq!(host_refused["gate"], Value::Null);
     let site = t.host.workers.home.join("site");
-    assert_eq!(host_refused["request"]["action"]["writes"], json!([site]));
+    assert_eq!(
+        host_refused["request"]["action"]["writes"],
+        json!([shown(&site)])
+    );
     assert_eq!(
         host_refused["request"]["action"]["working_folder"],
-        json!(site)
+        json!(shown(&site))
     );
     let message = host_refused["refused"]["message"].as_str().unwrap();
     assert!(
