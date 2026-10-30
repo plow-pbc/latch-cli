@@ -506,12 +506,12 @@
   // Card numbers a page shows, masked for a screenshot. latch's own code
   // gives the numbers of the cards filled in the session (this world is
   // latch's: the page can't read them here). An element holds one when
-  // its text has the number's digits with at most 3 characters that are
+  // its text has the number's digits with at most 8 characters that are
   // neither letters nor digits between two of them, as host-side masking
   // reads them, and no element inside it does; a field holds one by its
   // value. A holder's text, and all inside it, is made transparent until
   // `unmask` puts the page's own styles back.
-  const cardPattern = (digits) => new RegExp([...digits].join('[^\\p{L}\\p{N}]{0,3}'), 'u');
+  const cardPattern = (digits) => new RegExp([...digits].join('[^\\p{L}\\p{N}]{0,8}'), 'u');
   const holders = (cards) => {
     const patterns = cards.map(cardPattern);
     const shows = (text) => patterns.some((pattern) => pattern.test(text || ''));

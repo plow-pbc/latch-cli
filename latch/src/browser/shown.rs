@@ -134,7 +134,7 @@ pub fn mask_cards(value: &mut Value, cards: &[String]) {
 /// The most characters other than letters and digits (spaces, line
 /// breaks, dashes, invisible ones) a page may put between two digits of a
 /// card number that is still read as one.
-const GAP: usize = 3;
+const GAP: usize = 8;
 
 /// `text` with each card number in `cards` it shows (up to `GAP` other
 /// characters between two of its digits, as a page spaces it) put as
@@ -194,6 +194,7 @@ mod tests {
         let mut answer = json!({
             "lines": ["Paid with 4242 4242 4242 4242.", "Card 4242-4242-4242-4242 or 4242424242424242"],
             "split": "4242\n4242\n4242\n4242 and 4242\u{200b}4242 / 4242\u{feff}4242",
+            "spaced": "4242\u{a0}\u{a0}4242     4242 \n\t 4242",
             "elements": [{"value": "4242424242424242 04/31"}],
             "order": "Order 1234567890123, total $10.00",
             "total": "Total $10.00\n\n4242 4242 4242 4242",
@@ -204,6 +205,7 @@ mod tests {
             json!({
                 "lines": ["Paid with •••• 4242.", "Card •••• 4242 or •••• 4242"],
                 "split": "•••• 4242 and •••• 4242",
+                "spaced": "•••• 4242",
                 "elements": [{"value": "•••• 4242 04/31"}],
                 "order": "Order 1234567890123, total $10.00",
                 "total": "Total $10.00\n\n•••• 4242",

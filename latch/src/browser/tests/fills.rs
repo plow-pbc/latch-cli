@@ -478,6 +478,19 @@ impl Harness {
         (result, audit)
     }
 
+    /// A script the page itself runs, as the test stands in for it: sent
+    /// to the worker directly, so no agent code is noted and nothing of it
+    /// is refused.
+    async fn page_script(&mut self, script: &str) {
+        self.entry
+            .agent_session()
+            .await
+            .unwrap()
+            .call(json!({"op": "eval", "script": script}))
+            .await
+            .unwrap();
+    }
+
     /// latch's suggestion for `item` on the page now, by `observe`: the
     /// fill's arguments that take it.
     async fn suggested(&mut self, item: &str) -> Value {
@@ -2074,9 +2087,8 @@ async fn a_card_confirmation_binds_its_mapping_and_frames(engine: &str) {
     let args = h.suggested(&card.item).await;
     let (stop, _) = h.gated_fill(args).await;
     let id = stop.unwrap_err().details["confirmation"]["id"].clone();
-    h.call("eval", json!({"script": "const f = document.getElementById('pay'); f.src = f.src + '?again=1'; 1"}))
-        .await
-        .unwrap();
+    h.page_script("const f = document.getElementById('pay'); f.src = f.src + '?again=1'; 1")
+        .await;
     tokio::time::sleep(Duration::from_millis(1000)).await;
     let swapped = confirm(&mut h, &id, "r-swap").await.unwrap_err();
     println!("frame swapped: {} ({})", swapped.code, swapped.message);
@@ -2097,15 +2109,16 @@ async fn a_card_confirmation_binds_its_mapping_and_frames(engine: &str) {
         )
         .await;
     let id = stop.unwrap_err().details["confirmation"]["id"].clone();
-    h.call("eval", json!({"script": "const e = document.querySelector('[name=cc-number]'); e.replaceWith(e.cloneNode()); 1"}))
-        .await
-        .unwrap();
+    h.page_script(
+        "const e = document.querySelector('[name=cc-number]'); e.replaceWith(e.cloneNode()); 1",
+    )
+    .await;
     let swapped = confirm(&mut h, &id, "r-field").await.unwrap_err();
     println!("field swapped: {} ({})", swapped.code, swapped.message);
     assert_eq!(swapped.code, "confirm_stale");
     assert!(!h.text().await.contains("payment:"));
     assert!(
-        h.call("eval", json!({"script": "1"})).await.is_ok(),
+        h.call("screenshot", json!({})).await.is_ok(),
         "the agent is back"
     );
 

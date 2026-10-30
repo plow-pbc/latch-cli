@@ -295,7 +295,7 @@ browser, and an element list marks a field holding a filled value as
 (a confirmation that repeats it, a field it draws again): every answer in
 the session that filled it, and its plans' journals, show that number only
 as its last four digits (`•••• 4242`), however the page spaces it (up to
-3 other characters between two digits, line breaks and invisible ones
+8 other characters between two digits, line breaks and invisible ones
 included). A screenshot, or a plan's picture, is taken with every element
 showing it masked (its text made transparent), checked again once taken;
 a page that took a mask off, or a frame latch can't read, gets no picture

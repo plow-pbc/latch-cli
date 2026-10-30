@@ -282,23 +282,12 @@ async fn a_page_that_shows_the_number_back_shows_the_agent_only_its_last_four(en
     println!("eval: {} ({})", eval.code, eval.message);
     assert_eq!(eval.code, "secret_on_page");
 
-    let session = h.id.clone();
     h.call("close", json!({})).await.unwrap();
-    let mut audit = Map::new();
-    let history = super::super::host_call(
-        &h.browsers,
-        CALLER.into(),
-        "do_history",
-        &session,
-        &json!({"request": "r-type"}),
-        None,
-        &mut audit,
-    )
-    .await
-    .unwrap()
-    .0;
+    let history = h
+        .call("do_history", json!({"request": "r-type"}))
+        .await
+        .unwrap();
     println!("history: {history}");
-    h.shown.push(seen(&history));
     assert!(
         !h.saw_the_card(),
         "the page's copy of the number reached the agent"
@@ -314,7 +303,7 @@ async fn a_page_that_takes_the_mask_off_gets_no_picture(engine: &str) {
     .await
     .unwrap();
     let args = h.suggested(&card).await;
-    h.pay(args).await.0.unwrap();
+    h.pay(args).await.unwrap();
     let shot = h.call("screenshot", json!({})).await.unwrap_err();
     println!("screenshot: {} ({})", shot.code, shot.message);
     assert_eq!(shot.code, "secret_on_page");
