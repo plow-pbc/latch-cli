@@ -20,6 +20,7 @@ use serde_json::{Map, Value, json};
 
 use super::host::{Browsers, Entry};
 use super::plan::{CheckKind, Literal, Op, Plan, Step};
+use super::shown::Filled;
 use crate::failure::Failure;
 use crate::gate::Gate;
 use crate::vault::sites;
@@ -108,13 +109,13 @@ pub(super) struct FileShown {
 pub(super) async fn judge(
     gate: Option<Gate<'_>>,
     action: Action,
-    cards: &[String],
+    filled: &[Filled],
     audit: &mut Map<String, Value>,
 ) -> Result<(), Failure> {
     let Some(gate) = gate else {
         return Ok(());
     };
-    let action = shown(&action, cards);
+    let action = shown(&action, filled);
     audit.insert("judged".into(), action.clone());
     let judging = std::time::Instant::now();
     let judgment = gate.judge(&action).await;
@@ -123,12 +124,12 @@ pub(super) async fn judge(
     judgment.verdict
 }
 
-/// `action` as the judge is shown it: the numbers of the cards filled in
-/// the session (`cards`), wherever a page put one, by their last four
-/// digits.
-pub(super) fn shown(action: &Action, cards: &[String]) -> Value {
+/// `action` as the judge is shown it: the card numbers filled in the
+/// session (`filled`), wherever a page put one, by their last four digits,
+/// and its identity secrets not at all.
+pub(super) fn shown(action: &Action, filled: &[Filled]) -> Value {
     let mut shown = serde_json::to_value(action).expect("an action serializes");
-    super::shown::mask_cards(&mut shown, cards);
+    super::shown::mask_filled(&mut shown, filled);
     shown
 }
 
@@ -257,19 +258,19 @@ pub(super) async fn names(entry: &Entry, plan: &Plan) -> Names {
     let Ok((answer, _)) = super::steps::call(entry, call, &mut audit).await else {
         return Names::new();
     };
-    named(targets, &answer, &entry.card_numbers())
+    named(targets, &answer, &entry.filled())
 }
 
 /// The worker's `named` answer for `targets`, each name with the session's
-/// card numbers (`cards`) masked whole, before anything cuts it short: a
+/// filled values (`filled`) masked whole, before anything cuts it short: a
 /// name cut first could keep all but the last digits of a number.
-fn named(targets: Vec<(Option<String>, String)>, answer: &Value, cards: &[String]) -> Names {
+fn named(targets: Vec<(Option<String>, String)>, answer: &Value, filled: &[Filled]) -> Names {
     targets
         .into_iter()
         .zip(answer["named"].as_array().cloned().unwrap_or_default())
         .filter_map(|(key, named)| {
             let role = named["role"].as_str()?.to_string();
-            let name = super::shown::masked(named["name"].as_str()?, cards);
+            let name = super::shown::masked(named["name"].as_str()?, filled);
             Some((key, (role, name)))
         })
         .collect()
@@ -567,7 +568,7 @@ mod tests {
         let name = format!("{}{number}", "x".repeat(45));
         let answer = json!({"named": [{"role": "button", "name": name}]});
         let key = (None, "e2".to_string());
-        let names = named(vec![key.clone()], &answer, &[number.to_string()]);
+        let names = named(vec![key.clone()], &answer, &[Filled::Card(number.into())]);
         let shown = labelled("e2", names.get(&key));
         assert_eq!(
             shown,

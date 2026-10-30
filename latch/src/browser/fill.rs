@@ -49,6 +49,7 @@ use serde_json::{Map, Value, json};
 use super::host::{Browsers, Entry, paused, take_audit};
 use super::plan::Op;
 use super::session::Session;
+use super::shown::Filled;
 use super::suggest::{self, Control};
 use crate::failure::{Failure, code};
 use crate::vault::item::{Item, Meta};
@@ -401,16 +402,34 @@ pub async fn run(
         }
     };
     let result = fill(browsers, &mut session, &item, &plan, args, audit).await;
-    // A card whose values went toward the page: the session's answers and
-    // journals show its number by its last four digits from now on.
-    if meta.kind == "card"
-        && audit.get("released") == Some(&json!(true))
-        && let Ok(number) = release(&item, "number")
-    {
-        let digits: String = number.chars().filter(char::is_ascii_digit).collect();
-        let mut cards = entry.cards.lock().expect("cards lock");
-        if !digits.is_empty() && !cards.contains(&digits) {
-            cards.push(digits);
+    // A card or an identity secret whose values went toward the page: the
+    // session's answers and journals show the card's number by its last
+    // four digits from now on, and the secret not at all.
+    if audit.get("released") == Some(&json!(true)) {
+        let mut filled = Vec::new();
+        if meta.kind == "card"
+            && let Ok(number) = release(&item, "number")
+        {
+            let digits: String = number.chars().filter(char::is_ascii_digit).collect();
+            if !digits.is_empty() {
+                filled.push(Filled::Card(digits));
+            }
+        }
+        if meta.kind == "identity" {
+            for (label, _) in &plan.fields {
+                if suggest::secret_field(&meta, label)
+                    && let Ok(value) = release(&item, label)
+                    && !value.is_empty()
+                {
+                    filled.push(Filled::Secret(value));
+                }
+            }
+        }
+        let mut masks = entry.masks.lock().expect("masks lock");
+        for value in filled {
+            if !masks.contains(&value) {
+                masks.push(value);
+            }
         }
     }
     entry.runtime.filling.store(false, Ordering::SeqCst);

@@ -384,7 +384,7 @@ pub async fn run(
         &request,
         json!(summaries),
     )?
-    .masking(entry.cards.clone());
+    .masking(entry.masks.clone());
     let running = format!("{session}/{request}");
     browsers.running(&running, true);
     let mut run = Run {
@@ -651,7 +651,7 @@ impl<'a> Run<'a> {
         let site = judged::site(self.browsers, self.entry).await?;
         let action = judged::shown(
             &judged::fill(self.browsers, args, site),
-            &self.entry.card_numbers(),
+            &self.entry.filled(),
         );
         let judging = Instant::now();
         let judgment = gate.judge(&action).await;

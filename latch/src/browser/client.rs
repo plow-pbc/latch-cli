@@ -431,8 +431,6 @@ fn fill(request: &mut Value, command: BrowserCommand) -> Result<(), Failure> {
             }
             set(request, "suggested", json!(suggested));
             set(request, "press", json!(press));
-            // A fill that stops for a confirmation is kept as a request.
-            set(request, "request", json!(new_request_id()));
             "fill"
         }
         BrowserCommand::Login { .. } => {

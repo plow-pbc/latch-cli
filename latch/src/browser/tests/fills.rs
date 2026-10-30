@@ -471,8 +471,6 @@ impl Harness {
         args: Value,
     ) -> (Result<Value, crate::failure::Failure>, Map<String, Value>) {
         let mut audit = Map::new();
-        let mut args = args;
-        args["request"] = json!(format!("r-fill-{}", self.shown.len()));
         let result = host::fill(
             &self.browsers,
             &self.entry,
