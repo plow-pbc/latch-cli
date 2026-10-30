@@ -1308,6 +1308,10 @@ pub struct LoginArgs {
     /// If another of your machines already has this name, replace it: it is removed from your account, which signs it out of Plow, and this machine takes the name. Without it, a taken name is an error (at a terminal, a question). An agent's name is never taken over
     #[arg(long)]
     pub replace: bool,
+
+    /// Log in anew although this state folder is logged in, with a new login rather than the one saved here: by text at a terminal (or --events), or --token-file; an agent with its own credential. For a login Plow no longer accepts. Without it, and with no other option, a logged-in state folder is left as it is
+    #[arg(long)]
+    pub again: bool,
 }
 
 /// Which host a command goes to. Without `--host` or `$LATCH_HOST`, latch

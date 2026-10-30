@@ -39,6 +39,9 @@ pub struct LoginOutput {
     /// which ends in a line for them rather than JSON.
     #[serde(skip)]
     pub by_text: bool,
+    /// This state folder was logged in already, and nothing was changed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub already_logged_in: Option<String>,
 }
 
 /// Where this login's credential comes from.
@@ -55,6 +58,25 @@ enum Source {
 
 pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failure> {
     let saved = state.load_config()?;
+    // A plain `latch login` where one is saved changes nothing: an option
+    // asks for a change (a token, a name, by text), and --again for a login
+    // anew.
+    let plain = args.token_file.is_none() && args.name.is_none() && !args.replace && !args.events;
+    if let Some(config) = &saved
+        && plain
+        && !args.again
+    {
+        let message = format!(
+            "already logged in as {} on this computer; `latch login --again` logs in anew",
+            config.peer.name
+        );
+        return Ok(LoginOutput {
+            peer: config.peer.clone(),
+            key_created: false,
+            by_text: false,
+            already_logged_in: Some(message),
+        });
+    }
     let saved_url = match &saved {
         Some(config) => Some(config.api_url.clone()),
         None => state.load_plow_url()?,
@@ -67,7 +89,9 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
     };
     let source = if let Some(path) = &args.token_file {
         Source::Given(credential::read(path)?)
-    } else if let Some(token) = state.load_token()? {
+    } else if let Some(token) = state.load_token()?
+        && !args.again
+    {
         Source::Saved(token)
     } else if let Some(token) = credential::agent_token_if_present()? {
         Source::Agent(token)
@@ -178,6 +202,7 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
             peer,
             key_created,
             by_text: texted,
+            already_logged_in: None,
         })
     }
     .await;
@@ -200,6 +225,7 @@ pub async fn agent_on_first_use(state: &StateDir) -> Result<(), Failure> {
         name: None,
         events: false,
         replace: false,
+        again: false,
     };
     run(state, args).await.map(|_| ())
 }

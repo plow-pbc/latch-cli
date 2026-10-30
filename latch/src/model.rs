@@ -542,13 +542,13 @@ impl Provider for Plow {
                     ),
                     401 => CallFailed::new(
                         "http_401",
-                        "Plow refused this host's login: the host's owner must log it in again \
-                         with `latch login` on the host",
+                        "Plow refused this host's login: the host's owner must log it in anew \
+                         with `latch login --again` on the host",
                     ),
                     403 => CallFailed::new(
                         "not_allowed",
                         "this host's Plow login may not ask the decision model: the host's \
-                         owner must log it in again with `latch login` on the host, on an \
+                         owner must run `latch logout`, then `latch login` on the host, on an \
                          account that may",
                     ),
                     code => CallFailed::new(
@@ -682,10 +682,10 @@ pub mod tests {
                 "out of credits for the decision model: the host's account owner must add Plow credits",
                 "out_of_credits",
             ),
-            (401, "log it in again", "http_401"),
+            (401, "log it in anew with `latch login --again`", "http_401"),
             (
                 403,
-                "may not ask the decision model: the host's owner must log it in again",
+                "may not ask the decision model: the host's owner must run `latch logout`, then `latch login`",
                 "not_allowed",
             ),
         ] {

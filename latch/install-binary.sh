@@ -1,7 +1,7 @@
 #!/bin/sh
 # Installs a latch binary you already have into ~/.local/bin, or --bin-dir.
 #
-#   sh install-binary.sh [--bin-dir DIR] [--state-dir DIR] [--browser chrome|camoufox]... [--no-browser] [--client-only] [--non-interactive] [--no-modify-path] [path/to/latch]
+#   sh install-binary.sh [--bin-dir DIR] [--state-dir DIR] [--browser chrome|camoufox]... [--no-browser] [--client-only] [--no-login] [--non-interactive] [--no-modify-path] [path/to/latch]
 #
 # A first install (no login in the state directory yet) at a terminal ends
 # by running `latch setup` (log in, connect Google, and so on), or, when it
@@ -77,7 +77,12 @@
 # hosts, such as an agent's image: no gog, Messages reader, bubblewrap or
 # browser engine, and no setup or app window at the end, only the word to
 # run `latch login`. It leaves plugins/client-only in the state folder, so
-# `latch update` installs latch alone again.
+# `latch update` installs latch alone again. At a terminal, with this
+# machine holding an agent's Plow credential ($PLOW_AGENT_TOKEN, the file
+# $PLOW_TOKEN_FILE names or /config/secrets/plow-api-token, or
+# $PLOW_API_BASE's proxy) and a state folder not logged in yet, it runs
+# `latch login` itself; --no-login, --non-interactive or no terminal (an
+# image's boot) leaves the login to whoever runs it.
 set -eu
 
 say() { printf 'install-binary.sh: %s\n' "$*"; }
@@ -108,13 +113,14 @@ quit_windows() {
   return 1
 }
 
-usage="usage: sh install-binary.sh [--bin-dir DIR] [--state-dir DIR] [--browser chrome|camoufox]... [--no-browser] [--client-only] [--non-interactive] [--no-modify-path] [path/to/latch]"
+usage="usage: sh install-binary.sh [--bin-dir DIR] [--state-dir DIR] [--browser chrome|camoufox]... [--no-browser] [--client-only] [--no-login] [--non-interactive] [--no-modify-path] [path/to/latch]"
 # HOME=/ (a container's root) gives /.local/bin, not //.local/bin.
 bin_dir="${HOME%/}/.local/bin"
 state_dir=${LATCH_STATE_DIR:-"${HOME%/}/.latch"}
 browsers=""
 no_browser=""
 client_only=""
+no_login=""
 non_interactive=""
 modify_path=1
 state_given=${LATCH_STATE_DIR:+1}
@@ -129,7 +135,8 @@ while [ $# -gt 0 ]; do
         'Binary directory defaults to ~/.local/bin; state and plugins default to $LATCH_STATE_DIR, else ~/.latch.' \
         'The browser engine defaults to Chrome for Testing; --browser chrome|camoufox' \
         'names the engines instead (repeat it for both), --no-browser installs none.' \
-        '--client-only installs latch alone, for a machine that only asks hosts.' \
+        '--client-only installs latch alone, for a machine that only asks hosts;' \
+        'at a terminal, it logs in with an agent credential it finds, unless --no-login.' \
         '--no-modify-path leaves your shell profile alone when the binary directory is not on PATH.'
       exit 0
       ;;
@@ -157,6 +164,10 @@ while [ $# -gt 0 ]; do
       ;;
     --client-only)
       client_only=1
+      shift
+      ;;
+    --no-login)
+      no_login=1
       shift
       ;;
     --non-interactive)
@@ -620,6 +631,23 @@ if [ -n "$reopen" ]; then
   fi
 fi
 
+# Whether this machine holds an agent's Plow credential, where `latch login`
+# looks for one: set and not blank, as latch reads it.
+agent_credential() {
+  [ -n "$(printf %s "${PLOW_AGENT_TOKEN:-}" | tr -d '[:space:]')" ] ||
+    [ -e "${PLOW_TOKEN_FILE:-/config/secrets/plow-api-token}" ] ||
+    [ -n "$(printf %s "${PLOW_API_BASE:-}" | tr -d '[:space:]')" ]
+}
+
+# Whether latch, asked, says this state folder has no login: never a second
+# login over one, and none when it can't say.
+not_logged_in() {
+  case "$("$dest" --state-dir "$state_dir" status --local 2>/dev/null)" in
+    '{"login":null,'*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # A first install: no login in the state directory yet, once latch has
 # moved aside what an older install left there (a config.json among it).
 first_install=""
@@ -638,7 +666,17 @@ fi
 # runs from another folder. Whatever happens in setup, the install is done.
 if [ -n "$first_install" ]; then
   if [ -n "$client_only" ]; then
-    say "next: run \`latch login\` to log in"
+    if [ -z "$no_login" ] && [ -z "$non_interactive" ] && [ -t 1 ] && (: </dev/tty) 2>/dev/null &&
+      agent_credential && not_logged_in; then
+      say "logging in with this machine's agent credential"
+      if "$dest" --state-dir "$state_dir" login </dev/null; then
+        say "logged in"
+      else
+        say "the login did not work (see above); run \`latch login\` to try again"
+      fi
+    else
+      say "next: run \`latch login\` to log in"
+    fi
   elif [ -n "$non_interactive" ] || [ ! -t 1 ] || ! (: </dev/tty) 2>/dev/null; then
     say "next: run \`latch setup\` to log in and set up the rest"
   elif [ -n "$app" ] && [ "$macos" -ge 26 ]; then
