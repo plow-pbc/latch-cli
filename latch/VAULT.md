@@ -303,7 +303,11 @@ browser, and an element list marks a field holding a filled value as
 the session that filled it, and its plans' journals, show that number only
 as its last four digits (`•••• 4242`), whole or in groups set apart by
 single spaces or dashes, as a site prints it; the last four alone
-("ending in 4242") are left as they are. A script (`eval`) is refused
+("ending in 4242") are left as they are. An identity's secret that a
+fill released (an SSN, a passport number) is masked whole the same way:
+the session's text answers and its plans' journals (`do --history`) show
+it as `••••`, written as it was filled or as its digits in groups. A
+script (`eval`) is refused
 while a filled value may be in a field, as for a password (below), and
 runs once the page was submitted and its fields are empty: from then on
 it could read a number the page repeats.
