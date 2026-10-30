@@ -16,11 +16,12 @@ import { openActivity } from "./activity.js";
 import * as errors from "../errors.js";
 
 /** What the page keeps (the Mac's `AppModel` agents part): the account's
- * agents and why they couldn't be listed, each host's standing by host
- * name, the catalog's kind names, the agent picked and a removal's refusal. */
+ * agents and why they couldn't be listed, the hosts whose standing is being
+ * read (kept with each host's reads: `standingsOn`), the catalog's kind
+ * names, the agent picked and a removal's refusal. */
 function kept(app) {
   return (app.pages.agents ??= {
-    agents: null, error: null, standings: {}, reading: new Set(), kinds: null, selected: null, removeError: null,
+    agents: null, error: null, reading: new Set(), kinds: null, selected: null, removeError: null,
   });
 }
 
@@ -92,23 +93,27 @@ async function readList(app) {
 function readStandings(app, { missing }) {
   const page = kept(app);
   return Promise.all(reachable(app)
-    .filter((host) => !page.reading.has(host.name) && !(missing && page.standings[host.name]?.value))
+    .filter((host) => !page.reading.has(host.name) && !(missing && standingsOn(app, host)?.value))
     .map((host) => readStanding(app, host)));
 }
 
 async function readStanding(app, host) {
   const page = kept(app);
   page.reading.add(host.name);
-  try {
-    const list = await latch(["agents", "--host", host.name]);
-    const byAgent = new Map();
-    for (const agent of list.agents) if (agent.standing && !byAgent.has(agent.uid)) byAgent.set(agent.uid, agent.standing);
-    page.standings[host.name] = { value: byAgent };
-  } catch (error) {
-    page.standings[host.name] = { error };
-  }
+  await app.read(host, "standing", ["agents", "--host", host.name]);
   page.reading.delete(host.name);
   redraw(app);
+}
+
+/** A host's standing, by agent uid: the read kept with the host's others,
+ * which Rules reads again after a save (`AppModel.refreshStanding`), so a
+ * save shows here at once. Undefined until read. */
+function standingsOn(app, host) {
+  const read = app.summaries[host.name]?.standing;
+  if (!read?.value) return read;
+  const byAgent = new Map();
+  for (const agent of read.value.agents) if (agent.standing && !byAgent.has(agent.uid)) byAgent.set(agent.uid, agent.standing);
+  return { value: byAgent };
 }
 
 /** This PC, and the hosts Plow doesn't count offline. */
@@ -119,7 +124,7 @@ const reachable = (app) => app.hosts().filter((host) => host.thisPC || host.onli
 function readNewHosts(app) {
   const page = kept(app);
   for (const host of reachable(app)) {
-    if (!(host.name in page.standings) && !page.reading.has(host.name)) readStanding(app, host);
+    if (!standingsOn(app, host) && !page.reading.has(host.name)) readStanding(app, host);
   }
 }
 
@@ -224,7 +229,7 @@ const row = (label, value) => el("div", { class: "line" }, el("span", {}, label)
 function hostRow(app, agent, host) {
   const offline = isOffline(host);
   const state = hostState(host);
-  const read = kept(app).standings[host.name];
+  const read = standingsOn(app, host);
   const who = name(agent);
   const words = !offline && read?.error
     ? errorText(read.error, { host: spoken(host) })

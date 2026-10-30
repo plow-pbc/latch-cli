@@ -203,10 +203,9 @@
   border: 3px solid transparent;
   border-top-color: var(--accent);
   border-right-color: var(--accent);
-  animation: ag-spin 1s linear infinite;
+  animation: spin 1s linear infinite;
 }
 .ag-ring.small { width: 16px; height: 16px; border-width: 2px; }
-@keyframes ag-spin { to { transform: rotate(360deg); } }
 .ag-error { display: flex; flex-direction: column; gap: 2px; }
 .ag-error details { font-size: 12px; color: var(--text-2); }
 .ag-error summary { cursor: default; width: max-content; }
