@@ -2176,22 +2176,66 @@ fn an_agent_gets_owner_only_for_browser_setup_and_nothing_is_downloaded() {
     assert!(!state.join("plugins").exists());
 }
 
+/// An agent's login updates only its own computer, where latch is installed
+/// alone: on a host it gets owner_only, and there is no `--host` to aim it at
+/// another. Its own state folder installed alone is not enough while a host
+/// on another state folder runs the same latch: the update would replace
+/// that host's latch too. The agent runs its own copy of this build, which
+/// no other test's host runs; a local build, so on its own computer the
+/// update stops at `local_build`, past the agent's check and before any
+/// download.
 #[test]
-fn an_agent_gets_owner_only_for_update_and_nothing_is_installed() {
+fn an_agent_updates_only_its_own_client_only_computer() {
     let (dir, token, server) = logged_in_agent(vec![]);
     server.join().unwrap();
     let state = dir.path().join("state");
+    let installed = dir.path().join("installed/latch");
+    fs::create_dir_all(installed.parent().unwrap()).unwrap();
+    fs::copy(latch_bin(), &installed).unwrap();
+    let update = |args: &[&str]| {
+        let mut command = Command::new(&installed);
+        command
+            .env("HOME", dir.path())
+            .env("LATCH_APPLICATIONS", dir.path().join("Applications"))
+            .env("PLOW_TOKEN_FILE", &token)
+            .env_remove("PLOW_API_URL")
+            .env_remove("PLOW_API_BASE")
+            .env_remove("PLOW_AGENT_TOKEN")
+            .env_remove("LATCH_STATE_DIR")
+            .arg("--state-dir")
+            .arg(&state)
+            .args(args);
+        let output = command.output().unwrap();
+        let error = serde_json::from_slice::<Value>(&output.stderr).unwrap_or_default();
+        (output.status.code(), error["error"]["code"].clone())
+    };
     for args in [
         &["update"][..],
         &["update", "--check"],
         &["update", "v0.1.0-1"],
     ] {
-        let output = latch(&state, args, &[("PLOW_TOKEN_FILE", token.as_path())]);
-        assert_eq!(output.status.code(), Some(4), "{args:?}: {output:?}");
-        let error: Value = serde_json::from_slice(&output.stderr).unwrap();
-        assert_eq!(error["error"]["code"], "owner_only");
+        assert_eq!(update(args), (Some(4), json!("owner_only")), "{args:?}");
     }
     assert!(!dir.path().join(".local").exists());
+    assert_eq!(update(&["update", "--host", "studio"]).0, Some(2));
+    fs::create_dir_all(state.join("plugins")).unwrap();
+    fs::write(state.join("plugins/client-only"), "").unwrap();
+    for args in [&["update"][..], &["update", "v0.1.0-1"]] {
+        assert_eq!(update(args), (Some(1), json!("local_build")), "{args:?}");
+    }
+
+    // A host on another state folder, from the same latch.
+    let plow = LivePlow::start();
+    let host = owner_host_on(&plow, dir.path());
+    let (_relay, relay) = local_relay();
+    let mut command = Command::new(&installed);
+    command.env("LATCH_TEST_LOOPBACK", "1");
+    let (serving, log, _) = serving_with(configure_serve_command(command, &host, &relay));
+    thread::spawn(move || log.lines().for_each(drop));
+    until_serving(&host, &serving);
+    assert_eq!(update(&["update"]), (Some(4), json!("owner_only")));
+    drop(serving);
+    assert_eq!(update(&["update"]), (Some(1), json!("local_build")));
 }
 
 /// A newer build the host found shows in `status --local`, and a piped
@@ -3872,7 +3916,7 @@ fn an_agent_asks_for_a_login_by_phone_link_and_learns_only_its_state() {
     assert_eq!(code, Some(0), "{listed}");
     assert_eq!(
         listed["items"],
-        json!([{"item": "v1", "title": "Shop (US)", "sites": ["shop.example"]}]),
+        json!([{"item": "v1", "kind": "login", "title": "Shop (US)", "sites": ["shop.example"]}]),
         "{listed}"
     );
 
@@ -3953,6 +3997,50 @@ fn an_agent_asks_for_a_login_by_phone_link_and_learns_only_its_state() {
     ] {
         assert!(!text.contains(secret), "the secret is in the {place}");
     }
+}
+
+/// An agent's list names each item's kind, never a value, and narrows as
+/// the owner's does: the cards, or the logins saved for one site.
+#[test]
+fn an_agents_vault_list_shows_kinds_and_narrows() {
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    big_vault(&host, dir.path());
+    let agent_token = dir.path().join("agent.token");
+    fs::write(&agent_token, "agent-credential\n").unwrap();
+    let agent = dir.path().join("agent");
+    let agent_env = [("PLOW_TOKEN_FILE", agent_token.as_path())];
+    let login = latch(&agent, &["login", "--api-url", &plow.url], &agent_env);
+    assert_eq!(login.status.code(), Some(0), "{login:?}");
+    let _serve = serving(&host, &relay);
+    let list = |args: &[&str]| {
+        let output = latch(
+            &agent,
+            &[&["vault", "--host", "host", "list"], args].concat(),
+            &agent_env,
+        );
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        assert!(!String::from_utf8_lossy(&output.stdout).contains("4111111111111111"));
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
+    };
+    let first = list(&[]);
+    assert_eq!(first["items"].as_array().unwrap().len(), 50);
+    assert_eq!(first["total"], 120);
+    assert!(
+        first["next"].as_str().unwrap().contains("cards"),
+        "{}",
+        first["next"]
+    );
+    assert_eq!(
+        list(&["--kind", "card"])["items"],
+        json!([{"item": "v120", "kind": "card", "title": "Plow card", "sites": []}])
+    );
+    assert_eq!(
+        list(&["--site", "crateandbarrel.com"])["items"],
+        json!([{"item": "v119", "kind": "login", "title": "Crate & Barrel", "sites": ["crateandbarrel.com"]}])
+    );
 }
 
 #[test]
@@ -6334,6 +6422,81 @@ fn local_vault_edits_are_visible_to_serve_and_phone_links_stay_live() {
         .map(|r| r["args"]["command"].clone())
         .collect::<Vec<_>>();
     assert_eq!(imports, [json!("import"), json!("import")]);
+}
+
+/// A vault of 120 made-up items, imported into `host`'s state: logins
+/// for shop0000.com…, one for crateandbarrel.com and one card. Every row
+/// an import saves writes the vault again, so a bigger one is slow to make.
+fn big_vault(host: &Path, dir: &Path) {
+    let mut items: Vec<Value> = (0..118)
+        .map(|i| json!({"type": 1, "name": format!("Shop {i:04}"), "login": {"username": "ada", "password": "made-up", "uris": [{"uri": format!("https://www.shop{i:04}.com/login")}]}}))
+        .collect();
+    items.push(json!({"type": 1, "name": "Crate & Barrel", "login": {"username": "ada", "password": "made-up", "uris": [{"uri": "https://www.crateandbarrel.com/account"}]}}));
+    items.push(json!({"type": 3, "name": "Plow card", "card": {"number": "4111111111111111", "code": "737"}}));
+    let file = dir.join("big.json");
+    fs::write(
+        &file,
+        json!({"encrypted": false, "items": items}).to_string(),
+    )
+    .unwrap();
+    let output = latch(
+        host,
+        &["vault", "import", file.to_str().unwrap(), "--pick", "all"],
+        &[],
+    );
+    assert!(output.status.success(), "{output:?}");
+}
+
+/// A big vault lists 50 items at a time, says how many more there are,
+/// and narrows by site (its registrable domain), words and kind.
+#[test]
+fn a_big_vault_lists_a_page_and_narrows_by_site_search_and_kind() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    big_vault(&host, dir.path());
+    let list = |args: &[&str]| {
+        let output = latch(&host, &[&["vault", "list"], args].concat(), &[]);
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
+    };
+    let titles = |listed: &Value| -> Vec<String> {
+        listed["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["title"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let first = list(&[]);
+    assert_eq!(first["items"].as_array().unwrap().len(), 50);
+    assert_eq!(first["total"], 120);
+    assert!(
+        first["more"]
+            .as_str()
+            .unwrap()
+            .starts_with("70 more; narrow with --site"),
+        "{}",
+        first["more"]
+    );
+    let all = list(&["--all"]);
+    assert_eq!(all["items"].as_array().unwrap().len(), 120);
+    assert!(all.get("more").is_none());
+
+    let site = list(&["--site", "https://www.crateandbarrel.com/checkout"]);
+    assert_eq!(titles(&site), ["Crate & Barrel"]);
+    assert_eq!(site["total"], 1);
+    assert_eq!(titles(&list(&["--site", "shop0042.com"])), ["Shop 0042"]);
+    assert_eq!(list(&["--site", "nothere.com"])["total"], 0);
+    assert_eq!(titles(&list(&["--kind", "card"])), ["Plow card"]);
+    assert_eq!(titles(&list(&["--search", "BARREL"])), ["Crate & Barrel"]);
+    let limited = list(&["--search", "shop 011", "--limit", "3"]);
+    assert_eq!(titles(&limited), ["Shop 0110", "Shop 0111", "Shop 0112"]);
+    assert_eq!(limited["total"], 8);
+
+    let refused = latch(&host, &["vault", "list", "--kind", "wallet"], &[]);
+    let error = one_error_line(&String::from_utf8_lossy(&refused.stderr), Some(2));
+    assert_eq!(error["error"]["code"], "usage", "{error}");
 }
 
 #[test]

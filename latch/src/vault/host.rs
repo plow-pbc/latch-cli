@@ -131,15 +131,15 @@ pub(super) fn manage(
     }
 }
 
-/// How an agent signs in with a login the owner saved.
-const SIGN_IN: &str = "To sign in with one, run `latch browser fill` without --item on its site's sign-in page (`latch skill`, \"Signing in\")";
+/// How an agent signs in with a login the owner saved, or pays with a card.
+const SIGN_IN: &str = "To sign in with a login, run `latch browser fill` without --item on its site's sign-in page (`latch skill`, \"Signing in\"); at a checkout, `observe` lists the cards under `fill.items` and `fill --item` takes one";
 
-/// The vault as an agent sees it: each item's id, title and saved sites,
-/// never a value or a username, and how to sign in with one.
+/// The vault as an agent sees it: each item's id, kind, title and saved
+/// sites, never a value or a username, and how to use one.
 fn for_agent(items: &[super::item::Meta]) -> Value {
     let items: Vec<Value> = items
         .iter()
-        .map(|meta| json!({"item": meta.item, "title": meta.title, "sites": meta.sites}))
+        .map(|meta| json!({"item": meta.item, "kind": meta.kind, "title": meta.title, "sites": meta.sites}))
         .collect();
     json!({"items": items, "next": SIGN_IN})
 }

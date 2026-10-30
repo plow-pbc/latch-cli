@@ -132,7 +132,8 @@ pub async fn named_in_plan(
 }
 
 /// Where a caller finds an item's id.
-const LISTED: &str = "`latch vault list` shows each item's id, title and saved sites";
+const LISTED: &str =
+    "`latch vault list --site SITE` shows the items saved for a site, each id, title and sites";
 
 /// `given`, if it is an item's id.
 fn known(browsers: &Browsers, given: &str) -> Result<String, Failure> {
@@ -173,7 +174,7 @@ async fn saved_here(browsers: &Browsers, entry: &Entry) -> Result<String, Failur
         [] => Err(Failure::new(
             code::no_such_item,
             format!(
-                "no login in the vault is saved for {site}: {LISTED}; open the sign-in page of a site one is saved for, or name the item with --item and its id"
+                "no login in the vault is saved for {site}: {LISTED}; open the sign-in page of a site one is saved for, or name the item with --item and its id. A card is never picked for you: at a checkout, `observe` lists the cards under `fill.items`; fill one with --item"
             ),
         )),
         several => {
