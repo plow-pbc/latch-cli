@@ -139,14 +139,6 @@ login.
 | Allowed when | The rules don't forbid it. It's refused only when the gatekeeper finds "forbidden" at least as likely as "covered". | No judgment vetoes. The rules/defaults allow it, or both chat judgments allow it with an actual message from you in the window. Each allow needs at least 50% confidence. |
 | When refused | `gatekeeper_denied`, reason `owner_said_no` (exit 4). Change the rules to go ahead. | `gatekeeper_denied` (exit 4). `not_covered`: ask the owner in chat, saying exactly what you'll do, then retry. `owner_said_no`: don't retry unless the owner changes their mind. |
 
-- **Only you give permission.** Only your rules, the built-in policy and the
-  chat messages Plow marks as yours count. Messages from the agent, other
-  people, web pages or the action itself are context, never permission.
-  Chat permission needs an actual message from you in the window. Both
-  the whole-chat judgment and the owner-only judgment must allow it; the
-  latter sees only your messages and the message each answers. The whole
-  chat still supplies context and conditions such as “let me review it
-  first”.
 - **Everyday work needs no request.** Agents may look things up in your
   calendar, email, messages, contacts, files and the web, including opening
   links. They may create, edit, move and organize your files; run project
@@ -168,9 +160,14 @@ login.
   applies inside its window. Plain “never” stays absolute; “unless I ask in
   chat” lets you approve the action yourself. That exception removes the
   rules veto, but does not itself give permission: your chat must cover it.
-  An agent with no chat and no rules is judged by the built-in policy
-  alone. A new host starts with no rules: `latch setup`, like the Mac
-  app's onboarding, offers a family or a work assistant's to start from
+- **Only your own messages give chat permission.** Plow identifies who sent
+  each message. An agent or someone else quoting, forwarding or claiming
+  your words cannot give permission. The owner-only judgment excludes
+  unanswered messages from others; the whole-chat judgment still checks
+  context and conditions such as “let me review it first”. Rules/defaults
+  may allow work even with no chat.
+  A new host starts with no rules: `latch setup`, like the Mac app's
+  onboarding, offers a family or a work assistant's to start from
   (`latch rules set --preset family`, or `work`).
 - **Which chat.** The agent's chat, if its line has one. If it has several,
   the agent names one with `--plow-chat ID` or `LATCH_PLOW_CHAT`. Otherwise
@@ -207,7 +204,19 @@ login.
   and the agent never receives its values. Its site says where a login may
   go, not that it may be used: signing in still needs your OK, in a rule or
   the chat. Asking for something to be done on a site covers signing in
-  there.
+  there, including when you ask the agent to go to it, look something up or
+  open your link, or nudge it to sign in after it says it needs to. This
+  covers only signing in, not buying, sending, accepting or changing things
+  afterwards. An explicit “don't sign in” still wins. Before asking the
+  model, code refuses a login fill unless the page is one of its saved
+  sites or alternate top-level sites. The field's frame is checked again
+  before any value is released.
+
+The chat's stop threshold is 15% forbidden when covered is below 50%. A time
+restriction vetoes when its separate active-time answer is at least 50%; a
+rule's explicit chat exception can defer that veto to your messages. Other
+rules and the owner-only judgment veto below 50% covered when forbidden is
+at least as likely as not covered.
 
 **The audit log.** The host keeps a sealed log of the calls it handles,
 `audit.sealed.ndjson` in its state folder.
@@ -232,8 +241,9 @@ login.
   sealed the same way. `latch audit judge ID` shows one, ID being the
   record's `kept_request`, or an agent's `layers.rules`, `layers.chat` and
   `layers.will` kept-request ids. The `will` call is the owner-only
-  judgment. Each call records its probabilities, prompt/model identity
-  and cost; the gate's total includes all calls. They never hold a vault
+  judgment. Each call records its probabilities, prompt/model identity,
+  usage and cost; the gate's total includes all calls. Activity's
+  “Gatekeeper requests” opens them together. They never hold a vault
   value, and agents can't read them.
 
 ## 6. Managing a host

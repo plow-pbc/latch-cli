@@ -8,56 +8,69 @@ struct RulesView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        VStack(spacing: 0) {
-            VStack(spacing: 10) {
-                Text("Meet the Gatekeeper")
-                    .font(.system(size: 34, weight: .semibold))
-                    .accessibilityAddTraits(.isHeader)
-                Text("Your agents can look things up and create or edit ordinary files on their own, and they see what they find. Anything riskier, like sending, buying, deleting or giving a program internet access, needs your OK in your rules or your Plow chat.")
-                    .font(.system(size: 15))
-                    .lineSpacing(4)
+        ScrollView {
+            VStack(spacing: 0) {
+                VStack(spacing: 10) {
+                    Text("Meet the Gatekeeper")
+                        .font(.system(size: 34, weight: .semibold))
+                        .accessibilityAddTraits(.isHeader)
+                    Text("Everyday work is allowed: web and mail lookups, file edits, project builds and tests, and installing a project’s listed packages. Sending or changing accounts needs your OK in rules or your own Plow messages. Buying or sharing private data must be named.")
+                        .font(.system(size: 15))
+                        .lineSpacing(4)
+                        .foregroundStyle(Brand.muted)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Text("Permissions add to the defaults; restrictions still apply. “Never” stays never. “Unless I ask in chat” lets you approve it yourself. An agent quoting you cannot give permission.")
+                    .font(.system(size: 12.5))
                     .foregroundStyle(Brand.muted)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
-            }
-            Text("What may your agents do on this Mac?")
-                .font(.system(size: 14, weight: .medium))
-                .padding(.top, 24)
-                .padding(.bottom, 10)
-            field
+                    .padding(.top, 10)
+                Text("A task you give on a site includes signing in with its saved login there.")
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(Brand.muted)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 6)
+                Text("What may your agents do on this Mac?")
+                    .font(.system(size: 14, weight: .medium))
+                    .padding(.top, 24)
+                    .padding(.bottom, 10)
+                field
+                    .disabled(flow.rulesUnreadable)
+                HStack(alignment: .firstTextBaseline, spacing: 9) {
+                    Text("Start with:").foregroundStyle(Brand.muted)
+                    ForEach(Onboarding.decks) { deck in
+                        Button(deck.name) { flow.choose(deck) }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(flow.deck.name == deck.name && flow.draftRules == deck.rules ? Brand.volt : Brand.sage)
+                            .overlay(alignment: .bottom) { Rectangle().fill(Brand.sage.opacity(0.3)).frame(height: 1).offset(y: 2) }
+                    }
+                }
+                .font(.system(size: 12.5))
+                .padding(.top, 10)
                 .disabled(flow.rulesUnreadable)
-            HStack(alignment: .firstTextBaseline, spacing: 9) {
-                Text("Start with:").foregroundStyle(Brand.muted)
-                ForEach(Onboarding.decks) { deck in
-                    Button(deck.name) { flow.choose(deck) }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(flow.deck.name == deck.name && flow.draftRules == deck.rules ? Brand.volt : Brand.sage)
-                        .overlay(alignment: .bottom) { Rectangle().fill(Brand.sage.opacity(0.3)).frame(height: 1).offset(y: 2) }
+                if let note = flow.rulesNote {
+                    Text(note).font(.system(size: 12.5)).foregroundStyle(Brand.muted).padding(.top, 6)
                 }
-            }
-            .font(.system(size: 12.5))
-            .padding(.top, 10)
-            .disabled(flow.rulesUnreadable)
-            if let note = flow.rulesNote {
-                Text(note).font(.system(size: 12.5)).foregroundStyle(Brand.muted).padding(.top, 6)
-            }
-            if let error = flow.rulesError {
-                ErrorText(error: error, host: ErrorCopy.thisMac).foregroundStyle(Brand.clay).font(.callout).padding(.top, 8)
-            }
-            if flow.rulesUnreadable {
-                HStack(spacing: 10) {
-                    Text("Your current rules couldn't be read, so none can be saved over them.").foregroundStyle(Brand.muted)
-                    Button("Try Again") { Task { await flow.loadRules() } }
+                if let error = flow.rulesError {
+                    ErrorText(error: error, host: ErrorCopy.thisMac).foregroundStyle(Brand.clay).font(.callout).padding(.top, 8)
                 }
-                .font(.callout)
-                .padding(.top, 6)
+                if flow.rulesUnreadable {
+                    HStack(spacing: 10) {
+                        Text("Your current rules couldn't be read, so none can be saved over them.").foregroundStyle(Brand.muted)
+                        Button("Try Again") { Task { await flow.loadRules() } }
+                    }
+                    .font(.callout)
+                    .padding(.top, 6)
+                }
+                Deck(flow: flow, reduceMotion: reduceMotion)
+                    .padding(.top, 14)
             }
-            Deck(flow: flow, reduceMotion: reduceMotion)
-                .padding(.top, 14)
-            Spacer(minLength: 0)
+            .padding(.horizontal, 56)
+            .padding(.top, 46)
         }
-        .padding(.horizontal, 56)
-        .padding(.top, 46)
         .task { if !flow.app.still { await flow.loadRules() } }
         .onChange(of: flow.draftRules) { if !flow.app.still { flow.draftChanged() } }
     }

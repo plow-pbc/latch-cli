@@ -63,18 +63,24 @@ To revoke the agent, run `latch agents remove my-agent`.
 
 ## What an agent may do
 
-By default, your agents may look things up in your calendar, email, messages
-and files, and create or edit ordinary files, without asking. Riskier actions
-need your OK, in your rules or your Plow chat: sending, buying, deleting,
-changing calendars or shared systems, giving a program internet access, using
-secrets, and sending data elsewhere.
+By default, agents may look things up, open web pages, work on your files,
+run project builds and tests, and install packages the project already
+lists. Sending, inviting, deleting other files and changing accounts or
+shared systems need your permission. Buying, reading secrets or sharing
+private data must be named explicitly in your rules or your own Plow chat.
+A task you give on a site includes using its saved login there; it does not
+extend to buying, sending or changing things after sign-in.
 
-These are defaults. Your rules change them either way: forbid something
-agents could otherwise do, or allow something that would otherwise need your
-OK. For example:
+A permission adds to these defaults. A rule that grants one task leaves
+other everyday work allowed; a restriction still holds. “Never” stays
+absolute. “Unless I ask in chat” lets you approve the action yourself, in
+your own messages. An agent quoting you cannot give permission.
 
-- "Do not read or search this Mac's Messages."
-- "Agents may email the people in my contacts."
+For example:
+
+- “Do not read or search this Mac's Messages.”
+- “Agents may email the people in my contacts.”
+- “Never buy anything unless I ask in chat.”
 
 Each host keeps its own rules: see
 [How Latch works](how-latch-works.md#the-gatekeeper-and-rules).

@@ -223,6 +223,13 @@ review, to be met. Connector, path and sandbox limits still apply.
 No approval prompt exists: latch never shows the owner a dialog to allow
 a call, so never ask them to approve one.
 
+An owner's task on a site includes signing in with its saved login there,
+including opening their link or responding to their sign-in nudge. This
+covers only the saved login on its saved page sites, and never buying,
+accepting, sending or changing things afterwards. An explicit “don't sign
+in” still wins. A foreign-site login fill is refused by code before the
+model is asked; do not retry it there.
+
 An agent whose line has several Plow chats selects the one it acts for
 with `--plow-chat C` or `LATCH_PLOW_CHAT` on exec, file, Google, Messages,
 Contacts, browser session calls and `vault list`. Exit 2, `which_chat`, lists the choices;
@@ -244,6 +251,8 @@ Exit 4 is a refusal, and its code says what you may do:
 - `calendar_conflict`: the time is busy, nothing booked. Booking over it is
   the owner's call: ask them, naming the overlapping event, and once they
   agree resend with `--confirm-conflict`.
+- `gatekeeper_denied` with reason `login_site_mismatch`: use the login only
+  on its saved sites; the model is never asked to approve it elsewhere.
 - Any other exit 4 (`owner_said_no`, `exec_denied`, …) means no.
 
 Exit 3: the host was unreachable or could not judge; its message says what
