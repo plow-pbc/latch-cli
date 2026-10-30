@@ -56,7 +56,7 @@ if (tauri) {
 /** Follows a streaming command: `line` for each JSON line, `end` once. */
 export function follow(id, args, line, end) {
   followers.set(id, { line, end });
-  if (fake) return fake.stream(args, (value) => followers.get(id)?.line(value));
+  if (fake) return fake.stream(args, (value) => followers.get(id)?.line(value), (failure) => followers.get(id)?.end(failure));
   return tauri.core.invoke("stream", { id, args }).catch((failure) => end(failure));
 }
 

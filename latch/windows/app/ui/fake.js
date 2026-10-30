@@ -90,10 +90,10 @@ export async function pick() {
 
 /** A stream's lines, then nothing more until it's stopped, as the Mac's
  * fake `statusFollow` and `auditFollow` do. */
-export function stream(args, line) {
+export function stream(args, line, end) {
   queueMicrotask(() => {
     // Whatever `status --local` answers, a page's own fake included.
-    if (args[0] === "status") run(["status", "--local"]).then((status) => line({ type: "status", status }));
+    if (args[0] === "status") run(["status", "--local"]).then((status) => line({ type: "status", status }), end);
     if (args[0] === "audit") for (const value of each(per(args, "studioAudit", "kitchenAudit"))) line(value);
     // A login waiting for its text: the Mac's made-up code.
     if (args[0] === "login") line(one("code"));
