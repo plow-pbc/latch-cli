@@ -55,10 +55,11 @@ fn last_json(text: &str) -> Option<Value> {
         .find_map(|line| serde_json::from_str(line).ok())
 }
 
-/// Runs one latch command, with `input` on its stdin: its answer, or its
-/// failure.
+/// Runs one latch command, with `input` on its stdin: its answer (with
+/// `lines`, every JSON line it printed, as `audit`'s pages have many), or
+/// its failure.
 #[tauri::command]
-async fn run(args: Vec<String>, input: Option<String>) -> Result<Value, Value> {
+async fn run(args: Vec<String>, input: Option<String>, lines: Option<bool>) -> Result<Value, Value> {
     tauri::async_runtime::spawn_blocking(move || {
         let mut child = start(&args)?;
         let mut stdin = child.stdin.take().expect("piped stdin");
@@ -72,6 +73,10 @@ async fn run(args: Vec<String>, input: Option<String>) -> Result<Value, Value> {
             .wait_with_output()
             .map_err(|err| failure("io", &err.to_string()))?;
         let stdout = String::from_utf8_lossy(&output.stdout);
+        if output.status.success() && lines == Some(true) {
+            let all = stdout.lines().filter_map(|line| serde_json::from_str(line).ok());
+            return Ok(Value::Array(all.collect()));
+        }
         if output.status.success() {
             return Ok(last_json(&stdout).unwrap_or(Value::Null));
         }
@@ -143,10 +148,18 @@ fn qr(text: String) -> Result<String, Value> {
         .build())
 }
 
+/// Whether the window shows the Mac app's snapshot fixtures instead of
+/// asking latch: a debug build started with `LATCH_APP_FAKE`, for stills
+/// beside the Mac's (ui/fake.js).
+#[tauri::command]
+fn fake_mode() -> bool {
+    cfg!(debug_assertions) && std::env::var_os("LATCH_APP_FAKE").is_some()
+}
+
 fn main() {
     tauri::Builder::default()
         .manage(Streams::default())
-        .invoke_handler(tauri::generate_handler![run, stream, stop, qr])
+        .invoke_handler(tauri::generate_handler![run, stream, stop, qr, fake_mode])
         .build(tauri::generate_context!())
         .expect("the window builds")
         .run(|app, event| {
