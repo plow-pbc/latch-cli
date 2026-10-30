@@ -389,10 +389,7 @@ pub async fn run(state: &StateDir, args: &crate::cli::ServeArgs) -> Result<(), F
     // A host that could not sandbox its workers would refuse every call;
     // say so once, now, instead of starting. The quick check names a
     // missing kernel feature; the probe worker then installs the sandbox
-    // for real, which is the only way to know it can be. Windows has no
-    // worker sandbox yet: its host serves what needs no worker (rules, the
-    // vault, the record) and refuses each call that does.
-    #[cfg(unix)]
+    // for real, which is the only way to know it can be.
     crate::sandbox::check().map_err(|message| Failure::new(code::sandbox_unavailable, message))?;
     // The sandbox needs the state directory's real path (symlinks resolved).
     // One that does not exist yet has never logged in: say that, rather
@@ -480,16 +477,15 @@ async fn run_locked(
 ) -> Result<(), Failure> {
     let workers = workers(state_dir)?;
     let rules = RuleFiles::new(&state.path)?;
-    #[cfg(unix)]
     workers.probe().await.map_err(|err| {
         let message = format!("latch cannot sandbox host operations here: {}", err.message);
         Failure::new(code::sandbox_unavailable, message)
     })?;
-    #[cfg(unix)]
     log(&format!("worker sandbox: {}", crate::sandbox::name()));
-    #[cfg(windows)]
-    log("worker sandbox: none on Windows yet; exec, file, Google and browser calls are refused");
     exec::sweep_tmpdirs();
+    // Grants in access lists that launchers killed with a host left.
+    #[cfg(windows)]
+    crate::sandbox::sweep(&workers.state_dir);
     // Holding the folder, no other host runs here to use an older latch's.
     match crate::plugins::prune(&state.path) {
         Ok(removed) => {

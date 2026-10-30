@@ -155,7 +155,6 @@ fn mode_of(dir: &File, name: &[u8]) -> Option<u32> {
     (stat.st_mode & libc::S_IFMT == libc::S_IFREG).then_some(stat.st_mode as u32 & 0o7777)
 }
 
-#[cfg(unix)]
 fn changed(folder: &Path) -> Failure {
     Failure::new(
         code::destination_changed,
@@ -192,11 +191,147 @@ fn unlink(dir: &File, name: &str) -> io::Result<()> {
     Ok(())
 }
 
-/// Windows has no worker sandbox yet, so no worker stages an upload to place.
+/// Windows: the same steps without `*at` calls. The folder is opened once,
+/// not through a link at it, and must still be the folder that was judged;
+/// the new file is made in it and checked by its handle to be there; and it
+/// is renamed over the destination relative to that open folder, so a folder
+/// swapped meanwhile cannot redirect it. The new file takes the folder's
+/// access list, not the one of a file it replaces.
 #[cfg(windows)]
-pub fn place(_staged: &Path, path: &Path, _workers: &WorkerSetup) -> Result<(), Failure> {
-    let message = format!("{}: no worker sandbox on Windows yet", path.display());
-    Err(Failure::new(code::sandbox_unavailable, message))
+pub fn place(staged: &Path, path: &Path, workers: &WorkerSetup) -> Result<(), Failure> {
+    use std::fs::{File, OpenOptions};
+    use std::io;
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Foundation::GENERIC_WRITE;
+    use windows_sys::Win32::Storage::FileSystem::{
+        DELETE, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+    };
+
+    let (Some(folder), Some(name)) = (path.parent(), path.file_name()) else {
+        let message = format!("{} names no file", path.display());
+        return Err(Failure::new(code::bad_path, message));
+    };
+    let failed =
+        |err: io::Error| Failure::new(code::io_error, format!("{}: {err}", path.display()));
+    // The folder that was judged, or nothing: not a link, nor reached
+    // through a folder swapped for one. It must pass again.
+    let dir = OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(folder)
+        .ok()
+        .filter(|dir| final_path(dir).is_ok_and(|real| real == folder))
+        .ok_or_else(|| changed(folder))?;
+    check_path(workers, path, true)?;
+
+    let temp = folder.join(format!(
+        ".{}.latch-{}-{:08x}.part",
+        name.to_string_lossy(),
+        std::process::id(),
+        rand::random::<u32>()
+    ));
+    // Never an existing name, nor a link at it; DELETE, so it can be renamed.
+    let mut file = OpenOptions::new()
+        .write(true)
+        .access_mode(GENERIC_WRITE | DELETE)
+        .create_new(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(&temp)
+        .map_err(failed)?;
+    let written = final_path(&file)
+        .and_then(|real| match real.parent() == Some(folder) {
+            true => Ok(()),
+            false => Err(io::Error::other(
+                "the folder changed while the file was made",
+            )),
+        })
+        .and_then(|()| File::open(staged))
+        .and_then(|mut staged| io::copy(&mut staged, &mut file))
+        .and_then(|_| file.sync_all())
+        .and_then(|()| rename_into(&file, &dir, name));
+    drop((file, dir));
+    if let Err(err) = written {
+        let _ = std::fs::remove_file(&temp);
+        return Err(failed(err));
+    }
+    Ok(())
+}
+
+/// Where the open `file` really is, as `canonicalize` names it.
+#[cfg(windows)]
+fn final_path(file: &std::fs::File) -> std::io::Result<PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::GetFinalPathNameByHandleW;
+    let mut buffer = vec![0u16; 1024];
+    // SAFETY: `buffer` is writable for its length; the handle is live.
+    let length = unsafe {
+        GetFinalPathNameByHandleW(
+            file.as_raw_handle(),
+            buffer.as_mut_ptr(),
+            buffer.len() as u32,
+            0,
+        )
+    } as usize;
+    if length == 0 || length > buffer.len() {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(PathBuf::from(std::ffi::OsString::from_wide(
+        &buffer[..length],
+    )))
+}
+
+/// Renames the open `file` to `name` in the open folder `dir`, replacing
+/// what is there. Windows' own rename (`NtSetInformationFile`) takes the
+/// name relative to `dir`; the Win32 one (`SetFileInformationByHandle`)
+/// makes a bare name relative to this process's working folder instead.
+#[cfg(windows)]
+fn rename_into(
+    file: &std::fs::File,
+    dir: &std::fs::File,
+    name: &std::ffi::OsStr,
+) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Wdk::Storage::FileSystem::{
+        FILE_RENAME_INFORMATION, FileRenameInformation, NtSetInformationFile,
+    };
+    use windows_sys::Win32::Foundation::RtlNtStatusToDosError;
+    use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
+
+    let wide: Vec<u16> = name.encode_wide().collect();
+    let head = std::mem::offset_of!(FILE_RENAME_INFORMATION, FileName);
+    let size = (head + wide.len() * 2).max(size_of::<FILE_RENAME_INFORMATION>());
+    // u64s, so the structure is aligned.
+    let mut buffer = vec![0u64; size.div_ceil(8)];
+    let info = buffer.as_mut_ptr() as *mut FILE_RENAME_INFORMATION;
+    // SAFETY: `buffer` holds the structure, and the name from `FileName` on.
+    unsafe {
+        (*info).Anonymous.ReplaceIfExists = true;
+        (*info).RootDirectory = dir.as_raw_handle();
+        (*info).FileNameLength = (wide.len() * 2) as u32;
+        let to = (info as *mut u8).add(head) as *mut u16;
+        std::ptr::copy_nonoverlapping(wide.as_ptr(), to, wide.len());
+    }
+    let mut status = IO_STATUS_BLOCK::default();
+    // SAFETY: a live handle opened with DELETE, a live folder handle in the
+    // information, and `size` bytes of it.
+    let result = unsafe {
+        NtSetInformationFile(
+            file.as_raw_handle(),
+            &mut status,
+            info.cast(),
+            size as u32,
+            FileRenameInformation,
+        )
+    };
+    if result < 0 {
+        // SAFETY: converts a status code; no memory is touched.
+        return Err(std::io::Error::from_raw_os_error(
+            unsafe { RtlNtStatusToDosError(result) } as i32,
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
