@@ -196,15 +196,20 @@ fn unlink(dir: &File, name: &str) -> io::Result<()> {
 /// the new file is made in it and checked by its handle to be there; and it
 /// is renamed over the destination relative to that open folder, so a folder
 /// swapped meanwhile cannot redirect it. A file it replaces keeps its
-/// access list: the new one has it before any bytes are in it.
+/// access list: the new one is made with it.
 #[cfg(windows)]
 pub fn place(staged: &Path, path: &Path, workers: &WorkerSetup) -> Result<(), Failure> {
     use std::fs::{File, OpenOptions};
     use std::io;
+    use std::os::windows::ffi::OsStrExt;
     use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::FromRawHandle;
     use windows_sys::Win32::Foundation::GENERIC_WRITE;
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
     use windows_sys::Win32::Storage::FileSystem::{
-        DELETE, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, WRITE_DAC,
+        CREATE_NEW, CreateFileW, DELETE, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_BACKUP_SEMANTICS,
+        FILE_FLAG_OPEN_REPARSE_POINT,
     };
 
     use crate::sandbox::final_path;
@@ -232,15 +237,39 @@ pub fn place(staged: &Path, path: &Path, workers: &WorkerSetup) -> Result<(), Fa
         std::process::id(),
         rand::random::<u32>()
     ));
-    // Never an existing name, nor a link at it; DELETE, so it can be
-    // renamed, and WRITE_DAC, so it can take a replaced file's access list.
-    let mut file = OpenOptions::new()
-        .write(true)
-        .access_mode(GENERIC_WRITE | DELETE | WRITE_DAC)
-        .create_new(true)
-        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
-        .open(&temp)
-        .map_err(failed)?;
+    // Made with the access list of a file it replaces, protection included,
+    // and shared with no one until it is in place: an owner-only key in a
+    // folder others read is never theirs to open, not even in between.
+    let like = AccessOf::file(path).map_err(failed)?;
+    let attributes = SECURITY_ATTRIBUTES {
+        nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: like
+            .as_ref()
+            .map_or(std::ptr::null_mut(), AccessOf::descriptor),
+        bInheritHandle: 0,
+    };
+    let wide: Vec<u16> = temp.as_os_str().encode_wide().chain([0]).collect();
+    // Never an existing name (CREATE_NEW), nor a link at it; DELETE, so it
+    // can be renamed; no sharing.
+    // SAFETY: `wide` is NUL-terminated; `attributes` and the descriptor it
+    // points at (in `like`) outlive the call.
+    let handle = unsafe {
+        CreateFileW(
+            wide.as_ptr(),
+            GENERIC_WRITE | DELETE,
+            0,
+            &attributes,
+            CREATE_NEW,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
+            std::ptr::null_mut(),
+        )
+    };
+    drop(like);
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(failed(io::Error::last_os_error()));
+    }
+    // SAFETY: a new handle, owned by the File from here on.
+    let mut file = unsafe { File::from_raw_handle(handle) };
     let written = final_path(&file)
         .and_then(|real| match real.parent() == Some(folder) {
             true => Ok(()),
@@ -248,7 +277,6 @@ pub fn place(staged: &Path, path: &Path, workers: &WorkerSetup) -> Result<(), Fa
                 "the folder changed while the file was made",
             )),
         })
-        .and_then(|()| keep_access(&path, &file))
         .and_then(|()| File::open(staged))
         .and_then(|mut staged| io::copy(&mut staged, &mut file))
         .and_then(|_| file.sync_all())
@@ -261,79 +289,98 @@ pub fn place(staged: &Path, path: &Path, workers: &WorkerSetup) -> Result<(), Fa
     Ok(())
 }
 
-/// Gives the new `file` the access list of the file at `path` it replaces,
-/// as protected from inheriting as that one was: an owner-only key stays
-/// owner-only in a folder others read. A new name keeps the folder's.
+/// The access list of the file at `path`, and whether it is protected from
+/// inheriting, as a descriptor to make another file with.
 #[cfg(windows)]
-fn keep_access(path: &Path, file: &std::fs::File) -> std::io::Result<()> {
-    use std::os::windows::fs::OpenOptionsExt;
-    use std::os::windows::io::AsRawHandle;
-    use std::ptr::null_mut;
-    use windows_sys::Win32::Foundation::{ERROR_SUCCESS, LocalFree};
-    use windows_sys::Win32::Security::Authorization::{
-        GetSecurityInfo, SE_FILE_OBJECT, SetSecurityInfo,
-    };
-    use windows_sys::Win32::Security::{
-        ACL, DACL_SECURITY_INFORMATION, GetSecurityDescriptorControl,
-        PROTECTED_DACL_SECURITY_INFORMATION, SE_DACL_PROTECTED,
-        UNPROTECTED_DACL_SECURITY_INFORMATION,
-    };
-    use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_OPEN_REPARSE_POINT, READ_CONTROL};
+struct AccessOf {
+    /// As Windows gave it: holds the list `made` points at.
+    read: windows_sys::Win32::Security::PSECURITY_DESCRIPTOR,
+    made: Box<windows_sys::Win32::Security::SECURITY_DESCRIPTOR>,
+}
 
-    let old = match std::fs::OpenOptions::new()
-        .access_mode(READ_CONTROL)
-        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
-        .open(path)
-    {
-        Ok(old) => old,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(err) => return Err(err),
-    };
-    let (mut dacl, mut descriptor): (*mut ACL, _) = (null_mut(), null_mut());
-    // SAFETY: a live handle with READ_CONTROL; the descriptor holding `dacl`
-    // is freed below.
-    let read = unsafe {
-        GetSecurityInfo(
-            old.as_raw_handle(),
-            SE_FILE_OBJECT,
-            DACL_SECURITY_INFORMATION,
-            null_mut(),
-            null_mut(),
-            &mut dacl,
-            null_mut(),
-            &mut descriptor,
-        )
-    };
-    if read != ERROR_SUCCESS {
-        return Err(std::io::Error::from_raw_os_error(read as i32));
-    }
-    let (mut control, mut revision) = (0u16, 0u32);
-    // SAFETY: `descriptor` is live; `file` has WRITE_DAC; `dacl` lives in
-    // `descriptor`, freed once after.
-    let written = unsafe {
-        if GetSecurityDescriptorControl(descriptor, &mut control, &mut revision) == 0 {
-            std::io::Error::last_os_error().raw_os_error().unwrap_or(1) as u32
-        } else {
-            let protection = match control & SE_DACL_PROTECTED != 0 {
-                true => PROTECTED_DACL_SECURITY_INFORMATION,
-                false => UNPROTECTED_DACL_SECURITY_INFORMATION,
-            };
-            SetSecurityInfo(
-                file.as_raw_handle(),
+#[cfg(windows)]
+impl AccessOf {
+    /// None when no file is there.
+    fn file(path: &Path) -> std::io::Result<Option<AccessOf>> {
+        use std::os::windows::fs::OpenOptionsExt;
+        use std::os::windows::io::AsRawHandle;
+        use std::ptr::null_mut;
+        use windows_sys::Win32::Foundation::{ERROR_SUCCESS, LocalFree};
+        use windows_sys::Win32::Security::Authorization::{GetSecurityInfo, SE_FILE_OBJECT};
+        use windows_sys::Win32::Security::{
+            ACL, DACL_SECURITY_INFORMATION, GetSecurityDescriptorControl,
+            InitializeSecurityDescriptor, SE_DACL_PROTECTED, SetSecurityDescriptorControl,
+            SetSecurityDescriptorDacl,
+        };
+        use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_OPEN_REPARSE_POINT, READ_CONTROL};
+        use windows_sys::Win32::System::SystemServices::SECURITY_DESCRIPTOR_REVISION;
+
+        let old = match std::fs::OpenOptions::new()
+            .access_mode(READ_CONTROL)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)
+        {
+            Ok(old) => old,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => return Err(err),
+        };
+        let (mut dacl, mut read): (*mut ACL, _) = (null_mut(), null_mut());
+        // SAFETY: a live handle with READ_CONTROL; `read`, which holds
+        // `dacl`, is freed when the AccessOf is dropped.
+        let status = unsafe {
+            GetSecurityInfo(
+                old.as_raw_handle(),
                 SE_FILE_OBJECT,
-                DACL_SECURITY_INFORMATION | protection,
+                DACL_SECURITY_INFORMATION,
                 null_mut(),
                 null_mut(),
-                dacl,
+                &mut dacl,
                 null_mut(),
+                &mut read,
             )
+        };
+        if status != ERROR_SUCCESS {
+            return Err(std::io::Error::from_raw_os_error(status as i32));
         }
-    };
-    // SAFETY: allocated by GetSecurityInfo, freed once.
-    unsafe { LocalFree(descriptor) };
-    match written {
-        ERROR_SUCCESS => Ok(()),
-        err => Err(std::io::Error::from_raw_os_error(err as i32)),
+        // SAFETY: zeroes are a valid start; Initialize sets it up.
+        let mut access = AccessOf {
+            read,
+            made: Box::new(unsafe { std::mem::zeroed() }),
+        };
+        let made = (&raw mut *access.made).cast();
+        let (mut control, mut revision) = (0u16, 0u32);
+        // SAFETY: `read` is live; `made` is ours, pointing at `dacl` in `read`,
+        // which lives as long.
+        let done = unsafe {
+            GetSecurityDescriptorControl(read, &mut control, &mut revision) != 0
+                && InitializeSecurityDescriptor(made, SECURITY_DESCRIPTOR_REVISION) != 0
+                && SetSecurityDescriptorDacl(made, 1, dacl, 0) != 0
+                && SetSecurityDescriptorControl(
+                    made,
+                    SE_DACL_PROTECTED,
+                    control & SE_DACL_PROTECTED,
+                ) != 0
+        };
+        if !done {
+            let err = std::io::Error::last_os_error();
+            // SAFETY: allocated by GetSecurityInfo, freed once (`forget`).
+            unsafe { LocalFree(access.read) };
+            std::mem::forget(access);
+            return Err(err);
+        }
+        Ok(Some(access))
+    }
+
+    fn descriptor(&self) -> *mut std::ffi::c_void {
+        (&raw const *self.made).cast_mut().cast()
+    }
+}
+
+#[cfg(windows)]
+impl Drop for AccessOf {
+    fn drop(&mut self) {
+        // SAFETY: allocated by GetSecurityInfo, freed once.
+        unsafe { windows_sys::Win32::Foundation::LocalFree(self.read) };
     }
 }
 
