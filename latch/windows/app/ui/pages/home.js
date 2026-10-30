@@ -73,6 +73,21 @@ function need(symbol, text, detail, action) {
     el("span", { class: "text" }, text, detail ? el("small", {}, detail) : null), action ?? null);
 }
 
+/** Home's own Start Latch: whether it is starting, and how its last try
+ * failed, shown on its row. */
+const startedHere = (app) => (app.pages.home ??= { starting: false, error: null });
+
+async function start(app) {
+  const here = startedHere(app);
+  if (here.starting || !app.start) return;
+  here.starting = true;
+  here.error = null;
+  app.drawPage();
+  here.error = (await app.start()) ?? null;
+  here.starting = false;
+  app.drawPage();
+}
+
 function needs(app) {
   const rows = [];
   if (app.localError) rows.push(need("warning", "Couldn't check this PC.", said(app.localError)));
@@ -82,8 +97,9 @@ function needs(app) {
     if (hosting.blocked) rows.push(need("warning", "Latch can't run on this PC right now.", said(hosting.blocked)));
     else if (hosting.state === "stopped" || hosting.state === "error") {
       rows.push(need("pause", "Latch isn't running on this PC, so your agents can't reach it.",
-        status.last_error ? said(status.last_error) : "Start it to let them in again.",
-        button("Start Latch", () => app.start?.())));
+        startedHere(app).error ? errors.errorText(startedHere(app).error, { tone: "bad" })
+          : status.last_error ? said(status.last_error) : "Start it to let them in again.",
+        button(startedHere(app).starting ? "Starting…" : "Start Latch", () => start(app), { disabled: startedHere(app).starting })));
     }
     if (status.update?.available) {
       const build = status.update.build ? ` (build ${status.update.build})` : "";

@@ -142,10 +142,9 @@
   border-top-color: var(--accent);
   border-right-color: var(--accent);
   border-radius: 50%;
-  animation: activity-spin 0.9s linear infinite;
+  animation: spin 0.9s linear infinite;
 }
 .activity-record .ring.small { width: 18px; height: 18px; border-width: 2px; }
-@keyframes activity-spin { to { transform: rotate(360deg); } }
 
 /* ── footer ── */
 .activity .footer {

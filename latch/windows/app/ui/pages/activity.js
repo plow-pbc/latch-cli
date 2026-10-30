@@ -333,6 +333,11 @@ export function leave(app) {
   unwatch(app);
 }
 
+/** The account changed: every host's feed stops, and none is kept. */
+export function forget(app) {
+  for (const shown of Object.values(state(app).feeds)) shown.stop();
+}
+
 /** A host's Activity, or one agent's there, with every outcome or the one
  * asked for, no search, and no connections or owner's reads
  * (`AppModel.openActivity`): for Home and Agents. */

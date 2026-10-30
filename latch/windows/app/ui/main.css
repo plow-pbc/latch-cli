@@ -232,6 +232,11 @@ body:has(.app:not([hidden])) { background: var(--win-bg); }
 .line.need .icon.warn { width: 20px; height: 20px; flex: none; color: var(--warn); align-self: flex-start; }
 .line.need .text { display: flex; flex-direction: column; }
 .line.need small { color: var(--text-2); font-size: 13px; }
+.line.need .error-text { display: flex; flex-direction: column; gap: 2px; }
+.line.need .error-text.bad { color: var(--bad); }
+.line.need .error-details { font-size: 12px; color: var(--text-2); }
+.line.need .error-details summary { cursor: default; width: max-content; }
+.line.need .error-details .said { margin-top: 4px; user-select: text; overflow-wrap: anywhere; }
 .line.recent > .mono { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .line .mono, .mono { font-family: "Cascadia Mono", Consolas, ui-monospace, monospace; font-size: 13px; }
 .line .state { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
@@ -284,6 +289,50 @@ body:has(.app:not([hidden])) { background: var(--win-bg); }
   font: inherit;
   color: inherit;
 }
+
+/* Windows' controls, one look on every page. */
+/* ProgressRing, small; a page may draw it larger. */
+.app .ring {
+  display: inline-block;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid var(--track);
+  border-top-color: var(--accent);
+  animation: spin 0.9s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .app .ring { animation: none; } }
+
+/* ToggleSwitch, its On/Off before it as Windows' Settings shows it. */
+.app .switch { position: relative; display: inline-flex; align-items: center; gap: 12px; flex: none; }
+.app .switch .state { color: var(--text-1); min-width: 22px; text-align: right; }
+.app .switch input { position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: default; }
+.app .switch .track {
+  position: relative;
+  width: 40px;
+  height: 20px;
+  border-radius: 10px;
+  border: 1px solid var(--field-under);
+  background: var(--field);
+  pointer-events: none;
+}
+.app .switch .track::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--text-2);
+  transition: transform 0.12s ease-out;
+}
+.app .switch input:checked + .track { background: var(--accent); border-color: var(--accent); }
+.app .switch input:checked + .track::after { transform: translateX(20px); background: var(--card); }
+.app .switch input:focus-visible + .track { outline: 2px solid var(--text-1); outline-offset: 2px; }
+.app .switch:has(input:disabled) { opacity: 0.4; }
 
 /* A narrow window: the bar's tools go under the tabs, as the Mac's toolbar
    folds its items away. */

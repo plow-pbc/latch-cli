@@ -7,8 +7,9 @@
 // A page is a module in pages/ with `render(app, host)` (its nodes), and
 // optionally `enter(app, host)` (reads when it shows), `leave(app)` (when
 // another place shows: a stream it follows ends), `inspector(app, host)`
-// (the pane's nodes, or null), `search` (the bar's placeholder) and
-// `followsStatus` (drawn again when this PC's status changes).
+// (the pane's nodes, or null), `search` (the bar's placeholder),
+// `followsStatus` (drawn again when this PC's status changes) and
+// `forget(app)` (another account logged in: what it keeps for the last ends).
 // latch.js's latchFile() shows a file latch writes, and pickFile() asks
 // for one.
 
@@ -44,6 +45,7 @@ export const app = {
   draw,
   drawPage,
   go,
+  readAccount,
   host,
   hosts,
   on,
@@ -68,6 +70,23 @@ export async function open(into) {
     await window_.center();
   }
   const asked = new URLSearchParams(location.search);
+  // Set up again opens the window again: what runs for it is started once.
+  if (!opened) {
+    opened = true;
+    followLocal();
+    setInterval(readAccount, 30_000);
+    document.addEventListener("keydown", shortcut);
+  }
+  await readAccount();
+  if (asked.get("host")) app.hostName = asked.get("host");
+  if (asked.get("inspect")) app.inspecting[asked.get("place")] = asked.get("inspect") !== "0";
+  if (asked.get("search")) app.search[asked.get("place")] = asked.get("search");
+  go(asked.get("place") ?? app.place);
+}
+
+let opened = false;
+
+function followLocal() {
   follow("main-status", ["status", "--local", "--follow"], (line) => {
     if (line.type !== "status") return;
     app.local = line.status;
@@ -79,24 +98,45 @@ export async function open(into) {
     draw({ page: false });
     if (pageOf(app.place)?.followsStatus) drawPage();
   });
-  await readAccount();
-  setInterval(readAccount, 30_000);
-  document.addEventListener("keydown", shortcut);
-  if (asked.get("host")) app.hostName = asked.get("host");
-  if (asked.get("inspect")) app.inspecting[asked.get("place")] = asked.get("inspect") !== "0";
-  if (asked.get("search")) app.search[asked.get("place")] = asked.get("search");
-  go(asked.get("place") ?? app.place);
 }
 
+/** `status`: the account and its hosts, read again every 30 seconds. */
 async function readAccount() {
+  const was = { account: JSON.stringify(app.account), error: Boolean(app.accountError), host: host() };
+  let account = app.account;
   try {
-    app.account = await latch(["status"]);
+    account = await latch(["status"]);
     app.accountError = null;
   } catch (failure) {
     app.accountError = failure;
   }
+  const owner = (status) => status?.account?.owner_uid ?? null;
+  if (app.account && account && owner(account) !== owner(app.account)) {
+    forgetAccount();
+    app.account = account;
+    app.hostName = hosts()[0]?.name ?? null;
+    return go("home");
+  }
+  app.account = account;
   app.hostName ??= hosts()[0]?.name ?? null;
-  draw({ page: false });
+  // Nothing new: nothing is drawn again, so a search being typed keeps
+  // its focus.
+  if (JSON.stringify(account) === was.account && Boolean(app.accountError) === was.error) return;
+  const now = host();
+  // A host that came online: its page reads what it couldn't while it was
+  // offline, as opening it then would.
+  if (was.host?.online === false && now?.online === true && now.name === was.host.name) go(app.place);
+  else draw({ page: false });
+}
+
+/** Another Plow account than the one read before (logged out, then in as
+ * someone else): nothing read for the last one stays, so nothing acts on
+ * its hosts, devices or agents by mistake. */
+function forgetAccount() {
+  pageOf(app.place)?.leave?.(app);
+  for (const [, , page] of SCREENS) page.forget?.(app);
+  for (const entry of ACCOUNT) entry.at(-1).forget?.(app);
+  Object.assign(app, { summaries: {}, pages: {}, search: {}, hostName: null, place: "home" });
 }
 
 /** The arguments that point a command at `host`: none for this PC. */
@@ -246,8 +286,23 @@ function draw({ page = true } = {}) {
   else root.prepend(sidebar);
   const content = root.querySelector(".content");
   if (!content) root.append(el("section", { class: "content" }, header(entry), body(entry)));
-  else if (page) content.replaceChildren(header(entry), body(entry));
-  else content.querySelector(".head").replaceWith(header(entry));
+  else keepingFocus(() => {
+    if (page) content.replaceChildren(header(entry), body(entry));
+    else content.querySelector(".head").replaceWith(header(entry));
+  });
+}
+
+/** Runs `change`, then gives focus back to what had it, if it is still
+ * shown: the search field moves into each new header, and moving it would
+ * end typing in it, every 30 seconds when the hosts are read again. */
+function keepingFocus(change) {
+  const focused = document.activeElement;
+  const range = typeof focused?.selectionStart === "number" ? [focused.selectionStart, focused.selectionEnd] : null;
+  change();
+  if (focused && focused !== document.body && focused !== document.activeElement && focused.isConnected) {
+    focused.focus({ preventScroll: true });
+    if (range) focused.setSelectionRange(...range);
+  }
 }
 
 /** Draws the page (and its inspector) again, the header and sidebar kept:
