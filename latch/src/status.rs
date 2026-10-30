@@ -152,11 +152,14 @@ pub async fn directory(state: &StateDir) -> Result<Directory, Failure> {
         tokio::try_join!(plow.list_peers(), plow.owner_uid(), plow.display_name())?;
     let mut listed = hosts::only_hosts(peers, &config.peer.key);
     listed.sort_by_key(|host| !host.this_machine);
-    let asked = std::env::var("LATCH_HOST").ok();
-    let default = if hosts::this_machine_chosen(state, &config, asked.as_deref()) {
+    let named = hosts::named(state, std::env::var("LATCH_HOST").ok().as_deref())?;
+    let asked = named.host();
+    let default = if let hosts::Named::NoDefault = named {
+        Err(Failure::new(code::no_default_host, String::new()))
+    } else if hosts::this_machine_chosen(state, &config, asked) {
         Ok(config.peer.name.clone())
     } else {
-        hosts::pick(asked.as_deref(), &listed).map(|host| host.name)
+        hosts::pick(asked, &listed).map(|host| host.name)
     };
     let (default_host, default_host_reason) = match default {
         Ok(name) => (Some(name), None),
@@ -238,6 +241,9 @@ pub struct LocalStatus {
     pub last_error: Option<Problem>,
     /// The Plow this machine logged in to; `null` before login.
     pub api_url: Option<String>,
+    /// The host `--host default` names, as `latch hosts default` saved it
+    /// in this state folder; `null` when none is.
+    pub saved_default_host: Option<String>,
     pub state_dir: PathBuf,
     pub version: &'static str,
     pub protocol: u32,
@@ -331,6 +337,7 @@ pub fn local(state: &StateDir) -> Result<LocalStatus, Failure> {
         update: crate::update::status(&dir),
         last_error,
         api_url: config.map(|config| config.api_url),
+        saved_default_host: hosts::saved_default(state)?,
         state_dir: dir.clone(),
         version: crate::cli::version(),
         protocol: crate::wire::protocol(),

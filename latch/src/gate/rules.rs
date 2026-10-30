@@ -40,6 +40,44 @@ impl RulesSource for Rules {
     }
 }
 
+/// Rules to start from, by the kind of assistant: what `latch setup` offers
+/// and `rules set --preset` saves. The Mac app's onboarding offers the same
+/// texts (`Onboarding.decks`).
+#[derive(clap::ValueEnum, Clone, Copy, PartialEq, Debug)]
+pub enum Preset {
+    Family,
+    Work,
+}
+
+impl Preset {
+    pub const ALL: [Preset; 2] = [Preset::Family, Preset::Work];
+
+    pub fn word(self) -> &'static str {
+        match self {
+            Preset::Family => "family",
+            Preset::Work => "work",
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Preset::Family => "Family assistant",
+            Preset::Work => "Work assistant",
+        }
+    }
+
+    pub fn text(self) -> &'static str {
+        match self {
+            Preset::Family => {
+                "Allow my family assistant to keep our calendar, text and email people for me, and order groceries online. Never let it share my documents or passwords with anyone."
+            }
+            Preset::Work => {
+                "Allow my work assistant to read and send my email, keep my calendar, and work on my GitHub projects. Keep it out of my personal texts and chats."
+            }
+        }
+    }
+}
+
 /// The most the rules for one agent may come to: every agent's and its own.
 pub const MAX_RULES: u64 = 8 * 1024;
 
@@ -363,4 +401,29 @@ pub fn is_agent_uid(id: &str) -> bool {
         && id
             .bytes()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+#[cfg(test)]
+mod preset_tests {
+    use super::Preset;
+
+    /// The Mac app's onboarding offers each preset by the same name, with
+    /// the same text, in the same order.
+    #[test]
+    fn the_mac_app_offers_the_same_presets() {
+        let onboarding = include_str!("../../gui/Sources/PlowLatchUI/App/Onboarding.swift");
+        let mut from = 0;
+        for preset in Preset::ALL {
+            let deck = format!(
+                "Deck(name: \"{}\",\n                 rules: \"{}\",",
+                preset.name(),
+                preset.text()
+            );
+            let at = onboarding[from..]
+                .find(&deck)
+                .unwrap_or_else(|| panic!("Onboarding.swift has no deck {deck}"));
+            from += at + deck.len();
+        }
+        assert_eq!(onboarding.matches("Deck(name: ").count(), Preset::ALL.len());
+    }
 }

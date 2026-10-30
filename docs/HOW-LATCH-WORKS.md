@@ -150,7 +150,9 @@ login.
   internet access, using secrets or sending data elsewhere. Your rules stay
   in force when you ask in chat, and they can restrict everyday work too.
   An agent with no chat and no rules is judged by the built-in policy
-  alone.
+  alone. A new host starts with no rules: `latch setup`, like the Mac
+  app's onboarding, offers a family or a work assistant's to start from
+  (`latch rules set --preset family`, or `work`).
 - **Which chat.** The agent's chat, if its line has one. If it has several,
   the agent names one with `--plow-chat ID` or `LATCH_PLOW_CHAT`. Otherwise
   the call stops with `which_chat` (exit 2), which lists the choices. Your
@@ -252,6 +254,15 @@ login.
 ever run a host. Otherwise your only host. With no hosts you get `no_host`,
 and with several and none named `host_required` (both exit 2).
 
+`--host default` (or `LATCH_HOST=default`) is the host `latch hosts default
+NAME` saved in this machine's state folder, its own or an agent's: a
+choice, not a permission, so it reaches no host the caller couldn't name.
+`latch hosts default` prints it and `--clear` forgets it; `latch status`
+shows it as `saved_default_host`. With none saved, `--host default` is
+`no_default_host` (exit 2), listing the hosts. A command without `--host`
+goes where it always did, and a host named `default` is reached only
+through the saved name.
+
 | Error | Exit | Meaning |
 |---|---|---|
 | `host_offline` | 3 | Plow doesn't list the host as online. Nothing was sent. |
@@ -317,11 +328,15 @@ For how to report a vulnerability, see [SECURITY.md](../SECURITY.md).
     `latch status --local` and on its dashboard. Nothing installs on its
     own. `LATCH_NO_UPDATE_CHECK=1` turns the looking off.
 - **Log out:** `latch logout` stops this machine's host, removes the machine
-  from your Plow account and deletes its key and Plow token. The vault and
-  audit log read as before after the next `latch login`. An agent's logout
-  leaves Plow alone.
-  - `latch logout --purge` also deletes the vault and audit keys and the
-    whole state folder.
+  from your Plow account and deletes its Plow token. It keeps the machine's
+  key, its name, the vault, the audit log, rules and settings, so after
+  the next `latch login` it is the same machine, under the same name, to
+  every agent. An agent's logout leaves Plow alone.
+  - It first says what it deletes and keeps, with the state folder's full
+    path and the vault's items by kind, and asks. With no one at a
+    terminal it refuses unless given `--yes`; `--dry-run` only says.
+  - `latch logout --purge` deletes every secret and the whole state folder;
+    at a terminal you type `delete` to confirm.
   - If Plow can't be reached, the local delete still happens. Remove the
     machine from another one with `latch devices remove NAME`.
 

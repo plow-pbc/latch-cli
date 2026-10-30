@@ -1962,6 +1962,40 @@ fn use_plow(state: &Path, url: &str) {
     config["api_url"] = json!(url);
     fs::write(&config_path, config.to_string()).unwrap();
 }
+/// `rules set --preset` saves the preset's text, as `setup` offers it, and
+/// with `--revision none` only while there are no rules yet.
+#[test]
+fn rules_set_a_preset_only_where_there_are_none() {
+    let (_dir, state, _key) = owner_host();
+    let set = latch(
+        &state,
+        &["rules", "set", "--preset", "work", "--revision", "none"],
+        &[],
+    );
+    assert_eq!(set.status.code(), Some(0), "{set:?}");
+    let saved = fs::read_to_string(state.join("rules/host.txt")).unwrap();
+    assert!(
+        saved.starts_with("Allow my work assistant to read and send my email"),
+        "{saved}"
+    );
+    let again = latch(
+        &state,
+        &["rules", "set", "--preset", "family", "--revision", "none"],
+        &[],
+    );
+    assert_ne!(again.status.code(), Some(0), "{again:?}");
+    assert_eq!(
+        fs::read_to_string(state.join("rules/host.txt")).unwrap(),
+        saved
+    );
+    let both = latch(
+        &state,
+        &["rules", "set", "Never send email.", "--preset", "work"],
+        &[],
+    );
+    assert_eq!(both.status.code(), Some(2), "{both:?}");
+}
+
 #[test]
 fn rules_on_this_machines_own_host_state_are_set_edited_shown_and_audited() {
     const ADA: &str = "0123456789abcdef0123456789abcdef";
@@ -5367,6 +5401,144 @@ fn every_answer_from_a_host_names_the_host() {
     assert_eq!(error["error"]["host"], "studio", "{error}");
 }
 
+/// `--host default` is the host `latch hosts default` saved in this state
+/// folder: an owner device's or an agent's own, never a bare command's.
+#[test]
+fn a_saved_default_host_is_what_host_default_names() {
+    let owners = Owners::start();
+    let _host = owners.serve(&owners.host);
+    let _studio = owners.serve(&owners.studio);
+    let laptop = &owners.laptop;
+    let ok = |from: &Path, args: &[&str], env: &[(&str, &Path)]| {
+        let output = latch(from, args, env);
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+        println!("latch {}: {result}", args.join(" "));
+        result
+    };
+    let refused = |from: &Path, args: &[&str]| {
+        let output = latch(from, args, &[]);
+        let error = one_error_line(&String::from_utf8_lossy(&output.stderr), Some(2));
+        println!("latch {}: {error}", args.join(" "));
+        error["error"].clone()
+    };
+    let echo = ["exec", "--host", "default", "--", "echo", "hi"];
+
+    // None saved: --host default says how to save one, with the hosts.
+    assert_eq!(
+        ok(laptop, &["hosts", "default"], &[])["default_host"],
+        Value::Null
+    );
+    let unset = refused(laptop, &echo);
+    assert_eq!(unset["code"], "no_default_host", "{unset}");
+    let message = unset["message"].as_str().unwrap();
+    assert!(
+        message.contains("latch hosts default NAME") && message.contains("host, studio"),
+        "{message}"
+    );
+
+    // Only a host the account has, and never `default` itself.
+    for name in ["gone", "default"] {
+        assert_eq!(
+            refused(laptop, &["hosts", "default", name])["code"],
+            "unknown_host"
+        );
+    }
+
+    assert_eq!(
+        ok(laptop, &["hosts", "default", "studio"], &[])["default_host"],
+        "studio"
+    );
+    assert_eq!(
+        ok(laptop, &["hosts", "default"], &[])["default_host"],
+        "studio"
+    );
+    assert_eq!(ok(laptop, &echo, &[])["host"], "studio");
+    let by_env = ["exec", "--", "echo", "hi"];
+    let env = [("LATCH_HOST", Path::new("default"))];
+    assert_eq!(ok(laptop, &by_env, &env)["host"], "studio");
+    let status = ok(laptop, &["status"], &[]);
+    assert_eq!(status["saved_default_host"], "studio");
+    let status = ok(laptop, &["status"], &env);
+    assert_eq!(status["default_host"], "studio");
+    // A bare command goes where it always did: the laptop never served,
+    // and there are two hosts.
+    assert_eq!(refused(laptop, &by_env)["code"], "host_required");
+    // Another machine's state has its own, or none: on a serving host with
+    // none saved, --host default never falls back to the host itself.
+    let host = &owners.host;
+    assert_eq!(
+        ok(host, &["hosts", "default"], &[])["default_host"],
+        Value::Null
+    );
+    assert_eq!(refused(host, &echo)["code"], "no_default_host");
+    // Saved as itself, it is local, and named as Plow lists it.
+    ok(host, &["hosts", "default", "host"], &[]);
+    assert_eq!(ok(host, &echo, &[])["host"], "host");
+    let agents = ok(host, &["agents", "--host", "default"], &[]);
+    assert_eq!(agents["host"]["name"], "host", "{agents}");
+
+    assert_eq!(
+        ok(laptop, &["hosts", "default", "--clear"], &[])["default_host"],
+        Value::Null
+    );
+    assert_eq!(refused(laptop, &echo)["code"], "no_default_host");
+
+    // An agent saves one in its own state, and reaches it the same way.
+    let agent_token = owners.dir.path().join("agent.token");
+    fs::write(&agent_token, "agent-credential\n").unwrap();
+    let agent = owners.dir.path().join("agent");
+    let agent_env = [("PLOW_TOKEN_FILE", agent_token.as_path())];
+    let login = latch(
+        &agent,
+        &["login", "--api-url", &owners._plow.url],
+        &agent_env,
+    );
+    assert_eq!(login.status.code(), Some(0), "{login:?}");
+    let saved = ok(&agent, &["hosts", "default", "host"], &agent_env);
+    assert_eq!(saved["default_host"], "host");
+    let listed = ok(&agent, &["vault", "--host", "default", "list"], &agent_env);
+    assert_eq!(listed["host"], "host");
+}
+
+/// `rules edit --host default` saves to the host it read from, even when
+/// the saved default changes while the editor is open.
+#[test]
+fn a_rules_edit_saves_where_it_read_whatever_the_default_becomes() {
+    let owners = Owners::start();
+    let _host = owners.serve(&owners.host);
+    let _studio = owners.serve(&owners.studio);
+    let laptop = &owners.laptop;
+    let ok = |args: &[&str]| {
+        let output = latch(laptop, args, &[]);
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
+    };
+    ok(&["rules", "set", "--host", "host", "Rules on host."]);
+    ok(&["rules", "set", "--host", "studio", "Rules on studio."]);
+    ok(&["hosts", "default", "host"]);
+    // The editor moves the default to the studio, then edits.
+    let editor = owners.dir.path().join("editor.sh");
+    fs::write(
+        &editor,
+        format!(
+            "#!/bin/sh\n'{}' --state-dir '{}' hosts default studio >/dev/null || exit 1\nprintf ' Edited.' >> \"$1\"\n",
+            latch_bin().display(),
+            laptop.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&editor, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let edit = ["rules", "edit", "--host", "default"];
+    let (code, shown, _) =
+        latch_at_a_terminal(laptop, &edit, "", false, &[("EDITOR", editor.as_path())]);
+    assert_eq!(code, Some(0), "{shown}");
+    assert_eq!(ok(&["hosts", "default"])["default_host"], "studio");
+    let text = |host: &str| ok(&["rules", "show", "--host", host])["every_agent"]["text"].clone();
+    assert_eq!(text("host"), "Rules on host. Edited.");
+    assert_eq!(text("studio"), "Rules on studio.");
+}
+
 /// Each call from a machine whose host serves goes through that host,
 /// and answers, exits and is recorded at the other host as it is with no
 /// host serving here, when the command dials directly.
@@ -7223,17 +7395,17 @@ fn a_signed_latch_keeps_every_secret_in_the_keychain_and_none_in_files() {
         assert_eq!(out["from"], "keychain", "{out}");
         assert_eq!(
             out["removed"],
-            json!(["key", "plow-token", "config.json"]),
+            json!(["plow-token", "config.json"]),
             "{out}"
         );
         assert_eq!(logout(state, &[])["removed"], json!([]));
     }
     assert!(eventually(10, || serve.0.try_wait().unwrap().is_some()));
-    // --purge takes the vault and audit keys too, and the folders.
+    // --purge takes the key and the vault and audit keys too, and the folders.
     let purged = logout(&host, &["--purge"]);
     assert_eq!(
         purged["removed"],
-        json!(["vault.key", "audit.keys"]),
+        json!(["key", "vault.key", "audit.keys"]),
         "{purged}"
     );
     logout(&owner, &["--purge"]);
@@ -7254,13 +7426,13 @@ fn a_signed_latch_logs_out_a_state_folder_deleted_by_hand() {
     // login would, and still takes the machine out and deletes its login.
     let env = [("PLOW_API_URL", Path::new(&plow.url))];
     let logout = |args: &[&str]| -> Value {
-        let output = latch(&host, &[&["logout"], args].concat(), &env);
+        let output = latch(&host, &[&["logout", "--yes"], args].concat(), &env);
         assert_eq!(output.status.code(), Some(0), "{output:?}");
         serde_json::from_slice(&output.stdout).unwrap()
     };
     let out = logout(&[]);
     assert_eq!(out["from"], "keychain", "{out}");
-    assert_eq!(out["removed"], json!(["key", "plow-token"]), "{out}");
+    assert_eq!(out["removed"], json!(["plow-token"]), "{out}");
     assert_eq!(
         out["device"],
         json!({"name": "host", "removed": true}),
@@ -7268,30 +7440,201 @@ fn a_signed_latch_logs_out_a_state_folder_deleted_by_hand() {
     );
     assert!(plow.state.lock().unwrap().peers.is_empty());
     assert!(!host.exists());
-    // --purge finds the vault and audit keys the folder left.
+    // --purge finds the key and the vault and audit keys the folder left.
     let purged = logout(&["--purge"]);
     assert_eq!(
         purged["removed"],
-        json!(["vault.key", "audit.keys"]),
+        json!(["key", "vault.key", "audit.keys"]),
         "{purged}"
     );
     assert_eq!(purged["device"], Value::Null, "{purged}");
     assert_eq!(logout(&["--purge"])["removed"], json!([]));
 }
 
-/// `latch logout ARGS` on `state`, which must work: what it printed.
+/// `latch logout --yes ARGS` on `state`, which must work: what it printed.
 fn logout(state: &Path, args: &[&str]) -> Value {
-    let output = latch(state, &[&["logout"], args].concat(), &[]);
+    let output = latch(state, &[&["logout", "--yes"], args].concat(), &[]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     serde_json::from_slice(&output.stdout).unwrap()
 }
 
 #[test]
-fn logout_stops_the_host_and_deletes_only_the_login_so_the_vault_and_audit_still_read() {
+fn logout_says_what_it_deletes_and_keeps_and_asks_first() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let export = dir.path().join("export.json");
+    let items = json!([
+        {"type": 1, "name": "Shop", "login": {"username": "ada", "password": "made-up-shop-pw", "uris": [{"uri": "https://shop.example/login"}]}},
+        {"type": 1, "name": "Bank", "login": {"username": "ada", "password": "made-up-bank-pw", "uris": [{"uri": "https://bank.example/login"}]}},
+        {"type": 3, "name": "Plow card", "card": {"brand": "Visa", "number": "4111111111111111", "code": "737"}},
+        {"type": 2, "name": "Wi-Fi", "notes": "made-up-guest-network"},
+    ]);
+    fs::write(
+        &export,
+        json!({"encrypted": false, "items": items}).to_string(),
+    )
+    .unwrap();
+    let import = latch(
+        &host,
+        &["vault", "import", export.to_str().unwrap(), "--pick", "all"],
+        &[],
+    );
+    assert_eq!(import.status.code(), Some(0), "{import:?}");
+    // A browser engine and what a session left, stand-ins of known size.
+    let engine = host.join("plugins/camoufox/152.0");
+    fs::create_dir_all(engine.join("bin")).unwrap();
+    fs::write(engine.join("bin/camoufox"), vec![0; 3000]).unwrap();
+    fs::create_dir_all(host.join("browser/journal/s")).unwrap();
+    fs::write(host.join("browser/journal/s/r.jsonl"), vec![b'x'; 500]).unwrap();
+    // What each secret file held, by SECRET_FILES' order; never printed.
+    let before = SECRET_FILES.map(|file| fs::read(host.join(file)).unwrap());
+    let state_dir = host.canonicalize().unwrap();
+    let secret_values = [
+        "made-up-shop-pw",
+        "made-up-bank-pw",
+        "4111111111111111",
+        "737",
+        "made-up-guest-network",
+        "owner-login",
+    ];
+    let nothing_secret = |text: &str| {
+        for (index, value) in secret_values.iter().enumerate() {
+            // Named by its place in the list, so a failure never prints it.
+            assert!(!text.contains(value), "secret_values[{index}] was shown");
+        }
+    };
+    let untouched = || {
+        for (index, file) in SECRET_FILES.iter().enumerate() {
+            let same = fs::read(host.join(file)).unwrap() == before[index];
+            assert!(same, "{file} changed");
+        }
+        assert!(host.join("config.json").exists());
+    };
+
+    // No one at a terminal: refused, with what it would have deleted.
+    let refused = latch(&host, &["logout"], &[]);
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    let error = one_error_line(&stderr, refused.status.code());
+    assert_eq!(error["error"]["code"], "confirmation_required", "{error}");
+    assert_eq!(error["error"]["next"], "latch logout --yes", "{error}");
+    let summary = &error["error"]["summary"];
+    assert_eq!(
+        summary,
+        &json!({
+            "state_dir": state_dir,
+            "default_state_dir": false,
+            "login": {"name": "host", "kind": "device"},
+            "leaves_plow": true,
+            "host_running": false,
+            "keychain_items": [],
+            "files": [state_dir.join("plow-token"), state_dir.join("config.json")],
+            "deletes_folder": false,
+            "vault": {"card": 1, "login": 2, "note": 1},
+            "audit_records": summary["audit_records"],
+            "browsers": {
+                "engines": [{"engine": "camoufox", "version": "152.0", "path": state_dir.join("plugins/camoufox/152.0"), "bytes": 3000}],
+                "session_data": {"path": state_dir.join("browser"), "bytes": 500},
+            },
+        })
+    );
+    assert!(summary["audit_records"].as_u64().unwrap() > 0, "{summary}");
+    nothing_secret(&stderr);
+    untouched();
+
+    // --dry-run says what --purge would delete, and deletes nothing.
+    let dry = latch(&host, &["logout", "--purge", "--dry-run"], &[]);
+    assert_eq!(dry.status.code(), Some(0), "{dry:?}");
+    let dry: Value = serde_json::from_slice(&dry.stdout).unwrap();
+    assert_eq!(dry["dry_run"], true, "{dry}");
+    assert_eq!(dry["summary"]["deletes_folder"], true, "{dry}");
+    let files: Vec<PathBuf> = SECRET_FILES
+        .iter()
+        .map(|file| state_dir.join(file))
+        .collect();
+    assert_eq!(dry["summary"]["files"], json!(files), "{dry}");
+    nothing_secret(&dry.to_string());
+    untouched();
+
+    // At a terminal: what it deletes and keeps, by path and count, then a
+    // question; no keeps everything.
+    let (code, shown, _) = latch_at_a_terminal(&host, &["logout"], "n\n", false, &[]);
+    assert_eq!(code, Some(2), "{shown}");
+    for line in [
+        format!("latch logout on {} will:", state_dir.display()),
+        "take \"host\" out of your Plow account and sign out its login".to_string(),
+        format!("      {}", state_dir.join("plow-token").display()),
+        format!("      {}", state_dir.join("config.json").display()),
+        "It keeps:".to_string(),
+        "  - the vault: 1 card, 2 logins, 1 note".to_string(),
+        format!(
+            "  - the Camoufox 152.0 browser: 2.9 KB at {}",
+            state_dir.join("plugins/camoufox/152.0").display()
+        ),
+        format!(
+            "  - browser session journals and screenshots: 500 B at {}",
+            state_dir.join("browser").display()
+        ),
+        "rules, settings, plugins and this machine's key: `latch login` brings it back as \"host\""
+            .to_string(),
+        "Log out? [y/N]".to_string(),
+    ] {
+        assert!(shown.contains(&line), "{line:?} not in {shown}");
+    }
+    assert_eq!(last_error_line(&shown)["error"]["code"], "not_removed");
+    nothing_secret(&shown);
+    untouched();
+
+    // --purge wants the word typed, not a y.
+    let (code, shown, _) = latch_at_a_terminal(&host, &["logout", "--purge"], "y\n", false, &[]);
+    assert_eq!(code, Some(2), "{shown}");
+    for line in [
+        format!("  - delete {} and everything in it:", state_dir.display()),
+        "      the vault: 1 card, 2 logins, 1 note".to_string(),
+        "      the Camoufox 152.0 browser: 2.9 KB at".to_string(),
+        "      (`latch browser setup` downloads a browser again)".to_string(),
+        "This cannot be undone.".to_string(),
+        "Type delete to delete all of it:".to_string(),
+    ] {
+        assert!(shown.contains(&line), "{line:?} not in {shown}");
+    }
+    nothing_secret(&shown);
+    untouched();
+
+    // Yes logs out, and keeps the rest.
+    let (code, shown, stdout) = latch_at_a_terminal(&host, &["logout"], "y\n", false, &[]);
+    assert_eq!(code, Some(0), "{shown}");
+    let out: Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(
+        out["removed"],
+        json!(["plow-token", "config.json"]),
+        "{out}"
+    );
+    assert_eq!(secret_files_in(&host), ["key", "vault.key", "audit.keys"]);
+    assert!(
+        engine.join("bin/camoufox").exists() && host.join("browser/journal/s/r.jsonl").exists()
+    );
+    nothing_secret(&shown);
+
+    // Typing delete purges.
+    let (code, shown, _) =
+        latch_at_a_terminal(&host, &["logout", "--purge"], "delete\n", false, &[]);
+    assert_eq!(code, Some(0), "{shown}");
+    assert!(!host.exists());
+}
+
+#[test]
+fn logout_stops_the_host_and_deletes_only_the_login_so_a_login_again_is_the_same_machine() {
     let plow = LivePlow::start();
     let (_relay, relay) = local_relay();
     let dir = test_dir();
     let host = owner_host_on(&plow, dir.path());
+    let peer_key = |host: &Path| {
+        let config: Value =
+            serde_json::from_slice(&fs::read(host.join("config.json")).unwrap()).unwrap();
+        config["peer"]["key"].clone()
+    };
+    let key = peer_key(&host);
     let set = latch(&host, &["rules", "set", "Never send email."], &[]);
     assert_eq!(set.status.code(), Some(0), "{set:?}");
     let mut serve = serving(&host, &relay);
@@ -7302,7 +7645,7 @@ fn logout_stops_the_host_and_deletes_only_the_login_so_the_vault_and_audit_still
     assert_eq!(out["from"], "files", "{out}");
     assert_eq!(
         out["removed"],
-        json!(["key", "plow-token", "config.json"]),
+        json!(["plow-token", "config.json"]),
         "{out}"
     );
     assert_eq!(out["stopped"], true, "{out}");
@@ -7323,7 +7666,7 @@ fn logout_stops_the_host_and_deletes_only_the_login_so_the_vault_and_audit_still
         "{seen:?}"
     );
     assert!(plow.state.lock().unwrap().peers.is_empty());
-    assert_eq!(secret_files_in(&host), ["vault.key", "audit.keys"]);
+    assert_eq!(secret_files_in(&host), ["key", "vault.key", "audit.keys"]);
     // Logged out as far as setup and an app can tell: no login, and
     // anything needing the login says to log in.
     let local = latch(&host, &["status", "--local"], &[]);
@@ -7344,11 +7687,25 @@ fn logout_stops_the_host_and_deletes_only_the_login_so_the_vault_and_audit_still
         &plow.url,
         "--token-file",
         token.to_str().unwrap(),
-        "--name",
-        "host",
     ];
     let login = latch(&host, &args, &[]);
     assert_eq!(login.status.code(), Some(0), "{login:?}");
+    // The same key under the same name, though none was given: to an
+    // agent, the machine it knew.
+    let again: Value = serde_json::from_slice(&login.stdout).unwrap();
+    assert_eq!(again["key_created"], false, "{again}");
+    assert_eq!(peer_key(&host), key);
+    let peers = plow.state.lock().unwrap().peers.clone();
+    assert_eq!(peers.len(), 1, "{peers:?}");
+    assert_eq!(
+        (&peers[0].0["name"], &peers[0].0["key"]),
+        (&json!("host"), &key)
+    );
+    let shown = latch(&host, &["rules", "show"], &[]);
+    assert!(
+        String::from_utf8_lossy(&shown.stdout).contains("Never send email."),
+        "{shown:?}"
+    );
     let list = latch(&host, &["vault", "list"], &[]);
     assert_eq!(list.status.code(), Some(0), "{list:?}");
     let ops: Vec<Value> = audit_records(&host)
@@ -7387,10 +7744,10 @@ fn logout_without_plow_still_deletes_the_login_and_says_the_machine_is_still_lis
 
     assert_eq!(
         out["removed"],
-        json!(["key", "plow-token", "config.json"]),
+        json!(["plow-token", "config.json"]),
         "{out}"
     );
-    assert_eq!(secret_files_in(&host), Vec::<&str>::new());
+    assert_eq!(secret_files_in(&host), ["key"]);
     let device = &out["device"];
     assert_eq!(
         (&device["name"], &device["removed"]),
@@ -7449,7 +7806,7 @@ fn no_host_starts_while_logout_holds_the_state_folder() {
     let held = dir.path().join("held");
     let logout = latch_command(
         &host,
-        &["logout"],
+        &["logout", "--yes"],
         &[("LATCH_TEST_LOGOUT_HELD", held.as_path())],
     )
     .stdout(std::process::Stdio::piped())
@@ -7489,7 +7846,7 @@ fn no_host_starts_while_logout_holds_the_state_folder() {
     let out: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(
         out["removed"],
-        json!(["key", "plow-token", "config.json"]),
+        json!(["plow-token", "config.json"]),
         "{out}"
     );
 }
@@ -7831,11 +8188,12 @@ fn setup_sets_up_every_connector_with_no_host_running() {
 
     let env = [("LATCH_TEST_ACCESS", Path::new("granted"))];
     let (mut setup, mut typing, shown) = at_its_own_terminal(&host, &["setup"], &env);
-    // Google: yes; on macOS, Messages and Contacts: yes; start latch: no.
+    // Google: yes; on macOS, Messages and Contacts: yes; rules: none;
+    // start latch: no.
     let typed: &[u8] = if cfg!(target_os = "macos") {
-        b"y\ny\nn\n"
+        b"y\ny\n3\nn\n"
     } else {
-        b"y\nn\n"
+        b"y\n3\nn\n"
     };
     typing.write_all(typed).unwrap();
     let all = shows(&shown, "Done. Run `latch setup` again any time.");
@@ -8950,12 +9308,20 @@ fn setup_without_a_terminal_names_the_first_step_setup_status_lists() {
     )
     .unwrap();
     let mut nexts = Vec::new();
+    // The owner with Google but no rules, then with rules too.
+    let ruled = dir.path().join("ruled");
+    fs::create_dir_all(&ruled).unwrap();
+    let ruled = owner_host_on(&plow, &ruled);
+    fs::copy(ready.join("plugins.json"), ruled.join("plugins.json")).unwrap();
+    fs::create_dir_all(ruled.join("rules")).unwrap();
+    fs::write(ruled.join("rules/host.txt"), "Agents may read my mail.").unwrap();
     // The owner without a Google account in Plow, then with one.
     for (state, google) in [
         (&fresh, false),
         (&owner, false),
         (&owner, true),
         (&ready, true),
+        (&ruled, true),
     ] {
         plow.state.lock().unwrap().google = google.then(|| "google-token".into());
         let listed = latch(state, &["setup", "--status"], &[]);
@@ -8978,6 +9344,8 @@ fn setup_without_a_terminal_names_the_first_step_setup_status_lists() {
         let error = one_error_line(&String::from_utf8_lossy(&output.stderr), Some(2));
         assert_eq!(error["error"]["code"], "no_terminal", "{error}");
         assert_eq!(error["error"]["next"], expected, "{listed}");
+        // Setup with no terminal sets no rules.
+        assert_eq!(state.join("rules").exists(), *state == ruled, "{listed}");
         nexts.push(error["error"]["next"].as_str().unwrap().to_string());
     }
     assert_eq!(
@@ -8986,6 +9354,7 @@ fn setup_without_a_terminal_names_the_first_step_setup_status_lists() {
             "latch login --events",
             "latch plugins enable google --events",
             "latch plugins enable google",
+            "latch rules set --preset family --revision none",
             "latch serve -d"
         ]
     );
@@ -10640,6 +11009,8 @@ mod lifecycle {
             ));
             terminal.write_all(b"n\n").unwrap();
         }
+        all.push_str(&shows(&shown, "Rules for your agents? [1/2/3]"));
+        terminal.write_all(b"3\n").unwrap();
         all.push_str(&shows(&shown, "Start latch now? [Y/n]"));
         terminal.write_all(b"y\n").unwrap();
         all.push_str(&shows(&shown, "Run `latch setup` again any time."));
