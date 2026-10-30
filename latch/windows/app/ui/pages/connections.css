@@ -1,0 +1,22 @@
+/* Your account › Connections: Settings-style cards, each with its footnote,
+   and the Google sign-in's dialog. */
+
+.connections-page .cx-foot { margin: 8px 2px 0; font-size: 12px; color: var(--text-2); }
+.connections-page .cx-quiet { color: var(--text-2); }
+.connections-page .cx-center { justify-content: center; }
+.connections-page .cx-center > :first-child { flex: none; }
+.connections-page .cx-who { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.connections-page .cx-who > .icon { width: 18px; height: 18px; flex: none; color: var(--text-2); }
+.connections-page .cx-name { display: flex; flex-direction: column; min-width: 0; }
+.connections-page .cx-name > * { overflow: hidden; text-overflow: ellipsis; }
+.connections-page .cx-name small { font-size: 12px; color: var(--text-2); }
+.connections-page .cx-bad { color: var(--bad); }
+.connections-page .cx-bad .ag-error details { color: var(--text-2); }
+.connections-page .line > button { flex: none; }
+
+.cx-sheet .cx-signin { display: flex; flex-direction: column; }
+.cx-sheet .cx-said { color: var(--text-1); }
+.cx-sheet .cx-wait { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 12px; }
+.cx-sheet .cx-wait .ag-ring { margin-top: 2px; }
+.cx-sheet .actions { align-items: center; }
+.cx-sheet .cx-gap { flex: 1; }

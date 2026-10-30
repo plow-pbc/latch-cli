@@ -21,6 +21,7 @@ import * as rules from "./pages/rules.js";
 import * as vault from "./pages/vault.js";
 import * as settings from "./pages/settings.js";
 import * as agents from "./pages/agents.js";
+import * as connections from "./pages/connections.js";
 
 const SCREENS = [
   ["home", "Home", home],
@@ -31,6 +32,7 @@ const SCREENS = [
 ];
 const ACCOUNT = [
   ["agents", "Agents", "agents", agents],
+  ["connections", "Connections", "connections", connections],
 ];
 
 export const app = {
