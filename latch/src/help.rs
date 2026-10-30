@@ -1324,7 +1324,7 @@ const ENTRIES: &[Entry] = &[
         effect: Repeatable(
             "installs another latch build on this machine and restarts a `serve -d` host on it",
         ),
-        owner_only: true,
+        owner_only: false,
         connector: None,
         examples: &[
             ex("Install the newest build", &["update"]),
@@ -1412,6 +1412,10 @@ const ENTRIES: &[Entry] = &[
         examples: &[ex("Learn how to use latch", &["skill"])],
     },
 ];
+
+/// The commands an agent runs only on its own computer, where latch is
+/// installed alone and no host runs; the owner runs them anywhere.
+const OWN_COMPUTER: &[&str] = &["update"];
 
 /// The top-level fields of the answers that are plain structs, checked
 /// against those structs by the tests.
@@ -1650,6 +1654,9 @@ struct Action {
     side_effects: Option<&'static str>,
     retry: &'static str,
     owner_only: bool,
+    /// An agent may run it only on its own computer, where latch is
+    /// installed alone (`install.sh --client-only`) and no host runs.
+    agent_on_own_computer: bool,
     connector: Option<&'static str>,
     /// A gog command's own flags, after `--`, as its grammar declares them.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1707,6 +1714,7 @@ fn describe(id: &str, command: &clap::Command) -> Action {
         side_effects: entry.effect.side_effects(),
         retry: entry.effect.retry(),
         owner_only: entry.owner_only,
+        agent_on_own_computer: OWN_COMPUTER.contains(&id),
         connector: entry.connector,
         gog_flags: None,
         examples: entry
@@ -1745,6 +1753,7 @@ fn describe_gog(allowed: &Allowed, google: &clap::Command) -> Action {
         side_effects: effect.side_effects(),
         retry: effect.retry(),
         owner_only: false,
+        agent_on_own_computer: false,
         connector: Some("google"),
         gog_flags: Some(
             (allowed.flags.iter())

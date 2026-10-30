@@ -225,7 +225,8 @@ pub enum Command {
     Skill,
     /// Install the newest latch, or the build TAG names (also how to go
     /// back), restarting a `serve -d` host on it; `--check` only says whether
-    /// a newer build is available. Owner only
+    /// a newer build is available. Run by the owner, or by an agent on its
+    /// own computer, where latch is installed alone
     Update(UpdateArgs),
     /// Set this machine up, at a terminal: log in, connect Google, on a Mac
     /// turn on Messages and Contacts, all with no host running, then offer to
