@@ -2349,7 +2349,7 @@ async fn a_write_area_lists_once_allowed_and_an_entered_folder_or_the_root_never
     let entered = t.area.parent().unwrap().join("entered");
     std::fs::create_dir(&entered).unwrap();
     std::fs::write(entered.join("inside.txt"), "never listed").unwrap();
-    let allowed = crate::sandbox::list_folders() == Some("granted");
+    let allowed = crate::sandbox::lists_in(&t.area);
     let for_each = ["cmd", "/c", "for", "%f", "in", "(*)", "do", "@echo", "%f"];
     let cases: [(&[&str], Option<&Path>, &Path); 5] = [
         (&["cmd", "/c", "dir", "/b"], Some(&t.area), &t.area),

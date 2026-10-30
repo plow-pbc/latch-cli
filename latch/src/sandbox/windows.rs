@@ -769,6 +769,27 @@ pub fn list_folders() -> Option<&'static str> {
     })
 }
 
+/// Whether agents list folders on the volume `path` is on: whether its
+/// root admits the workers' capability.
+#[cfg(test)]
+pub(crate) fn lists_in(path: &Path) -> bool {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::Storage::FileSystem::GetVolumePathNameW;
+    let mut root = vec![0u16; 1024];
+    // SAFETY: a NUL-terminated path; `root` is writable for its length.
+    let found = unsafe {
+        GetVolumePathNameW(
+            wide(path.as_os_str()).as_ptr(),
+            root.as_mut_ptr(),
+            root.len() as u32,
+        )
+    };
+    let length = root.iter().position(|&unit| unit == 0).unwrap_or(0);
+    let root = PathBuf::from(std::ffi::OsString::from_wide(&root[..length]));
+    found != 0
+        && Sid::from_string(VOLUME_ROOT).is_ok_and(|sid| admits(&root, &sid).unwrap_or(false))
+}
+
 /// One fixed volume's root, as `volume_roots` left it.
 #[derive(Serialize)]
 pub struct Root {
@@ -857,11 +878,7 @@ fn run_inside(sid: &Sid, policy: &Policy) -> Result<u32, String> {
         .collect();
     let mut security = SECURITY_CAPABILITIES {
         AppContainerSid: sid.0,
-        Capabilities: if capabilities.is_empty() {
-            null_mut()
-        } else {
-            capabilities.as_mut_ptr()
-        },
+        Capabilities: capabilities.as_mut_ptr(),
         CapabilityCount: capabilities.len() as u32,
         Reserved: 0,
     };

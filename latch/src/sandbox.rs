@@ -802,6 +802,8 @@ mod platform;
 
 #[cfg(windows)]
 pub(crate) use platform::final_path;
+#[cfg(all(windows, test))]
+pub(crate) use platform::lists_in;
 #[cfg(windows)]
 pub use platform::{list_folders, sweep, tie_to_host, volume_roots};
 
