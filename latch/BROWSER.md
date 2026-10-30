@@ -532,8 +532,8 @@ cancel an account, order, subscription or ticket, sign out, create
 credentials or otherwise can't be undone (closing a dialog, popup, banner
 or menu is none of these, nor is choosing an option or opening a section
 that submits nothing, such as how to pay), judged on the exact
-element, its state (collapsed, checked), whether it submits its form, its
-row text, the page title and the lines of the form or section
+element, its state (collapsed; checked, for a checkbox, radio or switch),
+whether it submits its form, its row text, the page title and the lines of the form or section
 around it; an Enter in a field is judged as its form's submit (the form's
 submit control, else the form), and so is `type` text with a line break,
 which the engine types as Enter. The action is then made only if the

@@ -690,11 +690,8 @@ async fn consequential_actions_stop_for_a_confirmation_bound_to_what_was_reviewe
         ("?pay=outside", "click button \"Pay $52.40\""),
         ("?pay=collapsed", "click button \"Pay $52.40\" (collapsed)"),
         ("?pay=expanded", "click button \"Pay $52.40\" (expanded)"),
-        ("?pay=checked", "click button \"Pay $52.40\" (checked)"),
-        (
-            "?pay=unchecked",
-            "click button \"Pay $52.40\" (not checked)",
-        ),
+        ("?pay=checked", "click button \"Pay $52.40\""),
+        ("?pay=unchecked", "click button \"Pay $52.40\""),
     ] {
         let page = h.open(&format!("{site}/payment-method.html{shape}")).await;
         let pay = find(&page, "button", "Pay $52.40");
