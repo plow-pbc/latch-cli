@@ -15,7 +15,9 @@
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io;
+#[cfg(unix)]
 use std::os::fd::AsRawFd;
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -41,7 +43,18 @@ const NAVIGATION_STARTS: Duration = Duration::from_millis(350);
 const LOADING: Duration = Duration::from_secs(15);
 
 /// The only variables the engine gets.
+#[cfg(unix)]
 const PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
+#[cfg(windows)]
+use crate::worker::PATH;
+
+/// What holds all of Chrome's processes, so they can be ended together:
+/// on Unix the process group Chrome leads, which needs nothing kept; on
+/// Windows the job they run in, which also ends them when the worker ends.
+#[cfg(unix)]
+type Tree = ();
+#[cfg(windows)]
+type Tree = crate::sandbox::Job;
 
 /// latch's page reader, defined once per document in its isolated world.
 const READER: &str = include_str!("reader.js");
@@ -94,6 +107,8 @@ struct Placement {
 /// A session's browser.
 pub struct Cft {
     child: Child,
+    #[cfg_attr(unix, allow(dead_code))]
+    tree: Tree,
     cdp: Cdp,
     share: Share,
     remotes: HashMap<String, Remote>,
@@ -146,7 +161,7 @@ impl Cft {
             chrome_writes,
             cdp,
         } = cdp::pipes().map_err(io_failure)?;
-        let child = start(
+        let (child, tree) = start(
             &engine,
             &profile.data(),
             scratch,
@@ -161,6 +176,7 @@ impl Cft {
         drop((chrome_reads, chrome_writes));
         let mut browser = Cft {
             child,
+            tree,
             cdp,
             share: Share {
                 tabs: Vec::new(),
@@ -1600,7 +1616,7 @@ impl Driver for Cft {
     }
 
     /// Asks Chrome to close, waits for it, then kills whatever is left of
-    /// its process group and waits until the group is empty.
+    /// its process group (on Windows, its job) and waits until it is empty.
     fn close(&mut self) -> Value {
         let deadline = Instant::now() + CLOSING;
         let _ = self.cdp.call("Browser.close", json!({}), None, deadline);
@@ -1612,19 +1628,26 @@ impl Driver for Cft {
             }
             std::thread::sleep(Duration::from_millis(50));
         }
-        let group = self.child.id() as libc::pid_t;
-        // SAFETY: signals only; Chrome leads its own process group.
-        unsafe { libc::killpg(group, libc::SIGKILL) };
+        #[cfg(unix)]
+        let left = {
+            let group = self.child.id() as libc::pid_t;
+            // SAFETY: signals only; Chrome leads its own process group.
+            unsafe { libc::killpg(group, libc::SIGKILL) };
+            // A group with no process left answers ESRCH.
+            // SAFETY: signal 0 only checks whether the group still exists.
+            move || unsafe { libc::killpg(group, 0) } == 0
+        };
+        #[cfg(windows)]
+        let left = {
+            self.tree.end();
+            || self.tree.processes() > 0
+        };
         let _ = self.child.wait();
         let gone_by = Instant::now() + CLOSING;
-        // A group with no process left answers ESRCH.
-        // SAFETY: signal 0 only checks whether the group still exists.
-        let exists = || unsafe { libc::killpg(group, 0) } == 0;
-        while exists() && Instant::now() < gone_by {
+        while left() && Instant::now() < gone_by {
             std::thread::sleep(Duration::from_millis(50));
         }
-        let left = exists();
-        json!({"closed": !left, "forced": forced})
+        json!({"closed": !left(), "forced": forced})
     }
 }
 
@@ -1739,7 +1762,12 @@ fn stale() -> Failure {
 
 /// Starts the engine on its profile, headed unless `headless`, with the CDP
 /// pipe as its fd 3 (commands in) and fd 4 (replies out), in a process
-/// group of its own.
+/// group of its own. On Windows the pipe is the two handles
+/// `--remote-debugging-io-pipes` names, and Chrome runs in a job of its own
+/// from its first instruction, which ends it and everything it starts when
+/// the worker ends, however it ends; Chrome's own sandbox runs inside it,
+/// not in a worker's AppContainer, where it cannot start (as on macOS it is
+/// not in Seatbelt).
 #[allow(clippy::too_many_arguments)]
 fn start(
     engine: &Engine,
@@ -1749,14 +1777,13 @@ fn start(
     display: Option<&Display>,
     proxy: &str,
     page_isolation_off: bool,
-    reads: &impl AsRawFd,
-    writes: &impl AsRawFd,
-) -> Result<Child, Failure> {
+    reads: &cdp::End,
+    writes: &cdp::End,
+) -> Result<(Child, Tree), Failure> {
     for folder in ["tmp", "crash"] {
         fs::create_dir_all(scratch.join(folder)).map_err(io_failure)?;
     }
     let log = File::create(scratch.join("engine.log")).map_err(io_failure)?;
-    let (reads, writes) = (reads.as_raw_fd(), writes.as_raw_fd());
     let mut command = Command::new(&engine.executable);
     command.args(&engine.recipe);
     // Chrome's headless mode (the full browser, with no window). The pin's
@@ -1778,43 +1805,90 @@ fn start(
         .arg(format!("--user-data-dir={}", data.display()))
         .env_clear()
         .env("PATH", PATH)
-        .env("HOME", scratch)
-        .env("TMPDIR", scratch.join("tmp"))
-        // Chrome's crash reporter writes here instead of the user's Library.
-        .env("BREAKPAD_DUMP_LOCATION", scratch.join("crash"))
         .current_dir(scratch)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(log)
-        .process_group(0);
-    for (name, value) in display.map(Display::env).into_iter().flatten() {
-        command.env(name, value);
-    }
-    // SAFETY: between fork and exec, only async-signal-safe calls: the two
-    // ends are first copied above fd 4 (so neither is overwritten by the
-    // other's move), then onto 3 and 4, which exec keeps open.
-    unsafe {
-        command.pre_exec(move || {
-            let high_reads = libc::fcntl(reads, libc::F_DUPFD_CLOEXEC, 10);
-            let high_writes = libc::fcntl(writes, libc::F_DUPFD_CLOEXEC, 10);
-            if high_reads < 0
-                || high_writes < 0
-                || libc::dup2(high_reads, 3) < 0
-                || libc::dup2(high_writes, 4) < 0
-            {
-                return Err(io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
-    let child = command.spawn().map_err(|err| {
+        .stderr(log);
+    let failed = |err: io::Error| {
         Failure::new(
             code::engine_failed,
             format!("{}: {err}", engine.executable.display()),
         )
-    })?;
-    super::worker::started_group(child.id());
-    Ok(child)
+    };
+    #[cfg(unix)]
+    {
+        let (reads, writes) = (reads.as_raw_fd(), writes.as_raw_fd());
+        command
+            .env("HOME", scratch)
+            .env("TMPDIR", scratch.join("tmp"))
+            // Chrome's crash reporter writes here instead of the user's Library.
+            .env("BREAKPAD_DUMP_LOCATION", scratch.join("crash"))
+            .process_group(0);
+        for (name, value) in display.map(Display::env).into_iter().flatten() {
+            command.env(name, value);
+        }
+        // SAFETY: between fork and exec, only async-signal-safe calls: the two
+        // ends are first copied above fd 4 (so neither is overwritten by the
+        // other's move), then onto 3 and 4, which exec keeps open.
+        unsafe {
+            command.pre_exec(move || {
+                let high_reads = libc::fcntl(reads, libc::F_DUPFD_CLOEXEC, 10);
+                let high_writes = libc::fcntl(writes, libc::F_DUPFD_CLOEXEC, 10);
+                if high_reads < 0
+                    || high_writes < 0
+                    || libc::dup2(high_reads, 3) < 0
+                    || libc::dup2(high_writes, 4) < 0
+                {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let child = command.spawn().map_err(failed)?;
+        super::worker::started_group(child.id());
+        Ok((child, ()))
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Foundation::{HANDLE_FLAG_INHERIT, SetHandleInformation};
+
+        let _ = display;
+        command.arg(format!(
+            "--remote-debugging-io-pipes={},{}",
+            reads.as_raw_handle() as usize,
+            writes.as_raw_handle() as usize
+        ));
+        // What Windows needs to run it, then a home and a temp folder in the
+        // runtime's scratch folder, as elsewhere.
+        for name in crate::worker::WINDOWS_ENV {
+            if let Some(value) = std::env::var_os(name) {
+                command.env(name, value);
+            }
+        }
+        for name in ["USERPROFILE", "APPDATA", "LOCALAPPDATA"] {
+            command.env(name, scratch);
+        }
+        command
+            .env("TEMP", scratch.join("tmp"))
+            .env("TMP", scratch.join("tmp"));
+        // Chrome's two ends become inheritable for this start alone; the
+        // worker's own handles are not (`browser::worker`).
+        for end in [reads, writes] {
+            // SAFETY: marks a handle this worker owns.
+            unsafe {
+                SetHandleInformation(
+                    end.as_raw_handle(),
+                    HANDLE_FLAG_INHERIT,
+                    HANDLE_FLAG_INHERIT,
+                )
+            };
+        }
+        let tree =
+            crate::sandbox::Job::new().map_err(|why| Failure::new(code::engine_failed, why))?;
+        let child = tree.start(&mut command).map_err(failed)?;
+        Ok((child, tree))
+    }
 }
 
 pub fn io_failure(err: io::Error) -> Failure {

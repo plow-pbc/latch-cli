@@ -44,10 +44,11 @@ pub struct Pin {
 
 #[derive(Deserialize)]
 pub struct Build {
-    /// Checked by browser-engines.sh, which downloads the zip.
-    #[allow(dead_code)]
+    /// Checked by browser-engines.sh, which downloads the zip (on Windows,
+    /// `latch browser setup` itself).
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub url: String,
-    #[allow(dead_code)]
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub zip_sha256: String,
     /// The folder the zip unpacks to, inside the version folder.
     pub folder: String,
@@ -74,7 +75,9 @@ pub static CAMOUFOX: LazyLock<CamoufoxPin> =
 /// own folder of `<state-dir>/plugins/camoufox/<version>/`: `camoufox/`
 /// (the app and the version.json camoufox-js reads), `node/` and
 /// `runtime/` (the package, installed with `npm ci`).
+// Camoufox has no Windows build: there only its pin's checks run.
 #[derive(Deserialize)]
+#[cfg_attr(windows, allow(dead_code))]
 pub struct CamoufoxPin {
     pub engine: String,
     pub version: String,
@@ -107,6 +110,7 @@ pub struct Download {
 }
 
 /// An installed, checked Camoufox, ready to launch.
+#[cfg_attr(windows, allow(dead_code))]
 pub struct CamoufoxEngine {
     pub node: PathBuf,
     pub runtime: PathBuf,
@@ -186,6 +190,7 @@ pub fn platform() -> Option<&'static str> {
         ("macos", "x86_64") => Some("mac_x64"),
         ("linux", "aarch64") => Some("linux_arm64"),
         ("linux", "x86_64") => Some("linux_x64"),
+        ("windows", "x86_64") => Some("win_x64"),
         _ => None,
     }
 }
@@ -290,6 +295,7 @@ fn with_installed(state_dir: &Path, mut failure: Failure) -> Failure {
 /// checks out, else Camoufox when its does. With neither, the first one's
 /// error that is not just "not installed" (a changed build, or no build for
 /// this platform); with none installed, one naming the owner's setup.
+/// Camoufox with no build here (Windows) is left out, and not offered.
 pub fn default(state_dir: &Path) -> Result<&'static str, Failure> {
     let chrome = match CFT.verified(state_dir) {
         Ok(_) => return Ok("cft"),
@@ -299,17 +305,26 @@ pub fn default(state_dir: &Path) -> Result<&'static str, Failure> {
         Ok(_) => return Ok("camoufox"),
         Err(failure) => failure,
     };
-    for failure in [chrome, fox] {
+    let fox_here = fox.code != code::unsupported_platform.name;
+    for failure in [Some(chrome), fox_here.then_some(fox)]
+        .into_iter()
+        .flatten()
+    {
         if failure.code != code::engine_not_installed.name {
             return Err(failure);
         }
     }
     let setup = "latch browser setup --engine chrome";
+    let or_fox = if fox_here {
+        " (or `--engine camoufox`)"
+    } else {
+        ""
+    };
     let mut failure = Failure::new(
         code::engine_not_installed,
         format!(
-            "no browser engine is installed; the host's owner installs one with `{setup}` \
-             (or `--engine camoufox`) on the host"
+            "no browser engine is installed; the host's owner installs one with `{setup}`{or_fox} \
+             on the host"
         ),
     );
     failure.details = serde_json::json!({"setup": setup, "installed": [], "default": null});
@@ -514,6 +529,12 @@ fn walk(root: &Path, dir: &Path, entries: &mut Vec<(Vec<u8>, PathBuf)>) -> io::R
             .as_os_str()
             .as_encoded_bytes()
             .to_vec();
+        // Windows' separator as `/`, as the pin script's hash has it.
+        #[cfg(windows)]
+        let rel: Vec<u8> = rel
+            .into_iter()
+            .map(|byte| if byte == b'\\' { b'/' } else { byte })
+            .collect();
         let is_dir = fs::symlink_metadata(&path)?.is_dir();
         entries.push((rel, path.clone()));
         if is_dir {
@@ -537,7 +558,13 @@ mod tests {
         assert!(forbidden("--remote-debugging-port=9222"));
         assert!(forbidden("--headless=new"));
         assert!(forbidden("--no-sandbox"));
-        for key in ["mac_arm64", "mac_x64", "linux_arm64", "linux_x64"] {
+        for key in [
+            "mac_arm64",
+            "mac_x64",
+            "linux_arm64",
+            "linux_x64",
+            "win_x64",
+        ] {
             assert!(CFT.builds.contains_key(key), "{key}");
             assert!(!CFT.builds[key].args.iter().any(|arg| forbidden(arg)));
         }
@@ -665,26 +692,31 @@ mod tests {
             missing.details["setup"],
             "latch browser setup --engine chrome"
         );
-        assert!(
+        // Camoufox is offered only where it has a build: not on Windows.
+        assert_eq!(
             missing.message.contains("--engine camoufox"),
+            cfg!(unix),
             "{}",
             missing.message
         );
 
         // Camoufox alone, as on an agent's machine; then Chrome beside it.
-        let state = tempfile::tempdir().unwrap();
-        fake_install(state.path(), "camoufox");
-        assert_eq!(default(state.path()).unwrap(), "camoufox");
-        fake_install(state.path(), "cft");
-        assert_eq!(default(state.path()).unwrap(), "cft");
-        // A Chrome that no longer checks out gives way to Camoufox.
         let build = &CFT.builds[platform().unwrap()];
-        let exe = CFT
-            .folder(state.path())
-            .join(&build.folder)
-            .join(&build.executable);
-        fs::write(&exe, b"not chrome").unwrap();
-        assert_eq!(default(state.path()).unwrap(), "camoufox");
+        #[cfg(unix)]
+        {
+            let state = tempfile::tempdir().unwrap();
+            fake_install(state.path(), "camoufox");
+            assert_eq!(default(state.path()).unwrap(), "camoufox");
+            fake_install(state.path(), "cft");
+            assert_eq!(default(state.path()).unwrap(), "cft");
+            // A Chrome that no longer checks out gives way to Camoufox.
+            let exe = CFT
+                .folder(state.path())
+                .join(&build.folder)
+                .join(&build.executable);
+            fs::write(&exe, b"not chrome").unwrap();
+            assert_eq!(default(state.path()).unwrap(), "camoufox");
+        }
 
         // With nothing to give way to, its own error says why.
         let alone = tempfile::tempdir().unwrap();
@@ -700,6 +732,8 @@ mod tests {
         assert_eq!(default(alone.path()).unwrap_err().code, "engine_unverified");
     }
 
+    // Camoufox has no Windows build: there it is unsupported_platform.
+    #[cfg(unix)]
     #[test]
     fn a_missing_engine_names_the_ones_the_host_has_its_default_and_its_setup() {
         let state = tempfile::tempdir().unwrap();
@@ -743,6 +777,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_changed_camoufox_part_is_refused_before_launch() {
         let state = tempfile::tempdir().unwrap();

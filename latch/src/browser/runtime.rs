@@ -23,7 +23,10 @@ use crate::wire::Response;
 use crate::worker::OwnGroup;
 
 /// The worker's environment: nothing from the host's but a plain `PATH`.
+#[cfg(unix)]
 const PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
+#[cfg(windows)]
+use crate::worker::PATH;
 
 /// A session closes after this long without a call.
 pub const IDLE: Duration = Duration::from_secs(30 * 60);
@@ -128,12 +131,14 @@ impl Runtime {
         }
         // The worker dies with this host: on Linux the kernel kills it (and
         // bubblewrap, which it becomes, everything inside); on macOS it
-        // watches the host itself (see `browser::worker`).
+        // watches the host itself (see `browser::worker`); on Windows the
+        // host's job ends it, and the worker's job its browser.
         #[cfg(target_os = "linux")]
         crate::worker::die_with_host(&mut command);
+        command.env_clear().env("PATH", PATH);
+        #[cfg(windows)]
+        crate::worker::windows_env(&mut command);
         let mut child = command
-            .env_clear()
-            .env("PATH", PATH)
             .current_dir(scratch.path())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -142,6 +147,10 @@ impl Runtime {
             .kill_on_drop(true)
             .spawn()
             .map_err(failed)?;
+        #[cfg(windows)]
+        if let Some(handle) = child.raw_handle() {
+            crate::sandbox::tie_to_host(handle);
+        }
         let stdin = child.stdin.take().expect("piped");
         let stdout = BufReader::new(child.stdout.take().expect("piped"));
         let mut worker = Worker {
