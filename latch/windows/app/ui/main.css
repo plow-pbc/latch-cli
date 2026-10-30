@@ -1,0 +1,292 @@
+/* The main window: the Mac app's layout (a sidebar, a host's tabs over its
+   page, grouped rows) drawn as Windows 11 draws its own (Settings' cards,
+   Segoe UI Variable, the system's neutral greys and blue accent), as the
+   Mac's is drawn as macOS draws its own. */
+.app {
+  --win-bg: #F3F3F3;
+  --pane: #FAFAFA;
+  --card: #FFFFFF;
+  --card-line: rgba(0, 0, 0, 0.06);
+  --text-1: rgba(0, 0, 0, 0.9);
+  --text-2: rgba(0, 0, 0, 0.62);
+  --text-3: rgba(0, 0, 0, 0.45);
+  --hover: rgba(0, 0, 0, 0.04);
+  --pressed: rgba(0, 0, 0, 0.06);
+  --accent: #005FB8;
+  --ok: #0F7B0F;
+  --warn: #9D5D00;
+  --bad: #C42B1C;
+  --seg: rgba(0, 0, 0, 0.05);
+  --seg-on: #FFFFFF;
+}
+@media (prefers-color-scheme: dark) {
+  .app {
+    --win-bg: #202020;
+    --pane: #272727;
+    --card: #2D2D2D;
+    --card-line: rgba(0, 0, 0, 0.25);
+    --text-1: #FFFFFF;
+    --text-2: rgba(255, 255, 255, 0.72);
+    --text-3: rgba(255, 255, 255, 0.5);
+    --hover: rgba(255, 255, 255, 0.05);
+    --pressed: rgba(255, 255, 255, 0.08);
+    --accent: #60CDFF;
+    --ok: #6CCB5F;
+    --warn: #FCE100;
+    --bad: #FF99A4;
+    --seg: rgba(255, 255, 255, 0.06);
+    --seg-on: rgba(255, 255, 255, 0.12);
+  }
+}
+
+[hidden] { display: none !important; }
+body:has(.app:not([hidden])) { background: var(--win-bg); }
+.app {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  background: var(--win-bg);
+  color: var(--text-1);
+  font: 14px/1.43 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+}
+.app button { font: inherit; color: inherit; }
+.app.no-sidebar { grid-template-columns: 0 1fr; }
+.app.no-sidebar .sidebar { visibility: hidden; }
+.app svg.icon, .app svg.chevron {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* ── sidebar ── */
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 12px 8px;
+  overflow-y: auto;
+}
+.sidebar h2 {
+  margin: 14px 12px 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+.sidebar h2:first-child { margin-top: 4px; }
+.sidebar .nav {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 36px;
+  padding: 6px 12px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  text-align: left;
+  justify-content: flex-start;
+  cursor: default;
+}
+.sidebar .nav:hover { background: var(--hover); }
+.sidebar .nav.selected { background: var(--pressed); }
+.sidebar .nav.selected::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 3px;
+  height: 16px;
+  margin-top: -8px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+.sidebar .nav .icon { width: 18px; height: 18px; flex: none; color: var(--accent); }
+.sidebar .label { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.sidebar .label > span, .sidebar .label small { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.sidebar small { font-size: 12px; color: var(--text-2); }
+.sidebar .quiet, .sidebar .notice { margin: 4px 12px; color: var(--text-2); font-size: 13px; }
+.sidebar .notice { display: flex; gap: 8px; align-items: center; }
+.sidebar .notice .icon { width: 16px; height: 16px; }
+.sidebar .foot { margin-top: auto; padding-top: 8px; }
+.app .sidebar button.host-here { align-self: flex-start; margin: 6px 12px 0; }
+.sidebar .who { padding: 8px 12px 2px; font-size: 12px; color: var(--text-2); }
+
+/* ── content ── */
+.content {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--pane);
+  border-top-left-radius: 8px;
+  border: 1px solid var(--card-line);
+  border-right: 0;
+  border-bottom: 0;
+  overflow: hidden;
+}
+.head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 2px 16px;
+  padding: 18px 28px 12px;
+}
+.head .title { font: 600 20px/1.3 "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif; grid-column: 1; }
+.head .subtitle { color: var(--text-2); font-size: 13px; grid-column: 1; }
+.head .tools {
+  grid-column: 2;
+  grid-row: 1 / span 3;
+  align-self: end;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.search-box {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: clamp(120px, 22vw, 240px);
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 4px;
+  border: 1px solid var(--card-line);
+  border-bottom-color: var(--text-3);
+  background: var(--card);
+}
+.search-box .icon { width: 16px; height: 16px; color: var(--text-2); flex: none; }
+.search-box input { flex: 1; min-width: 0; border: 0; outline: 0; background: none; font: inherit; color: inherit; }
+.app button.inspect { display: grid; place-items: center; width: 34px; padding: 0; }
+.app button.inspect .icon { width: 18px; height: 18px; }
+.app button.inspect.on { background: var(--pressed); }
+.tabs {
+  grid-column: 1;
+  justify-self: start;
+  display: inline-flex;
+  margin-top: 12px;
+  padding: 2px;
+  gap: 2px;
+  border-radius: 6px;
+  background: var(--seg);
+}
+.tabs button {
+  border: 0;
+  border-radius: 4px;
+  padding: 5px 14px;
+  background: none;
+  color: var(--text-2);
+}
+.tabs button:hover:not(:disabled) { color: var(--text-1); }
+.tabs button.on {
+  background: var(--seg-on);
+  color: var(--text-1);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+}
+.body { flex: 1; display: grid; grid-template-columns: 1fr; min-height: 0; }
+.body.inspected { grid-template-columns: minmax(0, 1fr) clamp(220px, 30vw, 320px); }
+.page { overflow-y: auto; padding: 4px 28px 28px; min-width: 0; }
+.inspector {
+  overflow-y: auto;
+  padding: 16px 20px;
+  border-left: 1px solid var(--card-line);
+  background: var(--card);
+}
+.page .quiet, .page .center { color: var(--text-2); }
+.page .center { text-align: center; margin-top: 80px; }
+
+/* ── grouped rows (Settings' cards; the Mac's grouped Form) ── */
+.group { margin: 0 auto 20px; max-width: 920px; }
+.group h3 { margin: 16px 2px 8px; font-size: 14px; font-weight: 600; }
+.card {
+  border-radius: 6px;
+  background: var(--card);
+  border: 1px solid var(--card-line);
+  overflow: hidden;
+}
+.line {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 48px;
+  padding: 10px 16px;
+  border: 0;
+  border-top: 1px solid var(--card-line);
+  border-radius: 0;
+  background: none;
+  text-align: left;
+  line-height: 20px;
+  justify-content: flex-start;
+}
+.line:first-child { border-top: 0; }
+.line > :first-child { flex: 1; min-width: 0; }
+.line .value { color: var(--text-2); text-align: right; }
+.line .value.bad { color: var(--bad); }
+.line.go { cursor: default; }
+.line.go:hover { background: var(--hover); }
+.line .chevron { width: 14px; height: 14px; flex: none; color: var(--text-3); }
+.line.quiet { color: var(--text-2); }
+.line.need .icon.warn { width: 20px; height: 20px; flex: none; color: var(--warn); align-self: flex-start; }
+.line.need .text { display: flex; flex-direction: column; }
+.line.need small { color: var(--text-2); font-size: 13px; }
+.line.recent > .mono { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.line .mono, .mono { font-family: "Cascadia Mono", Consolas, ui-monospace, monospace; font-size: 13px; }
+.line .state { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.line .time { color: var(--text-3); font-variant-numeric: tabular-nums; }
+.pip { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--text-3); }
+.pip.allowed { background: var(--ok); }
+.pip.not-covered { background: #F7630C; }
+.pip.refused { background: var(--bad); }
+.app button:not(.line):not(.nav):not([role=tab]) {
+  min-height: 32px;
+  padding: 4px 12px;
+  border-radius: 4px;
+  border: 1px solid var(--card-line);
+  background: var(--card);
+}
+
+/* ── empty states ── */
+.empty { text-align: center; margin: 80px auto; max-width: 420px; color: var(--text-2); }
+.empty h3 { color: var(--text-1); font-size: 16px; margin: 12px 0 6px; }
+.empty .icon.big { width: 40px; height: 40px; color: var(--text-3); }
+
+/* ── sheets (the Mac's sheets and alerts) ── */
+.sheet {
+  max-width: calc(100vw - 48px);
+  max-height: calc(100vh - 48px);
+  padding: 24px;
+  border: 1px solid var(--card-line);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--text-1);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.24);
+  font: 14px/1.43 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+}
+.sheet::backdrop { background: rgba(0, 0, 0, 0.3); }
+.sheet h2 { margin: 0 0 8px; font: 600 20px/1.3 "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif; }
+.sheet p { margin: 0 0 12px; color: var(--text-2); }
+.actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
+.app button.primary:not(.line):not(.nav):not([role=tab]), .sheet button.primary { background: var(--accent); color: #fff; border-color: transparent; }
+.app button.destructive:not(.line):not(.nav):not([role=tab]), .sheet button.destructive { background: var(--bad); color: #fff; border-color: transparent; }
+/* Dark mode's accent is light: its text dark, as Windows draws it. */
+@media (prefers-color-scheme: dark) {
+  .app button.primary:not(.line):not(.nav):not([role=tab]), .sheet button.primary { color: #000; }
+}
+.sheet button {
+  min-height: 32px;
+  padding: 4px 16px;
+  border-radius: 4px;
+  border: 1px solid var(--card-line);
+  background: var(--card);
+  font: inherit;
+  color: inherit;
+}
+
+/* A narrow window: the bar's tools go under the tabs, as the Mac's toolbar
+   folds its items away. */
+@media (max-width: 960px) {
+  .head .tools { grid-column: 1 / -1; grid-row: auto; justify-self: start; margin-top: 8px; }
+}
