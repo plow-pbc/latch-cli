@@ -1,0 +1,262 @@
+/* The Vault page (pages/vault.js): its list of items as a Windows 11 list
+   view, the inspector's grouped cards, the New Item, Edit and Import
+   dialogs, and the list's context menu. */
+.vault, .vault-inspector, .vault-sheet, .vault-menu {
+  --field: rgba(255, 255, 255, 0.7);
+  --field-line: rgba(0, 0, 0, 0.06);
+  --field-under: rgba(0, 0, 0, 0.45);
+  --caution: #FFF4CE;
+}
+@media (prefers-color-scheme: dark) {
+  .vault, .vault-inspector, .vault-sheet, .vault-menu {
+    --field: rgba(255, 255, 255, 0.06);
+    --field-line: rgba(255, 255, 255, 0.08);
+    --field-under: rgba(255, 255, 255, 0.54);
+    --caution: #433519;
+  }
+}
+
+/* ── the page ── */
+.vault .commands { display: flex; flex-wrap: wrap; gap: 4px; margin: 0 -10px 10px; }
+.app .vault .commands button.command {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  border-color: transparent;
+  background: transparent;
+  white-space: nowrap;
+}
+.app .vault .commands button.command:hover:not(:disabled) { background: var(--hover); }
+.app .vault .commands button.command:disabled { color: var(--text-3); opacity: 1; }
+.vault .commands .icon { width: 16px; height: 16px; flex: none; color: var(--accent); }
+.vault .commands button:disabled .icon { color: var(--text-3); }
+
+.vault .list { display: flex; flex-direction: column; gap: 2px; outline: none; }
+.vault .entry {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 56px;
+  padding: 6px 14px;
+  border-radius: 4px;
+  cursor: default;
+  user-select: none;
+}
+.vault .entry:hover { background: var(--hover); }
+.vault .entry.selected { background: var(--pressed); }
+.vault .entry.selected::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 3px;
+  height: 16px;
+  margin-top: -8px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+.vault .list:focus-visible .entry.selected { outline: 2px solid var(--text-1); outline-offset: -2px; }
+.vault .entry .icon.kind { width: 22px; height: 22px; flex: none; color: var(--text-2); }
+.vault .entry .text { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.vault .entry .title, .vault .entry small { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.vault .entry small { font-size: 12px; color: var(--text-2); }
+.vault .twofa { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-2); }
+.vault .twofa .icon { width: 16px; height: 16px; }
+
+.vault .empty .action { margin-top: 16px; }
+.vault .empty p { margin: 0; }
+.vault .infobar {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin: 0 0 12px;
+  padding: 12px 16px;
+  border-radius: 4px;
+  border: 1px solid var(--card-line);
+  background: var(--caution);
+}
+.vault .infobar .icon.warn { width: 20px; height: 20px; flex: none; color: var(--warn); }
+.vault .infobar .text { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.vault .infobar strong { font-weight: 600; }
+
+.vault .reading, .vault-sheet .reading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  margin: 120px auto 0;
+  color: var(--text-2);
+}
+.vault-sheet .reading { margin-top: 110px; }
+.vault .ring, .vault-sheet .ring {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 3px solid transparent;
+  border-top-color: var(--accent);
+  border-right-color: var(--accent);
+  animation: vault-turn 0.9s linear infinite;
+}
+@keyframes vault-turn { to { transform: rotate(360deg); } }
+
+/* ── an error's words, and latch's under Details ── */
+.vault .error-text p, .vault-inspector .error-text p, .vault-sheet .error-text p { margin: 0; }
+.vault details, .vault-inspector details, .vault-sheet details { margin-top: 4px; font-size: 12px; color: var(--text-2); }
+.vault summary, .vault-inspector summary, .vault-sheet summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  list-style: none;
+  cursor: default;
+}
+.vault summary::-webkit-details-marker, .vault-inspector summary::-webkit-details-marker, .vault-sheet summary::-webkit-details-marker { display: none; }
+.vault summary .chevron, .vault-inspector summary .chevron, .vault-sheet summary .chevron { width: 12px; height: 12px; transition: transform 0.1s; }
+.vault details[open] summary .chevron, .vault-inspector details[open] summary .chevron, .vault-sheet details[open] summary .chevron { transform: rotate(90deg); }
+.vault details .more, .vault-inspector details .more, .vault-sheet details .more {
+  margin: 4px 0 0;
+  text-align: left;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.vault .empty .error-text { display: flex; flex-direction: column; align-items: center; }
+
+/* ── the inspector ── */
+.vault-inspector .empty { margin-top: 120px; }
+.vault-inspector .item { display: flex; align-items: center; gap: 12px; margin: 4px 2px 4px; }
+.vault-inspector .item .icon.kind { width: 28px; height: 28px; flex: none; color: var(--accent); }
+.vault-inspector .item h2 { margin: 0; font: 600 16px/1.3 "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif; overflow-wrap: anywhere; }
+.vault-inspector .item p { margin: 0; font-size: 13px; color: var(--text-2); }
+.vault-inspector .group { margin: 0 0 4px; }
+.vault-inspector .group h3 { margin: 14px 2px 6px; font-size: 13px; }
+.vault-inspector .line { min-height: 40px; padding: 8px 12px; gap: 10px; }
+.vault-inspector .line .value { max-width: 62%; overflow-wrap: anywhere; }
+.vault-inspector .line .value.shown { color: var(--text-1); white-space: pre-wrap; user-select: text; }
+.vault-inspector .line .mono { overflow-wrap: anywhere; }
+.vault-inspector .line.failed, .vault-sheet .line.failed { align-items: flex-start; color: var(--text-2); }
+.vault-inspector .line.failed > :first-child, .vault-sheet .line.failed > :first-child { flex: none; }
+.vault-inspector .line.failed .icon, .vault-sheet .line.failed .icon { width: 16px; height: 16px; margin-top: 2px; }
+.vault-inspector .line.buttons { justify-content: space-between; }
+.vault-inspector .line.buttons > :first-child { flex: none; }
+.app .vault-inspector button.remove { color: var(--bad); }
+.vault-inspector .foot { margin: 6px 2px 0; font-size: 12px; color: var(--text-2); }
+
+/* ── New Item, Edit and Import (the Mac's sheets) ── */
+.sheet:has(> .vault-sheet) { padding: 0; overflow: hidden; }
+.vault-sheet {
+  display: flex;
+  flex-direction: column;
+  height: min(520px, calc(100vh - 50px));
+  background: var(--pane);
+}
+.vault-sheet.tall { height: min(640px, calc(100vh - 50px)); }
+.vault-sheet.import { height: min(460px, calc(100vh - 50px)); }
+.vault-sheet p { margin: 0; color: inherit; }
+.vault-sheet > header { padding: 20px 24px 14px; border-bottom: 1px solid var(--card-line); background: var(--card); }
+.vault-sheet > header h2 { margin: 0; }
+.vault-sheet > header p { margin-top: 2px; color: var(--text-2); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.vault-sheet > .scroll {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow-y: auto;
+  margin: 0;
+  padding: 16px 24px 20px;
+  border: 0;
+}
+.vault-sheet h3 { margin: 18px 2px 8px; font-size: 14px; font-weight: 600; }
+.vault-sheet .hint { margin: 8px 2px 0; font-size: 12px; color: var(--text-2); }
+.vault-sheet .line.field { min-height: 44px; padding: 6px 12px 6px 16px; }
+.vault-sheet .line .headline { color: var(--text-1); }
+.vault-sheet input[type=text], .vault-sheet input[type=password], .vault-sheet select, .vault-sheet textarea {
+  box-sizing: border-box;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--field-line);
+  border-bottom-color: var(--field-under);
+  border-radius: 4px;
+  background: var(--field);
+  color: var(--text-1);
+  font: inherit;
+  outline: none;
+}
+.vault-sheet input[type=text], .vault-sheet input[type=password], .vault-sheet select { width: 240px; flex: none; }
+.vault-sheet input::placeholder, .vault-sheet textarea::placeholder { color: var(--text-2); }
+.vault-sheet input:focus, .vault-sheet select:focus, .vault-sheet textarea:focus {
+  border-bottom: 2px solid var(--accent);
+  background: var(--card);
+}
+/* What's typed in a secret field is never shown either: no reveal button. */
+.vault-sheet input::-ms-reveal, .vault-sheet input::-ms-clear { display: none; }
+.vault-sheet textarea { display: block; width: 100%; min-height: 0; height: 56px; padding: 6px 10px; line-height: 20px; resize: vertical; }
+.vault-sheet textarea.long { height: 120px; }
+.vault-sheet fieldset:disabled { opacity: 0.6; }
+.vault-sheet > .foot {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 16px 24px;
+  border-top: 1px solid var(--card-line);
+  background: var(--win-bg);
+}
+.vault-sheet .said { flex: 1; min-width: 0; font-size: 12px; color: var(--text-2); }
+.vault-sheet .said.bad { display: flex; align-items: flex-start; gap: 8px; color: var(--bad); }
+.vault-sheet .said.bad > .icon { width: 16px; height: 16px; flex: none; margin-top: 1px; }
+.vault-sheet .said.bad details { color: var(--text-2); }
+.vault-sheet .buttons { display: flex; gap: 8px; flex: none; }
+.vault-sheet .buttons button { min-width: 96px; }
+.app .vault-sheet .buttons button.primary:not(.x) { background: var(--accent); color: #fff; border-color: transparent; }
+@media (prefers-color-scheme: dark) {
+  .app .vault-sheet .buttons button.primary:not(.x) { color: #000; }
+}
+.app .vault-sheet .buttons button:disabled:not(.x) { background: var(--seg); color: var(--text-3); border-color: transparent; opacity: 1; }
+
+.vault-sheet .import-list { min-width: 0; margin: 0; padding: 0; border: 0; }
+.vault-sheet.import > .scroll { padding-top: 14px; }
+.vault-sheet .empty { margin: 70px auto 0; }
+.vault-sheet .empty .lines { white-space: pre-line; }
+.vault-sheet .warn-line { display: flex; align-items: flex-start; gap: 8px; margin: 0 2px 12px; color: var(--warn); }
+.vault-sheet .warn-line .icon { width: 16px; height: 16px; flex: none; margin-top: 2px; }
+.vault-sheet .picks, .vault-sheet .skipped {
+  border-radius: 6px;
+  border: 1px solid var(--card-line);
+  background: var(--card);
+  overflow: hidden;
+}
+.vault-sheet .pick { display: flex; align-items: flex-start; gap: 12px; padding: 10px 16px; border-top: 1px solid var(--card-line); }
+.vault-sheet .pick:first-child, .vault-sheet .skip:first-child { border-top: 0; }
+.vault-sheet .pick input { width: 18px; height: 18px; margin: 1px 0 0; flex: none; accent-color: var(--accent); outline: none; }
+.vault-sheet .pick input:focus-visible { outline: 2px solid var(--text-1); outline-offset: 1px; }
+.vault-sheet .pick .text { display: flex; flex-direction: column; min-width: 0; }
+.vault-sheet .pick small { font-size: 12px; color: var(--text-2); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.vault-sheet .skip { display: flex; gap: 16px; padding: 10px 16px; border-top: 1px solid var(--card-line); }
+.vault-sheet .skip .value { flex: 1; color: var(--text-2); text-align: right; }
+
+/* ── the list's context menu ── */
+.vault-menu {
+  position: fixed;
+  z-index: 10;
+  min-width: 160px;
+  padding: 4px;
+  border-radius: 8px;
+  border: 1px solid var(--card-line);
+  background: var(--card);
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.14);
+}
+.app .vault-menu button.item[role=menuitem] {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 32px;
+  padding: 4px 12px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  text-align: left;
+}
+.app .vault-menu button.item[role=menuitem]:hover, .app .vault-menu button.item[role=menuitem]:focus { background: var(--hover); outline: none; }
+.vault-menu .icon { width: 16px; height: 16px; }
+.app .vault-menu button.danger { color: var(--bad); }
