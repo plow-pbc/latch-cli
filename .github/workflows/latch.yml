@@ -19,18 +19,20 @@ on:
 permissions:
   contents: read
 
-# A new push to a pull request, or to a branch, cancels the run it
-# supersedes: a merge commit holds every one before it.
+# A new push to a pull request cancels the run it supersedes. A push to a
+# branch never does: each push's run is its own, since a docs-only push
+# tests nothing (`changes`) and must not cancel the run that tests the code
+# before it.
 concurrency:
-  group: latch-${{ github.event.pull_request.number || (github.event_name == 'push' && github.ref) || github.run_id }}-${{ inputs.mode || github.event_name }}
+  group: latch-${{ github.event.pull_request.number || github.run_id }}-${{ inputs.mode || github.event_name }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
 
 jobs:
-  # What this run tests: everything, except a pull request that changes
-  # only docs. Pull requests test on Linux, run the Mac app's Swift tests
-  # (mac-smoke-build), and run the macOS archives on older Macs (mac-smoke);
-  # the full Mac suite runs on main, and by hand on any branch with the
-  # mac-tests workflow.
+  # What this run tests: everything, except a pull request or a push whose
+  # changes are only docs. Pull requests test on Linux, run the Mac app's
+  # Swift tests (mac-smoke-build), and run the macOS archives on older Macs
+  # (mac-smoke); the full Mac suite runs on main, and by hand on any branch
+  # with the mac-tests workflow.
   changes:
     if: github.ref != 'refs/heads/ci-speed' || (github.event_name == 'workflow_dispatch' && inputs.mode != 'probe')
     runs-on: ubuntu-24.04
@@ -44,13 +46,21 @@ jobs:
           fetch-depth: 2
       - id: pick
         env:
-          PULL_REQUEST: ${{ github.event_name == 'pull_request' }}
+          EVENT: ${{ github.event_name }}
+          # A push's previous tip: on main, the merge commit's first parent.
+          BEFORE: ${{ github.event.before }}
         run: |
           python3 - <<'PY'
           import os, subprocess
           code = True
-          if os.environ["PULL_REQUEST"] == "true":
-              files = subprocess.check_output(["git", "diff", "--name-only", "HEAD^1", "HEAD"], text=True).split()
+          base = None
+          if os.environ["EVENT"] == "pull_request":
+              base = "HEAD^1"
+          elif os.environ["EVENT"] == "push" and os.environ["BEFORE"].strip("0"):
+              subprocess.run(["git", "fetch", "--quiet", "--depth=1", "origin", os.environ["BEFORE"]], check=True)
+              base = os.environ["BEFORE"]
+          if base:
+              files = subprocess.check_output(["git", "diff", "--name-only", base, "HEAD"], text=True).split()
               code = any(not (f.endswith(".md") or f.startswith("docs/")) for f in files)
           print(f"code={code}")
           with open(os.environ["GITHUB_OUTPUT"], "a") as out:
@@ -74,7 +84,7 @@ jobs:
   # all of its time, and the tests Linux also runs take seconds here.
   mac:
     needs: changes
-    if: github.event_name == 'push' || inputs.mode == 'main'
+    if: needs.changes.outputs.code == 'true' && (github.event_name == 'push' || inputs.mode == 'main')
     uses: ./.github/workflows/mac-tests.yml
     with:
       ref: ${{ inputs.source-ref }}
