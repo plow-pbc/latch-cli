@@ -1203,9 +1203,10 @@ pub enum DevicesAction {
 #[derive(Subcommand, Debug)]
 pub enum HostsCommand {
     /// The host `--host default` names: print it, save NAME, or clear it.
-    /// Kept in this state folder, for this machine or agent alone; it
-    /// reaches no host you couldn't name yourself. A command without
-    /// --host goes where it always did
+    /// Saved, use it with --host default (or LATCH_HOST=default); commands
+    /// without --host are unchanged. Kept in this state folder, for this
+    /// machine or agent alone; it reaches no host you couldn't name
+    /// yourself
     Default {
         /// A host this account has, as `latch status` lists it
         #[arg(conflicts_with = "clear")]
