@@ -49,8 +49,8 @@ Windows window's fake mode shows the same data, for side-by-side stills.
 | New Agent sheet: catalog, start by text (QR), community, failed | Built | Open in Messages: Mac only |
 | Connections: Google accounts and sign-in sheet, devices | Built | Google itself: eng-65 |
 | App settings: log out, update check | Built | here a page; on the Mac, a Settings window |
-| Menu commands: New Item, Import, Save, Find, Show Sidebar/Inspector, screens ⌘1–5 | Not started | Windows: the same as Ctrl shortcuts |
-| Quick Look for screenshots and cards | Not started | Windows: open with the default app |
+| Menu commands: New Item, Import, Save, Find, Show Sidebar/Inspector, screens ⌘1–5 | Built | Ctrl+N, Ctrl+S, Ctrl+F, Ctrl+Alt+S/I, Ctrl+1–5 (real keystrokes checked on the VM); the browser's own keys are off |
+| Quick Look for screenshots and cards | Built | shown in a sheet in the window |
 
 ## What runs underneath
 

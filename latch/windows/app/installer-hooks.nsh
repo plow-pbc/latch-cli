@@ -7,3 +7,9 @@
   nsExec::Exec '"$INSTDIR\latch.exe" stop'
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Plow Latch"
 !macroend
+
+!macro NSIS_HOOK_POSTINSTALL
+  ; Google's tool, the pinned gog, installed now rather than at first use
+  ; (`plugins enable google` installs it too when it's missing).
+  nsExec::Exec '"$INSTDIR\latch.exe" install-gog'
+!macroend
