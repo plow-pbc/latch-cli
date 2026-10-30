@@ -152,17 +152,14 @@ pub async fn directory(state: &StateDir) -> Result<Directory, Failure> {
         tokio::try_join!(plow.list_peers(), plow.owner_uid(), plow.display_name())?;
     let mut listed = hosts::only_hosts(peers, &config.peer.key);
     listed.sort_by_key(|host| !host.this_machine);
-    let mut asked = std::env::var("LATCH_HOST").ok();
-    let unset = asked.as_deref() == Some(hosts::DEFAULT) && hosts::saved_default(state)?.is_none();
-    if asked.as_deref() == Some(hosts::DEFAULT) {
-        asked = hosts::saved_default(state)?;
-    }
-    let default = if unset {
+    let named = hosts::named(state, std::env::var("LATCH_HOST").ok().as_deref())?;
+    let asked = named.host();
+    let default = if let hosts::Named::NoDefault = named {
         Err(Failure::new(code::no_default_host, String::new()))
-    } else if hosts::this_machine_chosen(state, &config, asked.as_deref()) {
+    } else if hosts::this_machine_chosen(state, &config, asked) {
         Ok(config.peer.name.clone())
     } else {
-        hosts::pick(asked.as_deref(), &listed).map(|host| host.name)
+        hosts::pick(asked, &listed).map(|host| host.name)
     };
     let (default_host, default_host_reason) = match default {
         Ok(name) => (Some(name), None),

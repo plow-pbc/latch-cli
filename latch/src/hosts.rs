@@ -32,13 +32,37 @@ pub fn saved_default(state: &StateDir) -> Result<Option<String>, Failure> {
     }
 }
 
-/// `asked`, with `default` read as the saved default host; `None` for
-/// `default` when none is saved.
-fn named(state: &StateDir, asked: Option<&str>) -> Result<Option<String>, Failure> {
-    match asked {
-        Some(DEFAULT) => saved_default(state),
-        other => Ok(other.map(str::to_string)),
+/// What a command's `--host` (or `LATCH_HOST`) names.
+pub(crate) enum Named {
+    /// No host named.
+    Bare,
+    /// A host by name, `default` read as the saved default host.
+    Host(String),
+    /// `default`, with no default host saved.
+    NoDefault,
+}
+
+impl Named {
+    /// The name, if one is.
+    pub(crate) fn host(&self) -> Option<&str> {
+        match self {
+            Named::Host(name) => Some(name),
+            _ => None,
+        }
     }
+}
+
+/// What `asked` names, reading the saved default host once, so a choice
+/// changed meanwhile can't send one call two ways.
+pub(crate) fn named(state: &StateDir, asked: Option<&str>) -> Result<Named, Failure> {
+    Ok(match asked {
+        None => Named::Bare,
+        Some(DEFAULT) => match saved_default(state)? {
+            Some(name) => Named::Host(name),
+            None => Named::NoDefault,
+        },
+        Some(name) => Named::Host(name.to_string()),
+    })
 }
 
 /// `--host default` with no default saved: how to save one, and the hosts.
@@ -54,12 +78,11 @@ fn no_default(hosts: &[Peer]) -> Failure {
 
 /// Owner configuration without a target, or naming this peer, stays local.
 pub fn local_target(state: &StateDir, asked: Option<&str>) -> Result<bool, Failure> {
-    let saved = named(state, asked)?;
-    Ok(match (asked, saved.as_deref()) {
-        (None, _) => true,
+    Ok(match named(state, asked)? {
+        Named::Bare => true,
         // No default saved: `resolve` says so, with the hosts.
-        (Some(_), None) => false,
-        (Some(_), Some(name)) => state.require_config()?.peer.name == name,
+        Named::NoDefault => false,
+        Named::Host(name) => state.require_config()?.peer.name == name,
     })
 }
 
@@ -69,9 +92,9 @@ pub fn local_target(state: &StateDir, asked: Option<&str>) -> Result<bool, Failu
 /// registers again first: a host refuses a caller Plow does not know.
 pub async fn resolve(state: &StateDir, asked: Option<String>) -> Result<Peer, Failure> {
     let config = state.require_config()?;
-    let default_unset = asked.as_deref() == Some(DEFAULT) && saved_default(state)?.is_none();
-    let asked = named(state, asked.as_deref())?;
-    if !default_unset && this_machine_chosen(state, &config, asked.as_deref()) {
+    let named = named(state, asked.as_deref())?;
+    let asked = named.host();
+    if !matches!(named, Named::NoDefault) && this_machine_chosen(state, &config, asked) {
         return Ok(Peer {
             this_machine: true,
             ..config.peer
@@ -83,10 +106,10 @@ pub async fn resolve(state: &StateDir, asked: Option<String>) -> Result<Peer, Fa
         login::register_again(state).await?;
     }
     let hosts = only_hosts(peers, &own_key);
-    if default_unset {
+    if let Named::NoDefault = named {
         return Err(no_default(&hosts));
     }
-    pick(asked.as_deref(), &hosts)
+    pick(asked, &hosts)
 }
 
 /// `latch hosts default`: the saved default host; with `name`, saves that

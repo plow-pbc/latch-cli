@@ -5430,11 +5430,19 @@ fn a_saved_default_host_is_what_host_default_names() {
     // A bare command goes where it always did: the laptop never served,
     // and there are two hosts.
     assert_eq!(refused(laptop, &by_env)["code"], "host_required");
-    // Another machine's state has its own, or none.
+    // Another machine's state has its own, or none: on a serving host with
+    // none saved, --host default never falls back to the host itself.
+    let host = &owners.host;
     assert_eq!(
-        ok(&owners.host, &["hosts", "default"], &[])["default_host"],
+        ok(host, &["hosts", "default"], &[])["default_host"],
         Value::Null
     );
+    assert_eq!(refused(host, &echo)["code"], "no_default_host");
+    // Saved as itself, it is local, and named as Plow lists it.
+    ok(host, &["hosts", "default", "host"], &[]);
+    assert_eq!(ok(host, &echo, &[])["host"], "host");
+    let agents = ok(host, &["agents", "--host", "default"], &[]);
+    assert_eq!(agents["host"]["name"], "host", "{agents}");
 
     assert_eq!(
         ok(laptop, &["hosts", "default", "--clear"], &[])["default_host"],
