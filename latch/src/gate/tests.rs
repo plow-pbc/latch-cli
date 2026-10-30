@@ -2,6 +2,9 @@
 //! for Plow's agent, chat and message routes, and a recording provider for
 //! the decision model. No real chat is ever read.
 
+#[cfg(feature = "live-model")]
+mod eval;
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -103,6 +106,8 @@ impl Provider for Recorder {
 
     fn ask_as_written<'a>(&'a self, state: &'a RawValue, questions: &'a [Question]) -> Asked<'a> {
         let questions = system_one(questions);
+        let exception = questions["exception"].clone();
+        let time_ban = questions["time_ban"].clone();
         let p = match self.rules_layer {
             Some(rules_layer) if is_rules_layer(&questions) => rules_layer,
             _ => self.p,
@@ -136,7 +141,14 @@ impl Provider for Recorder {
                 cost: Some(0.0003),
                 exchange: None,
             };
-            Ok((HashMap::from([("decision".to_string(), answer)]), meta))
+            let mut answers = HashMap::from([("decision".to_string(), answer)]);
+            if !exception.is_null() {
+                answers.insert("exception".to_string(), Answer::Yes(0.0));
+            }
+            if !time_ban.is_null() {
+                answers.insert("time_ban".to_string(), Answer::Yes(0.0));
+            }
+            Ok((answers, meta))
         })
     }
 }
@@ -595,7 +607,7 @@ async fn the_answer_decides_allow_ask_or_stop_and_a_failed_model_refuses() {
     assert_eq!(judgment.gate["decided_by"], "rules");
     let p = json!({"COVERED": 0.5, "NOT_COVERED": 0.3, "FORBIDDEN": 0.2});
     assert_eq!(judgment.gate["p"], p);
-    for (layer, prompt) in [("rules", &RULES_LAYER), ("chat", &ASKED)] {
+    for (layer, prompt) in [("rules", &RULES_LAYER), ("chat", &CHAT_LAYER)] {
         let call = &judgment.gate["layers"][layer];
         assert_eq!(call["p"], p, "{layer}");
         assert_eq!(call["says"], "allow", "{layer}");
@@ -607,7 +619,8 @@ async fn the_answer_decides_allow_ask_or_stop_and_a_failed_model_refuses() {
     assert_ne!(RULES_LAYER.id(), ASKED.id());
 
     for (p, reason) in [
-        ([0.45, 0.4, 0.15], "not_covered"),
+        ([0.45, 0.45, 0.1], "not_covered"),
+        ([0.45, 0.4, 0.15], "owner_said_no"),
         ([0.2, 0.4, 0.4], "owner_said_no"),
     ] {
         let model = Recorder::answering(p[0], p[1], p[2]);
@@ -624,7 +637,7 @@ async fn the_answer_decides_allow_ask_or_stop_and_a_failed_model_refuses() {
     }
 
     // An agent is sent to the owner's chat.
-    let model = Recorder::answering(0.45, 0.4, 0.15);
+    let model = Recorder::answering(0.45, 0.45, 0.1);
     let judgment = gatekeeper(one_chat(), &model, Rules::default())
         .judge(AGENT_CALLER, &order())
         .await;
@@ -803,6 +816,77 @@ async fn no_chat_is_neither_but_a_layer_that_fails_refuses() {
 }
 
 #[tokio::test]
+async fn a_login_on_an_unsaved_site_is_refused_without_reading_chat_or_asking_the_model() {
+    for caller in [
+        AGENT_CALLER,
+        Caller::Owner,
+        Caller::RulesLayer { agent: None },
+    ] {
+        for site in [
+            Some("ridgemart-account.com"),
+            Some("ridgemart.com.evil.net"),
+            None,
+        ] {
+            let action = serde_json::value::to_raw_value(&json!({
+                "kind": "vault_fill", "site": site,
+                "item": {"kind": "login", "title": "Ridgemart", "sites": ["ridgemart.com"]},
+                "fields": ["username", "password"]
+            }))
+            .unwrap();
+            let model = Recorder::answering(0.9, 0.05, 0.05);
+            let (plow, seen) = plow(one_chat());
+            let keeper = Gatekeeper::new(plow, model.clone(), Box::new(host_rules()));
+            let judgment = keeper.judge(caller, &action).await;
+            assert_eq!(
+                judgment.verdict.unwrap_err().details["reason"],
+                "login_site_mismatch"
+            );
+            assert_eq!(judgment.gate["source"], "saved_login_sites");
+            assert_eq!(model.calls(), 0);
+            assert!(seen.lock().unwrap().is_empty());
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_saved_page_site_still_gets_judged_and_other_item_kinds_are_unaffected() {
+    for (kind, site, sites, tops) in [
+        (
+            "login",
+            "login.ridgemart.com",
+            vec!["ridgemart.com"],
+            vec![],
+        ),
+        (
+            "login",
+            "ridgemart.com",
+            vec!["other.example", "ridgemart.com"],
+            vec![],
+        ),
+        (
+            "login",
+            "portal.example",
+            vec!["ridgemart.com"],
+            vec!["portal.example"],
+        ),
+        ("card", "shop.example", vec![], vec![]),
+    ] {
+        let action = serde_json::value::to_raw_value(&json!({
+            "kind": "vault_fill", "site": site,
+            "item": {"kind": kind, "title": "Saved item", "sites": sites, "other_top_sites": tops},
+            "fields": ["username"]
+        }))
+        .unwrap();
+        let model = Recorder::answering(0.9, 0.05, 0.05);
+        let judgment = gatekeeper(one_chat(), &model, host_rules())
+            .judge(AGENT_CALLER, &action)
+            .await;
+        assert!(judgment.verdict.is_ok());
+        assert_eq!(model.calls(), 2);
+    }
+}
+
+#[tokio::test]
 async fn a_fill_from_the_vault_is_judged_knowing_what_a_fill_does() {
     let fill = crate::browser::previewed_fill(
         "https://www.instacart.com/login",
@@ -956,7 +1040,11 @@ async fn every_held_out_probe_asks_what_v0_asks() {
         let expected = &probe["expected"];
         let id = &probe["id"];
         assert_eq!(state, expected["state"].as_str().unwrap(), "{id}: state");
-        assert_eq!(questions, expected["questions"], "{id}: question");
+        assert_eq!(
+            questions,
+            system_one(&super::questions(&CHAT_LAYER)),
+            "{id}: question"
+        );
         assert_eq!(json!(ALLOW_P), expected["allow_at"], "{id}: threshold");
     }
 }
@@ -1100,30 +1188,43 @@ async fn an_owner_command_applies_to_the_next_judgment() {
 /// per probe; one row per decision goes to `$LATCH_TEST_REPLAY_OUT`, to be
 /// scored as v0's runs are. `just gatekeeper replay OUT` runs it.
 #[cfg(feature = "live-model")]
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn live_held_out_replay() {
     let out = std::env::var_os("LATCH_TEST_REPLAY_OUT")
         .expect("LATCH_TEST_REPLAY_OUT names the file for the rows");
     let provider = Gatekeeper::provider_for_host(&crate::model::logged_in_for_tests()).unwrap();
 
-    let fixture = held_out();
-    let mut rows = Vec::new();
-    for repeat in 1..=2 {
-        for probe in fixture["probes"].as_array().unwrap() {
-            let started = std::time::Instant::now();
-            let (verdict, gate) = judge_held_out(&fixture, probe, provider.clone()).await;
-            let reason = match &verdict {
-                Ok(()) => "allow".to_string(),
-                Err(f) => f.details["reason"].as_str().unwrap_or(&f.code).to_string(),
-            };
-            rows.push(
+    let fixture = Arc::new(held_out());
+    let repeats: usize = std::env::var("LATCH_REPLAY_REPEATS").map_or(2, |r| r.parse().unwrap());
+    let slots = Arc::new(tokio::sync::Semaphore::new(6));
+    let mut tasks = tokio::task::JoinSet::new();
+    for repeat in 1..=repeats {
+        for probe in fixture["probes"].as_array().unwrap().clone() {
+            let (fixture, provider, slots) = (fixture.clone(), provider.clone(), slots.clone());
+            tasks.spawn(async move {
+                let _held = slots.acquire().await.unwrap();
+                let started = std::time::Instant::now();
+                let (verdict, gate) = judge_held_out(&fixture, &probe, provider).await;
+                let reason = match &verdict {
+                    Ok(()) => "allow".to_string(),
+                    Err(f) => f.details["reason"].as_str().unwrap_or(&f.code).to_string(),
+                };
+                let layer = |l: &str, f: &str| gate["layers"][l][f].clone();
                 json!({"model": MODEL, "repeat": repeat, "probe": probe["id"],
-                             "reason": reason, "p": gate["p"], "decided_by": gate["decided_by"],
-                             "p_rules": gate["layers"]["rules"]["p"],
-                             "p_chat": gate["layers"]["chat"]["p"],
-                             "latency_ms": started.elapsed().as_millis() as u64}),
-            );
+                       "reason": reason, "p": gate["p"], "decided_by": gate["decided_by"],
+                       "p_rules": layer("rules", "p"), "p_chat": layer("chat", "p"),
+                       "p_exception": layer("rules", "p_exception"), "p_time_ban": layer("rules", "p_time_ban"),
+                       "waits_for_owner": layer("rules", "waits_for_owner"),
+                       "says_rules": layer("rules", "says"), "says_chat": layer("chat", "says"),
+                       "usage_rules": layer("rules", "usage"), "usage_chat": layer("chat", "usage"),
+                       "cost": gate["cost"], "model_failed": gate["model_failed"],
+                       "latency_ms": started.elapsed().as_millis() as u64, "gate": gate})
+            });
         }
+    }
+    let mut rows = Vec::new();
+    while let Some(row) = tasks.join_next().await {
+        rows.push(row.unwrap());
     }
     std::fs::write(out, serde_json::to_string(&json!({"rows": rows})).unwrap()).unwrap();
 }
@@ -1242,4 +1343,146 @@ async fn the_judgment_future_stays_small() {
     let judging = keeper.judge(AGENT_CALLER, &action);
     let size = std::mem::size_of_val(&judging);
     assert!(size <= 4096, "{size} bytes");
+}
+
+/// A stand-in that gives the rules questions their own answers while the
+/// existing recorder supplies each layer's ordinary decision.
+struct RuleAnswers {
+    inner: Arc<Recorder>,
+    exception: f64,
+    time_ban: f64,
+}
+
+impl Provider for RuleAnswers {
+    fn ask<'a>(&'a self, state: &'a Value, questions: &'a [Question]) -> Asked<'a> {
+        self.inner.ask(state, questions)
+    }
+
+    fn ask_as_written<'a>(&'a self, state: &'a RawValue, questions: &'a [Question]) -> Asked<'a> {
+        let asked = self.inner.ask_as_written(state, questions);
+        let exception = self.exception;
+        let time_ban = self.time_ban;
+        Box::pin(async move {
+            let (mut answers, meta) = asked.await?;
+            if answers.contains_key("exception") {
+                answers.insert("exception".into(), Answer::Yes(exception));
+            }
+            if answers.contains_key("time_ban") {
+                answers.insert("time_ban".into(), Answer::Yes(time_ban));
+            }
+            Ok((answers, meta))
+        })
+    }
+}
+
+#[tokio::test]
+async fn an_active_time_prohibition_vetoes_even_a_covered_action() {
+    for (time_ban, verdict) in [(0.5, "owner_said_no"), (0.49, "allow")] {
+        let model = Arc::new(RuleAnswers {
+            inner: Recorder::answering(0.9, 0.05, 0.05),
+            exception: 0.0,
+            time_ban,
+        });
+        let judgment = Gatekeeper::new(plow(one_chat()).0, model, Box::new(Rules::default()))
+            .judge(AGENT_CALLER, &order())
+            .await;
+        assert_eq!(judgment.gate["verdict"], verdict, "{time_ban}");
+    }
+}
+
+#[tokio::test]
+async fn a_liftable_rule_waits_for_chat_permission_without_granting_it() {
+    for (rule_p, time_ban, exception, chat_p, verdict) in [
+        ([0.01, 0.0, 0.99], 0.0, 0.5, [0.9, 0.05, 0.05], "allow"),
+        (
+            [0.01, 0.0, 0.99],
+            0.0,
+            0.49,
+            [0.9, 0.05, 0.05],
+            "owner_said_no",
+        ),
+        (
+            [0.01, 0.0, 0.99],
+            0.0,
+            0.5,
+            [0.4, 0.55, 0.05],
+            "not_covered",
+        ),
+        ([0.9, 0.05, 0.05], 0.5, 0.5, [0.9, 0.05, 0.05], "allow"),
+        (
+            [0.9, 0.05, 0.05],
+            0.5,
+            0.49,
+            [0.9, 0.05, 0.05],
+            "owner_said_no",
+        ),
+        (
+            [0.9, 0.05, 0.05],
+            0.5,
+            0.5,
+            [0.4, 0.55, 0.05],
+            "not_covered",
+        ),
+        ([0.9, 0.05, 0.05], 0.0, 0.9, [0.4, 0.55, 0.05], "allow"),
+    ] {
+        let model = Arc::new(RuleAnswers {
+            inner: Recorder::layers(Some(rule_p), Some(chat_p)),
+            exception,
+            time_ban,
+        });
+        let judgment = Gatekeeper::new(plow(one_chat()).0, model, Box::new(Rules::default()))
+            .judge(AGENT_CALLER, &order())
+            .await;
+        assert_eq!(
+            judgment.gate["verdict"], verdict,
+            "{rule_p:?} {time_ban} {exception} {chat_p:?}"
+        );
+        if exception >= 0.5 && (time_ban >= 0.5 || rule_p[2] > rule_p[0]) {
+            assert_eq!(judgment.gate["layers"]["rules"]["waits_for_owner"], true);
+            assert_eq!(judgment.gate["layers"]["rules"]["says"], "neither");
+        }
+    }
+}
+
+#[tokio::test]
+async fn the_chat_stop_threshold_vetoes_only_below_half_covered() {
+    for (rules, chat, verdict) in [
+        ([0.9, 0.05, 0.05], [0.49, 0.36, 0.15], "owner_said_no"),
+        ([0.0, 1.0, 0.0], [0.5, 0.35, 0.15], "allow"),
+        ([0.0, 1.0, 0.0], [0.49, 0.37, 0.14], "not_covered"),
+        ([0.9, 0.05, 0.05], [0.49, 0.37, 0.14], "allow"),
+    ] {
+        let model = Recorder::layers(Some(rules), Some(chat));
+        let judgment = gatekeeper(one_chat(), &model, Rules::default())
+            .judge(AGENT_CALLER, &order())
+            .await;
+        assert_eq!(judgment.gate["verdict"], verdict, "{rules:?} {chat:?}");
+    }
+}
+
+#[test]
+fn the_rules_layer_reads_the_time_of_day_both_ways() {
+    assert_eq!(
+        both_ways("Tue 2026-10-06 19:31 PT"),
+        "Tue 2026-10-06 19:31 (7:31pm) PT"
+    );
+    assert_eq!(
+        both_ways("Sat 2026-10-03 00:05 PDT"),
+        "Sat 2026-10-03 00:05 (12:05am) PDT"
+    );
+    assert_eq!(
+        both_ways("Sat 2026-10-03 12:00 PDT"),
+        "Sat 2026-10-03 12:00 (12:00pm) PDT"
+    );
+    assert_eq!(both_ways("no time here"), "no time here");
+}
+
+#[tokio::test]
+async fn the_rules_clock_alone_shows_both_time_notations() {
+    let model = Recorder::answering(0.9, 0.05, 0.05);
+    gatekeeper(one_chat(), &model, host_rules())
+        .judge(AGENT_CALLER, &order())
+        .await;
+    assert!(model.rules_state()["now"].as_str().unwrap().contains("m) "));
+    assert!(!model.chat_state()["now"].as_str().unwrap().contains("m) "));
 }

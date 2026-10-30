@@ -2827,14 +2827,18 @@ impl LivePlow {
                 200,
                 json!({"id": "req_test", "model": "typesafe/jev-1.14", "answers": {"decision": {
                     "type": "choice", "choice": "FORBIDDEN",
-                    "probabilities": {"COVERED": 0.02, "NOT_COVERED": 0.08, "FORBIDDEN": 0.9}}},
+                    "probabilities": {"COVERED": 0.02, "NOT_COVERED": 0.08, "FORBIDDEN": 0.9}},
+                    "exception": {"type": "noul", "noul": 0.0},
+                    "time_ban": {"type": "noul", "noul": 0.0}},
                     "usage": {"input_tokens": 1, "output_tokens": 0}}),
             ),
             ("POST", "/v1/decisions") if kind == "device" => (
                 200,
                 json!({"id": "req_test", "model": "typesafe/jev-1.14", "answers": {"decision": {
                     "type": "choice", "choice": "COVERED",
-                    "probabilities": {"COVERED": 0.9, "NOT_COVERED": 0.08, "FORBIDDEN": 0.02}}},
+                    "probabilities": {"COVERED": 0.9, "NOT_COVERED": 0.08, "FORBIDDEN": 0.02}},
+                    "exception": {"type": "noul", "noul": 0.0},
+                    "time_ban": {"type": "noul", "noul": 0.0}},
                     "usage": {"input_tokens": 1, "output_tokens": 0}}),
             ),
             _ => (404, json!({})),
