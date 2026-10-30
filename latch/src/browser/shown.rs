@@ -240,6 +240,18 @@ mod tests {
     }
 
     #[test]
+    fn a_cards_last_four_alone_stays_readable() {
+        let cards = ["4242424242424242".to_string()];
+        for text in [
+            "Visa ending in 4242",
+            "Card •••• 4242, expires 04/31",
+            "4242 (ending), order 42424242",
+        ] {
+            assert_eq!(masked(text, &cards), text);
+        }
+    }
+
+    #[test]
     fn two_cards_side_by_side_both_show_as_their_last_four() {
         let cards = [
             "4242424242424242".to_string(),
