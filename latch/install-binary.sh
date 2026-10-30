@@ -615,14 +615,11 @@ if [ -n "$login_again" ]; then
   esac
 fi
 
-# 9. A window quit in step 1, opened again from the new app.
+# 9. A window quit in step 1, opened again from the new app. With no
+# arguments: the window goes back to the state folder it last ran on, which
+# need not be the one this install was given.
 if [ -n "$reopen" ]; then
-  if [ -n "$state_given" ]; then
-    set -- "$installed" --args --state-dir "$(cd "$state_dir" && pwd)"
-  else
-    set -- "$installed"
-  fi
-  if open "$@"; then
+  if open "$installed"; then
     say "opened Latch's window again from $installed"
   else
     say "could not open $installed; open Latch again"
