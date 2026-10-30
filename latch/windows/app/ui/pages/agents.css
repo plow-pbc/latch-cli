@@ -1,0 +1,270 @@
+/* Your account › Agents: a list and the agent picked beside it, as
+   Windows' People-style two panes; its menus are Windows' menu flyouts. The
+   ag- pieces (ring, error, infobar, flyout) serve every account page. */
+
+.page:has(> .agents-page) { padding: 0; overflow: hidden; display: flex; }
+.agents-page {
+  --info-bg: #FFF4CE;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+@media (prefers-color-scheme: dark) {
+  .agents-page { --info-bg: #433519; }
+}
+
+.agents-page .ag-bar {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 28px 12px;
+  border-bottom: 1px solid var(--card-line);
+}
+.app .agents-page button.ag-new { display: inline-flex; align-items: center; gap: 8px; }
+.agents-page .ag-new .icon { width: 16px; height: 16px; }
+
+.agents-page > .empty { margin: auto; padding-bottom: 48px; }
+.agents-page .ag-waiting {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--text-2);
+}
+
+/* ── the two panes ── */
+.agents-page .ag-split { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.agents-page .ag-panes { flex: 1; display: grid; grid-template-columns: 260px 1fr; min-height: 0; }
+.agents-page .ag-list {
+  overflow-y: auto;
+  padding: 8px;
+  border-right: 1px solid var(--card-line);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.agents-page .ag-row {
+  position: relative;
+  min-height: 52px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 4px;
+  gap: 10px;
+}
+.agents-page .ag-row:hover { background: var(--hover); }
+.agents-page .ag-row.selected { background: var(--pressed); }
+.agents-page .ag-row.selected::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 3px;
+  height: 16px;
+  margin-top: -8px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+.agents-page .ag-row > .ag-avatar { flex: none; }
+.agents-page .ag-who { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.agents-page .ag-who > * { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.agents-page .ag-who small { font-size: 12px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+
+.agents-page .ag-detail { overflow-y: auto; padding: 20px 28px 28px; min-width: 0; }
+.agents-page .ag-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  max-width: 920px;
+  margin: 0 auto 20px;
+}
+.agents-page .ag-title { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.agents-page .ag-title h2 {
+  margin: 0;
+  font: 600 20px/1.3 "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  user-select: text;
+}
+.agents-page .ag-title span { color: var(--text-2); font-size: 13px; }
+.app .agents-page button.ag-more:not(.line) { display: grid; place-items: center; width: 36px; padding: 0; }
+.agents-page .ag-more .icon { width: 18px; height: 18px; }
+.agents-page .ag-detail .value { user-select: text; }
+.agents-page .ag-number { font-variant-numeric: tabular-nums; }
+
+/* An agent on each host. */
+.agents-page .ag-host { align-items: flex-start; }
+.agents-page .ag-on { display: flex; align-items: baseline; gap: 10px; }
+.agents-page .ag-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-3);
+  transform: translateY(-1px);
+}
+.agents-page .ag-dot.up { background: var(--ok); }
+.agents-page .ag-dot.problem { background: var(--bad); }
+.agents-page .ag-where { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.agents-page .ag-where small, .agents-page .ag-where .ag-error { font-size: 13px; color: var(--text-2); }
+.agents-page .ag-host.offline .ag-on { opacity: 0.6; }
+.agents-page .ag-host > button { flex: none; }
+.app .agents-page button.subtle:not(.line) {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border-color: transparent;
+  background: transparent;
+}
+.app .agents-page button.subtle:not(.line):hover { background: var(--hover); }
+.agents-page .ag-host.offline button.subtle { color: var(--text-2); }
+.agents-page .subtle .icon { width: 14px; height: 14px; }
+
+/* ── avatars: a persona's photo, or an initial on its tint ── */
+.ag-avatar {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: var(--size);
+  height: var(--size);
+  border-radius: 50%;
+  background: linear-gradient(to bottom, color-mix(in srgb, var(--tint) 78%, white), var(--tint));
+  color: #fff;
+}
+.ag-avatar > img { width: 100%; height: 100%; border-radius: 50%; object-fit: cover; }
+.ag-avatar .ag-initial {
+  font: 600 calc(var(--size) * 0.44) / 1 "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
+}
+.ag-avatar > .icon { width: 60%; height: 60%; }
+.ag-avatar .ag-badge {
+  position: absolute;
+  right: calc(var(--size) * -0.06);
+  bottom: calc(var(--size) * -0.06);
+  display: grid;
+  place-items: center;
+  width: calc(var(--size) * 0.4);
+  height: calc(var(--size) * 0.4);
+  border-radius: 50%;
+  background: var(--card);
+  color: var(--text-2);
+}
+.ag-avatar .ag-badge .icon { width: 72%; height: 72%; }
+.app svg.ag-glyph .solid { fill: currentColor; stroke: none; }
+
+/* ── a removal's refusal: Windows' InfoBar, warning ── */
+.agents-page .ag-infobar {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin: 12px 16px 0;
+  padding: 10px 12px 10px 16px;
+  border: 1px solid var(--card-line);
+  border-radius: 4px;
+  background: var(--info-bg);
+}
+.agents-page .ag-infobar > .icon { width: 18px; height: 18px; flex: none; color: var(--warn); margin-top: 2px; }
+.agents-page .ag-infotext { flex: 1; display: flex; flex-direction: column; gap: 2px; }
+.agents-page .ag-infotext strong { font-weight: 600; }
+.agents-page .ag-infotext .ag-error { color: var(--text-2); font-size: 13px; }
+
+/* ── menu flyouts ── */
+.ag-flyout {
+  position: fixed;
+  z-index: 10;
+  min-width: 200px;
+  padding: 4px;
+  border: 1px solid var(--card-line);
+  border-radius: 8px;
+  background: var(--card);
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.14);
+}
+.ag-flyout .line {
+  min-height: 32px;
+  padding: 4px 12px;
+  border: 0;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+.ag-flyout .line:hover, .ag-flyout .line:focus-visible { background: var(--hover); outline: none; }
+.ag-flyout .line.danger { color: var(--bad); }
+.ag-flyout hr { margin: 4px 0; border: 0; border-top: 1px solid var(--card-line); }
+
+/* ── shared by the account pages ── */
+.ag-ring {
+  display: inline-block;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 3px solid transparent;
+  border-top-color: var(--accent);
+  border-right-color: var(--accent);
+  animation: ag-spin 1s linear infinite;
+}
+.ag-ring.small { width: 16px; height: 16px; border-width: 2px; }
+@keyframes ag-spin { to { transform: rotate(360deg); } }
+.ag-error { display: flex; flex-direction: column; gap: 2px; }
+.ag-error details { font-size: 12px; color: var(--text-2); }
+.ag-error summary { cursor: default; width: max-content; }
+.ag-error .ag-details { margin-top: 4px; font-family: "Cascadia Mono", Consolas, ui-monospace, monospace; user-select: text; white-space: pre-wrap; }
+.empty .ag-error { align-items: center; }
+
+/* ── New Agent ── */
+.sheet.na-sheet { padding: 0; }
+.na-sheet .na-head { padding: 20px 24px 12px; border-bottom: 1px solid var(--card-line); }
+.na-sheet .na-head p { margin: 0; }
+.na-sheet .na-body { min-height: 320px; display: flex; }
+.na-sheet .na-body > * { flex: 1; }
+.na-sheet .na-center { display: grid; place-items: center; }
+.na-sheet .empty { margin: 32px auto; }
+.na-sheet .empty h3 { font: 600 20px/1.3 "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif; }
+.na-sheet .na-text { display: flex; align-items: flex-start; gap: 24px; padding: 24px; }
+.na-sheet .na-code {
+  flex: none;
+  width: 180px;
+  height: 180px;
+  padding: 10px;
+  border-radius: 8px;
+  background: #fff;
+}
+.na-sheet .na-code svg { display: block; width: 100%; height: 100%; }
+.na-sheet .na-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 14px; }
+.na-sheet .na-kind { display: flex; align-items: center; gap: 12px; }
+.na-sheet .na-select { position: relative; display: inline-flex; align-items: center; }
+.na-sheet .na-select .icon { position: absolute; right: 10px; width: 14px; height: 14px; pointer-events: none; color: var(--text-2); }
+.na-sheet select {
+  appearance: none;
+  color-scheme: light dark;
+  min-width: 180px;
+  min-height: 32px;
+  padding: 4px 32px 4px 10px;
+  border: 1px solid var(--card-line);
+  border-bottom-color: var(--text-3);
+  border-radius: 4px;
+  background: var(--card);
+  color: inherit;
+  font: inherit;
+}
+.na-sheet .na-copy { display: flex; flex-direction: column; gap: 2px; }
+.na-sheet .na-copy small { font-size: 12px; color: var(--text-2); }
+.na-sheet .na-copy > div { display: flex; align-items: baseline; gap: 8px; }
+.na-sheet .na-copy .mono { flex: 1; min-width: 0; font-size: 15px; user-select: text; overflow-wrap: anywhere; }
+.app .na-sheet .na-copy button:not(.line) { min-height: 28px; padding: 2px 12px; }
+.na-sheet .na-hint { margin: 0; font-size: 13px; }
+.na-sheet .na-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 24px;
+  border-top: 1px solid var(--card-line);
+  background: var(--win-bg);
+}
+.na-sheet .na-wait { display: inline-flex; align-items: center; gap: 10px; color: var(--text-2); font-size: 13px; }
+
+.app .ag-sheet button:disabled { opacity: 0.5; }
+.na-sheet .empty p { margin-top: 16px; }
