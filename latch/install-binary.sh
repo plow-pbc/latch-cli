@@ -272,6 +272,9 @@ on_exit() {
   if [ "$ended" -ne 0 ] && [ -n "$restart_host" ]; then
     say "the host on $state_dir is stopped; start once with: $restart_host (plus any --deny-exec or --headless-browsers flags you need)" >&2
   fi
+  if [ "$ended" -ne 0 ] && [ -n "$reopen" ]; then
+    say "Latch's window was quit for the install; open Latch again" >&2
+  fi
 }
 trap on_exit EXIT
 # The new latch asks and stops: the latch there may be too old to know
@@ -325,6 +328,12 @@ if [ -n "$app" ]; then
   if [ -z "$replace" ]; then
     say "$(basename "$app") already installed at $installed"
   else
+    # A window open from the app being replaced keeps running the old one
+    # until it is opened again: it is quit here, after the host is stopped,
+    # and opened again from the new app (step 9).
+    if ! quit_windows "$installed"; then
+      say "Latch's window did not quit; quit it and open Latch again to see the new version"
+    fi
     # Copied beside the old one first. The old one then moves aside, not
     # away, until the new one has its path: if that fails, the old one goes
     # back, still working, and the link into it with it. A run cut short
@@ -606,18 +615,16 @@ if [ -n "$login_again" ]; then
   esac
 fi
 
-# 9. A window quit in step 1, opened again from the new copy.
+# 9. A window quit in step 1, opened again from the new app. With no
+# arguments: the window goes back to the state folder it last ran on, which
+# need not be the one this install was given.
 if [ -n "$reopen" ]; then
-  if [ -n "$state_given" ]; then
-    set -- "$installed" --args --state-dir "$(cd "$state_dir" && pwd)"
-  else
-    set -- "$installed"
-  fi
-  if open "$@"; then
-    say "opened $installed in place of the window that ran from $other"
+  if open "$installed"; then
+    say "opened Latch's window again from $installed"
   else
     say "could not open $installed; open Latch again"
   fi
+  reopen=""
 fi
 
 # A first install: no login in the state directory yet, once latch has

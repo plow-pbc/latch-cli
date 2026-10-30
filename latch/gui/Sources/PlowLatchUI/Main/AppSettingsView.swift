@@ -20,7 +20,7 @@ struct AppSettingsView: View {
                     Text("Couldn't check for updates. Try again in a moment.").foregroundStyle(.red)
                 }
                 if available {
-                    Text("Installing it from the app isn't available yet: update Latch from Terminal, and it restarts what was running.")
+                    Text("Installing it from the app isn't available yet: run `latch update` in Terminal. It restarts Latch on this Mac and reopens this window on the new version.")
                         .foregroundStyle(.secondary)
                 }
             }
