@@ -721,7 +721,8 @@ async fn a_refused_command_sends_nothing_to_the_page(engine: &str) {
     refused(&released, "not_covered", &chat);
     // The release is judged on the checkout the confirmation bound: the
     // page, the sites the values go to, the button and the lines around
-    // it, the card's last four digits.
+    // it, the card's last four digits, and that a script ran on the shop
+    // (the test's own look above).
     assert_eq!(
         judge.last_action(),
         json!({"kind": "vault_fill", "site": "shop.example",
@@ -730,8 +731,66 @@ async fn a_refused_command_sends_nothing_to_the_page(engine: &str) {
                "checkout": {"page_title": "latch checkout test",
                             "field_sites": ["https://shop.example"], "press": "Pay",
                             "lines": ["Name on card", "Card number", "Expiry", "CVV", "Pay"],
-                            "card_last4": "4242", "agent_code_before_fill": false}})
+                            "card_last4": "4242", "agent_code_before_fill": true}})
     );
+    // A page that shows the card's number shows the judge its last four
+    // digits only. In a new session, where no script ran yet.
+    let id = host
+        .look(
+            "open",
+            named(engine),
+            json!({"url": format!("{site}/card-on-file.html")}),
+        )
+        .await["session"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let on_file = host.agent("observe", &id, json!({}), None).await.0.unwrap();
+    let (stop, _) = host
+        .agent(
+            "fill",
+            &id,
+            json!({"request": "r-fill-on-file", "item": card.item, "snapshot": on_file["snapshot"],
+                   "press": find(&on_file, "button", "Pay $10.00"), "fields": [
+                ["number", [find(&on_file, "textbox", "Card number")]],
+            ]}),
+            None,
+        )
+        .await;
+    let confirmation = stop.unwrap_err().details["confirmation"]["id"].clone();
+    // A script sent to the page after the confirmation was issued: the
+    // judge is told, as the release is judged.
+    host.look("eval", &id, json!({"script": "1"})).await;
+    let released = host
+        .agent(
+            "do",
+            &id,
+            json!({"request": "r-confirm-on-file", "plan": {"steps": []}, "confirm": confirmation}),
+            None,
+        )
+        .await;
+    refused(&released, "not_covered", &chat);
+    let judged = judge.last_action();
+    println!("judged on a page that shows the number: {judged}");
+    assert_eq!(
+        judged["checkout"]["agent_code_before_fill"], true,
+        "{judged}"
+    );
+    assert!(
+        judged["checkout"]["lines"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("Card on file: •••• 4242")),
+        "{judged}"
+    );
+    let everything = judge
+        .shown
+        .lock()
+        .unwrap()
+        .iter()
+        .map(Value::to_string)
+        .collect::<String>();
+    assert!(!everything.contains(NUMBER), "the judge saw a card number");
     let values = host
         .look(
             "eval",

@@ -1036,7 +1036,7 @@ async fn release_and_set(
         .iter()
         .map(String::as_str)
         .chain([top])
-        .filter_map(sites::site_of)
+        .filter_map(|origin| sites::site_of(&browsers.origin_as(origin)))
         .collect();
     let agent_code = session.runtime.agent_code_on(&touched);
     audit.insert("agent_code_before_fill".into(), json!(agent_code));
