@@ -219,6 +219,9 @@ Exit 4 is a refusal, and its code says what you may do:
 - `calendar_conflict`: the time is busy, nothing booked. Booking over it is
   the owner's call: ask them, naming the overlapping event, and once they
   agree resend with `--confirm-conflict`.
+- `agent_code_on_site`: your own script ran on this site earlier in the
+  browser session, nothing filled. `open` a new session, go back to the
+  checkout and fill the card there, without running a script first.
 - Any other exit 4 (`owner_said_no`, `exec_denied`, …) means no.
 
 Exit 3: the host was unreachable or could not judge; its message says what

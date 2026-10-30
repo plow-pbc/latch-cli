@@ -202,20 +202,17 @@ async fn a_card_fills_split_boxes_and_expiry_lists(engine: &str) {
 
 async fn agent_code_on_a_shop_keeps_the_card_out(engine: &str) {
     let (mut h, card, local, _, _keep) = shop(engine).await;
-    h.call("open", json!({"url": format!("{local}/card-form.html")}))
+    h.call("open", json!({"url": format!("{local}/checkout.html")}))
         .await
         .unwrap();
     // The agent's script stays behind on the shop and copies what is typed.
     let planted = "document.addEventListener('input', (e) => localStorage.setItem('copied-' + e.target.name, e.target.value), true); 1";
     h.call("eval", json!({"script": planted})).await.unwrap();
     let args = h.suggested(&card).await;
-    let (paid, audit) = h.pay(args).await;
-    let refused = paid.unwrap_err();
+    let refused = h.pay(args).await.unwrap_err();
     println!(
-        "after the agent's script: {} ({}); audit {}",
-        refused.code,
-        refused.message,
-        Value::Object(audit)
+        "after the agent's script: {} ({})",
+        refused.code, refused.message
     );
     assert_eq!(refused.code, "agent_code_on_site");
     let copied = h
@@ -229,11 +226,11 @@ async fn agent_code_on_a_shop_keeps_the_card_out(engine: &str) {
 
     // A new session has none of it: the card pays there.
     h.new_session().await;
-    h.call("open", json!({"url": format!("{local}/card-form.html")}))
+    h.call("open", json!({"url": format!("{local}/checkout.html")}))
         .await
         .unwrap();
     let args = h.suggested(&card).await;
-    h.pay(args).await.0.unwrap();
+    h.pay(args).await.unwrap();
     let page = h.text().await;
     assert!(page.contains(PAID), "{page}");
     assert!(!h.saw_the_card(), "the card reached a result or the audit");

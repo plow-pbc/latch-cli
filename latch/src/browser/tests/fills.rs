@@ -671,6 +671,8 @@ async fn vault_fills_go_only_where_the_item_allows_and_never_show_a_value(engine
     assert!(h.text().await.contains("password accepted"));
 
     // A card: secret fields only with --press; reshaped expiry; gone after.
+    // In a new session: a card is never filled where agent code ran.
+    h.new_session().await;
     let checkout = h
         .call("open", json!({"url": format!("{local}/checkout.html")}))
         .await
@@ -1062,7 +1064,7 @@ async fn a_fill_that_cannot_finish_shows_no_value_and_keeps_the_agent_out(engine
     );
     assert_eq!(refused.code, "press_required");
     assert!(
-        h.call("eval", json!({"script": "1"})).await.is_ok(),
+        h.call("screenshot", json!({})).await.is_ok(),
         "nothing was left on the page"
     );
 
