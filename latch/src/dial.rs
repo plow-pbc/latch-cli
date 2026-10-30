@@ -65,7 +65,9 @@ pub struct Link {
 /// iroh: through this machine's host when one serves here, else from an
 /// endpoint of our own. Failure here means nothing was sent: exit 3.
 pub async fn connect(state: &StateDir, host: &Peer) -> Result<Link, Failure> {
-    connect_within(state, host, CONNECT_TIMEOUT).await
+    connect_within(state, host, CONNECT_TIMEOUT)
+        .await
+        .map_err(naming(host))
 }
 
 async fn connect_within(state: &StateDir, host: &Peer, within: Duration) -> Result<Link, Failure> {
@@ -143,7 +145,7 @@ fn offline(host: &Peer) -> Failure {
         "host {:?} is not online{seen}; nothing was sent. Start `latch serve` there",
         host.name
     );
-    named(Failure::new(code::host_offline, message), host)
+    Failure::new(code::host_offline, message)
 }
 
 /// A failure of a call to `host`, naming it in `host` as its answers do,
@@ -179,7 +181,7 @@ fn not_connected(host: &Peer, err: &ConnectError) -> Failure {
             String::from_utf8_lossy(wire::ALPN),
             crate::cli::version(),
         );
-        return named(Failure::new(code::protocol_mismatch, message), host);
+        return Failure::new(code::protocol_mismatch, message);
     }
     tracing::info!(host = %host.name, error = ?err, "could not connect");
     let message = format!(
@@ -187,7 +189,7 @@ fn not_connected(host: &Peer, err: &ConnectError) -> Failure {
         host.name,
         reasons(err)
     );
-    named(Failure::new(code::host_unreachable, message), host)
+    Failure::new(code::host_unreachable, message)
 }
 
 fn not_connected_within(host: &Peer, within: Duration) -> Failure {
@@ -197,7 +199,7 @@ fn not_connected_within(host: &Peer, within: Duration) -> Failure {
         host.name,
         within.as_secs_f32()
     );
-    named(Failure::new(code::host_unreachable, message), host)
+    Failure::new(code::host_unreachable, message)
 }
 
 /// Sends `request` to each of `hosts` at once, through one endpoint, and
@@ -555,6 +557,31 @@ mod tests {
             failure.message
         );
         assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    /// A connection that can't be made names its host, wherever it fails:
+    /// here, this machine's own host isn't running.
+    #[tokio::test]
+    async fn a_connection_that_fails_to_open_names_its_host() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = StateDir {
+            path: dir.path().to_path_buf(),
+        };
+        let host = Peer {
+            key: "c".repeat(64),
+            kind: "device".into(),
+            name: "mac".into(),
+            relay_url: Some("https://relay.example/".into()),
+            last_seen_at: None,
+            online: Some(true),
+            this_machine: true,
+        };
+        let failure = connect(&state, &host).await.err().unwrap();
+        assert_eq!(
+            failure.details["host"], "mac",
+            "{}: {}",
+            failure.code, failure.message
+        );
     }
 
     #[test]
