@@ -649,7 +649,7 @@ fn plural<'a>(count: u64, one: &'a str, more: &'a str) -> &'a str {
     if count == 1 { one } else { more }
 }
 
-fn human_size(bytes: u64) -> String {
+pub(crate) fn human_size(bytes: u64) -> String {
     match bytes {
         0..1024 => format!("{bytes} B"),
         1024..1_048_576 => format!("{:.1} KB", bytes as f64 / 1024.0),

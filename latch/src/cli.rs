@@ -92,8 +92,9 @@ Agents:
   judging it as yours.
 
   Exit 4 means denied. A host's gatekeeper refusal, gatekeeper_denied with
-  reason not_covered, is the one to retry: ask the owner in your Plow chat,
-  naming exactly what you will do, then retry once they agree. owner_said_no
+  reason not_covered, is the one to retry: latch has no approval prompt, so
+  ask the owner in your Plow chat, naming exactly what you will do, then
+  retry once they agree there; refused again, stop and tell them. owner_said_no
   and exec_denied (the owner turned exec off on that host) mean no.
   Exit 3, gatekeeper_unavailable: the host could not judge. Its message says
   what fixes it: often a retry later, but a host out of Plow credits fails
@@ -165,12 +166,15 @@ pub enum Command {
     Login(LoginArgs),
     /// Log this machine out of Plow
     ///
-    /// Stops this state folder's host, then deletes its key and Plow token
-    /// from the Keychain or its files; the vault and audit stay readable
-    /// after the next login
+    /// Says what it deletes and asks, stops this state folder's host, then
+    /// deletes its Plow token; its key, name, vault, audit, rules and
+    /// settings stay, so the next login is the same machine
     Logout(LogoutArgs),
     /// List this account's machines, online or not, or remove one
     Devices(DevicesArgs),
+    /// This machine's or agent's own choices about hosts
+    #[command(subcommand)]
+    Hosts(HostsCommand),
     /// List your agents, with their lines and Plow status
     ///
     /// With --host, each one's standing on that host. Its subcommands show,
@@ -247,10 +251,11 @@ pub enum Command {
     Update(UpdateArgs),
     /// Set this machine up, step by step, at a terminal
     ///
-    /// Log in, connect Google, on a Mac turn on Messages and Contacts, all
-    /// with no host running, then offer to start latch. Each step runs a
-    /// latch command and is skipped once done, so it can be run again any
-    /// time; `--status` only lists the steps
+    /// Log in, connect Google, on a Mac turn on Messages and Contacts, rules
+    /// for agents from a preset when there are none, all with no host
+    /// running, then offer to start latch. Each step runs a latch command and
+    /// is skipped once done, so it can be run again any time; `--status` only
+    /// lists the steps
     Setup(SetupArgs),
     /// Internal: the sandboxed process a host starts for each file read or write, exec, Google call and startup probe
     #[command(hide = true)]
@@ -330,7 +335,8 @@ pub struct HelpArgs {
 
 #[derive(Args, Debug)]
 pub struct BrowserArgs {
-    /// Name of the host to use
+    /// Name of the host to use; `default` is the one `latch hosts default`
+    /// saved
     #[arg(long, env = "LATCH_HOST", global = true)]
     pub host: Option<String>,
     /// The session to use: the id `open` answered
@@ -655,7 +661,7 @@ pub enum DialogAction {
 
 #[derive(Args, Debug)]
 pub struct VaultArgs {
-    /// Host to use (default: this machine's vault; naming this machine is local too)
+    /// Host to use (default: this machine's vault; naming this machine is local too; `default`, the one `latch hosts default` saved)
     #[arg(long, env = "LATCH_HOST", global = true)]
     pub host: Option<String>,
     /// The owner's Plow chat an agent's `list` or `link` acts for, when its
@@ -910,12 +916,15 @@ pub enum OnOff {
 
 #[derive(Subcommand, Debug)]
 pub enum RulesCommand {
-    /// Replace the rules with TEXT, or with the text of --file F (- reads stdin)
+    /// Replace the rules with TEXT, with the text of --file F (- reads stdin), or with a preset's
     Set {
-        #[arg(conflicts_with = "file")]
+        #[arg(conflicts_with_all = ["file", "preset"])]
         text: Option<String>,
-        #[arg(long, value_name = "F")]
+        #[arg(long, value_name = "F", conflicts_with = "preset")]
         file: Option<PathBuf>,
+        /// Rules to start from: family (a family assistant: calendar, texts and email, groceries; never documents or passwords) or work (a work assistant: email, calendar, GitHub; not personal texts and chats), as the Mac app offers them
+        #[arg(long, value_name = "NAME")]
+        preset: Option<crate::gate::rules::Preset>,
         /// Save only if the rules are still at revision R, as `rules show`
         /// gave it (`none`: there were none); otherwise refused, and
         /// nothing changes
@@ -1191,6 +1200,22 @@ pub enum DevicesAction {
     },
 }
 
+#[derive(Subcommand, Debug)]
+pub enum HostsCommand {
+    /// The host `--host default` names: print it, save NAME, or clear it.
+    /// Kept in this state folder, for this machine or agent alone; it
+    /// reaches no host you couldn't name yourself. A command without
+    /// --host goes where it always did
+    Default {
+        /// A host this account has, as `latch status` lists it
+        #[arg(conflicts_with = "clear")]
+        name: Option<String>,
+        /// Forget the saved default host
+        #[arg(long)]
+        clear: bool,
+    },
+}
+
 /// `latch audit`: with no command, its records; with one, the log's upkeep.
 #[derive(Args, Debug)]
 #[command(args_conflicts_with_subcommands = true)]
@@ -1386,10 +1411,17 @@ pub const EVERY_AGENT: &str = "*";
 
 #[derive(Args, Debug)]
 pub struct LogoutArgs {
-    /// Also delete the vault and audit keys, and then the state folder
-    /// itself, with everything in it
+    /// Delete every secret, and then the state folder itself, with
+    /// everything in it: the vault, audit log, rules and settings
     #[arg(long)]
     pub purge: bool,
+    /// Log out without asking, still saying what it deletes (required when
+    /// no one is at a terminal)
+    #[arg(long)]
+    pub yes: bool,
+    /// Say what it would delete and keep, and change nothing
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 #[derive(Args, Debug)]
@@ -1423,7 +1455,8 @@ pub struct LoginArgs {
 /// uses the only host in the directory, if there is exactly one.
 #[derive(Args, Debug)]
 pub struct HostArg {
-    /// Name of the host to use
+    /// Name of the host to use; `default` is the one `latch hosts default`
+    /// saved
     #[arg(long, env = "LATCH_HOST")]
     pub host: Option<String>,
     /// The owner's Plow chat this agent acts for, when its line has more

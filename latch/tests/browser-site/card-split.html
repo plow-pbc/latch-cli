@@ -1,0 +1,41 @@
+<!doctype html><title>latch split card test</title>
+<!-- A card form in pieces: the number in four boxes of four that move on
+     to the next box when full, and the expiry as month and year lists.
+     On submit the page joins them into cc-number and cc-exp for /pay. -->
+<h1>Checkout</h1>
+<p>Total $10.00</p>
+<form method="post" action="pay" id="pay">
+  <p><label>Name on card <input name="cc-name" autocomplete="cc-name"></label></p>
+  <fieldset><legend>Card number</legend>
+    <input class="box" aria-label="Card number 1" maxlength="4" inputmode="numeric">
+    <input class="box" aria-label="Card number 2" maxlength="4" inputmode="numeric">
+    <input class="box" aria-label="Card number 3" maxlength="4" inputmode="numeric">
+    <input class="box" aria-label="Card number 4" maxlength="4" inputmode="numeric">
+  </fieldset>
+  <p><label>Month <select id="month" autocomplete="cc-exp-month">
+    <option value="">MM</option>
+    <option>01</option><option>02</option><option>03</option><option>04</option>
+    <option>05</option><option>06</option><option>07</option><option>08</option>
+    <option>09</option><option>10</option><option>11</option><option>12</option>
+  </select></label>
+  <label>Year <select id="year" autocomplete="cc-exp-year">
+    <option value="">YYYY</option>
+    <option>2026</option><option>2027</option><option>2028</option><option>2029</option>
+    <option>2030</option><option>2031</option><option>2032</option><option>2033</option>
+  </select></label></p>
+  <p><label>CVC <input name="cc-csc" autocomplete="cc-csc" maxlength="4"></label></p>
+  <input type="hidden" name="cc-number">
+  <input type="hidden" name="cc-exp">
+  <p><button type="submit">Pay $10.00</button></p>
+</form>
+<script>
+  const boxes = [...document.querySelectorAll('.box')];
+  boxes.forEach((box, i) => box.addEventListener('input', () => {
+    if (box.value.length === 4 && boxes[i + 1]) boxes[i + 1].focus();
+  }));
+  document.getElementById('pay').addEventListener('submit', () => {
+    const form = document.getElementById('pay');
+    form.elements['cc-number'].value = boxes.map((b) => b.value).join('');
+    form.elements['cc-exp'].value = month.value + ' / ' + year.value.slice(2);
+  });
+</script>

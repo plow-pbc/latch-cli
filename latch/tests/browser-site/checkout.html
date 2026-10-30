@@ -1,6 +1,7 @@
 <!doctype html><title>latch checkout test</title>
 <!-- Posts to /pay, which answers with a new page saying which card fields
-     matched the test card. -->
+     matched the test card. With ?bare the fields lose their autocomplete
+     hints, as many shops' have none. -->
 <h1>Checkout</h1>
 <form method="post" action="pay">
   <p><label>Name on card <input name="cc-name" autocomplete="cc-name"></label></p>
@@ -9,3 +10,8 @@
   <p><label>CVV <input name="cc-csc" autocomplete="cc-csc" maxlength="4"></label></p>
   <p><button type="submit">Pay</button></p>
 </form>
+<script>
+  if (new URLSearchParams(location.search).has('bare')) {
+    for (const field of document.querySelectorAll('[autocomplete]')) field.removeAttribute('autocomplete');
+  }
+</script>
