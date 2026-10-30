@@ -305,7 +305,7 @@ impl AccessOf {
         use std::os::windows::fs::OpenOptionsExt;
         use std::os::windows::io::AsRawHandle;
         use std::ptr::null_mut;
-        use windows_sys::Win32::Foundation::{ERROR_SUCCESS, LocalFree};
+        use windows_sys::Win32::Foundation::ERROR_SUCCESS;
         use windows_sys::Win32::Security::Authorization::{GetSecurityInfo, SE_FILE_OBJECT};
         use windows_sys::Win32::Security::{
             ACL, DACL_SECURITY_INFORMATION, GetSecurityDescriptorControl,
@@ -361,12 +361,10 @@ impl AccessOf {
                     control & SE_DACL_PROTECTED,
                 ) != 0
         };
+        // On failure `access` frees what it holds as it drops, after the
+        // error is read.
         if !done {
-            let err = std::io::Error::last_os_error();
-            // SAFETY: allocated by GetSecurityInfo, freed once (`forget`).
-            unsafe { LocalFree(access.read) };
-            std::mem::forget(access);
-            return Err(err);
+            return Err(std::io::Error::last_os_error());
         }
         Ok(Some(access))
     }
