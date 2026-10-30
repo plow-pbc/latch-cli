@@ -214,6 +214,39 @@ pub fn normalize(workers: &WorkerSetup, value: &Value) -> Result<PreparedExec, F
     Ok(PreparedExec(args))
 }
 
+/// A resolved `path` as a person reads it, and as the judge, the audit and
+/// the caller are shown it. On Windows a resolved path is verbatim
+/// (`\\?\C:\x`); shown, it is `C:\x`, and `\\?\UNC\server\share` is
+/// `\\server\share`, unless the plain form would name something else (a
+/// part ending in a dot or a space, or a device such as `NUL`), which is shown
+/// as it is. latch itself goes on using the resolved path.
+pub(crate) fn shown(path: &str) -> String {
+    #[cfg(windows)]
+    {
+        let plain = match path.strip_prefix(r"\\?\UNC\") {
+            Some(share) => Some(format!(r"\\{share}")),
+            None => path
+                .strip_prefix(r"\\?\")
+                .filter(|rest| rest.as_bytes().get(1) == Some(&b':'))
+                .map(str::to_owned),
+        };
+        const DEVICES: &[&str] = &[
+            "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7",
+            "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+        ];
+        let same = |plain: &str| {
+            plain.split('\\').skip(1).all(|part| {
+                let stem = part.split('.').next().unwrap_or(part).trim_end();
+                !part.ends_with(['.', ' ']) && !DEVICES.iter().any(|d| d.eq_ignore_ascii_case(stem))
+            })
+        };
+        if let Some(plain) = plain.filter(|plain| same(plain)) {
+            return plain;
+        }
+    }
+    path.to_owned()
+}
+
 pub(crate) fn resolve(home: &Path, path: &Path) -> Result<PathBuf, Failure> {
     let path = match path.strip_prefix("~") {
         Ok(rest) => home.join(rest),
@@ -317,8 +350,13 @@ pub async fn run(
     let timeout = args.timeout;
     // What the program reads on stdin: the bytes the client sent, or none.
     let input = args.stdin.take();
-    let mut audit = json!({ "argv": args.argv, "workdir": args.workdir,
-                           "writes": args.writes, "network": args.network,
+    let writes: Vec<String> = args
+        .writes
+        .iter()
+        .map(|path| shown(&path.to_string_lossy()))
+        .collect();
+    let mut audit = json!({ "argv": args.argv, "workdir": args.workdir.as_deref().map(shown),
+                           "writes": writes, "network": args.network,
                            "secret_env": secret_metadata(&args.secret_env),
                            "timeout": timeout });
     if let Some(bytes) = &input {
@@ -727,6 +765,30 @@ fn signal_name(signal: i32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn a_resolved_path_is_shown_plain_unless_that_names_something_else() {
+        assert_eq!(
+            shown(r"\\?\C:\Users\me\notes.txt"),
+            r"C:\Users\me\notes.txt"
+        );
+        assert_eq!(
+            shown(r"\\?\UNC\server\share\a.txt"),
+            r"\\server\share\a.txt"
+        );
+        assert_eq!(shown(r"C:\already\plain"), r"C:\already\plain");
+        // Plain, these would name another file, or a device.
+        for kept in [
+            r"\\?\C:\Users\me\notes.",
+            r"\\?\C:\Users\me\notes ",
+            r"\\?\C:\temp\NUL",
+            r"\\?\C:\temp\con.txt",
+            r"\\?\Volume{4f2a}\x",
+        ] {
+            assert_eq!(shown(kept), kept);
+        }
+    }
     use crate::failure::Exit;
     use std::os::unix::fs::PermissionsExt;
     use tokio::io::AsyncWriteExt;

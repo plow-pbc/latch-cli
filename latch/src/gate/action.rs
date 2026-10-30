@@ -75,6 +75,18 @@ pub fn gated(op: &str, args: &Value) -> Option<Gated> {
         "vault" => format!("vault.{}", args["command"].as_str().unwrap_or("unknown")),
         _ => op.to_string(),
     };
+    // Paths as a person reads them (`exec::shown`); latch keeps the resolved ones.
+    let shown = |value: &Value| {
+        value
+            .as_str()
+            .map_or(value.clone(), |path| json!(crate::exec::shown(path)))
+    };
+    let path = shown(&args["remote_path"]);
+    let workdir = args["workdir"].as_str().map(crate::exec::shown);
+    let writes = match args["writes"].as_array() {
+        Some(paths) => Value::Array(paths.iter().map(shown).collect()),
+        None => args["writes"].clone(),
+    };
     let none = Action {
         operation: &operation,
         argv: None,
@@ -98,14 +110,14 @@ pub fn gated(op: &str, args: &Value) -> Option<Gated> {
             let action = Action {
                 argv: Some(&args["argv"]),
                 stdin: stdin.as_deref(),
-                working_folder: args["workdir"].as_str(),
-                writes: Some(&args["writes"]),
+                working_folder: workdir.as_deref(),
+                writes: Some(&writes),
                 network: Some(&args["network"]),
                 secret_env: Some(secret_env.clone()),
                 ..none
             };
-            let mut audit = json!({"argv": args["argv"], "workdir": args["workdir"],
-                                   "writes": args["writes"], "network": args["network"], "secret_env": secret_env});
+            let mut audit = json!({"argv": args["argv"], "workdir": workdir,
+                                   "writes": writes, "network": args["network"], "secret_env": secret_env});
             if let Ok(bytes) = serde_json::from_value::<Vec<u8>>(args["stdin"].clone()) {
                 audit["stdin"] = crate::exec::stdin_audit(&bytes);
             }
@@ -113,22 +125,19 @@ pub fn gated(op: &str, args: &Value) -> Option<Gated> {
         }
         "file_get" => {
             let action = Action {
-                path: Some(&args["remote_path"]),
+                path: Some(&path),
                 ..none
             };
-            (action, json!({"path": args["remote_path"]}))
+            (action, json!({"path": path}))
         }
         "file_put" => {
             let action = Action {
-                path: Some(&args["remote_path"]),
+                path: Some(&path),
                 size: Some(&args["size"]),
                 file_name: Some(&args["name"]),
                 ..none
             };
-            (
-                action,
-                json!({"path": args["remote_path"], "size": args["size"]}),
-            )
+            (action, json!({"path": path, "size": args["size"]}))
         }
         "google" => {
             let action = Action {

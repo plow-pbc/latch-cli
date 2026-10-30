@@ -25,28 +25,33 @@ pub async fn get(workers: &WorkerSetup, args: &Value, send: &mut SendStream) -> 
     let Some(path) = args["remote_path"].as_str() else {
         return bad_arguments();
     };
+    // Answered and audited as a person reads it; read where it resolved.
+    let shown = &crate::exec::shown(path);
     let (mut worker, first) = match workers.start_read(Path::new(path)).await {
         Ok(started) => started,
-        Err(error) => return refused(path, error),
+        Err(error) => return refused(shown, error),
     };
     let Some(size) = first["size"].as_u64() else {
-        return refused(path, worker.finish().await.err().unwrap_or_else(unexpected));
+        return refused(
+            shown,
+            worker.finish().await.err().unwrap_or_else(unexpected),
+        );
     };
 
     // First answer: how many bytes follow.
     let start = serde_json::to_vec(&Response::Ok(json!({ "size": size }))).expect("serializes");
     if wire::write_frame(send, &start).await.is_err() {
-        return lost(path);
+        return lost(shown);
     }
     let Ok(sha256) = wire::copy(&mut worker.stdout, send, size).await else {
         // The client left, or the file ended early. Stop the worker too, so
         // it is not left waiting to write to a pipe nobody reads.
         let _ = worker.child.kill().await;
-        return broken_off(send, path, unexpected());
+        return broken_off(send, shown, unexpected());
     };
     match worker.finish().await {
-        Ok(()) => moved(path, size, sha256),
-        Err(error) => broken_off(send, path, error),
+        Ok(()) => moved(shown, size, sha256),
+        Err(error) => broken_off(send, shown, error),
     }
 }
 
@@ -94,13 +99,15 @@ pub async fn put(
     let (Some(path), Some(size)) = (args["remote_path"].as_str(), args["size"].as_u64()) else {
         return bad_arguments();
     };
+    // Answered and audited as a person reads it; placed where it resolved.
+    let shown = &crate::exec::shown(path);
     let staging = match tempfile::Builder::new().prefix("latch-put-").tempdir() {
         Ok(staging) => staging,
         Err(err) => {
             return Done::failed(
                 code::tmpdir_failed,
                 err.to_string(),
-                json!({ "path": path }),
+                json!({ "path": shown }),
             );
         }
     };
@@ -111,16 +118,19 @@ pub async fn put(
             return Done::failed(
                 code::tmpdir_failed,
                 err.to_string(),
-                json!({ "path": path }),
+                json!({ "path": shown }),
             );
         }
     };
     let (mut worker, first) = match workers.start_write(size, &staged).await {
         Ok(started) => started,
-        Err(error) => return refused(path, error),
+        Err(error) => return refused(shown, error),
     };
     if first["ready"] != true {
-        return refused(path, worker.finish().await.err().unwrap_or_else(unexpected));
+        return refused(
+            shown,
+            worker.finish().await.err().unwrap_or_else(unexpected),
+        );
     }
 
     // First answer: "go ahead", so the client sends nothing before the
@@ -128,22 +138,22 @@ pub async fn put(
     // `size` bytes arrived, so if the client breaks off, nothing changes.
     let go = serde_json::to_vec(&Response::Ok(json!({}))).expect("serializes");
     if wire::write_frame(send, &go).await.is_err() {
-        return lost(path);
+        return lost(shown);
     }
     let mut stdin = worker.child.stdin.take().expect("stdin is piped");
     let copied = wire::copy(recv, &mut stdin, size).await;
     drop(stdin);
     match (copied, worker.finish().await) {
         (Ok(sha256), Ok(())) => match place::place(&staged, Path::new(path), workers) {
-            Ok(()) => moved(path, size, sha256),
+            Ok(()) => moved(shown, size, sha256),
             Err(failure) => Done {
                 response: Response::error(&failure),
-                audit_args: json!({ "path": path }),
+                audit_args: json!({ "path": shown }),
                 outcome: failure.code,
             },
         },
-        (_, Err(error)) => Done::worker(error, json!({ "path": path })),
-        (Err(_), Ok(())) => lost(path),
+        (_, Err(error)) => Done::worker(error, json!({ "path": shown })),
+        (Err(_), Ok(())) => lost(shown),
     }
 }
 
