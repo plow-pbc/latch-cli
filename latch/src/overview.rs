@@ -100,7 +100,13 @@ pub fn run(state: &StateDir) -> Result<(), Failure> {
             }
         });
     }
-    let asked = std::env::var("LATCH_HOST").ok();
+    // `default` is the saved default host, when one is.
+    let asked = match std::env::var("LATCH_HOST").ok() {
+        Some(name) if name == crate::hosts::DEFAULT => {
+            crate::hosts::saved_default(state)?.or(Some(name))
+        }
+        other => other,
+    };
     let mut facts = Facts {
         login: config.as_ref().map(|config| Login {
             kind: config.peer.kind.clone(),

@@ -2,7 +2,9 @@
 //!
 //! Order: `--host NAME`, then `$LATCH_HOST` (clap folds both into one
 //! value), then this machine if it has served, otherwise the only host
-//! in the directory, if there is exactly one.
+//! in the directory, if there is exactly one. The name `default` is the
+//! host `latch hosts default` saved in this state folder: a choice of this
+//! machine or agent, which reaches no host it couldn't name itself.
 //! Anything else is a usage error (exit 2) that lists the hosts. Whether the
 //! host is up isn't checked here: `dial::connect` refuses one Plow lists as
 //! offline without dialing, and learns about any other by dialing it.
@@ -12,11 +14,52 @@ use crate::login;
 use crate::plow::{Peer, Plow};
 use crate::state::{Config, StateDir};
 
+/// What `--host default` names.
+pub const DEFAULT: &str = "default";
+/// The saved default host's name, in the state folder.
+const DEFAULT_FILE: &str = "default-host";
+
+/// The host `latch hosts default` saved, if one is.
+pub fn saved_default(state: &StateDir) -> Result<Option<String>, Failure> {
+    let path = state.path.join(DEFAULT_FILE);
+    match std::fs::read_to_string(&path) {
+        Ok(text) => Ok(Some(text.trim().to_string()).filter(|name| !name.is_empty())),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(Failure::new(
+            code::bad_state,
+            format!("{}: {err}", path.display()),
+        )),
+    }
+}
+
+/// `asked`, with `default` read as the saved default host; `None` for
+/// `default` when none is saved.
+fn named(state: &StateDir, asked: Option<&str>) -> Result<Option<String>, Failure> {
+    match asked {
+        Some(DEFAULT) => saved_default(state),
+        other => Ok(other.map(str::to_string)),
+    }
+}
+
+/// `--host default` with no default saved: how to save one, and the hosts.
+fn no_default(hosts: &[Peer]) -> Failure {
+    Failure::new(
+        code::no_default_host,
+        format!(
+            "no default host set; `latch hosts default NAME` sets one. Hosts: {}",
+            names(hosts)
+        ),
+    )
+}
+
 /// Owner configuration without a target, or naming this peer, stays local.
 pub fn local_target(state: &StateDir, asked: Option<&str>) -> Result<bool, Failure> {
-    Ok(match asked {
-        None => true,
-        Some(name) => state.require_config()?.peer.name == name,
+    let saved = named(state, asked)?;
+    Ok(match (asked, saved.as_deref()) {
+        (None, _) => true,
+        // No default saved: `resolve` says so, with the hosts.
+        (Some(_), None) => false,
+        (Some(_), Some(name)) => state.require_config()?.peer.name == name,
     })
 }
 
@@ -26,7 +69,9 @@ pub fn local_target(state: &StateDir, asked: Option<&str>) -> Result<bool, Failu
 /// registers again first: a host refuses a caller Plow does not know.
 pub async fn resolve(state: &StateDir, asked: Option<String>) -> Result<Peer, Failure> {
     let config = state.require_config()?;
-    if this_machine_chosen(state, &config, asked.as_deref()) {
+    let default_unset = asked.as_deref() == Some(DEFAULT) && saved_default(state)?.is_none();
+    let asked = named(state, asked.as_deref())?;
+    if !default_unset && this_machine_chosen(state, &config, asked.as_deref()) {
         return Ok(Peer {
             this_machine: true,
             ..config.peer
@@ -37,7 +82,43 @@ pub async fn resolve(state: &StateDir, asked: Option<String>) -> Result<Peer, Fa
     if !peers.iter().any(|peer| peer.key == own_key) {
         login::register_again(state).await?;
     }
-    pick(asked.as_deref(), &only_hosts(peers, &own_key))
+    let hosts = only_hosts(peers, &own_key);
+    if default_unset {
+        return Err(no_default(&hosts));
+    }
+    pick(asked.as_deref(), &hosts)
+}
+
+/// `latch hosts default`: the saved default host; with `name`, saves that
+/// host (one Plow lists for this account), with `clear`, removes it.
+pub async fn default(
+    state: &StateDir,
+    name: Option<String>,
+    clear: bool,
+) -> Result<serde_json::Value, Failure> {
+    let path = state.path.join(DEFAULT_FILE);
+    let io =
+        |err: std::io::Error| Failure::new(code::bad_state, format!("{}: {err}", path.display()));
+    if clear {
+        match std::fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(io(err)),
+        }
+        return Ok(serde_json::json!({"default_host": null}));
+    }
+    let Some(name) = name else {
+        return Ok(serde_json::json!({"default_host": saved_default(state)?}));
+    };
+    let config = state.require_login()?;
+    let peers = Plow::from_state(state)?.list_peers().await?;
+    let hosts = only_hosts(peers, &config.peer.key);
+    if name == DEFAULT || !hosts.iter().any(|host| host.name == name) {
+        let message = format!("no host named {name:?}; hosts: {}", names(&hosts));
+        return Err(Failure::new(code::unknown_host, message));
+    }
+    crate::state::write_private(&path, format!("{name}\n").as_bytes()).map_err(io)?;
+    Ok(serde_json::json!({"default_host": name}))
 }
 
 /// Whether `asked` (or, naming none, the default) is this machine itself:

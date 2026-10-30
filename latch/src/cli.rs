@@ -171,6 +171,9 @@ pub enum Command {
     Logout(LogoutArgs),
     /// List this account's machines, online or not, or remove one
     Devices(DevicesArgs),
+    /// This machine's or agent's own choices about hosts
+    #[command(subcommand)]
+    Hosts(HostsCommand),
     /// List your agents, with their lines and Plow status
     ///
     /// With --host, each one's standing on that host. Its subcommands show,
@@ -330,7 +333,8 @@ pub struct HelpArgs {
 
 #[derive(Args, Debug)]
 pub struct BrowserArgs {
-    /// Name of the host to use
+    /// Name of the host to use; `default` is the one `latch hosts default`
+    /// saved
     #[arg(long, env = "LATCH_HOST", global = true)]
     pub host: Option<String>,
     /// The session to use: the id `open` answered
@@ -655,7 +659,7 @@ pub enum DialogAction {
 
 #[derive(Args, Debug)]
 pub struct VaultArgs {
-    /// Host to use (default: this machine's vault; naming this machine is local too)
+    /// Host to use (default: this machine's vault; naming this machine is local too; `default`, the one `latch hosts default` saved)
     #[arg(long, env = "LATCH_HOST", global = true)]
     pub host: Option<String>,
     /// The owner's Plow chat an agent's `list` or `link` acts for, when its
@@ -1191,6 +1195,22 @@ pub enum DevicesAction {
     },
 }
 
+#[derive(Subcommand, Debug)]
+pub enum HostsCommand {
+    /// The host `--host default` names: print it, save NAME, or clear it.
+    /// Kept in this state folder, for this machine or agent alone; it
+    /// reaches no host you couldn't name yourself. A command without
+    /// --host goes where it always did
+    Default {
+        /// A host this account has, as `latch status` lists it
+        #[arg(conflicts_with = "clear")]
+        name: Option<String>,
+        /// Forget the saved default host
+        #[arg(long)]
+        clear: bool,
+    },
+}
+
 /// `latch audit`: with no command, its records; with one, the log's upkeep.
 #[derive(Args, Debug)]
 #[command(args_conflicts_with_subcommands = true)]
@@ -1423,7 +1443,8 @@ pub struct LoginArgs {
 /// uses the only host in the directory, if there is exactly one.
 #[derive(Args, Debug)]
 pub struct HostArg {
-    /// Name of the host to use
+    /// Name of the host to use; `default` is the one `latch hosts default`
+    /// saved
     #[arg(long, env = "LATCH_HOST")]
     pub host: Option<String>,
     /// The owner's Plow chat this agent acts for, when its line has more

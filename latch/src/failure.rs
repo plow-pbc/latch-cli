@@ -353,6 +353,7 @@ codes! {
     no_handoff: Failed,
     no_history: Failed,
     no_card: Usage,
+    no_default_host: Usage,
     no_host: Usage,
     no_host_here: Usage,
     no_progress: Failed,

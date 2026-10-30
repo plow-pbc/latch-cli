@@ -269,9 +269,25 @@ const ENTRIES: &[Entry] = &[
         )],
     },
     Entry {
+        id: "hosts.default",
+        runs_on: |_| RunsOn::Local,
+        output: "`default_host`: the host `--host default` (or `LATCH_HOST=default`) names, saved in this state folder for this machine or agent alone; null when none is. NAME must be a host this account has; `--clear` forgets it. A command without --host goes where it always did, and a host named `default` is reached only through this.",
+        effect: Repeatable("saves or clears this state folder's default host"),
+        owner_only: false,
+        connector: None,
+        examples: &[
+            ex(
+                "Use mbp when --host default is given",
+                &["hosts", "default", "mbp"],
+            ),
+            ex("Say which host it is", &["hosts", "default"]),
+            ex("Forget it", &["hosts", "default", "--clear"]),
+        ],
+    },
+    Entry {
         id: "status",
         runs_on: |_| RunsOn::Either,
-        output: "`account` (`owner_uid`, `display_name`), `login` (`kind`: device or agent), `this_machine` (its `name` and `key`, and `hosting`: `running`, `ready`, `configuring`, `managed`, `attached`, `state`, `pid`, `blocked`, `waiting` (what a starting host waits for, else null), `deny_exec` (`every_agent`, `agent_uids`) as the host runs or last ran, null if its saved flags are unreadable, and `keep_awake` (`enabled`, `held`, `reason`; see `settings set`), null if its saved settings are unreadable), `hosts` (the account's hosts as Plow lists them, this machine first: `name`, `key`, `self`, Plow's `online` and `last_seen_at`, and `plugins`, the ones it has on as `name` and `state` (enabled or needs_setup), asked of every host Plow lists online within 2 s in all; null when unknown, with `plugins_reason`: host_offline, host_unreachable, caller_denied, protocol_mismatch or the host's own code), `default_host` (where a command without --host goes; null with `default_host_reason`: unknown_host, no_host, host_required or not_logged_in), `plugins`, `update`, `last_error`, `api_url`, `state_dir`, `version` and `protocol`. Before login it asks no one: `login`, `account`, `hosts` and this machine's `name` and `key` are null. With --local, the same without `account`, `hosts` and `default_host*`, asking no one; with --host, that host's own `status --local` (owner devices only; a host on an older latch answers in that latch's shape); with --follow too, JSON lines: `hello`, then a `status` line, again each time it changes.",
+        output: "`account` (`owner_uid`, `display_name`), `login` (`kind`: device or agent), `this_machine` (its `name` and `key`, and `hosting`: `running`, `ready`, `configuring`, `managed`, `attached`, `state`, `pid`, `blocked`, `waiting` (what a starting host waits for, else null), `deny_exec` (`every_agent`, `agent_uids`) as the host runs or last ran, null if its saved flags are unreadable, and `keep_awake` (`enabled`, `held`, `reason`; see `settings set`), null if its saved settings are unreadable), `hosts` (the account's hosts as Plow lists them, this machine first: `name`, `key`, `self`, Plow's `online` and `last_seen_at`, and `plugins`, the ones it has on as `name` and `state` (enabled or needs_setup), asked of every host Plow lists online within 2 s in all; null when unknown, with `plugins_reason`: host_offline, host_unreachable, caller_denied, protocol_mismatch or the host's own code), `default_host` (where a command without --host goes; null with `default_host_reason`: unknown_host, no_host, host_required, no_default_host or not_logged_in), `saved_default_host` (the host `--host default` names, saved by `latch hosts default`; null when none is), `plugins`, `update`, `last_error`, `api_url`, `state_dir`, `version` and `protocol`. Before login it asks no one: `login`, `account`, `hosts` and this machine's `name` and `key` are null. With --local, the same without `account`, `hosts` and `default_host*`, asking no one; with --host, that host's own `status --local` (owner devices only; a host on an older latch answers in that latch's shape); with --follow too, JSON lines: `hello`, then a `status` line, again each time it changes.",
         effect: ReadOnly,
         owner_only: false,
         connector: None,

@@ -5367,6 +5367,98 @@ fn every_answer_from_a_host_names_the_host() {
     assert_eq!(error["error"]["host"], "studio", "{error}");
 }
 
+/// `--host default` is the host `latch hosts default` saved in this state
+/// folder: an owner device's or an agent's own, never a bare command's.
+#[test]
+fn a_saved_default_host_is_what_host_default_names() {
+    let owners = Owners::start();
+    let _host = owners.serve(&owners.host);
+    let _studio = owners.serve(&owners.studio);
+    let laptop = &owners.laptop;
+    let ok = |from: &Path, args: &[&str], env: &[(&str, &Path)]| {
+        let output = latch(from, args, env);
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+        println!("latch {}: {result}", args.join(" "));
+        result
+    };
+    let refused = |from: &Path, args: &[&str]| {
+        let output = latch(from, args, &[]);
+        let error = one_error_line(&String::from_utf8_lossy(&output.stderr), Some(2));
+        println!("latch {}: {error}", args.join(" "));
+        error["error"].clone()
+    };
+    let echo = ["exec", "--host", "default", "--", "echo", "hi"];
+
+    // None saved: --host default says how to save one, with the hosts.
+    assert_eq!(
+        ok(laptop, &["hosts", "default"], &[])["default_host"],
+        Value::Null
+    );
+    let unset = refused(laptop, &echo);
+    assert_eq!(unset["code"], "no_default_host", "{unset}");
+    let message = unset["message"].as_str().unwrap();
+    assert!(
+        message.contains("latch hosts default NAME") && message.contains("host, studio"),
+        "{message}"
+    );
+
+    // Only a host the account has, and never `default` itself.
+    for name in ["gone", "default"] {
+        assert_eq!(
+            refused(laptop, &["hosts", "default", name])["code"],
+            "unknown_host"
+        );
+    }
+
+    assert_eq!(
+        ok(laptop, &["hosts", "default", "studio"], &[])["default_host"],
+        "studio"
+    );
+    assert_eq!(
+        ok(laptop, &["hosts", "default"], &[])["default_host"],
+        "studio"
+    );
+    assert_eq!(ok(laptop, &echo, &[])["host"], "studio");
+    let by_env = ["exec", "--", "echo", "hi"];
+    let env = [("LATCH_HOST", Path::new("default"))];
+    assert_eq!(ok(laptop, &by_env, &env)["host"], "studio");
+    let status = ok(laptop, &["status"], &[]);
+    assert_eq!(status["saved_default_host"], "studio");
+    let status = ok(laptop, &["status"], &env);
+    assert_eq!(status["default_host"], "studio");
+    // A bare command goes where it always did: the laptop never served,
+    // and there are two hosts.
+    assert_eq!(refused(laptop, &by_env)["code"], "host_required");
+    // Another machine's state has its own, or none.
+    assert_eq!(
+        ok(&owners.host, &["hosts", "default"], &[])["default_host"],
+        Value::Null
+    );
+
+    assert_eq!(
+        ok(laptop, &["hosts", "default", "--clear"], &[])["default_host"],
+        Value::Null
+    );
+    assert_eq!(refused(laptop, &echo)["code"], "no_default_host");
+
+    // An agent saves one in its own state, and reaches it the same way.
+    let agent_token = owners.dir.path().join("agent.token");
+    fs::write(&agent_token, "agent-credential\n").unwrap();
+    let agent = owners.dir.path().join("agent");
+    let agent_env = [("PLOW_TOKEN_FILE", agent_token.as_path())];
+    let login = latch(
+        &agent,
+        &["login", "--api-url", &owners._plow.url],
+        &agent_env,
+    );
+    assert_eq!(login.status.code(), Some(0), "{login:?}");
+    let saved = ok(&agent, &["hosts", "default", "host"], &agent_env);
+    assert_eq!(saved["default_host"], "host");
+    let listed = ok(&agent, &["vault", "--host", "default", "list"], &agent_env);
+    assert_eq!(listed["host"], "host");
+}
+
 /// Each call from a machine whose host serves goes through that host,
 /// and answers, exits and is recorded at the other host as it is with no
 /// host serving here, when the command dials directly.

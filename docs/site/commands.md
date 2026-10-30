@@ -18,6 +18,8 @@ agent.
 connection between the two computers. Without it, the command goes to the
 host `LATCH_HOST` names; else to this computer, if it hosts; else to your only
 host. With several hosts and none named, it stops with `host_required`.
+`--host default` is the host `latch hosts default NAME` saved on this
+computer, or for this agent.
 
 `rules`, `vault` and `audit` work on this computer's own host, or on another
 of your hosts with `--host NAME`. Bare `latch status` reports this computer
@@ -43,6 +45,7 @@ latch browser open --host my-mac https://example.com
 | `latch status` | Host | Print this machine, its login and account, and the account's hosts. |
 | `latch devices` | Host | List this account's machines, online or not, or remove one. |
 | `latch devices remove` | Host | Remove a machine and sign out the Plow login it registered with. Owner only.<br>Remove the old Pi without a prompt: `latch devices remove old-pi --yes` |
+| `latch hosts default` | Host | The host `--host default` names: print it, save NAME, or clear it. Kept in this state folder, for this machine or agent alone; it reaches no host you couldn't name yourself. A command without --host goes where it always did.<br>Use mbp when --host default is given: `latch hosts default mbp` |
 | `latch update` | Host Agent | Install the newest latch, or the build TAG names. |
 | `latch app` | Host | Open the Plow Latch app this latch belongs to (macOS). |
 | `latch help` | Host | Help for a command, its examples, or every command as JSON.<br>Help for one command: `latch help browser open` |
@@ -114,7 +117,8 @@ latch browser open --host my-mac https://example.com
 | `latch vault show` | Host | One item's metadata and its non-secret values (never a secret one). Owner only.<br>Show an item: `latch vault --host mac show v3` |
 | `latch vault add` | Host | Add an item to the vault. Owner only.<br>Add a login with its password as JSON on stdin: `latch vault add --kind login --title Shop --site shop.example --field username=ada --stdin` |
 | `latch vault edit` | Host | Change an item's title, sites or fields, at its current revision. Owner only.<br>Change a login's password, given as JSON on stdin: `latch vault edit v1 --revision 2 --stdin` |
-| `latch vault link` | Host | Add an item from your phone, through a one-time link. Owner only.<br>Add a card from the phone: `latch vault --host mac link --kind card --title Visa --page https://phone.example/latch` |
+| `latch vault link` | Host | Add an item from your phone, through a one-time link.<br>Add a card from the phone: `latch vault --host mac link --kind card --title Visa --page https://phone.example/latch` |
+| `latch vault link-state` | Host | Whether a phone link is still pending, saved (with the new item's id) or expired; never a value.<br>Whether the owner has saved the login yet: `latch vault --host mac link-state l3f09a2c1` |
 | `latch vault remove` | Host | Remove an item at its current revision. Owner only.<br>Remove an item: `latch vault --host mac remove v3 --revision 1` |
 | `latch vault import` | Host | Import another password manager's export. Owner only.<br>Import a 1Password export: `latch vault --host mac import export.1pux` |
 
