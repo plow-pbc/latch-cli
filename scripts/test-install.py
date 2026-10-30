@@ -1224,6 +1224,7 @@ class BrowserEngines(unittest.TestCase):
         tool(self.tools, "uname", f'case "$1" in -s) echo {system};; -m) echo x86_64;; esac\n')
         # Linux's sandbox is in place already: nothing asks for root.
         tool(self.tools, "bwrap", "")
+        tool(self.tools, "sw_vers", "echo 26.0\n")
         result = subprocess.run(["sh", str(setup / "install-binary.sh"), "--state-dir", str(state),
                                  *options, str(setup / "latch")],
                                 cwd=self.root, env=self.env, capture_output=True, text=True)
