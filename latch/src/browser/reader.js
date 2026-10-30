@@ -538,13 +538,12 @@
     if (!uids.has(el)) uids.set(el, ++nextUid);
     return uids.get(el);
   };
-  const SUBMITS = 'button:not([type]), button[type=submit], input[type=submit], input[type=image]';
   // What Enter in `el` acts on: its form's submit control, else the form;
   // and the element whose surroundings are read for it.
   const formOf = (form) => ({ role: 'form', name: clean(form.getAttribute('aria-label') || form.getAttribute('name') || '') });
   const enterOn = (el) => {
     const form = el.form || el.closest('form');
-    const submit = form && [...form.querySelectorAll(SUBMITS)].find(rendered);
+    const submit = form && [...form.querySelectorAll(SUBMIT_BUTTONS)].find(rendered);
     const actsOn = submit ? { role: role(submit), name: name(submit) } : form ? formOf(form) : null;
     return { actsOn, around: submit || form || el };
   };
@@ -562,7 +561,7 @@
     let actsOn = null;
     let around = el;
     if (enter) ({ actsOn, around } = enterOn(el));
-    else if (el.form && el.matches(SUBMITS)) actsOn = formOf(el.form);
+    else if (el.form && el.matches(SUBMIT_BUTTONS)) actsOn = formOf(el.form);
     const lines = linesOf(regionOf(around));
     return { uid: uid(el), element: { role: r, name: n, row, checked, expanded }, acts_on: actsOn, lines };
   };
