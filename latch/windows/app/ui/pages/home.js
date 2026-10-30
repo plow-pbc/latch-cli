@@ -7,6 +7,9 @@ import { latchLines, said } from "../latch.js";
 import * as records from "../records.js";
 import { openActivity, openRecord } from "./activity.js";
 
+/** What needs you follows this PC's status as it changes. */
+export const followsStatus = true;
+
 export async function enter(app, host) {
   if (!host) return;
   if (app.summaries[host.name]) delete app.summaries[host.name].older;

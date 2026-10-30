@@ -7,7 +7,8 @@
 // A page is a module in pages/ with `render(app, host)` (its nodes), and
 // optionally `enter(app, host)` (reads when it shows), `leave(app)` (when
 // another place shows: a stream it follows ends), `inspector(app, host)`
-// (the pane's nodes, or null) and `search` (the bar's placeholder).
+// (the pane's nodes, or null), `search` (the bar's placeholder) and
+// `followsStatus` (drawn again when this PC's status changes).
 // latch.js's latchFile() shows a file latch writes, and pickFile() asks
 // for one.
 
@@ -85,9 +86,11 @@ export async function open(into) {
     app.local = line.status;
     app.localError = null;
     draw({ page: false });
+    if (pageOf(app.place)?.followsStatus) drawPage();
   }, (failure) => {
     app.localError = failure;
     draw({ page: false });
+    if (pageOf(app.place)?.followsStatus) drawPage();
   });
   await readAccount();
   setInterval(readAccount, 30_000);

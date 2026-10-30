@@ -204,6 +204,9 @@ function keepAwakeSaid(keepAwake) {
 
 // ── drawing ───────────────────────────────────────────────────────────────
 
+/** This PC's state shows as it changes. */
+export const followsStatus = true;
+
 export function render(app, host) {
   const offline = !host.thisPC && host.online === false;
   return el("div", { class: "settings-page" },
