@@ -113,6 +113,8 @@ impl StateDir {
     pub fn create(&self) -> Result<(), Failure> {
         self.check_format()?;
         fs::create_dir_all(&self.path).map_err(|err| self.io_failure(&self.path, err))?;
+        #[cfg(windows)]
+        owner::folder(&self.path).map_err(|err| self.io_failure(&self.path, err))?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -493,6 +495,8 @@ pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         .prefix(&name)
         .suffix(".tmp")
         .tempfile_in(dir)?;
+    #[cfg(windows)]
+    owner::file(temp.path())?;
     temp.write_all(bytes)?;
     temp.as_file().sync_all()?;
     temp.persist(path).map_err(|err| err.error)?;
@@ -502,9 +506,127 @@ pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Windows access lists that let in this user alone, and nothing inherited
+/// from above: the Windows side of modes 0700 and 0600.
+#[cfg(windows)]
+pub(crate) mod owner {
+    use std::io;
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::Path;
+    use std::ptr::{null, null_mut};
+
+    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_SUCCESS, HANDLE, LocalFree};
+    use windows_sys::Win32::Security::Authorization::{
+        EXPLICIT_ACCESS_W, NO_MULTIPLE_TRUSTEE, SE_FILE_OBJECT, SET_ACCESS, SetEntriesInAclW,
+        SetNamedSecurityInfoW, TRUSTEE_IS_SID, TRUSTEE_IS_USER, TRUSTEE_W,
+    };
+    use windows_sys::Win32::Security::{
+        ACL, DACL_SECURITY_INFORMATION, GetTokenInformation, NO_INHERITANCE,
+        PROTECTED_DACL_SECURITY_INFORMATION, SUB_CONTAINERS_AND_OBJECTS_INHERIT, TOKEN_QUERY,
+        TOKEN_USER, TokenUser,
+    };
+    use windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    /// `folder` and everything in it and made in it: this user's alone.
+    pub fn folder(folder: &Path) -> io::Result<()> {
+        named(folder, SUB_CONTAINERS_AND_OBJECTS_INHERIT)
+    }
+
+    /// The file at `file`, just made: this user's alone, before anything is
+    /// written to it. By name, since the handle that made it may not change
+    /// its access list; its owner may.
+    pub fn file(file: &Path) -> io::Result<()> {
+        named(file, NO_INHERITANCE)
+    }
+
+    fn named(path: &Path, inheritance: u32) -> io::Result<()> {
+        let name: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+        with_acl(inheritance, |acl| {
+            // SAFETY: a NUL-terminated name and a live list; only the DACL changes.
+            unsafe {
+                SetNamedSecurityInfoW(
+                    name.as_ptr(),
+                    SE_FILE_OBJECT,
+                    DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                    null_mut(),
+                    null_mut(),
+                    acl,
+                    null(),
+                )
+            }
+        })
+    }
+
+    /// Runs `apply` with an access list that grants this user everything,
+    /// and nothing else anyone.
+    fn with_acl(inheritance: u32, apply: impl FnOnce(*const ACL) -> u32) -> io::Result<()> {
+        let user = this_user()?;
+        // SAFETY: TOKEN_USER starts the buffer, which `this_user` filled.
+        let sid = unsafe { (*(user.as_ptr() as *const TOKEN_USER)).User.Sid };
+        let entry = EXPLICIT_ACCESS_W {
+            grfAccessPermissions: FILE_ALL_ACCESS,
+            grfAccessMode: SET_ACCESS,
+            grfInheritance: inheritance,
+            Trustee: TRUSTEE_W {
+                pMultipleTrustee: null_mut(),
+                MultipleTrusteeOperation: NO_MULTIPLE_TRUSTEE,
+                TrusteeForm: TRUSTEE_IS_SID,
+                TrusteeType: TRUSTEE_IS_USER,
+                ptstrName: sid.cast(),
+            },
+        };
+        let mut acl: *mut ACL = null_mut();
+        // SAFETY: one entry, no old list; `acl` is freed below.
+        let made = unsafe { SetEntriesInAclW(1, &entry, null(), &mut acl) };
+        if made != ERROR_SUCCESS {
+            return Err(io::Error::from_raw_os_error(made as i32));
+        }
+        let applied = apply(acl);
+        // SAFETY: allocated by SetEntriesInAclW above, freed once.
+        unsafe { LocalFree(acl.cast()) };
+        match applied {
+            ERROR_SUCCESS => Ok(()),
+            err => Err(io::Error::from_raw_os_error(err as i32)),
+        }
+    }
+
+    /// This process's user, as the TOKEN_USER its token gives.
+    fn this_user() -> io::Result<Vec<u64>> {
+        let mut token: HANDLE = null_mut();
+        // SAFETY: a query-only token of this process, closed below.
+        if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let mut size = 0u32;
+        // SAFETY: the first call only says how much room it needs.
+        unsafe { GetTokenInformation(token, TokenUser, null_mut(), 0, &mut size) };
+        // u64s, so the SID's words are aligned.
+        let mut buffer = vec![0u64; (size as usize).div_ceil(8)];
+        // SAFETY: `buffer` holds `size` bytes.
+        let ok = unsafe {
+            GetTokenInformation(
+                token,
+                TokenUser,
+                buffer.as_mut_ptr().cast(),
+                size,
+                &mut size,
+            )
+        };
+        let error = io::Error::last_os_error();
+        // SAFETY: our token, closed once.
+        unsafe { CloseHandle(token) };
+        if ok == 0 {
+            return Err(error);
+        }
+        Ok(buffer)
+    }
+}
+
 /// Files and folders only their owner can use: mode 0600 and 0700 on Unix.
-/// On Windows a new file or folder takes its parent's ACL, and a state folder
-/// in the user's profile is the user's alone.
+/// On Windows a new file or folder takes its parent's access list: the state
+/// folder's is this user's alone (`owner::folder`), and a secret written
+/// anywhere else is made so before its bytes are (`owner::file`).
 pub(crate) trait OwnerOnly {
     fn owner_only(&mut self) -> &mut Self;
 }
