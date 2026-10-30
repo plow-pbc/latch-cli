@@ -35,7 +35,7 @@ impl Exit {
                 "The host could not be reached, or could not judge the call. Its message says what fixes it: often a retry later. A browser plan may have run steps before it stopped: read its `steps` and `stop` and send only what is left."
             }
             Exit::Denied => {
-                "Refused; don't retry, except: gatekeeper_denied with reason not_covered (latch has no approval prompt: ask the owner in your Plow chat, naming exactly what you will do, and retry once they agree there; refused again, stop and tell them); confirm_needed (if the task needs it, carry it out with `latch browser do --confirm C`); calendar_conflict (ask the owner; once they agree, resend with --confirm-conflict); agent_code_on_site (fill the card in a new browser session)."
+                "Refused; don't retry, except: gatekeeper_denied with reason not_covered (latch has no approval prompt: ask the owner in your Plow chat, naming exactly what you will do, and retry once they agree there; refused again, stop and tell them); confirm_needed (if the task needs it, carry it out with `latch browser do --confirm C`); calendar_conflict (ask the owner; once they agree, resend with --confirm-conflict)."
             }
             Exit::Unknown => {
                 "The connection was lost after the request was sent; check before resending."
@@ -210,7 +210,6 @@ codes! {
     addressbook_not_granted: Failed,
     addressbook_unreadable: Failed,
     addressbook_version: Failed,
-    agent_code_on_site: Denied,
     already_attached: Failed,
     already_serving: Failed,
     already_true: Failed,

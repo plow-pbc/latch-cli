@@ -228,9 +228,6 @@ Exit 4 is a refusal, and its code says what you may do:
 - `calendar_conflict`: the time is busy, nothing booked. Booking over it is
   the owner's call: ask them, naming the overlapping event, and once they
   agree resend with `--confirm-conflict`.
-- `agent_code_on_site`: your own script ran on this site earlier in the
-  browser session, nothing filled. `open` a new session, go back to the
-  checkout and fill the card there, without running a script first.
 - Any other exit 4 (`owner_said_no`, `exec_denied`, …) means no.
 
 Exit 3: the host was unreachable or could not judge; its message says what
@@ -282,7 +279,9 @@ fixes it.
   has changed since.
 - Read a page with `text` (its words) or `observe` (its elements), not
   `eval`: the gatekeeper judges every script, which is slower, and can
-  refuse it.
+  refuse it. Closing a pop-up or scrolling is everyday; a script that
+  reads form fields, listens to typing or form events, or sends page data
+  anywhere needs the owner's explicit OK.
 - A value `fill` put in a page stays there: never copy it out, repeat it
   or write it anywhere.
 - Buying: sign in, choose, `fill` the card ("Paying with a saved card"),

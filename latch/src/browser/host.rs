@@ -1027,17 +1027,6 @@ async fn worker(
             Err(failure)
         }
     };
-    // Agent code that reached this page's site is noted, for every later
-    // fill there in this session; one refused before it was sent is not.
-    if command == "eval"
-        && audit.get("script_sent") == Some(&json!(true))
-        && let Some(site) = audit
-            .get("origin")
-            .and_then(Value::as_str)
-            .and_then(|origin| sites::site_of(&browsers.origin_as(origin)))
-    {
-        entry.runtime.note_agent_code(&site);
-    }
     let reply = reply?;
     let mut result = reply.result;
     if command == "observe" {
