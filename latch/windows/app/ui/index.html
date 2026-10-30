@@ -5,6 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Plow Latch</title>
   <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="main.css">
+  <link rel="stylesheet" href="pages/activity.css">
+  <link rel="stylesheet" href="pages/rules.css">
+  <link rel="stylesheet" href="pages/settings.css">
 </head>
 <body>
   <main id="screen" aria-live="polite"></main>
@@ -12,6 +16,7 @@
     <ol id="steps" aria-label="Setup steps"></ol>
     <div id="actions"></div>
   </footer>
-  <script src="app.js"></script>
+  <div id="app" class="app" hidden></div>
+  <script type="module" src="app.js"></script>
 </body>
 </html>
