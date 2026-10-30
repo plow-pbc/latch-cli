@@ -893,11 +893,31 @@ const ENTRIES: &[Entry] = &[
             Ok(Some(_)) => RunsOn::Host,
             _ => RunsOn::Either,
         },
-        output: "For the owner, every item's metadata: id, kind, title, a login's username, sites, field labels, revision. For an agent, judged by the gatekeeper like its other work: each item's id, title and saved sites, and `next`, how to sign in with one. Never a secret value.",
+        output: "`items`: for the owner, each item's metadata: id, kind, title, a login's username, sites, field labels, revision; for an agent, judged by the gatekeeper like its other work, each item's id, kind, title and saved sites, and `next`, how to use one. The first 50 that match --site, --search and --kind (every one with --all), `total`, how many matched, and `more` when some are left out. Never a secret value.",
         effect: ReadOnly,
         owner_only: false,
         connector: None,
-        examples: &[ex("List the items", &["vault", "--host", "mac", "list"])],
+        examples: &[
+            ex(
+                "The items saved for a site",
+                &[
+                    "vault",
+                    "--host",
+                    "mac",
+                    "list",
+                    "--site",
+                    "crateandbarrel.com",
+                ],
+            ),
+            ex(
+                "The cards",
+                &["vault", "--host", "mac", "list", "--kind", "card"],
+            ),
+            ex(
+                "Items whose title or site has a word",
+                &["vault", "--host", "mac", "list", "--search", "costco"],
+            ),
+        ],
     },
     Entry {
         id: "vault.show",
@@ -1324,7 +1344,7 @@ const ENTRIES: &[Entry] = &[
         effect: Repeatable(
             "installs another latch build on this machine and restarts a `serve -d` host on it",
         ),
-        owner_only: true,
+        owner_only: false,
         connector: None,
         examples: &[
             ex("Install the newest build", &["update"]),
@@ -1412,6 +1432,10 @@ const ENTRIES: &[Entry] = &[
         examples: &[ex("Learn how to use latch", &["skill"])],
     },
 ];
+
+/// The commands an agent runs only on its own computer, where latch is
+/// installed alone and no host runs; the owner runs them anywhere.
+const OWN_COMPUTER: &[&str] = &["update"];
 
 /// The top-level fields of the answers that are plain structs, checked
 /// against those structs by the tests.
@@ -1656,6 +1680,9 @@ struct Action {
     side_effects: Option<&'static str>,
     retry: &'static str,
     owner_only: bool,
+    /// An agent may run it only on its own computer, where latch is
+    /// installed alone (`install.sh --client-only`) and no host runs.
+    agent_on_own_computer: bool,
     connector: Option<&'static str>,
     /// A gog command's own flags, after `--`, as its grammar declares them.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1734,6 +1761,7 @@ fn describe(id: &str, command: &clap::Command) -> Action {
         side_effects: entry.effect.side_effects(),
         retry: entry.effect.retry(),
         owner_only: entry.owner_only,
+        agent_on_own_computer: OWN_COMPUTER.contains(&id),
         connector: entry.connector,
         gog_flags: None,
         examples: entry
@@ -1774,6 +1802,7 @@ fn describe_gog(allowed: &Allowed, google: &clap::Command) -> Action {
         side_effects: effect.side_effects(),
         retry: effect.retry(),
         owner_only: false,
+        agent_on_own_computer: false,
         connector: Some("google"),
         gog_flags: Some(
             (allowed.flags.iter())

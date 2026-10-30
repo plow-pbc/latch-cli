@@ -10,7 +10,8 @@
 //! own `install-binary.sh`, which replaces latch and restarts a host just as
 //! running `install.sh` again would.
 //!
-//! Nothing installs unless the owner runs `latch update`. A host only
+//! Nothing installs unless the owner runs `latch update`, or an agent runs
+//! it on its own computer, where latch is installed alone. A host only
 //! looks, once a day, and the newer build shows up in
 //! `status --local` and on its dashboard.
 
@@ -146,13 +147,7 @@ impl Source {
             }
             signature => signature?,
         };
-        let signature = String::from_utf8(signature)
-            .ok()
-            .and_then(|text| Signature::decode(&text).ok())
-            .ok_or_else(|| refused("has a signature that cannot be read"))?;
-        self.key
-            .verify(&bytes, &signature, false)
-            .map_err(|_| refused("is not signed with latch's release key"))?;
+        check_signature(&self.key, &bytes, &signature).map_err(refused)?;
         Ok(bytes)
     }
 
@@ -176,6 +171,36 @@ impl Source {
     }
 }
 
+/// Why `signature`, a `.minisig` file, does not sign `bytes` with `key`.
+fn check_signature(key: &PublicKey, bytes: &[u8], signature: &[u8]) -> Result<(), &'static str> {
+    let signature = std::str::from_utf8(signature)
+        .ok()
+        .and_then(|text| Signature::decode(text).ok())
+        .ok_or("has a signature that cannot be read")?;
+    key.verify(bytes, &signature, false)
+        .map_err(|_| "is not signed with latch's release key")
+}
+
+/// `install.sh`'s check, on a Mac, that `file` is signed with `key` (a
+/// minisign public key's base64 line) by `file.minisig` beside it. The
+/// installer runs it only once it has checked who signed this app.
+pub fn verify_file(key: &str, file: &Path) -> Result<Value, Failure> {
+    let key = PublicKey::from_base64(key).map_err(|_| {
+        Failure::new(
+            code::bad_signature,
+            format!("{key} is not a minisign public key"),
+        )
+    })?;
+    let read = |path: &Path| {
+        std::fs::read(path).map_err(|err| io_failure(&path.display().to_string(), err))
+    };
+    let mut signature = file.as_os_str().to_owned();
+    signature.push(".minisig");
+    check_signature(&key, &read(file)?, &read(Path::new(&signature))?)
+        .map_err(|why| Failure::new(code::bad_signature, format!("{} {why}", file.display())))?;
+    Ok(json!({ "verified": file }))
+}
+
 fn http() -> Result<reqwest::Client, Failure> {
     crate::plow::http(
         reqwest::Client::builder()
@@ -191,15 +216,7 @@ pub fn current() -> Option<u64> {
 
 /// `latch update [--check] [TAG]`.
 pub async fn run(state: &StateDir, args: UpdateArgs) -> Result<Value, Failure> {
-    // An update restarts the host other callers use: only the owner's own
-    // login runs one. No host operation starts one, so no caller reaches it
-    // through a host.
-    if let Some(config) = state.load_config()?
-        && config.peer.kind != "device"
-    {
-        let message = "latch is updated by the owner of this machine, never by an agent";
-        return Err(Failure::new(code::owner_only, message.into()));
-    }
+    may_update(state, &installations())?;
     let source = Source::releases();
     let bin = bin_dir();
     let tag = args.tag.as_deref();
@@ -264,6 +281,135 @@ async fn update(
         answer["host"] = host;
     }
     Ok(answer)
+}
+
+/// Whether this login may update this machine's latch. An update replaces
+/// the latch every state folder here runs, and restarts the host other
+/// callers use, so on a host only the owner's own login runs one. An agent
+/// may update its own computer: latch installed alone in its state folder
+/// (`install-binary.sh --client-only`), and no host running on this machine
+/// from the latch the update replaces, whatever its state folder. No host
+/// operation starts an update, so no caller reaches one through a host.
+fn may_update(state: &StateDir, installations: &[PathBuf]) -> Result<(), Failure> {
+    let Some(config) = state.load_config()? else {
+        return Ok(());
+    };
+    if config.peer.kind == "device" {
+        return Ok(());
+    }
+    let client_only = state.path.join("plugins/client-only").is_file();
+    if client_only
+        && !crate::status::local(state)?.this_machine.hosting.running
+        && !host_runs_this_latch(installations)
+    {
+        return Ok(());
+    }
+    let message = "this machine is a host, and a host's latch is updated by its owner; \
+                   an agent updates latch only on its own computer, installed with install.sh --client-only";
+    Err(Failure::new(code::owner_only, message.into()))
+}
+
+/// The latch an update replaces: this one, and on macOS the app in each
+/// folder the installer puts it in, which it moves this one into: the
+/// shared one (`$LATCH_APPLICATIONS`, as the installer reads it, else
+/// /Applications) and the user's own.
+fn installations() -> Vec<PathBuf> {
+    let mut found: Vec<PathBuf> = std::env::current_exe().into_iter().collect();
+    if cfg!(target_os = "macos") {
+        let shared = std::env::var_os("LATCH_APPLICATIONS").unwrap_or("/Applications".into());
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let folders = [
+            Some(PathBuf::from(shared)),
+            home.map(|home| home.join("Applications")),
+        ];
+        found.extend(
+            folders
+                .into_iter()
+                .flatten()
+                .map(|folder| folder.join("Plow Latch.app/Contents/MacOS/latch")),
+        );
+    }
+    found
+        .into_iter()
+        .filter_map(|path| path.canonicalize().ok())
+        .collect()
+}
+
+/// Whether a host runs on this machine from one of `installations`: a
+/// `latch serve` process of any state folder, any user's. When the
+/// processes can't be listed, one is taken to run.
+fn host_runs_this_latch(installations: &[PathBuf]) -> bool {
+    let Some(hosts) = hosts() else {
+        return true;
+    };
+    hosts
+        .iter()
+        .filter_map(|exe| exe.canonicalize().ok())
+        .any(|exe| installations.contains(&exe))
+}
+
+/// The executables of this machine's `latch serve` processes but this one.
+#[cfg(target_os = "linux")]
+fn hosts() -> Option<Vec<PathBuf>> {
+    let me = std::process::id().to_string();
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir("/proc").ok()?.flatten() {
+        let pid = entry.file_name();
+        let pid = pid.to_string_lossy();
+        if !pid.bytes().all(|b| b.is_ascii_digit()) || pid == me {
+            continue;
+        }
+        let Ok(argv) = std::fs::read(format!("/proc/{pid}/cmdline")) else {
+            continue;
+        };
+        let mut words = argv.split(|b| *b == 0).map(String::from_utf8_lossy);
+        let program = words.next().unwrap_or_default().into_owned();
+        if serves(words) {
+            // Another user's process hides its executable; its command
+            // line still names it.
+            let exe = std::fs::read_link(format!("/proc/{pid}/exe"));
+            found.push(exe.unwrap_or_else(|_| PathBuf::from(program)));
+        }
+    }
+    Some(found)
+}
+
+/// The executables of this machine's `latch serve` processes but this one.
+#[cfg(target_os = "macos")]
+fn hosts() -> Option<Vec<PathBuf>> {
+    let listed = std::process::Command::new("ps")
+        .args(["-A", "-ww", "-o", "pid=,args="])
+        .stderr(Stdio::null())
+        .output()
+        .ok()
+        .filter(|output| output.status.success())?;
+    let me = std::process::id();
+    let mut found = Vec::new();
+    for line in String::from_utf8_lossy(&listed.stdout).lines() {
+        let mut words = line.split_whitespace();
+        let Some(pid) = words.next().and_then(|pid| pid.parse::<i32>().ok()) else {
+            continue;
+        };
+        if pid as u32 == me || !serves(words.map(std::borrow::Cow::Borrowed)) {
+            continue;
+        }
+        let mut path = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+        // SAFETY: the buffer is as long as the size passed, which
+        // proc_pidpath writes at most.
+        let written =
+            unsafe { libc::proc_pidpath(pid, path.as_mut_ptr().cast(), path.len() as u32) };
+        if written > 0 {
+            path.truncate(written as usize);
+            use std::os::unix::ffi::OsStringExt;
+            found.push(PathBuf::from(std::ffi::OsString::from_vec(path)));
+        }
+    }
+    Some(found)
+}
+
+/// Whether a command line's words after the program run `latch serve`.
+fn serves<'a>(mut words: impl Iterator<Item = std::borrow::Cow<'a, str>>) -> bool {
+    words.any(|word| word == "serve")
 }
 
 /// What an update did to the host on this state folder, when one ran. The

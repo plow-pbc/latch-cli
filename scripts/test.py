@@ -301,15 +301,21 @@ def steps(where, suites, gate, shard, archive=None, ci=False, only=None):
         out.append(("docs site", ["core"], ["python3", "scripts/docs_site.py", "check", "--latch",
                                             str(LATCH / target_dir(where) / "debug/latch")], ROOT))
     if "installer" in suites and first_shard:
-        out.append(("install.sh", ["installer"], ["python3", "scripts/test-install-release.py"], ROOT))
-        out.append(("install-binary.sh", ["installer"], ["python3", "scripts/test-install.py"], ROOT))
-        out.append(("dev-login.py", ["installer"], ["python3", "scripts/test-dev-login.py"], LATCH))
+        latch = LATCH / target_dir(where) / "debug/latch"
+        install = ["python3", "scripts/test-install-release.py"]
         if where == "macos":
             if not rust:
                 out.append(("latch", ["installer"], ["cargo", "build", "--locked", "--features", features],
                             LATCH))
+            # On a Mac, install.sh has the release's latch check signatures:
+            # here, the latch just built.
+            install = ["env", f"LATCH_RELEASE_LATCH={latch}", *install]
+        out.append(("install.sh", ["installer"], install, ROOT))
+        out.append(("install-binary.sh", ["installer"], ["python3", "scripts/test-install.py"], ROOT))
+        out.append(("dev-login.py", ["installer"], ["python3", "scripts/test-dev-login.py"], LATCH))
+        if where == "macos":
             # Its ContractTests run the latch just built.
-            out.append(("swift app", ["installer"], ["env", f"LATCH_CONTRACT_LATCH={LATCH / target_dir(where) / 'debug/latch'}",
+            out.append(("swift app", ["installer"], ["env", f"LATCH_CONTRACT_LATCH={latch}",
                                                       "swift", "test"], LATCH / "gui"))
             out.append(("app bundle", ["installer"], ["sh", str(ROOT / "scripts/test-app-bundle.sh")], LATCH))
     return out
