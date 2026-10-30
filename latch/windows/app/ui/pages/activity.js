@@ -7,7 +7,7 @@
 // the inspector (Main/RecordInspector.swift).
 
 import { el, icon } from "../dom.js";
-import { latch, latchLines, latchFile, latchText, follow, unfollow, said } from "../latch.js";
+import { latch, latchLines, latchFile, latchText, follow, unfollow, said, faked } from "../latch.js";
 import * as records from "../records.js";
 
 export const search = "Search requests";
@@ -245,7 +245,7 @@ export function feed(app, host) {
 /** Fake mode's stills (fake/activity.js); never in the app. */
 let stills;
 async function staged() {
-  if (window.__TAURI__) return null;
+  if (!faked()) return null;
   return (stills ??= import("../fake/activity.js").catch(() => null));
 }
 

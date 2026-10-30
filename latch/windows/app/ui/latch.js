@@ -12,6 +12,9 @@ export async function connect() {
   return fake != null;
 }
 
+/** Whether answers come from fixtures (fake mode). */
+export const faked = () => fake != null;
+
 /** One latch command's answer, or its failure (thrown). */
 export function latch(args, input) {
   return fake ? fake.run(args, input) : tauri.core.invoke("run", { args, input });
