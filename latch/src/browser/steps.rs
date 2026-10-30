@@ -1481,7 +1481,18 @@ fn action_line(reviewed: &Value, enter: bool, typing: bool) -> String {
         }
         line
     } else {
-        format!("click {}", named(element))
+        let mut line = format!("click {}", named(element));
+        match (element["expanded"].as_bool(), element["checked"].as_bool()) {
+            (Some(true), _) => line.push_str(" (expanded)"),
+            (Some(false), _) => line.push_str(" (collapsed)"),
+            (_, Some(true)) => line.push_str(" (checked)"),
+            (_, Some(false)) => line.push_str(" (not checked)"),
+            _ => {}
+        }
+        if reviewed["acts_on"]["role"] == "form" {
+            line.push_str(", which submits its form");
+        }
+        line
     };
     if let Some(row) = element["row"].as_str() {
         line.push_str(&format!(" — in: {row}"));
@@ -1739,6 +1750,18 @@ mod tests {
         assert_eq!(
             action_line(&reviewed, false, false),
             "click button \"Place order\""
+        );
+        let submit = json!({"element": {"role": "button", "name": "Pay $52.40"},
+                            "acts_on": {"role": "form", "name": ""}});
+        assert_eq!(
+            action_line(&submit, false, false),
+            "click button \"Pay $52.40\", which submits its form"
+        );
+        let method =
+            json!({"element": {"role": "button", "name": "Pay with card", "expanded": false}});
+        assert_eq!(
+            action_line(&method, false, false),
+            "click button \"Pay with card\" (collapsed)"
         );
         let enter = json!({"element": {"role": "textbox", "name": "Gift note"},
                            "acts_on": {"role": "button", "name": "Place order"}});

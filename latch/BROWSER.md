@@ -470,7 +470,8 @@ the one already chosen marked. A typed check decides completion
 line (`model_assessed`). Before its first action a step whose result is
 already a field's value, the address or the title ends `already_held`;
 page text alone, such as a message an earlier step left, never counts. A
-pass stops, in this order, at a CAPTCHA (`needs_owner`), a code stage
+pass stops, in this order, at a CAPTCHA shown on screen (`needs_owner`; a
+hidden one, such as a payment form's invisible check, is not a stop), a code stage
 or a passkey stage (`needs_fields`, before the model is asked; a code
 stage's stop points to SKILL.md's "Signing in" for the code; a passkey
 stage goes on when a named item that fits holds a password, so the model
@@ -529,8 +530,10 @@ deadline; nothing is replayed or retried. Exit 0 is `reached` or
 would pay, place an order, send, publish or delete something, close or
 cancel an account, order, subscription or ticket, sign out, create
 credentials or otherwise can't be undone (closing a dialog, popup, banner
-or menu is none of these), judged on the exact
-element, its row text, the page title and the lines of the form or section
+or menu is none of these, nor is choosing an option or opening a section
+that submits nothing, such as how to pay), judged on the exact
+element, its state (collapsed, checked), whether it submits its form, its
+row text, the page title and the lines of the form or section
 around it; an Enter in a field is judged as its form's submit (the form's
 submit control, else the form), and so is `type` text with a line break,
 which the engine types as Enter. The action is then made only if the

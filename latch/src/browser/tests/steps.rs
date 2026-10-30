@@ -933,7 +933,6 @@ async fn live_the_model_asks_for_a_confirmation_only_where_one_is_needed() {
     let site = site();
     let mut h = Harness::start(&state, "cft", Some(Arc::from(provider))).await;
     let page = h.open(&format!("{site}/order.html")).await;
-    let back = find(&page, "link", "Back to basket");
     let place = find(&page, "button", "Place order");
     let note = find(&page, "textbox", "Gift note");
     let failure = h.act(ActAction::Click, &[&place], None).await.unwrap_err();
@@ -953,6 +952,23 @@ async fn live_the_model_asks_for_a_confirmation_only_where_one_is_needed() {
         confirmation(&failure)["risk_p"]
     );
     assert_eq!(failure.code, "confirm_needed");
+    let page = h.open(&format!("{site}/payment-method.html")).await;
+    let card = find(&page, "button", "Pay with card");
+    let pay = find(&page, "button", "Pay $52.40");
+    let chosen = h.act(ActAction::Click, &[&card], None).await;
+    println!(
+        "pay with card: {:?}",
+        chosen
+            .as_ref()
+            .map(|c| &c["trail"][0]["risk_p"])
+            .map_err(|f| (f.code.clone(), confirmation(f)["risk_p"].clone()))
+    );
+    assert_eq!(chosen.unwrap()["status"], "dispatched");
+    let failure = h.act(ActAction::Click, &[&pay], None).await.unwrap_err();
+    println!("pay: {} {}", failure.code, confirmation(&failure)["risk_p"]);
+    assert_eq!(failure.code, "confirm_needed");
+    let page = h.open(&format!("{site}/order.html")).await;
+    let back = find(&page, "link", "Back to basket");
     let fine = h.act(ActAction::Click, &[&back], None).await.unwrap();
     println!("back to basket: risk {}", fine["trail"][0]["risk_p"]);
     assert_eq!(fine["page"]["title"], "Basket · Shop");

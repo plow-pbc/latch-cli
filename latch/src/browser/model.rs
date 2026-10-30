@@ -135,8 +135,9 @@ impl Model {
     /// field, which submits its form) can't be undone: paying, ordering,
     /// sending, publishing or deleting something, closing or cancelling an
     /// account or an order, signing out, creating credentials and the like;
-    /// never dismissing a dialog. `lines` are the lines around the
-    /// element on the page.
+    /// never dismissing a dialog, nor choosing an option or opening a section
+    /// that submits nothing. `lines` are the lines around the element on the
+    /// page.
     pub async fn risky(
         &mut self,
         title: &str,
@@ -168,7 +169,7 @@ impl Model {
 }
 
 /// The risk question, for one action named after it.
-const RISK_QUESTION: &str = "Would this action spend money or pay, place an order, send a message, publish or delete something, close or cancel an account, order, subscription or ticket, sign out of an account, create credentials or keys (such as an API key, token or password), or otherwise do something that cannot be undone? Closing or dismissing a dialog, popup, banner or menu is none of these.";
+const RISK_QUESTION: &str = "Would this action spend money or pay, place an order, send a message, publish or delete something, close or cancel an account, order, subscription or ticket, sign out of an account, create credentials or keys (such as an API key, token or password), or otherwise do something that cannot be undone? Closing or dismissing a dialog, popup, banner or menu is none of these, and neither is choosing an option or opening a section that submits nothing, such as picking how to pay before paying: the control that then submits the payment or order is the one that pays.";
 
 /// What an instruction step's operations do, as the model reads them.
 const OPERATIONS: [(&str, &str); 12] = [

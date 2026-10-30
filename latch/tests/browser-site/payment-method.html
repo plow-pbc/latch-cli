@@ -1,0 +1,16 @@
+<!doctype html><meta charset="utf-8"><title>Checkout · Shop</title>
+<!-- A hosted checkout's payment step: "Pay with card" only opens the card
+     form; "Pay $52.40" submits it and pays. Posts to /placed. -->
+<h1>Pay Shop</h1>
+<p>Sharp Objects · $52.40</p>
+<form method="post" action="placed">
+  <h2>Payment method</h2>
+  <button type="button" aria-expanded="false" aria-controls="card"
+          onclick="this.setAttribute('aria-expanded', 'true'); document.getElementById('card').hidden = false">Pay with card</button>
+  <div id="card" hidden>
+    <p><label for="number">Card number</label> <input id="number" name="number" autocomplete="cc-number"></p>
+    <p><label for="expiry">Expiration</label> <input id="expiry" name="expiry" autocomplete="cc-exp"></p>
+    <p><label for="cvc">CVC</label> <input id="cvc" name="cvc" autocomplete="cc-csc"></p>
+  </div>
+  <p><button>Pay $52.40</button></p>
+</form>
