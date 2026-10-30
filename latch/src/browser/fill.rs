@@ -519,13 +519,7 @@ impl Plan {
                 _ => classify::read(&item.raw, &label).is_some(),
             };
             if !known {
-                return Err(Failure::new(
-                    code::no_such_field,
-                    format!(
-                        "item {} has no field {label:?}; observe lists the fields each item holds",
-                        item.id
-                    ),
-                ));
+                return Err(no_such_field(item, &label));
             }
             if meta.kind == "note"
                 && label != "notes"
@@ -1072,8 +1066,12 @@ async fn release_and_set(
         ));
     }
     audit.insert("released".into(), json!(true));
-    for field in &fields {
-        let label = field["field"].as_str().unwrap_or_default();
+    let labels: Vec<&str> = fields
+        .iter()
+        .map(|field| field["field"].as_str().unwrap_or_default())
+        .collect();
+    for (at, field) in fields.iter().enumerate() {
+        let label = labels[at];
         let boxes: Vec<Value> = field["boxes"].as_array().cloned().unwrap_or_default();
         let value = release(item, label)?;
         let value = shaped(label, value, &boxes[0])?;
@@ -1081,7 +1079,8 @@ async fn release_and_set(
             Failure::new(
                 code::split_mismatch,
                 format!(
-                    "{label} does not split into those {} boxes; nothing was filled",
+                    "the {label} ({} characters) does not split into those {} boxes; nothing was filled",
+                    value.chars().count(),
                     boxes.len()
                 ),
             )
@@ -1093,12 +1092,12 @@ async fn release_and_set(
             // A value split across boxes must land whole in each one.
             let dropped = answer["dropped_breaks"] == true;
             if answer["held"] != true || dropped && boxes.len() > 1 {
-                return Err(Failure::new(
-                    code::needs_owner,
-                    format!(
-                        "the page would not keep the value latch set; this site needs the owner: {}",
-                        super::handoff::to_owner(browsers.screen(), "signin")
-                    ),
+                return Err(not_kept(
+                    browsers,
+                    &meta,
+                    &labels,
+                    at,
+                    answer["page"].as_str(),
                 ));
             }
             // Worth fixing in the vault, though the fill went through.
@@ -1117,20 +1116,68 @@ async fn release_and_set(
     Ok(())
 }
 
+/// A fill stopped at field `labels[at]`, which the page did not keep as
+/// latch typed it: what the page did (`page`, from the reader: cleared,
+/// cut short, changed), what had gone in and what had not.
+fn not_kept(
+    browsers: &Browsers,
+    meta: &crate::vault::item::Meta,
+    labels: &[&str],
+    at: usize,
+    page: Option<&str>,
+) -> Failure {
+    let did = match page {
+        Some("cleared") => "cleared it",
+        Some("cut_short") => "kept only the start of it",
+        _ => "changed it",
+    };
+    let list = |labels: &[&str]| match labels {
+        [] => "none".to_string(),
+        some => some.join(", "),
+    };
+    let next = if meta.kind == "login" {
+        format!(
+            "this site needs the owner: {}",
+            super::handoff::to_owner(browsers.screen(), "signin")
+        )
+    } else {
+        "tell the owner what the page did; latch can't fill it there".to_string()
+    };
+    Failure::new(
+        code::needs_owner,
+        format!(
+            "the page did not keep the {} latch typed: it {did}. Nothing was submitted; filled before it, and cleared again: {}; not filled: {}. {next}",
+            labels[at],
+            list(&labels[..at]),
+            list(&labels[at + 1..]),
+        ),
+    )
+}
+
+/// A field `item` lacks, refused with the fields it has.
+fn no_such_field(item: &Item, label: &str) -> Failure {
+    let held: Vec<String> = holding(&item.meta())["fields"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|field| field["id"].as_str().map(str::to_string))
+        .collect();
+    Failure::new(
+        code::no_such_field,
+        format!(
+            "item {} has no field {label:?}; its fields are {}",
+            item.id,
+            held.join(", ")
+        ),
+    )
+}
+
 /// One value out of the vault: a field, or for a login's `otp` the current
 /// TOTP code, computed here from the stored key. Read from `item` as it
 /// was loaded, never from the vault again: an edit since then, which the
 /// confirmation never saw, gives none of its values to this fill.
 fn release(item: &Item, label: &str) -> Result<String, Failure> {
-    let missing = || {
-        Failure::new(
-            code::no_such_field,
-            format!(
-                "item {} has no field {label:?}; list it to see its fields",
-                item.id
-            ),
-        )
-    };
+    let missing = || no_such_field(item, label);
     if label == "otp" && item.meta().kind == "login" {
         let key = item
             .raw

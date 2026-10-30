@@ -354,7 +354,8 @@ impl<D: Driver> Core<D> {
             return Err(refused(why));
         }
         Ok(json!({"held": answer["held"] == true,
-                  "dropped_breaks": answer["dropped_breaks"] == true}))
+                  "dropped_breaks": answer["dropped_breaks"] == true,
+                  "page": answer["page"]}))
     }
 
     /// Puts `value` into the field as a person types it: a text field

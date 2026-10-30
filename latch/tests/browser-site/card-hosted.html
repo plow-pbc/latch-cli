@@ -1,0 +1,27 @@
+<!doctype html><title>latch hosted checkout test</title>
+<!-- A checkout shaped like a payment provider's hosted page: the card's
+     fields in the page's own frame, the number and expiry formatted as
+     they are typed (card-format.js). Pay sends the number's digits, the
+     expiry as shown, to /pay. -->
+<script src="card-format.js"></script>
+<h1>Pay $10.00</h1>
+<form method="post" action="pay" id="pay">
+  <p><label>Card number <input id="number" autocomplete="cc-number" inputmode="numeric" placeholder="1234 1234 1234 1234"></label></p>
+  <p><label>Expiry <input id="expiry" autocomplete="cc-exp" placeholder="MM / YY"></label></p>
+  <p><label>CVC <input id="cvc" autocomplete="cc-csc" maxlength="4"></label></p>
+  <p><label>Name on card <input id="name" autocomplete="cc-name"></label></p>
+  <input type="hidden" name="cc-number"><input type="hidden" name="cc-exp">
+  <input type="hidden" name="cc-csc"><input type="hidden" name="cc-name">
+  <p><button type="submit">Pay $10.00</button></p>
+</form>
+<script>
+  formatAs(number, 'number');
+  formatAs(expiry, 'expiry');
+  document.getElementById('pay').addEventListener('submit', () => {
+    const form = document.getElementById('pay');
+    form.elements['cc-number'].value = number.value.replace(/\D/g, '');
+    form.elements['cc-exp'].value = expiry.value;
+    form.elements['cc-csc'].value = cvc.value;
+    form.elements['cc-name'].value = document.getElementById('name').value;
+  });
+</script>

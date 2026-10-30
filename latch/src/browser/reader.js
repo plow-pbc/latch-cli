@@ -387,21 +387,18 @@
   };
   const current = (el) => (el.isContentEditable ? el.textContent : el.value);
   // Whether a field holding `held` holds `wanted`: the same characters in
-  // the same order, give or take the separators a field adds as it formats
-  // a value (a code as "123 456", a card number in fours, a date with
-  // slashes). Walked by code point, so an astral character is one. The
-  // GET guards (`cdp.rs`, `helper.mjs`) match a value the same way.
+  // the same order, the separators either puts between them aside (a field
+  // formats a code as "123 456", a card number in fours, a date with
+  // slashes; a stored value may carry spaces the field drops). By code
+  // point, so an astral character is one. The GET guards (`cdp.rs`,
+  // `helper.mjs`) match a value the same way.
   const SEPARATORS = new Set([' ', '\u00a0', '-', '/', '.', '(', ')', '+']);
+  const SPACES = new Set([' ', '\u00a0']);
+  const bare = (text, set) => Array.from(text).filter((ch) => !set.has(ch)).join('');
   const keeps = (held, wanted) => {
-    if (held === wanted) return true;
-    if (wanted === '') return false;
-    const want = Array.from(wanted);
-    let i = 0;
-    for (const ch of held) {
-      if (i < want.length && ch === want[i]) i++;
-      else if (!SEPARATORS.has(ch)) return false;
-    }
-    return i === want.length;
+    // A value of separators alone is its own characters: only spaces go.
+    const set = bare(wanted, SEPARATORS) === '' ? SPACES : SEPARATORS;
+    return held === wanted || (bare(wanted, set) !== '' && bare(held, set) === bare(wanted, set));
   };
 
   // The field a value goes into, checked again: its element, document and
@@ -487,7 +484,10 @@
     if (el.localName === 'input' && unbroken !== value && keeps(current(el), unbroken)) {
       return { held: true, dropped_breaks: true };
     }
-    return { held: false };
+    // What the page did with it, never what it holds.
+    const now = bare(current(el), SEPARATORS);
+    const page = now === '' ? 'cleared' : bare(value, SEPARATORS).startsWith(now) ? 'cut_short' : 'changed';
+    return { held: false, page };
   };
 
   // How many filled elements still hold something.

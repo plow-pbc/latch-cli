@@ -7,7 +7,7 @@
 
 use serde_json::{Value, json};
 
-use super::{CVV, Harness, NUMBER, find, item, latch, site, test_state};
+use super::{AMEX, CVV, Harness, NUMBER, find, item, latch, site, test_state};
 use crate::browser::host::Browsers;
 use crate::failure::Failure;
 use crate::vault::host::Vault;
@@ -19,6 +19,11 @@ conformance!(
     a_card_fills_a_providers_hosted_fields,
     a_card_fills_split_boxes_and_expiry_lists,
     a_card_saved_with_spaces_fills_by_its_digits,
+    a_hosted_checkout_takes_a_number_however_it_was_saved,
+    a_providers_formatting_fields_take_a_number_saved_with_spaces,
+    a_two_digit_year_field_gets_two_digits,
+    an_amex_number_in_four_boxes_of_four_says_it_does_not_split,
+    a_field_that_clears_itself_says_what_happened_and_what_was_filled,
     agent_code_on_a_shop_keeps_the_card_out,
     a_page_that_shows_the_number_back_shows_the_agent_only_its_last_four,
     a_redrawn_number_field_does_not_show_its_value,
@@ -384,5 +389,212 @@ async fn a_card_saved_with_spaces_fills_by_its_digits(engine: &str) {
     let page = h.text().await;
     assert!(page.contains(PAID), "{page}");
     assert!(!h.saw_the_card(), "the card reached a result or the audit");
+    h.call("close", json!({})).await.ok();
+}
+
+/// A card as an older latch may have kept it: the number as it was
+/// typed, spaces and all.
+fn add_as_stored(h: &Harness, title: &str, number: &str) -> String {
+    h.browsers
+        .vault
+        .with(|s| {
+            s.add_as_stored(item(
+                CARD,
+                title,
+                &[],
+                &[
+                    ("cardholder name", "Ada Lovelace"),
+                    ("number", number),
+                    ("expiry month", "04"),
+                    ("expiry year", "2031"),
+                    ("code", CVV),
+                ],
+            ))
+        })
+        .unwrap()
+        .item
+}
+
+/// The fields a paid fill's trail says went in, in order, each once.
+fn filled(paid: &Value) -> Vec<String> {
+    let mut fields: Vec<String> = Vec::new();
+    for field in paid["trail"][0]["fields"].as_array().unwrap() {
+        let name = field["field"].as_str().unwrap().to_string();
+        if field["outcome"] == "filled" && !fields.contains(&name) {
+            fields.push(name);
+        }
+    }
+    fields
+}
+
+async fn a_hosted_checkout_takes_a_number_however_it_was_saved(engine: &str) {
+    let (mut h, plain, local, _, _keep) = shop(engine).await;
+    let spaced = add_as_stored(&h, "Spaced card", " 4242 4242 4242 4242");
+    let amex = add_as_stored(&h, "Amex", "3782 8224 6310 005");
+    for card in [&spaced, &plain, &amex] {
+        h.call("open", json!({"url": format!("{local}/card-hosted.html")}))
+            .await
+            .unwrap();
+        let args = h.suggested(card).await;
+        let paid = h.pay(args).await.unwrap();
+        assert_eq!(
+            filled(&paid),
+            ["number", "expiry", "code", "cardholder name"],
+            "{card}"
+        );
+        let page = h.text().await;
+        println!("{card} on the hosted checkout: {page}");
+        assert!(page.contains(PAID), "{card}: {page}");
+    }
+    assert!(!h.saw_the_card(), "the card reached a result or the audit");
+    assert!(!h.shown.join("\n").replace(' ', "").contains(AMEX));
+    h.call("close", json!({})).await.ok();
+}
+
+async fn a_providers_formatting_fields_take_a_number_saved_with_spaces(engine: &str) {
+    let (mut h, _, local, processor, _keep) = shop(engine).await;
+    let spaced = add_as_stored(&h, "Spaced card", " 4242 4242 4242 4242");
+    h.call(
+        "open",
+        json!({"url": format!("{local}/card-elements.html?frame={processor}")}),
+    )
+    .await
+    .unwrap();
+    let observed = h.call("observe", json!({})).await.unwrap();
+    let suggestion = observed["fill"]["suggestions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["item"] == spaced.as_str())
+        .unwrap()
+        .clone();
+    assert_eq!(
+        suggestion["frames"],
+        json!([
+            "https://www.merchant.example",
+            "https://js.processor.example"
+        ])
+    );
+    let paid = h
+        .pay(
+            json!({"item": spaced, "suggested": suggestion["id"], "snapshot": observed["snapshot"],
+                   "press": find(&observed, "button", "Pay $10.00")}),
+        )
+        .await
+        .unwrap();
+    // In the order the provider's frames came, which varies.
+    let mut fields = filled(&paid);
+    fields.sort();
+    assert_eq!(fields, ["cardholder name", "code", "expiry", "number"]);
+    h.call("wait", json!({"text": "payment:", "within": 5}))
+        .await
+        .unwrap();
+    let page = h.text().await;
+    assert!(page.contains(PAID), "{page}");
+    assert!(!h.saw_the_card(), "the card reached a result or the audit");
+    h.call("close", json!({})).await.ok();
+}
+
+async fn a_two_digit_year_field_gets_two_digits(engine: &str) {
+    let (mut h, card, local, _, _keep) = shop(engine).await;
+    let split = h
+        .call(
+            "open",
+            json!({"url": format!("{local}/card-split.html?year2")}),
+        )
+        .await
+        .unwrap();
+    let boxes: Vec<String> = (1..=4)
+        .map(|n| find(&split, "textbox", &format!("Card number {n}")))
+        .collect();
+    let fields = json!([
+        ["cardholder name", [find(&split, "textbox", "Name on card")]],
+        ["number", boxes],
+        ["expiry month", [find(&split, "combobox", "Month")]],
+        ["expiry year", [find(&split, "textbox", "Year")]],
+        ["cvv", [find(&split, "textbox", "CVC")]],
+    ]);
+    let press = find(&split, "button", "Pay $10.00");
+    let paid = h
+        .pay(json!({"item": card, "fields": fields, "press": press}))
+        .await
+        .unwrap();
+    assert_eq!(
+        filled(&paid),
+        [
+            "cardholder name",
+            "number",
+            "expiry month",
+            "expiry year",
+            "cvv"
+        ]
+    );
+    let page = h.text().await;
+    assert!(page.contains(PAID), "{page}");
+    h.call("close", json!({})).await.ok();
+}
+
+async fn an_amex_number_in_four_boxes_of_four_says_it_does_not_split(engine: &str) {
+    let (mut h, _, local, _, _keep) = shop(engine).await;
+    let amex = add_as_stored(&h, "Amex", AMEX);
+    let split = h
+        .call("open", json!({"url": format!("{local}/card-split.html")}))
+        .await
+        .unwrap();
+    let boxes: Vec<String> = (1..=4)
+        .map(|n| find(&split, "textbox", &format!("Card number {n}")))
+        .collect();
+    let press = find(&split, "button", "Pay $10.00");
+    let refused = h
+        .pay(json!({"item": amex, "fields": [["number", boxes]], "press": press}))
+        .await
+        .unwrap_err();
+    println!(
+        "an Amex in four boxes: {} ({})",
+        refused.code, refused.message
+    );
+    assert!(
+        refused.message.contains(
+            "the number (15 characters) does not split into those 4 boxes; nothing was filled"
+        ),
+        "{}",
+        refused.message
+    );
+    assert!(!h.text().await.contains("payment:"));
+    h.call("close", json!({})).await.ok();
+}
+
+async fn a_field_that_clears_itself_says_what_happened_and_what_was_filled(engine: &str) {
+    let (mut h, card, local, _, _keep) = shop(engine).await;
+    let page = h
+        .call(
+            "open",
+            json!({"url": format!("{local}/card-clearing.html")}),
+        )
+        .await
+        .unwrap();
+    let fields = json!([
+        ["cardholder name", [find(&page, "textbox", "Name on card")]],
+        ["number", [find(&page, "textbox", "Card number")]],
+        ["expiry", [find(&page, "textbox", "Expiry")]],
+        ["cvv", [find(&page, "textbox", "CVV")]],
+    ]);
+    let press = find(&page, "button", "Pay");
+    let refused = h
+        .pay(json!({"item": card, "fields": fields, "press": press}))
+        .await
+        .unwrap_err();
+    println!(
+        "a field that clears itself: {} ({})",
+        refused.code, refused.message
+    );
+    assert!(
+        refused.message.contains(
+            "the page did not keep the number latch typed: it cleared it. Nothing was submitted; filled before it, and cleared again: cardholder name; not filled: expiry, cvv. tell the owner what the page did; latch can't fill it there"
+        ),
+        "{}",
+        refused.message
+    );
+    assert!(!h.text().await.contains("payment:"));
     h.call("close", json!({})).await.ok();
 }

@@ -25,6 +25,8 @@ use crate::vault::totp::Params;
 
 const PASSWORD: &str = "made-up-pass-7c41";
 const NUMBER: &str = "4242424242424242";
+/// An Amex test number: 15 digits, which providers show as 4-6-5.
+const AMEX: &str = "378282246310005";
 const CVV: &str = "8640";
 const KEY: &str = "JBSWY3DPEHPK3PXP";
 
@@ -308,7 +310,7 @@ fn site() -> u16 {
                             "latch paid",
                             format!(
                                 "payment: number {}, expiry {} ({}), cvv {}, name {}",
-                                check(get("cc-number") == NUMBER),
+                                check([NUMBER, AMEX].contains(&get("cc-number"))),
                                 check(get("cc-exp") == "04 / 31"),
                                 get("cc-exp"),
                                 check(get("cc-csc") == CVV),

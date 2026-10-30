@@ -37,24 +37,19 @@ pub fn carries(url: &str, values: &[String]) -> bool {
 /// the same in `reader.js` and `helper.mjs`.
 const SEPARATORS: &[char] = &[' ', '\u{a0}', '-', '/', '.', '(', ')', '+'];
 
-/// Whether `held` holds `wanted`: its characters in order, with only
-/// [`SEPARATORS`] between them (`reader.js`'s `keeps`).
+/// Whether `held` holds `wanted`: the same characters in order, the
+/// [`SEPARATORS`] either puts between them aside (`reader.js`'s `keeps`).
 fn keeps(held: &str, wanted: &str) -> bool {
-    if held == wanted {
-        return true;
-    }
-    if wanted.is_empty() {
-        return false;
-    }
-    let mut want = wanted.chars().peekable();
-    for ch in held.chars() {
-        if want.peek() == Some(&ch) {
-            want.next();
-        } else if !SEPARATORS.contains(&ch) {
-            return false;
-        }
-    }
-    want.peek().is_none()
+    let bare = |text: &str, set: &[char]| -> String {
+        text.chars().filter(|c| !set.contains(c)).collect()
+    };
+    // A value of separators alone is its own characters: only spaces go.
+    let set: &[char] = if bare(wanted, SEPARATORS).is_empty() {
+        &[' ', '\u{a0}']
+    } else {
+        SEPARATORS
+    };
+    held == wanted || (!bare(wanted, set).is_empty() && bare(held, set) == bare(wanted, set))
 }
 
 pub struct Cdp {
@@ -467,6 +462,11 @@ mod tests {
         assert!(carries(
             "https://a.example/w?p=--+--",
             &["----".to_string()]
+        ));
+        // A value stored with spaces the page left out.
+        assert!(carries(
+            "https://a.example/w?n=4242424242424242",
+            &[" 4242 4242 4242 4242".to_string()]
         ));
     }
 
