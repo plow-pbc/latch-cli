@@ -99,8 +99,8 @@ permission.
 
 **Browser sessions are disposable.** Every `browser open` starts a fresh
 browser with an empty profile of its own, on the engine it names
-(`--engine chrome` or `--engine camoufox`). By default that is Chrome if the
-host has it, else Camoufox. Sessions share no cookies, logins, tabs or
+(`--engine chrome` or `--engine camoufox`). By default that is Camoufox if the
+host has it, else Chrome. Sessions share no cookies, logins, tabs or
 downloads. A session ends with `browser close`, or after 30 idle minutes,
 and then its profile is deleted. So a session starts signed in nowhere. It
 signs in by filling from the vault or, on a Mac host with a screen, by

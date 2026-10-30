@@ -916,10 +916,13 @@ const ENTRIES: &[Entry] = &[
         connector: None,
         examples: &[
             ex(
-                "Chrome for Testing, after install.sh --no-browser",
+                "Camoufox, after install.sh --no-browser",
                 &["browser", "setup"],
             ),
-            ex("Camoufox", &["browser", "setup", "--engine", "camoufox"]),
+            ex(
+                "Chrome for Testing",
+                &["browser", "setup", "--engine", "chrome"],
+            ),
         ],
     },
     Entry {

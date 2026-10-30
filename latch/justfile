@@ -133,7 +133,7 @@ build api="":
 # build`'s latch (its state folder and Plow) with the app's window (gui/),
 # under its own bundle id, co.plow.latch.dev, so it never shares the
 # installed app's Full Disk Access, preferences or windows. gog, the
-# Messages reader and Chrome for Testing go into that state folder, as the
+# Messages reader and Camoufox go into that state folder, as the
 # installer puts them in ~/.latch, so Google, Messages and the browser work. `open` it to see the window; its
 # latch is the CLI as well.
 [macos]

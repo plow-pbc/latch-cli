@@ -262,10 +262,10 @@ fixes it.
 
 - Each `open` starts signed in nowhere, and its logins last until it
   closes: do the whole task in one session.
-- A host may have two browsers: Chrome (`chrome`, Chrome for Testing) and
-  Camoufox (`camoufox`, a Firefox). `open` with no `--engine` uses Chrome
-  if the host has it, and the answer's `engine` says which ran; `open
-  --engine camoufox URL` picks the other. A site may silently drop a
+- A host may have two browsers: Camoufox (`camoufox`, a Firefox) and
+  Chrome (`chrome`, Chrome for Testing). `open` with no `--engine` uses
+  Camoufox if the host has it, and the answer's `engine` says which ran;
+  `open --engine chrome URL` picks the other. A site may silently drop a
   sign-in or a submit from one and take it from the other.
 - `engine_not_installed`: `details.installed` lists the engines the host
   has, and `details.default` the one an `open` with no `--engine` uses. If
