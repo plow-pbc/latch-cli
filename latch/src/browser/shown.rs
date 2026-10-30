@@ -202,11 +202,16 @@ pub fn masked(text: &str, filled: &[Filled]) -> String {
             }
             end += 1;
         }
-        let found = numbers.iter().find_map(|(number, shown)| {
-            digits
-                .find(number.as_str())
-                .map(|from| (number, shown, from))
-        });
+        // The value found earliest in the run: the digits before it hold
+        // none, whichever was filled first.
+        let found = numbers
+            .iter()
+            .filter_map(|(number, shown)| {
+                digits
+                    .find(number.as_str())
+                    .map(|from| (number, shown, from))
+            })
+            .min_by_key(|(_, _, from)| *from);
         match found {
             // Only the value's own digits go; the digits around them stay.
             Some((number, shown, from)) => {
@@ -285,6 +290,15 @@ mod tests {
                 "lines": ["SSN ••••, or ••••, or ••••", "Passport ••••."],
                 "order": "Order 1234567890123",
             })
+        );
+        // Two in one run of digits, the later-filled first: both go.
+        let filled = [
+            Filled::Secret("111-22-3333".into()),
+            Filled::Secret("444-55-6666".into()),
+        ];
+        assert_eq!(
+            masked("IDs 444 55 6666 111 22 3333", &filled),
+            "IDs •••• ••••"
         );
     }
 
