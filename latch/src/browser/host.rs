@@ -153,7 +153,7 @@ pub(super) struct Entry {
     /// The sites the gatekeeper let this session go to.
     judged_sites: std::sync::Mutex<HashSet<String>>,
     /// The numbers of the cards filled in this session, digits only: what
-    /// its answers and pictures are checked for.
+    /// its answers and journals are masked for.
     pub(super) cards: super::journal::Cards,
 }
 
@@ -168,13 +168,13 @@ impl Entry {
         audit.insert("engine".into(), self.runtime.ready["engine"].clone());
     }
 
-    /// The session's worker for one agent call: refused while the owner has
-    /// the session, whenever the call was asked for.
     /// The numbers of the cards filled in this session.
     pub(super) fn card_numbers(&self) -> Vec<String> {
         self.cards.lock().expect("cards lock").clone()
     }
 
+    /// The session's worker for one agent call: refused while the owner has
+    /// the session, whenever the call was asked for.
     pub(super) async fn agent_session(
         &self,
     ) -> Result<tokio::sync::MutexGuard<'_, Session>, Failure> {
@@ -1023,19 +1023,15 @@ pub(super) async fn worker(
     input: Option<&[u8]>,
     audit: &mut Map<String, Value>,
 ) -> Result<(Value, Option<Vec<u8>>), Failure> {
-    let mut call = worker_call(command, args)?;
+    let call = worker_call(command, args)?;
     if entry.runtime.filling.load(Ordering::SeqCst) {
         return Err(paused());
     }
     let mut session = entry.agent_session().await?;
     // Read under the session's lock, which a fill holds until it has
     // recorded its card: a fill that finished while this call waited counts.
-    let cards = entry.card_numbers();
-    if command == "eval" && !cards.is_empty() {
+    if command == "eval" && !entry.card_numbers().is_empty() {
         return Err(no_script_after_a_card());
-    }
-    if command == "screenshot" {
-        call["cards"] = json!(cards);
     }
     let reply = match session.call_with(call, input).await {
         Ok(reply) => {

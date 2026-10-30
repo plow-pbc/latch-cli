@@ -296,15 +296,17 @@ browser, and an element list marks a field holding a filled value as
 the session that filled it, and its plans' journals, show that number only
 as its last four digits (`•••• 4242`), however the page spaces it (any
 run of spaces or line breaks, invisible characters, and up to 3 other
-marks between two digits). A screenshot, or a plan's picture, is taken
-with the digits of every element showing it replaced by dots, and put
-back after; the page is read again once the picture is taken, and one
-that shows the number then, or a frame latch can't read, gets no picture
-(`secret_on_page`). A number drawn in an image, a canvas or a style's
-`content` isn't found. No `eval` runs in a session that filled a card
+marks between two digits); the last four alone ("ending in 4242") are
+left as they are. No `eval` runs in a session that filled a card
 (`secret_on_page`), checked again as it is sent: a script could read the
-number in any form. While a
-filled value may be on a page,
+number in any form. Screenshots are not masked: a card fill always
+presses its button, and its cleanup clears the fields if the page keeps
+them (above), so the number is never left in a field, but a page that
+prints the whole number after the fill shows it in a picture, though not
+in a text answer. Not yet tested: a single-page checkout that reads the
+card only at a later "Place order", after the cleanup has cleared its
+fields, and a 3-D Secure check slower than the cleanup's 15 seconds.
+While a filled value may be on a page,
 in whichever of the session's tabs, `eval` and screenshots are refused
 (`secret_on_page`) until it is gone or its tab is closed. The result says
 `submitted`, not "logged in" or "paid", with each field's outcome, the

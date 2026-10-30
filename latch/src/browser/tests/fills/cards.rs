@@ -20,7 +20,6 @@ conformance!(
     a_card_fills_split_boxes_and_expiry_lists,
     agent_code_on_a_shop_keeps_the_card_out,
     a_page_that_shows_the_number_back_shows_the_agent_only_its_last_four,
-    a_page_that_takes_the_mask_off_gets_no_picture,
     a_redrawn_number_field_does_not_show_its_value,
 );
 
@@ -250,13 +249,11 @@ async fn a_page_that_shows_the_number_back_shows_the_agent_only_its_last_four(en
     let page = h.text().await;
     println!("the shop's confirmation, as the agent reads it: {page:?}");
     assert!(page.contains("Paid $10.00 with card •••• 4242"), "{page}");
+    // The last four digits on their own are no card number.
+    assert!(page.contains("Visa ending in 4242"), "{page}");
 
-    // A picture is taken with the number's digits replaced by dots (the
-    // page outlines its text, which no colour would hide), and the number
-    // put back after.
+    // Pictures are taken once the card was filled and paid.
     h.call("screenshot", json!({})).await.unwrap();
-    let page = h.text().await;
-    assert!(page.contains("[dots][number]"), "{page}");
 
     // A plan's own pictures too, and its journal, read back after the
     // session closed, holds no number, though the step's field is named
@@ -306,34 +303,6 @@ async fn a_page_that_shows_the_number_back_shows_the_agent_only_its_last_four(en
         !h.saw_the_card(),
         "the page's copy of the number reached the agent"
     );
-}
-
-async fn a_page_that_takes_the_mask_off_gets_no_picture(engine: &str) {
-    let (mut h, card, local, _, _keep) = shop(engine).await;
-    h.call(
-        "open",
-        json!({"url": format!("{local}/card-echo.html?strip")}),
-    )
-    .await
-    .unwrap();
-    let args = h.suggested(&card).await;
-    h.pay(args).await.unwrap();
-    let shot = h.call("screenshot", json!({})).await.unwrap_err();
-    println!("screenshot: {} ({})", shot.code, shot.message);
-    assert_eq!(shot.code, "secret_on_page");
-    let page = h.call("observe", json!({})).await.unwrap();
-    let step = format!("type {} \"04 / 31\"", find(&page, "textbox", "Expiry"));
-    let typed = h
-        .call(
-            "do",
-            json!({"request": "r-type", "plan": {"steps": [
-                crate::browser::plan::short_step(&step).unwrap()]}}),
-        )
-        .await
-        .unwrap();
-    assert_eq!(typed["trail"][0]["screenshot"], json!({"suppressed": true}));
-    assert!(!h.saw_the_card(), "the card reached the agent");
-    h.call("close", json!({})).await.ok();
 }
 
 async fn a_redrawn_number_field_does_not_show_its_value(engine: &str) {

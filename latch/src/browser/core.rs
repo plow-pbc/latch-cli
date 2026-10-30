@@ -57,17 +57,9 @@ pub enum Call {
         scope: Option<String>,
     },
     Text,
-    /// A screenshot; `cards`, the numbers of the cards filled in the
-    /// session, are masked wherever the page shows one.
-    Screenshot {
-        #[serde(default)]
-        cards: Vec<String>,
-    },
-    /// A screenshot for a plan's trail, masked as a screenshot is.
-    Shot {
-        #[serde(default)]
-        cards: Vec<String>,
-    },
+    Screenshot,
+    /// A screenshot for a plan's trail.
+    Shot,
     Act {
         snapshot: Option<String>,
         action: Action,
@@ -316,15 +308,6 @@ struct Located {
     options: Vec<String>,
 }
 
-/// A screenshot refused because a card number on the page could not be
-/// hidden for it.
-fn unmaskable(why: &str) -> Failure {
-    Failure::new(
-        code::secret_on_page,
-        format!("{why}; no screenshot was taken, so it can't show the card"),
-    )
-}
-
 impl<D: Driver> Core<D> {
     pub fn new(driver: D) -> Self {
         Core {
@@ -393,7 +376,7 @@ impl<D: Driver> Core<D> {
                 | Call::Resolve { .. }
                 | Call::Lines
                 | Call::View { .. }
-                | Call::Shot { .. }
+                | Call::Shot
                 | Call::Wait { .. }
                 | Call::Pin { .. }
                 | Call::Review { .. }
@@ -437,9 +420,7 @@ impl<D: Driver> Core<D> {
                 self.observe(tab.as_deref(), scope.as_deref(), &mut audit)
             }
             Call::Text => self.text(&mut audit),
-            Call::Screenshot { cards } | Call::Shot { cards } => {
-                self.screenshot(&cards, &mut audit)
-            }
+            Call::Screenshot | Call::Shot => self.screenshot(&mut audit),
             Call::Act {
                 snapshot,
                 action,
@@ -707,86 +688,14 @@ impl<D: Driver> Core<D> {
     }
 
     /// Refused while a value latch filled may still be on a page: a
-    /// picture would show it. A card number of `cards` the page shows is
-    /// masked for the picture; once it is taken the page is read again, and
-    /// a picture taken while it showed one is not kept.
-    fn screenshot(
-        &mut self,
-        cards: &[String],
-        audit: &mut Map<String, Value>,
-    ) -> Result<Value, Failure> {
+    /// picture would show it.
+    fn screenshot(&mut self, audit: &mut Map<String, Value>) -> Result<Value, Failure> {
         self.no_dialog()?;
         self.page(audit)?;
         self.no_value_on_page("a screenshot")?;
-        let masked = self.mask_cards(cards)?;
-        let shot = self.driver.screenshot();
-        let held = cards.is_empty() || self.cards_masked(cards).unwrap_or(false);
-        self.unmask(&masked);
-        let (meta, png) = shot?;
-        if !held {
-            return Err(unmaskable(
-                "the page took latch's mask off a card number it shows",
-            ));
-        }
-        if !masked.is_empty() {
-            audit.insert("cards_masked".into(), json!(true));
-        }
+        let (meta, png) = self.driver.screenshot()?;
         self.bytes = Some(png);
         Ok(meta)
-    }
-
-    /// Masks every card of `cards` the page shows, in each frame: the
-    /// frames masked. Refused when a frame can't be read or a mask doesn't
-    /// take, with the masks made so far taken off.
-    fn mask_cards(&mut self, cards: &[String]) -> Result<Vec<Frame>, Failure> {
-        let mut masked = Vec::new();
-        if cards.is_empty() {
-            return Ok(masked);
-        }
-        for frame in self.driver.frames()? {
-            let done = self.driver.call(
-                &frame,
-                "function (cards) { return __latch.maskCards(cards); }",
-                vec![json!(cards)],
-            );
-            let Ok(done) = done else {
-                self.unmask(&masked);
-                return Err(unmaskable(
-                    "a frame latch can't read may show a card number",
-                ));
-            };
-            if done["found"].as_u64().unwrap_or(0) > 0 {
-                masked.push(frame.clone());
-            }
-            if done["hidden"] != true {
-                self.unmask(&masked);
-                return Err(unmaskable(
-                    "latch could not hide a card number the page shows",
-                ));
-            }
-        }
-        Ok(masked)
-    }
-
-    /// Whether no frame shows a card of `cards` now.
-    fn cards_masked(&mut self, cards: &[String]) -> Result<bool, Failure> {
-        for frame in self.driver.frames()? {
-            let held = self.driver.call(
-                &frame,
-                "function (cards) { return __latch.cardsMasked(cards); }",
-                vec![json!(cards)],
-            )?;
-            if held != true {
-                return Ok(false);
-            }
-        }
-        Ok(true)
-    }
-
-    fn unmask(&mut self, frames: &[Frame]) {
-        for frame in frames {
-            let _ = self.driver.run(frame, "__latch.unmask()");
-        }
     }
 
     fn act(
@@ -1519,12 +1428,9 @@ mod tests {
     }
 
     /// An engine with no optional features: only enough of the contract
-    /// to say where it is, and to go somewhere else; with `answers`, one
-    /// frame whose reader calls answer them in turn, and a blank picture.
-    #[derive(Default)]
+    /// to say where it is, and to go somewhere else.
     struct Bare {
         url: String,
-        answers: std::collections::VecDeque<Value>,
     }
 
     impl Driver for Bare {
@@ -1567,18 +1473,13 @@ mod tests {
             unreachable!()
         }
         fn frames(&mut self) -> Result<Vec<Frame>, Failure> {
-            assert!(!self.answers.is_empty());
-            Ok(vec![Frame {
-                id: "f1".into(),
-                parent: None,
-                document: "d1".into(),
-            }])
+            unreachable!()
         }
         fn run(&mut self, _: &Frame, _: &str) -> Result<Value, Failure> {
             unreachable!()
         }
         fn call(&mut self, _: &Frame, _: &str, _: Vec<Value>) -> Result<Value, Failure> {
-            Ok(self.answers.pop_front().expect("a scripted answer"))
+            unreachable!()
         }
         fn holds_focus(&mut self, _: &Frame) -> Result<bool, Failure> {
             Ok(true)
@@ -1634,48 +1535,24 @@ mod tests {
             unreachable!()
         }
         fn screenshot(&mut self) -> Result<(Value, Vec<u8>), Failure> {
-            Ok((json!({}), Vec::new()))
+            unreachable!()
         }
         fn close(&mut self) -> Value {
             unreachable!()
         }
     }
 
-    /// A page that shows a card filled in the session only once nothing
-    /// was there to mask: its picture is read again and not kept.
-    #[test]
-    fn a_card_that_shows_after_the_masking_keeps_the_picture_back() {
-        let mut core = Core::new(Bare {
-            url: "https://shop.example/checkout".into(),
-            answers: [json!({"found": 0, "hidden": true}), json!(false)].into(),
-        });
-        let refused = core
-            .call(
-                Call::Screenshot {
-                    cards: vec!["4242424242424242".into()],
-                },
-                None,
-            )
-            .err()
-            .expect("the picture is not kept");
-        assert_eq!(refused.code, "secret_on_page");
-    }
-
     #[test]
     fn a_tab_a_page_took_off_the_web_is_never_read() {
         // Reading it would panic: the refusal comes first, and leaves it blank.
-        let mut core = Core::new(Bare::default());
+        let mut core = Core::new(Bare { url: String::new() });
         for (call, url, scheme) in [
             (
                 Call::Text,
                 "file:///Users/someone/latch/state/config.json",
                 "file:",
             ),
-            (
-                Call::Screenshot { cards: vec![] },
-                "data:text/html,hi",
-                "data:",
-            ),
+            (Call::Screenshot, "data:text/html,hi", "data:"),
             (
                 Call::Eval { script: "1".into() },
                 "chrome://version/",
@@ -1698,7 +1575,6 @@ mod tests {
         // Every driver method that would dispatch panics: refusing must come first.
         let mut core = Core::new(Bare {
             url: "https://shop.example/cart?id=7".into(),
-            ..Default::default()
         });
         for (call, capability) in [
             (Call::Eval { script: "1".into() }, "eval"),
@@ -1738,7 +1614,6 @@ mod tests {
         fn tabs(&mut self) -> Result<Vec<super::super::driver::Tab>, Failure> {
             Bare {
                 url: "https://shop.example/cart?id=7".into(),
-                ..Default::default()
             }
             .tabs()
         }
@@ -1838,7 +1713,7 @@ mod tests {
             unreachable!()
         }
         fn screenshot(&mut self) -> Result<(Value, Vec<u8>), Failure> {
-            Ok((json!({}), Vec::new()))
+            unreachable!()
         }
         fn close(&mut self) -> Value {
             unreachable!()

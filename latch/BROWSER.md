@@ -506,9 +506,8 @@ changed, `events` (a dialog, a new tab, a download, or an `http_error`: a
 page load, XHR or fetch of the page's that the site answered with an
 error status, such as a sign-in's 429, by its status, origin and any
 `retry_after`, at most 5 between two answers), and `screenshot`: the handle `{"request": R, "shot": N}` of a
-screenshot taken after it, or `{"suppressed": true}` after a vault fill,
-while a filled value is on the page or when a card number filled in the
-session could not be masked in it) and `page` (snapshot, URL, title, up to 40 lines, the element
+screenshot taken after it, or `{"suppressed": true}` after a vault fill or
+while a filled value is on the page) and `page` (snapshot, URL, title, up to 40 lines, the element
 list, bounded as every answer's is). A plan that stopped before sending any
 action reads no new snapshot: its `page` is the tab's URL and title with a
 `note` saying so, and a ref still names the last page latch returned (a
@@ -576,11 +575,10 @@ with `latch audit shot RECORD N --output F` (`--host H` from another of
 their machines): the host finds it by the record's session hash, request
 and shot, and sends it only if its sha256 is the one the record kept. A
 request's journal and screenshots are kept 7 days, after its session
-closes too. latch takes no screenshot while a value filled from the vault
-is on the page, and none of a fill step; it masks the number of a card
-filled in the session wherever the page shows it as text, and takes none
-when it can't. A number drawn in an image or canvas isn't found; typed
-text and the rest of the page can show.
+closes too. latch doesn't redact a screenshot's pixels: it takes none
+while a value filled from the vault is on the page, and none of a fill
+step, but typed text and the rest of the page can show, a card's number
+included if the page prints it after the fill ([VAULT.md](VAULT.md)).
 
 **Removed forms.** `act` on a name or description, `act --expect`,
 `act --steps`, `act click --at X,Y`, `find "<description>"` and

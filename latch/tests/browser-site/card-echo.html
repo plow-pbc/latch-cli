@@ -1,16 +1,11 @@
 <!doctype html><title>latch card echo test</title>
 <!-- A checkout that shows the card back: a preview of the number as it is
      typed, and, on Pay, a confirmation on the same page with the whole
-     number twice (once inside an element of its own), outlined so that
-     even clear text would show it, and a field named after it, as a
-     careless shop might. Nothing is sent anywhere.
-     #seen lists what the confirmation showed each time it changed, as
-     latch masks it for a picture and puts it back: [dots] or [number].
-     With ?strip the page puts the number back as soon as latch masks it. -->
-<style>#done { -webkit-text-stroke: 1px black; }</style>
+     number, its last four digits on their own, and a field named after
+     the number, as a careless shop might. Nothing is sent anywhere. -->
 <h1>Checkout</h1>
 <p>Total $10.00</p>
-<p id="preview">•••• •••• •••• ••••</p>
+<p id="preview"></p>
 <form id="pay">
   <p><label>Card number <input name="cc-number" autocomplete="cc-number" inputmode="numeric"></label></p>
   <p><label>Expiry <input name="cc-exp" autocomplete="cc-exp" placeholder="MM / YY"></label></p>
@@ -18,34 +13,19 @@
   <p><button type="submit">Pay $10.00</button></p>
 </form>
 <p id="done"></p>
-<p id="seen"></p>
+<p id="last"></p>
 <script>
   const form = document.getElementById('pay');
   const number = form.elements['cc-number'];
   const spaced = () => number.value.replace(/\D/g, '').replace(/(\d{4})(?=\d)/g, '$1 ');
-  let paid = '';
   number.addEventListener('input', () => { preview.textContent = spaced(); });
   form.addEventListener('submit', (event) => {
     event.preventDefault();
-    paid = spaced();
-    render();
+    done.textContent = 'Paid $10.00 with card ' + spaced();
+    last.textContent = 'Visa ending in ' + spaced().slice(-4);
     const nickname = document.createElement('input');
     nickname.setAttribute('aria-label', 'Nickname for card ' + spaced());
     done.after(nickname);
     form.reset();
   });
-  const render = () => {
-    const again = document.createElement('span');
-    again.textContent = '(' + paid + ')';
-    done.replaceChildren('Paid $10.00 with card ' + paid + ' ', again);
-  };
-  const strip = new URLSearchParams(location.search).has('strip');
-  new MutationObserver(() => {
-    const dots = !/\d{4}/.test(done.textContent);
-    if (strip && done.textContent.includes('\u2022')) {
-      render();
-      return;
-    }
-    seen.textContent += dots ? '[dots]' : '[number]';
-  }).observe(done, { characterData: true, childList: true, subtree: true });
 </script>

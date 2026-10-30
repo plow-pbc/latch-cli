@@ -594,8 +594,7 @@ pub async fn run(
 /// `name` (`final`, or an action's number), taken by worker call `op`: its
 /// handle, which `do --history R --shot <name>` fetches, and what the audit
 /// records of it. None if the page could not be shot, or (`shot`) a value
-/// latch filled from the vault is on it; a card number filled in the
-/// session is masked in it, and None if it could not be.
+/// latch filled from the vault is on it.
 async fn keep_shot(
     browsers: &Browsers,
     entry: &Entry,
@@ -608,7 +607,7 @@ async fn keep_shot(
         .agent_session()
         .await
         .ok()?
-        .call(json!({"op": op, "cards": entry.card_numbers()}))
+        .call(json!({"op": op}))
         .await
         .ok()?;
     let png = reply.bytes?;

@@ -503,68 +503,6 @@
     return holding();
   };
 
-  // Card numbers a page shows, masked for a screenshot. latch's own code
-  // gives the numbers of the cards filled in the session (this world is
-  // latch's: the page can't read them here). An element holds one when
-  // its text has the number's digits with no more between two of them
-  // than spaces (of any length), invisible characters and up to 3 other
-  // marks, as host-side masking reads them, and no element inside it
-  // does; a field holds one by its value. A holder's digits, in its text
-  // and all inside it or in its value, are replaced by dots until
-  // `unmask` puts them back: the picture then shows no number, however the
-  // page paints its text.
-  const plain = (text) => (text || '').replace(/\p{Cf}/gu, '').replace(/\s+/g, ' ');
-  const cardPattern = (digits) => new RegExp([...digits].join('[^\\p{L}\\p{N}]{0,3}'), 'u');
-  const holders = (cards) => {
-    const patterns = cards.map(cardPattern);
-    const shows = (text) => patterns.some((pattern) => pattern.test(plain(text)));
-    const found = [];
-    const walk = (el) => {
-      const inner = [...el.children].filter((child) => shows(child.textContent));
-      if (!inner.length) found.push(el);
-      inner.forEach(walk);
-    };
-    if (document.body && shows(document.body.textContent)) walk(document.body);
-    for (const el of document.querySelectorAll('input, textarea')) if (shows(el.value)) found.push(el);
-    return found;
-  };
-  let masked = [];
-  const dotted = (text) => text.replace(/\d/g, '\u2022');
-  // Whether no element shows one of `cards`.
-  const cardsMasked = (cards) => holders(cards).length === 0;
-  const mask = (el) => {
-    if (el.localName === 'input' || el.localName === 'textarea') {
-      masked.push({ el, value: el.value });
-      el.value = dotted(el.value);
-      return;
-    }
-    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
-    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-      if (!/\d/.test(node.data)) continue;
-      masked.push({ node, data: node.data });
-      node.data = dotted(node.data);
-    }
-  };
-  // Masks every element that shows one of `cards`, and again while one
-  // does (one whose own text repeats a number inside it shows it once the
-  // inner one is masked): how many, and whether none shows one now.
-  const maskCards = (cards) => {
-    let found = 0;
-    for (let round = 0, now = holders(cards); round < 8 && now.length; round++, now = holders(cards)) {
-      found += now.length;
-      now.forEach(mask);
-    }
-    return { found, hidden: cardsMasked(cards) };
-  };
-  const unmask = () => {
-    for (const { el, value, node, data } of masked.reverse()) {
-      if (node) node.data = data;
-      else el.value = value;
-    }
-    masked = [];
-    return true;
-  };
-
   // Non-secret fields as lines, for a judgement of what the page shows.
   const FIELD_ROLES = ['textbox', 'searchbox', 'combobox', 'spinbutton', 'checkbox', 'radio'];
   const fields = (max) => [...document.querySelectorAll(INTERACTIVE)]
@@ -771,9 +709,6 @@
       const body = document.body ? document.body.innerText : '';
       return { text: body.length > max ? body.slice(0, max) : body, truncated: body.length > max };
     },
-    maskCards,
-    cardsMasked,
-    unmask,
     controls,
     stageMark,
     fillTarget,
