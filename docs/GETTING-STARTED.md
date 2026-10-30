@@ -112,7 +112,11 @@ each is skipped once done, so you can run setup again at any time:
    has no Google account yet, it shows a link and a QR code to sign in.
 3. **On a Mac, turn on Messages and Contacts.** These need Full Disk Access
    for the Plow Latch app.
-4. **Start the host** (`latch serve -d`), if you say yes.
+4. **Set rules for your agents**, when there are none yet: a family
+   assistant's, a work assistant's (the same two the Mac app offers), or none
+   for now (`latch rules set --preset family`, or `work`). Enter takes the
+   family assistant's.
+5. **Start the host** (`latch serve -d`), if you say yes.
 
 `latch setup --status` lists the same steps as JSON and changes nothing.
 
@@ -289,7 +293,9 @@ latch rules edit --agent my-agent    # rules for one agent only
 latch rules show
 ```
 
-`latch rules set TEXT` sets them without an editor. Your rules stay in force
+`latch rules set TEXT` sets them without an editor, and
+`latch rules set --preset family` (or `work`) to the rules setup and the Mac
+app offer. Your rules stay in force
 when you ask in chat, and they can restrict everyday work too, for example
 "Do not read or search this Mac's Messages."
 

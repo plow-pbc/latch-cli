@@ -1962,6 +1962,40 @@ fn use_plow(state: &Path, url: &str) {
     config["api_url"] = json!(url);
     fs::write(&config_path, config.to_string()).unwrap();
 }
+/// `rules set --preset` saves the preset's text, as `setup` offers it, and
+/// with `--revision none` only while there are no rules yet.
+#[test]
+fn rules_set_a_preset_only_where_there_are_none() {
+    let (_dir, state, _key) = owner_host();
+    let set = latch(
+        &state,
+        &["rules", "set", "--preset", "work", "--revision", "none"],
+        &[],
+    );
+    assert_eq!(set.status.code(), Some(0), "{set:?}");
+    let saved = fs::read_to_string(state.join("rules/host.txt")).unwrap();
+    assert!(
+        saved.starts_with("Allow my work assistant to read and send my email"),
+        "{saved}"
+    );
+    let again = latch(
+        &state,
+        &["rules", "set", "--preset", "family", "--revision", "none"],
+        &[],
+    );
+    assert_ne!(again.status.code(), Some(0), "{again:?}");
+    assert_eq!(
+        fs::read_to_string(state.join("rules/host.txt")).unwrap(),
+        saved
+    );
+    let both = latch(
+        &state,
+        &["rules", "set", "Never send email.", "--preset", "work"],
+        &[],
+    );
+    assert_eq!(both.status.code(), Some(2), "{both:?}");
+}
+
 #[test]
 fn rules_on_this_machines_own_host_state_are_set_edited_shown_and_audited() {
     const ADA: &str = "0123456789abcdef0123456789abcdef";
@@ -8154,11 +8188,12 @@ fn setup_sets_up_every_connector_with_no_host_running() {
 
     let env = [("LATCH_TEST_ACCESS", Path::new("granted"))];
     let (mut setup, mut typing, shown) = at_its_own_terminal(&host, &["setup"], &env);
-    // Google: yes; on macOS, Messages and Contacts: yes; start latch: no.
+    // Google: yes; on macOS, Messages and Contacts: yes; rules: none;
+    // start latch: no.
     let typed: &[u8] = if cfg!(target_os = "macos") {
-        b"y\ny\nn\n"
+        b"y\ny\n3\nn\n"
     } else {
-        b"y\nn\n"
+        b"y\n3\nn\n"
     };
     typing.write_all(typed).unwrap();
     let all = shows(&shown, "Done. Run `latch setup` again any time.");
@@ -9273,12 +9308,20 @@ fn setup_without_a_terminal_names_the_first_step_setup_status_lists() {
     )
     .unwrap();
     let mut nexts = Vec::new();
+    // The owner with Google but no rules, then with rules too.
+    let ruled = dir.path().join("ruled");
+    fs::create_dir_all(&ruled).unwrap();
+    let ruled = owner_host_on(&plow, &ruled);
+    fs::copy(ready.join("plugins.json"), ruled.join("plugins.json")).unwrap();
+    fs::create_dir_all(ruled.join("rules")).unwrap();
+    fs::write(ruled.join("rules/host.txt"), "Agents may read my mail.").unwrap();
     // The owner without a Google account in Plow, then with one.
     for (state, google) in [
         (&fresh, false),
         (&owner, false),
         (&owner, true),
         (&ready, true),
+        (&ruled, true),
     ] {
         plow.state.lock().unwrap().google = google.then(|| "google-token".into());
         let listed = latch(state, &["setup", "--status"], &[]);
@@ -9301,6 +9344,8 @@ fn setup_without_a_terminal_names_the_first_step_setup_status_lists() {
         let error = one_error_line(&String::from_utf8_lossy(&output.stderr), Some(2));
         assert_eq!(error["error"]["code"], "no_terminal", "{error}");
         assert_eq!(error["error"]["next"], expected, "{listed}");
+        // Setup with no terminal sets no rules.
+        assert_eq!(state.join("rules").exists(), *state == ruled, "{listed}");
         nexts.push(error["error"]["next"].as_str().unwrap().to_string());
     }
     assert_eq!(
@@ -9309,6 +9354,7 @@ fn setup_without_a_terminal_names_the_first_step_setup_status_lists() {
             "latch login --events",
             "latch plugins enable google --events",
             "latch plugins enable google",
+            "latch rules set --preset family --revision none",
             "latch serve -d"
         ]
     );
@@ -10963,6 +11009,8 @@ mod lifecycle {
             ));
             terminal.write_all(b"n\n").unwrap();
         }
+        all.push_str(&shows(&shown, "Rules for your agents? [1/2/3]"));
+        terminal.write_all(b"3\n").unwrap();
         all.push_str(&shows(&shown, "Start latch now? [Y/n]"));
         terminal.write_all(b"y\n").unwrap();
         all.push_str(&shows(&shown, "Run `latch setup` again any time."));

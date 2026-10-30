@@ -1161,6 +1161,10 @@ const ENTRIES: &[Entry] = &[
                 ],
             ),
             ex(
+                "Start from the rules the Mac app offers a family assistant, only if there are none yet",
+                &["rules", "set", "--preset", "family", "--revision", "none"],
+            ),
+            ex(
                 "Save over the rules only if they are still at the revision `rules show` gave (`none`: there were none); otherwise stale_revision, with the revision they are at",
                 &["rules", "set", "--revision", "9f2c…", "--file", "rules.txt"],
             ),
@@ -1478,9 +1482,9 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "setup",
         runs_on: |_| RunsOn::Local,
-        output: "At a terminal, each step and the latch command it ran; skipped steps say so. Without one, `no_terminal`, whose `next` is the first step not done. With --status, at a terminal or not, `steps`: each step's `step` (login, each connector, host), `state` (done, needed or blocked), `reason`, `args` (the words after `latch` that do it, null once done, or while something else must happen first) and, for a connector, `enabled` and `ready` (enabled and served by a running host). For the owner, the Google step asks Plow (read only) whether Google is connected there: it adds `accounts`, and `connect_url` (where to connect one) while none is; it is blocked when Plow cannot be asked. With an account connected it also asks Plow for their credentials, for up to 5 s, to add `needs_sign_in`: the accounts Google wants the owner to sign in with again (the step is needed when none works); said only when there are some. With --check-access, on a Mac, the Messages and Contacts steps add `access` (granted, not_granted or unknown): whether Plow Latch has Full Disk Access, checked once as the host would and saving nothing.",
+        output: "At a terminal, each step and the latch command it ran; skipped steps say so. Without one, `no_terminal`, whose `next` is the first step not done. With --status, at a terminal or not, `steps`: each step's `step` (login, each connector, rules, host), `state` (done, needed or blocked), `reason`, `args` (the words after `latch` that do it, null once done, or while something else must happen first) and, for a connector, `enabled` and `ready` (enabled and served by a running host). For the owner, the Google step asks Plow (read only) whether Google is connected there: it adds `accounts`, and `connect_url` (where to connect one) while none is; it is blocked when Plow cannot be asked. With an account connected it also asks Plow for their credentials, for up to 5 s, to add `needs_sign_in`: the accounts Google wants the owner to sign in with again (the step is needed when none works); said only when there are some. With --check-access, on a Mac, the Messages and Contacts steps add `access` (granted, not_granted or unknown): whether Plow Latch has Full Disk Access, checked once as the host would and saving nothing.",
         effect: Repeatable(
-            "logs in and enables connectors with no host running, then starts the host if the owner says so; done steps are skipped. --status changes nothing",
+            "logs in, enables connectors and, when there are none, sets rules for agents from the preset the owner picks, with no host running, then starts the host if the owner says so; done steps are skipped. --status changes nothing",
         ),
         owner_only: false,
         connector: None,

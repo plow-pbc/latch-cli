@@ -34,8 +34,10 @@ browser's risky steps.
   Earlier steps of a browser plan may already have acted.
 
 **Your rules** are plain words, kept on each host: one text for every agent,
-and one for each agent. Edit them on the host, or from another of your
-computers with `--host`:
+and one for each agent. A new host has none until setup offers a family or
+a work assistant's to start from (`latch rules set --preset family`, or
+`work`). Edit them on the host, or from another of your computers with
+`--host`:
 
 ```sh host
 latch rules edit

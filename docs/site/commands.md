@@ -126,7 +126,7 @@ latch browser open --host my-mac https://example.com
 
 | Command | For | What it does, and an example |
 |---|---|---|
-| `latch rules set` | Host | Replace the rules with TEXT, or with the text of --file F (- reads stdin). Owner only.<br>Let agents read mail, never send it: `latch rules set 'Agents may search my mail but never send any.'` |
+| `latch rules set` | Host | Replace the rules with TEXT, with the text of --file F (- reads stdin), or with a preset's. Owner only.<br>Let agents read mail, never send it: `latch rules set 'Agents may search my mail but never send any.'` |
 | `latch rules edit` | Host | Change the rules in $EDITOR; saved only if they did not change meanwhile. Owner only.<br>Edit one agent's rules: `latch rules edit --agent ada` |
 | `latch rules clear` | Host | Remove the rules. Owner only. |
 | `latch rules show` | Host | The rules for every agent and each agent's own, with their revisions. Owner only. |
