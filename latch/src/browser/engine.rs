@@ -525,6 +525,7 @@ fn walk(root: &Path, dir: &Path, entries: &mut Vec<(Vec<u8>, PathBuf)>) -> io::R
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
     use super::*;
@@ -550,6 +551,7 @@ mod tests {
 
     /// The same tree through `scripts/cft-pin.py`'s `tree_hash` gives this
     /// value, so the pin the script prints is the one latch checks.
+    #[cfg(unix)]
     #[test]
     fn tree_hash_matches_the_pin_script() {
         let dir = tempfile::tempdir().unwrap();
@@ -653,6 +655,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "browsers on Windows come with #363")]
     fn with_no_engine_named_chrome_runs_if_it_checks_out_else_camoufox() {
         let none = tempfile::tempdir().unwrap();
         let missing = default(none.path()).unwrap_err();
@@ -701,6 +704,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "browsers on Windows come with #363")]
     fn a_missing_engine_names_the_ones_the_host_has_its_default_and_its_setup() {
         let state = tempfile::tempdir().unwrap();
         let none = verify(state.path(), "camoufox").unwrap_err();
@@ -744,6 +748,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "browsers on Windows come with #363")]
     fn a_changed_camoufox_part_is_refused_before_launch() {
         let state = tempfile::tempdir().unwrap();
         let missing = CAMOUFOX.verified(state.path()).err().unwrap();

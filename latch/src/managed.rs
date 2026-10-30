@@ -949,7 +949,7 @@ mod platform {
         // SAFETY: four FILETIMEs to write into, for a live handle of ours.
         let ok =
             unsafe { GetProcessTimes(process, &mut created, &mut exited, &mut kernel, &mut user) };
-        (ok != 0).then(|| (created.dwHighDateTime as u64) << 32 | created.dwLowDateTime as u64)
+        (ok != 0).then_some((created.dwHighDateTime as u64) << 32 | created.dwLowDateTime as u64)
     }
 
     /// The service's process, while it runs: a handle that may wait on it

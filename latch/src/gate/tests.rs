@@ -9,7 +9,9 @@ use jiff::Timestamp;
 use serde_json::{Value, json};
 
 use super::fake::{self, AGENT, LINE, World, agent_self, member, message, owner};
-use super::rules::{RULES_DIR, RuleFiles, Rules, RulesSource};
+#[cfg(unix)]
+use super::rules::RULES_DIR;
+use super::rules::{RuleFiles, Rules, RulesSource};
 use super::*;
 use crate::failure::Exit;
 use crate::model::{Asked, CallFailed, CallMeta, system_one};
@@ -1034,6 +1036,7 @@ async fn every_held_out_probe_asks_what_v0_asks() {
     }
 }
 
+#[cfg(unix)]
 #[test]
 fn serve_refuses_rules_it_could_not_trust_or_use() {
     let dir = tempfile::tempdir().unwrap();
@@ -1098,6 +1101,7 @@ fn serve_refuses_rules_it_could_not_trust_or_use() {
     assert_eq!(refused(), None);
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn rules_files_are_read_at_each_judgment() {
     let dir = tempfile::tempdir().unwrap();

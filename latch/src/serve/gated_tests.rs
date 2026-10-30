@@ -229,12 +229,9 @@ impl TestHost {
     }
 
     async fn local_request(&self, request: Request) -> Response {
-        let (mine, hosts) = tokio::net::UnixStream::pair().unwrap();
-        tokio::spawn(serve_local(
-            self.host.clone(),
-            hosts,
-            crate::transport::Admission {},
-        ));
+        let (mut mine, hosts, admission) = crate::transport::test_pair();
+        tokio::spawn(serve_local(self.host.clone(), hosts, admission));
+        crate::transport::test_admit(&mut mine).await;
         let (mut recv, mut send) = mine.into_split();
         wire::write_frame(&mut send, &serde_json::to_vec(&request).unwrap())
             .await
@@ -466,6 +463,7 @@ async fn the_answer_does_not_wait_for_the_dashboard_name_lookup() {
 }
 
 #[tokio::test]
+#[cfg_attr(windows, ignore = "its program is /bin/sh")]
 async fn the_owners_reply_lets_the_retry_through_and_every_call_is_judged() {
     let t = start(a_chat(covered_after_a_yes)).await;
     let agent = t.caller("agent").await;
@@ -542,6 +540,7 @@ pub(super) fn always_covered(_: &Value) -> Option<[f64; 3]> {
     Some([0.9, 0.08, 0.02])
 }
 
+#[cfg(unix)]
 fn replace_the_judged_write_folder(state: &Value) -> Option<[f64; 3]> {
     let path = Path::new(state["proposed_action"]["writes"][0].as_str().unwrap());
     // Asked once for each layer: the folder is swapped at the first.
@@ -554,6 +553,7 @@ fn replace_the_judged_write_folder(state: &Value) -> Option<[f64; 3]> {
     always_covered(state)
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn a_write_path_retargeted_after_judgment_is_refused() {
     let t = start(a_chat(replace_the_judged_write_folder)).await;
@@ -573,6 +573,7 @@ async fn a_write_path_retargeted_after_judgment_is_refused() {
     assert_eq!(refusal(&answer).1, "bad_path");
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn unusual_and_missing_caches_do_not_fail_exec_or_grant_aliases() {
     let t = start(a_chat(always_covered)).await;
@@ -631,6 +632,7 @@ async fn a_repeated_google_change_is_judged_afresh_with_no_history() {
 }
 
 #[tokio::test]
+#[cfg_attr(windows, ignore = "the judge is shown a verbatim (\\\\?\\) path")]
 async fn a_put_is_judged_at_its_resolved_path_and_a_short_one_changes_nothing() {
     let t = start(a_chat(always_covered)).await;
     let agent = t.caller("agent").await;
@@ -657,6 +659,7 @@ async fn a_put_is_judged_at_its_resolved_path_and_a_short_one_changes_nothing() 
     assert_eq!(t.judged(), 2);
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn a_get_reads_any_readable_path_in_home_and_never_a_hidden_one() {
     let t = start(a_chat(always_covered)).await;
@@ -688,6 +691,7 @@ async fn a_get_reads_any_readable_path_in_home_and_never_a_hidden_one() {
 }
 
 #[tokio::test]
+#[cfg_attr(windows, ignore = "its program is /bin/sh")]
 async fn an_exec_the_host_denies_is_refused_without_asking_the_judge() {
     let every_agent = DenyExec::from_flags(&[crate::cli::EVERY_AGENT.to_string()]);
     let t = start_denying(a_chat(always_covered), every_agent).await;
@@ -712,6 +716,7 @@ fn exec_stdin(stdin: &[u8]) -> Value {
 }
 
 #[tokio::test]
+#[cfg_attr(windows, ignore = "its program is /bin/sh")]
 async fn exec_paths_are_validated_before_judgment_and_created_only_after_allow() {
     let t = start(a_chat(covered_after_a_yes)).await;
     let agent = t.caller("agent").await;
@@ -753,6 +758,7 @@ async fn exec_paths_are_validated_before_judgment_and_created_only_after_allow()
 }
 
 #[tokio::test]
+#[cfg_attr(windows, ignore = "its program is /bin/sh")]
 async fn exec_reads_home_but_writes_only_declarations_and_caches() {
     let t = start(a_chat(always_covered)).await;
     let home = &t.host.workers.home;
@@ -833,6 +839,7 @@ fn kept(t: &TestHost, text: &str) -> bool {
 }
 
 #[tokio::test]
+#[cfg_attr(windows, ignore = "its program is /bin/sh")]
 async fn a_program_cannot_turn_its_stderr_into_a_worker_error_or_audit_content() {
     let t = start(a_chat(always_covered)).await;
     let marker = "program-output-must-not-be-audit-content";
@@ -849,6 +856,7 @@ async fn a_program_cannot_turn_its_stderr_into_a_worker_error_or_audit_content()
 }
 
 #[tokio::test]
+#[cfg_attr(windows, ignore = "its program is /bin/sh")]
 async fn secret_env_reaches_only_the_program_and_preserves_argv_and_stdin() {
     let t = start(a_chat(always_covered)).await;
     let agent = t.caller("agent").await;
@@ -990,6 +998,7 @@ async fn invalid_or_reserved_secret_names_never_reach_the_judge() {
 }
 
 #[tokio::test]
+#[cfg_attr(windows, ignore = "its program is /bin/sh")]
 async fn an_agents_exec_stdin_is_judged_with_its_argv_and_never_kept() {
     let t = start(a_chat(always_covered)).await;
     let agent = t.caller("agent").await;
@@ -1084,6 +1093,7 @@ async fn owners_cannot_select_an_agents_plow_chat() {
 }
 
 #[tokio::test]
+#[cfg_attr(windows, ignore = "its program is /bin/sh")]
 async fn the_owners_own_devices_are_judged_as_the_owner() {
     let t = start(a_chat(the_owners_request)).await;
     let device = t.caller("device").await;
@@ -1388,6 +1398,7 @@ async fn an_agent_with_no_chat_and_no_rules_is_judged_by_the_built_in_policy() {
 /// agent gets `owner_only` for each, and the agent's next judgment reads
 /// what the owner set.
 #[tokio::test]
+#[cfg_attr(windows, ignore = "its program is /bin/sh")]
 async fn the_owners_rules_commands_work_over_the_connection_and_never_for_an_agent() {
     let world = World {
         decide: Some(always_covered),
@@ -1763,6 +1774,7 @@ async fn a_host_whose_binary_was_replaced_runs_nothing_for_callers_or_phone_link
     assert_eq!(refused, [(Some("deny"), Some("host_upgraded")); 3]);
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn a_host_whose_binary_was_replaced_says_which_build_is_there_on_its_dashboard() {
     use std::os::unix::fs::PermissionsExt;
@@ -2292,6 +2304,7 @@ async fn local_vault_edits_reach_a_running_hosts_release_path() {
 }
 
 #[tokio::test]
+#[cfg_attr(windows, ignore = "its program is /bin/sh")]
 async fn an_exec_is_audited_whole_and_shown_with_its_credentials_hidden() {
     let t = start(a_chat(always_covered)).await;
     let agent = t.caller("agent").await;

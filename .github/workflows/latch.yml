@@ -379,6 +379,32 @@ jobs:
           tar -xzf latch-v0.0.0-smoke-${{ matrix.target }}.tar.gz
           sh scripts/macos-smoke.sh latch-v0.0.0-smoke-${{ matrix.target }}
 
+  # Windows: latch's native build, its unit tests, clippy and rustfmt, with
+  # no secrets. Tests that need a Unix (sh scripts, Unix sockets, file
+  # modes, symlinks) are cfg(unix); a few more are ignored on Windows with
+  # their reason, which the run's output names. Not in ci-required yet.
+  windows:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: latch
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source-ref || github.sha }}
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: latch -> target
+          shared-key: windows-x64
+      - run: cargo fmt --check
+      - run: cargo build --locked
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked
+
   ci-required:
     name: ${{ inputs.source-ref != '' && 'ci-benchmark' || 'ci-required' }}
     if: always() && (github.ref != 'refs/heads/ci-speed' || (github.event_name == 'workflow_dispatch' && inputs.mode != 'probe'))

@@ -305,6 +305,7 @@ mod tests {
         assert!(pending(dir.path()).is_empty());
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_headless_host_has_no_screen_to_hand_off_on() {
         assert!(!screen(true));

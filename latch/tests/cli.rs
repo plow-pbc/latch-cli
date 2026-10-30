@@ -1,6 +1,10 @@
 //! Runs the real `latch` binary against a tiny fake Plow, to check what an
 //! agent actually sees: stdout, stderr, exit codes and the saved state.
 
+// Unix only: these drive latch through ptys, signals and file modes; on
+// Windows the unit tests and the Windows VM checks (latch/windows) cover it.
+#![cfg(unix)]
+
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;

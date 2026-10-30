@@ -455,6 +455,7 @@ mod platform {
     mod tests {
         use super::*;
 
+        #[cfg(unix)]
         #[test]
         fn a_signature_macos_could_not_read_fails_and_is_never_taken_as_unsigned() {
             let refused = chosen(Err("the task's signature is invalid".into()))
@@ -487,6 +488,7 @@ mod platform {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
@@ -540,6 +542,7 @@ mod tests {
         })
     }
 
+    #[cfg(unix)]
     #[test]
     fn this_dev_build_keeps_secrets_in_owner_only_files() {
         let dir = tempfile::tempdir().unwrap();
@@ -615,6 +618,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_deleted_folder_s_items_are_found_by_the_path_they_were_filed_under() {
         let parent = tempfile::tempdir().unwrap();

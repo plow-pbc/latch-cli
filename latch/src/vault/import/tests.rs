@@ -650,6 +650,7 @@ fn a_renewed_card_or_a_note_with_another_custom_field_is_new() {
     assert_eq!((again.saved, again.duplicates), (0, 2));
 }
 
+#[cfg(unix)]
 #[test]
 fn an_import_writes_the_vault_once_and_a_failed_write_saves_no_row() {
     use std::os::unix::fs::PermissionsExt;
