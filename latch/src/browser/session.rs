@@ -56,7 +56,7 @@ impl Session {
     }
 
     /// A runtime with this one session in it, for tests that drive the
-    /// worker directly.
+    /// worker directly, on a profile of its own.
     #[cfg(all(test, any(target_os = "macos", feature = "linux-browser-tests")))]
     pub async fn start_with(
         latch: &std::path::Path,
@@ -65,8 +65,11 @@ impl Session {
         idle: std::time::Duration,
         headless: bool,
     ) -> Result<Self, Failure> {
-        let runtime =
-            Arc::new(Runtime::start_with(latch, state_dir, engine, idle, headless).await?);
+        let principal = format!("test{:08x}", rand::random::<u32>());
+        let profile = super::profile::make(super::profile::of(state_dir, &principal, engine)?)?;
+        let runtime = Arc::new(
+            Runtime::start_with(latch, state_dir, engine, &profile, idle, headless).await?,
+        );
         Ok(Session::new(runtime))
     }
 

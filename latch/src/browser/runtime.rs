@@ -1,9 +1,9 @@
 //! A session runtime as the host keeps it: the browser worker (`worker.rs`)
-//! one session runs on, started on a profile of its own (`profile.rs`) when
+//! one session runs on, started on its caller's profile (`profile.rs`) when
 //! the session opens, and what the host knows of it: the fill pause. The
-//! profile is removed when the runtime ends.
+//! profile outlives the runtime.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU32};
 use std::time::Duration;
@@ -57,9 +57,9 @@ struct Worker {
     /// runtime ends, by its `Drop`.
     #[cfg_attr(not(all(test, target_os = "macos")), allow(dead_code))]
     scratch: TempDir,
-    /// The session's profile, removed after the worker is stopped.
+    /// The session's profile folder.
     #[cfg_attr(not(all(test, target_os = "macos")), allow(dead_code))]
-    profile: TempDir,
+    profile: PathBuf,
 }
 
 /// A call's answer: the agent's result, the audit's record of it, and a
@@ -71,13 +71,18 @@ pub struct Reply {
 }
 
 impl Runtime {
-    /// Starts the runtime on `engine` (`cft` or `camoufox`), on a new
-    /// profile, and waits until its browser is up; with `headless`, its
-    /// engine has no window.
-    pub async fn start(state_dir: &Path, engine: &str, headless: bool) -> Result<Self, Failure> {
+    /// Starts the runtime on `engine` (`cft` or `camoufox`), on the
+    /// profile in folder `profile`, and waits until its browser is up; with
+    /// `headless`, its engine has no window.
+    pub async fn start(
+        state_dir: &Path,
+        engine: &str,
+        profile: &Path,
+        headless: bool,
+    ) -> Result<Self, Failure> {
         let latch = std::env::current_exe()
             .map_err(|err| Failure::new(code::engine_failed, err.to_string()))?;
-        Self::start_with(&latch, state_dir, engine, IDLE, headless).await
+        Self::start_with(&latch, state_dir, engine, profile, IDLE, headless).await
     }
 
     /// `start`, with `latch` as the latch binary to run the worker.
@@ -85,6 +90,7 @@ impl Runtime {
         latch: &Path,
         state_dir: &Path,
         engine: &str,
+        profile: &Path,
         idle: Duration,
         headless: bool,
     ) -> Result<Self, Failure> {
@@ -93,7 +99,6 @@ impl Runtime {
             .prefix("latch-browser-")
             .tempdir()
             .map_err(failed)?;
-        let profile = super::profile::make(state_dir).map_err(failed)?;
         let mut command = Command::new(latch);
         command
             .arg("--state-dir")
@@ -102,7 +107,7 @@ impl Runtime {
             .arg("--engine")
             .arg(engine)
             .arg("--profile")
-            .arg(profile.path())
+            .arg(profile)
             .arg("--scratch")
             .arg(scratch.path())
             .arg("--idle-timeout")
@@ -142,7 +147,7 @@ impl Runtime {
             stdin,
             stdout,
             scratch,
-            profile,
+            profile: profile.to_path_buf(),
         };
         let ready = worker.answer().await?;
         Ok(Runtime {
@@ -170,8 +175,7 @@ impl Runtime {
             .try_lock()
             .expect("no call under way")
             .profile
-            .path()
-            .to_path_buf()
+            .clone()
     }
 
     /// Whether the worker is still running: one whose session sat idle has
@@ -296,7 +300,7 @@ mod tests {
         let ready = r#"echo '{"ok": {"pid": 1}}'"#;
         std::fs::write(&worker, format!("#!/bin/sh\n{ready}\n{script}\n")).unwrap();
         std::fs::set_permissions(&worker, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let mut runtime = Runtime::start_with(&worker, dir.path(), "cft", IDLE, true)
+        let mut runtime = Runtime::start_with(&worker, dir.path(), "cft", dir.path(), IDLE, true)
             .await
             .unwrap();
         runtime.within = |_| Duration::from_millis(300);

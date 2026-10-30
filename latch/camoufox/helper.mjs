@@ -353,17 +353,21 @@ const THROUGH_PROXY = {
 
 async function launch(params) {
   reader = params.reader;
-  // One fingerprint for the session: a site sees the same device for the
-  // whole task, and a new one the next.
-  const options = await launchOptions({
-    os: params.os,
-    headless: params.headless,
-    main_world_eval: true,
-    exclude_addons: ["UBO"],
-    geoip: false,
-    env: {},
-  });
-  const identity = { env: options.env, prefs: options.firefoxUserPrefs };
+  // The profile's fingerprint, made on its first launch: a site sees the
+  // same device in every one of the agent's sessions.
+  let identity = params.identity;
+  if (!identity) {
+    const options = await launchOptions({
+      os: params.os,
+      headless: params.headless,
+      main_world_eval: true,
+      exclude_addons: ["UBO"],
+      geoip: false,
+      enable_cache: true,
+      env: {},
+    });
+    identity = { env: options.env, prefs: options.firefoxUserPrefs };
+  }
   context = await firefox.launchPersistentContext(params.data, {
     executablePath: params.executable,
     headless: params.headless,
@@ -376,6 +380,10 @@ async function launch(params) {
       "widget.macos.allow-native-select": !params.headless,
       // Never the OS's client certificates: on macOS, the owner's keychain.
       "security.osclientcerts.autoload": false,
+      // Each session starts on a blank page: the profile keeps its sites'
+      // storage, never the last session's tabs.
+      "browser.startup.page": 0,
+      "browser.sessionstore.resume_from_crash": false,
     },
     proxy: { server: params.proxy },
     acceptDownloads: true,
@@ -428,7 +436,7 @@ async function launch(params) {
     }
   }
   session.active = adopt(page);
-  return {};
+  return { identity };
 }
 
 async function title(page) {

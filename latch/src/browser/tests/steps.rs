@@ -245,7 +245,7 @@ impl Harness {
         browsers.screen = Some(true);
         browsers.provider = provider;
         let browsers = Arc::new(browsers);
-        let (id, entry) = browsers.open(engine, CALLER, None).await.unwrap();
+        let (id, entry) = browsers.open(engine, CALLER, CALLER, None).await.unwrap();
         Harness {
             browsers,
             entry,

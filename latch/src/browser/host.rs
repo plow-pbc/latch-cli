@@ -1,10 +1,12 @@
 //! The host's side of `latch browser`: the `browser` operation.
 //!
 //! Each `open` starts a new session in a runtime of its own (`runtime.rs`):
-//! a browser and worker on the engine `open` names, on a fresh profile that
-//! lasts as long as the session and is removed with it, on `close`, idle
-//! expiry, a failed launch or the host stopping. Sessions share nothing:
-//! no cookies, logins, tabs, downloads or dialogs.
+//! a browser and worker on the engine `open` names, on its caller's own
+//! profile for that engine (`profile.rs`), which outlives the session: the
+//! agent's next session has its cookies and logins, never its tabs. One
+//! session at a time runs on a profile; another `open` while it is live is
+//! `profile_in_use`. Different agents' sessions share nothing: no cookies,
+//! logins, tabs, downloads or dialogs.
 //!
 //! A session is reachable only with its id, which `open` returns once (128
 //! random bits), and only by the caller that opened it: an id this caller
@@ -86,6 +88,8 @@ pub struct Browsers {
     pub(super) screen: Option<bool>,
     /// Open sessions, by id.
     sessions: Mutex<HashMap<String, Arc<Entry>>>,
+    /// The profiles a session runs on, or is starting on.
+    in_use: Arc<std::sync::Mutex<HashSet<PathBuf>>>,
     /// When this host started: when the sessions open before it ended.
     started: jiff::Timestamp,
     /// Browsers closing after their sessions ended, which nothing waits on
@@ -116,6 +120,18 @@ pub(super) struct Caller<'a> {
     pub(super) key: &'a str,
     pub(super) device: bool,
     pub(super) gate: Option<Gate<'a>>,
+}
+
+impl Caller<'_> {
+    /// Whose browser profile its sessions run on: the principal its gate
+    /// judges (an agent's uid, or the owner), and in the browser's own
+    /// tests its key.
+    fn principal(&self) -> String {
+        match self.gate {
+            Some(gate) => gate.caller.key().to_string(),
+            None => self.key.to_string(),
+        }
+    }
 }
 
 /// A caller that is not one of the owner's devices, and is not judged: a
@@ -159,6 +175,20 @@ pub(super) struct Entry {
     /// The numbers of the cards filled in this session, digits only: what
     /// its answers and journals are masked for.
     pub(super) cards: super::journal::Cards,
+    /// The profile it runs on, until its browser has closed.
+    profile: std::sync::Mutex<Option<InUse>>,
+}
+
+/// A profile a session runs on, or is starting on, until this is dropped.
+struct InUse {
+    set: Arc<std::sync::Mutex<HashSet<PathBuf>>>,
+    profile: PathBuf,
+}
+
+impl Drop for InUse {
+    fn drop(&mut self) {
+        self.set.lock().expect("in use lock").remove(&self.profile);
+    }
 }
 
 impl Entry {
@@ -170,6 +200,11 @@ impl Entry {
             audit.insert("task".into(), json!(task));
         }
         audit.insert("engine".into(), self.runtime.ready["engine"].clone());
+    }
+
+    /// Frees the session's profile for another: its browser has closed.
+    fn free_profile(&self) {
+        self.profile.lock().expect("profile lock").take();
     }
 
     /// The numbers of the cards filled in this session.
@@ -220,6 +255,7 @@ impl Browsers {
             #[cfg(test)]
             screen: None,
             sessions: Mutex::new(HashMap::new()),
+            in_use: Default::default(),
             closing: Default::default(),
             vault,
             running: Default::default(),
@@ -321,6 +357,7 @@ impl Browsers {
         let entry = sessions.get(id)?.clone();
         if !entry.runtime.alive() {
             sessions.remove(id);
+            entry.free_profile();
             super::opened::forget(&self.state_dir, &entry.hash);
             return None;
         }
@@ -365,16 +402,34 @@ impl Browsers {
     }
 
     /// A new session on `engine` (`cft` or `camoufox`) for `caller`, in a
-    /// runtime of its own. Answers the session's id, its only copy outside
-    /// this map, and the session.
+    /// runtime of its own on `principal`'s profile for the engine, unless a
+    /// session already runs on it. Answers the session's id, its only copy
+    /// outside this map, and the session.
     pub(super) async fn open(
         &self,
         engine: &str,
         caller: &str,
+        principal: &str,
         task: Option<&str>,
     ) -> Result<(String, Arc<Entry>), Failure> {
+        // A session that idled out leaves its profile now, not at the sweep.
+        self.sweep().await;
+        // Made only once the engine checks out (`start`).
+        let profile = super::profile::of(&self.state_dir, principal, engine)?;
+        if !self
+            .in_use
+            .lock()
+            .expect("in use lock")
+            .insert(profile.clone())
+        {
+            return Err(profile_in_use(engine));
+        }
+        let in_use = InUse {
+            set: self.in_use.clone(),
+            profile,
+        };
         let launching = Instant::now();
-        let started = self.start(engine).await;
+        let started = self.start(engine, &in_use.profile).await;
         add_time(|phases| &mut phases.launch_ms, launching.elapsed());
         let runtime = Arc::new(started?);
         let session = Session::new(runtime.clone());
@@ -396,34 +451,36 @@ impl Browsers {
             handing: Default::default(),
             judged_sites: Default::default(),
             cards: Default::default(),
+            profile: std::sync::Mutex::new(Some(in_use)),
         });
         self.sessions.lock().await.insert(id.clone(), entry.clone());
         Ok((id, entry))
     }
 
-    async fn start(&self, engine: &str) -> Result<Runtime, Failure> {
+    async fn start(&self, engine: &str, profile: &std::path::Path) -> Result<Runtime, Failure> {
         // Checked here first, outside the worker's sandbox, so that a full
         // hash leaves its receipt and the worker's own check is quick.
         let (state_dir, name) = (self.state_dir.clone(), engine.to_string());
         tokio::task::spawn_blocking(move || super::engine::verify(&state_dir, &name))
             .await
             .expect("the engine check does not panic")?;
+        let profile = &super::profile::make(profile.to_path_buf())?;
         #[cfg(test)]
         if let Some((latch, _)) = &self.test {
             return Runtime::start_with(
                 latch,
                 &self.state_dir,
                 engine,
+                profile,
                 super::runtime::IDLE,
                 self.headless,
             )
             .await;
         }
-        Runtime::start(&self.state_dir, engine, self.headless).await
+        Runtime::start(&self.state_dir, engine, profile, self.headless).await
     }
 
-    /// Forgets the sessions whose runtime ended or that sat idle too long:
-    /// their profiles go with them.
+    /// Forgets the sessions whose runtime ended or that sat idle too long.
     pub async fn sweep(&self) {
         let ids: Vec<String> = self.sessions.lock().await.keys().cloned().collect();
         for id in ids {
@@ -530,7 +587,7 @@ impl Browsers {
 
     /// A session the map no longer has: its browser closes once every
     /// request under way in it has answered (a `wait` or a plan, not only
-    /// the worker call in flight), and its profile goes with it. Neither
+    /// the worker call in flight), and its profile is free again. Neither
     /// waits: the answer is at once.
     fn close_browser(&self, entry: Arc<Entry>) -> Value {
         let mut closing = self.closing.lock().expect("closing lock");
@@ -539,6 +596,7 @@ impl Browsers {
             let _all = entry.calls.write().await;
             let _turn = entry.session.lock().await;
             let _ = tokio::time::timeout(CLOSING, entry.runtime.close()).await;
+            entry.free_profile();
         });
         json!({"closed": true})
     }
@@ -972,17 +1030,24 @@ async fn open(
                 .expect("the engine check does not panic")?
         }
     };
-    open_judged(browsers, caller.key, engine, args, audit).await
+    open_judged(browsers, caller, engine, args, audit).await
 }
 
 async fn open_judged(
     browsers: &Browsers,
-    caller: &str,
+    caller: Caller<'_>,
     engine: &str,
     args: &Value,
     audit: &mut Map<String, Value>,
 ) -> Result<(Value, Option<Vec<u8>>), Failure> {
-    let (id, entry) = browsers.open(engine, caller, args["task"].as_str()).await?;
+    let (id, entry) = browsers
+        .open(
+            engine,
+            caller.key,
+            &caller.principal(),
+            args["task"].as_str(),
+        )
+        .await?;
     entry.note(audit);
     let loaded = worker(browsers, &entry, "open", args, None, audit).await;
     match loaded {
@@ -1198,12 +1263,27 @@ fn not_owner() -> Failure {
     )
 }
 
+fn profile_in_use(engine: &str) -> Failure {
+    let mut failure = Failure::new(
+        code::profile_in_use,
+        format!(
+            "you already have a {} session open on this host, and your browser profile runs \
+             one session at a time: open more tabs in it (`latch browser tab new URL`), or \
+             `latch browser close` it first. `latch browser sessions` lists it; one whose id \
+             is lost closes itself after 30 idle minutes",
+            super::engine::named(engine)
+        ),
+    );
+    failure.next = Some("latch browser tab new URL".into());
+    failure
+}
+
 fn session_ended(started: jiff::Timestamp) -> Failure {
     let at = jiff::Timestamp::from_second(started.as_second()).unwrap_or(started);
     let mut failure = Failure::new(
         code::session_ended,
         format!(
-            "this session ended when the host restarted at {at}: its tabs and sign-ins are gone, \
+            "this session ended when the host restarted at {at}: its tabs are gone, \
              and no retry brings it back; open a new session with `latch browser open URL` \
              and carry on from there"
         ),

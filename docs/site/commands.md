@@ -106,7 +106,7 @@ latch browser open --host my-mac https://example.com
 | `latch browser download get` | Agent | Write download D (such as d1) to a file here.<br>Bring a report here: `latch browser --host mac download get d1 --output report.csv` |
 | `latch browser fill` | Agent | Fill a page's fields from a vault item.<br>Sign in with the login saved for the page's site: `latch browser --host mac fill --field username=e4 --field password=e5 --press e6` |
 | `latch browser sessions` | Agent | Your open sessions, without their ids.<br>List your sessions: `latch browser --host mac sessions` |
-| `latch browser close` | Agent | End the session, deleting its cookies and logins.<br>End this session: `latch browser --host mac close` |
+| `latch browser close` | Agent | End the session and close its browser; its cookies and logins stay.<br>End this session: `latch browser --host mac close` |
 | `latch browser setup` | Host | Download and verify a browser engine into this machine's state folder. Owner only. |
 
 ## Vault

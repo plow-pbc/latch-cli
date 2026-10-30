@@ -262,8 +262,10 @@ fixes it.
 
 ## Browsing
 
-- Each `open` starts signed in nowhere, and its logins last until it
-  closes: do the whole task in one session.
+- Your sessions on a host share one browser profile per engine: each
+  `open` starts with the cookies and sign-ins your earlier sessions left,
+  and on its first page alone. One session at a time: a second `open`
+  while one is live is `profile_in_use`; open tabs in it instead.
 - A host may have two browsers: Chrome (`chrome`, Chrome for Testing) and
   Camoufox (`camoufox`, a Firefox). `open` with no `--engine` uses Chrome
   if the host has it, and the answer's `engine` says which ran; `open

@@ -515,7 +515,7 @@ const ENTRIES: &[Entry] = &[
         runs_on: |_| RunsOn::Host,
         output: "The new session's id (shown only now: keep it), its engine, and the elements on screen.",
         effect: Once(
-            "starts a browser session, in a fresh browser of its own, on the host and loads the page",
+            "starts a browser session on the host, in a browser of its own on your profile there, and loads the page",
         ),
         owner_only: false,
         connector: None,

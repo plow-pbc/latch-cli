@@ -355,9 +355,10 @@ pub struct BrowserArgs {
 pub enum BrowserCommand {
     /// Start a new browser session and load URL
     ///
-    /// The session runs in a fresh browser of its own. It lists the elements
-    /// on screen and answers the session's id, which every later command
-    /// needs. Its cookies and logins last until it closes
+    /// The session runs in a browser of its own, on your browser profile on
+    /// the host: the cookies and logins your earlier sessions left are there.
+    /// It lists the elements on screen and answers the session's id, which
+    /// every later command needs. One session at a time; use its tabs
     Open {
         /// The browser engine the session runs on [default: chrome if the
         /// host has it, else camoufox]
@@ -576,7 +577,7 @@ pub enum BrowserCommand {
     },
     /// Your open sessions, without their ids
     Sessions,
-    /// End the session, deleting its cookies and logins
+    /// End the session and close its browser; its cookies and logins stay
     ///
     /// One of the owner's own machines may name any session by the hash the
     /// host's dashboard shows

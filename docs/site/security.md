@@ -32,7 +32,9 @@ Latch lets an agent work on your computer without handing it the keys.
   the same browser session. The gatekeeper judges each script's whole source
   before it runs, and one that reads form fields, listens to typing or sends
   page data away needs your explicit OK. That judgment is a model's, so a
-  script that hides what it does may get through. A new session starts clean.
+  script that hides what it does may get through. A new session doesn't
+  start clean: an agent's sessions on a host keep one browser profile, so
+  what a script left for a site is still there in its later sessions.
 - **Your own login is you.** A host judges it as you, even where an agent
   runs. Give each agent its own login.
 
