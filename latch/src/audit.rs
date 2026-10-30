@@ -412,17 +412,7 @@ pub async fn run(state: &StateDir, action: AuditAction) -> Result<Value, Failure
                 }
                 None => {
                     let png = crate::browser::journal::audited(&state.path, &record, &shot)?;
-                    let staged = crate::transfer::Staged::beside(&output)?;
-                    let mut file = staged.file()?;
-                    let written = async {
-                        use tokio::io::AsyncWriteExt;
-                        file.write_all(&png).await?;
-                        file.flush().await
-                    };
-                    written.await.map_err(|err| {
-                        Failure::new(code::local_file, format!("{}: {err}", output.display()))
-                    })?;
-                    staged.place(&output)?;
+                    crate::transfer::save(&output, &png).await?;
                     (json!(png.len()), to_hex(&Sha256::digest(&png)), Value::Null)
                 }
             };

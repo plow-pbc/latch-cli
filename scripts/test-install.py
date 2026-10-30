@@ -453,7 +453,7 @@ class BinaryInstall(unittest.TestCase):
                 else:
                     tool(setup, "latch", latch.removeprefix("#!/bin/sh\n"))
                     installed = home / ".local/bin/latch"
-                env = {**os.environ, "HOME": str(home), "PATH": str(tools)}
+                env = {**without_agent_credential(), "HOME": str(home), "PATH": str(tools)}
                 result = at_terminal(["sh", str(setup / "install-binary.sh"), "--client-only"],
                                      root, env)
                 self.assertEqual(result.returncode, 0, system)
@@ -473,6 +473,62 @@ class BinaryInstall(unittest.TestCase):
                 self.assertEqual(said.returncode, 0, said.stderr)
                 self.assertIn("next: run `latch login` to log in", said.stdout)
                 self.assertNotIn("setup", said.stdout)
+
+    def test_client_only_logs_in_once_at_a_terminal_with_an_agent_credential(self):
+        # A person installing on an agent's computer, which holds the agent's
+        # Plow credential: the install logs in. An image's boot (no terminal,
+        # or --non-interactive), --no-login, and a state folder latch says is
+        # logged in already each leave the login alone.
+        parent = ROOT / ".dev/tests"
+        parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=parent) as directory:
+            root = Path(directory)
+            setup = root / "setup"
+            setup.mkdir()
+            shutil.copyfile(ROOT / "latch/install-binary.sh", setup / "install-binary.sh")
+            tools = root / "tools"
+            tools.mkdir()
+            link_basic_tools(tools)
+            for name in ["readlink", "basename", "ln", "diff"]:
+                (tools / name).symlink_to(shutil.which(name))
+            tool(tools, "uname", 'case "$1" in -s) echo Linux;; -m) echo arm64;; esac\n')
+            called = root / "called"
+            # Logged in once a login ran here, or when the test says so.
+            tool(setup, "latch", f'echo "$*" >> "{called}"\n'
+                 'case "$*" in *"status --local"*)\n'
+                 '  if [ -n "${FAKE_LOGGED_IN:-}" ]; then echo \'{"login":{"peer":{}},"this_machine":{}}\'\n'
+                 '  else echo \'{"login":null,"this_machine":{}}\'; fi;; esac\n')
+
+            def install(name, *options, terminal=True, **extra):
+                home = root / name
+                env = {**without_agent_credential(), "HOME": str(home), "PATH": str(tools),
+                       "PLOW_AGENT_TOKEN": "agent-credential", **extra}
+                args = ["sh", str(setup / "install-binary.sh"), "--client-only", *options]
+                if called.exists():
+                    called.unlink()
+                if terminal:
+                    result = at_terminal(args, root, env)
+                else:
+                    result = subprocess.run(args, cwd=root, env=env, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, name)
+                runs = called.read_text().splitlines() if called.exists() else []
+                return [run for run in runs if run.endswith(" login")], result
+
+            logins, _ = install("person")
+            self.assertEqual(logins, [f"--state-dir {root / 'person/.latch'} login"])
+            logins, said = install("image", terminal=False)
+            self.assertEqual(logins, [])
+            self.assertIn("next: run `latch login` to log in", said.stdout)
+            logins, said = install("image-at-a-terminal", "--non-interactive")
+            self.assertEqual(logins, [])
+            logins, _ = install("told-not-to", "--no-login")
+            self.assertEqual(logins, [])
+            logins, _ = install("logged-in", FAKE_LOGGED_IN="1")
+            self.assertEqual(logins, [])
+            logins, _ = install("no-credential", PLOW_AGENT_TOKEN=" ")
+            self.assertEqual(logins, [])
+            logins, _ = install("proxied", PLOW_AGENT_TOKEN="", PLOW_API_BASE="http://proxy")
+            self.assertEqual(len(logins), 1)
 
     def test_an_update_of_a_client_only_install_on_linux_without_root_stays_client_only(self):
         # A Linux agent image: a user who isn't root, with no sudo. `latch
@@ -899,8 +955,7 @@ class MacAppFolder(unittest.TestCase):
         self.assert_installed_in(applications, home, result)
         self.assertFalse(self.is_running(window))
         self.assertEqual(calls, ["0.1.0 (2) stop", "0.1.0 (2) serve -d --again",
-                                 f"open {applications}/Plow Latch.app --args --state-dir "
-                                 f"{home.parent}/state"])
+                                 f"open {applications}/Plow Latch.app"])
         self.assertFalse((home / "Applications/Plow Latch.app").exists())
 
     def test_a_window_that_does_not_quit_keeps_the_copy_it_runs_from(self):
@@ -910,6 +965,33 @@ class MacAppFolder(unittest.TestCase):
         self.assertTrue(self.is_running(window))
         self.assertTrue((home / "Applications/Plow Latch.app/Contents/MacOS/latch").exists())
         self.assertIn("since Latch's window from it did not quit", result.stdout)
+        self.assertFalse(any(call.startswith("open") for call in calls), calls)
+
+    def test_a_window_open_from_the_app_replaced_in_place_is_quit_and_opened_again(self):
+        # The window keeps running the app it was opened from, so a new
+        # window would show only once it is opened again, with no arguments:
+        # it goes back to its own state folder, not the one this install was
+        # given. An app installed again unchanged leaves it alone.
+        for own, replaced in [("0.1.0 (1)", True), ("0.1.0 (2)", False)]:
+            with self.subTest(own=own):
+                window = self.window("sleep 60")
+                result, calls, home, _ = self.install(shared="absent", own=own, host="managed",
+                                                      window=window)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                installed = home / "Applications/Plow Latch.app"
+                self.assertEqual(self.is_running(window), not replaced)
+                opened = f"open {installed}"
+                self.assertEqual(opened in calls, replaced, calls)
+                self.assertEqual(f"opened Latch's window again from {installed}" in result.stdout,
+                                 replaced, result.stdout)
+
+    def test_a_window_that_does_not_quit_for_an_in_place_update_is_left_to_the_user(self):
+        window = self.window("trap '' TERM; sleep 60")
+        result, calls, home, _ = self.install(shared="absent", own="0.1.0 (1)", window=window)
+        self.assert_installed_in(home / "Applications", home, result)
+        self.assertTrue(self.is_running(window))
+        self.assertIn("Latch's window did not quit; quit it and open Latch again to see the new version",
+                      result.stdout)
         self.assertFalse(any(call.startswith("open") for call in calls), calls)
 
     def test_a_copy_a_run_cut_short_left_aside_in_the_users_folder_goes_too(self):
@@ -987,6 +1069,13 @@ def link_basic_tools(folder):
   *) exec "{shutil.which("cat")}" "$@" ;;
 esac
 """)
+
+
+def without_agent_credential():
+    """This process's environment, without the agent credential `latch login`
+    would find in it."""
+    return {name: value for name, value in os.environ.items()
+            if name not in ("PLOW_AGENT_TOKEN", "PLOW_TOKEN_FILE", "PLOW_API_BASE")}
 
 
 def tool(folder, name, body):

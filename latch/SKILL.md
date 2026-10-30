@@ -28,6 +28,13 @@ as `latch status` lists it. Branch on
   plugins each one has on (`plugins`; `null` with `plugins_reason` when it
   didn't say) and `default_host`, where a command without `--host` goes; name one with
   `--host` (or `$LATCH_HOST`); with only one host, latch picks it.
+- **Say which host.** Your owner may run several hosts. Whenever you
+  tell them what you did or read through latch, name the host it ran on,
+  as `latch status` names it ("I ran the tests on mbp"), this machine
+  included. From another machine, when more than one host is online and
+  the owner hasn't said which, ask, or use the one they named last in
+  this chat, and pass it with `--host` rather than leave the choice to a
+  default.
 - Your login lives in a state folder: `--state-dir DIR`, else
   `$LATCH_STATE_DIR`, else `~/.latch`. Where `HOME` is not your home,
   set `LATCH_STATE_DIR` once rather than passing `--state-dir` each time.
