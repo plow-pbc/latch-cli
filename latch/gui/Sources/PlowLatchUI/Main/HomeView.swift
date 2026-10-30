@@ -96,8 +96,13 @@ private struct NeedsSection: View {
                 case let .blocked(problem): Need(text: "Latch can't run on this Mac right now.", error: problem)
                 case let .stopped(lastError): StartNeed(lastError: lastError)
                 case let .update(build):
-                    Need(symbol: "arrow.down.circle", text: "A new version of Latch is available\(build.map { " (build \($0))" } ?? "").",
-                         detail: "Install the update from Terminal.")
+                    HStack(alignment: .top) {
+                        Need(symbol: "arrow.down.circle", text: "A new version of Latch is available\(build.map { " (build \($0))" } ?? "").",
+                             detail: "Installing it restarts Latch on this Mac.")
+                        Spacer(minLength: 12)
+                        InstallUpdateButton()
+                    }
+                    UpdateProgress()
                 }
             }
         }
@@ -117,7 +122,7 @@ private struct NeedsSection: View {
         } else if status.thisMachine.hosting.state == "stopped" || status.thisMachine.hosting.state == "error" {
             needs.append(.stopped(lastError: status.lastError.map(LatchError.failed)))
         }
-        if let update = status.update, update.available { needs.append(.update(build: update.build)) }
+        if app.updateAvailable, !app.updateInstalled { needs.append(.update(build: app.availableBuild)) }
         return needs
     }
 }

@@ -85,6 +85,10 @@ nonisolated protocol LatchClient: Sendable {
     func removeDevice(_ name: String) async throws
     /// `latch update --check`.
     func updateCheck() async throws -> UpdateCheck
+    /// `latch update`: installs the newest build. The installer stops and
+    /// restarts this Mac's host, and quits this window and opens it again
+    /// on the new version.
+    func update() async throws -> UpdateResult
     /// `latch logout`: this Mac leaves the account; its vault stays.
     func logout() async throws -> LogoutResult
     /// `latch agents catalog`.
@@ -322,6 +326,10 @@ nonisolated struct LiveLatchClient: LatchClient {
 
     func updateCheck() async throws -> UpdateCheck {
         try decode(UpdateCheck.self, try await run(["update", "--check"]))
+    }
+
+    func update() async throws -> UpdateResult {
+        try decode(UpdateResult.self, try await run(["update"]))
     }
 
     func logout() async throws -> LogoutResult {

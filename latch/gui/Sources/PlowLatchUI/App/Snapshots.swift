@@ -81,6 +81,7 @@ nonisolated struct FakeLatchClient: LatchClient {
     func devices() async throws -> DeviceList { try Fixtures.decode(Fixtures.devices) }
     func removeDevice(_ name: String) async throws {}
     func updateCheck() async throws -> UpdateCheck { try Fixtures.decode(Fixtures.updateCheck) }
+    func update() async throws -> UpdateResult { UpdateResult(updated: false) }
     func logout() async throws -> LogoutResult { LogoutResult(device: nil) }
     func agentCatalog() async throws -> AgentCatalog { try Fixtures.decode(Fixtures.catalog) }
     func agentCard(_ uid: String) async throws -> Data { throw LatchError.unreachable("a still") }
@@ -202,6 +203,8 @@ nonisolated enum Fixtures {
     // `update --check` and `agents catalog`: real runs.
     static let devices = #"{"devices":[{"key":"0cdaf3c7601ab886e37b9835cfe9902617aeed88ffd3d066b11bc77eef548b29","kind":"device","name":"laptop","relay_url":null,"last_seen_at":"2026-10-22T22:05:50.582906Z","online":true},{"key":"78d8cd12e343e28d70b1da3ac8a0bb8c37593b5f8d535a58b716b776a91f2edc","kind":"device","name":"pi-kitchen","relay_url":"https://usw1-1.relay.n0.iroh.link./","last_seen_at":"2026-10-22T22:06:30.037004Z","online":true},{"key":"b58ac41605d91211b1d5c052addea8d6e7b81702d4902f746e6d639e38909364","kind":"device","name":"sidecar","relay_url":"https://usw1-1.relay.n0.iroh.link./","last_seen_at":"2026-10-22T22:06:33.384336Z","online":true},{"key":"6b55a78fcd1400f6ac14f129cd1825744125406e25a2892be4abda157baaa23f","kind":"device","name":"studio","relay_url":"https://usw1-1.relay.n0.iroh.link./","last_seen_at":"2026-10-22T22:06:26.724881Z","online":true}]}"#
     static let updateCheck = #"{"available":false,"current":null,"latest":{"build":138,"tag":"v0.1.0-138"}}"#
+    /// A released build with a newer one published.
+    static let updateAvailable = #"{"available":true,"current":150,"latest":{"build":155,"tag":"v0.1.0-155"}}"#
     static let catalog = #"{"kinds":[{"id":"exe:checkpoint","name":"Checkpoint"},{"id":"exe:clip-warden","name":"Clip Warden"},{"id":"exe:dailies","name":"Video Cuts"},{"id":"exe:danedelattre-x-manager","name":"X Manager"},{"id":"exe:fandom","name":"Fandom"},{"id":"exe:fipe","name":"Fipe"},{"id":"exe:founder-agent","name":"Founder Agent"},{"id":"exe:galahad-hackathon","name":"Joust"},{"id":"exe:hermes","name":"Hermes"},{"id":"exe:hermes-cat-paw","name":"Hermes Cat Paw"},{"id":"exe:instagram-social-selling","name":"Instagram Social Selling"},{"id":"exe:life","name":"Life Assistant"},{"id":"exe:mako","name":"Mako"},{"id":"exe:meals-planner","name":"Meals Planner"},{"id":"exe:memory-vault","name":"Memory Vault"},{"id":"exe:metabolix","name":"Metabolix"},{"id":"exe:nutrilatch","name":"NutriLatch"},{"id":"exe:parley","name":"Parley"},{"id":"exe:phoneflow-agent","name":"PhoneFlow"},{"id":"exe:pm-second-brain","name":"PM Agent"},{"id":"exe:pruce","name":"Prucê"},{"id":"exe:radar","name":"RadaR"},{"id":"exe:receiptsnap","name":"ReceiptSnap"},{"id":"exe:repro-relay","name":"Repro Relay"},{"id":"exe:saved","name":"Saved"},{"id":"exe:text-me","name":"text-me"},{"id":"exe:the-commish","name":"The Commish"},{"id":"exe:theplowtimes","name":"The Plow Times"},{"id":"exe:vela","name":"Vela"},{"id":"exe:vigia","name":"Vigia"},{"id":"exe:your-mother","name":"Your Mother"},{"id":"exe:zoen","name":"Zoen"}]}"#
     // `agents start-by-text`, as latch builds it from Plow's /v1/signup:
     // the public number and phrases plow.co and Plow's catalog give (the
@@ -1044,6 +1047,21 @@ package enum SnapshotRunner {
                 let app = try settingsApp(status: status, account: Fixtures.studioHosts, chosen: nil, checked: checked)
                 try await renderWindow(AppSettingsView().environment(app), size: CGSize(width: 520, height: 300), dark: dark,
                                        file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
+            }
+            // A newer build found: the toolbar's pill, the sidebar's card,
+            // Home and Settings; then installing it, and the install failing.
+            let installFailed = LatchError.failed(LatchFailure(code: "bad_signature",
+                message: "https://releases.plow.co/latch-cli/releases/v0.1.0-155/SHA256SUMS is not signed with latch's release key; nothing was installed"))
+            let updates: [(String, Bool, LatchError?)] = [("available", false, nil), ("installing", true, nil), ("failed", false, installFailed)]
+            for (name, installing, error) in updates {
+                let app = try settingsApp(status: Fixtures.serving, account: Fixtures.studioHosts, chosen: nil, checked: false)
+                app.stage(devices: nil, update: try Fixtures.decode(Fixtures.updateAvailable))
+                app.stage(installingUpdate: installing, error: error)
+                app.place = .host(.home)
+                try await renderWindow(app, size: CGSize(width: 1120, height: 640), dark: dark,
+                                       file: output.appending(path: "26-update-\(name)-window-\(dark ? "dark" : "light").png"))
+                try await renderWindow(AppSettingsView().environment(app), size: CGSize(width: 520, height: 340), dark: dark,
+                                       file: output.appending(path: "26-update-\(name)-settings-\(dark ? "dark" : "light").png"))
             }
             let app = AppModel(client: FakeLatchClient(), still: true)
             app.stage(status: try Fixtures.decode(Fixtures.serving))

@@ -53,11 +53,17 @@ final class AppModel {
     /// Onboarding progress for this state folder, in the app's preferences.
     let store: ProgressStore
 
-    init(client: any LatchClient, store: ProgressStore? = nil, still: Bool = false, loginItemOffered: Bool = true) {
+    /// Where the app's own choices are kept; none for a still.
+    private let preferences: UserDefaults?
+
+    init(client: any LatchClient, store: ProgressStore? = nil, still: Bool = false, loginItemOffered: Bool = true,
+         preferences: UserDefaults? = .standard) {
         self.client = client
         self.still = still
         self.loginItemOffered = loginItemOffered
         self.store = store ?? ProgressStore(defaults: .standard, stateDir: client.stateDir)
+        self.preferences = still ? nil : preferences
+        checksForUpdates = self.preferences?.object(forKey: Self.checksForUpdatesKey) as? Bool ?? true
     }
 
     var progress: Progress { onboarding?.progress ?? store.load() }
@@ -543,11 +549,9 @@ final class AppModel {
     }
 
     /// Connections: the account's logged-in machines (`latch devices`).
-    /// Settings: the last update check. Host Settings: a start, stop or
-    /// restart of this Mac's host while it runs and how it failed.
+    /// Host Settings: a start, stop or restart of this Mac's host while it
+    /// runs and how it failed.
     private(set) var devices: Result<[DeviceList.Device], LatchError>?
-    private(set) var update: Result<UpdateCheck, LatchError>?
-    private(set) var checkingUpdate = false
     private(set) var hostAction: HostAction?
     private(set) var hostActionError: LatchError?
 
@@ -576,10 +580,70 @@ final class AppModel {
         if case let .failure(error) = removed { deviceRemoveError = error } else { deviceRemoveError = nil }
     }
 
+    /// The last update check (`latch update --check`) and when it began;
+    /// an install of the newest build while it runs, how it failed, and
+    /// whether it installed one this window still runs the old version of.
+    private(set) var update: Result<UpdateCheck, LatchError>?
+    private(set) var checkingUpdate = false
+    private(set) var updateCheckedAt: Date?
+    private(set) var installingUpdate = false
+    private(set) var installUpdateError: LatchError?
+    private(set) var updateInstalled = false
+
+    /// "Check for updates automatically", in the app's preferences: on
+    /// unless turned off. Nothing installs without a click.
+    var checksForUpdates: Bool {
+        didSet { preferences?.set(checksForUpdates, forKey: Self.checksForUpdatesKey) }
+    }
+
+    private static let checksForUpdatesKey = "CheckForUpdates"
+    /// How old the last check may be before an automatic one runs.
+    static let updateCheckEvery: TimeInterval = 6 * 60 * 60
+
+    /// Whether there's a newer build to install, and its number when
+    /// known: the app's last check, else what this Mac's host last found.
+    var updateAvailable: Bool {
+        if case let .success(check)? = update { return check.available }
+        return status?.update?.available == true
+    }
+
+    var availableBuild: Int? {
+        if case let .success(check)? = update { return check.latest?.build }
+        return status?.update?.build
+    }
+
     func checkForUpdate() async {
+        guard !checkingUpdate else { return }
         checkingUpdate = true
+        updateCheckedAt = .now
         defer { checkingUpdate = false }
         if let update = await Self.result({ try await self.client.updateCheck() }) { self.update = update }
+    }
+
+    /// Checks, when automatic checks are on, if the last check is older
+    /// than `updateCheckEvery` or there was none.
+    func checkForUpdateIfDue(now: Date = .now) async {
+        guard checksForUpdates, !installingUpdate else { return }
+        if let checked = updateCheckedAt, now.timeIntervalSince(checked) < Self.updateCheckEvery { return }
+        await checkForUpdate()
+    }
+
+    /// Installs the newest build with `latch update`, which checks its
+    /// signatures first. The installer quits this window and opens it again
+    /// on the new version; a window it didn't quit (one run from elsewhere)
+    /// says the update is installed.
+    func installUpdate() async {
+        guard !installingUpdate else { return }
+        installingUpdate = true
+        installUpdateError = nil
+        defer { installingUpdate = false }
+        switch await Self.result({ try await self.client.update() }) {
+        case let .success(result)?: updateInstalled = result.updated
+        case let .failure(error)?: installUpdateError = error
+        case nil: return
+        }
+        await checkForUpdate()
+        await refreshStatus()
     }
 
     /// Stops this Mac's host; agents can't reach it until it's started.
@@ -724,6 +788,13 @@ final class AppModel {
     func stage(devices: DeviceList?, update: UpdateCheck?) {
         self.devices = devices.map { .success($0.devices) }
         self.update = update.map { .success($0) }
+    }
+
+    /// For snapshots: an install of the update running, or how it ended.
+    func stage(installingUpdate: Bool, error: LatchError? = nil, installed: Bool = false) {
+        self.installingUpdate = installingUpdate
+        installUpdateError = error
+        updateInstalled = installed
     }
 
     /// The account's agents (`latch agents`), and each one's standing on

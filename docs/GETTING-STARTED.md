@@ -323,7 +323,10 @@ Latch checks the release's signature first, and on a Mac that Plow signed
 the app. A host started with `latch serve -d` restarts on the new version.
 A host running in a terminal stops, and the update tells you to start it
 again. A running host checks for a new release once a day and shows it in
-`latch` and on its dashboard. Nothing installs on its own.
+`latch` and on its dashboard. On a Mac, Latch's window also checks every few
+hours (Settings turns that off) and shows **Update Available** in its
+toolbar; clicking it runs `latch update`, and the window opens again on the
+new version. Nothing installs on its own.
 
 An agent runs `latch update` on its own computer too, where latch is
 installed alone (`install.sh --client-only`) and no host runs. An agent's

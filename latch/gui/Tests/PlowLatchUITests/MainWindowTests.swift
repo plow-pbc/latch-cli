@@ -43,13 +43,33 @@ struct MainWindowTests {
         let app = try app(LiveClient())
         let controller = open(app)
         defer { controller.close() }
-        let fixed: [NSToolbarItem.Identifier] = [.toggleSidebar, .sidebarTrackingSeparator, .flexibleSpace, .inspectorTrackingSeparator,
-                                                 .flexibleSpace, .toggleInspector]
+        let fixed: [NSToolbarItem.Identifier] = [.toggleSidebar, .sidebarTrackingSeparator, .flexibleSpace, .update,
+                                                 .inspectorTrackingSeparator, .flexibleSpace, .toggleInspector]
         for place in [Place.host(.home), .host(.activity), .account(.agents), .host(.vault), .account(.connections), .host(.settings)] {
             app.place = place
             try await Task.sleep(for: .milliseconds(20))
             #expect(controller.window?.toolbar?.items.map(\.itemIdentifier) == fixed, "\(place)")
         }
+    }
+
+    // The update pill shows on every place while a newer build waits, and
+    // goes once this window has installed it.
+    @Test func theUpdatePillShowsWhileAnUpdateWaits() async throws {
+        let app = try app(LiveClient())
+        let controller = open(app)
+        defer { controller.close() }
+        let pill = try #require(controller.window?.toolbar?.items.first { $0.itemIdentifier == .update })
+        try await Task.sleep(for: .milliseconds(20))
+        #expect(pill.isHidden)
+        app.stage(devices: nil, update: try Fixtures.decode(Fixtures.updateAvailable))
+        for place in [Place.host(.home), .account(.agents), .host(.vault)] {
+            app.place = place
+            try await Task.sleep(for: .milliseconds(20))
+            #expect(!pill.isHidden, "\(place)")
+        }
+        app.stage(installingUpdate: false, installed: true)
+        try await Task.sleep(for: .milliseconds(20))
+        #expect(pill.isHidden)
     }
 
     // The inspector's toggle works only where there's an inspector, Activity

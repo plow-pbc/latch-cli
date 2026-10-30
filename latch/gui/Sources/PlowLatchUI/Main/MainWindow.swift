@@ -35,6 +35,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     private let barItem = NSSplitViewItemAccessoryViewController()
     private let inspectorShows = WindowInspector.Shown()
     private let inspectorItem: NSSplitViewItem
+    /// "Update Available" in the toolbar while there's a newer Latch:
+    /// one click installs it.
+    private let updateItem = NSToolbarItem(itemIdentifier: .update)
     let sheets: WindowSheets
     /// Where the window keeps its place, host and inspectors; nil for one
     /// that keeps nothing (a still, a test).
@@ -103,6 +106,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
                 split.splitView.autosaveName = "Main"
             }
         }
+        let pill = NSHostingView(rootView: UpdatePill().environment(app))
+        pill.sizingOptions = .intrinsicContentSize
+        updateItem.view = pill
+        updateItem.label = "Update"
+        updateItem.isBordered = false
+        updateItem.isHidden = true
         let toolbar = NSToolbar(identifier: "Main")
         toolbar.delegate = self
         toolbar.displayMode = .iconOnly
@@ -147,6 +156,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             await app.followStatus()
         })
         tasks.append(Task { [app] in await app.refreshAccount() })
+        // A newer Latch, looked for now and while the window stays open.
+        tasks.append(Task { [app] in
+            while !Task.isCancelled {
+                await app.checkForUpdateIfDue()
+                try? await Task.sleep(for: .seconds(60 * 60))
+            }
+        })
         // SwiftUI's empty state is slow to make the first time in a process
         // on a Mac that hasn't drawn one lately: up to a third of a second on
         // the main thread, which the first screen to show one (Activity, with
@@ -165,6 +181,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             MainActor.assumeIsolated {
                 guard let self, !self.closed else { return }
                 self.tasks.append(Task { [app = self.app] in await app.activated() })
+                self.tasks.append(Task { [app = self.app] in await app.checkForUpdateIfDue() })
             }
         }
     }
@@ -274,6 +291,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             }
             bar.show(screen, pages: pages, search: search)
         }
+        let pending = app.updateAvailable && !app.updateInstalled
+        if updateItem.isHidden == pending { updateItem.isHidden = !pending }
         sheets.update(over: split)
         window.toolbar?.validateVisibleItems()
         MenuBridge.shared.setNeedsRefresh()
@@ -314,19 +333,23 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         // The second flexible space keeps the inspector's toggle at the
         // window's trailing edge whether the inspector is open or not.
-        [.toggleSidebar, .sidebarTrackingSeparator, .flexibleSpace, .inspectorTrackingSeparator, .flexibleSpace, .toggleInspector]
+        [.toggleSidebar, .sidebarTrackingSeparator, .flexibleSpace, .update, .inspectorTrackingSeparator, .flexibleSpace, .toggleInspector]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         toolbarDefaultItemIdentifiers(toolbar)
     }
 
-    /// Every item is the system's; the toolbar asks for them all the same,
-    /// and shows none without this answer.
+    /// Every item but the update pill is the system's; the toolbar asks for
+    /// them all the same, and shows none without this answer.
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier id: NSToolbarItem.Identifier,
                  willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
-        nil
+        id == .update ? updateItem : nil
     }
+}
+
+extension NSToolbarItem.Identifier {
+    static let update = NSToolbarItem.Identifier("Update")
 }
 
 /// The split view: the inspector's toggle opens and closes it on the
