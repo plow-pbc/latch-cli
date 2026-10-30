@@ -256,12 +256,7 @@ async fn a_page_that_shows_the_number_back_shows_the_agent_only_its_last_four(en
     let refused = h.call("eval", json!({"script": "1"})).await.unwrap_err();
     assert_eq!(refused.code, "secret_on_page");
 
-    // The card is paid in a new session: the script the agent tried counts
-    // as agent code on the shop, refused or not.
-    h.new_session().await;
-    h.call("open", json!({"url": format!("{local}/card-echo.html")}))
-        .await
-        .unwrap();
+    // That script never ran: the card still pays on the shop.
     let args = h.suggested(&card).await;
     h.pay(args).await.unwrap();
     // Once the page was submitted and its fields are empty, scripts run.

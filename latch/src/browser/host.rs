@@ -1027,9 +1027,10 @@ async fn worker(
             Err(failure)
         }
     };
-    // Agent code was sent to this page's site: it is noted, refused or
-    // not, for every later fill there in this session.
+    // Agent code that reached this page's site is noted, for every later
+    // fill there in this session; one refused before it was sent is not.
     if command == "eval"
+        && audit.get("script_sent") == Some(&json!(true))
         && let Some(site) = audit
             .get("origin")
             .and_then(Value::as_str)
