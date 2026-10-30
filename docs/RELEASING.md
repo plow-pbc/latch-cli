@@ -23,16 +23,17 @@ Write the notes from the pull requests merged since the previous release
 (`git log --first-parent --merges <previous tag>..<tag>`), reading each one's
 title and description.
 
-- **Group by what changed for people**, for example Cards, Phone links,
-  Hosts, Gatekeeper, Browser, Mac app, Install and update, Fixes. Use only the
-  groups a release needs.
+- **Four groups, always these, in this order:** New (something people can
+  do that they couldn't before), Better (something they already did that
+  works better), Fixes (something that was broken), Behind the scenes. Leave
+  out a group with nothing in it.
 - **One or two short lines per pull request**, saying what changes for
   owners and agents, and why it matters to them. Several pull requests that
   make one change can share a line.
 - **Link every pull request**, as `([#123](https://github.com/plow-pbc/latch-cli/pull/123))`.
   Every pull request in the range appears once.
-- **Behind the scenes**: test-only and CI-only pull requests share one short
-  line at the end, such as "Steadier tests", with their links.
+- **Behind the scenes**: test-only, CI-only and maintainer-tooling pull
+  requests share one short line, such as "Steadier tests", with their links.
 - **No internal jargon**: no spec sections or chunks, review rounds,
   function or file names, or test names. Name a command or flag only when
   people type it.
@@ -42,16 +43,14 @@ title and description.
 ### Example: v0.1.0-154
 
 ```markdown
-## Cards
+## New
+- `latch setup` offers starter rules for your agents: a family assistant's, a work assistant's, or none. It asks only when the computer has no rules yet. ([#340](https://github.com/plow-pbc/latch-cli/pull/340))
+
+## Better
 - A card is never filled on a site where the agent's own script ran earlier in the session. The agent starts a fresh session instead. ([#326](https://github.com/plow-pbc/latch-cli/pull/326))
 - A filled card's number reaches the agent only as its last four digits (•••• 4242), in every answer and in the saved history. ([#327](https://github.com/plow-pbc/latch-cli/pull/327), [#347](https://github.com/plow-pbc/latch-cli/pull/347))
 - After a card is filled, the agent's scripts are refused only until the page is submitted, the same guard passwords have. ([#347](https://github.com/plow-pbc/latch-cli/pull/347))
 - The gatekeeper judges a card payment on the checkout itself: the page, where the number goes, the button pressed and the amount shown. ([#328](https://github.com/plow-pbc/latch-cli/pull/328))
-
-## Setup
-- `latch setup` offers starter rules for your agents: a family assistant's, a work assistant's, or none. It asks only when the computer has no rules yet. ([#340](https://github.com/plow-pbc/latch-cli/pull/340))
-
-## Browser
 - Agents now know a host can have two browsers, Chrome and Camoufox. When a site silently drops a sign-in, they try it once on the other. ([#346](https://github.com/plow-pbc/latch-cli/pull/346))
 
 ## Behind the scenes
