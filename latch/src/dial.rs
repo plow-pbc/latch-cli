@@ -65,7 +65,9 @@ pub struct Link {
 /// iroh: through this machine's host when one serves here, else from an
 /// endpoint of our own. Failure here means nothing was sent: exit 3.
 pub async fn connect(state: &StateDir, host: &Peer) -> Result<Link, Failure> {
-    connect_within(state, host, CONNECT_TIMEOUT).await
+    connect_within(state, host, CONNECT_TIMEOUT)
+        .await
+        .map_err(naming(host))
 }
 
 async fn connect_within(state: &StateDir, host: &Peer, within: Duration) -> Result<Link, Failure> {
@@ -144,6 +146,26 @@ fn offline(host: &Peer) -> Failure {
         host.name
     );
     Failure::new(code::host_offline, message)
+}
+
+/// A failure of a call to `host`, naming it in `host` as its answers do,
+/// unless it names one already.
+fn named(mut failure: Failure, host: &Peer) -> Failure {
+    if failure.details.is_null() {
+        failure.details = serde_json::json!({});
+    }
+    if let Some(details) = failure.details.as_object_mut() {
+        details
+            .entry("host")
+            .or_insert_with(|| serde_json::json!(host.name));
+    }
+    failure
+}
+
+/// Names `host` in each failure of a call to it: a dropped connection or
+/// no answer in time, as well as what the host itself said.
+pub fn naming(host: &Peer) -> impl Fn(Failure) -> Failure + '_ {
+    move |failure| named(failure, host)
 }
 
 /// Why dialing `host` failed: it speaks another protocol, or it could not
@@ -396,7 +418,7 @@ pub async fn call(
     let link = connect(state, host).await?;
     let result = one_exchange(&link.connection, request, answer_within).await;
     link.close();
-    result
+    result.map_err(naming(host))
 }
 
 async fn one_exchange(
@@ -534,6 +556,7 @@ mod tests {
         let started = Instant::now();
         let failure = connect(&state, &host).await.err().unwrap();
         assert_eq!(failure.code, "host_offline");
+        assert_eq!(failure.details, serde_json::json!({"host": "mac"}));
         assert!(
             failure
                 .message
@@ -542,6 +565,56 @@ mod tests {
             failure.message
         );
         assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    /// A connection that can't be made names its host, wherever it fails:
+    /// here, this machine's own host isn't running.
+    #[tokio::test]
+    async fn a_connection_that_fails_to_open_names_its_host() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = StateDir {
+            path: dir.path().to_path_buf(),
+        };
+        let host = Peer {
+            key: "c".repeat(64),
+            kind: "device".into(),
+            name: "mac".into(),
+            relay_url: Some("https://relay.example/".into()),
+            last_seen_at: None,
+            online: Some(true),
+            this_machine: true,
+        };
+        let failure = connect(&state, &host).await.err().unwrap();
+        assert_eq!(
+            failure.details["host"], "mac",
+            "{}: {}",
+            failure.code, failure.message
+        );
+    }
+
+    #[test]
+    fn a_failed_call_names_its_host_unless_the_host_named_itself() {
+        let host = Peer {
+            key: "c".repeat(64),
+            kind: "device".into(),
+            name: "mac".into(),
+            relay_url: None,
+            last_seen_at: None,
+            online: Some(true),
+            this_machine: false,
+        };
+        let dropped = Failure::new(code::outcome_unknown, "dropped".into());
+        let timed_out = Failure::new(code::no_answer, "no answer".into());
+        for failure in [dropped, timed_out] {
+            assert_eq!(
+                naming(&host)(failure).details,
+                serde_json::json!({"host": "mac"})
+            );
+        }
+        let mut answered = Failure::new(code::not_found, "gone".into());
+        answered.details = serde_json::json!({"host": "studio", "path": "/x"});
+        let kept = naming(&host)(answered).details;
+        assert_eq!(kept, serde_json::json!({"host": "studio", "path": "/x"}));
     }
 
     /// A state folder with a key, and a host at `key` behind `relay`.

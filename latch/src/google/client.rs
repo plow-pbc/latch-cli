@@ -35,7 +35,7 @@ pub async fn run(state: &StateDir, args: GoogleArgs) -> Result<Value, Failure> {
     let chat = args.host.plow_chat;
     let result = exchange(&link.connection, chat, request, files, plan.as_ref()).await;
     link.close();
-    result
+    result.map_err(dial::naming(&host))
 }
 
 /// A `google` operation, ready to send: its arguments, the client files
