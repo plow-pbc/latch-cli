@@ -39,10 +39,12 @@ for (const name of ["activity", "rules", "vault", "settings", "agents", "connect
 
 const failed = (code, message) => ({ error: { code, message } });
 
-export async function run(args) {
+export async function run(args, input) {
   for (const [prefix, answer] of answers) {
     if (prefix.every((word, i) => args[i] === word || (word === "--host" && args.includes("--host")))) {
-      return answer(args);
+      // An answer that gives undefined isn't this still's: the next is tried.
+      const value = await answer(args, input);
+      if (value !== undefined) return value;
     }
   }
   // Writes (rules set, vault remove, stop…) answer as if they worked.
@@ -71,7 +73,8 @@ export async function pick() {
  * fake `statusFollow` and `auditFollow` do. */
 export function stream(args, line) {
   queueMicrotask(() => {
-    if (args[0] === "status") line({ type: "status", status: one("serving") });
+    // Whatever `status --local` answers, a page's own fake included.
+    if (args[0] === "status") run(["status", "--local"]).then((status) => line({ type: "status", status }));
     if (args[0] === "audit") for (const value of each(per(args, "studioAudit", "kitchenAudit"))) line(value);
   });
 }

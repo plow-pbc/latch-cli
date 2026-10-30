@@ -186,6 +186,20 @@ async fn run_file(args: Vec<String>, kind: String) -> Result<String, Value> {
     Ok(format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes)))
 }
 
+/// Opens a web link in the default browser (a sign-in page): http(s) only.
+#[tauri::command]
+fn open_url(url: String) -> Result<(), Value> {
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return Err(failure("bad_url", &url));
+    }
+    Command::new("rundll32")
+        .args(["url.dll,FileProtocolHandler", &url])
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()
+        .map(|_| ())
+        .map_err(|err| failure("io", &err.to_string()))
+}
+
 /// The native Open dialog: the path picked, or nothing if it was cancelled.
 #[tauri::command]
 async fn pick_file(window: tauri::Window, title: String, name: String, extensions: Vec<String>) -> Option<String> {
@@ -209,7 +223,7 @@ fn fake_mode() -> bool {
 fn main() {
     tauri::Builder::default()
         .manage(Streams::default())
-        .invoke_handler(tauri::generate_handler![run, run_file, pick_file, stream, stop, qr, fake_mode])
+        .invoke_handler(tauri::generate_handler![run, run_file, pick_file, open_url, stream, stop, qr, fake_mode])
         .build(tauri::generate_context!())
         .expect("the window builds")
         .run(|app, event| {

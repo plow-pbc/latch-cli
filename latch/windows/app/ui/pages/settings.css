@@ -1,0 +1,106 @@
+/* Host Settings: Windows' Settings rows, with its ToggleSwitch, Expander
+   and ProgressRing. */
+.settings-page {
+  --field: rgba(255, 255, 255, 0.7);
+  --field-under: rgba(0, 0, 0, 0.45);
+  --track: rgba(0, 0, 0, 0.1);
+}
+@media (prefers-color-scheme: dark) {
+  .settings-page {
+    --field: rgba(255, 255, 255, 0.06);
+    --field-under: rgba(255, 255, 255, 0.55);
+    --track: rgba(255, 255, 255, 0.12);
+  }
+}
+
+.settings-page .group-note { margin: 6px 2px 0; font-size: 12px; color: var(--text-2); }
+.settings-page .line > button, .settings-page .line > .switch, .settings-page .line > .ring { flex: none; }
+.settings-page .line .text { display: flex; flex-direction: column; }
+.settings-page .line small { font-size: 12px; line-height: 16px; color: var(--text-2); }
+.settings-page .line.bad { color: var(--bad); }
+.settings-page .line.center { justify-content: center; }
+.settings-page .selectable { user-select: text; overflow-wrap: anywhere; }
+.settings-page .value.mono { font-family: "Cascadia Mono", Consolas, ui-monospace, monospace; font-size: 13px; }
+
+/* A host's state: its dot, as the sidebar's Mac counterpart draws it. */
+.settings-page .value.state { display: inline-flex; align-items: center; gap: 8px; color: var(--text-1); }
+.settings-page .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-3); flex: none; }
+.settings-page .dot.is-up { background: var(--ok); }
+.settings-page .dot.is-problem { background: var(--bad); }
+
+.settings-page .line.buttons { gap: 8px; }
+.settings-page .doing { display: inline-flex; align-items: center; gap: 10px; color: var(--text-2); }
+
+/* ProgressRing, small. */
+.settings-page .ring {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid var(--track);
+  border-top-color: var(--accent);
+  animation: settings-spin 0.9s linear infinite;
+}
+@keyframes settings-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .settings-page .ring { animation: none; } }
+
+/* Expander: Details, its rows inside. */
+.settings-page details.expander { display: block; padding: 0; }
+.settings-page details.expander summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 48px;
+  padding: 10px 16px;
+  list-style: none;
+  cursor: default;
+}
+.settings-page details.expander summary::-webkit-details-marker { display: none; }
+.settings-page details.expander summary > :first-child { flex: 1; }
+.settings-page details.expander summary:hover { background: var(--hover); }
+.settings-page details.expander .chevron { transform: rotate(90deg); transition: transform 0.12s ease-out; }
+.settings-page details.expander[open] .chevron { transform: rotate(-90deg); }
+.settings-page details.expander > .line { padding-left: 32px; }
+
+/* ToggleSwitch, its On/Off before it as Windows' Settings shows it. */
+.settings-page .switch { position: relative; display: inline-flex; align-items: center; gap: 12px; }
+.settings-page .switch .state { min-width: 22px; text-align: right; }
+.settings-page .switch input { position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: default; }
+.settings-page .switch .track { pointer-events: none; }
+.settings-page .switch .track {
+  position: relative;
+  width: 40px;
+  height: 20px;
+  border-radius: 10px;
+  border: 1px solid var(--field-under);
+  background: var(--field);
+}
+.settings-page .switch .track::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--text-2);
+  transition: transform 0.12s ease-out;
+}
+.settings-page .switch input:checked + .track { background: var(--accent); border-color: var(--accent); }
+.settings-page .switch input:checked + .track::after { transform: translateX(20px); background: var(--card); }
+.settings-page .switch input:focus-visible + .track { outline: 2px solid var(--text-1); outline-offset: 2px; }
+.settings-page .switch:has(input:disabled) { opacity: 0.4; }
+
+/* Errors: the sentence, and latch's own words under Details. */
+.settings-page .error-text { display: flex; flex-direction: column; gap: 2px; }
+.settings-page .error-details { font-size: 12px; color: var(--text-2); }
+.settings-page .error-details summary { cursor: default; width: max-content; }
+.settings-page .error-details .said { margin-top: 4px; user-select: text; overflow-wrap: anywhere; }
+
+/* Stop…'s confirmation, while this page shows: main.css's plain-button
+   rule outranks its own `.sheet button.destructive`, leaving the button
+   white on white, so it's restated here at that rule's weight. */
+.app:has(.settings-page) .sheet button.destructive { background: var(--bad); color: #fff; border-color: transparent; }
+@media (prefers-color-scheme: dark) {
+  .app:has(.settings-page) .sheet button.destructive { color: rgba(0, 0, 0, 0.9); }
+}

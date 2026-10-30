@@ -34,6 +34,11 @@ export function latchFile(args, kind) {
   return fake ? fake.file(args, kind) : tauri.core.invoke("run_file", { args, kind });
 }
 
+/** Opens a web link in the default browser. */
+export function openURL(url) {
+  return fake ? Promise.resolve(window.open(url, "_blank")) : tauri.core.invoke("open_url", { url });
+}
+
 /** The native Open dialog: the path picked, or null if cancelled. */
 export function pickFile(title, name, extensions) {
   return fake ? fake.pick(title, name, extensions) : tauri.core.invoke("pick_file", { title, name, extensions });

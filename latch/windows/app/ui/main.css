@@ -267,6 +267,10 @@ body:has(.app:not([hidden])) { background: var(--win-bg); }
 .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
 .app button.primary:not(.line):not(.nav):not([role=tab]), .sheet button.primary { background: var(--accent); color: #fff; border-color: transparent; }
 .app button.destructive:not(.line):not(.nav):not([role=tab]), .sheet button.destructive { background: var(--bad); color: #fff; border-color: transparent; }
+/* Dark mode's accent is light: its text dark, as Windows draws it. */
+@media (prefers-color-scheme: dark) {
+  .app button.primary:not(.line):not(.nav):not([role=tab]), .sheet button.primary { color: #000; }
+}
 .sheet button {
   min-height: 32px;
   padding: 4px 16px;

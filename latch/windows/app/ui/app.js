@@ -378,7 +378,16 @@ async function openMain() {
     for (const id of ["screen", "bar"]) document.getElementById(id).hidden = false;
     go("welcome");
   };
-  main.app.start = startHost;
+  // Logged out: setup again, from logging in (the Mac's `logout`).
+  main.app.loggedOut = () => {
+    root.hidden = true;
+    for (const id of ["screen", "bar"]) document.getElementById(id).hidden = false;
+    go("login");
+  };
+  // Home's Start Latch starts it as Host Settings does (the Mac's
+  // `startHosting`: setup's host step, then status read again).
+  const settings = await import("./pages/settings.js");
+  main.app.start = () => settings.startHosting(main.app);
   await main.open(root);
 }
 
