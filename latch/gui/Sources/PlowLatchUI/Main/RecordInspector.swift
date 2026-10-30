@@ -73,7 +73,7 @@ struct RecordInspector: View {
                 Why(gate: gate, caller: caller.who)
                 if !gate.keptRequests.isEmpty {
                     Section {
-                        Button("Gatekeeper request") {
+                        Button(gate.keptRequests.count == 1 ? "Gatekeeper request" : "Gatekeeper requests (\(gate.keptRequests.count))") {
                             judging?.cancel()
                             judging = Task { await openJudged(gate.keptRequests) }
                         }
