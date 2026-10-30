@@ -34,6 +34,17 @@
       "icons/128x128.png",
       "icons/icon.ico"
     ],
-    "externalBin": []
+    "externalBin": [
+      "binaries/latch"
+    ],
+    "publisher": "Plow",
+    "shortDescription": "Your agents work on this PC, judged by your rules.",
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "displayLanguageSelector": false,
+        "installerHooks": "installer-hooks.nsh"
+      }
+    }
   }
 }
