@@ -415,11 +415,18 @@ fn make_tmpdir() -> std::io::Result<PathBuf> {
     let path = std::env::temp_dir().join(name);
     // `create` (not `recursive`) fails if the name already exists.
     std::fs::DirBuilder::new().owner_only().create(&path)?;
-    // Windows matches no paths, so the name its programs can read is kept.
-    if cfg!(windows) {
-        return Ok(path);
+    let real = path.canonicalize()?;
+    // On Windows the temp folder may be named with 8.3 short names
+    // (C:\Users\RUNNER~1\...), which the sandbox's check that it grants what
+    // was judged would not match: its real, long path, without the `\\?\`
+    // that programs given it as TMP may not read.
+    #[cfg(windows)]
+    if let Some(plain) = real.to_str().and_then(|text| text.strip_prefix(r"\\?\"))
+        && plain.as_bytes().get(1) == Some(&b':')
+    {
+        return Ok(PathBuf::from(plain));
     }
-    path.canonicalize()
+    Ok(real)
 }
 
 /// Removes the temp folders that killed hosts left: this user's
