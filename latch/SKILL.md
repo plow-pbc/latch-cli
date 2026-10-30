@@ -254,12 +254,16 @@ fixes it.
   type) will not let a retry or a wait through: stop and tell the owner.
   A challenge you can't do yourself is `handoff`'s; on a host with no
   screen (`no_screen`), stop and tell the owner what the page needs.
-- A sign-in you submitted that doesn't move on (the same page, no error,
-  no code prompt; a fill's answer then has a `next` saying latch cleared
-  the fields), or an obvious bot check: `close` the session and retry it
-  once on the other engine, then tell the owner which engine worked. If
-  that fails too, stop and tell the owner. More attempts can get the
-  account rate-limited or locked.
+- A sign-in you submitted that doesn't seem to move on (the same page, no
+  error, no code prompt, not signed in; a login fill's answer then has a
+  `next` saying the page kept its fields), or an obvious bot check:
+  `close` the session and retry it once on the other engine, then tell the
+  owner which engine worked. If that fails too, stop and tell the owner.
+  More attempts can get the account rate-limited or locked.
+- A card (or any other non-login) fill whose page kept its fields may
+  still have gone through: a checkout can stay put while a payment is
+  slow. Never submit it again, on either engine: check the page and the
+  site's orders for whether it succeeded, and ask the owner.
 - Never fake a click or key with `eval`: the site sees it isn't real.
   `covered_target` means something is on top: click the banner's or
   dialog's own button.

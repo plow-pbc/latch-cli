@@ -709,23 +709,29 @@ async fn fill(
         answer_events(object, events, &sites);
         if cleared {
             let engine = session.ready["engine"].as_str().unwrap_or_default();
-            object.insert("next".into(), json!(not_accepted(engine)));
+            object.insert("next".into(), json!(kept(meta.kind, engine)));
         }
     }
     Ok(result)
 }
 
 /// The way on after a submit the page kept: it neither left nor emptied the
-/// filled fields, so latch cleared them. A site may drop a sign-in from one
-/// engine silently and take it from the other.
-fn not_accepted(engine: &str) -> String {
+/// filled fields, so latch cleared them. That may mean the page refused it,
+/// or only that it is still working (a checkout that stays put, a slow
+/// payment). A site may drop a sign-in from one engine silently and take it
+/// from the other, so a login may be retried once there; anything else may
+/// have gone through, and sending it again could repeat an order.
+fn kept(kind: &str, engine: &str) -> String {
+    if kind != "login" {
+        return "the page kept the filled fields after the submit (latch cleared them), which doesn't say whether it went through: don't submit again; check the page, and the site's orders or account, for whether it succeeded, and ask the owner before trying again".into();
+    }
     let other = if engine == "camoufox" {
         "chrome"
     } else {
         "camoufox"
     };
     format!(
-        "the page did not take the submit (latch cleared the fields): check the page for an error; with none, `close` this session and retry once on `open --engine {other}`, then tell the owner which engine worked"
+        "the page kept the filled fields after the submit (latch cleared them), so the sign-in may not have gone through: check the page for an error or a code prompt; with neither and no sign of being signed in, `close` this session and retry once on `open --engine {other}`, then tell the owner which engine worked"
     )
 }
 
@@ -1197,14 +1203,25 @@ mod tests {
     use super::*;
     use crate::vault::item::{Custom, LOGIN, Raw};
 
-    /// A submit the page kept points the agent at the engine it is not on,
-    /// once, by the name `open --engine` takes.
+    /// A sign-in the page kept points the agent at the engine it is not on,
+    /// once, by the name `open --engine` takes. Any other kept submit (a
+    /// card's, which may have paid) is never to be sent again.
     #[test]
-    fn a_kept_submit_says_to_retry_once_on_the_other_engine() {
+    fn a_kept_submit_retries_a_login_once_on_the_other_engine_and_nothing_else() {
         for (engine, other) in [("cft", "camoufox"), ("camoufox", "chrome")] {
-            let next = not_accepted(engine);
+            let next = kept("login", engine);
             assert!(next.contains(&format!("`open --engine {other}`")), "{next}");
             assert!(next.contains("retry once"), "{next}");
+            assert!(next.contains("may not have gone through"), "{next}");
+        }
+        for kind in ["card", "identity", "note"] {
+            let next = kept(kind, "cft");
+            assert!(
+                !next.contains("--engine") && !next.contains("retry"),
+                "{next}"
+            );
+            assert!(next.contains("don't submit again"), "{next}");
+            assert!(next.contains("ask the owner"), "{next}");
         }
     }
 
