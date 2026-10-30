@@ -196,7 +196,7 @@ pub async fn run(state: &StateDir, args: BrowserArgs) -> Result<Value, Failure> 
                 Transfer::From(mut upload) => send(&link.connection, &request, &mut upload).await,
             };
             link.close();
-            result
+            result.map_err(dial::naming(&host))
         }
     }
 }
@@ -548,7 +548,7 @@ async fn fetch_final(
     let link = dial::connect(state, host).await?;
     let got = receive(&link.connection, &fetch, path).await;
     link.close();
-    got
+    got.map_err(dial::naming(host))
 }
 
 /// The plan command's plan: from `--plan-file`, or one short-form step per
@@ -641,6 +641,7 @@ async fn receive(
     meta["path"] = json!(path);
     meta["sha256"] = json!(sha256);
     meta["audit_id"] = done["audit_id"].clone();
+    meta["host"] = done["host"].clone();
     Ok(meta)
 }
 

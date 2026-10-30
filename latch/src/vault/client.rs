@@ -233,7 +233,7 @@ pub async fn run(state: &StateDir, args: VaultArgs) -> Result<Value, Failure> {
             )
             .await;
             link.close();
-            result
+            result.map_err(dial::naming(host))
         }
     }
 }
