@@ -229,8 +229,8 @@ pub enum Command {
     /// own computer, where latch is installed alone
     Update(UpdateArgs),
     /// Set this machine up, at a terminal: log in, connect Google, on a Mac
-    /// turn on Messages and Contacts, all with no host running, then offer to
-    /// start latch. Each step runs a latch command and is skipped once done,
+    /// turn on Messages and Contacts, rules for agents from a preset when
+    /// there are none, all with no host running, then offer to start latch. Each step runs a latch command and is skipped once done,
     /// so it can be run again any time; `--status` only lists the steps
     Setup(SetupArgs),
     /// Internal: the sandboxed process a host starts for each file read or write, exec, Google call and startup probe
@@ -857,12 +857,15 @@ pub enum OnOff {
 
 #[derive(Subcommand, Debug)]
 pub enum RulesCommand {
-    /// Replace the rules with TEXT, or with the text of --file F (- reads stdin)
+    /// Replace the rules with TEXT, with the text of --file F (- reads stdin), or with a preset's
     Set {
-        #[arg(conflicts_with = "file")]
+        #[arg(conflicts_with_all = ["file", "preset"])]
         text: Option<String>,
-        #[arg(long, value_name = "F")]
+        #[arg(long, value_name = "F", conflicts_with = "preset")]
         file: Option<PathBuf>,
+        /// Rules to start from: family (a family assistant: calendar, texts and email, groceries; never documents or passwords) or work (a work assistant: email, calendar, GitHub; not personal texts and chats), as the Mac app offers them
+        #[arg(long, value_name = "NAME")]
+        preset: Option<crate::gate::rules::Preset>,
         /// Save only if the rules are still at revision R, as `rules show`
         /// gave it (`none`: there were none); otherwise refused, and
         /// nothing changes

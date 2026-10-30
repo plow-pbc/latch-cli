@@ -1,6 +1,6 @@
 //! `latch setup`: one pass, at a terminal, through what a new machine
-//! needs: a login, Google, on macOS Messages and Contacts, and a running
-//! host. None of the steps before the last needs a host running; the last
+//! needs: a login, Google, on macOS Messages and Contacts, rules for its
+//! agents, and a running host. None of the steps before the last needs a host running; the last
 //! offers to start one. It is thin: every step runs an existing latch command (and says
 //! which), so a person can do any step by hand later. Each step first looks
 //! whether it is done already and then skips it, so setup can be run again
@@ -19,6 +19,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::failure::{Failure, code};
+use crate::gate::rules::{Preset, RulesDir, Scope};
 use crate::state::StateDir;
 
 /// How often, and how long, the Full Disk Access step checks again.
@@ -38,6 +39,7 @@ pub fn run(state_dir: Option<PathBuf>) -> ExitCode {
         setup.google();
         #[cfg(target_os = "macos")]
         setup.messages_and_contacts();
+        setup.rules();
         setup.start();
     }
     say("Done. Run `latch setup` again any time.");
@@ -246,7 +248,67 @@ impl Setup {
         }
     }
 
-    /// Step 4, last: a running host, if the owner wants one now. `--again`
+    /// Step 4: rules for agents, from a preset, when there are none yet; the
+    /// owner's to set, so not for an agent's login. A choice of none leaves
+    /// agents to the built-in policy, and the next setup asks again.
+    fn rules(&mut self) {
+        if self.local()["login"]["kind"] != "device" {
+            return;
+        }
+        let shown = self.latch(&["rules", "show"]);
+        if !shown.ok {
+            failed(&shown.json, "latch rules show");
+            return;
+        }
+        if has_rules(&shown.json) {
+            done("Your agents have rules: `latch rules show` shows them.");
+            return;
+        }
+        say(
+            "Rules tell the gatekeeper what your agents may do; with none, they may only do everyday work without asking you.",
+        );
+        for (number, preset) in Preset::ALL.iter().enumerate() {
+            say(&format!(
+                "  {}. {}: {}",
+                number + 1,
+                preset.name(),
+                preset.text()
+            ));
+        }
+        say("  3. None for now");
+        let answer = self.input().answer("Rules for your agents? [1/2/3] ");
+        let preset = match answer.as_str() {
+            "" | "1" | "f" | "family" => Preset::Family,
+            "2" | "w" | "work" => Preset::Work,
+            _ => {
+                say(
+                    "No rules; later: `latch rules set --preset family` (or work), or `latch rules edit`.",
+                );
+                return;
+            }
+        };
+        let args = [
+            "rules",
+            "set",
+            "--preset",
+            preset.word(),
+            "--revision",
+            "none",
+        ];
+        let command = format!("latch {}", args.join(" "));
+        step("Set rules", &command);
+        let set = self.latch(&args);
+        if set.ok {
+            done(&format!(
+                "Your agents have the {} rules; change them with `latch rules edit`.",
+                preset.name()
+            ));
+        } else {
+            failed(&set.json, &command);
+        }
+    }
+
+    /// Step 5, last: a running host, if the owner wants one now. `--again`
     /// once a host ran here, so it keeps the flags its owner gave it
     /// (`--deny-exec`).
     fn start(&mut self) {
@@ -313,7 +375,7 @@ pub struct Status {
 
 #[derive(Serialize)]
 pub struct Step {
-    /// `login`, each connector this build has, then `host`.
+    /// `login`, each connector this build has, `rules`, then `host`.
     pub step: &'static str,
     pub state: StepState,
     pub reason: String,
@@ -437,6 +499,32 @@ pub async fn status(state: &StateDir, check_access: bool) -> Result<Status, Fail
         }
         steps.push(step);
     }
+    let rules = RulesDir::new(&state.path);
+    let any_rules = rules.text(&Scope::Host)?.is_some() || !rules.agents()?.is_empty();
+    steps.push(match &local.login {
+        None => Step::new("rules", Blocked, "Rules need a login first.".into(), None),
+        Some(login) if login.kind != "device" => Step::new(
+            "rules",
+            Blocked,
+            "Rules are set by the owner's own login, not an agent's.".into(),
+            None,
+        ),
+        Some(_) if any_rules => Step::new("rules", Done, "Your agents have rules.".into(), None),
+        Some(_) => Step::new(
+            "rules",
+            Needed,
+            "Your agents have no rules, so they may only do everyday work without asking you."
+                .into(),
+            Some(vec![
+                "rules",
+                "set",
+                "--preset",
+                "family",
+                "--revision",
+                "none",
+            ]),
+        ),
+    });
     steps.push(match (&local.login, &local.this_machine.hosting) {
         (None, _) => Step::new("host", Blocked, "latch needs a login first.".into(), None),
         (_, serve) if serve.ready => Step::new("host", Done, "latch is running.".into(), None),
@@ -637,11 +725,17 @@ impl Input {
 
     /// Asks `question`; an empty answer (or a closed stdin) is `default`.
     fn yes(&self, question: &str, default: bool) -> bool {
-        eprint!("{question}");
-        match self.0.recv().unwrap_or_default().as_str() {
+        match self.answer(question).as_str() {
             "" => default,
             answer => answer.starts_with('y'),
         }
+    }
+
+    /// Asks `question`: the line typed, trimmed and lowercased; empty for a
+    /// closed stdin.
+    fn answer(&self, question: &str) -> String {
+        eprint!("{question}");
+        self.0.recv().unwrap_or_default()
     }
 
     /// Waits `wait`, or less if `s` is typed: then true.
@@ -682,4 +776,12 @@ fn done(text: &str) {
 fn failed(json: &Value, command: &str) {
     let message = json["error"]["message"].as_str().unwrap_or("it failed");
     eprintln!("✗ {message}\n  Try again later: {command}");
+}
+
+/// Whether `rules show` lists rules: every agent's, or an agent's own.
+fn has_rules(shown: &Value) -> bool {
+    !shown["every_agent"].is_null()
+        || shown["agents"]
+            .as_array()
+            .is_some_and(|agents| agents.iter().any(|agent| !agent["text"].is_null()))
 }

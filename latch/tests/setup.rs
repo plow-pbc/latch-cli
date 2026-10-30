@@ -16,14 +16,17 @@ use std::thread;
 /// per call to `plugins enable NAME`, `ok`, `not_granted`, `unavailable` or
 /// `fail`, the last one repeating. With `taken`, login finds this machine's
 /// name taken and asks, as the real one does, whether to replace it and
-/// else for a new name; it keeps the answers in `login-answers`.
+/// else for a new name; it keeps the answers in `login-answers`. With
+/// `agent`, the login is an agent's. Rules are set unless `no-rules`; a
+/// `rules set --preset NAME` keeps NAME in `rules`.
 const STUB: &str = r#"#!/bin/sh
 [ "$1" = --state-dir ] && shift 2
 echo "${LATCH_HOST:+LATCH_HOST=$LATCH_HOST }$*" >> "$STUB/calls"
 state() { if [ -f "$STUB/$1" ]; then echo true; else echo false; fi; }
 case "$*" in
   "status --local")
-    if [ -f "$STUB/peer" ]; then login='{"kind":"device"}' name='"mac"'; else login=null name=null; fi
+    kind=device; [ -f "$STUB/agent" ] && kind=agent
+    if [ -f "$STUB/peer" ]; then login="{\"kind\":\"$kind\"}" name='"mac"'; else login=null name=null; fi
     plugins='['; sep=''
     for plugin in google messages contacts; do
       if [ -f "$STUB/enabled-$plugin" ]; then s=enabled; else s=disabled; fi
@@ -51,6 +54,12 @@ case "$*" in
     else echo "Logged in as mac." >&2; fi
     touch "$STUB/peer" ;;
   "serve -d"|"serve -d --again") touch "$STUB/ready"; echo '{"pid":4242}' ;;
+  "rules show")
+    if [ -f "$STUB/no-rules" ] && [ ! -f "$STUB/rules" ]; then echo '{"every_agent":null,"agents":[]}'
+    else echo '{"every_agent":{"text":"Agents may read my mail.","revision":"r"},"agents":[]}'; fi ;;
+  "rules set --preset "*" --revision none")
+    if [ -f "$STUB/rules" ] || [ ! -f "$STUB/no-rules" ]; then echo '{"error":{"code":"stale_revision","message":"the rules changed"}}' >&2; exit 1; fi
+    echo "$4" > "$STUB/rules"; echo '{"saved":true}' ;;
   "plugins enable "*)
     name=$3
     answer=$(head -n 1 "$STUB/enable-$name" 2>/dev/null || echo ok)
@@ -142,6 +151,7 @@ impl Stub {
             .arg("setup")
             .env("LATCH_SETUP_LATCH", self.root.join("latch-stub"))
             .env("STUB", self.root.join("stub"))
+            .env("HOME", &self.root)
             // As if the owner's shell named another host for other commands.
             .env("LATCH_HOST", "elsewhere")
             .env("PATH", path)
@@ -484,10 +494,101 @@ fn a_failure_on_a_later_check_is_reported_not_waited_out() {
     assert!(!shown.contains("Not granted yet"), "{shown}");
 }
 
+/// What setup's questions before the rules one are answered `no` with:
+/// Google, and on macOS Messages.
+fn no_to_the_connectors() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "n\nn\n"
+    } else {
+        "n\n"
+    }
+}
+
+/// With no rules yet, setup shows the two presets and Enter takes the
+/// first, saved by `rules set` only while there are still none.
+#[test]
+fn a_host_with_no_rules_is_offered_the_presets_and_enter_takes_family() {
+    let stub = Stub::new();
+    stub.file("peer", "");
+    stub.file("no-rules", "");
+    // Rules: Enter; start: Enter.
+    let (code, shown) = stub.setup(&format!("{}\n\n", no_to_the_connectors()));
+    assert_eq!(code, Some(0), "{shown}");
+    for line in [
+        "  1. Family assistant: Allow my family assistant to keep our calendar",
+        "  2. Work assistant: Allow my work assistant to read and send my email",
+        "  3. None for now",
+        "Rules for your agents? [1/2/3] ",
+        "→ Set rules: latch rules set --preset family --revision none",
+        "✓ Your agents have the Family assistant rules",
+    ] {
+        assert!(shown.contains(line), "{line}: {shown}");
+    }
+    assert_eq!(stub.read("rules"), "family\n");
+    // Before the host starts, so it starts with them.
+    let calls = stub.read("calls");
+    assert!(
+        calls.find("rules set").unwrap() < calls.find("serve").unwrap(),
+        "{calls}"
+    );
+}
+
+#[test]
+fn work_or_none_is_saved_as_chosen() {
+    for (typed, saved) in [
+        ("2", Some("work\n")),
+        ("w", Some("work\n")),
+        ("3", None),
+        ("n", None),
+    ] {
+        let stub = Stub::new();
+        stub.file("peer", "");
+        stub.file("no-rules", "");
+        let (code, shown) = stub.setup(&format!("{}{typed}\nn\n", no_to_the_connectors()));
+        assert_eq!(code, Some(0), "{shown}");
+        match saved {
+            Some(saved) => assert_eq!(stub.read("rules"), saved, "{typed}: {shown}"),
+            None => {
+                assert!(!stub.read("calls").contains("rules set"), "{typed}");
+                assert!(
+                    shown.contains("No rules; later: `latch rules set --preset family` (or work)"),
+                    "{typed}: {shown}"
+                );
+            }
+        }
+    }
+}
+
+/// Rules set before, here or by hand: nothing asked, nothing changed.
+#[test]
+fn rules_already_set_skip_the_step() {
+    let stub = Stub::new();
+    stub.file("peer", "");
+    let (code, shown) = stub.setup(&format!("{}n\n", no_to_the_connectors()));
+    assert_eq!(code, Some(0), "{shown}");
+    assert!(shown.contains("✓ Your agents have rules"), "{shown}");
+    assert!(!shown.contains("Rules for your agents?"), "{shown}");
+    assert!(!stub.read("calls").contains("rules set"));
+}
+
+/// Rules are the owner's: an agent's login is not asked for them.
+#[test]
+fn an_agent_login_is_not_asked_for_rules() {
+    let stub = Stub::new();
+    stub.file("peer", "");
+    stub.file("agent", "");
+    stub.file("no-rules", "");
+    let (code, shown) = stub.setup(&format!("{}n\n", no_to_the_connectors()));
+    assert_eq!(code, Some(0), "{shown}");
+    assert!(!shown.contains("Rules for your agents?"), "{shown}");
+    assert!(!stub.read("calls").contains("rules"));
+}
+
 /// `latch setup --status` on `state`, without a terminal: its JSON steps,
 /// by name.
 fn status(state: &Path) -> serde_json::Map<String, serde_json::Value> {
     let output = Command::new(env!("CARGO_BIN_EXE_latch"))
+        .env("HOME", state.parent().unwrap())
         .arg("--state-dir")
         .arg(state)
         .args(["setup", "--status"])
@@ -549,6 +650,7 @@ fn status_on_a_fresh_state_asks_for_a_login_first_and_creates_nothing() {
     );
     assert_eq!(steps["google"]["state"], "blocked");
     assert_eq!(steps["google"]["args"], serde_json::Value::Null);
+    assert_eq!(steps["rules"]["state"], "blocked");
     assert_eq!(steps["host"]["state"], "blocked");
     assert!(!state.exists());
 }
@@ -592,6 +694,13 @@ fn status_reads_the_saved_connectors_and_serve_flags_and_changes_nothing() {
         steps["host"]["args"],
         serde_json::json!(["serve", "-d", "--again"])
     );
+    // No rules here yet: the preset the Mac app starts from, set only
+    // while there are still none.
+    assert_eq!(steps["rules"]["state"], "needed");
+    assert_eq!(
+        steps["rules"]["args"],
+        serde_json::json!(["rules", "set", "--preset", "family", "--revision", "none"])
+    );
     if cfg!(target_os = "macos") {
         let messages = &steps["messages"];
         assert_eq!(messages["state"], "blocked");
@@ -617,8 +726,50 @@ fn status_on_an_agent_login_leaves_the_connectors_to_the_owner() {
     let stub = Stub::new();
     let state = logged_in(&stub, "agent", &[]);
     let steps = status(&state);
+    assert_eq!(steps["rules"]["state"], "blocked");
+    assert_eq!(steps["rules"]["args"], serde_json::Value::Null);
     assert_eq!(steps["google"]["state"], "blocked");
     assert_eq!(steps["google"]["args"], serde_json::Value::Null);
     assert_eq!(steps["host"]["state"], "needed");
     assert_eq!(steps["host"]["args"], serde_json::json!(["serve", "-d"]));
+}
+
+#[test]
+fn status_says_rules_are_done_once_any_are_set() {
+    for file in ["host.txt", "0123456789abcdef0123456789abcdef.txt"] {
+        let stub = Stub::new();
+        let state = logged_in(&stub, "device", &[]);
+        fs::create_dir_all(state.join("rules")).unwrap();
+        fs::write(state.join("rules").join(file), "Agents may read my mail.").unwrap();
+        let steps = status(&state);
+        assert_eq!(steps["rules"]["state"], "done", "{file}");
+        assert_eq!(steps["rules"]["args"], serde_json::Value::Null, "{file}");
+    }
+}
+
+/// Without a terminal setup asks nothing and sets no rules: it says the
+/// first step left, which once Google is settled is the rules.
+#[test]
+fn without_a_terminal_setup_sets_no_rules_and_says_how() {
+    let stub = Stub::new();
+    let state = logged_in(&stub, "device", &[]);
+    let before = contents(&state);
+    let output = Command::new(env!("CARGO_BIN_EXE_latch"))
+        .env("HOME", &stub.root)
+        .arg("--state-dir")
+        .arg(&state)
+        .arg("setup")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "no_terminal", "{error}");
+    assert_eq!(contents(&state), before);
+    assert!(!state.join("rules").exists());
+    let steps = status(&state);
+    assert_eq!(
+        steps["rules"]["args"],
+        serde_json::json!(["rules", "set", "--preset", "family", "--revision", "none"])
+    );
 }

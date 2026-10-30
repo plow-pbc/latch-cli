@@ -150,7 +150,9 @@ login.
   internet access, using secrets or sending data elsewhere. Your rules stay
   in force when you ask in chat, and they can restrict everyday work too.
   An agent with no chat and no rules is judged by the built-in policy
-  alone.
+  alone. A new host starts with no rules: `latch setup`, like the Mac
+  app's onboarding, offers a family or a work assistant's to start from
+  (`latch rules set --preset family`, or `work`).
 - **Which chat.** The agent's chat, if its line has one. If it has several,
   the agent names one with `--plow-chat ID` or `LATCH_PLOW_CHAT`. Otherwise
   the call stops with `which_chat` (exit 2), which lists the choices. Your
