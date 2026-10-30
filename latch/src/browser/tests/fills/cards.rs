@@ -32,6 +32,7 @@ conformance!(
     a_card_in_its_fields_shows_blank_in_pictures_until_pay,
     a_card_left_in_its_fields_is_emptied_after_a_while,
     a_page_that_takes_the_blanking_off_gets_no_picture,
+    a_card_filled_on_a_new_checkout_gets_its_own_time,
 );
 
 /// What the shop's `/pay` says when the test card arrived whole.
@@ -748,5 +749,55 @@ async fn a_page_that_takes_the_blanking_off_gets_no_picture(engine: &str) {
     let refused = h.shot().await.unwrap_err();
     println!("unblanked: {} ({})", refused.code, refused.message);
     assert_eq!(refused.code, "secret_on_page");
+    h.call("close", json!({})).await.ok();
+}
+
+/// A card filled on a checkout after an earlier one's page went keeps its
+/// own time in the fields, not what was left of the earlier card's.
+async fn a_card_filled_on_a_new_checkout_gets_its_own_time(engine: &str) {
+    let window = Duration::from_secs(8);
+    let (mut h, card, local, _, _keep) = shop_for(engine, Some(window)).await;
+    let fill = async |h: &mut Harness| {
+        h.call("open", json!({"url": format!("{local}/card-hosted.html")}))
+            .await
+            .unwrap();
+        let mut args = h.paying(&card, "Pay $10.00").await;
+        args.as_object_mut().unwrap().remove("press");
+        h.gated_fill(args).await.0.unwrap();
+        std::time::Instant::now()
+    };
+    let first = fill(&mut h).await;
+    // The first checkout's page goes; the second is filled before its time
+    // is up.
+    tokio::time::sleep(Duration::from_secs(2).saturating_sub(first.elapsed())).await;
+    let second = fill(&mut h).await;
+    // The second card went in while the first's time still ran.
+    assert!(second < first + window, "too slow to test");
+    // Past the first card's time, before the second's: still in the fields.
+    let check = first + window + Duration::from_millis(500);
+    assert!(
+        check + Duration::from_millis(500) < second + window,
+        "too slow to test"
+    );
+    tokio::time::sleep(check.saturating_duration_since(std::time::Instant::now())).await;
+    let held = h.call("eval", json!({"script": "1"})).await.unwrap_err();
+    assert_eq!(
+        held.code, "secret_on_page",
+        "emptied on the first card's time"
+    );
+    // Its own time up: emptied.
+    tokio::time::sleep(
+        (second + window + Duration::from_secs(2))
+            .saturating_duration_since(std::time::Instant::now()),
+    )
+    .await;
+    let left = h
+        .call(
+            "eval",
+            json!({"script": "[...document.querySelectorAll('input:not([type=hidden])')].map(i => i.value)"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(left["value"], json!(["", "", "", ""]), "{left}");
     h.call("close", json!({})).await.ok();
 }

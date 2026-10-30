@@ -110,6 +110,11 @@ impl<D: Driver> Core<D> {
         self.no_dialog()?;
         self.paused = true;
         self.fill.targets.clear();
+        // An earlier fill's deadline stands only while its fields still
+        // hold something: one whose page went has nothing left to empty.
+        if self.holding().ok() == Some(0) {
+            self.fill.clear_at = None;
+        }
         self.page(audit)?;
         let snapshot = match prepare.snapshot.as_deref() {
             Some(id) => self.snapshot(id)?.id.clone(),
@@ -529,7 +534,8 @@ impl<D: Driver> Core<D> {
             && self.holding().ok() != Some(0)
             && !self.fill.guarded.is_empty()
         {
-            // An earlier secret's deadline stands: the earliest goes first.
+            // An earlier secret still on the page keeps its deadline: the
+            // earliest goes first.
             let at = Instant::now() + Duration::from_millis(ms);
             self.fill.clear_at = Some(self.fill.clear_at.map_or(at, |was| was.min(at)));
         }
