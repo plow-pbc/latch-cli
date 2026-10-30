@@ -692,26 +692,31 @@ mod tests {
             missing.details["setup"],
             "latch browser setup --engine chrome"
         );
-        assert!(
+        // Camoufox is offered only where it has a build: not on Windows.
+        assert_eq!(
             missing.message.contains("--engine camoufox"),
+            cfg!(unix),
             "{}",
             missing.message
         );
 
         // Camoufox alone, as on an agent's machine; then Chrome beside it.
-        let state = tempfile::tempdir().unwrap();
-        fake_install(state.path(), "camoufox");
-        assert_eq!(default(state.path()).unwrap(), "camoufox");
-        fake_install(state.path(), "cft");
-        assert_eq!(default(state.path()).unwrap(), "cft");
-        // A Chrome that no longer checks out gives way to Camoufox.
         let build = &CFT.builds[platform().unwrap()];
-        let exe = CFT
-            .folder(state.path())
-            .join(&build.folder)
-            .join(&build.executable);
-        fs::write(&exe, b"not chrome").unwrap();
-        assert_eq!(default(state.path()).unwrap(), "camoufox");
+        #[cfg(unix)]
+        {
+            let state = tempfile::tempdir().unwrap();
+            fake_install(state.path(), "camoufox");
+            assert_eq!(default(state.path()).unwrap(), "camoufox");
+            fake_install(state.path(), "cft");
+            assert_eq!(default(state.path()).unwrap(), "cft");
+            // A Chrome that no longer checks out gives way to Camoufox.
+            let exe = CFT
+                .folder(state.path())
+                .join(&build.folder)
+                .join(&build.executable);
+            fs::write(&exe, b"not chrome").unwrap();
+            assert_eq!(default(state.path()).unwrap(), "camoufox");
+        }
 
         // With nothing to give way to, its own error says why.
         let alone = tempfile::tempdir().unwrap();
@@ -727,6 +732,8 @@ mod tests {
         assert_eq!(default(alone.path()).unwrap_err().code, "engine_unverified");
     }
 
+    // Camoufox has no Windows build: there it is unsupported_platform.
+    #[cfg(unix)]
     #[test]
     fn a_missing_engine_names_the_ones_the_host_has_its_default_and_its_setup() {
         let state = tempfile::tempdir().unwrap();
@@ -770,6 +777,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_changed_camoufox_part_is_refused_before_launch() {
         let state = tempfile::tempdir().unwrap();
