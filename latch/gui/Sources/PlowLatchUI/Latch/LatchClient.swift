@@ -328,8 +328,14 @@ nonisolated struct LiveLatchClient: LatchClient {
         try decode(UpdateCheck.self, try await run(["update", "--check"]))
     }
 
+    /// Detached, its output in the state folder's `app-update/`: the
+    /// installer quits this app, and the update must outlive it.
     func update() async throws -> UpdateResult {
-        try decode(UpdateResult.self, try await run(["update"]))
+        let folder = URL(filePath: stateDir).appending(path: "app-update")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let out = try await LatchProcess.detached(executable: executable, arguments: withState(["update"]), environment: Self.environment,
+                                                  out: folder.appending(path: "out.json"), err: folder.appending(path: "err.log"))
+        return try decode(UpdateResult.self, out)
     }
 
     func logout() async throws -> LogoutResult {
