@@ -20,6 +20,7 @@ import * as activity from "./pages/activity.js";
 import * as rules from "./pages/rules.js";
 import * as vault from "./pages/vault.js";
 import * as settings from "./pages/settings.js";
+import * as agents from "./pages/agents.js";
 
 const SCREENS = [
   ["home", "Home", home],
@@ -29,6 +30,7 @@ const SCREENS = [
   ["settings", "Host Settings", settings],
 ];
 const ACCOUNT = [
+  ["agents", "Agents", "agents", agents],
 ];
 
 export const app = {
