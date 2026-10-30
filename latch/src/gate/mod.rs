@@ -113,6 +113,9 @@ const EXCEPTION_P: f64 = 0.5;
 /// The chat layer also vetoes at this P(FORBIDDEN), below `ALLOW_P`: an
 /// unsure "stop" from the owner still stops.
 const CHAT_VETO_P: f64 = 0.15;
+/// Added to the rules of judgment for an agent's `eval`, which runs with
+/// the page's own access: what it may read or send is what to judge.
+const RUN_SCRIPT: &str = "An eval (a run_script action) runs the agent's own JavaScript, shown whole as its script, in the page of its site with the page's own access: it can read anything on the page, what is typed or filled into its fields included, and what it sets up can keep running after the call. Ordinary page work, for something the owner wants done on that site, is everyday: closing a pop-up or banner, scrolling, clicking, reading the visible text. A script that reads the values of form fields (password and card fields above all), listens to input, keyboard or form events, or sends page data off the page (fetch, XMLHttpRequest, sendBeacon, an image or script source, a WebSocket, postMessage to another window, or storage kept for later) needs the owner's explicit OK for exactly that; a request to do something on the site is not one.";
 /// Added to the rules of judgment when the owner is the caller.
 const OWNER_CALLS: &str = "The caller is the owner, at one of their own machines: the proposed action is the owner's own request. Judge only whether the owner's rules on this host forbid it; if a rule plausibly applies, choose FORBIDDEN.";
 /// Added to the rules of judgment only when the judge sees host rules: a
@@ -1059,6 +1062,9 @@ fn state(
     }
     if shown["operation"] == "vault.link" {
         rules_of_judgment.push(VAULT_LINK);
+    }
+    if shown["kind"] == "run_script" {
+        rules_of_judgment.push(RUN_SCRIPT);
     }
     let state = State {
         rules_of_judgment,

@@ -77,11 +77,14 @@ are welcome.
 - **An owner's login placed where an agent runs is judged as the owner.**
   The host can't tell. Give each agent a login of its own.
 - **A script the agent ran on a page can catch a value filled there later.**
-  If an agent ran its own script on a site earlier in a browser session,
-  what that script left behind (a service worker, a stored script) can read
-  a vault value that Latch fills there. Latch can't prevent this. Its audit
-  marks every such fill (`agent_code_before_fill`). A new browser session
-  starts clean.
+  An agent's `eval` runs with the page's own access, and what it leaves
+  behind (an event listener, a service worker, a stored script) can read a
+  vault value that Latch fills on that site later in the session. Latch
+  doesn't track this. Instead the gatekeeper judges each script's whole
+  source before it runs: one that reads form fields, listens to input,
+  keyboard or form events, or sends page data off the page needs the
+  owner's explicit OK. That judgment is a model's, so a script that hides
+  what it does may get through. A new browser session starts clean.
 - **On macOS, the browser engine runs outside Latch's sandbox**, in its own
   sandbox. A compromised engine could read the host's state folder.
 - **Outside the signed macOS app, secrets are files** that only the OS user

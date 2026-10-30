@@ -36,8 +36,9 @@ as `latch status` lists it. Branch on
   this chat, and pass it with `--host` rather than leave the choice to a
   default.
 - **A default host.** When the owner tells you which host to use from now
-  on, save it: `latch hosts default mbp`. Then pass `--host default`
-  (`latch hosts default` says which it is). It is your own choice, kept
+  on, save it: `latch hosts default mbp`. Then pass `--host default` on
+  every command that should go there: a command without `--host` still
+  goes where it always did (`latch hosts default` says which it is). It is your own choice, kept
   in your state folder, and still say which host each answer came from.
 - Your login lives in a state folder: `--state-dir DIR`, else
   `$LATCH_STATE_DIR`, else `~/.latch`. Where `HOME` is not your home,
@@ -261,6 +262,11 @@ fixes it.
 
 - Each `open` starts signed in nowhere, and its logins last until it
   closes: do the whole task in one session.
+- A host may have two browsers: Chrome (`chrome`, Chrome for Testing) and
+  Camoufox (`camoufox`, a Firefox). `open` with no `--engine` uses Chrome
+  if the host has it, and the answer's `engine` says which ran; `open
+  --engine camoufox URL` picks the other. A site may silently drop a
+  sign-in or a submit from one and take it from the other.
 - `engine_not_installed`: `details.installed` lists the engines the host
   has, and `details.default` the one an `open` with no `--engine` uses. If
   the task can use one of them, `open` again on it; else tell the owner the
@@ -271,9 +277,16 @@ fixes it.
   type) will not let a retry or a wait through: stop and tell the owner.
   A challenge you can't do yourself is `handoff`'s; on a host with no
   screen (`no_screen`), stop and tell the owner what the page needs.
-- A sign-in you submitted that doesn't move on (the same page, no code
-  prompt): retry it once at most, then stop and tell the owner. More
-  attempts can get the account rate-limited or locked.
+- A sign-in you submitted that doesn't seem to move on (the same page, no
+  error, no code prompt, not signed in; a login fill's answer then has a
+  `next` saying the page kept its fields), or an obvious bot check:
+  `close` the session and retry it once on the other engine, then tell the
+  owner which engine worked. If that fails too, stop and tell the owner.
+  More attempts can get the account rate-limited or locked.
+- A card (or any other non-login) fill whose page kept its fields may
+  still have gone through: a checkout can stay put while a payment is
+  slow. Never submit it again, on either engine: check the page and the
+  site's orders for whether it succeeded, and ask the owner.
 - Never fake a click or key with `eval`: the site sees it isn't real.
   `covered_target` means something is on top: click the banner's or
   dialog's own button.
@@ -291,7 +304,9 @@ fixes it.
   has changed since.
 - Read a page with `text` (its words) or `observe` (its elements), not
   `eval`: the gatekeeper judges every script, which is slower, and can
-  refuse it.
+  refuse it. Closing a pop-up or scrolling is everyday; a script that
+  reads form fields, listens to typing or form events, or sends page data
+  anywhere needs the owner's explicit OK.
 - A value `fill` put in a page stays there: never copy it out, repeat it
   or write it anywhere.
 - Buying: sign in, choose, `fill` the card ("Paying with a saved card"),

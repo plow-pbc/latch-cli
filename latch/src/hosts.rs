@@ -120,8 +120,22 @@ pub async fn resolve(state: &StateDir, asked: Option<String>) -> Result<Peer, Fa
     if let Named::NoDefault = named {
         return Err(no_default(&hosts));
     }
-    pick(asked, &hosts)
+    pick(asked, &hosts).map_err(|mut failure| {
+        // A saved default is easy to take for one every command uses.
+        if failure.code == code::host_required.name
+            && let Ok(Some(saved)) = saved_default(state)
+        {
+            failure.message = format!(
+                "{}. Your saved default, {saved}, is used only with --host default (or LATCH_HOST=default)",
+                failure.message
+            );
+        }
+        failure
+    })
 }
+
+/// What a saved default host does, said with it.
+const SAVED_USE: &str = "saved; use --host default (or LATCH_HOST=default) to use it; commands without --host are unchanged";
 
 /// `latch hosts default`: the saved default host; with `name`, saves that
 /// host (one Plow lists for this account), with `clear`, removes it.
@@ -142,7 +156,10 @@ pub async fn default(
         return Ok(serde_json::json!({"default_host": null}));
     }
     let Some(name) = name else {
-        return Ok(serde_json::json!({"default_host": saved_default(state)?}));
+        return Ok(match saved_default(state)? {
+            Some(saved) => serde_json::json!({"default_host": saved, "next": SAVED_USE}),
+            None => serde_json::json!({"default_host": null}),
+        });
     };
     let config = state.require_login()?;
     let peers = Plow::from_state(state)?.list_peers().await?;
@@ -152,7 +169,7 @@ pub async fn default(
         return Err(Failure::new(code::unknown_host, message));
     }
     crate::state::write_private(&path, format!("{name}\n").as_bytes()).map_err(io)?;
-    Ok(serde_json::json!({"default_host": name}))
+    Ok(serde_json::json!({"default_host": name, "next": SAVED_USE}))
 }
 
 /// Whether `asked` (or, naming none, the default) is this machine itself:

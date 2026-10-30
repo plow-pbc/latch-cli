@@ -19,7 +19,7 @@
     '[role=slider]', '[role=spinbutton]', '[role=treeitem]',
   ].join(',');
   const ROWS = 'tr, li, [role=row], [role=listitem], [role=gridcell], article, dd';
-  const SECRET = /pass|secret|token|otp|one-time|cvv|cvc|\bpin\b/i;
+  const SECRET = /pass|secret|token|otp|one-time|cvv|cvc|cc-number|cc-csc|\bpin\b/i;
 
   const clean = (text, max = MAX_TEXT) => {
     const flat = (text || '').replace(/\s+/g, ' ').trim();
@@ -387,10 +387,9 @@
   };
   const current = (el) => (el.isContentEditable ? el.textContent : el.value);
   // Whether a field holding `held` holds `wanted`: the same characters in
-  // the same order, give or take the separators a field adds as it formats
-  // a value (a code as "123 456", a card number in fours, a date with
-  // slashes). Walked by code point, so an astral character is one. The
-  // GET guards (`cdp.rs`, `helper.mjs`) match a value the same way.
+  // the same order, with only the separators a field adds as it formats a
+  // value between them (a code as "123 456", a date with slashes). By code
+  // point, so an astral character is one.
   const SEPARATORS = new Set([' ', '\u00a0', '-', '/', '.', '(', ')', '+']);
   const keeps = (held, wanted) => {
     if (held === wanted) return true;
@@ -403,6 +402,12 @@
     }
     return i === want.length;
   };
+  // For a value sites format as they like (a card's number and expiry),
+  // the separators either side puts between its characters are set aside:
+  // one stored with spaces is kept by a field that drops them. The GET
+  // guards (`cdp.rs`, `helper.mjs`) match every value so.
+  const bare = (text) => Array.from(text).filter((ch) => !SEPARATORS.has(ch)).join('');
+  const keepsFormatted = (held, wanted) => held === wanted || (bare(wanted) !== '' && bare(held) === bare(wanted));
 
   // The field a value goes into, checked again: its element, document and
   // origin, and (the page can make a field editable after the fill was
@@ -418,12 +423,12 @@
 
   // Checks the field, then sets the value in one step. Answers whether the
   // field holds it, never the value.
-  const fill = (snap, index, value, origin, expected) => {
+  const fill = (snap, index, value, origin, expected, formatted) => {
     const { el, refused } = fillable(snap, index, origin, expected);
     if (refused) return { refused };
     if (!setValue(el, value)) return { refused: 'no option matches' };
     if (value) filled.add(el); else filled.delete(el);
-    return held(el, value);
+    return held(el, value, formatted);
   };
 
   // A text field takes a value as a person types it: `typeStart` checks
@@ -454,12 +459,12 @@
   };
   // A field that took none of the keys, or only the first ones, gets the
   // value in one step.
-  const typeEnd = (snap, index, value, expected) => {
+  const typeEnd = (snap, index, value, expected, formatted) => {
     const el = element(snap, index);
     if (!el || expected !== token) return { refused: 'the field is gone' };
     const now = current(el);
     if (now !== value && value.startsWith(now)) setValue(el, value);
-    return held(el, value);
+    return held(el, value, formatted);
   };
   // Whether `el` is its document's active element. Keys go to it only
   // while its frame holds the page's focus too, which latch asks the
@@ -478,16 +483,22 @@
     }
   };
 
-  // Whether the field holds `value`, never the value.
-  const held = (el, value) => {
-    if (el.localName === 'select' || keeps(current(el), value)) return { held: true };
+  // Whether the field holds `value` (`formatted`: a value sites format as
+  // they like), never the value.
+  const held = (el, value, formatted) => {
+    const same = formatted ? keepsFormatted : keeps;
+    if (el.localName === 'select' || same(current(el), value)) return { held: true };
     // A single-line field drops line breaks, as it does from a paste: it
     // holds the value less them, which is what a person would have got.
     const unbroken = value.replace(/[\r\n]/g, '');
-    if (el.localName === 'input' && unbroken !== value && keeps(current(el), unbroken)) {
+    if (el.localName === 'input' && unbroken !== value && same(current(el), unbroken)) {
       return { held: true, dropped_breaks: true };
     }
-    return { held: false };
+    // What the page did with it, never what it holds.
+    const now = bare(current(el));
+    const whole = bare(value);
+    const page = now === '' ? 'cleared' : now !== whole && whole.startsWith(now) ? 'cut_short' : 'changed';
+    return { held: false, page };
   };
 
   // How many filled elements still hold something.

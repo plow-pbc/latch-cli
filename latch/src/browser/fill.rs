@@ -33,9 +33,8 @@
 //! The result says `submitted`, never "logged in" or "paid", with each
 //! field's outcome. The audit records the item, its revision, the mapping
 //! by ref, where it came from (a suggestion's id, or the agent), the
-//! stages, the origins, any `hint_mismatch`, whether agent code ever ran on
-//! those sites in the session (`agent_code_before_fill`), and the outcome:
-//! never a value.
+//! stages, the origins, any `hint_mismatch`, and the outcome: never a
+//! value.
 
 use std::sync::atomic::Ordering;
 
@@ -463,6 +462,18 @@ pub async fn run(
         }
     };
     let result = fill(browsers, &mut session, &item, &plan, args, audit).await;
+    // A card whose values went toward the page: the session's answers and
+    // journals show its number by its last four digits from now on.
+    if meta.kind == "card"
+        && audit.get("released") == Some(&json!(true))
+        && let Ok(number) = release(&item, "number")
+    {
+        let digits: String = number.chars().filter(char::is_ascii_digit).collect();
+        let mut cards = entry.cards.lock().expect("cards lock");
+        if !digits.is_empty() && !cards.contains(&digits) {
+            cards.push(digits);
+        }
+    }
     entry.runtime.filling.store(false, Ordering::SeqCst);
     result
 }
@@ -506,13 +517,7 @@ impl Plan {
                 _ => classify::read(&item.raw, &label).is_some(),
             };
             if !known {
-                return Err(Failure::new(
-                    code::no_such_field,
-                    format!(
-                        "item {} has no field {label:?}; observe lists the fields each item holds",
-                        item.id
-                    ),
-                ));
+                return Err(no_such_field(item, &label));
             }
             if meta.kind == "note"
                 && label != "notes"
@@ -636,6 +641,7 @@ async fn fill(
     // answer, as `heard` lets it.
     let mut events: Vec<Value> = Vec::new();
     let mut sites = fill_origins(&prepared);
+    let mut cleared = false;
     if let Some(press) = &plan.press {
         audit.insert("pressed".into(), json!(press));
         let pressed = json!({"op": "fill_submit", "target": press, "guard": args["guard"]});
@@ -670,6 +676,7 @@ async fn fill(
                 cleaned["cleared_by_latch"].clone(),
             );
             events.extend(listed(&cleaned["events"]));
+            cleared = cleaned["cleared_by_latch"] == true;
         }
         if !cleaned.as_ref().is_ok_and(|c| c["clean"] == true) {
             // The values may still be on the page: the agent stays out.
@@ -691,8 +698,32 @@ async fn fill(
         object.insert("stages".into(), json!(stages));
         object.insert("submitted".into(), json!(plan.press.is_some()));
         answer_events(object, events, &sites);
+        if cleared {
+            let engine = session.ready["engine"].as_str().unwrap_or_default();
+            object.insert("next".into(), json!(kept(meta.kind, engine)));
+        }
     }
     Ok(result)
+}
+
+/// The way on after a submit the page kept: it neither left nor emptied the
+/// filled fields, so latch cleared them. That may mean the page refused it,
+/// or only that it is still working (a checkout that stays put, a slow
+/// payment). A site may drop a sign-in from one engine silently and take it
+/// from the other, so a login may be retried once there; anything else may
+/// have gone through, and sending it again could repeat an order.
+fn kept(kind: &str, engine: &str) -> String {
+    if kind != "login" {
+        return "the page kept the filled fields after the submit (latch cleared them), which doesn't say whether it went through: don't submit again; check the page, and the site's orders or account, for whether it succeeded, and ask the owner before trying again".into();
+    }
+    let other = if engine == "camoufox" {
+        "chrome"
+    } else {
+        "camoufox"
+    };
+    format!(
+        "the page kept the filled fields after the submit (latch cleared them), so the sign-in may not have gone through: check the page for an error or a code prompt; with neither and no sign of being signed in, `close` this session and retry once on `open --engine {other}`, then tell the owner which engine worked"
+    )
 }
 
 /// A fill that stopped, with what it heard (`answer_events`) in its
@@ -1016,20 +1047,13 @@ async fn release_and_set(
             }
         }
     }
-    // Agent code that ran on these sites, in any session, may have left a
-    // service worker or stored script to see what is filled now.
-    let touched: Vec<String> = frame_origins
+    audit.insert("released".into(), json!(true));
+    let labels: Vec<&str> = fields
         .iter()
-        .map(String::as_str)
-        .chain([top])
-        .filter_map(sites::site_of)
+        .map(|field| field["field"].as_str().unwrap_or_default())
         .collect();
-    audit.insert(
-        "agent_code_before_fill".into(),
-        json!(session.runtime.agent_code_on(&touched)),
-    );
-    for field in &fields {
-        let label = field["field"].as_str().unwrap_or_default();
+    for (at, field) in fields.iter().enumerate() {
+        let label = labels[at];
         let boxes: Vec<Value> = field["boxes"].as_array().cloned().unwrap_or_default();
         let value = release(item, label)?;
         let value = shaped(label, value, &boxes[0])?;
@@ -1037,24 +1061,26 @@ async fn release_and_set(
             Failure::new(
                 code::split_mismatch,
                 format!(
-                    "{label} does not split into those {} boxes; nothing was filled",
+                    "the {label} ({} characters) does not split into those {} boxes; nothing was filled",
+                    value.chars().count(),
                     boxes.len()
                 ),
             )
         })?;
         for (target, piece) in boxes.iter().zip(pieces) {
             let set = json!({"op": "set_value", "target": target["ref"], "value": piece,
-                             "secret": suggest::secret_field(&meta, label)});
+                             "secret": suggest::secret_field(&meta, label),
+                             "formatted": formatted(meta.kind, label)});
             let answer = step(session, set, audit).await?;
             // A value split across boxes must land whole in each one.
             let dropped = answer["dropped_breaks"] == true;
             if answer["held"] != true || dropped && boxes.len() > 1 {
-                return Err(Failure::new(
-                    code::needs_owner,
-                    format!(
-                        "the page would not keep the value latch set; this site needs the owner: {}",
-                        super::handoff::to_owner(browsers.screen(), "signin")
-                    ),
+                return Err(not_kept(
+                    browsers,
+                    &meta,
+                    &labels,
+                    at,
+                    answer["page"].as_str(),
                 ));
             }
             // Worth fixing in the vault, though the fill went through.
@@ -1073,20 +1099,77 @@ async fn release_and_set(
     Ok(())
 }
 
+/// A fill stopped at field `labels[at]`, which the page did not keep as
+/// latch typed it: what the page did (`page`, from the reader: cleared,
+/// cut short, changed), what had gone in and what had not.
+fn not_kept(
+    browsers: &Browsers,
+    meta: &crate::vault::item::Meta,
+    labels: &[&str],
+    at: usize,
+    page: Option<&str>,
+) -> Failure {
+    let did = match page {
+        Some("cleared") => "cleared it",
+        Some("cut_short") => "kept only the start of it",
+        _ => "changed it",
+    };
+    let list = |labels: &[&str]| match labels {
+        [] => "none".to_string(),
+        some => some.join(", "),
+    };
+    let next = if meta.kind == "login" {
+        format!(
+            "this site needs the owner: {}",
+            super::handoff::to_owner(browsers.screen(), "signin")
+        )
+    } else {
+        "tell the owner what the page did; latch can't fill it there".to_string()
+    };
+    Failure::new(
+        code::needs_owner,
+        format!(
+            "the page did not keep the {} latch typed: it {did}. This stage was not submitted; filled before it, and cleared again: {}; not filled: {}. {next}",
+            labels[at],
+            list(&labels[..at]),
+            list(&labels[at + 1..]),
+        ),
+    )
+}
+
+/// Whether a site may format field `label` of an item of `kind` as it
+/// likes, so that the page keeps it whatever separators either side puts
+/// in it: a card's number and expiry, which checkouts space and slash as
+/// they please. Every other value stays as it is, a login's above all: a
+/// username or password a page changed is no longer the account's.
+fn formatted(kind: &str, label: &str) -> bool {
+    kind == "card" && (label == "number" || label.starts_with("expiry"))
+}
+
+/// A field `item` lacks, refused with the fields it has.
+fn no_such_field(item: &Item, label: &str) -> Failure {
+    let held: Vec<String> = holding(&item.meta())["fields"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|field| field["id"].as_str().map(str::to_string))
+        .collect();
+    Failure::new(
+        code::no_such_field,
+        format!(
+            "item {} has no field {label:?}; its fields are {}",
+            item.id,
+            held.join(", ")
+        ),
+    )
+}
+
 /// One value out of the vault: a field, or for a login's `otp` the current
 /// TOTP code, computed here from the stored key. Read from `item` as it
 /// was loaded, never from the vault again: an edit since then, which the
 /// confirmation never saw, gives none of its values to this fill.
 fn release(item: &Item, label: &str) -> Result<String, Failure> {
-    let missing = || {
-        Failure::new(
-            code::no_such_field,
-            format!(
-                "item {} has no field {label:?}; list it to see its fields",
-                item.id
-            ),
-        )
-    };
+    let missing = || no_such_field(item, label);
     if label == "otp" && item.meta().kind == "login" {
         let key = item
             .raw
@@ -1097,7 +1180,12 @@ fn release(item: &Item, label: &str) -> Result<String, Failure> {
         let params = totp::Params::parse(key).map_err(|why| Failure::new(code::bad_item, why))?;
         return Ok(params.current());
     }
-    classify::read(&item.raw, label).ok_or_else(missing)
+    let value = classify::read(&item.raw, label).ok_or_else(missing)?;
+    // An older latch kept a card's number as it was typed, spaces and all.
+    if label == "number" && item.meta().kind == "card" {
+        return Ok(crate::vault::item::card_digits(&value));
+    }
+    Ok(value)
 }
 
 /// A date reshaped to the field's own format (its placeholder or length,
@@ -1157,6 +1245,28 @@ fn split(value: &str, boxes: &[Value]) -> Option<Vec<String>> {
 mod tests {
     use super::*;
     use crate::vault::item::{Custom, LOGIN, Raw};
+
+    /// A sign-in the page kept points the agent at the engine it is not on,
+    /// once, by the name `open --engine` takes. Any other kept submit (a
+    /// card's, which may have paid) is never to be sent again.
+    #[test]
+    fn a_kept_submit_retries_a_login_once_on_the_other_engine_and_nothing_else() {
+        for (engine, other) in [("cft", "camoufox"), ("camoufox", "chrome")] {
+            let next = kept("login", engine);
+            assert!(next.contains(&format!("`open --engine {other}`")), "{next}");
+            assert!(next.contains("retry once"), "{next}");
+            assert!(next.contains("may not have gone through"), "{next}");
+        }
+        for kind in ["card", "identity", "note"] {
+            let next = kept(kind, "cft");
+            assert!(
+                !next.contains("--engine") && !next.contains("retry"),
+                "{next}"
+            );
+            assert!(next.contains("don't submit again"), "{next}");
+            assert!(next.contains("ask the owner"), "{next}");
+        }
+    }
 
     /// The resume's events go through the same filter as the presses' and
     /// the cleanup's: a page's dialog, another site's refusal and any

@@ -14,7 +14,9 @@ over. Each item has a title, its sites (a login needs one; a card or
 identity may list the only sites it fills on) and a revision: an edit or
 removal against an older revision is refused. Items are not tied to browser
 sessions: any session may use any item, wherever its kind's site rule lets
-it fill.
+it fill. A card's number is kept as its digits alone, however it was typed
+or pasted (spaces and dashes are dropped), and must be 12 to 19 of them; a
+fill types those digits, a number an older latch kept with spaces too.
 
 Which fields are **secret** follows the Latch app's classifier, ported with
 its truth table (`tests/fixtures/maskClassification.json`): a login's
@@ -202,8 +204,10 @@ page in the address.
 One command fills every kind: `latch browser fill --item vN` with the
 agent's mapping; with no `--item`, the login saved for the page's site
 (several there: refused `which_item`, listing them). The item is found
-before the fill is judged, so the judge sees its kind and sites; an id the
-vault lacks is refused `no_such_item`. The mapping is
+before the fill is judged, so the judge sees its kind and sites (and, as a
+card's confirmation releases it, the checkout: the page's title, the sites
+its values go into, the button pressed and the lines around it, and the
+card's last four digits); an id the vault lacks is refused `no_such_item`. The mapping is
 `--field FIELD=eN` for each item field (`username`,
 `password`, `otp` for a login's current authenticator code, computed on
 the host; a card's `number`, `expiry`, `cvv`, …; an identity's or a note's
@@ -278,12 +282,21 @@ the focus and its caret has not gone back; only the head of a value
 longer than 64 characters is set in one step. A field that takes no keys,
 or only the first ones, gets the value in one step, as does any other
 field (a list, a date) and a value with a line break or a tab. A field that
-formats what it gets (a code as "123 456", a card number in fours) still
-holds the value: only spaces, dashes, dots, slashes, parentheses and plus
-signs may come between its characters, none lost, added or moved; a field
-that holds anything else ends the fill with `needs_owner`. latch then presses
+formats what it gets (a code as "123 456") still holds the value: only
+spaces, dashes, dots, slashes, parentheses and plus signs may come between
+its characters, none lost, added or moved. A value sites format as they
+like (a card's number and expiry) is held whatever of those separators
+either the field or the stored value puts between its characters; every
+other value, a login's username and password above all, never is. A field
+that holds anything else ends the fill with `needs_owner`, naming the
+field, what the page did with it and what went in before it. latch then presses
 submit and waits until the values have left the page (clearing them itself
-if the page keeps them). A fill that stops part-way (a covered button, a
+if the page keeps them; the fill's answer then has a `next`. Kept fields
+don't prove the submit failed. For a login it says to check the page,
+else retry once on the other browser engine, as a site may drop a sign-in
+from one engine and take it from the other; for any other kind, a card's
+above all, never to submit again but to check whether it went through and
+ask the owner). A fill that stops part-way (a covered button, a
 refused field) is cleaned up the same way. If latch cannot confirm the
 values left the page, the session stays paused, through
 any later fill too, until a cleanup confirms the page holds none or the
@@ -291,7 +304,24 @@ session that filled is closed. Closing it never lets its pages send what
 they hold: on Chrome for Testing the guard stands until the browser exits;
 on Camoufox the browser is killed. No reading is taken while a fill holds the
 browser, and an element list marks a field holding a filled value as
-`filled`, never showing the value. While a filled value may be on a page,
+`filled`, never showing the value. A page may show a card's number back
+(a confirmation that repeats it, a field it draws again): every answer in
+the session that filled it, and its plans' journals, show that number only
+as its last four digits (`•••• 4242`), whole or in groups set apart by
+single spaces or dashes, as a site prints it; the last four alone
+("ending in 4242") are left as they are. A script (`eval`) is refused
+while a filled value may be in a field, as for a password (below), and
+runs once the page was submitted and its fields are empty: from then on
+it could read a number the page repeats. Screenshots and downloads are
+not masked: a card
+fill always presses its button, and its cleanup clears the fields if the
+page keeps them (above), so the number is never left in a field, but a
+page that prints the whole number after the fill shows it in a picture,
+and a receipt the agent downloads (text or PDF) can hold it, though no
+text answer does. Not yet tested: a single-page checkout that reads the
+card only at a later "Place order", after the cleanup has cleared its
+fields, and a 3-D Secure check slower than the cleanup's 15 seconds.
+While a filled value may be on a page,
 in whichever of the session's tabs, `eval` and screenshots are refused
 (`secret_on_page`) until it is gone or its tab is closed. The result says
 `submitted`, not "logged in" or "paid", with each field's outcome, the
@@ -304,13 +334,13 @@ response's `Retry-After` may be what the page or the site made of it.
 
 The audit records the item, its revision, the mapping by ref, where it
 came from (a suggestion's id, or the agent), the stages, both origins, any
-`hint_mismatch`, whether
-agent code (`eval`) ran on those sites earlier in the session
-(`agent_code_before_fill`), and the outcome: never a value. An agent script
-that ran on the site before a fill could read the value it puts on the
-page, through what it left behind (a service worker, a stored script).
-Latch can't prevent that, so it flags every such fill. What a script left goes
-with the session's profile, so a new session starts unflagged.
+`hint_mismatch`, and the outcome: never a value. A script the agent runs
+with `eval` could read what is typed or filled on its page, then or later
+through what it leaves behind (a listener, a service worker, a stored
+script), so the gatekeeper judges each script's whole source: one that
+reads form fields, hooks input, keyboard or form events, or sends page
+data off the page needs the owner's own OK. A login and a card are filled
+under the same protections either way.
 
 ## Storage
 

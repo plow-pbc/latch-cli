@@ -28,8 +28,11 @@ Latch lets an agent work on your computer without handing it the keys.
 - **The gatekeeper is a model,** and models make mistakes. Rules are judged,
   not guaranteed. `latch serve --deny-exec` is enforced in code.
 - **A page script can catch a filled value.** If an agent ran its own script
-  on a site, it can read a vault value filled there later in the same browser
-  session. Latch flags every such fill, and a new session starts clean.
+  on a site, what it left behind can read a vault value filled there later in
+  the same browser session. The gatekeeper judges each script's whole source
+  before it runs, and one that reads form fields, listens to typing or sends
+  page data away needs your explicit OK. That judgment is a model's, so a
+  script that hides what it does may get through. A new session starts clean.
 - **Your own login is you.** A host judges it as you, even where an agent
   runs. Give each agent its own login.
 

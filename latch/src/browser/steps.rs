@@ -398,7 +398,8 @@ pub async fn run(
         caller,
         &request,
         json!(summaries),
-    )?;
+    )?
+    .masking(entry.cards.clone());
     let running = format!("{session}/{request}");
     browsers.running(&running, true);
     let mut run = Run {
@@ -643,7 +644,7 @@ pub async fn stop_fill(
         json!([{"step": 1, "op": "fill"}]),
     );
     let mut journal = match started {
-        Ok(journal) => journal,
+        Ok(journal) => journal.masking(entry.cards.clone()),
         Err(failure) => return failure,
     };
     let mut failure = confirm_fill(browsers, entry, args, audit).await;
@@ -710,7 +711,10 @@ impl<'a> Run<'a> {
             return Ok(());
         };
         let site = judged::site(self.browsers, self.entry).await?;
-        let action = judged::fill(self.browsers, args, site, false);
+        let action = judged::shown(
+            &judged::fill(self.browsers, args, site, false),
+            &self.entry.card_numbers(),
+        );
         let judging = Instant::now();
         let judgment = gate.judge(&action).await;
         super::host::add_time(|phases| &mut phases.gate_ms, judging.elapsed());
@@ -1563,6 +1567,19 @@ pub async fn confirm_fill(
     fill["guard"] = json!({"fingerprint": fingerprint(&reviewed)});
     // Its values go only where they were confirmed to go.
     fill["confirmed"] = json!({"frames": frames, "revision": revision});
+    // What the gatekeeper is shown of the checkout when it is confirmed.
+    let sites: Vec<String> = frames
+        .iter()
+        .filter_map(|frame| crate::vault::sites::site_of(frame))
+        .chain(super::judged::site(browsers, entry).await.ok().flatten())
+        .collect();
+    fill["review"] = json!({
+        "title": reviewed["title"],
+        "frames": frames,
+        "sites": sites,
+        "press": reviewed["element"]["name"],
+        "lines": reviewed["lines"],
+    });
     entry
         .confirmations
         .lock()
