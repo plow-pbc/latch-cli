@@ -1100,6 +1100,26 @@ async fn a_script_is_judged_whole_knowing_what_it_can_reach() {
     }
 }
 
+/// The rules layer reads a rule that keeps agents off something ("don't
+/// touch my calendar") as forbidding a look at it too, though looking
+/// things up is everyday work; the chat layers are not told.
+#[tokio::test]
+async fn a_rule_keeping_agents_off_something_forbids_looking_at_it() {
+    let calendar = json!({"operation": "google", "accounts": [],
+                          "command": ["calendar", "events", "primary"]});
+    let action = serde_json::value::to_raw_value(&calendar).unwrap();
+    let model = Recorder::answering(0.9, 0.05, 0.05);
+    gatekeeper(one_chat(), &model, host_rules())
+        .judge(AGENT_CALLER, &action)
+        .await;
+    let told = "A rule that keeps agents off something (\\\"don't touch\\\", \\\"stay out of\\\", \\\"leave alone\\\") forbids reading, searching or listing it too, everyday look-ups included.";
+    let rules = model.rules_state()["rules_of_judgment"].to_string();
+    assert!(rules.contains(told), "{rules}");
+    for state in [model.chat_state(), model.will_state()] {
+        assert!(!state["rules_of_judgment"].to_string().contains(told));
+    }
+}
+
 #[tokio::test]
 async fn an_agents_vault_list_is_judged_knowing_what_it_shows() {
     let list = crate::gate::gated("vault", &json!({"command": "list"}))
