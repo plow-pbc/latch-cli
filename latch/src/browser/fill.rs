@@ -719,10 +719,13 @@ async fn fill(
             .fields
             .iter()
             .any(|(label, _)| suggest::secret_field(&meta, label));
+    // After a sign-in's submit the answer says what the page shows, for
+    // the agent to tell a bounced sign-in from one that moved on.
+    let shows = meta.kind == "login" && plan.press.is_some();
     let resume = if left {
-        json!({"op": "fill_resume", "clear_after_ms": window.as_millis() as u64})
+        json!({"op": "fill_resume", "clear_after_ms": window.as_millis() as u64, "shows": shows})
     } else {
-        json!({"op": "fill_resume"})
+        json!({"op": "fill_resume", "shows": shows})
     };
     let mut result = step(session, resume, audit).await?;
     if let Some(object) = result.as_object_mut() {

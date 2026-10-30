@@ -376,6 +376,11 @@ async function launch(params) {
       "widget.macos.allow-native-select": !params.headless,
       // Never the OS's client certificates: on macOS, the owner's keychain.
       "security.osclientcerts.autoload": false,
+      // A passkey request reaches no authenticator, never the OS's passkey
+      // sheet, which no call can reach: it fails at once, and the site
+      // offers its password or code instead. The API stays, as on any Firefox.
+      "security.webauthn.enable_macos_passkeys": false,
+      "security.webauth.webauthn_enable_usbtoken": false,
     },
     proxy: { server: params.proxy },
     acceptDownloads: true,

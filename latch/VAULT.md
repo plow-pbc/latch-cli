@@ -337,6 +337,13 @@ stage (`http_error`, a 429) shows there, though the page may say only
 page's own origin or one a value went to: while a value is on the page, a
 dialog's message, a new tab's address, another site's name or a
 response's `Retry-After` may be what the page or the site made of it.
+A login fill that pressed a button also says what the page shows after
+the submit (`shows`), for telling a sign-in that bounced from one that
+moved on: its path, whether a password field (else a username field) is
+showing and empty, and the errors it shows (alerts, and the error
+messages of fields it marks invalid), for example `after the submit, the
+page (/ax/claim) shows the password field, empty, with no error`. It
+describes, never decides: `submitted` stays true.
 
 The audit records the item, its revision, the mapping by ref, where it
 came from (a suggestion's id, or the agent), the stages, both origins, any

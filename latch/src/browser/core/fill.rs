@@ -95,6 +95,31 @@ pub struct State {
     clear_at: Option<Instant>,
 }
 
+/// What a sign-in page at `path` shows after a submit, from each frame's
+/// `__latch.signInShown()`: its password field, else its username field,
+/// whether that is empty, and the errors it shows.
+fn sign_in_shown(path: &str, frames: &[Value]) -> String {
+    let field = ["password", "username"].into_iter().find_map(|field| {
+        frames
+            .iter()
+            .find_map(|found| found[field].as_str())
+            .map(|state| format!("the {field} field, {state}"))
+    });
+    let errors: Vec<String> = frames
+        .iter()
+        .flat_map(|found| found["errors"].as_array().cloned().unwrap_or_default())
+        .filter_map(|error| error.as_str().map(|text| format!("\"{text}\"")))
+        .take(3)
+        .collect();
+    let field = field.unwrap_or_else(|| "no password or username field".into());
+    let errors = if errors.is_empty() {
+        "no error".into()
+    } else {
+        format!("the error {}", errors.join(", "))
+    };
+    format!("after the submit, the page ({path}) shows {field}, with {errors}")
+}
+
 /// The filled frames still open, in the active tab and in others.
 struct Filled {
     here: Vec<(String, Frame)>,
@@ -520,6 +545,7 @@ impl<D: Driver> Core<D> {
     pub(super) fn fill_resume(
         &mut self,
         clear_after_ms: Option<u64>,
+        shows: bool,
         audit: &mut Map<String, Value>,
     ) -> Result<Value, Failure> {
         if self.fill.unclean {
@@ -544,6 +570,16 @@ impl<D: Driver> Core<D> {
         let events = self.settle()?;
         self.after(&before, events, &mut result)?;
         result.extend(self.page(audit)?);
+        if shows {
+            let found: Vec<Value> = self
+                .driver
+                .frames()?
+                .iter()
+                .filter_map(|frame| self.driver.run(frame, "__latch.signInShown()").ok())
+                .collect();
+            let (_, path) = super::origin_and_path(result["url"].as_str().unwrap_or_default());
+            result.insert("shows".into(), json!(sign_in_shown(&path, &found)));
+        }
         Ok(Value::Object(result))
     }
 
@@ -821,6 +857,26 @@ mod tests {
     }
 
     #[test]
+    fn a_sign_in_page_is_described_by_its_field_and_its_errors() {
+        let frames = [
+            json!({"password": null, "username": "filled", "errors": ["Try again later"]}),
+            json!({"password": "empty", "username": null, "errors": []}),
+        ];
+        assert_eq!(
+            sign_in_shown("/ax/claim", &frames),
+            "after the submit, the page (/ax/claim) shows the password field, empty, \
+             with the error \"Try again later\""
+        );
+        assert_eq!(
+            sign_in_shown(
+                "/",
+                &[json!({"password": null, "username": null, "errors": []})]
+            ),
+            "after the submit, the page (/) shows no password or username field, with no error"
+        );
+    }
+
+    #[test]
     fn a_cleanup_that_fails_keeps_every_later_resume_out() {
         let mut core = Core::new(Broken);
         core.paused = true;
@@ -839,6 +895,7 @@ mod tests {
             .call(
                 Call::FillResume {
                     clear_after_ms: None,
+                    shows: false,
                 },
                 None,
             )

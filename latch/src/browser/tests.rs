@@ -392,6 +392,7 @@ conformance!(
     sessions_share_nothing_and_their_profiles_end_with_them,
     a_busy_browser_dies_with_its_host,
     an_answer_shows_the_screen_and_observe_all_every_element,
+    a_passkey_request_settles_in_the_page_and_raises_no_sheet,
 );
 
 /// At most this many tests drive a real engine at once: two engines' worth
@@ -1739,6 +1740,45 @@ async fn a_frames_target_under_a_parent_page_layer_is_refused(engine: &str) {
         text["text"].as_str().unwrap().contains("layer clicks: 0"),
         "{}",
         text["text"]
+    );
+    session.close().await.unwrap();
+}
+
+/// A page that asks for a passkey is answered inside the browser, never by
+/// the OS's passkey sheet, which no session call can reach: the request
+/// settles at once without a credential, and the site falls back to its
+/// password or code.
+async fn a_passkey_request_settles_in_the_page_and_raises_no_sheet(engine: &str) {
+    let (_dir, state, _area) = test_state(engine);
+    let mut session =
+        Session::start_with(&latch(), &state, engine, Duration::from_secs(120), HEADLESS)
+            .await
+            .unwrap();
+    // A passkey's site is a name, never an IP address.
+    let url = local_page().replace("127.0.0.1", "localhost");
+    session
+        .call(json!({"op": "open", "url": url}))
+        .await
+        .unwrap();
+    let script = "const started = performance.now();\n\
+        navigator.credentials.get({publicKey: {challenge: new Uint8Array(32), timeout: 60000}})\n\
+          .then(c => c === null ? 'none' : 'credential', e => e.name)\n\
+          .then(answer => ({answer, ms: performance.now() - started}))";
+    let evaluated = session
+        .call(json!({"op": "eval", "script": script}))
+        .await
+        .unwrap()
+        .result;
+    println!("{engine} passkey request: {}", evaluated["value"]);
+    assert_eq!(
+        evaluated["value"]["answer"], "NotAllowedError",
+        "{}",
+        evaluated["value"]
+    );
+    assert!(
+        evaluated["value"]["ms"].as_f64().unwrap() < 5000.0,
+        "{}",
+        evaluated["value"]
     );
     session.close().await.unwrap();
 }

@@ -185,6 +185,10 @@ pub enum Call {
     FillResume {
         #[serde(default)]
         clear_after_ms: Option<u64>,
+        /// After a login's submit: the answer says what the page shows
+        /// (`shows`).
+        #[serde(default)]
+        shows: bool,
     },
     /// Closes the browser, ending the session.
     Close,
@@ -446,7 +450,10 @@ impl<D: Driver> Core<D> {
             } => self.set_value(&target, &value, secret, formatted),
             Call::FillSubmit { target, guard } => self.fill_submit(&target, guard.as_ref()),
             Call::FillCleanup => self.fill_cleanup(),
-            Call::FillResume { clear_after_ms } => self.fill_resume(clear_after_ms, &mut audit),
+            Call::FillResume {
+                clear_after_ms,
+                shows,
+            } => self.fill_resume(clear_after_ms, shows, &mut audit),
             Call::Open { url } => self.open(url.as_deref(), &mut audit),
             Call::Observe { tab, scope } => {
                 self.observe(tab.as_deref(), scope.as_deref(), &mut audit)

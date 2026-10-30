@@ -413,6 +413,18 @@ impl Cft {
             .call("Page.enable", json!({}), Some(&session), deadline)?;
         self.cdp
             .call("Network.enable", json!({}), Some(&session), deadline)?;
+        // A passkey request goes to an authenticator inside the browser that
+        // holds no credentials, never to the OS's passkey sheet, which no
+        // call can reach: it fails at once, and the site offers its
+        // password or code instead.
+        self.cdp
+            .call("WebAuthn.enable", json!({}), Some(&session), deadline)?;
+        self.cdp.call(
+            "WebAuthn.addVirtualAuthenticator",
+            json!({"options": {"protocol": "ctap2", "transport": "usb"}}),
+            Some(&session),
+            deadline,
+        )?;
         if !self.auto_attach(&session)? {
             return Err(Failure::new(
                 code::engine_error,

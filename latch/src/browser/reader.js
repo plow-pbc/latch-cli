@@ -346,6 +346,31 @@
     };
   };
 
+  // What a sign-in page shows after a submit, for the agent to read the
+  // outcome by: its password and username fields (empty or not, never
+  // their values) and the errors it shows (alerts, and the error messages
+  // of fields it marks invalid).
+  const signInShown = () => {
+    const shownField = (selector) => [...document.querySelectorAll(selector)]
+      .find((el) => rendered(el) && !unread(el));
+    const state = (el) => (el ? (el.value ? 'filled' : 'empty') : null);
+    const errors = [];
+    const add = (el) => {
+      const text = el && rendered(el) && !unread(el) ? clean(el.innerText, 160) : '';
+      if (text && !errors.includes(text)) errors.push(text);
+    };
+    document.querySelectorAll('[role=alert], [aria-live=assertive]').forEach(add);
+    document.querySelectorAll('[aria-invalid=true]').forEach((field) => {
+      const ids = field.getAttribute('aria-errormessage') || field.getAttribute('aria-describedby') || '';
+      ids.split(/\s+/).filter(Boolean).forEach((id) => add(document.getElementById(id)));
+    });
+    return {
+      password: state(shownField('input[type=password]')),
+      username: state(shownField('input[autocomplete~=username], input[autocomplete~=email], input[type=email]')),
+      errors: errors.slice(0, 3),
+    };
+  };
+
   // Fields whose markup marks them secret, which a note never fills.
   const SECRET_TOKENS = ['current-password', 'new-password', 'one-time-code', 'cc-number', 'cc-csc'];
   const markedSecret = (el) => (el.getAttribute('type') || '').toLowerCase() === 'password'
@@ -754,6 +779,7 @@
     },
     controls,
     stageMark,
+    signInShown,
     fillTarget,
     fill,
     typeStart,
