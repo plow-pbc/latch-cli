@@ -38,8 +38,8 @@ use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_SUCCESS, HANDLE, HANDLE_FLAG_INHERIT, LocalFree, SetHandleInformation,
-    WAIT_ABANDONED, WAIT_OBJECT_0, WAIT_TIMEOUT,
+    CloseHandle, ERROR_SUCCESS, HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, LocalFree,
+    SetHandleInformation, WAIT_ABANDONED, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Security::Authorization::{
     ConvertStringSidToSidW, DENY_ACCESS, EXPLICIT_ACCESS_W, GRANT_ACCESS, GetSecurityInfo,
@@ -66,11 +66,16 @@ use windows_sys::Win32::Storage::FileSystem::{
 use windows_sys::Win32::System::Console::{
     GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
 };
+use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
+};
 use windows_sys::Win32::System::Environment::GetCommandLineW;
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION,
-    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-    JobObjectExtendedLimitInformation, SetInformationJobObject, TerminateJobObject,
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectBasicAccountingInformation,
+    JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
+    TerminateJobObject,
 };
 use windows_sys::Win32::System::SystemServices::{
     ACCESS_ALLOWED_ACE_TYPE, ACCESS_DENIED_ACE_TYPE, MAXDWORD, SE_GROUP_ENABLED,
@@ -80,10 +85,10 @@ use windows_sys::Win32::System::Threading::{
     CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateMutexW, CreateProcessW,
     DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetCurrentProcess,
     GetExitCodeProcess, INFINITE, InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST,
-    OpenProcess, OpenProcessToken, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+    OpenProcess, OpenProcessToken, OpenThread, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
     PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, PROCESS_INFORMATION, PROCESS_SYNCHRONIZE,
-    ReleaseMutex, ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOEXW, TerminateProcess,
-    UpdateProcThreadAttribute, WaitForSingleObject,
+    ReleaseMutex, ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOEXW, THREAD_SUSPEND_RESUME,
+    TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
 };
 
 use super::Policy;
@@ -850,10 +855,12 @@ impl Drop for Attributes {
 }
 
 /// A Job object that ends everything in it when its last handle closes.
-struct Job(HANDLE);
+/// A job whose processes all end when its one handle closes: a worker's
+/// (here), or a browser's (`browser::cft`).
+pub(crate) struct Job(HANDLE);
 
 impl Job {
-    fn new() -> Result<Job, String> {
+    pub(crate) fn new() -> Result<Job, String> {
         // SAFETY: an unnamed job with default security.
         let job = unsafe { CreateJobObjectW(null(), null()) };
         if job.is_null() {
@@ -886,10 +893,98 @@ impl Job {
     }
 }
 
+impl Job {
+    /// Starts `command` suspended, puts it in this job, then lets it run,
+    /// so it and everything it starts are in the job from the first.
+    pub(crate) fn start(
+        &self,
+        command: &mut std::process::Command,
+    ) -> std::io::Result<std::process::Child> {
+        use std::os::windows::process::CommandExt;
+        let mut child = command.creation_flags(CREATE_SUSPENDED).spawn()?;
+        // SAFETY: this job and the child's own process handle.
+        let started = match unsafe { AssignProcessToJobObject(self.0, child.as_raw_handle()) } {
+            0 => Err(std::io::Error::last_os_error()),
+            _ => resume(child.id()),
+        };
+        if let Err(err) = started {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(err);
+        }
+        Ok(child)
+    }
+
+    /// Ends every process in the job.
+    pub(crate) fn end(&self) {
+        // SAFETY: our own job's handle.
+        unsafe { TerminateJobObject(self.0, 1) };
+    }
+
+    /// How many processes are still in the job.
+    pub(crate) fn processes(&self) -> u32 {
+        // SAFETY: zeroed is a valid structure to receive into.
+        let mut info: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = unsafe { std::mem::zeroed() };
+        // SAFETY: `info` is the structure this class answers, for its size.
+        let ok = unsafe {
+            QueryInformationJobObject(
+                self.0,
+                JobObjectBasicAccountingInformation,
+                (&mut info as *mut JOBOBJECT_BASIC_ACCOUNTING_INFORMATION).cast(),
+                size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32,
+                null_mut(),
+            )
+        };
+        if ok == 0 {
+            u32::MAX
+        } else {
+            info.ActiveProcesses
+        }
+    }
+}
+
 impl Drop for Job {
     fn drop(&mut self) {
         // SAFETY: the job's one handle; closing it ends what is still in it.
         unsafe { CloseHandle(self.0) };
+    }
+}
+
+/// Lets the suspended process `pid` run: resumes its threads, of which a
+/// process started suspended has one.
+fn resume(pid: u32) -> std::io::Result<()> {
+    // SAFETY: a snapshot of every thread, closed below.
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
+    if snapshot == INVALID_HANDLE_VALUE {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: zeroed is valid once its size is set.
+    let mut entry: THREADENTRY32 = unsafe { std::mem::zeroed() };
+    entry.dwSize = size_of::<THREADENTRY32>() as u32;
+    let mut resumed = 0;
+    // SAFETY: the snapshot is live and `entry` sized for it.
+    let mut more = unsafe { Thread32First(snapshot, &mut entry) } != 0;
+    while more {
+        if entry.th32OwnerProcessID == pid {
+            // SAFETY: a thread of the child; its handle is closed here.
+            unsafe {
+                let thread = OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID);
+                if !thread.is_null() {
+                    if ResumeThread(thread) != u32::MAX {
+                        resumed += 1;
+                    }
+                    CloseHandle(thread);
+                }
+            }
+        }
+        // SAFETY: as for `Thread32First`.
+        more = unsafe { Thread32Next(snapshot, &mut entry) } != 0;
+    }
+    // SAFETY: the snapshot is ours and closed once.
+    unsafe { CloseHandle(snapshot) };
+    match resumed {
+        0 => Err(std::io::Error::other("its thread could not be resumed")),
+        _ => Ok(()),
     }
 }
 

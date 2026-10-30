@@ -44,10 +44,11 @@ pub struct Pin {
 
 #[derive(Deserialize)]
 pub struct Build {
-    /// Checked by browser-engines.sh, which downloads the zip.
-    #[allow(dead_code)]
+    /// Checked by browser-engines.sh, which downloads the zip (on Windows,
+    /// `latch browser setup` itself).
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub url: String,
-    #[allow(dead_code)]
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub zip_sha256: String,
     /// The folder the zip unpacks to, inside the version folder.
     pub folder: String,
@@ -74,7 +75,9 @@ pub static CAMOUFOX: LazyLock<CamoufoxPin> =
 /// own folder of `<state-dir>/plugins/camoufox/<version>/`: `camoufox/`
 /// (the app and the version.json camoufox-js reads), `node/` and
 /// `runtime/` (the package, installed with `npm ci`).
+// Camoufox has no Windows build: there only its pin's checks run.
 #[derive(Deserialize)]
+#[cfg_attr(windows, allow(dead_code))]
 pub struct CamoufoxPin {
     pub engine: String,
     pub version: String,
@@ -107,6 +110,7 @@ pub struct Download {
 }
 
 /// An installed, checked Camoufox, ready to launch.
+#[cfg_attr(windows, allow(dead_code))]
 pub struct CamoufoxEngine {
     pub node: PathBuf,
     pub runtime: PathBuf,
@@ -186,6 +190,7 @@ pub fn platform() -> Option<&'static str> {
         ("macos", "x86_64") => Some("mac_x64"),
         ("linux", "aarch64") => Some("linux_arm64"),
         ("linux", "x86_64") => Some("linux_x64"),
+        ("windows", "x86_64") => Some("win_x64"),
         _ => None,
     }
 }
@@ -514,6 +519,12 @@ fn walk(root: &Path, dir: &Path, entries: &mut Vec<(Vec<u8>, PathBuf)>) -> io::R
             .as_os_str()
             .as_encoded_bytes()
             .to_vec();
+        // Windows' separator as `/`, as the pin script's hash has it.
+        #[cfg(windows)]
+        let rel: Vec<u8> = rel
+            .into_iter()
+            .map(|byte| if byte == b'\\' { b'/' } else { byte })
+            .collect();
         let is_dir = fs::symlink_metadata(&path)?.is_dir();
         entries.push((rel, path.clone()));
         if is_dir {
@@ -537,7 +548,13 @@ mod tests {
         assert!(forbidden("--remote-debugging-port=9222"));
         assert!(forbidden("--headless=new"));
         assert!(forbidden("--no-sandbox"));
-        for key in ["mac_arm64", "mac_x64", "linux_arm64", "linux_x64"] {
+        for key in [
+            "mac_arm64",
+            "mac_x64",
+            "linux_arm64",
+            "linux_x64",
+            "win_x64",
+        ] {
             assert!(CFT.builds.contains_key(key), "{key}");
             assert!(!CFT.builds[key].args.iter().any(|arg| forbidden(arg)));
         }

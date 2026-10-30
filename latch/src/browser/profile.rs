@@ -85,6 +85,20 @@ pub fn prepare(dir: &Path, engine: &str) -> Result<Profile, Failure> {
                 profile.data().join("Default/Preferences"),
                 serde_json::to_vec(&preferences).expect("JSON"),
             )?;
+            // On Windows Chrome asks whether the user's password is blank by
+            // logging on with an empty one, unless its profile already holds
+            // the answer: in a new profile, so once per session here, a
+            // failed logon that a lockout policy counts until it locks the
+            // account. The answer is given ahead: not blank, unchanged since.
+            #[cfg(windows)]
+            fs::write(
+                profile.data().join("Local State"),
+                serde_json::to_vec(&json!({"password_manager": {
+                    "os_password_blank": false,
+                    "os_password_last_changed": i64::MAX.to_string(),
+                }}))
+                .expect("JSON"),
+            )?;
         }
         io::Result::Ok(())
     })();

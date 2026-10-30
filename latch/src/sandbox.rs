@@ -801,6 +801,8 @@ mod platform;
 mod platform;
 
 #[cfg(windows)]
+pub(crate) use platform::Job;
+#[cfg(windows)]
 pub(crate) use platform::final_path;
 #[cfg(windows)]
 pub use platform::{sweep, tie_to_host};

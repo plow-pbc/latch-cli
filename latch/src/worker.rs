@@ -103,13 +103,13 @@ pub fn authenticated_worker_error(stderr: &str, token: &str) -> Option<WorkerErr
 const PATH: &str = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
 /// Windows' own folders.
 #[cfg(windows)]
-const PATH: &str = r"C:\Windows\System32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0";
+pub(crate) const PATH: &str = r"C:\Windows\System32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0";
 
 /// What Windows itself needs from the environment to start a program and
 /// run it: where the system and the user's folders are (an AppContainer's
 /// own folders are made from them). The host's values are passed on.
 #[cfg(windows)]
-const WINDOWS_ENV: &[&str] = &[
+pub(crate) const WINDOWS_ENV: &[&str] = &[
     "SystemRoot",
     "windir",
     "SystemDrive",
@@ -460,7 +460,7 @@ impl WorkerSetup {
 
 /// Passes on the host's values of `WINDOWS_ENV`.
 #[cfg(windows)]
-fn windows_env(command: &mut Command) {
+pub(crate) fn windows_env(command: &mut Command) {
     for name in WINDOWS_ENV {
         if let Some(value) = std::env::var_os(name) {
             command.env(name, value);
