@@ -38,7 +38,7 @@ use std::sync::OnceLock;
 use serde::{Deserialize, Serialize};
 use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_SUCCESS, HANDLE, HANDLE_FLAG_INHERIT, LocalFree, SetHandleInformation,
-    WAIT_OBJECT_0, WAIT_TIMEOUT,
+    WAIT_ABANDONED, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Security::Authorization::{
     ConvertStringSidToSidW, DENY_ACCESS, EXPLICIT_ACCESS_W, GRANT_ACCESS, GetNamedSecurityInfoW,
@@ -70,11 +70,11 @@ use windows_sys::Win32::System::SystemServices::{
     ACCESS_ALLOWED_ACE_TYPE, ACCESS_DENIED_ACE_TYPE, MAXDWORD, SE_GROUP_ENABLED,
 };
 use windows_sys::Win32::System::Threading::{
-    CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessW, DeleteProcThreadAttributeList,
+    CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateMutexW, CreateProcessW, DeleteProcThreadAttributeList,
     EXTENDED_STARTUPINFO_PRESENT, GetCurrentProcess, GetExitCodeProcess, INFINITE,
     InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST, OpenProcess, OpenProcessToken,
     PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
-    PROCESS_INFORMATION, PROCESS_SYNCHRONIZE, ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOEXW,
+    PROCESS_INFORMATION, PROCESS_SYNCHRONIZE, ReleaseMutex, ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOEXW,
     TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
 };
 
@@ -272,6 +272,45 @@ fn grant_all(sid: &Sid, grants: &[Grant]) -> Result<(), String> {
     Ok(())
 }
 
+/// Access-list edits, one at a time across this user's launchers. Each is
+/// a read, a change and a write of the whole list, so two at once write
+/// over each other: a grant lost, or an entry taken back that comes back.
+/// The latch it runs and any area two calls share are edited by both. A
+/// launcher killed while holding it abandons it, which frees it; a
+/// container cannot reach it (its `Local` names are its own).
+struct EditLock(HANDLE);
+
+impl EditLock {
+    fn take() -> std::io::Result<EditLock> {
+        let name = wide(OsStr::new("Local\\latch.sandbox.access-lists"));
+        // SAFETY: a NUL-terminated name, no security attributes.
+        let mutex = unsafe { CreateMutexW(null(), 0, name.as_ptr()) };
+        if mutex.is_null() {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: a live handle of ours.
+        match unsafe { WaitForSingleObject(mutex, INFINITE) } {
+            WAIT_OBJECT_0 | WAIT_ABANDONED => Ok(EditLock(mutex)),
+            _ => {
+                let err = std::io::Error::last_os_error();
+                // SAFETY: closed once, here.
+                unsafe { CloseHandle(mutex) };
+                Err(err)
+            }
+        }
+    }
+}
+
+impl Drop for EditLock {
+    fn drop(&mut self) {
+        // SAFETY: held by this thread since `take`, released and closed once.
+        unsafe {
+            ReleaseMutex(self.0);
+            CloseHandle(self.0);
+        }
+    }
+}
+
 /// Takes back every entry for the container: grants and denials alike.
 fn take_back(sid: &Sid, grants: &[Grant]) {
     for grant in grants {
@@ -283,6 +322,7 @@ fn take_back(sid: &Sid, grants: &[Grant]) {
 /// `sid`, allowed and denied (`REVOKE_ACCESS` removes only the allowed);
 /// Windows takes their inherited copies off what is below a folder.
 fn remove_entries(path: &Path, sid: PSID) -> std::io::Result<()> {
+    let _one_at_a_time = EditLock::take()?;
     let name = wide(path.as_os_str());
     let mut old: *mut ACL = null_mut();
     let mut descriptor = null_mut();
@@ -404,6 +444,7 @@ unsafe fn without(old: *const ACL, sid: PSID) -> std::io::Result<Option<Vec<u32>
 /// Adds to `path`'s access list an entry for `sid`, inherited by everything
 /// below a folder. Windows carries it down to what is already there.
 fn set_entry(path: &Path, sid: PSID, access: u32, mode: i32) -> std::io::Result<()> {
+    let _one_at_a_time = EditLock::take()?;
     let name = wide(path.as_os_str());
     let mut old: *mut ACL = null_mut();
     let mut descriptor = null_mut();
