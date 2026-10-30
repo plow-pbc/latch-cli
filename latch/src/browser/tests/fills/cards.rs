@@ -251,11 +251,12 @@ async fn a_page_that_shows_the_number_back_shows_the_agent_only_its_last_four(en
     println!("the shop's confirmation, as the agent reads it: {page:?}");
     assert!(page.contains("Paid $10.00 with card •••• 4242"), "{page}");
 
-    // A picture is taken with the number masked, and the page's own
-    // style put back after.
+    // A picture is taken with the number's digits replaced by dots (the
+    // page outlines its text, which no colour would hide), and the number
+    // put back after.
     h.call("screenshot", json!({})).await.unwrap();
     let page = h.text().await;
-    assert!(page.contains("[transparent][own]"), "{page}");
+    assert!(page.contains("[dots][number]"), "{page}");
 
     // A plan's own pictures too, and its journal, read back after the
     // session closed, holds no number, though the step's field is named
@@ -281,6 +282,19 @@ async fn a_page_that_shows_the_number_back_shows_the_agent_only_its_last_four(en
     let eval = h.call("eval", json!({"script": script})).await.unwrap_err();
     println!("eval: {} ({})", eval.code, eval.message);
     assert_eq!(eval.code, "secret_on_page");
+    // Nor one the host let in before the card was filled, which reached
+    // the session only once the fill was done.
+    let late = crate::browser::host::worker(
+        &h.browsers,
+        &h.entry,
+        "eval",
+        &json!({"script": script}),
+        None,
+        &mut serde_json::Map::new(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(late.code, "secret_on_page");
 
     h.call("close", json!({})).await.unwrap();
     let history = h

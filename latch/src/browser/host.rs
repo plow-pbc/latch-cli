@@ -754,12 +754,10 @@ async fn answer(
         return Err(super::handoff::handed_off());
     }
     // A script could read a card's number off a page that repeats it, in
-    // any form: none runs in a session that filled a card.
+    // any form: none runs in a session that filled a card. Checked again
+    // under the session's lock, as it is sent.
     if command == "eval" && !entry.card_numbers().is_empty() {
-        return Err(Failure::new(
-            code::secret_on_page,
-            "a card was filled in this session, and a script could read its number off the page: eval stays off in this session. Read the page with `text` or `observe`, or open a new session".into(),
-        ));
+        return Err(no_script_after_a_card());
     }
     // Not on the web: refused before the gatekeeper is asked.
     if matches!(command, "goto" | "tab")
@@ -1008,8 +1006,16 @@ async fn open_judged(
     }
 }
 
+/// The refusal of an `eval` in a session that filled a card.
+fn no_script_after_a_card() -> Failure {
+    Failure::new(
+        code::secret_on_page,
+        "a card was filled in this session, and a script could read its number off the page: eval stays off in this session. Read the page with `text` or `observe`, or open a new session".into(),
+    )
+}
+
 /// Passes one call to the session's worker.
-async fn worker(
+pub(super) async fn worker(
     browsers: &Browsers,
     entry: &Entry,
     command: &str,
@@ -1018,13 +1024,19 @@ async fn worker(
     audit: &mut Map<String, Value>,
 ) -> Result<(Value, Option<Vec<u8>>), Failure> {
     let mut call = worker_call(command, args)?;
-    if command == "screenshot" {
-        call["cards"] = json!(entry.card_numbers());
-    }
     if entry.runtime.filling.load(Ordering::SeqCst) {
         return Err(paused());
     }
     let mut session = entry.agent_session().await?;
+    // Read under the session's lock, which a fill holds until it has
+    // recorded its card: a fill that finished while this call waited counts.
+    let cards = entry.card_numbers();
+    if command == "eval" && !cards.is_empty() {
+        return Err(no_script_after_a_card());
+    }
+    if command == "screenshot" {
+        call["cards"] = json!(cards);
+    }
     let reply = match session.call_with(call, input).await {
         Ok(reply) => {
             if let Some(worker) = reply.audit.as_object() {

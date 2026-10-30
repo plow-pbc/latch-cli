@@ -506,15 +506,18 @@
   // Card numbers a page shows, masked for a screenshot. latch's own code
   // gives the numbers of the cards filled in the session (this world is
   // latch's: the page can't read them here). An element holds one when
-  // its text has the number's digits with at most 8 characters that are
-  // neither letters nor digits between two of them, as host-side masking
-  // reads them, and no element inside it does; a field holds one by its
-  // value. A holder's text, and all inside it, is made transparent until
-  // `unmask` puts the page's own styles back.
-  const cardPattern = (digits) => new RegExp([...digits].join('[^\\p{L}\\p{N}]{0,8}'), 'u');
+  // its text has the number's digits with no more between two of them
+  // than spaces (of any length), invisible characters and up to 3 other
+  // marks, as host-side masking reads them, and no element inside it
+  // does; a field holds one by its value. A holder's digits, in its text
+  // and all inside it or in its value, are replaced by dots until
+  // `unmask` puts them back: the picture then shows no number, however the
+  // page paints its text.
+  const plain = (text) => (text || '').replace(/\p{Cf}/gu, '').replace(/\s+/g, ' ');
+  const cardPattern = (digits) => new RegExp([...digits].join('[^\\p{L}\\p{N}]{0,3}'), 'u');
   const holders = (cards) => {
     const patterns = cards.map(cardPattern);
-    const shows = (text) => patterns.some((pattern) => pattern.test(text || ''));
+    const shows = (text) => patterns.some((pattern) => pattern.test(plain(text)));
     const found = [];
     const walk = (el) => {
       const inner = [...el.children].filter((child) => shows(child.textContent));
@@ -525,37 +528,38 @@
     for (const el of document.querySelectorAll('input, textarea')) if (shows(el.value)) found.push(el);
     return found;
   };
-  const MASK = [['transition', 'none'], ['color', 'transparent'],
-    ['-webkit-text-fill-color', 'transparent'], ['text-shadow', 'none']];
   let masked = [];
-  const clear = (color) => color === 'transparent' || /^rgba\(.*,\s*0\)$/.test(color);
-  const hidden = (el) => {
-    const style = getComputedStyle(el);
-    const fill = style.getPropertyValue('-webkit-text-fill-color');
-    return clear(style.color) && (!fill || clear(fill)) && style.textShadow === 'none';
-  };
-  const maskOf = (el) => [el, ...el.querySelectorAll('*')];
-  // Whether every element that shows one of `cards` is masked and shows
-  // no text: true when none does.
-  const cardsMasked = (cards) => holders(cards).flatMap(maskOf)
-    .every((el) => masked.some((m) => m.el === el) && hidden(el));
-  // Masks every element that shows one of `cards`: how many, and whether
-  // the masks took.
-  const maskCards = (cards) => {
-    const found = holders(cards);
-    for (const el of found.flatMap(maskOf)) {
-      if (masked.some((m) => m.el === el)) continue;
-      masked.push({ el, before: MASK.map(([name]) => [name, el.style.getPropertyValue(name), el.style.getPropertyPriority(name)]) });
-      for (const [name, value] of MASK) el.style.setProperty(name, value, 'important');
+  const dotted = (text) => text.replace(/\d/g, '\u2022');
+  // Whether no element shows one of `cards`.
+  const cardsMasked = (cards) => holders(cards).length === 0;
+  const mask = (el) => {
+    if (el.localName === 'input' || el.localName === 'textarea') {
+      masked.push({ el, value: el.value });
+      el.value = dotted(el.value);
+      return;
     }
-    return { found: found.length, hidden: cardsMasked(cards) };
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      if (!/\d/.test(node.data)) continue;
+      masked.push({ node, data: node.data });
+      node.data = dotted(node.data);
+    }
+  };
+  // Masks every element that shows one of `cards`, and again while one
+  // does (one whose own text repeats a number inside it shows it once the
+  // inner one is masked): how many, and whether none shows one now.
+  const maskCards = (cards) => {
+    let found = 0;
+    for (let round = 0, now = holders(cards); round < 8 && now.length; round++, now = holders(cards)) {
+      found += now.length;
+      now.forEach(mask);
+    }
+    return { found, hidden: cardsMasked(cards) };
   };
   const unmask = () => {
-    for (const { el, before } of masked) {
-      for (const [name, value, priority] of before) {
-        if (value) el.style.setProperty(name, value, priority);
-        else el.style.removeProperty(name);
-      }
+    for (const { el, value, node, data } of masked.reverse()) {
+      if (node) node.data = data;
+      else el.value = value;
     }
     masked = [];
     return true;

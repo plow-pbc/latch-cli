@@ -294,13 +294,16 @@ browser, and an element list marks a field holding a filled value as
 `filled`, never showing the value. A page may show a card's number back
 (a confirmation that repeats it, a field it draws again): every answer in
 the session that filled it, and its plans' journals, show that number only
-as its last four digits (`•••• 4242`), however the page spaces it (up to
-8 other characters between two digits, line breaks and invisible ones
-included). A screenshot, or a plan's picture, is taken with every element
-showing it masked (its text made transparent), checked again once taken;
-a page that took a mask off, or a frame latch can't read, gets no picture
-(`secret_on_page`). No `eval` runs in a session that filled a card
-(`secret_on_page`): a script could read the number in any form. While a
+as its last four digits (`•••• 4242`), however the page spaces it (any
+run of spaces or line breaks, invisible characters, and up to 3 other
+marks between two digits). A screenshot, or a plan's picture, is taken
+with the digits of every element showing it replaced by dots, and put
+back after; the page is read again once the picture is taken, and one
+that shows the number then, or a frame latch can't read, gets no picture
+(`secret_on_page`). A number drawn in an image, a canvas or a style's
+`content` isn't found. No `eval` runs in a session that filled a card
+(`secret_on_page`), checked again as it is sent: a script could read the
+number in any form. While a
 filled value may be on a page,
 in whichever of the session's tabs, `eval` and screenshots are refused
 (`secret_on_page`) until it is gone or its tab is closed. The result says
