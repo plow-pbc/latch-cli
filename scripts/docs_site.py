@@ -86,13 +86,14 @@ latch browser open --host my-mac https://example.com
 
 # Who runs a command, from what `latch help --json` says of it: Agent for a
 # request an agent may send to a host, Host for everything you, the owner, run,
-# and both for one an agent also runs on its own computer.
-# Agents also run these two, though neither goes to a host.
-AGENTS_RUN = {"vault.list", "skill"}
+# and both for one an agent also runs on its own computer, or one that works on
+# your own host and an agent sends with --host.
+# Agents also run this one, though it doesn't go to a host.
+AGENTS_RUN = {"skill"}
 
 
 def pill(action):
-    if action["agent_on_own_computer"]:
+    if action["agent_on_own_computer"] or (action["runs_on"] == "either" and not action["owner_only"]):
         return "Host Agent"
     agent = action["runs_on"] == "host" and not action["owner_only"]
     return "Agent" if agent or action["id"] in AGENTS_RUN else "Host"
