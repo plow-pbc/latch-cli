@@ -2,7 +2,8 @@
 <!-- One of card-elements.html's provider fields (?field=number, expiry or
      cvc). Like a provider's, it formats what is typed (card-format.js),
      keeps it as it is typed, and the number's frame sends all three from
-     there, the number as its digits, to the top window. -->
+     there, the number as its digits, to the top window. With ?colors its
+     text is large and red, with a red outline and shadow. -->
 <script src="card-format.js"></script>
 <style>body { margin: 0 } input { width: 100%; box-sizing: border-box }</style>
 <input id="field">
@@ -17,6 +18,12 @@
   input.setAttribute('autocomplete', token);
   input.setAttribute('aria-label', label);
   input.placeholder = hint;
+  if (new URLSearchParams(location.search).has('colors')) {
+    input.style.font = 'bold 24px sans-serif';
+    input.style.color = 'rgb(255, 0, 0)';
+    input.style.webkitTextStroke = '1px rgb(255, 0, 0)';
+    input.style.textShadow = '2px 2px rgb(255, 0, 0)';
+  }
   if (field === 'number') formatAs(input, cardFormat.number);
   if (field === 'expiry') formatAs(input, cardFormat.expiry);
   window.held = '';

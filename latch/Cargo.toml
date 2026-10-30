@@ -78,6 +78,8 @@ minisign = "0.10.0"
 # A paused clock, for tests that time latch's own waits apart from how
 # busy the machine running them is.
 tokio = { version = "1.53.3", features = ["test-util"] }
+# Reads a screenshot's pixels, for the tests that check what it shows.
+png = "0.18.1"
 
 # The build date `latch --version` prints (build.rs).
 [build-dependencies]

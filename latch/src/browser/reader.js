@@ -154,9 +154,11 @@
   const describe = (el) => {
     const rect = el.getBoundingClientRect();
     const item = { role: role(el), name: name(el) };
-    // A field holding a value latch filled from the vault never shows it.
-    if (filled.has(el)) item.filled = true;
-    const v = filled.has(el) ? undefined : value(el);
+    // A field holding a value latch filled from the vault never shows it;
+    // one emptied since is an ordinary field again.
+    const mine = filled.has(el) && !!current(el);
+    if (mine) item.filled = true;
+    const v = mine ? undefined : value(el);
     if (v !== undefined && v !== '') item.value = v;
     if (secret(el)) item.secret = true;
     if (el.localName === 'input' && ['checkbox', 'radio'].includes(el.type)) item.checked = el.checked;
@@ -514,6 +516,36 @@
     return holding();
   };
 
+  // Hides each filled field whole (`on`), for a screenshot, at once, and
+  // puts the field's own style back after it.
+  const BLANKED = { opacity: '0', transition: 'none' };
+  // Each blanked field: its own value and priority of each property, and
+  // the blanking value as the page holds it.
+  const blanked = new Map();
+  const blankFilled = (on) => {
+    if (on) {
+      for (const el of filled) {
+        if (!el.isConnected || blanked.has(el)) continue;
+        const kept = Object.keys(BLANKED).map((p) => [p, el.style.getPropertyValue(p), el.style.getPropertyPriority(p)]);
+        for (const [p, v] of Object.entries(BLANKED)) el.style.setProperty(p, v, 'important');
+        blanked.set(el, { kept, set: Object.keys(BLANKED).map((p) => [p, el.style.getPropertyValue(p)]) });
+      }
+      return blanked.size;
+    }
+    for (const [el, { kept }] of blanked) {
+      for (const [p, was, priority] of kept) {
+        if (was) el.style.setProperty(p, was, priority); else el.style.removeProperty(p);
+      }
+    }
+    blanked.clear();
+    return 0;
+  };
+  // Whether every field blanked still is: a page that took the blanking
+  // off during the picture showed the value in it.
+  const stillBlank = () => [...blanked].every(([el, { set }]) => !el.isConnected
+    || set.every(([p, v]) => el.style.getPropertyValue(p) === v
+      && el.style.getPropertyPriority(p) === 'important'));
+
   // Non-secret fields as lines, for a judgement of what the page shows.
   const FIELD_ROLES = ['textbox', 'searchbox', 'combobox', 'spinbutton', 'checkbox', 'radio'];
   const fields = (max) => [...document.querySelectorAll(INTERACTIVE)]
@@ -729,5 +761,7 @@
     typeEnd,
     holding,
     clearFilled,
+    blankFilled,
+    stillBlank,
   };
 })();

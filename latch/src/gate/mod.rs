@@ -92,6 +92,9 @@ const VAULT_FILL_ASKED: &str = concat!(
     " When the owner asked for something to be done on a site, signing in there with the login saved for it is a plain step of that request and covered by it, unless they said not to.",
     " Any task the owner gave on a site (going there, checking or looking something up there, or opening a link they sent, and the sign-in page it leads to) includes signing in there with the login saved for that site; after the agent said it must sign in, the owner's question or nudge about signing in (such as 'is it in my vault?', 'try again?' or 'try logging in there') asks for it too. That covers filling the login on one of its own sites and nothing more: not filling it on any other site, nor buying, accepting, sending or changing anything once signed in, which each need the owner's OK, and not signing in when the owner or their rules said not to."
 );
+/// Added after the vault fill's for an action that fills a card, which
+/// presses nothing (`browser::fill`).
+const CARD_FILL: &str = "A card fill presses nothing: the agent presses the page's Pay button afterwards, a click of its own.";
 /// Added to the rules of judgment for an agent's vault list, which shows
 /// what is saved where (`vault::host`), so that it is not read as
 /// reading secrets.
@@ -212,6 +215,7 @@ impl Prompt {
             self.name_tasks,
             self.exec,
             self.vault_fill,
+            CARD_FILL,
             self.vault_list,
             self.exception.unwrap_or_default(),
             self.time_ban.unwrap_or_default(),
@@ -1057,6 +1061,9 @@ fn state(
     if fills_from_vault(&shown) {
         rules_of_judgment.push(prompt.vault_fill);
     }
+    if fills_a_card(&shown) {
+        rules_of_judgment.push(CARD_FILL);
+    }
     if shown["operation"] == "vault.list" {
         rules_of_judgment.push(prompt.vault_list);
     }
@@ -1108,6 +1115,18 @@ fn fills_from_vault(action: &Value) -> bool {
                 .is_some_and(|items| !items.is_empty())
                 || action["first_confirms"].is_object()
         }
+        _ => false,
+    }
+}
+
+/// Whether the browser action the judge is shown fills a card: a card's
+/// fill, or a plan that may fill one.
+fn fills_a_card(action: &Value) -> bool {
+    match action["kind"].as_str() {
+        Some("vault_fill") => action["item"]["kind"] == "card",
+        Some("browser_plan") => action["may_fill"]
+            .as_array()
+            .is_some_and(|items| items.iter().any(|item| item["kind"] == "card")),
         _ => false,
     }
 }

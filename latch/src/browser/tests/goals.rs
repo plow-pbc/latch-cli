@@ -1224,36 +1224,47 @@ async fn fills_inside_plans_take_latchs_suggestions_or_stop() {
     assert_eq!(signed["status"], "reached", "{signed:#}");
     assert!(!told.offered(0, "operation").contains(&"fill".to_string()));
 
-    // A card the plan names: the model's choice of latch's suggestion stops
-    // for a confirmation showing its mapping; that fills, pays and cleans up.
+    // A card the plan names: the model's choice of latch's suggestion fills
+    // it, pressing nothing; its next choice, Pay, pays.
     h.open(&at(
         "reset.html?user=testuser@example.com&cart=greek:Regular",
     ))
     .await;
     h.open(&at("payment.html")).await;
-    told.tell(|_| choose("fill", Some("Test Visa")));
-    let (code, details) = stop(
-        h.send(plan(
+    let passes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let seen = passes.clone();
+    told.tell(
+        move |_| match seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+            0 => choose("fill", Some("Test Visa")),
+            1 => choose("click", Some("Pay $")),
+            _ => complete("Order GL-1042 is placed", "done"),
+        },
+    );
+    let sent = h
+        .send(plan(
             &["pay for the order with my saved card"],
             &site,
             &[],
             std::slice::from_ref(&card),
         ))
-        .await,
+        .await;
+    let paid = match sent {
+        Ok(paid) => paid,
+        // The risk check may stop Pay for the agent's confirmation.
+        Err(stop) if stop.code == "confirm_needed" => {
+            let id = stop.details["stop"]["confirmation"]["id"].clone();
+            h.confirm(id.as_str().unwrap()).await.unwrap()
+        }
+        Err(stop) => panic!("{} {}", stop.code, stop.message),
+    };
+    println!("paid: {} {}", paid["status"], paid["page"]["title"]);
+    // Before Pay, the model saw the card in its fields, never a value.
+    assert!(
+        told.offered(1, "click")
+            .contains(&"textbox \"Card number\", filled from the vault".to_string()),
+        "{:?}",
+        told.offered(1, "click")
     );
-    let confirmation = &details["stop"]["confirmation"];
-    println!(
-        "card, named: {code}; mapping {} frames {}",
-        confirmation["mapping"], confirmation["frames"]
-    );
-    assert_eq!(code, "confirm_needed");
-    assert_eq!(confirmation["mapping"].as_array().unwrap().len(), 4);
-    assert_eq!(confirmation["frames"], json!(["https://shop.example"]));
-    let paid = h
-        .confirm(confirmation["id"].as_str().unwrap())
-        .await
-        .unwrap();
-    println!("confirmed: {} {}", paid["status"], paid["page"]["title"]);
     assert!(
         storage(&mut h, "order")
             .await

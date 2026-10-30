@@ -2,7 +2,8 @@
 <!-- A checkout shaped like a payment provider's hosted page: the card's
      fields in the page's own frame, the number and expiry formatted as
      they are typed (card-format.js). Pay sends the number's digits, the
-     expiry as shown, to /pay. -->
+     expiry as shown, to /pay. With ?unblank the page takes back any
+     style put on the number field. -->
 <script src="card-format.js"></script>
 <h1>Pay $10.00</h1>
 <form method="post" action="pay" id="pay">
@@ -16,6 +17,11 @@
 </form>
 <script>
   formatAs(number, cardFormat.number);
+  if (new URLSearchParams(location.search).has('unblank')) {
+    new MutationObserver(() => {
+      if (number.getAttribute('style')) number.removeAttribute('style');
+    }).observe(number, { attributes: true, attributeFilter: ['style'] });
+  }
   formatAs(expiry, cardFormat.expiry);
   document.getElementById('pay').addEventListener('submit', () => {
     const form = document.getElementById('pay');

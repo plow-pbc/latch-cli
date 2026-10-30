@@ -986,6 +986,48 @@ async fn a_saved_page_site_still_gets_judged_and_other_item_kinds_are_unaffected
     }
 }
 
+/// A card fill's judge is told it presses nothing; a login fill's is not,
+/// its rules of judgment as they were before cards stopped pressing.
+#[tokio::test]
+async fn only_a_card_fill_is_told_it_presses_nothing() {
+    let fill = |kind: &str| {
+        serde_json::value::to_raw_value(&crate::browser::previewed_fill(
+            "https://www.instacart.com/checkout",
+            kind,
+            "Saved item",
+            vec!["number".into()],
+        ))
+        .unwrap()
+    };
+    let plan = |kind: &str| {
+        serde_json::value::to_raw_value(&json!({"kind": "browser_plan",
+               "page": {"url": "https://www.instacart.com/checkout", "title": "Checkout"},
+               "steps": [{"step": "Pay"}], "may_fill": [{"kind": kind, "title": "Saved item"}]}))
+        .unwrap()
+    };
+    assert!(!VAULT_FILL.contains("card") && VAULT_FILL.ends_with("still is."));
+    for (action, card) in [
+        (fill("card"), true),
+        (plan("card"), true),
+        (fill("login"), false),
+        (plan("login"), false),
+    ] {
+        for caller in [AGENT_CALLER, Caller::Owner] {
+            let model = Recorder::answering(0.9, 0.05, 0.05);
+            gatekeeper(one_chat(), &model, host_rules())
+                .judge(caller, &action)
+                .await;
+            let told = model
+                .asked
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(state, _)| state.contains(CARD_FILL));
+            assert_eq!(told, card, "{action}");
+        }
+    }
+}
+
 #[tokio::test]
 async fn a_fill_from_the_vault_is_judged_knowing_what_a_fill_does() {
     let fill = crate::browser::previewed_fill(

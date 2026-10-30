@@ -78,8 +78,9 @@ Your agents use them without seeing them.
 - You add secrets at a prompt, from your phone (`latch vault link`), or from
   another password manager's export (`latch vault import`).
 - A fill puts a value into a web page. The agent never receives it.
-- A saved login fills only on its own sites. A card or identity waits for a
-  confirmation.
+- A saved login fills only on its own sites. A card waits in the page's
+  fields, blank in screenshots, until the agent presses Pay itself; an
+  identity's secret waits for a confirmation.
 - An agent can list the vault's items, with their titles and sites, but never
   their secrets.
 

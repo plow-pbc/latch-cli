@@ -180,7 +180,12 @@ pub enum Call {
     /// After a login's identifier stage: its next stage, read privately.
     NextStage,
     FillCleanup,
-    FillResume,
+    /// With `clear_after_ms`, a secret the fill left on the page is emptied
+    /// that long after, if its field still holds it (`Core::clear_due`).
+    FillResume {
+        #[serde(default)]
+        clear_after_ms: Option<u64>,
+    },
     /// Closes the browser, ending the session.
     Close,
 }
@@ -382,7 +387,7 @@ impl<D: Driver> Core<D> {
                 | Call::FillSubmit { .. }
                 | Call::NextStage
                 | Call::FillCleanup
-                | Call::FillResume
+                | Call::FillResume { .. }
                 | Call::Tabs
         );
         if self.paused && !fill_step {
@@ -441,7 +446,7 @@ impl<D: Driver> Core<D> {
             } => self.set_value(&target, &value, secret, formatted),
             Call::FillSubmit { target, guard } => self.fill_submit(&target, guard.as_ref()),
             Call::FillCleanup => self.fill_cleanup(),
-            Call::FillResume => self.fill_resume(&mut audit),
+            Call::FillResume { clear_after_ms } => self.fill_resume(clear_after_ms, &mut audit),
             Call::Open { url } => self.open(url.as_deref(), &mut audit),
             Call::Observe { tab, scope } => {
                 self.observe(tab.as_deref(), scope.as_deref(), &mut audit)
@@ -714,13 +719,11 @@ impl<D: Driver> Core<D> {
         Ok(Value::Object(result))
     }
 
-    /// Refused while a value latch filled may still be on a page: a
-    /// picture would show it.
+    /// The fields holding a value latch filled show blank in the picture.
     fn screenshot(&mut self, audit: &mut Map<String, Value>) -> Result<Value, Failure> {
         self.no_dialog()?;
         self.page(audit)?;
-        self.no_value_on_page("a screenshot")?;
-        let (meta, png) = self.driver.screenshot()?;
+        let (meta, png) = self.blanked(|driver| driver.screenshot())?;
         self.bytes = Some(png);
         Ok(meta)
     }

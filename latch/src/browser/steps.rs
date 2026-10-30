@@ -9,8 +9,8 @@
 //! field, first gets the decision model's risk decision on exactly what it
 //! would act on; one that can't be undone stops with `confirm_needed` and a
 //! confirmation instead of being sent, and with no model it stops with
-//! `model_unavailable`. A fill that releases a card or identity secret
-//! always stops for a confirmation. Every dispatch is journaled before it is
+//! `model_unavailable`. A fill that releases an identity secret always
+//! stops for a confirmation. Every dispatch is journaled before it is
 //! sent and once its result is known (`journal.rs`). The step's check then
 //! decides its outcome: `checked` or `model_assessed`, or `dispatched` when
 //! it has none. The plan stops at the first step that does not pass, and
@@ -1567,19 +1567,6 @@ pub async fn confirm_fill(
     fill["guard"] = json!({"fingerprint": fingerprint(&reviewed)});
     // Its values go only where they were confirmed to go.
     fill["confirmed"] = json!({"frames": frames, "revision": revision});
-    // What the gatekeeper is shown of the checkout when it is confirmed.
-    let sites: Vec<String> = frames
-        .iter()
-        .filter_map(|frame| crate::vault::sites::site_of(frame))
-        .chain(super::judged::site(browsers, entry).await.ok().flatten())
-        .collect();
-    fill["review"] = json!({
-        "title": reviewed["title"],
-        "frames": frames,
-        "sites": sites,
-        "press": reviewed["element"]["name"],
-        "lines": reviewed["lines"],
-    });
     entry
         .confirmations
         .lock()

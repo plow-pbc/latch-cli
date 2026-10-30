@@ -102,6 +102,10 @@ pub struct Browsers {
     /// Tests only: the decision model's provider, in place of the host's.
     #[cfg(test)]
     pub(super) provider: Option<Arc<dyn crate::model::Provider>>,
+    /// Tests only: how long a secret filled with no press stays, in place
+    /// of `fill::FILLED_FOR`.
+    #[cfg(test)]
+    pub(super) filled_for: Option<Duration>,
 }
 
 /// Who a command comes from: the client key the gate verified, whether
@@ -223,7 +227,18 @@ impl Browsers {
             test: None,
             #[cfg(test)]
             provider: None,
+            #[cfg(test)]
+            filled_for: None,
         }
+    }
+
+    /// How long a secret filled with no press stays in its field.
+    pub(super) fn filled_for(&self) -> Duration {
+        #[cfg(test)]
+        if let Some(window) = self.filled_for {
+            return window;
+        }
+        super::fill::FILLED_FOR
     }
 
     pub(super) fn state_dir(&self) -> PathBuf {
@@ -631,8 +646,8 @@ async fn run_command(
 
 /// A `fill`: its item, named by id or left to the page's site, is found
 /// before it is judged; a suggestion taken by its id becomes the mapping
-/// it stands for; one that releases a card or identity secret stops for
-/// the agent's confirmation before any value is released.
+/// it stands for; one that releases an identity secret stops for the
+/// agent's confirmation before any value is released.
 pub(super) async fn fill(
     browsers: &Browsers,
     entry: &Entry,
@@ -824,7 +839,7 @@ async fn answer(
 /// What the gatekeeper judges of a session command before it runs, if
 /// anything: a tab opened or a `goto` on a site the session has not been
 /// judged for,
-/// a plan (with a card or identity fill it confirms first), a confirmed
+/// a plan (with an identity fill it confirms first), a confirmed
 /// fill alone, and every `eval`, upload and download. A `fill` is judged
 /// once its suggestion is resolved (`fill`).
 async fn judged_action(

@@ -189,9 +189,9 @@ Errors:
 - `shot_changed` (exit 1): the file there is not the one the record kept
   the sha256 of.
 
-latch doesn't redact a screenshot's pixels. It takes none while a value
-filled from the vault is on the page, and none of a fill step, but typed
-text and the rest of the page can show.
+While a value filled from the vault is on the page, a screenshot shows the
+fields that hold it blank, and none is taken of a fill step. latch redacts
+nothing else: typed text and the rest of the page can show.
 
 ## `latch audit judge`
 

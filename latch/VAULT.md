@@ -204,18 +204,18 @@ page in the address.
 One command fills every kind: `latch browser fill --item vN` with the
 agent's mapping; with no `--item`, the login saved for the page's site
 (several there: refused `which_item`, listing them). The item is found
-before the fill is judged, so the judge sees its kind and sites (and, as a
-card's confirmation releases it, the checkout: the page's title, the sites
-its values go into, the button pressed and the lines around it, and the
-card's last four digits); an id the vault lacks is refused `no_such_item`. The mapping is
+before the fill is judged, so the judge sees its kind and sites; an id the
+vault lacks is refused `no_such_item`. The mapping is
 `--field FIELD=eN` for each item field (`username`,
 `password`, `otp` for a login's current authenticator code, computed on
 the host; a card's `number`, `expiry`, `cvv`, …; an identity's or a note's
 fields), `--field number=e4,e5,e6,e7` for a value split across boxes; or
 `--suggested S`, a mapping latch suggested. Dates and expiries are
-reshaped to the field's own format. A mapping that includes a secret (a
-password, a code, a card or identity secret) needs `--press eN`, the button
-that submits it (given, or in the suggestion). latch never maps or finds a
+reshaped to the field's own format. A mapping that includes a login's or
+an identity's secret (a password, a code) needs `--press eN`, the button
+that submits it (given, or in the suggestion). A card takes none
+(`--press` is refused, `bad_arguments`): it stays in the page's fields
+until the agent presses Pay itself, an ordinary judged click (below). latch never maps or finds a
 button on its own, and picks an item only as above: the one login saved
 for the page's site.
 
@@ -230,7 +230,8 @@ button, the evidence for each element and each target frame's site; and
 Suggestions come only from `autocomplete` tokens, input types and forms:
 a login's password field and the single text or email field before it in
 its form, a lone field marked `username`, cards by their `cc-*` tokens,
-identities by theirs; the press button is the form's single submit button.
+identities by theirs; the press button is the form's single submit button
+(a card's suggestion has none: the agent presses Pay itself).
 None is made on a registration form (`new-password`, or two password
 fields), for a code field (`one-time-code` can't tell an authenticator
 code from a texted one), or where the map would be ambiguous. `--suggested
@@ -264,7 +265,7 @@ passkey, a method chooser, two submit buttons) ends the fill after cleanup
 with `needs_fields` and the new stage's page, fields and offers; a second
 stage on another site is refused `origin_mismatch`.
 
-A fill that releases a card or identity secret stops with
+A fill that releases an identity secret stops with
 `confirm_needed` (exit 4) before any value is released: the confirmation
 names the item, the exact mapping by the page's names, the site of each
 frame a value goes into and the press button, and `latch browser do
@@ -312,18 +313,23 @@ single spaces or dashes, as a site prints it; the last four alone
 ("ending in 4242") are left as they are. A script (`eval`) is refused
 while a filled value may be in a field, as for a password (below), and
 runs once the page was submitted and its fields are empty: from then on
-it could read a number the page repeats. Screenshots and downloads are
-not masked: a card
-fill always presses its button, and its cleanup clears the fields if the
-page keeps them (above), so the number is never left in a field, but a
-page that prints the whole number after the fill shows it in a picture,
-and a receipt the agent downloads (text or PDF) can hold it, though no
-text answer does. Not yet tested: a single-page checkout that reads the
-card only at a later "Place order", after the cleanup has cleared its
-fields, and a 3-D Secure check slower than the cleanup's 15 seconds.
-While a filled value may be on a page,
-in whichever of the session's tabs, `eval` and screenshots are refused
-(`secret_on_page`) until it is gone or its tab is closed. The result says
+it could read a number the page repeats.
+
+A card fill presses nothing: the card stays in the page's fields, and the
+agent checks the page and presses Pay itself, an ordinary click with its
+own risk decision, then reads the page that follows to see what happened.
+While the card is in the fields, a screenshot shows exactly the fields
+latch filled blank (hidden whole for the capture, and the picture dropped
+if the page undid that) (in every frame of the page, a payment provider's
+included), putting their own look back once it is taken; plans' pictures
+too. latch empties fields still holding the card 5 minutes after the fill
+(the fill's answer says so in its `next`), and the values go with the
+browser when the session closes. Only the filled fields are blanked: a page
+that prints the whole number elsewhere shows it in a picture, and a receipt
+the agent downloads (text or PDF) can hold it, though no text answer does.
+While a filled value may be on a page, in whichever of the session's tabs,
+`eval` is refused (`secret_on_page`) until it is gone or its tab is
+closed. The result says
 `submitted`, not "logged in" or "paid", with each field's outcome, the
 number of stages and its `events`: a sign-in the site refused at either
 stage (`http_error`, a 429) shows there, though the page may say only

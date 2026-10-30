@@ -15,7 +15,8 @@
 //!   field alone), a card across the page, an identity per form. None on a
 //!   registration-like form, none for `otp`, none where the map would be
 //!   ambiguous or incomplete. The press button is the form's single
-//!   submit button, or none.
+//!   submit button, or none; a card's has none, its Pay being the
+//!   agent's own click.
 //! - **Checks:** what the page's own markup contradicts is refused; a weak
 //!   mismatch is let through and flagged.
 
@@ -379,9 +380,8 @@ pub fn suggest(item: &Meta, snapshot: &str, controls: &[Control]) -> Vec<Suggest
             if let Some((fields, evidence)) = token_map(item, controls, &CARD_TOKENS, None)
                 && fields.iter().any(|(label, _)| label == "number")
             {
-                let forms = forms_of(controls, &fields);
-                let press = press_of(controls, &forms);
-                made.push(build(item, snapshot, controls, fields, evidence, press));
+                // The agent presses Pay itself, as a click of its own.
+                made.push(build(item, snapshot, controls, fields, evidence, None));
             }
         }
         "identity" => {
@@ -520,22 +520,6 @@ fn token_map(
         evidence.push((control.reference.clone(), format!("autocomplete={token}")));
     }
     (!map.is_empty()).then_some((map, evidence))
-}
-
-/// The forms the mapped fields are in.
-fn forms_of(controls: &[Control], fields: &[(String, Vec<String>)]) -> Vec<String> {
-    let mut forms = Vec::new();
-    for (_, refs) in fields {
-        for reference in refs {
-            if let Some(control) = controls.iter().find(|c| &c.reference == reference) {
-                let group = control.group();
-                if !forms.contains(&group) {
-                    forms.push(group);
-                }
-            }
-        }
-    }
-    forms
 }
 
 /// The single submit button of the one form the fields are in; none for
@@ -966,7 +950,7 @@ mod tests {
         ];
         let [made] = suggest(&card, "o1", &page).try_into().unwrap();
         assert_eq!(made.fields[0], ("number".into(), vec!["e1".into()]));
-        assert_eq!(made.press.as_deref(), Some("e4"));
+        assert_eq!(made.press, None);
         assert!(
             made.fields
                 .iter()

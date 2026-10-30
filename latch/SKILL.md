@@ -159,12 +159,14 @@ number. At the checkout page:
    `fill.suggestions` how one fills the page's card fields.
 2. `latch browser --session ID fill --item vN --suggested S`, or map it
    yourself: `fill --item vN --field number=eN --field code=eN --field
-   expiry=eN --field "cardholder name"=eN --press eN`. A card is never
-   picked for you: name it with `--item`.
-3. A card fill always stops before any value goes in (exit 4,
-   `confirm_needed`, naming the card, the fields and the sites they go
-   to): carry it out with `latch browser --session ID do --confirm C`.
-   The order button stops for its own confirmation the same way.
+   expiry=eN --field "cardholder name"=eN`. A card is never picked for
+   you: name it with `--item`.
+3. The card stays in the page's fields, which you can't read: screenshots
+   show them blank, and `eval` waits until they are empty. Check the page
+   (ZIP, a box to untick, the total), then press its Pay button yourself
+   with `do 'click eN'`. Read the page that follows to see whether it paid.
+   latch empties the card's fields 5 minutes after the fill if they still
+   hold it, and when the session closes.
 
 ## Credentials in exec
 
@@ -283,10 +285,10 @@ fixes it.
   `close` the session and retry it once on the other engine, then tell the
   owner which engine worked. If that fails too, stop and tell the owner.
   More attempts can get the account rate-limited or locked.
-- A card (or any other non-login) fill whose page kept its fields may
-  still have gone through: a checkout can stay put while a payment is
-  slow. Never submit it again, on either engine: check the page and the
-  site's orders for whether it succeeded, and ask the owner.
+- A checkout that stays put after Pay may still have paid: a payment can
+  be slow. Never press Pay again, on either engine, unless the page shows
+  it refused the card (a field marked wrong, a decline): check the page
+  and the site's orders for whether it succeeded, and ask the owner.
 - Never fake a click or key with `eval`: the site sees it isn't real.
   `covered_target` means something is on top: click the banner's or
   dialog's own button.
@@ -310,9 +312,8 @@ fixes it.
 - A value `fill` put in a page stays there: never copy it out, repeat it
   or write it anywhere.
 - Buying: sign in, choose, `fill` the card ("Paying with a saved card"),
-  `do --confirm C` each
-  confirmation the card and the order button stop for, `screenshot` the
-  confirmation page, then `close`. Close every session when
+  press Pay (`do --confirm C` if it stops for a confirmation),
+  `screenshot` the confirmation page, then `close`. Close every session when
   done; an idle one closes itself after 30 minutes.
 - The host keeps a screenshot after each action of a plan for 7 days,
   and its owner can see them (`latch audit shot`).

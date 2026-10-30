@@ -1,9 +1,0 @@
-<!doctype html><title>latch payment processor frame</title>
-<!-- The card form inside processor.html's frame; posts to /pay, whose
-     answer takes the whole window. -->
-<form method="post" action="pay" target="_top">
-  <p><label>Card number <input name="cc-number" autocomplete="cc-number" inputmode="numeric"></label></p>
-  <p><label>Expiry <input name="cc-exp" autocomplete="cc-exp" placeholder="MM / YY"></label></p>
-  <p><label>CVV <input name="cc-csc" autocomplete="cc-csc" maxlength="4"></label></p>
-  <p><button type="submit">Pay $10.00</button></p>
-</form>
