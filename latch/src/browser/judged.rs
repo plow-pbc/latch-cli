@@ -340,12 +340,19 @@ pub(super) async fn names(entry: &Entry, plan: &Plan) -> Names {
     let Ok((answer, _)) = super::steps::call(entry, call, &mut audit).await else {
         return Names::new();
     };
+    named(targets, &answer, &entry.card_numbers())
+}
+
+/// The worker's `named` answer for `targets`, each name with the session's
+/// card numbers (`cards`) masked whole, before anything cuts it short: a
+/// name cut first could keep all but the last digits of a number.
+fn named(targets: Vec<(Option<String>, String)>, answer: &Value, cards: &[String]) -> Names {
     targets
         .into_iter()
         .zip(answer["named"].as_array().cloned().unwrap_or_default())
         .filter_map(|(key, named)| {
             let role = named["role"].as_str()?.to_string();
-            let name = named["name"].as_str()?.to_string();
+            let name = super::shown::masked(named["name"].as_str()?, cards);
             Some((key, (role, name)))
         })
         .collect()
@@ -640,6 +647,31 @@ mod tests {
                 "click e40",
             ]
         );
+    }
+
+    /// A card number the page put in a name is masked whole before the
+    /// name is cut short: cut first, 45 characters and a number would keep
+    /// its first 15 digits, which no later masking finds.
+    #[test]
+    fn a_card_number_in_a_name_is_masked_before_the_name_is_cut() {
+        let number = "4242424242424242";
+        let name = format!("{}{number}", "x".repeat(45));
+        let answer = json!({"named": [{"role": "button", "name": name}]});
+        let key = (None, "e2".to_string());
+        let names = named(vec![key.clone()], &answer, &[number.to_string()]);
+        let shown = labelled("e2", names.get(&key));
+        assert_eq!(
+            shown,
+            format!("e2 (button \"{}•••• 4242\")", "x".repeat(45))
+        );
+        assert!(!shown.contains(&number[..15]), "{shown}");
+        // And the judge's own masking still runs over the whole action.
+        let step = Plan {
+            steps: vec![short_step("click e2").unwrap()],
+            ..Default::default()
+        };
+        let written: Vec<String> = step.steps.iter().map(|s| written(s, &names)).collect();
+        assert!(!written[0].contains(&number[..15]), "{written:?}");
     }
 
     /// A name is the page's own text: one line, at most 60 characters,
