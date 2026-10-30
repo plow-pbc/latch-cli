@@ -684,7 +684,7 @@ fn check_size(value: &Value) -> Result<(), Failure> {
 /// plugins folder, in a folder named for the pinned `version`, so a latch
 /// with a new pin never picks up the old gog. There is no other place.
 pub(crate) fn gog_program(state_dir: &Path, version: &str) -> Result<PathBuf, Failure> {
-    let path = state_dir.join("plugins/gog").join(version).join("gog");
+    let path = state_dir.join("plugins/gog").join(version).join(super::GOG);
     if path.exists() {
         return Ok(path);
     }
@@ -716,19 +716,28 @@ fn worker_error(error: crate::worker::WorkerError) -> Failure {
 mod tests {
     use super::*;
     use crate::failure::Exit;
+    use crate::google::GOG;
+    /// Where gog `version` is, below the state folder, as a message shows it.
+    fn in_plugins(version: &str) -> String {
+        Path::new("plugins/gog")
+            .join(version)
+            .join(GOG)
+            .display()
+            .to_string()
+    }
     #[test]
     fn gog_comes_only_from_the_state_dirs_plugins_folder() {
         let state = tempfile::tempdir().unwrap();
         let installed = |base: &Path, version: &str| {
             let path = base.join(version);
             std::fs::create_dir_all(&path).unwrap();
-            std::fs::write(path.join("gog"), b"").unwrap();
-            path.join("gog")
+            std::fs::write(path.join(GOG), b"").unwrap();
+            path.join(GOG)
         };
         let missing = gog_program(state.path(), "0.36.0").unwrap_err();
         assert_eq!(missing.code, "gog_not_configured");
         assert!(
-            missing.message.contains("plugins/gog/0.36.0/gog")
+            missing.message.contains(&in_plugins("0.36.0"))
                 && missing.message.contains("install.sh")
         );
         // The old place (~/.local/share/latch/gog) is never used.
@@ -748,11 +757,12 @@ mod tests {
     fn the_host_uses_the_compiled_pins_version() {
         let pin: Value = serde_json::from_str(include_str!("pin.json")).unwrap();
         assert_eq!(PIN.version, pin["version"].as_str().unwrap());
-        assert_eq!(PIN.hashes.len(), 4);
+        // gog's binary for macOS, Linux and Windows, on amd64 and arm64.
+        assert_eq!(PIN.hashes.len(), 6);
         let state = tempfile::tempdir().unwrap();
         let missing = gog_program(state.path(), &PIN.version);
         let message = missing.unwrap_err().message;
-        assert!(message.contains(&format!("gog/{}/gog", pin["version"].as_str().unwrap())));
+        assert!(message.contains(&in_plugins(pin["version"].as_str().unwrap())));
     }
     #[test]
     fn write_deadlines_are_unknown_but_reads_and_help_are_failed() {
