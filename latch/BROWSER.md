@@ -94,6 +94,11 @@ add-on is left out.
 
     latch browser open --engine camoufox https://example.com
 
+A site may silently drop a sign-in or a submit from one engine and take it
+from the other. Agents are taught (`SKILL.md`) to retry such a step once
+in a new session on the other engine, and a fill whose submit the page
+kept says so in its answer's `next`.
+
 ## Calling from the host itself
 
 Use the host's own state folder and its existing `serve`:

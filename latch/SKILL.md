@@ -239,6 +239,11 @@ fixes it.
 
 - Each `open` starts signed in nowhere, and its logins last until it
   closes: do the whole task in one session.
+- A host may have two browsers: Chrome (`chrome`, Chrome for Testing) and
+  Camoufox (`camoufox`, a Firefox). `open` with no `--engine` uses Chrome
+  if the host has it, and the answer's `engine` says which ran; `open
+  --engine camoufox URL` picks the other. A site may silently drop a
+  sign-in or a submit from one and take it from the other.
 - `engine_not_installed`: `details.installed` lists the engines the host
   has, and `details.default` the one an `open` with no `--engine` uses. If
   the task can use one of them, `open` again on it; else tell the owner the
@@ -249,9 +254,12 @@ fixes it.
   type) will not let a retry or a wait through: stop and tell the owner.
   A challenge you can't do yourself is `handoff`'s; on a host with no
   screen (`no_screen`), stop and tell the owner what the page needs.
-- A sign-in you submitted that doesn't move on (the same page, no code
-  prompt): retry it once at most, then stop and tell the owner. More
-  attempts can get the account rate-limited or locked.
+- A sign-in you submitted that doesn't move on (the same page, no error,
+  no code prompt; a fill's answer then has a `next` saying latch cleared
+  the fields), or an obvious bot check: `close` the session and retry it
+  once on the other engine, then tell the owner which engine worked. If
+  that fails too, stop and tell the owner. More attempts can get the
+  account rate-limited or locked.
 - Never fake a click or key with `eval`: the site sees it isn't real.
   `covered_target` means something is on top: click the banner's or
   dialog's own button.

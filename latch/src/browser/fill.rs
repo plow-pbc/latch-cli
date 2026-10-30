@@ -650,6 +650,7 @@ async fn fill(
     // answer, as `heard` lets it.
     let mut events: Vec<Value> = Vec::new();
     let mut sites = fill_origins(&prepared);
+    let mut cleared = false;
     if let Some(press) = &plan.press {
         audit.insert("pressed".into(), json!(press));
         let pressed = json!({"op": "fill_submit", "target": press, "guard": args["guard"]});
@@ -684,6 +685,7 @@ async fn fill(
                 cleaned["cleared_by_latch"].clone(),
             );
             events.extend(listed(&cleaned["events"]));
+            cleared = cleaned["cleared_by_latch"] == true;
         }
         if !cleaned.as_ref().is_ok_and(|c| c["clean"] == true) {
             // The values may still be on the page: the agent stays out.
@@ -705,8 +707,26 @@ async fn fill(
         object.insert("stages".into(), json!(stages));
         object.insert("submitted".into(), json!(plan.press.is_some()));
         answer_events(object, events, &sites);
+        if cleared {
+            let engine = session.ready["engine"].as_str().unwrap_or_default();
+            object.insert("next".into(), json!(not_accepted(engine)));
+        }
     }
     Ok(result)
+}
+
+/// The way on after a submit the page kept: it neither left nor emptied the
+/// filled fields, so latch cleared them. A site may drop a sign-in from one
+/// engine silently and take it from the other.
+fn not_accepted(engine: &str) -> String {
+    let other = if engine == "camoufox" {
+        "chrome"
+    } else {
+        "camoufox"
+    };
+    format!(
+        "the page did not take the submit (latch cleared the fields): check the page for an error; with none, `close` this session and retry once on `open --engine {other}`, then tell the owner which engine worked"
+    )
 }
 
 /// A fill that stopped, with what it heard (`answer_events`) in its
@@ -1176,6 +1196,17 @@ fn split(value: &str, boxes: &[Value]) -> Option<Vec<String>> {
 mod tests {
     use super::*;
     use crate::vault::item::{Custom, LOGIN, Raw};
+
+    /// A submit the page kept points the agent at the engine it is not on,
+    /// once, by the name `open --engine` takes.
+    #[test]
+    fn a_kept_submit_says_to_retry_once_on_the_other_engine() {
+        for (engine, other) in [("cft", "camoufox"), ("camoufox", "chrome")] {
+            let next = not_accepted(engine);
+            assert!(next.contains(&format!("`open --engine {other}`")), "{next}");
+            assert!(next.contains("retry once"), "{next}");
+        }
+    }
 
     /// The resume's events go through the same filter as the presses' and
     /// the cleanup's: a page's dialog, another site's refusal and any
