@@ -33,8 +33,11 @@ use std::cell::RefCell;
 use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::{self, Write};
+#[cfg(unix)]
 use std::os::fd::AsFd;
+#[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{ExitCode, Stdio};
@@ -200,7 +203,7 @@ impl WorkerSetup {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .process_group(0)
+            .own_group()
             .kill_on_drop(true);
         let mut child = command
             .spawn()
@@ -260,7 +263,7 @@ impl WorkerSetup {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .process_group(0)
+            .own_group()
             .kill_on_drop(true);
         command
             .spawn()
@@ -376,7 +379,7 @@ impl WorkerSetup {
         command
             .env("PATH", exec_path(std::env::var_os("PATH")))
             .env("TMPDIR", tmpdir)
-            .process_group(0)
+            .own_group()
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -417,7 +420,7 @@ async fn first_line(mut command: Command) -> Result<(Running, serde_json::Value)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .process_group(0)
+        .own_group()
         .kill_on_drop(true);
     let mut child = command
         .spawn()
@@ -454,6 +457,30 @@ pub fn die_with_host(command: &mut Command) {
     }
 }
 
+/// A worker leads a process group of its own, so the host can stop it with
+/// everything it started; on Windows, a console process group of its own.
+pub(crate) trait OwnGroup {
+    fn own_group(&mut self) -> &mut Self;
+}
+
+impl OwnGroup for Command {
+    fn own_group(&mut self) -> &mut Self {
+        #[cfg(unix)]
+        return self.process_group(0);
+        #[cfg(windows)]
+        return self
+            .creation_flags(windows_sys::Win32::System::Threading::CREATE_NEW_PROCESS_GROUP);
+    }
+}
+
+#[cfg(windows)]
+impl Drop for Running {
+    fn drop(&mut self) {
+        let _ = self.child.start_kill();
+    }
+}
+
+#[cfg(unix)]
 impl Drop for Running {
     fn drop(&mut self) {
         if let Some(pid) = self.child.id() {
@@ -577,7 +604,13 @@ pub fn run(args: WorkerArgs) -> ExitCode {
         }
         WorkerAction::Messages { program, args } => {
             // The reader replaces this process and keeps its sandbox.
+            #[cfg(unix)]
             let err = std::process::Command::new(program).args(args).exec();
+            #[cfg(windows)]
+            let err = {
+                let _ = args;
+                io::Error::from(io::ErrorKind::Unsupported)
+            };
             return fail(io_code(&err), &format!("{}: {err}", program.display()));
         }
         WorkerAction::Read { path } => read(path),
@@ -612,6 +645,7 @@ pub fn run(args: WorkerArgs) -> ExitCode {
 /// Moves into `workdir` and replaces this process with the program. Only
 /// returns (with an error) if that fails; otherwise the program's own exit
 /// becomes the worker's.
+#[cfg(unix)]
 fn exec(
     areas: &[PathBuf],
     workdir: Option<&Path>,
@@ -670,6 +704,7 @@ fn exec(
 }
 
 /// Sends the file's size, then its bytes, to stdout.
+#[cfg(unix)]
 fn read(path: &Path) -> Result<(), (PathBuf, io::Error)> {
     let failed = |err| (path.to_path_buf(), err);
     let absolute = std::path::absolute(path).map_err(failed)?;
@@ -755,6 +790,7 @@ fn fail(code: &str, message: &str) -> ExitCode {
     ExitCode::from(WORKER_FAILED)
 }
 
+#[cfg(unix)]
 fn read_private_exec() -> Result<crate::exec::PrivateExec, ExitCode> {
     // Stdin buffers reads; a plain duplicated file leaves the program's
     // bytes in the pipe when exec replaces this process.
@@ -774,6 +810,27 @@ fn read_private_exec() -> Result<crate::exec::PrivateExec, ExitCode> {
         )
     })?;
     Ok(job)
+}
+
+/// Windows has no worker sandbox yet, so a worker never gets this far.
+#[cfg(windows)]
+fn exec(
+    _areas: &[PathBuf],
+    _workdir: Option<&Path>,
+    _argv: &[String],
+    _secrets: &std::collections::BTreeMap<String, String>,
+) -> ExitCode {
+    fail("sandbox_failed", "no worker sandbox on Windows yet")
+}
+
+#[cfg(windows)]
+fn read(path: &Path) -> Result<(), (PathBuf, io::Error)> {
+    Err((path.to_path_buf(), io::ErrorKind::Unsupported.into()))
+}
+
+#[cfg(windows)]
+fn read_private_exec() -> Result<crate::exec::PrivateExec, ExitCode> {
+    Err(fail("sandbox_failed", "no worker sandbox on Windows yet"))
 }
 
 #[cfg(test)]

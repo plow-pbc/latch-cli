@@ -18,7 +18,6 @@
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -31,7 +30,7 @@ use crate::audit::Keys;
 use crate::browser::journal::KEEP;
 use crate::failure::{Failure, code};
 use crate::model::Exchange;
-use crate::state::to_hex;
+use crate::state::{OwnerOnly, to_hex};
 
 /// One call, as kept.
 #[derive(Serialize)]
@@ -101,13 +100,13 @@ pub fn keep(
     let written = || -> std::io::Result<()> {
         fs::DirBuilder::new()
             .recursive(true)
-            .mode(0o700)
+            .owner_only()
             .create(folder(state_dir))?;
         OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(true)
-            .mode(0o600)
+            .owner_only()
             .open(file(state_dir, id))?
             .write_all(&text)
     };

@@ -20,6 +20,7 @@ use tokio::sync::Mutex;
 use super::core::{self, Call};
 use crate::failure::{Failure, code};
 use crate::wire::Response;
+use crate::worker::OwnGroup;
 
 /// The worker's environment: nothing from the host's but a plain `PATH`.
 const PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
@@ -118,6 +119,7 @@ impl Runtime {
         if super::egress::local_allowed(state_dir)? {
             command.arg("--allow-local-browsing");
         }
+        #[cfg(unix)]
         if super::display::for_runtime(headless) {
             command.arg("--private-display");
         }
@@ -136,7 +138,7 @@ impl Runtime {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
-            .process_group(0)
+            .own_group()
             .kill_on_drop(true)
             .spawn()
             .map_err(failed)?;
@@ -263,6 +265,9 @@ impl Runtime {
 
 impl Worker {
     fn stop(&mut self) {
+        #[cfg(windows)]
+        let _ = self.child.start_kill();
+        #[cfg(unix)]
         if let Some(pid) = self.child.id() {
             // The worker leads its own group; the browser, in a group of its
             // own, exits when the worker's end of its pipe closes.

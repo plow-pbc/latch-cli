@@ -29,14 +29,23 @@
 //! - `camoufox.rs`: the Camoufox driver, through the helper in `camoufox/`.
 //! - `tags.rs`: workaround tags for the audit of an agent's `eval`.
 
+#[cfg(unix)]
 pub mod camoufox;
+#[cfg(unix)]
 pub mod cdp;
+#[cfg(unix)]
 pub mod cft;
 pub mod client;
+// The engines' drivers' own code: idle on Windows, which has no browser worker yet.
+#[cfg_attr(windows, allow(dead_code))]
 pub mod core;
+#[cfg(unix)]
 pub mod display;
+#[cfg_attr(windows, allow(dead_code))]
 pub mod driver;
+#[cfg_attr(windows, allow(dead_code))]
 pub mod egress;
+#[cfg_attr(windows, allow(dead_code))]
 pub mod engine;
 mod fill;
 pub mod handoff;
@@ -47,6 +56,7 @@ pub(crate) use judged::previewed_fill;
 pub mod model;
 mod opened;
 pub mod plan;
+#[cfg_attr(windows, allow(dead_code))]
 pub mod profile;
 pub mod runtime;
 pub mod session;
@@ -58,4 +68,35 @@ pub mod tags;
 // Real engines: on macOS always, on Linux only where one is installed.
 #[cfg(all(test, any(target_os = "macos", feature = "linux-browser-tests")))]
 mod tests;
+#[cfg(unix)]
 pub mod worker;
+
+/// Windows has no worker sandbox yet, and so no browser worker: the engines'
+/// drivers (`cft`, `camoufox`, `cdp`, `display`) and the worker that runs
+/// them are left out, and a worker started there says why.
+#[cfg(windows)]
+pub mod worker {
+    use std::path::Path;
+    use std::process::ExitCode;
+    use std::time::Duration;
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn run(
+        _state_dir: &Path,
+        _engine: &str,
+        _profile: &Path,
+        _scratch: &Path,
+        _idle: Duration,
+        _call_limit: Duration,
+        _headless: bool,
+        _private_display: bool,
+        _allow_local_browsing: bool,
+        _page_isolation_off: bool,
+    ) -> ExitCode {
+        let message = "no worker sandbox on Windows yet, so no browser runs here";
+        let failure =
+            crate::failure::Failure::new(crate::failure::code::sandbox_unavailable, message.into());
+        eprintln!("{}", failure.to_json());
+        failure.exit.into()
+    }
+}

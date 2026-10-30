@@ -23,13 +23,12 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, DuplexStream};
-use tokio::net::UnixStream;
 use tokio::task::JoinHandle;
 
 use crate::failure::{Failure, code};
 use crate::plow::Peer;
 use crate::state::StateDir;
-use crate::transport::{RecvStream, SendStream};
+use crate::transport::{LocalStream, RecvStream, SendStream};
 use crate::wire::{self, Request, Response};
 
 /// The local socket request that asks the host to carry a call.
@@ -147,7 +146,7 @@ fn unavailable(host: &Peer) -> Failure {
 /// A connection to another host through this machine's host: one stream,
 /// which a task carries between the socket and the command's two ends.
 pub struct Proxied {
-    socket: Mutex<Option<UnixStream>>,
+    socket: Mutex<Option<LocalStream>>,
     /// Why the remote host refused us, once it has.
     denied: Arc<Mutex<Option<String>>>,
     pump: Mutex<Option<JoinHandle<()>>>,
@@ -193,7 +192,7 @@ impl Drop for Proxied {
 /// Carries the command's bytes (`outgoing`) to the socket and the
 /// socket's to the command (`incoming`), until both directions end.
 async fn pump(
-    socket: UnixStream,
+    socket: LocalStream,
     mut outgoing: DuplexStream,
     mut incoming: DuplexStream,
     denied: Arc<Mutex<Option<String>>>,

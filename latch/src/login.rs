@@ -57,6 +57,10 @@ enum Source {
 }
 
 pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failure> {
+    // A Windows state folder another user owns could never keep this
+    // login's secrets: it is refused before anyone is asked to text.
+    #[cfg(windows)]
+    state.create()?;
     let saved = state.load_config()?;
     // A plain `latch login` where one is saved changes nothing: an option
     // asks for a change (a token, a name, a Plow, by text), and --again for
@@ -507,6 +511,30 @@ pub fn default_name() -> Option<String> {
 
 /// This machine's hostname, up to its first dot (`mac-studio`, not
 /// `mac-studio.local`), if it has one.
+#[cfg(windows)]
+fn hostname() -> Option<String> {
+    use windows_sys::Win32::System::SystemInformation::{
+        ComputerNamePhysicalDnsHostname, GetComputerNameExW,
+    };
+    let mut buffer = [0u16; 256];
+    let mut length = buffer.len() as u32;
+    // SAFETY: `buffer` is writable for `length` UTF-16 units, which the call
+    // sets to the name's length, without its terminator.
+    let named = unsafe {
+        GetComputerNameExW(
+            ComputerNamePhysicalDnsHostname,
+            buffer.as_mut_ptr(),
+            &mut length,
+        )
+    };
+    let full = String::from_utf16_lossy(&buffer[..length as usize]);
+    let short = full.split('.').next().unwrap_or_default().trim();
+    Some(short.to_string()).filter(|name| named != 0 && !name.is_empty())
+}
+
+/// This machine's hostname, up to its first dot (`mac-studio`, not
+/// `mac-studio.local`), if it has one.
+#[cfg(unix)]
 fn hostname() -> Option<String> {
     let mut buffer = [0u8; 256];
     // SAFETY: std has no hostname API. `buffer` is writable for the supplied

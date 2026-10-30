@@ -4,13 +4,12 @@
 
 use std::fs::{self, File};
 use std::io::ErrorKind;
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
 use crate::failure::{Failure, code};
-use crate::state::{to_hex, write_private};
+use crate::state::{OwnerOnly, to_hex, write_private};
 
 /// The owner's rules that apply to one agent.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -352,7 +351,7 @@ impl RulesDir {
     fn lock(&self) -> Result<File, Failure> {
         fs::DirBuilder::new()
             .recursive(true)
-            .mode(0o700)
+            .owner_only()
             .create(&self.dir)
             .map_err(|err| self.failure(&self.dir, err))?;
         let path = self.dir.join(".lock");
@@ -360,7 +359,7 @@ impl RulesDir {
             .create(true)
             .truncate(false)
             .write(true)
-            .mode(0o600)
+            .owner_only()
             .open(&path)
             .map_err(|err| self.failure(&path, err))?;
         file.lock().map_err(|err| self.failure(&path, err))?;

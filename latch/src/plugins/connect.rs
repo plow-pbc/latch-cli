@@ -308,8 +308,36 @@ async fn reader_gone() {
     }
 }
 
+/// Whether stdout is a pipe whose reader has gone: a write of nothing to
+/// it fails then, and writes nothing otherwise.
+#[cfg(windows)]
+fn stdout_gone() -> bool {
+    use windows_sys::Win32::Foundation::{ERROR_BROKEN_PIPE, ERROR_NO_DATA, GetLastError};
+    use windows_sys::Win32::Storage::FileSystem::{FILE_TYPE_PIPE, GetFileType, WriteFile};
+    use windows_sys::Win32::System::Console::{GetStdHandle, STD_OUTPUT_HANDLE};
+    // SAFETY: GetStdHandle takes a constant; GetFileType only reads the handle.
+    let out = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) };
+    if unsafe { GetFileType(out) } != FILE_TYPE_PIPE {
+        return false;
+    }
+    let mut written = 0;
+    // SAFETY: a zero-byte write reads nothing from the (empty) buffer.
+    let wrote = unsafe {
+        WriteFile(
+            out,
+            [0u8; 0].as_ptr(),
+            0,
+            &mut written,
+            std::ptr::null_mut(),
+        )
+    };
+    // SAFETY: reads this thread's last error, set by the failed write.
+    wrote == 0 && matches!(unsafe { GetLastError() }, ERROR_NO_DATA | ERROR_BROKEN_PIPE)
+}
+
 /// Whether stdout is a pipe or socket whose reader has gone: the kernel
 /// says so without a write (POLLHUP on macOS, POLLERR on Linux).
+#[cfg(unix)]
 fn stdout_gone() -> bool {
     let mut out = libc::pollfd {
         fd: libc::STDOUT_FILENO,

@@ -1959,6 +1959,7 @@ dependencies = [
  "clap",
  "core-foundation",
  "csv",
+ "hmac 0.13.0",
  "iroh",
  "iroh-relay",
  "jiff",
@@ -1983,6 +1984,7 @@ dependencies = [
  "tracing-subscriber",
  "unicode-width",
  "url",
+ "windows-sys 0.61.2",
  "zip",
 ]
 
