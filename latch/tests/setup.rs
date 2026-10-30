@@ -3,6 +3,9 @@
 //! files, and logs every call. The stand-in lets these tests cover every
 //! answer without a Plow, a host or System Settings.
 
+// Unix only: `latch setup` at a pty.
+#![cfg(unix)]
+
 use std::fs;
 use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;

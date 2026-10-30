@@ -1,6 +1,10 @@
 //! Runs the real `latch worker` against a throwaway area and state
 //! directory, to check what the sandbox lets it touch.
 
+// Unix only: the Seatbelt and bubblewrap sandboxes; Windows' is checked on
+// a Windows VM (see the windows-sandbox pull request).
+#![cfg(unix)]
+
 use std::fs;
 use std::io::Write;
 #[cfg(target_os = "linux")]

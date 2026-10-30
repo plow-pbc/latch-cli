@@ -130,6 +130,7 @@ Folder     ~/.latch
 
 For agents (JSON): latch status. Live activity: latch dashboard."
             .replace("this Mac", &format!("this {}", here()))
+            .replace("~/.latch", &format!("~{}.latch", std::path::MAIN_SEPARATOR))
     );
 }
 

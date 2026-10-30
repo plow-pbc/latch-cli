@@ -103,6 +103,7 @@ mod tests {
 
     /// The bundle around this latch, run directly or through a link as
     /// `~/.local/bin/latch` is.
+    #[cfg(unix)]
     #[test]
     fn the_app_is_the_bundle_around_this_latch() {
         let dir = tempfile::tempdir().unwrap();

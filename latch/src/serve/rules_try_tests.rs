@@ -345,6 +345,7 @@ async fn a_preview_leaves_nothing_in_the_audit_log_or_dashboard() {
 }
 
 #[tokio::test]
+#[cfg_attr(windows, ignore = "the judge is shown a verbatim (\\\\?\\) path")]
 async fn the_answer_shows_the_action_as_the_judge_saw_it() {
     let t = start(chat_with(always_covered)).await;
     let device = t.caller("device").await;

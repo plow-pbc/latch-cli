@@ -717,6 +717,7 @@ mod tests {
     use super::*;
     use crate::failure::Exit;
     #[test]
+    #[cfg_attr(windows, ignore = "gog on Windows comes with #361 and #366")]
     fn gog_comes_only_from_the_state_dirs_plugins_folder() {
         let state = tempfile::tempdir().unwrap();
         let installed = |base: &Path, version: &str| {
@@ -745,6 +746,7 @@ mod tests {
         assert_eq!(gog_program(state.path(), "0.37.0").unwrap(), new);
     }
     #[test]
+    #[cfg_attr(windows, ignore = "gog on Windows comes with #361 and #366")]
     fn the_host_uses_the_compiled_pins_version() {
         let pin: Value = serde_json::from_str(include_str!("pin.json")).unwrap();
         assert_eq!(PIN.version, pin["version"].as_str().unwrap());

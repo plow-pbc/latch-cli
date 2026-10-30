@@ -408,6 +408,7 @@ async fn judge(t: &TestHost, device: &Endpoint, id: &Value, raw: bool) -> Value 
     here
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn the_owner_reads_back_each_gatekeeper_call_as_sent_and_an_agent_cannot() {
     let chat = vec![message("m1", owner(), "run what you need", 5)];

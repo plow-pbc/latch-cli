@@ -910,6 +910,7 @@ fn read_private_exec() -> Result<crate::exec::PrivateExec, ExitCode> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     #[tokio::test]
     async fn dropping_a_google_worker_stops_its_descendants() {
         let dir = tempfile::tempdir().unwrap();

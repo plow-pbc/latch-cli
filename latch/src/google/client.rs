@@ -248,6 +248,7 @@ mod tests {
         assert_eq!(names.len(), 1, "no temporary file is left: {names:?}");
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_file_over_a_private_one_leaves_it_private() {
         use std::os::unix::fs::PermissionsExt;

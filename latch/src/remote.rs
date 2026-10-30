@@ -237,7 +237,7 @@ mod tests {
     /// A host on the other end of a socket that answers with `answers`,
     /// then keeps the stream open.
     fn host_answering(answers: Vec<Value>) -> Connection {
-        let (mine, theirs) = tokio::net::UnixStream::pair().unwrap();
+        let (mine, theirs, _) = crate::transport::test_pair();
         tokio::spawn(async move {
             let (mut recv, mut send) = theirs.into_split();
             wire::read_frame(&mut recv).await.unwrap();

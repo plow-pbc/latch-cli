@@ -606,6 +606,7 @@ mod tests {
         host.owner(set(Some("Bob"), &text(5000))).await.unwrap();
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn an_interrupted_write_leaves_the_old_text() {
         let host = Host::new();

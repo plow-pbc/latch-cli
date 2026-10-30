@@ -311,6 +311,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn items_are_sealed_on_disk_and_reopen_with_the_custody_key() {
         let dir = tempfile::tempdir().unwrap();

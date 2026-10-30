@@ -497,6 +497,7 @@ fn running(pid: u32) -> bool {
         }
         // SAFETY: a live handle of ours, closed once.
         let alive = unsafe { WaitForSingleObject(process, 0) } == WAIT_TIMEOUT;
+        // SAFETY: closed once, here.
         unsafe { CloseHandle(process) };
         alive
     }
@@ -731,7 +732,8 @@ fn signal_name(signal: i32) -> String {
     name.to_string()
 }
 
-#[cfg(test)]
+// Their workers are sh scripts: Unix only.
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::failure::Exit;

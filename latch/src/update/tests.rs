@@ -197,6 +197,7 @@ impl World {
 /// A newer build goes in through its own installer, into the folder the
 /// running latch is in (here ~/bin, not the installer's ~/.local/bin).
 #[tokio::test]
+#[cfg_attr(windows, ignore = "latch has no Windows release yet")]
 async fn a_newer_build_is_installed_by_its_own_installer_where_latch_runs() {
     let world = World::new();
     let release = world.release(1328);
@@ -267,6 +268,7 @@ fn an_update_installs_where_this_latch_runs() {
 }
 
 #[tokio::test]
+#[cfg_attr(windows, ignore = "latch has no Windows release yet")]
 async fn check_says_what_is_newer_and_installs_nothing() {
     let world = World::new();
     let release = world.release(1328);
@@ -286,6 +288,7 @@ async fn check_says_what_is_newer_and_installs_nothing() {
 }
 
 #[tokio::test]
+#[cfg_attr(windows, ignore = "latch has no Windows release yet")]
 async fn an_older_build_is_installed_only_when_its_tag_is_named() {
     let world = World::new();
     let older = world.release(1326);
@@ -311,6 +314,7 @@ async fn an_older_build_is_installed_only_when_its_tag_is_named() {
 }
 
 #[tokio::test]
+#[cfg_attr(windows, ignore = "latch has no Windows release yet")]
 async fn a_corrupted_archive_fails_before_anything_is_replaced() {
     let world = World::new();
     let release = world.release(1328);
@@ -333,6 +337,7 @@ async fn a_corrupted_archive_fails_before_anything_is_replaced() {
 /// What tar and the installer print goes to trace.log, never this
 /// command's stdout or stderr, whether they succeed or fail.
 #[tokio::test]
+#[cfg_attr(windows, ignore = "latch has no Windows release yet")]
 async fn what_tar_and_the_installer_print_goes_to_trace_log() {
     let world = World::new();
     let release = world.release(1328);
@@ -387,6 +392,7 @@ async fn what_tar_and_the_installer_print_goes_to_trace_log() {
 }
 
 #[tokio::test]
+#[cfg_attr(windows, ignore = "latch has no Windows release yet")]
 async fn an_unsigned_or_wrongly_signed_release_is_refused() {
     let world = World::new();
     let release = world.release(1328);
@@ -428,6 +434,7 @@ async fn an_unsigned_or_wrongly_signed_release_is_refused() {
 }
 
 #[tokio::test]
+#[cfg_attr(windows, ignore = "latch has no Windows release yet")]
 async fn a_local_build_never_updates_itself() {
     let world = World::new();
     let release = world.release(1328);
@@ -485,6 +492,7 @@ fn only_a_release_tag_names_a_release() {
 /// next plain update installs this build again, and one with every helper
 /// in place does nothing.
 #[tokio::test]
+#[cfg_attr(windows, ignore = "latch has no Windows release yet")]
 async fn a_cut_off_update_is_finished_by_the_next_one() {
     let world = World::new();
     let release = world.release(1328);
@@ -545,6 +553,7 @@ fn the_installed_engines_are_the_ones_kept_up_to_date() {
 /// A machine installed with `--client-only` is updated the same way: latch
 /// alone, whatever else is in its state folder.
 #[tokio::test]
+#[cfg_attr(windows, ignore = "latch has no Windows release yet")]
 async fn a_client_only_install_is_updated_client_only() {
     let world = World::new();
     let release = world.release(1328);
@@ -563,6 +572,7 @@ async fn a_client_only_install_is_updated_client_only() {
 /// An agent updates its own computer, where latch is installed alone; on a
 /// host it gets `owner_only`. The owner's login updates either.
 #[tokio::test]
+#[cfg_attr(windows, ignore = "latch has no Windows release yet")]
 async fn an_agent_updates_only_its_own_client_only_computer() {
     let login = |world: &World, kind: &str| {
         let peer = crate::plow::Peer {
@@ -606,6 +616,7 @@ async fn an_agent_updates_only_its_own_client_only_computer() {
 }
 
 #[tokio::test]
+#[cfg_attr(windows, ignore = "latch has no Windows release yet")]
 async fn a_look_finds_a_newer_build_for_status_and_the_dashboard() {
     let world = World::new();
     let release = world.release(1328);
@@ -637,6 +648,7 @@ async fn a_look_finds_a_newer_build_for_status_and_the_dashboard() {
 /// Looks are a day apart, whether the last one worked or not; one that
 /// failed keeps what the last one that worked found.
 #[tokio::test]
+#[cfg_attr(windows, ignore = "latch has no Windows release yet")]
 async fn a_failed_look_keeps_what_was_found_and_the_next_is_a_day_later() {
     let world = World::new();
     let release = world.release(1328);

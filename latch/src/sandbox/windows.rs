@@ -490,6 +490,7 @@ unsafe fn write_through(
     new: *mut ACL,
 ) -> std::io::Result<()> {
     let (mut control, mut revision) = (0u16, 0u32);
+    // SAFETY: a plain C struct, valid as zeroes; it is initialized below.
     let mut descriptor: SECURITY_DESCRIPTOR = unsafe { std::mem::zeroed() };
     let built = (&raw mut descriptor).cast();
     let kept = SE_DACL_PROTECTED | SE_DACL_AUTO_INHERITED;
@@ -720,6 +721,7 @@ fn run_inside(sid: &Sid, policy: &Policy) -> Result<u32, String> {
         // SAFETY: ends the suspended worker that could not join the job.
         unsafe { TerminateProcess(process.hProcess, 1) };
         let message = failed("cannot put the worker in its job");
+        // SAFETY: the worker's handles, closed once, here.
         unsafe {
             CloseHandle(process.hThread);
             CloseHandle(process.hProcess);
@@ -952,6 +954,7 @@ fn running(pid: u32) -> bool {
     }
     // SAFETY: a live handle of ours, closed once.
     let alive = unsafe { WaitForSingleObject(process, 0) } != WAIT_OBJECT_0;
+    // SAFETY: closed once, here.
     unsafe { CloseHandle(process) };
     alive
 }

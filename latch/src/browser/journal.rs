@@ -391,6 +391,7 @@ pub fn history(
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     #[test]
     fn an_action_with_no_result_reads_unknown_and_the_journal_is_the_callers() {
         let dir = tempfile::tempdir().unwrap();

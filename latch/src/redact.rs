@@ -346,6 +346,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        windows,
+        ignore = "a path that exists is kept readable only for Unix paths (/ and ~/)"
+    )]
     fn long_credential_looking_runs_are_redacted() {
         let token = "aB3dE5fG7hJ9kL1mN3pQ5rS7tU9vW1xY";
         assert_eq!(

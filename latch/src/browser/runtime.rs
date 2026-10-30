@@ -304,7 +304,8 @@ fn lost() -> Failure {
     Failure::new(code::browser_gone, "the browser worker stopped".into())
 }
 
-#[cfg(test)]
+// Their workers are sh scripts: Unix only.
+#[cfg(all(test, unix))]
 mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::time::Instant;

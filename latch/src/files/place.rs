@@ -342,9 +342,9 @@ impl AccessOf {
         if status != ERROR_SUCCESS {
             return Err(std::io::Error::from_raw_os_error(status as i32));
         }
-        // SAFETY: zeroes are a valid start; Initialize sets it up.
         let mut access = AccessOf {
             read,
+            // SAFETY: zeroes are a valid start; Initialize sets it up.
             made: Box::new(unsafe { std::mem::zeroed() }),
         };
         let made = (&raw mut *access.made).cast();
@@ -435,7 +435,8 @@ fn rename_into(
     Ok(())
 }
 
-#[cfg(test)]
+// Unix only: they swap folders for symlinks and read file modes.
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::failure::Exit;

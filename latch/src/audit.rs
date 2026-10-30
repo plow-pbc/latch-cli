@@ -1224,6 +1224,7 @@ mod tests {
         assert_eq!(ids(&every), all);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_follower_resumes_after_its_last_id_and_an_unknown_one_has_expired() {
         let (dir, path) = log_with_three_records();
@@ -1282,6 +1283,7 @@ mod tests {
 
     /// A follower of a long log reads only what is new on each wake, so a
     /// new record reaches it far sooner than the whole log takes to open.
+    #[cfg(unix)]
     #[test]
     fn a_follower_of_a_long_log_reads_only_the_new_records() {
         let dir = test_dir();

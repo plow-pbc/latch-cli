@@ -410,7 +410,9 @@ mod preset_tests {
     /// the same text, in the same order.
     #[test]
     fn the_mac_app_offers_the_same_presets() {
-        let onboarding = include_str!("../../gui/Sources/PlowLatchUI/App/Onboarding.swift");
+        // A Windows checkout may have CRLF line ends.
+        let onboarding = include_str!("../../gui/Sources/PlowLatchUI/App/Onboarding.swift")
+            .replace("\r\n", "\n");
         let mut from = 0;
         for preset in Preset::ALL {
             let deck = format!(

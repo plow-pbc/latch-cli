@@ -97,7 +97,7 @@ pub fn prepare(dir: &Path, engine: &str) -> Result<Profile, Failure> {
     Ok(profile)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use std::os::unix::fs::PermissionsExt;
 
