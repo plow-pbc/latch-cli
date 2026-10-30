@@ -5,6 +5,8 @@
 import { connect, latch, follow, unfollow, openURL } from "./latch.js";
 import { el } from "./dom.js";
 import { decks, tryArgs, errorText, sentence, glyph, THIS_PC, unreachable, code } from "./pages/rules.js";
+import { startHost, startHosting } from "./pages/settings.js";
+import { accountsOf, working, addsAccount, noneWorks, RECONNECT, TOOLS_MISSING, signInProblem } from "./google.js";
 
 const invoke = window.__TAURI__?.core.invoke ?? (() => Promise.reject(new Error("no app")));
 
@@ -39,6 +41,9 @@ const state = {
   // Set your rules.
   savedRules: null,
   draftRules: "",
+  /** What loadRules last put in the box: while the box still holds it, the
+   * person has not edited it. */
+  filledRules: null,
   rulesError: null,
   savingRules: false,
   rulesUnreadable: false,
@@ -653,8 +658,13 @@ async function loadRules() {
   try {
     const shown = await latch(["rules", "show"]);
     const saved = shown?.every_agent?.text ?? null;
+    // The box follows the saved rules unless the person changed it since
+    // it was filled: rules saved elsewhere meanwhile (the main window's
+    // Rules, before "Set up again") show here, as on the Mac, whose setup
+    // starts afresh each time.
+    const followed = !state.draftRules || state.draftRules === state.filledRules;
     state.savedRules = saved;
-    if (!state.draftRules) state.draftRules = saved?.trim() ? saved : DECKS[0].rules;
+    if (followed) state.draftRules = state.filledRules = saved?.trim() ? saved : DECKS[0].rules;
     const match = DECKS.findIndex((one) => one.rules === state.draftRules.trim());
     if (match >= 0) state.deck = match;
     state.rulesError = null;
@@ -738,7 +748,7 @@ async function saveRules() {
   draw();
   try {
     await latch(["rules", "set", "--file", "-"], draft);
-    state.savedRules = draft;
+    state.savedRules = state.filledRules = state.draftRules = draft;
     state.rulesError = null;
     state.savingRules = false;
     next();
@@ -753,12 +763,6 @@ async function saveRules() {
 
 const NOT_LOGGED_IN = "This PC isn't logged in to Plow. Go back to log in, then try again.";
 const COULD_NOT_CHECK = "Latch couldn't check Google just now. Try again.";
-const TOOLS_MISSING = "Latch's Google tools are missing from this PC. Install Latch again, then try again.";
-const RECONNECT = "Reconnect it on Plow's Connections page.";
-
-/** The accounts connected in Plow (`GoogleAccounts`): from `setup
- * --status`'s Google step, null when Plow didn't say. */
-const accountsOf = (step) => (Array.isArray(step?.accounts) ? { accounts: step.accounts, needsSignIn: step.needs_sign_in ?? [] } : null);
 
 /** From latch's enable, which lists the accounts that work and the rest apart. */
 function accountsEnabled(enabled) {
@@ -766,10 +770,6 @@ function accountsEnabled(enabled) {
   const working = enabled?.accounts ?? [];
   return { accounts: [...working, ...again.filter((a) => !working.includes(a))], needsSignIn: again };
 }
-
-const working = (accounts) => accounts.accounts.filter((a) => !accounts.needsSignIn.includes(a));
-const addsAccount = (accounts) => working(accounts).length > 0;
-const noneWorks = (accounts) => accounts.accounts.length > 0 && !addsAccount(accounts);
 
 /** latch's refusal, said plainly: decided on its code, never shown. */
 function googleProblem(error) {
@@ -781,19 +781,6 @@ function googleProblem(error) {
     // No connected account works until the owner signs in again.
     case "google_needs_sign_in": return ["notConnected", null];
     default: return ["failed", COULD_NOT_CHECK];
-  }
-}
-
-/** Why a wait for a sign-in ended with no new account (`GoogleSignIn.problem`). */
-function signInProblem(error, adding) {
-  switch (code(error)) {
-    case "sign_in_timeout":
-      return adding ? "No new Google account showed up in time. An account that's already connected isn't added again."
-        : "No Google account showed up in time. If you finished signing in, try again.";
-    case "plow_unreachable": return "Plow can't be reached right now. Check your internet connection, then try again.";
-    case "not_logged_in": return "This PC isn't logged in to Plow.";
-    case "gog_not_configured": return TOOLS_MISSING;
-    default: return "Couldn't connect Google just now. Try again.";
   }
 }
 
@@ -1017,18 +1004,6 @@ async function setKeepAwake(on) {
 const loginItem = () => (fakeSetup ? fakeSetup.loginItem() : invoke("login_item"));
 const setLoginItem = (on) => (fakeSetup ? fakeSetup.setLoginItem(on) : invoke("set_login_item", { on }));
 
-/** Starts this PC's host the way `setup --status` says (its host step's
- * words after `latch`, `serve -d` with the last serve's flags); nothing
- * when it isn't needed. A host latch says can't start now throws. */
-async function startHost() {
-  const setup = await latch(["setup", "--status"]);
-  if (!Array.isArray(setup?.steps)) throw unreachable("Latch returned an unreadable response.");
-  const host = setup.steps.find((s) => s.step === "host");
-  if (!host) return;
-  if (host.state === "needed" && host.args) await latch(host.args);
-  else if (host.state === "blocked") throw unreachable("Latch can't start on this PC right now.", host.reason ?? null);
-}
-
 /** Starts the host in the background and sets the login item, as the
  * switches say. */
 async function startLatch() {
@@ -1192,8 +1167,7 @@ async function openMain() {
   };
   // Home's Start Latch starts it as Host Settings does (the Mac's
   // `startHosting`: setup's host step, then status read again).
-  const settings = await import("./pages/settings.js");
-  main.app.start = () => settings.startHosting(main.app);
+  main.app.start = () => startHosting(main.app);
   await main.open(root);
 }
 
