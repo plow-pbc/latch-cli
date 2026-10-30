@@ -402,10 +402,10 @@
     }
     return i === want.length;
   };
-  // For a value sites format as they like (a card's number and expiry, a
-  // phone number), the separators either side puts between its characters
-  // are set aside: one stored with spaces is kept by a field that drops
-  // them. The GET guards (`cdp.rs`, `helper.mjs`) match every value so.
+  // For a value sites format as they like (a card's number and expiry),
+  // the separators either side puts between its characters are set aside:
+  // one stored with spaces is kept by a field that drops them. The GET
+  // guards (`cdp.rs`, `helper.mjs`) match every value so.
   const bare = (text) => Array.from(text).filter((ch) => !SEPARATORS.has(ch)).join('');
   const keepsFormatted = (held, wanted) => held === wanted || (bare(wanted) !== '' && bare(held) === bare(wanted));
 

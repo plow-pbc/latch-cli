@@ -158,7 +158,7 @@ pub enum Call {
         /// request may carry it while it may be on the page.
         #[serde(default)]
         secret: bool,
-        /// A value sites format as they like (a card's number): the field
+        /// A value sites format as they like (a card's number or expiry): the field
         /// keeps it whatever separators either side puts in it.
         #[serde(default)]
         formatted: bool,

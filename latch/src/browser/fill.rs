@@ -1157,11 +1157,11 @@ fn not_kept(
 
 /// Whether a site may format field `label` of an item of `kind` as it
 /// likes, so that the page keeps it whatever separators either side puts
-/// in it: a card's fields, an identity's phone, SSN and postal code. A
-/// login's fields (a username, an email, a password) stay as they are:
-/// one a page changed is no longer the account's.
+/// in it: a card's number and expiry, which checkouts space and slash as
+/// they please. Every other value stays as it is, a login's above all: a
+/// username or password a page changed is no longer the account's.
 fn formatted(kind: &str, label: &str) -> bool {
-    kind == "card" || kind == "identity" && matches!(label, "phone" | "ssn" | "postal code")
+    kind == "card" && (label == "number" || label.starts_with("expiry"))
 }
 
 /// A field `item` lacks, refused with the fields it has.

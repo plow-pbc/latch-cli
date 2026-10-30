@@ -285,9 +285,9 @@ field (a list, a date) and a value with a line break or a tab. A field that
 formats what it gets (a code as "123 456") still holds the value: only
 spaces, dashes, dots, slashes, parentheses and plus signs may come between
 its characters, none lost, added or moved. A value sites format as they
-like (a card's fields, an identity's phone, SSN and postal code) is held
-whatever of those separators either the field or the stored value puts
-between its characters; a login's username and password never are. A field
+like (a card's number and expiry) is held whatever of those separators
+either the field or the stored value puts between its characters; every
+other value, a login's username and password above all, never is. A field
 that holds anything else ends the fill with `needs_owner`, naming the
 field, what the page did with it and what went in before it. latch then presses
 submit and waits until the values have left the page (clearing them itself
