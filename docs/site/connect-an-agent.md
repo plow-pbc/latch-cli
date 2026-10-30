@@ -39,20 +39,22 @@ latch agents new --own --name my-agent --line LINE --token-file my-agent.token
 `LINE` is a line's number from `latch agents lines`. Treat
 `my-agent.token` like a password.
 
-**3. Give the agent its credential.** Copy the file to the agent's computer,
-and give it Latch with the [agent install](index.md#install-on-an-agent).
-Then log in, in a state folder of its own:
+**3. Give the agent its credential.** Copy the file to the agent's computer.
+There, choose the agent's state folder before the
+[agent install](index.md#install-on-an-agent), then install and log in:
 
 ```sh agent
 export PLOW_TOKEN_FILE=~/my-agent.token
 export LATCH_STATE_DIR=~/latch-agent
+curl -fsSLO https://releases.plow.co/latch-cli/install.sh && sh install.sh --client-only
 latch login
 ```
 
 `latch` reads the agent's credential from the file `PLOW_TOKEN_FILE` names,
 or from `PLOW_AGENT_TOKEN` if you set the token itself. Keep them set for
 every command the agent runs: `latch` never copies the credential into its
-state folder.
+state folder. Keep `LATCH_STATE_DIR` set too: the install marks that folder
+as the agent's own computer, which `latch update` checks.
 
 Use a state folder of its own. A folder that already holds your own login
 uses yours, whatever the agent's credential says.

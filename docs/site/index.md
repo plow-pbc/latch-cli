@@ -64,4 +64,5 @@ latch status
 latch update
 ```
 
-Nothing updates on its own.
+An agent runs it with the `LATCH_STATE_DIR` it was installed with, if it has
+one. Nothing updates on its own.
