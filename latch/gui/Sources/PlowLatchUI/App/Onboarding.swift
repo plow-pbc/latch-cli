@@ -339,7 +339,8 @@ final class Onboarding {
     /// A step already set up shows Continue alone, not Skip for now.
     var stepDone: Bool {
         switch step {
-        case .rules: !(savedRules ?? "").isEmpty && !rulesChanged
+        // Rules that couldn't be read again leave Skip for now the way on.
+        case .rules: !(savedRules ?? "").isEmpty && !rulesChanged && !rulesUnreadable
         case .access: accessDone && google == .connected
         default: false
         }

@@ -220,6 +220,13 @@ struct GatekeeperTests {
         client.savedText = "Agents may read ~/Projects."
         await flow.loadRules()
         #expect(!flow.rulesUnreadable && flow.primaryEnabled)
+        // Read once and unchanged, then not on a return: Skip for now is
+        // offered again.
+        flow.draftRules = "Agents may read ~/Projects."
+        #expect(flow.stepDone)
+        client.showFailure = LatchFailure(code: "state_busy", message: "the state folder is busy")
+        await flow.loadRules()
+        #expect(flow.rulesUnreadable && !flow.stepDone && !flow.primaryEnabled)
         let skipped = app.stage(.rules)
         client.showFailure = LatchFailure(code: "state_busy", message: "the state folder is busy")
         await skipped.loadRules()
