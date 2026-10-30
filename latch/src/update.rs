@@ -146,13 +146,7 @@ impl Source {
             }
             signature => signature?,
         };
-        let signature = String::from_utf8(signature)
-            .ok()
-            .and_then(|text| Signature::decode(&text).ok())
-            .ok_or_else(|| refused("has a signature that cannot be read"))?;
-        self.key
-            .verify(&bytes, &signature, false)
-            .map_err(|_| refused("is not signed with latch's release key"))?;
+        check_signature(&self.key, &bytes, &signature).map_err(refused)?;
         Ok(bytes)
     }
 
@@ -174,6 +168,36 @@ impl Source {
         }
         Ok(latest)
     }
+}
+
+/// Why `signature`, a `.minisig` file, does not sign `bytes` with `key`.
+fn check_signature(key: &PublicKey, bytes: &[u8], signature: &[u8]) -> Result<(), &'static str> {
+    let signature = std::str::from_utf8(signature)
+        .ok()
+        .and_then(|text| Signature::decode(text).ok())
+        .ok_or("has a signature that cannot be read")?;
+    key.verify(bytes, &signature, false)
+        .map_err(|_| "is not signed with latch's release key")
+}
+
+/// `install.sh`'s check, on a Mac, that `file` is signed with `key` (a
+/// minisign public key's base64 line) by `file.minisig` beside it. The
+/// installer runs it only once it has checked who signed this app.
+pub fn verify_file(key: &str, file: &Path) -> Result<Value, Failure> {
+    let key = PublicKey::from_base64(key).map_err(|_| {
+        Failure::new(
+            code::bad_signature,
+            format!("{key} is not a minisign public key"),
+        )
+    })?;
+    let read = |path: &Path| {
+        std::fs::read(path).map_err(|err| io_failure(&path.display().to_string(), err))
+    };
+    let mut signature = file.as_os_str().to_owned();
+    signature.push(".minisig");
+    check_signature(&key, &read(file)?, &read(Path::new(&signature))?)
+        .map_err(|why| Failure::new(code::bad_signature, format!("{} {why}", file.display())))?;
+    Ok(json!({ "verified": file }))
 }
 
 fn http() -> Result<reqwest::Client, Failure> {

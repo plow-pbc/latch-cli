@@ -30,9 +30,10 @@ When it fails, it prints one `{"error": …}` line on stderr instead.
 curl -fsSLO https://releases.plow.co/latch-cli/install.sh && sh install.sh
 ```
 
-The installer downloads the newest release for your machine, checks it
-against the release's `SHA256SUMS` and installs it. You need `curl`, `tar`
-and a SHA-256 tool, which most systems have.
+The installer downloads the newest release for your machine, checks that
+it is signed with Latch's release key, as `latch update` does, and on a Mac
+that Plow signed the app, then installs it. You need `curl`, `tar` and a
+SHA-256 tool, which most systems have, and on Linux OpenSSL 3.
 
 | What | Where |
 |---|---|

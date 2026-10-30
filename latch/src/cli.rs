@@ -242,6 +242,15 @@ pub enum Command {
     /// unless a host runs on the state folder; the installer runs it
     #[command(hide = true)]
     PruneHelpers,
+    /// Internal: on a Mac, install.sh's check that FILE is signed, by
+    /// FILE.minisig, with the release key it carries
+    #[command(hide = true)]
+    VerifySignature {
+        /// The minisign public key: the base64 line of its key file
+        #[arg(long)]
+        key: String,
+        file: PathBuf,
+    },
     /// Internal: the app's "Start when you log in" item, as ServiceManagement
     /// reports it; with --again, registered again from this app, which the
     /// installer does once it moves the app to another folder
