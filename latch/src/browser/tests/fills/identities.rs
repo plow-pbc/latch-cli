@@ -137,11 +137,16 @@ async fn a_page_that_shows_the_secret_back_shows_the_agent_none_of_it(engine: &s
         .call("open", json!({"url": format!("{local}/id-echo.html")}))
         .await
         .unwrap();
-    let (filled, _) = h
-        .gated_fill(json!({"item": identity, "fields": [
-            ["ssn", [find(&page, "textbox", "Social Security number")]]]}))
-        .await;
-    let filled = filled.unwrap();
+    // The fill as the host answers an agent's: the page's preview of the
+    // number is in its answer, masked.
+    let filled = h
+        .call(
+            "fill",
+            json!({"item": identity, "fields": [
+                ["ssn", [find(&page, "textbox", "Social Security number")]]]}),
+        )
+        .await
+        .unwrap();
     println!("filled: {filled}");
     let lines = filled["lines"].to_string();
     assert!(
