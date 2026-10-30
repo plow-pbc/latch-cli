@@ -397,7 +397,7 @@ pub async fn run(state: &StateDir, action: AuditAction) -> Result<Value, Failure
             output,
             host,
         } => {
-            let (size, sha256) = match crate::remote::other_host(state, host).await? {
+            let (size, sha256, named) = match crate::remote::other_host(state, host).await? {
                 Some(host) => {
                     let request = crate::wire::Request {
                         op: "audit_shot".into(),
@@ -407,18 +407,21 @@ pub async fn run(state: &StateDir, action: AuditAction) -> Result<Value, Failure
                     let link = crate::dial::connect(state, &host).await?;
                     let got = crate::transfer::download(&link.connection, &request, &output).await;
                     link.close();
-                    let (start, _, sha256) = got?;
-                    (start["size"].clone(), sha256)
+                    let (start, done, sha256) = got.map_err(crate::dial::naming(&host))?;
+                    (start["size"].clone(), sha256, done["host"].clone())
                 }
                 None => {
                     let png = crate::browser::journal::audited(&state.path, &record, &shot)?;
                     crate::transfer::save(&output, &png).await?;
-                    (json!(png.len()), to_hex(&Sha256::digest(&png)))
+                    (json!(png.len()), to_hex(&Sha256::digest(&png)), Value::Null)
                 }
             };
-            Ok(
-                json!({"record": record, "shot": shot, "path": output, "size": size, "sha256": sha256}),
-            )
+            let mut saved = json!({"record": record, "shot": shot, "path": output, "size": size, "sha256": sha256});
+            // Another host's shot names it, as its other answers do.
+            if !named.is_null() {
+                saved["host"] = named;
+            }
+            Ok(saved)
         }
         AuditAction::Verify => {
             let text = read_locked(&path)?;
