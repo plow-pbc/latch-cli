@@ -6563,13 +6563,17 @@ fn logout_says_what_it_deletes_and_keeps_and_asks_first() {
         "owner-login",
     ];
     let nothing_secret = |text: &str| {
-        for value in secret_values {
-            assert!(!text.contains(value), "{value} shown: {text}");
+        for (index, value) in secret_values.iter().enumerate() {
+            // Named by its place in the list, so a failure never prints it.
+            assert!(!text.contains(value), "secret_values[{index}] was shown");
         }
     };
     let untouched = || {
         for (file, bytes) in &all_secrets {
-            assert_eq!(&fs::read(host.join(file)).unwrap(), bytes, "{file}");
+            assert!(
+                &fs::read(host.join(file)).unwrap() == bytes,
+                "{file} changed"
+            );
         }
         assert!(host.join("config.json").exists());
     };

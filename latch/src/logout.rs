@@ -230,7 +230,7 @@ impl Summary {
         } else {
             &Secret::LOGIN[..]
         } {
-            if secrets.read(secret)?.is_none() {
+            if !secrets.has(secret)? {
                 continue;
             }
             let at = path.join(secret.file());
@@ -245,7 +245,7 @@ impl Summary {
         }
         let leaves_plow = match &config {
             Some(config) => config.peer.kind == "device",
-            None => !exists && state.load_token()?.is_some(),
+            None => !exists && secrets.has(Secret::PlowToken)?,
         };
         let vault = exists.then(|| vault_count(path)).flatten();
         let audit_records = fs::read_to_string(path.join(crate::audit::FILE))
