@@ -285,7 +285,12 @@ holds the value: only spaces, dashes, dots, slashes, parentheses and plus
 signs may come between its characters, none lost, added or moved; a field
 that holds anything else ends the fill with `needs_owner`. latch then presses
 submit and waits until the values have left the page (clearing them itself
-if the page keeps them). A fill that stops part-way (a covered button, a
+if the page keeps them; the fill's answer then has a `next`. Kept fields
+don't prove the submit failed. For a login it says to check the page,
+else retry once on the other browser engine, as a site may drop a sign-in
+from one engine and take it from the other; for any other kind, a card's
+above all, never to submit again but to check whether it went through and
+ask the owner). A fill that stops part-way (a covered button, a
 refused field) is cleaned up the same way. If latch cannot confirm the
 values left the page, the session stays paused, through
 any later fill too, until a cleanup confirms the page holds none or the
