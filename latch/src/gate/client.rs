@@ -53,9 +53,10 @@ pub async fn run(state: &StateDir, args: RulesArgs) -> Result<Value, Failure> {
         | RulesCommand::Clear { ref scope, .. }
         | RulesCommand::Show { ref scope } => scope,
     };
+    // `--host default` read once: an edit's save goes where its show went.
     let target = Target {
         state,
-        host: scope.host.clone(),
+        host: hosts::pinned(state, scope.host.clone())?,
     };
     // The operation still calls the agent `from`, as hosts of every
     // version read it.

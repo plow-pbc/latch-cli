@@ -252,6 +252,15 @@ login.
 ever run a host. Otherwise your only host. With no hosts you get `no_host`,
 and with several and none named `host_required` (both exit 2).
 
+`--host default` (or `LATCH_HOST=default`) is the host `latch hosts default
+NAME` saved in this machine's state folder, its own or an agent's: a
+choice, not a permission, so it reaches no host the caller couldn't name.
+`latch hosts default` prints it and `--clear` forgets it; `latch status`
+shows it as `saved_default_host`. With none saved, `--host default` is
+`no_default_host` (exit 2), listing the hosts. A command without `--host`
+goes where it always did, and a host named `default` is reached only
+through the saved name.
+
 | Error | Exit | Meaning |
 |---|---|---|
 | `host_offline` | 3 | Plow doesn't list the host as online. Nothing was sent. |

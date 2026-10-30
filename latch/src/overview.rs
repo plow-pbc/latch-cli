@@ -100,7 +100,7 @@ pub fn run(state: &StateDir) -> Result<(), Failure> {
             }
         });
     }
-    let asked = std::env::var("LATCH_HOST").ok();
+    let named = crate::hosts::named(state, std::env::var("LATCH_HOST").ok().as_deref())?;
     let mut facts = Facts {
         login: config.as_ref().map(|config| Login {
             kind: config.peer.kind.clone(),
@@ -108,7 +108,8 @@ pub fn run(state: &StateDir) -> Result<(), Failure> {
         name: config.as_ref().map(|config| config.peer.name.clone()),
         here_default: config
             .as_ref()
-            .filter(|config| crate::hosts::this_machine_chosen(state, config, asked.as_deref()))
+            .filter(|_| !matches!(named, crate::hosts::Named::NoDefault))
+            .filter(|config| crate::hosts::this_machine_chosen(state, config, named.host()))
             .map(|config| config.peer.name.clone()),
         plugins: crate::plugins::list_saved(state)?["plugins"].take(),
         update: crate::update::status(&state.path),
@@ -598,7 +599,9 @@ impl Facts {
             .map(|host| term::one_line(&host.name))
             .collect();
         match directory.default_host_reason.as_deref() {
-            Some("host_required") => plain(format!("choose with --host: {}", names.join(", "))),
+            Some("host_required" | "no_default_host") => {
+                plain(format!("choose with --host: {}", names.join(", ")))
+            }
             Some("unknown_host") => toned(
                 format!(
                     "no matching host for LATCH_HOST={}",

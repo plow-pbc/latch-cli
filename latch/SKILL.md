@@ -35,6 +35,10 @@ as `latch status` lists it. Branch on
   the owner hasn't said which, ask, or use the one they named last in
   this chat, and pass it with `--host` rather than leave the choice to a
   default.
+- **A default host.** When the owner tells you which host to use from now
+  on, save it: `latch hosts default mbp`. Then pass `--host default`
+  (`latch hosts default` says which it is). It is your own choice, kept
+  in your state folder, and still say which host each answer came from.
 - Your login lives in a state folder: `--state-dir DIR`, else
   `$LATCH_STATE_DIR`, else `~/.latch`. Where `HOME` is not your home,
   set `LATCH_STATE_DIR` once rather than passing `--state-dir` each time.

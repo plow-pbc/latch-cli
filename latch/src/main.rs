@@ -79,7 +79,9 @@ use clap::{CommandFactory, FromArgMatches};
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use cli::{BrowserCommand, Cli, Command, DevicesAction, FileCommand, HandoffAction, HostArg};
+use cli::{
+    BrowserCommand, Cli, Command, DevicesAction, FileCommand, HandoffAction, HostArg, HostsCommand,
+};
 use failure::{Exit, Failure};
 use state::StateDir;
 use wire::Request;
@@ -264,7 +266,8 @@ async fn run(
         | Command::Vault(_)
         | Command::Rules(_)
         | Command::Agents(_)
-        | Command::Devices(_) => true,
+        | Command::Devices(_)
+        | Command::Hosts(HostsCommand::Default { name: Some(_), .. }) => true,
         _ => false,
     };
     if needs_login {
@@ -303,6 +306,9 @@ async fn run(
         }
         Command::Logout(args) => json(pretty, logout::run(&state, &args).await?),
         Command::Agents(args) => json(pretty, agents::run(&state, args).await?),
+        Command::Hosts(HostsCommand::Default { name, clear }) => {
+            json(pretty, hosts::default(&state, name, clear).await?)
+        }
         Command::Devices(args) => match args.action {
             None => json(pretty, devices::list(&state).await?),
             Some(DevicesAction::Remove { name, yes }) => {

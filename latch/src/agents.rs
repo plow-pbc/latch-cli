@@ -160,6 +160,8 @@ async fn rules_on(
             crate::gate::owner::run(&state.path, plow, &config.peer.name, "device", &show).await;
         let rules = done.response.into_result()?;
         let online = crate::status::local(state)?.this_machine.hosting.ready;
+        // Named as Plow lists it, not as asked (`default`).
+        let name = config.peer.name.clone();
         return Ok((HostShown { name, online }, rules));
     }
     let host = hosts::resolve(state, Some(name)).await?;
