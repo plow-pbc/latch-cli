@@ -499,7 +499,7 @@ pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         let temp = dir.join(name);
         let written = owner::create_new(&temp)
             .and_then(|mut file| file.write_all(bytes).and_then(|()| file.sync_all()))
-            .and_then(|()| fs::rename(&temp, path));
+            .and_then(|()| rename_retrying(&temp, path));
         if written.is_err() {
             let _ = fs::remove_file(&temp);
         }
@@ -515,6 +515,26 @@ pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         temp.as_file().sync_all()?;
         temp.persist(path).map_err(|err| err.error)?;
         fs::File::open(dir)?.sync_all()
+    }
+}
+
+/// `fs::rename`, tried again for a moment while Windows refuses it: a file
+/// being deleted stays in the way, as access denied, until the last handle
+/// on it closes (a reader's, or another writer's).
+#[cfg(windows)]
+fn rename_retrying(from: &Path, to: &Path) -> std::io::Result<()> {
+    let mut wait = std::time::Duration::from_millis(1);
+    loop {
+        match fs::rename(from, to) {
+            Err(err)
+                if err.kind() == std::io::ErrorKind::PermissionDenied
+                    && wait < std::time::Duration::from_millis(200) =>
+            {
+                std::thread::sleep(wait);
+                wait *= 2;
+            }
+            result => return result,
+        }
     }
 }
 
