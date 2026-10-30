@@ -42,9 +42,10 @@ use windows_sys::Win32::Foundation::{
     WAIT_ABANDONED, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Security::Authorization::{
+    ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
     ConvertStringSidToSidW, DENY_ACCESS, EXPLICIT_ACCESS_W, GRANT_ACCESS, GetSecurityInfo,
-    NO_MULTIPLE_TRUSTEE, SE_FILE_OBJECT, SetEntriesInAclW, SetNamedSecurityInfoW, TRUSTEE_IS_SID,
-    TRUSTEE_IS_UNKNOWN, TRUSTEE_W,
+    NO_MULTIPLE_TRUSTEE, SDDL_REVISION_1, SE_FILE_OBJECT, SetEntriesInAclW, SetNamedSecurityInfoW,
+    TRUSTEE_IS_SID, TRUSTEE_IS_UNKNOWN, TRUSTEE_W,
 };
 use windows_sys::Win32::Security::Isolation::{
     CreateAppContainerProfile, DeleteAppContainerProfile, DeriveAppContainerSidFromAppContainerName,
@@ -54,9 +55,10 @@ use windows_sys::Win32::Security::{
     DACL_SECURITY_INFORMATION, EqualSid, FreeSid, GetAce, GetAclInformation,
     GetSecurityDescriptorControl, GetTokenInformation, INHERITED_ACE, InitializeAcl,
     InitializeSecurityDescriptor, NO_INHERITANCE, PSECURITY_DESCRIPTOR, PSID,
-    SE_DACL_AUTO_INHERITED, SE_DACL_PROTECTED, SECURITY_CAPABILITIES, SECURITY_DESCRIPTOR,
-    SID_AND_ATTRIBUTES, SUB_CONTAINERS_AND_OBJECTS_INHERIT, SetKernelObjectSecurity,
-    SetSecurityDescriptorControl, SetSecurityDescriptorDacl, TOKEN_QUERY, TokenIsAppContainer,
+    SE_DACL_AUTO_INHERITED, SE_DACL_PROTECTED, SECURITY_ATTRIBUTES, SECURITY_CAPABILITIES,
+    SECURITY_DESCRIPTOR, SID_AND_ATTRIBUTES, SUB_CONTAINERS_AND_OBJECTS_INHERIT,
+    SetKernelObjectSecurity, SetSecurityDescriptorControl, SetSecurityDescriptorDacl, TOKEN_QUERY,
+    TOKEN_USER, TokenIsAppContainer, TokenUser,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     DELETE, FILE_FLAG_BACKUP_SEMANTICS, FILE_GENERIC_EXECUTE, FILE_GENERIC_READ,
@@ -71,6 +73,11 @@ use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION,
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
     JobObjectExtendedLimitInformation, SetInformationJobObject, TerminateJobObject,
+};
+use windows_sys::Win32::System::StationsAndDesktops::{
+    CloseDesktop, CloseWindowStation, CreateDesktopW, CreateWindowStationW,
+    GetProcessWindowStation, GetUserObjectInformationW, HDESK, HWINSTA, SetProcessWindowStation,
+    UOI_FLAGS, USEROBJECTFLAGS,
 };
 use windows_sys::Win32::System::SystemServices::{
     ACCESS_ALLOWED_ACE_TYPE, ACCESS_DENIED_ACE_TYPE, MAXDWORD, SE_GROUP_ENABLED,
@@ -675,6 +682,11 @@ fn run_inside(sid: &Sid, policy: &Policy) -> Result<u32, String> {
     // SAFETY: a zeroed STARTUPINFOEXW is valid once its size is set.
     let mut startup: STARTUPINFOEXW = unsafe { std::mem::zeroed() };
     startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
+    // Outside the interactive window station, a desk of this call's own.
+    let desk = Desk::for_container(sid)?;
+    if let Some(desk) = &desk {
+        startup.StartupInfo.lpDesktop = desk.name.as_ptr().cast_mut();
+    }
     startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
     startup.StartupInfo.hStdInput = stdio[0];
     startup.StartupInfo.hStdOutput = stdio[1];
@@ -751,10 +763,188 @@ fn run_inside(sid: &Sid, policy: &Policy) -> Result<u32, String> {
     Ok(code)
 }
 
+/// A window station and a desktop of a worker's own, for a launcher outside
+/// the interactive window station (a host started over ssh, or as a
+/// service). Windows starts no program without a window station and desktop
+/// it may open, and an AppContainer may open the interactive ones, whose
+/// access lists admit every app container, but not a service's: user32
+/// fails as it starts (0xC0000142). These admit the user and this call's
+/// container alone (an AppContainer needs both), and go with their handles
+/// when the worker has ended.
+struct Desk {
+    station: HWINSTA,
+    desktop: HDESK,
+    /// `station\desktop`, NUL-terminated, as `lpDesktop` names it.
+    name: Vec<u16>,
+}
+
+impl Desk {
+    /// None on the interactive window station, which the worker may open.
+    fn for_container(sid: &Sid) -> Result<Option<Desk>, String> {
+        let failed = |what: &str| format!("{what}: {}", std::io::Error::last_os_error());
+        // SAFETY: this process's window station; not ours to close.
+        let current = unsafe { GetProcessWindowStation() };
+        let mut flags = USEROBJECTFLAGS::default();
+        // SAFETY: `flags` is writable for its size.
+        let read = unsafe {
+            GetUserObjectInformationW(
+                current,
+                UOI_FLAGS,
+                (&mut flags as *mut USEROBJECTFLAGS).cast(),
+                size_of::<USEROBJECTFLAGS>() as u32,
+                null_mut(),
+            )
+        };
+        // `WSF_VISIBLE`: the interactive window station.
+        if read != 0 && flags.dwFlags & 1 != 0 {
+            return Ok(None);
+        }
+        let access = format!("D:P(A;;GA;;;{})(A;;GA;;;{})", sid.text()?, user_sid()?);
+        let mut descriptor: PSECURITY_DESCRIPTOR = null_mut();
+        // SAFETY: a NUL-terminated SDDL string; the descriptor is ours to free.
+        if unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                wide(OsStr::new(&access)).as_ptr(),
+                SDDL_REVISION_1,
+                &mut descriptor,
+                null_mut(),
+            )
+        } == 0
+        {
+            return Err(failed("cannot describe the worker's window station"));
+        }
+        let attributes = SECURITY_ATTRIBUTES {
+            nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: descriptor,
+            bInheritHandle: 0,
+        };
+        let station_name = format!("latch.worker.{:016x}", rand::random::<u64>());
+        // `CWF_CREATE_ONLY`; every window-station-specific right (0x37F).
+        // SAFETY: a NUL-terminated name; `attributes` is live for the call.
+        let station = unsafe {
+            CreateWindowStationW(
+                wide(OsStr::new(&station_name)).as_ptr(),
+                1,
+                0x37F,
+                &attributes,
+            )
+        };
+        let made = if station.is_null() {
+            Err(failed("cannot make the worker's window station"))
+        } else {
+            // The desktop is made in the process's window station: this
+            // one, for the moment.
+            // SAFETY: our new window station, then this process's own back.
+            unsafe {
+                let desktop = match SetProcessWindowStation(station) {
+                    0 => null_mut(),
+                    // Every desktop-specific right (0x1FF).
+                    _ => CreateDesktopW(
+                        wide(OsStr::new("worker")).as_ptr(),
+                        null(),
+                        null(),
+                        0,
+                        0x1FF,
+                        &attributes,
+                    ),
+                };
+                // Read before switching back, which may set another error.
+                let failure = failed("cannot make the worker's desktop");
+                SetProcessWindowStation(current);
+                match (!desktop.is_null()).then_some(desktop) {
+                    None => {
+                        CloseWindowStation(station);
+                        Err(failure)
+                    }
+                    Some(desktop) => Ok(Desk {
+                        station,
+                        desktop,
+                        name: wide(OsStr::new(&format!("{station_name}\\worker"))),
+                    }),
+                }
+            }
+        };
+        // SAFETY: the descriptor converted above, freed once.
+        unsafe { LocalFree(descriptor) };
+        made.map(Some)
+    }
+}
+
+impl Drop for Desk {
+    fn drop(&mut self) {
+        // SAFETY: our own handles, closed once.
+        unsafe {
+            CloseDesktop(self.desktop);
+            CloseWindowStation(self.station);
+        }
+    }
+}
+
+/// This process's user, as an SDDL SID string.
+fn user_sid() -> Result<String, String> {
+    let mut token: HANDLE = null_mut();
+    // SAFETY: a query-only token of this process, closed below.
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+        return Err(format!(
+            "cannot read this user: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let mut buffer = vec![0u8; 256];
+    let mut size = 0u32;
+    // SAFETY: `buffer` is writable for its length; the token is ours.
+    let read = unsafe {
+        GetTokenInformation(
+            token,
+            TokenUser,
+            buffer.as_mut_ptr().cast(),
+            buffer.len() as u32,
+            &mut size,
+        )
+    };
+    // SAFETY: the token is ours and closed once.
+    unsafe { CloseHandle(token) };
+    if read == 0 {
+        return Err(format!(
+            "cannot read this user: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    // SAFETY: GetTokenInformation filled a TOKEN_USER at the buffer's start.
+    let user = unsafe { (*buffer.as_ptr().cast::<TOKEN_USER>()).User.Sid };
+    sid_text(user)
+}
+
+/// `sid` as an SDDL SID string.
+fn sid_text(sid: PSID) -> Result<String, String> {
+    let mut text: *mut u16 = null_mut();
+    // SAFETY: a valid SID; `text` is LocalAlloc'd by Windows, freed below.
+    if unsafe { ConvertSidToStringSidW(sid, &mut text) } == 0 {
+        return Err(format!(
+            "cannot name a SID: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    // SAFETY: a NUL-terminated string Windows made.
+    let length = (0..)
+        .take_while(|&at| unsafe { *text.add(at) } != 0)
+        .count();
+    // SAFETY: `length` u16s at `text`, read before it is freed.
+    let named = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(text, length) });
+    // SAFETY: Windows' allocation, freed once.
+    unsafe { LocalFree(text.cast()) };
+    Ok(named)
+}
+
 /// A SID Windows allocated, freed when dropped.
 struct Sid(PSID, fn(PSID));
 
 impl Sid {
+    /// As an SDDL SID string.
+    fn text(&self) -> Result<String, String> {
+        sid_text(self.0)
+    }
+
     /// The SID of container profile `name`, made now.
     fn container(name: &str) -> Result<Sid, String> {
         let name = wide(OsStr::new(name));
