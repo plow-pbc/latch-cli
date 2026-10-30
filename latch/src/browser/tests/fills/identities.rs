@@ -60,6 +60,20 @@ async fn an_identity_secret_fills_like_a_card(engine: &str) {
         filled.unwrap()
     };
 
+    // A fill that would press the form's button is refused: submitting is
+    // the agent's own click.
+    let submit = find(&page, "button", "Submit application");
+    let (pressed, _) = h
+        .gated_fill(json!({"item": identity.item, "fields": ssn, "press": submit}))
+        .await;
+    let pressed = pressed.unwrap_err();
+    assert_eq!(pressed.code, "bad_arguments");
+    assert!(
+        pressed.message.contains("an identity fill presses nothing"),
+        "{}",
+        pressed.message
+    );
+
     // Filled with no press and no confirmation: the number waits in its
     // field for the agent's own press.
     let filled = fill(&mut h).await;
@@ -90,9 +104,7 @@ async fn an_identity_secret_fills_like_a_card(engine: &str) {
 
     // Filled again, the agent's own press sends it.
     fill(&mut h).await;
-    h.click(&find(&page, "button", "Submit application"))
-        .await
-        .unwrap();
+    h.click(&submit).await.unwrap();
     h.call("wait", json!({"text": "application:", "within": 5}))
         .await
         .unwrap();

@@ -15,8 +15,8 @@
 //!   field alone), a card across the page, an identity per form. None on a
 //!   registration-like form, none for `otp`, none where the map would be
 //!   ambiguous or incomplete. The press button is the form's single
-//!   submit button, or none; a card's has none, its Pay being the
-//!   agent's own click.
+//!   submit button, or none; a card's and an identity's have none, the
+//!   page's button being the agent's own click.
 //! - **Checks:** what the page's own markup contradicts is refused; a weak
 //!   mismatch is let through and flagged.
 
@@ -389,14 +389,8 @@ pub fn suggest(item: &Meta, snapshot: &str, controls: &[Control]) -> Vec<Suggest
                 if let Some((fields, evidence)) =
                     token_map(item, controls, &IDENTITY_TOKENS, Some(&group))
                 {
-                    made.push(build(
-                        item,
-                        snapshot,
-                        controls,
-                        fields,
-                        evidence,
-                        press_of(controls, &[group]),
-                    ));
+                    // The agent submits the form itself, as a click of its own.
+                    made.push(build(item, snapshot, controls, fields, evidence, None));
                 }
             }
         }
@@ -956,6 +950,11 @@ mod tests {
                 .iter()
                 .any(|(label, _)| secret_field(&card, label))
         );
+        // Nor does an identity's, its form's submit button notwithstanding.
+        let identity = meta("identity", &[("first name", false)], false);
+        let form = [input("e1", "text", "given-name"), submit("e2")];
+        let [made] = suggest(&identity, "o1", &form).try_into().unwrap();
+        assert_eq!(made.press, None);
 
         let two = [
             input("e1", "email", "username"),

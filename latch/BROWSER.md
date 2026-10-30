@@ -548,9 +548,8 @@ only while the element and the reviewed lines are unchanged; otherwise
 `confirm_stale` with a fresh page (a total that changes from $10.00 to
 $100.00 is refused, even with the same ref, URL and button name). It needs
 no new risk decision, so it still works while the model is down. A
-vault fill needs no confirmation: a card fill, or an identity's with no
-press, presses nothing, and the agent presses the page's button (Pay,
-Submit) itself, a click judged like any other ([VAULT.md](VAULT.md)). A step
+vault fill needs no confirmation: a card or identity fill presses
+nothing, and the agent presses the page's button (Pay, Submit) itself, a click judged like any other ([VAULT.md](VAULT.md)). A step
 whose `new text` check already holds stops before the confirmation is
 spent.
 

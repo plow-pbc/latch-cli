@@ -7,8 +7,8 @@
 //!    site rule's question (step 4). A mapping that includes a login's
 //!    secret (a password, a code) needs a press button: the secret leaves
 //!    the page before the agent is back. A card or an identity is filled
-//!    like any other field, judged as any fill is: the agent presses the
-//!    page's button (Pay, Submit) itself, and until the page takes the
+//!    like any other field, judged as any fill is, and presses nothing:
+//!    the agent presses the page's button (Pay, Submit) itself, and until the page takes the
 //!    values, latch keeps them out of what the agent can read (below).
 //! 2. **Pause and prepare.** The browser is held: every other call in the
 //!    session gets `session_paused`. The worker
@@ -492,10 +492,15 @@ impl Plan {
             ));
         }
         let press = args["press"].as_str().map(str::to_string);
-        if meta.kind == "card" && press.is_some() {
-            return Err(usage(
-                "a card fill presses nothing: fill it without --press, check the page, then press Pay yourself with `do 'click eN'`",
-            ));
+        if matches!(meta.kind, "card" | "identity") && press.is_some() {
+            let fill = if meta.kind == "card" {
+                "a card fill"
+            } else {
+                "an identity fill"
+            };
+            return Err(usage(&format!(
+                "{fill} presses nothing: fill it without --press, check the page, then press its button (Pay, Submit) yourself with `do 'click eN'`"
+            )));
         }
         // A card's or an identity's values stay on the page for the
         // agent's own press of the page's button; a login's go with its.

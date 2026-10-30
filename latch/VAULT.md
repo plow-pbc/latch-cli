@@ -213,11 +213,10 @@ fields), `--field number=e4,e5,e6,e7` for a value split across boxes; or
 `--suggested S`, a mapping latch suggested. Dates and expiries are
 reshaped to the field's own format. A mapping that includes a login's
 secret (a password, a code) needs `--press eN`, the button that submits
-it (given, or in the suggestion). A card takes none (`--press` is
-refused, `bad_arguments`): it stays in the page's fields until the agent
-presses Pay itself, an ordinary judged click (below). An identity's or a
-note's fields, its secrets (an identity's numbers) included, may go
-without a press the same way, or with one. latch never maps or finds a
+it (given, or in the suggestion). A card or an identity takes none
+(`--press` is refused, `bad_arguments`): it stays in the page's fields
+until the agent presses Pay or Submit itself, an ordinary judged click
+(below). latch never maps or finds a
 button on its own, and picks an item only as above: the one login saved
 for the page's site.
 
@@ -233,7 +232,8 @@ Suggestions come only from `autocomplete` tokens, input types and forms:
 a login's password field and the single text or email field before it in
 its form, a lone field marked `username`, cards by their `cc-*` tokens,
 identities by theirs; the press button is the form's single submit button
-(a card's suggestion has none: the agent presses Pay itself).
+(a card's or an identity's suggestion has none: the agent presses the
+page's button itself).
 None is made on a registration form (`new-password`, or two password
 fields), for a code field (`one-time-code` can't tell an authenticator
 code from a texted one), or where the map would be ambiguous. `--suggested
@@ -311,8 +311,9 @@ it could read a number the page repeats.
 A card fill presses nothing: the card stays in the page's fields, and the
 agent checks the page and presses Pay itself, an ordinary click with its
 own risk decision, then reads the page that follows to see what happened.
-An identity's secret filled with no press stays the same way, for the
-agent's own press of the page's button, and all below holds for it too.
+An identity fill presses nothing either: its values stay the same way,
+for the agent's own press of the page's button, and all below holds for
+it too.
 While the card is in the fields, a screenshot shows exactly the fields
 latch filled blank (hidden whole for the capture, and the picture dropped
 if the page undid that) (in every frame of the page, a payment provider's
