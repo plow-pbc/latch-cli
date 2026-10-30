@@ -2961,6 +2961,17 @@ fn a_login_where_one_is_saved_changes_nothing_unless_asked_again() {
     assert_eq!(again.get("already_logged_in"), None, "{again}");
     assert_eq!(again["peer"]["key"], first["peer"]["key"]);
     assert!(plow.seen().len() > asked, "--again registers with Plow");
+
+    // Naming a Plow asks for one: the login goes ahead there.
+    let other = LivePlow::start();
+    let moved = latch(&state, &["login", "--api-url", other.url.as_str()], &env);
+    assert_eq!(moved.status.code(), Some(0), "{moved:?}");
+    let moved: Value = serde_json::from_slice(&moved.stdout).unwrap();
+    assert_eq!(moved.get("already_logged_in"), None, "{moved}");
+    assert!(!other.seen().is_empty(), "the login went to the Plow named");
+    let config: Value =
+        serde_json::from_slice(&fs::read(state.join("config.json")).unwrap()).unwrap();
+    assert_eq!(config["api_url"], other.url.as_str());
 }
 
 #[test]

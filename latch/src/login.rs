@@ -59,9 +59,13 @@ enum Source {
 pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failure> {
     let saved = state.load_config()?;
     // A plain `latch login` where one is saved changes nothing: an option
-    // asks for a change (a token, a name, by text), and --again for a login
-    // anew.
-    let plain = args.token_file.is_none() && args.name.is_none() && !args.replace && !args.events;
+    // asks for a change (a token, a name, a Plow, by text), and --again for
+    // a login anew.
+    let plain = args.token_file.is_none()
+        && args.name.is_none()
+        && args.api_url.is_none()
+        && !args.replace
+        && !args.events;
     if let Some(config) = &saved
         && plain
         && !args.again
