@@ -2,5 +2,10 @@
   "identifier": "default",
   "description": "The window follows latch's streams through events.",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": [
+    "core:default",
+    "core:window:allow-set-size",
+    "core:window:allow-set-min-size",
+    "core:window:allow-center"
+  ]
 }

@@ -18,3 +18,11 @@ tauri = { version = "2", features = [] }
 serde_json = "1"
 # The login QR code, as latch draws it in a terminal, here as SVG.
 qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }
+# A file latch wrote (a screenshot, a contact card), shown as a data URL.
+base64 = "0.22"
+# The native Open dialog, for a vault import's file (what Tauri's own dialog
+# plugin uses).
+rfd = "0.15"
+# WebView2's own settings (autofill off), at the versions Tauri's wry uses.
+webview2-com = "0.39.1"
+windows-core = "0.62.2"

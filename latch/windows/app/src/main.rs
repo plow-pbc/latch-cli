@@ -34,6 +34,11 @@ fn latch() -> PathBuf {
 fn start(args: &[String]) -> Result<Child, Value> {
     Command::new(latch())
         .args(args)
+        // The window speaks for this PC's owner: a host or a chat named in
+        // the person's environment, for their own latch calls, never
+        // redirects it. A command for another host names it with --host.
+        .env_remove("LATCH_HOST")
+        .env_remove("LATCH_PLOW_CHAT")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -55,10 +60,17 @@ fn last_json(text: &str) -> Option<Value> {
         .find_map(|line| serde_json::from_str(line).ok())
 }
 
-/// Runs one latch command, with `input` on its stdin: its answer, or its
-/// failure.
+/// Runs one latch command, with `input` on its stdin: its answer (with
+/// `lines`, every JSON line it printed, as `audit`'s pages have many; with
+/// `text`, what it printed as it printed it, as `--pretty`'s indented
+/// JSON), or its failure.
 #[tauri::command]
-async fn run(args: Vec<String>, input: Option<String>) -> Result<Value, Value> {
+async fn run(
+    args: Vec<String>,
+    input: Option<String>,
+    lines: Option<bool>,
+    text: Option<bool>,
+) -> Result<Value, Value> {
     tauri::async_runtime::spawn_blocking(move || {
         let mut child = start(&args)?;
         let mut stdin = child.stdin.take().expect("piped stdin");
@@ -72,6 +84,13 @@ async fn run(args: Vec<String>, input: Option<String>) -> Result<Value, Value> {
             .wait_with_output()
             .map_err(|err| failure("io", &err.to_string()))?;
         let stdout = String::from_utf8_lossy(&output.stdout);
+        if output.status.success() && text == Some(true) {
+            return Ok(Value::String(stdout.into_owned()));
+        }
+        if output.status.success() && lines == Some(true) {
+            let all = stdout.lines().filter_map(|line| serde_json::from_str(line).ok());
+            return Ok(Value::Array(all.collect()));
+        }
         if output.status.success() {
             return Ok(last_json(&stdout).unwrap_or(Value::Null));
         }
@@ -143,10 +162,174 @@ fn qr(text: String) -> Result<String, Value> {
         .build())
 }
 
+/// Runs a latch command that writes a file, its `{file}` argument a path in
+/// the temp folder, and answers with that file as a data URL (`audit shot`'s
+/// screenshot, `agents card`'s contact card); the file goes once read.
+#[tauri::command]
+async fn run_file(args: Vec<String>, kind: String) -> Result<String, Value> {
+    use base64::Engine;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_nanos());
+    let path = std::env::temp_dir().join(format!("latch-window-{}-{stamp}.{kind}", std::process::id()));
+    let file = path.to_string_lossy().into_owned();
+    let args = args
+        .into_iter()
+        .map(|arg| if arg == "{file}" { file.clone() } else { arg })
+        .collect();
+    let ran = run(args, None, None, None).await;
+    let read = std::fs::read(&path);
+    let _ = std::fs::remove_file(&path);
+    ran?;
+    let bytes = read.map_err(|err| failure("io", &err.to_string()))?;
+    let mime = match kind.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "vcf" => "text/vcard",
+        _ => "application/octet-stream",
+    };
+    Ok(format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes)))
+}
+
+/// Opens a web link in the default browser (a sign-in page): http(s) only.
+#[tauri::command]
+fn open_url(url: String) -> Result<(), Value> {
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return Err(failure("bad_url", &url));
+    }
+    Command::new("rundll32")
+        .args(["url.dll,FileProtocolHandler", &url])
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()
+        .map(|_| ())
+        .map_err(|err| failure("io", &err.to_string()))
+}
+
+/// The native Open dialog: the path picked, or nothing if it was cancelled.
+#[tauri::command]
+async fn pick_file(window: tauri::Window, title: String, name: String, extensions: Vec<String>) -> Option<String> {
+    rfd::AsyncFileDialog::new()
+        .set_title(title)
+        .add_filter(name, &extensions)
+        .set_parent(&window)
+        .pick_file()
+        .await
+        .map(|file| file.path().display().to_string())
+}
+
+/// Where Windows keeps this user's programs to start at logon, and this
+/// app's entry there: the Mac app's "Start when you log in". At logon the
+/// app starts latch's host (`--at-login`) and opens no window.
+const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+const RUN_NAME: &str = "Plow Latch";
+
+fn reg(args: &[&str]) -> std::io::Result<std::process::Output> {
+    Command::new("reg").args(args).creation_flags(CREATE_NO_WINDOW).output()
+}
+
+/// Whether Latch starts when this user logs in.
+#[tauri::command]
+fn login_item() -> bool {
+    reg(&["query", RUN_KEY, "/v", RUN_NAME]).is_ok_and(|out| out.status.success())
+}
+
+/// Starts Latch when this user logs in, or no longer.
+#[tauri::command]
+fn set_login_item(on: bool) -> Result<(), Value> {
+    let out = if on {
+        let exe = std::env::current_exe().map_err(|err| failure("io", &err.to_string()))?;
+        let command = format!("\"{}\" --at-login", exe.display());
+        reg(&["add", RUN_KEY, "/v", RUN_NAME, "/t", "REG_SZ", "/d", &command, "/f"])
+    } else {
+        reg(&["delete", RUN_KEY, "/v", RUN_NAME, "/f"])
+    }
+    .map_err(|err| failure("io", &err.to_string()))?;
+    if out.status.success() || (!on && !login_item()) {
+        return Ok(());
+    }
+    Err(failure("login_item", String::from_utf8_lossy(&out.stderr).trim()))
+}
+
+/// Whether the window shows the Mac app's snapshot fixtures instead of
+/// asking latch: a debug build started with `LATCH_APP_FAKE`, for stills
+/// beside the Mac's (ui/fake.js).
+#[tauri::command]
+fn fake_mode() -> bool {
+    cfg!(debug_assertions) && std::env::var_os("LATCH_APP_FAKE").is_some()
+}
+
+/// WebView2 as an app's window, not a browser's: it keeps no form data and
+/// no passwords of its own (a vault item's fields are typed here, and
+/// general autofill is on by default), and the browser's own keys (F5 and
+/// Ctrl+R reload, Ctrl+P prints, Ctrl+F finds) are off; the pages' own
+/// shortcuts still work.
+fn as_an_app(webview: &tauri::webview::PlatformWebview) -> windows_core::Result<()> {
+    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings4;
+    use windows_core::Interface;
+    // SAFETY: COM calls on the window's own live controller, on its thread.
+    unsafe {
+        let settings: ICoreWebView2Settings4 = webview.controller().CoreWebView2()?.Settings()?.cast()?;
+        settings.SetIsGeneralAutofillEnabled(false.into())?;
+        settings.SetIsPasswordAutosaveEnabled(false.into())?;
+        settings.SetAreBrowserAcceleratorKeysEnabled(false.into())?;
+    }
+    Ok(())
+}
+
+/// At logon (the Run entry above): latch's host started as setup starts it,
+/// with the host step `setup --status` gives (`serve -d --again` once a host
+/// has run here), so one that ran with flags (`--deny-exec`…) keeps them; a
+/// host already running is left alone. No window opens.
+fn start_at_login() {
+    let Ok(child) = start(&["setup".into(), "--status".into()]) else { return };
+    let Ok(output) = child.wait_with_output() else { return };
+    let status = last_json(&String::from_utf8_lossy(&output.stdout));
+    let host = status
+        .as_ref()
+        .and_then(|status| status["steps"].as_array())
+        .and_then(|steps| steps.iter().find(|step| step["step"] == "host" && step["state"] == "needed"));
+    let Some(args) = host.and_then(|step| step["args"].as_array()) else { return };
+    let args: Vec<String> = args.iter().filter_map(|arg| arg.as_str().map(String::from)).collect();
+    if let Ok(mut child) = start(&args) {
+        drop(child.stdin.take());
+        let _ = child.wait();
+    }
+}
+
 fn main() {
+    if std::env::args().any(|arg| arg == "--at-login") {
+        return start_at_login();
+    }
     tauri::Builder::default()
         .manage(Streams::default())
-        .invoke_handler(tauri::generate_handler![run, stream, stop, qr])
+        .setup(|app| {
+            // The window is made here, not from the config alone: a debug
+            // build started with LATCH_APP_DEVTOOLS opens WebView2's
+            // DevTools protocol on loopback, for driving the window in
+            // tests (WebView2 ignores its environment variable under Tauri).
+            let config = app.config().app.windows.first().cloned().expect("the window's config");
+            let mut made = tauri::WebviewWindowBuilder::from_config(app, &config)?;
+            if cfg!(debug_assertions) && std::env::var_os("LATCH_APP_DEVTOOLS").is_some() {
+                made = made.additional_browser_args(
+                    "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection \
+                     --remote-debugging-port=9222 --remote-debugging-address=127.0.0.1",
+                );
+            }
+            made.build()?;
+            if let Some(window) = app.get_webview_window("main") {
+                window.with_webview(|webview| {
+                    let _ = as_an_app(&webview);
+                })?;
+                // Fake mode only: `LATCH_APP_STILL` is the address's query
+                // (`place=vault&host=pi-kitchen`), for stills beside the Mac's.
+                if let (true, Ok(still)) = (fake_mode(), std::env::var("LATCH_APP_STILL")) {
+                    let query = serde_json::to_string(&still).unwrap_or_default();
+                    window.eval(&format!("if (!location.search) location.search = {query}"))?;
+                }
+            }
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![run, run_file, pick_file, open_url, stream, stop, qr, fake_mode, login_item, set_login_item])
         .build(tauri::generate_context!())
         .expect("the window builds")
         .run(|app, event| {
