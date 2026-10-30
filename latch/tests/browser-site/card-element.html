@@ -1,0 +1,42 @@
+<!doctype html><title>latch hosted card field</title>
+<!-- One of card-elements.html's provider fields (?field=number, expiry or
+     cvc). Like a provider's, it keeps what was typed as it is typed, and
+     the number's frame sends all three from there, to the top window. -->
+<style>body { margin: 0 } input { width: 100%; box-sizing: border-box }</style>
+<input id="field">
+<script>
+  const field = new URLSearchParams(location.search).get('field');
+  const input = document.getElementById('field');
+  const [token, label, hint] = {
+    number: ['cc-number', 'Card number', '1234 1234 1234 1234'],
+    expiry: ['cc-exp', 'Expiry', 'MM / YY'],
+    cvc: ['cc-csc', 'CVC', 'CVC'],
+  }[field];
+  input.setAttribute('autocomplete', token);
+  input.setAttribute('aria-label', label);
+  input.placeholder = hint;
+  window.held = '';
+  input.addEventListener('input', () => { window.held = input.value; });
+  window.addEventListener('message', (event) => {
+    if (field !== 'number' || event.data?.pay === undefined) return;
+    const form = document.createElement('form');
+    form.method = 'post';
+    form.action = 'pay';
+    form.target = '_top';
+    const sent = {
+      'cc-number': window.held,
+      'cc-exp': parent.frames.expiry.held,
+      'cc-csc': parent.frames.cvc.held,
+      'cc-name': event.data.pay,
+    };
+    for (const [name, value] of Object.entries(sent)) {
+      const hidden = document.createElement('input');
+      hidden.type = 'hidden';
+      hidden.name = name;
+      hidden.value = value;
+      form.append(hidden);
+    }
+    document.body.append(form);
+    form.submit();
+  });
+</script>
