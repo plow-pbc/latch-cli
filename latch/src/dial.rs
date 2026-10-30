@@ -146,10 +146,24 @@ fn offline(host: &Peer) -> Failure {
     named(Failure::new(code::host_offline, message), host)
 }
 
-/// A failure to reach `host`, naming it in `host` as its answers do.
+/// A failure of a call to `host`, naming it in `host` as its answers do,
+/// unless it names one already.
 fn named(mut failure: Failure, host: &Peer) -> Failure {
-    failure.details = serde_json::json!({"host": host.name});
+    if failure.details.is_null() {
+        failure.details = serde_json::json!({});
+    }
+    if let Some(details) = failure.details.as_object_mut() {
+        details
+            .entry("host")
+            .or_insert_with(|| serde_json::json!(host.name));
+    }
     failure
+}
+
+/// Names `host` in each failure of a call to it: a dropped connection or
+/// no answer in time, as well as what the host itself said.
+pub fn naming(host: &Peer) -> impl Fn(Failure) -> Failure + '_ {
+    move |failure| named(failure, host)
 }
 
 /// Why dialing `host` failed: it speaks another protocol, or it could not
@@ -394,7 +408,7 @@ pub async fn call(
     let link = connect(state, host).await?;
     let result = one_exchange(&link.connection, request, answer_within).await;
     link.close();
-    result
+    result.map_err(naming(host))
 }
 
 async fn one_exchange(
@@ -541,6 +555,31 @@ mod tests {
             failure.message
         );
         assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn a_failed_call_names_its_host_unless_the_host_named_itself() {
+        let host = Peer {
+            key: "c".repeat(64),
+            kind: "device".into(),
+            name: "mac".into(),
+            relay_url: None,
+            last_seen_at: None,
+            online: Some(true),
+            this_machine: false,
+        };
+        let dropped = Failure::new(code::outcome_unknown, "dropped".into());
+        let timed_out = Failure::new(code::no_answer, "no answer".into());
+        for failure in [dropped, timed_out] {
+            assert_eq!(
+                naming(&host)(failure).details,
+                serde_json::json!({"host": "mac"})
+            );
+        }
+        let mut answered = Failure::new(code::not_found, "gone".into());
+        answered.details = serde_json::json!({"host": "studio", "path": "/x"});
+        let kept = naming(&host)(answered).details;
+        assert_eq!(kept, serde_json::json!({"host": "studio", "path": "/x"}));
     }
 
     /// A state folder with a key, and a host at `key` behind `relay`.

@@ -4819,18 +4819,27 @@ fn every_answer_from_a_host_names_the_host() {
     assert_eq!(here["host"], "studio");
     let status = run(&owners.laptop, &["status", "--host", "studio"]);
     assert_eq!(status["host"], "studio");
+    // A transfer's result is put together here, from the host's answers.
+    let (note, got) = (
+        owners.dir.path().join("note.txt"),
+        owners.dir.path().join("got"),
+    );
+    fs::write(&note, "hi").unwrap();
+    let (note, got) = (note.to_str().unwrap(), got.to_str().unwrap());
+    let put = run(
+        &owners.laptop,
+        &["file", "put", "--host", "studio", note, "~/note.txt"],
+    );
+    assert_eq!(put["host"], "studio");
+    let fetched = run(
+        &owners.laptop,
+        &["file", "get", "--host", "studio", "~/note.txt", got],
+    );
+    assert_eq!(fetched["host"], "studio");
 
-    let got = owners.dir.path().join("got");
     let missing = latch(
         &owners.laptop,
-        &[
-            "file",
-            "get",
-            "--host",
-            "studio",
-            "/no/such/file",
-            got.to_str().unwrap(),
-        ],
+        &["file", "get", "--host", "studio", "/no/such/file", got],
         &[],
     );
     let error = one_error_line(
@@ -5205,6 +5214,8 @@ fn a_starting_host_waits_for_a_direct_call_and_a_direct_follow_makes_way() {
     let error = &one_error_line(&stderr, Some(3))["error"];
     assert_eq!(ended.code(), Some(3));
     assert_eq!(error["code"], "host_unreachable", "{error}");
+    // A call cut off names its host, as the host's own answers do.
+    assert_eq!(error["host"], "host", "{error}");
     assert_eq!(
         error["next"],
         "run this again: it then goes through that host"

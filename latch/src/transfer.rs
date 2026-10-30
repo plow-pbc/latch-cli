@@ -38,7 +38,7 @@ pub async fn get(
     let link = dial::connect(state, host).await?;
     let result = receive(&link.connection, chat, remote_path, &local).await;
     link.close();
-    result
+    result.map_err(dial::naming(host))
 }
 
 async fn receive(
@@ -59,6 +59,7 @@ async fn receive(
         "size": start["size"],
         "sha256": sha256,
         "audit_id": done["audit_id"],
+        "host": done["host"],
     }))
 }
 
@@ -101,7 +102,7 @@ pub async fn put(
     let link = dial::connect(state, host).await?;
     let result = send(&link.connection, chat, &mut file, args).await;
     link.close();
-    let mut result = result?;
+    let mut result = result.map_err(dial::naming(host))?;
     result["local_path"] = json!(local);
     Ok(result)
 }
@@ -132,6 +133,7 @@ async fn send(
         "size": size,
         "sha256": sha256,
         "audit_id": done["audit_id"],
+        "host": done["host"],
     }))
 }
 
