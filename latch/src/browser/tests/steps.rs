@@ -1152,13 +1152,16 @@ async fn waiting_for_the_page_counts_as_settle_time(engine: &str) {
     let page = h.open(&format!("{site}/order.html")).await;
     let soon = find(&page, "button", "Reprice in a moment");
 
+    // The total changes two seconds after the click, however long the click
+    // itself takes to come back: the wait is met no sooner than that.
+    let clicking = std::time::Instant::now();
     h.act(ActAction::Click, &[&soon], None).await.unwrap();
     let waiting = std::time::Instant::now();
     let (waited, took) = host::timed(h.call("wait", json!({"text": "$100.00", "within": 5}))).await;
     let waited_ms = waiting.elapsed().as_millis() as u64;
     println!("wait: {waited} in {waited_ms} ms: {took:?}");
     assert_eq!(waited["met"], true);
-    assert!(waited_ms > 1000, "{waited_ms}");
+    assert!(clicking.elapsed().as_millis() >= 2000, "{:?}", clicking.elapsed());
     let settled = took.settle_ms.unwrap_or_default();
     assert!(settled + 300 >= waited_ms, "{settled} of {waited_ms}");
 
