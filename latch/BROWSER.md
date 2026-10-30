@@ -305,7 +305,8 @@ away, is `type_failed`.
 
 `eval` runs the script's expression in the page's main frame, in the
 page's own world (a promise is awaited), and answers its JSON value (at
-most 1 MiB). Uploads and downloads move as files with matching sha256 on
+most 1 MiB); a session that filled a card runs none
+([VAULT.md](VAULT.md)). Uploads and downloads move as files with matching sha256 on
 both sides; a download is a handle (`d1`) until `download get`, which waits
 a little for one still in progress and never hands over an incomplete one.
 An engine without a command's optional feature (`eval`, `upload`,
@@ -506,8 +507,8 @@ page load, XHR or fetch of the page's that the site answered with an
 error status, such as a sign-in's 429, by its status, origin and any
 `retry_after`, at most 5 between two answers), and `screenshot`: the handle `{"request": R, "shot": N}` of a
 screenshot taken after it, or `{"suppressed": true}` after a vault fill,
-while a filled value is on the page or while it shows a card number filled
-in the session) and `page` (snapshot, URL, title, up to 40 lines, the element
+while a filled value is on the page or when a card number filled in the
+session could not be masked in it) and `page` (snapshot, URL, title, up to 40 lines, the element
 list, bounded as every answer's is). A plan that stopped before sending any
 action reads no new snapshot: its `page` is the tab's URL and title with a
 `note` saying so, and a ref still names the last page latch returned (a
@@ -575,10 +576,11 @@ with `latch audit shot RECORD N --output F` (`--host H` from another of
 their machines): the host finds it by the record's session hash, request
 and shot, and sends it only if its sha256 is the one the record kept. A
 request's journal and screenshots are kept 7 days, after its session
-closes too. latch doesn't redact a screenshot's pixels: it takes none
-while a value filled from the vault is on the page, none while any frame
-shows the number of a card filled in the session, and none of a fill
-step, but typed text and the rest of the page can show.
+closes too. latch takes no screenshot while a value filled from the vault
+is on the page, and none of a fill step; it masks the number of a card
+filled in the session wherever the page shows it as text, and takes none
+when it can't. A number drawn in an image or canvas isn't found; typed
+text and the rest of the page can show.
 
 **Removed forms.** `act` on a name or description, `act --expect`,
 `act --steps`, `act click --at X,Y`, `find "<description>"` and

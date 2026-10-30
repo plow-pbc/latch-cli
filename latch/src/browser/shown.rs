@@ -131,9 +131,14 @@ pub fn mask_cards(value: &mut Value, cards: &[String]) {
     }
 }
 
-/// `text` with each run of digits that holds a card number in `cards`
-/// (spaces, dots or dashes between its digits, as a page spaces it) put as
-/// `•••• 4242`.
+/// The most characters other than letters and digits (spaces, line
+/// breaks, dashes, invisible ones) a page may put between two digits of a
+/// card number that is still read as one.
+const GAP: usize = 3;
+
+/// `text` with each card number in `cards` it shows (up to `GAP` other
+/// characters between two of its digits, as a page spaces it) put as
+/// `•••• 4242`; the digits around it stay.
 pub fn masked(text: &str, cards: &[String]) -> String {
     let chars: Vec<char> = text.chars().collect();
     let mut out = String::new();
@@ -144,27 +149,37 @@ pub fn masked(text: &str, cards: &[String]) -> String {
             at += 1;
             continue;
         }
-        let (mut end, mut digits) = (at, String::new());
-        let mut next = at;
-        while next < chars.len() {
-            if chars[next].is_ascii_digit() {
-                digits.push(chars[next]);
+        // The run from here: each digit and where it is.
+        let (mut end, mut digits, mut gap) = (at, Vec::new(), 0);
+        for (next, ch) in chars.iter().enumerate().skip(at) {
+            if ch.is_ascii_digit() {
+                digits.push((*ch, next));
                 end = next + 1;
-            } else if !matches!(chars[next], ' ' | '.' | '-')
-                || !chars.get(next + 1).is_some_and(char::is_ascii_digit)
-            {
+                gap = 0;
+            } else if ch.is_alphanumeric() || gap == GAP {
                 break;
+            } else {
+                gap += 1;
             }
-            next += 1;
         }
-        match cards.iter().find(|card| digits.contains(card.as_str())) {
-            Some(card) => {
+        let run: String = digits.iter().map(|(digit, _)| digit).collect();
+        let found = cards
+            .iter()
+            .find_map(|card| run.find(card.as_str()).map(|from| (card, from)));
+        match found {
+            // Only the card's own digits, and what is between them, go.
+            Some((card, from)) => {
+                let (first, last) = (digits[from].1, digits[from + card.len() - 1].1);
+                out.extend(&chars[at..first]);
                 out.push_str("•••• ");
                 out.push_str(&card[card.len().saturating_sub(4)..]);
+                at = last + 1;
             }
-            None => out.extend(&chars[at..end]),
+            None => {
+                out.extend(&chars[at..end]);
+                at = end;
+            }
         }
-        at = end;
     }
     out
 }
@@ -178,17 +193,20 @@ mod tests {
         let cards = ["4242424242424242".to_string()];
         let mut answer = json!({
             "lines": ["Paid with 4242 4242 4242 4242.", "Card 4242-4242-4242-4242 or 4242424242424242"],
+            "split": "4242\n4242\n4242\n4242 and 4242\u{200b}4242 / 4242\u{feff}4242",
             "elements": [{"value": "4242424242424242 04/31"}],
             "order": "Order 1234567890123, total $10.00",
+            "total": "Total $10.00\n\n4242 4242 4242 4242",
         });
-        // Digits spaced on from the number's run go with it.
         mask_cards(&mut answer, &cards);
         assert_eq!(
             answer,
             json!({
                 "lines": ["Paid with •••• 4242.", "Card •••• 4242 or •••• 4242"],
-                "elements": [{"value": "•••• 4242/31"}],
+                "split": "•••• 4242 and •••• 4242",
+                "elements": [{"value": "•••• 4242 04/31"}],
                 "order": "Order 1234567890123, total $10.00",
+                "total": "Total $10.00\n\n•••• 4242",
             })
         );
     }

@@ -154,7 +154,7 @@ pub(super) struct Entry {
     judged_sites: std::sync::Mutex<HashSet<String>>,
     /// The numbers of the cards filled in this session, digits only: what
     /// its answers and pictures are checked for.
-    pub(super) cards: std::sync::Mutex<Vec<String>>,
+    pub(super) cards: super::journal::Cards,
 }
 
 impl Entry {
@@ -170,6 +170,11 @@ impl Entry {
 
     /// The session's worker for one agent call: refused while the owner has
     /// the session, whenever the call was asked for.
+    /// The numbers of the cards filled in this session.
+    pub(super) fn card_numbers(&self) -> Vec<String> {
+        self.cards.lock().expect("cards lock").clone()
+    }
+
     pub(super) async fn agent_session(
         &self,
     ) -> Result<tokio::sync::MutexGuard<'_, Session>, Failure> {
@@ -748,6 +753,14 @@ async fn answer(
     if entry.handing.load(Ordering::SeqCst) && command != "close" {
         return Err(super::handoff::handed_off());
     }
+    // A script could read a card's number off a page that repeats it, in
+    // any form: none runs in a session that filled a card.
+    if command == "eval" && !entry.card_numbers().is_empty() {
+        return Err(Failure::new(
+            code::secret_on_page,
+            "a card was filled in this session, and a script could read its number off the page: eval stays off in this session. Read the page with `text` or `observe`, or open a new session".into(),
+        ));
+    }
     // Not on the web: refused before the gatekeeper is asked.
     if matches!(command, "goto" | "tab")
         && let Some(url) = args["url"].as_str()
@@ -802,7 +815,7 @@ async fn answer(
     }
     // A page may show a card number it was given (a confirmation that
     // repeats it): the agent gets its last four digits only.
-    let cards = entry.cards.lock().expect("cards lock").clone();
+    let cards = entry.card_numbers();
     if !cards.is_empty() {
         match &mut result {
             Ok((answer, _)) => super::shown::mask_cards(answer, &cards),
@@ -1004,17 +1017,14 @@ async fn worker(
     input: Option<&[u8]>,
     audit: &mut Map<String, Value>,
 ) -> Result<(Value, Option<Vec<u8>>), Failure> {
-    let call = worker_call(command, args)?;
+    let mut call = worker_call(command, args)?;
+    if command == "screenshot" {
+        call["cards"] = json!(entry.card_numbers());
+    }
     if entry.runtime.filling.load(Ordering::SeqCst) {
         return Err(paused());
     }
     let mut session = entry.agent_session().await?;
-    if command == "screenshot" && shows_a_card(entry, &mut session).await {
-        return Err(Failure::new(
-            code::secret_on_page,
-            "the page shows a card number latch filled from the vault; a screenshot waits until it is gone".into(),
-        ));
-    }
     let reply = match session.call_with(call, input).await {
         Ok(reply) => {
             if let Some(worker) = reply.audit.as_object() {
@@ -1073,26 +1083,6 @@ fn letters(bytes: &[u8]) -> String {
         .flat_map(|byte| [byte >> 4, byte & 15])
         .map(|nibble| char::from(b'a' + nibble))
         .collect()
-}
-
-/// Whether the page shows the number of a card filled in this session,
-/// in any frame's text or field, however spaced. A page that can't be read
-/// counts as showing it.
-pub(super) async fn shows_a_card(entry: &Entry, session: &mut Session) -> bool {
-    let cards = entry.cards.lock().expect("cards lock").clone();
-    if cards.is_empty() {
-        return false;
-    }
-    let Ok(reply) = session.call(json!({"op": "numbers"})).await else {
-        return true;
-    };
-    reply
-        .result
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .any(|run| cards.iter().any(|card| run.contains(card.as_str())))
 }
 
 /// The worker's call for a client command: the command's own arguments,

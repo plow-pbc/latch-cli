@@ -1,7 +1,10 @@
 <!doctype html><title>latch card echo test</title>
 <!-- A checkout that shows the card back: a preview of the number as it is
      typed, and, on Pay, a confirmation on the same page with the whole
-     number, as a careless shop might. Nothing is sent anywhere. -->
+     number and a field named after it, as a careless shop might. Nothing
+     is sent anywhere. #styles lists what happens to the confirmation's own
+     color, as latch masks it for a picture and puts it back; with ?strip
+     the page takes latch's mask off as soon as it goes on. -->
 <h1>Checkout</h1>
 <p>Total $10.00</p>
 <p id="preview">•••• •••• •••• ••••</p>
@@ -12,6 +15,7 @@
   <p><button type="submit">Pay $10.00</button></p>
 </form>
 <p id="done"></p>
+<p id="styles"></p>
 <script>
   const form = document.getElementById('pay');
   const number = form.elements['cc-number'];
@@ -20,6 +24,17 @@
   form.addEventListener('submit', (event) => {
     event.preventDefault();
     done.textContent = 'Paid $10.00 with card ' + spaced();
+    const nickname = document.createElement('input');
+    nickname.setAttribute('aria-label', 'Nickname for card ' + spaced());
+    done.after(nickname);
     form.reset();
   });
+  const strip = new URLSearchParams(location.search).has('strip');
+  new MutationObserver(() => {
+    if (strip && done.style.color === 'transparent') {
+      done.style.removeProperty('color');
+      done.style.removeProperty('-webkit-text-fill-color');
+    }
+    styles.textContent += '[' + (done.style.color || 'own') + ']';
+  }).observe(done, { attributes: true, attributeFilter: ['style'] });
 </script>

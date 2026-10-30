@@ -503,6 +503,64 @@
     return holding();
   };
 
+  // Card numbers a page shows, masked for a screenshot. latch's own code
+  // gives the numbers of the cards filled in the session (this world is
+  // latch's: the page can't read them here). An element holds one when
+  // its text has the number's digits with at most 3 characters that are
+  // neither letters nor digits between two of them, as host-side masking
+  // reads them, and no element inside it does; a field holds one by its
+  // value. A holder's text, and all inside it, is made transparent until
+  // `unmask` puts the page's own styles back.
+  const cardPattern = (digits) => new RegExp([...digits].join('[^\\p{L}\\p{N}]{0,3}'), 'u');
+  const holders = (cards) => {
+    const patterns = cards.map(cardPattern);
+    const shows = (text) => patterns.some((pattern) => pattern.test(text || ''));
+    const found = [];
+    const walk = (el) => {
+      const inner = [...el.children].filter((child) => shows(child.textContent));
+      if (!inner.length) found.push(el);
+      inner.forEach(walk);
+    };
+    if (document.body && shows(document.body.textContent)) walk(document.body);
+    for (const el of document.querySelectorAll('input, textarea')) if (shows(el.value)) found.push(el);
+    return found;
+  };
+  const MASK = [['transition', 'none'], ['color', 'transparent'],
+    ['-webkit-text-fill-color', 'transparent'], ['text-shadow', 'none']];
+  let masked = [];
+  const clear = (color) => color === 'transparent' || /^rgba\(.*,\s*0\)$/.test(color);
+  const hidden = (el) => {
+    const style = getComputedStyle(el);
+    const fill = style.getPropertyValue('-webkit-text-fill-color');
+    return clear(style.color) && (!fill || clear(fill)) && style.textShadow === 'none';
+  };
+  const maskOf = (el) => [el, ...el.querySelectorAll('*')];
+  // Whether every element that shows one of `cards` is masked and shows
+  // no text: true when none does.
+  const cardsMasked = (cards) => holders(cards).flatMap(maskOf)
+    .every((el) => masked.some((m) => m.el === el) && hidden(el));
+  // Masks every element that shows one of `cards`: how many, and whether
+  // the masks took.
+  const maskCards = (cards) => {
+    const found = holders(cards);
+    for (const el of found.flatMap(maskOf)) {
+      if (masked.some((m) => m.el === el)) continue;
+      masked.push({ el, before: MASK.map(([name]) => [name, el.style.getPropertyValue(name), el.style.getPropertyPriority(name)]) });
+      for (const [name, value] of MASK) el.style.setProperty(name, value, 'important');
+    }
+    return { found: found.length, hidden: cardsMasked(cards) };
+  };
+  const unmask = () => {
+    for (const { el, before } of masked) {
+      for (const [name, value, priority] of before) {
+        if (value) el.style.setProperty(name, value, priority);
+        else el.style.removeProperty(name);
+      }
+    }
+    masked = [];
+    return true;
+  };
+
   // Non-secret fields as lines, for a judgement of what the page shows.
   const FIELD_ROLES = ['textbox', 'searchbox', 'combobox', 'spinbutton', 'checkbox', 'radio'];
   const fields = (max) => [...document.querySelectorAll(INTERACTIVE)]
@@ -709,14 +767,9 @@
       const body = document.body ? document.body.innerText : '';
       return { text: body.length > max ? body.slice(0, max) : body, truncated: body.length > max };
     },
-    // Every run of 12 or more digits in the text and the fields, spaces,
-    // dots and dashes left out: for the host to check for a card number it
-    // filled. Never shown to the agent.
-    numbers: () => {
-      const fields = [...document.querySelectorAll('input, textarea')].map((el) => el.value);
-      const all = [document.body ? document.body.innerText : '', ...fields].join('\n');
-      return [...all.matchAll(/\d(?:[ .-]?\d){11,}/g)].map((run) => run[0].replace(/\D/g, ''));
-    },
+    maskCards,
+    cardsMasked,
+    unmask,
     controls,
     stageMark,
     fillTarget,

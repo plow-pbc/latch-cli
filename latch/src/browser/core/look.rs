@@ -232,17 +232,6 @@ impl<D: Driver> Core<D> {
         }))
     }
 
-    /// Every run of 12 or more digits in any frame's text or fields; a
-    /// frame that can't be read fails the call.
-    pub(super) fn numbers(&mut self) -> Result<Value, Failure> {
-        let mut runs = Vec::new();
-        for frame in self.driver.frames()? {
-            let found = self.driver.run(&frame, "__latch.numbers()")?;
-            runs.extend(found.as_array().into_iter().flatten().cloned());
-        }
-        Ok(json!(runs))
-    }
-
     /// Every frame's non-secret fields as lines (`combobox "Size": "Large"`).
     fn field_lines(&mut self) -> Result<Vec<String>, Failure> {
         let mut fields = Vec::new();

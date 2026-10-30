@@ -20,6 +20,7 @@ conformance!(
     a_card_fills_split_boxes_and_expiry_lists,
     agent_code_on_a_shop_keeps_the_card_out,
     a_page_that_shows_the_number_back_shows_the_agent_only_its_last_four,
+    a_page_that_takes_the_mask_off_gets_no_picture,
     a_redrawn_number_field_does_not_show_its_value,
 );
 
@@ -249,10 +250,74 @@ async fn a_page_that_shows_the_number_back_shows_the_agent_only_its_last_four(en
     let page = h.text().await;
     println!("the shop's confirmation, as the agent reads it: {page:?}");
     assert!(page.contains("Paid $10.00 with card •••• 4242"), "{page}");
+
+    // A picture is taken with the number masked, and the page's own
+    // style put back after.
+    h.call("screenshot", json!({})).await.unwrap();
+    let page = h.text().await;
+    assert!(page.contains("[transparent][own]"), "{page}");
+
+    // A plan's own pictures too, and its journal, read back after the
+    // session closed, holds no number, though the step's field is named
+    // after it.
+    let page = h.call("observe", json!({})).await.unwrap();
+    let nickname = find(&page, "textbox", "Nickname for card •••• 4242");
+    let step = format!("type {nickname} \"Work\"");
+    let typed = h
+        .call(
+            "do",
+            json!({"request": "r-type", "plan": {"steps": [
+                crate::browser::plan::short_step(&step).unwrap()]}}),
+        )
+        .await
+        .unwrap();
+    assert!(
+        typed["trail"][0]["screenshot"]["shot"].is_number(),
+        "{typed}"
+    );
+
+    // No script runs in the session: it could read the number in any form.
+    let script = "[...document.getElementById('done').textContent].map((c) => c.charCodeAt(0))";
+    let eval = h.call("eval", json!({"script": script})).await.unwrap_err();
+    println!("eval: {} ({})", eval.code, eval.message);
+    assert_eq!(eval.code, "secret_on_page");
+
+    let session = h.id.clone();
+    h.call("close", json!({})).await.unwrap();
+    let mut audit = Map::new();
+    let history = super::super::host_call(
+        &h.browsers,
+        CALLER.into(),
+        "do_history",
+        &session,
+        &json!({"request": "r-type"}),
+        None,
+        &mut audit,
+    )
+    .await
+    .unwrap()
+    .0;
+    println!("history: {history}");
+    h.shown.push(seen(&history));
+    assert!(
+        !h.saw_the_card(),
+        "the page's copy of the number reached the agent"
+    );
+}
+
+async fn a_page_that_takes_the_mask_off_gets_no_picture(engine: &str) {
+    let (mut h, card, local, _, _keep) = shop(engine).await;
+    h.call(
+        "open",
+        json!({"url": format!("{local}/card-echo.html?strip")}),
+    )
+    .await
+    .unwrap();
+    let args = h.suggested(&card).await;
+    h.pay(args).await.0.unwrap();
     let shot = h.call("screenshot", json!({})).await.unwrap_err();
     println!("screenshot: {} ({})", shot.code, shot.message);
     assert_eq!(shot.code, "secret_on_page");
-    // A plan's own pictures leave it out too.
     let page = h.call("observe", json!({})).await.unwrap();
     let step = format!("type {} \"04 / 31\"", find(&page, "textbox", "Expiry"));
     let typed = h
@@ -264,10 +329,7 @@ async fn a_page_that_shows_the_number_back_shows_the_agent_only_its_last_four(en
         .await
         .unwrap();
     assert_eq!(typed["trail"][0]["screenshot"], json!({"suppressed": true}));
-    assert!(
-        !h.saw_the_card(),
-        "the page's copy of the number reached the agent"
-    );
+    assert!(!h.saw_the_card(), "the card reached the agent");
     h.call("close", json!({})).await.ok();
 }
 

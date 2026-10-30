@@ -398,7 +398,8 @@ pub async fn run(
         caller,
         &request,
         json!(summaries),
-    )?;
+    )?
+    .masking(entry.cards.clone());
     let running = format!("{session}/{request}");
     browsers.running(&running, true);
     let mut run = Run {
@@ -593,8 +594,8 @@ pub async fn run(
 /// `name` (`final`, or an action's number), taken by worker call `op`: its
 /// handle, which `do --history R --shot <name>` fetches, and what the audit
 /// records of it. None if the page could not be shot, or (`shot`) a value
-/// latch filled from the vault is on it, or it shows a card number filled
-/// in the session.
+/// latch filled from the vault is on it; a card number filled in the
+/// session is masked in it, and None if it could not be.
 async fn keep_shot(
     browsers: &Browsers,
     entry: &Entry,
@@ -603,12 +604,13 @@ async fn keep_shot(
     name: &str,
     op: &str,
 ) -> Option<(Value, Value)> {
-    let mut worker = entry.agent_session().await.ok()?;
-    if super::host::shows_a_card(entry, &mut worker).await {
-        return None;
-    }
-    let reply = worker.call(json!({"op": op})).await.ok()?;
-    drop(worker);
+    let reply = entry
+        .agent_session()
+        .await
+        .ok()?
+        .call(json!({"op": op, "cards": entry.card_numbers()}))
+        .await
+        .ok()?;
     let png = reply.bytes?;
     journal::save_shot(&browsers.state_dir(), session, request, name, &png).ok()?;
     let meta = json!({"shot": name, "size": png.len(), "sha256": to_hex(&Sha256::digest(&png))});
@@ -643,7 +645,7 @@ pub async fn stop_fill(
         json!([{"step": 1, "op": "fill"}]),
     );
     let mut journal = match started {
-        Ok(journal) => journal,
+        Ok(journal) => journal.masking(entry.cards.clone()),
         Err(failure) => return failure,
     };
     let mut failure = confirm_fill(browsers, entry, args, audit).await;

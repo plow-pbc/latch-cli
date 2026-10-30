@@ -821,19 +821,23 @@ async fn vault_fills_go_only_where_the_item_allows_and_never_show_a_value(engine
         page.contains("$100.00") && !page.contains("payment:"),
         "{page}"
     );
-    // The agent is back (the cleanup was confirmed), and the fields are
-    // empty: eval, refused while one holds anything, reads them.
+    // The cleanup was confirmed, and the fields are empty. The agent's eval
+    // stays off in a session that filled a card; the test reads them
+    // through the worker.
     let left = h
-        .call(
-            "eval",
-            json!({"script": "['cc-number', 'cc-exp', 'cc-csc'].map((n) => document.querySelector(`[name=${n}]`).value)"}),
-        )
+        .entry
+        .agent_session()
         .await
-        .unwrap();
+        .unwrap()
+        .call(json!({"op": "eval", "script": "['cc-number', 'cc-exp', 'cc-csc'].map((n) => document.querySelector(`[name=${n}]`).value)"}))
+        .await
+        .unwrap()
+        .result;
     assert_eq!(left["value"], json!(["", "", ""]));
 
     // An identity's ordinary fields fill without --press; while they are on
-    // the page, eval is refused.
+    // the page, eval is refused (in a new session, which filled no card).
+    h.new_session().await;
     let address = h
         .call("open", json!({"url": format!("{local}/address.html")}))
         .await

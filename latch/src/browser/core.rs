@@ -57,9 +57,17 @@ pub enum Call {
         scope: Option<String>,
     },
     Text,
-    Screenshot,
-    /// A screenshot for a plan's trail.
-    Shot,
+    /// A screenshot; `cards`, the numbers of the cards filled in the
+    /// session, are masked wherever the page shows one.
+    Screenshot {
+        #[serde(default)]
+        cards: Vec<String>,
+    },
+    /// A screenshot for a plan's trail, masked as a screenshot is.
+    Shot {
+        #[serde(default)]
+        cards: Vec<String>,
+    },
     Act {
         snapshot: Option<String>,
         action: Action,
@@ -101,8 +109,6 @@ pub enum Call {
     Page,
     /// The page's lines and its non-secret field values, for a judgement.
     Lines,
-    /// Every frame's runs of digits, for the host's card number check.
-    Numbers,
     /// The page as one pass of an instruction step sees it; with `step`,
     /// which lines on screen were written since that step began (`begin`
     /// starts it here).
@@ -310,6 +316,15 @@ struct Located {
     options: Vec<String>,
 }
 
+/// A screenshot refused because a card number on the page could not be
+/// hidden for it.
+fn unmaskable(why: &str) -> Failure {
+    Failure::new(
+        code::secret_on_page,
+        format!("{why}; no screenshot was taken, so it can't show the card"),
+    )
+}
+
 impl<D: Driver> Core<D> {
     pub fn new(driver: D) -> Self {
         Core {
@@ -377,9 +392,8 @@ impl<D: Driver> Core<D> {
             Call::Act { quiet: true, .. }
                 | Call::Resolve { .. }
                 | Call::Lines
-                | Call::Numbers
                 | Call::View { .. }
-                | Call::Shot
+                | Call::Shot { .. }
                 | Call::Wait { .. }
                 | Call::Pin { .. }
                 | Call::Review { .. }
@@ -396,7 +410,6 @@ impl<D: Driver> Core<D> {
             Call::Glance => self.glance(&mut audit),
             Call::Page => self.page(&mut audit).map(Value::Object),
             Call::Lines => self.lines(&mut audit),
-            Call::Numbers => self.numbers(),
             Call::View { step, begin } => self.view(step.as_deref(), begin, &mut audit),
             Call::Wait {
                 condition,
@@ -424,7 +437,9 @@ impl<D: Driver> Core<D> {
                 self.observe(tab.as_deref(), scope.as_deref(), &mut audit)
             }
             Call::Text => self.text(&mut audit),
-            Call::Screenshot | Call::Shot => self.screenshot(&mut audit),
+            Call::Screenshot { cards } | Call::Shot { cards } => {
+                self.screenshot(&cards, &mut audit)
+            }
             Call::Act {
                 snapshot,
                 action,
@@ -692,14 +707,82 @@ impl<D: Driver> Core<D> {
     }
 
     /// Refused while a value latch filled may still be on a page: a
-    /// picture would show it.
-    fn screenshot(&mut self, audit: &mut Map<String, Value>) -> Result<Value, Failure> {
+    /// picture would show it. A card number of `cards` the page shows is
+    /// masked for the picture; the masks are checked again once it is
+    /// taken, and a picture whose masks did not hold is not kept.
+    fn screenshot(
+        &mut self,
+        cards: &[String],
+        audit: &mut Map<String, Value>,
+    ) -> Result<Value, Failure> {
         self.no_dialog()?;
         self.page(audit)?;
         self.no_value_on_page("a screenshot")?;
-        let (meta, png) = self.driver.screenshot()?;
+        let masked = self.mask_cards(cards)?;
+        let shot = self.driver.screenshot();
+        let held = masked.is_empty() || self.cards_masked(cards).unwrap_or(false);
+        self.unmask(&masked);
+        let (meta, png) = shot?;
+        if !held {
+            return Err(unmaskable(
+                "the page took latch's mask off a card number it shows",
+            ));
+        }
+        if !masked.is_empty() {
+            audit.insert("cards_masked".into(), json!(true));
+        }
         self.bytes = Some(png);
         Ok(meta)
+    }
+
+    /// Masks every card of `cards` the page shows, in each frame: the
+    /// frames masked. Refused when a frame can't be read or a mask doesn't
+    /// take, with the masks made so far taken off.
+    fn mask_cards(&mut self, cards: &[String]) -> Result<Vec<Frame>, Failure> {
+        let mut masked = Vec::new();
+        if cards.is_empty() {
+            return Ok(masked);
+        }
+        for frame in self.driver.frames()? {
+            let done = self
+                .driver
+                .run(&frame, &format!("__latch.maskCards({})", json!(cards)));
+            let Ok(done) = done else {
+                self.unmask(&masked);
+                return Err(unmaskable(
+                    "a frame latch can't read may show a card number",
+                ));
+            };
+            if done["found"].as_u64().unwrap_or(0) > 0 {
+                masked.push(frame.clone());
+            }
+            if done["hidden"] != true {
+                self.unmask(&masked);
+                return Err(unmaskable(
+                    "latch could not hide a card number the page shows",
+                ));
+            }
+        }
+        Ok(masked)
+    }
+
+    /// Whether every card of `cards` the page shows now is still masked.
+    fn cards_masked(&mut self, cards: &[String]) -> Result<bool, Failure> {
+        for frame in self.driver.frames()? {
+            let held = self
+                .driver
+                .run(&frame, &format!("__latch.cardsMasked({})", json!(cards)))?;
+            if held != true {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    fn unmask(&mut self, frames: &[Frame]) {
+        for frame in frames {
+            let _ = self.driver.run(frame, "__latch.unmask()");
+        }
     }
 
     fn act(
@@ -1556,7 +1639,11 @@ mod tests {
                 "file:///Users/someone/latch/state/config.json",
                 "file:",
             ),
-            (Call::Screenshot, "data:text/html,hi", "data:"),
+            (
+                Call::Screenshot { cards: vec![] },
+                "data:text/html,hi",
+                "data:",
+            ),
             (
                 Call::Eval { script: "1".into() },
                 "chrome://version/",
