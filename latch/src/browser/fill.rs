@@ -464,9 +464,8 @@ pub async fn run(
         }
     };
     let result = fill(browsers, &mut session, &item, &plan, args, audit).await;
-    // A card whose values went toward the page: the session's answers,
-    // journals and scripts are kept from its number from now on. Recorded
-    // while the session is still held, so a call waiting on it sees it.
+    // A card whose values went toward the page: the session's answers and
+    // journals show its number by its last four digits from now on.
     if meta.kind == "card"
         && audit.get("released") == Some(&json!(true))
         && let Ok(number) = release(&item, "number")
