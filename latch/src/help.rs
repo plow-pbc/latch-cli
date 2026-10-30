@@ -111,17 +111,25 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "logout",
         runs_on: |_| RunsOn::Local,
-        output: "`removed` (what it deleted, by file name: the key, Plow token and config.json; with --purge every secret, then the folder), `from` (`keychain` or `files`), `stopped` (whether a host was running), `purged`, `device` (an owner's machine: its `name`, null if the state folder was already gone, and whether Plow `removed` it; if not, the `error` and the `next` step; null otherwise) and `state_dir`.",
+        output: "`summary` (what it deletes and keeps, worked out first: `state_dir`, `default_state_dir`, `login` (`name`, `kind`), `leaves_plow`, `host_running`, `keychain_items` and `files` it deletes by full path, `deletes_folder`, `vault` (item counts by kind), `audit_records` and `browsers` (each installed engine's `engine`, `version`, `path` and `bytes`, and `session_data`: `browser/`'s `path` and `bytes`); counts, names and sizes, never a value), `removed` (what it deleted, by file name: the Plow token and config.json; with --purge every secret, then the folder), `from` (`keychain` or `files`), `stopped` (whether a host was running), `purged`, `device` (an owner's machine: its `name`, null if the state folder was already gone, and whether Plow `removed` it; if not, the `error` and the `next` step; null otherwise) and `state_dir`. With --dry-run, only `dry_run` and `summary`. Asks first at a terminal (y, or typing `delete` for --purge); with no one there it fails with `confirmation_required` and the `summary`, unless given --yes.",
         effect: Repeatable(
-            "stops this state folder's host, takes this machine out of the Plow account and signs out its login, and deletes its key and Plow token; with --purge also its vault and audit keys and the folder itself",
+            "stops this state folder's host, takes this machine out of the Plow account and signs out its login, and deletes its Plow token, keeping its key, vault, audit log, rules and settings; with --purge every secret and the folder itself",
         ),
         owner_only: false,
         connector: None,
         examples: &[
             ex("Log this state folder out", &["logout"]),
             ex(
+                "See what a purge would delete",
+                &["logout", "--purge", "--dry-run"],
+            ),
+            ex(
                 "Delete this state folder and every secret it has",
                 &["logout", "--purge"],
+            ),
+            ex(
+                "Log out from a script, without asking",
+                &["logout", "--yes"],
             ),
         ],
     },
@@ -269,9 +277,25 @@ const ENTRIES: &[Entry] = &[
         )],
     },
     Entry {
+        id: "hosts.default",
+        runs_on: |_| RunsOn::Local,
+        output: "`default_host`: the host `--host default` (or `LATCH_HOST=default`) names, saved in this state folder for this machine or agent alone; null when none is. NAME must be a host this account has; `--clear` forgets it. A command without --host goes where it always did, and a host named `default` is reached only through this.",
+        effect: Repeatable("saves or clears this state folder's default host"),
+        owner_only: false,
+        connector: None,
+        examples: &[
+            ex(
+                "Use mbp when --host default is given",
+                &["hosts", "default", "mbp"],
+            ),
+            ex("Say which host it is", &["hosts", "default"]),
+            ex("Forget it", &["hosts", "default", "--clear"]),
+        ],
+    },
+    Entry {
         id: "status",
         runs_on: |_| RunsOn::Either,
-        output: "`account` (`owner_uid`, `display_name`), `login` (`kind`: device or agent), `this_machine` (its `name` and `key`, and `hosting`: `running`, `ready`, `configuring`, `managed`, `attached`, `state`, `pid`, `blocked`, `waiting` (what a starting host waits for, else null), `deny_exec` (`every_agent`, `agent_uids`) as the host runs or last ran, null if its saved flags are unreadable, and `keep_awake` (`enabled`, `held`, `reason`; see `settings set`), null if its saved settings are unreadable), `hosts` (the account's hosts as Plow lists them, this machine first: `name`, `key`, `self`, Plow's `online` and `last_seen_at`, and `plugins`, the ones it has on as `name` and `state` (enabled or needs_setup), asked of every host Plow lists online within 2 s in all; null when unknown, with `plugins_reason`: host_offline, host_unreachable, caller_denied, protocol_mismatch or the host's own code), `default_host` (where a command without --host goes; null with `default_host_reason`: unknown_host, no_host, host_required or not_logged_in), `plugins`, `update`, `last_error`, `api_url`, `state_dir`, `version` and `protocol`. Before login it asks no one: `login`, `account`, `hosts` and this machine's `name` and `key` are null. With --local, the same without `account`, `hosts` and `default_host*`, asking no one; with --host, that host's own `status --local` (owner devices only; a host on an older latch answers in that latch's shape); with --follow too, JSON lines: `hello`, then a `status` line, again each time it changes.",
+        output: "`account` (`owner_uid`, `display_name`), `login` (`kind`: device or agent), `this_machine` (its `name` and `key`, and `hosting`: `running`, `ready`, `configuring`, `managed`, `attached`, `state`, `pid`, `blocked`, `waiting` (what a starting host waits for, else null), `deny_exec` (`every_agent`, `agent_uids`) as the host runs or last ran, null if its saved flags are unreadable, and `keep_awake` (`enabled`, `held`, `reason`; see `settings set`), null if its saved settings are unreadable), `hosts` (the account's hosts as Plow lists them, this machine first: `name`, `key`, `self`, Plow's `online` and `last_seen_at`, and `plugins`, the ones it has on as `name` and `state` (enabled or needs_setup), asked of every host Plow lists online within 2 s in all; null when unknown, with `plugins_reason`: host_offline, host_unreachable, caller_denied, protocol_mismatch or the host's own code), `default_host` (where a command without --host goes; null with `default_host_reason`: unknown_host, no_host, host_required, no_default_host or not_logged_in), `saved_default_host` (the host `--host default` names, saved by `latch hosts default`; null when none is), `plugins`, `update`, `last_error`, `api_url`, `state_dir`, `version` and `protocol`. Before login it asks no one: `login`, `account`, `hosts` and this machine's `name` and `key` are null. With --local, the same without `account`, `hosts` and `default_host*`, asking no one; with --host, that host's own `status --local` (owner devices only; a host on an older latch answers in that latch's shape); with --follow too, JSON lines: `hello`, then a `status` line, again each time it changes.",
         effect: ReadOnly,
         owner_only: false,
         connector: None,
@@ -1137,6 +1161,10 @@ const ENTRIES: &[Entry] = &[
                 ],
             ),
             ex(
+                "Start from the rules the Mac app offers a family assistant, only if there are none yet",
+                &["rules", "set", "--preset", "family", "--revision", "none"],
+            ),
+            ex(
                 "Save over the rules only if they are still at the revision `rules show` gave (`none`: there were none); otherwise stale_revision, with the revision they are at",
                 &["rules", "set", "--revision", "9f2c…", "--file", "rules.txt"],
             ),
@@ -1332,7 +1360,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "audit.judge",
         runs_on: |_| RunsOn::Either,
-        output: "One gatekeeper call, by its id (a record's `kept_request`, in `details.gate` or its `layers`): `id`, `time`, `layer` (`owner`, or an agent's `rules` or `chat`), `request` (the body sent to Plow's decision route: model, state, questions; the rules, the chat and the action as the judge saw them) and `answer` (Plow's reply, null when none came). Kept sealed with the host's audit key, exactly as sent; printed with credential-looking values hidden, as `latch audit` hides them, best effort, or with `--raw` exactly as sent, a credential typed into a command included. The judge is never shown a vault or secret value. A host keeps them 7 days (then `no_such_request`), on that host only.",
+        output: "One gatekeeper call, by its id (a record's `kept_request`, in `details.gate` or its `layers`): `id`, `time`, `layer` (`owner`, or an agent's `rules`, `chat` for the whole chat, or `will` for only the owner's messages and the message each answers), `request` (the body sent to Plow's decision route: model, state, questions; the rules, the chat and the action as the judge saw them) and `answer` (Plow's reply, null when none came). Kept sealed with the host's audit key, exactly as sent; printed with credential-looking values hidden, as `latch audit` hides them, best effort, or with `--raw` exactly as sent, a credential typed into a command included. The judge is never shown a vault or secret value. A host keeps them 7 days (then `no_such_request`), on that host only.",
         effect: ReadOnly,
         owner_only: true,
         connector: None,
@@ -1454,9 +1482,9 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "setup",
         runs_on: |_| RunsOn::Local,
-        output: "At a terminal, each step and the latch command it ran; skipped steps say so. Without one, `no_terminal`, whose `next` is the first step not done. With --status, at a terminal or not, `steps`: each step's `step` (login, each connector, host), `state` (done, needed or blocked), `reason`, `args` (the words after `latch` that do it, null once done, or while something else must happen first) and, for a connector, `enabled` and `ready` (enabled and served by a running host). For the owner, the Google step asks Plow (read only) whether Google is connected there: it adds `accounts`, and `connect_url` (where to connect one) while none is; it is blocked when Plow cannot be asked. With an account connected it also asks Plow for their credentials, for up to 5 s, to add `needs_sign_in`: the accounts Google wants the owner to sign in with again (the step is needed when none works); said only when there are some. With --check-access, on a Mac, the Messages and Contacts steps add `access` (granted, not_granted or unknown): whether Plow Latch has Full Disk Access, checked once as the host would and saving nothing.",
+        output: "At a terminal, each step and the latch command it ran; skipped steps say so. Without one, `no_terminal`, whose `next` is the first step not done. With --status, at a terminal or not, `steps`: each step's `step` (login, each connector, rules, host), `state` (done, needed or blocked), `reason`, `args` (the words after `latch` that do it, null once done, or while something else must happen first) and, for a connector, `enabled` and `ready` (enabled and served by a running host). For the owner, the Google step asks Plow (read only) whether Google is connected there: it adds `accounts`, and `connect_url` (where to connect one) while none is; it is blocked when Plow cannot be asked. With an account connected it also asks Plow for their credentials, for up to 5 s, to add `needs_sign_in`: the accounts Google wants the owner to sign in with again (the step is needed when none works); said only when there are some. With --check-access, on a Mac, the Messages and Contacts steps add `access` (granted, not_granted or unknown): whether Plow Latch has Full Disk Access, checked once as the host would and saving nothing.",
         effect: Repeatable(
-            "logs in and enables connectors with no host running, then starts the host if the owner says so; done steps are skipped. --status changes nothing",
+            "logs in, enables connectors and, when there are none, sets rules for agents from the preset the owner picks, with no host running, then starts the host if the owner says so; done steps are skipped. --status changes nothing",
         ),
         owner_only: false,
         connector: None,

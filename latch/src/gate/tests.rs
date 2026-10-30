@@ -659,7 +659,8 @@ async fn the_answer_decides_allow_ask_or_stop_and_a_failed_model_refuses() {
         assert_eq!(failure.details["reason"], reason);
     }
 
-    // An agent is sent to the owner's chat.
+    // An agent is sent to the owner's chat, which its refusal names with
+    // the owner's messages the judge read there.
     let model = Recorder::answering(0.45, 0.45, 0.1);
     let judgment = gatekeeper(one_chat(), &model, Rules::default())
         .judge(AGENT_CALLER, &order())
@@ -668,12 +669,15 @@ async fn the_answer_decides_allow_ask_or_stop_and_a_failed_model_refuses() {
         judgment.gate["rule"],
         "refused when a layer forbids; else allowed when a layer is within instructions >= 0.50"
     );
+    let failure = judgment.verdict.unwrap_err();
     assert!(
-        judgment
-            .verdict
-            .unwrap_err()
-            .message
-            .contains("Ask the owner in chat")
+        failure.message.contains("in Plow chat chat_a"),
+        "{}",
+        failure.message
+    );
+    assert_eq!(
+        failure.details,
+        json!({"reason": "not_covered", "chat_lookup": "found", "chat": "chat_a", "owner_messages": ["m1"]})
     );
     // The owner, at a machine or on the host, is judged only against the
     // host's rules: refused only where FORBIDDEN is at least COVERED, so
@@ -738,6 +742,8 @@ fn a_layer_allows_at_one_half_and_vetoes_where_forbidden_outweighs_the_rest() {
             covered,
             not_covered,
             forbidden,
+            exception: None,
+            time_ban: None,
         }
         .says()
     };
@@ -752,10 +758,77 @@ fn a_layer_allows_at_one_half_and_vetoes_where_forbidden_outweighs_the_rest() {
     assert_eq!(says(0.0, 1.0, 0.0), Says::Neither);
 }
 
+/// latch shows the owner no dialog, so no refusal an agent may pass on
+/// sends the owner to approve one, and each `not_covered` says where the
+/// owner's OK goes instead.
+#[test]
+fn no_refusal_claims_an_approval_prompt() {
+    use Says::{Neither, Veto};
+    let theirs = [json!("m1")];
+    let refusals = [
+        agent_verdict(Veto, None),
+        agent_verdict(Neither, None),
+        agent_verdict(
+            Neither,
+            Some((
+                Neither,
+                ChatRead {
+                    chat: "chat_a",
+                    owner_messages: &theirs,
+                },
+            )),
+        ),
+        agent_verdict(
+            Neither,
+            Some((
+                Neither,
+                ChatRead {
+                    chat: "chat_a",
+                    owner_messages: &[],
+                },
+            )),
+        ),
+        owner_verdict(P {
+            covered: 0.1,
+            not_covered: 0.1,
+            forbidden: 0.8,
+            exception: None,
+            time_ban: None,
+        }),
+    ];
+    let mut said: Vec<(String, String)> = refusals
+        .into_iter()
+        .map(|refusal| {
+            let failure = refusal.unwrap_err();
+            let reason = failure.details["reason"].as_str().unwrap().to_string();
+            (reason, failure.message)
+        })
+        .collect();
+    said.push(("exit_4".into(), Exit::Denied.meaning().to_string()));
+    for (reason, message) in &said {
+        let lower = message.to_lowercase();
+        // What is left once the disclaimers are taken out claims nothing.
+        let rest = lower
+            .replace(&NO_PROMPT.to_lowercase(), "")
+            .replace("no approval prompt", "");
+        for claim in ["prompt", "dialog", "approve"] {
+            assert!(!rest.contains(claim), "{reason}: {message}");
+        }
+        if reason == "not_covered" {
+            assert!(lower.contains("no approval prompt"), "{message}");
+            assert!(lower.contains("rules"), "{message}");
+        }
+    }
+}
+
 #[test]
 fn either_layers_veto_refuses_before_either_layers_allow() {
     use Says::{Allow, Neither, Veto};
-    let reason = |rules, chat| match agent_verdict(rules, chat, false) {
+    let read = || ChatRead {
+        chat: "chat_a",
+        owner_messages: &[],
+    };
+    let reason = |rules, chat: Option<Says>| match agent_verdict(rules, chat.map(|c| (c, read()))) {
         Ok(()) => "allow".to_string(),
         Err(failure) => failure.details["reason"].as_str().unwrap().to_string(),
     };
@@ -817,6 +890,10 @@ async fn no_chat_is_neither_but_a_layer_that_fails_refuses() {
             .await;
         assert_eq!(judgment.gate["verdict"], expected);
         assert_eq!(model.calls(), 1, "the chat layer is never asked");
+        if let Err(failure) = judgment.verdict {
+            assert_eq!(failure.details["chat_lookup"], "none");
+            assert!(failure.message.contains("only their rules can allow this"));
+        }
     }
 
     // Either layer's failure refuses, whatever the other allows.
@@ -1523,9 +1600,31 @@ async fn quoted_owner_words_without_an_owner_message_cannot_allow_chat_permissio
     )
     .judge(AGENT_CALLER, &order())
     .await;
+    let failure = judgment.verdict.unwrap_err();
     assert_eq!(
-        judgment.verdict.unwrap_err().details["reason"],
-        "not_covered"
+        failure.details,
+        json!({"reason": "not_covered", "chat_lookup": "found", "chat": "chat_a", "owner_messages": []})
+    );
+    assert!(failure.message.contains("in Plow chat chat_a"));
+    assert!(
+        failure
+            .message
+            .contains("None of the messages read is the owner's")
+    );
+    assert!(
+        failure
+            .message
+            .contains("latch has no approval prompt or dialog")
+    );
+    assert!(
+        failure
+            .message
+            .contains("saying so in that chat, or in their rules")
+    );
+    assert!(
+        failure
+            .message
+            .contains("if it is refused again, stop and tell them")
     );
     assert_eq!(judgment.gate["owner_messages"], json!([]));
 }
@@ -1564,13 +1663,39 @@ impl Provider for OwnerViewAnswers {
 
 #[tokio::test]
 async fn chat_permission_needs_both_judgments_and_either_failure_refuses() {
-    for (whole, will, expected) in [
-        ([0.9, 0.05, 0.05], Some([0.1, 0.85, 0.05]), "not_covered"),
-        ([0.1, 0.85, 0.05], Some([0.9, 0.05, 0.05]), "not_covered"),
-        ([0.9, 0.05, 0.05], Some([0.03, 0.12, 0.85]), "owner_said_no"),
-        ([0.03, 0.12, 0.85], Some([0.9, 0.05, 0.05]), "owner_said_no"),
-        ([0.9, 0.05, 0.05], None, "gatekeeper_unavailable"),
-        ([0.9, 0.05, 0.05], Some([0.9, 0.05, 0.05]), "allow"),
+    for (whole, will, expected, decided_by) in [
+        (
+            [0.9, 0.05, 0.05],
+            Some([0.1, 0.85, 0.05]),
+            "not_covered",
+            "rules",
+        ),
+        (
+            [0.1, 0.85, 0.05],
+            Some([0.9, 0.05, 0.05]),
+            "not_covered",
+            "rules",
+        ),
+        (
+            [0.9, 0.05, 0.05],
+            Some([0.03, 0.12, 0.85]),
+            "owner_said_no",
+            "will",
+        ),
+        (
+            [0.03, 0.12, 0.85],
+            Some([0.9, 0.05, 0.05]),
+            "owner_said_no",
+            "chat",
+        ),
+        (
+            [0.03, 0.12, 0.85],
+            Some([0.03, 0.12, 0.85]),
+            "owner_said_no",
+            "chat",
+        ),
+        ([0.9, 0.05, 0.05], None, "gatekeeper_unavailable", ""),
+        ([0.9, 0.05, 0.05], Some([0.9, 0.05, 0.05]), "allow", "chat"),
     ] {
         let (plow, _) = plow(one_chat());
         let keeper = Gatekeeper::new(
@@ -1581,6 +1706,14 @@ async fn chat_permission_needs_both_judgments_and_either_failure_refuses() {
         let judgment = keeper.judge(AGENT_CALLER, &order()).await;
         assert_eq!(judgment.gate["verdict"], expected);
         assert_eq!(judgment.verdict.is_ok(), expected == "allow");
+        if !decided_by.is_empty() {
+            assert_eq!(judgment.gate["decided_by"], decided_by);
+            assert_eq!(judgment.gate["p"], judgment.gate["layers"][decided_by]["p"]);
+        }
+        if decided_by == "will" {
+            assert_eq!(judgment.gate["p"]["FORBIDDEN"], 0.85);
+            assert_eq!(judgment.gate["layers"]["chat"]["p"]["COVERED"], 0.9);
+        }
     }
 }
 

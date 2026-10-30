@@ -11,7 +11,7 @@
 //! Calls are grouped only by what links them for real (a browser
 //! session), never by when they came.
 
-mod describe;
+pub(crate) mod describe;
 mod show;
 mod view;
 

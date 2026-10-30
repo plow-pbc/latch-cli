@@ -201,17 +201,23 @@ latch audit judge ID [--raw] [--host NAME]
 
 This prints one gatekeeper call the host kept: what it sent Plow's
 decision route and what came back. ID is a record's `kept_request`: in
-`details.gate` for the owner's own call, in `details.gate.layers.rules`
-and `details.gate.layers.chat` for an agent's. It prints `{"id", "time",
-"layer", "request", "answer"}`:
+`details.gate` for the owner's own call, in `details.gate.layers.rules`,
+`details.gate.layers.chat` and `details.gate.layers.will` for an agent's.
+It prints `{"id", "time", "layer", "request", "answer"}`:
 
-- `layer`: `owner`, `rules` or `chat`.
+- `layer`: `owner`, `rules`, `chat` (whole chat) or `will` (only the owner's
+  messages and the message each answers).
 - `request`: the body as sent, `{"model", "state", "questions"}`. The
   state holds the rules of judgment, the conversation as the judge saw it
   (`"(no chat)"` when there was none), the owner's rules and the proposed
   action. Keys print sorted.
 - `answer`: Plow's reply, an error's included, or null when none came
   (the record's `model_failed` says why).
+
+An agent's `details.gate.decided_by` names the deciding call (`rules`,
+`chat` or `will`), and `details.gate.p` holds that call's probabilities.
+`details.gate.layers` records each call's probabilities, prompt/model
+identity and cost; the gate's total includes all calls.
 
 An agent's record also says `details.gate.chat_lookup`: `found`, or
 `none` when the host found no Plow chat for the agent, so it read none of

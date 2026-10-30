@@ -18,6 +18,8 @@ agent.
 connection between the two computers. Without it, the command goes to the
 host `LATCH_HOST` names; else to this computer, if it hosts; else to your only
 host. With several hosts and none named, it stops with `host_required`.
+`--host default` is the host `latch hosts default NAME` saved on this
+computer, or for this agent.
 
 `rules`, `vault` and `audit` work on this computer's own host, or on another
 of your hosts with `--host NAME`. Bare `latch status` reports this computer
@@ -43,6 +45,7 @@ latch browser open --host my-mac https://example.com
 | `latch status` | Host Agent | Print this machine, its login and account, and the account's hosts. |
 | `latch devices` | Host | List this account's machines, online or not, or remove one. |
 | `latch devices remove` | Host | Remove a machine and sign out the Plow login it registered with. Owner only.<br>Remove the old Pi without a prompt: `latch devices remove old-pi --yes` |
+| `latch hosts default` | Host | The host `--host default` names: print it, save NAME, or clear it. Kept in this state folder, for this machine or agent alone; it reaches no host you couldn't name yourself. A command without --host goes where it always did.<br>Use mbp when --host default is given: `latch hosts default mbp` |
 | `latch update` | Host Agent | Install the newest latch, or the build TAG names. |
 | `latch app` | Host | Open the Plow Latch app this latch belongs to (macOS). |
 | `latch help` | Host | Help for a command, its examples, or every command as JSON.<br>Help for one command: `latch help browser open` |
@@ -123,7 +126,7 @@ latch browser open --host my-mac https://example.com
 
 | Command | For | What it does, and an example |
 |---|---|---|
-| `latch rules set` | Host | Replace the rules with TEXT, or with the text of --file F (- reads stdin). Owner only.<br>Let agents read mail, never send it: `latch rules set 'Agents may search my mail but never send any.'` |
+| `latch rules set` | Host | Replace the rules with TEXT, with the text of --file F (- reads stdin), or with a preset's. Owner only.<br>Let agents read mail, never send it: `latch rules set 'Agents may search my mail but never send any.'` |
 | `latch rules edit` | Host | Change the rules in $EDITOR; saved only if they did not change meanwhile. Owner only.<br>Edit one agent's rules: `latch rules edit --agent ada` |
 | `latch rules clear` | Host | Remove the rules. Owner only. |
 | `latch rules show` | Host | The rules for every agent and each agent's own, with their revisions. Owner only. |

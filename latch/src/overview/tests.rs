@@ -308,6 +308,23 @@ fn several_hosts_and_never_served_needs_a_host_and_lists_three() {
     );
 }
 
+/// `LATCH_HOST=default` with no default host saved: the hosts to choose
+/// from, never "no hosts yet".
+#[test]
+fn no_saved_default_lists_the_hosts_to_choose_from() {
+    let mut facts = facts();
+    facts.here_default = None;
+    let mut listed = directory(&[("a", false, Some(true)), ("b", false, Some(true))]);
+    listed.default_host_reason = Some("no_default_host".into());
+    facts.plow = Some(Pending::Got(listed));
+    let text = shown(&facts);
+    assert!(
+        text.contains("Commands   choose with --host: a, b"),
+        "{text}"
+    );
+    assert!(!text.contains("no hosts yet"), "{text}");
+}
+
 #[test]
 fn an_agents_login_and_its_host() {
     let mut facts = facts();

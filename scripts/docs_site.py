@@ -34,7 +34,7 @@ PAGES = ["index", "connect-an-agent", "how-latch-works", "troubleshooting", "com
 
 # Where each command goes on the Commands page, by the first word of its id.
 GROUPS = [
-    ("Set up", ["setup", "login", "logout", "status", "devices", "update", "app", "help", "skill"]),
+    ("Set up", ["setup", "login", "logout", "status", "devices", "hosts", "update", "app", "help", "skill"]),
     ("Run a host", ["serve", "stop", "dashboard", "logs", "settings"]),
     ("Agents", ["agents"]),
     ("Programs and files", ["exec", "file"]),
@@ -66,6 +66,8 @@ agent.
 connection between the two computers. Without it, the command goes to the
 host `LATCH_HOST` names; else to this computer, if it hosts; else to your only
 host. With several hosts and none named, it stops with `host_required`.
+`--host default` is the host `latch hosts default NAME` saved on this
+computer, or for this agent.
 
 `rules`, `vault` and `audit` work on this computer's own host, or on another
 of your hosts with `--host NAME`. Bare `latch status` reports this computer
