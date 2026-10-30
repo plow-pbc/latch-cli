@@ -218,6 +218,18 @@ pub(crate) fn resolve(home: &Path, path: &Path) -> Result<PathBuf, Failure> {
         Err(_) if path.is_relative() => home.join(path),
         Err(_) => path.to_path_buf(),
     };
+    // A Windows path can name another machine (`\\server\share`): looking it
+    // up signs this user in there. Only this PC's drives are looked at.
+    #[cfg(windows)]
+    {
+        use std::path::{Component, Prefix};
+        let local = matches!(path.components().next(), Some(Component::Prefix(prefix))
+            if matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_)));
+        if !local {
+            let message = "the host path is not on one of this PC's drives".into();
+            return Err(Failure::new(code::bad_path, message));
+        }
+    }
     let mut above = path.as_path();
     let mut missing = Vec::new();
     loop {

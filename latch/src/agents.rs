@@ -534,6 +534,20 @@ impl TokenFile {
         // create-new is anyway).
         #[cfg(unix)]
         std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, libc::O_NOFOLLOW);
+        // On Windows it takes its folder's access list: made this user's
+        // alone before the credential is written, wherever it is.
+        #[cfg(windows)]
+        let opened = options
+            .open(&path)
+            .and_then(|file| match crate::state::owner::file(&path) {
+                Ok(()) => Ok(file),
+                Err(err) => {
+                    drop(file);
+                    let _ = std::fs::remove_file(&path);
+                    Err(err)
+                }
+            });
+        #[cfg(unix)]
         let opened = options.open(&path);
         match opened {
             Ok(file) => Ok(TokenFile { path, file }),

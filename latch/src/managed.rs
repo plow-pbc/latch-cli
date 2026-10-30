@@ -919,10 +919,16 @@ mod platform {
     use std::process::{Command, Stdio};
     use std::time::Instant;
 
-    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, WAIT_TIMEOUT};
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, FILETIME, HANDLE, HANDLE_FLAG_INHERIT, SetHandleInformation, WAIT_TIMEOUT,
+    };
+    use windows_sys::Win32::System::Console::{
+        GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+    };
     use windows_sys::Win32::System::Threading::{
-        CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS, OpenProcess, PROCESS_SYNCHRONIZE,
-        PROCESS_TERMINATE, TerminateProcess, WaitForSingleObject,
+        CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS, GetProcessTimes, OpenProcess,
+        PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
+        TerminateProcess, WaitForSingleObject,
     };
 
     use crate::failure::{Failure, code};
@@ -931,22 +937,41 @@ mod platform {
         std::env::temp_dir().join(format!("{label}.pid"))
     }
 
+    /// When `process` started, which tells it from a later process that
+    /// was given the same pid.
+    fn started(process: HANDLE) -> Option<u64> {
+        let zero = FILETIME {
+            dwLowDateTime: 0,
+            dwHighDateTime: 0,
+        };
+        let (mut created, mut exited, mut kernel, mut user) = (zero, zero, zero, zero);
+        // SAFETY: four FILETIMEs to write into, for a live handle of ours.
+        let ok =
+            unsafe { GetProcessTimes(process, &mut created, &mut exited, &mut kernel, &mut user) };
+        (ok != 0).then(|| (created.dwHighDateTime as u64) << 32 | created.dwLowDateTime as u64)
+    }
+
     /// The service's process, while it runs: a handle that may wait on it
-    /// and end it.
+    /// and end it. The pid file holds its pid and when it started, so a
+    /// later process given the same pid is never taken for it.
     fn running(label: &str) -> Option<HANDLE> {
-        let pid: u32 = std::fs::read_to_string(pid_file(label))
-            .ok()?
-            .trim()
-            .parse()
-            .ok()?;
+        let written = std::fs::read_to_string(pid_file(label)).ok()?;
+        let (pid, when) = written.trim().split_once(' ')?;
+        let (pid, when): (u32, u64) = (pid.parse().ok()?, when.parse().ok()?);
         // SAFETY: OpenProcess takes plain values; a null handle is a failure.
-        let process = unsafe { OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_TERMINATE, 0, pid) };
+        let process = unsafe {
+            OpenProcess(
+                PROCESS_SYNCHRONIZE | PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION,
+                0,
+                pid,
+            )
+        };
         if process.is_null() {
             return None;
         }
         // SAFETY: `process` is a live handle this function owns.
         let alive = unsafe { WaitForSingleObject(process, 0) } == WAIT_TIMEOUT;
-        if alive {
+        if alive && started(process) == Some(when) {
             return Some(process);
         }
         // SAFETY: as above; it is closed once.
@@ -971,6 +996,14 @@ mod platform {
             .append(true)
             .open(dir.join("serve.log"))
             .map_err(failed)?;
+        // A process started on Windows inherits every handle its parent may
+        // pass on, this command's stdio included: the host would hold the
+        // caller's pipes open, and whoever reads this command's answer to its
+        // end would wait for the host to stop. It gets its log and nothing else.
+        for which in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+            // SAFETY: this process's own standard handle; only its inherit flag changes.
+            unsafe { SetHandleInformation(GetStdHandle(which), HANDLE_FLAG_INHERIT, 0) };
+        }
         let child = Command::new(&argv[0])
             .args(&argv[1..])
             .stdin(Stdio::null())
@@ -979,7 +1012,9 @@ mod platform {
             .creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
             .spawn()
             .map_err(failed)?;
-        std::fs::write(pid_file(label), child.id().to_string()).map_err(failed)
+        let when = started(std::os::windows::io::AsRawHandle::as_raw_handle(&child))
+            .ok_or_else(|| failed(std::io::Error::last_os_error()))?;
+        std::fs::write(pid_file(label), format!("{} {when}", child.id())).map_err(failed)
     }
 
     pub fn remove(label: &str) -> Result<(), Failure> {
