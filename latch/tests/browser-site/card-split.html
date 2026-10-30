@@ -1,7 +1,8 @@
 <!doctype html><title>latch split card test</title>
 <!-- A card form in pieces: the number in four boxes of four that move on
-     to the next box when full, and the expiry as month and year lists.
-     On submit the page joins them into cc-number and cc-exp for /pay. -->
+     to the next box when full, and the expiry as month and year lists
+     (with ?year2, the year a field of two digits). On submit the page
+     joins them into cc-number and cc-exp for /pay. -->
 <h1>Checkout</h1>
 <p>Total $10.00</p>
 <form method="post" action="pay" id="pay">
@@ -29,6 +30,13 @@
   <p><button type="submit">Pay $10.00</button></p>
 </form>
 <script>
+  if (new URLSearchParams(location.search).has('year2')) {
+    const typed = document.createElement('input');
+    typed.id = 'year';
+    typed.maxLength = 2;
+    typed.setAttribute('autocomplete', 'cc-exp-year');
+    document.getElementById('year').replaceWith(typed);
+  }
   const boxes = [...document.querySelectorAll('.box')];
   boxes.forEach((box, i) => box.addEventListener('input', () => {
     if (box.value.length === 4 && boxes[i + 1]) boxes[i + 1].focus();
@@ -36,6 +44,7 @@
   document.getElementById('pay').addEventListener('submit', () => {
     const form = document.getElementById('pay');
     form.elements['cc-number'].value = boxes.map((b) => b.value).join('');
-    form.elements['cc-exp'].value = month.value + ' / ' + year.value.slice(2);
+    const shown = document.getElementById('year').value;
+    form.elements['cc-exp'].value = month.value + ' / ' + shown.slice(-2);
   });
 </script>

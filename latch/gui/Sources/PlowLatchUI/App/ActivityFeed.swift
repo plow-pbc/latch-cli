@@ -352,14 +352,20 @@ nonisolated final class LineBatches: Sendable {
 nonisolated extension AuditRecord {
     /// What became of it, in words.
     enum Status: Equatable {
-        case connected, allowed(String?), refused(String), notCovered
+        /// `gatekeeper(saidNo:)`: the gatekeeper refused it, as you said
+        /// no, or as nothing covered it. `refused`: this host's settings
+        /// refused it. `stopped`: latch stopped it for another reason,
+        /// which says what happened.
+        case connected, allowed(String?), gatekeeper(saidNo: Bool), refused(String), stopped(String)
 
         var title: String {
             switch self {
             case .connected: "Connected"
             case let .allowed(note): note.map { "Allowed · \($0)" } ?? "Allowed"
+            case .gatekeeper(saidNo: true): "Refused by gatekeeper · you said no"
+            case .gatekeeper(saidNo: false): "Refused by gatekeeper · needed your OK"
             case let .refused(why): "Refused · \(why)"
-            case .notCovered: "Refused · needed your OK"
+            case let .stopped(what): what
             }
         }
     }
@@ -367,16 +373,26 @@ nonisolated extension AuditRecord {
     var status: Status {
         if op == "connect", decision == "allow" { return .connected }
         if decision == "allow" { return .allowed(outcome == "ok" ? nil : outcome.replacingOccurrences(of: "_", with: " ")) }
+        if outcome == "gatekeeper_denied" || ["not_covered", "owner_said_no"].contains(gate?.verdict) {
+            return .gatekeeper(saidNo: gate?.verdict == "owner_said_no")
+        }
         switch outcome {
         case "exec_denied": return .refused("exec is off for this agent")
         case "not_enabled": return .refused("\(op.capitalized) is off")
         case "gatekeeper_unavailable": return .refused("judge unavailable")
         case "caller_denied": return .refused("caller not allowed")
         case "owner_only": return .refused("the owner's only")
-        case "gatekeeper_denied":
-            return gate?.verdict == "owner_said_no" ? .refused("you said no") : .notCovered
-        default: return .refused(outcome.replacingOccurrences(of: "_", with: " "))
+        default: return .stopped(Self.happened(outcome))
         }
+    }
+
+    /// What latch's code says happened, in words: `no_such_field` is "Field
+    /// not found", and any other code its own words.
+    static func happened(_ code: String) -> String {
+        if code == "confirm_needed" { return "Needs confirmation" }
+        let words = code.hasPrefix("no_such_") ? code.dropFirst(8) + "_not_found" : Substring(code)
+        let said = words.replacingOccurrences(of: "_", with: " ")
+        return said.prefix(1).uppercased() + said.dropFirst()
     }
 
     /// Who asked: an agent by its name, else the owner, from which machine.

@@ -78,7 +78,7 @@ const EXEC_PERMISSIONS: &str = "Judge an exec's argv and working folder together
 /// own site is not read as handing over the password.
 macro_rules! vault_fill {
     () => {
-        "A vault fill (a vault_fill action, or the items a browser plan may_fill) puts values saved in the owner's vault into fields on a web page. latch sets them in the page itself and the agent never receives them; for a password, latch also presses the form's button and keeps the agent out of the browser session until the values have left the page. An item's sites are the sites it is saved for, and a saved login fills only on them (or on a page under one of its other_top_sites). That says where a login may be filled, not that it may be used: a saved-login fill needs the owner's OK, from their rules or their own messages, and with no chat the rules decide. Filling the owner's saved login into one of its own sites, for something the owner wants done there, uses the login as the owner saved it: it is not reading, revealing or sharing a password. Revealing, copying or exporting a saved value, or filling a login into a site that is not one of its own, still is."
+        "A vault fill (a vault_fill action, or the items a browser plan may_fill) puts values saved in the owner's vault into fields on a web page. latch sets them in the page itself and the agent never receives them; for a password, latch also presses the form's button and keeps the agent out of the browser session until the values have left the page. An item's sites are the sites it is saved for, and a saved login fills only on them (or on a page under one of its other_top_sites). That says where a login may be filled, not that it may be used: a saved-login fill needs the owner's OK, from their rules or their own messages, and with no chat the rules decide. Filling the owner's saved login into one of its own sites, for something the owner wants done there, uses the login as the owner saved it: it is not reading, revealing or sharing a password. Revealing, copying or exporting a saved value, or filling a login into a site that is not one of its own, still is. A card fills on any site unless the owner saved it for some: using it is buying or paying there. A confirmed card fill shows its checkout: the page, the sites its values go into (a payment provider's frame is usual), the button it presses and the lines around it (the amount, as the page shows it), and the card's last four digits; judge that purchase."
     };
 }
 /// Added to the rules of judgment for an action that fills from the vault.
@@ -111,6 +111,9 @@ const EXCEPTION_P: f64 = 0.5;
 /// The chat layer also vetoes at this P(FORBIDDEN), below `ALLOW_P`: an
 /// unsure "stop" from the owner still stops.
 const CHAT_VETO_P: f64 = 0.15;
+/// Added to the rules of judgment for an agent's `eval`, which runs with
+/// the page's own access: what it may read or send is what to judge.
+const RUN_SCRIPT: &str = "An eval (a run_script action) runs the agent's own JavaScript, shown whole as its script, in the page of its site with the page's own access: it can read anything on the page, what is typed or filled into its fields included, and what it sets up can keep running after the call. Ordinary page work, for something the owner wants done on that site, is everyday: closing a pop-up or banner, scrolling, clicking, reading the visible text. A script that reads the values of form fields (password and card fields above all), listens to input, keyboard or form events, or sends page data off the page (fetch, XMLHttpRequest, sendBeacon, an image or script source, a WebSocket, postMessage to another window, or storage kept for later) needs the owner's explicit OK for exactly that; a request to do something on the site is not one.";
 /// Added to the rules of judgment when the owner is the caller.
 const OWNER_CALLS: &str = "The caller is the owner, at one of their own machines: the proposed action is the owner's own request. Judge only whether the owner's rules on this host forbid it; if a rule plausibly applies, choose FORBIDDEN.";
 /// Added to the rules of judgment only when the judge sees host rules: a
@@ -987,6 +990,9 @@ fn state(
     }
     if shown["operation"] == "vault.link" {
         rules_of_judgment.push(VAULT_LINK);
+    }
+    if shown["kind"] == "run_script" {
+        rules_of_judgment.push(RUN_SCRIPT);
     }
     let state = State {
         rules_of_judgment,

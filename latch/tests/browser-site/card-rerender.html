@@ -1,0 +1,24 @@
+<!doctype html><title>latch card re-render test</title>
+<!-- A checkout that, on Pay, declines the card and draws its form again:
+     the number's field is replaced by a new one holding the same number,
+     as a page that re-renders its form does. Nothing is sent anywhere. -->
+<h1>Checkout</h1>
+<p>Total $10.00</p>
+<form id="pay">
+  <p><label>Card number <input name="cc-number" autocomplete="cc-number" inputmode="numeric"></label></p>
+  <p><label>Expiry <input name="cc-exp" autocomplete="cc-exp" placeholder="MM / YY"></label></p>
+  <p><label>CVC <input name="cc-csc" autocomplete="cc-csc" maxlength="4"></label></p>
+  <p><button type="submit">Pay $10.00</button></p>
+</form>
+<p id="error"></p>
+<script>
+  const form = document.getElementById('pay');
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const old = form.elements['cc-number'];
+    const drawn = old.cloneNode();
+    drawn.value = old.value;
+    old.replaceWith(drawn);
+    error.textContent = 'Your card was declined. Check the number and try again.';
+  });
+</script>

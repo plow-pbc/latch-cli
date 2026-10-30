@@ -997,12 +997,17 @@ async fn fills_inside_plans_take_latchs_suggestions_or_stop() {
             ("code", "319"),
         ],
     );
+    // Read through the worker, as the test's own look: the agent's eval
+    // would keep the card out of this session.
     let storage = async |h: &mut Harness, key: &str| {
-        h.call(
-            "eval",
-            json!({"script": format!("localStorage.getItem({key:?})")}),
-        )
-        .await["value"]
+        h.entry
+            .agent_session()
+            .await
+            .unwrap()
+            .call(json!({"op": "eval", "script": format!("localStorage.getItem({key:?})")}))
+            .await
+            .unwrap()
+            .result["value"]
             .clone()
     };
 

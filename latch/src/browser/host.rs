@@ -152,6 +152,9 @@ pub(super) struct Entry {
     handing: std::sync::atomic::AtomicBool,
     /// The sites the gatekeeper let this session go to.
     judged_sites: std::sync::Mutex<HashSet<String>>,
+    /// The numbers of the cards filled in this session, digits only: what
+    /// its answers and journals are masked for.
+    pub(super) cards: super::journal::Cards,
 }
 
 impl Entry {
@@ -163,6 +166,11 @@ impl Entry {
             audit.insert("task".into(), json!(task));
         }
         audit.insert("engine".into(), self.runtime.ready["engine"].clone());
+    }
+
+    /// The numbers of the cards filled in this session.
+    pub(super) fn card_numbers(&self) -> Vec<String> {
+        self.cards.lock().expect("cards lock").clone()
     }
 
     /// The session's worker for one agent call: refused while the owner has
@@ -372,6 +380,7 @@ impl Browsers {
             confirmations: Default::default(),
             handing: Default::default(),
             judged_sites: Default::default(),
+            cards: Default::default(),
         });
         self.sessions.lock().await.insert(id.clone(), entry.clone());
         Ok((id, entry))
@@ -641,6 +650,7 @@ pub(super) async fn fill(
         judged::judge(
             caller.gate,
             judged::fill(browsers, &args, site, false),
+            &entry.card_numbers(),
             audit,
         )
         .await?;
@@ -762,9 +772,9 @@ async fn answer(
     if caller.gate.is_some()
         && let Some(action) = judged_action(browsers, &entry, command, args).await?
     {
-        judged::judge(caller.gate, action, audit).await?;
+        judged::judge(caller.gate, action, &entry.card_numbers(), audit).await?;
     }
-    let result = match command {
+    let mut result = match command {
         "close" => browsers.close(name, key).await.map(|closed| (closed, None)),
         "fill" => fill(browsers, &entry, name, caller, args, audit)
             .await
@@ -795,6 +805,18 @@ async fn answer(
     }
     if result.is_ok() {
         last_site(&entry, audit);
+    }
+    // A page may show a card number it was given (a confirmation that
+    // repeats it): the agent gets its last four digits only.
+    let cards = entry.card_numbers();
+    if !cards.is_empty() {
+        match &mut result {
+            Ok((answer, _)) => super::shown::mask_cards(answer, &cards),
+            Err(failure) => {
+                failure.message = super::shown::masked(&failure.message, &cards);
+                super::shown::mask_cards(&mut failure.details, &cards);
+            }
+        }
     }
     result
 }
@@ -859,7 +881,8 @@ async fn judged_action(
                 Some(mut plan) if !plan.steps.is_empty() && !one_action(&plan) => {
                     plan.resolve_facts();
                     let page = judged::page(browsers, entry).await?;
-                    judged::plan(browsers, &plan, page, confirmed)
+                    let names = judged::names(entry, &plan).await;
+                    judged::plan(browsers, &plan, page, &names, confirmed)
                 }
                 _ => match confirmed {
                     Some(fill) => fill,
@@ -922,7 +945,7 @@ async fn open(
     }
     if let Some(url) = url {
         let action = judged::open_site(browsers, url);
-        judged::judge(caller.gate, action, audit).await?;
+        judged::judge(caller.gate, action, &[], audit).await?;
     }
     // Judged first, as a named engine's own check comes only at its launch.
     let engine = match named {
@@ -1005,16 +1028,6 @@ async fn worker(
             Err(failure)
         }
     };
-    // Agent code was sent to this page's site: it is noted, refused or
-    // not, for every later fill there in this session.
-    if command == "eval"
-        && let Some(site) = audit
-            .get("origin")
-            .and_then(Value::as_str)
-            .and_then(sites::site_of)
-    {
-        entry.runtime.note_agent_code(&site);
-    }
     let reply = reply?;
     let mut result = reply.result;
     if command == "observe" {

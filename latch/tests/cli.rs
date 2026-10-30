@@ -5449,13 +5449,17 @@ fn a_saved_default_host_is_what_host_default_names() {
         );
     }
 
+    // Saved, it says how it is used, and that a bare command isn't.
+    let use_it = "saved; use --host default (or LATCH_HOST=default) to use it; commands without --host are unchanged";
+    let saved = ok(laptop, &["hosts", "default", "studio"], &[]);
     assert_eq!(
-        ok(laptop, &["hosts", "default", "studio"], &[])["default_host"],
-        "studio"
+        (&saved["default_host"], &saved["next"]),
+        (&json!("studio"), &json!(use_it))
     );
+    let shown = ok(laptop, &["hosts", "default"], &[]);
     assert_eq!(
-        ok(laptop, &["hosts", "default"], &[])["default_host"],
-        "studio"
+        (&shown["default_host"], &shown["next"]),
+        (&json!("studio"), &json!(use_it))
     );
     assert_eq!(ok(laptop, &echo, &[])["host"], "studio");
     let by_env = ["exec", "--", "echo", "hi"];
@@ -5466,8 +5470,16 @@ fn a_saved_default_host_is_what_host_default_names() {
     let status = ok(laptop, &["status"], &env);
     assert_eq!(status["default_host"], "studio");
     // A bare command goes where it always did: the laptop never served,
-    // and there are two hosts.
-    assert_eq!(refused(laptop, &by_env)["code"], "host_required");
+    // and there are two hosts. Its refusal says the saved default needs
+    // --host default.
+    let bare = refused(laptop, &by_env);
+    assert_eq!(bare["code"], "host_required");
+    assert!(
+        bare["message"].as_str().unwrap().ends_with(
+            "Your saved default, studio, is used only with --host default (or LATCH_HOST=default)"
+        ),
+        "{bare}"
+    );
     // Another machine's state has its own, or none: on a serving host with
     // none saved, --host default never falls back to the host itself.
     let host = &owners.host;
@@ -5483,8 +5495,14 @@ fn a_saved_default_host_is_what_host_default_names() {
     assert_eq!(agents["host"]["name"], "host", "{agents}");
 
     assert_eq!(
-        ok(laptop, &["hosts", "default", "--clear"], &[])["default_host"],
-        Value::Null
+        ok(laptop, &["hosts", "default", "--clear"], &[]),
+        json!({"default_host": null})
+    );
+    // With none saved, host_required names no default.
+    let bare = refused(laptop, &by_env);
+    assert!(
+        !bare["message"].as_str().unwrap().contains("saved default"),
+        "{bare}"
     );
     assert_eq!(refused(laptop, &echo)["code"], "no_default_host");
 

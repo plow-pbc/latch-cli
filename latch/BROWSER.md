@@ -94,6 +94,13 @@ add-on is left out.
 
     latch browser open --engine camoufox https://example.com
 
+A site may silently drop a sign-in from one engine and take it from the
+other. Agents are taught (`SKILL.md`) to retry a sign-in that doesn't move
+on once, in a new session on the other engine, and a login fill whose
+fields the page kept says so in its answer's `next`. A card's, or any
+other kind's, `next` says never to submit again: kept fields don't prove
+a payment failed.
+
 ## Calling from the host itself
 
 Use the host's own state folder and its existing `serve`:
@@ -253,8 +260,8 @@ A vault fill holds its session's browser: the session's calls get
 a fill could not clear may be on a page, until the session is closed.
 
 Each element in a snapshot has its ref, role and accessible name, its
-value (never for a password or secret-looking field, which is marked
-`secret`), checked/expanded/disabled/off-screen state, and the text of its
+value (never for a password, a card's number or code, or another
+secret-looking field, which is marked `secret`), checked/expanded/disabled/off-screen state, and the text of its
 row or card. Every frame is read, cross-site and sandboxed ones included,
 and listed with its effective origin (`self.origin` in latch's isolated
 world; `opaque` for a sandboxed frame). A snapshot lists at most 200
@@ -372,8 +379,11 @@ each before anything of it reaches the page:
   there; with it, a sign-in on the login's own site isn't read as sharing the
   password, while a login on any other site is. A refused fill in a plan
   stops the plan at that step, the reason in its `stop`;
-- every `eval` (its script), upload and download (the file's name and
-  size).
+- every `eval`, judged on its whole script: ordinary page work (closing a
+  pop-up, scrolling, clicking, reading visible text) is everyday, while a
+  script that reads form fields, listens to input, keyboard or form
+  events, or sends page data off the page needs the owner's explicit OK;
+- every upload and download (the file's name and size).
 
 Clicks, typing, `act`, page reads, screenshots and the `--confirm` of an
 ordinary click are not judged: the risk decision, confirmations and the
@@ -576,7 +586,8 @@ and shot, and sends it only if its sha256 is the one the record kept. A
 request's journal and screenshots are kept 7 days, after its session
 closes too. latch doesn't redact a screenshot's pixels: it takes none
 while a value filled from the vault is on the page, and none of a fill
-step, but typed text and the rest of the page can show.
+step, but typed text and the rest of the page can show, a card's number
+included if the page prints it after the fill ([VAULT.md](VAULT.md)).
 
 **Removed forms.** `act` on a name or description, `act --expect`,
 `act --steps`, `act click --at X,Y`, `find "<description>"` and

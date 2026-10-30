@@ -6,6 +6,9 @@
 //! the ref of one left out works as soon as `observe --all` (or a scroll
 //! and an `observe`) shows it; the audit, the gatekeeper and reservations
 //! read full addresses from the page, never from this.
+//!
+//! A card number a session filled is shown in its answers by its last four
+//! digits only (`mask_cards`), wherever the page put it.
 
 use serde_json::{Map, Value, json};
 
@@ -117,9 +120,104 @@ fn short(url: &str) -> String {
     shown
 }
 
+/// Every string in `value` with each card number in `cards` (digits only)
+/// shown by its last four digits.
+pub fn mask_cards(value: &mut Value, cards: &[String]) {
+    match value {
+        Value::String(text) => *text = masked(text, cards),
+        Value::Array(values) => values.iter_mut().for_each(|v| mask_cards(v, cards)),
+        Value::Object(values) => values.values_mut().for_each(|v| mask_cards(v, cards)),
+        _ => {}
+    }
+}
+
+/// `text` with each card number in `cards` it shows (whole, or in groups
+/// set apart by single spaces or dashes, as a site prints one) put as
+/// `•••• 4242`; the digits around it stay.
+pub fn masked(text: &str, cards: &[String]) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::new();
+    let mut at = 0;
+    while at < chars.len() {
+        if !chars[at].is_ascii_digit() {
+            out.push(chars[at]);
+            at += 1;
+            continue;
+        }
+        // The run from here: each digit and where it is.
+        let (mut end, mut digits, mut places) = (at, String::new(), Vec::new());
+        while end < chars.len() {
+            if chars[end].is_ascii_digit() {
+                digits.push(chars[end]);
+                places.push(end);
+            } else if !matches!(chars[end], ' ' | '-')
+                || !chars.get(end + 1).is_some_and(char::is_ascii_digit)
+            {
+                break;
+            }
+            end += 1;
+        }
+        let found = cards
+            .iter()
+            .find_map(|card| digits.find(card.as_str()).map(|from| (card, from)));
+        match found {
+            // Only the card's own digits go; the digits around them stay.
+            Some((card, from)) => {
+                out.extend(&chars[at..places[from]]);
+                out.push_str("•••• ");
+                out.push_str(&card[card.len().saturating_sub(4)..]);
+                at = places[from + card.len() - 1] + 1;
+            }
+            None => {
+                out.extend(&chars[at..end]);
+                at = end;
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_card_number_shows_as_its_last_four_as_a_site_prints_it() {
+        let cards = ["4242424242424242".to_string()];
+        let mut answer = json!({
+            "lines": ["Paid with 4242 4242 4242 4242.", "Card 4242-4242-4242-4242 or 4242424242424242"],
+            "elements": [{"value": "4242424242424242 04/31"}],
+            "order": "Order 1234567890123, total $10.00",
+            "total": "Total $10.00\n\n4242 4242 4242 4242",
+        });
+        mask_cards(&mut answer, &cards);
+        assert_eq!(
+            answer,
+            json!({
+                "lines": ["Paid with •••• 4242.", "Card •••• 4242 or •••• 4242"],
+                "elements": [{"value": "•••• 4242 04/31"}],
+                "order": "Order 1234567890123, total $10.00",
+                "total": "Total $10.00\n\n•••• 4242",
+            })
+        );
+    }
+
+    #[test]
+    fn a_number_shorter_than_four_digits_is_masked_whole() {
+        assert_eq!(masked("Order 123", &["123".to_string()]), "Order •••• 123");
+    }
+
+    #[test]
+    fn a_cards_last_four_alone_stays_readable() {
+        let cards = ["4242424242424242".to_string()];
+        for text in [
+            "Visa ending in 4242",
+            "Card •••• 4242, expires 04/31",
+            "4242 (ending), order 42424242",
+        ] {
+            assert_eq!(masked(text, &cards), text);
+        }
+    }
 
     #[test]
     fn a_page_shows_its_on_screen_elements_and_their_frames_and_says_what_it_left_out() {

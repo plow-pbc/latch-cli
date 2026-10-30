@@ -1,7 +1,8 @@
 <!doctype html><title>latch checkout test</title>
 <!-- Posts to /pay, which answers with a new page saying which card fields
      matched the test card. With ?bare the fields lose their autocomplete
-     hints, as many shops' have none. -->
+     hints, as many shops' have none; with ?max16 the card number field
+     takes at most 16 characters. -->
 <h1>Checkout</h1>
 <form method="post" action="pay">
   <p><label>Name on card <input name="cc-name" autocomplete="cc-name"></label></p>
@@ -11,7 +12,9 @@
   <p><button type="submit">Pay</button></p>
 </form>
 <script>
-  if (new URLSearchParams(location.search).has('bare')) {
+  const given = new URLSearchParams(location.search);
+  if (given.has('bare')) {
     for (const field of document.querySelectorAll('[autocomplete]')) field.removeAttribute('autocomplete');
   }
+  if (given.has('max16')) document.querySelector('[name=cc-number]').maxLength = 16;
 </script>

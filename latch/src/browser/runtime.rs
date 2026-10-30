@@ -1,12 +1,10 @@
 //! A session runtime as the host keeps it: the browser worker (`worker.rs`)
 //! one session runs on, started on a profile of its own (`profile.rs`) when
-//! the session opens, and what the host knows of it: the fill pause and the
-//! sites agent code ran on. The profile is removed when the runtime ends.
+//! the session opens, and what the host knows of it: the fill pause. The
+//! profile is removed when the runtime ends.
 
-use std::collections::BTreeSet;
 use std::path::Path;
 use std::process::Stdio;
-use std::sync::Mutex as Shared;
 use std::sync::atomic::{AtomicBool, AtomicU32};
 use std::time::Duration;
 
@@ -46,9 +44,6 @@ pub struct Runtime {
     /// How many fill pauses have begun: a decision made before one began
     /// is not acted on.
     pub pauses: AtomicU32,
-    /// The sites agent code (`eval`) has run on in this runtime: a value
-    /// filled there later may be seen by what it left.
-    agent_code: Shared<BTreeSet<String>>,
     /// How long a call (its line, upload, answer and bytes) may take.
     within: fn(&Value) -> Duration,
 }
@@ -155,7 +150,6 @@ impl Runtime {
             ready,
             filling: AtomicBool::new(false),
             pauses: AtomicU32::new(0),
-            agent_code: Shared::default(),
             within,
         })
     }
@@ -244,20 +238,6 @@ impl Runtime {
         let closed = worker.answer().await?;
         let _ = worker.child.wait().await;
         Ok(closed["result"].clone())
-    }
-
-    /// Agent code ran on `site`, for every later fill in this runtime.
-    pub fn note_agent_code(&self, site: &str) {
-        self.agent_code
-            .lock()
-            .expect("agent code lock")
-            .insert(site.to_string());
-    }
-
-    /// Whether agent code ran on one of `sites` in this runtime.
-    pub fn agent_code_on(&self, sites: &[String]) -> bool {
-        let ran = self.agent_code.lock().expect("agent code lock");
-        sites.iter().any(|site| ran.contains(site))
     }
 }
 
