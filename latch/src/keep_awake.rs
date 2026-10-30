@@ -469,8 +469,10 @@ mod platform {
     use super::keeper::{Assertion, Power};
     use crate::log::log;
 
-    /// `SYSTEM_POWER_STATUS.BatteryFlag`: the PC has no system battery.
+    /// `SYSTEM_POWER_STATUS.BatteryFlag`: the PC has no system battery, and
+    /// the flag Windows could not read, which has that bit set too.
     const NO_BATTERY: u8 = 128;
+    const UNREAD: u8 = 255;
 
     /// What powers the PC now. A PC with no battery says AC.
     pub fn power() -> Power {
@@ -480,10 +482,11 @@ mod platform {
         if unsafe { GetSystemPowerStatus(&mut status) } == 0 {
             return Power::Unknown;
         }
+        // Power Windows cannot read never holds, as on macOS.
         match status.ACLineStatus {
             1 => Power::Ac,
             0 => Power::Battery,
-            _ if status.BatteryFlag & NO_BATTERY != 0 => Power::Ac,
+            _ if status.BatteryFlag != UNREAD && status.BatteryFlag & NO_BATTERY != 0 => Power::Ac,
             _ => Power::Unknown,
         }
     }
