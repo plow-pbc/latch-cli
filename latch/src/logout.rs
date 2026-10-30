@@ -37,6 +37,7 @@ use serde_json::{Value, json};
 
 use crate::cli::LogoutArgs;
 use crate::credential;
+use crate::dashboard::describe::human_size;
 use crate::failure::{Failure, code};
 use crate::lifecycle;
 use crate::login::shell_quoted;
@@ -163,6 +164,34 @@ pub struct Summary {
     vault: Option<VaultCount>,
     /// The audit log's records; null with no audit log.
     audit_records: Option<usize>,
+    browsers: Browsers,
+}
+
+/// The browsers on this folder: each engine installed, a folder per
+/// version that `latch browser setup` (or the installer) downloads again,
+/// and `browser/`, what sessions left: their journals and screenshots,
+/// kept 7 days. A session's profile, sign-ins included, lives there only
+/// while it runs; a host removes it when the session ends.
+#[derive(Serialize)]
+struct Browsers {
+    engines: Vec<Engine>,
+    /// `browser/`, by size; null when there is none.
+    session_data: Option<Sized>,
+}
+
+#[derive(Serialize)]
+struct Engine {
+    /// As `latch browser setup --engine` names it.
+    engine: &'static str,
+    version: String,
+    path: PathBuf,
+    bytes: u64,
+}
+
+#[derive(Serialize)]
+struct Sized {
+    path: PathBuf,
+    bytes: u64,
 }
 
 #[derive(Serialize)]
@@ -231,6 +260,7 @@ impl Summary {
             deletes_folder: purge && exists,
             vault,
             audit_records,
+            browsers: browsers(path),
         })
     }
 
@@ -285,6 +315,9 @@ impl Summary {
                 let _ = writeln!(text, "      {line}");
             }
             text += "      rules, settings, plugins and this machine's key\n";
+            if !self.browsers.engines.is_empty() {
+                text += "      (`latch browser setup` downloads a browser again)\n";
+            }
             text += "This cannot be undone.\n";
         } else if !purge {
             text += "It keeps:\n";
@@ -319,8 +352,70 @@ impl Summary {
         if let Some(records) = self.audit_records {
             lines.push(format!("the audit log: {}", counted(records, "record")));
         }
+        for engine in &self.browsers.engines {
+            let name = match engine.engine {
+                "chrome" => "Chrome for Testing",
+                _ => "Camoufox",
+            };
+            lines.push(format!(
+                "the {name} {} browser: {} at {}",
+                engine.version,
+                human_size(engine.bytes),
+                engine.path.display()
+            ));
+        }
+        if let Some(data) = &self.browsers.session_data {
+            lines.push(format!(
+                "browser session journals and screenshots: {} at {}",
+                human_size(data.bytes),
+                data.path.display()
+            ));
+        }
         lines
     }
+}
+
+fn browsers(path: &Path) -> Browsers {
+    let mut engines = Vec::new();
+    for (engine, folder) in [("chrome", "cft"), ("camoufox", "camoufox")] {
+        let Ok(versions) = fs::read_dir(path.join("plugins").join(folder)) else {
+            continue;
+        };
+        for version in versions.flatten() {
+            if version.file_type().is_ok_and(|kind| kind.is_dir()) {
+                engines.push(Engine {
+                    engine,
+                    version: version.file_name().to_string_lossy().into_owned(),
+                    path: version.path(),
+                    bytes: bytes_in(&version.path()),
+                });
+            }
+        }
+    }
+    engines.sort_by(|a, b| a.path.cmp(&b.path));
+    let data = path.join("browser");
+    Browsers {
+        engines,
+        session_data: data.is_dir().then(|| Sized {
+            bytes: bytes_in(&data),
+            path: data,
+        }),
+    }
+}
+
+/// The size of every file under `path`, links not followed.
+fn bytes_in(path: &Path) -> u64 {
+    let Ok(entries) = fs::read_dir(path) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .map(|entry| match entry.file_type() {
+            Ok(kind) if kind.is_dir() => bytes_in(&entry.path()),
+            Ok(kind) if kind.is_file() => entry.metadata().map_or(0, |found| found.len()),
+            _ => 0,
+        })
+        .sum()
 }
 
 fn vault_count(path: &Path) -> Option<VaultCount> {

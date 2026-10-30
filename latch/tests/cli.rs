@@ -6546,6 +6546,12 @@ fn logout_says_what_it_deletes_and_keeps_and_asks_first() {
         &[],
     );
     assert_eq!(import.status.code(), Some(0), "{import:?}");
+    // A browser engine and what a session left, stand-ins of known size.
+    let engine = host.join("plugins/camoufox/152.0");
+    fs::create_dir_all(engine.join("bin")).unwrap();
+    fs::write(engine.join("bin/camoufox"), vec![0; 3000]).unwrap();
+    fs::create_dir_all(host.join("browser/journal/s")).unwrap();
+    fs::write(host.join("browser/journal/s/r.jsonl"), vec![b'x'; 500]).unwrap();
     let all_secrets = SECRET_FILES.map(|file| (file, fs::read(host.join(file)).unwrap()));
     let state_dir = host.canonicalize().unwrap();
     let secret_values = [
@@ -6588,6 +6594,10 @@ fn logout_says_what_it_deletes_and_keeps_and_asks_first() {
             "deletes_folder": false,
             "vault": {"card": 1, "login": 2, "note": 1},
             "audit_records": summary["audit_records"],
+            "browsers": {
+                "engines": [{"engine": "camoufox", "version": "152.0", "path": state_dir.join("plugins/camoufox/152.0"), "bytes": 3000}],
+                "session_data": {"path": state_dir.join("browser"), "bytes": 500},
+            },
         })
     );
     assert!(summary["audit_records"].as_u64().unwrap() > 0, "{summary}");
@@ -6619,6 +6629,14 @@ fn logout_says_what_it_deletes_and_keeps_and_asks_first() {
         format!("      {}", state_dir.join("config.json").display()),
         "It keeps:".to_string(),
         "  - the vault: 1 card, 2 logins, 1 note".to_string(),
+        format!(
+            "  - the Camoufox 152.0 browser: 2.9 KB at {}",
+            state_dir.join("plugins/camoufox/152.0").display()
+        ),
+        format!(
+            "  - browser session journals and screenshots: 500 B at {}",
+            state_dir.join("browser").display()
+        ),
         "rules, settings, plugins and this machine's key: `latch login` brings it back as \"host\""
             .to_string(),
         "Log out? [y/N]".to_string(),
@@ -6635,6 +6653,8 @@ fn logout_says_what_it_deletes_and_keeps_and_asks_first() {
     for line in [
         format!("  - delete {} and everything in it:", state_dir.display()),
         "      the vault: 1 card, 2 logins, 1 note".to_string(),
+        "      the Camoufox 152.0 browser: 2.9 KB at".to_string(),
+        "      (`latch browser setup` downloads a browser again)".to_string(),
         "This cannot be undone.".to_string(),
         "Type delete to delete all of it:".to_string(),
     ] {
@@ -6653,6 +6673,9 @@ fn logout_says_what_it_deletes_and_keeps_and_asks_first() {
         "{out}"
     );
     assert_eq!(secret_files_in(&host), ["key", "vault.key", "audit.keys"]);
+    assert!(
+        engine.join("bin/camoufox").exists() && host.join("browser/journal/s/r.jsonl").exists()
+    );
     nothing_secret(&shown);
 
     // Typing delete purges.
