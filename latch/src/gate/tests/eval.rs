@@ -85,7 +85,7 @@ async fn live_eval_cases() {
         rows.push(row.unwrap());
     }
     let meta = json!({"path": "Gatekeeper::judge", "model": MODEL, "repeats": repeats,
-                      "rules_prompt": RULES_LAYER.id(), "chat_prompt": CHAT_LAYER.id()});
+                      "rules_prompt": RULES_LAYER.id(), "chat_prompt": CHAT_LAYER.id(), "owner_prompt": WILL_LAYER.id()});
     std::fs::write(
         out,
         serde_json::to_vec(&json!({"meta": meta, "rows": rows})).unwrap(),
