@@ -276,6 +276,12 @@ pub enum Command {
         key: String,
         file: PathBuf,
     },
+    /// Internal: on Windows, installs the pinned gog the host runs for
+    /// `latch google` unless it is there, as install.sh does elsewhere; the
+    /// installer runs it
+    #[cfg(windows)]
+    #[command(hide = true)]
+    InstallGog,
     /// Internal: the app's "Start when you log in" item, as ServiceManagement
     /// reports it; with --again, registered again from this app, which the
     /// installer does once it moves the app to another folder

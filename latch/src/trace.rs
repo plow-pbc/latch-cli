@@ -88,3 +88,33 @@ pub fn output(log: &File) -> Result<(Stdio, Stdio), Failure> {
     };
     Ok((copy()?, copy()?))
 }
+
+/// Runs `program` from Windows' own System32 (curl.exe, tar.exe,
+/// icacls.exe) with `args`, its output into `trace.log`, as the installers
+/// latch runs elsewhere write there. A failure names it and that file.
+#[cfg(windows)]
+pub fn system_tool(
+    state: &StateDir,
+    program: &str,
+    args: &[&std::ffi::OsStr],
+) -> Result<(), Failure> {
+    let system = std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap_or_default())
+        .join("System32");
+    let (out, err) = output(&file(state)?)?;
+    let status = std::process::Command::new(system.join(program))
+        .args(args)
+        .stdout(out)
+        .stderr(err)
+        .status()
+        .map_err(|err| Failure::new(code::setup_failed, format!("{program}: {err}")))?;
+    if status.success() {
+        return Ok(());
+    }
+    Err(Failure::new(
+        code::setup_failed,
+        format!(
+            "{program} failed ({status}); its messages are in {}",
+            state.path.join(FILE).display()
+        ),
+    ))
+}

@@ -684,15 +684,29 @@ fn check_size(value: &Value) -> Result<(), Failure> {
 /// plugins folder, in a folder named for the pinned `version`, so a latch
 /// with a new pin never picks up the old gog. There is no other place.
 pub(crate) fn gog_program(state_dir: &Path, version: &str) -> Result<PathBuf, Failure> {
-    let path = state_dir.join("plugins/gog").join(version).join(super::GOG);
+    let path = gog_path(state_dir, version);
     if path.exists() {
         return Ok(path);
     }
+    // Windows has no install.sh: turning Google on installs gog there.
+    let fix = match cfg!(windows) {
+        true => "`latch plugins enable google` installs it",
+        false => "run install.sh",
+    };
     let message = format!(
-        "gog {version} is not installed at {}; run install.sh",
+        "gog {version} is not installed at {}; {fix}",
         path.display()
     );
     Err(Failure::new(code::gog_not_configured, message))
+}
+
+/// Where gog `version` is, installed or not.
+pub(crate) fn gog_path(state_dir: &Path, version: &str) -> PathBuf {
+    state_dir
+        .join("plugins")
+        .join("gog")
+        .join(version)
+        .join(super::GOG)
 }
 /// Sends one `Ok` answer frame to the client.
 async fn frame(send: &mut SendStream, value: Value) -> Result<(), Failure> {
@@ -719,7 +733,8 @@ mod tests {
     use crate::google::GOG;
     /// Where gog `version` is, below the state folder, as a message shows it.
     fn in_plugins(version: &str) -> String {
-        Path::new("plugins/gog")
+        Path::new("plugins")
+            .join("gog")
             .join(version)
             .join(GOG)
             .display()
@@ -736,9 +751,15 @@ mod tests {
         };
         let missing = gog_program(state.path(), "0.36.0").unwrap_err();
         assert_eq!(missing.code, "gog_not_configured");
+        // What puts it there: install.sh, or on Windows turning Google on.
+        let fix = match cfg!(windows) {
+            true => "`latch plugins enable google` installs it",
+            false => "run install.sh",
+        };
         assert!(
-            missing.message.contains(&in_plugins("0.36.0"))
-                && missing.message.contains("install.sh")
+            missing.message.contains(&in_plugins("0.36.0")) && missing.message.contains(fix),
+            "{}",
+            missing.message
         );
         // The old place (~/.local/share/latch/gog) is never used.
         installed(&state.path().join(".local/share/latch/gog"), "0.36.0");

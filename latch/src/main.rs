@@ -511,6 +511,8 @@ async fn run(
             Ok(Printed(String::new()))
         }
         Command::PruneHelpers => json(pretty, plugins::prune_alone(&state.path)?),
+        #[cfg(windows)]
+        Command::InstallGog => json(pretty, google::install::if_missing(&state)?),
         #[cfg(target_os = "macos")]
         Command::LoginItem { again } => json(
             pretty,
