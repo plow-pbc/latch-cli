@@ -494,7 +494,11 @@ impl Gatekeeper {
         gate["decided_by"] = json!(decided_by);
         gate["p"] = layers[decided_by]["p"].clone();
         gate["layers"] = layers;
-        agent_verdict(says.0, says.1, looked && says.1.is_none())
+        let read = ChatRead {
+            chat: gate["chat"].as_str().unwrap_or_default(),
+            owner_messages: gate["owner_messages"].as_array().map_or(&[], Vec::as_slice),
+        };
+        agent_verdict(says.0, says.1.map(|chat| (chat, read)))
     }
 
     /// Asks the model about `action` against `intent` with `prompt`. `call`
@@ -664,12 +668,20 @@ fn owner_verdict(p: P) -> Result<(), Failure> {
     ))
 }
 
+/// The chat an agent's chat layer read, as the record names it: its id,
+/// and the owner's messages among those the judge was shown.
+struct ChatRead<'a> {
+    chat: &'a str,
+    owner_messages: &'a [Value],
+}
+
 /// An agent's verdict from its layers: the rules layer, and the chat layer
-/// when it has a chat. Either one's veto refuses; else either one's allow
-/// allows. No chat says neither, and a refusal says when the host found
-/// none for the agent (`no_chat`).
-fn agent_verdict(rules: Says, chat: Option<Says>, no_chat: bool) -> Result<(), Failure> {
-    let says = [Some(rules), chat];
+/// with the chat it read, when the host found one. Either one's veto
+/// refuses; else either one's allow allows. No chat says neither. A
+/// `not_covered` refusal says which chat was read, if any, and where the
+/// owner's OK has to go: latch never asks the owner itself.
+fn agent_verdict(rules: Says, chat: Option<(Says, ChatRead)>) -> Result<(), Failure> {
+    let says = [Some(rules), chat.as_ref().map(|(says, _)| *says)];
     if says.contains(&Some(Says::Veto)) {
         return Err(denied(
             "owner_said_no",
@@ -679,19 +691,41 @@ fn agent_verdict(rules: Says, chat: Option<Says>, no_chat: bool) -> Result<(), F
     if says.contains(&Some(Says::Allow)) {
         return Ok(());
     }
-    let found = match no_chat {
-        true => {
-            " This host found no Plow chat between you and the owner, so it read none of their messages."
+    match chat {
+        Some((_, read)) => {
+            let none_theirs = match read.owner_messages {
+                [] => " None of the messages read is the owner's.",
+                _ => "",
+            };
+            let mut failure = denied(
+                "not_covered",
+                format!(
+                    "Neither the owner's rules nor their messages in Plow chat {} allow this.{none_theirs} {NO_PROMPT} the owner allows this by saying so in that chat, or in their rules. Ask them there, saying exactly what you will do (item, total, recipient), and retry once they agree; if it is refused again, stop and tell them.",
+                    read.chat
+                ),
+            );
+            failure.details["chat"] = json!(read.chat);
+            failure.details["owner_messages"] = json!(read.owner_messages);
+            failure.details["chat_lookup"] = json!("found");
+            Err(failure)
         }
-        false => "",
-    };
-    Err(denied(
-        "not_covered",
-        format!(
-            "Neither the owner's rules nor their messages allow this.{found} Ask the owner in chat, saying exactly what you will do (item, total, recipient), then retry."
-        ),
-    ))
+        None => {
+            let mut failure = denied(
+                "not_covered",
+                format!(
+                    "Neither the owner's rules nor their messages allow this. This host found no Plow chat between you and the owner, so it read none of their messages and only their rules can allow this. {NO_PROMPT} tell the owner exactly what you will do (item, total, recipient) and that it needs their rules on this host (`latch rules edit`)."
+                ),
+            );
+            failure.details["chat_lookup"] = json!("none");
+            Err(failure)
+        }
+    }
 }
+
+/// Said in every refusal an agent may take to the owner, so that it never
+/// sends them looking for a dialog.
+const NO_PROMPT: &str =
+    "latch has no approval prompt or dialog, so never ask the owner to approve one:";
 
 fn denied(reason: &str, message: String) -> Failure {
     let mut failure = Failure::new(code::gatekeeper_denied, message);
