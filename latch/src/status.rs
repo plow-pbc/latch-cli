@@ -133,10 +133,10 @@ pub async fn run(state: &StateDir) -> Result<Status, Failure> {
             return Ok(None);
         }
         let plow = Plow::new(&config.api_url, &credential::token(state)?)?;
-        tokio::time::timeout(PLOW_WITHIN, plow.balance())
+        let balance = tokio::time::timeout(PLOW_WITHIN, plow.balance())
             .await
-            .unwrap_or_else(|_| Err(crate::plow::no_answer(&config.api_url, PLOW_WITHIN)))
-            .map(Some)
+            .unwrap_or_else(|_| Err(crate::plow::no_answer(&config.api_url, PLOW_WITHIN)));
+        unless_denied(balance)
     };
     let ((), balance) = tokio::join!(plugins, balance);
     directory.account.available_balance_usd = balance.map_err(offline)?;
@@ -147,6 +147,17 @@ pub async fn run(state: &StateDir) -> Result<Status, Failure> {
         default_host: directory.default_host,
         default_host_reason: directory.default_host_reason,
     })
+}
+
+/// What only an owner's login may read, or `None` where Plow refuses this
+/// login it: a cloud host's credential is a device's, without the owner's
+/// scopes.
+fn unless_denied<T>(answer: Result<T, Failure>) -> Result<Option<T>, Failure> {
+    match answer {
+        Ok(value) => Ok(Some(value)),
+        Err(failure) if failure.code == code::plow_denied.name => Ok(None),
+        Err(failure) => Err(failure),
+    }
 }
 
 /// What Plow says of the account this machine is logged in to.
@@ -167,14 +178,17 @@ pub struct Directory {
 pub async fn directory(state: &StateDir) -> Result<Directory, Failure> {
     let config = state.require_login()?;
     let plow = Plow::new(&config.api_url, &credential::token(state)?)?;
-    // The owner's login reads its name with what only it may read; an
-    // agent's, from the profile.
+    // An owner's login reads its name with what only it may read; an
+    // agent's, or a device login Plow refuses that (a cloud host's), from
+    // the profile.
     let who = async {
-        if config.peer.kind == "device" {
-            let identity = plow.owner_identity().await?;
-            Ok((identity.display_name.clone(), Some(identity)))
-        } else {
-            Ok((plow.display_name().await?, None))
+        let identity = match config.peer.kind == "device" {
+            true => unless_denied(plow.owner_identity().await)?,
+            false => None,
+        };
+        match identity {
+            Some(identity) => Ok((identity.display_name.clone(), Some(identity))),
+            None => Ok((plow.display_name().await?, None)),
         }
     };
     let (peers, owner_uid, (display_name, identity)) =

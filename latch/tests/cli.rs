@@ -1665,6 +1665,17 @@ fn status_names_the_account_this_machine_and_each_host_once() {
     let unknown = status_of(&[("LATCH_HOST", Path::new("gone"))]);
     assert_eq!(unknown["default_host_reason"], "unknown_host");
 
+    // A cloud host's credential may not read what only the owner's may:
+    // the status says so with nulls, never fails.
+    plow.state.lock().unwrap().host_login = true;
+    let host_login = status_of(&[]);
+    assert_eq!(
+        host_login["account"],
+        json!({"owner_uid": "usr_synthetic", "display_name": "Ada Example",
+               "phones": null, "emails": null, "available_balance_usd": null})
+    );
+    plow.state.lock().unwrap().host_login = false;
+
     // --local is the same, without what Plow says.
     let asked = plow.seen().len();
     let local = latch(&host, &["status", "--local"], &[]);
@@ -2462,6 +2473,9 @@ struct LiveState {
     /// The real Plow decision route and the login to ask it with: its
     /// decisions go there instead (`real_judge`).
     judge: Option<(String, String)>,
+    /// The owner's login is a cloud host's credential: a device's, with
+    /// none of the owner's own scopes.
+    host_login: bool,
 }
 
 impl LivePlow {
@@ -2488,6 +2502,7 @@ impl LivePlow {
                 sign_in_slow: std::time::Duration::ZERO,
                 tokens_slow: std::time::Duration::ZERO,
                 judge: None,
+                host_login: false,
             })),
         };
         let serving = plow.clone();
@@ -2776,6 +2791,7 @@ impl LivePlow {
             ),
             ("GET", "/v1/auth/owner-uid") => (200, json!({"owner_uid": "usr_synthetic"})),
             // Super-scope and `account:usage`: an owner's login only.
+            ("GET", "/v1/auth/owner-identity" | "/v1/usage") if state.host_login => (403, json!({})),
             ("GET", "/v1/auth/owner-identity") if kind == "device" => (
                 200,
                 json!({"display_name": "Ada Example", "phones": ["+15550000009"],
