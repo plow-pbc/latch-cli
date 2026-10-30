@@ -11,7 +11,6 @@
 //! line left out.
 
 use std::future::Future;
-use std::os::fd::{AsRawFd, RawFd};
 
 use iroh::endpoint::VarInt;
 use serde_json::{Map, Value, json};
@@ -147,12 +146,15 @@ async fn stream(
     host: &Host,
     send: &mut SendStream,
     cut_off: impl Future<Output = Code>,
-    lines: impl FnOnce(RawFd, mpsc::Sender<Value>) -> Result<(), Failure> + Send + 'static,
+    lines: impl FnOnce(crate::watch::Hangup, mpsc::Sender<Value>) -> Result<(), Failure>
+    + Send
+    + 'static,
 ) -> Result<Value, Failure> {
     let (hangup, hold) =
         std::io::pipe().map_err(|err| Failure::new(code::watch_failed, err.to_string()))?;
     let (queue, mut queued) = mpsc::channel(QUEUED);
-    let reader = tokio::task::spawn_blocking(move || lines(hangup.as_raw_fd(), queue));
+    let reader =
+        tokio::task::spawn_blocking(move || lines(crate::watch::hangup_of(&hangup), queue));
     tokio::pin!(cut_off);
     let mut stopping = host.stopping.subscribe();
     let stopping = async move {

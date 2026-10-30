@@ -16,6 +16,8 @@ mod credential;
 mod dashboard;
 mod devices;
 mod dial;
+// Windows runs no workers until it has a sandbox: what only they use is idle there.
+#[cfg_attr(windows, allow(dead_code, unused_imports))]
 mod exec;
 mod failure;
 mod files;
@@ -66,6 +68,8 @@ mod update;
 mod vault;
 mod watch;
 mod wire;
+// Windows runs no workers until it has a sandbox: what only they use is idle there.
+#[cfg_attr(windows, allow(dead_code, unused_imports))]
 mod worker;
 
 use crate::failure::code;
@@ -96,6 +100,9 @@ fn main() -> ExitCode {
     if let Some(exit) = gui::launch() {
         return exit;
     }
+    // A Windows console draws latch's escape sequences only when asked to.
+    #[cfg(windows)]
+    term::Console::draw_escapes();
     // A relative LATCH_STATE_DIR names a folder from here: made absolute
     // for every latch this one starts, a host's service in another
     // working folder included.

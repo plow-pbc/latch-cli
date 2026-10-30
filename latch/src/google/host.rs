@@ -1,6 +1,5 @@
 //! Authenticated host operations. The host sees file metadata and pipes;
 //! only sandboxed children open the transferred files or contact Google.
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -443,9 +442,11 @@ async fn invoke(
             }
         })?;
     // Only this worker is granted the unique private folder in OS temp.
-    let folder = tempfile::Builder::new()
-        .prefix("latch-google-")
-        .permissions(std::fs::Permissions::from_mode(0o700))
+    let mut folder = tempfile::Builder::new();
+    folder.prefix("latch-google-");
+    #[cfg(unix)]
+    folder.permissions(std::os::unix::fs::PermissionsExt::from_mode(0o700));
+    let folder = folder
         .tempdir()
         .map_err(|_| problem(code::google_worker_failed, json!({})))?;
     let job = process::Job {

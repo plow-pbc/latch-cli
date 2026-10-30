@@ -48,9 +48,14 @@ pub async fn run(state: &StateDir, args: BrowserArgs) -> Result<Value, Failure> 
             "with --history, --output takes one of R's screenshots: add --shot N".into(),
         ));
     }
+    // Audited only; std names no parent process on Windows.
+    #[cfg(unix)]
+    let ppid = Some(std::os::unix::process::parent_id());
+    #[cfg(windows)]
+    let ppid: Option<u32> = None;
     let mut request = json!({
         "session": args.session,
-        "ppid": std::os::unix::process::parent_id(),
+        "ppid": ppid,
     });
     // Where bytes go: a screenshot or download into a file here, an
     // upload's out of one.

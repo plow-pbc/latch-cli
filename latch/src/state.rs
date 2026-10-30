@@ -38,7 +38,6 @@
 
 use std::fs;
 use std::io::{ErrorKind, Write};
-use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use iroh::{PublicKey, SecretKey};
@@ -114,9 +113,13 @@ impl StateDir {
     pub fn create(&self) -> Result<(), Failure> {
         self.check_format()?;
         fs::create_dir_all(&self.path).map_err(|err| self.io_failure(&self.path, err))?;
-        let owner_only = fs::Permissions::from_mode(0o700);
-        fs::set_permissions(&self.path, owner_only)
-            .map_err(|err| self.io_failure(&self.path, err))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let owner_only = fs::Permissions::from_mode(0o700);
+            fs::set_permissions(&self.path, owner_only)
+                .map_err(|err| self.io_failure(&self.path, err))?;
+        }
         if !self.path.join("latch.json").exists() {
             self.save_json(
                 "latch.json",
@@ -238,10 +241,10 @@ impl StateDir {
     fn move_aside(&self, found: &[String]) -> Result<(), Failure> {
         let aside = self.aside();
         fs::DirBuilder::new()
-            .mode(0o700)
+            .owner_only()
             .recursive(true)
             .create(self.path.join("leftovers"))
-            .and_then(|()| fs::DirBuilder::new().mode(0o700).create(&aside))
+            .and_then(|()| fs::DirBuilder::new().owner_only().create(&aside))
             .map_err(|err| self.io_failure(&aside, err))?;
         for name in found {
             fs::rename(self.path.join(name), aside.join(name))
@@ -321,13 +324,12 @@ impl StateDir {
     }
 
     fn key_lock(&self) -> Result<fs::File, Failure> {
-        use std::os::unix::fs::OpenOptionsExt;
         fs::OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(false)
-            .mode(0o600)
+            .owner_only()
             .open(self.path.join("key.lock"))
             .map_err(|err| self.key_lock_failure(err))
     }
@@ -494,7 +496,33 @@ pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     temp.write_all(bytes)?;
     temp.as_file().sync_all()?;
     temp.persist(path).map_err(|err| err.error)?;
-    fs::File::open(dir)?.sync_all()
+    // Windows cannot open a folder as a file; NTFS logs the rename itself.
+    #[cfg(unix)]
+    fs::File::open(dir)?.sync_all()?;
+    Ok(())
+}
+
+/// Files and folders only their owner can use: mode 0600 and 0700 on Unix.
+/// On Windows a new file or folder takes its parent's ACL, and a state folder
+/// in the user's profile is the user's alone.
+pub(crate) trait OwnerOnly {
+    fn owner_only(&mut self) -> &mut Self;
+}
+
+impl OwnerOnly for fs::OpenOptions {
+    fn owner_only(&mut self) -> &mut Self {
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(self, 0o600);
+        self
+    }
+}
+
+impl OwnerOnly for fs::DirBuilder {
+    fn owner_only(&mut self) -> &mut Self {
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(self, 0o700);
+        self
+    }
 }
 
 /// Bytes as lowercase hex, two characters per byte.
@@ -504,6 +532,8 @@ pub fn to_hex(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
     use super::*;
 
     /// Test state lives under the repo's gitignored `.dev/`, like every dev run.

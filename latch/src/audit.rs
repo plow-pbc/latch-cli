@@ -32,7 +32,6 @@
 use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -43,7 +42,7 @@ use crate::cli::AuditAction;
 use crate::failure::{Failure, code};
 use crate::seal::from_hex;
 use crate::secrets::{Secret, Secrets};
-use crate::state::{StateDir, to_hex};
+use crate::state::{OwnerOnly, StateDir, to_hex};
 
 /// The `prev` of the very first record.
 pub const GENESIS: &str = "0000000000000000000000000000000000000000000000000000000000000000";
@@ -297,7 +296,7 @@ impl AuditLog {
             .create(true)
             .read(true)
             .append(true)
-            .mode(0o600)
+            .owner_only()
             .open(&path)
             .and_then(|mut file| file.read_to_string(&mut text))
             .map_err(|err| io_failure(&path, err))?;
@@ -352,7 +351,7 @@ impl AuditLog {
             .create(true)
             .read(true)
             .append(true)
-            .mode(0o600)
+            .owner_only()
             .open(&self.path)
             .map_err(|err| io_failure(&self.path, err))?;
         let prev = last_hash(&mut file).map_err(|err| io_failure(&self.path, err))?;
@@ -568,7 +567,7 @@ pub fn read(
     dir: &Path,
     whose: &str,
     range: &Range,
-    hangup: Option<std::os::fd::RawFd>,
+    hangup: Option<crate::watch::Hangup>,
     mut send: impl FnMut(&Value) -> bool,
 ) -> Result<(), Failure> {
     range.check()?;
@@ -821,7 +820,7 @@ fn lock(dir: &Path) -> Result<File, Failure> {
         .write(true)
         .create(true)
         .truncate(false)
-        .mode(0o600)
+        .owner_only()
         .open(&path)
         .map_err(|err| io_failure(&path, err))?;
     file.lock().map_err(|err| io_failure(&path, err))?;

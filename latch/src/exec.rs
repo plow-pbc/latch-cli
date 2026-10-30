@@ -24,7 +24,9 @@
 
 use std::collections::BTreeMap;
 use std::future::Future;
+#[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
+#[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
@@ -285,8 +287,24 @@ pub(crate) fn caches(workers: &WorkerSetup) -> Vec<PathBuf> {
     .collect()
 }
 
+/// `exec` on Windows, where no sandbox confines a program yet: refused,
+/// and nothing runs.
+#[cfg(windows)]
+pub async fn run(
+    _workers: &WorkerSetup,
+    prepared: PreparedExec,
+    _cut_off: impl Future<Output = Code>,
+) -> Done {
+    let args = prepared.0;
+    let audit = json!({ "argv": args.argv, "workdir": args.workdir, "writes": args.writes,
+                        "network": args.network, "timeout": args.timeout });
+    let message = "no worker sandbox on Windows yet, so programs do not run here".to_string();
+    Done::failed(code::sandbox_unavailable, message, audit)
+}
+
 /// `exec`: runs `args.argv` and returns its result. If `cut_off` finishes
 /// first, the program is killed, and its outcome is the one `cut_off` gives.
+#[cfg(unix)]
 pub async fn run(
     workers: &WorkerSetup,
     prepared: PreparedExec,
@@ -347,6 +365,7 @@ pub async fn run(
     done
 }
 
+#[cfg(unix)]
 fn create_write_dir(path: &Path) -> std::io::Result<()> {
     use std::os::fd::AsRawFd;
     use std::os::unix::ffi::OsStrExt;
@@ -377,6 +396,7 @@ pub fn stdin_audit(bytes: &[u8]) -> Value {
 /// A new, empty folder `latch-exec-<host pid>-<random>` in the OS temp
 /// folder, for this user only. Its real path, since the sandbox matches
 /// real paths (macOS's temp folder is behind the `/var` link).
+#[cfg(unix)]
 fn make_tmpdir() -> std::io::Result<PathBuf> {
     use std::os::unix::fs::DirBuilderExt;
     let name = format!(
@@ -394,6 +414,7 @@ fn make_tmpdir() -> std::io::Result<PathBuf> {
 /// `latch-exec-<pid>-…` folders in the OS temp folder whose host no longer
 /// runs. Those of hosts still running (this one, or another on another
 /// state folder) stay.
+#[cfg(unix)]
 pub fn sweep_tmpdirs() {
     let temp = std::env::temp_dir();
     let Ok(entries) = std::fs::read_dir(&temp) else {
@@ -431,7 +452,12 @@ pub fn sweep_tmpdirs() {
     }
 }
 
+/// Windows runs no programs for exec yet, so leaves no folders behind.
+#[cfg(windows)]
+pub fn sweep_tmpdirs() {}
+
 /// Whether a process `pid` runs (one of another user counts too).
+#[cfg(unix)]
 fn running(pid: libc::pid_t) -> bool {
     // SAFETY: std cannot probe an arbitrary PID. Signal 0 checks existence
     // without delivering a signal; this scalar-only call accesses no Rust memory.
@@ -441,12 +467,14 @@ fn running(pid: libc::pid_t) -> bool {
 
 /// When a program must stop: at `timeout` seconds, or when `cut_off`
 /// finishes, with the outcome it gives.
+#[cfg(unix)]
 struct Limits<F> {
     timeout: u64,
     cut_off: F,
 }
 
 /// How the wait for a program ended.
+#[cfg(unix)]
 enum End {
     Exited,
     TimedOut,
@@ -455,6 +483,7 @@ enum End {
 }
 
 /// Starts the program and waits for it, within `limits`.
+#[cfg(unix)]
 async fn run_program(
     workers: &WorkerSetup,
     args: &ExecArgs,
@@ -544,6 +573,7 @@ fn argv_is_usable(argv: &[String]) -> bool {
 
 /// Waits for the program, within `limits`. Past them, kills the program's
 /// whole process group and returns its (killed) status, and why.
+#[cfg(unix)]
 async fn wait_or_kill(
     child: &mut Child,
     limits: Limits<impl Future<Output = Code>>,
@@ -576,6 +606,7 @@ async fn wait_or_kill(
 /// through an `Arc<Mutex<…>>`: `Arc` lets both hold it, `Mutex` lets one at
 /// a time change it.
 #[derive(Default)]
+#[cfg(unix)]
 struct Captured {
     /// The first `OUTPUT_CAP` bytes.
     kept: Vec<u8>,
@@ -584,12 +615,14 @@ struct Captured {
 }
 
 /// A stream being read in the background: its output so far, and the task.
+#[cfg(unix)]
 struct Capture {
     captured: Arc<Mutex<Captured>>,
     task: JoinHandle<()>,
 }
 
 /// Starts reading `stream` in the background.
+#[cfg(unix)]
 fn capture(stream: impl AsyncRead + Unpin + Send + 'static) -> Capture {
     let captured = Arc::new(Mutex::new(Captured::default()));
     let task = tokio::spawn(read_capped(stream, captured.clone()));
@@ -598,6 +631,7 @@ fn capture(stream: impl AsyncRead + Unpin + Send + 'static) -> Capture {
 
 /// Reads a stream to its end into `captured`, keeping the first
 /// `OUTPUT_CAP` bytes and noting whether more came.
+#[cfg(unix)]
 async fn read_capped(mut stream: impl AsyncRead + Unpin, captured: Arc<Mutex<Captured>>) {
     let mut buffer = vec![0u8; 64 * 1024];
     loop {
@@ -616,6 +650,7 @@ async fn read_capped(mut stream: impl AsyncRead + Unpin, captured: Arc<Mutex<Cap
 /// `grace`, whichever comes first. A stream still open after the grace (a
 /// background process the program left behind holds it) keeps everything
 /// read so far, and is marked cut, since more may follow.
+#[cfg(unix)]
 async fn collected(capture: Capture, grace: Duration) -> (Vec<u8>, bool) {
     let abort = capture.task.abort_handle();
     let finished = tokio::time::timeout(grace, capture.task).await.is_ok();
@@ -628,6 +663,7 @@ async fn collected(capture: Capture, grace: Duration) -> (Vec<u8>, bool) {
 }
 
 /// A signal's usual name, e.g. 11 -> "SIGSEGV".
+#[cfg(unix)]
 fn signal_name(signal: i32) -> String {
     let name = match signal {
         libc::SIGHUP => "SIGHUP",

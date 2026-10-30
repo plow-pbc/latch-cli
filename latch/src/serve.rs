@@ -14,8 +14,8 @@
 
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
+#[cfg(unix)]
 use std::io::{Read, Seek, Write};
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -25,7 +25,6 @@ use iroh::endpoint::{Connection, Incoming, VarInt};
 use iroh::{Endpoint, RelayMode, Watcher};
 use serde_json::{Value, json};
 use tokio::io::AsyncReadExt;
-use tokio::signal::unix::{Signal, SignalKind, signal};
 use tokio::sync::watch;
 use tokio::task::{JoinHandle, JoinSet};
 use tracing::Instrument;
@@ -43,7 +42,7 @@ use crate::heartbeat;
 use crate::lifecycle::{self, Phase};
 use crate::log::log;
 use crate::plow::{Identity, Plow};
-use crate::state::{HeldKey, StateDir};
+use crate::state::{HeldKey, OwnerOnly, StateDir};
 use crate::vault::link;
 use crate::wire::{self, Request, Response};
 use crate::worker::WorkerSetup;
@@ -390,7 +389,10 @@ pub async fn run(state: &StateDir, args: &crate::cli::ServeArgs) -> Result<(), F
     // A host that could not sandbox its workers would refuse every call;
     // say so once, now, instead of starting. The quick check names a
     // missing kernel feature; the probe worker then installs the sandbox
-    // for real, which is the only way to know it can be.
+    // for real, which is the only way to know it can be. Windows has no
+    // worker sandbox yet: its host serves what needs no worker (rules, the
+    // vault, the record) and refuses each call that does.
+    #[cfg(unix)]
     crate::sandbox::check().map_err(|message| Failure::new(code::sandbox_unavailable, message))?;
     // The sandbox needs the state directory's real path (symlinks resolved).
     // One that does not exist yet has never logged in: say that, rather
@@ -478,11 +480,15 @@ async fn run_locked(
 ) -> Result<(), Failure> {
     let workers = workers(state_dir)?;
     let rules = RuleFiles::new(&state.path)?;
+    #[cfg(unix)]
     workers.probe().await.map_err(|err| {
         let message = format!("latch cannot sandbox host operations here: {}", err.message);
         Failure::new(code::sandbox_unavailable, message)
     })?;
+    #[cfg(unix)]
     log(&format!("worker sandbox: {}", crate::sandbox::name()));
+    #[cfg(windows)]
+    log("worker sandbox: none on Windows yet; exec, file, Google and browser calls are refused");
     exec::sweep_tmpdirs();
     // Holding the folder, no other host runs here to use an older latch's.
     match crate::plugins::prune(&state.path) {
@@ -587,7 +593,7 @@ async fn run_host(
         return Err(failure);
     }
     dashboard.step("registering with Plow…");
-    let terminate = signal(SignalKind::terminate())
+    let terminate = Terminate::listen()
         .map_err(|err| Failure::new(code::signal, format!("cannot listen for SIGTERM: {err}")))?;
     let name = config.peer.name.clone();
     let heartbeat_state = StateDir {
@@ -653,9 +659,9 @@ async fn run_host(
     let mut accept_failure = None;
     let moved = loop {
         tokio::select! {
-            accepted = local_socket.listener.accept() => {
+            accepted = local_socket.accept() => {
                 match accepted {
-                    Ok((socket, _)) => { connections.spawn(serve_local(host.clone(), socket)); }
+                    Ok(socket) => { connections.spawn(serve_local(host.clone(), socket, local_socket.admission())); }
                     Err(err) => {
                         log(&format!("stopping: local socket accept failed: {err}"));
                         accept_failure = Some(Failure::new(code::local_socket, err.to_string()));
@@ -780,21 +786,31 @@ struct Binary {
 /// What tells one file at a path from another, or from itself rewritten.
 #[derive(PartialEq)]
 struct OnDisk {
-    device: u64,
-    inode: u64,
+    /// The file itself: its device and inode on Unix; on Windows, where a
+    /// file put in its place is a new file, its creation time.
+    file: (u64, u64),
     size: u64,
-    modified: (i64, i64),
+    modified: std::time::SystemTime,
 }
 
 impl OnDisk {
     /// Follows a symlink, so one pointed at another latch counts as replaced.
     fn of(path: &Path) -> Option<OnDisk> {
         let meta = std::fs::metadata(path).ok()?;
+        #[cfg(unix)]
+        let file = {
+            use std::os::unix::fs::MetadataExt;
+            (meta.dev(), meta.ino())
+        };
+        #[cfg(windows)]
+        let file = {
+            use std::os::windows::fs::MetadataExt;
+            (meta.creation_time(), 0)
+        };
         Some(OnDisk {
-            device: meta.dev(),
-            inode: meta.ino(),
-            size: meta.size(),
-            modified: (meta.mtime(), meta.mtime_nsec()),
+            file,
+            size: meta.len(),
+            modified: meta.modified().ok()?,
         })
     }
 }
@@ -942,20 +958,29 @@ pub(crate) fn hold_state(
     let path = state_dir.join("serve.lock");
     let io =
         |err: std::io::Error| Failure::new(code::state_io, format!("{}: {err}", path.display()));
+    // Only Unix writes the holder into the lock file itself.
+    #[cfg_attr(windows, allow(unused_mut))]
     let mut file = OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .truncate(false)
-        .mode(0o600)
+        .owner_only()
         .open(&path)
         .map_err(io)?;
     let started = std::time::Instant::now();
     while file.try_lock().is_err() {
-        let mut holder = String::new();
-        let _ = file
-            .seek(std::io::SeekFrom::Start(0))
-            .and_then(|_| file.read_to_string(&mut holder));
+        #[cfg(unix)]
+        let holder = {
+            let mut holder = String::new();
+            let _ = file
+                .seek(std::io::SeekFrom::Start(0))
+                .and_then(|_| file.read_to_string(&mut holder));
+            holder
+        };
+        #[cfg(windows)]
+        let holder =
+            std::fs::read_to_string(crate::lifecycle::holder_path(state_dir)).unwrap_or_default();
         let holder = match holder.trim() {
             "" => "another process".to_string(),
             holder => holder.to_string(),
@@ -969,10 +994,13 @@ pub(crate) fn hold_state(
     let exe =
         std::env::current_exe().map_or_else(|_| "latch".into(), |exe| exe.display().to_string());
     let holder = format!("{who} (pid {}, {exe})\n", std::process::id());
+    #[cfg(unix)]
     file.set_len(0)
         .and_then(|()| file.rewind())
         .and_then(|()| file.write_all(holder.as_bytes()))
         .map_err(io)?;
+    #[cfg(windows)]
+    std::fs::write(crate::lifecycle::holder_path(state_dir), holder.as_bytes()).map_err(io)?;
     Ok(Ok(file))
 }
 
@@ -1001,10 +1029,49 @@ fn with_targets(paths: Vec<PathBuf>) -> Vec<PathBuf> {
 
 /// Finishes when the host is asked to stop: Ctrl-C (SIGINT) in a terminal,
 /// or SIGTERM from launchd and other service managers.
-async fn stop_requested(mut terminate: Signal) {
+async fn stop_requested(mut terminate: Terminate) {
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {}
-        _ = terminate.recv() => {}
+        () = terminate.recv() => {}
+    }
+}
+
+/// What asks this process to stop, besides Ctrl-C: SIGTERM, or on Windows,
+/// which has none, its console closing, Ctrl-Break, or the system shutting down.
+pub(crate) struct Terminate {
+    #[cfg(unix)]
+    signal: tokio::signal::unix::Signal,
+    #[cfg(windows)]
+    close: tokio::signal::windows::CtrlClose,
+    #[cfg(windows)]
+    ctrl_break: tokio::signal::windows::CtrlBreak,
+    #[cfg(windows)]
+    shutdown: tokio::signal::windows::CtrlShutdown,
+}
+
+impl Terminate {
+    pub(crate) fn listen() -> std::io::Result<Self> {
+        #[cfg(unix)]
+        return Ok(Self {
+            signal: tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?,
+        });
+        #[cfg(windows)]
+        return Ok(Self {
+            close: tokio::signal::windows::ctrl_close()?,
+            ctrl_break: tokio::signal::windows::ctrl_break()?,
+            shutdown: tokio::signal::windows::ctrl_shutdown()?,
+        });
+    }
+
+    pub(crate) async fn recv(&mut self) {
+        #[cfg(unix)]
+        self.signal.recv().await;
+        #[cfg(windows)]
+        tokio::select! {
+            _ = self.close.recv() => {}
+            _ = self.ctrl_break.recv() => {}
+            _ = self.shutdown.recv() => {}
+        }
     }
 }
 
@@ -1633,8 +1700,15 @@ async fn check<'a>(
 }
 
 /// Local callers are trusted by the private socket, never by a request field.
-async fn serve_local(host: Arc<Host>, socket: tokio::net::UnixStream) {
+async fn serve_local(
+    host: Arc<Host>,
+    socket: crate::transport::LocalStream,
+    admission: crate::transport::Admission,
+) {
     let (mut recv, mut send) = socket.into_split();
+    if !admission.check(&mut recv).await {
+        return;
+    }
     let Some(request) = read_request(&mut send, &mut recv).await else {
         return;
     };
@@ -1646,7 +1720,7 @@ async fn serve_local(host: Arc<Host>, socket: tokio::net::UnixStream) {
     }
     let caller = host.endpoint.id().to_string();
     log(&format!(
-        "connect: {caller}: owner_on_host over Unix socket"
+        "connect: {caller}: owner_on_host over the local socket"
     ));
     let operation = tracing::info_span!("operation", op = Empty);
     serve_request(

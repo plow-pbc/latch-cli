@@ -374,6 +374,12 @@ fn hosts() -> Option<Vec<PathBuf>> {
     Some(found)
 }
 
+/// Windows cannot list them here yet: a host is taken to run.
+#[cfg(windows)]
+fn hosts() -> Option<Vec<PathBuf>> {
+    None
+}
+
 /// The executables of this machine's `latch serve` processes but this one.
 #[cfg(target_os = "macos")]
 fn hosts() -> Option<Vec<PathBuf>> {
@@ -408,6 +414,7 @@ fn hosts() -> Option<Vec<PathBuf>> {
 }
 
 /// Whether a command line's words after the program run `latch serve`.
+#[cfg(unix)]
 fn serves<'a>(mut words: impl Iterator<Item = std::borrow::Cow<'a, str>>) -> bool {
     words.any(|word| word == "serve")
 }

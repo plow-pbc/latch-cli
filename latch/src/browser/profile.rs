@@ -9,9 +9,9 @@
 //! Folders an earlier latch kept under `<state-dir>/browser/profiles/` are
 //! never opened, nor removed.
 
-use std::fs::{self, Permissions};
+use crate::state::OwnerOnly;
+use std::fs;
 use std::io;
-use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use serde_json::json;
@@ -41,13 +41,13 @@ pub fn make(state_dir: &Path) -> io::Result<TempDir> {
     let root = root(state_dir);
     fs::DirBuilder::new()
         .recursive(true)
-        .mode(0o700)
+        .owner_only()
         .create(&root)?;
-    tempfile::Builder::new()
-        .prefix("")
-        .rand_bytes(22)
-        .permissions(Permissions::from_mode(0o700))
-        .tempdir_in(root)
+    let mut folder = tempfile::Builder::new();
+    folder.prefix("").rand_bytes(22);
+    #[cfg(unix)]
+    folder.permissions(std::os::unix::fs::PermissionsExt::from_mode(0o700));
+    folder.tempdir_in(root)
 }
 
 /// Removes the profiles an earlier host left: none of its sessions is open
@@ -99,6 +99,8 @@ pub fn prepare(dir: &Path, engine: &str) -> Result<Profile, Failure> {
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
     use super::*;
 
     #[test]
