@@ -1976,6 +1976,7 @@ dependencies = [
  "clap",
  "core-foundation",
  "csv",
+ "hmac 0.13.0",
  "iroh",
  "iroh-relay",
  "jiff",

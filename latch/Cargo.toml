@@ -82,8 +82,12 @@ windows-sys = { version = "0.61.2", features = [
   "Win32_System_Console",
   "Win32_System_Memory",
   "Win32_System_SystemInformation",
+  "Win32_System_SystemServices",
   "Win32_System_Threading",
 ] }
+# The local socket's handshake (src/transport.rs): HMAC-SHA256, with the
+# sha2 above.
+hmac = "0.13.0"
 
 [dev-dependencies]
 # A local iroh relay (plain HTTP), so the test that runs a real host and
