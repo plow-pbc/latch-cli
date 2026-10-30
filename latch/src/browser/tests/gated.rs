@@ -467,10 +467,9 @@ async fn a_refused_command_sends_nothing_to_the_page(engine: &str) {
     refused(&plan, "not_covered", &chat);
     let shown = judge.last_action();
     assert_eq!(shown["kind"], "browser_plan");
-    assert_eq!(
-        shown["steps"],
-        json!([{"step": format!("click {link}")}, {"step": format!("click {link}")}])
-    );
+    // Each ref with the role and name the session's reading gave it.
+    let step = format!("click {link} (link \"Download the report\")");
+    assert_eq!(shown["steps"], json!([{"step": step}, {"step": step}]));
     assert_eq!(shown["page"]["title"], "latch files test");
     // The audit keeps the refused plan's steps as the judge saw them.
     assert_eq!(plan.1["judged"], shown);
