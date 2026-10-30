@@ -32,6 +32,17 @@ pub fn saved_default(state: &StateDir) -> Result<Option<String>, Failure> {
     }
 }
 
+/// `asked` with `default` read now as the saved host's name, for a command
+/// that calls its host more than once: each call then goes to the host the
+/// first went to, whatever is saved meanwhile. With none saved it stays
+/// `default`, which each call refuses as `no_default_host`.
+pub fn pinned(state: &StateDir, asked: Option<String>) -> Result<Option<String>, Failure> {
+    Ok(match named(state, asked.as_deref())? {
+        Named::Host(name) => Some(name),
+        Named::Bare | Named::NoDefault => asked,
+    })
+}
+
 /// What a command's `--host` (or `LATCH_HOST`) names.
 pub(crate) enum Named {
     /// No host named.

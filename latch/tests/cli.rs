@@ -5467,6 +5467,44 @@ fn a_saved_default_host_is_what_host_default_names() {
     assert_eq!(listed["host"], "host");
 }
 
+/// `rules edit --host default` saves to the host it read from, even when
+/// the saved default changes while the editor is open.
+#[test]
+fn a_rules_edit_saves_where_it_read_whatever_the_default_becomes() {
+    let owners = Owners::start();
+    let _host = owners.serve(&owners.host);
+    let _studio = owners.serve(&owners.studio);
+    let laptop = &owners.laptop;
+    let ok = |args: &[&str]| {
+        let output = latch(laptop, args, &[]);
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
+    };
+    ok(&["rules", "set", "--host", "host", "Rules on host."]);
+    ok(&["rules", "set", "--host", "studio", "Rules on studio."]);
+    ok(&["hosts", "default", "host"]);
+    // The editor moves the default to the studio, then edits.
+    let editor = owners.dir.path().join("editor.sh");
+    fs::write(
+        &editor,
+        format!(
+            "#!/bin/sh\n'{}' --state-dir '{}' hosts default studio >/dev/null || exit 1\nprintf ' Edited.' >> \"$1\"\n",
+            latch_bin().display(),
+            laptop.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&editor, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let edit = ["rules", "edit", "--host", "default"];
+    let (code, shown, _) =
+        latch_at_a_terminal(laptop, &edit, "", false, &[("EDITOR", editor.as_path())]);
+    assert_eq!(code, Some(0), "{shown}");
+    assert_eq!(ok(&["hosts", "default"])["default_host"], "studio");
+    let text = |host: &str| ok(&["rules", "show", "--host", host])["every_agent"]["text"].clone();
+    assert_eq!(text("host"), "Rules on host. Edited.");
+    assert_eq!(text("studio"), "Rules on studio.");
+}
+
 /// Each call from a machine whose host serves goes through that host,
 /// and answers, exits and is recorded at the other host as it is with no
 /// host serving here, when the command dials directly.
