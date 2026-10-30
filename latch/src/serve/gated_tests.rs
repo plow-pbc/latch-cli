@@ -641,7 +641,10 @@ async fn a_put_is_judged_at_its_resolved_path_and_a_short_one_changes_nothing() 
     assert!(matches!(last, Some(Response::Ok(_))), "{last:?}");
     assert_eq!(std::fs::read(t.area.join("upload.txt")).unwrap(), b"hi");
     let asked = t.judgments();
-    let shown = t.area.join("upload.txt").display().to_string();
+    // Resolved, as a person reads it, and as a JSON string, as the judge's
+    // request carries it (on Windows its backslashes are escaped there).
+    let upload = t.area.join("upload.txt").canonicalize().unwrap();
+    let shown = json!(crate::exec::shown(&upload.to_string_lossy())).to_string();
     assert!(asked[0].to_string().contains(&shown), "{}", asked[0]);
     // An upload that breaks off leaves the old file and nothing beside it.
     let (_, last) = t.put(&agent, "area/notes.txt", 10, b"new").await;
