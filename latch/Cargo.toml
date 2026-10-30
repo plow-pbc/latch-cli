@@ -77,6 +77,7 @@ minisign-verify = "0.3.0"
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = [
   "Wdk_Storage_FileSystem",
+    "Wdk_System_Threading",
   "Win32_Foundation",
   "Win32_Security",
   "Win32_Security_Authorization",
@@ -84,6 +85,7 @@ windows-sys = { version = "0.61.2", features = [
   "Win32_Security_Isolation",
   "Win32_Storage_FileSystem",
   "Win32_System_Console",
+    "Win32_System_Diagnostics_ToolHelp",
   "Win32_System_Environment",
   "Win32_System_IO",
   "Win32_System_JobObjects",
