@@ -1,7 +1,7 @@
 //! What the gatekeeper judges of a caller's browser use, and how each is
 //! put to the judge: opening a site the session has not been judged for,
-//! each plan, each vault fill and each confirmation that releases a card
-//! or identity, and every `eval`, upload and download. Clicks, typing,
+//! each plan, each vault fill and each confirmation that releases an
+//! identity, and every `eval`, upload and download. Clicks, typing,
 //! page reads and screenshots are not judged, nor is `act`'s one such
 //! action (a `do` of one step is judged): they pass the browser's own
 //! checks (the risk decision, confirmations, fill and pause checks).
@@ -9,8 +9,7 @@
 //! Each is judged before anything of it is sent to the page. A refusal
 //! sends nothing; the audit gets the judgment's `gate` object either way.
 //! The judge sees an item's kind, title and the sites it is saved for, and
-//! the fields a fill maps, never a value; a confirmed card fill adds the
-//! checkout it pays on and the card's last four digits. A plan step's refs
+//! the fields a fill maps, never a value. A plan step's refs
 //! are shown with the role and name the session's reading gave them
 //! (`click e2 (button "Pay with card")`): text the page wrote, quoted and
 //! cut short, which the judge takes as context, never permission.
@@ -45,7 +44,7 @@ pub(super) enum Action {
         /// The vault items the plan may fill.
         #[serde(skip_serializing_if = "Vec::is_empty")]
         may_fill: Vec<ItemShown>,
-        /// A card or identity fill the plan first carries out, confirmed.
+        /// An identity fill the plan first carries out, confirmed.
         #[serde(skip_serializing_if = "Option::is_none")]
         first_confirms: Option<Box<Action>>,
     },
@@ -54,12 +53,9 @@ pub(super) enum Action {
         site: Option<String>,
         item: ItemShown,
         fields: Vec<String>,
-        /// A card or identity secret released on the agent's confirmation.
+        /// An identity secret released on the agent's confirmation.
         #[serde(skip_serializing_if = "std::ops::Not::not")]
         confirmed: bool,
-        /// A confirmed card fill: the checkout it pays on.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        checkout: Option<Checkout>,
     },
     /// The agent's own JavaScript, run in the page.
     RunScript {
@@ -104,22 +100,6 @@ pub(super) struct ItemShown {
     /// Other top-level sites a login may be filled under.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     other_top_sites: Vec<String>,
-}
-
-/// What a confirmed card fill pays on, as the agent's confirmation bound
-/// it: never the number.
-#[derive(Serialize, Clone, Debug)]
-pub(super) struct Checkout {
-    /// The page's title.
-    page_title: String,
-    /// The site of each frame a value goes into: a payment provider's, say.
-    field_sites: Vec<String>,
-    /// The button pressed, and the lines around it (the amount, as a page
-    /// shows it there).
-    press: String,
-    lines: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    card_last4: Option<String>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -231,51 +211,11 @@ pub(super) fn fill(
         .flatten()
         .filter_map(|pair| pair[0].as_str().map(str::to_string))
         .collect();
-    let checkout = (confirmed && item.kind == "card" && args["review"].is_object())
-        .then(|| checkout(browsers, args));
     Action::VaultFill {
         site,
         item,
         fields,
         confirmed,
-        checkout,
-    }
-}
-
-/// The checkout a confirmed card fill's `review` describes, with the
-/// card's last four digits.
-fn checkout(browsers: &Browsers, args: &Value) -> Checkout {
-    let review = &args["review"];
-    let strings = |value: &Value| -> Vec<String> {
-        value
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|v| v.as_str().map(str::to_string))
-            .collect()
-    };
-    let digits: Option<String> = browsers
-        .vault
-        .with(|store| Ok(store.item(args["item"].as_str().unwrap_or_default())))
-        .ok()
-        .flatten()
-        .and_then(|item| crate::vault::classify::read(&item.raw, "number"))
-        .map(|number| number.chars().filter(char::is_ascii_digit).collect());
-    // A page that already shows this card's number shows the judge its
-    // last four digits only.
-    let own: Vec<String> = digits.iter().cloned().collect();
-    let masked = |value: &Value| super::shown::masked(value.as_str().unwrap_or_default(), &own);
-    Checkout {
-        page_title: masked(&review["title"]),
-        field_sites: strings(&review["frames"]),
-        press: masked(&review["press"]),
-        lines: strings(&review["lines"])
-            .iter()
-            .map(|line| super::shown::masked(line, &own))
-            .collect(),
-        card_last4: digits
-            .filter(|digits| digits.len() >= 4)
-            .map(|digits| digits[digits.len() - 4..].to_string()),
     }
 }
 
@@ -299,7 +239,6 @@ pub(crate) fn previewed_fill(
         site,
         fields,
         confirmed: false,
-        checkout: None,
     }
 }
 

@@ -3,7 +3,17 @@
      field is its own frame from the provider (open with ?frame=PORT; the
      frames come from http://localhost:PORT/card-element.html), and the Pay
      button is the shop's. Pay asks the number's frame, a moment later as a
-     provider's script would, to send the card to the provider's /pay. -->
+     provider's script would, to send the card to the provider's /pay.
+     With ?colors the card's fields show their text large and red, with a
+     red outline and shadow, in its frames too, and a ZIP field shows its
+     text blue. -->
+<style>
+  .colors input {
+    font: bold 24px sans-serif; color: rgb(255, 0, 0);
+    -webkit-text-stroke: 1px rgb(255, 0, 0); text-shadow: 2px 2px rgb(255, 0, 0);
+  }
+  .colors #zip { color: rgb(0, 0, 255); -webkit-text-stroke: 0; text-shadow: none }
+</style>
 <h1>Checkout</h1>
 <p>Total $10.00</p>
 <form id="checkout">
@@ -11,13 +21,20 @@
   <p>Card number <iframe name="number" width="260" height="40"></iframe></p>
   <p>Expiry <iframe name="expiry" width="120" height="40"></iframe>
      CVC <iframe name="cvc" width="120" height="40"></iframe></p>
+  <p id="zipped" hidden><label>ZIP <input id="zip" autocomplete="off"></label></p>
   <p><button type="submit">Pay $10.00</button></p>
 </form>
 <script>
-  const port = new URLSearchParams(location.search).get('frame');
+  const given = new URLSearchParams(location.search);
+  const port = given.get('frame');
+  const colors = given.has('colors');
+  if (colors) {
+    document.body.classList.add('colors');
+    zipped.hidden = false;
+  }
   for (const name of ['number', 'expiry', 'cvc']) {
     document.querySelector(`iframe[name=${name}]`).src =
-      `http://localhost:${port}/card-element.html?field=${name}`;
+      `http://localhost:${port}/card-element.html?field=${name}${colors ? '&colors' : ''}`;
   }
   document.getElementById('checkout').addEventListener('submit', (event) => {
     event.preventDefault();

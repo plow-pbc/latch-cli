@@ -121,7 +121,7 @@ struct Bundle {
     /// The fill, as `fill.rs` takes it.
     args: Value,
     title: String,
-    /// It releases a card or identity secret: confirmed first.
+    /// It releases an identity secret: confirmed first.
     confirm: bool,
 }
 
@@ -652,8 +652,12 @@ impl Run<'_> {
                 *acted += 1;
                 before = Some(state);
                 match sent {
-                    Ok(()) => lines.push(format!(
+                    Ok(()) if bundle.args["press"].is_string() => lines.push(format!(
                         "filled from {:?} and pressed its button",
+                        bundle.title
+                    )),
+                    Ok(()) => lines.push(format!(
+                        "filled from {:?}, pressing nothing: the page's own button is next",
                         bundle.title
                     )),
                     Err(failure) if retried(&failure) => {
@@ -1302,6 +1306,9 @@ fn describe(e: &Value) -> String {
         ));
     } else if let Some(value) = e["value"].as_str() {
         line.push_str(&format!(", value {value:?}"));
+    } else if e["filled"] == true {
+        // A card waits in its fields for the page's own button.
+        line.push_str(", filled from the vault");
     } else if e["kind"] == "text" {
         line.push_str(", empty");
     }
@@ -1379,8 +1386,9 @@ fn candidates(pick: &Pick, offered: &[Target]) -> Vec<Value> {
 
 /// latch's suggestions for the items the plan names, as fills the model
 /// may choose: complete ones only (a press button, which every login and
-/// every secret needs), each read as the item, its mapping by the page's
-/// names, and its button.
+/// every secret but a card's needs), each read as the item, its mapping by
+/// the page's names, and its button. A card's has none: Pay is a click of
+/// its own.
 fn bundles(
     browsers: &Browsers,
     fill: &Value,
@@ -1403,9 +1411,10 @@ fn bundles(
         else {
             continue;
         };
-        let Some(press) = shown["press"].as_str() else {
+        let press = shown["press"].as_str();
+        if press.is_none() && meta.kind != "card" {
             continue;
-        };
+        }
         let fields: Vec<(String, Vec<String>)> = shown["fields"]
             .as_object()
             .into_iter()
@@ -1426,13 +1435,16 @@ fn bundles(
         made.push(Bundle {
             offer: Offer {
                 id: id.clone(),
-                text: format!(
-                    "{:?} ({}): {}; then press {}",
-                    meta.title,
-                    meta.kind,
-                    mapped.join(", "),
-                    name_of(press)
-                ),
+                text: match press {
+                    Some(press) => format!(
+                        "{:?} ({}): {}; then press {}",
+                        meta.title,
+                        meta.kind,
+                        mapped.join(", "),
+                        name_of(press)
+                    ),
+                    None => format!("{:?} ({}): {}", meta.title, meta.kind, mapped.join(", ")),
+                },
             },
             args: json!({
                 "item": meta.item,
@@ -1443,7 +1455,7 @@ fn bundles(
                 "suggestion": id,
             }),
             title: meta.title.clone(),
-            confirm: secret && meta.kind != "login",
+            confirm: secret && !matches!(meta.kind, "login" | "card"),
         });
     }
     made

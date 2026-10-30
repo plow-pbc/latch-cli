@@ -49,7 +49,11 @@ builds only; `cargo tree -e normal` shows neither in latch.
 
 Tests only, too: `minisign` (3.0M / 1.0M downloads, 112 stars, jedisct1,
 0.10.0, MIT), which signs the test releases `latch update` checks with a key
-made for each test.
+made for each test. And `png` (287M / 103M downloads, 525 stars,
+image-rs org, 0.18.1, MIT or Apache-2.0, pulled 2026-10-30), which reads a
+screenshot's pixels for the tests that check what it shows; it brings
+`fdeflate`, `miniz_oxide` and `adler2` (its own decompressors, MIT or
+Apache-2.0 among their licenses) into test builds only.
 
 Not used, although the audit lists them: `anyhow` and `thiserror`. A failure
 is one plain struct (`src/failure.rs`) with an exit kind, a code and a

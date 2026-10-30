@@ -37,7 +37,6 @@ conformance!(
     observe_lists_items_by_the_frames_that_hold_fields,
     a_login_goes_on_to_its_password_stage_in_one_pause,
     observe_suggests_from_hints_and_the_checks_refuse_contradictions,
-    a_card_confirmation_binds_its_mapping_and_frames,
     a_fill_pauses_its_own_session_and_no_other,
     a_login_after_an_edit_fills_the_new_password,
     a_sign_in_the_site_refuses_says_so,
@@ -55,7 +54,7 @@ conformance!(
     ;
     mac:
     vault_fills_go_only_where_the_item_allows_and_never_show_a_value,
-    a_filled_value_is_guarded_in_every_tab_and_from_screenshots,
+    a_filled_value_is_guarded_in_every_tab_and_blank_in_screenshots,
 );
 
 /// `value` as an agent or the audit saw it, for the leak checks, less what
@@ -669,7 +668,8 @@ async fn vault_fills_go_only_where_the_item_allows_and_never_show_a_value(engine
     assert_eq!(slow.unwrap()["submitted"], true);
     assert!(h.text().await.contains("password accepted"));
 
-    // A card: secret fields only with --press; reshaped expiry; gone after.
+    // A card needs no confirmation and no press: its values stay in the
+    // page for the agent's own Pay, and no script runs meanwhile.
     h.new_session().await;
     let checkout = h
         .call("open", json!({"url": format!("{local}/checkout.html")}))
@@ -684,151 +684,40 @@ async fn vault_fills_go_only_where_the_item_allows_and_never_show_a_value(engine
         ["expiry", [find(&checkout, "textbox", "Expiry")]],
         ["cvv", [find(&checkout, "textbox", "CVV")]],
     ]);
-    let (no_press, _) = h
+    let (left, audit) = h
         .gated_fill(json!({"item": card.item, "fields": fields}))
         .await;
-    let no_press = no_press.unwrap_err();
-    println!("card without --press: {}", no_press.code);
-    assert_eq!(
-        (no_press.exit, no_press.code.as_str()),
-        (crate::failure::Exit::Denied, "press_required")
-    );
-    // With --press, it stops for the agent's confirmation before any value
-    // is released; the confirmation fills, presses and cleans up.
-    let pay = find(&checkout, "button", "Pay");
-    let (stop, _) = h
-        .gated_fill(json!({"item": card.item, "fields": fields, "press": pay}))
-        .await;
-    let stop = stop.unwrap_err();
-    println!("card with --press: {} {}", stop.code, stop.details);
-    assert_eq!(
-        (stop.exit, stop.code.as_str()),
-        (crate::failure::Exit::Denied, "confirm_needed")
-    );
-    let issued = &stop.details["confirmation"];
-    assert_eq!(issued["item_title"], "Test Visa");
-    // The exact mapping, by the page's names, and where its values go.
-    assert_eq!(issued["mapping"].as_array().unwrap().len(), 4);
-    assert_eq!(issued["mapping"][1]["name"], "Card number");
-    assert_eq!(issued["mapping"][1]["evidence"], "autocomplete=cc-number");
-    assert_eq!(issued["frames"], json!(["https://login.shop.example"]));
-    assert_eq!(issued["target"]["name"], "Pay");
-    assert!(issued["title"].is_string() && issued["lines"].is_array());
-    let handle = &issued["screenshot"];
-    let png = crate::browser::steps::shot(
-        &h.browsers,
-        &h.id,
-        CALLER,
-        handle["request"].as_str().unwrap(),
-        handle["shot"].as_str().unwrap(),
-    )
-    .unwrap();
-    assert!(png.starts_with(b"\x89PNG"), "the confirmation's screenshot");
-    let untouched = h.call("observe", json!({})).await.unwrap();
+    let left = left.unwrap();
+    println!("card without --press: {left}");
+    assert_eq!(left["submitted"], false);
     assert!(
-        untouched["elements"]
-            .as_array()
+        left["next"]
+            .as_str()
             .unwrap()
-            .iter()
-            .all(|e| e["filled"].is_null() && e["value"].is_null()),
-        "nothing was released before the confirmation"
-    );
-    let mut audit = Map::new();
-    let paid = crate::browser::steps::run(
-        &h.browsers,
-        &h.entry,
-        &h.id,
-        CALLER,
-        None,
-        &json!({"request": "r-card", "plan": {"steps": []}, "confirm": issued["id"]}),
-        &mut audit,
-    )
-    .await
-    .unwrap();
-    h.shown.push(seen(&paid));
-    h.shown.push(seen(&Value::Object(audit.clone())));
-    println!("card confirmed: {}", paid["trail"]);
-    assert_eq!(paid["trail"][0]["op"], "fill");
-    assert_eq!(paid["trail"][0]["submitted"], true);
-    let audit = audit["step_records"][0].as_object().unwrap().clone();
-    println!(
-        "card: audit sites: top {} frames {}",
-        audit["top_origin"], audit["frame_origins"]
-    );
-    let page = h.text().await;
-    println!("checkout answered: {page}");
-    assert!(
-        page.contains("number ok, expiry ok (04 / 31), cvv ok, name Ada Lovelace"),
-        "{page}"
+            .contains("press its own button"),
+        "{left}"
     );
     assert_eq!(audit["top_origin"], json!(local));
     assert_eq!(audit["frame_origins"], json!([local]));
-    let after = seen(&h.call("observe", json!({})).await.unwrap());
-    assert!(!after.contains(NUMBER) && !after.contains(CVV));
-
-    // A confirmed card fill whose page reprices once the number is in: Pay
-    // is not pressed, the values are cleared, and the agent is let back in.
-    let checkout = h
-        .call(
-            "open",
-            json!({"url": format!("{local}/reprice-checkout.html")}),
-        )
-        .await
-        .unwrap();
-    let fields = json!([
-        ["number", [find(&checkout, "textbox", "Card number")]],
-        ["expiry", [find(&checkout, "textbox", "Expiry")]],
-        ["cvv", [find(&checkout, "textbox", "CVV")]],
-    ]);
+    let refused = h.call("eval", json!({"script": "1"})).await.unwrap_err();
+    assert_eq!(refused.code, "secret_on_page");
+    // A card fill never presses: Pay is the agent's own click, judged as
+    // any click is.
     let pay = find(&checkout, "button", "Pay");
-    let (stop, _) = h
+    let (pressed, _) = h
         .gated_fill(json!({"item": card.item, "fields": fields, "press": pay}))
         .await;
-    let stop = stop.unwrap_err();
-    assert_eq!(stop.code, "confirm_needed");
+    let pressed = pressed.unwrap_err();
+    println!("card with --press: {} ({})", pressed.code, pressed.message);
+    assert_eq!(pressed.code, "bad_arguments");
     assert!(
-        stop.details["confirmation"]["lines"]
-            .to_string()
-            .contains("$10.00")
+        pressed.message.contains("a card fill presses nothing"),
+        "{}",
+        pressed.message
     );
-    let mut audit = Map::new();
-    let repriced = crate::browser::steps::run(
-        &h.browsers,
-        &h.entry,
-        &h.id,
-        CALLER,
-        None,
-        &json!({"request": "r-reprice", "plan": {"steps": []},
-                "confirm": stop.details["confirmation"]["id"]}),
-        &mut audit,
-    )
-    .await
-    .unwrap_err();
-    h.shown.push(seen_failure(&repriced));
-    h.shown.push(seen(&Value::Object(audit.clone())));
-    println!(
-        "repriced during the fill: {} ({})",
-        repriced.code, repriced.message
-    );
-    assert_eq!(
-        (repriced.exit, repriced.code.as_str()),
-        (crate::failure::Exit::Denied, "confirm_stale")
-    );
-    let page = h.text().await;
-    assert!(
-        page.contains("$100.00") && !page.contains("payment:"),
-        "{page}"
-    );
-    // The agent is back (the cleanup was confirmed), and the fields are
-    // empty: eval, refused while one holds anything, reads them.
-    let left = h
-        .call(
-            "eval",
-            json!({"script": "['cc-number', 'cc-exp', 'cc-csc'].map((n) => document.querySelector(`[name=${n}]`).value)"}),
-        )
-        .await
-        .unwrap();
-    assert_eq!(left["value"], json!(["", "", ""]));
+    assert!(!h.text().await.contains("payment:"));
+    let after = seen(&h.call("observe", json!({})).await.unwrap());
+    assert!(!after.contains(NUMBER) && !after.contains(CVV));
 
     // An identity's ordinary fields fill without --press; while they are on
     // the page, eval is refused.
@@ -996,21 +885,6 @@ async fn a_fill_that_cannot_finish_shows_no_value_and_keeps_the_agent_out(engine
             ))
         })
         .unwrap();
-    let card = vault
-        .with(|s| {
-            s.add(item(
-                CARD,
-                "Test Visa",
-                &[],
-                &[
-                    ("number", NUMBER),
-                    ("expiry month", "4"),
-                    ("expiry year", "2031"),
-                    ("code", CVV),
-                ],
-            ))
-        })
-        .unwrap();
     let pages = site();
     let local = format!("http://127.0.0.1:{pages}");
     let mut browsers = Browsers::new(state.clone(), vault.clone(), super::HEADLESS);
@@ -1071,17 +945,17 @@ async fn a_fill_that_cannot_finish_shows_no_value_and_keeps_the_agent_out(engine
     let page = h
         .call(
             "open",
-            json!({"url": format!("{local}/trap-checkout.html")}),
+            json!({"url": format!("{local}/trap-checkout.html?password")}),
         )
         .await
         .unwrap();
+    // A sign-in's fill, which presses: a card's never does.
     let fields = json!([
-        ["number", [find(&page, "textbox", "Card number")]],
-        ["expiry", [find(&page, "textbox", "Expiry")]],
-        ["cvv", [find(&page, "textbox", "CVV")]],
+        ["username", [find(&page, "textbox", "Name on card")]],
+        ["password", [find(&page, "textbox", "Card number")]],
     ]);
     let (trapped, audit) = h
-        .fill(json!({"item": card.item, "fields": fields, "press": find(&page, "button", "Pay")}))
+        .fill(json!({"item": login.item, "fields": fields, "press": find(&page, "button", "Pay")}))
         .await;
     let trapped = trapped.unwrap_err();
     println!(
@@ -1141,21 +1015,6 @@ async fn a_fill_pauses_its_own_session_and_no_other(engine: &str) {
                 "Shop",
                 &["shop.example"],
                 &[("username", "ada@shop.example"), ("password", PASSWORD)],
-            ))
-        })
-        .unwrap();
-    let card = vault
-        .with(|s| {
-            s.add(item(
-                CARD,
-                "Test Visa",
-                &[],
-                &[
-                    ("number", NUMBER),
-                    ("expiry month", "4"),
-                    ("expiry year", "2031"),
-                    ("code", CVV),
-                ],
             ))
         })
         .unwrap();
@@ -1235,17 +1094,17 @@ async fn a_fill_pauses_its_own_session_and_no_other(engine: &str) {
     let page = h
         .call(
             "open",
-            json!({"url": format!("{local}/trap-checkout.html")}),
+            json!({"url": format!("{local}/trap-checkout.html?password")}),
         )
         .await
         .unwrap();
+    // A sign-in's fill, which presses: a card's never does.
     let fields = json!([
-        ["number", [find(&page, "textbox", "Card number")]],
-        ["expiry", [find(&page, "textbox", "Expiry")]],
-        ["cvv", [find(&page, "textbox", "CVV")]],
+        ["username", [find(&page, "textbox", "Name on card")]],
+        ["password", [find(&page, "textbox", "Card number")]],
     ]);
     let (trapped, _) = h
-        .fill(json!({"item": card.item, "fields": fields, "press": find(&page, "button", "Pay")}))
+        .fill(json!({"item": login.item, "fields": fields, "press": find(&page, "button", "Pay")}))
         .await;
     assert_eq!(trapped.unwrap_err().code, "session_paused");
     let held = h.call("observe", json!({})).await.unwrap_err();
@@ -1784,7 +1643,8 @@ async fn observe_suggests_from_hints_and_the_checks_refuse_contradictions(engine
         made["fields"]["number"],
         json!([find(&observed, "textbox", "Card number")])
     );
-    assert_eq!(made["press"], json!(find(&observed, "button", "Pay")));
+    // The agent presses Pay itself.
+    assert_eq!(made["press"], Value::Null);
 
     // Refused, naming the field and why, with nothing released: what the
     // page's markup contradicts.
@@ -1807,7 +1667,7 @@ async fn observe_suggests_from_hints_and_the_checks_refuse_contradictions(engine
         ),
     ] {
         let (refused, _) = h
-            .gated_fill(json!({"item": card.item, "fields": [[field, [target]]], "press": pay}))
+            .gated_fill(json!({"item": card.item, "fields": [[field, [target]]]}))
             .await;
         let refused = refused.unwrap_err();
         println!(
@@ -1907,26 +1767,21 @@ async fn observe_suggests_from_hints_and_the_checks_refuse_contradictions(engine
     assert_eq!(filled["fields"][0]["hint_mismatch"], "tel-national");
     assert!(audit["hint_mismatch"].is_array());
     assert!(h.text().await.contains("password accepted"));
+    // Unmarked card fields: no suggestion, and the agent's own mapping
+    // fills. In a new session: this one ran the agent's scripts.
+    h.new_session().await;
     let observed = open(&mut h, "plain-checkout.html").await;
     assert!(suggested_for(&observed, &card.item).is_empty());
-    let (stop, _) = h
-        .gated_fill(
-            json!({"item": card.item, "press": find(&observed, "button", "Pay"),
+    let (filled, _) = h
+        .gated_fill(json!({"item": card.item,
                            "fields": [["number", [find(&observed, "textbox", "Card number")]],
                                       ["expiry", [find(&observed, "textbox", "Expiry")]],
-                                      ["cvv", [find(&observed, "textbox", "CVV")]]]}),
-        )
+                                      ["cvv", [find(&observed, "textbox", "CVV")]]]}))
         .await;
-    let stop = stop.unwrap_err();
-    println!(
-        "unmarked card fields: {} mapping {}",
-        stop.code, stop.details["confirmation"]["mapping"]
-    );
-    assert_eq!(stop.code, "confirm_needed");
-    assert_eq!(
-        stop.details["confirmation"]["mapping"][0]["name"],
-        "Card number"
-    );
+    let filled = filled.unwrap();
+    println!("unmarked card fields: {}", filled["fields"]);
+    assert_eq!(filled["fields"][0]["field"], "number");
+    assert_eq!(filled["fields"][0]["outcome"], "filled");
 
     // A suggestion that no longer comes out the same: a moved field, or a
     // changed item. Refused, with fresh suggestions, nothing released.
@@ -1974,149 +1829,7 @@ async fn observe_suggests_from_hints_and_the_checks_refuse_contradictions(engine
     h.call("close", json!({})).await.ok();
 }
 
-/// A card's confirmation names the exact mapping, the site of the frame its
-/// values go into and the press button, and binds them: used once, and
-/// refused once the frame or a mapped field is swapped.
-async fn a_card_confirmation_binds_its_mapping_and_frames(engine: &str) {
-    let (_dir, state, _area) = test_state(engine);
-    let vault = Vault::new(state.clone());
-    let card = vault
-        .with(|s| {
-            s.add(item(
-                CARD,
-                "Test Visa",
-                &[],
-                &[
-                    ("number", NUMBER),
-                    ("expiry month", "4"),
-                    ("expiry year", "2031"),
-                    ("code", CVV),
-                ],
-            ))
-        })
-        .unwrap();
-    let (pages, processor) = (site(), site());
-    let local = format!("http://127.0.0.1:{pages}");
-    let frame = format!("http://localhost:{processor}");
-    let mut browsers = Browsers::new(state.clone(), vault.clone(), super::HEADLESS);
-    browsers.test = Some((
-        latch(),
-        vec![
-            (local.clone(), "https://shop.example".into()),
-            (frame.clone(), "https://js.processor.example".into()),
-        ],
-    ));
-    let mut h = Harness::start(browsers, engine).await;
-    let confirm = async |h: &mut Harness, id: &Value, request: &str| {
-        let mut audit = Map::new();
-        let done = crate::browser::steps::run(
-            &h.browsers,
-            &h.entry,
-            &h.id,
-            CALLER,
-            None,
-            &json!({"request": request, "plan": {"steps": []}, "confirm": id}),
-            &mut audit,
-        )
-        .await;
-        h.shown.push(seen(&Value::Object(audit)));
-        match &done {
-            Ok(value) => h.shown.push(seen(value)),
-            Err(failure) => h.shown.push(seen_failure(failure)),
-        }
-        done
-    };
-
-    h.call(
-        "open",
-        json!({"url": format!("{local}/processor.html?frame={processor}")}),
-    )
-    .await
-    .unwrap();
-    let args = h.suggested(&card.item).await;
-    let (stop, _) = h.gated_fill(args).await;
-    let stop = stop.unwrap_err();
-    let issued = stop.details["confirmation"].clone();
-    println!(
-        "processor frame: {} ({}); confirmation {issued}",
-        stop.code, stop.message
-    );
-    assert_eq!(stop.code, "confirm_needed");
-    assert_eq!(issued["frames"], json!(["https://js.processor.example"]));
-    assert_eq!(issued["mapping"].as_array().unwrap().len(), 3);
-    assert_eq!(issued["target"]["name"], "Pay $10.00");
-    assert!(issued["suggestion"].is_string());
-    let paid = confirm(&mut h, &issued["id"], "r-frame").await.unwrap();
-    println!("confirmed: trail {}", paid["trail"]);
-    assert_eq!(paid["trail"][0]["submitted"], true);
-    let page = h.text().await;
-    println!("the processor answered: {page}");
-    assert!(
-        page.contains("number ok, expiry ok (04 / 31), cvv ok"),
-        "{page}"
-    );
-    let again = confirm(&mut h, &issued["id"], "r-frame-2")
-        .await
-        .unwrap_err();
-    println!("used again: {} ({})", again.code, again.message);
-    assert_eq!(again.code, "confirm_stale");
-
-    // The frame swapped after the confirmation: refused, nothing paid.
-    h.call(
-        "open",
-        json!({"url": format!("{local}/processor.html?frame={processor}")}),
-    )
-    .await
-    .unwrap();
-    let args = h.suggested(&card.item).await;
-    let (stop, _) = h.gated_fill(args).await;
-    let id = stop.unwrap_err().details["confirmation"]["id"].clone();
-    h.call("eval", json!({"script": "const f = document.getElementById('pay'); f.src = f.src + '?again=1'; 1"}))
-        .await
-        .unwrap();
-    tokio::time::sleep(Duration::from_millis(1000)).await;
-    let swapped = confirm(&mut h, &id, "r-swap").await.unwrap_err();
-    println!("frame swapped: {} ({})", swapped.code, swapped.message);
-    assert_eq!(swapped.code, "confirm_stale");
-    assert!(!h.text().await.contains("payment:"));
-
-    // A mapped field swapped for a copy: refused, nothing paid.
-    let checkout = h
-        .call("open", json!({"url": format!("{local}/checkout.html")}))
-        .await
-        .unwrap();
-    let (stop, _) = h
-        .gated_fill(
-            json!({"item": card.item, "press": find(&checkout, "button", "Pay"),
-                           "fields": [["number", [find(&checkout, "textbox", "Card number")]],
-                                      ["expiry", [find(&checkout, "textbox", "Expiry")]],
-                                      ["cvv", [find(&checkout, "textbox", "CVV")]]]}),
-        )
-        .await;
-    let id = stop.unwrap_err().details["confirmation"]["id"].clone();
-    h.call("eval", json!({"script": "const e = document.querySelector('[name=cc-number]'); e.replaceWith(e.cloneNode()); 1"}))
-        .await
-        .unwrap();
-    let swapped = confirm(&mut h, &id, "r-field").await.unwrap_err();
-    println!("field swapped: {} ({})", swapped.code, swapped.message);
-    assert_eq!(swapped.code, "confirm_stale");
-    assert!(!h.text().await.contains("payment:"));
-    assert!(
-        h.call("eval", json!({"script": "1"})).await.is_ok(),
-        "the agent is back"
-    );
-
-    let everything = h.shown.join("\n");
-    for value in [NUMBER, CVV] {
-        assert!(
-            !everything.contains(value),
-            "a value reached a result or the audit"
-        );
-    }
-    h.call("close", json!({})).await.ok();
-}
-
-async fn a_filled_value_is_guarded_in_every_tab_and_from_screenshots(engine: &str) {
+async fn a_filled_value_is_guarded_in_every_tab_and_blank_in_screenshots(engine: &str) {
     let (_dir, state, _area) = test_state(engine);
     let vault = Vault::new(state.clone());
     let identity = vault
@@ -2154,8 +1867,8 @@ async fn a_filled_value_is_guarded_in_every_tab_and_from_screenshots(engine: &st
     };
     let guarded = (crate::failure::Exit::Denied, "secret_on_page".to_string());
 
-    // A picture would show the values.
-    assert_eq!(refused(h.call("screenshot", json!({})).await), guarded);
+    // A picture is taken, the filled fields blank in it.
+    assert!(h.call("screenshot", json!({})).await.is_ok());
     // Nor does another tab let anything read them: eval there, and back
     // on the filled tab, are refused alike.
     h.call(
@@ -2350,11 +2063,8 @@ async fn no_secret_goes_into_a_form_sent_by_get(engine: &str) {
     h.call("close", json!({})).await.unwrap();
 }
 
-/// A fill that cannot clean up keeps its secret guarded after its call:
-/// the page's own requests still go on, checked between calls, and the
-/// guard stands until the session's tabs are closed.
-/// A fill that cannot clean up keeps its secret guarded after its call:
-/// the page's own requests still go on, checked between calls; and
+/// A card left in a page that keeps it stays guarded after its fill's
+/// call: the page's own requests still go on, checked between calls; and
 /// however it ends, its session closed or its host stopped, no page sends
 /// the secret it holds as it goes.
 async fn requests_go_on_while_a_guard_outlives_its_call(engine: &str) {
@@ -2398,12 +2108,9 @@ async fn requests_go_on_while_a_guard_outlives_its_call(engine: &str) {
         ]);
         let started = std::time::Instant::now();
         let (before, _) = beacons(port);
-        let (trapped, _) = h
-            .fill(
-                json!({"item": card.item, "fields": fields, "press": find(&page, "button", "Pay")}),
-            )
-            .await;
-        assert_eq!(trapped.unwrap_err().code, "session_paused");
+        // The card waits in its fields for a Pay that never comes.
+        let (left, _) = h.fill(json!({"item": card.item, "fields": fields})).await;
+        assert_eq!(left.unwrap()["submitted"], false);
         if !host_stops {
             assert!(
                 started.elapsed() < Duration::from_secs(29),

@@ -658,16 +658,8 @@ async fn a_refused_command_sends_nothing_to_the_page(engine: &str) {
         "the judge saw a vault value"
     );
 
-    // A card fill is judged as it stops for its confirmation, and again as
-    // the confirmation would release the card: refused there, nothing is
-    // filled.
-    judge.answer(|state| {
-        let action = &state["proposed_action"];
-        match (action["kind"].as_str(), action["confirmed"] == true) {
-            (Some("vault_fill"), false) => COVERED,
-            _ => NOT_COVERED,
-        }
-    });
+    // A card fill is judged once, as any fill: the item, the fields and
+    // the page's site, never the number. Refused, nothing is filled.
     let card = host
         .browsers
         .vault
@@ -701,12 +693,12 @@ async fn a_refused_command_sends_nothing_to_the_page(engine: &str) {
     .0
     .unwrap();
     let checkout = host.agent("observe", &id, json!({}), None).await.0.unwrap();
-    let (stop, audit) = host
+    let filled = host
         .agent(
             "fill",
             &id,
             json!({"request": "r-fill-card", "item": card.item, "snapshot": checkout["snapshot"],
-                   "press": find(&checkout, "button", "Pay"), "fields": [
+                   "fields": [
                 ["number", [find(&checkout, "textbox", "Card number")]],
                 ["expiry", [find(&checkout, "textbox", "Expiry")]],
                 ["cvv", [find(&checkout, "textbox", "CVV")]],
@@ -714,74 +706,12 @@ async fn a_refused_command_sends_nothing_to_the_page(engine: &str) {
             None,
         )
         .await;
-    assert_eq!(audit["gate"]["verdict"], "allow");
-    let stop = stop.unwrap_err();
-    assert_eq!(stop.code, "confirm_needed", "{stop:?}");
-    let confirmation = stop.details["confirmation"]["id"].clone();
-    let released = host
-        .agent(
-            "do",
-            &id,
-            json!({"request": "r-confirm-card", "plan": {"steps": []}, "confirm": confirmation}),
-            None,
-        )
-        .await;
-    refused(&released, "not_covered", &chat);
-    // The release is judged on the checkout the confirmation bound: the
-    // page, the sites the values go to, the button and the lines around
-    // it, and the card's last four digits.
+    refused(&filled, "not_covered", &chat);
     assert_eq!(
         judge.last_action(),
         json!({"kind": "vault_fill", "site": "shop.example",
                "item": {"kind": "card", "title": "Test Visa"},
-               "fields": ["number", "expiry", "cvv"], "confirmed": true,
-               "checkout": {"page_title": "latch checkout test",
-                            "field_sites": ["https://shop.example"], "press": "Pay",
-                            "lines": ["Name on card", "Card number", "Expiry", "CVV", "Pay"],
-                            "card_last4": "4242"}})
-    );
-    // A page that shows the card's number shows the judge its last four
-    // digits only.
-    let id = host
-        .look(
-            "open",
-            named(engine),
-            json!({"url": format!("{site}/card-on-file.html")}),
-        )
-        .await["session"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let on_file = host.agent("observe", &id, json!({}), None).await.0.unwrap();
-    let (stop, _) = host
-        .agent(
-            "fill",
-            &id,
-            json!({"request": "r-fill-on-file", "item": card.item, "snapshot": on_file["snapshot"],
-                   "press": find(&on_file, "button", "Pay $10.00"), "fields": [
-                ["number", [find(&on_file, "textbox", "Card number")]],
-            ]}),
-            None,
-        )
-        .await;
-    let confirmation = stop.unwrap_err().details["confirmation"]["id"].clone();
-    let released = host
-        .agent(
-            "do",
-            &id,
-            json!({"request": "r-confirm-on-file", "plan": {"steps": []}, "confirm": confirmation}),
-            None,
-        )
-        .await;
-    refused(&released, "not_covered", &chat);
-    let judged = judge.last_action();
-    println!("judged on a page that shows the number: {judged}");
-    assert!(
-        judged["checkout"]["lines"]
-            .as_array()
-            .unwrap()
-            .contains(&json!("Card on file: •••• 4242")),
-        "{judged}"
+               "fields": ["number", "expiry", "cvv"]})
     );
     let everything = judge
         .shown

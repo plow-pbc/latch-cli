@@ -97,9 +97,8 @@ add-on is left out.
 A site may silently drop a sign-in from one engine and take it from the
 other. Agents are taught (`SKILL.md`) to retry a sign-in that doesn't move
 on once, in a new session on the other engine, and a login fill whose
-fields the page kept says so in its answer's `next`. A card's, or any
-other kind's, `next` says never to submit again: kept fields don't prove
-a payment failed.
+fields the page kept says so in its answer's `next`. Any other kind's
+`next` says never to submit again: kept fields don't prove it failed.
 
 ## Calling from the host itself
 
@@ -198,7 +197,7 @@ latch browser --host my-mac fill --item v1 --suggested s3f2a1c09bd   # a mapping
 latch browser --host my-mac fill --item v1 --field username=e4 --field password=e5 --press e6
 latch browser --host my-mac fill --field username=e4 --field password=e5 --press e6   # the login saved for this page's site
 latch browser --host my-mac fill --item v1 --field otp=e7 --press e8   # the current authenticator code
-latch browser --host my-mac fill --item v2 --field number=e4 --field expiry=e5 --field cvv=e6 --press e7   # stops for a confirmation
+latch browser --host my-mac fill --item v2 --field number=e4 --field expiry=e5 --field cvv=e6   # a card: no --press; then click Pay yourself
 latch browser --host my-mac handoff --reason captcha      # the owner takes over; waits until handed back
 latch browser handoff done [HASH]                          # on the host: hand the session back
 latch browser --host my-mac sessions | close
@@ -370,7 +369,7 @@ each before anything of it reaches the page:
   one of a single step too; only `act`'s one click, keypress or scroll is
   not;
 - every vault fill: a `fill`, each fill a plan makes (a literal fill step
-  or one a goal chose), and every `do --confirm` that releases a card or
+  or one a goal chose), and every `do --confirm` that releases an
   identity: the item's kind and title, the sites it is saved for, the
   fields and the page's site, never a value. The judge is told that the
   agent never receives the values and that a login fills only on its own
@@ -457,7 +456,8 @@ are the only texts it may type (a `{NAME}` the plan has no fact for is
 refused before anything runs), and a quoted URL is the only place it may
 `navigate` to. `--item vN` names a
 vault item the plan may fill from, by its id (`latch vault list`): the model may then choose one of
-latch's suggestions for it (item, mapping and button, or `none`), never a
+latch's suggestions for it (item, mapping and button, a card's with no
+button, its Pay a click of its own; or `none`), never a
 field or a ref of its own; a plan that names none never fills. `--dry-run` prints the canonical plan
 and sends nothing; `--output F` writes the page as the plan ended (or
 stopped) to F on this machine. Each pass reads the page and asks the
@@ -485,7 +485,7 @@ and other controls, for a literal `fill`), the same action on an
 unchanged page, or, in a step without a typed check, a second click or
 submit of the same control (`repeat`), or two actions that change nothing
 (`no_progress`), and a click or Enter that can't be undone
-(`confirm_needed`, as does a chosen fill that releases a card or identity
+(`confirm_needed`, as does a chosen fill that releases an identity
 secret). A page a step's click opens in a new tab is followed: the plan
 goes on there, nothing comes to the front. Lines written since the step began, even with the
 same words as before (a message an add-to-cart writes again), are marked
@@ -542,8 +542,8 @@ id, the target's ref and snapshot, the reviewed context, and a screenshot
 of the page as a handle (`{"request": R, "shot": "final"}`), which
 `do --history R --shot final --output F` streams to the client with
 matching sha256. A `fill` that
-releases a card or identity secret field (card number, CVV, identity
-numbers) always stops so, before any value is released, with the item's
+releases an identity secret field (an identity's numbers) always stops
+so, before any value is released, with the item's
 title, the exact mapping, each destination frame's site and the press
 button, whether it came standalone, as a plan step or as the model's
 choice. The agent confirms
@@ -555,9 +555,10 @@ only while the element and the reviewed lines are unchanged; otherwise
 $100.00 is refused, even with the same ref, URL and button name). It needs
 no new risk decision, so it still works while the model is down. A
 confirmed fill checks again at its press: if the button or the lines
-around it changed once the values went in (a total that reprices as the
-card number arrives), it does not press, clears the values, and answers
-`confirm_stale`. A step
+around it changed once the values went in, it does not press, clears the
+values, and answers `confirm_stale`. A card fill presses nothing and needs
+no confirmation: the agent presses Pay itself, a click judged like any
+other ([VAULT.md](VAULT.md)). A step
 whose `new text` check already holds stops before the confirmation is
 spent.
 
@@ -584,10 +585,11 @@ with `latch audit shot RECORD N --output F` (`--host H` from another of
 their machines): the host finds it by the record's session hash, request
 and shot, and sends it only if its sha256 is the one the record kept. A
 request's journal and screenshots are kept 7 days, after its session
-closes too. latch doesn't redact a screenshot's pixels: it takes none
-while a value filled from the vault is on the page, and none of a fill
-step, but typed text and the rest of the page can show, a card's number
-included if the page prints it after the fill ([VAULT.md](VAULT.md)).
+closes too. While a value filled from the vault is on the page, a
+screenshot shows the fields that hold it blank, and none is taken of a
+fill step; latch redacts nothing else, so typed text and the rest of the
+page can show, a card's number included if the page prints it after the
+fill ([VAULT.md](VAULT.md)).
 
 **Removed forms.** `act` on a name or description, `act --expect`,
 `act --steps`, `act click --at X,Y`, `find "<description>"` and
@@ -643,9 +645,10 @@ the code the site emailed or texted, and only then the owner, is SKILL.md's
 - **A filled value stays in the page.** Never copy one out, repeat it or
   write it anywhere.
 - **A purchase, in order:** `open` the shop; sign in with
-  `fill` if it isn't; choose the items; at checkout `fill` the card and
-  click the order button, carrying out each confirmation they stop for
-  (the card always does) with `do --confirm C`; `screenshot` the confirmation page; `close`.
+  `fill` if it isn't; choose the items; at checkout `fill` the card, check
+  the page, and click the order button yourself, carrying out the
+  confirmation it may stop for with `do --confirm C`; `screenshot` the
+  confirmation page; `close`.
 - **Close the session when done.** One whose id is lost closes itself
   after 30 idle minutes.
 

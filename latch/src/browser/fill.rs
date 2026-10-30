@@ -4,12 +4,14 @@
 //! (`core/fill.rs`):
 //!
 //! 1. **Gate.** Any session may use any item; where it may go is the
-//!    site rule's question (step 4). A mapping that includes a secret (a
-//!    password, a code, a card or identity secret) needs a press button: a
-//!    secret leaves the page before the agent is back. One that releases a
-//!    card or identity secret is also confirmed by the agent before any
-//!    value is released (`steps.rs`, [`releases_secret`]); this runs once
-//!    it is.
+//!    site rule's question (step 4). A mapping that includes a login's or
+//!    an identity's secret (a password, a code) needs a press button: the
+//!    secret leaves the page before the agent is back. One that releases
+//!    an identity secret is also confirmed by the agent before any value is
+//!    released (`steps.rs`, [`releases_secret`]); this runs once it is. A
+//!    card is filled like any other field, judged as any fill is: the
+//!    agent presses Pay itself, and until the page takes the card, latch
+//!    keeps it out of what the agent can read (below).
 //! 2. **Pause and prepare.** The browser is held: every other call in the
 //!    session gets `session_paused`. The worker
 //!    reports what the page's markup says of each mapped element.
@@ -35,6 +37,12 @@
 //! by ref, where it came from (a suggestion's id, or the agent), the
 //! stages, the origins, any `hint_mismatch`, and the outcome: never a
 //! value.
+//!
+//! A fill with no press leaves its values on the page for the agent to
+//! submit. While they are there, `eval` is refused, screenshots show the
+//! filled fields blank, and a GET request carrying a secret is stopped;
+//! latch empties fields still holding a secret [`FILLED_FOR`] after the
+//! fill, and the values go with the browser when the session closes.
 
 use std::sync::atomic::Ordering;
 
@@ -49,15 +57,20 @@ use crate::vault::item::{Item, Meta};
 use crate::vault::store::Backend;
 use crate::vault::{classify, dates, sites, totp};
 
-/// Whether a fill releases a card or identity secret, and so needs the
-/// agent's confirmation first: the item's title if it does. A malformed
-/// fill is refused here, as `run` would refuse it. A login's password and
-/// code need no confirmation: they go only to the login's own site.
+/// How long a secret filled with no press may stay in the page's fields
+/// before latch empties them.
+pub const FILLED_FOR: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
+/// Whether a fill releases an identity secret, and so needs the agent's
+/// confirmation first: the item's title if it does. A malformed fill is
+/// refused here, as `run` would refuse it. A login's password and code
+/// need no confirmation: they go only to the login's own site; nor does a
+/// card, judged as any fill is.
 pub fn releases_secret(browsers: &Browsers, args: &Value) -> Result<Option<String>, Failure> {
     let item = item_of(browsers, args)?;
     let plan = Plan::of(&item, args)?;
     let meta = item.meta();
-    let secret = meta.kind != "login"
+    let secret = !matches!(meta.kind, "login" | "card")
         && plan
             .fields
             .iter()
@@ -553,9 +566,16 @@ impl Plan {
             ));
         }
         let press = args["press"].as_str().map(str::to_string);
-        let secret = fields
-            .iter()
-            .any(|(label, _)| suggest::secret_field(&meta, label));
+        if meta.kind == "card" && press.is_some() {
+            return Err(usage(
+                "a card fill presses nothing: fill it without --press, check the page, then press Pay yourself with `do 'click eN'`",
+            ));
+        }
+        // A card stays on the page for the agent's own press of Pay.
+        let secret = meta.kind != "card"
+            && fields
+                .iter()
+                .any(|(label, _)| suggest::secret_field(&meta, label));
         if secret && press.is_none() {
             return Err(Failure::new(
                 code::press_required,
@@ -691,7 +711,20 @@ async fn fill(
     if !mismatches.is_empty() {
         audit.insert("hint_mismatch".into(), json!(mismatches));
     }
-    let mut result = step(session, json!({"op": "fill_resume"}), audit).await?;
+    // A secret left on the page for the agent's own press goes from it in
+    // a while, pressed or not.
+    let window = browsers.filled_for();
+    let left = plan.press.is_none()
+        && plan
+            .fields
+            .iter()
+            .any(|(label, _)| suggest::secret_field(&meta, label));
+    let resume = if left {
+        json!({"op": "fill_resume", "clear_after_ms": window.as_millis() as u64})
+    } else {
+        json!({"op": "fill_resume"})
+    };
+    let mut result = step(session, resume, audit).await?;
     if let Some(object) = result.as_object_mut() {
         object.insert("item".into(), json!(item.id));
         object.insert("fields".into(), json!(outcomes));
@@ -701,9 +734,25 @@ async fn fill(
         if cleared {
             let engine = session.ready["engine"].as_str().unwrap_or_default();
             object.insert("next".into(), json!(kept(meta.kind, engine)));
+        } else if left {
+            object.insert("next".into(), json!(left_on_page(window)));
         }
     }
     Ok(result)
+}
+
+/// The way on after a fill that left a secret on the page: the agent looks,
+/// then presses the page's own button.
+fn left_on_page(window: std::time::Duration) -> String {
+    let secs = window.as_secs();
+    let after = if secs >= 60 {
+        format!("{} minutes", secs / 60)
+    } else {
+        format!("{secs} seconds")
+    };
+    format!(
+        "the values are in the page's fields, which you can't read: screenshots show them blank, and `eval` waits until they are empty. Check the page, then press its own button (Pay, Submit) yourself. latch empties those fields {after} after this fill if they still hold the values, and when the session closes"
+    )
 }
 
 /// The way on after a submit the page kept: it neither left nor emptied the

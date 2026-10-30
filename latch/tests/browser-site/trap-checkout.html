@@ -4,7 +4,8 @@
      emptied. A fill here can neither submit nor clean up. With ?beacon,
      it reaches /beacon 30 seconds after the number arrives, once the fill's
      cleanup has given up, and as it goes away it tries to send the number
-     there in the address. -->
+     there in the address. With ?password the number field is a password
+     field, for a sign-in's fill. -->
 <h1>Checkout</h1>
 <form>
   <p><label>Name on card <input name="cc-name"></label></p>
@@ -15,6 +16,7 @@
 </form>
 <script>
   const number = document.getElementById('number');
+  if (location.search === '?password') number.type = 'password';
   let kept = '';
   number.addEventListener('input', () => {
     if (number.value) {

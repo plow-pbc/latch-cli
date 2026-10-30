@@ -23,8 +23,9 @@
 //! `FillInventory` reports every element of a snapshot as a fill sees it
 //! (`__latch.controls`), for the host's suggestions and checks; it pauses
 //! nothing. No step answers with a value. While a filled value may still be
-//! on a page (a fill without a press), in whichever tab, `eval` and
-//! screenshots are refused.
+//! on a page (a fill without a press), in whichever tab, `eval` is refused
+//! and a screenshot shows the filled fields blank; a secret among them is
+//! emptied once the time its fill gave is up (`clear_due`).
 
 use std::time::{Duration, Instant};
 
@@ -39,6 +40,9 @@ use crate::failure::{Failure, code};
 const CLEANUP: Duration = Duration::from_secs(15);
 /// How long latch watches fields it emptied before calling them empty.
 const SETTLED: Duration = Duration::from_millis(500);
+/// How long latch waits to empty a filled secret again when its tab is
+/// not the active one, and so can't be read.
+const CLEAR_AGAIN: Duration = Duration::from_secs(30);
 /// How long a login's next stage has to show after its identifier stage.
 const NEXT_STAGE: Duration = Duration::from_secs(15);
 /// How long a changed page must stay unchanged to count as the next stage,
@@ -87,6 +91,8 @@ pub struct State {
     /// Secrets filled into the page, which no GET request may carry while
     /// they may be on it (`Driver::guard`).
     guarded: Vec<String>,
+    /// When the secrets a fill left on the page are emptied.
+    clear_at: Option<Instant>,
 }
 
 /// The filled frames still open, in the active tab and in others.
@@ -506,7 +512,11 @@ impl<D: Driver> Core<D> {
     /// Lets the agent back in, unless a cleanup could not confirm the values
     /// left the page: that keeps the session paused through every later
     /// fill, until one's cleanup confirms the page holds none.
-    pub(super) fn fill_resume(&mut self, audit: &mut Map<String, Value>) -> Result<Value, Failure> {
+    pub(super) fn fill_resume(
+        &mut self,
+        clear_after_ms: Option<u64>,
+        audit: &mut Map<String, Value>,
+    ) -> Result<Value, Failure> {
         if self.fill.unclean {
             return Err(Failure::new(
                 code::session_paused,
@@ -515,6 +525,14 @@ impl<D: Driver> Core<D> {
         }
         self.fill.targets.clear();
         self.paused = false;
+        if let Some(ms) = clear_after_ms
+            && self.holding().ok() != Some(0)
+            && !self.fill.guarded.is_empty()
+        {
+            // An earlier secret's deadline stands: the earliest goes first.
+            let at = Instant::now() + Duration::from_millis(ms);
+            self.fill.clear_at = Some(self.fill.clear_at.map_or(at, |was| was.min(at)));
+        }
         let before = Map::new();
         let mut result = Map::new();
         let events = self.settle()?;
@@ -591,8 +609,75 @@ impl<D: Driver> Core<D> {
         Ok(())
     }
 
-    /// `eval` and screenshots are refused while a filled value may still
-    /// be on a page of the session, in any of its tabs.
+    /// When the secrets a fill left on the page are due to be emptied; none
+    /// while a fill holds the session, which keeps the deadline for after.
+    pub fn clear_at(&self) -> Option<Instant> {
+        self.fill.clear_at.filter(|_| !self.paused)
+    }
+
+    /// Empties the filled fields of the active tab once their time is up;
+    /// a filled tab that isn't the active one is tried again a little
+    /// later, as only the active tab's frames can be read.
+    pub fn clear_due(&mut self) {
+        if self.clear_at().is_none_or(|at| at > Instant::now()) {
+            return;
+        }
+        let Ok(filled) = self.live_filled() else {
+            self.fill.clear_at = Some(Instant::now() + CLEAR_AGAIN);
+            return;
+        };
+        for (_, frame) in &filled.here {
+            let _ = self.driver.run(frame, "__latch.clearFilled()");
+        }
+        self.fill.clear_at = if filled.elsewhere.is_empty() {
+            // Lifts the GET guard once nothing is held.
+            let _ = self.holding();
+            None
+        } else {
+            Some(Instant::now() + CLEAR_AGAIN)
+        };
+    }
+
+    /// `take` (a screenshot) with every field of the active tab that holds
+    /// a value latch filled shown blank, and their own look put back after.
+    /// Refused when a filled frame there can't be blanked, or a field's
+    /// blanking was gone once the picture was taken.
+    pub(super) fn blanked<T>(
+        &mut self,
+        take: impl FnOnce(&mut D) -> Result<T, Failure>,
+    ) -> Result<T, Failure> {
+        let here = self.live_filled()?.here;
+        let mut done = Vec::new();
+        let mut failed = false;
+        for (_, frame) in &here {
+            match self.driver.run(frame, "__latch.blankFilled(true)") {
+                Ok(_) => done.push(frame.clone()),
+                Err(_) => {
+                    failed = true;
+                    break;
+                }
+            }
+        }
+        let mut taken = if failed {
+            Err(unhidden())
+        } else {
+            take(&mut self.driver)
+        };
+        if taken.is_ok()
+            && done.iter().any(|frame| {
+                self.driver.run(frame, "__latch.stillBlank()").ok() != Some(json!(true))
+            })
+        {
+            taken = Err(unhidden());
+        }
+        for frame in &done {
+            let _ = self.driver.run(frame, "__latch.blankFilled(false)");
+        }
+        taken
+    }
+
+    /// `eval` is refused while a filled value may still be on a page of
+    /// the session, in any of its tabs.
     pub(super) fn no_value_on_page(&mut self, what: &str) -> Result<(), Failure> {
         if self.holding().ok() != Some(0) {
             return Err(Failure::new(
@@ -604,6 +689,14 @@ impl<D: Driver> Core<D> {
         }
         Ok(())
     }
+}
+
+/// A screenshot refused: a filled value would show in it.
+fn unhidden() -> Failure {
+    Failure::new(
+        code::secret_on_page,
+        "a value latch filled from the vault is on this page in a field latch could not hide; a screenshot waits until it is gone".into(),
+    )
 }
 
 #[cfg(test)]
@@ -736,7 +829,15 @@ mod tests {
         let cleaned = core.call(Call::FillCleanup, None).err().unwrap();
         assert_eq!(cleaned.code, "engine_error");
         // As after a later fill that failed before releasing anything.
-        let resumed = core.call(Call::FillResume, None).err().unwrap();
+        let resumed = core
+            .call(
+                Call::FillResume {
+                    clear_after_ms: None,
+                },
+                None,
+            )
+            .err()
+            .unwrap();
         assert_eq!(resumed.code, "session_paused");
         assert!(core.paused);
     }

@@ -198,7 +198,7 @@ const OPERATIONS: [(&str, &str); 12] = [
     ("wait", "Wait for the page to finish loading or updating."),
     (
         "fill",
-        "Fill the sign-in fields or the form on this page from a saved vault item: latch fills them from the vault and presses the form's button. Use it on a sign-in or password page, or a form the step asks to fill.",
+        "Fill the sign-in fields or the form on this page from a saved vault item: latch fills them from the vault and presses the form's button (a card's it leaves for you to press). Use it on a sign-in or password page, or a form the step asks to fill.",
     ),
     (
         "done",
