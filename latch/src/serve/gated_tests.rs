@@ -1398,6 +1398,7 @@ async fn an_agent_with_no_chat_and_no_rules_is_judged_by_the_built_in_policy() {
 /// agent gets `owner_only` for each, and the agent's next judgment reads
 /// what the owner set.
 #[tokio::test]
+#[cfg_attr(windows, ignore = "its program is /bin/sh")]
 async fn the_owners_rules_commands_work_over_the_connection_and_never_for_an_agent() {
     let world = World {
         decide: Some(always_covered),
@@ -2303,6 +2304,7 @@ async fn local_vault_edits_reach_a_running_hosts_release_path() {
 }
 
 #[tokio::test]
+#[cfg_attr(windows, ignore = "its program is /bin/sh")]
 async fn an_exec_is_audited_whole_and_shown_with_its_credentials_hidden() {
     let t = start(a_chat(always_covered)).await;
     let agent = t.caller("agent").await;
