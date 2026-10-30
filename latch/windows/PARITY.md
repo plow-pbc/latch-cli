@@ -26,7 +26,7 @@ Windows window's fake mode shows the same data, for side-by-side stills.
 | Access: Google (`plugins enable google --events`) | eng-65 | the window's step waits on Google working on Windows |
 | Access: Contacts & Messages (Full Disk Access, its helper panel) | Mac only | no Messages or Contacts on Windows |
 | Start: `serve -d`, run in the background | Done | |
-| Start: start when you log in (Login Item) | Not started | Windows: a Task Scheduler logon task |
+| Start: start when you log in (Login Item) | Built | the user's Run key; the setup switch is being ported |
 | Done (text an agent, skipped steps, not running) | Done | the plain "done"; its other states not started |
 | Set up again (from Home) | Built | |
 
@@ -35,16 +35,16 @@ Windows window's fake mode shows the same data, for side-by-side stills.
 | Mac | Windows | Notes |
 | --- | --- | --- |
 | Sidebar: Your account (Agents, Connections), Hosts with state words, "Logged in as" | Built | |
-| Sidebar: Plow unreachable notice; viewer-only "Start Hosting on This Mac…" | Built / Not started | notice built; viewer-only not started |
+| Sidebar: Plow unreachable notice; viewer-only "Start Hosting on This Mac…" | Built | |
 | Host bar: screen tabs, search, inspector toggle | Built | |
-| Home: needs you, today, recent activity, on this host, offline host | Built | |
-| Home: Load Earlier; viewer-only section | Built / Not started | viewer-only not started |
-| Activity: table, filters, agent chip, search, live feed, states | Built | |
+| Home: needs you, today, recent activity, on this host, offline host | Done | live: stopped → Start Latch → serving |
+| Home: Load Earlier; viewer-only section | Built | |
+| Activity: table, filters, agent chip, search, live feed, states | Done | live: this PC's real records |
 | Activity: record inspector, gatekeeper request, screenshots | Built | screenshots through run_file |
-| Rules: every agent / per agent, edit, save, clear, revisions, try box | Built | |
-| Vault: list, search, inspector (no secret values), remove | Built | WebView2 autofill off |
-| Vault: new item, edit, import (preview, pick, conflicts) | Built | native Open dialog |
-| Host Settings: start/stop/restart, plugins, version, keep awake | Built | keep awake: latch says unsupported on Windows |
+| Rules: every agent / per agent, edit, save, clear, revisions, try box | Done | live: saved, read back by the CLI, restored |
+| Vault: list, search, inspector (no secret values), remove | Done | live: added, shown "Saved, never shown" (the value nowhere on the page), removed; WebView2 autofill off |
+| Vault: new item, edit, import (preview, pick, conflicts) | Done / Built | new item live; edit and import built, native Open dialog |
+| Host Settings: start/stop/restart, plugins, version, keep awake | Done | live: stopped (asked first) and started; keep awake: latch says unsupported on Windows |
 | Agents: list, detail, menu, remove, contact card, hub | Built | Message (opens Messages): Mac only |
 | New Agent sheet: catalog, start by text (QR), community, failed | Built | Open in Messages: Mac only |
 | Connections: Google accounts and sign-in sheet, devices | Built | Google itself: eng-65 |
