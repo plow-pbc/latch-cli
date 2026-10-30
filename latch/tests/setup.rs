@@ -746,30 +746,3 @@ fn status_says_rules_are_done_once_any_are_set() {
         assert_eq!(steps["rules"]["args"], serde_json::Value::Null, "{file}");
     }
 }
-
-/// Without a terminal setup asks nothing and sets no rules: it says the
-/// first step left, which once Google is settled is the rules.
-#[test]
-fn without_a_terminal_setup_sets_no_rules_and_says_how() {
-    let stub = Stub::new();
-    let state = logged_in(&stub, "device", &[]);
-    let before = contents(&state);
-    let output = Command::new(env!("CARGO_BIN_EXE_latch"))
-        .env("HOME", &stub.root)
-        .arg("--state-dir")
-        .arg(&state)
-        .arg("setup")
-        .stdin(std::process::Stdio::null())
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(2), "{output:?}");
-    let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
-    assert_eq!(error["error"]["code"], "no_terminal", "{error}");
-    assert_eq!(contents(&state), before);
-    assert!(!state.join("rules").exists());
-    let steps = status(&state);
-    assert_eq!(
-        steps["rules"]["args"],
-        serde_json::json!(["rules", "set", "--preset", "family", "--revision", "none"])
-    );
-}

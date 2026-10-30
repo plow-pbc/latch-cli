@@ -9021,6 +9021,8 @@ fn setup_without_a_terminal_names_the_first_step_setup_status_lists() {
         let error = one_error_line(&String::from_utf8_lossy(&output.stderr), Some(2));
         assert_eq!(error["error"]["code"], "no_terminal", "{error}");
         assert_eq!(error["error"]["next"], expected, "{listed}");
+        // Setup with no terminal sets no rules.
+        assert_eq!(state.join("rules").exists(), *state == ruled, "{listed}");
         nexts.push(error["error"]["next"].as_str().unwrap().to_string());
     }
     assert_eq!(
