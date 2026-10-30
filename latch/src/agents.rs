@@ -22,7 +22,9 @@ use crate::failure::{Failure, code};
 use crate::hosts;
 use crate::login;
 use crate::plow::{ListedAgent, Plow};
-use crate::state::{OwnerOnly, StateDir};
+#[cfg(unix)]
+use crate::state::OwnerOnly;
+use crate::state::StateDir;
 use crate::term;
 use crate::wire::Request;
 
@@ -528,27 +530,17 @@ struct TokenFile {
 impl TokenFile {
     fn reserve(path: &Path) -> Result<TokenFile, Failure> {
         let path = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true).owner_only();
-        // A link there is "already exists", never followed (as Windows'
-        // create-new is anyway).
-        #[cfg(unix)]
-        std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, libc::O_NOFOLLOW);
-        // On Windows it takes its folder's access list: made this user's
-        // alone before the credential is written, wherever it is.
+        // A link there is "already exists", never followed. On Windows the
+        // file is made this user's alone as it is made, wherever it is.
         #[cfg(windows)]
-        let opened = options
-            .open(&path)
-            .and_then(|file| match crate::state::owner::file(&path) {
-                Ok(()) => Ok(file),
-                Err(err) => {
-                    drop(file);
-                    let _ = std::fs::remove_file(&path);
-                    Err(err)
-                }
-            });
+        let opened = crate::state::owner::create_new(&path);
         #[cfg(unix)]
-        let opened = options.open(&path);
+        let opened = {
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true).owner_only();
+            std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, libc::O_NOFOLLOW);
+            options.open(&path)
+        };
         match opened {
             Ok(file) => Ok(TokenFile { path, file }),
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {

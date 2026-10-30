@@ -1706,7 +1706,7 @@ async fn serve_local(
     admission: crate::transport::Admission,
 ) {
     let (mut recv, mut send) = socket.into_split();
-    if !admission.check(&mut recv).await {
+    if !admission.check(&mut recv, &mut send).await {
         return;
     }
     let Some(request) = read_request(&mut send, &mut recv).await else {
