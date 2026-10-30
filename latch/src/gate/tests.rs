@@ -1032,7 +1032,7 @@ async fn a_fill_from_the_vault_is_judged_knowing_what_a_fill_does() {
     }
 }
 
-/// An agent's script is judged on its whole source, however long, by both
+/// An agent's script is judged on its whole source, however long, by all three
 /// layers, told what a script in a page can reach; nothing else is.
 #[tokio::test]
 async fn a_script_is_judged_whole_knowing_what_it_can_reach() {
@@ -1050,7 +1050,7 @@ async fn a_script_is_judged_whole_knowing_what_it_can_reach() {
         gatekeeper(one_chat(), &model, host_rules())
             .judge(AGENT_CALLER, &raw)
             .await;
-        for state in [model.rules_state(), model.chat_state()] {
+        for state in [model.rules_state(), model.chat_state(), model.will_state()] {
             assert_eq!(state["proposed_action"], action);
             let rules = state["rules_of_judgment"].to_string();
             assert_eq!(rules.contains(RUN_SCRIPT), told, "{action}");
