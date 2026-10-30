@@ -12,6 +12,7 @@
 //! `browser-engines.sh` does elsewhere, with the system's curl.exe and
 //! tar.exe. Camoufox has no Windows build.
 
+#[cfg(unix)]
 use std::process::Command;
 
 use serde_json::{Value, json};
@@ -158,25 +159,7 @@ fn install(state: &StateDir, engine: &str) -> Result<(), Failure> {
         .prefix(".download.")
         .tempdir_in(&version)
         .map_err(local)?;
-    let system = std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap_or_default())
-        .join("System32");
-    let log = crate::trace::file(state)?;
-    let run = |program: &str, args: &[&OsStr]| -> Result<(), Failure> {
-        let (out, err) = crate::trace::output(&log)?;
-        let status = Command::new(system.join(program))
-            .args(args)
-            .stdout(out)
-            .stderr(err)
-            .status()
-            .map_err(local)?;
-        match status.success() {
-            true => Ok(()),
-            false => Err(failed(format!(
-                "{program} failed ({status}); its messages are in {}",
-                state.path.join(crate::trace::FILE).display()
-            ))),
-        }
-    };
+    let run = |program: &str, args: &[&OsStr]| crate::trace::system_tool(state, program, args);
     let zip = staging.path().join("cft.zip");
     run(
         "curl.exe",

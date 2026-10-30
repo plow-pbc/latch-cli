@@ -122,6 +122,16 @@ fn runnable(meta: &std::fs::Metadata) -> bool {
 /// connected that it gives this host credentials for. Nothing is kept here:
 /// Plow still hands out short-lived credentials per operation.
 async fn google(workers: &WorkerSetup, plow: &Plow) -> Result<Value, Failure> {
+    // Windows has no install.sh: the pinned gog is installed here when missing.
+    #[cfg(windows)]
+    {
+        let state = crate::state::StateDir {
+            path: workers.state_dir.clone(),
+        };
+        tokio::task::spawn_blocking(move || crate::google::install::if_missing(&state))
+            .await
+            .map_err(|err| Failure::new(code::setup_failed, err.to_string()))??;
+    }
     let gog = crate::google::host::gog_program(&workers.state_dir, &crate::google::PIN.version)?;
     // The check every Google worker makes before it runs gog.
     crate::google::process::verify(&gog)?;
