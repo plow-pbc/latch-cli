@@ -123,6 +123,7 @@ impl Secrets {
         let Some(store) = &self.keychain else {
             let path = self.dir.join(secret.file());
             let sealed = self.sealed(secret, bytes)?;
+            let _lock = self.lock()?;
             return write_private(&path, &sealed).map_err(|err| io_failure(&path, err));
         };
         store
@@ -136,6 +137,7 @@ impl Secrets {
         let Some(store) = &self.keychain else {
             let path = self.dir.join(secret.file());
             let sealed = self.sealed(secret, bytes)?;
+            let _lock = self.lock()?;
             let file = fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
@@ -159,6 +161,7 @@ impl Secrets {
     /// Deletes each of `secrets` this folder has, where this build keeps
     /// them. Returns the files they are named by, of those there were.
     pub fn remove_each(&self, secrets: &[Secret]) -> Result<Vec<&'static str>, Failure> {
+        let _lock = self.lock()?;
         let mut removed = Vec::new();
         for &secret in secrets {
             let was = match &self.keychain {
@@ -207,17 +210,27 @@ impl Secrets {
     }
 
     /// The secret in a file's `bytes`. On Windows a file an older latch left
-    /// in the clear is sealed in place first, unless it changed meanwhile.
+    /// in the clear is sealed in place first, under the lock every change
+    /// holds; one that changed since it was read (an audit key rotated, a
+    /// login) is opened as it is now instead, never put back as it was.
     fn opened(&self, secret: Secret, path: &Path, bytes: Vec<u8>) -> Result<Vec<u8>, Failure> {
         #[cfg(windows)]
         return match dpapi::open(bytes, &self.account(secret)) {
             Ok(dpapi::Opened::Sealed(bytes)) => Ok(bytes),
             Ok(dpapi::Opened::Clear(bytes)) => {
                 let sealed = self.sealed(secret, &bytes)?;
-                if fs::read(path).is_ok_and(|now| now == bytes) {
-                    write_private(path, &sealed).map_err(|err| io_failure(path, err))?;
+                let lock = self.lock()?;
+                match fs::read(path) {
+                    Ok(now) if now == bytes => {
+                        write_private(path, &sealed).map_err(|err| io_failure(path, err))?;
+                        Ok(bytes)
+                    }
+                    Ok(now) => {
+                        drop(lock);
+                        self.opened(secret, path, now)
+                    }
+                    Err(err) => Err(io_failure(path, err)),
                 }
-                Ok(bytes)
             }
             Err(why) => Err(self.unsealable("open", secret, &why)),
         };
@@ -241,6 +254,33 @@ impl Secrets {
             self.account(secret)
         );
         Failure::new(code::keychain_failed, message)
+    }
+
+    /// On Windows every change to a secret file, sealing a clear one
+    /// included, holds `secrets.lock`, so a sealing never puts back a
+    /// secret changed since it was read (see `opened`). Elsewhere files are
+    /// written whole and never sealed: there is nothing to hold.
+    #[cfg(windows)]
+    fn lock(&self) -> Result<Option<fs::File>, Failure> {
+        let path = self.dir.join("secrets.lock");
+        let opened = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .owner_only()
+            .open(&path);
+        let file = match opened {
+            Ok(file) => file,
+            // A folder that is gone has no secret file to change.
+            Err(err) if err.kind() == ErrorKind::NotFound => return Ok(None),
+            Err(err) => return Err(io_failure(&path, err)),
+        };
+        file.lock().map_err(|err| io_failure(&path, err))?;
+        Ok(Some(file))
+    }
+    #[cfg(not(windows))]
+    fn lock(&self) -> Result<Option<fs::File>, Failure> {
+        Ok(None)
     }
 
     #[cfg(windows)]
