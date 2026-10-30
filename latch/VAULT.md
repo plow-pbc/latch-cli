@@ -334,17 +334,13 @@ response's `Retry-After` may be what the page or the site made of it.
 
 The audit records the item, its revision, the mapping by ref, where it
 came from (a suggestion's id, or the agent), the stages, both origins, any
-`hint_mismatch`, whether
-agent code (`eval`) ran on those sites earlier in the session
-(`agent_code_before_fill`), and the outcome: never a value. An agent script
-that ran on the site before a fill could read the value it puts on the
-page, through what it left behind (a service worker, a stored script).
-Latch can't prevent that, so it flags every such fill, and refuses a card's
-(`agent_code_on_site`, exit 4) before any value is released. An `eval`
-refused before it was sent (while a filled value was on the page, say)
-ran nothing and counts for none of this. What a script
-left goes with the session's profile, so a new session starts unflagged:
-fill the card there.
+`hint_mismatch`, and the outcome: never a value. A script the agent runs
+with `eval` could read what is typed or filled on its page, then or later
+through what it leaves behind (a listener, a service worker, a stored
+script), so the gatekeeper judges each script's whole source: one that
+reads form fields, hooks input, keyboard or form events, or sends page
+data off the page needs the owner's own OK. A login and a card are filled
+under the same protections either way.
 
 ## Storage
 

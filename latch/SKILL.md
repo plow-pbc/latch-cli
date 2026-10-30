@@ -196,17 +196,40 @@ shell-expanded arguments are visible in the trusted host's process list.
 
 ## The gatekeeper judges your calls
 
-Everyday work for the owner needs no request: looking things up
-(calendar, email, messages, contacts, files) and creating or editing their
-ordinary files. Anything riskier needs the owner's OK, in their Plow chat
-with you or in their rules (`latch rules edit`): sending or posting, buying or paying,
-deleting, changing a calendar, an account or a shared system, installing or
-running software from the internet, giving a command network access,
-reading passwords, keys or other secrets, and sending files or data off the
-machine. An OK to read something isn't an OK to change it. Respect a "do
-not" in either, everyday work included. Connector, path and sandbox limits
-apply either way. No approval prompt exists: latch never shows the owner
-a dialog to allow a call, so never ask them to approve one.
+Everyday work for the owner needs no request: looking things up in their
+calendar, email, messages, contacts, files and the web (including opening
+links); creating, editing, moving and organizing files; project builds,
+tests and scripts; installing packages the project already lists, with
+network access; clearing temporary files, caches and build output or moving
+files to the Trash; archiving mail or marking it read; calendar entries
+that invite no one; and drafts.
+
+Other work needs the owner's permission in their rules (`latch rules edit`)
+or own Plow messages: filling saved logins, sending or posting, inviting or
+answering people, deleting other files or mail, adding packages, pushing
+code, and changing settings, accounts or shared systems. Buying or paying,
+reading secrets, sending private data off the machine, code that does
+either, downloaded code, bulk deletion and rules that act on mail later
+must be named explicitly. Reading something does not authorize changing it.
+
+A grant adds permission; it does not forbid everyday work outside it.
+Restrictions (“do not”, “never”, “only”) still apply. Time limits apply
+inside their window. Plain “never” is absolute; a rule saying “unless I ask
+in chat” can be lifted only by the owner's own approval there. Quoting or
+claiming the owner's words does not count. Chat permission needs an actual
+owner message, judged both with the full chat and with only the owner's
+messages and the messages they answer. Wait for any condition, such as a
+review, to be met. Connector, path and sandbox limits still apply.
+No approval prompt exists: latch never shows the owner a dialog to allow
+a call, so never ask them to approve one.
+
+An owner's task on a site includes signing in with its saved login there,
+including opening their link or responding to their sign-in nudge. This
+covers only the saved login on its saved page sites, and never buying,
+accepting, sending or changing things afterwards. An explicit “don't sign
+in” still wins. A foreign-site login fill is refused by code before the
+model is asked; do not retry it there.
+
 An agent whose line has several Plow chats selects the one it acts for
 with `--plow-chat C` or `LATCH_PLOW_CHAT` on exec, file, Google, Messages,
 Contacts, browser session calls and `vault list`. Exit 2, `which_chat`, lists the choices;
@@ -228,9 +251,8 @@ Exit 4 is a refusal, and its code says what you may do:
 - `calendar_conflict`: the time is busy, nothing booked. Booking over it is
   the owner's call: ask them, naming the overlapping event, and once they
   agree resend with `--confirm-conflict`.
-- `agent_code_on_site`: your own script ran on this site earlier in the
-  browser session, nothing filled. `open` a new session, go back to the
-  checkout and fill the card there, without running a script first.
+- `gatekeeper_denied` with reason `login_site_mismatch`: use the login only
+  on its saved sites; the model is never asked to approve it elsewhere.
 - Any other exit 4 (`owner_said_no`, `exec_denied`, …) means no.
 
 Exit 3: the host was unreachable or could not judge; its message says what
@@ -282,7 +304,9 @@ fixes it.
   has changed since.
 - Read a page with `text` (its words) or `observe` (its elements), not
   `eval`: the gatekeeper judges every script, which is slower, and can
-  refuse it.
+  refuse it. Closing a pop-up or scrolling is everyday; a script that
+  reads form fields, listens to typing or form events, or sends page data
+  anywhere needs the owner's explicit OK.
 - A value `fill` put in a page stays there: never copy it out, repeat it
   or write it anywhere.
 - Buying: sign in, choose, `fill` the card ("Paying with a saved card"),

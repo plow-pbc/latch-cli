@@ -436,6 +436,7 @@ async fn the_owner_reads_back_each_gatekeeper_call_as_sent_and_an_agent_cannot()
         ("owner", by_owner),
         ("rules", &layers["rules"]),
         ("chat", &layers["chat"]),
+        ("will", &layers["will"]),
     ] {
         // By default, credential-looking values are hidden, as in `latch
         // audit`: in the action and in the owner's request.
@@ -515,7 +516,7 @@ async fn the_owner_reads_back_each_gatekeeper_call_as_sent_and_an_agent_cannot()
         .into_iter()
         .filter(|r| r["op"] == "audit_judge")
         .collect();
-    assert_eq!(reads.len(), 6);
+    assert_eq!(reads.len(), 8);
     assert_eq!(
         reads[..2].iter().map(|r| &r["args"]).collect::<Vec<_>>(),
         [

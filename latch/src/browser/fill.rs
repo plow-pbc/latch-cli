@@ -33,10 +33,8 @@
 //! The result says `submitted`, never "logged in" or "paid", with each
 //! field's outcome. The audit records the item, its revision, the mapping
 //! by ref, where it came from (a suggestion's id, or the agent), the
-//! stages, the origins, any `hint_mismatch`, whether agent code ever ran on
-//! those sites in the session (`agent_code_before_fill`), and the outcome:
-//! never a value. A card is never filled where agent code ran
-//! (`agent_code_on_site`): what the script left could read it.
+//! stages, the origins, any `hint_mismatch`, and the outcome: never a
+//! value.
 
 use std::sync::atomic::Ordering;
 
@@ -1048,22 +1046,6 @@ async fn release_and_set(
                 ));
             }
         }
-    }
-    // Agent code that ran on these sites, in any session, may have left a
-    // service worker or stored script to see what is filled now.
-    let touched: Vec<String> = frame_origins
-        .iter()
-        .map(String::as_str)
-        .chain([top])
-        .filter_map(|origin| sites::site_of(&browsers.origin_as(origin)))
-        .collect();
-    let agent_code = session.runtime.agent_code_on(&touched);
-    audit.insert("agent_code_before_fill".into(), json!(agent_code));
-    if agent_code && meta.kind == "card" {
-        return Err(Failure::new(
-            code::agent_code_on_site,
-            "nothing was filled: your own script ran on this site earlier in this browser session, and what it left behind could read the card; open a new session (`latch browser open`) and fill the card there".into(),
-        ));
     }
     audit.insert("released".into(), json!(true));
     let labels: Vec<&str> = fields

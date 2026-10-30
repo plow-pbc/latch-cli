@@ -86,7 +86,9 @@ impl World {
                 200,
                 json!({"id": "req_fake", "model": asked["model"],
                        "answers": {"decision": {"type": "choice", "choice": top,
-                           "probabilities": {"COVERED": c, "NOT_COVERED": n, "FORBIDDEN": f}}},
+                           "probabilities": {"COVERED": c, "NOT_COVERED": n, "FORBIDDEN": f}},
+                           "exception": {"type": "noul", "noul": 0.0},
+                           "time_ban": {"type": "noul", "noul": 0.0}},
                        "usage": {"input_tokens": 1000, "output_tokens": 0, "cost": 0.0001}}),
             );
         }

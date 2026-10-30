@@ -124,9 +124,6 @@ pub(super) struct Checkout {
     lines: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     card_last4: Option<String>,
-    /// The agent's own script ran on one of these sites earlier in the
-    /// session; what it left could read the card.
-    agent_code_before_fill: bool,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -299,7 +296,6 @@ fn checkout(browsers: &Browsers, args: &Value) -> Checkout {
         card_last4: digits
             .filter(|digits| digits.len() >= 4)
             .map(|digits| digits[digits.len() - 4..].to_string()),
-        agent_code_before_fill: review["agent_code_before_fill"] == true,
     }
 }
 

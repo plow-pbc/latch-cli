@@ -33,7 +33,8 @@ dev-login api="" twin="":
 # Asks the real decision model as a host does, through Plow on the login of
 # this checkout's ../.dev/state (`just dev-login` first), synthetic chats only: `checks` (the gatekeeper's and the
 # browser's), `replay OUT` (the held-out corpus, twice per probe, its
-# decisions written to OUT) or `scenario` (the return on the test shop).
+# decisions written to OUT), `eval OUT` (synthetic cases from
+# LATCH_EVAL_CASES, LATCH_EVAL_REPEATS times) or `scenario` (the return on the test shop).
 gatekeeper what="checks" out="":
     #!/bin/sh
     set -eu
@@ -49,11 +50,14 @@ gatekeeper what="checks" out="":
     replay)
         [ -n "{{out}}" ] || { echo "usage: just gatekeeper replay OUT" >&2; exit 2; }
         LATCH_TEST_REPLAY_OUT="{{out}}" cargo test --locked --features live-model gate::tests::live_held_out_replay -- --nocapture ;;
+    eval)
+        [ -n "{{out}}" ] || { echo "usage: just gatekeeper eval OUT" >&2; exit 2; }
+        LATCH_EVAL_OUT="{{out}}" cargo test --locked --features live-model gate::tests::eval::live_eval_cases -- --nocapture ;;
     scenario)
         just engines
         cargo test --locked --features fake-gog,live-model --test cli scenario::the_owner_returns_items_from_an_emailed_order_through_the_real_judge -- --exact --nocapture ;;
     *)
-        echo "usage: just gatekeeper [checks | replay OUT | scenario]" >&2
+        echo "usage: just gatekeeper [checks | replay OUT | eval OUT | scenario]" >&2
         exit 2 ;;
     esac
 
