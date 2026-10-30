@@ -90,7 +90,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "login",
         runs_on: |_| RunsOn::Local,
-        output: "This machine or agent as `peer` (name, key, kind), and whether its key was created now; with --events, JSON lines (hello, code, waiting, verified, expired, error) instead.",
+        output: "This machine or agent as `peer` (name, key, kind), and whether its key was created now; when this state folder was logged in already and nothing changed, `already_logged_in` says as whom; with --events, JSON lines (hello, code, waiting, verified, expired, error) instead.",
         effect: Repeatable(
             "creates this machine's or agent's key if missing and registers it with Plow",
         ),
@@ -111,7 +111,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "logout",
         runs_on: |_| RunsOn::Local,
-        output: "`summary` (what it deletes and keeps, worked out first: `state_dir`, `default_state_dir`, `login` (`name`, `kind`), `leaves_plow`, `host_running`, `keychain_items` and `files` it deletes by full path, `deletes_folder`, `vault` (item counts by kind) and `audit_records`; counts and names, never a value), `removed` (what it deleted, by file name: the Plow token and config.json; with --purge every secret, then the folder), `from` (`keychain` or `files`), `stopped` (whether a host was running), `purged`, `device` (an owner's machine: its `name`, null if the state folder was already gone, and whether Plow `removed` it; if not, the `error` and the `next` step; null otherwise) and `state_dir`. With --dry-run, only `dry_run` and `summary`. Asks first at a terminal (y, or typing `delete` for --purge); with no one there it fails with `confirmation_required` and the `summary`, unless given --yes.",
+        output: "`summary` (what it deletes and keeps, worked out first: `state_dir`, `default_state_dir`, `login` (`name`, `kind`), `leaves_plow`, `host_running`, `keychain_items` and `files` it deletes by full path, `deletes_folder`, `vault` (item counts by kind), `audit_records` and `browsers` (each installed engine's `engine`, `version`, `path` and `bytes`, and `session_data`: `browser/`'s `path` and `bytes`); counts, names and sizes, never a value), `removed` (what it deleted, by file name: the Plow token and config.json; with --purge every secret, then the folder), `from` (`keychain` or `files`), `stopped` (whether a host was running), `purged`, `device` (an owner's machine: its `name`, null if the state folder was already gone, and whether Plow `removed` it; if not, the `error` and the `next` step; null otherwise) and `state_dir`. With --dry-run, only `dry_run` and `summary`. Asks first at a terminal (y, or typing `delete` for --purge); with no one there it fails with `confirmation_required` and the `summary`, unless given --yes.",
         effect: Repeatable(
             "stops this state folder's host, takes this machine out of the Plow account and signs out its login, and deletes its Plow token, keeping its key, vault, audit log, rules and settings; with --purge every secret and the folder itself",
         ),
@@ -136,7 +136,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "agents",
         runs_on: |_| RunsOn::Either,
-        output: "`host` (with --host: its `name` and whether it is `online`; else null) and `agents`, in Plow's order: each one's `uid`, `name`, `kind` (cloud or own), `cloud_kind`, `line` (`number`, `name`), `created_at`, `status` (a cloud agent's phase in Plow; null for own agents), `failure_code`, `last_seen_at` (its credential's last use, not proof it runs) and `standing` on the host (`own_rules`, `exec_blocked`; null without --host).",
+        output: "`host` (with --host: its `name` and whether it is `online`; else null) and `agents`, in Plow's order: each one's `uid`, `name`, `kind` (cloud or own), `cloud_kind`, `line` (`number`, `name`, `card_url`: its persona's contact card, null for an unnamed line), `created_at`, `status` (a cloud agent's phase in Plow; null for own agents), `failure_code`, `last_seen_at` (its credential's last use, not proof it runs) and `standing` on the host (`own_rules`, `exec_blocked`; null without --host).",
         effect: ReadOnly,
         owner_only: true,
         connector: None,
@@ -230,6 +230,18 @@ const ENTRIES: &[Entry] = &[
         ],
     },
     Entry {
+        id: "agents.card",
+        runs_on: |_| RunsOn::Local,
+        output: "`agent` (its uid), `card_url`, the `path` the vCard was saved to and its `size`. The card is the one Plow names for the agent's line (its persona's, photo included), fetched without your credential; an unnamed line has none (`no_card`).",
+        effect: ReadOnly,
+        owner_only: true,
+        connector: None,
+        examples: &[ex(
+            "Save an agent's contact card",
+            &["agents", "card", "Willow", "--output", "willow.vcf"],
+        )],
+    },
+    Entry {
         id: "agents.remove",
         runs_on: |_| RunsOn::Local,
         output: "`removed`: the agent as it was.",
@@ -301,7 +313,7 @@ const ENTRIES: &[Entry] = &[
         owner_only: false,
         connector: None,
         examples: &[ex(
-            "Send a script into the Pi's shared folder",
+            "Send a script into ~/scripts on the Pi",
             &["file", "put", "--host", "pi", "./check.sh", "scripts/"],
         )],
     },
@@ -466,7 +478,7 @@ const ENTRIES: &[Entry] = &[
                 ],
             ),
             ex(
-                "Use a credential through the program's environment, away from the remote judge",
+                "Use a credential through the program's environment, away from the gatekeeper",
                 &[
                     "exec",
                     "--host",
@@ -901,11 +913,31 @@ const ENTRIES: &[Entry] = &[
             Ok(Some(_)) => RunsOn::Host,
             _ => RunsOn::Either,
         },
-        output: "For the owner, every item's metadata: id, kind, title, a login's username, sites, field labels, revision. For an agent, judged by the gatekeeper like its other work: each item's id, title and saved sites, and `next`, how to sign in with one. Never a secret value.",
+        output: "`items`: for the owner, each item's metadata: id, kind, title, a login's username, sites, field labels, revision; for an agent, judged by the gatekeeper like its other work, each item's id, kind, title and saved sites, and `next`, how to use one. The first 50 that match --site, --search and --kind (every one with --all), `total`, how many matched, and `more` when some are left out. Never a secret value.",
         effect: ReadOnly,
         owner_only: false,
         connector: None,
-        examples: &[ex("List the items", &["vault", "--host", "mac", "list"])],
+        examples: &[
+            ex(
+                "The items saved for a site",
+                &[
+                    "vault",
+                    "--host",
+                    "mac",
+                    "list",
+                    "--site",
+                    "crateandbarrel.com",
+                ],
+            ),
+            ex(
+                "The cards",
+                &["vault", "--host", "mac", "list", "--kind", "card"],
+            ),
+            ex(
+                "Items whose title or site has a word",
+                &["vault", "--host", "mac", "list", "--search", "costco"],
+            ),
+        ],
     },
     Entry {
         id: "vault.show",
@@ -992,25 +1024,60 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "vault.link",
-        runs_on: |_| RunsOn::Either,
-        output: "A one-time link (and a QR code on a terminal) for 15 minutes.",
+        // An agent's link, the one that names a chat, goes to a host.
+        runs_on: |args| match args.try_get_one::<String>("plow_chat") {
+            Ok(Some(_)) => RunsOn::Host,
+            _ => RunsOn::Either,
+        },
+        output: "`url`, a one-time link (and a QR code on a terminal) for 15 minutes; `link`, its id for `vault link-state`; `expires_in`, in seconds. The link opens the host's phone page unless the owner names one with --page. An agent may ask only for a login, judged by the gatekeeper like its other work, never names the page, and never gives a secret: the owner types it on the phone.",
         effect: Once("makes a one-time link that adds an item from a phone"),
-        owner_only: true,
+        owner_only: false,
+        connector: None,
+        examples: &[
+            ex(
+                "Add a card from the phone",
+                &[
+                    "vault",
+                    "--host",
+                    "mac",
+                    "link",
+                    "--kind",
+                    "card",
+                    "--title",
+                    "Visa",
+                    "--page",
+                    "https://phone.example/latch",
+                ],
+            ),
+            ex(
+                "An agent asks its owner for a login, then sends them the url",
+                &[
+                    "vault",
+                    "--host",
+                    "mac",
+                    "link",
+                    "--kind",
+                    "login",
+                    "--title",
+                    "Shop",
+                    "--site",
+                    "shop.example",
+                    "--field",
+                    "username=owner@example.com",
+                ],
+            ),
+        ],
+    },
+    Entry {
+        id: "vault.link-state",
+        runs_on: |_| RunsOn::Either,
+        output: "`state`: `pending` (with `expires_in`), `saved` (with `item`, the new item's id) or `expired`. Never a value.",
+        effect: ReadOnly,
+        owner_only: false,
         connector: None,
         examples: &[ex(
-            "Add a card from the phone",
-            &[
-                "vault",
-                "--host",
-                "mac",
-                "link",
-                "--kind",
-                "card",
-                "--title",
-                "Visa",
-                "--page",
-                "https://phone.example/latch",
-            ],
+            "Whether the owner has saved the login yet",
+            &["vault", "--host", "mac", "link-state", "l3f09a2c1"],
         )],
     },
     Entry {
@@ -1332,7 +1399,7 @@ const ENTRIES: &[Entry] = &[
         effect: Repeatable(
             "installs another latch build on this machine and restarts a `serve -d` host on it",
         ),
-        owner_only: true,
+        owner_only: false,
         connector: None,
         examples: &[
             ex("Install the newest build", &["update"]),
@@ -1420,6 +1487,10 @@ const ENTRIES: &[Entry] = &[
         examples: &[ex("Learn how to use latch", &["skill"])],
     },
 ];
+
+/// The commands an agent runs only on its own computer, where latch is
+/// installed alone and no host runs; the owner runs them anywhere.
+const OWN_COMPUTER: &[&str] = &["update"];
 
 /// The top-level fields of the answers that are plain structs, checked
 /// against those structs by the tests.
@@ -1649,7 +1720,13 @@ struct ErrorCodeHelp {
 struct Action {
     id: String,
     usage: String,
+    /// The first line of `about`, as `latch --help` lists the command.
+    summary: String,
     about: String,
+    /// Where its first example runs: `local` (this computer), `host` (the
+    /// selected host) or `either` (this computer's own state, or a host's
+    /// with --host).
+    runs_on: &'static str,
     inputs: Vec<Input>,
     output: &'static str,
     /// The answer's top-level fields, where they are known.
@@ -1658,6 +1735,9 @@ struct Action {
     side_effects: Option<&'static str>,
     retry: &'static str,
     owner_only: bool,
+    /// An agent may run it only on its own computer, where latch is
+    /// installed alone (`install.sh --client-only`) and no host runs.
+    agent_on_own_computer: bool,
     connector: Option<&'static str>,
     /// A gog command's own flags, after `--`, as its grammar declares them.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1695,6 +1775,22 @@ struct Input {
     about: String,
 }
 
+/// Where `entry`'s first example runs, as its own command line routes it.
+fn runs_on(entry: &Entry) -> &'static str {
+    let example = entry
+        .examples
+        .first()
+        .expect("every command has an example");
+    let matches = Cli::command()
+        .try_get_matches_from(std::iter::once("latch").chain(example.args.iter().copied()))
+        .expect("every example parses");
+    match (entry.runs_on)(selected(&matches).1) {
+        RunsOn::Local => "local",
+        RunsOn::Host => "host",
+        RunsOn::Either => "either",
+    }
+}
+
 fn describe(id: &str, command: &clap::Command) -> Action {
     let entry = entry(id);
     let about = command
@@ -1705,7 +1801,12 @@ fn describe(id: &str, command: &clap::Command) -> Action {
     Action {
         id: id.to_string(),
         usage: usage(command),
+        summary: command
+            .get_about()
+            .map(ToString::to_string)
+            .unwrap_or_default(),
         about,
+        runs_on: runs_on(entry),
         inputs: inputs(command),
         output: entry.output,
         output_fields: OUTPUT_FIELDS
@@ -1715,6 +1816,7 @@ fn describe(id: &str, command: &clap::Command) -> Action {
         side_effects: entry.effect.side_effects(),
         retry: entry.effect.retry(),
         owner_only: entry.owner_only,
+        agent_on_own_computer: OWN_COMPUTER.contains(&id),
         connector: entry.connector,
         gog_flags: None,
         examples: entry
@@ -1746,13 +1848,16 @@ fn describe_gog(allowed: &Allowed, google: &clap::Command) -> Action {
     Action {
         id: format!("google.{}", allowed.command),
         usage: format!("latch google [OPTIONS] -- {words} [GOG_ARGS]..."),
-        about: format!("gog's `{words}`, run on a host's Google account"),
+        summary: format!("Run `{words}` on a host's Google account"),
+        about: format!("Run `{words}` on a host's Google account"),
+        runs_on: "host",
         inputs,
         output: "gog's JSON answer.",
         output_fields: None,
         side_effects: effect.side_effects(),
         retry: effect.retry(),
         owner_only: false,
+        agent_on_own_computer: false,
         connector: Some("google"),
         gog_flags: Some(
             (allowed.flags.iter())
@@ -1763,7 +1868,7 @@ fn describe_gog(allowed: &Allowed, google: &clap::Command) -> Action {
                 .collect(),
         ),
         examples: vec![ExampleHelp {
-            what: format!("gog's own usage for `{words}`"),
+            what: format!("The usage of `{words}`"),
             command: format!("latch {}", quoted(&help_args)),
         }],
     }

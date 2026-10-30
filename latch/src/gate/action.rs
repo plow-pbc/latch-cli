@@ -1,5 +1,6 @@
-//! What the judge is shown of a caller's exec, file, Google, connector or
-//! vault list operation, and what the audit keeps of one the judge refused.
+//! What the judge is shown of a caller's exec, file, Google, connector,
+//! vault list or phone link operation, and what the audit keeps of one the
+//! judge refused.
 
 use serde::Serialize;
 use serde_json::value::RawValue;
@@ -50,6 +51,9 @@ struct Action<'a> {
     accounts: Option<&'a Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     arguments: Option<&'a Value>,
+    /// The login a phone link asks the owner for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    login: Option<Value>,
 }
 
 /// `op` with `args` as the judge sees it, if the gatekeeper judges `op`.
@@ -85,6 +89,7 @@ pub fn gated(op: &str, args: &Value) -> Option<Gated> {
         command: None,
         accounts: None,
         arguments: None,
+        login: None,
     };
     let (action, audit) = match op {
         "exec" => {
@@ -148,9 +153,24 @@ pub fn gated(op: &str, args: &Value) -> Option<Gated> {
             let audit = crate::messages::host::audit(op, name, &args["args"], &args["plan"]);
             (action, audit)
         }
-        // The one vault command an agent may give; the rest are the
-        // owner's, never judged.
+        // The vault commands an agent may give; the rest are the owner's,
+        // never judged.
         "vault" if args["command"] == "list" => (none, json!({"command": "list"})),
+        // What the owner's rules can name: the site, title and username.
+        // An agent asks only for a login; any other kind is refused unasked.
+        "vault" if args["command"] == "link" && args["kind"] == "login" => {
+            let login = json!({
+                "title": args["title"],
+                "sites": args["sites"],
+                "username": args["values"]["username"],
+            });
+            let audit = json!({"command": "link", "login": login});
+            let action = Action {
+                login: Some(login),
+                ..none
+            };
+            (action, audit)
+        }
         _ => return None,
     };
     Some(Gated {

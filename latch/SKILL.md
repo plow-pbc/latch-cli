@@ -26,6 +26,13 @@ when there is a next step), with an exit code you can branch on. Branch on
   plugins each one has on (`plugins`; `null` with `plugins_reason` when it
   didn't say) and `default_host`, where a command without `--host` goes; name one with
   `--host` (or `$LATCH_HOST`); with only one host, latch picks it.
+- **Say which host.** Your owner may run several hosts. Whenever you
+  tell them what you did or read through latch, name the host it ran on,
+  as `latch status` names it ("I ran the tests on mbp"), this machine
+  included. From another machine, when more than one host is online and
+  the owner hasn't said which, ask, or use the one they named last in
+  this chat, and pass it with `--host` rather than leave the choice to a
+  default.
 - Your login lives in a state folder: `--state-dir DIR`, else
   `$LATCH_STATE_DIR`, else `~/.latch`. Where `HOME` is not your home,
   set `LATCH_STATE_DIR` once rather than passing `--state-dir` each time.
@@ -76,9 +83,32 @@ when there is a next step), with an exit code you can branch on. Branch on
 With a login the owner saved: `open` the site's sign-in page, `observe`,
 then `latch browser --session ID fill --field username=eN --field
 password=eN --press eN` with no `--item`: latch uses the login saved for
-that site. When several are (`which_item` lists them), add `--item vN`;
-`latch vault list` shows each item's id, title and sites, never a value.
+that site. When several are (`which_item` lists them), add `--item vN`.
 `--item` takes an id, never a title.
+
+The vault holds the owner's logins, cards, identities and notes. To find
+one, narrow the list rather than reading all of it: `latch vault list
+--site shop.example` (the items saved for that site), `--kind card`, or
+`--search WORD` (in titles and sites). It shows each item's id, kind,
+title and sites, never a value, at most 50 at a time; `more` says when
+some are left out.
+
+When no login is saved for the site, ask the owner for one with a phone
+link; never ask for a password in chat:
+
+1. `latch vault --host H link --kind login --title TITLE --site SITE
+   [--field username=NAME]`: the site's address and a title, and the
+   username if you know it, never a password or code (refused). It is
+   judged like your other work; on `not_covered`, ask the owner first.
+2. Send the owner the answer's `url` in your Plow chat, with one sentence
+   on what it's for: "I need your login for shop.example to place the
+   order. Tap to add it; I won't see the password." They sign in to Plow
+   on the page, check the site, and save the login on their computer.
+3. Wait for the owner to say it's done, then `latch vault --host H
+   link-state LINK` with the answer's `link`: `saved` names the new item
+   (`vN`); sign in with it as above. `pending`: the owner hasn't saved it
+   yet. `expired` (15 minutes) or `no_such_link` (the host restarted): ask
+   for a new link.
 
 When the site then asks for a one-time code (`observe`'s
 `fill.page_offers` has `code`; a goal in words stops there with
@@ -111,6 +141,23 @@ finds it: hand them the session, `latch browser --session ID handoff
 --reason 2fa`. A host with no screen (a Linux host) refuses a handoff
 (`needs_owner`, reason `no_screen`): ask the owner for the code in your
 Plow chat instead, and type it as in step 3.
+
+## Paying with a saved card
+
+The owner's cards are in the vault (`latch vault list --kind card`). A
+card saved with no sites fills on any shop; never ask the owner for its
+number. At the checkout page:
+
+1. `observe`: `fill.items` lists the cards (`kind` `card`), and
+   `fill.suggestions` how one fills the page's card fields.
+2. `latch browser --session ID fill --item vN --suggested S`, or map it
+   yourself: `fill --item vN --field number=eN --field code=eN --field
+   expiry=eN --field "cardholder name"=eN --press eN`. A card is never
+   picked for you: name it with `--item`.
+3. A card fill always stops before any value goes in (exit 4,
+   `confirm_needed`, naming the card, the fields and the sites they go
+   to): carry it out with `latch browser --session ID do --confirm C`.
+   The order button stops for its own confirmation the same way.
 
 ## Credentials in exec
 
@@ -212,7 +259,8 @@ fixes it.
   refuse it.
 - A value `fill` put in a page stays there: never copy it out, repeat it
   or write it anywhere.
-- Buying: sign in, choose, `fill` the card, `do --confirm C` each
+- Buying: sign in, choose, `fill` the card ("Paying with a saved card"),
+  `do --confirm C` each
   confirmation the card and the order button stop for, `screenshot` the
   confirmation page, then `close`. Close every session when
   done; an idle one closes itself after 30 minutes.

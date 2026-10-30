@@ -83,6 +83,7 @@ nonisolated struct FakeLatchClient: LatchClient {
     func updateCheck() async throws -> UpdateCheck { try Fixtures.decode(Fixtures.updateCheck) }
     func logout() async throws -> LogoutResult { LogoutResult(device: nil) }
     func agentCatalog() async throws -> AgentCatalog { try Fixtures.decode(Fixtures.catalog) }
+    func agentCard(_ uid: String) async throws -> Data { throw LatchError.unreachable("a still") }
     func agentStartByText() async throws -> AgentStartByText { try Fixtures.decode(Fixtures.startByText) }
     func removeAgent(_ uid: String) async throws {}
 }
@@ -268,12 +269,25 @@ nonisolated enum Fixtures {
     static let agents = #"{"agents":[{"cloud_kind":null,"created_at":"2026-10-23T05:37:45.397426","failure_code":null,"kind":"own","last_seen_at":"2026-10-23T05:37:45.523892","line":{"name":null,"number":"+15550000002"},"name":"scout","standing":null,"status":null,"uid":"ba3c0b3ad1eba7a9a1eb04b67c9db0dd"},{"cloud_kind":null,"created_at":"2026-10-23T05:37:45.569323","failure_code":null,"kind":"own","last_seen_at":"2026-10-23T05:37:45.604826","line":{"name":null,"number":"+15550000003"},"name":"helper","standing":null,"status":null,"uid":"3971582e59baad83250141c8dcc95855"}],"host":null}"#
     static let agentsStudio = #"{"agents":[{"cloud_kind":null,"created_at":"2026-10-23T05:37:45.397426","failure_code":null,"kind":"own","last_seen_at":"2026-10-23T05:37:45.523892","line":{"name":null,"number":"+15550000002"},"name":"scout","standing":{"exec_blocked":false,"own_rules":true},"status":null,"uid":"ba3c0b3ad1eba7a9a1eb04b67c9db0dd"},{"cloud_kind":null,"created_at":"2026-10-23T05:37:45.569323","failure_code":null,"kind":"own","last_seen_at":"2026-10-23T05:37:45.604826","line":{"name":null,"number":"+15550000003"},"name":"helper","standing":{"exec_blocked":false,"own_rules":false},"status":null,"uid":"3971582e59baad83250141c8dcc95855"}],"host":{"name":"studio","online":true}}"#
     static let agentsKitchen = #"{"agents":[{"cloud_kind":null,"created_at":"2026-10-23T05:37:45.397426","failure_code":null,"kind":"own","last_seen_at":"2026-10-23T05:37:45.523892","line":{"name":null,"number":"+15550000002"},"name":"scout","standing":{"exec_blocked":false,"own_rules":false},"status":null,"uid":"ba3c0b3ad1eba7a9a1eb04b67c9db0dd"},{"cloud_kind":null,"created_at":"2026-10-23T05:37:45.569323","failure_code":null,"kind":"own","last_seen_at":"2026-10-23T05:37:45.604826","line":{"name":null,"number":"+15550000003"},"name":"helper","standing":{"exec_blocked":true,"own_rules":false},"status":null,"uid":"3971582e59baad83250141c8dcc95855"}],"host":{"name":"pi-kitchen","online":true}}"#
+    /// A stand-in persona photo: a head and shoulders on a soft backdrop.
+    static func photo(hue: CGFloat) -> CGImage {
+        let side = 256
+        let context = CGContext(data: nil, width: side, height: side, bitsPerComponent: 8, bytesPerRow: 0,
+                                space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        context.setFillColor(NSColor(hue: hue, saturation: 0.35, brightness: 0.85, alpha: 1).cgColor)
+        context.fill(CGRect(x: 0, y: 0, width: side, height: side))
+        context.setFillColor(NSColor(hue: hue, saturation: 0.55, brightness: 0.45, alpha: 1).cgColor)
+        context.fillEllipse(in: CGRect(x: 88, y: 120, width: 80, height: 92))
+        context.fillEllipse(in: CGRect(x: 40, y: -60, width: 176, height: 170))
+        return context.makeImage()!
+    }
+
     // Three agents as `latch agents` prints them, two with lines named in
     // Plow and one without, and their standing on studio and pi-kitchen
     // (which refuses Aspen exec); numbers from the fictional 555-01xx range.
-    static let trio = #"{"agents":[{"cloud_kind":"exe:hermes","created_at":"2026-10-21T17:02:11.204518","failure_code":null,"kind":"cloud","last_seen_at":null,"line":{"name":"Aspen","number":"+16505550136"},"name":"openclaw-test2","standing":null,"status":"running","uid":"a5be0c1d2e3f40516273849506a7b8c9"},{"cloud_kind":null,"created_at":"2026-10-22T09:41:57.880113","failure_code":null,"kind":"own","last_seen_at":null,"line":{"name":null,"number":"+16505550104"},"name":"grok-bot","standing":null,"status":null,"uid":"e1f0d2c3b4a5968778695a4b3c2d1e0f"},{"cloud_kind":"exe:meals-planner","created_at":"2026-10-24T12:15:03.551920","failure_code":null,"kind":"cloud","last_seen_at":null,"line":{"name":"Willow","number":"+16505550171"},"name":"willow-meals","standing":null,"status":"running","uid":"77a1b2c3d4e5f60718293a4b5c6d7e8f"}],"host":null}"#
-    static let trioStudio = #"{"agents":[{"cloud_kind":"exe:hermes","created_at":"2026-10-21T17:02:11.204518","failure_code":null,"kind":"cloud","last_seen_at":null,"line":{"name":"Aspen","number":"+16505550136"},"name":"openclaw-test2","standing":{"exec_blocked":false,"own_rules":false},"status":"running","uid":"a5be0c1d2e3f40516273849506a7b8c9"},{"cloud_kind":null,"created_at":"2026-10-22T09:41:57.880113","failure_code":null,"kind":"own","last_seen_at":null,"line":{"name":null,"number":"+16505550104"},"name":"grok-bot","standing":{"exec_blocked":false,"own_rules":true},"status":null,"uid":"e1f0d2c3b4a5968778695a4b3c2d1e0f"},{"cloud_kind":"exe:meals-planner","created_at":"2026-10-24T12:15:03.551920","failure_code":null,"kind":"cloud","last_seen_at":null,"line":{"name":"Willow","number":"+16505550171"},"name":"willow-meals","standing":{"exec_blocked":false,"own_rules":false},"status":"running","uid":"77a1b2c3d4e5f60718293a4b5c6d7e8f"}],"host":{"name":"studio","online":true}}"#
-    static let trioKitchen = #"{"agents":[{"cloud_kind":"exe:hermes","created_at":"2026-10-21T17:02:11.204518","failure_code":null,"kind":"cloud","last_seen_at":null,"line":{"name":"Aspen","number":"+16505550136"},"name":"openclaw-test2","standing":{"exec_blocked":true,"own_rules":false},"status":"running","uid":"a5be0c1d2e3f40516273849506a7b8c9"},{"cloud_kind":null,"created_at":"2026-10-22T09:41:57.880113","failure_code":null,"kind":"own","last_seen_at":null,"line":{"name":null,"number":"+16505550104"},"name":"grok-bot","standing":{"exec_blocked":false,"own_rules":false},"status":null,"uid":"e1f0d2c3b4a5968778695a4b3c2d1e0f"},{"cloud_kind":"exe:meals-planner","created_at":"2026-10-24T12:15:03.551920","failure_code":null,"kind":"cloud","last_seen_at":null,"line":{"name":"Willow","number":"+16505550171"},"name":"willow-meals","standing":{"exec_blocked":false,"own_rules":false},"status":"running","uid":"77a1b2c3d4e5f60718293a4b5c6d7e8f"}],"host":{"name":"pi-kitchen","online":true}}"#
+    static let trio = #"{"agents":[{"cloud_kind":"exe:hermes","created_at":"2026-10-21T17:02:11.204518","failure_code":null,"kind":"cloud","last_seen_at":null,"line":{"card_url":"https://plow.co/aspen.vcf","name":"Aspen","number":"+16505550136"},"name":"openclaw-test2","standing":null,"status":"running","uid":"a5be0c1d2e3f40516273849506a7b8c9"},{"cloud_kind":null,"created_at":"2026-10-22T09:41:57.880113","failure_code":null,"kind":"own","last_seen_at":null,"line":{"name":null,"number":"+16505550104"},"name":"grok-bot","standing":null,"status":null,"uid":"e1f0d2c3b4a5968778695a4b3c2d1e0f"},{"cloud_kind":"exe:meals-planner","created_at":"2026-10-24T12:15:03.551920","failure_code":null,"kind":"cloud","last_seen_at":null,"line":{"card_url":"https://plow.co/willow.vcf","name":"Willow","number":"+16505550171"},"name":"willow-meals","standing":null,"status":"running","uid":"77a1b2c3d4e5f60718293a4b5c6d7e8f"}],"host":null}"#
+    static let trioStudio = #"{"agents":[{"cloud_kind":"exe:hermes","created_at":"2026-10-21T17:02:11.204518","failure_code":null,"kind":"cloud","last_seen_at":null,"line":{"card_url":"https://plow.co/aspen.vcf","name":"Aspen","number":"+16505550136"},"name":"openclaw-test2","standing":{"exec_blocked":false,"own_rules":false},"status":"running","uid":"a5be0c1d2e3f40516273849506a7b8c9"},{"cloud_kind":null,"created_at":"2026-10-22T09:41:57.880113","failure_code":null,"kind":"own","last_seen_at":null,"line":{"name":null,"number":"+16505550104"},"name":"grok-bot","standing":{"exec_blocked":false,"own_rules":true},"status":null,"uid":"e1f0d2c3b4a5968778695a4b3c2d1e0f"},{"cloud_kind":"exe:meals-planner","created_at":"2026-10-24T12:15:03.551920","failure_code":null,"kind":"cloud","last_seen_at":null,"line":{"card_url":"https://plow.co/willow.vcf","name":"Willow","number":"+16505550171"},"name":"willow-meals","standing":{"exec_blocked":false,"own_rules":false},"status":"running","uid":"77a1b2c3d4e5f60718293a4b5c6d7e8f"}],"host":{"name":"studio","online":true}}"#
+    static let trioKitchen = #"{"agents":[{"cloud_kind":"exe:hermes","created_at":"2026-10-21T17:02:11.204518","failure_code":null,"kind":"cloud","last_seen_at":null,"line":{"card_url":"https://plow.co/aspen.vcf","name":"Aspen","number":"+16505550136"},"name":"openclaw-test2","standing":{"exec_blocked":true,"own_rules":false},"status":"running","uid":"a5be0c1d2e3f40516273849506a7b8c9"},{"cloud_kind":null,"created_at":"2026-10-22T09:41:57.880113","failure_code":null,"kind":"own","last_seen_at":null,"line":{"name":null,"number":"+16505550104"},"name":"grok-bot","standing":{"exec_blocked":false,"own_rules":false},"status":null,"uid":"e1f0d2c3b4a5968778695a4b3c2d1e0f"},{"cloud_kind":"exe:meals-planner","created_at":"2026-10-24T12:15:03.551920","failure_code":null,"kind":"cloud","last_seen_at":null,"line":{"card_url":"https://plow.co/willow.vcf","name":"Willow","number":"+16505550171"},"name":"willow-meals","standing":{"exec_blocked":false,"own_rules":false},"status":"running","uid":"77a1b2c3d4e5f60718293a4b5c6d7e8f"}],"host":{"name":"pi-kitchen","online":true}}"#
     static let agentsKitchenOffline = #"{"error":{"code":"host_offline","message":"host \"pi-kitchen\" is offline; nothing was sent. Start `latch serve` there"}}"#
     static let rulesStudio = #"{"agents":[{"agent_name":"scout","agent_uid":"ba3c0b3ad1eba7a9a1eb04b67c9db0dd","revision":"a33189e9c51bcecdd839cfc226d392a7ce6c00eb700b08ce25fa325e2c29f780","text":"scout may run builds and tests in ~/Projects/latch-demo."}],"audit_id":"94b02a5438b53063f41edeb8a2babaaefb3ffaefee225dbfe5e94a2ddff078bf","deny_exec":{"agent_uids":[],"every_agent":false},"every_agent":{"revision":"ea4ac6c6bd9184d7479f8312f4ebca18db1804f21bba03212ac8f0dc80f35c7c","text":"Agents may list and read files in ~/Projects. Never delete anything, and never touch ~/Finance.\n"},"host":"studio","warning":"Freeform rules are judged, not guaranteed. --deny-exec is enforced in code."}"#
     static let rulesKitchen = #"{"agents":[],"audit_id":"d5776f75782524ce226a62a46607b95c3382c957b8b44a342456171d2345fd49","deny_exec":{"agent_uids":["3971582e59baad83250141c8dcc95855"],"every_agent":false},"every_agent":null,"host":"pi-kitchen","warning":"Freeform rules are judged, not guaranteed. --deny-exec is enforced in code."}"#
@@ -349,8 +363,17 @@ package enum SnapshotRunner {
             ("04-rules-first-run", .rules, Fixtures.stopped, Progress(), {
                 await $0.loadRules(); $0.stopWork(); $0.previews = [:]
             }),
+            // Rules already on this Mac: read into the box, said to be them.
             ("04-rules-rerun-prefilled", .rules, Fixtures.stopped, Progress(), {
                 $0.savedRules = rules; $0.draftRules = rules
+            }),
+            // They couldn't be read: nothing can be saved over them.
+            ("04-rules-read-failed", .rules, Fixtures.stopped, Progress(), {
+                $0.stage(rulesUnreadable: LatchError.failed(LatchFailure(code: "state_busy", message: "the state folder is busy")))
+            }),
+            // Changed from them: Save rules says it replaces them.
+            ("04-rules-rerun-changed", .rules, Fixtures.stopped, Progress(), {
+                $0.savedRules = rules; $0.draftRules = Onboarding.decks[1].rules; $0.deck = Onboarding.decks[1]
             }),
             ("04-rules-checking", .rules, Fixtures.serving, Progress(), {
                 $0.savedRules = rules; $0.draftRules = rules; $0.reviewing = true
@@ -732,6 +755,10 @@ package enum SnapshotRunner {
                     "pi-kitchen": .success(try Fixtures.decode(Fixtures.trioKitchen)),
                 ])
                 await app.refreshAgentKinds()
+                // Aspen's and Willow's cards give photos (drawn here); grok-bot's
+                // line has none, so it keeps its monogram.
+                app.stage(photo: Fixtures.photo(hue: 0.08), card: "https://plow.co/aspen.vcf")
+                app.stage(photo: Fixtures.photo(hue: 0.38), card: "https://plow.co/willow.vcf")
                 app.place = .account(.agents)
                 _ = app.stage(.done, progress: full)
                 return app

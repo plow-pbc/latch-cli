@@ -175,6 +175,66 @@ struct GatekeeperTests {
         #expect(flow.savedRules == "Allow everything.")
     }
 
+    /// Rules already on this Mac stay unless the person changes them: the
+    /// box says they're the current ones; Continue and Skip write nothing;
+    /// a default replaces the text only when clicked, and only Save rules
+    /// then writes it, saying so first.
+    @Test func rulesAlreadyHereAreKeptUnlessChanged() async {
+        let client = ScriptedClient { _ in nil }
+        client.savedText = "Agents may read ~/Projects."
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
+        let flow = app.stage(.rules)
+        await flow.loadRules()
+        #expect(flow.draftRules == "Agents may read ~/Projects.")
+        #expect(flow.rulesNote == "These are your current rules on this Mac.")
+        flow.skip()
+        #expect(flow.step != .rules)
+        #expect(client.saved.isEmpty)
+
+        let again = app.stage(.rules)
+        await again.loadRules()
+        again.choose(Onboarding.decks[0])
+        #expect(again.draftRules == Onboarding.decks[0].rules)
+        #expect(again.rulesNote == "Save rules replaces your current rules on this Mac.")
+        #expect(client.saved.isEmpty)
+        again.primary()
+        await waitUntil { again.step != .rules }
+        #expect(client.saved == [Onboarding.decks[0].rules])
+    }
+
+    /// Rules that couldn't be read can't be saved over: a default may be
+    /// picked, but Save rules is off until a read works; Skip still goes on.
+    @Test func unreadRulesCantBeSavedOver() async {
+        let client = ScriptedClient { _ in nil }
+        client.showFailure = LatchFailure(code: "state_busy", message: "the state folder is busy")
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
+        let flow = app.stage(.rules)
+        await flow.loadRules()
+        #expect(flow.rulesUnreadable && !flow.primaryEnabled)
+        flow.choose(Onboarding.decks[0])
+        flow.primary()
+        await flow.saveRules()
+        #expect(client.saved.isEmpty)
+        // Read again: saving works once the rules are known.
+        client.showFailure = nil
+        client.savedText = "Agents may read ~/Projects."
+        await flow.loadRules()
+        #expect(!flow.rulesUnreadable && flow.primaryEnabled)
+        // Read once and unchanged, then not on a return: Skip for now is
+        // offered again.
+        flow.draftRules = "Agents may read ~/Projects."
+        #expect(flow.stepDone)
+        client.showFailure = LatchFailure(code: "state_busy", message: "the state folder is busy")
+        await flow.loadRules()
+        #expect(flow.rulesUnreadable && !flow.stepDone && !flow.primaryEnabled)
+        let skipped = app.stage(.rules)
+        client.showFailure = LatchFailure(code: "state_busy", message: "the state folder is busy")
+        await skipped.loadRules()
+        skipped.skip()
+        #expect(skipped.step != .rules)
+        #expect(client.saved.isEmpty)
+    }
+
     @Test func anEmptyBoxPreviewsTheSavedRulesItKeeps() async {
         let client = ScriptedClient { _ in nil }
         let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
@@ -436,7 +496,10 @@ final class ScriptedClient: LatchClient, @unchecked Sendable {
     }
     /// The shared rules `rules show` gives, if any.
     var savedText: String?
+    /// `rules show` fails with this.
+    var showFailure: LatchFailure?
     func rulesShow(host: String?) async throws -> RulesShow {
+        if let showFailure { throw LatchError.failed(showFailure) }
         let every = try savedText.map { String(decoding: try JSONEncoder().encode(["text": $0, "revision": "r1"]), as: UTF8.self) } ?? "null"
         return try Fixtures.decode(#"{"agents":[],"every_agent":\#(every)}"#)
     }

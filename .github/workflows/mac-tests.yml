@@ -73,8 +73,11 @@ jobs:
       - if: matrix.shard == 1
         working-directory: latch/gui
         run: LATCH_LIVE_TESTS=1 LATCH_SCALING=1 swift build --build-tests
+      # The gate's report, for reading a run afterwards; nothing downstream
+      # needs it, so an upload GitHub cannot take never fails the job.
       - uses: actions/upload-artifact@v4
         if: always()
+        continue-on-error: true
         with:
           name: mac-tests-${{ matrix.shard }}
           path: .dev/ci/*.json

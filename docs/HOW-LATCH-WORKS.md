@@ -36,7 +36,7 @@ guides cover the [browser](../latch/BROWSER.md), [vault](../latch/VAULT.md),
 |---|---|---|---|---|---|
 | **Owner** | One of your machines, logged in with your own Plow login: by text, or with `--token-file`. | Yes, any host in your account. | Rules and vault on any host (`--host NAME`). Connectors: listed on any host, turned on or off only on the host itself. | Yes. | As your own request: refused only where the host's rules forbid it. |
 | **Owner on the host** | Anything running as the host's OS user that uses the host's own state folder, with no `--host` naming another machine. An agent running there counts. | That host, through its private local socket. Other hosts, as the owner. | Yes, on that host. Rules and vault work even while the host is stopped. | It is the host. | Exactly like the owner. The audit records it as `owner_on_host`. |
-| **Agent** | An agent logged in with its own Plow agent credential, in its own state folder. | Yes. | No: `owner_only` (exit 4). It may run `vault list`, which shows each item's id, title and saved sites, and it sees which connectors each host has on. | No: its login saves no Plow token, so `latch serve` stops with `not_logged_in`. | Against your rules and your messages in your Plow chat with that agent. |
+| **Agent** | An agent logged in with its own Plow agent credential, in its own state folder. | Yes. | No: `owner_only` (exit 4). It may run `vault list`, which shows each item's id, title and saved sites, and `vault link --kind login`, which asks you for a login on your phone (it sees only whether it was saved, and the new item's id), and it sees which connectors each host has on. On its own computer, where latch is installed alone, it runs `latch update`. | No: its login saves no Plow token, so `latch serve` stops with `not_logged_in`. | Against your rules and your messages in your Plow chat with that agent. |
 
 - **A host knows a remote caller only by its key.** It asks Plow who that
   key is when the caller connects, and again before every operation. If
@@ -129,7 +129,7 @@ login.
 |---|---|
 | `exec`, `file get`, `file put`, `google`, `messages`, `contacts` | Every call, yours and your agents' alike. |
 | `browser` | Going to a site the session hasn't been judged for, every `do` plan with steps, every fill, a card or identity fill's confirmation, scripts, uploads and downloads. Reading a page, screenshots, a single `act` step and a `do --confirm` that only confirms a click aren't judged. Separately, the browser's own risk check stops a click or Enter it judges consequential (paying, sending, deleting) until the caller confirms it with `browser do --confirm`. |
-| `vault`, `rules`, `plugins` | Never, except an agent's `vault list`, which is judged like its other work. |
+| `vault`, `rules`, `plugins` | Never, except an agent's `vault list` and `vault link`, which are judged like its other work. |
 
 **You and your agents are judged differently.**
 
@@ -209,7 +209,7 @@ login.
 | Task | On the host | From another of your machines | Works while the host is stopped |
 |---|---|---|---|
 | Rules | `latch rules show\|set\|edit\|clear\|try`, `--agent AGENT` for one agent's rules | add `--host NAME` | Yes |
-| Vault | `latch vault list\|show\|add\|edit\|remove\|import\|link` | add `--host NAME` | Yes, except `vault link` |
+| Vault | `latch vault list\|show\|add\|edit\|remove\|import\|link\|link-state` | add `--host NAME` | Yes, except `vault link` and `link-state` |
 | Connectors | `latch plugins enable\|disable google` (on a Mac, also `messages` and `contacts`) | `latch status` shows the ones each host has on; `latch status --host NAME` lists them all | Yes |
 | Refuse exec to agents | `latch serve --deny-exec` or `--deny-exec=AGENT_UID` | No | Set when the host starts |
 | Keep a Mac awake | `latch settings set --keep-awake on`: no idle sleep while the host serves on AC power. The display still sleeps and locks, and closing the lid still sleeps the Mac. | No | Yes |
@@ -297,9 +297,14 @@ For how to report a vulnerability, see [SECURITY.md](../SECURITY.md).
   See [Getting started](GETTING-STARTED.md#1-install) for what it puts
   where and its options. A release logs in to `https://api.plow.co`. The
   macOS app is signed with Plow's Developer ID and notarized by Apple.
+  - It checks the release's `SHA256SUMS` against Latch's release signing
+    key, which it carries, and on a Mac that Plow signed the app, before it
+    runs anything the release contains.
 - **Update:** `latch update` installs the newest release, `latch update TAG`
   a given one (also how to go back), and `latch update --check` only says
-  whether there's a newer one.
+  whether there's a newer one. The owner runs it, and so does an agent on its
+  own computer, where latch is installed alone (`--client-only`) and no host
+  runs from that latch; elsewhere an agent gets `owner_only`.
   - It checks the release's `SHA256SUMS` against Latch's release signing
     key, and on a Mac that Plow signed the app.
   - The state folder stays as it is, and the browser engines are brought up
@@ -308,7 +313,6 @@ For how to report a vulnerability, see [SECURITY.md](../SECURITY.md).
   - A host started with `latch serve -d` restarts on the new version with
     the same flags. A host running in a terminal stops, and you're told to
     start it again.
-  - Only the owner can update: an agent's login is refused.
   - A running host looks for a new release once a day, and shows it in
     `latch status --local` and on its dashboard. Nothing installs on its
     own. `LATCH_NO_UPDATE_CHECK=1` turns the looking off.

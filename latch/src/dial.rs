@@ -193,6 +193,14 @@ pub async fn ask_each(
     within: Duration,
     mut each: impl FnMut(usize, Result<Value, Failure>),
 ) {
+    // Its caller may keep only a failure's code (`status`'s
+    // `plugins_reason`): the trace keeps why.
+    let mut each = |index: usize, answer: Result<Value, Failure>| {
+        if let Err(failure) = &answer {
+            tracing::info!(host = %hosts[index].name, code = %failure.code, "not asked: {}", failure.message);
+        }
+        each(index, answer)
+    };
     let deadline = tokio::time::Instant::now() + within;
     let late = |host: &Peer| {
         let message = format!(
@@ -579,6 +587,61 @@ mod tests {
         let result = run.await;
         let logged = String::from_utf8(events.0.lock().unwrap().clone()).unwrap();
         (result, logged)
+    }
+
+    #[tokio::test]
+    async fn a_host_asked_with_others_that_did_not_answer_is_traced_with_why() {
+        // One host offline, one whose relay never answers: each is traced
+        // with its code and message, which `status` keeps only the code of.
+        let other = tempfile::tempdir().unwrap();
+        let elsewhere = StateDir {
+            path: other.path().to_path_buf(),
+        };
+        let (silent_key, _) = elsewhere.load_or_create_key().unwrap();
+        let (_dir, state, silent) = dialing(Some(silent_key.to_string()), "http://127.0.0.1:9/");
+        let offline_host = Peer {
+            name: "laptop".into(),
+            online: Some(false),
+            ..silent.clone()
+        };
+        let request = Request {
+            op: "plugins".to_string(),
+            args: serde_json::json!({"command": "list"}),
+            chat: None,
+        };
+        let mut codes = Vec::new();
+        let ((), logged) = traced(ask_each(
+            &state,
+            &[offline_host, silent],
+            &request,
+            Duration::from_millis(500),
+            |index, answer| codes.push((index, answer.err().map(|failure| failure.code))),
+        ))
+        .await;
+        codes.sort();
+        assert_eq!(
+            codes,
+            [
+                (0, Some("host_offline".into())),
+                (1, Some("host_unreachable".into()))
+            ]
+        );
+        let line = |host: &str| {
+            logged
+                .lines()
+                .find(|line| line.contains(&format!("host={host} ")))
+                .unwrap_or_default()
+        };
+        assert!(line("laptop").contains("code=host_offline"), "{logged}");
+        assert!(
+            line("laptop").contains("not asked: host \"laptop\" is not online"),
+            "{logged}"
+        );
+        assert!(line("mac").contains("code=host_unreachable"), "{logged}");
+        assert!(
+            line("mac").contains("not asked: host \"mac\" did not answer within 0.5s"),
+            "{logged}"
+        );
     }
 
     #[tokio::test]

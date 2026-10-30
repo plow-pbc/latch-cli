@@ -232,15 +232,19 @@ private struct AgentHostRow: View {
     }
 }
 
-/// An agent's initial on a tint of its own, with a badge for who runs it.
+/// An agent's persona photo, from its line's contact card, or its initial
+/// on a tint of its own; with a badge for who runs it.
 struct Monogram: View {
     var agent: AgentsList.Agent
     var size: CGFloat
+    @Environment(AppModel.self) private var app
 
     var body: some View {
         ZStack {
             Circle().fill(agent.tint.gradient)
-            if let initial = agent.displayName.first(where: \.isLetter) {
+            if let photo = agent.line?.cardUrl.flatMap({ app.agentPhotos[$0] }) {
+                Image(decorative: photo, scale: 1).resizable().scaledToFill().clipShape(Circle())
+            } else if let initial = agent.displayName.first(where: \.isLetter) {
                 Text(String(initial).uppercased())
                     .font(.system(size: size * 0.44, weight: .semibold, design: .rounded))
                     .foregroundStyle(.white)
@@ -258,6 +262,10 @@ struct Monogram: View {
                 .offset(x: size * 0.08, y: size * 0.08)
         }
         .accessibilityHidden(true)
+        .task(id: agent.line?.cardUrl) {
+            guard !app.still else { return }
+            await app.loadPhoto(of: agent)
+        }
     }
 }
 

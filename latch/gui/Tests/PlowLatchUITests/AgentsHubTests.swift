@@ -1,4 +1,5 @@
 import Foundation
+import ImageIO
 import Synchronization
 import Testing
 @testable import PlowLatchUI
@@ -196,5 +197,64 @@ struct NewAgentWaitTests {
     @Test func theWaitBacksOffAndEnds() {
         #expect(NewAgent.waits.first == .seconds(3) && NewAgent.waits.last == .seconds(10))
         #expect(NewAgent.waits.reduce(.zero, +) == .seconds(600))
+    }
+}
+
+/// A persona's photo from its line's contact card: read once a session per
+/// card, drawn small; none (or one that can't be read) leaves the monogram.
+@MainActor
+struct AgentPhotoTests {
+    /// A vCard with a 600-pixel photo, as plow.co's cards carry one.
+    static func card() -> Data {
+        let side = 600
+        let context = CGContext(data: nil, width: side, height: side, bitsPerComponent: 8, bytesPerRow: 0,
+                                space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        let png = NSMutableData()
+        let destination = CGImageDestinationCreateWithData(png, "public.png" as CFString, 1, nil)!
+        CGImageDestinationAddImage(destination, context.makeImage()!, nil)
+        CGImageDestinationFinalize(destination)
+        let photo = (png as Data).base64EncodedString()
+        return Data("BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Willow by Plow\r\nPHOTO;ENCODING=b;TYPE=PNG:\(photo)\r\nEND:VCARD\r\n".utf8)
+    }
+
+    final class CardClient: LatchClient, @unchecked Sendable {
+        let stateDir = "/s"
+        private let asked = Mutex<[String]>([])
+        var cards: [String] { asked.withLock { $0 } }
+        var answer: Data?
+        func agentCard(_ uid: String) async throws -> Data {
+            asked.withLock { $0.append(uid) }
+            guard let answer else { throw LatchError.failed(LatchFailure(code: "plow_unreachable", message: "could not reach Plow")) }
+            return answer
+        }
+    }
+
+    private func agent(_ uid: String, card: String?) throws -> AgentsList.Agent {
+        try Fixtures.decode(#"{"uid":"\#(uid)","name":"\#(uid)","kind":"cloud","line":{"number":"+15550000002","card_url":\#(card.map { "\"\($0)\"" } ?? "null")}}"#)
+    }
+
+    @Test func aCardsPhotoIsReadOnceAndDrawnSmall() async throws {
+        let client = CardClient()
+        client.answer = Self.card()
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
+        let willow = try agent("willow", card: "https://plow.co/willow.vcf")
+        await app.loadPhoto(of: willow)
+        await app.loadPhoto(of: willow)
+        await app.loadPhoto(of: try agent("unnamed", card: nil))
+        #expect(client.cards == ["willow"])
+        let photo = try #require(app.agentPhotos["https://plow.co/willow.vcf"])
+        #expect(photo.width == AgentPhoto.side && photo.height == AgentPhoto.side)
+    }
+
+    @Test func anUnreadableCardIsntAskedAgain() async throws {
+        let client = CardClient()
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
+        let aspen = try agent("aspen", card: "https://plow.co/aspen.vcf")
+        await app.loadPhoto(of: aspen)
+        await app.loadPhoto(of: aspen)
+        #expect(client.cards == ["aspen"])
+        #expect(app.agentPhotos.isEmpty)
+        // A card with no photo, likewise.
+        #expect(AgentPhoto.image(fromCard: Data("BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Elm\r\nEND:VCARD\r\n".utf8)) == nil)
     }
 }

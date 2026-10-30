@@ -93,6 +93,14 @@ pub struct Permissions {
     pub call: bool,
 }
 
+/// Plow vouching for a phone page's key, from
+/// `GET /v1/latch/phone-grants/{key}`.
+#[derive(Deserialize, Debug)]
+struct PhoneGrant {
+    key: String,
+    request: String,
+}
+
 /// An agent, from `GET /v1/agents/{uid}`: its current name and the line
 /// it serves.
 #[derive(Deserialize, Debug)]
@@ -169,6 +177,10 @@ pub struct ListedLine {
     /// The phone number or address.
     pub provider_key: String,
     pub display_name: Option<String>,
+    /// Its persona's contact card (a vCard, photo included); none for an
+    /// unnamed line, or from a Plow that doesn't say.
+    #[serde(default)]
+    pub card_url: Option<String>,
 }
 
 /// A kind of agent Plow can run, from its catalog.
@@ -479,6 +491,30 @@ impl Plow {
         Ok(identity)
     }
 
+    /// The phone link request Plow vouches `key` may open, as this
+    /// account's owner signed in on the phone page; `None` when it vouches
+    /// for none (none was given, it expired, or it is another account's).
+    pub async fn phone_grant(&self, key: &str) -> Result<Option<String>, Failure> {
+        let url = format!("{}/v1/latch/phone-grants/{key}", self.api_url);
+        let response = match self.send(self.http.get(url)).await {
+            Ok(response) => response,
+            Err(failure) if failure.code.as_str() == "not_found" => return Ok(None),
+            Err(failure) => return Err(failure),
+        };
+        let grant: PhoneGrant = response.json().await.map_err(|_| bad_answer())?;
+        // Trust the answer only if it is about the key we asked about.
+        if grant.key != key {
+            let message = "Plow answered about a different key".to_string();
+            return Err(Failure::new(code::plow_error, message));
+        }
+        Ok(Some(grant.request))
+    }
+
+    /// The Plow this client asks, as a phone page signs in to it.
+    pub fn api_url(&self) -> &str {
+        &self.api_url
+    }
+
     /// One of the account's agents, with the line it serves.
     pub async fn agent(&self, agent_uid: &str) -> Result<Agent, Failure> {
         let url = format!("{}/v1/agents/{agent_uid}", self.api_url);
@@ -526,6 +562,14 @@ impl Plow {
         let url = format!("{}/v1/signup", self.api_url);
         let response = self.send(self.http.get(url)).await?;
         response.json().await.map_err(|_| bad_answer())
+    }
+
+    /// The file at `url`, which Plow named (a line's contact card), asked
+    /// for with this client's credential: an anonymous client sends none.
+    pub async fn fetch(&self, url: &str) -> Result<Vec<u8>, Failure> {
+        let response = self.send(self.http.get(url)).await?;
+        let body = response.bytes().await.map_err(|_| bad_answer())?;
+        Ok(body.to_vec())
     }
 
     /// Every phone line of Plow's, and whether each is free for an agent.

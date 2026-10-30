@@ -39,6 +39,9 @@ pub struct LoginOutput {
     /// which ends in a line for them rather than JSON.
     #[serde(skip)]
     pub by_text: bool,
+    /// This state folder was logged in already, and nothing was changed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub already_logged_in: Option<String>,
 }
 
 /// Where this login's credential comes from.
@@ -55,6 +58,29 @@ enum Source {
 
 pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failure> {
     let saved = state.load_config()?;
+    // A plain `latch login` where one is saved changes nothing: an option
+    // asks for a change (a token, a name, a Plow, by text), and --again for
+    // a login anew.
+    let plain = args.token_file.is_none()
+        && args.name.is_none()
+        && args.api_url.is_none()
+        && !args.replace
+        && !args.events;
+    if let Some(config) = &saved
+        && plain
+        && !args.again
+    {
+        let message = format!(
+            "already logged in as {} on this computer; `latch login --again` logs in anew",
+            config.peer.name
+        );
+        return Ok(LoginOutput {
+            peer: config.peer.clone(),
+            key_created: false,
+            by_text: false,
+            already_logged_in: Some(message),
+        });
+    }
     let saved_url = match &saved {
         Some(config) => Some(config.api_url.clone()),
         None => state.load_plow_url()?,
@@ -65,9 +91,12 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
                        (or set $PLOW_API_BASE or $PLOW_API_URL)";
         return Err(Failure::new(code::not_configured, message.to_string()));
     };
+    let had_token = state.load_token()?.is_some();
     let source = if let Some(path) = &args.token_file {
         Source::Given(credential::read(path)?)
-    } else if let Some(token) = state.load_token()? {
+    } else if let Some(token) = state.load_token()?
+        && !args.again
+    {
         Source::Saved(token)
     } else if let Some(token) = credential::agent_token_if_present()? {
         Source::Agent(token)
@@ -84,7 +113,15 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
         return Err(failure);
     };
     let owner = !matches!(source, Source::Agent(_));
-    let save_token = matches!(source, Source::Given(_));
+    // A login by text in place of a saved one keeps the saved token until
+    // Plow accepts the new one; a first one is saved as soon as it arrives.
+    let save_now = !had_token;
+    let given = matches!(source, Source::Given(_));
+    let save_token = match source {
+        Source::Given(_) => true,
+        Source::ByText => !save_now,
+        Source::Saved(_) | Source::Agent(_) => false,
+    };
 
     let named = args.name.is_some();
     let mut name = match args.name {
@@ -106,7 +143,7 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
             let Some(name) = &name else {
                 return Err(missing("--name"));
             };
-            by_text(state, &api_url, name, args.events).await?
+            by_text(state, &api_url, name, args.events, save_now).await?
         }
     };
     // Once a person has texted, what goes wrong is theirs to read.
@@ -158,7 +195,7 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
                 if registration.name.is_none() {
                     return Err(failure);
                 }
-                let rerun = if save_token {
+                let rerun = if given {
                     "latch login --token-file FILE"
                 } else {
                     "latch login"
@@ -170,7 +207,8 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
 
         // Save only after Plow accepted us, so a failed first login leaves no
         // half-configured instance behind (apart from the key, and the token of
-        // a login by text, which is saved as soon as it arrives).
+        // a first login by text, which is saved as soon as it arrives), and a
+        // failed login anew leaves the saved one as it was.
         if save_token {
             state.save_token(&token, &api_url)?;
         }
@@ -182,6 +220,7 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
             peer,
             key_created,
             by_text: texted,
+            already_logged_in: None,
         })
     }
     .await;
@@ -204,6 +243,7 @@ pub async fn agent_on_first_use(state: &StateDir) -> Result<(), Failure> {
         name: None,
         events: false,
         replace: false,
+        again: false,
     };
     run(state, args).await.map(|_| ())
 }
@@ -227,8 +267,8 @@ pub async fn register_again(state: &StateDir) -> Result<(), Failure> {
 
 /// Logs in by text: Plow gives a code, the person texts it from their
 /// phone, and the phone's account gets a new owner login for this machine.
-/// The token is saved at once, so a login that fails after this point
-/// (a name already taken, say) does not need another text. The code is
+/// With `save`, the token is saved at once, so a login that fails after
+/// this point (a name already taken, say) does not need another text. The code is
 /// shown once and never logged. With `events`, what to text is a JSON line
 /// for an app to show instead.
 async fn by_text(
@@ -236,6 +276,7 @@ async fn by_text(
     api_url: &str,
     name: &str,
     events: bool,
+    save: bool,
 ) -> Result<String, Failure> {
     let plow = Plow::anonymous(api_url)?;
     let activation = plow.activate(name).await?;
@@ -259,7 +300,7 @@ async fn by_text(
         eprintln!("Text {code} to {}", for_people(&activation.send_to));
         eprintln!("Waiting for your text…");
     }
-    let waited = wait_for_text(state, api_url, &plow, &activation.activation_secret).await;
+    let waited = wait_for_text(state, api_url, &plow, &activation.activation_secret, save).await;
     match events {
         true => waited,
         // Once it has talked to the person, what goes wrong is theirs to read.
@@ -267,12 +308,14 @@ async fn by_text(
     }
 }
 
-/// Asks Plow until the code was texted: the login's token, saved.
+/// Asks Plow until the code was texted: the login's token, saved with
+/// `save`.
 async fn wait_for_text(
     state: &StateDir,
     api_url: &str,
     plow: &Plow,
     secret: &str,
+    save: bool,
 ) -> Result<String, Failure> {
     let started = Instant::now();
     let mut failures = 0;
@@ -285,8 +328,10 @@ async fn wait_for_text(
                     let message = "this login was already collected; run `latch login` again";
                     return Err(Failure::new(code::login_collected, message.to_string()));
                 };
-                state.create()?;
-                state.save_token(&token, api_url)?;
+                if save {
+                    state.create()?;
+                    state.save_token(&token, api_url)?;
+                }
                 return Ok(token);
             }
             Ok(_) => {

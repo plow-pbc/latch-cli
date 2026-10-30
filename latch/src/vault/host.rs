@@ -1,5 +1,6 @@
 //! The host's vault commands, shared by owner devices and local management.
-//! Agents get exit 4. Store transactions use a file lock across processes.
+//! Agents get exit 4, but for a list and a login's phone link. Store
+//! transactions use a file lock across processes.
 //!
 //! The audit records which item and kind, never a value.
 
@@ -83,15 +84,28 @@ pub async fn run(
     let command = args["command"].as_str().unwrap_or_default().to_string();
     let mut audit = Map::new();
     audit.insert("command".into(), json!(command));
-    // The gatekeeper has judged an agent's list before it gets here.
-    if kind == "agent" && command == "list" {
-        return done(vault.with(|store| Ok(for_agent(&store.list()))), audit);
+    // The gatekeeper has judged an agent's list or link before it gets here.
+    match (kind, command.as_str()) {
+        ("agent", "list") => {
+            return done(vault.with(|store| Ok(for_agent(&store.list()))), audit);
+        }
+        // An agent asks the owner for a login, never another kind of item.
+        ("agent", "link") if args["kind"] != "login" => {
+            let failure = Failure::new(
+                code::owner_only,
+                "an agent's phone link asks only for a login (--kind login)".into(),
+            );
+            return done(Err(failure), audit);
+        }
+        ("agent", "link") => return done(link::open(vault, here, &args, true, &mut audit), audit),
+        (_, "link_state") => return done(link::state(vault, &args, &mut audit), audit),
+        _ => {}
     }
     if let Err(failure) = owner_only(kind) {
         return done(Err(failure), audit);
     }
     let result = match command.as_str() {
-        "link" => link::open(vault, here, &args, &mut audit),
+        "link" => link::open(vault, here, &args, false, &mut audit),
         "import" => import(vault, &args, send, recv, &mut audit).await,
         _ => manage(vault, &args, &mut audit),
     };
@@ -117,22 +131,22 @@ pub(super) fn manage(
     }
 }
 
-/// How an agent signs in with a login the owner saved.
-const SIGN_IN: &str = "To sign in with one, run `latch browser fill` without --item on its site's sign-in page (`latch skill`, \"Signing in\")";
+/// How an agent signs in with a login the owner saved, or pays with a card.
+const SIGN_IN: &str = "To sign in with a login, run `latch browser fill` without --item on its site's sign-in page (`latch skill`, \"Signing in\"); at a checkout, `observe` lists the cards under `fill.items` and `fill --item` takes one";
 
-/// The vault as an agent sees it: each item's id, title and saved sites,
-/// never a value or a username, and how to sign in with one.
+/// The vault as an agent sees it: each item's id, kind, title and saved
+/// sites, never a value or a username, and how to use one.
 fn for_agent(items: &[super::item::Meta]) -> Value {
     let items: Vec<Value> = items
         .iter()
-        .map(|meta| json!({"item": meta.item, "title": meta.title, "sites": meta.sites}))
+        .map(|meta| json!({"item": meta.item, "kind": meta.kind, "title": meta.title, "sites": meta.sites}))
         .collect();
     json!({"items": items, "next": SIGN_IN})
 }
 
 /// Only the owner's own devices may use the vault's commands, but for an
-/// agent's list; an agent's key, whoever's agent, gets exit 4, and how to
-/// sign in without them.
+/// agent's list and phone link; an agent's key, whoever's agent, gets exit
+/// 4, and how to sign in without them.
 pub(super) fn owner_only(kind: &str) -> Result<(), Failure> {
     if kind == "device" {
         return Ok(());
@@ -140,7 +154,7 @@ pub(super) fn owner_only(kind: &str) -> Result<(), Failure> {
     Err(Failure::new(
         code::owner_only,
         format!(
-            "the vault takes commands from the owner's own devices only, but for an agent's `latch vault list --host HOST`: each item's id, title and saved sites. {SIGN_IN}"
+            "the vault takes commands from the owner's own devices only, but for an agent's `latch vault list --host HOST`: each item's id, title and saved sites, and `latch vault link --kind login`, which asks the owner to type a login on their phone. {SIGN_IN}"
         ),
     ))
 }

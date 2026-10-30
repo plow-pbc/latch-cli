@@ -179,6 +179,19 @@ fn main() -> ExitCode {
                 }
             };
         }
+        // Run by install.sh before anything is installed: no state folder.
+        Command::VerifySignature { key, file } => {
+            return match update::verify_file(&key, &file).and_then(|v| json(cli.pretty, v)) {
+                Ok(Printed(text)) => {
+                    term::print_out(&format!("{text}\n"));
+                    ExitCode::SUCCESS
+                }
+                Err(failure) => {
+                    report(&failure);
+                    failure.exit.into()
+                }
+            };
+        }
         command => command,
     };
     // Only the human commands still say a newer build is out: a regular
@@ -506,7 +519,8 @@ async fn run(
         | Command::BrowserWorker(_)
         | Command::Help(_)
         | Command::Skill
-        | Command::App => {
+        | Command::App
+        | Command::VerifySignature { .. } => {
             unreachable!("handled in main")
         }
     }

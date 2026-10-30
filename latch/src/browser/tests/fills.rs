@@ -47,6 +47,7 @@ conformance!(
     requests_go_on_while_a_guard_outlives_its_call,
     no_vault_value_goes_into_an_editable_region,
     a_stored_password_with_a_line_break_fills_a_single_line_field,
+    a_login_an_agent_asked_for_by_phone_link_fills_on_its_site,
     ;
     mac:
     vault_fills_go_only_where_the_item_allows_and_never_show_a_value,
@@ -928,6 +929,52 @@ async fn vault_fills_go_only_where_the_item_allows_and_never_show_a_value(engine
     );
     h.call("close", json!({})).await.ok();
     let _ = h.browsers.vault.with(|s| Ok(s.list()));
+}
+
+/// A login the owner saved through an agent's phone link fills on its site
+/// like any other: the agent asks for it, the owner, whom Plow vouches for,
+/// types the password on the phone, and the agent signs in with the item it
+/// learns from the link's state, never seeing the password.
+async fn a_login_an_agent_asked_for_by_phone_link_fills_on_its_site(engine: &str) {
+    use crate::vault::link;
+    let (_dir, state, _area) = test_state(engine);
+    let vault = Vault::new(state.clone());
+    let here = link::Here {
+        key: "ab".repeat(32),
+        name: "test-host".into(),
+        relay: Some("https://usw1-1.relay.n0.iroh.link./".parse().unwrap()),
+        plow: "https://api.plow.co".into(),
+    };
+    let asked = json!({"kind": "login", "title": "Shop", "sites": ["shop.example"],
+                       "values": {"username": "ada@shop.example"}});
+    let opened = link::open(&vault, &here, &asked, true, &mut Map::new()).unwrap();
+    let id = opened["link"].as_str().unwrap();
+    let typed = json!({"link": id, "values": {"password": PASSWORD}});
+    link::submit(&vault, &typed, Some(id), &mut Map::new()).unwrap();
+    let saved = link::state(&vault, &json!({"link": id}), &mut Map::new()).unwrap();
+    assert_eq!(saved["state"], "saved");
+    let item = saved["item"].as_str().unwrap();
+
+    let pages = site();
+    let local = format!("http://127.0.0.1:{pages}");
+    let mut browsers = Browsers::new(state.clone(), vault.clone(), super::HEADLESS);
+    browsers.test = Some((
+        latch(),
+        vec![(local.clone(), "https://login.shop.example".into())],
+    ));
+    let mut h = Harness::start(browsers, engine).await;
+    h.call("open", json!({"url": format!("{local}/login.html")}))
+        .await
+        .unwrap();
+    let (signed_in, _) = h.login(item).await;
+    assert_eq!(signed_in.unwrap()["submitted"], true);
+    assert!(h.text().await.contains("password accepted"));
+    let everything = format!("{} {opened} {saved}", h.shown.join("\n"));
+    assert!(
+        !everything.contains(PASSWORD),
+        "the password reached the agent"
+    );
+    h.call("close", json!({})).await.ok();
 }
 
 /// Fills that cannot finish: no submit to press, a page that covers its
