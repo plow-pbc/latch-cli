@@ -152,6 +152,9 @@ pub(super) struct Entry {
     handing: std::sync::atomic::AtomicBool,
     /// The sites the gatekeeper let this session go to.
     judged_sites: std::sync::Mutex<HashSet<String>>,
+    /// The numbers of the cards filled in this session, digits only: what
+    /// its answers and journals are masked for.
+    pub(super) cards: super::journal::Cards,
 }
 
 impl Entry {
@@ -163,6 +166,11 @@ impl Entry {
             audit.insert("task".into(), json!(task));
         }
         audit.insert("engine".into(), self.runtime.ready["engine"].clone());
+    }
+
+    /// The numbers of the cards filled in this session.
+    pub(super) fn card_numbers(&self) -> Vec<String> {
+        self.cards.lock().expect("cards lock").clone()
     }
 
     /// The session's worker for one agent call: refused while the owner has
@@ -372,6 +380,7 @@ impl Browsers {
             confirmations: Default::default(),
             handing: Default::default(),
             judged_sites: Default::default(),
+            cards: Default::default(),
         });
         self.sessions.lock().await.insert(id.clone(), entry.clone());
         Ok((id, entry))
@@ -744,6 +753,12 @@ async fn answer(
     if entry.handing.load(Ordering::SeqCst) && command != "close" {
         return Err(super::handoff::handed_off());
     }
+    // A script could read a card's number off a page that repeats it, in
+    // any form: none runs in a session that filled a card. Checked again
+    // under the session's lock, as it is sent.
+    if command == "eval" && !entry.card_numbers().is_empty() {
+        return Err(no_script_after_a_card());
+    }
     // Not on the web: refused before the gatekeeper is asked.
     if matches!(command, "goto" | "tab")
         && let Some(url) = args["url"].as_str()
@@ -764,7 +779,7 @@ async fn answer(
     {
         judged::judge(caller.gate, action, audit).await?;
     }
-    let result = match command {
+    let mut result = match command {
         "close" => browsers.close(name, key).await.map(|closed| (closed, None)),
         "fill" => fill(browsers, &entry, name, caller, args, audit)
             .await
@@ -795,6 +810,18 @@ async fn answer(
     }
     if result.is_ok() {
         last_site(&entry, audit);
+    }
+    // A page may show a card number it was given (a confirmation that
+    // repeats it): the agent gets its last four digits only.
+    let cards = entry.card_numbers();
+    if !cards.is_empty() {
+        match &mut result {
+            Ok((answer, _)) => super::shown::mask_cards(answer, &cards),
+            Err(failure) => {
+                failure.message = super::shown::masked(&failure.message, &cards);
+                super::shown::mask_cards(&mut failure.details, &cards);
+            }
+        }
     }
     result
 }
@@ -979,8 +1006,16 @@ async fn open_judged(
     }
 }
 
+/// The refusal of an `eval` in a session that filled a card.
+fn no_script_after_a_card() -> Failure {
+    Failure::new(
+        code::secret_on_page,
+        "a card was filled in this session, and a script could read its number off the page: eval stays off in this session. Read the page with `text` or `observe`, or open a new session".into(),
+    )
+}
+
 /// Passes one call to the session's worker.
-async fn worker(
+pub(super) async fn worker(
     browsers: &Browsers,
     entry: &Entry,
     command: &str,
@@ -993,6 +1028,11 @@ async fn worker(
         return Err(paused());
     }
     let mut session = entry.agent_session().await?;
+    // Read under the session's lock, which a fill holds until it has
+    // recorded its card: a fill that finished while this call waited counts.
+    if command == "eval" && !entry.card_numbers().is_empty() {
+        return Err(no_script_after_a_card());
+    }
     let reply = match session.call_with(call, input).await {
         Ok(reply) => {
             if let Some(worker) = reply.audit.as_object() {

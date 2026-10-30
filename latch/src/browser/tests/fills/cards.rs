@@ -19,6 +19,8 @@ conformance!(
     a_card_fills_a_providers_hosted_fields,
     a_card_fills_split_boxes_and_expiry_lists,
     agent_code_on_a_shop_keeps_the_card_out,
+    a_page_that_shows_the_number_back_shows_the_agent_only_its_last_four,
+    a_redrawn_number_field_does_not_show_its_value,
 );
 
 /// What the shop's `/pay` says when the test card arrived whole.
@@ -234,5 +236,95 @@ async fn agent_code_on_a_shop_keeps_the_card_out(engine: &str) {
     let page = h.text().await;
     assert!(page.contains(PAID), "{page}");
     assert!(!h.saw_the_card(), "the card reached a result or the audit");
+    h.call("close", json!({})).await.ok();
+}
+
+async fn a_page_that_shows_the_number_back_shows_the_agent_only_its_last_four(engine: &str) {
+    let (mut h, card, local, _, _keep) = shop(engine).await;
+    h.call("open", json!({"url": format!("{local}/card-echo.html")}))
+        .await
+        .unwrap();
+    let args = h.suggested(&card).await;
+    h.pay(args).await.unwrap();
+    let page = h.text().await;
+    println!("the shop's confirmation, as the agent reads it: {page:?}");
+    assert!(page.contains("Paid $10.00 with card •••• 4242"), "{page}");
+    // The last four digits on their own are no card number.
+    assert!(page.contains("Visa ending in 4242"), "{page}");
+
+    // Pictures are taken once the card was filled and paid.
+    h.call("screenshot", json!({})).await.unwrap();
+
+    // A plan's own pictures too, and its journal, read back after the
+    // session closed, holds no number, though the step's field is named
+    // after it.
+    let page = h.call("observe", json!({})).await.unwrap();
+    let nickname = find(&page, "textbox", "Nickname for card •••• 4242");
+    let step = format!("type {nickname} \"Work\"");
+    let typed = h
+        .call(
+            "do",
+            json!({"request": "r-type", "plan": {"steps": [
+                crate::browser::plan::short_step(&step).unwrap()]}}),
+        )
+        .await
+        .unwrap();
+    assert!(
+        typed["trail"][0]["screenshot"]["shot"].is_number(),
+        "{typed}"
+    );
+
+    // No script runs in the session: it could read the number in any form.
+    let script = "[...document.getElementById('done').textContent].map((c) => c.charCodeAt(0))";
+    let eval = h.call("eval", json!({"script": script})).await.unwrap_err();
+    println!("eval: {} ({})", eval.code, eval.message);
+    assert_eq!(eval.code, "secret_on_page");
+    // Nor one the host let in before the card was filled, which reached
+    // the session only once the fill was done.
+    let late = crate::browser::host::worker(
+        &h.browsers,
+        &h.entry,
+        "eval",
+        &json!({"script": script}),
+        None,
+        &mut serde_json::Map::new(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(late.code, "secret_on_page");
+
+    h.call("close", json!({})).await.unwrap();
+    let history = h
+        .call("do_history", json!({"request": "r-type"}))
+        .await
+        .unwrap();
+    println!("history: {history}");
+    assert!(
+        !h.saw_the_card(),
+        "the page's copy of the number reached the agent"
+    );
+}
+
+async fn a_redrawn_number_field_does_not_show_its_value(engine: &str) {
+    let (mut h, card, local, _, _keep) = shop(engine).await;
+    h.call(
+        "open",
+        json!({"url": format!("{local}/card-rerender.html")}),
+    )
+    .await
+    .unwrap();
+    let args = h.suggested(&card).await;
+    h.pay(args).await.unwrap();
+    let observed = h.call("observe", json!({})).await.unwrap();
+    println!("after the shop redrew its form: {}", observed["elements"]);
+    let number = &observed["elements"][0];
+    assert_eq!(
+        (number["name"].as_str(), &number["secret"], &number["value"]),
+        (Some("Card number"), &json!(true), &Value::Null)
+    );
+    assert!(
+        !h.saw_the_card(),
+        "the redrawn field's value reached the agent"
+    );
     h.call("close", json!({})).await.ok();
 }

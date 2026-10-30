@@ -6,6 +6,9 @@
 //! the ref of one left out works as soon as `observe --all` (or a scroll
 //! and an `observe`) shows it; the audit, the gatekeeper and reservations
 //! read full addresses from the page, never from this.
+//!
+//! A card number a session filled is shown in its answers by its last four
+//! digits only (`mask_cards`), wherever the page put it.
 
 use serde_json::{Map, Value, json};
 
@@ -117,9 +120,148 @@ fn short(url: &str) -> String {
     shown
 }
 
+/// Every string in `value` with each card number in `cards` (digits only)
+/// shown by its last four digits.
+pub fn mask_cards(value: &mut Value, cards: &[String]) {
+    match value {
+        Value::String(text) => *text = masked(text, cards),
+        Value::Array(values) => values.iter_mut().for_each(|v| mask_cards(v, cards)),
+        Value::Object(values) => values.values_mut().for_each(|v| mask_cards(v, cards)),
+        _ => {}
+    }
+}
+
+/// The most marks a page may put between two digits of a card number that
+/// is still read as one: a run of spaces or line breaks counts once, and
+/// invisible characters (zero-width ones, format marks) not at all.
+const GAP: usize = 3;
+
+/// A Unicode format character (category Cf): zero-width spaces and
+/// joiners, direction marks, the byte-order mark, a soft hyphen.
+fn invisible(ch: char) -> bool {
+    matches!(ch,
+        '\u{ad}' | '\u{600}'..='\u{605}' | '\u{61c}' | '\u{6dd}' | '\u{70f}' | '\u{890}'..='\u{891}'
+        | '\u{8e2}' | '\u{180e}' | '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}'
+        | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{206f}' | '\u{feff}' | '\u{fff9}'..='\u{fffb}'
+        | '\u{110bd}' | '\u{110cd}' | '\u{13430}'..='\u{1343f}' | '\u{1bca0}'..='\u{1bca3}'
+        | '\u{1d173}'..='\u{1d17a}' | '\u{e0001}' | '\u{e0020}'..='\u{e007f}')
+}
+
+/// `text` with each card number in `cards` it shows (up to `GAP` marks
+/// between two of its digits, as a page spaces it) put as `•••• 4242`; the
+/// digits around it stay.
+pub fn masked(text: &str, cards: &[String]) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::new();
+    let mut at = 0;
+    while at < chars.len() {
+        if !chars[at].is_ascii_digit() {
+            out.push(chars[at]);
+            at += 1;
+            continue;
+        }
+        // The run from here: each digit and where it is.
+        let (mut end, mut digits, mut gap, mut space) = (at, Vec::new(), 0, false);
+        for (next, ch) in chars.iter().enumerate().skip(at) {
+            if ch.is_ascii_digit() {
+                digits.push((*ch, next));
+                end = next + 1;
+                (gap, space) = (0, false);
+            } else if invisible(*ch) {
+                continue;
+            } else if ch.is_alphanumeric() {
+                break;
+            } else if ch.is_whitespace() {
+                gap += usize::from(!space);
+                space = true;
+            } else {
+                gap += 1;
+                space = false;
+            }
+            if gap > GAP {
+                break;
+            }
+        }
+        let run: String = digits.iter().map(|(digit, _)| digit).collect();
+        // The card that shows first, so the digits before it are no other.
+        let found = cards
+            .iter()
+            .filter_map(|card| run.find(card.as_str()).map(|from| (card, from)))
+            .min_by_key(|(_, from)| *from);
+        match found {
+            // Only the card's own digits, and what is between them, go.
+            Some((card, from)) => {
+                let (first, last) = (digits[from].1, digits[from + card.len() - 1].1);
+                out.extend(&chars[at..first]);
+                out.push_str("•••• ");
+                out.push_str(&card[card.len().saturating_sub(4)..]);
+                at = last + 1;
+            }
+            None => {
+                out.extend(&chars[at..end]);
+                at = end;
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_card_number_shows_as_its_last_four_however_the_page_spaces_it() {
+        let cards = ["4242424242424242".to_string()];
+        let mut answer = json!({
+            "lines": ["Paid with 4242 4242 4242 4242.", "Card 4242-4242-4242-4242 or 4242424242424242"],
+            "split": "4242\n4242\n4242\n4242 and 4242\u{200b}4242 / 4242\u{feff}4242",
+            "spaced": "4242\u{a0}\u{a0}4242     4242 \n\t 4242",
+            "invisible": "4242\u{200b}\u{200b}\u{200b}\u{200b}\u{200b}\u{200b}\u{200b}\u{200b}\u{200b}4242 \u{200d}4242\u{2060}-\u{feff}4242",
+            "dashes": "4242----4242----4242----4242",
+            "elements": [{"value": "4242424242424242 04/31"}],
+            "order": "Order 1234567890123, total $10.00",
+            "total": "Total $10.00\n\n4242 4242 4242 4242",
+        });
+        mask_cards(&mut answer, &cards);
+        assert_eq!(
+            answer,
+            json!({
+                "lines": ["Paid with •••• 4242.", "Card •••• 4242 or •••• 4242"],
+                "split": "•••• 4242 and •••• 4242",
+                "spaced": "•••• 4242",
+                "invisible": "•••• 4242",
+                "dashes": "4242----4242----4242----4242",
+                "elements": [{"value": "•••• 4242 04/31"}],
+                "order": "Order 1234567890123, total $10.00",
+                "total": "Total $10.00\n\n•••• 4242",
+            })
+        );
+    }
+
+    #[test]
+    fn a_cards_last_four_alone_stays_readable() {
+        let cards = ["4242424242424242".to_string()];
+        for text in [
+            "Visa ending in 4242",
+            "Card •••• 4242, expires 04/31",
+            "4242 (ending), order 42424242",
+        ] {
+            assert_eq!(masked(text, &cards), text);
+        }
+    }
+
+    #[test]
+    fn two_cards_side_by_side_both_show_as_their_last_four() {
+        let cards = [
+            "4242424242424242".to_string(),
+            "5555555555554444".to_string(),
+        ];
+        assert_eq!(
+            masked("5555 5555 5555 4444 / 4242 4242 4242 4242", &cards),
+            "•••• 4444 / •••• 4242"
+        );
+    }
 
     #[test]
     fn a_page_shows_its_on_screen_elements_and_their_frames_and_says_what_it_left_out() {

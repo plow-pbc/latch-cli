@@ -253,8 +253,8 @@ A vault fill holds its session's browser: the session's calls get
 a fill could not clear may be on a page, until the session is closed.
 
 Each element in a snapshot has its ref, role and accessible name, its
-value (never for a password or secret-looking field, which is marked
-`secret`), checked/expanded/disabled/off-screen state, and the text of its
+value (never for a password, a card's number or code, or another
+secret-looking field, which is marked `secret`), checked/expanded/disabled/off-screen state, and the text of its
 row or card. Every frame is read, cross-site and sandboxed ones included,
 and listed with its effective origin (`self.origin` in latch's isolated
 world; `opaque` for a sandboxed frame). A snapshot lists at most 200
@@ -305,7 +305,8 @@ away, is `type_failed`.
 
 `eval` runs the script's expression in the page's main frame, in the
 page's own world (a promise is awaited), and answers its JSON value (at
-most 1 MiB). Uploads and downloads move as files with matching sha256 on
+most 1 MiB); a session that filled a card runs none
+([VAULT.md](VAULT.md)). Uploads and downloads move as files with matching sha256 on
 both sides; a download is a handle (`d1`) until `download get`, which waits
 a little for one still in progress and never hands over an incomplete one.
 An engine without a command's optional feature (`eval`, `upload`,
@@ -576,7 +577,8 @@ and shot, and sends it only if its sha256 is the one the record kept. A
 request's journal and screenshots are kept 7 days, after its session
 closes too. latch doesn't redact a screenshot's pixels: it takes none
 while a value filled from the vault is on the page, and none of a fill
-step, but typed text and the rest of the page can show.
+step, but typed text and the rest of the page can show, a card's number
+included if the page prints it after the fill ([VAULT.md](VAULT.md)).
 
 **Removed forms.** `act` on a name or description, `act --expect`,
 `act --steps`, `act click --at X,Y`, `find "<description>"` and

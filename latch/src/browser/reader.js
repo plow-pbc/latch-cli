@@ -19,7 +19,7 @@
     '[role=slider]', '[role=spinbutton]', '[role=treeitem]',
   ].join(',');
   const ROWS = 'tr, li, [role=row], [role=listitem], [role=gridcell], article, dd';
-  const SECRET = /pass|secret|token|otp|one-time|cvv|cvc|\bpin\b/i;
+  const SECRET = /pass|secret|token|otp|one-time|cvv|cvc|cc-number|cc-csc|\bpin\b/i;
 
   const clean = (text, max = MAX_TEXT) => {
     const flat = (text || '').replace(/\s+/g, ' ').trim();

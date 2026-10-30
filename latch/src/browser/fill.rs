@@ -464,6 +464,19 @@ pub async fn run(
         }
     };
     let result = fill(browsers, &mut session, &item, &plan, args, audit).await;
+    // A card whose values went toward the page: the session's answers,
+    // journals and scripts are kept from its number from now on. Recorded
+    // while the session is still held, so a call waiting on it sees it.
+    if meta.kind == "card"
+        && audit.get("released") == Some(&json!(true))
+        && let Ok(number) = release(&item, "number")
+    {
+        let digits: String = number.chars().filter(char::is_ascii_digit).collect();
+        let mut cards = entry.cards.lock().expect("cards lock");
+        if !digits.is_empty() && !cards.contains(&digits) {
+            cards.push(digits);
+        }
+    }
     entry.runtime.filling.store(false, Ordering::SeqCst);
     result
 }
@@ -1033,6 +1046,7 @@ async fn release_and_set(
             "nothing was filled: your own script ran on this site earlier in this browser session, and what it left behind could read the card; open a new session (`latch browser open`) and fill the card there".into(),
         ));
     }
+    audit.insert("released".into(), json!(true));
     for field in &fields {
         let label = field["field"].as_str().unwrap_or_default();
         let boxes: Vec<Value> = field["boxes"].as_array().cloned().unwrap_or_default();

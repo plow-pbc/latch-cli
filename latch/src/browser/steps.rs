@@ -398,7 +398,8 @@ pub async fn run(
         caller,
         &request,
         json!(summaries),
-    )?;
+    )?
+    .masking(entry.cards.clone());
     let running = format!("{session}/{request}");
     browsers.running(&running, true);
     let mut run = Run {
@@ -643,7 +644,7 @@ pub async fn stop_fill(
         json!([{"step": 1, "op": "fill"}]),
     );
     let mut journal = match started {
-        Ok(journal) => journal,
+        Ok(journal) => journal.masking(entry.cards.clone()),
         Err(failure) => return failure,
     };
     let mut failure = confirm_fill(browsers, entry, args, audit).await;
