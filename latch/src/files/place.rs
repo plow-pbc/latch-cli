@@ -155,7 +155,6 @@ fn mode_of(dir: &File, name: &[u8]) -> Option<u32> {
     (stat.st_mode & libc::S_IFMT == libc::S_IFREG).then_some(stat.st_mode as u32 & 0o7777)
 }
 
-#[cfg(unix)]
 fn changed(folder: &Path) -> Failure {
     Failure::new(
         code::destination_changed,
@@ -192,11 +191,248 @@ fn unlink(dir: &File, name: &str) -> io::Result<()> {
     Ok(())
 }
 
-/// Windows has no worker sandbox yet, so no worker stages an upload to place.
+/// Windows: the same steps without `*at` calls. The folder is opened once,
+/// not through a link at it, and must still be the folder that was judged;
+/// the new file is made in it and checked by its handle to be there; and it
+/// is renamed over the destination relative to that open folder, so a folder
+/// swapped meanwhile cannot redirect it. A file it replaces keeps its
+/// access list: the new one is made with it.
 #[cfg(windows)]
-pub fn place(_staged: &Path, path: &Path, _workers: &WorkerSetup) -> Result<(), Failure> {
-    let message = format!("{}: no worker sandbox on Windows yet", path.display());
-    Err(Failure::new(code::sandbox_unavailable, message))
+pub fn place(staged: &Path, path: &Path, workers: &WorkerSetup) -> Result<(), Failure> {
+    use std::fs::{File, OpenOptions};
+    use std::io;
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::FromRawHandle;
+    use windows_sys::Win32::Foundation::GENERIC_WRITE;
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
+    use windows_sys::Win32::Storage::FileSystem::{
+        CREATE_NEW, CreateFileW, DELETE, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_BACKUP_SEMANTICS,
+        FILE_FLAG_OPEN_REPARSE_POINT,
+    };
+
+    use crate::sandbox::final_path;
+
+    let (Some(folder), Some(name)) = (path.parent(), path.file_name()) else {
+        let message = format!("{} names no file", path.display());
+        return Err(Failure::new(code::bad_path, message));
+    };
+    let failed =
+        |err: io::Error| Failure::new(code::io_error, format!("{}: {err}", path.display()));
+    // The folder that was judged, or nothing: not a link, nor reached
+    // through a folder swapped for one. It must pass again.
+    let dir = OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(folder)
+        .ok()
+        .filter(|dir| final_path(dir).is_ok_and(|real| real == folder))
+        .ok_or_else(|| changed(folder))?;
+    check_path(workers, path, true)?;
+
+    let temp = folder.join(format!(
+        ".{}.latch-{}-{:08x}.part",
+        name.to_string_lossy(),
+        std::process::id(),
+        rand::random::<u32>()
+    ));
+    // Made with the access list of a file it replaces, protection included,
+    // and shared with no one until it is in place: an owner-only key in a
+    // folder others read is never theirs to open, not even in between.
+    let like = AccessOf::file(path).map_err(failed)?;
+    let attributes = SECURITY_ATTRIBUTES {
+        nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: like
+            .as_ref()
+            .map_or(std::ptr::null_mut(), AccessOf::descriptor),
+        bInheritHandle: 0,
+    };
+    let wide: Vec<u16> = temp.as_os_str().encode_wide().chain([0]).collect();
+    // Never an existing name (CREATE_NEW), nor a link at it; DELETE, so it
+    // can be renamed; no sharing.
+    // SAFETY: `wide` is NUL-terminated; `attributes` and the descriptor it
+    // points at (in `like`) outlive the call.
+    let handle = unsafe {
+        CreateFileW(
+            wide.as_ptr(),
+            GENERIC_WRITE | DELETE,
+            0,
+            &attributes,
+            CREATE_NEW,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
+            std::ptr::null_mut(),
+        )
+    };
+    drop(like);
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(failed(io::Error::last_os_error()));
+    }
+    // SAFETY: a new handle, owned by the File from here on.
+    let mut file = unsafe { File::from_raw_handle(handle) };
+    let written = final_path(&file)
+        .and_then(|real| match real.parent() == Some(folder) {
+            true => Ok(()),
+            false => Err(io::Error::other(
+                "the folder changed while the file was made",
+            )),
+        })
+        .and_then(|()| File::open(staged))
+        .and_then(|mut staged| io::copy(&mut staged, &mut file))
+        .and_then(|_| file.sync_all())
+        .and_then(|()| rename_into(&file, &dir, name));
+    drop((file, dir));
+    if let Err(err) = written {
+        let _ = std::fs::remove_file(&temp);
+        return Err(failed(err));
+    }
+    Ok(())
+}
+
+/// The access list of the file at `path`, and whether it is protected from
+/// inheriting, as a descriptor to make another file with.
+#[cfg(windows)]
+struct AccessOf {
+    /// As Windows gave it: holds the list `made` points at.
+    read: windows_sys::Win32::Security::PSECURITY_DESCRIPTOR,
+    made: Box<windows_sys::Win32::Security::SECURITY_DESCRIPTOR>,
+}
+
+#[cfg(windows)]
+impl AccessOf {
+    /// None when no file is there.
+    fn file(path: &Path) -> std::io::Result<Option<AccessOf>> {
+        use std::os::windows::fs::OpenOptionsExt;
+        use std::os::windows::io::AsRawHandle;
+        use std::ptr::null_mut;
+        use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+        use windows_sys::Win32::Security::Authorization::{GetSecurityInfo, SE_FILE_OBJECT};
+        use windows_sys::Win32::Security::{
+            ACL, DACL_SECURITY_INFORMATION, GetSecurityDescriptorControl,
+            InitializeSecurityDescriptor, SE_DACL_PROTECTED, SetSecurityDescriptorControl,
+            SetSecurityDescriptorDacl,
+        };
+        use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_OPEN_REPARSE_POINT, READ_CONTROL};
+        use windows_sys::Win32::System::SystemServices::SECURITY_DESCRIPTOR_REVISION;
+
+        let old = match std::fs::OpenOptions::new()
+            .access_mode(READ_CONTROL)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)
+        {
+            Ok(old) => old,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => return Err(err),
+        };
+        let (mut dacl, mut read): (*mut ACL, _) = (null_mut(), null_mut());
+        // SAFETY: a live handle with READ_CONTROL; `read`, which holds
+        // `dacl`, is freed when the AccessOf is dropped.
+        let status = unsafe {
+            GetSecurityInfo(
+                old.as_raw_handle(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                null_mut(),
+                null_mut(),
+                &mut dacl,
+                null_mut(),
+                &mut read,
+            )
+        };
+        if status != ERROR_SUCCESS {
+            return Err(std::io::Error::from_raw_os_error(status as i32));
+        }
+        // SAFETY: zeroes are a valid start; Initialize sets it up.
+        let mut access = AccessOf {
+            read,
+            made: Box::new(unsafe { std::mem::zeroed() }),
+        };
+        let made = (&raw mut *access.made).cast();
+        let (mut control, mut revision) = (0u16, 0u32);
+        // SAFETY: `read` is live; `made` is ours, pointing at `dacl` in `read`,
+        // which lives as long.
+        let done = unsafe {
+            GetSecurityDescriptorControl(read, &mut control, &mut revision) != 0
+                && InitializeSecurityDescriptor(made, SECURITY_DESCRIPTOR_REVISION) != 0
+                && SetSecurityDescriptorDacl(made, 1, dacl, 0) != 0
+                && SetSecurityDescriptorControl(
+                    made,
+                    SE_DACL_PROTECTED,
+                    control & SE_DACL_PROTECTED,
+                ) != 0
+        };
+        // On failure `access` frees what it holds as it drops, after the
+        // error is read.
+        if !done {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(Some(access))
+    }
+
+    fn descriptor(&self) -> *mut std::ffi::c_void {
+        (&raw const *self.made).cast_mut().cast()
+    }
+}
+
+#[cfg(windows)]
+impl Drop for AccessOf {
+    fn drop(&mut self) {
+        // SAFETY: allocated by GetSecurityInfo, freed once.
+        unsafe { windows_sys::Win32::Foundation::LocalFree(self.read) };
+    }
+}
+
+/// Renames the open `file` to `name` in the open folder `dir`, replacing
+/// what is there. Windows' own rename (`NtSetInformationFile`) takes the
+/// name relative to `dir`; the Win32 one (`SetFileInformationByHandle`)
+/// makes a bare name relative to this process's working folder instead.
+#[cfg(windows)]
+fn rename_into(
+    file: &std::fs::File,
+    dir: &std::fs::File,
+    name: &std::ffi::OsStr,
+) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Wdk::Storage::FileSystem::{
+        FILE_RENAME_INFORMATION, FileRenameInformation, NtSetInformationFile,
+    };
+    use windows_sys::Win32::Foundation::RtlNtStatusToDosError;
+    use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
+
+    let wide: Vec<u16> = name.encode_wide().collect();
+    let head = std::mem::offset_of!(FILE_RENAME_INFORMATION, FileName);
+    let size = (head + wide.len() * 2).max(size_of::<FILE_RENAME_INFORMATION>());
+    // u64s, so the structure is aligned.
+    let mut buffer = vec![0u64; size.div_ceil(8)];
+    let info = buffer.as_mut_ptr() as *mut FILE_RENAME_INFORMATION;
+    // SAFETY: `buffer` holds the structure, and the name from `FileName` on.
+    unsafe {
+        (*info).Anonymous.ReplaceIfExists = true;
+        (*info).RootDirectory = dir.as_raw_handle();
+        (*info).FileNameLength = (wide.len() * 2) as u32;
+        let to = (info as *mut u8).add(head) as *mut u16;
+        std::ptr::copy_nonoverlapping(wide.as_ptr(), to, wide.len());
+    }
+    let mut status = IO_STATUS_BLOCK::default();
+    // SAFETY: a live handle opened with DELETE, a live folder handle in the
+    // information, and `size` bytes of it.
+    let result = unsafe {
+        NtSetInformationFile(
+            file.as_raw_handle(),
+            &mut status,
+            info.cast(),
+            size as u32,
+            FileRenameInformation,
+        )
+    };
+    if result < 0 {
+        // SAFETY: converts a status code; no memory is touched.
+        return Err(std::io::Error::from_raw_os_error(
+            unsafe { RtlNtStatusToDosError(result) } as i32,
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -59,7 +59,10 @@ as `latch status` lists it. Branch on
   tool-cache folders are writable too; missing or aliased caches are skipped.
   IP network is off unless `--network`. Workdir defaults to the first write
   folder, otherwise home; `--workdir` overrides it. Host Unix sockets stay
-  blocked even with network (macOS allows its system DNS resolver).
+  blocked even with network (macOS allows its system DNS resolver). On a
+  Windows host, exec reads only its write folders, files the rules name and
+  system files, and has no tool-cache writes; `file get` reads named home
+  files there.
 - `latch file get --host H '~/Documents/report.pdf' report.pdf` copies a
   readable host path here, the destination a plain argument; `latch file
   put` writes only its judged destination. Exec and file need no
