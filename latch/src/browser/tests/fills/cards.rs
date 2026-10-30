@@ -241,11 +241,28 @@ async fn agent_code_on_a_shop_keeps_the_card_out(engine: &str) {
 
 async fn a_page_that_shows_the_number_back_shows_the_agent_only_its_last_four(engine: &str) {
     let (mut h, card, local, _, _keep) = shop(engine).await;
-    h.call("open", json!({"url": format!("{local}/card-echo.html")}))
+    let checkout = h
+        .call("open", json!({"url": format!("{local}/card-echo.html")}))
         .await
         .unwrap();
+    // While a value latch filled is in a field, no script runs, as for a
+    // password: here the expiry, filled with no press.
+    let (filled, _) = h
+        .gated_fill(
+            json!({"item": card, "fields": [["expiry", [find(&checkout, "textbox", "Expiry")]]]}),
+        )
+        .await;
+    assert_eq!(filled.unwrap()["submitted"], false);
+    let refused = h.call("eval", json!({"script": "1"})).await.unwrap_err();
+    assert_eq!(refused.code, "secret_on_page");
+
+    // That script never ran: the card still pays on the shop.
     let args = h.suggested(&card).await;
     h.pay(args).await.unwrap();
+    // Once the page was submitted and its fields are empty, scripts run.
+    h.call("eval", json!({"script": "document.title"}))
+        .await
+        .unwrap();
     let page = h.text().await;
     println!("the shop's confirmation, as the agent reads it: {page:?}");
     assert!(page.contains("Paid $10.00 with card •••• 4242"), "{page}");
@@ -273,25 +290,6 @@ async fn a_page_that_shows_the_number_back_shows_the_agent_only_its_last_four(en
         typed["trail"][0]["screenshot"]["shot"].is_number(),
         "{typed}"
     );
-
-    // No script runs in the session: it could read the number in any form.
-    let script = "[...document.getElementById('done').textContent].map((c) => c.charCodeAt(0))";
-    let eval = h.call("eval", json!({"script": script})).await.unwrap_err();
-    println!("eval: {} ({})", eval.code, eval.message);
-    assert_eq!(eval.code, "secret_on_page");
-    // Nor one the host let in before the card was filled, which reached
-    // the session only once the fill was done.
-    let late = crate::browser::host::worker(
-        &h.browsers,
-        &h.entry,
-        "eval",
-        &json!({"script": script}),
-        None,
-        &mut serde_json::Map::new(),
-    )
-    .await
-    .unwrap_err();
-    assert_eq!(late.code, "secret_on_page");
 
     h.call("close", json!({})).await.unwrap();
     let history = h

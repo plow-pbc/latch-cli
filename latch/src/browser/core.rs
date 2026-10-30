@@ -578,6 +578,8 @@ impl<D: Driver> Core<D> {
         self.needs("eval", audit)?;
         self.no_dialog()?;
         self.no_value_on_page("eval")?;
+        // From here the script may run, whatever comes back.
+        audit.insert("script_sent".into(), json!(true));
         let value = self.driver.eval(script)?;
         let size = serde_json::to_vec(&value).map_or(0, |bytes| bytes.len());
         if size > MAX_EVAL_RESULT {

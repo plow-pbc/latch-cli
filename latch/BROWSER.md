@@ -312,8 +312,7 @@ away, is `type_failed`.
 
 `eval` runs the script's expression in the page's main frame, in the
 page's own world (a promise is awaited), and answers its JSON value (at
-most 1 MiB); a session that filled a card runs none
-([VAULT.md](VAULT.md)). Uploads and downloads move as files with matching sha256 on
+most 1 MiB). Uploads and downloads move as files with matching sha256 on
 both sides; a download is a handle (`d1`) until `download get`, which waits
 a little for one still in progress and never hands over an incomplete one.
 An engine without a command's optional feature (`eval`, `upload`,

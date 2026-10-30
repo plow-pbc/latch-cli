@@ -301,16 +301,18 @@ browser, and an element list marks a field holding a filled value as
 `filled`, never showing the value. A page may show a card's number back
 (a confirmation that repeats it, a field it draws again): every answer in
 the session that filled it, and its plans' journals, show that number only
-as its last four digits (`•••• 4242`), however the page spaces it (any
-run of spaces or line breaks, invisible characters, and up to 3 other
-marks between two digits); the last four alone ("ending in 4242") are
-left as they are. No `eval` runs in a session that filled a card
-(`secret_on_page`), checked again as it is sent: a script could read the
-number in any form. Screenshots are not masked: a card fill always
-presses its button, and its cleanup clears the fields if the page keeps
-them (above), so the number is never left in a field, but a page that
-prints the whole number after the fill shows it in a picture, though not
-in a text answer. Not yet tested: a single-page checkout that reads the
+as its last four digits (`•••• 4242`), whole or in groups set apart by
+single spaces or dashes, as a site prints it; the last four alone
+("ending in 4242") are left as they are. A script (`eval`) is refused
+while a filled value may be in a field, as for a password (below), and
+runs once the page was submitted and its fields are empty: from then on
+it could read a number the page repeats. Screenshots and downloads are
+not masked: a card
+fill always presses its button, and its cleanup clears the fields if the
+page keeps them (above), so the number is never left in a field, but a
+page that prints the whole number after the fill shows it in a picture,
+and a receipt the agent downloads (text or PDF) can hold it, though no
+text answer does. Not yet tested: a single-page checkout that reads the
 card only at a later "Place order", after the cleanup has cleared its
 fields, and a 3-D Secure check slower than the cleanup's 15 seconds.
 While a filled value may be on a page,
@@ -332,7 +334,9 @@ agent code (`eval`) ran on those sites earlier in the session
 that ran on the site before a fill could read the value it puts on the
 page, through what it left behind (a service worker, a stored script).
 Latch can't prevent that, so it flags every such fill, and refuses a card's
-(`agent_code_on_site`, exit 4) before any value is released. What a script
+(`agent_code_on_site`, exit 4) before any value is released. An `eval`
+refused before it was sent (while a filled value was on the page, say)
+ran nothing and counts for none of this. What a script
 left goes with the session's profile, so a new session starts unflagged:
 fill the card there.
 
