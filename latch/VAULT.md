@@ -342,7 +342,10 @@ the submit (`shows`), for telling a sign-in that bounced from one that
 moved on: its path, whether a password field (else a username field) is
 showing and empty, and the errors it shows (alerts, and the error
 messages of fields it marks invalid), for example `after the submit, the
-page (/ax/claim) shows the password field, empty, with no error`. It
+page (/ax/claim) shows the password field, empty, with no error`. With no
+such field found while a frame could not be read, it says the page could
+not be read rather than that it shows none. A page none of whose frames it could read, short of such a field,
+is said to be unreadable rather than to show none. It
 describes, never decides: `submitted` stays true.
 
 The audit records the item, its revision, the mapping by ref, where it

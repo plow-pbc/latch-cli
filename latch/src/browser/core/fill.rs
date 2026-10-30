@@ -96,16 +96,21 @@ pub struct State {
 }
 
 /// What a sign-in page at `path` shows after a submit, from each frame's
-/// `__latch.signInShown()`: its password field, else its username field,
-/// whether that is empty, and the errors it shows.
-fn sign_in_shown(path: &str, frames: &[Value]) -> String {
+/// `__latch.signInShown()` (none for a frame that could not be read): its
+/// password field, else its username field, whether that is empty, and the
+/// errors it shows. With no field found where a frame went unread, the
+/// field may be in it, so it says the page could not be read.
+fn sign_in_shown(path: &str, frames: &[Option<Value>]) -> String {
+    let read: Vec<&Value> = frames.iter().flatten().collect();
     let field = ["password", "username"].into_iter().find_map(|field| {
-        frames
-            .iter()
+        read.iter()
             .find_map(|found| found[field].as_str())
             .map(|state| format!("the {field} field, {state}"))
     });
-    let errors: Vec<String> = frames
+    if field.is_none() && read.len() < frames.len() {
+        return format!("after the submit, the page ({path}) could not be read");
+    }
+    let errors: Vec<String> = read
         .iter()
         .flat_map(|found| found["errors"].as_array().cloned().unwrap_or_default())
         .filter_map(|error| error.as_str().map(|text| format!("\"{text}\"")))
@@ -571,11 +576,11 @@ impl<D: Driver> Core<D> {
         self.after(&before, events, &mut result)?;
         result.extend(self.page(audit)?);
         if shows {
-            let found: Vec<Value> = self
+            let found: Vec<Option<Value>> = self
                 .driver
                 .frames()?
                 .iter()
-                .filter_map(|frame| self.driver.run(frame, "__latch.signInShown()").ok())
+                .map(|frame| self.driver.run(frame, "__latch.signInShown()").ok())
                 .collect();
             let (_, path) = super::origin_and_path(result["url"].as_str().unwrap_or_default());
             result.insert("shows".into(), json!(sign_in_shown(&path, &found)));
@@ -859,20 +864,24 @@ mod tests {
     #[test]
     fn a_sign_in_page_is_described_by_its_field_and_its_errors() {
         let frames = [
-            json!({"password": null, "username": "filled", "errors": ["Try again later"]}),
-            json!({"password": "empty", "username": null, "errors": []}),
+            Some(json!({"password": null, "username": "filled", "errors": ["Try again later"]})),
+            Some(json!({"password": "empty", "username": null, "errors": []})),
+            None,
         ];
         assert_eq!(
             sign_in_shown("/ax/claim", &frames),
             "after the submit, the page (/ax/claim) shows the password field, empty, \
              with the error \"Try again later\""
         );
+        let nothing = Some(json!({"password": null, "username": null, "errors": []}));
         assert_eq!(
-            sign_in_shown(
-                "/",
-                &[json!({"password": null, "username": null, "errors": []})]
-            ),
+            sign_in_shown("/", std::slice::from_ref(&nothing)),
             "after the submit, the page (/) shows no password or username field, with no error"
+        );
+        // A frame it could not read may hold the field.
+        assert_eq!(
+            sign_in_shown("/", &[nothing, None]),
+            "after the submit, the page (/) could not be read"
         );
     }
 

@@ -5,7 +5,7 @@
 //! 1. a CAPTCHA page: `needs_owner`; a code stage, or a passkey stage
 //!    unless an item the plan names fits and holds a password:
 //!    `needs_fields` (latch can't tell a texted code from an
-//!    authenticator code, and holds no passkeys);
+//!    authenticator code, and its browsers offer no passkeys);
 //! 2. completion: a typed check that holds (`checked`, or `already_held`
 //!    before the first action; once the step has acted and is about to
 //!    stop, the check gets up to 10 s, and where the model judged the step
@@ -316,10 +316,9 @@ impl Run<'_> {
                         handoff::to_owner(screen, "2fa")
                     )
                 } else {
-                    format!(
-                        "a passkey; nothing was sent: {}",
-                        handoff::to_owner(screen, "passkey")
-                    )
+                    // latch's browsers offer no passkey to the agent or,
+                    // in a handoff, to the owner.
+                    "a passkey, which latch's browsers don't offer, to an agent or in a handoff; nothing was sent: use another way to sign in the page offers (a password or a code), else stop and tell the owner the site wants a passkey".to_string()
                 };
                 let mut failure = stopped(
                     code::needs_fields,
