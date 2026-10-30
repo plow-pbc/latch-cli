@@ -165,9 +165,9 @@ pub enum Command {
     Login(LoginArgs),
     /// Log this machine out of Plow
     ///
-    /// Stops this state folder's host, then deletes its key and Plow token
-    /// from the Keychain or its files; the vault and audit stay readable
-    /// after the next login
+    /// Says what it deletes and asks, stops this state folder's host, then
+    /// deletes its Plow token; its key, name, vault, audit, rules and
+    /// settings stay, so the next login is the same machine
     Logout(LogoutArgs),
     /// List this account's machines, online or not, or remove one
     Devices(DevicesArgs),
@@ -1386,10 +1386,17 @@ pub const EVERY_AGENT: &str = "*";
 
 #[derive(Args, Debug)]
 pub struct LogoutArgs {
-    /// Also delete the vault and audit keys, and then the state folder
-    /// itself, with everything in it
+    /// Delete every secret, and then the state folder itself, with
+    /// everything in it: the vault, audit log, rules and settings
     #[arg(long)]
     pub purge: bool,
+    /// Log out without asking, still saying what it deletes (required when
+    /// no one is at a terminal)
+    #[arg(long)]
+    pub yes: bool,
+    /// Say what it would delete and keep, and change nothing
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 #[derive(Args, Debug)]

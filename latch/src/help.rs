@@ -111,17 +111,25 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "logout",
         runs_on: |_| RunsOn::Local,
-        output: "`removed` (what it deleted, by file name: the key, Plow token and config.json; with --purge every secret, then the folder), `from` (`keychain` or `files`), `stopped` (whether a host was running), `purged`, `device` (an owner's machine: its `name`, null if the state folder was already gone, and whether Plow `removed` it; if not, the `error` and the `next` step; null otherwise) and `state_dir`.",
+        output: "`summary` (what it deletes and keeps, worked out first: `state_dir`, `default_state_dir`, `login` (`name`, `kind`), `leaves_plow`, `host_running`, `keychain_items` and `files` it deletes by full path, `deletes_folder`, `vault` (item counts by kind), `audit_records` and `browsers` (each installed engine's `engine`, `version`, `path` and `bytes`, and `session_data`: `browser/`'s `path` and `bytes`); counts, names and sizes, never a value), `removed` (what it deleted, by file name: the Plow token and config.json; with --purge every secret, then the folder), `from` (`keychain` or `files`), `stopped` (whether a host was running), `purged`, `device` (an owner's machine: its `name`, null if the state folder was already gone, and whether Plow `removed` it; if not, the `error` and the `next` step; null otherwise) and `state_dir`. With --dry-run, only `dry_run` and `summary`. Asks first at a terminal (y, or typing `delete` for --purge); with no one there it fails with `confirmation_required` and the `summary`, unless given --yes.",
         effect: Repeatable(
-            "stops this state folder's host, takes this machine out of the Plow account and signs out its login, and deletes its key and Plow token; with --purge also its vault and audit keys and the folder itself",
+            "stops this state folder's host, takes this machine out of the Plow account and signs out its login, and deletes its Plow token, keeping its key, vault, audit log, rules and settings; with --purge every secret and the folder itself",
         ),
         owner_only: false,
         connector: None,
         examples: &[
             ex("Log this state folder out", &["logout"]),
             ex(
+                "See what a purge would delete",
+                &["logout", "--purge", "--dry-run"],
+            ),
+            ex(
                 "Delete this state folder and every secret it has",
                 &["logout", "--purge"],
+            ),
+            ex(
+                "Log out from a script, without asking",
+                &["logout", "--yes"],
             ),
         ],
     },

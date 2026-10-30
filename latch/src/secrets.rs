@@ -42,8 +42,9 @@ impl Secret {
         Secret::VaultKey,
         Secret::AuditKeys,
     ];
-    /// This peer's identity and login, without which it is logged out.
-    pub const LOGIN: [Secret; 2] = [Secret::Key, Secret::PlowToken];
+    /// This peer's login, without which it is logged out. Its key is its
+    /// identity, which a login again keeps.
+    pub const LOGIN: [Secret; 1] = [Secret::PlowToken];
 
     /// The file it is kept in by a build without the Keychain.
     pub fn file(self) -> &'static str {
@@ -59,6 +60,8 @@ impl Secret {
 /// A Keychain-like store of named items: the real Keychain, or the tests'.
 trait Store: Send + Sync {
     fn get(&self, account: &str) -> Result<Option<Vec<u8>>, String>;
+    /// Whether the item is there, without reading its value.
+    fn has(&self, account: &str) -> Result<bool, String>;
     /// Adds the item; `false` if one is already there, which is left alone.
     fn add(&self, account: &str, bytes: &[u8]) -> Result<bool, String>;
     /// Adds the item or replaces its value.
@@ -95,6 +98,16 @@ impl Secrets {
         store
             .get(&self.account(secret))
             .map_err(|why| self.refused("read", secret, &why))
+    }
+
+    /// Whether this folder has `secret`, without reading it.
+    pub fn has(&self, secret: Secret) -> Result<bool, Failure> {
+        let Some(store) = &self.keychain else {
+            return Ok(self.dir.join(secret.file()).exists());
+        };
+        store
+            .has(&self.account(secret))
+            .map_err(|why| self.refused("find", secret, &why))
     }
 
     /// Saves `secret`, replacing what was there.
@@ -368,6 +381,19 @@ mod platform {
             Ok(Some(data.bytes().to_vec()))
         }
 
+        fn has(&self, account: &str) -> Result<bool, String> {
+            // Asking for no data, the answer is only whether it is there.
+            let query = CFDictionary::from_CFType_pairs(&item(account));
+            // SAFETY: `query` is a valid dictionary; with no result asked
+            // for, none is returned to own.
+            let code =
+                unsafe { SecItemCopyMatching(query.as_concrete_TypeRef(), std::ptr::null_mut()) };
+            if code == errSecItemNotFound {
+                return Ok(false);
+            }
+            status(code).map(|()| true)
+        }
+
         fn add(&self, account: &str, bytes: &[u8]) -> Result<bool, String> {
             let mut attributes = item(account);
             // SAFETY: valid static CFStrings.
@@ -480,6 +506,10 @@ mod tests {
             Ok(self.items.lock().unwrap().get(account).cloned())
         }
 
+        fn has(&self, account: &str) -> Result<bool, String> {
+            Ok(self.items.lock().unwrap().contains_key(account))
+        }
+
         fn add(&self, account: &str, bytes: &[u8]) -> Result<bool, String> {
             if self.items.lock().unwrap().contains_key(account) {
                 return Ok(false);
@@ -564,12 +594,14 @@ mod tests {
         let theirs = in_memory(other.path(), &memory).unwrap();
         theirs.create(Secret::Key, b"their-key").unwrap();
 
-        assert_eq!(
-            secrets.remove_each(&Secret::LOGIN).unwrap(),
-            ["key", "plow-token"]
-        );
+        assert!(secrets.has(Secret::PlowToken).unwrap());
+        assert_eq!(secrets.remove_each(&Secret::LOGIN).unwrap(), ["plow-token"]);
+        assert!(!secrets.has(Secret::PlowToken).unwrap());
         assert_eq!(secrets.read(Secret::AuditKeys).unwrap().unwrap(), b"audit");
-        assert_eq!(secrets.remove_each(&Secret::ALL).unwrap(), ["audit.keys"]);
+        assert_eq!(
+            secrets.remove_each(&Secret::ALL).unwrap(),
+            ["key", "audit.keys"]
+        );
         assert_eq!(
             secrets.remove_each(&Secret::ALL).unwrap(),
             Vec::<&str>::new()
@@ -601,7 +633,7 @@ mod tests {
 
         let secrets = in_memory(&dir, &memory).unwrap();
         assert_eq!(secrets.read(Secret::Key).unwrap().unwrap(), b"key");
-        assert_eq!(secrets.remove_each(&Secret::LOGIN).unwrap(), ["key"]);
+        assert_eq!(secrets.remove_each(&[Secret::Key]).unwrap(), ["key"]);
         assert!(memory.items.lock().unwrap().is_empty());
     }
 

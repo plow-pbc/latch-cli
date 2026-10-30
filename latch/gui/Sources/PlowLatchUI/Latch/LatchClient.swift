@@ -325,7 +325,7 @@ nonisolated struct LiveLatchClient: LatchClient {
     }
 
     func logout() async throws -> LogoutResult {
-        try decode(LogoutResult.self, try await run(["logout"]))
+        try decode(LogoutResult.self, try await run(["logout", "--yes"]))
     }
 
     func agentCatalog() async throws -> AgentCatalog {
