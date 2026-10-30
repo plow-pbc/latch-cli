@@ -34,6 +34,11 @@ fn latch() -> PathBuf {
 fn start(args: &[String]) -> Result<Child, Value> {
     Command::new(latch())
         .args(args)
+        // The window speaks for this PC's owner: a host or a chat named in
+        // the person's environment, for their own latch calls, never
+        // redirects it. A command for another host names it with --host.
+        .env_remove("LATCH_HOST")
+        .env_remove("LATCH_PLOW_CHAT")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
