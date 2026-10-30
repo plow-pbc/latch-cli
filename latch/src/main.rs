@@ -201,6 +201,20 @@ fn main() -> ExitCode {
                 }
             };
         }
+        // Run from a terminal opened as administrator, maybe another
+        // account's: no state folder needed, and no runtime.
+        Command::VolumeRoots { change } => {
+            return match setup::volume_roots(change).and_then(|done| json(cli.pretty, done)) {
+                Ok(Printed(text)) => {
+                    term::print_out(&format!("{text}\n"));
+                    ExitCode::SUCCESS
+                }
+                Err(failure) => {
+                    report(&failure);
+                    failure.exit.into()
+                }
+            };
+        }
         command => command,
     };
     // Only the human commands still say a newer build is out: a regular
@@ -533,7 +547,8 @@ async fn run(
         | Command::Help(_)
         | Command::Skill
         | Command::App
-        | Command::VerifySignature { .. } => {
+        | Command::VerifySignature { .. }
+        | Command::VolumeRoots { .. } => {
             unreachable!("handled in main")
         }
     }

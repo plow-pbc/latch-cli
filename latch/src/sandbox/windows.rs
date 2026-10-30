@@ -42,16 +42,16 @@ use windows_sys::Win32::Foundation::{
     WAIT_ABANDONED, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Security::Authorization::{
-    ConvertStringSidToSidW, DENY_ACCESS, EXPLICIT_ACCESS_W, GRANT_ACCESS, GetSecurityInfo,
-    NO_MULTIPLE_TRUSTEE, SE_FILE_OBJECT, SetEntriesInAclW, SetNamedSecurityInfoW, TRUSTEE_IS_SID,
-    TRUSTEE_IS_UNKNOWN, TRUSTEE_W,
+    ACCESS_MODE, ConvertStringSidToSidW, DENY_ACCESS, EXPLICIT_ACCESS_W, GRANT_ACCESS,
+    GetNamedSecurityInfoW, GetSecurityInfo, NO_MULTIPLE_TRUSTEE, SE_FILE_OBJECT, SetEntriesInAclW,
+    SetNamedSecurityInfoW, TRUSTEE_IS_SID, TRUSTEE_IS_UNKNOWN, TRUSTEE_W,
 };
 use windows_sys::Win32::Security::Isolation::{
     CreateAppContainerProfile, DeleteAppContainerProfile, DeriveAppContainerSidFromAppContainerName,
 };
 use windows_sys::Win32::Security::{
-    ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, ACL_SIZE_INFORMATION, AclSizeInformation, AddAce,
-    DACL_SECURITY_INFORMATION, EqualSid, FreeSid, GetAce, GetAclInformation,
+    ACCESS_ALLOWED_ACE, ACE_FLAGS, ACE_HEADER, ACL, ACL_SIZE_INFORMATION, AclSizeInformation,
+    AddAce, DACL_SECURITY_INFORMATION, EqualSid, FreeSid, GetAce, GetAclInformation,
     GetSecurityDescriptorControl, GetTokenInformation, INHERITED_ACE, InitializeAcl,
     InitializeSecurityDescriptor, NO_INHERITANCE, PSECURITY_DESCRIPTOR, PSID,
     SE_DACL_AUTO_INHERITED, SE_DACL_PROTECTED, SECURITY_CAPABILITIES, SECURITY_DESCRIPTOR,
@@ -61,7 +61,8 @@ use windows_sys::Win32::Security::{
 use windows_sys::Win32::Storage::FileSystem::{
     DELETE, FILE_FLAG_BACKUP_SEMANTICS, FILE_GENERIC_EXECUTE, FILE_GENERIC_READ,
     FILE_GENERIC_WRITE, FILE_READ_ATTRIBUTES, FILE_READ_DATA, FILE_SHARE_READ, FILE_SHARE_WRITE,
-    FILE_TRAVERSE, GetFinalPathNameByHandleW, READ_CONTROL, SYNCHRONIZE, WRITE_DAC,
+    FILE_TRAVERSE, GetDriveTypeW, GetFinalPathNameByHandleW, GetLogicalDriveStringsW, READ_CONTROL,
+    SYNCHRONIZE, WRITE_DAC,
 };
 use windows_sys::Win32::System::Console::{
     GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
@@ -85,6 +86,7 @@ use windows_sys::Win32::System::Threading::{
     ReleaseMutex, ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOEXW, TerminateProcess,
     UpdateProcThreadAttribute, WaitForSingleObject,
 };
+use windows_sys::Win32::System::WindowsProgramming::DRIVE_FIXED;
 
 use super::Policy;
 
@@ -100,6 +102,20 @@ const ENTER: u32 = FILE_TRAVERSE | FILE_READ_ATTRIBUTES | SYNCHRONIZE;
 
 /// The capability a container needs for outbound connections.
 const INTERNET_CLIENT: &str = "S-1-15-3-1";
+
+/// latch's own capability, which every worker carries: as
+/// `DeriveCapabilitySidsFromName` derives it from `latchWorkerVolumeRoot`.
+/// Programs open a volume's root for its details (cmd's `dir` and `vol`),
+/// and a root admits no AppContainer, so they fail even in a folder the
+/// worker may list. `latch volume-roots add`, run once from a terminal
+/// opened as administrator, gives this capability `ROOT_ACCESS` on each
+/// fixed volume's root, and nothing below it. Windows' own `isolatedWin32-volumeRootMinimal`, which roots already
+/// admit, cannot be given to a plain AppContainer: CreateProcess refuses it.
+pub(crate) const VOLUME_ROOT: &str = "S-1-15-3-1024-2072464065-3400578307-2891438376-2029114129-1094856869-133864159-224730807-2445515868";
+
+/// What a root grants it: the root's own attributes, which the volume's
+/// details are read through, and nothing to list or read.
+const ROOT_ACCESS: u32 = FILE_READ_ATTRIBUTES | SYNCHRONIZE;
 
 /// AppContainers are part of Windows since 8; there is nothing to probe
 /// before the probe worker confines itself for real.
@@ -593,44 +609,267 @@ fn set_entry(grant: &Grant, sid: PSID) -> std::io::Result<()> {
     };
     let inherited = grant.access != Access::Enter;
     with_dacl(&grant.path, inherited, |old, folder, write| {
-        let entry = EXPLICIT_ACCESS_W {
-            grfAccessPermissions: access,
-            grfAccessMode: mode,
-            grfInheritance: if inherited && folder {
-                SUB_CONTAINERS_AND_OBJECTS_INHERIT
-            } else {
-                NO_INHERITANCE
-            },
-            Trustee: TRUSTEE_W {
-                pMultipleTrustee: null_mut(),
-                MultipleTrusteeOperation: NO_MULTIPLE_TRUSTEE,
-                TrusteeForm: TRUSTEE_IS_SID,
-                TrusteeType: TRUSTEE_IS_UNKNOWN,
-                ptstrName: sid.cast(),
-            },
+        let inheritance = if inherited && folder {
+            SUB_CONTAINERS_AND_OBJECTS_INHERIT
+        } else {
+            NO_INHERITANCE
         };
-        let mut new: *mut ACL = null_mut();
-        // SAFETY: one entry in, `old` live meanwhile, `new` freed below.
-        let merged = unsafe { SetEntriesInAclW(1, &entry, old, &mut new) };
-        if merged != ERROR_SUCCESS {
-            return Err(std::io::Error::from_raw_os_error(merged as i32));
-        }
-        let written = write(new);
-        // SAFETY: allocated by SetEntriesInAclW, freed once.
-        unsafe { LocalFree(new.cast()) };
-        written
+        // SAFETY: `old` is the object's access list, live meanwhile.
+        unsafe { add_entry(old, access, mode, inheritance, sid, write) }
     })
+}
+
+/// Writes `old` with one more entry for `sid`.
+///
+/// # Safety
+/// `old` must be null or a live access list, `sid` a live SID.
+unsafe fn add_entry(
+    old: *mut ACL,
+    access: u32,
+    mode: ACCESS_MODE,
+    inheritance: ACE_FLAGS,
+    sid: PSID,
+    write: &dyn Fn(*mut ACL) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    let entry = EXPLICIT_ACCESS_W {
+        grfAccessPermissions: access,
+        grfAccessMode: mode,
+        grfInheritance: inheritance,
+        Trustee: TRUSTEE_W {
+            pMultipleTrustee: null_mut(),
+            MultipleTrusteeOperation: NO_MULTIPLE_TRUSTEE,
+            TrusteeForm: TRUSTEE_IS_SID,
+            TrusteeType: TRUSTEE_IS_UNKNOWN,
+            ptstrName: sid.cast(),
+        },
+    };
+    let mut new: *mut ACL = null_mut();
+    // SAFETY: one entry in, `old` live meanwhile, `new` freed below.
+    let merged = unsafe { SetEntriesInAclW(1, &entry, old, &mut new) };
+    if merged != ERROR_SUCCESS {
+        return Err(std::io::Error::from_raw_os_error(merged as i32));
+    }
+    let written = write(new);
+    // SAFETY: allocated by SetEntriesInAclW, freed once.
+    unsafe { LocalFree(new.cast()) };
+    written
+}
+
+/// The fixed volumes' roots (`C:\\` and the like), where a worker's
+/// folders are.
+fn fixed_roots() -> Vec<PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    let mut buffer = vec![0u16; 512];
+    // SAFETY: `buffer` is writable for its length.
+    let length =
+        unsafe { GetLogicalDriveStringsW(buffer.len() as u32, buffer.as_mut_ptr()) } as usize;
+    if length == 0 || length > buffer.len() {
+        return Vec::new();
+    }
+    buffer[..length]
+        .split(|&unit| unit == 0)
+        .filter(|root| !root.is_empty())
+        .map(|root| PathBuf::from(std::ffi::OsString::from_wide(root)))
+        // SAFETY: a NUL-terminated name.
+        .filter(|root| unsafe { GetDriveTypeW(wide(root.as_os_str()).as_ptr()) } == DRIVE_FIXED)
+        .collect()
+}
+
+/// Whether `root` admits the workers' capability as `volume_roots` makes
+/// it: an entry of its own allowing at least `ROOT_ACCESS`. A root with no
+/// access list (FAT) admits every program already. Reading the list needs
+/// no administrator.
+fn admits(root: &Path, sid: &Sid) -> std::io::Result<bool> {
+    let name = wide(root.as_os_str());
+    let (mut list, mut descriptor): (*mut ACL, PSECURITY_DESCRIPTOR) = (null_mut(), null_mut());
+    // SAFETY: a NUL-terminated name; the descriptor holding `list` is freed
+    // below with LocalFree.
+    let read = unsafe {
+        GetNamedSecurityInfoW(
+            name.as_ptr(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            null_mut(),
+            null_mut(),
+            &mut list,
+            null_mut(),
+            &mut descriptor,
+        )
+    };
+    if read != ERROR_SUCCESS {
+        return Err(std::io::Error::from_raw_os_error(read as i32));
+    }
+    // SAFETY: `list` is null or the live list `descriptor` holds.
+    let admits = list.is_null() || unsafe { allowed(list, sid.0) }? & ROOT_ACCESS == ROOT_ACCESS;
+    // SAFETY: allocated by GetNamedSecurityInfoW, freed once.
+    unsafe { LocalFree(descriptor) };
+    Ok(admits)
+}
+
+/// What `list`'s own (not inherited) allowing entries give `sid`.
+///
+/// # Safety
+/// `list` must be a live access list.
+unsafe fn allowed(list: *const ACL, sid: PSID) -> std::io::Result<u32> {
+    let mut size = ACL_SIZE_INFORMATION::default();
+    // SAFETY: `size` is writable for its own length.
+    let sized = unsafe {
+        GetAclInformation(
+            list,
+            (&raw mut size).cast(),
+            size_of::<ACL_SIZE_INFORMATION>() as u32,
+            AclSizeInformation,
+        )
+    };
+    if sized == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let mut access = 0;
+    for index in 0..size.AceCount {
+        let mut ace = null_mut();
+        // SAFETY: `index` is below the list's count.
+        if unsafe { GetAce(list, index, &mut ace) } == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: every entry starts with a header.
+        let header = unsafe { *(ace as *const ACE_HEADER) };
+        if header.AceType as u32 == ACCESS_ALLOWED_ACE_TYPE
+            && header.AceFlags as u32 & INHERITED_ACE == 0
+            // SAFETY: an allowed entry goes on with its mask and its SID.
+            && unsafe {
+                EqualSid(
+                    (&raw mut (*(ace as *mut ACCESS_ALLOWED_ACE)).SidStart).cast(),
+                    sid,
+                )
+            } != 0
+        {
+            // SAFETY: as above.
+            access |= unsafe { (*(ace as *const ACCESS_ALLOWED_ACE)).Mask };
+        }
+    }
+    Ok(access)
+}
+
+/// Whether agents may list folders here: `granted` when every fixed
+/// volume's root admits the workers' capability, `missing` when none does
+/// (or none can be read), `partial` in between.
+pub fn list_folders() -> Option<&'static str> {
+    let Ok(sid) = Sid::from_string(VOLUME_ROOT) else {
+        return Some("missing");
+    };
+    let roots = fixed_roots();
+    let admitting = roots
+        .iter()
+        .filter(|root| admits(root, &sid).unwrap_or(false))
+        .count();
+    Some(match admitting {
+        0 => "missing",
+        n if n == roots.len() => "granted",
+        _ => "partial",
+    })
+}
+
+/// Whether agents list folders on the volume `path` is on: whether its
+/// root admits the workers' capability.
+#[cfg(test)]
+pub(crate) fn lists_in(path: &Path) -> bool {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::Storage::FileSystem::GetVolumePathNameW;
+    let mut root = vec![0u16; 1024];
+    // SAFETY: a NUL-terminated path; `root` is writable for its length.
+    let found = unsafe {
+        GetVolumePathNameW(
+            wide(path.as_os_str()).as_ptr(),
+            root.as_mut_ptr(),
+            root.len() as u32,
+        )
+    };
+    let length = root.iter().position(|&unit| unit == 0).unwrap_or(0);
+    let root = PathBuf::from(std::ffi::OsString::from_wide(&root[..length]));
+    found != 0
+        && Sid::from_string(VOLUME_ROOT).is_ok_and(|sid| admits(&root, &sid).unwrap_or(false))
+}
+
+/// One fixed volume's root, as `volume_roots` left it.
+#[derive(Serialize)]
+pub struct Root {
+    pub root: PathBuf,
+    /// It admits the workers' capability now.
+    pub entry: bool,
+    /// This run added or removed its entry.
+    pub changed: bool,
+    /// Why it is not as asked.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// `latch volume-roots add` (or `remove`): gives the workers' capability
+/// `ROOT_ACCESS` on each fixed volume's root, its own entry with nothing
+/// inherited below, or takes it back. Writing a root's access list needs
+/// an administrator. Each root as it is afterwards.
+pub fn volume_roots(add: bool) -> Vec<Root> {
+    let sid = match Sid::from_string(VOLUME_ROOT) {
+        Ok(sid) => sid,
+        Err(message) => {
+            return fixed_roots()
+                .into_iter()
+                .map(|root| Root {
+                    root,
+                    entry: false,
+                    changed: false,
+                    error: Some(message.clone()),
+                })
+                .collect();
+        }
+    };
+    fixed_roots()
+        .into_iter()
+        .map(|root| {
+            let before = admits(&root, &sid);
+            let changed = match before {
+                Ok(had) if had == add => Ok(false),
+                _ => with_dacl(&root, false, |old, _, write| {
+                    if add {
+                        // SAFETY: `old` is the root's access list, live
+                        // meanwhile; `sid` is live.
+                        unsafe {
+                            add_entry(old, ROOT_ACCESS, GRANT_ACCESS, NO_INHERITANCE, sid.0, write)
+                        }
+                    } else {
+                        // SAFETY: as above.
+                        match unsafe { without(old, sid.0) }? {
+                            Some(mut new) => write(new.as_mut_ptr().cast()),
+                            None => Ok(()),
+                        }
+                    }
+                })
+                .map(|()| true),
+            };
+            let after = admits(&root, &sid);
+            let error = match (&changed, &after) {
+                (Err(err), _) | (_, Err(err)) => Some(err.to_string()),
+                (Ok(_), Ok(entry)) if *entry != add => Some("its entry did not change".into()),
+                _ => None,
+            };
+            Root {
+                entry: after.unwrap_or(false),
+                changed: changed.unwrap_or(false),
+                error,
+                root,
+            }
+        })
+        .collect()
 }
 
 /// Runs this worker's own command line again, in the container `sid` and a
 /// Job object that dies with this launcher; its exit code.
 fn run_inside(sid: &Sid, policy: &Policy) -> Result<u32, String> {
     let failed = |what: &str| format!("{what}: {}", std::io::Error::last_os_error());
-    let internet = policy
-        .network
-        .then(|| Sid::from_string(INTERNET_CLIENT))
-        .transpose()?;
-    let mut capabilities: Vec<SID_AND_ATTRIBUTES> = internet
+    let mut granted = vec![Sid::from_string(VOLUME_ROOT)?];
+    if policy.network {
+        granted.push(Sid::from_string(INTERNET_CLIENT)?);
+    }
+    let mut capabilities: Vec<SID_AND_ATTRIBUTES> = granted
         .iter()
         .map(|sid| SID_AND_ATTRIBUTES {
             Sid: sid.0,
@@ -639,11 +878,7 @@ fn run_inside(sid: &Sid, policy: &Policy) -> Result<u32, String> {
         .collect();
     let mut security = SECURITY_CAPABILITIES {
         AppContainerSid: sid.0,
-        Capabilities: if capabilities.is_empty() {
-            null_mut()
-        } else {
-            capabilities.as_mut_ptr()
-        },
+        Capabilities: capabilities.as_mut_ptr(),
         CapabilityCount: capabilities.len() as u32,
         Reserved: 0,
     };
@@ -972,4 +1207,43 @@ unsafe fn copy_wide(text: *const u16) -> Vec<u16> {
     }
     // SAFETY: `length` units then the terminator are readable.
     unsafe { std::slice::from_raw_parts(text, length + 1) }.to_vec()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use windows_sys::Win32::Security::DeriveCapabilitySidsFromName;
+
+    #[test]
+    fn the_workers_capability_is_the_one_its_name_derives() {
+        let name = wide(OsStr::new("latchWorkerVolumeRoot"));
+        let (mut groups, mut group_count) = (null_mut(), 0u32);
+        let (mut capabilities, mut capability_count) = (null_mut(), 0u32);
+        // SAFETY: a NUL-terminated name; Windows allocates the lists.
+        let derived = unsafe {
+            DeriveCapabilitySidsFromName(
+                name.as_ptr(),
+                &mut groups,
+                &mut group_count,
+                &mut capabilities,
+                &mut capability_count,
+            )
+        };
+        assert_ne!(derived, 0, "{}", std::io::Error::last_os_error());
+        assert_eq!(capability_count, 1);
+        let ours = Sid::from_string(VOLUME_ROOT).unwrap();
+        // SAFETY: one capability SID at the list's start, live until freed.
+        assert_ne!(unsafe { EqualSid(*capabilities, ours.0) }, 0);
+        // SAFETY: each SID and both lists are Windows' allocations, freed once.
+        unsafe {
+            for at in 0..group_count as usize {
+                LocalFree((*groups.add(at)).cast());
+            }
+            for at in 0..capability_count as usize {
+                LocalFree((*capabilities.add(at)).cast());
+            }
+            LocalFree(groups.cast());
+            LocalFree(capabilities.cast());
+        }
+    }
 }

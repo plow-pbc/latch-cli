@@ -253,10 +253,23 @@ pub enum Command {
     ///
     /// Log in, connect Google, on a Mac turn on Messages and Contacts, rules
     /// for agents from a preset when there are none, all with no host
-    /// running, then offer to start latch. Each step runs a latch command and
-    /// is skipped once done, so it can be run again any time; `--status` only
-    /// lists the steps
+    /// running, then offer to start latch; on Windows it also says how to let
+    /// agents list folders. Each step runs a latch command and is skipped
+    /// once done, so it can be run again any time; `--status` only lists the
+    /// steps
     Setup(SetupArgs),
+    /// Let agents list folders on this Windows PC, or no longer
+    ///
+    /// Programs read the root of a folder's volume for its details (cmd's
+    /// `dir` and `vol`), and latch's sandbox keeps every volume's root closed
+    /// to them, so they fail even in a folder an agent may write. `add` lets latch's workers read each fixed
+    /// volume's root's own attributes, with nothing on it listed or read;
+    /// `remove` takes that back. Run it once, from a terminal opened as
+    /// administrator. Only Windows needs it
+    VolumeRoots {
+        /// add or remove
+        change: RootsChange,
+    },
     /// Internal: the sandboxed process a host starts for each file read or write, exec, Google call and startup probe
     #[command(hide = true)]
     Worker(WorkerArgs),
@@ -587,6 +600,15 @@ pub enum BrowserCommand {
         #[arg(long, value_enum, default_value_t = EngineArg::Cft)]
         engine: EngineArg,
     },
+}
+
+/// What `latch volume-roots` does to each fixed volume's root.
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq)]
+pub enum RootsChange {
+    /// Agents may list folders
+    Add,
+    /// They may no longer
+    Remove,
 }
 
 #[derive(clap::ValueEnum, Clone, Copy, Debug)]
