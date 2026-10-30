@@ -81,8 +81,11 @@ from all of them; a 1PUX's credit cards come along as cards, and a Bitwarden
 JSON's cards, identities and notes as themselves (1Password's CSV carries no
 card details). It shows every
 row (values reduced to whether they are there), marks rows the vault
-already holds or that would update a changed password, and imports only
-the rows you pick; nothing is picked by default. Without a prompt,
+already holds (a login by its title, username, site and secrets; a card
+or note only when every field it keeps is the same, custom fields
+included, so a renewed card is new) or that would update a changed
+password, and imports only the rows you pick,
+writing the vault once; nothing is picked by default. Without a prompt,
 `--preview` returns that preview as JSON, imports nothing and, like a
 rules preview, is not audited; and `--pick
 1,3-5` (or `all`) imports those rows of it. That pick reads the vault

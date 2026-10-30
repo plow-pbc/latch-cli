@@ -6305,9 +6305,57 @@ fn local_vault_edits_are_visible_to_serve_and_phone_links_stay_live() {
     assert_eq!(imports, [json!("import"), json!("import")]);
 }
 
+/// 2,000 rows import in seconds, written to the vault once, and a second
+/// import of the same file finds every row already there, cards and
+/// notes too.
+#[test]
+fn two_thousand_rows_import_at_once_and_again_as_duplicates() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let mut items: Vec<Value> = (0..1996)
+        .map(|i| json!({"type": 1, "name": format!("Shop {i:04}"), "login": {"username": "ada", "password": format!("made-up-{i}"), "uris": [{"uri": format!("https://www.shop{i:04}.com/login")}]}}))
+        .collect();
+    items.push(json!({"type": 3, "name": "Plow card", "card": {"brand": "Visa", "number": "4111111111111111", "code": "737"}}));
+    items.push(json!({"type": 3, "name": "Plow card", "card": {"brand": "Visa", "number": "4000056655665556", "code": "123"}}));
+    items.push(json!({"type": 2, "name": "Wi-Fi", "notes": "made-up guest network"}));
+    items.push(json!({"type": 2, "name": "Wi-Fi", "notes": "made-up office network"}));
+    let file = dir.path().join("export.json");
+    fs::write(
+        &file,
+        json!({"encrypted": false, "items": items}).to_string(),
+    )
+    .unwrap();
+    let import = || {
+        let started = std::time::Instant::now();
+        let output = latch(
+            &host,
+            &["vault", "import", file.to_str().unwrap(), "--pick", "all"],
+            &[],
+        );
+        assert!(output.status.success(), "{output:?}");
+        let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+        (result, started.elapsed())
+    };
+    let (first, took) = import();
+    assert_eq!(
+        (&first["saved"], &first["duplicates"]),
+        (&json!(2000), &json!(0))
+    );
+    // Saved row by row, this took minutes.
+    assert!(
+        took < std::time::Duration::from_secs(30),
+        "2,000 rows took {took:?}"
+    );
+    let (again, _) = import();
+    assert_eq!(
+        (&again["saved"], &again["duplicates"]),
+        (&json!(0), &json!(2000))
+    );
+}
+
 /// A vault of 120 made-up items, imported into `host`'s state: logins
-/// for shop0000.com…, one for crateandbarrel.com and one card. Every row
-/// an import saves writes the vault again, so a bigger one is slow to make.
+/// for shop0000.com…, one for crateandbarrel.com and one card.
 fn big_vault(host: &Path, dir: &Path) {
     let mut items: Vec<Value> = (0..118)
         .map(|i| json!({"type": 1, "name": format!("Shop {i:04}"), "login": {"username": "ada", "password": "made-up", "uris": [{"uri": format!("https://www.shop{i:04}.com/login")}]}}))
