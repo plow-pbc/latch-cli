@@ -79,9 +79,9 @@ and the new revision, never a value.
 CSV, Chrome's CSV and Bitwarden's CSV and unencrypted JSON. It shows every
 row (values reduced to whether they are there), marks rows the vault
 already holds (a login by its title, username, site and secrets; a card
-or note by its title and every field) or that would update a changed
-password, or a renewed card (the same title and number, a new expiry or
-code), and imports only the rows you pick,
+or note only when every field it keeps is the same, custom fields
+included, so a renewed card is new) or that would update a changed
+password, and imports only the rows you pick,
 writing the vault once; nothing is picked by default. Without a prompt,
 `--preview` returns that preview as JSON, imports nothing and, like a
 rules preview, is not audited; and `--pick

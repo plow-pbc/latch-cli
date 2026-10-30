@@ -501,44 +501,47 @@ fn reimported_cards_and_notes_are_duplicates_and_changed_ones_are_new() {
 }
 
 #[test]
-fn a_renewed_card_updates_the_card_it_renews() {
+fn a_renewed_card_or_a_note_with_another_custom_field_is_new() {
     let (_dir, mut vault) = store();
-    let card = |exp_year: &str, code: &str| {
-        cards_and_notes(json!([
-            {"type": 3, "name": "Plow card", "card": {"brand": "Visa", "number": "4111111111111111", "expMonth": "4", "expYear": exp_year, "code": code}},
-        ]))
-    };
-    run(&mut vault, &card("2027", "737"));
-    let held = vault.list()[0].clone();
-
-    let mut parsed = parse_text(&card("2031", "123")).unwrap();
-    mark_against(&vault, &mut parsed).unwrap();
-    let update = parsed.items[0].update.clone().unwrap();
-    assert!(!parsed.items[0].duplicate);
-    assert_eq!(
-        (update.item.as_str(), update.revision),
-        (held.item.as_str(), 1)
+    let card = |exp_year: &str, code: &str| json!({"type": 3, "name": "Plow card", "card": {"brand": "Visa", "number": "4111111111111111", "expMonth": "4", "expYear": exp_year, "code": code}});
+    let note = |value: &str| json!({"type": 2, "name": "Wi-Fi", "notes": "guest network", "fields": [{"name": "router", "value": value, "type": 0}]});
+    run(
+        &mut vault,
+        &cards_and_notes(json!([card("2027", "737"), note("upstairs")])),
     );
-    assert_eq!(update.fields, ["expiry year", "code"]);
-    let shown = preview(&parsed);
-    assert_eq!(shown["items"][0]["changed"], json!(["expiry year", "code"]));
-    assert!(!shown.to_string().contains("123"));
+    let before: Vec<Item> = vault
+        .list()
+        .iter()
+        .map(|m| vault.item(&m.item).unwrap())
+        .collect();
 
-    let outcome = commit(&mut vault, &parsed, &[1]);
-    assert_eq!((outcome.saved, outcome.updated), (0, 1));
-    assert_eq!(vault.list().len(), 1);
-    // Compared, never printed: a card's code is a secret.
-    assert!(vault.release(&held.item, "code").unwrap() == "123");
+    // A new expiry and code, or another custom field, is another item:
+    // saved beside the one held, which stays as it was.
+    let (parsed, outcome) = run(
+        &mut vault,
+        &cards_and_notes(json!([card("2031", "123"), note("downstairs")])),
+    );
     assert!(
-        vault
-            .item(&held.item)
-            .unwrap()
-            .raw
-            .get("expiry year")
-            .as_deref()
-            == Some("2031")
+        parsed
+            .items
+            .iter()
+            .all(|r| !r.duplicate && r.update.is_none())
     );
-    assert!(vault.item(&held.item).unwrap().raw.login.is_none());
+    assert_eq!((outcome.saved, outcome.updated), (2, 0));
+    assert_eq!(vault.list().len(), 4);
+    for held in &before {
+        assert!(
+            vault.item(&held.id).as_ref() == Some(held),
+            "{} changed",
+            held.id
+        );
+    }
+    // The same again, custom field and all, is a duplicate.
+    let (_, again) = run(
+        &mut vault,
+        &cards_and_notes(json!([card("2031", "123"), note("downstairs")])),
+    );
+    assert_eq!((again.saved, again.duplicates), (0, 2));
 }
 
 #[test]
