@@ -243,13 +243,11 @@ fn grants(policy: &Policy) -> Result<Vec<Grant>, String> {
             .flatten()
             .any(|home| path.starts_with(home))
     };
-    let reads = policy
-        .reads
-        .iter()
-        .chain(&policy.program)
-        .filter(|read| in_home(read));
-    // The latch it runs, wherever it is.
-    for read in reads.chain(std::iter::once(&program)) {
+    let reads = policy.reads.iter().filter(|read| in_home(read));
+    // The latch it runs, and the helper the host checked (gog), wherever
+    // they are: a state folder outside home keeps its gog there.
+    let programs = policy.program.iter().chain(std::iter::once(&program));
+    for read in reads.chain(programs) {
         if read.exists() {
             grants.push(Grant {
                 path: read.clone(),
