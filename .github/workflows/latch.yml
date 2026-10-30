@@ -19,10 +19,12 @@ on:
 permissions:
   contents: read
 
-# A new push to a pull request, or to a branch, cancels the run it
-# supersedes: a merge commit holds every one before it.
+# A new push to a pull request cancels the run it supersedes. A push to a
+# branch never does: each push's run is its own, since a docs-only push
+# tests nothing (`changes`) and must not cancel the run that tests the code
+# before it.
 concurrency:
-  group: latch-${{ github.event.pull_request.number || (github.event_name == 'push' && github.ref) || github.run_id }}-${{ inputs.mode || github.event_name }}
+  group: latch-${{ github.event.pull_request.number || github.run_id }}-${{ inputs.mode || github.event_name }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
 
 jobs:
