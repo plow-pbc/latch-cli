@@ -4,8 +4,8 @@
 //! macOS latch and as a file on any other), and with it `config.json`, the
 //! record that this folder is logged in. Everything else stays: this
 //! machine's key, the vault and audit log and their keys, rules, settings
-//! and plugins. `latch login` then registers the same key, so under the
-//! same name (the hostname, or the `--name` given again) an agent finds the
+//! and plugins, and the machine's name is kept in `name`. `latch login` then
+//! registers the same key under the same name, so an agent finds the
 //! machine it knew. `--purge` deletes
 //! every secret, and then the state folder itself. If Plow cannot be
 //! reached or refuses, the local delete goes ahead and the output says the
@@ -116,12 +116,18 @@ async fn log_out(path: PathBuf, purge: bool) -> Result<Value, Failure> {
         }
     };
     held_for_tests();
-    let device = unregister(&StateDir { path: path.clone() }).await;
+    let state = StateDir { path: path.clone() };
+    let config = state.load_config()?;
+    let device = unregister(&state).await;
     let secrets = Secrets::open(&path)?;
     let mut removed = secrets.remove_each(if purge { &Secret::ALL } else { &Secret::LOGIN })?;
     if purge {
         fs::remove_dir_all(&path).map_err(|err| io_failure(&path, err))?;
     } else {
+        // The name outlives the login, so the next one comes back under it.
+        if let Some(config) = &config {
+            state.save_name(&config.peer.name)?;
+        }
         let config = path.join("config.json");
         match fs::remove_file(&config) {
             Ok(()) => removed.push("config.json"),

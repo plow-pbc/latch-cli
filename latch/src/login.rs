@@ -87,9 +87,13 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
     let save_token = matches!(source, Source::Given(_));
 
     let named = args.name.is_some();
-    let mut name = args
-        .name
-        .or(saved.as_ref().map(|config| config.peer.name.clone()));
+    let mut name = match args.name {
+        Some(name) => Some(name),
+        None => match &saved {
+            Some(config) => Some(config.peer.name.clone()),
+            None => state.load_name()?,
+        },
+    };
     // A machine is named after its hostname, without asking.
     if owner && name.is_none() {
         name = default_name();

@@ -6749,12 +6749,11 @@ fn logout_stops_the_host_and_deletes_only_the_login_so_a_login_again_is_the_same
         &plow.url,
         "--token-file",
         token.to_str().unwrap(),
-        "--name",
-        "host",
     ];
     let login = latch(&host, &args, &[]);
     assert_eq!(login.status.code(), Some(0), "{login:?}");
-    // The same key under the same name: to an agent, the machine it knew.
+    // The same key under the same name, though none was given: to an
+    // agent, the machine it knew.
     let again: Value = serde_json::from_slice(&login.stdout).unwrap();
     assert_eq!(again["key_created"], false, "{again}");
     assert_eq!(peer_key(&host), key);

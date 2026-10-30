@@ -314,10 +314,9 @@ For how to report a vulnerability, see [SECURITY.md](../SECURITY.md).
     own. `LATCH_NO_UPDATE_CHECK=1` turns the looking off.
 - **Log out:** `latch logout` stops this machine's host, removes the machine
   from your Plow account and deletes its Plow token. It keeps the machine's
-  key, the vault, the audit log, rules and settings, so after the next
-  `latch login` (with the same `--name`, if it had one other than the
-  hostname) it is the same machine to every agent. An agent's logout
-  leaves Plow alone.
+  key, its name, the vault, the audit log, rules and settings, so after
+  the next `latch login` it is the same machine, under the same name, to
+  every agent. An agent's logout leaves Plow alone.
   - It first says what it deletes and keeps, with the state folder's full
     path and the vault's items by kind, and asks. With no one at a
     terminal it refuses unless given `--yes`; `--dry-run` only says.
