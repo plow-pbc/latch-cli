@@ -216,7 +216,7 @@ login.
 | Vault | `latch vault list\|show\|add\|edit\|remove\|import\|link\|link-state` | add `--host NAME` | Yes, except `vault link` and `link-state` |
 | Connectors | `latch plugins enable\|disable google` (on a Mac, also `messages` and `contacts`) | `latch status` shows the ones each host has on; `latch status --host NAME` lists them all | Yes |
 | Refuse exec to agents | `latch serve --deny-exec` or `--deny-exec=AGENT_UID` | No | Set when the host starts |
-| Keep a Mac awake | `latch settings set --keep-awake on`: no idle sleep while the host serves on AC power. The display still sleeps and locks, and closing the lid still sleeps the Mac. | No | Yes |
+| Keep a Mac or PC awake | `latch settings set --keep-awake on`: no idle sleep while the host serves on AC power. The display still sleeps and locks, and closing the lid still sleeps it. | No | Yes |
 | Audit log | `latch audit` (`--before ID`, `--all`, `--follow`), `latch audit judge ID`, `latch audit shot ID N --output FILE`, `latch audit verify`, `latch audit rotate-key` | `audit`, `audit judge` and `audit shot` with `--host NAME`; `verify` and `rotate-key` only on the host | Yes |
 | Watch it | `latch dashboard`, `latch logs [-f]`, `latch audit --follow`, `latch status --local --follow` | `latch audit --follow --host NAME`, `latch status --host NAME --follow` | Yes, except `dashboard` |
 
