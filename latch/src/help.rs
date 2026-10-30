@@ -897,7 +897,9 @@ const ENTRIES: &[Entry] = &[
         id: "browser.close",
         runs_on: |_| RunsOn::Host,
         output: "The session closed.",
-        effect: Repeatable("ends the session and deletes its cookies and logins"),
+        effect: Repeatable(
+            "ends the session and closes its browser; its cookies and logins stay on your profile",
+        ),
         owner_only: false,
         connector: None,
         examples: &[ex(

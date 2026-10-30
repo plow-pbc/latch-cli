@@ -243,6 +243,14 @@ impl Runtime {
         let _ = worker.child.wait().await;
         Ok(closed["result"].clone())
     }
+
+    /// Stops the worker and waits for it; the browser exits once its pipe
+    /// closes.
+    pub async fn stop(&self) {
+        let mut worker = self.worker.lock().await;
+        worker.stop();
+        let _ = worker.child.wait().await;
+    }
 }
 
 impl Worker {
