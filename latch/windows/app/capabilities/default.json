@@ -1,0 +1,6 @@
+{
+  "identifier": "default",
+  "description": "The window follows latch's streams through events.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}
