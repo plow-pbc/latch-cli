@@ -716,9 +716,9 @@ impl<'a> Run<'a> {
         let Some(gate) = self.gate else {
             return Ok(());
         };
-        let site = judged::site(self.browsers, self.entry).await?;
+        let place = judged::place(self.browsers, self.entry).await?;
         let action = judged::shown(
-            &judged::fill(self.browsers, args, site, false),
+            &judged::fill(self.browsers, args, place, false),
             &self.entry.card_numbers(),
         );
         let judging = Instant::now();

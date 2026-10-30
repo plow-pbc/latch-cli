@@ -646,10 +646,10 @@ pub(super) async fn fill(
     audit.insert("item".into(), args["item"].clone());
     let args = super::fill::resolve(browsers, entry, &args).await?;
     if caller.gate.is_some() {
-        let site = judged::site(browsers, entry).await?;
+        let place = judged::place(browsers, entry).await?;
         judged::judge(
             caller.gate,
-            judged::fill(browsers, &args, site, false),
+            judged::fill(browsers, &args, place, false),
             &entry.card_numbers(),
             audit,
         )
@@ -854,8 +854,8 @@ async fn judged_action(
             let confirmed = match args["confirm"].as_str() {
                 Some(id) => match super::steps::fill_to_confirm(entry, id) {
                     Some(fill) => {
-                        let site = judged::site(browsers, entry).await?;
-                        Some(judged::fill(browsers, &fill, site, true))
+                        let place = judged::place(browsers, entry).await?;
+                        Some(judged::fill(browsers, &fill, place, true))
                     }
                     None => None,
                 },

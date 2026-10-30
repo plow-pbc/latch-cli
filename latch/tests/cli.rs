@@ -11649,7 +11649,7 @@ fn rules_try_previews_a_verdict_and_runs_nothing() {
     assert_eq!(tried["verdict"], "allow");
     assert_eq!(
         tried["request"],
-        json!({"op": "browser", "action": {"kind": "vault_fill", "site": "instacart.com",
+        json!({"op": "browser", "action": {"kind": "vault_fill", "site": "instacart.com", "page_host": "www.instacart.com",
                "item": {"kind": "login", "title": "Instacart", "sites": ["instacart.com"]},
                "fields": ["username", "password"]}})
     );

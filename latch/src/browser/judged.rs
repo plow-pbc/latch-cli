@@ -52,6 +52,10 @@ pub(super) enum Action {
     /// Vault values put into a page's fields.
     VaultFill {
         site: Option<String>,
+        /// The page's own host (`checkout.stripe.com`), beside `site`, its
+        /// registrable domain (`stripe.com`).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        page_host: Option<String>,
         item: ItemShown,
         fields: Vec<String>,
         /// A card or identity secret released on the agent's confirmation.
@@ -196,6 +200,26 @@ pub(super) async fn site(browsers: &Browsers, entry: &Entry) -> Result<Option<St
     Ok(sites::site_of(&page(browsers, entry).await?.url))
 }
 
+/// Where a fill goes, as the judge is shown it: the active tab's site and
+/// its own host.
+pub(super) struct Place {
+    site: Option<String>,
+    host: Option<String>,
+}
+
+pub(super) async fn place(browsers: &Browsers, entry: &Entry) -> Result<Place, Failure> {
+    Ok(place_of(&page(browsers, entry).await?.url))
+}
+
+fn place_of(url: &str) -> Place {
+    Place {
+        site: sites::site_of(url),
+        host: url::Url::parse(url)
+            .ok()
+            .and_then(|url| url.host_str().map(str::to_string)),
+    }
+}
+
 /// A vault item's kind, title and sites; an item the vault lacks is shown
 /// by its handle, and is refused later by the step that uses it.
 pub(super) fn item(browsers: &Browsers, id: &str) -> ItemShown {
@@ -220,13 +244,8 @@ pub(super) fn item(browsers: &Browsers, id: &str) -> ItemShown {
     }
 }
 
-/// A fill of `args` (its mapping resolved) on `site`.
-pub(super) fn fill(
-    browsers: &Browsers,
-    args: &Value,
-    site: Option<String>,
-    confirmed: bool,
-) -> Action {
+/// A fill of `args` (its mapping resolved) on the page at `place`.
+pub(super) fn fill(browsers: &Browsers, args: &Value, place: Place, confirmed: bool) -> Action {
     let item = item(browsers, args["item"].as_str().unwrap_or_default());
     let fields = args["fields"]
         .as_array()
@@ -237,7 +256,8 @@ pub(super) fn fill(
     let checkout = (confirmed && item.kind == "card" && args["review"].is_object())
         .then(|| checkout(browsers, args));
     Action::VaultFill {
-        site,
+        site: place.site,
+        page_host: place.host,
         item,
         fields,
         confirmed,
@@ -292,7 +312,7 @@ pub(crate) fn previewed_fill(
     title: &str,
     fields: Vec<String>,
 ) -> impl Serialize + use<> {
-    let site = sites::site_of(url);
+    let Place { site, host } = place_of(url);
     Action::VaultFill {
         item: ItemShown {
             kind: kind.to_string(),
@@ -301,6 +321,7 @@ pub(crate) fn previewed_fill(
             other_top_sites: vec![],
         },
         site,
+        page_host: host,
         fields,
         confirmed: false,
         checkout: None,
@@ -735,7 +756,12 @@ mod tests {
         let added = browsers.vault.with(|store| store.add(item)).unwrap();
         let args =
             json!({"item": added.item, "fields": [["username", ["e1"]], ["password", ["e2"]]]});
-        let action = fill(&browsers, &args, Some("shop.example".into()), false);
+        let action = fill(
+            &browsers,
+            &args,
+            place_of("https://shop.example/login"),
+            false,
+        );
 
         let world = fake::World {
             decide: Some(|_| Some([0.9, 0.08, 0.02])),
@@ -757,6 +783,28 @@ mod tests {
             !kept.contains(password) && !kept.contains(username),
             "{kept}"
         );
+    }
+
+    /// A fill shows the judge the page's own host beside its site: a rule
+    /// that names checkout.stripe.com finds it said.
+    #[test]
+    fn a_fill_names_the_pages_host_beside_its_site() {
+        let place = place_of("https://checkout.stripe.com/c/pay/cs_live_a1#fid");
+        assert_eq!(place.site.as_deref(), Some("stripe.com"));
+        assert_eq!(place.host.as_deref(), Some("checkout.stripe.com"));
+        let shown = serde_json::to_value(previewed_fill(
+            "https://checkout.stripe.com/c/pay/cs_live_a1",
+            "card",
+            "Plow card",
+            vec!["number".into()],
+        ))
+        .unwrap();
+        assert_eq!(
+            (&shown["site"], &shown["page_host"]),
+            (&json!("stripe.com"), &json!("checkout.stripe.com"))
+        );
+        // No host to read: none is shown.
+        assert_eq!(place_of("about:blank").host, None);
     }
 
     #[test]

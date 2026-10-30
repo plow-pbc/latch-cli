@@ -595,7 +595,7 @@ async fn a_refused_command_sends_nothing_to_the_page(engine: &str) {
         assert_eq!(filled.1["item"], json!(added), "{item:?}");
         assert_eq!(
             judge.last_action(),
-            json!({"kind": "vault_fill", "site": "shop.example",
+            json!({"kind": "vault_fill", "site": "shop.example", "page_host": "shop.example",
                    "item": {"kind": "login", "title": "Test site", "sites": ["shop.example"]},
                    "fields": ["username", "password"]}),
             "{item:?}"
@@ -724,7 +724,7 @@ async fn a_refused_command_sends_nothing_to_the_page(engine: &str) {
     // (the test's own look above).
     assert_eq!(
         judge.last_action(),
-        json!({"kind": "vault_fill", "site": "shop.example",
+        json!({"kind": "vault_fill", "site": "shop.example", "page_host": "shop.example",
                "item": {"kind": "card", "title": "Test Visa"},
                "fields": ["number", "expiry", "cvv"], "confirmed": true,
                "checkout": {"page_title": "latch checkout test",
