@@ -29,8 +29,10 @@ const NUMBER: &str = "4242424242424242";
 const AMEX: &str = "378282246310005";
 const CVV: &str = "8640";
 const KEY: &str = "JBSWY3DPEHPK3PXP";
+const SSN: &str = "078-05-1120";
 
 mod cards;
+mod identities;
 
 conformance!(
     a_fill_that_cannot_finish_shows_no_value_and_keeps_the_agent_out,
@@ -317,6 +319,14 @@ fn site() -> u16 {
                             ),
                         ))
                     }
+                    "/apply" => Some(answer(
+                        "latch applied",
+                        format!(
+                            "application: ssn {}, name {}",
+                            if get("ssn") == SSN { "ok" } else { "wrong" },
+                            get("given-name"),
+                        ),
+                    )),
                     "/verify" => {
                         let params = Params::parse(KEY).unwrap();
                         let now = std::time::SystemTime::now()
@@ -466,7 +476,6 @@ impl Harness {
         let result = host::fill(
             &self.browsers,
             &self.entry,
-            &self.id,
             CALLER.into(),
             &args,
             &mut audit,

@@ -1105,16 +1105,13 @@ fn answered(window: &[chat::Said], i: usize, owner: bool) -> bool {
 }
 
 /// Whether the browser action the judge is shown fills from the vault: a
-/// fill, or a plan that may fill or first fills a card or identity.
+/// fill, or a plan that may fill.
 fn fills_from_vault(action: &Value) -> bool {
     match action["kind"].as_str() {
         Some("vault_fill") => true,
-        Some("browser_plan") => {
-            action["may_fill"]
-                .as_array()
-                .is_some_and(|items| !items.is_empty())
-                || action["first_confirms"].is_object()
-        }
+        Some("browser_plan") => action["may_fill"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty()),
         _ => false,
     }
 }

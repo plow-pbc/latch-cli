@@ -1,7 +1,6 @@
 //! What the gatekeeper judges of a caller's browser use, and how each is
 //! put to the judge: opening a site the session has not been judged for,
-//! each plan, each vault fill and each confirmation that releases an
-//! identity, and every `eval`, upload and download. Clicks, typing,
+//! each plan, each vault fill, and every `eval`, upload and download. Clicks, typing,
 //! page reads and screenshots are not judged, nor is `act`'s one such
 //! action (a `do` of one step is judged): they pass the browser's own
 //! checks (the risk decision, confirmations, fill and pause checks).
@@ -44,18 +43,12 @@ pub(super) enum Action {
         /// The vault items the plan may fill.
         #[serde(skip_serializing_if = "Vec::is_empty")]
         may_fill: Vec<ItemShown>,
-        /// An identity fill the plan first carries out, confirmed.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        first_confirms: Option<Box<Action>>,
     },
     /// Vault values put into a page's fields.
     VaultFill {
         site: Option<String>,
         item: ItemShown,
         fields: Vec<String>,
-        /// An identity secret released on the agent's confirmation.
-        #[serde(skip_serializing_if = "std::ops::Not::not")]
-        confirmed: bool,
     },
     /// The agent's own JavaScript, run in the page.
     RunScript {
@@ -198,12 +191,7 @@ pub(super) fn item(browsers: &Browsers, id: &str) -> ItemShown {
 }
 
 /// A fill of `args` (its mapping resolved) on `site`.
-pub(super) fn fill(
-    browsers: &Browsers,
-    args: &Value,
-    site: Option<String>,
-    confirmed: bool,
-) -> Action {
+pub(super) fn fill(browsers: &Browsers, args: &Value, site: Option<String>) -> Action {
     let item = item(browsers, args["item"].as_str().unwrap_or_default());
     let fields = args["fields"]
         .as_array()
@@ -211,12 +199,7 @@ pub(super) fn fill(
         .flatten()
         .filter_map(|pair| pair[0].as_str().map(str::to_string))
         .collect();
-    Action::VaultFill {
-        site,
-        item,
-        fields,
-        confirmed,
-    }
+    Action::VaultFill { site, item, fields }
 }
 
 /// A login fill as `rules try --fill-login` previews it: the item's kind
@@ -238,7 +221,6 @@ pub(crate) fn previewed_fill(
         },
         site,
         fields,
-        confirmed: false,
     }
 }
 
@@ -328,15 +310,8 @@ pub(super) fn labelled(target: &str, named: Option<&(String, String)>) -> String
 }
 
 /// A plan on `page`, its steps written out as the agent wrote them, each
-/// ref with its role and name from `names`, and a card or identity fill
-/// it carries out first.
-pub(super) fn plan(
-    browsers: &Browsers,
-    plan: &Plan,
-    page: Page,
-    names: &Names,
-    first_confirms: Option<Action>,
-) -> Action {
+/// ref with its role and name from `names`.
+pub(super) fn plan(browsers: &Browsers, plan: &Plan, page: Page, names: &Names) -> Action {
     let mut items: BTreeSet<String> = plan.items.iter().cloned().collect();
     let mut named = BTreeSet::new();
     for step in &plan.steps {
@@ -368,7 +343,6 @@ pub(super) fn plan(
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect(),
-        first_confirms: first_confirms.map(Box::new),
     }
 }
 
@@ -533,7 +507,7 @@ mod tests {
     }
 
     fn plan_action(browsers: &Browsers, plan: &Plan, page: Page) -> Action {
-        super::plan(browsers, plan, page, &Names::new(), None)
+        super::plan(browsers, plan, page, &Names::new())
     }
 
     /// The names the session's reading gave these refs, in its latest
@@ -670,7 +644,7 @@ mod tests {
         let added = browsers.vault.with(|store| store.add(item)).unwrap();
         let args =
             json!({"item": added.item, "fields": [["username", ["e1"]], ["password", ["e2"]]]});
-        let action = fill(&browsers, &args, Some("shop.example".into()), false);
+        let action = fill(&browsers, &args, Some("shop.example".into()));
 
         let world = fake::World {
             decide: Some(|_| Some([0.9, 0.08, 0.02])),

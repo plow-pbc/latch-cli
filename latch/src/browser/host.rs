@@ -646,12 +646,10 @@ async fn run_command(
 
 /// A `fill`: its item, named by id or left to the page's site, is found
 /// before it is judged; a suggestion taken by its id becomes the mapping
-/// it stands for; one that releases an identity secret stops for the
-/// agent's confirmation before any value is released.
+/// it stands for.
 pub(super) async fn fill(
     browsers: &Browsers,
     entry: &Entry,
-    session: &str,
     caller: Caller<'_>,
     args: &Value,
     audit: &mut Map<String, Value>,
@@ -664,32 +662,13 @@ pub(super) async fn fill(
         let site = judged::site(browsers, entry).await?;
         judged::judge(
             caller.gate,
-            judged::fill(browsers, &args, site, false),
+            judged::fill(browsers, &args, site),
             &entry.card_numbers(),
             audit,
         )
         .await?;
     }
-    fill_resolved(browsers, entry, session, caller.key, &args, audit).await
-}
-
-async fn fill_resolved(
-    browsers: &Browsers,
-    entry: &Entry,
-    session: &str,
-    caller: &str,
-    args: &Value,
-    audit: &mut Map<String, Value>,
-) -> Result<Value, Failure> {
-    if let Some(title) = super::fill::releases_secret(browsers, args)? {
-        if entry.runtime.filling.load(Ordering::SeqCst) {
-            return Err(paused());
-        }
-        let mut args = args.clone();
-        args["item_title"] = json!(title);
-        return Err(super::steps::stop_fill(browsers, entry, session, caller, &args, audit).await);
-    }
-    super::fill::run(browsers, entry, args, audit).await
+    super::fill::run(browsers, entry, &args, audit).await
 }
 
 /// One command for `caller`, as `answer` runs it, the page in its answer
@@ -791,7 +770,7 @@ async fn answer(
     }
     let mut result = match command {
         "close" => browsers.close(name, key).await.map(|closed| (closed, None)),
-        "fill" => fill(browsers, &entry, name, caller, args, audit)
+        "fill" => fill(browsers, &entry, caller, args, audit)
             .await
             .map(|result| (result, None)),
         "do" => super::steps::run(browsers, &entry, name, key, caller.gate, args, audit)
@@ -839,8 +818,7 @@ async fn answer(
 /// What the gatekeeper judges of a session command before it runs, if
 /// anything: a tab opened or a `goto` on a site the session has not been
 /// judged for,
-/// a plan (with an identity fill it confirms first), a confirmed
-/// fill alone, and every `eval`, upload and download. A `fill` is judged
+/// a plan, and every `eval`, upload and download. A `fill` is judged
 /// once its suggestion is resolved (`fill`).
 async fn judged_action(
     browsers: &Browsers,
@@ -866,16 +844,6 @@ async fn judged_action(
             judged::open_site(browsers, url)
         }
         "do" => {
-            let confirmed = match args["confirm"].as_str() {
-                Some(id) => match super::steps::fill_to_confirm(entry, id) {
-                    Some(fill) => {
-                        let site = judged::site(browsers, entry).await?;
-                        Some(judged::fill(browsers, &fill, site, true))
-                    }
-                    None => None,
-                },
-                None => None,
-            };
             // A malformed plan is refused before anything runs: there is
             // nothing to judge.
             let plan = serde_json::from_value::<super::plan::Plan>(args["plan"].clone())
@@ -897,12 +865,9 @@ async fn judged_action(
                     plan.resolve_facts();
                     let page = judged::page(browsers, entry).await?;
                     let names = judged::names(entry, &plan).await;
-                    judged::plan(browsers, &plan, page, &names, confirmed)
+                    judged::plan(browsers, &plan, page, &names)
                 }
-                _ => match confirmed {
-                    Some(fill) => fill,
-                    None => return Ok(None),
-                },
+                _ => return Ok(None),
             }
         }
         "eval" => judged::Action::RunScript {

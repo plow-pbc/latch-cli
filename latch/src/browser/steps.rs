@@ -9,8 +9,7 @@
 //! field, first gets the decision model's risk decision on exactly what it
 //! would act on; one that can't be undone stops with `confirm_needed` and a
 //! confirmation instead of being sent, and with no model it stops with
-//! `model_unavailable`. A fill that releases an identity secret always
-//! stops for a confirmation. Every dispatch is journaled before it is
+//! `model_unavailable`. Every dispatch is journaled before it is
 //! sent and once its result is known (`journal.rs`). The step's check then
 //! decides its outcome: `checked` or `model_assessed`, or `dispatched` when
 //! it has none. The plan stops at the first step that does not pass, and
@@ -79,20 +78,6 @@ enum Confirms {
     /// Keys that activate: `press` Enter or Space, or `type` text with a
     /// line break; the op and its text as written.
     Keys(Op, String),
-    /// A fill releasing a secret field, with its arguments.
-    Fill(Value),
-}
-
-/// The fill a confirmation in this session would release, while it is
-/// still unused: what the gatekeeper judges before it is carried out.
-pub(super) fn fill_to_confirm(entry: &Entry, id: &str) -> Option<Value> {
-    let all = entry.confirmations.lock().expect("confirmations lock");
-    all.iter()
-        .find(|c| c.id == id && !c.used)
-        .and_then(|c| match &c.kind {
-            Confirms::Fill(args) => Some(args.clone()),
-            _ => None,
-        })
 }
 
 /// Waits until `deadline` for `condition`, checking it a few times a
@@ -620,53 +605,6 @@ async fn keep_shot(
     Some((handle, meta))
 }
 
-/// A standalone `fill` that releases a secret field: journaled as a request
-/// of one step that stopped for a confirmation, with a screenshot of the
-/// page.
-pub async fn stop_fill(
-    browsers: &Browsers,
-    entry: &Entry,
-    session: &str,
-    caller: &str,
-    args: &Value,
-    audit: &mut Map<String, Value>,
-) -> Failure {
-    let request = match request_id(args) {
-        Ok(request) => request,
-        Err(failure) => return failure,
-    };
-    audit.insert("request".into(), json!(request));
-    let started = Journal::start(
-        &browsers.state_dir(),
-        session,
-        caller,
-        &request,
-        json!([{"step": 1, "op": "fill"}]),
-    );
-    let mut journal = match started {
-        Ok(journal) => journal.masking(entry.cards.clone()),
-        Err(failure) => return failure,
-    };
-    let mut failure = confirm_fill(browsers, entry, args, audit).await;
-    let stop = json!({"step": 1, "code": failure.code});
-    let journaled = journal
-        .write(json!({"t": "step", "step": 1, "op": "fill", "outcome": "stopped", "code": failure.code}))
-        .and_then(|()| journal.write(json!({"t": "end", "status": "stopped", "stop": stop})));
-    if let Err(lost) = journaled {
-        return lost;
-    }
-    if failure.code == "confirm_needed"
-        && let Some((handle, meta)) =
-            keep_shot(browsers, entry, session, &request, "final", "screenshot").await
-    {
-        audit.insert("screenshot".into(), meta);
-        failure.details["confirmation"]["screenshot"] = handle.clone();
-        failure.details["screenshot"] = handle;
-    }
-    failure.details["request"] = json!(request);
-    failure
-}
-
 /// A step that passed: its outcome, and the evidence for it.
 struct Done {
     outcome: &'static str,
@@ -712,7 +650,7 @@ impl<'a> Run<'a> {
         };
         let site = judged::site(self.browsers, self.entry).await?;
         let action = judged::shown(
-            &judged::fill(self.browsers, args, site, false),
+            &judged::fill(self.browsers, args, site),
             &self.entry.card_numbers(),
         );
         let judging = Instant::now();
@@ -896,7 +834,6 @@ impl Run<'_> {
                 let kind = match &c.kind {
                     Confirms::Click => Confirms::Click,
                     Confirms::Keys(op, text) => Confirms::Keys(*op, text.clone()),
-                    Confirms::Fill(args) => Confirms::Fill(args.clone()),
                 };
                 (
                     was_used,
@@ -938,13 +875,9 @@ impl Run<'_> {
             },
         };
         let enter = presses_enter(&literal);
-        let press = match &kind {
-            Confirms::Fill(args) => args["press"].as_str().unwrap_or_default().to_string(),
-            _ => target.clone(),
-        };
         let reviewed = call(
             self.entry,
-            json!({"op": "review", "snapshot": snapshot, "target": press, "enter": enter}),
+            json!({"op": "review", "snapshot": snapshot, "target": target, "enter": enter}),
             self.audit,
         )
         .await;
@@ -964,10 +897,7 @@ impl Run<'_> {
             ));
         }
         let guard = Some((print.as_str(), enter));
-        let sent = match kind {
-            Confirms::Fill(args) => self.fill_now(n, args, Some(id)).await,
-            _ => self.dispatch(n, &literal, None, Some(id), guard).await,
-        };
+        let sent = self.dispatch(n, &literal, None, Some(id), guard).await;
         match sent {
             Err(failure) if failure.code == "context_changed" => {
                 return Err(stale(
@@ -1133,49 +1063,24 @@ impl Run<'_> {
         self.journal.write(record)
     }
 
-    /// A literal fill: one that releases a secret field stops for a
-    /// confirmation first; any other fills now.
+    /// A literal fill, judged, then carried out.
     async fn fill(&mut self, n: usize, literal: &Literal) -> Result<(), Failure> {
-        let mut args = super::fill::resolve(self.browsers, self.entry, &fill_args(literal)).await?;
+        let args = super::fill::resolve(self.browsers, self.entry, &fill_args(literal)).await?;
         self.judge_fill(n, &args).await?;
-        match super::fill::releases_secret(self.browsers, &args) {
-            Ok(Some(title)) => {
-                args["item_title"] = json!(title);
-                let failure = confirm_fill(self.browsers, self.entry, &args, self.audit).await;
-                self.records.push(json!({"step": n, "op": "fill", "item": args["item"],
-                                         "confirmation": failure.details["confirmation"]["id"], "dispatch": "refused",
-                                         "gate": self.judgment.take()}));
-                Err(failure)
-            }
-            Ok(None) => self.fill_now(n, args, None).await,
-            Err(failure) => Err(failure),
-        }
+        self.fill_now(n, args).await
     }
 
     /// A vault fill as one action: pause, origin match, set, press, clean
     /// up (`fill.rs`). The trail records the item and the fields filled,
     /// never a value.
-    async fn fill_now(
-        &mut self,
-        n: usize,
-        args: Value,
-        confirmation: Option<&str>,
-    ) -> Result<(), Failure> {
+    async fn fill_now(&mut self, n: usize, args: Value) -> Result<(), Failure> {
         let action = self.begin(
             n,
             Op::Fill,
             json!({"item": args["item"], "press": args["press"]}),
         )?;
         let mut fill_audit = Map::new();
-        let mut outcome = super::fill::run(self.browsers, self.entry, &args, &mut fill_audit).await;
-        // A confirmed fill whose fields or their frames went from the page
-        // is no longer the fill that was confirmed.
-        if confirmation.is_some()
-            && let Err(failure) = &mut outcome
-            && matches!(failure.code.as_str(), "stale_snapshot" | "fill_refused")
-        {
-            failure.recode(code::context_changed);
-        }
+        let outcome = super::fill::run(self.browsers, self.entry, &args, &mut fill_audit).await;
         let result = match &outcome {
             Ok(_) => "dispatched",
             Err(failure) if refused(failure) => "refused",
@@ -1199,9 +1104,6 @@ impl Run<'_> {
         {
             record[key] = value.clone();
         }
-        if let Some(id) = confirmation {
-            record["confirmation"] = json!(id);
-        }
         self.records.push(record);
         // No screenshot: the page may still show what was filled.
         let mut shown = json!({"step": n, "action": action, "op": "fill", "item": args["item"],
@@ -1218,9 +1120,6 @@ impl Run<'_> {
         }
         if let Some(id) = args["suggestion"].as_str() {
             shown["suggestion"] = json!(id);
-        }
-        if let Some(id) = confirmation {
-            shown["confirmation"] = json!(id);
         }
         if let Ok(filled) = &outcome {
             shown["fields"] = filled["fields"].clone();
@@ -1526,89 +1425,6 @@ fn fill_args(literal: &Literal) -> Value {
         .collect();
     json!({"item": literal.item, "fields": fields, "press": literal.press,
            "snapshot": literal.snapshot, "suggested": literal.suggestion})
-}
-
-/// A fill that releases a secret field stops here, before any value is
-/// released, with a confirmation bound to its press button and the lines
-/// around it, its exact mapping, the site of each frame a value would go
-/// into, and the item's revision. Its confirmation fills, presses and
-/// cleans up as one step.
-pub async fn confirm_fill(
-    browsers: &Browsers,
-    entry: &Entry,
-    args: &Value,
-    audit: &mut Map<String, Value>,
-) -> Failure {
-    let press = args["press"].as_str().unwrap_or_default();
-    let (mapping, frames) = match super::fill::preview(browsers, entry, args).await {
-        Ok(previewed) => previewed,
-        Err(failure) => return failure,
-    };
-    let revision = browsers
-        .vault
-        .list_if_present()
-        .into_iter()
-        .find(|meta| args["item"] == meta.item.as_str())
-        .map(|meta| meta.revision);
-    let reviewed = match call(
-        entry,
-        json!({"op": "review", "snapshot": args["snapshot"], "target": press}),
-        audit,
-    )
-    .await
-    {
-        Ok((reviewed, _)) => reviewed,
-        Err(failure) => return failure,
-    };
-    let id = format!("c{:012x}", rand::random::<u64>() & 0xffff_ffff_ffff);
-    let mut fill = args.clone();
-    fill["snapshot"] = reviewed["snapshot"].clone();
-    // Its press is made only while the page still shows what was confirmed.
-    fill["guard"] = json!({"fingerprint": fingerprint(&reviewed)});
-    // Its values go only where they were confirmed to go.
-    fill["confirmed"] = json!({"frames": frames, "revision": revision});
-    entry
-        .confirmations
-        .lock()
-        .expect("confirmations lock")
-        .push(Confirmation {
-            id: id.clone(),
-            kind: Confirms::Fill(fill),
-            snapshot: reviewed["snapshot"]
-                .as_str()
-                .unwrap_or_default()
-                .to_string(),
-            target: press.to_string(),
-            document: reviewed["document"]
-                .as_str()
-                .unwrap_or_default()
-                .to_string(),
-            uid: reviewed["uid"].clone(),
-            fingerprint: fingerprint(&reviewed),
-            used: false,
-        });
-    audit.insert("confirmation".into(), json!(id));
-    let mut shown = reviewed_json(&id, &reviewed);
-    shown["op"] = json!("fill");
-    shown["item"] = args["item"].clone();
-    if let Some(title) = args["item_title"].as_str() {
-        shown["item_title"] = json!(title);
-    }
-    shown["mapping"] = json!(mapping);
-    shown["frames"] = json!(frames);
-    if let Some(id) = args["suggestion"].as_str() {
-        shown["suggestion"] = json!(id);
-    }
-    let mut failure = Failure::new(
-        code::confirm_needed,
-        format!(
-            "this fill releases a secret field into {}, and presses {:?}; nothing was released. If that mapping is what the task needs, confirm it with `latch browser do --confirm {id}`",
-            frames.join(", "),
-            reviewed["element"]["name"].as_str().unwrap_or(press)
-        ),
-    );
-    failure.details = json!({"confirmation": shown});
-    failure
 }
 
 /// `do --history R --shot N`: one of request R's screenshots, for the

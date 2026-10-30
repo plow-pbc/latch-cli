@@ -172,10 +172,6 @@ pub enum Call {
     },
     FillSubmit {
         target: String,
-        /// A confirmed fill's press: made only while the button and the
-        /// lines around it are as the agent confirmed them.
-        #[serde(default)]
-        guard: Option<Guard>,
     },
     /// After a login's identifier stage: its next stage, read privately.
     NextStage,
@@ -444,7 +440,7 @@ impl<D: Driver> Core<D> {
                 secret,
                 formatted,
             } => self.set_value(&target, &value, secret, formatted),
-            Call::FillSubmit { target, guard } => self.fill_submit(&target, guard.as_ref()),
+            Call::FillSubmit { target } => self.fill_submit(&target),
             Call::FillCleanup => self.fill_cleanup(),
             Call::FillResume { clear_after_ms } => self.fill_resume(clear_after_ms, &mut audit),
             Call::Open { url } => self.open(url.as_deref(), &mut audit),
