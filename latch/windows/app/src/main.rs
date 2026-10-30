@@ -56,10 +56,16 @@ fn last_json(text: &str) -> Option<Value> {
 }
 
 /// Runs one latch command, with `input` on its stdin: its answer (with
-/// `lines`, every JSON line it printed, as `audit`'s pages have many), or
-/// its failure.
+/// `lines`, every JSON line it printed, as `audit`'s pages have many; with
+/// `text`, what it printed as it printed it, as `--pretty`'s indented
+/// JSON), or its failure.
 #[tauri::command]
-async fn run(args: Vec<String>, input: Option<String>, lines: Option<bool>) -> Result<Value, Value> {
+async fn run(
+    args: Vec<String>,
+    input: Option<String>,
+    lines: Option<bool>,
+    text: Option<bool>,
+) -> Result<Value, Value> {
     tauri::async_runtime::spawn_blocking(move || {
         let mut child = start(&args)?;
         let mut stdin = child.stdin.take().expect("piped stdin");
@@ -73,6 +79,9 @@ async fn run(args: Vec<String>, input: Option<String>, lines: Option<bool>) -> R
             .wait_with_output()
             .map_err(|err| failure("io", &err.to_string()))?;
         let stdout = String::from_utf8_lossy(&output.stdout);
+        if output.status.success() && text == Some(true) {
+            return Ok(Value::String(stdout.into_owned()));
+        }
         if output.status.success() && lines == Some(true) {
             let all = stdout.lines().filter_map(|line| serde_json::from_str(line).ok());
             return Ok(Value::Array(all.collect()));
@@ -163,7 +172,7 @@ async fn run_file(args: Vec<String>, kind: String) -> Result<String, Value> {
         .into_iter()
         .map(|arg| if arg == "{file}" { file.clone() } else { arg })
         .collect();
-    let ran = run(args, None, None).await;
+    let ran = run(args, None, None, None).await;
     let read = std::fs::read(&path);
     let _ = std::fs::remove_file(&path);
     ran?;

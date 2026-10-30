@@ -3,10 +3,12 @@
 // latest five, and the host's rules, vault and plugins.
 
 import { el, icon, button, clock, sameDay } from "../dom.js";
-import { said } from "../latch.js";
+import { latchLines, said } from "../latch.js";
 import * as records from "../records.js";
+import { openActivity, openRecord } from "./activity.js";
 
 export async function enter(app, host) {
+  if (app.summaries[host.name]) delete app.summaries[host.name].older;
   const reads = [app.read(host, "feed", ["audit", ...app.on(host)], { lines: true })];
   if (host.thisPC || host.online !== false) {
     reads.push(app.read(host, "rules", ["rules", "show", ...app.on(host)]));
@@ -92,19 +94,43 @@ function activity(app, host) {
     return [section("Activity", el("div", { class: "line" }, none ? "This PC keeps no activity yet." : "Couldn't read the activity."),
       none ? null : el("div", { class: "line quiet" }, said(feed.error)))];
   }
-  const { records: list, hasOlder } = records.page(feed.value);
+  const shown = records.page(feed.value);
+  const older = app.summaries[host.name]?.older;
+  const list = [...(older?.records ?? []), ...shown.records];
+  const hasOlder = older ? older.hasOlder : shown.hasOlder;
   const calls = summary(list);
   const more = hasOlder && list[0] && sameDay(records.time(list[0]), new Date()) ? "+" : "";
   const agents = [...calls.agents].sort();
   return [
     section("Today",
-      goRow("Requests", `${calls.today}${more}`, () => app.go("activity")),
-      goRow("Refused", `${calls.refused}${more}`, () => app.go("activity"), { tone: calls.refused ? "bad" : "" }),
+      goRow("Requests", `${calls.today}${more}`, () => openActivity(app, host)),
+      goRow("Refused", `${calls.refused}${more}`, () => openActivity(app, host, { filter: "Refused" }), { tone: calls.refused ? "bad" : "" }),
       line("Agents that called", agents.length ? agents.join(", ") : "None")),
     section("Recent activity",
-      calls.recent.length ? null : el("div", { class: "line quiet" }, "No requests yet."),
-      calls.recent.map((record) => recent(record, host, () => app.go("activity")))),
+      calls.recent.length ? null : el("div", { class: "line quiet" }, older?.reading ? "Looking further back…" : "No requests yet."),
+      calls.recent.map((record) => recent(record, host, () => openRecord(app, record, host))),
+      // Home reaches back on its own only so far; the rest is a click away.
+      calls.recent.length < 5 && hasOlder && !older?.reading && list[0]
+        ? el("div", { class: "line" }, button("Load Earlier", () => loadEarlier(app, host, list[0].id)))
+        : null),
   ];
+}
+
+/** The page of records before `before`, kept ahead of what Home shows. */
+async function loadEarlier(app, host, before) {
+  const summary = app.summaries[host.name];
+  const older = (summary.older ??= { records: [], hasOlder: true });
+  older.reading = true;
+  app.drawPage();
+  try {
+    const page = records.page(await latchLines(["audit", "--before", before, ...app.on(host)]));
+    older.records = [...page.records, ...older.records];
+    older.hasOlder = page.hasOlder;
+  } catch {
+    older.hasOlder = false;
+  }
+  older.reading = false;
+  app.drawPage();
 }
 
 function recent(record, host, onclick) {

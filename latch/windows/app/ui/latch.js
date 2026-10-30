@@ -22,6 +22,12 @@ export function latchLines(args) {
   return fake ? fake.lines(args) : tauri.core.invoke("run", { args, lines: true });
 }
 
+/** What one command printed, verbatim (`--pretty`'s indented JSON). */
+export function latchText(args) {
+  if (!fake) return tauri.core.invoke("run", { args, text: true });
+  return fake.run(args.filter((arg) => arg !== "--pretty")).then((value) => JSON.stringify(value, null, 2));
+}
+
 /** A command that writes a file, its `{file}` argument a temp path: that
  * file as a data URL (`kind` its extension: png, vcf…). */
 export function latchFile(args, kind) {
