@@ -7315,7 +7315,8 @@ fn logout_says_what_it_deletes_and_keeps_and_asks_first() {
     fs::write(engine.join("bin/camoufox"), vec![0; 3000]).unwrap();
     fs::create_dir_all(host.join("browser/journal/s")).unwrap();
     fs::write(host.join("browser/journal/s/r.jsonl"), vec![b'x'; 500]).unwrap();
-    let all_secrets = SECRET_FILES.map(|file| (file, fs::read(host.join(file)).unwrap()));
+    // What each secret file held, by SECRET_FILES' order; never printed.
+    let before = SECRET_FILES.map(|file| fs::read(host.join(file)).unwrap());
     let state_dir = host.canonicalize().unwrap();
     let secret_values = [
         "made-up-shop-pw",
@@ -7332,11 +7333,9 @@ fn logout_says_what_it_deletes_and_keeps_and_asks_first() {
         }
     };
     let untouched = || {
-        for (file, bytes) in &all_secrets {
-            assert!(
-                &fs::read(host.join(file)).unwrap() == bytes,
-                "{file} changed"
-            );
+        for (index, file) in SECRET_FILES.iter().enumerate() {
+            let same = fs::read(host.join(file)).unwrap() == before[index];
+            assert!(same, "{file} changed");
         }
         assert!(host.join("config.json").exists());
     };
