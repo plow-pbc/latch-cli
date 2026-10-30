@@ -63,5 +63,5 @@ Windows window's fake mode shows the same data, for side-by-side stills.
 | Vault secrets in the Keychain | eng-65 | DPAPI |
 | Messages and Contacts readers | Mac only | |
 | Keep awake | Not started | Windows: SetThreadExecutionState |
-| Installer (.dmg/.pkg) and signing | Not started | NSIS + Authenticode |
+| Installer (.dmg/.pkg) and signing | Done / Not started | NSIS, per user (no admin), latch beside the window, Start Menu, uninstall stops the host and the start at login; checked on the VM. Signing waits on a certificate |
 | `latch update` | Not started | needs a Windows release feed |
