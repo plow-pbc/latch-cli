@@ -42,6 +42,13 @@ pub struct Status {
 pub struct Account {
     pub owner_uid: String,
     pub display_name: Option<String>,
+    /// What only the owner's login reads; `null` for an agent's: the
+    /// numbers the owner texts Plow from, the Google accounts connected in
+    /// Plow, and the credit left in US dollars, a decimal string as Plow
+    /// writes it.
+    pub phones: Option<Vec<String>>,
+    pub emails: Option<Vec<String>>,
+    pub available_balance_usd: Option<String>,
 }
 
 /// A host as Plow lists it: whether it is online and when Plow last heard
@@ -109,18 +116,30 @@ pub async fn run(state: &StateDir) -> Result<Status, Failure> {
     let directory = tokio::time::timeout(PLOW_WITHIN, directory(state))
         .await
         .unwrap_or_else(|_| Err(crate::plow::no_answer(&config.api_url, PLOW_WITHIN)));
-    let mut directory = directory.map_err(|mut failure| {
+    let offline = |mut failure: Failure| {
         if failure.code == code::plow_unreachable.name {
             failure.next = Some("latch status --local".into());
         }
         failure
-    })?;
+    };
+    let mut directory = directory.map_err(offline)?;
     let hosts = &mut directory.hosts;
-    ask_plugins(state, &directory.peers, |index, answer| match answer {
+    let plugins = ask_plugins(state, &directory.peers, |index, answer| match answer {
         Ok(plugins) => hosts[index].plugins = Some(plugins),
         Err(reason) => hosts[index].plugins_reason = Some(reason),
-    })
-    .await;
+    });
+    let balance = async {
+        if config.peer.kind != "device" {
+            return Ok(None);
+        }
+        let plow = Plow::new(&config.api_url, &credential::token(state)?)?;
+        tokio::time::timeout(PLOW_WITHIN, plow.balance())
+            .await
+            .unwrap_or_else(|_| Err(crate::plow::no_answer(&config.api_url, PLOW_WITHIN)))
+            .map(Some)
+    };
+    let ((), balance) = tokio::join!(plugins, balance);
+    directory.account.available_balance_usd = balance.map_err(offline)?;
     Ok(Status {
         account: Some(directory.account),
         local,
@@ -148,8 +167,18 @@ pub struct Directory {
 pub async fn directory(state: &StateDir) -> Result<Directory, Failure> {
     let config = state.require_login()?;
     let plow = Plow::new(&config.api_url, &credential::token(state)?)?;
-    let (peers, owner_uid, display_name) =
-        tokio::try_join!(plow.list_peers(), plow.owner_uid(), plow.display_name())?;
+    // The owner's login reads its name with what only it may read; an
+    // agent's, from the profile.
+    let who = async {
+        if config.peer.kind == "device" {
+            let identity = plow.owner_identity().await?;
+            Ok((identity.display_name.clone(), Some(identity)))
+        } else {
+            Ok((plow.display_name().await?, None))
+        }
+    };
+    let (peers, owner_uid, (display_name, identity)) =
+        tokio::try_join!(plow.list_peers(), plow.owner_uid(), who)?;
     let mut listed = hosts::only_hosts(peers, &config.peer.key);
     listed.sort_by_key(|host| !host.this_machine);
     let named = hosts::named(state, std::env::var("LATCH_HOST").ok().as_deref())?;
@@ -169,6 +198,9 @@ pub async fn directory(state: &StateDir) -> Result<Directory, Failure> {
         account: Account {
             owner_uid,
             display_name,
+            phones: identity.as_ref().map(|identity| identity.phones.clone()),
+            emails: identity.map(|identity| identity.emails),
+            available_balance_usd: None,
         },
         hosts: listed
             .iter()

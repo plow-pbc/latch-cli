@@ -87,6 +87,9 @@ fn directory(hosts: &[(&str, bool, Option<bool>)]) -> Directory {
         account: Account {
             owner_uid: "usr_1".into(),
             display_name: Some("Ada Lovelace".into()),
+            phones: None,
+            emails: None,
+            available_balance_usd: None,
         },
         hosts,
         peers: vec![],

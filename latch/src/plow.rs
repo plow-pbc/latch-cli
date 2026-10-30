@@ -183,6 +183,15 @@ pub struct ListedLine {
     pub card_url: Option<String>,
 }
 
+/// Who the account's owner is to Plow: the numbers they text from and the
+/// Google accounts they connected.
+#[derive(Deserialize, Debug)]
+pub struct OwnerIdentity {
+    pub display_name: Option<String>,
+    pub phones: Vec<String>,
+    pub emails: Vec<String>,
+}
+
 /// A kind of agent Plow can run, from its catalog.
 #[derive(Deserialize, Debug)]
 pub struct AgentKind {
@@ -426,6 +435,28 @@ impl Plow {
         let response = self.send(self.http.get(url)).await?;
         let profile: Profile = response.json().await.map_err(|_| bad_answer())?;
         Ok(profile.display_name)
+    }
+
+    /// The owner's display name, phone numbers and the Google accounts
+    /// connected in Plow. An owner's login only.
+    pub async fn owner_identity(&self) -> Result<OwnerIdentity, Failure> {
+        let url = format!("{}/v1/auth/owner-identity", self.api_url);
+        let response = self.send(self.http.get(url)).await?;
+        response.json().await.map_err(|_| bad_answer())
+    }
+
+    /// The account's credit left, in US dollars, as Plow writes it: a
+    /// decimal in a string, below zero once spent past it. An owner's login
+    /// only.
+    pub async fn balance(&self) -> Result<String, Failure> {
+        #[derive(Deserialize)]
+        struct Usage {
+            available_balance_usd: String,
+        }
+        let url = format!("{}/v1/usage", self.api_url);
+        let response = self.send(self.http.get(url)).await?;
+        let usage: Usage = response.json().await.map_err(|_| bad_answer())?;
+        Ok(usage.available_balance_usd)
     }
 
     /// Starts a login by text for a machine called `name`.

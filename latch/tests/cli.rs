@@ -1632,7 +1632,9 @@ fn status_names_the_account_this_machine_and_each_host_once() {
     assert_eq!(logged_in["login"], json!({"kind": "device"}), "{logged_in}");
     assert_eq!(
         logged_in["account"],
-        json!({"owner_uid": "usr_synthetic", "display_name": "Ada Example"})
+        json!({"owner_uid": "usr_synthetic", "display_name": "Ada Example",
+               "phones": ["+15550000009"], "emails": ["ada@example.com"],
+               "available_balance_usd": "48.625000"})
     );
     assert_eq!(logged_in["this_machine"]["name"], "host");
     assert_eq!(logged_in["this_machine"]["key"], own_key);
@@ -2773,6 +2775,17 @@ impl LivePlow {
                                        "last_seen_at": "2026-10-22T09:00:00Z"}}]),
             ),
             ("GET", "/v1/auth/owner-uid") => (200, json!({"owner_uid": "usr_synthetic"})),
+            // Super-scope and `account:usage`: an owner's login only.
+            ("GET", "/v1/auth/owner-identity") if kind == "device" => (
+                200,
+                json!({"display_name": "Ada Example", "phones": ["+15550000009"],
+                       "emails": ["ada@example.com"]}),
+            ),
+            ("GET", "/v1/usage") if kind == "device" => (
+                200,
+                json!({"total_tokens": 0, "total_spend_usd": "1.375000",
+                       "available_balance_usd": "48.625000", "by_model": [], "by_line": [], "recent": []}),
+            ),
             ("GET", "/v1/auth/profile") => (
                 200,
                 json!({"display_name": "Ada Example", "photo_url": null}),
@@ -9823,6 +9836,10 @@ fn plugins_are_listed_for_anyone_and_turned_on_or_off_only_by_the_owner_at_the_h
     let host_row = |status: &Value| status["hosts"][0].clone();
     let (code, agents) = run(&agent, &["status"], &agent_env);
     assert_eq!(code, Some(0));
+    // What only the owner's login may read, an agent's never asks.
+    for owner_only in ["phones", "emails", "available_balance_usd"] {
+        assert_eq!(agents["account"][owner_only], Value::Null, "{agents}");
+    }
     assert_eq!(
         (
             &host_row(&agents)["plugins"],
