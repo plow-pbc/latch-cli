@@ -131,9 +131,9 @@ pub fn mask_cards(value: &mut Value, cards: &[String]) {
     }
 }
 
-/// `text` with each run of digits that holds a card number in `cards`
-/// (whole, or in groups set apart by single spaces or dashes, as a site
-/// prints one) put as `•••• 4242`.
+/// `text` with each card number in `cards` it shows (whole, or in groups
+/// set apart by single spaces or dashes, as a site prints one) put as
+/// `•••• 4242`; the digits around it stay.
 pub fn masked(text: &str, cards: &[String]) -> String {
     let chars: Vec<char> = text.chars().collect();
     let mut out = String::new();
@@ -144,10 +144,12 @@ pub fn masked(text: &str, cards: &[String]) -> String {
             at += 1;
             continue;
         }
-        let (mut end, mut digits) = (at, String::new());
+        // The run from here: each digit and where it is.
+        let (mut end, mut digits, mut places) = (at, String::new(), Vec::new());
         while end < chars.len() {
             if chars[end].is_ascii_digit() {
                 digits.push(chars[end]);
+                places.push(end);
             } else if !matches!(chars[end], ' ' | '-')
                 || !chars.get(end + 1).is_some_and(char::is_ascii_digit)
             {
@@ -155,14 +157,22 @@ pub fn masked(text: &str, cards: &[String]) -> String {
             }
             end += 1;
         }
-        match cards.iter().find(|card| digits.contains(card.as_str())) {
-            Some(card) => {
+        let found = cards
+            .iter()
+            .find_map(|card| digits.find(card.as_str()).map(|from| (card, from)));
+        match found {
+            // Only the card's own digits go; the digits around them stay.
+            Some((card, from)) => {
+                out.extend(&chars[at..places[from]]);
                 out.push_str("•••• ");
-                out.push_str(&card[card.len() - 4..]);
+                out.push_str(&card[card.len().saturating_sub(4)..]);
+                at = places[from + card.len() - 1] + 1;
             }
-            None => out.extend(&chars[at..end]),
+            None => {
+                out.extend(&chars[at..end]);
+                at = end;
+            }
         }
-        at = end;
     }
     out
 }
@@ -176,7 +186,7 @@ mod tests {
         let cards = ["4242424242424242".to_string()];
         let mut answer = json!({
             "lines": ["Paid with 4242 4242 4242 4242.", "Card 4242-4242-4242-4242 or 4242424242424242"],
-            "elements": [{"value": "4242424242424242"}],
+            "elements": [{"value": "4242424242424242 04/31"}],
             "order": "Order 1234567890123, total $10.00",
             "total": "Total $10.00\n\n4242 4242 4242 4242",
         });
@@ -185,11 +195,16 @@ mod tests {
             answer,
             json!({
                 "lines": ["Paid with •••• 4242.", "Card •••• 4242 or •••• 4242"],
-                "elements": [{"value": "•••• 4242"}],
+                "elements": [{"value": "•••• 4242 04/31"}],
                 "order": "Order 1234567890123, total $10.00",
                 "total": "Total $10.00\n\n•••• 4242",
             })
         );
+    }
+
+    #[test]
+    fn a_number_shorter_than_four_digits_is_masked_whole() {
+        assert_eq!(masked("Order 123", &["123".to_string()]), "Order •••• 123");
     }
 
     #[test]
