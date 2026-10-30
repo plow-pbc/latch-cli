@@ -7,6 +7,11 @@
 # appear before or after the path; --help prints this and installs nothing.
 # --browser, --no-browser and --no-login are accepted and do nothing here.
 #
+# --client-only installs latch alone, for a machine that only asks other
+# hosts (an agent's computer). It leaves plugins\client-only in the state
+# folder, so `latch update` installs latch alone again; an install without
+# it makes this machine a host from then on.
+#
 # When the binary directory isn't on PATH, it is added to this user's PATH
 # (new terminals see it). --no-modify-path, --client-only and
 # --non-interactive (`latch update`) leave PATH alone.
@@ -26,6 +31,7 @@ $usage = (Get-Content $PSCommandPath | Select-Object -Skip 1 -First 7) -replace 
 $binDir = Join-Path $env:LOCALAPPDATA 'Programs\latch'
 $stateDir = $null
 $modifyPath = $true
+$clientOnly = $false
 $src = $null
 # Inside a switch's clauses $args is the clause's own: the script's are kept.
 $argv = $args
@@ -35,7 +41,8 @@ for ($i = 0; $i -lt $argv.Count; $i++) {
     '--bin-dir' { $i++; $binDir = $argv[$i] }
     '--state-dir' { $i++; $stateDir = $argv[$i] }
     '--browser' { $i++ }
-    { $_ -in '--client-only', '--non-interactive', '--no-modify-path' } { $modifyPath = $false }
+    '--client-only' { $clientOnly = $true; $modifyPath = $false }
+    { $_ -in '--non-interactive', '--no-modify-path' } { $modifyPath = $false }
     { $_ -in '--no-browser', '--no-login' } { }
     default {
       if ($argv[$i] -like '--*') { [Console]::Error.WriteLine("unknown option $($argv[$i])"); exit 2 }
@@ -82,6 +89,17 @@ if ((Resolve-Path -ErrorAction SilentlyContinue $dest).Path -ne $src) {
   }
 }
 Say "installed $dest"
+
+# Whether latch is installed alone, kept where `latch update` looks (latch
+# makes the state folder private when it first uses it).
+$stateFolder = if ($stateDir) { $stateDir } elseif ($env:LATCH_STATE_DIR) { $env:LATCH_STATE_DIR } else { Join-Path $HOME '.latch' }
+$record = Join-Path $stateFolder 'plugins\client-only'
+if ($clientOnly) {
+  New-Item -ItemType Directory -Force (Split-Path $record) | Out-Null
+  New-Item -ItemType File -Force $record | Out-Null
+} else {
+  Remove-Item -Force $record -ErrorAction SilentlyContinue
+}
 
 if ($modifyPath) {
   $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')

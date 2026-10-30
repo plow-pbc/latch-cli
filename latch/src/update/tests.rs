@@ -510,15 +510,16 @@ async fn a_cut_off_update_is_finished_by_the_next_one() {
     let answer = update(&world.state, &world.source(), Some(1328), None, None, false)
         .await
         .unwrap();
+    // Windows' installer puts in no helpers (no gog, and Camoufox has no
+    // Windows build): an up-to-date install stays as it is.
+    if cfg!(windows) {
+        assert_eq!(answer["updated"], false, "{answer}");
+        assert!(world.arguments().is_none(), "the installer never ran");
+        return;
+    }
     assert_eq!(answer["updated"], true, "{answer}");
     assert_eq!(answer["to"]["build"], 1328);
-    // Camoufox has no Windows build: there, only gog is repaired.
-    let repaired = if cfg!(windows) {
-        json!(["gog"])
-    } else {
-        json!(["gog", "camoufox"])
-    };
-    assert_eq!(answer["repaired"], repaired);
+    assert_eq!(answer["repaired"], json!(["gog", "camoufox"]));
     let arguments = world.arguments().expect("install-binary.sh ran");
     assert_eq!(
         arguments[2..5],
