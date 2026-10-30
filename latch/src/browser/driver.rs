@@ -216,4 +216,9 @@ pub trait Runtime: Driver {
     fn tend(&mut self) -> bool {
         false
     }
+    /// What the engine writes to that the worker wakes on between calls,
+    /// to tend it then.
+    fn wakes(&self) -> Option<std::os::fd::RawFd> {
+        None
+    }
 }

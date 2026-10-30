@@ -68,6 +68,8 @@ pub struct Cdp {
     removed: HashSet<String>,
     /// A reply did not come in time since this was last asked.
     unanswered: bool,
+    /// Chrome closed its end of the pipe.
+    closed: bool,
     /// Filled vault values no GET request may carry as a query parameter
     /// (`Driver::guard`), and whether a request carried one since this was
     /// last asked.
@@ -99,6 +101,7 @@ pub fn pipes() -> io::Result<Pipes> {
             pages: HashSet::new(),
             removed: HashSet::new(),
             unanswered: false,
+            closed: false,
             guards: Vec::new(),
             stopped: false,
         },
@@ -217,6 +220,12 @@ impl Cdp {
         }
     }
 
+    /// What Chrome writes its replies and events to, while it is open: a
+    /// closed pipe reads as ready for ever.
+    pub fn events(&self) -> Option<std::os::fd::RawFd> {
+        (!self.closed).then(|| self.from_chrome.as_raw_fd())
+    }
+
     /// Whether a reply did not come in time since this was last asked.
     pub fn take_unanswered(&mut self) -> bool {
         std::mem::take(&mut self.unanswered)
@@ -256,6 +265,21 @@ impl Cdp {
                 page
             }
             "Target.targetDestroyed" => self.pages.remove(&text("targetId")),
+            // Every page, the session's first window and its popups alike,
+            // starts paused (`Cft::listen`), its scripts not yet run. A
+            // passkey request then goes to an authenticator inside the
+            // browser that holds no credentials, never to the OS's passkey
+            // sheet, which no call can reach: it fails at once, and the
+            // site offers its password or code instead. The page goes on
+            // only after.
+            "Target.attachedToTarget" if params["targetInfo"]["type"] == "page" => {
+                let page = params["sessionId"].as_str();
+                let _ = self.send("WebAuthn.enable", json!({}), page);
+                let authenticator = json!({"options": {"protocol": "ctap2", "transport": "usb"}});
+                let _ = self.send("WebAuthn.addVirtualAuthenticator", authenticator, page);
+                let _ = self.send("Runtime.runIfWaitingForDebugger", json!({}), page);
+                false
+            }
             "Target.attachedToTarget" => params["targetInfo"]["type"] == "iframe",
             "Target.detachedFromTarget" => {
                 let session = text("sessionId");
@@ -374,6 +398,7 @@ impl Cdp {
         let mut chunk = [0u8; 64 * 1024];
         let n = self.from_chrome.read(&mut chunk).map_err(|_| gone())?;
         if n == 0 {
+            self.closed = true;
             return Err(gone());
         }
         self.buffer.extend_from_slice(&chunk[..n]);
@@ -383,17 +408,29 @@ impl Cdp {
 
 /// Whether `file` has bytes (or its end) to read within `wait`.
 pub fn readable(file: &impl AsRawFd, wait: Duration) -> Result<bool, Failure> {
-    let mut poll = libc::pollfd {
-        fd: file.as_raw_fd(),
+    readable_or(file, None, wait)
+}
+
+/// Whether `file` has bytes (or its end) to read within `wait`, which ends
+/// early too when `also` has.
+pub fn readable_or(
+    file: &impl AsRawFd,
+    also: Option<std::os::fd::RawFd>,
+    wait: Duration,
+) -> Result<bool, Failure> {
+    let poll = |fd| libc::pollfd {
+        fd,
         events: libc::POLLIN,
         revents: 0,
     };
+    let mut polls = [poll(file.as_raw_fd()), poll(also.unwrap_or(-1))];
     let millis = wait.as_millis().min(i32::MAX as u128) as i32;
     loop {
-        // SAFETY: one pollfd we own, for the duration of the call.
-        let ready = unsafe { libc::poll(&mut poll, 1, millis.max(1)) };
+        // SAFETY: pollfds we own, for the duration of the call; poll skips
+        // a negative fd.
+        let ready = unsafe { libc::poll(polls.as_mut_ptr(), 2, millis.max(1)) };
         if ready >= 0 {
-            return Ok(ready > 0);
+            return Ok(polls[0].revents != 0);
         }
         if io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
             return Err(Failure::new(code::engine_error, "poll failed".into()));

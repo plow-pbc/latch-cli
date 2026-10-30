@@ -393,6 +393,7 @@ conformance!(
     a_busy_browser_dies_with_its_host,
     an_answer_shows_the_screen_and_observe_all_every_element,
     a_passkey_request_settles_in_the_page_and_raises_no_sheet,
+    a_popup_that_asks_for_a_passkey_as_it_loads_raises_no_sheet,
 );
 
 /// At most this many tests drive a real engine at once: two engines' worth
@@ -1781,6 +1782,51 @@ async fn a_passkey_request_settles_in_the_page_and_raises_no_sheet(engine: &str)
         evaluated["value"]
     );
     session.close().await.unwrap();
+}
+
+/// The same in a popup whose page asks for a passkey as it loads, before
+/// latch has adopted it as a tab.
+async fn a_popup_that_asks_for_a_passkey_as_it_loads_raises_no_sheet(engine: &str) {
+    let (_dir, state, _area) = test_state(engine);
+    let popup = b"<!doctype html><title>passkey popup</title><h1>asking</h1><script>\
+        navigator.credentials.get({publicKey: {challenge: new Uint8Array(32), timeout: 60000}})\
+          .then(() => 'credential', e => e.name)\
+          .then(answer => { document.querySelector('h1').textContent = 'answered ' + answer; });\
+        </script>";
+    let opener = b"<!doctype html><title>opener</title>\
+        <button onclick=\"window.open('popup')\">Sign in</button>";
+    let port = serve(vec![
+        ("/".into(), opener.to_vec()),
+        ("/popup".into(), popup.to_vec()),
+    ]);
+    // A passkey's site is a name, never an IP address.
+    let url = format!("http://localhost:{port}/");
+    let mut h = Host::new(&state);
+    let (id, page) = h.open(CALLER, engine, json!({"url": url})).await;
+    let button = find(&page, "button", "Sign in");
+    let clicked = h
+        .call(CALLER, "do", &id, act(&format!("click {button}")))
+        .await
+        .unwrap();
+    assert_eq!(
+        clicked["trail"][0]["followed"], "t2",
+        "{}",
+        clicked["trail"]
+    );
+    let mut text = String::new();
+    for _ in 0..25 {
+        text = h.call(CALLER, "text", &id, json!({})).await.unwrap()["text"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        if !text.contains("asking") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    println!("{engine} passkey popup: {text}");
+    h.call(CALLER, "close", &id, json!({})).await.unwrap();
+    assert!(text.contains("answered NotAllowedError"), "{text}");
 }
 
 async fn eval_upload_and_download_move_values_and_files(engine: &str) {

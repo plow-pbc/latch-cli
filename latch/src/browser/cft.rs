@@ -212,6 +212,16 @@ impl Cft {
             None,
             deadline,
         )?;
+        // Each new page waits, before any of its scripts runs, for `cdp` to
+        // set it up (`Cdp::queue`): on a session of its own, kept for the
+        // page's life, beside the one it is adopted on as a tab.
+        self.cdp.call(
+            "Target.setAutoAttach",
+            json!({"autoAttach": true, "waitForDebuggerOnStart": true, "flatten": true,
+                   "filter": [{"type": "page"}]}),
+            None,
+            deadline,
+        )?;
         // Every tab's and frame's loads of a scheme off the web stop before
         // they start, in any tab and however they came about; `cdp` fails
         // each one it hears of (`Fetch.requestPaused`).
@@ -413,18 +423,6 @@ impl Cft {
             .call("Page.enable", json!({}), Some(&session), deadline)?;
         self.cdp
             .call("Network.enable", json!({}), Some(&session), deadline)?;
-        // A passkey request goes to an authenticator inside the browser that
-        // holds no credentials, never to the OS's passkey sheet, which no
-        // call can reach: it fails at once, and the site offers its
-        // password or code instead.
-        self.cdp
-            .call("WebAuthn.enable", json!({}), Some(&session), deadline)?;
-        self.cdp.call(
-            "WebAuthn.addVirtualAuthenticator",
-            json!({"options": {"protocol": "ctap2", "transport": "usb"}}),
-            Some(&session),
-            deadline,
-        )?;
         if !self.auto_attach(&session)? {
             return Err(Failure::new(
                 code::engine_error,
@@ -966,15 +964,18 @@ impl Cft {
 }
 
 impl Runtime for Cft {
-    /// While a guard stands every request waits for latch, so the worker
-    /// reads Chrome between calls too.
+    /// A page that opens between calls waits for latch to set it up
+    /// (`listen`): Chrome says so on its pipe, which wakes the worker
+    /// (`wakes`). While a guard stands every request waits for latch, so
+    /// the worker reads Chrome every few milliseconds too.
     fn tend(&mut self) -> bool {
-        if self.cdp.guards.is_empty() {
-            return false;
-        }
         // A wait of zero reads nothing new from the pipe; a millisecond does.
         let _ = self.cdp.pump(Duration::from_millis(1));
-        true
+        !self.cdp.guards.is_empty()
+    }
+
+    fn wakes(&self) -> Option<std::os::fd::RawFd> {
+        self.cdp.events()
     }
 
     fn unanswered(&mut self) -> bool {
