@@ -1161,7 +1161,11 @@ async fn waiting_for_the_page_counts_as_settle_time(engine: &str) {
     let waited_ms = waiting.elapsed().as_millis() as u64;
     println!("wait: {waited} in {waited_ms} ms: {took:?}");
     assert_eq!(waited["met"], true);
-    assert!(clicking.elapsed().as_millis() >= 2000, "{:?}", clicking.elapsed());
+    assert!(
+        clicking.elapsed().as_millis() >= 2000,
+        "{:?}",
+        clicking.elapsed()
+    );
     let settled = took.settle_ms.unwrap_or_default();
     assert!(settled + 300 >= waited_ms, "{settled} of {waited_ms}");
 
