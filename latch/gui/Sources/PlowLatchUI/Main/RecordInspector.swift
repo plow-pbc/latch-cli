@@ -300,6 +300,7 @@ struct Why: View {
 
     static let sources = [
         "owner_request": "Your own request",
+        "saved_login_sites": "Saved login sites",
         "defaults": "Defaults only (no rules, no chat)",
         "rules": "Defaults and rules (no chat)",
         "chat_and_rules": "Defaults, rules and your chat with the agent",
@@ -309,6 +310,7 @@ struct Why: View {
         "allow": "Allowed",
         "not_covered": "Needed your OK",
         "owner_said_no": "You said no",
+        "login_site_mismatch": "Login not saved for this site",
     ]
 }
 

@@ -19,7 +19,7 @@ latch logs -f
 | `host_required` | You have several hosts and named none. | Add `--host NAME`. |
 | `serve_required` | This computer's host isn't running. | `latch serve -d` |
 | `gatekeeper_unavailable` | The host couldn't judge the request, so that step didn't run. In a browser plan, earlier steps may already have acted. | Read the answer's `steps`, then retry later only what didn't happen. If the error says the account is out of credits, add Plow credits. |
-| `gatekeeper_denied` | The gatekeeper refused. | For `not_covered`, ask in your Plow chat, then retry. |
+| `gatekeeper_denied` | The gatekeeper refused. | For `not_covered`, ask in your Plow chat, then retry. For `login_site_mismatch`, use the login only on its saved sites; this refusal happens before the model is asked. |
 | `exec_denied` | This host doesn't let agents run programs. | Asking again won't help. |
 | `not_enabled` | That connector is off on the host. | On the host, run the `latch plugins enable` command the error gives. |
 | `outcome_unknown` | Sent, but no answer came back. | Check before you send it again. |

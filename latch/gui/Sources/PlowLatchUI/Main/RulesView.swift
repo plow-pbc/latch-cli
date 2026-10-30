@@ -67,6 +67,12 @@ private struct HostRules: View {
                                     host: host, agent: agent)
                             .id(agent.uid)
                     }
+                    Section("Defaults and your rules") {
+                        Text("Agents can look things up on the web or in your mail, edit files, run project builds and tests, and install packages a project already lists.")
+                        Text("Sending, account changes and other riskier work need your OK. Buying or sharing private data must be named in your rules or your own Plow messages.")
+                        Text("A permission adds to the defaults. “Do not”, “never” and “only” set limits; “unless I ask in chat” lets you approve it yourself. An agent quoting you cannot give chat permission.")
+                        Text("A task you give on a site includes signing in with its saved login there. Buying, sending or changing things after sign-in needs its own permission.")
+                    }
                     // A verdict arrives below the fold: it's brought into view.
                     TryPanel(host: host, everyAgentSaved: show.everyAgent?.text ?? "")
                         .id(Self.verdictAnchor)

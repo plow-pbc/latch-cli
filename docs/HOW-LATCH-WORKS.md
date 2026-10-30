@@ -135,22 +135,37 @@ login.
 
 | | You (any machine of yours, or on the host) | An agent |
 |---|---|---|
-| What the gatekeeper reads | Your request, plus the host's rules. | Two judgments of the same request. One reads a built-in policy, the host's rules for every agent and that agent's own rules, without the chat. The other, if the agent has a chat, reads your messages there plus the same rules. |
-| Allowed when | The rules don't forbid it. It's refused only when the gatekeeper finds "forbidden" at least as likely as "covered". | Neither judgment says no, and at least one is at least 50% sure it's allowed. |
+| What the gatekeeper reads | Your request, plus the host's rules. | The built-in policy and your rules, without chat. If there is a chat, two parallel judgments also read it: the whole conversation, and only your own messages with the message each answers. Both see the same rules. |
+| Allowed when | The rules don't forbid it. It's refused only when the gatekeeper finds "forbidden" at least as likely as "covered". | No judgment vetoes. The rules/defaults allow it, or both chat judgments allow it with an actual message from you in the window. Each allow needs at least 50% confidence. |
 | When refused | `gatekeeper_denied`, reason `owner_said_no` (exit 4). Change the rules to go ahead. | `gatekeeper_denied` (exit 4). `not_covered`: ask the owner in chat, saying exactly what you'll do, then retry. `owner_said_no`: don't retry unless the owner changes their mind. |
 
-- **Only you give permission.** Only your rules, the built-in policy and the
-  chat messages Plow marks as yours count. Messages from the agent, other
-  people, web pages or the action itself are context, never permission.
-- **What an agent may do on its own.** Your agents can look things up in
-  your calendar, email, messages and files, and create or edit ordinary
-  files, without asking first. What they read goes back to the agent.
-  Riskier actions need permission in your rules or your Plow chat: sending,
-  buying, deleting, changing calendars or shared systems, giving a program
-  internet access, using secrets or sending data elsewhere. Your rules stay
-  in force when you ask in chat, and they can restrict everyday work too.
-  An agent with no chat and no rules is judged by the built-in policy
-  alone.
+- **Everyday work needs no request.** Agents may look things up in your
+  calendar, email, messages, contacts, files and the web, including opening
+  links. They may create, edit, move and organize your files; run project
+  builds, tests and scripts; install packages the project already lists,
+  with network access; clear temporary files, caches and build output or
+  move files to the Trash; archive email or mark it read; add calendar
+  entries that invite no one; and write drafts. What they read goes back
+  to the agent.
+- **Other work needs your permission**, from a rule or your own Plow
+  messages: sending or posting, inviting or answering people, deleting
+  other files or mail, adding packages, pushing code, and changing
+  settings, accounts or shared systems. Some work must be named explicitly:
+  buying or paying, reading secrets, sending private data off the machine,
+  code that does either, downloaded code, bulk deletion, and rules that act
+  on mail later. An OK to read something does not let an agent change it.
+- **Permissions add; restrictions still apply.** A rule allowing builds in
+  one project leaves everyday work elsewhere allowed. “Do not”, “never”
+  and “only” set limits, including on everyday work. A time-limited rule
+  applies inside its window. Plain “never” stays absolute; “unless I ask in
+  chat” lets you approve the action yourself. That exception removes the
+  rules veto, but does not itself give permission: your chat must cover it.
+- **Only your own messages give chat permission.** Plow identifies who sent
+  each message. An agent or someone else quoting, forwarding or claiming
+  your words cannot give permission. The owner-only judgment excludes
+  unanswered messages from others; the whole-chat judgment still checks
+  context and conditions such as “let me review it first”. Rules/defaults
+  may allow work even with no chat.
 - **Which chat.** The agent's chat, if its line has one. If it has several,
   the agent names one with `--plow-chat ID` or `LATCH_PLOW_CHAT`. Otherwise
   the call stops with `which_chat` (exit 2), which lists the choices. Your
@@ -178,7 +193,19 @@ login.
   and the agent never receives its values. Its site says where a login may
   go, not that it may be used: signing in still needs your OK, in a rule or
   the chat. Asking for something to be done on a site covers signing in
-  there.
+  there, including when you ask the agent to go to it, look something up or
+  open your link, or nudge it to sign in after it says it needs to. This
+  covers only signing in, not buying, sending, accepting or changing things
+  afterwards. An explicit “don't sign in” still wins. Before asking the
+  model, code refuses a login fill unless the page is one of its saved
+  sites or alternate top-level sites. The field's frame is checked again
+  before any value is released.
+
+The chat's stop threshold is 15% forbidden when covered is below 50%. A time
+restriction vetoes when its separate active-time answer is at least 50%; a
+rule's explicit chat exception can defer that veto to your messages. Other
+rules and the owner-only judgment veto below 50% covered when forbidden is
+at least as likely as not covered.
 
 **The audit log.** The host keeps a sealed log of the calls it handles,
 `audit.sealed.ndjson` in its state folder.
@@ -201,8 +228,11 @@ login.
   page can show.
 - The host also keeps each gatekeeper request and Plow's answer for 7 days,
   sealed the same way. `latch audit judge ID` shows one, ID being the
-  record's `kept_request`. They never hold a vault value, and agents can't
-  read them.
+  record's `kept_request`, or an agent's `layers.rules`, `layers.chat` and
+  `layers.will` kept-request ids. Each call records its probabilities,
+  prompt/model identity, usage and cost. Activity's “Gatekeeper requests”
+  opens them together. They never hold a vault value, and agents can't read
+  them.
 
 ## 6. Managing a host
 

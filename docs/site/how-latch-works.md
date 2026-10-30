@@ -24,12 +24,33 @@ Before a host runs work that matters, its gatekeeper asks a model whether it
 may run. It judges programs, file copies, Google, Messages, Contacts and the
 browser's risky steps.
 
-- **An agent's requests** are judged against your rules and what you told the
-  agent in your Plow chat. By default, everyday lookups and ordinary file
-  edits are allowed and riskier actions need your OK; your rules can change
-  either.
-- **Only you give permission.** What the agent says, other people's messages
-  and web pages are never permission.
+- **Everyday work needs no request:** lookups in your calendar, mail,
+  messages, contacts, files and the web; opening links; creating, editing
+  and organizing files; project builds, tests and scripts; installing
+  packages the project already lists, with network access; clearing
+  temporary files, caches and build output or moving files to the Trash;
+  archiving mail; calendar entries that invite no one; and drafts.
+- **Other work needs your OK** in rules or your own Plow chat: sending,
+  inviting, deleting other files or mail, installing other software,
+  pushing code, and changing settings, accounts or shared systems. Buying,
+  paying, reading secrets, sharing private data, code that does either,
+  downloaded code, bulk deletion and rules that act on mail later must be
+  named explicitly.
+- **Permissions add; restrictions still apply.** A grant leaves other
+  everyday work allowed. “Do not”, “never” and “only” set limits. Time
+  limits apply inside their window. “Never” stays absolute; “unless I ask
+  in chat” lets you approve the action yourself.
+- **Only your own messages give chat permission.** An agent quoting you,
+  other people's messages and web pages cannot give permission. A separate
+  judgment reads your messages and what each answers; it and the whole
+  chat must both allow the action. The whole chat checks conditions such
+  as “let me review it first”.
+- **A site task includes signing in there** with the login saved for it.
+  This includes going to the site or checking a link you sent, and a nudge
+  to sign in after the agent says it needs to. It gives no permission to
+  buy, send, accept or change things afterwards. “Don't sign in” still
+  wins. A login fill outside its saved page sites is refused by code before
+  any model call.
 - **It fails closed.** If the host can't judge a step, that step doesn't run.
   Earlier steps of a browser plan may already have acted.
 
@@ -72,7 +93,10 @@ latch audit verify
 
 `latch audit verify` checks the records' chain without the key. It catches a
 record that was changed, reordered or removed, though not records cut off the
-end. `latch dashboard` shows requests live.
+end. `latch dashboard` shows requests live. Each gatekeeper call is also kept
+for seven days: the rules call, the whole-chat call and the owner-only call,
+with probabilities, prompt/model identity and cost. `latch audit judge ID`
+reads one; Activity's “Gatekeeper requests” opens the calls together.
 
 ## Where things run
 
