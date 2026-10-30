@@ -108,6 +108,11 @@ function next() {
 
 function back() {
   const index = STEPS.indexOf(state.step);
+  // A login left waiting would still log this PC in when its text comes.
+  if (state.step === "login" && state.login.phase !== "verified") {
+    unfollow("login");
+    state.login = { phase: "idle" };
+  }
   if (index > 0) go(STEPS[index - 1]);
 }
 
@@ -216,9 +221,10 @@ const SCREENS = {
     ];
     if (state.rules === null && !state.rulesError) {
       body.push(status("wait", "Reading your rules…"));
-    } else if (state.rulesError) {
+    } else if (state.rules === null) {
       body.push(el("p", { class: "problem" }, state.rulesError));
     } else {
+      if (state.rulesError) body.push(el("p", { class: "problem" }, state.rulesError));
       body.push(
         el("label", { class: "small muted", for: "rules" }, "Your rules for agents on this PC"),
         el("textarea", { id: "rules", placeholder: "Allow my agent to read my email and keep my calendar. Never let it share my documents." },
@@ -320,8 +326,6 @@ async function startLogin(name, replace = false) {
   state.login = { phase: "starting" };
   draw();
   const args = ["login", "--events"];
-  const api = await invoke("api_url");
-  if (api) args.push("--api-url", api);
   if (name) args.push("--name", name);
   if (replace) args.push("--replace");
   clearInterval(ticking);
@@ -353,9 +357,11 @@ function remaining(expiresAt) {
 
 async function saveRules() {
   const text = document.getElementById("rules").value;
+  // Kept, so a save latch refuses leaves the draft to fix.
+  state.rules = { text };
+  state.rulesError = null;
   try {
     await latch(["rules", "set", "--file", "-"], text);
-    state.rules = { text };
     next();
   } catch (failure) {
     state.rulesError = said(failure);
@@ -396,5 +402,16 @@ function followStatus() {
   }, () => followers.delete("status"));
 }
 
-draw();
-ENTER[state.step]?.();
+/** Opens where setup stands: a PC that isn't logged in goes back to login,
+ *  whatever step was passed before, as the Mac app's `Progress.destination`. */
+async function boot() {
+  try {
+    const status = await latch(["status", "--local"]);
+    const past = state.step === "home" || STEPS.indexOf(state.step) > STEPS.indexOf("login");
+    if (!status?.login && past) state.step = "login";
+  } catch {}
+  draw();
+  ENTER[state.step]?.();
+}
+
+boot();

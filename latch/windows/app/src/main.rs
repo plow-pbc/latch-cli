@@ -2,7 +2,8 @@
 //! keeps no logic of its own: every screen runs the `latch.exe` beside it,
 //! with the same arguments, and reads its JSON. A command answers once
 //! (`run`); one that streams (`login --events`, `status --local --follow`)
-//! sends each line it prints as an event (`stream`).
+//! sends each line it prints as an event (`stream`). A test Plow is given
+//! as latch's own `PLOW_API_URL`, which the latch it runs inherits.
 #![windows_subsystem = "windows"]
 
 use std::collections::HashMap;
@@ -13,7 +14,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 
 use serde_json::{Value, json};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 /// latch is a console program; started from a window it would open a
 /// console of its own.
@@ -142,19 +143,20 @@ fn qr(text: String) -> Result<String, Value> {
         .build())
 }
 
-/// The Plow the app logs in to: production, unless `PLOW_LATCH_API_URL`
-/// names a test stack.
-#[tauri::command]
-fn api_url() -> Option<String> {
-    std::env::var("PLOW_LATCH_API_URL")
-        .ok()
-        .filter(|url| !url.is_empty())
-}
-
 fn main() {
     tauri::Builder::default()
         .manage(Streams::default())
-        .invoke_handler(tauri::generate_handler![run, stream, stop, qr, api_url])
-        .run(tauri::generate_context!())
-        .expect("the window runs");
+        .invoke_handler(tauri::generate_handler![run, stream, stop, qr])
+        .build(tauri::generate_context!())
+        .expect("the window builds")
+        .run(|app, event| {
+            // A login still waiting for its text would log this PC in after
+            // the window is gone: every stream ends with the window.
+            if let tauri::RunEvent::Exit = event {
+                let streams = app.state::<Streams>();
+                for (_, mut child) in streams.0.lock().expect("streams lock").drain() {
+                    let _ = child.kill();
+                }
+            }
+        });
 }
