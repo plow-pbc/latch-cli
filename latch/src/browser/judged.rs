@@ -9,7 +9,8 @@
 //! Each is judged before anything of it is sent to the page. A refusal
 //! sends nothing; the audit gets the judgment's `gate` object either way.
 //! The judge sees an item's kind, title and the sites it is saved for, and
-//! the fields a fill maps, never a value.
+//! the fields a fill maps, never a value; a confirmed card fill adds the
+//! checkout it pays on and the card's last four digits.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -53,6 +54,9 @@ pub(super) enum Action {
         /// A card or identity secret released on the agent's confirmation.
         #[serde(skip_serializing_if = "std::ops::Not::not")]
         confirmed: bool,
+        /// A confirmed card fill: the checkout it pays on.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        checkout: Option<Checkout>,
     },
     /// The agent's own JavaScript, run in the page.
     RunScript {
@@ -99,6 +103,25 @@ pub(super) struct ItemShown {
     other_top_sites: Vec<String>,
 }
 
+/// What a confirmed card fill pays on, as the agent's confirmation bound
+/// it: never the number.
+#[derive(Serialize, Clone, Debug)]
+pub(super) struct Checkout {
+    /// The page's title.
+    page_title: String,
+    /// The site of each frame a value goes into: a payment provider's, say.
+    field_sites: Vec<String>,
+    /// The button pressed, and the lines around it (the amount, as a page
+    /// shows it there).
+    press: String,
+    lines: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    card_last4: Option<String>,
+    /// The agent's own script ran on one of these sites earlier in the
+    /// session; what it left could read the card.
+    agent_code_before_fill: bool,
+}
+
 #[derive(Serialize, Clone, Debug)]
 pub(super) struct FileShown {
     name: String,
@@ -112,20 +135,28 @@ pub(super) struct FileShown {
 pub(super) async fn judge(
     gate: Option<Gate<'_>>,
     action: Action,
+    cards: &[String],
     audit: &mut Map<String, Value>,
 ) -> Result<(), Failure> {
     let Some(gate) = gate else {
         return Ok(());
     };
-    audit.insert(
-        "judged".into(),
-        serde_json::to_value(&action).expect("an action serializes"),
-    );
+    let action = shown(&action, cards);
+    audit.insert("judged".into(), action.clone());
     let judging = std::time::Instant::now();
     let judgment = gate.judge(&action).await;
     super::host::add_time(|phases| &mut phases.gate_ms, judging.elapsed());
     audit.insert("gate".into(), judgment.gate);
     judgment.verdict
+}
+
+/// `action` as the judge is shown it: the numbers of the cards filled in
+/// the session (`cards`), wherever a page put one, by their last four
+/// digits.
+pub(super) fn shown(action: &Action, cards: &[String]) -> Value {
+    let mut shown = serde_json::to_value(action).expect("an action serializes");
+    super::shown::mask_cards(&mut shown, cards);
+    shown
 }
 
 /// A URL as the site rules read it: outside tests, itself.
@@ -200,11 +231,52 @@ pub(super) fn fill(
         .flatten()
         .filter_map(|pair| pair[0].as_str().map(str::to_string))
         .collect();
+    let checkout = (confirmed && item.kind == "card" && args["review"].is_object())
+        .then(|| checkout(browsers, args));
     Action::VaultFill {
         site,
         item,
         fields,
         confirmed,
+        checkout,
+    }
+}
+
+/// The checkout a confirmed card fill's `review` describes, with the
+/// card's last four digits.
+fn checkout(browsers: &Browsers, args: &Value) -> Checkout {
+    let review = &args["review"];
+    let strings = |value: &Value| -> Vec<String> {
+        value
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect()
+    };
+    let digits: Option<String> = browsers
+        .vault
+        .with(|store| Ok(store.item(args["item"].as_str().unwrap_or_default())))
+        .ok()
+        .flatten()
+        .and_then(|item| crate::vault::classify::read(&item.raw, "number"))
+        .map(|number| number.chars().filter(char::is_ascii_digit).collect());
+    // A page that already shows this card's number shows the judge its
+    // last four digits only.
+    let own: Vec<String> = digits.iter().cloned().collect();
+    let masked = |value: &Value| super::shown::masked(value.as_str().unwrap_or_default(), &own);
+    Checkout {
+        page_title: masked(&review["title"]),
+        field_sites: strings(&review["frames"]),
+        press: masked(&review["press"]),
+        lines: strings(&review["lines"])
+            .iter()
+            .map(|line| super::shown::masked(line, &own))
+            .collect(),
+        card_last4: digits
+            .filter(|digits| digits.len() >= 4)
+            .map(|digits| digits[digits.len() - 4..].to_string()),
+        agent_code_before_fill: review["agent_code_before_fill"] == true,
     }
 }
 
@@ -228,6 +300,7 @@ pub(crate) fn previewed_fill(
         site,
         fields,
         confirmed: false,
+        checkout: None,
     }
 }
 

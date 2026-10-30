@@ -650,6 +650,7 @@ pub(super) async fn fill(
         judged::judge(
             caller.gate,
             judged::fill(browsers, &args, site, false),
+            &entry.card_numbers(),
             audit,
         )
         .await?;
@@ -777,7 +778,7 @@ async fn answer(
     if caller.gate.is_some()
         && let Some(action) = judged_action(browsers, &entry, command, args).await?
     {
-        judged::judge(caller.gate, action, audit).await?;
+        judged::judge(caller.gate, action, &entry.card_numbers(), audit).await?;
     }
     let mut result = match command {
         "close" => browsers.close(name, key).await.map(|closed| (closed, None)),
@@ -949,7 +950,7 @@ async fn open(
     }
     if let Some(url) = url {
         let action = judged::open_site(browsers, url);
-        judged::judge(caller.gate, action, audit).await?;
+        judged::judge(caller.gate, action, &[], audit).await?;
     }
     // Judged first, as a named engine's own check comes only at its launch.
     let engine = match named {
@@ -1051,7 +1052,7 @@ pub(super) async fn worker(
         && let Some(site) = audit
             .get("origin")
             .and_then(Value::as_str)
-            .and_then(sites::site_of)
+            .and_then(|origin| sites::site_of(&browsers.origin_as(origin)))
     {
         entry.runtime.note_agent_code(&site);
     }

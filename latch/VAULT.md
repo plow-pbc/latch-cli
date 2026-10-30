@@ -202,8 +202,10 @@ page in the address.
 One command fills every kind: `latch browser fill --item vN` with the
 agent's mapping; with no `--item`, the login saved for the page's site
 (several there: refused `which_item`, listing them). The item is found
-before the fill is judged, so the judge sees its kind and sites; an id the
-vault lacks is refused `no_such_item`. The mapping is
+before the fill is judged, so the judge sees its kind and sites (and, as a
+card's confirmation releases it, the checkout: the page's title, the sites
+its values go into, the button pressed and the lines around it, and the
+card's last four digits); an id the vault lacks is refused `no_such_item`. The mapping is
 `--field FIELD=eN` for each item field (`username`,
 `password`, `otp` for a login's current authenticator code, computed on
 the host; a card's `number`, `expiry`, `cvv`, …; an identity's or a note's

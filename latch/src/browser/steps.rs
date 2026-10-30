@@ -84,15 +84,21 @@ enum Confirms {
 }
 
 /// The fill a confirmation in this session would release, while it is
-/// still unused: what the gatekeeper judges before it is carried out.
+/// still unused: what the gatekeeper judges before it is carried out,
+/// with whether agent code has run on its sites by now.
 pub(super) fn fill_to_confirm(entry: &Entry, id: &str) -> Option<Value> {
     let all = entry.confirmations.lock().expect("confirmations lock");
-    all.iter()
+    let mut fill = all
+        .iter()
         .find(|c| c.id == id && !c.used)
         .and_then(|c| match &c.kind {
             Confirms::Fill(args) => Some(args.clone()),
             _ => None,
-        })
+        })?;
+    let sites: Vec<String> =
+        serde_json::from_value(fill["review"]["sites"].clone()).unwrap_or_default();
+    fill["review"]["agent_code_before_fill"] = json!(entry.runtime.agent_code_on(&sites));
+    Some(fill)
 }
 
 /// Waits until `deadline` for `condition`, checking it a few times a
@@ -711,7 +717,10 @@ impl<'a> Run<'a> {
             return Ok(());
         };
         let site = judged::site(self.browsers, self.entry).await?;
-        let action = judged::fill(self.browsers, args, site, false);
+        let action = judged::shown(
+            &judged::fill(self.browsers, args, site, false),
+            &self.entry.card_numbers(),
+        );
         let judging = Instant::now();
         let judgment = gate.judge(&action).await;
         super::host::add_time(|phases| &mut phases.gate_ms, judging.elapsed());
@@ -1564,6 +1573,19 @@ pub async fn confirm_fill(
     fill["guard"] = json!({"fingerprint": fingerprint(&reviewed)});
     // Its values go only where they were confirmed to go.
     fill["confirmed"] = json!({"frames": frames, "revision": revision});
+    // What the gatekeeper is shown of the checkout when it is confirmed.
+    let sites: Vec<String> = frames
+        .iter()
+        .filter_map(|frame| crate::vault::sites::site_of(frame))
+        .chain(super::judged::site(browsers, entry).await.ok().flatten())
+        .collect();
+    fill["review"] = json!({
+        "title": reviewed["title"],
+        "frames": frames,
+        "sites": sites,
+        "press": reviewed["element"]["name"],
+        "lines": reviewed["lines"],
+    });
     entry
         .confirmations
         .lock()
