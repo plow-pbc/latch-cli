@@ -35,7 +35,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     private let barItem = NSSplitViewItemAccessoryViewController()
     private let inspectorShows = WindowInspector.Shown()
     private let inspectorItem: NSSplitViewItem
-    /// "Update Available" in the toolbar while there's a newer Latch:
+    /// "Update" in the toolbar while there's a newer Latch:
     /// one click installs it.
     private let updateItem = NSToolbarItem(itemIdentifier: .update)
     let sheets: WindowSheets

@@ -97,8 +97,8 @@ private struct NeedsSection: View {
                 case let .stopped(lastError): StartNeed(lastError: lastError)
                 case let .update(build):
                     HStack(alignment: .top) {
-                        Need(symbol: "arrow.down.circle", text: "A new version of Latch is available\(build.map { " (build \($0))" } ?? "").",
-                             detail: "Installing it restarts Latch on this Mac.")
+                        Need(symbol: "arrow.down.circle", text: build.map { "Build \($0) available" } ?? "Update available",
+                             detail: "Latch will restart.")
                         Spacer(minLength: 12)
                         InstallUpdateButton()
                     }
