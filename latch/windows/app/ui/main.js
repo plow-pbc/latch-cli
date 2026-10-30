@@ -18,12 +18,14 @@ import { el, icon, clock, sameDay } from "./dom.js";
 import * as home from "./pages/home.js";
 import * as activity from "./pages/activity.js";
 import * as rules from "./pages/rules.js";
+import * as vault from "./pages/vault.js";
 import * as settings from "./pages/settings.js";
 
 const SCREENS = [
   ["home", "Home", home],
   ["activity", "Activity", activity],
   ["rules", "Rules", rules],
+  ["vault", "Vault", vault],
   ["settings", "Host Settings", settings],
 ];
 const ACCOUNT = [
