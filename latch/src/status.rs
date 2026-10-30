@@ -315,6 +315,10 @@ pub struct ThisMachine {
     pub name: Option<String>,
     pub key: Option<String>,
     pub hosting: Hosting,
+    /// Windows: whether agents may list folders here (`granted`, `missing`
+    /// or `partial`), as `latch volume-roots` lets them. Not said elsewhere.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub list_folders: Option<&'static str>,
 }
 
 #[derive(Serialize)]
@@ -377,6 +381,7 @@ pub fn local(state: &StateDir) -> Result<LocalStatus, Failure> {
             name: config.as_ref().map(|config| config.peer.name.clone()),
             key: config.as_ref().map(|config| config.peer.key.clone()),
             hosting,
+            list_folders: crate::sandbox::list_folders(),
         },
         plugins: plugins["plugins"].take(),
         update: crate::update::status(&dir),

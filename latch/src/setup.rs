@@ -41,6 +41,8 @@ pub fn run(state_dir: Option<PathBuf>) -> ExitCode {
         setup.messages_and_contacts();
         setup.rules();
         setup.start();
+        #[cfg(windows)]
+        setup.list_folders();
     }
     say("Done. Run `latch setup` again any time.");
     ExitCode::SUCCESS
@@ -185,6 +187,18 @@ impl Setup {
             done("Google is connected.");
         } else {
             eprintln!("✗ Google is not on yet.\n  Try again later: latch plugins enable google");
+        }
+    }
+
+    /// Windows: whether agents may list folders. Letting them needs an
+    /// administrator, so this says how rather than asking.
+    #[cfg(windows)]
+    fn list_folders(&self) {
+        match self.local()["this_machine"]["list_folders"].as_str() {
+            Some("granted") => done("Agents can list folders on this PC."),
+            _ => say(&format!(
+                "{LIST_FOLDERS_NEEDED} To allow it: `latch volume-roots add`."
+            )),
         }
     }
 
@@ -375,7 +389,8 @@ pub struct Status {
 
 #[derive(Serialize)]
 pub struct Step {
-    /// `login`, each connector this build has, `rules`, then `host`.
+    /// `login`, each connector this build has, `rules`, `host`, then on
+    /// Windows `list_folders`.
     pub step: &'static str,
     pub state: StepState,
     pub reason: String,
@@ -545,7 +560,70 @@ pub async fn status(state: &StateDir, check_access: bool) -> Result<Status, Fail
             Some(start_args(state)),
         ),
     });
+    // Windows: last, so `no_terminal`'s `next` starts latch first.
+    if let Some(granted) = local.this_machine.list_folders {
+        steps.push(match granted {
+            "granted" => Step::new(
+                "list_folders",
+                Done,
+                "Agents can list folders on this PC.".into(),
+                None,
+            ),
+            _ => Step::new(
+                "list_folders",
+                Needed,
+                LIST_FOLDERS_NEEDED.into(),
+                Some(vec!["volume-roots", "add"]),
+            ),
+        });
+    }
     Ok(Status { steps })
+}
+
+/// Why the `list_folders` step is not done.
+const LIST_FOLDERS_NEEDED: &str = "Agents can't list folders on this PC with cmd's dir and vol \
+until it is allowed once from a terminal opened as administrator.";
+
+/// `latch volume-roots add` (or `remove`): on Windows, each fixed volume's
+/// root as it left it, and `list_folders`. Writing a root's access list
+/// needs an administrator: `volume_roots_failed` unless every root is as
+/// asked.
+pub fn volume_roots(change: crate::cli::RootsChange) -> Result<Value, Failure> {
+    #[cfg(windows)]
+    {
+        let roots = crate::sandbox::volume_roots(change == crate::cli::RootsChange::Add);
+        let mut failed: Vec<String> = roots
+            .iter()
+            .filter_map(|root| {
+                let err = root.error.as_ref()?;
+                Some(format!("{}: {err}", root.root.display()))
+            })
+            .collect();
+        if roots.is_empty() {
+            failed.push("no fixed volume found".into());
+        }
+        if !failed.is_empty() {
+            return Err(Failure::new(
+                code::volume_roots_failed,
+                format!(
+                    "not every volume's root was changed (run it from a terminal opened as administrator): {}",
+                    failed.join("; ")
+                ),
+            ));
+        }
+        Ok(serde_json::json!({
+            "roots": roots,
+            "list_folders": crate::sandbox::list_folders(),
+        }))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = change;
+        Err(Failure::new(
+            code::unsupported_platform,
+            "only Windows needs `volume-roots`: here agents list folders already".into(),
+        ))
+    }
 }
 
 /// Whether Plow Latch has Full Disk Access, as the host would see it: one

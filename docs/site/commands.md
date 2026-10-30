@@ -60,6 +60,7 @@ latch browser open --host my-mac https://example.com
 | `latch dashboard` | Host | View the running host; Ctrl-C closes only the view. |
 | `latch logs` | Host | The host's diagnostics (serve.log).<br>Follow the host's log: `latch logs --follow` |
 | `latch settings set` | Host | Save a setting for this machine's host; needs no login, host or restart.<br>Keep this Mac awake while plugged in, for its host: `latch settings set --keep-awake on` |
+| `latch volume-roots` | Host | Let agents list folders on this Windows PC, or no longer.<br>Let agents list folders, from a terminal opened as administrator: `latch volume-roots add` |
 
 ## Agents
 

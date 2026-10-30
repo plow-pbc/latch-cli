@@ -478,6 +478,7 @@ codes! {
     vague_condition: Usage,
     vault_failed: Failed,
     vault_version: Failed,
+    volume_roots_failed: Failed,
     watch_failed: Failed,
     which_chat: Usage,
     which_handoff: Usage,

@@ -754,7 +754,7 @@ async fn run_program(
         };
         return Done::failed(outcome, format!("{message} after {duration_ms} ms"), audit);
     }
-    let result = json!({
+    let mut result = json!({
         "writes": args.writes,
         "network": args.network,
         "exit_code": exit_code,
@@ -764,12 +764,26 @@ async fn run_program(
         "stderr": String::from_utf8_lossy(&stderr),
         "truncated": stdout_cut || stderr_cut,
     });
+    // Windows: a listing that failed may be for want of the volume root's
+    // entry (`latch volume-roots`), so the agent is told how it is got.
+    if (exit_code != Some(0) || !stderr.is_empty())
+        && crate::sandbox::list_folders().is_some_and(|granted| granted != "granted")
+    {
+        result["hint"] = json!(LIST_FOLDERS_HINT);
+    }
     Done {
         response: Response::Ok(result),
         audit_args: audit,
         outcome: if timed_out { "timed_out" } else { "ok" }.to_string(),
     }
 }
+
+/// What a failed exec says where agents may not list folders (Windows).
+const LIST_FOLDERS_HINT: &str = "If it failed listing a folder: this Windows PC doesn't let \
+agents list folders yet, so cmd's dir and vol are denied even in a folder you may write. Its \
+owner allows it by running `latch volume-roots add` once from a terminal opened as \
+administrator. Meanwhile `cmd /c for %f in (*) do @echo %f` lists one, and so does PowerShell's \
+Get-ChildItem given the folder's full path (-LiteralPath).";
 
 fn argv_is_usable(argv: &[String]) -> bool {
     !argv.is_empty() && !argv[0].is_empty()
