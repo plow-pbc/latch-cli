@@ -102,9 +102,11 @@ const SCREENS = {
     [
       mark(),
       el("div", { class: "center" },
-        el("h1", {}, "Welcome to Latch"),
+        // As the Mac's welcome (Onboarding/Screens.swift): its two lines, the
+        // second in volt; "Welcome to Latch" is its window's title.
+        el("h1", {}, "Put your agent to work.", el("br"), el("span", { class: "volt" }, "Keep control.")),
         el("p", { class: "lead", style: "margin: 0 auto 0" },
-          "Put your agent to work. Your agent can do everyday work on this PC. Anything riskier needs your OK."),
+          "Your agent can do everyday work on this PC. Anything riskier needs your OK."),
       ),
     ],
     [button("Get Started", next, { primary: true })],

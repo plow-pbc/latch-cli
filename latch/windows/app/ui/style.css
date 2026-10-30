@@ -190,3 +190,5 @@ footer#bar {
 :is(#screen, #bar) button.primary:hover { filter: brightness(0.94); }
 :is(#screen, #bar) button:disabled { opacity: 0.4; cursor: default; }
 :is(#screen, #bar) button:focus-visible { outline: 2px solid var(--volt); outline-offset: 2px; }
+
+:is(#screen, #bar) .volt { color: var(--volt); }
