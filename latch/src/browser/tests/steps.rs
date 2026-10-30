@@ -118,9 +118,11 @@ struct Fake {
     slow: AtomicU64,
     /// When set, how many more calls it answers before it goes down.
     down_after: Mutex<Option<usize>>,
+    /// Each action the risk question was asked about, as the model read it.
+    judged: Mutex<Vec<String>>,
 }
 
-const FAKE_RISKY: [&str; 1] = ["Place order"];
+const FAKE_RISKY: [&str; 2] = ["Place order", "Pay $52.40"];
 const FAKE_FACTS: [(&str, &str); 2] = [
     ("the draft was saved", "Draft saved"),
     ("the total is $100.00", "$100.00"),
@@ -174,6 +176,7 @@ impl Provider for Fake {
                 }
                 ("risky", Kind::YesNo) => {
                     let action = state["action"].as_str().unwrap_or_default();
+                    self.judged.lock().unwrap().push(action.to_string());
                     let risky = FAKE_RISKY.iter().any(|r| action.contains(r));
                     Answer::Yes(if risky { 0.92 } else { 0.04 })
                 }
@@ -678,6 +681,39 @@ async fn consequential_actions_stop_for_a_confirmation_bound_to_what_was_reviewe
     assert_eq!(placed["trail"][0]["op"], "type");
     assert_eq!(placed["page"]["title"], "Order · Shop");
 
+    // A Pay button the page's script pays from submits no form, and one
+    // may carry a state; each is still judged, as the model is told it
+    // reads, and stops with nothing sent.
+    for (shape, read) in [
+        ("", "click button \"Pay $52.40\", which submits its form"),
+        ("?pay=js", "click button \"Pay $52.40\""),
+        ("?pay=outside", "click button \"Pay $52.40\""),
+        ("?pay=collapsed", "click button \"Pay $52.40\" (collapsed)"),
+        ("?pay=expanded", "click button \"Pay $52.40\" (expanded)"),
+        ("?pay=checked", "click button \"Pay $52.40\" (checked)"),
+        (
+            "?pay=unchecked",
+            "click button \"Pay $52.40\" (not checked)",
+        ),
+    ] {
+        let page = h.open(&format!("{site}/payment-method.html{shape}")).await;
+        let pay = find(&page, "button", "Pay $52.40");
+        let failure = h.act(ActAction::Click, &[&pay], None).await.unwrap_err();
+        assert_eq!(
+            refused(&failure),
+            (Exit::Denied, "confirm_needed"),
+            "{shape}"
+        );
+        assert!(failure.details["trail"].as_array().unwrap().is_empty());
+        let text = h.text().await;
+        assert!(
+            !text.contains("Payment complete") && !text.contains("Order placed"),
+            "{shape}: {text}"
+        );
+        let asked = slow.judged.lock().unwrap().last().cloned();
+        assert_eq!(asked.as_deref(), Some(read), "{shape}");
+    }
+
     // A total that changes while the model judges a click: not sent.
     let page = h.open(&format!("{site}/order.html")).await;
     let soon = find(&page, "button", "Reprice in a moment");
@@ -967,6 +1003,26 @@ async fn live_the_model_asks_for_a_confirmation_only_where_one_is_needed() {
     let failure = h.act(ActAction::Click, &[&pay], None).await.unwrap_err();
     println!("pay: {} {}", failure.code, confirmation(&failure)["risk_p"]);
     assert_eq!(failure.code, "confirm_needed");
+    for shape in [
+        "js",
+        "outside",
+        "collapsed",
+        "expanded",
+        "checked",
+        "unchecked",
+    ] {
+        let page = h
+            .open(&format!("{site}/payment-method.html?pay={shape}"))
+            .await;
+        let pay = find(&page, "button", "Pay $52.40");
+        let failure = h.act(ActAction::Click, &[&pay], None).await.unwrap_err();
+        println!(
+            "pay ({shape}): {} {}",
+            failure.code,
+            confirmation(&failure)["risk_p"]
+        );
+        assert_eq!(failure.code, "confirm_needed", "{shape}");
+    }
     let page = h.open(&format!("{site}/order.html")).await;
     let back = find(&page, "link", "Back to basket");
     let fine = h.act(ActAction::Click, &[&back], None).await.unwrap();
