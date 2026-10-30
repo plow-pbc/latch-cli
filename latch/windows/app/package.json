@@ -1,0 +1,11 @@
+{
+  "private": true,
+  "description": "Builds Plow Latch for Windows with the Tauri CLI.",
+  "scripts": {
+    "build": "tauri build",
+    "icons": "tauri icon icons/icon.svg -o icons"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

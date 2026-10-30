@@ -1,0 +1,20 @@
+# Plow Latch for Windows: the window, a Tauri 2 shell over the latch.exe
+# beside it. Its own workspace, like the phone shim: it builds only for
+# Windows and stays out of latch's build and gates.
+[workspace]
+
+[package]
+name = "plow-latch"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde_json = "1"
+# The login QR code, as latch draws it in a terminal, here as SVG.
+qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }

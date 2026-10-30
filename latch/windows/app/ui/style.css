@@ -1,0 +1,192 @@
+/* The Mac app's look (gui/Sources/PlowLatchUI/Theme/Brand.swift): a warm
+   near-black window, off-white text and the volt accent, with a light
+   appearance of the same warmth. */
+:root {
+  --content: #F6F5EF;
+  --bar: #EFEEE7;
+  --text: #161614;
+  --muted: rgba(22, 22, 20, 0.56);
+  --line: rgba(22, 22, 20, 0.10);
+  --surface: rgba(22, 22, 20, 0.045);
+  --field-border: rgba(22, 22, 20, 0.16);
+  --volt: #4E6B00;
+  --volt-fill: #D5EF8A;
+  --on-volt: #01000A;
+  --sage: #5E7A5E;
+  --amber: #9A5B00;
+  --clay: #A14A2B;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --content: #0C0C0B;
+    --bar: #0E0E0D;
+    --text: #F0F0E8;
+    --muted: rgba(240, 240, 232, 0.48);
+    --line: rgba(240, 240, 232, 0.08);
+    --surface: rgba(240, 240, 232, 0.045);
+    --field-border: rgba(240, 240, 232, 0.14);
+    --volt: #D5EF8A;
+    --sage: #A6C2A6;
+    --amber: #FEBC2E;
+    --clay: #D89478;
+  }
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  display: flex;
+  flex-direction: column;
+  background: var(--content);
+  color: var(--text);
+  font: 15px/1.45 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+main {
+  flex: 1;
+  overflow-y: auto;
+  padding: 44px 48px 24px;
+  animation: rise 0.18s ease-out;
+}
+@keyframes rise { from { opacity: 0; transform: translateY(6px); } }
+@media (prefers-reduced-motion: reduce) { main { animation: none; } }
+
+h1 {
+  font: 600 30px/1.15 "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
+  letter-spacing: -0.01em;
+  margin: 0 0 10px;
+}
+.lead { font-size: 17px; color: var(--muted); margin: 0 0 24px; max-width: 32em; }
+.muted { color: var(--muted); }
+.small { font-size: 13px; }
+
+.mark { display: block; height: 220px; margin: 40px auto 36px; fill: var(--volt); }
+.center { text-align: center; }
+
+.points { list-style: none; padding: 0; margin: 8px 0 0; display: grid; gap: 14px; }
+.points li {
+  display: grid;
+  grid-template-columns: 28px 1fr;
+  gap: 4px 12px;
+  padding: 14px 16px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+.points li::before {
+  content: "";
+  grid-row: span 2;
+  width: 10px; height: 10px; margin: 7px 0 0 6px;
+  border-radius: 50%;
+  background: var(--volt-fill);
+}
+.points b { font-weight: 600; }
+
+.code-card {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 22px;
+  align-items: center;
+  padding: 18px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+}
+.qr { width: 172px; height: 172px; background: #fff; border-radius: 10px; padding: 6px; }
+.qr svg { width: 100%; height: 100%; display: block; }
+.code {
+  font: 600 26px/1.2 "Cascadia Mono", Consolas, ui-monospace, monospace;
+  letter-spacing: 0.06em;
+  margin: 4px 0;
+  user-select: all;
+}
+.to { font-size: 16px; }
+
+textarea {
+  width: 100%;
+  min-height: 210px;
+  resize: vertical;
+  padding: 12px 14px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--field-border);
+  border-radius: 10px;
+  font: 14px/1.5 "Segoe UI", system-ui, sans-serif;
+}
+textarea:focus, input:focus { outline: 2px solid var(--volt); outline-offset: 1px; }
+input[type=text] {
+  width: 100%;
+  padding: 9px 12px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--field-border);
+  border-radius: 10px;
+  font: inherit;
+}
+
+.status {
+  display: flex; align-items: center; gap: 10px;
+  margin: 18px 0 0;
+  font-size: 14px;
+}
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; }
+.dot.on { background: var(--volt-fill); box-shadow: 0 0 0 3px rgba(213, 239, 138, 0.18); }
+.dot.wait { background: var(--amber); animation: pulse 1.2s ease-in-out infinite; }
+.dot.off { background: var(--clay); }
+@keyframes pulse { 50% { opacity: 0.35; } }
+
+.problem {
+  margin: 18px 0 0;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--clay);
+  color: var(--clay);
+  background: color-mix(in srgb, var(--clay) 8%, transparent);
+}
+.note {
+  margin: 18px 0 0;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.rows { display: grid; gap: 0; margin: 10px 0 0; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+.row { display: flex; justify-content: space-between; gap: 16px; padding: 11px 16px; background: var(--surface); }
+.row + .row { border-top: 1px solid var(--line); }
+.row span:last-child { color: var(--muted); text-align: right; }
+
+footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  padding: 14px 24px;
+  background: var(--bar);
+  border-top: 1px solid var(--line);
+}
+#steps { display: flex; gap: 7px; list-style: none; margin: 0; padding: 0; }
+#steps[hidden] { display: none; }
+#steps li { width: 7px; height: 7px; border-radius: 50%; background: var(--line); }
+#steps li.done { background: var(--muted); }
+#steps li.now { background: var(--volt-fill); }
+#actions { display: flex; gap: 10px; margin-left: auto; }
+
+button {
+  min-height: 34px;
+  padding: 0 18px;
+  border-radius: 999px;
+  border: 1px solid var(--field-border);
+  background: transparent;
+  color: var(--text);
+  font: 600 14px "Segoe UI", system-ui, sans-serif;
+  cursor: pointer;
+}
+button:hover { background: var(--surface); }
+button.primary { background: var(--volt-fill); color: var(--on-volt); border-color: transparent; }
+button.primary:hover { filter: brightness(0.94); }
+button:disabled { opacity: 0.4; cursor: default; }
+button:focus-visible { outline: 2px solid var(--volt); outline-offset: 2px; }
