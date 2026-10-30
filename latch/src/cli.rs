@@ -1096,6 +1096,14 @@ pub enum AgentsAction {
         #[arg(long)]
         line: String,
     },
+    /// Save the contact card of an agent's line (a vCard, its persona's
+    /// photo included), by the agent's uid or exact name
+    Card {
+        agent: String,
+        /// Where to save it
+        #[arg(long, short, value_name = "FILE")]
+        output: PathBuf,
+    },
     /// Remove an agent, by its uid or its exact name: its credential stops
     /// working and its line is freed
     Remove {
