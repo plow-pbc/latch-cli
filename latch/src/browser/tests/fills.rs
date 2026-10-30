@@ -2728,6 +2728,7 @@ async fn a_sign_in_that_bounces_says_what_the_page_shows(engine: &str) {
         signed_in.unwrap()["shows"],
         "after the submit, the page (/welcome) shows no password or username field, with no error"
     );
+    h.call("close", json!({})).await.ok();
 }
 
 async fn a_sign_in_the_site_refuses_says_so(engine: &str) {
