@@ -1,0 +1,139 @@
+/* Rules: grouped editors and Try a request, drawn with Windows 11's own
+   controls (TextBox, ComboBox, ToggleSwitch, DropDownButton and its
+   MenuFlyout, ProgressBar, ProgressRing). */
+.rules-page {
+  --field: rgba(255, 255, 255, 0.7);
+  --field-hover: rgba(249, 249, 249, 0.5);
+  --field-line: rgba(0, 0, 0, 0.06);
+  --field-under: rgba(0, 0, 0, 0.45);
+  --orange: #F7630C;
+  --track: rgba(0, 0, 0, 0.1);
+  --menu: #F9F9F9;
+}
+@media (prefers-color-scheme: dark) {
+  .rules-page {
+    --field: rgba(255, 255, 255, 0.06);
+    --field-hover: rgba(255, 255, 255, 0.08);
+    --field-line: rgba(255, 255, 255, 0.08);
+    --field-under: rgba(255, 255, 255, 0.55);
+    --orange: #FF9D5C;
+    --track: rgba(255, 255, 255, 0.12);
+    --menu: #2C2C2C;
+  }
+}
+
+.rules-page .group-note { margin: 6px 2px 0; font-size: 12px; color: var(--text-2); }
+.rules-page .quiet { color: var(--text-2); }
+.rules-page .small { font-size: 12px; line-height: 16px; }
+.rules-page .line > svg, .rules-page .line > .menu-wrap, .rules-page .line > button { flex: none; }
+
+/* TextBox: a filled field whose bottom edge turns the accent on focus. */
+.rules-page textarea, .rules-page input.request, .rules-page select.combo {
+  min-height: 32px;
+  padding: 5px 11px 6px;
+  border: 1px solid var(--field-line);
+  border-bottom-color: var(--field-under);
+  border-radius: 4px;
+  background: var(--field);
+  color: var(--text-1);
+  font: 14px/20px "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  outline: none;
+}
+.rules-page textarea:hover:not(:disabled), .rules-page input.request:hover, .rules-page select.combo:hover { background: var(--field-hover); }
+.rules-page textarea:focus, .rules-page input.request:focus {
+  outline: none;
+  background: var(--card);
+  border-bottom: 2px solid var(--accent);
+  padding-bottom: 5px;
+}
+.rules-page select.combo:focus-visible { outline: 2px solid var(--text-1); outline-offset: 1px; }
+.rules-page textarea:disabled { opacity: 0.6; }
+.rules-page textarea {
+  width: 100%;
+  min-height: 72px;
+  resize: vertical;
+  border-radius: 4px;
+}
+.rules-page textarea.draft { min-height: 52px; }
+.rules-page .line.editor { padding: 12px 16px; }
+.rules-page input.request { flex: 1; min-width: 0; font: 13px/20px "Cascadia Mono", Consolas, ui-monospace, monospace; }
+.rules-page input.request::placeholder, .rules-page textarea::placeholder { color: var(--text-3); }
+.rules-page select.combo { min-width: 200px; padding-right: 32px; appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--text-2) 50%), linear-gradient(135deg, var(--text-2) 50%, transparent 50%);
+  background-position: calc(100% - 17px) 14px, calc(100% - 12px) 14px;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+.rules-page select.combo option { background: var(--card); color: var(--text-1); }
+
+.rules-page .line.buttons { justify-content: flex-end; gap: 8px; }
+.rules-page .line.buttons > :first-child { flex: none; }
+
+.rules-page .line.reading { justify-content: center; gap: 10px; color: var(--text-2); }
+.rules-page .line.reading > :last-child { flex: none; }
+
+/* Errors: their sentence, and latch's own words under Details. */
+.rules-page .line.failed { align-items: flex-start; }
+.rules-page .line.failed .text { display: flex; flex-direction: column; gap: 4px; }
+.rules-page .line.failed .label { display: flex; align-items: center; gap: 8px; }
+.rules-page .line.failed .icon { width: 18px; height: 18px; flex: none; margin-top: 1px; }
+.rules-page .line.failed.bad { color: var(--bad); }
+.rules-page .line.failed.bad > .error-text { flex: 1; min-width: 0; }
+.rules-page .error-text { display: flex; flex-direction: column; gap: 2px; }
+.rules-page .error-text.quiet { color: var(--text-2); }
+.rules-page .error-details { font-size: 12px; color: var(--text-2); }
+.rules-page .error-details summary { cursor: default; width: max-content; color: var(--text-2); }
+.rules-page .error-details summary:hover { color: var(--text-1); }
+.rules-page .error-details .said { margin-top: 4px; user-select: text; overflow-wrap: anywhere; }
+
+/* DropDownButton and its MenuFlyout. */
+.rules-page .menu-wrap { position: relative; }
+.rules-page button.drop { display: inline-flex; align-items: center; gap: 8px; }
+.rules-page .glyph { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.rules-page .menu {
+  position: fixed;
+  z-index: 10;
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
+  min-width: 300px;
+  padding: 4px;
+  border-radius: 8px;
+  border: 1px solid var(--card-line);
+  background: var(--menu);
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.14);
+}
+.app .rules-page .menu button[role=menuitem] {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 34px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  text-align: left;
+  font-weight: 400;
+}
+.app .rules-page .menu button[role=menuitem]:hover, .app .rules-page .menu button[role=menuitem]:focus-visible { background: var(--hover); outline: none; }
+
+/* A verdict: its heading, and the gatekeeper's reading as ProgressBars. */
+.rules-page .verdict-view { display: flex; flex-direction: column; gap: 8px; padding: 4px 0; }
+.rules-page .verdict-view .heading { display: flex; align-items: center; gap: 8px; }
+.rules-page .verdict-view .heading .glyph { width: 20px; height: 20px; }
+.rules-page .glyph .disc { fill: currentColor; stroke: none; }
+.rules-page .glyph .mark { stroke: var(--card); stroke-width: 1.8; }
+.rules-page .glyph.ok, .rules-page .bar.ok i { color: var(--ok); background-color: var(--ok); }
+.rules-page .glyph.orange, .rules-page .bar.orange i { color: var(--orange); background-color: var(--orange); }
+.rules-page .glyph.bad, .rules-page .bar.bad i { color: var(--bad); background-color: var(--bad); }
+.rules-page .glyph.ok, .rules-page .glyph.orange, .rules-page .glyph.bad { background: none; }
+.rules-page .pair { display: flex; justify-content: space-between; gap: 12px; }
+.rules-page .pair .value { color: var(--text-2); text-align: right; }
+.rules-page .likelihood { display: flex; flex-direction: column; gap: 4px; }
+.rules-page .bar { height: 3px; border-radius: 2px; background: var(--track); overflow: hidden; }
+.rules-page .bar i { display: block; height: 100%; border-radius: 2px; }
+
+/* The accent button: main.css's plain-button rule outranks its own
+   `.app button.primary`, so it's restated here at that rule's weight. */
+.app .rules-page .line button.primary { background: var(--accent); color: var(--card); border-color: transparent; }
+.app .rules-page .line button.primary:disabled { background: var(--track); color: var(--text-3); opacity: 1; }
