@@ -21,7 +21,7 @@ pub const MARKER: &str = "latch-fake-gog-test-only";
 /// Runs as gog when this binary was started under that name.
 pub fn run_if_gog() -> Option<ExitCode> {
     let name = std::env::args_os().next()?;
-    if std::path::Path::new(&name).file_name()? != "gog" {
+    if std::path::Path::new(&name).file_name()? != super::GOG {
         return None;
     }
     let args: Vec<String> = std::env::args().skip(1).collect();
