@@ -769,6 +769,24 @@ async fn instruction_steps_offer_only_what_is_possible_and_stop_in_order() {
         asked,
         "a CAPTCHA stops before the model is asked"
     );
+    // CAPTCHA frames a page loads but does not show are no stop; one shown
+    // over the page is.
+    h.open(&at("captcha-frames.html")).await;
+    told.tell(|_| Choice {
+        status: "cannot",
+        ..choose("stuck", None)
+    });
+    let (code, _) = stop(h.send(plan(&["pay"], &site, &[], &[])).await);
+    assert_eq!(code, "blocked", "hidden CAPTCHA frames are no wall");
+    h.open(&at("captcha-frames.html?shown")).await;
+    let asked = told.passes();
+    let (code, _) = stop(h.send(plan(&["pay"], &site, &[], &[])).await);
+    assert_eq!(code, "needs_owner");
+    assert_eq!(
+        told.passes(),
+        asked,
+        "a shown CAPTCHA stops before the model is asked"
+    );
     let card = h
         .browsers
         .vault

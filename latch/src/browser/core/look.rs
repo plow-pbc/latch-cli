@@ -359,15 +359,22 @@ impl<D: Driver> Core<D> {
         Ok(Value::Object(result))
     }
 
-    /// A CAPTCHA's frame on the page now, or else a password field: what an
-    /// instruction step stops at, or may sign in on.
+    /// A CAPTCHA's frame shown on the page now, or else a password field:
+    /// what an instruction step stops at, or may sign in on. A CAPTCHA's
+    /// frame shows where the middle of its viewport is on screen and the
+    /// pages around it draw nothing over it there.
     fn wall(&mut self) -> Result<Option<&'static str>, Failure> {
         let mut login = false;
         for frame in self.driver.frames()? {
             let Ok(found) = self.driver.run(&frame, "__latch.wall()") else {
                 continue;
             };
-            if found["captcha"] == true {
+            if let (Some(x), Some(y)) = (
+                found["captcha"]["x"].as_f64(),
+                found["captcha"]["y"].as_f64(),
+            ) && let Ok((dx, dy)) = self.driver.frame_offset(&frame)
+                && let Ok(true) = self.driver.reaches(&frame, x + dx, y + dy)
+            {
                 return Ok(Some("captcha"));
             }
             login |= found["password"] == true;

@@ -1,0 +1,38 @@
+<!doctype html><meta charset="utf-8"><title>Checkout · Shop</title>
+<!-- A hosted checkout's payment step: "Pay with card" only opens the card
+     form; "Pay $52.40" pays. As written it is the form's submit control and
+     posts to /placed; with ?pay=SHAPE it is a button the page's script pays
+     from, which submits no form, saying "Payment complete": `js` in the
+     form, `outside` it, and `collapsed`, `expanded`, `checked` or
+     `unchecked` carrying that state. -->
+<h1>Pay Shop</h1>
+<p>Sharp Objects · $52.40</p>
+<form method="post" action="placed">
+  <h2>Payment method</h2>
+  <button type="button" aria-expanded="false" aria-controls="card"
+          onclick="this.setAttribute('aria-expanded', 'true'); document.getElementById('card').hidden = false">Pay with card</button>
+  <div id="card" hidden>
+    <p><label for="number">Card number</label> <input id="number" name="number" autocomplete="cc-number"></p>
+    <p><label for="expiry">Expiration</label> <input id="expiry" name="expiry" autocomplete="cc-exp"></p>
+    <p><label for="cvc">CVC</label> <input id="cvc" name="cvc" autocomplete="cc-csc"></p>
+  </div>
+  <p id="pay"><button>Pay $52.40</button></p>
+</form>
+<script>
+const shape = new URLSearchParams(location.search).get('pay');
+if (shape) {
+  const states = {
+    collapsed: 'aria-expanded="false"', expanded: 'aria-expanded="true"',
+    checked: 'aria-checked="true"', unchecked: 'aria-checked="false"',
+  };
+  const button = `<button type="button" ${states[shape] || ''}
+    onclick="document.body.insertAdjacentHTML('beforeend', '<p>Payment complete</p>')">Pay $52.40</button>`;
+  const at = document.getElementById('pay');
+  if (shape === 'outside') {
+    at.remove();
+    document.body.insertAdjacentHTML('beforeend', `<p>${button}</p>`);
+  } else {
+    at.innerHTML = button;
+  }
+}
+</script>

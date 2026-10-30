@@ -1481,7 +1481,22 @@ fn action_line(reviewed: &Value, enter: bool, typing: bool) -> String {
         }
         line
     } else {
-        format!("click {}", named(element))
+        let mut line = format!("click {}", named(element));
+        // Checked is said only of what a click checks: on a button it reads
+        // as a choice already made, and the model lets a payment through.
+        let checks =
+            ["checkbox", "radio", "switch"].contains(&element["role"].as_str().unwrap_or_default());
+        match (element["expanded"].as_bool(), element["checked"].as_bool()) {
+            (Some(true), _) => line.push_str(" (expanded)"),
+            (Some(false), _) => line.push_str(" (collapsed)"),
+            (_, Some(true)) if checks => line.push_str(" (checked)"),
+            (_, Some(false)) if checks => line.push_str(" (not checked)"),
+            _ => {}
+        }
+        if reviewed["acts_on"]["role"] == "form" {
+            line.push_str(", which submits its form");
+        }
+        line
     };
     if let Some(row) = element["row"].as_str() {
         line.push_str(&format!(" — in: {row}"));
@@ -1726,6 +1741,30 @@ mod tests {
         assert_eq!(
             action_line(&reviewed, false, false),
             "click button \"Place order\""
+        );
+        let submit = json!({"element": {"role": "button", "name": "Pay $52.40"},
+                            "acts_on": {"role": "form", "name": ""}});
+        assert_eq!(
+            action_line(&submit, false, false),
+            "click button \"Pay $52.40\", which submits its form"
+        );
+        let method =
+            json!({"element": {"role": "button", "name": "Pay with card", "expanded": false}});
+        assert_eq!(
+            action_line(&method, false, false),
+            "click button \"Pay with card\" (collapsed)"
+        );
+        let pressed =
+            json!({"element": {"role": "button", "name": "Place order", "checked": false}});
+        assert_eq!(
+            action_line(&pressed, false, false),
+            "click button \"Place order\""
+        );
+        let option =
+            json!({"element": {"role": "radio", "name": "Pay with card", "checked": false}});
+        assert_eq!(
+            action_line(&option, false, false),
+            "click radio \"Pay with card\" (not checked)"
         );
         let enter = json!({"element": {"role": "textbox", "name": "Gift note"},
                            "acts_on": {"role": "button", "name": "Place order"}});
