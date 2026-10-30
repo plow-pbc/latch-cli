@@ -18,16 +18,16 @@ Windows window's fake mode shows the same data, for side-by-side stills.
 | Mac | Windows | Notes |
 | --- | --- | --- |
 | Welcome, with the brand mark | Done | |
-| Login: QR code, the text to send, code countdown | Done | |
+| Login: QR code, the text to send, code countdown | Done | redone in the Mac's layout (centred QR, To/Text table) |
 | Login: name taken → replace; expired; error | Done | |
 | Privacy | Done | |
 | Rules: draft, save | Done | |
-| Rules: Gatekeeper example decks (Family, Work) tried with `rules try`, verdicts, rerun | Not started | |
+| Rules: Gatekeeper example decks (Family, Work) tried with `rules try`, verdicts, rerun | Built | the Mac's Keychain and Messages examples are Mac only |
 | Access: Google (`plugins enable google --events`) | eng-65 | the window's step waits on Google working on Windows |
 | Access: Contacts & Messages (Full Disk Access, its helper panel) | Mac only | no Messages or Contacts on Windows |
 | Start: `serve -d`, run in the background | Done | |
-| Start: start when you log in (Login Item) | Built | the user's Run key; the setup switch is being ported |
-| Done (text an agent, skipped steps, not running) | Done | the plain "done"; its other states not started |
+| Start: start when you log in (Login Item); keep awake while plugged in | Built | the user's Run key; keep awake: latch says unsupported on Windows |
+| Done: "You're all set" with each step's state | Built | "Text ‹agent›" opens Messages: Mac only |
 | Set up again (from Home) | Built | |
 
 ## Main window
