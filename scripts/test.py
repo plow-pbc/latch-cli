@@ -453,7 +453,17 @@ def in_container(args):
     # for an instant to readers, so latch's atomic writes are not atomic
     # there and a `status --local` beside a host's write finds no config.
     (DEV / "tests").mkdir(parents=True, exist_ok=True)
+    # A run takes a share of the machine, not all of it, so other work on
+    # it keeps going; past six CPUs the gate is barely faster. nextest runs
+    # as many tests at once as the container has CPUs.
+    cpus = os.environ.get("LATCH_LINUX_CPUS", "6")
+    memory = os.environ.get("LATCH_LINUX_MEMORY", "8g")
+    try:
+        threads = max(1, int(float(cpus)))
+    except ValueError:
+        raise SystemExit(f"test.py: LATCH_LINUX_CPUS is a number of CPUs, not {cpus!r}")
     command = ["docker", "run", "--rm", "--init", "--platform", "linux/arm64", *apparmor, "--user", f"{os.getuid()}:{os.getgid()}",
+               "--cpus", cpus, "--memory", memory, "-e", f"NEXTEST_TEST_THREADS={threads}",
                "--cap-drop=ALL", "--security-opt=no-new-privileges=true",
                "--security-opt=systempaths=unconfined",
                f"--security-opt=seccomp={docker / 'seccomp.json'}",

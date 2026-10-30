@@ -46,6 +46,7 @@ installer's Linux paths, systemd) or to reproduce a Linux failure from CI,
 and then only that suite or test (`just test --linux --only NAME`; the
 systemd tests run in CI and on a Linux machine, not in the container). A suite
 that can't run where you asked fails and says why: nothing is skipped.
+The Linux container gets 6 CPUs and 8 GB; set `LATCH_LINUX_CPUS` or `LATCH_LINUX_MEMORY` to change that.
 
 Some checks call a real Plow stack or the decision model (`just dev-login`,
 `just gatekeeper`). They aren't part of the gate. Maintainers run them by

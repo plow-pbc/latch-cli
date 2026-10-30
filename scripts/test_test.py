@@ -286,6 +286,32 @@ class Plans(unittest.TestCase):
                 runner.plan(args)
         self.assertIn("installer has none", str(refused.exception))
 
+    def test_the_container_takes_six_cpus_and_8g_unless_told_otherwise(self):
+        args = runner.argparse.Namespace(suites=["core"], linux=True, shard=None, ci=False,
+                                         dry_run=False, build_archive=None, from_archive=None, only=None)
+
+        def docker_run(env):
+            with mock.patch.dict(runner.os.environ, env), \
+                    mock.patch.object(runner.subprocess, "run", return_value=mock.Mock(returncode=0)) as ran:
+                runner.in_container(args)
+            return ran.call_args_list[-1].args[0]
+
+        def flag(command, name):
+            return command[command.index(name) + 1]
+
+        with mock.patch.dict(runner.os.environ):
+            runner.os.environ.pop("LATCH_LINUX_CPUS", None)
+            runner.os.environ.pop("LATCH_LINUX_MEMORY", None)
+            default = docker_run({})
+        self.assertEqual((flag(default, "--cpus"), flag(default, "--memory")), ("6", "8g"))
+        self.assertIn("NEXTEST_TEST_THREADS=6", default)
+        told = docker_run({"LATCH_LINUX_CPUS": "2.5", "LATCH_LINUX_MEMORY": "4g"})
+        self.assertEqual((flag(told, "--cpus"), flag(told, "--memory")), ("2.5", "4g"))
+        self.assertIn("NEXTEST_TEST_THREADS=2", told)
+        self.assertLess(told.index("--cpus"), told.index(runner.IMAGE))
+        with self.assertRaises(SystemExit):
+            docker_run({"LATCH_LINUX_CPUS": "all"})
+
     def test_the_container_is_linux_arm64_on_any_host(self):
         for machine in ("x86_64", "arm64"):
             with mock.patch.object(runner.platform, "machine", return_value=machine):

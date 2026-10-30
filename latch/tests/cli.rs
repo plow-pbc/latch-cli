@@ -1344,8 +1344,6 @@ fn a_login_by_text_ends_in_a_line_and_one_that_asks_no_one_in_json() {
     let (api_url, server) = fake_plow(vec![
         (200, activation),
         (200, json!({"status": "verified", "token": "texted-login"})),
-        (200, mac.clone()),
-        (200, mac.clone()),
         (200, mac),
     ]);
     let dir = test_dir();
@@ -1362,15 +1360,17 @@ fn a_login_by_text_ends_in_a_line_and_one_that_asks_no_one_in_json() {
     );
     assert!(stdout.is_empty(), "{stdout}");
 
-    // Logged in already: nothing to ask, so JSON, at a terminal and piped.
+    // Logged in already: nothing to ask, of the person or of Plow, so JSON
+    // that says so, at a terminal and piped.
     let (code, shown, _) = latch_at_a_terminal(&state, &["login"], "", true, &[]);
     assert_eq!(code, Some(0), "{shown}");
     let again: Value = serde_json::from_str(shown.trim()).unwrap();
     assert_eq!(again["peer"]["name"], "mac");
+    assert!(again["already_logged_in"].is_string(), "{again}");
     let piped = latch(&state, &["login"], &[]);
     let again: Value = serde_json::from_slice(&piped.stdout).unwrap();
     assert_eq!(again["peer"]["name"], "mac");
-    assert_eq!(server.join().unwrap().len(), 5);
+    assert_eq!(server.join().unwrap().len(), 3);
 }
 
 #[test]
@@ -2358,14 +2358,28 @@ impl Http {
 }
 
 fn respond(socket: &mut impl Write, status: u16, body: &Value) {
-    let body = body.to_string();
+    respond_bytes(
+        socket,
+        status,
+        "application/json",
+        body.to_string().as_bytes(),
+    );
+}
+
+fn respond_bytes(socket: &mut impl Write, status: u16, content_type: &str, body: &[u8]) {
     let head = format!(
-        "HTTP/1.1 {status} Fake\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {status} Fake\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     );
     let _ = socket.write_all(head.as_bytes());
-    let _ = socket.write_all(body.as_bytes());
+    let _ = socket.write_all(body);
 }
+
+/// The research line's contact card, as plow.co serves one: a vCard with
+/// its persona's photo.
+const RESEARCH_CARD: &[u8] = b"BEGIN:VCARD\r\nVERSION:3.0\r\nN:by Plow;Research;;;\r\nFN:Research line\r\n\
+PHOTO;ENCODING=b;TYPE=PNG:iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAwS2OUAAAAABJRU5ErkJggg==\r\n\
+END:VCARD\r\n";
 
 const AGENT_UID: &str = "0123456789abcdef0123456789abcdef";
 
@@ -2448,8 +2462,15 @@ impl LivePlow {
                     let mut socket = socket.unwrap();
                     let mut reader = BufReader::new(socket.try_clone().unwrap());
                     if let Some(request) = Http::read(&mut reader) {
-                        let (status, body) = plow.answer(&request);
-                        respond(&mut socket, status, &body);
+                        match plow.card(&request) {
+                            Some((status, card)) => {
+                                respond_bytes(&mut socket, status, "text/vcard", card)
+                            }
+                            None => {
+                                let (status, body) = plow.answer(&request);
+                                respond(&mut socket, status, &body);
+                            }
+                        }
                     }
                 });
             }
@@ -2479,6 +2500,16 @@ impl LivePlow {
 
     fn seen(&self) -> Vec<(String, Option<String>)> {
         self.state.lock().unwrap().seen.clone()
+    }
+
+    /// The research line's contact card, public: asked with a credential,
+    /// it refuses, so a test sees none is sent.
+    fn card(&self, request: &Http) -> Option<(u16, &'static [u8])> {
+        let asked = request.line().starts_with("GET /cards/research.vcf ");
+        asked.then(|| match request.bearer() {
+            Some(_) => (400, b"sent a credential".as_slice()),
+            None => (200, RESEARCH_CARD),
+        })
     }
 
     fn answer(&self, request: &Http) -> (u16, Value) {
@@ -2696,7 +2727,8 @@ impl LivePlow {
                 200,
                 json!([{"uid": AGENT_UID, "name": "Research bot", "provider": "self_hosted",
                         "line": {"uid": "line_agent", "object": "line", "provider_type": "imessage",
-                                 "provider_key": "+14155550123", "display_name": "Research line"},
+                                 "provider_key": "+14155550123", "display_name": "Research line",
+                                 "card_url": format!("{}/cards/research.vcf", self.url)},
                         "mailbox": null, "created_at": "2026-10-20T10:00:00Z", "url": null,
                         "image": null, "status": null, "failure_code": null, "settings": {},
                         "credential": {"id": 7, "name": null, "scopes": [], "connected": false,
@@ -2863,6 +2895,137 @@ fn adding_proxy(upstream: &str, credential: &str) -> String {
         }
     });
     url
+}
+
+/// A login Plow no longer accepts: `latch login --again` logs in anew, by
+/// text here, keeps this machine's key, and never sends the saved token.
+#[test]
+fn login_again_replaces_the_saved_login_with_a_new_one() {
+    let (api_url, server) = fake_plow(vec![(200, peer(Value::Null, "mac", "device", Value::Null))]);
+    let dir = test_dir();
+    let state = dir.path().join("state");
+    let token = dir.path().join("owner.token");
+    fs::write(&token, "refused-login\n").unwrap();
+    let token = token.to_str().unwrap();
+    let args = [
+        "login",
+        "--api-url",
+        &api_url,
+        "--token-file",
+        token,
+        "--name",
+        "mac",
+    ];
+    let first = latch(&state, &args, &[]);
+    assert_eq!(first.status.code(), Some(0), "{first:?}");
+    let first: Value = serde_json::from_slice(&first.stdout).unwrap();
+    server.join().unwrap();
+
+    let activation = json!({"display_code": "TRY12", "activation_secret": "s3cret",
+                            "send_to": "+14155550100"});
+    let (api_url, server) = fake_plow(vec![
+        (200, activation),
+        (200, json!({"status": "verified", "token": "texted-login"})),
+        (200, peer(Value::Null, "mac", "device", Value::Null)),
+    ]);
+    let args = ["login", "--again", "--events", "--api-url", &api_url];
+    let again = latch(&state, &args, &[]);
+    assert_eq!(again.status.code(), Some(0), "{again:?}");
+    assert_eq!(event_lines(&again).pop().unwrap()["type"], "verified");
+    let requests = server.join().unwrap();
+    assert!(requests[0].contains("/v1/auth/activate"), "{}", requests[0]);
+    assert!(
+        requests
+            .iter()
+            .all(|request| !request.contains("refused-login")),
+        "{requests:?}"
+    );
+    assert!(
+        requests[2].contains("authorization: Bearer texted-login\r\n"),
+        "{}",
+        requests[2]
+    );
+    assert_eq!(body(&requests[2])["key"], first["peer"]["key"]);
+
+    // A login anew that Plow refuses leaves the saved one as it was.
+    let activation = json!({"display_code": "TRY13", "activation_secret": "s3cret",
+                            "send_to": "+14155550100"});
+    let (api_url, server) = fake_plow(vec![
+        (200, activation),
+        (200, json!({"status": "verified", "token": "refused-again"})),
+        (401, json!({})),
+    ]);
+    let args = ["login", "--again", "--events", "--api-url", &api_url];
+    let refused = latch(&state, &args, &[]);
+    assert_ne!(refused.status.code(), Some(0), "{refused:?}");
+    server.join().unwrap();
+    let (api_url, server) = fake_plow(vec![(200, peer(Value::Null, "mac", "device", Value::Null))]);
+    let kept = latch(&state, &["login", "--api-url", &api_url], &[]);
+    assert_eq!(kept.status.code(), Some(0), "{kept:?}");
+    let requests = server.join().unwrap();
+    assert!(
+        requests[0].contains("authorization: Bearer texted-login\r\n"),
+        "{}",
+        requests[0]
+    );
+
+    // With no terminal and nothing to log in with, it says how, and never
+    // falls back on the saved login.
+    let piped = latch(&state, &["login", "--again"], &[]);
+    assert_eq!(piped.status.code(), Some(2), "{piped:?}");
+    let error = one_error_line(&String::from_utf8_lossy(&piped.stderr), Some(2));
+    assert_eq!(error["error"]["code"], "no_credential", "{error}");
+}
+
+/// A second `latch login` on a logged-in state folder says so and asks
+/// nothing of Plow; `--again` logs in anew.
+#[test]
+fn a_login_where_one_is_saved_changes_nothing_unless_asked_again() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let state = dir.path().join("state");
+    let token = dir.path().join("agent.token");
+    fs::write(&token, "agent-credential\n").unwrap();
+    let env = [("PLOW_TOKEN_FILE", token.as_path())];
+    let first = latch(&state, &["login", "--api-url", plow.url.as_str()], &env);
+    assert_eq!(first.status.code(), Some(0), "{first:?}");
+    let first: Value = serde_json::from_slice(&first.stdout).unwrap();
+    assert_eq!(first.get("already_logged_in"), None, "{first}");
+    let config = fs::read(state.join("config.json")).unwrap();
+    let asked = plow.seen().len();
+
+    let second = latch(&state, &["login"], &env);
+    assert_eq!(second.status.code(), Some(0), "{second:?}");
+    let second: Value = serde_json::from_slice(&second.stdout).unwrap();
+    assert_eq!(
+        second["already_logged_in"],
+        format!(
+            "already logged in as {} on this computer; `latch login --again` logs in anew",
+            first["peer"]["name"].as_str().unwrap()
+        ),
+        "{second}"
+    );
+    assert_eq!(second["peer"], first["peer"]);
+    assert_eq!(plow.seen().len(), asked, "Plow was asked nothing");
+    assert_eq!(fs::read(state.join("config.json")).unwrap(), config);
+
+    let again = latch(&state, &["login", "--again"], &env);
+    assert_eq!(again.status.code(), Some(0), "{again:?}");
+    let again: Value = serde_json::from_slice(&again.stdout).unwrap();
+    assert_eq!(again.get("already_logged_in"), None, "{again}");
+    assert_eq!(again["peer"]["key"], first["peer"]["key"]);
+    assert!(plow.seen().len() > asked, "--again registers with Plow");
+
+    // Naming a Plow asks for one: the login goes ahead there.
+    let other = LivePlow::start();
+    let moved = latch(&state, &["login", "--api-url", other.url.as_str()], &env);
+    assert_eq!(moved.status.code(), Some(0), "{moved:?}");
+    let moved: Value = serde_json::from_slice(&moved.stdout).unwrap();
+    assert_eq!(moved.get("already_logged_in"), None, "{moved}");
+    assert!(!other.seen().is_empty(), "the login went to the Plow named");
+    let config: Value =
+        serde_json::from_slice(&fs::read(state.join("config.json")).unwrap()).unwrap();
+    assert_eq!(config["api_url"], other.url.as_str());
 }
 
 #[test]
@@ -3798,7 +3961,8 @@ fn agents_are_listed_for_the_owner_with_their_standing_on_a_host() {
     assert_eq!(
         listed,
         json!({"host": null, "agents": [{"uid": AGENT_UID, "name": "Research bot", "kind": "own",
-               "cloud_kind": null, "line": {"number": "+14155550123", "name": "Research line"},
+               "cloud_kind": null, "line": {"number": "+14155550123", "name": "Research line",
+                                            "card_url": format!("{}/cards/research.vcf", plow.url)},
                "created_at": "2026-10-20T10:00:00Z", "status": null, "failure_code": null,
                "last_seen_at": "2026-10-22T09:00:00Z", "standing": null}]})
     );
@@ -3896,6 +4060,22 @@ fn agents_are_shown_created_and_removed_by_their_owner() {
         "no mailbox"
     );
     assert_eq!(lines["lines"][1]["available"], false);
+
+    // Its line's contact card: named in the list, saved by `agents card`
+    // without the owner's credential.
+    let (code, listed, _) = run(&["agents"]);
+    assert_eq!(code, Some(0), "{listed}");
+    let card_url = format!("{}/cards/research.vcf", plow.url);
+    assert_eq!(listed["agents"][0]["line"]["card_url"], card_url.as_str());
+    let card_file = dir.path().join("research.vcf");
+    let card_path = card_file.to_str().unwrap();
+    let (code, saved, _) = run(&["agents", "card", "Research bot", "--output", card_path]);
+    assert_eq!(code, Some(0), "{saved}");
+    assert_eq!(fs::read(&card_file).unwrap(), RESEARCH_CARD);
+    assert_eq!(
+        saved,
+        json!({"agent": AGENT_UID, "card_url": card_url, "path": card_path, "size": RESEARCH_CARD.len()})
+    );
 
     let (code, shown, _) = run(&["agents", "show", "Research bot"]);
     assert_eq!(code, Some(0), "{shown}");
@@ -5157,17 +5337,20 @@ fn a_starting_host_waits_for_a_direct_call_and_a_direct_follow_makes_way() {
         error["next"],
         "run this again: it then goes through that host"
     );
-    let waiting = latch(&owners.studio, &["status", "--local"], &[]);
-    let waiting: Value = serde_json::from_slice(&waiting.stdout).unwrap();
-    let hosting = &waiting["this_machine"]["hosting"];
-    assert_eq!(hosting["state"], "starting", "{hosting}");
-    assert!(
+    // The follow ends when the host records that it is starting, and the
+    // host records its wait only after that, once it finds the exec still
+    // using the key: the wait shows soon, not at once.
+    let mut hosting = Value::Null;
+    let waits = eventually(10, || {
+        let status = latch(&owners.studio, &["status", "--local"], &[]);
+        let status: Value = serde_json::from_slice(&status.stdout).unwrap();
+        hosting = status["this_machine"]["hosting"].clone();
         hosting["waiting"]
             .as_str()
-            .unwrap_or_default()
-            .contains("waiting for latch commands"),
-        "{hosting}"
-    );
+            .is_some_and(|why| why.contains("waiting for latch commands"))
+    });
+    assert!(waits, "{hosting}");
+    assert_eq!(hosting["state"], "starting", "{hosting}");
     direct_exec.release();
     let (serve, _log, lines) = started.join().unwrap();
     until_serving(&owners.studio, &serve);
