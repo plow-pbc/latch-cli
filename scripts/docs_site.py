@@ -77,12 +77,15 @@ latch browser open --host my-mac https://example.com
 """
 
 # Who runs a command, from what `latch help --json` says of it: Agent for a
-# request an agent may send to a host, Host for everything you, the owner, run.
+# request an agent may send to a host, Host for everything you, the owner, run,
+# and both for one an agent also runs on its own computer.
 # Agents also run these two, though neither goes to a host.
 AGENTS_RUN = {"vault.list", "skill"}
 
 
 def pill(action):
+    if action["agent_on_own_computer"]:
+        return "Host Agent"
     agent = action["runs_on"] == "host" and not action["owner_only"]
     return "Agent" if agent or action["id"] in AGENTS_RUN else "Host"
 
@@ -228,9 +231,9 @@ def table(lines):
         raise SystemExit(f"docs_site.py: a table's second line must be its divider: {lines[1]!r}")
     def td(c, column):
         if head[column] == "For":
-            if c and c not in PILLS.values():
-                raise SystemExit(f"docs_site.py: a For cell is not Host or Agent: {c!r}")
-            return pill_html(c) if c else ""
+            if c and c not in ("Host", "Agent", "Host Agent"):
+                raise SystemExit(f"docs_site.py: a For cell is not Host, Agent or Host Agent: {c!r}")
+            return " ".join(pill_html(name) for name in c.split())
         # A cell's lines, as `<br>` splits them on GitHub too.
         return "<br>".join(inline(part) for part in c.split("<br>"))
     th = "".join(f"<th>{inline(c)}</th>" for c in head)

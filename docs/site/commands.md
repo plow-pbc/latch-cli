@@ -43,7 +43,7 @@ latch browser open --host my-mac https://example.com
 | `latch status` | Host | Print this machine, its login and account, and the account's hosts. |
 | `latch devices` | Host | List this account's machines, online or not, or remove one. |
 | `latch devices remove` | Host | Remove a machine and sign out the Plow login it registered with. Owner only.<br>Remove the old Pi without a prompt: `latch devices remove old-pi --yes` |
-| `latch update` | Host | Install the newest latch, or the build TAG names. Owner only. |
+| `latch update` | Host Agent | Install the newest latch, or the build TAG names. |
 | `latch app` | Host | Open the Plow Latch app this latch belongs to (macOS). |
 | `latch help` | Host | Help for a command, its examples, or every command as JSON.<br>Help for one command: `latch help browser open` |
 | `latch skill` | Agent | Print SKILL.md, which teaches an agent how to use latch. |
@@ -109,7 +109,7 @@ latch browser open --host my-mac https://example.com
 
 | Command | For | What it does, and an example |
 |---|---|---|
-| `latch vault list` | Agent | Every item's metadata, a login's username included (never a secret value).<br>List the items: `latch vault --host mac list` |
+| `latch vault list` | Agent | The items' metadata, a login's username included (never a secret value): the first 50 unless --all, narrowed by --site, --search and --kind.<br>The items saved for a site: `latch vault --host mac list --site crateandbarrel.com` |
 | `latch vault show` | Host | One item's metadata and its non-secret values (never a secret one). Owner only.<br>Show an item: `latch vault --host mac show v3` |
 | `latch vault add` | Host | Add an item to the vault. Owner only.<br>Add a login with its password as JSON on stdin: `latch vault add --kind login --title Shop --site shop.example --field username=ada --stdin` |
 | `latch vault edit` | Host | Change an item's title, sites or fields, at its current revision. Owner only.<br>Change a login's password, given as JSON on stdin: `latch vault edit v1 --revision 2 --stdin` |

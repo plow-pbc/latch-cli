@@ -60,16 +60,8 @@ latch status
 
 ## Update
 
-On a host:
-
-```sh host
+```sh host agent
 latch update
-```
-
-An agent can't run `latch update`, so on an agent's computer, install again:
-
-```sh agent
-curl -fsSLO https://releases.plow.co/latch-cli/install.sh && sh install.sh --client-only
 ```
 
 Nothing updates on its own.
