@@ -30,9 +30,10 @@ When it fails, it prints one `{"error": …}` line on stderr instead.
 curl -fsSLO https://releases.plow.co/latch-cli/install.sh && sh install.sh
 ```
 
-The installer downloads the newest release for your machine, checks it
-against the release's `SHA256SUMS` and installs it. You need `curl`, `tar`
-and a SHA-256 tool, which most systems have.
+The installer downloads the newest release for your machine, checks that
+it is signed with Latch's release key, as `latch update` does, and on a Mac
+that Plow signed the app, then installs it. You need `curl`, `tar` and a
+SHA-256 tool, which most systems have, and on Linux OpenSSL 3.
 
 | What | Where |
 |---|---|
@@ -76,7 +77,8 @@ bubblewrap work. For Docker, see [DOCKER.md](../latch/DOCKER.md).
 | Option | What it does |
 |---|---|
 | `TAG` | Installs that release instead of the newest, for example `v0.1.0-151`. Put it first. |
-| `--client-only` | Installs `latch` for a machine that only calls hosts, such as an agent's: no browser, no Google tool, no Messages reader and no Linux sandbox packages. It never asks for `sudo` and runs no setup. |
+| `--client-only` | Installs `latch` for a machine that only calls hosts, such as an agent's: no browser, no Google tool, no Messages reader and no Linux sandbox packages. It never asks for `sudo` and runs no setup. At a terminal, on a machine holding an agent's Plow credential, it runs `latch login` once at the end, unless this state folder is logged in already. |
+| `--no-login` | With `--client-only` at a terminal, doesn't log in at the end. |
 | `--bin-dir FOLDER` | Puts `latch` in `FOLDER`. |
 | `--state-dir FOLDER` | Uses `FOLDER` as the state folder. Then pass the same `--state-dir FOLDER` to every `latch` command, or set `LATCH_STATE_DIR=FOLDER`. |
 | `--browser chrome`, `--browser camoufox` | Chooses the browser to install. Repeat it to install both. |
@@ -127,7 +129,9 @@ with the phone's camera. Latch waits for the text, then prints
 The machine is named after its hostname. `latch login --name NAME` picks
 another name. Names are unique in your account. If another of your machines
 has the name, the login asks whether to replace that machine or which name to
-use instead. `latch devices` lists your machines.
+use instead. `latch devices` lists your machines. Run on a machine that is
+logged in already, `latch login` changes nothing and says as whom;
+`latch login --again` logs in anew.
 
 **See this machine at a glance:**
 
@@ -229,7 +233,9 @@ folder. The host then judges each of its calls as that agent's.
 **An agent that runs on Plow** has its credential and Plow's address in its
 environment (`PLOW_AGENT_TOKEN`, `PLOW_TOKEN_FILE` or `PLOW_API_BASE`). If
 its machine has no Latch yet, install it with
-`sh install.sh --client-only`. Then, in that same environment:
+`sh install.sh --client-only` in that environment: at a terminal, it logs
+in at the end. Then, in that same environment (`latch login` logs in when
+the install didn't, and otherwise says it is logged in already):
 
 ```sh
 latch login
@@ -312,6 +318,10 @@ the app. A host started with `latch serve -d` restarts on the new version.
 A host running in a terminal stops, and the update tells you to start it
 again. A running host checks for a new release once a day and shows it in
 `latch` and on its dashboard. Nothing installs on its own.
+
+An agent runs `latch update` on its own computer too, where latch is
+installed alone (`install.sh --client-only`) and no host runs. An agent's
+login can't update a host, or a computer where a host runs: the owner does.
 
 ## 6. Troubleshooting
 

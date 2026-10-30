@@ -143,7 +143,7 @@ A suite that cannot run where you asked fails and says why; nothing is skipped. 
 
 `just gatekeeper` runs the checks that ask the decision model for real, through Plow on the login of `.dev/state` (not tests).
 
-Run `just test --linux` on a Mac only for a Linux-specific change (the bubblewrap sandbox, the Linux browser code, the installer's Linux paths, systemd) or to reproduce a Linux failure from CI, and then only the suite or test it touches: `just test --linux sandbox`, `just test --linux --only NAME`. The systemd tests (`lifecycle`) don't run in the container; CI and a Linux machine run them. The full Linux gate uses every core for about ten minutes, and CI runs it anyway.
+Run `just test --linux` on a Mac only for a Linux-specific change (the bubblewrap sandbox, the Linux browser code, the installer's Linux paths, systemd) or to reproduce a Linux failure from CI, and then only the suite or test it touches: `just test --linux sandbox`, `just test --linux --only NAME`. The systemd tests (`lifecycle`) don't run in the container; CI and a Linux machine run them. The full Linux gate takes about ten minutes, and CI runs it anyway. The container gets 6 CPUs and 8 GB; `LATCH_LINUX_CPUS` and `LATCH_LINUX_MEMORY` change that (e.g. `LATCH_LINUX_CPUS=4 just test --linux sandbox`).
 
 Rules:
 

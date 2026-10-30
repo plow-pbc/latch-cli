@@ -130,6 +130,9 @@ final class Onboarding {
     var draftRules = ""
     var rulesError: LatchError?
     var savingRules = false
+    /// This Mac's rules couldn't be read: nothing may be saved over them,
+    /// unseen, until they are. Skip for now still moves on.
+    private(set) var rulesUnreadable = false
     /// The requests the rules are tried on: the first default's until the
     /// person picks one.
     var deck = Onboarding.decks[0]
@@ -281,7 +284,7 @@ final class Onboarding {
     var primaryEnabled: Bool {
         switch step {
         case .login: verified
-        case .rules: !savingRules
+        case .rules: !savingRules && !rulesUnreadable
         // Continue never skips: until Google is on too, Skip for now does that.
         case .access: accessDone || accessFailed ? google == .connected : !waitingForAccess
         case .start: !starting
@@ -336,7 +339,8 @@ final class Onboarding {
     /// A step already set up shows Continue alone, not Skip for now.
     var stepDone: Bool {
         switch step {
-        case .rules: !(savedRules ?? "").isEmpty && !rulesChanged
+        // Rules that couldn't be read again leave Skip for now the way on.
+        case .rules: !(savedRules ?? "").isEmpty && !rulesChanged && !rulesUnreadable
         case .access: accessDone && google == .connected
         default: false
         }
@@ -365,6 +369,13 @@ final class Onboarding {
     var previewedRules: String {
         let draft = draftRules.trimmingCharacters(in: .whitespacesAndNewlines)
         return draft.isEmpty ? savedRules?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "" : draft
+    }
+
+    /// Whose rules the box holds, when this Mac already has some: those, or
+    /// a change Save rules would put in their place.
+    var rulesNote: String? {
+        guard let saved = savedRules?.trimmingCharacters(in: .whitespacesAndNewlines), !saved.isEmpty else { return nil }
+        return rulesChanged ? "Save rules replaces your current rules on this Mac." : "These are your current rules on this Mac."
     }
 
     var rulesChanged: Bool {
@@ -443,8 +454,10 @@ final class Onboarding {
             let draft = draftRules.trimmingCharacters(in: .whitespacesAndNewlines)
             if let match = Self.decks.first(where: { $0.rules == draft }) { deck = match }
             rulesError = nil
+            rulesUnreadable = false
         } catch {
             rulesError = .from(error)
+            rulesUnreadable = true
         }
         startReview()
     }
@@ -537,6 +550,7 @@ final class Onboarding {
     /// Continue: saves the rules only if the person changed them. An empty
     /// box never clears rules that are saved.
     func saveRules() async {
+        guard !rulesUnreadable else { return }
         guard rulesChanged else { return next() }
         let draft = draftRules.trimmingCharacters(in: .whitespacesAndNewlines)
         savingRules = true
@@ -618,6 +632,12 @@ final class Onboarding {
     }
 
     var canOpenGoogleSignInAgain: Bool { googleSignInLink != nil }
+
+    /// For snapshots: this Mac's rules couldn't be read.
+    func stage(rulesUnreadable error: LatchError) {
+        rulesError = error
+        rulesUnreadable = true
+    }
 
     /// For snapshots: latch has given a sign-in link.
     func stage(googleSignInLink: URL) {

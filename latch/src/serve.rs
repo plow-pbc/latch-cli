@@ -1398,7 +1398,8 @@ async fn serve_request(
                 Err(message) => failed(code::audit_failed, message),
             };
             // Answered before the board's name for the caller, which may ask Plow.
-            answer(&mut send, &with_permissions(response, exec_permissions)).await;
+            let response = with_permissions(response, exec_permissions);
+            answer(&mut send, &with_host(response, &host.name)).await;
             let name = host.shown_name(&identity).await;
             host.dashboard.end(
                 on_board,
@@ -1413,7 +1414,26 @@ async fn serve_request(
             return;
         }
     };
-    answer(&mut send, &with_permissions(response, exec_permissions)).await;
+    let response = with_permissions(response, exec_permissions);
+    answer(&mut send, &with_host(response, &host.name)).await;
+}
+
+/// Names the host that answered, as Plow lists it, in `host`: on a result,
+/// and on an error's details, unless the answer names one already.
+fn with_host(mut response: Response, name: &str) -> Response {
+    let named = match &mut response {
+        Response::Ok(result) => result.as_object_mut(),
+        Response::Error { details, .. } => {
+            if details.is_null() {
+                *details = json!({});
+            }
+            details.as_object_mut()
+        }
+    };
+    if let Some(named) = named {
+        named.entry("host").or_insert_with(|| json!(name));
+    }
+    response
 }
 
 /// An exec's refusal, with the writes and network it asked for.
@@ -1677,12 +1697,30 @@ async fn serve_phone(host: &Host, caller: &str, connection: &Connection) {
         let started = Instant::now();
         let mut audit_args = serde_json::Map::new();
         audit_args.insert("command".into(), Value::String(request.op.clone()));
-        let result = match request.op.as_str() {
+        // An agent's link names its request, not a code: the host serves it
+        // only to a phone Plow vouches is the owner, for that request.
+        let granted = match request.args["link"].is_string() && !host.binary.replaced() {
+            true => host.plow.phone_grant(caller).await,
+            false => Ok(None),
+        };
+        let result = match (request.op.as_str(), granted) {
             // The link's item would be saved by this old host's code.
             _ if host.binary.replaced() => Err(host_upgraded()),
-            "page" => link::page(&host.vault, &host.here(), &request.args, &mut audit_args),
-            "submit" => link::submit(&host.vault, &request.args, &mut audit_args),
-            op => Err(Failure::new(
+            (_, Err(failure)) => Err(failure),
+            ("page", Ok(granted)) => link::page(
+                &host.vault,
+                &host.here(),
+                &request.args,
+                granted.as_deref(),
+                &mut audit_args,
+            ),
+            ("submit", Ok(granted)) => link::submit(
+                &host.vault,
+                &request.args,
+                granted.as_deref(),
+                &mut audit_args,
+            ),
+            (op, Ok(_)) => Err(Failure::new(
                 code::not_on_a_phone_link,
                 format!("a phone link cannot run `{op}`"),
             )),
@@ -1802,6 +1840,7 @@ impl Host {
             key: self.endpoint.id().to_string(),
             name: self.name.clone(),
             relay: self.endpoint.addr().relay_urls().next().cloned(),
+            plow: self.plow.api_url().to_string(),
         }
     }
 

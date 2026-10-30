@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; base-uri 'self'; form-action 'none'">
+<title>How adding a login from your phone works</title>
+<link rel="stylesheet" href="how.css">
+</head>
+<body>
+<main>
+<h1>How adding a login from your phone works</h1>
+<p>Your agent asked you for a login it doesn't have. This page sends what you type straight to one of your computers running latch, where it is saved in latch's vault. Your agent can then use the login on that website, but it never sees the password.</p>
+
+<h2>Where your password goes</h2>
+<ul>
+  <li>The page connects to the computer named in the link over an encrypted connection, end to end. The connection passes through a relay, which only forwards encrypted data.</li>
+  <li>Plow serves this page but never receives what you type. Your agent never receives it either: it only learns that a login was saved.</li>
+  <li>If an agent sent you the link, you first sign in to Plow with a code it texts you. Plow then tells your computer that this page is you, for this request only. Without that, your computer shows nothing.</li>
+  <li>The link works once, for 15 minutes.</li>
+</ul>
+
+<h2>What to check before you save</h2>
+<ul>
+  <li><strong>The website.</strong> The login is only ever used on the website shown in large type. If it isn't the site you expect, correct it or don't save.</li>
+  <li><strong>The computer's name.</strong> The page shows the name the computer gives. It does not prove that the computer is yours: a link from someone else could lead to a computer they control. Only save if you expected this request.</li>
+</ul>
+
+<h2>What this page can't promise</h2>
+<p>Plow serves this page, so Plow could change it. The page's security rules let it load only its own files and connect only to itself and the relay, so nothing else on it can send what you type anywhere. Those rules can't protect you from the server that serves the page. The page is built from open source code, so any change can be seen: <a href="https://github.com/plow-pbc/latch-cli/tree/main/latch/phone">github.com/plow-pbc/latch-cli</a>.</p>
+</main>
+</body>
+</html>

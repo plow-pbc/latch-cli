@@ -69,7 +69,7 @@ pub async fn run(
                 let name = &config.peer.name;
                 let message = format!(
                     "Plow gave the name {name:?} to another machine (a `latch login` there took it over), \
-                     so this host stops; run `latch login` here to take the name back"
+                     so this host stops; run `latch login --replace` here to take the name back"
                 );
                 log(&format!("heartbeat: refused: {message}"));
                 return Failure::new(code::name_moved, message);

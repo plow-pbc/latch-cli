@@ -38,7 +38,7 @@ pub async fn get(
     let link = dial::connect(state, host).await?;
     let result = receive(&link.connection, chat, remote_path, &local).await;
     link.close();
-    result
+    result.map_err(dial::naming(host))
 }
 
 async fn receive(
@@ -59,6 +59,7 @@ async fn receive(
         "size": start["size"],
         "sha256": sha256,
         "audit_id": done["audit_id"],
+        "host": done["host"],
     }))
 }
 
@@ -101,7 +102,7 @@ pub async fn put(
     let link = dial::connect(state, host).await?;
     let result = send(&link.connection, chat, &mut file, args).await;
     link.close();
-    let mut result = result?;
+    let mut result = result.map_err(dial::naming(host))?;
     result["local_path"] = json!(local);
     Ok(result)
 }
@@ -132,6 +133,7 @@ async fn send(
         "size": size,
         "sha256": sha256,
         "audit_id": done["audit_id"],
+        "host": done["host"],
     }))
 }
 
@@ -190,6 +192,20 @@ impl Staged {
             .map(|_| ())
             .map_err(|err| local_failure(local, err.error))
     }
+}
+
+/// Saves `bytes` as `local`, staged beside it first, so a write that fails
+/// leaves whatever was under that name as it was.
+pub async fn save(local: &Path, bytes: &[u8]) -> Result<(), Failure> {
+    use tokio::io::AsyncWriteExt;
+    let staged = Staged::beside(local)?;
+    let mut file = staged.file()?;
+    let written = async {
+        file.write_all(bytes).await?;
+        file.flush().await
+    };
+    written.await.map_err(|err| local_failure(local, err))?;
+    staged.place(local)
 }
 
 /// Sends `request`, then reads the host's first answer with the size,

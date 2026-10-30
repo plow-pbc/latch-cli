@@ -46,6 +46,7 @@ installer's Linux paths, systemd) or to reproduce a Linux failure from CI,
 and then only that suite or test (`just test --linux --only NAME`; the
 systemd tests run in CI and on a Linux machine, not in the container). A suite
 that can't run where you asked fails and says why: nothing is skipped.
+The Linux container gets 6 CPUs and 8 GB; set `LATCH_LINUX_CPUS` or `LATCH_LINUX_MEMORY` to change that.
 
 Some checks call a real Plow stack or the decision model (`just dev-login`,
 `just gatekeeper`). They aren't part of the gate. Maintainers run them by
@@ -58,6 +59,11 @@ hand.
    one change.
 3. Update the docs in the same pull request when behavior changes:
    [README.md](README.md), [docs/](docs/) and the guides in `latch/*.md`.
+   The pages of plow.co/latch/docs are in [docs/site/](docs/site/), and
+   `docs/site/commands.md` is written from `latch help --json` by
+   `just docs-site OUT`; `just test` fails when it is out of date.
+   `just docs-publish [PLOW_CHECKOUT]` opens a plow PR with the rendered
+   pages; `--dry-run` prints the diff stat instead.
 4. Run `just test`; CI runs the Linux gate. Say in the pull request which
    ones you ran.
 5. Write the pull request's title and description so that someone who hasn't

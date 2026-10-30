@@ -35,18 +35,31 @@ pub async fn run(state: &StateDir, args: VaultArgs) -> Result<Value, Failure> {
         chat: None,
     };
     match args.command {
-        // An agent's list is judged in the chat it names, as its other calls are.
-        VaultCommand::List if target.host.is_none() && args.plow_chat.is_some() => Err(Failure::new(
+        // An agent's list or link is judged in the chat it names, as its
+        // other calls are.
+        VaultCommand::List { .. } | VaultCommand::Link { .. }
+            if target.host.is_none() && args.plow_chat.is_some() =>
+        {
+            Err(Failure::new(
             code::plow_chat_not_supported,
             "--plow-chat and LATCH_PLOW_CHAT select an agent's Plow chat on a host; this machine's own vault takes none: omit them".into(),
-        )),
-        VaultCommand::List => {
-            target
+            ))
+        }
+        VaultCommand::List {
+            site,
+            search,
+            kind,
+            limit,
+            all,
+        } => {
+            let narrow = Narrow::new(site, search, kind, (!all).then_some(limit))?;
+            let listed = target
                 .call(Request {
                     chat: args.plow_chat,
                     ..call(json!({"command": "list"}))
                 })
-                .await
+                .await?;
+            narrow.apply(listed)
         }
         VaultCommand::Show { item } => {
             target
@@ -150,22 +163,38 @@ pub async fn run(state: &StateDir, args: VaultArgs) -> Result<Value, Failure> {
             ask,
             page,
         } => {
+            // The page sees what the owner types: an agent's link always
+            // opens the one its host sets.
+            if page.is_some() && state.require_config()?.peer.kind == "agent" {
+                return Err(Failure::new(
+                    code::bad_arguments,
+                    "an agent's link opens the phone page its host sets; omit --page".into(),
+                ));
+            }
             let values = given(&kind, &field)?;
-            let request = call(json!({
-                "command": "link",
-                "kind": kind,
-                "title": title,
-                "sites": site,
-                "values": values,
-                "ask": ask,
-            }));
+            let request = Request {
+                chat: args.plow_chat,
+                ..call(json!({
+                    "command": "link",
+                    "kind": kind,
+                    "title": title,
+                    "sites": site,
+                    "values": values,
+                    "ask": ask,
+                }))
+            };
             let opened = target.call(request).await?;
-            let url = link_url(&page, &opened);
+            let page = page.as_deref().or(opened["page"].as_str()).unwrap_or_default();
+            let url = link_url(page, &opened);
             if term::interactive() {
                 eprintln!("{}", term::qr(&url));
                 eprintln!("Open on your phone; it works once, for 15 minutes.");
             }
             Ok(json!({"url": url, "link": opened["link"], "expires_in": opened["expires_in"]}))
+        }
+        VaultCommand::LinkState { link } => {
+            let request = call(json!({"command": "link_state", "link": link}));
+            target.call(request).await
         }
         VaultCommand::Import {
             file,
@@ -204,8 +233,101 @@ pub async fn run(state: &StateDir, args: VaultArgs) -> Result<Value, Failure> {
             )
             .await;
             link.close();
-            result
+            result.map_err(dial::naming(host))
         }
+    }
+}
+
+/// What `vault list` keeps of the host's list: the items that match every
+/// filter given, at most `limit` of them, with how many matched and, when
+/// some are left out, how to find them. The host sends the whole list, so
+/// this reads an owner's list and an agent's alike, from any host.
+struct Narrow {
+    site: Option<String>,
+    search: Option<String>,
+    kind: Option<String>,
+    limit: Option<usize>,
+}
+
+impl Narrow {
+    fn new(
+        site: Option<String>,
+        search: Option<String>,
+        kind: Option<String>,
+        limit: Option<usize>,
+    ) -> Result<Narrow, Failure> {
+        let usage = |message: String| Failure::new(code::usage, message);
+        let site = site
+            .map(|site| super::sites::registrable(&site).map_err(usage))
+            .transpose()?;
+        if let Some(kind) = &kind
+            && kind_code(kind).is_none()
+        {
+            return Err(usage(format!(
+                "--kind is login, card, identity or note, not {kind:?}"
+            )));
+        }
+        Ok(Narrow {
+            site,
+            search: search.map(|text| text.to_lowercase()),
+            kind,
+            limit,
+        })
+    }
+
+    fn keeps(&self, item: &Value) -> bool {
+        let sites: Vec<&str> = item["sites"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .collect();
+        let site = self.site.as_ref().is_none_or(|wanted| {
+            sites
+                .iter()
+                .any(|site| super::sites::registrable(site).as_ref() == Ok(wanted))
+        });
+        let search = self.search.as_ref().is_none_or(|text| {
+            let title = item["title"].as_str().unwrap_or_default().to_lowercase();
+            title.contains(text) || sites.iter().any(|site| site.to_lowercase().contains(text))
+        });
+        let kind = self
+            .kind
+            .as_ref()
+            .is_none_or(|kind| item["kind"].as_str() == Some(kind));
+        site && search && kind
+    }
+
+    fn apply(&self, mut listed: Value) -> Result<Value, Failure> {
+        let items = listed["items"].as_array().cloned().unwrap_or_default();
+        // A host that predates kinds in an agent's list would match none.
+        if self.kind.is_some() && items.iter().any(|item| item["kind"].is_null()) {
+            let mut outdated = Failure::new(
+                code::host_outdated,
+                "that host's latch doesn't say each item's kind, so --kind can't narrow its list"
+                    .into(),
+            );
+            outdated.next = Some(
+                "ask the owner to update latch on that host, or narrow with --site or --search"
+                    .into(),
+            );
+            return Err(outdated);
+        }
+        let matched: Vec<Value> = items.into_iter().filter(|item| self.keeps(item)).collect();
+        let total = matched.len();
+        let shown: Vec<Value> = matched
+            .into_iter()
+            .take(self.limit.unwrap_or(usize::MAX))
+            .collect();
+        let more = total - shown.len();
+        listed["items"] = json!(shown);
+        listed["total"] = json!(total);
+        if more > 0 {
+            listed["more"] = json!(format!(
+                "{more} more; narrow with --site SITE, --search TEXT or --kind KIND, or show them with --all"
+            ));
+        }
+        Ok(listed)
     }
 }
 
@@ -219,7 +341,8 @@ impl Target<'_> {
         if let Some(host) = &self.host {
             return dial::call(self.state, host, &request, ANSWER_WITHIN).await;
         }
-        if request.args["command"] == "link" {
+        // Open links live in the running host's memory.
+        if ["link", "link_state"].contains(&request.args["command"].as_str().unwrap_or_default()) {
             super::local::link(self.state, request.args).await
         } else {
             super::local::call(self.state, request.args)
@@ -410,13 +533,26 @@ fn prompted(kind: &str, asked: &[String], required: bool) -> Result<Map<String, 
     Ok(values)
 }
 
-/// The phone link: the page's address, then the host's key, its relay and
-/// the code after `#`, which a browser never sends to the page's server.
+/// The phone link: the page's address, then after `#`, which a browser
+/// never sends to the page's server, the host's key, its relay and an
+/// owner's link's code, or for an agent's link the request's id and the
+/// Plow the page signs the owner in to, when it is not Plow's own.
 fn link_url(page: &str, opened: &Value) -> String {
     let page = page.split('#').next().unwrap_or_default();
-    let part = |key: &str| opened[key].as_str().unwrap_or_default().to_string();
-    let relay: String = url::form_urlencoded::byte_serialize(part("relay").as_bytes()).collect();
-    format!("{page}#h={}&r={relay}&c={}", part("host"), part("code"))
+    let part = |key: &str| {
+        let value = opened[key].as_str().unwrap_or_default();
+        url::form_urlencoded::byte_serialize(value.as_bytes()).collect::<String>()
+    };
+    let mut url = format!("{page}#h={}&r={}", part("host"), part("relay"));
+    if opened["code"].is_string() {
+        url += &format!("&c={}", part("code"));
+    } else {
+        url += &format!("&l={}", part("link"));
+        if opened["plow"] != "https://api.plow.co" {
+            url += &format!("&p={}", part("plow"));
+        }
+    }
+    url
 }
 
 /// Sends the export and gets the preview; with `preview` that is the
@@ -677,5 +813,97 @@ mod tests {
             edits("login", &[], &["code".into()]).err().unwrap().code,
             "bad_item"
         );
+    }
+
+    /// 2,000 items as a host lists them, as many as an owner imports from
+    /// a password manager.
+    fn two_thousand() -> Value {
+        let mut items: Vec<Value> = (0..1998)
+            .map(|i| json!({"item": format!("v{}", i + 1), "kind": "login", "title": format!("Shop {i:04}"), "sites": [format!("shop{i:04}.com")]}))
+            .collect();
+        items.push(json!({"item": "v1999", "kind": "login", "title": "Crate & Barrel", "sites": ["crateandbarrel.com"]}));
+        items.push(json!({"item": "v2000", "kind": "card", "title": "Plow card", "sites": []}));
+        json!({"items": items, "next": "how to use one"})
+    }
+
+    fn narrow(
+        site: Option<&str>,
+        search: Option<&str>,
+        kind: Option<&str>,
+        limit: Option<usize>,
+    ) -> Value {
+        let own = |s: Option<&str>| s.map(str::to_string);
+        Narrow::new(own(site), own(search), own(kind), limit)
+            .unwrap()
+            .apply(two_thousand())
+            .unwrap()
+    }
+
+    fn ids(listed: &Value) -> Vec<&str> {
+        listed["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["item"].as_str().unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn two_thousand_items_list_a_page_and_narrow_to_what_is_asked() {
+        let first = narrow(None, None, None, Some(50));
+        assert_eq!(ids(&first).len(), 50);
+        assert_eq!(first["total"], 2000);
+        assert_eq!(first["next"], "how to use one");
+        assert!(first["more"].as_str().unwrap().starts_with("1950 more;"));
+        let all = narrow(None, None, None, None);
+        assert_eq!((ids(&all).len(), all.get("more")), (2000, None));
+
+        let at = |site| ids(&narrow(Some(site), None, None, Some(50))).join(",");
+        assert_eq!(at("https://www.crateandbarrel.com/cart"), "v1999");
+        assert_eq!(at("shop0420.com"), "v421");
+        assert_eq!(at("crate.example"), "");
+        assert_eq!(
+            ids(&narrow(None, Some("BARREL"), None, Some(50))),
+            ["v1999"]
+        );
+        assert_eq!(ids(&narrow(None, None, Some("card"), Some(50))), ["v2000"]);
+        let both = narrow(None, Some("shop 19"), Some("login"), Some(3));
+        assert_eq!(ids(&both), ["v1901", "v1902", "v1903"]);
+        assert_eq!(both["total"], 98);
+    }
+
+    /// An older host's list for an agent has no kinds: --kind says the
+    /// host needs updating rather than reporting an empty vault.
+    #[test]
+    fn kind_against_a_host_that_lists_no_kinds_says_to_update_it() {
+        let older = json!({"items": [
+            {"item": "v1", "title": "Plow card", "sites": []},
+            {"item": "v2", "title": "Shop", "sites": ["shop.example"]},
+        ], "next": "how to sign in"});
+        let kind = |listed: Value| {
+            Narrow::new(None, None, Some("card".into()), Some(50))
+                .unwrap()
+                .apply(listed)
+        };
+        let refused = kind(older.clone()).err().unwrap();
+        assert_eq!(refused.code, "host_outdated");
+        assert!(refused.next.unwrap().contains("update latch on that host"));
+        // The other filters still read it.
+        let site = Narrow::new(Some("shop.example".into()), None, None, Some(50)).unwrap();
+        assert_eq!(site.apply(older).unwrap()["total"], 1);
+        // An empty list has nothing to tell kinds by, and is empty.
+        assert_eq!(kind(json!({"items": []})).unwrap()["total"], 0);
+    }
+
+    #[test]
+    fn a_kind_or_site_it_cannot_read_is_a_usage_error() {
+        let wallet = Narrow::new(None, None, Some("wallet".into()), None)
+            .err()
+            .unwrap();
+        assert_eq!(wallet.code, "usage");
+        let site = Narrow::new(Some("not a site".into()), None, None, None)
+            .err()
+            .unwrap();
+        assert_eq!(site.code, "usage");
     }
 }

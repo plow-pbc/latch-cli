@@ -174,9 +174,12 @@ the link the installer checks is `~/.local/bin/latch`. The installer:
 
 1. stops a host running the latch being replaced (a different version, or
    the copy in the other folder), with the new latch;
-2. copies the new app beside the old one, moves the old one aside, moves
-   the new one into its place, then removes the old one. If a move fails
-   the old app goes back, still working;
+2. quits a window open from the app being replaced, which would otherwise
+   keep running the old app until opened again (if it has not quit 10
+   seconds on, the update goes on and says to quit and open Latch again);
+   then copies the new app beside the old one, moves the old one aside,
+   moves the new one into its place, then removes the old one. If a move
+   fails the old app goes back, still working;
 3. links `~/.local/bin/latch` into it, if the link is not there already,
    and removes this user's copy in the other folder, quitting a window
    open from it first;
@@ -185,8 +188,8 @@ the link the installer checks is `~/.local/bin/latch`. The installer:
    given. A host that ran in a terminal stays stopped, and the update says
    to run `latch serve` there again;
 6. turns "Start when you log in" on again for the new copy if it was on
-   for the one removed in step 3, and opens the new copy if a window was
-   quit there.
+   for the one removed in step 3, and opens the new app if a window was
+   quit in step 2 or 3.
 
 So on macOS the app is replaced as a unit and the binary is never copied
 anywhere else. Every install and update also writes these outside the

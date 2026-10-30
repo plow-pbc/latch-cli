@@ -331,14 +331,8 @@ nonisolated struct SyntheticLatchClient: LatchClient {
         return LogoutResult(device: nil)
     }
     func agentCatalog() async throws -> AgentCatalog { try await read(Fixtures.catalog) }
-    func agentLines() async throws -> AgentLines { try await read(Fixtures.lines) }
-    func newAgent(name: String, cloud: String?, tokenFile: URL?, line: String) async throws -> AgentCreated {
-        try await base.newAgent(name: name, cloud: cloud, tokenFile: tokenFile, line: line)
-    }
+    func agentCard(_ uid: String) async throws -> Data { throw LatchError.unreachable("no card on the synthetic latch") }
+    func agentStartByText() async throws -> AgentStartByText { try await read(Fixtures.startByText) }
     func removeAgent(_ uid: String) async throws {}
-    func agentShow(_ uid: String) async throws -> AgentsList.Agent {
-        guard let agent = try await agents(host: nil).agents.first(where: { $0.uid == uid }) else { throw LatchError.unreachable("no such agent") }
-        return agent
-    }
 }
 #endif

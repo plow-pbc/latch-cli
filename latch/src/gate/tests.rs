@@ -854,10 +854,22 @@ async fn an_agents_vault_list_is_judged_knowing_what_it_shows() {
         .unwrap()
         .action;
     assert_eq!(list.get(), r#"{"operation":"vault.list"}"#);
-    // Only the list is an agent's to ask for; the rest is never judged.
-    for command in ["show", "add", "edit", "remove", "import", "link"] {
+    // Only the list and a phone link are an agent's to ask for; the rest
+    // is never judged.
+    for command in ["show", "add", "edit", "remove", "import", "link_state"] {
         assert!(crate::gate::gated("vault", &json!({"command": command})).is_none());
     }
+    let link = json!({"command": "link", "kind": "login", "title": "Shop",
+                      "sites": ["shop.example"], "values": {"username": "ada@shop.example"}});
+    let gated = crate::gate::gated("vault", &link).unwrap();
+    let login = json!({"title": "Shop", "sites": ["shop.example"], "username": "ada@shop.example"});
+    assert_eq!(
+        serde_json::from_str::<Value>(gated.action.get()).unwrap(),
+        json!({"operation": "vault.link", "login": login})
+    );
+    assert_eq!(gated.audit, json!({"command": "link", "login": login}));
+    let note = json!({"command": "link", "kind": "note", "title": "Wifi"});
+    assert!(crate::gate::gated("vault", &note).is_none());
     let fill = serde_json::value::to_raw_value(&crate::browser::previewed_fill(
         "https://www.parentsquare.com/signin",
         "login",

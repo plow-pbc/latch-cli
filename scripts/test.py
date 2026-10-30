@@ -297,16 +297,27 @@ def steps(where, suites, gate, shard, archive=None, ci=False, only=None):
                     LATCH / "messages-reader"))
     if "core" in suites and first_shard:
         out.append(("test.py", ["core"], ["python3", "scripts/test_test.py"], ROOT))
+        # The Commands page says what this build's `latch help --json` says.
+        out.append(("docs site", ["core"], ["python3", "scripts/docs_site.py", "check", "--latch",
+                                            str(LATCH / target_dir(where) / "debug/latch")], ROOT))
+        out.append(("docs publish", ["core"], ["python3", "scripts/test_docs_site.py",
+                                               str(LATCH / target_dir(where) / "debug/latch")], ROOT))
     if "installer" in suites and first_shard:
-        out.append(("install.sh", ["installer"], ["python3", "scripts/test-install-release.py"], ROOT))
-        out.append(("install-binary.sh", ["installer"], ["python3", "scripts/test-install.py"], ROOT))
-        out.append(("dev-login.py", ["installer"], ["python3", "scripts/test-dev-login.py"], LATCH))
+        latch = LATCH / target_dir(where) / "debug/latch"
+        install = ["python3", "scripts/test-install-release.py"]
         if where == "macos":
             if not rust:
                 out.append(("latch", ["installer"], ["cargo", "build", "--locked", "--features", features],
                             LATCH))
+            # On a Mac, install.sh has the release's latch check signatures:
+            # here, the latch just built.
+            install = ["env", f"LATCH_RELEASE_LATCH={latch}", *install]
+        out.append(("install.sh", ["installer"], install, ROOT))
+        out.append(("install-binary.sh", ["installer"], ["python3", "scripts/test-install.py"], ROOT))
+        out.append(("dev-login.py", ["installer"], ["python3", "scripts/test-dev-login.py"], LATCH))
+        if where == "macos":
             # Its ContractTests run the latch just built.
-            out.append(("swift app", ["installer"], ["env", f"LATCH_CONTRACT_LATCH={LATCH / target_dir(where) / 'debug/latch'}",
+            out.append(("swift app", ["installer"], ["env", f"LATCH_CONTRACT_LATCH={latch}",
                                                       "swift", "test"], LATCH / "gui"))
             out.append(("app bundle", ["installer"], ["sh", str(ROOT / "scripts/test-app-bundle.sh")], LATCH))
     return out
@@ -444,7 +455,17 @@ def in_container(args):
     # for an instant to readers, so latch's atomic writes are not atomic
     # there and a `status --local` beside a host's write finds no config.
     (DEV / "tests").mkdir(parents=True, exist_ok=True)
+    # A run takes a share of the machine, not all of it, so other work on
+    # it keeps going; past six CPUs the gate is barely faster. nextest runs
+    # as many tests at once as the container has CPUs.
+    cpus = os.environ.get("LATCH_LINUX_CPUS", "6")
+    memory = os.environ.get("LATCH_LINUX_MEMORY", "8g")
+    try:
+        threads = max(1, int(float(cpus)))
+    except ValueError:
+        raise SystemExit(f"test.py: LATCH_LINUX_CPUS is a number of CPUs, not {cpus!r}")
     command = ["docker", "run", "--rm", "--init", "--platform", "linux/arm64", *apparmor, "--user", f"{os.getuid()}:{os.getgid()}",
+               "--cpus", cpus, "--memory", memory, "-e", f"NEXTEST_TEST_THREADS={threads}",
                "--cap-drop=ALL", "--security-opt=no-new-privileges=true",
                "--security-opt=systempaths=unconfined",
                f"--security-opt=seccomp={docker / 'seccomp.json'}",

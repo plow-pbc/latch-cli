@@ -600,8 +600,10 @@ or a route that fails or can't be reached, means what needs a decision
 stops with `model_unavailable`; there is no keyword stand-in. The message
 says what fixes it: an account out of credits (Plow's 402) waits for the
 host's account owner to add Plow credits, and every retry fails until
-then; a login Plow refuses (401, 403) waits for the host's owner to run
-`latch login` on the host again; an unreachable route or another error is
+then; a login Plow refuses (401) waits for the host's owner to run
+`latch login --again` on the host, and one that may not ask the model (403)
+for `latch logout`, then `latch login` on an account that may; an
+unreachable route or another error is
 worth a retry later. The gatekeeper asks the same route, and its
 `gatekeeper_unavailable` says the same. No command asks the model only to
 report its health: a failure shows when something needs a decision.

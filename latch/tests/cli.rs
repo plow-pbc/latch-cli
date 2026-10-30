@@ -1344,8 +1344,6 @@ fn a_login_by_text_ends_in_a_line_and_one_that_asks_no_one_in_json() {
     let (api_url, server) = fake_plow(vec![
         (200, activation),
         (200, json!({"status": "verified", "token": "texted-login"})),
-        (200, mac.clone()),
-        (200, mac.clone()),
         (200, mac),
     ]);
     let dir = test_dir();
@@ -1362,15 +1360,17 @@ fn a_login_by_text_ends_in_a_line_and_one_that_asks_no_one_in_json() {
     );
     assert!(stdout.is_empty(), "{stdout}");
 
-    // Logged in already: nothing to ask, so JSON, at a terminal and piped.
+    // Logged in already: nothing to ask, of the person or of Plow, so JSON
+    // that says so, at a terminal and piped.
     let (code, shown, _) = latch_at_a_terminal(&state, &["login"], "", true, &[]);
     assert_eq!(code, Some(0), "{shown}");
     let again: Value = serde_json::from_str(shown.trim()).unwrap();
     assert_eq!(again["peer"]["name"], "mac");
+    assert!(again["already_logged_in"].is_string(), "{again}");
     let piped = latch(&state, &["login"], &[]);
     let again: Value = serde_json::from_slice(&piped.stdout).unwrap();
     assert_eq!(again["peer"]["name"], "mac");
-    assert_eq!(server.join().unwrap().len(), 5);
+    assert_eq!(server.join().unwrap().len(), 3);
 }
 
 #[test]
@@ -2176,22 +2176,66 @@ fn an_agent_gets_owner_only_for_browser_setup_and_nothing_is_downloaded() {
     assert!(!state.join("plugins").exists());
 }
 
+/// An agent's login updates only its own computer, where latch is installed
+/// alone: on a host it gets owner_only, and there is no `--host` to aim it at
+/// another. Its own state folder installed alone is not enough while a host
+/// on another state folder runs the same latch: the update would replace
+/// that host's latch too. The agent runs its own copy of this build, which
+/// no other test's host runs; a local build, so on its own computer the
+/// update stops at `local_build`, past the agent's check and before any
+/// download.
 #[test]
-fn an_agent_gets_owner_only_for_update_and_nothing_is_installed() {
+fn an_agent_updates_only_its_own_client_only_computer() {
     let (dir, token, server) = logged_in_agent(vec![]);
     server.join().unwrap();
     let state = dir.path().join("state");
+    let installed = dir.path().join("installed/latch");
+    fs::create_dir_all(installed.parent().unwrap()).unwrap();
+    fs::copy(latch_bin(), &installed).unwrap();
+    let update = |args: &[&str]| {
+        let mut command = Command::new(&installed);
+        command
+            .env("HOME", dir.path())
+            .env("LATCH_APPLICATIONS", dir.path().join("Applications"))
+            .env("PLOW_TOKEN_FILE", &token)
+            .env_remove("PLOW_API_URL")
+            .env_remove("PLOW_API_BASE")
+            .env_remove("PLOW_AGENT_TOKEN")
+            .env_remove("LATCH_STATE_DIR")
+            .arg("--state-dir")
+            .arg(&state)
+            .args(args);
+        let output = command.output().unwrap();
+        let error = serde_json::from_slice::<Value>(&output.stderr).unwrap_or_default();
+        (output.status.code(), error["error"]["code"].clone())
+    };
     for args in [
         &["update"][..],
         &["update", "--check"],
         &["update", "v0.1.0-1"],
     ] {
-        let output = latch(&state, args, &[("PLOW_TOKEN_FILE", token.as_path())]);
-        assert_eq!(output.status.code(), Some(4), "{args:?}: {output:?}");
-        let error: Value = serde_json::from_slice(&output.stderr).unwrap();
-        assert_eq!(error["error"]["code"], "owner_only");
+        assert_eq!(update(args), (Some(4), json!("owner_only")), "{args:?}");
     }
     assert!(!dir.path().join(".local").exists());
+    assert_eq!(update(&["update", "--host", "studio"]).0, Some(2));
+    fs::create_dir_all(state.join("plugins")).unwrap();
+    fs::write(state.join("plugins/client-only"), "").unwrap();
+    for args in [&["update"][..], &["update", "v0.1.0-1"]] {
+        assert_eq!(update(args), (Some(1), json!("local_build")), "{args:?}");
+    }
+
+    // A host on another state folder, from the same latch.
+    let plow = LivePlow::start();
+    let host = owner_host_on(&plow, dir.path());
+    let (_relay, relay) = local_relay();
+    let mut command = Command::new(&installed);
+    command.env("LATCH_TEST_LOOPBACK", "1");
+    let (serving, log, _) = serving_with(configure_serve_command(command, &host, &relay));
+    thread::spawn(move || log.lines().for_each(drop));
+    until_serving(&host, &serving);
+    assert_eq!(update(&["update"]), (Some(4), json!("owner_only")));
+    drop(serving);
+    assert_eq!(update(&["update"]), (Some(1), json!("local_build")));
 }
 
 /// A newer build the host found shows in `status --local`, and a piped
@@ -2314,14 +2358,28 @@ impl Http {
 }
 
 fn respond(socket: &mut impl Write, status: u16, body: &Value) {
-    let body = body.to_string();
+    respond_bytes(
+        socket,
+        status,
+        "application/json",
+        body.to_string().as_bytes(),
+    );
+}
+
+fn respond_bytes(socket: &mut impl Write, status: u16, content_type: &str, body: &[u8]) {
     let head = format!(
-        "HTTP/1.1 {status} Fake\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {status} Fake\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     );
     let _ = socket.write_all(head.as_bytes());
-    let _ = socket.write_all(body.as_bytes());
+    let _ = socket.write_all(body);
 }
+
+/// The research line's contact card, as plow.co serves one: a vCard with
+/// its persona's photo.
+const RESEARCH_CARD: &[u8] = b"BEGIN:VCARD\r\nVERSION:3.0\r\nN:by Plow;Research;;;\r\nFN:Research line\r\n\
+PHOTO;ENCODING=b;TYPE=PNG:iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAwS2OUAAAAABJRU5ErkJggg==\r\n\
+END:VCARD\r\n";
 
 const AGENT_UID: &str = "0123456789abcdef0123456789abcdef";
 
@@ -2353,6 +2411,8 @@ struct LiveState {
     google: Option<String>,
     /// Google accounts added after that one, listed by `GET /v1/connectors`.
     added_google: Vec<String>,
+    /// Phone page keys Plow vouches for, each with the request it may open.
+    phone_grants: Vec<(String, String)>,
     /// Connected accounts Google wants signed in again: minted no token.
     google_reauth: Vec<String>,
     /// How long a Google sign-in link lasts, in seconds (Plow's is 120).
@@ -2385,6 +2445,7 @@ impl LivePlow {
                 seen: Vec::new(),
                 google: None,
                 added_google: Vec::new(),
+                phone_grants: Vec::new(),
                 google_reauth: Vec::new(),
                 sign_in_for: 120,
                 sign_in_refused: false,
@@ -2404,8 +2465,15 @@ impl LivePlow {
                     let mut socket = socket.unwrap();
                     let mut reader = BufReader::new(socket.try_clone().unwrap());
                     if let Some(request) = Http::read(&mut reader) {
-                        let (status, body) = plow.answer(&request);
-                        respond(&mut socket, status, &body);
+                        match plow.card(&request) {
+                            Some((status, card)) => {
+                                respond_bytes(&mut socket, status, "text/vcard", card)
+                            }
+                            None => {
+                                let (status, body) = plow.answer(&request);
+                                respond(&mut socket, status, &body);
+                            }
+                        }
                     }
                 });
             }
@@ -2437,6 +2505,16 @@ impl LivePlow {
         self.state.lock().unwrap().seen.clone()
     }
 
+    /// The research line's contact card, public: asked with a credential,
+    /// it refuses, so a test sees none is sent.
+    fn card(&self, request: &Http) -> Option<(u16, &'static [u8])> {
+        let asked = request.line().starts_with("GET /cards/research.vcf ");
+        asked.then(|| match request.bearer() {
+            Some(_) => (400, b"sent a credential".as_slice()),
+            None => (200, RESEARCH_CARD),
+        })
+    }
+
     fn answer(&self, request: &Http) -> (u16, Value) {
         let mut state = self.state.lock().unwrap();
         let bearer = request.bearer();
@@ -2458,6 +2536,22 @@ impl LivePlow {
         }
         if request.line().starts_with("GET /socket-page ") {
             return (200, json!({"fixture": "Local socket browser page"}));
+        }
+        // How to start an agent by text, public: asked with a credential,
+        // it refuses, so a test sees none is sent. One kind with two
+        // phrases, one whose phrase needs escaping, and one with none.
+        if request.line().starts_with("GET /v1/signup ") {
+            if bearer.is_some() {
+                return (400, json!({"detail": "sent a credential"}));
+            }
+            return (
+                200,
+                json!({"managed_phone": "+15550000001", "default_provider": "exe:hermes",
+                       "providers": [
+                           {"id": "exe:hermes", "name": "Hermes", "phrases": ["Create an agent for me", "Set this up for me: Hermes"]},
+                           {"id": "exe:life", "name": "Life Assistant", "phrases": ["Set this up for me: aiworthusing.com/agent-index/life"]},
+                           {"id": "exe:quiet", "name": "Quiet", "phrases": []}]}),
+            );
         }
         let token = bearer.unwrap_or_default();
         let kind = if token == state.owner {
@@ -2636,7 +2730,8 @@ impl LivePlow {
                 200,
                 json!([{"uid": AGENT_UID, "name": "Research bot", "provider": "self_hosted",
                         "line": {"uid": "line_agent", "object": "line", "provider_type": "imessage",
-                                 "provider_key": "+14155550123", "display_name": "Research line"},
+                                 "provider_key": "+14155550123", "display_name": "Research line",
+                                 "card_url": format!("{}/cards/research.vcf", self.url)},
                         "mailbox": null, "created_at": "2026-10-20T10:00:00Z", "url": null,
                         "image": null, "status": null, "failure_code": null, "settings": {},
                         "credential": {"id": 7, "name": null, "scopes": [], "connected": false,
@@ -2652,6 +2747,16 @@ impl LivePlow {
                 200,
                 json!({"agent": {"uid": AGENT_UID, "name": "Research bot"}}),
             ),
+            ("GET", path) if path.starts_with("/v1/latch/phone-grants/") && kind == "device" => {
+                let key = &path["/v1/latch/phone-grants/".len()..];
+                match state.phone_grants.iter().rev().find(|(k, _)| k == key) {
+                    Some((_, request)) => (
+                        200,
+                        json!({"key": key, "request": request, "expires_at": "2026-10-29T12:10:00Z"}),
+                    ),
+                    None => (404, json!({})),
+                }
+            }
             ("GET", path) if path.starts_with("/v1/latch/peers/") => {
                 let key = &path["/v1/latch/peers/".len()..];
                 let found = state
@@ -2803,6 +2908,137 @@ fn adding_proxy(upstream: &str, credential: &str) -> String {
         }
     });
     url
+}
+
+/// A login Plow no longer accepts: `latch login --again` logs in anew, by
+/// text here, keeps this machine's key, and never sends the saved token.
+#[test]
+fn login_again_replaces_the_saved_login_with_a_new_one() {
+    let (api_url, server) = fake_plow(vec![(200, peer(Value::Null, "mac", "device", Value::Null))]);
+    let dir = test_dir();
+    let state = dir.path().join("state");
+    let token = dir.path().join("owner.token");
+    fs::write(&token, "refused-login\n").unwrap();
+    let token = token.to_str().unwrap();
+    let args = [
+        "login",
+        "--api-url",
+        &api_url,
+        "--token-file",
+        token,
+        "--name",
+        "mac",
+    ];
+    let first = latch(&state, &args, &[]);
+    assert_eq!(first.status.code(), Some(0), "{first:?}");
+    let first: Value = serde_json::from_slice(&first.stdout).unwrap();
+    server.join().unwrap();
+
+    let activation = json!({"display_code": "TRY12", "activation_secret": "s3cret",
+                            "send_to": "+14155550100"});
+    let (api_url, server) = fake_plow(vec![
+        (200, activation),
+        (200, json!({"status": "verified", "token": "texted-login"})),
+        (200, peer(Value::Null, "mac", "device", Value::Null)),
+    ]);
+    let args = ["login", "--again", "--events", "--api-url", &api_url];
+    let again = latch(&state, &args, &[]);
+    assert_eq!(again.status.code(), Some(0), "{again:?}");
+    assert_eq!(event_lines(&again).pop().unwrap()["type"], "verified");
+    let requests = server.join().unwrap();
+    assert!(requests[0].contains("/v1/auth/activate"), "{}", requests[0]);
+    assert!(
+        requests
+            .iter()
+            .all(|request| !request.contains("refused-login")),
+        "{requests:?}"
+    );
+    assert!(
+        requests[2].contains("authorization: Bearer texted-login\r\n"),
+        "{}",
+        requests[2]
+    );
+    assert_eq!(body(&requests[2])["key"], first["peer"]["key"]);
+
+    // A login anew that Plow refuses leaves the saved one as it was.
+    let activation = json!({"display_code": "TRY13", "activation_secret": "s3cret",
+                            "send_to": "+14155550100"});
+    let (api_url, server) = fake_plow(vec![
+        (200, activation),
+        (200, json!({"status": "verified", "token": "refused-again"})),
+        (401, json!({})),
+    ]);
+    let args = ["login", "--again", "--events", "--api-url", &api_url];
+    let refused = latch(&state, &args, &[]);
+    assert_ne!(refused.status.code(), Some(0), "{refused:?}");
+    server.join().unwrap();
+    let (api_url, server) = fake_plow(vec![(200, peer(Value::Null, "mac", "device", Value::Null))]);
+    let kept = latch(&state, &["login", "--api-url", &api_url], &[]);
+    assert_eq!(kept.status.code(), Some(0), "{kept:?}");
+    let requests = server.join().unwrap();
+    assert!(
+        requests[0].contains("authorization: Bearer texted-login\r\n"),
+        "{}",
+        requests[0]
+    );
+
+    // With no terminal and nothing to log in with, it says how, and never
+    // falls back on the saved login.
+    let piped = latch(&state, &["login", "--again"], &[]);
+    assert_eq!(piped.status.code(), Some(2), "{piped:?}");
+    let error = one_error_line(&String::from_utf8_lossy(&piped.stderr), Some(2));
+    assert_eq!(error["error"]["code"], "no_credential", "{error}");
+}
+
+/// A second `latch login` on a logged-in state folder says so and asks
+/// nothing of Plow; `--again` logs in anew.
+#[test]
+fn a_login_where_one_is_saved_changes_nothing_unless_asked_again() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let state = dir.path().join("state");
+    let token = dir.path().join("agent.token");
+    fs::write(&token, "agent-credential\n").unwrap();
+    let env = [("PLOW_TOKEN_FILE", token.as_path())];
+    let first = latch(&state, &["login", "--api-url", plow.url.as_str()], &env);
+    assert_eq!(first.status.code(), Some(0), "{first:?}");
+    let first: Value = serde_json::from_slice(&first.stdout).unwrap();
+    assert_eq!(first.get("already_logged_in"), None, "{first}");
+    let config = fs::read(state.join("config.json")).unwrap();
+    let asked = plow.seen().len();
+
+    let second = latch(&state, &["login"], &env);
+    assert_eq!(second.status.code(), Some(0), "{second:?}");
+    let second: Value = serde_json::from_slice(&second.stdout).unwrap();
+    assert_eq!(
+        second["already_logged_in"],
+        format!(
+            "already logged in as {} on this computer; `latch login --again` logs in anew",
+            first["peer"]["name"].as_str().unwrap()
+        ),
+        "{second}"
+    );
+    assert_eq!(second["peer"], first["peer"]);
+    assert_eq!(plow.seen().len(), asked, "Plow was asked nothing");
+    assert_eq!(fs::read(state.join("config.json")).unwrap(), config);
+
+    let again = latch(&state, &["login", "--again"], &env);
+    assert_eq!(again.status.code(), Some(0), "{again:?}");
+    let again: Value = serde_json::from_slice(&again.stdout).unwrap();
+    assert_eq!(again.get("already_logged_in"), None, "{again}");
+    assert_eq!(again["peer"]["key"], first["peer"]["key"]);
+    assert!(plow.seen().len() > asked, "--again registers with Plow");
+
+    // Naming a Plow asks for one: the login goes ahead there.
+    let other = LivePlow::start();
+    let moved = latch(&state, &["login", "--api-url", other.url.as_str()], &env);
+    assert_eq!(moved.status.code(), Some(0), "{moved:?}");
+    let moved: Value = serde_json::from_slice(&moved.stdout).unwrap();
+    assert_eq!(moved.get("already_logged_in"), None, "{moved}");
+    assert!(!other.seen().is_empty(), "the login went to the Plow named");
+    let config: Value =
+        serde_json::from_slice(&fs::read(state.join("config.json")).unwrap()).unwrap();
+    assert_eq!(config["api_url"], other.url.as_str());
 }
 
 #[test]
@@ -3428,7 +3664,10 @@ fn a_host_runs_exec_and_files_under_home() {
     // The owner reads its status as it prints it there.
     let remote = latch(&owner, &["status", "--host", "host"], &[]);
     assert_eq!(remote.status.code(), Some(0), "{remote:?}");
-    let remote: Value = serde_json::from_slice(&remote.stdout).unwrap();
+    let mut remote: Value = serde_json::from_slice(&remote.stdout).unwrap();
+    // Named, as every answer from a host is; the rest as printed there.
+    let named = remote.as_object_mut().unwrap().remove("host");
+    assert_eq!(named, Some(json!("host")));
     assert_eq!(remote, local);
 
     let into = dir.path().join("hosts");
@@ -3606,6 +3845,374 @@ fn an_agents_vault_list_names_its_plow_chat() {
     }
 }
 
+/// One request on a phone link's own protocol, as the phone page sends it
+/// with its key `phone` to the host the link `url` names, through `relay`:
+/// `args`, and the link's code or, for an agent's link, its request id.
+fn phone_request(
+    runtime: &tokio::runtime::Runtime,
+    relay: &str,
+    url: &str,
+    phone: &iroh::SecretKey,
+    op: &str,
+    mut args: Value,
+) -> Value {
+    use tokio::io::AsyncReadExt;
+    let url = url::Url::parse(url).unwrap();
+    let parts: std::collections::HashMap<_, _> =
+        url::form_urlencoded::parse(url.fragment().unwrap().as_bytes())
+            .into_owned()
+            .collect();
+    runtime.block_on(async {
+        tokio::time::timeout(std::time::Duration::from_secs(15), async {
+            let endpoint = loopback_endpoint()
+                .secret_key(phone.clone())
+                .relay_mode(iroh::RelayMode::custom([relay.parse().unwrap()]))
+                .bind()
+                .await
+                .unwrap();
+            let addr = iroh::EndpointAddr::new(parts["h"].parse().unwrap())
+                .with_relay_url(relay.parse().unwrap());
+            let connection = endpoint.connect(addr, b"plow/latch-phone/1").await.unwrap();
+            let (mut send, mut recv) = connection.open_bi().await.unwrap();
+            match parts.get("c") {
+                Some(code) => args["code"] = json!(code),
+                None => args["link"] = json!(parts["l"]),
+            }
+            let bytes = serde_json::to_vec(&json!({"op": op, "args": args})).unwrap();
+            send.write_all(&(bytes.len() as u32).to_be_bytes())
+                .await
+                .unwrap();
+            send.write_all(&bytes).await.unwrap();
+            send.finish().unwrap();
+            let len = recv.read_u32().await.unwrap();
+            assert!(len < 100_000, "a {len}-byte answer");
+            let mut bytes = vec![0; len as usize];
+            recv.read_exact(&mut bytes).await.unwrap();
+            connection.close(0u32.into(), b"done");
+            endpoint.close().await;
+            serde_json::from_slice(&bytes).unwrap()
+        })
+        .await
+        .expect("phone request timed out")
+    })
+}
+
+/// An agent asks its owner for a login with a phone link, judged and
+/// audited like its other work. It sends no secret and gets none back:
+/// only the link, then whether the login is saved and its id. The owner
+/// types the password on the phone, once, on the page its host names.
+#[test]
+fn an_agent_asks_for_a_login_by_phone_link_and_learns_only_its_state() {
+    let plow = LivePlow::start();
+    let (runtime, relay) = local_relay();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let agent_token = dir.path().join("agent.token");
+    fs::write(&agent_token, "agent-credential\n").unwrap();
+    let agent = dir.path().join("agent");
+    let agent_env = [("PLOW_TOKEN_FILE", agent_token.as_path())];
+    let login = latch(&agent, &["login", "--api-url", &plow.url], &agent_env);
+    assert_eq!(login.status.code(), Some(0), "{login:?}");
+    let mut serve = serve_command(&host, &relay);
+    serve.env("LATCH_PHONE_PAGE", "https://phone.example/latch");
+    let (serve, mut log, _) = serving_with(serve);
+    until_serving(&host, &serve);
+
+    let secret = "made-up-pass-3e7d";
+    let mut printed = String::new();
+    let mut run = |args: &[&str]| {
+        let output = latch(&agent, args, &agent_env);
+        printed.push_str(&String::from_utf8_lossy(&output.stdout));
+        printed.push_str(&String::from_utf8_lossy(&output.stderr));
+        answered(&output)
+    };
+    let ask = |kind: &'static str, field: &'static str| {
+        [
+            "vault",
+            "--host",
+            "host",
+            "--plow-chat",
+            "chat_a",
+            "link",
+            "--kind",
+            kind,
+            "--title",
+            "Shop",
+            "--site",
+            "shop.example",
+            "--field",
+            field,
+        ]
+    };
+
+    // The agent opens a login link, judged in its chat like its other work.
+    let (code, opened) = run(&ask("login", "username=ada@shop.example"));
+    assert_eq!(code, Some(0), "{opened}");
+    let url = opened["url"].as_str().unwrap().to_string();
+    let link = opened["link"].as_str().unwrap().to_string();
+    // It opens the page the host names, which the agent cannot choose.
+    assert!(url.starts_with("https://phone.example/latch#h="), "{url}");
+    let elsewhere = [
+        &ask("login", "username=ada@shop.example")[..],
+        &["--page", "https://agent.example/"],
+    ]
+    .concat();
+    let (code, refused) = run(&elsewhere);
+    assert_eq!(
+        (code, &refused["error"]["code"]),
+        (Some(2), &json!("bad_arguments")),
+        "{refused}"
+    );
+    let judged = plow
+        .state
+        .lock()
+        .unwrap()
+        .decisions
+        .last()
+        .unwrap()
+        .to_string();
+    assert!(judged.contains("vault.link"), "{judged}");
+    assert!(
+        judged.contains("shop.example") && judged.contains("ada@shop.example"),
+        "{judged}"
+    );
+    let (code, state) = run(&["vault", "--host", "host", "link-state", &link]);
+    assert_eq!(
+        (code, &state["state"]),
+        (Some(0), &json!("pending")),
+        "{state}"
+    );
+
+    // Only a login, and never with a secret of its own.
+    let (code, refused) = run(&ask("note", "notes=hello"));
+    assert_eq!(
+        (code, &refused["error"]["code"]),
+        (Some(4), &json!("owner_only")),
+        "{refused}"
+    );
+    let password = format!("password={secret}");
+    let mut with_secret = ask("login", "username=ada@shop.example").to_vec();
+    with_secret[13] = &password;
+    // Run directly, not through `latch`, which prints its arguments, this
+    // made-up secret among them, if the call unexpectedly works.
+    let refused = latch_command(&agent, &with_secret, &agent_env)
+        .output()
+        .unwrap();
+    let (code, refused) = answered(&refused);
+    assert_eq!(
+        (code, &refused["error"]["code"]),
+        (Some(2), &json!("secret_in_argv")),
+        "{refused}"
+    );
+
+    // The agent's link carries no code: only the request's id.
+    assert!(
+        !url.contains("&c=") && url.contains(&format!("&l={link}")),
+        "{url}"
+    );
+    assert!(opened.get("code").is_none(), "{opened}");
+    // Without Plow vouching for the phone's key as the owner, for this
+    // request, the host shows nothing.
+    let phone = iroh::SecretKey::generate();
+    let page_key = phone.public().to_string();
+    let refused = phone_request(&runtime, &relay, &url, &phone, "page", json!({}));
+    assert_eq!(refused["error"]["code"], "phone_not_signed_in", "{refused}");
+    let grant = |request: &str| {
+        plow.state
+            .lock()
+            .unwrap()
+            .phone_grants
+            .push((page_key.clone(), request.to_string()));
+    };
+    grant("l00000000");
+    let refused = phone_request(&runtime, &relay, &url, &phone, "page", json!({}));
+    assert_eq!(refused["error"]["code"], "phone_not_signed_in", "{refused}");
+
+    // Signed in on the page, the owner types the password on the phone, once.
+    grant(&link);
+    let shown = phone_request(&runtime, &relay, &url, &phone, "page", json!({}));
+    assert_eq!(
+        shown["ok"]["request"]["sites"],
+        json!(["shop.example"]),
+        "{shown}"
+    );
+    // The owner corrects the website and title there; a site latch never
+    // fills on is refused, and the link stays open.
+    let edit = |sites: Value| json!({"title": "Shop (US)", "sites": sites, "values": {"password": secret}});
+    let refused = phone_request(
+        &runtime,
+        &relay,
+        &url,
+        &phone,
+        "submit",
+        edit(json!(["http://shop.example"])),
+    );
+    assert_eq!(refused["error"]["code"], "bad_item", "{refused}");
+    assert!(
+        refused["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("https://"),
+        "{refused}"
+    );
+    let saved = phone_request(
+        &runtime,
+        &relay,
+        &url,
+        &phone,
+        "submit",
+        edit(json!(["https://www.shop.example/login"])),
+    );
+    assert!(saved.get("ok").is_some(), "{saved}");
+    let again = phone_request(
+        &runtime,
+        &relay,
+        &url,
+        &phone,
+        "submit",
+        json!({"values": {"password": "x"}}),
+    );
+    assert!(again.to_string().contains("link_used"), "{again}");
+
+    // The agent learns it is saved, and the new item's id: no value.
+    let (code, state) = run(&["vault", "--host", "host", "link-state", &link]);
+    assert_eq!(code, Some(0), "{state}");
+    assert_eq!(
+        (&state["state"], &state["item"]),
+        (&json!("saved"), &json!("v1")),
+        "{state}"
+    );
+    let (code, listed) = run(&["vault", "--host", "host", "--plow-chat", "chat_a", "list"]);
+    assert_eq!(code, Some(0), "{listed}");
+    assert_eq!(
+        listed["items"],
+        json!([{"item": "v1", "kind": "login", "title": "Shop (US)", "sites": ["shop.example"]}]),
+        "{listed}"
+    );
+
+    // The owner's own vault takes no agent chat.
+    let local = latch(
+        &host,
+        &[
+            &["vault", "--plow-chat", "chat_a"][..],
+            &ask("login", "username=ada")[5..],
+        ]
+        .concat(),
+        &[],
+    );
+    let (code, refused) = answered(&local);
+    assert_eq!(
+        (code, &refused["error"]["code"]),
+        (Some(2), &json!("plow_chat_not_supported")),
+        "{refused}"
+    );
+
+    // The owner's rules can forbid it: refused, and nothing opened.
+    plow.state.lock().unwrap().forbidden = true;
+    let (code, refused) = run(&ask("login", "username=ada@shop.example"));
+    assert_eq!(code, Some(4), "{refused}");
+    assert_eq!(refused["error"]["code"], "gatekeeper_denied", "{refused}");
+    assert_eq!(refused["error"]["reason"], "owner_said_no", "{refused}");
+    plow.state.lock().unwrap().forbidden = false;
+
+    // Audited with what the rules can name, never the secret.
+    let records = audit_records(&host);
+    let links: Vec<&Value> = records
+        .iter()
+        .filter(|r| r["op"] == "vault" && r["args"]["command"] == "link")
+        .collect();
+    let outcomes: Vec<(&Value, &Value)> = links
+        .iter()
+        .map(|r| (&r["outcome"], &r["gate"]["verdict"]))
+        .collect();
+    let (ok, allow, refused) = (json!("ok"), json!("allow"), json!("gatekeeper_denied"));
+    let (owner_only, no) = (json!("owner_only"), json!("owner_said_no"));
+    assert_eq!(
+        outcomes,
+        [(&ok, &allow), (&owner_only, &Value::Null), (&refused, &no)],
+        "{links:?}"
+    );
+    assert_eq!(
+        links[0]["args"]["sites"],
+        json!(["shop.example"]),
+        "{:?}",
+        links[0]
+    );
+    assert_eq!(
+        links[0]["args"]["username"], "ada@shop.example",
+        "{:?}",
+        links[0]
+    );
+    // The save names what the owner changed: the title, not the site,
+    // which is the same site written another way.
+    let submit = records
+        .iter()
+        .find(|r| r["args"]["command"] == "submit" && r["outcome"] == "ok")
+        .unwrap();
+    assert_eq!(submit["args"]["edited"], json!(["title"]), "{submit}");
+    let audit = serde_json::to_string(&records).unwrap();
+    drop(serve);
+    let mut host_log = String::new();
+    log.read_to_string(&mut host_log).unwrap();
+    assert!(host_log.contains("vault"), "{host_log}");
+    let to_plow = {
+        let state = plow.state.lock().unwrap();
+        format!("{:?} {:?}", state.decisions, state.seen)
+    };
+    for (place, text) in [
+        ("agent output", &printed),
+        ("audit", &audit),
+        ("host log", &host_log),
+        ("requests to Plow", &to_plow),
+    ] {
+        assert!(!text.contains(secret), "the secret is in the {place}");
+    }
+}
+
+/// An agent's list names each item's kind, never a value, and narrows as
+/// the owner's does: the cards, or the logins saved for one site.
+#[test]
+fn an_agents_vault_list_shows_kinds_and_narrows() {
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    big_vault(&host, dir.path());
+    let agent_token = dir.path().join("agent.token");
+    fs::write(&agent_token, "agent-credential\n").unwrap();
+    let agent = dir.path().join("agent");
+    let agent_env = [("PLOW_TOKEN_FILE", agent_token.as_path())];
+    let login = latch(&agent, &["login", "--api-url", &plow.url], &agent_env);
+    assert_eq!(login.status.code(), Some(0), "{login:?}");
+    let _serve = serving(&host, &relay);
+    let list = |args: &[&str]| {
+        let output = latch(
+            &agent,
+            &[&["vault", "--host", "host", "list"], args].concat(),
+            &agent_env,
+        );
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        assert!(!String::from_utf8_lossy(&output.stdout).contains("4111111111111111"));
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
+    };
+    let first = list(&[]);
+    assert_eq!(first["items"].as_array().unwrap().len(), 50);
+    assert_eq!(first["total"], 120);
+    assert!(
+        first["next"].as_str().unwrap().contains("cards"),
+        "{}",
+        first["next"]
+    );
+    assert_eq!(
+        list(&["--kind", "card"])["items"],
+        json!([{"item": "v120", "kind": "card", "title": "Plow card", "sites": []}])
+    );
+    assert_eq!(
+        list(&["--site", "crateandbarrel.com"])["items"],
+        json!([{"item": "v119", "kind": "login", "title": "Crate & Barrel", "sites": ["crateandbarrel.com"]}])
+    );
+}
+
 #[test]
 fn latch_trace_goes_to_the_state_folder_and_a_hosts_log_never_to_a_commands_stderr() {
     let plow = LivePlow::start();
@@ -3694,7 +4301,8 @@ fn agents_are_listed_for_the_owner_with_their_standing_on_a_host() {
     assert_eq!(
         listed,
         json!({"host": null, "agents": [{"uid": AGENT_UID, "name": "Research bot", "kind": "own",
-               "cloud_kind": null, "line": {"number": "+14155550123", "name": "Research line"},
+               "cloud_kind": null, "line": {"number": "+14155550123", "name": "Research line",
+                                            "card_url": format!("{}/cards/research.vcf", plow.url)},
                "created_at": "2026-10-20T10:00:00Z", "status": null, "failure_code": null,
                "last_seen_at": "2026-10-22T09:00:00Z", "standing": null}]})
     );
@@ -3763,6 +4371,22 @@ fn agents_are_shown_created_and_removed_by_their_owner() {
         catalog,
         json!({"kinds": [{"id": "exe:hermes", "name": "Hermes"}]})
     );
+    // What to text Plow's number: each kind's first phrase, as a QR code's
+    // SMSTO (taken as it is) and an sms: link (escaped); a kind with no
+    // phrase can't be started by text.
+    let (code, by_text, _) = run(&["agents", "start-by-text"]);
+    assert_eq!(code, Some(0), "{by_text}");
+    assert_eq!(
+        by_text,
+        json!({"number": "+15550000001", "default": "exe:hermes", "kinds": [
+            {"id": "exe:hermes", "name": "Hermes", "phrase": "Create an agent for me",
+             "smsto": "SMSTO:+15550000001:Create an agent for me",
+             "sms_link": "sms:+15550000001?&body=Create%20an%20agent%20for%20me"},
+            {"id": "exe:life", "name": "Life Assistant",
+             "phrase": "Set this up for me: aiworthusing.com/agent-index/life",
+             "smsto": "SMSTO:+15550000001:Set this up for me: aiworthusing.com/agent-index/life",
+             "sms_link": "sms:+15550000001?&body=Set%20this%20up%20for%20me%3A%20aiworthusing.com%2Fagent-index%2Flife"}]})
+    );
     let (_, lines, _) = run(&["agents", "lines"]);
     let numbers: Vec<&Value> = lines["lines"]
         .as_array()
@@ -3776,6 +4400,22 @@ fn agents_are_shown_created_and_removed_by_their_owner() {
         "no mailbox"
     );
     assert_eq!(lines["lines"][1]["available"], false);
+
+    // Its line's contact card: named in the list, saved by `agents card`
+    // without the owner's credential.
+    let (code, listed, _) = run(&["agents"]);
+    assert_eq!(code, Some(0), "{listed}");
+    let card_url = format!("{}/cards/research.vcf", plow.url);
+    assert_eq!(listed["agents"][0]["line"]["card_url"], card_url.as_str());
+    let card_file = dir.path().join("research.vcf");
+    let card_path = card_file.to_str().unwrap();
+    let (code, saved, _) = run(&["agents", "card", "Research bot", "--output", card_path]);
+    assert_eq!(code, Some(0), "{saved}");
+    assert_eq!(fs::read(&card_file).unwrap(), RESEARCH_CARD);
+    assert_eq!(
+        saved,
+        json!({"agent": AGENT_UID, "card_url": card_url, "path": card_path, "size": RESEARCH_CARD.len()})
+    );
 
     let (code, shown, _) = run(&["agents", "show", "Research bot"]);
     assert_eq!(code, Some(0), "{shown}");
@@ -4669,6 +5309,64 @@ fn exec_true(from: &Path, host: &str) {
     );
 }
 
+/// Every answer from a host names it in `host`, as Plow lists it: a
+/// result, and an error's `error` object, whether it came from another
+/// host or from this machine's own.
+#[test]
+fn every_answer_from_a_host_names_the_host() {
+    let owners = Owners::start();
+    let _host = owners.serve(&owners.host);
+    let _studio = owners.serve(&owners.studio);
+    let run = |from: &Path, args: &[&str]| {
+        let output = latch(from, args, &[]);
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+        println!("latch {}: {result}", args.join(" "));
+        result
+    };
+    for host in ["host", "studio"] {
+        let ran = run(
+            &owners.laptop,
+            &["exec", "--host", host, "--", "echo", "hi"],
+        );
+        assert_eq!(ran["host"], host);
+    }
+    // On the studio itself, through its own socket.
+    let here = run(&owners.studio, &["exec", "--", "echo", "hi"]);
+    assert_eq!(here["host"], "studio");
+    let status = run(&owners.laptop, &["status", "--host", "studio"]);
+    assert_eq!(status["host"], "studio");
+    // A transfer's result is put together here, from the host's answers.
+    let (note, got) = (
+        owners.dir.path().join("note.txt"),
+        owners.dir.path().join("got"),
+    );
+    fs::write(&note, "hi").unwrap();
+    let (note, got) = (note.to_str().unwrap(), got.to_str().unwrap());
+    let put = run(
+        &owners.laptop,
+        &["file", "put", "--host", "studio", note, "~/note.txt"],
+    );
+    assert_eq!(put["host"], "studio");
+    let fetched = run(
+        &owners.laptop,
+        &["file", "get", "--host", "studio", "~/note.txt", got],
+    );
+    assert_eq!(fetched["host"], "studio");
+
+    let missing = latch(
+        &owners.laptop,
+        &["file", "get", "--host", "studio", "/no/such/file", got],
+        &[],
+    );
+    let error = one_error_line(
+        &String::from_utf8_lossy(&missing.stderr),
+        missing.status.code(),
+    );
+    println!("latch file get --host studio /no/such/file: {error}");
+    assert_eq!(error["error"]["host"], "studio", "{error}");
+}
+
 /// Each call from a machine whose host serves goes through that host,
 /// and answers, exits and is recorded at the other host as it is with no
 /// host serving here, when the command dials directly.
@@ -5033,21 +5731,26 @@ fn a_starting_host_waits_for_a_direct_call_and_a_direct_follow_makes_way() {
     let error = &one_error_line(&stderr, Some(3))["error"];
     assert_eq!(ended.code(), Some(3));
     assert_eq!(error["code"], "host_unreachable", "{error}");
+    // A call cut off names its host, as the host's own answers do.
+    assert_eq!(error["host"], "host", "{error}");
     assert_eq!(
         error["next"],
         "run this again: it then goes through that host"
     );
-    let waiting = latch(&owners.studio, &["status", "--local"], &[]);
-    let waiting: Value = serde_json::from_slice(&waiting.stdout).unwrap();
-    let hosting = &waiting["this_machine"]["hosting"];
-    assert_eq!(hosting["state"], "starting", "{hosting}");
-    assert!(
+    // The follow ends when the host records that it is starting, and the
+    // host records its wait only after that, once it finds the exec still
+    // using the key: the wait shows soon, not at once.
+    let mut hosting = Value::Null;
+    let waits = eventually(10, || {
+        let status = latch(&owners.studio, &["status", "--local"], &[]);
+        let status: Value = serde_json::from_slice(&status.stdout).unwrap();
+        hosting = status["this_machine"]["hosting"].clone();
         hosting["waiting"]
             .as_str()
-            .unwrap_or_default()
-            .contains("waiting for latch commands"),
-        "{hosting}"
-    );
+            .is_some_and(|why| why.contains("waiting for latch commands"))
+    });
+    assert!(waits, "{hosting}");
+    assert_eq!(hosting["state"], "starting", "{hosting}");
     direct_exec.release();
     let (serve, _log, lines) = started.join().unwrap();
     until_serving(&owners.studio, &serve);
@@ -5904,46 +6607,15 @@ fn local_vault_edits_are_visible_to_serve_and_phone_links_stay_live() {
     );
     assert!(opened.status.success(), "link creation failed");
     let opened: Value = serde_json::from_slice(&opened.stdout).unwrap();
-    let url = url::Url::parse(opened["url"].as_str().unwrap()).unwrap();
-    let parts: std::collections::HashMap<_, _> =
-        url::form_urlencoded::parse(url.fragment().unwrap().as_bytes())
-            .into_owned()
-            .collect();
-    runtime.block_on(async {
-        use tokio::io::AsyncReadExt;
-        tokio::time::timeout(std::time::Duration::from_secs(15), async {
-            let endpoint = loopback_endpoint()
-                .relay_mode(iroh::RelayMode::custom([relay.parse().unwrap()]))
-                .bind()
-                .await
-                .unwrap();
-            let addr = iroh::EndpointAddr::new(parts["h"].parse().unwrap())
-                .with_relay_url(relay.parse().unwrap());
-            let connection = endpoint.connect(addr, b"plow/latch-phone/1").await.unwrap();
-            for op in ["page", "submit"] {
-                let (mut send, mut recv) = connection.open_bi().await.unwrap();
-                let bytes = serde_json::to_vec(
-                    &json!({"op": op, "args": {"code": parts["c"], "values": {}}}),
-                )
-                .unwrap();
-                send.write_all(&(bytes.len() as u32).to_be_bytes())
-                    .await
-                    .unwrap();
-                send.write_all(&bytes).await.unwrap();
-                send.finish().unwrap();
-                let len = recv.read_u32().await.unwrap();
-                assert!(len < 100_000);
-                let mut bytes = vec![0; len as usize];
-                recv.read_exact(&mut bytes).await.unwrap();
-                let response: Value = serde_json::from_slice(&bytes).unwrap();
-                assert!(response.get("ok").is_some(), "phone request refused");
-            }
-            connection.close(0u32.into(), b"done");
-            endpoint.close().await;
-        })
-        .await
-        .expect("phone link timed out");
-    });
+    let url = opened["url"].as_str().unwrap();
+    let phone = iroh::SecretKey::generate();
+    for op in ["page", "submit"] {
+        let response = phone_request(&runtime, &relay, url, &phone, op, json!({"values": {}}));
+        assert!(
+            response.get("ok").is_some(),
+            "phone request refused: {response}"
+        );
+    }
     assert_eq!(
         remote(&["vault", "list", "--host", "host"])["items"]
             .as_array()
@@ -6000,6 +6672,129 @@ fn local_vault_edits_are_visible_to_serve_and_phone_links_stay_live() {
         .map(|r| r["args"]["command"].clone())
         .collect::<Vec<_>>();
     assert_eq!(imports, [json!("import"), json!("import")]);
+}
+
+/// 2,000 rows import in seconds, written to the vault once, and a second
+/// import of the same file finds every row already there, cards and
+/// notes too.
+#[test]
+fn two_thousand_rows_import_at_once_and_again_as_duplicates() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let mut items: Vec<Value> = (0..1996)
+        .map(|i| json!({"type": 1, "name": format!("Shop {i:04}"), "login": {"username": "ada", "password": format!("made-up-{i}"), "uris": [{"uri": format!("https://www.shop{i:04}.com/login")}]}}))
+        .collect();
+    items.push(json!({"type": 3, "name": "Plow card", "card": {"brand": "Visa", "number": "4111111111111111", "code": "737"}}));
+    items.push(json!({"type": 3, "name": "Plow card", "card": {"brand": "Visa", "number": "4000056655665556", "code": "123"}}));
+    items.push(json!({"type": 2, "name": "Wi-Fi", "notes": "made-up guest network"}));
+    items.push(json!({"type": 2, "name": "Wi-Fi", "notes": "made-up office network"}));
+    let file = dir.path().join("export.json");
+    fs::write(
+        &file,
+        json!({"encrypted": false, "items": items}).to_string(),
+    )
+    .unwrap();
+    let import = || {
+        let started = std::time::Instant::now();
+        let output = latch(
+            &host,
+            &["vault", "import", file.to_str().unwrap(), "--pick", "all"],
+            &[],
+        );
+        assert!(output.status.success(), "{output:?}");
+        let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+        (result, started.elapsed())
+    };
+    let (first, took) = import();
+    assert_eq!(
+        (&first["saved"], &first["duplicates"]),
+        (&json!(2000), &json!(0))
+    );
+    // Saved row by row, this took minutes.
+    assert!(
+        took < std::time::Duration::from_secs(30),
+        "2,000 rows took {took:?}"
+    );
+    let (again, _) = import();
+    assert_eq!(
+        (&again["saved"], &again["duplicates"]),
+        (&json!(0), &json!(2000))
+    );
+}
+
+/// A vault of 120 made-up items, imported into `host`'s state: logins
+/// for shop0000.com…, one for crateandbarrel.com and one card.
+fn big_vault(host: &Path, dir: &Path) {
+    let mut items: Vec<Value> = (0..118)
+        .map(|i| json!({"type": 1, "name": format!("Shop {i:04}"), "login": {"username": "ada", "password": "made-up", "uris": [{"uri": format!("https://www.shop{i:04}.com/login")}]}}))
+        .collect();
+    items.push(json!({"type": 1, "name": "Crate & Barrel", "login": {"username": "ada", "password": "made-up", "uris": [{"uri": "https://www.crateandbarrel.com/account"}]}}));
+    items.push(json!({"type": 3, "name": "Plow card", "card": {"number": "4111111111111111", "code": "737"}}));
+    let file = dir.join("big.json");
+    fs::write(
+        &file,
+        json!({"encrypted": false, "items": items}).to_string(),
+    )
+    .unwrap();
+    let output = latch(
+        host,
+        &["vault", "import", file.to_str().unwrap(), "--pick", "all"],
+        &[],
+    );
+    assert!(output.status.success(), "{output:?}");
+}
+
+/// A big vault lists 50 items at a time, says how many more there are,
+/// and narrows by site (its registrable domain), words and kind.
+#[test]
+fn a_big_vault_lists_a_page_and_narrows_by_site_search_and_kind() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    big_vault(&host, dir.path());
+    let list = |args: &[&str]| {
+        let output = latch(&host, &[&["vault", "list"], args].concat(), &[]);
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
+    };
+    let titles = |listed: &Value| -> Vec<String> {
+        listed["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["title"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let first = list(&[]);
+    assert_eq!(first["items"].as_array().unwrap().len(), 50);
+    assert_eq!(first["total"], 120);
+    assert!(
+        first["more"]
+            .as_str()
+            .unwrap()
+            .starts_with("70 more; narrow with --site"),
+        "{}",
+        first["more"]
+    );
+    let all = list(&["--all"]);
+    assert_eq!(all["items"].as_array().unwrap().len(), 120);
+    assert!(all.get("more").is_none());
+
+    let site = list(&["--site", "https://www.crateandbarrel.com/checkout"]);
+    assert_eq!(titles(&site), ["Crate & Barrel"]);
+    assert_eq!(site["total"], 1);
+    assert_eq!(titles(&list(&["--site", "shop0042.com"])), ["Shop 0042"]);
+    assert_eq!(list(&["--site", "nothere.com"])["total"], 0);
+    assert_eq!(titles(&list(&["--kind", "card"])), ["Plow card"]);
+    assert_eq!(titles(&list(&["--search", "BARREL"])), ["Crate & Barrel"]);
+    let limited = list(&["--search", "shop 011", "--limit", "3"]);
+    assert_eq!(titles(&limited), ["Shop 0110", "Shop 0111", "Shop 0112"]);
+    assert_eq!(limited["total"], 8);
+
+    let refused = latch(&host, &["vault", "list", "--kind", "wallet"], &[]);
+    let error = one_error_line(&String::from_utf8_lossy(&refused.stderr), Some(2));
+    assert_eq!(error["error"]["code"], "usage", "{error}");
 }
 
 #[test]
@@ -10678,7 +11473,7 @@ fn rules_try_says_what_is_missing_before_reaching_a_host() {
         (Some(2), &json!("not_previewable"))
     );
 
-    let help = latch(&fresh, &["rules", "try", "-h"], &[]);
+    let help = latch(&fresh, &["rules", "try", "--help"], &[]);
     let help = String::from_utf8(help.stdout).unwrap();
     assert!(help.contains("about $0.0001"), "{help}");
     assert!(help.contains("`gate.p` shows how sure it was"), "{help}");

@@ -65,7 +65,9 @@ pub struct Link {
 /// iroh: through this machine's host when one serves here, else from an
 /// endpoint of our own. Failure here means nothing was sent: exit 3.
 pub async fn connect(state: &StateDir, host: &Peer) -> Result<Link, Failure> {
-    connect_within(state, host, CONNECT_TIMEOUT).await
+    connect_within(state, host, CONNECT_TIMEOUT)
+        .await
+        .map_err(naming(host))
 }
 
 async fn connect_within(state: &StateDir, host: &Peer, within: Duration) -> Result<Link, Failure> {
@@ -146,6 +148,26 @@ fn offline(host: &Peer) -> Failure {
     Failure::new(code::host_offline, message)
 }
 
+/// A failure of a call to `host`, naming it in `host` as its answers do,
+/// unless it names one already.
+fn named(mut failure: Failure, host: &Peer) -> Failure {
+    if failure.details.is_null() {
+        failure.details = serde_json::json!({});
+    }
+    if let Some(details) = failure.details.as_object_mut() {
+        details
+            .entry("host")
+            .or_insert_with(|| serde_json::json!(host.name));
+    }
+    failure
+}
+
+/// Names `host` in each failure of a call to it: a dropped connection or
+/// no answer in time, as well as what the host itself said.
+pub fn naming(host: &Peer) -> impl Fn(Failure) -> Failure + '_ {
+    move |failure| named(failure, host)
+}
+
 /// Why dialing `host` failed: it speaks another protocol, or it could not
 /// be reached.
 fn not_connected(host: &Peer, err: &ConnectError) -> Failure {
@@ -193,6 +215,14 @@ pub async fn ask_each(
     within: Duration,
     mut each: impl FnMut(usize, Result<Value, Failure>),
 ) {
+    // Its caller may keep only a failure's code (`status`'s
+    // `plugins_reason`): the trace keeps why.
+    let mut each = |index: usize, answer: Result<Value, Failure>| {
+        if let Err(failure) = &answer {
+            tracing::info!(host = %hosts[index].name, code = %failure.code, "not asked: {}", failure.message);
+        }
+        each(index, answer)
+    };
     let deadline = tokio::time::Instant::now() + within;
     let late = |host: &Peer| {
         let message = format!(
@@ -388,7 +418,7 @@ pub async fn call(
     let link = connect(state, host).await?;
     let result = one_exchange(&link.connection, request, answer_within).await;
     link.close();
-    result
+    result.map_err(naming(host))
 }
 
 async fn one_exchange(
@@ -526,6 +556,7 @@ mod tests {
         let started = Instant::now();
         let failure = connect(&state, &host).await.err().unwrap();
         assert_eq!(failure.code, "host_offline");
+        assert_eq!(failure.details, serde_json::json!({"host": "mac"}));
         assert!(
             failure
                 .message
@@ -534,6 +565,56 @@ mod tests {
             failure.message
         );
         assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    /// A connection that can't be made names its host, wherever it fails:
+    /// here, this machine's own host isn't running.
+    #[tokio::test]
+    async fn a_connection_that_fails_to_open_names_its_host() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = StateDir {
+            path: dir.path().to_path_buf(),
+        };
+        let host = Peer {
+            key: "c".repeat(64),
+            kind: "device".into(),
+            name: "mac".into(),
+            relay_url: Some("https://relay.example/".into()),
+            last_seen_at: None,
+            online: Some(true),
+            this_machine: true,
+        };
+        let failure = connect(&state, &host).await.err().unwrap();
+        assert_eq!(
+            failure.details["host"], "mac",
+            "{}: {}",
+            failure.code, failure.message
+        );
+    }
+
+    #[test]
+    fn a_failed_call_names_its_host_unless_the_host_named_itself() {
+        let host = Peer {
+            key: "c".repeat(64),
+            kind: "device".into(),
+            name: "mac".into(),
+            relay_url: None,
+            last_seen_at: None,
+            online: Some(true),
+            this_machine: false,
+        };
+        let dropped = Failure::new(code::outcome_unknown, "dropped".into());
+        let timed_out = Failure::new(code::no_answer, "no answer".into());
+        for failure in [dropped, timed_out] {
+            assert_eq!(
+                naming(&host)(failure).details,
+                serde_json::json!({"host": "mac"})
+            );
+        }
+        let mut answered = Failure::new(code::not_found, "gone".into());
+        answered.details = serde_json::json!({"host": "studio", "path": "/x"});
+        let kept = naming(&host)(answered).details;
+        assert_eq!(kept, serde_json::json!({"host": "studio", "path": "/x"}));
     }
 
     /// A state folder with a key, and a host at `key` behind `relay`.
@@ -579,6 +660,61 @@ mod tests {
         let result = run.await;
         let logged = String::from_utf8(events.0.lock().unwrap().clone()).unwrap();
         (result, logged)
+    }
+
+    #[tokio::test]
+    async fn a_host_asked_with_others_that_did_not_answer_is_traced_with_why() {
+        // One host offline, one whose relay never answers: each is traced
+        // with its code and message, which `status` keeps only the code of.
+        let other = tempfile::tempdir().unwrap();
+        let elsewhere = StateDir {
+            path: other.path().to_path_buf(),
+        };
+        let (silent_key, _) = elsewhere.load_or_create_key().unwrap();
+        let (_dir, state, silent) = dialing(Some(silent_key.to_string()), "http://127.0.0.1:9/");
+        let offline_host = Peer {
+            name: "laptop".into(),
+            online: Some(false),
+            ..silent.clone()
+        };
+        let request = Request {
+            op: "plugins".to_string(),
+            args: serde_json::json!({"command": "list"}),
+            chat: None,
+        };
+        let mut codes = Vec::new();
+        let ((), logged) = traced(ask_each(
+            &state,
+            &[offline_host, silent],
+            &request,
+            Duration::from_millis(500),
+            |index, answer| codes.push((index, answer.err().map(|failure| failure.code))),
+        ))
+        .await;
+        codes.sort();
+        assert_eq!(
+            codes,
+            [
+                (0, Some("host_offline".into())),
+                (1, Some("host_unreachable".into()))
+            ]
+        );
+        let line = |host: &str| {
+            logged
+                .lines()
+                .find(|line| line.contains(&format!("host={host} ")))
+                .unwrap_or_default()
+        };
+        assert!(line("laptop").contains("code=host_offline"), "{logged}");
+        assert!(
+            line("laptop").contains("not asked: host \"laptop\" is not online"),
+            "{logged}"
+        );
+        assert!(line("mac").contains("code=host_unreachable"), "{logged}");
+        assert!(
+            line("mac").contains("not asked: host \"mac\" did not answer within 0.5s"),
+            "{logged}"
+        );
     }
 
     #[tokio::test]

@@ -20,6 +20,7 @@ use crate::cli::{AgentsAction, AgentsArgs};
 use crate::dial::{self, ANSWER_WITHIN};
 use crate::failure::{Failure, code};
 use crate::hosts;
+use crate::login;
 use crate::plow::{ListedAgent, Plow};
 use crate::state::StateDir;
 use crate::term;
@@ -61,6 +62,8 @@ pub struct AgentShown {
 pub struct LineShown {
     pub number: String,
     pub name: Option<String>,
+    /// Its persona's contact card, for `agents card`.
+    pub card_url: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -101,6 +104,7 @@ async fn managed(
             json!({"agent": agent_shown(agent, None)})
         }
         Some(AgentsAction::Catalog) => catalog(plow).await?,
+        Some(AgentsAction::StartByText) => start_by_text(api_url).await?,
         Some(AgentsAction::Lines) => lines(plow).await?,
         Some(AgentsAction::New {
             cloud,
@@ -109,6 +113,7 @@ async fn managed(
             line,
             ..
         }) => new(plow, api_url, cloud, token_file, &name, &line).await?,
+        Some(AgentsAction::Card { agent, output }) => card(plow, api_url, &agent, &output).await?,
         Some(AgentsAction::Remove { agent, yes }) => remove(plow, &agent, yes).await?,
     })
 }
@@ -248,6 +253,7 @@ fn agent_shown(agent: ListedAgent, standing: Option<Standing>) -> AgentShown {
         line: LineShown {
             number: agent.line.provider_key,
             name: agent.line.display_name,
+            card_url: agent.line.card_url,
         },
         created_at: agent.created_at,
         status: agent.status,
@@ -305,6 +311,39 @@ async fn catalog(plow: &Plow) -> Result<Value, Failure> {
         .map(|kind| json!({"id": kind.id, "name": kind.name}))
         .collect();
     Ok(json!({"kinds": kinds}))
+}
+
+/// What to text Plow's managed number to start each kind of cloud agent:
+/// the kind's first phrase, which Plow's own pages offer too, ready for a
+/// phone's camera (`smsto`) and for Messages on a Mac (`sms_link`).
+async fn start_by_text(api_url: &str) -> Result<Value, Failure> {
+    // Public, so it's asked without the owner's credential.
+    let signup = Plow::anonymous(api_url)?.signup().await?;
+    let number = signup.managed_phone;
+    let kinds: Vec<Value> = signup
+        .providers
+        .into_iter()
+        .filter_map(|kind| {
+            let phrase = kind.phrases.into_iter().next()?;
+            Some(json!({"id": kind.id, "name": kind.name,
+                        "smsto": login::smsto(&number, &phrase),
+                        "sms_link": login::sms_link(&number, &phrase), "phrase": phrase}))
+        })
+        .collect();
+    Ok(json!({"number": number, "default": signup.default_provider, "kinds": kinds}))
+}
+
+/// Saves the contact card of `named`'s line to `output`, fetched from
+/// where Plow says it is without the owner's credential: it is public.
+async fn card(plow: &Plow, api_url: &str, named: &str, output: &Path) -> Result<Value, Failure> {
+    let agent = resolve(plow, named).await?;
+    let Some(url) = agent.line.card_url else {
+        let message = format!("{}'s line has no contact card", agent.name);
+        return Err(Failure::new(code::no_card, message));
+    };
+    let vcard = Plow::anonymous(api_url)?.fetch(&url).await?;
+    crate::transfer::save(output, &vcard).await?;
+    Ok(json!({"agent": agent.uid, "card_url": url, "path": output, "size": vcard.len()}))
 }
 
 /// Plow's provider id for an agent its owner runs.

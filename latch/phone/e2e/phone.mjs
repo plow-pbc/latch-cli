@@ -32,7 +32,7 @@ try {
   await page.waitForTimeout(1000);
   if (await form.locator("#result").isVisible()) throw new Error("sent with a required field empty");
   console.log("header:", await page.textContent("#status"));
-  console.log("site:", await form.locator("#site").textContent());
+  console.log("site:", await form.locator("#sites").inputValue());
   for (const [label, value] of Object.entries(values)) {
     await form.locator(`[name="${label}"]`).fill(value);
   }

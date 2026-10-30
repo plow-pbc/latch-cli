@@ -78,7 +78,7 @@ pub async fn stream(
         printing.await
     };
     link.close();
-    printed
+    printed.map_err(dial::naming(host))
 }
 
 /// How often a direct follow looks for a host starting.

@@ -232,8 +232,10 @@ enum KeepAwakeSwitch {
     static let title = "Keep this Mac awake while plugged in"
     static let detail = "The display still sleeps, and closing the lid still sleeps the Mac."
 
-    /// What the host does about the choice, and a failed save.
+    /// What the host does about the choice, and a failed save. On Start,
+    /// with Run Latch now on, a host not running yet is about to be.
     struct Said: View {
+        var willRun = false
         @Environment(AppModel.self) private var app
 
         var body: some View {
@@ -241,7 +243,7 @@ enum KeepAwakeSwitch {
                 ErrorText(error: error).foregroundStyle(.red)
             } else if app.status != nil, app.status?.thisMachine.hosting.keepAwake == nil {
                 Text("Latch couldn't read this Mac's settings.")
-            } else if let said = app.status?.thisMachine.hosting.keepAwake?.said {
+            } else if let keepAwake = app.status?.thisMachine.hosting.keepAwake, let said = keepAwake.said(willRun: willRun) {
                 Text(said)
             }
         }
@@ -255,6 +257,8 @@ extension AppModel {
         }
     }
 
-    /// Only once latch has said the choice, and not while saving one.
-    var canSetKeepAwake: Bool { status?.thisMachine.hosting.keepAwake != nil && !settingKeepAwake }
+    /// Only once latch has said the choice. Not turned off while one saves:
+    /// a switch disabled in the middle of its own click can stay drawn
+    /// mid-flip, its knob gone (setKeepAwake drops a second click instead).
+    var canSetKeepAwake: Bool { status?.thisMachine.hosting.keepAwake != nil }
 }
