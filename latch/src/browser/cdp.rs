@@ -38,7 +38,9 @@ pub fn carries(url: &str, values: &[String]) -> bool {
 const SEPARATORS: &[char] = &[' ', '\u{a0}', '-', '/', '.', '(', ')', '+'];
 
 /// Whether `held` holds `wanted`: the same characters in order, the
-/// [`SEPARATORS`] either puts between them aside (`reader.js`'s `keeps`).
+/// [`SEPARATORS`] either puts between them aside, as `reader.js`'s
+/// `keepsFormatted` takes a formatted field to hold its value, for every
+/// value here: a guard would rather stop more requests than fewer.
 fn keeps(held: &str, wanted: &str) -> bool {
     let bare = |text: &str, set: &[char]| -> String {
         text.chars().filter(|c| !set.contains(c)).collect()

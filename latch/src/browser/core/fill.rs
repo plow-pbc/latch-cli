@@ -291,6 +291,7 @@ impl<D: Driver> Core<D> {
         target: &str,
         value: &str,
         secret: bool,
+        formatted: bool,
     ) -> Result<Value, Failure> {
         let Some(at) = self.fill.targets.iter().position(|t| t.reference == target) else {
             return Err(Failure::new(
@@ -349,7 +350,8 @@ impl<D: Driver> Core<D> {
             let tab = self.driver.active_tab();
             self.fill.filled.push((tab, frame.clone()));
         }
-        let answer = self.type_value(&frame, &snapshot, index, value, &origin, &token)?;
+        let answer =
+            self.type_value(&frame, &snapshot, index, value, &origin, &token, formatted)?;
         if let Some(why) = answer["refused"].as_str() {
             return Err(refused(why));
         }
@@ -364,6 +366,7 @@ impl<D: Driver> Core<D> {
     /// them set in one step; any other field, or a value with a line break
     /// or a tab, which keys would turn into a submit or a move, is set in
     /// one step. Answers the reader's `held`, or its refusal.
+    #[allow(clippy::too_many_arguments)]
     fn type_value(
         &mut self,
         frame: &Frame,
@@ -372,6 +375,7 @@ impl<D: Driver> Core<D> {
         value: &str,
         origin: &str,
         token: &str,
+        formatted: bool,
     ) -> Result<Value, Failure> {
         let at = value
             .char_indices()
@@ -402,13 +406,14 @@ impl<D: Driver> Core<D> {
         if start["assign"] == true || !self.driver.holds_focus(frame)? {
             return self.driver.call(
                 frame,
-                "function (s, i, v, o, t) { return __latch.fill(s, i, v, o, t); }",
+                "function (s, i, v, o, t, f) { return __latch.fill(s, i, v, o, t, f); }",
                 vec![
                     json!(snapshot),
                     json!(index),
                     json!(value),
                     json!(origin),
                     json!(token),
+                    json!(formatted),
                 ],
             );
         }
@@ -430,8 +435,14 @@ impl<D: Driver> Core<D> {
         }
         self.driver.call(
             frame,
-            "function (s, i, v, t) { return __latch.typeEnd(s, i, v, t); }",
-            vec![json!(snapshot), json!(index), json!(value), json!(token)],
+            "function (s, i, v, t, f) { return __latch.typeEnd(s, i, v, t, f); }",
+            vec![
+                json!(snapshot),
+                json!(index),
+                json!(value),
+                json!(token),
+                json!(formatted),
+            ],
         )
     }
 

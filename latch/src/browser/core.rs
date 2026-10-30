@@ -158,6 +158,10 @@ pub enum Call {
         /// request may carry it while it may be on the page.
         #[serde(default)]
         secret: bool,
+        /// A value sites format as they like (a card's number): the field
+        /// keeps it whatever separators either side puts in it.
+        #[serde(default)]
+        formatted: bool,
     },
     FillSubmit {
         target: String,
@@ -411,7 +415,8 @@ impl<D: Driver> Core<D> {
                 target,
                 value,
                 secret,
-            } => self.set_value(&target, &value, secret),
+                formatted,
+            } => self.set_value(&target, &value, secret, formatted),
             Call::FillSubmit { target, guard } => self.fill_submit(&target, guard.as_ref()),
             Call::FillCleanup => self.fill_cleanup(),
             Call::FillResume => self.fill_resume(&mut audit),

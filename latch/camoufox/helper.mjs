@@ -84,9 +84,9 @@ let nextDocument = 0;
 // Filled vault values no GET request may carry as a query parameter
 // (`guard`); the session's `stopped` says one was stopped. Line breaks
 // count alike however written: a form sends a field's as CRLF. A value
-// counts as a fill takes a field to hold it (`reader.js`'s `keeps`): the
-// same characters in order, the separators either may put between them
-// aside.
+// counts as a formatted field holds it (`reader.js`'s `keepsFormatted`),
+// for every value: the same characters in order, the separators either
+// may put between them aside. A guard would rather stop more than fewer.
 const oneNewline = (text) => text.replace(/\r\n?/g, "\n");
 const SEPARATORS = new Set([" ", "\u00a0", "-", "/", ".", "(", ")", "+"]);
 const SPACES = new Set([" ", "\u00a0"]);

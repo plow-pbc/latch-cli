@@ -1087,7 +1087,8 @@ async fn release_and_set(
         })?;
         for (target, piece) in boxes.iter().zip(pieces) {
             let set = json!({"op": "set_value", "target": target["ref"], "value": piece,
-                             "secret": suggest::secret_field(&meta, label)});
+                             "secret": suggest::secret_field(&meta, label),
+                             "formatted": formatted(meta.kind, label)});
             let answer = step(session, set, audit).await?;
             // A value split across boxes must land whole in each one.
             let dropped = answer["dropped_breaks"] == true;
@@ -1152,6 +1153,15 @@ fn not_kept(
             list(&labels[at + 1..]),
         ),
     )
+}
+
+/// Whether a site may format field `label` of an item of `kind` as it
+/// likes, so that the page keeps it whatever separators either side puts
+/// in it: a card's fields, an identity's phone, SSN and postal code. A
+/// login's fields (a username, an email, a password) stay as they are:
+/// one a page changed is no longer the account's.
+fn formatted(kind: &str, label: &str) -> bool {
+    kind == "card" || kind == "identity" && matches!(label, "phone" | "ssn" | "postal code")
 }
 
 /// A field `item` lacks, refused with the fields it has.
