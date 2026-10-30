@@ -23,13 +23,14 @@ const remote = (args) => on(args) != null && on(args) !== "studio";
 const failed = (code, message) => ({ error: { code, message } });
 const busy = () => failed("state_busy", "another latch is changing /Users/me/.latch; try again");
 
-// `vault show` on studio, by item: built in code on the Mac (`vaultShows`).
-const shows = {
-  v1: { item: { fields: [{ alias: false, custom: false, hidden: false, label: "username" }, { alias: false, custom: false, hidden: true, label: "password" }, { alias: false, custom: false, hidden: true, label: "totp" }], item: "v1", kind: "login", revision: 2, sites: ["shop.example"], title: "Shop", totp: true, username: "ada" }, values: { username: "ada" } },
-  v2: { item: { fields: [{ alias: false, custom: false, hidden: false, label: "notes" }], item: "v2", kind: "note", revision: 2, sites: [], title: "Building notes", totp: false }, values: { notes: "Gate code is in the binder." } },
-  v3: { item: { fields: [{ alias: false, custom: false, hidden: true, label: "number" }, { alias: false, custom: false, hidden: true, label: "code" }, { alias: false, custom: false, hidden: false, label: "expiry month" }, { alias: false, custom: false, hidden: false, label: "expiry year" }, { alias: false, custom: false, hidden: false, label: "cardholder name" }, { alias: false, custom: false, hidden: false, label: "brand" }, { alias: false, custom: false, hidden: false, label: "expiry" }], item: "v3", kind: "card", revision: 1, sites: [], title: "Visa (test)", totp: false }, values: { brand: "Visa", "cardholder name": "Ada L", expiry: "2031-04", "expiry month": "04", "expiry year": "2031" } },
-  v4: { item: { fields: ["title", "first name", "middle name", "last name", "username", "company"].map((label) => ({ alias: false, custom: false, hidden: false, label })).concat([{ alias: false, custom: false, hidden: true, label: "ssn" }, { alias: false, custom: false, hidden: true, label: "passport number" }], ["license number", "email", "phone", "address1", "city", "state", "postal code", "country", "date of birth"].map((label) => ({ alias: false, custom: false, hidden: false, label }))), item: "v4", kind: "identity", revision: 2, sites: [], title: "Me (test)", totp: false }, values: { address1: "1 St", city: "London", company: "Co", country: "UK", "date of birth": "1815-12-10", email: "ada@example.com", "first name": "Ada", "last name": "Lovelace", "license number": "L1", "middle name": "K", phone: "555", "postal code": "N1", state: "LDN", title: "Dr", username: "ada2" } },
-  v6: { item: { fields: [{ alias: false, custom: false, hidden: false, label: "username" }, { alias: false, custom: false, hidden: true, label: "password" }], item: "v6", kind: "login", other_top_sites: ["grocer-login.example"], revision: 1, sites: ["grocer.example"], title: "Grocer", totp: false, username: "ada@example.com" }, values: { username: "ada@example.com" } },
+// `vault show`'s values on studio, by item (the Mac's `vaultShows`); each
+// item itself is as `vault list` lists it.
+const showValues = {
+  v1: { username: "ada" },
+  v2: { notes: "Gate code is in the binder." },
+  v3: { brand: "Visa", "cardholder name": "Ada L", expiry: "2031-04", "expiry month": "04", "expiry year": "2031" },
+  v4: { address1: "1 St", city: "London", company: "Co", country: "UK", "date of birth": "1815-12-10", email: "ada@example.com", "first name": "Ada", "last name": "Lovelace", "license number": "L1", "middle name": "K", phone: "555", "postal code": "N1", state: "LDN", title: "Dr", username: "ada2" },
+  v6: { username: "ada@example.com" },
 };
 
 /** What `vault list` lists on the host `args` name. */
@@ -45,13 +46,11 @@ function list(args) {
 function show(args) {
   const id = args[2];
   if (stage === "show-failed") throw busy();
-  if (onVault) {
-    if (remote(args)) return one("remoteVaultShow");
-    if (shows[id]) return structuredClone(shows[id]);
-  }
+  if (onVault && remote(args)) return one("remoteVaultShow");
   const item = list(args).items.find((listed) => listed.item === id);
   if (!item) throw failed("no_such_item", `no item ${id}`);
-  return { item, values: item.username ? { username: item.username } : {} };
+  const values = onVault && showValues[id] ? structuredClone(showValues[id]) : item.username ? { username: item.username } : {};
+  return { item, values };
 }
 
 /** `vault add`'s answer: the item as the arguments describe it. */

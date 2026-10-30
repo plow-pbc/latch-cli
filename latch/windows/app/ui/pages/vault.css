@@ -97,9 +97,8 @@
   border: 3px solid transparent;
   border-top-color: var(--accent);
   border-right-color: var(--accent);
-  animation: vault-turn 0.9s linear infinite;
+  animation: spin 0.9s linear infinite;
 }
-@keyframes vault-turn { to { transform: rotate(360deg); } }
 
 /* ── an error's words, and latch's under Details ── */
 .vault .error-text p, .vault-inspector .error-text p, .vault-sheet .error-text p { margin: 0; }
