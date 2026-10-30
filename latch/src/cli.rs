@@ -669,9 +669,9 @@ pub struct VaultArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum VaultCommand {
-    /// The items' metadata, a login's username included (never a secret
-    /// value): the first 50 unless --all, narrowed by --site, --search and
-    /// --kind
+    /// The items' metadata, a login's username included (never a secret value)
+    ///
+    /// The first 50 unless --all, narrowed by --site, --search and --kind
     List {
         /// Only items saved for this site: a domain or URL, matched by its
         /// registrable domain (www.shop.example finds shop.example)
