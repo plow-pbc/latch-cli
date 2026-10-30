@@ -588,8 +588,14 @@ function examplesMenu(app, request) {
     document.removeEventListener("scroll", scrolled, true);
   };
   const outside = (event) => { if (!wrap.contains(event.target)) close(); };
-  // A flyout stays where it opened: the page scrolling closes it.
-  const scrolled = (event) => { if (!wrap.querySelector(".menu")?.contains(event.target)) close(); };
+  // A flyout stays where it opened: the page scrolling on from there closes
+  // it (a scroll still arriving from before it opened doesn't).
+  let openedAt = 0;
+  const scroller = () => document.querySelector(".content .page");
+  const scrolled = (event) => {
+    if (wrap.querySelector(".menu")?.contains(event.target)) return;
+    if ((scroller()?.scrollTop ?? 0) !== openedAt) close();
+  };
   const opener = el("button", {
     class: "drop", "aria-haspopup": "menu", "aria-expanded": "false",
     onclick: () => {
@@ -623,6 +629,7 @@ function examplesMenu(app, request) {
       menu.style.top = at.bottom + 4 + height <= window.innerHeight - 8
         ? `${at.bottom + 4}px` : `${Math.max(8, at.top - 4 - height)}px`;
       opener.setAttribute("aria-expanded", "true");
+      openedAt = scroller()?.scrollTop ?? 0;
       document.addEventListener("pointerdown", outside, true);
       document.addEventListener("scroll", scrolled, true);
       menu.querySelector("button")?.focus({ preventScroll: true });

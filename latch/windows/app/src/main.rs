@@ -238,6 +238,19 @@ fn main() {
     tauri::Builder::default()
         .manage(Streams::default())
         .setup(|app| {
+            // The window is made here, not from the config alone: a debug
+            // build started with LATCH_APP_DEVTOOLS opens WebView2's
+            // DevTools protocol on loopback, for driving the window in
+            // tests (WebView2 ignores its environment variable under Tauri).
+            let config = app.config().app.windows.first().cloned().expect("the window's config");
+            let mut made = tauri::WebviewWindowBuilder::from_config(app, &config)?;
+            if cfg!(debug_assertions) && std::env::var_os("LATCH_APP_DEVTOOLS").is_some() {
+                made = made.additional_browser_args(
+                    "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection \
+                     --remote-debugging-port=9222 --remote-debugging-address=127.0.0.1",
+                );
+            }
+            made.build()?;
             if let Some(window) = app.get_webview_window("main") {
                 window.with_webview(|webview| {
                     let _ = without_autofill(&webview);

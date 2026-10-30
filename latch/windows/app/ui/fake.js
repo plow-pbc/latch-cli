@@ -7,6 +7,8 @@ const fixtures = await (await fetch(new URL("fake/fixtures.json", import.meta.ur
 const one = (name) => JSON.parse(fixtures[name]);
 const each = (name) => fixtures[name].split("\n").filter(Boolean).map((line) => JSON.parse(line));
 
+const failed = (code, message) => ({ error: { code, message } });
+
 /** The host a command names with `--host`, if any. */
 const on = (args) => {
   const at = args.indexOf("--host");
@@ -16,10 +18,29 @@ const on = (args) => {
 /** This Mac's fixture ("studio"), or pi-kitchen's for another host. */
 const per = (args, studio, kitchen) => (on(args) && on(args) !== "studio" ? kitchen : studio);
 
+// The address can stage this PC and the account as the Mac's stills do:
+// status=stopped|servingAttached|otherVersion|laptop|failed, update=1,
+// account=studioHosts|laptopHosts|laptopHostsPiOffline|noHosts|unreachable.
+const asked = new URLSearchParams(location.search);
+
+function localStatus() {
+  if (asked.get("status") === "failed") throw failed("io_error", "latch couldn't read its state folder");
+  const status = one(asked.get("status") ?? "serving");
+  if (asked.get("update")) status.update = { available: true, build: 139, checked_at: "2026-10-22T22:00:00Z" };
+  return status;
+}
+
+function accountStatus() {
+  if (asked.get("account") === "unreachable") {
+    throw failed("plow_unreachable", "could not reach Plow at http://127.0.0.1:9: connection refused");
+  }
+  return one(asked.get("account") ?? "studioHosts");
+}
+
 const answers = [
-  [["status", "--local"], () => one("serving")],
+  [["status", "--local"], localStatus],
   [["status", "--host"], () => one("piStatus")],
-  [["status"], () => one("studioHosts")],
+  [["status"], accountStatus],
   [["rules", "show"], (args) => one(per(args, "studioRules", "piRules"))],
   [["vault", "list"], (args) => one(per(args, "studioVault", "piVault"))],
   [["agents", "catalog"], () => one("catalog")],
@@ -36,8 +57,6 @@ for (const name of ["activity", "rules", "vault", "settings", "agents", "connect
     answers.unshift(...(await import(`./fake/${name}.js`)).answers);
   } catch {}
 }
-
-const failed = (code, message) => ({ error: { code, message } });
 
 export async function run(args, input) {
   for (const [prefix, answer] of answers) {

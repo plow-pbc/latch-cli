@@ -36,6 +36,8 @@ const google = (state) => ({
 
 /** `status --local` on this PC, as each still has it. */
 function local() {
+  // Not one of Host Settings' stills: fake.js's own answer (its `status=`).
+  if (!still) return undefined;
   const status = one({
     "19-settings-this-mac-stopped-update": "stopped",
     "19-settings-this-mac-blocked": "otherVersion",

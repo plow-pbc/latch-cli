@@ -8,6 +8,9 @@
 //   rules-stale                           a save over rules changed elsewhere meanwhile
 //   rules-too-long                        a save latch refuses as too long
 //   rules-try-usage                       a try latch can't run as typed
+// The 16 stills also stage what the person had done, as the Mac's do
+// (`trial.stage`, `rulesDrafts[key] = …`, `openRules`): the request and
+// who it's tried as (Try runs it), a draft, the agent's rules asked for.
 
 const fixtures = await (await fetch(new URL("fixtures.json", import.meta.url))).json();
 const one = (name) => JSON.parse(fixtures[name]);
@@ -22,6 +25,26 @@ const kitchen = (args) => on(args) != null && on(args) !== "studio";
 const failed = (code, message) => ({ error: { code, message } });
 
 const HELPER = "3971582e59baad83250141c8dcc95855";
+const SCOUT = "ba3c0b3ad1eba7a9a1eb04b67c9db0dd";
+
+/** Rules' own state (pages/rules.js `state`) with a still's staged in it. */
+function staged({ request = "", caller = "new", drafts = {}, focus = null }) {
+  return {
+    drafts, errors: {}, saving: new Set(), focus,
+    trial: { request, caller, draft: "", useDraft: false, trying: false, results: {} },
+  };
+}
+const studioRules = JSON.parse(fixtures.rulesStudio).every_agent;
+const STAGED = {
+  "16-rules-studio-scout-try-allowed": () => staged({
+    request: "exec --workdir ~/Projects/latch-demo -- make test", caller: SCOUT, focus: { host: "studio", agent: SCOUT } }),
+  "16-rules-studio-try-you-said-no": () => staged({ request: "exec -- cat Finance/2026.csv", caller: SCOUT }),
+  "16-rules-studio-unsaved-draft": () => staged({
+    drafts: { "studio\n": { text: `${studioRules.text}Never send email without asking me.`, base: studioRules.revision } } }),
+  "16-rules-pi-kitchen-helper-exec-refused": () => staged({
+    request: "exec -- ls", caller: HELPER, focus: { host: "pi-kitchen", agent: HELPER } }),
+};
+if (STAGED[still]) (await import("../main.js")).app.pages.rules = STAGED[still]();
 
 const TRIES = {
   "allow-owner": {"as":"owner","gate":{"caller":"owner_device","cost":1.1e-05,"latency_ms":268,"model":"typesafe/jev-1.14-20261014","model_request":"req_nzfeeqvhlqnslxsf","p":{"COVERED":0.9,"FORBIDDEN":0.08,"NOT_COVERED":0.02},"rule":"refused when forbidden >= within instructions","rules":{"agent":null,"host":"ea4ac6c6bd9184d7479f8312f4ebca18db1804f21bba03212ac8f0dc80f35c7c"},"source":"owner_request","verdict":"allow"},"host":"studio","request":{"action":{"argv":["ls","Projects"],"network":false,"operation":"exec","secret_env":[],"working_folder":"/Users/me","writes":[]},"op":"exec"},"verdict":"allow"},

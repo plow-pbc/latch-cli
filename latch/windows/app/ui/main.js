@@ -62,6 +62,8 @@ export const app = {
   read,
   sheet,
   confirm,
+  viewerOnly,
+  askToHost,
 };
 
 let root;
@@ -144,6 +146,19 @@ function host() {
   return hosts().find((h) => h.name === app.hostName) ?? null;
 }
 
+/** Logged in, Plow answered, and this PC isn't one of the hosts: the
+ * person is viewing their hosts from here (`AppModel.viewerOnly`). */
+function viewerOnly() {
+  return Boolean(app.local?.login && app.account && !hosts().some((h) => h.thisPC));
+}
+
+/** Asks, then starts hosting on this PC (the Mac's `.startHosting`). */
+async function askToHost() {
+  const yes = await confirm("Start hosting on this PC?",
+    "Latch runs in the background, and your agents can reach this PC, judged by your rules.", "Start Hosting", { destructive: false });
+  if (yes) await app.start?.();
+}
+
 /** A host's state in a word or two (`HostState`). */
 export function hostState(entry) {
   if (entry.thisPC) {
@@ -201,11 +216,14 @@ function draw({ page = true } = {}) {
     el("h2", {}, "Hosts"),
     hosts().map((h) => row(icon(h.thisPC ? "pc" : "server"), h.name, subtitle(h),
       !isAccount(app.place) && app.hostName === h.name, () => { app.hostName = h.name; go(isAccount(app.place) ? "home" : app.place); })),
-    hosts().length ? null : el("p", { class: "quiet" }, app.accountError ? "Not listed" : "Checking…"),
+    hosts().length ? null : el("p", { class: "quiet" }, viewerOnly() ? "No hosts yet" : app.accountError ? "Not listed" : "Checking…"),
     app.accountError ? el("p", { class: "notice" }, icon("offline"), "Plow can't be reached") : null,
+    viewerOnly() ? el("button", { class: "host-here", title: "This PC isn't hosting; you're viewing your hosts", onclick: askToHost },
+      "Start Hosting on This PC…") : null,
     el("div", { class: "foot" },
       row(icon(settingsIcon), settingsTitle, null, app.place === settingsId, () => go(settingsId)),
-      el("div", { class: "who" }, app.local?.login ? `Logged in as ${app.local.this_machine.name}` : "")),
+      el("div", { class: "who" }, app.local?.login
+        ? `Logged in as ${app.local.this_machine.name}${viewerOnly() ? " · viewing only" : ""}` : "")),
   );
   // Swapped in place: a page being typed in keeps its focus while the
   // status and hosts around it change.
@@ -276,7 +294,10 @@ function inspectorToggle(page) {
 function body(entry) {
   const page = pageOf(app.place);
   const view = el("div", { class: "page" });
-  if (!entry && !isAccount(app.place)) view.append(el("p", { class: "quiet center" }, app.accountError ? said(app.accountError) : "Checking your hosts…"));
+  // Home speaks for a viewer with no host yet; other screens need a host.
+  if (!entry && !isAccount(app.place) && !(app.place === "home" && viewerOnly())) {
+    view.append(el("p", { class: "quiet center" }, app.accountError ? said(app.accountError) : "Checking your hosts…"));
+  }
   else view.append(...[page.render(app, entry)].flat().filter(Boolean));
   const pane = page?.inspector && app.inspecting[app.place] && (entry || isAccount(app.place)) ? page.inspector(app, entry) : null;
   return el("div", { class: `body${pane ? " inspected" : ""}` }, view,

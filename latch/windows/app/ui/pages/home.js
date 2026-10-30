@@ -8,6 +8,7 @@ import * as records from "../records.js";
 import { openActivity, openRecord } from "./activity.js";
 
 export async function enter(app, host) {
+  if (!host) return;
   if (app.summaries[host.name]) delete app.summaries[host.name].older;
   const reads = [app.read(host, "feed", ["audit", ...app.on(host)], { lines: true })];
   if (host.thisPC || host.online !== false) {
@@ -19,12 +20,27 @@ export async function enter(app, host) {
 }
 
 export function render(app, host) {
-  if (!host.thisPC && host.online === false) return offline(host);
+  const viewing = app.viewerOnly() ? viewer(app) : null;
+  if (!host) {
+    return [viewing, el("div", { class: "empty" }, icon("server", "icon big"), el("h3", {}, "No hosts yet"),
+      el("p", {}, "To add a host, install and start Latch on another computer, or start hosting on this PC."))];
+  }
+  if (!host.thisPC && host.online === false) return [viewing, offline(host)];
   return [
+    viewing,
     host.thisPC ? needs(app) : null,
     ...activity(app, host),
     onHost(app, host),
   ];
+}
+
+/** Logged in with nothing hosted here: say so, and offer to start. */
+function viewer(app) {
+  const name = app.local?.this_machine.name ?? "";
+  return section(null, el("div", { class: "line need" }, icon("pc", "icon warn"),
+    el("span", { class: "text" }, el("b", {}, `This PC (${name}) isn't hosting.`),
+      el("small", {}, "You're viewing your hosts. Your agents' work runs on them, not here.")),
+    button("Start hosting on this PC…", () => app.askToHost())));
 }
 
 function section(title, ...rows) {

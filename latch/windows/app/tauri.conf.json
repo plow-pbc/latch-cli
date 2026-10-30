@@ -11,6 +11,7 @@
     "windows": [
       {
         "label": "main",
+        "create": false,
         "title": "Plow Latch",
         "width": 600,
         "height": 660,
