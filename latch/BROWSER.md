@@ -379,8 +379,11 @@ each before anything of it reaches the page:
   there; with it, a sign-in on the login's own site isn't read as sharing the
   password, while a login on any other site is. A refused fill in a plan
   stops the plan at that step, the reason in its `stop`;
-- every `eval` (its script), upload and download (the file's name and
-  size).
+- every `eval`, judged on its whole script: ordinary page work (closing a
+  pop-up, scrolling, clicking, reading visible text) is everyday, while a
+  script that reads form fields, listens to input, keyboard or form
+  events, or sends page data off the page needs the owner's explicit OK;
+- every upload and download (the file's name and size).
 
 Clicks, typing, `act`, page reads, screenshots and the `--confirm` of an
 ordinary click are not judged: the risk decision, confirmations and the

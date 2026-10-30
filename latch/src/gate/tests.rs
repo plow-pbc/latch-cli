@@ -921,6 +921,32 @@ async fn a_fill_from_the_vault_is_judged_knowing_what_a_fill_does() {
     }
 }
 
+/// An agent's script is judged on its whole source, however long, by both
+/// layers, told what a script in a page can reach; nothing else is.
+#[tokio::test]
+async fn a_script_is_judged_whole_knowing_what_it_can_reach() {
+    let long = format!(
+        "{}document.querySelector('.popup')?.remove(); 1",
+        "// ...\n".repeat(1000)
+    );
+    let script = json!({"kind": "run_script", "site": "instacart.com", "script": long});
+    for (action, told) in [
+        (script, true),
+        (serde_json::from_str(order().get()).unwrap(), false),
+    ] {
+        let raw = serde_json::value::to_raw_value(&action).unwrap();
+        let model = Recorder::answering(0.9, 0.05, 0.05);
+        gatekeeper(one_chat(), &model, host_rules())
+            .judge(AGENT_CALLER, &raw)
+            .await;
+        for state in [model.rules_state(), model.chat_state()] {
+            assert_eq!(state["proposed_action"], action);
+            let rules = state["rules_of_judgment"].to_string();
+            assert_eq!(rules.contains(RUN_SCRIPT), told, "{action}");
+        }
+    }
+}
+
 #[tokio::test]
 async fn an_agents_vault_list_is_judged_knowing_what_it_shows() {
     let list = crate::gate::gated("vault", &json!({"command": "list"}))

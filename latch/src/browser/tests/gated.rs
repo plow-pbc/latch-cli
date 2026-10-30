@@ -485,6 +485,11 @@ async fn a_refused_command_sends_nothing_to_the_page(engine: &str) {
         .await;
     refused(&eval, "not_covered", &chat);
     assert_eq!(judge.last_action()["kind"], "run_script");
+    assert_eq!(
+        judge.last_action()["script"],
+        "fetch('/eval-ran'); document.title = 'ran'",
+        "the judge sees the whole script"
+    );
     assert_eq!(judge.last_action()["site"], "shop.example");
 
     // A refused upload puts no file into the page.
@@ -720,8 +725,7 @@ async fn a_refused_command_sends_nothing_to_the_page(engine: &str) {
     refused(&released, "not_covered", &chat);
     // The release is judged on the checkout the confirmation bound: the
     // page, the sites the values go to, the button and the lines around
-    // it, the card's last four digits, and that a script ran on the shop
-    // (the test's own look above).
+    // it, and the card's last four digits.
     assert_eq!(
         judge.last_action(),
         json!({"kind": "vault_fill", "site": "shop.example",
@@ -730,10 +734,10 @@ async fn a_refused_command_sends_nothing_to_the_page(engine: &str) {
                "checkout": {"page_title": "latch checkout test",
                             "field_sites": ["https://shop.example"], "press": "Pay",
                             "lines": ["Name on card", "Card number", "Expiry", "CVV", "Pay"],
-                            "card_last4": "4242", "agent_code_before_fill": true}})
+                            "card_last4": "4242"}})
     );
     // A page that shows the card's number shows the judge its last four
-    // digits only. In a new session, where no script ran yet.
+    // digits only.
     let id = host
         .look(
             "open",
@@ -757,9 +761,6 @@ async fn a_refused_command_sends_nothing_to_the_page(engine: &str) {
         )
         .await;
     let confirmation = stop.unwrap_err().details["confirmation"]["id"].clone();
-    // A script sent to the page after the confirmation was issued: the
-    // judge is told, as the release is judged.
-    host.look("eval", &id, json!({"script": "1"})).await;
     let released = host
         .agent(
             "do",
@@ -771,10 +772,6 @@ async fn a_refused_command_sends_nothing_to_the_page(engine: &str) {
     refused(&released, "not_covered", &chat);
     let judged = judge.last_action();
     println!("judged on a page that shows the number: {judged}");
-    assert_eq!(
-        judged["checkout"]["agent_code_before_fill"], true,
-        "{judged}"
-    );
     assert!(
         judged["checkout"]["lines"]
             .as_array()

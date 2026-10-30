@@ -84,21 +84,15 @@ enum Confirms {
 }
 
 /// The fill a confirmation in this session would release, while it is
-/// still unused: what the gatekeeper judges before it is carried out,
-/// with whether agent code has run on its sites by now.
+/// still unused: what the gatekeeper judges before it is carried out.
 pub(super) fn fill_to_confirm(entry: &Entry, id: &str) -> Option<Value> {
     let all = entry.confirmations.lock().expect("confirmations lock");
-    let mut fill = all
-        .iter()
+    all.iter()
         .find(|c| c.id == id && !c.used)
         .and_then(|c| match &c.kind {
             Confirms::Fill(args) => Some(args.clone()),
             _ => None,
-        })?;
-    let sites: Vec<String> =
-        serde_json::from_value(fill["review"]["sites"].clone()).unwrap_or_default();
-    fill["review"]["agent_code_before_fill"] = json!(entry.runtime.agent_code_on(&sites));
-    Some(fill)
+        })
 }
 
 /// Waits until `deadline` for `condition`, checking it a few times a
