@@ -1947,10 +1947,7 @@ async fn with_no_engine_a_call_names_the_owners_setup_and_downloads_nothing() {
         .await
         .unwrap_err();
     assert_eq!(unnamed.code, "engine_not_installed", "{unnamed:?}");
-    assert_eq!(
-        unnamed.details["setup"],
-        "latch browser setup --engine chrome"
-    );
+    assert_eq!(unnamed.details["setup"], "latch browser setup");
     let other = h
         .call(CALLER, "open", "firefox", json!({}))
         .await

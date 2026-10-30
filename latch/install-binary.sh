@@ -60,15 +60,15 @@
 # could not stop still runs.
 #
 # It also installs a browser engine for `latch browser`, with
-# browser-engines.sh next to this script: Chrome for Testing by default (on
-# macOS and Linux arm64/x86_64), or the engines `--browser` names (chrome,
-# camoufox; repeat it for both). `--no-browser` installs none;
-# `latch browser setup --engine ENGINE` installs one later.
+# browser-engines.sh next to this script: Camoufox by default (on macOS and
+# Linux arm64/x86_64), or the engines `--browser` names (camoufox, chrome;
+# repeat it for both). `--no-browser` installs none;
+# `latch browser setup [--engine ENGINE]` installs one later.
 #
 # On Linux it also installs bubblewrap, which `latch serve` uses to sandbox
 # its workers, and on Ubuntu 24.04 and later the AppArmor profile that lets
 # bubblewrap create user namespaces there (browser-engines.sh adds Xvfb and
-# unzip and runtime libraries for Chrome). Those need root, so it asks for sudo
+# unzip and the browser's runtime libraries). Those need root, so it asks for sudo
 # once, and only when something is missing. On macOS none of that is
 # needed. It downloads no latch binary. Running it again changes
 # nothing that is already in place.
@@ -133,7 +133,7 @@ while [ $# -gt 0 ]; do
         'Without a binary path, installs the latch next to this script.' \
         'Options may appear before or after the binary path.' \
         'Binary directory defaults to ~/.local/bin; state and plugins default to $LATCH_STATE_DIR, else ~/.latch.' \
-        'The browser engine defaults to Chrome for Testing; --browser chrome|camoufox' \
+        'The browser engine defaults to Camoufox; --browser chrome|camoufox' \
         'names the engines instead (repeat it for both), --no-browser installs none.' \
         '--client-only installs latch alone, for a machine that only asks hosts;' \
         'at a terminal, it logs in with an agent credential it finds, unless --no-login.' \
@@ -192,7 +192,7 @@ if [ -n "$client_only" ]; then
 elif [ -n "$no_browser" ]; then
   [ -z "$browsers" ] || die "--no-browser and --browser can't both be given"
 elif [ -z "$browsers" ]; then
-  browsers=chrome
+  browsers=camoufox
 fi
 [ -f "$src" ] && [ -x "$src" ] || die "$src is not an executable file"
 
@@ -550,7 +550,7 @@ if [ "$(uname -s)" = Darwin ] && [ -f "$reader" ] && [ -z "$client_only" ]; then
 fi
 
 # 4. Linux hosts: work out what needs root, then run it all under one sudo.
-# What Chrome needs is browser-engines.sh's to install, then or later.
+# What the browser needs is browser-engines.sh's to install, then or later.
 if [ "$(uname -s)" = Linux ] && [ -z "$client_only" ]; then
   packages=""
   want() { packages="${packages:+$packages }$1"; }

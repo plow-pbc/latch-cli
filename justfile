@@ -35,6 +35,6 @@ docs-publish *args:
     cd latch && cargo build --quiet --locked
     t="${CARGO_TARGET_DIR:-target}"; case "$t" in /*) ;; *) t="{{justfile_directory()}}/latch/$t" ;; esac; cd "{{invocation_directory()}}" && python3 "{{justfile_directory()}}/scripts/docs_site.py" publish --latch "$t/debug/latch" "$@"
 
-# This checkout as a dev Mac app (.dev/app/Plow Latch Dev.app), on `just build`'s latch, with gog, the Messages reader and Chrome for Testing.
+# This checkout as a dev Mac app (.dev/app/Plow Latch Dev.app), on `just build`'s latch, with gog, the Messages reader and Camoufox.
 app *args:
     @just --justfile latch/justfile app {{args}}
