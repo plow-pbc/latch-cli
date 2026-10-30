@@ -24,7 +24,8 @@
 //! It talks to the host over its standard streams, one JSON line each way
 //! per call, every answer a `wire::Response`:
 //! - first, unasked: `{"ok": {"engine", "version", "driver_contract",
-//!   "pid"}}` once the browser is up, or the error that stopped it;
+//!   "pid", "groups"}}` once the browser is up (`groups`: the process
+//!   groups the engine's processes lead), or the error that stopped it;
 //! - then one `core::Call` per line (`{"op": "observe", …}`), answered
 //!   `{"ok": {"result": R, "audit": A}}`: R for the agent, A for the host's
 //!   audit record. When bytes follow the line (a screenshot, a download),
@@ -75,6 +76,14 @@ pub fn started_group(leader: u32) {
         .lock()
         .unwrap_or_else(|held| held.into_inner());
     groups.push(leader as libc::pid_t);
+}
+
+/// The process groups the engine's processes lead.
+fn engine_groups() -> Vec<libc::pid_t> {
+    ENGINE_GROUPS
+        .lock()
+        .unwrap_or_else(|held| held.into_inner())
+        .clone()
 }
 
 /// Kills the engine's processes and this worker the moment the host that
@@ -180,6 +189,7 @@ pub fn run(
                     "version": CAMOUFOX.version,
                     "driver_contract": CAMOUFOX.driver_contract,
                     "pid": browser.pid(),
+                    "groups": engine_groups(),
                 });
                 serve(ready, browser, idle, call_limit, local)
             }
@@ -198,6 +208,7 @@ pub fn run(
                     "version": CFT.version,
                     "driver_contract": CFT.driver_contract,
                     "pid": browser.pid(),
+                    "groups": engine_groups(),
                 });
                 serve(ready, browser, idle, call_limit, local)
             }

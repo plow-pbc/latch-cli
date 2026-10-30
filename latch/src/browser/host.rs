@@ -595,11 +595,12 @@ impl Browsers {
         closing.spawn(async move {
             let _all = entry.calls.write().await;
             let _turn = entry.session.lock().await;
-            // A browser that will not close is stopped: never two on a profile.
-            if tokio::time::timeout(CLOSING, entry.runtime.close())
-                .await
-                .is_err()
-            {
+            // A browser that did not close is stopped, every process of it
+            // gone: never two on a profile.
+            if !matches!(
+                tokio::time::timeout(CLOSING, entry.runtime.close()).await,
+                Ok(Ok(_))
+            ) {
                 entry.runtime.stop().await;
             }
             entry.free_profile();

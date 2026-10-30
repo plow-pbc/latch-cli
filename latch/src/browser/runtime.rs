@@ -29,6 +29,9 @@ pub const IDLE: Duration = Duration::from_secs(30 * 60);
 /// the worker ends its waits by the limit, and answers soon after.
 const ANSWER_GRACE: Duration = Duration::from_secs(30);
 
+/// How long a stopped engine's processes may take to be gone.
+const STOPPING: Duration = Duration::from_secs(10);
+
 /// How long the whole of `call` may take: its limit, and the grace.
 fn within(call: &Value) -> Duration {
     Call::deserialize(call).map_or(core::CALL, |call| call.limit(core::CALL)) + ANSWER_GRACE
@@ -57,6 +60,11 @@ struct Worker {
     /// runtime ends, by its `Drop`.
     #[cfg_attr(not(all(test, target_os = "macos")), allow(dead_code))]
     scratch: TempDir,
+    /// On macOS, the process groups the engine's processes lead (the
+    /// browser's, and Camoufox's helper's), which a stopped worker leaves
+    /// running. On Linux they are in the worker's bubblewrap, which takes
+    /// them with it.
+    groups: Vec<libc::pid_t>,
     /// The session's profile folder.
     #[cfg_attr(not(all(test, target_os = "macos")), allow(dead_code))]
     profile: PathBuf,
@@ -147,9 +155,13 @@ impl Runtime {
             stdin,
             stdout,
             scratch,
+            groups: Vec::new(),
             profile: profile.to_path_buf(),
         };
         let ready = worker.answer().await?;
+        if cfg!(target_os = "macos") {
+            worker.groups = serde_json::from_value(ready["groups"].clone()).unwrap_or_default();
+        }
         Ok(Runtime {
             worker: Mutex::new(worker),
             ready,
@@ -222,8 +234,7 @@ impl Runtime {
         match tokio::time::timeout(within, exchange).await {
             Ok(reply) => reply,
             Err(_) => {
-                worker.stop();
-                let _ = worker.child.wait().await;
+                worker.stop_and_wait().await;
                 Err(Failure::new(
                     code::browser_gone,
                     format!(
@@ -241,25 +252,49 @@ impl Runtime {
         worker.send(serde_json::json!({"op": "close"})).await?;
         let closed = worker.answer().await?;
         let _ = worker.child.wait().await;
+        // It waited for every process it started to end.
+        worker.groups.clear();
         Ok(closed["result"].clone())
     }
 
-    /// Stops the worker and waits for it; the browser exits once its pipe
-    /// closes.
+    /// Stops the worker and every process of its engine, and waits until
+    /// they are gone: nothing of the browser is left on its profile.
     pub async fn stop(&self) {
-        let mut worker = self.worker.lock().await;
-        worker.stop();
-        let _ = worker.child.wait().await;
+        self.worker.lock().await.stop_and_wait().await;
     }
 }
 
 impl Worker {
-    fn stop(&mut self) {
-        if let Some(pid) = self.child.id() {
-            // The worker leads its own group; the browser, in a group of its
-            // own, exits when the worker's end of its pipe closes.
+    /// Kills the worker's group and, while the worker still runs, its
+    /// engine's groups (once it has ended, it waited for them, and their
+    /// ids may be another's). Answers the engine's groups it killed.
+    fn stop(&mut self) -> Vec<libc::pid_t> {
+        let groups = std::mem::take(&mut self.groups);
+        if !matches!(self.child.try_wait(), Ok(None)) {
+            return Vec::new();
+        }
+        let pid = self.child.id().expect("running") as libc::pid_t;
+        for group in std::iter::once(pid).chain(groups.iter().copied()) {
             // SAFETY: killpg sends a signal and touches no Rust memory.
-            unsafe { libc::killpg(pid as libc::pid_t, libc::SIGKILL) };
+            unsafe { libc::killpg(group, libc::SIGKILL) };
+        }
+        groups
+    }
+
+    /// `stop`, and waits until the worker and the engine's processes are
+    /// gone.
+    async fn stop_and_wait(&mut self) {
+        let groups = self.stop();
+        let _ = self.child.wait().await;
+        let stopping = std::time::Instant::now();
+        // SAFETY: signal 0 only asks whether the group has a process left.
+        let left = |group: &libc::pid_t| unsafe { libc::killpg(*group, 0) } == 0;
+        while groups.iter().any(left) {
+            if stopping.elapsed() > STOPPING {
+                crate::log::log("browser: an engine process outlived SIGKILL");
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
 

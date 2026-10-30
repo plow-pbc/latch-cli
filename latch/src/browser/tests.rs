@@ -2682,6 +2682,55 @@ async fn an_answer_shows_the_screen_and_observe_all_every_element(engine: &str) 
 mod mac {
     use super::*;
 
+    /// A browser that does not close in time is stopped, every process of
+    /// its engine with it (Camoufox's helper and browser lead groups of
+    /// their own), before its profile is free for the next session: never
+    /// two browsers on one profile. (On Linux the worker's bubblewrap
+    /// takes them with it.)
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn a_browser_that_will_not_close_is_gone_before_its_profile_is_free() {
+        let (dir, state, _area) = test_state("camoufox");
+        // A worker whose engine is a process group of its own that answers
+        // the open and never the close.
+        let worker = dir.path().join("stuck-worker");
+        fs::write(
+            &worker,
+            r#"#!/bin/sh
+set -m
+sleep 600 </dev/null >/dev/null 2>&1 &
+engine=$!
+echo "{\"ok\": {\"engine\": \"camoufox\", \"pid\": $engine, \"groups\": [$engine]}}"
+read -r open
+echo '{"ok": {"result": {}, "audit": {}}}'
+while read -r ignored; do :; done
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(&worker, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let mut h = Host::new(&state);
+        h.browsers.test = Some((worker, Vec::new()));
+        let (id, _) = h.open(CALLER, "camoufox", json!({})).await;
+        let entry = h.browsers.session_for_test(&id).await;
+        let engine = entry.runtime.ready["pid"].as_i64().unwrap() as libc::pid_t;
+        drop(entry);
+        // Not `h.call`, which waits for a closed browser to be gone.
+        h.browsers.close(&id, CALLER).await.unwrap();
+        let refused = h
+            .call(CALLER, "open", "camoufox", json!({}))
+            .await
+            .unwrap_err();
+        assert_eq!(refused.code, "profile_in_use", "not free while it closes");
+        h.browsers.settled().await;
+        // SAFETY: signal 0 only asks whether the group has a process left.
+        let left = unsafe { libc::killpg(engine, 0) } == 0;
+        println!("after the close timed out: the engine's group is left: {left}");
+        assert!(!left);
+        let (again, _) = h.open(CALLER, "camoufox", json!({})).await;
+        h.call(CALLER, "close", &again, json!({})).await.unwrap();
+        h.browsers.settled().await;
+    }
+
     /// Camoufox runs with the prefs that open every window a page opens
     /// (`window.open`, with features or without, or a `target=_blank` link) as a
     /// tab that loads in the background; Firefox keeps the ones that differ from
