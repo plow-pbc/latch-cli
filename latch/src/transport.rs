@@ -279,36 +279,24 @@ pub async fn connect_local(state: &Path) -> Result<LocalStream, Failure> {
 /// caller answers with its own and HMAC-SHA256(secret, "latch caller" ‖
 /// host's ‖ caller's); the host answers HMAC-SHA256(secret, "latch host" ‖
 /// caller's ‖ host's), which the caller checks before it sends a request.
+/// Each side checks the other's proof in constant time (`verify_slice`).
 #[cfg(windows)]
 mod handshake {
-    use sha2::{Digest, Sha256};
+    use hmac::{Hmac, KeyInit, Mac};
+    use sha2::Sha256;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     use super::{LocalRead, LocalStream, LocalWrite};
 
     const NONCE: usize = 32;
 
-    fn hmac(key: &[u8], parts: &[&[u8]]) -> [u8; 32] {
-        let mut block = [0u8; 64];
-        if key.len() > block.len() {
-            block[..32].copy_from_slice(&Sha256::digest(key));
-        } else {
-            block[..key.len()].copy_from_slice(key);
-        }
-        let mut inner = Sha256::new();
-        inner.update(block.map(|byte| byte ^ 0x36));
-        for part in parts {
-            inner.update(part);
-        }
-        let mut outer = Sha256::new();
-        outer.update(block.map(|byte| byte ^ 0x5c));
-        outer.update(inner.finalize());
-        outer.finalize().into()
-    }
-
-    /// Equal, in a time that does not say where they differ.
-    fn same(a: &[u8], b: &[u8]) -> bool {
-        a.len() == b.len() && a.iter().zip(b).fold(0, |differ, (x, y)| differ | (x ^ y)) == 0
+    /// One side's proof: HMAC-SHA256(secret, `side` ‖ `first` ‖ `second`).
+    fn proof(secret: &[u8], side: &[u8], first: &[u8], second: &[u8]) -> Hmac<Sha256> {
+        let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("HMAC takes any key");
+        mac.update(side);
+        mac.update(first);
+        mac.update(second);
+        mac
     }
 
     /// The caller's side: whether the other end proved it is the host.
@@ -316,13 +304,15 @@ mod handshake {
         let mut host = [0u8; NONCE];
         stream.read_exact(&mut host).await?;
         let mine: [u8; NONCE] = rand::random();
-        let proof = hmac(secret, &[b"latch caller", &host, &mine]);
-        stream
-            .write_all(&[mine.as_slice(), &proof].concat())
-            .await?;
+        let sent = proof(secret, b"latch caller", &host, &mine)
+            .finalize()
+            .into_bytes();
+        stream.write_all(&[mine.as_slice(), &sent].concat()).await?;
         let mut answer = [0u8; 32];
         stream.read_exact(&mut answer).await?;
-        Ok(same(&answer, &hmac(secret, &[b"latch host", &mine, &host])))
+        Ok(proof(secret, b"latch host", &mine, &host)
+            .verify_slice(&answer)
+            .is_ok())
     }
 
     /// The host's side: whether the caller proved it knows the secret; if it
@@ -336,12 +326,17 @@ mod handshake {
         send.write_all(&mine).await?;
         let mut theirs = [0u8; NONCE + 32];
         recv.read_exact(&mut theirs).await?;
-        let (caller, proof) = theirs.split_at(NONCE);
-        if !same(proof, &hmac(secret, &[b"latch caller", &mine, caller])) {
+        let (caller, sent) = theirs.split_at(NONCE);
+        if proof(secret, b"latch caller", &mine, caller)
+            .verify_slice(sent)
+            .is_err()
+        {
             return Ok(false);
         }
-        send.write_all(&hmac(secret, &[b"latch host", caller, &mine]))
-            .await?;
+        let answer = proof(secret, b"latch host", caller, &mine)
+            .finalize()
+            .into_bytes();
+        send.write_all(&answer).await?;
         Ok(true)
     }
 }
