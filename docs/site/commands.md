@@ -45,7 +45,7 @@ latch browser open --host my-mac https://example.com
 | `latch status` | Host Agent | Print this machine, its login and account, and the account's hosts. |
 | `latch devices` | Host | List this account's machines, online or not, or remove one. |
 | `latch devices remove` | Host | Remove a machine and sign out the Plow login it registered with. Owner only.<br>Remove the old Pi without a prompt: `latch devices remove old-pi --yes` |
-| `latch hosts default` | Host | The host `--host default` names: print it, save NAME, or clear it. Kept in this state folder, for this machine or agent alone; it reaches no host you couldn't name yourself. A command without --host goes where it always did.<br>Use mbp when --host default is given: `latch hosts default mbp` |
+| `latch hosts default` | Host | The host `--host default` names: print it, save NAME, or clear it. Saved, use it with --host default (or LATCH_HOST=default); commands without --host are unchanged. Kept in this state folder, for this machine or agent alone; it reaches no host you couldn't name yourself.<br>Use mbp when --host default is given: `latch hosts default mbp` |
 | `latch update` | Host Agent | Install the newest latch, or the build TAG names. |
 | `latch app` | Host | Open the Plow Latch app this latch belongs to (macOS). |
 | `latch help` | Host | Help for a command, its examples, or every command as JSON.<br>Help for one command: `latch help browser open` |
