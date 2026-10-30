@@ -803,7 +803,14 @@ mod platform;
 #[cfg(windows)]
 pub(crate) use platform::final_path;
 #[cfg(windows)]
-pub use platform::{sweep, tie_to_host};
+pub use platform::{list_folders, sweep, tie_to_host, volume_roots};
+
+/// Whether agents may list folders here: only Windows asks
+/// (`latch volume-roots`), so nothing to say elsewhere.
+#[cfg(not(windows))]
+pub fn list_folders() -> Option<&'static str> {
+    None
+}
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 mod platform {

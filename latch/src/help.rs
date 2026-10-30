@@ -295,7 +295,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "status",
         runs_on: |_| RunsOn::Either,
-        output: "`account` (`owner_uid`, `display_name`), `login` (`kind`: device or agent), `this_machine` (its `name` and `key`, and `hosting`: `running`, `ready`, `configuring`, `managed`, `attached`, `state`, `pid`, `blocked`, `waiting` (what a starting host waits for, else null), `deny_exec` (`every_agent`, `agent_uids`) as the host runs or last ran, null if its saved flags are unreadable, and `keep_awake` (`enabled`, `held`, `reason`; see `settings set`), null if its saved settings are unreadable), `hosts` (the account's hosts as Plow lists them, this machine first: `name`, `key`, `self`, Plow's `online` and `last_seen_at`, and `plugins`, the ones it has on as `name` and `state` (enabled or needs_setup), asked of every host Plow lists online within 2 s in all; null when unknown, with `plugins_reason`: host_offline, host_unreachable, caller_denied, protocol_mismatch or the host's own code), `default_host` (where a command without --host goes; null with `default_host_reason`: unknown_host, no_host, host_required, no_default_host or not_logged_in), `saved_default_host` (the host `--host default` names, saved by `latch hosts default`; null when none is), `plugins`, `update`, `last_error`, `api_url`, `state_dir`, `version` and `protocol`. Before login it asks no one: `login`, `account`, `hosts` and this machine's `name` and `key` are null. With --local, the same without `account`, `hosts` and `default_host*`, asking no one; with --host, that host's own `status --local` (owner devices only; a host on an older latch answers in that latch's shape); with --follow too, JSON lines: `hello`, then a `status` line, again each time it changes.",
+        output: "`account` (`owner_uid`, `display_name`), `login` (`kind`: device or agent), `this_machine` (its `name` and `key`, and `hosting`: `running`, `ready`, `configuring`, `managed`, `attached`, `state`, `pid`, `blocked`, `waiting` (what a starting host waits for, else null), `deny_exec` (`every_agent`, `agent_uids`) as the host runs or last ran, null if its saved flags are unreadable, and `keep_awake` (`enabled`, `held`, `reason`; see `settings set`), null if its saved settings are unreadable; on Windows, `list_folders`: granted, missing or partial, whether agents may list folders on each fixed volume, see `volume-roots`), `hosts` (the account's hosts as Plow lists them, this machine first: `name`, `key`, `self`, Plow's `online` and `last_seen_at`, and `plugins`, the ones it has on as `name` and `state` (enabled or needs_setup), asked of every host Plow lists online within 2 s in all; null when unknown, with `plugins_reason`: host_offline, host_unreachable, caller_denied, protocol_mismatch or the host's own code), `default_host` (where a command without --host goes; null with `default_host_reason`: unknown_host, no_host, host_required, no_default_host or not_logged_in), `saved_default_host` (the host `--host default` names, saved by `latch hosts default`; null when none is), `plugins`, `update`, `last_error`, `api_url`, `state_dir`, `version` and `protocol`. Before login it asks no one: `login`, `account`, `hosts` and this machine's `name` and `key` are null. With --local, the same without `account`, `hosts` and `default_host*`, asking no one; with --host, that host's own `status --local` (owner devices only; a host on an older latch answers in that latch's shape); with --follow too, JSON lines: `hello`, then a `status` line, again each time it changes.",
         effect: ReadOnly,
         owner_only: false,
         connector: None,
@@ -466,7 +466,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "exec",
         runs_on: |_| RunsOn::Host,
-        output: "The program's `exit_code` (or `signal`), `stdout`, `stderr`, declared `writes` and `network` flag. Secret environment values are omitted from judgment and audit; program output is returned as-is.",
+        output: "The program's `exit_code` (or `signal`), `stdout`, `stderr`, declared `writes` and `network` flag. Secret environment values are omitted from judgment and audit; program output is returned as-is. On a Windows host where agents may not list folders yet (see `volume-roots`), a program that failed or wrote to stderr also gets `hint`: how its owner allows that.",
         effect: Once(
             "runs the program on the host, inside its sandbox; its effects are the program's",
         ),
@@ -1482,7 +1482,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "setup",
         runs_on: |_| RunsOn::Local,
-        output: "At a terminal, each step and the latch command it ran; skipped steps say so. Without one, `no_terminal`, whose `next` is the first step not done. With --status, at a terminal or not, `steps`: each step's `step` (login, each connector, rules, host), `state` (done, needed or blocked), `reason`, `args` (the words after `latch` that do it, null once done, or while something else must happen first) and, for a connector, `enabled` and `ready` (enabled and served by a running host). For the owner, the Google step asks Plow (read only) whether Google is connected there: it adds `accounts`, and `connect_url` (where to connect one) while none is; it is blocked when Plow cannot be asked. With an account connected it also asks Plow for their credentials, for up to 5 s, to add `needs_sign_in`: the accounts Google wants the owner to sign in with again (the step is needed when none works); said only when there are some. With --check-access, on a Mac, the Messages and Contacts steps add `access` (granted, not_granted or unknown): whether Plow Latch has Full Disk Access, checked once as the host would and saving nothing.",
+        output: "At a terminal, each step and the latch command it ran; skipped steps say so. Without one, `no_terminal`, whose `next` is the first step not done. With --status, at a terminal or not, `steps`: each step's `step` (login, each connector, rules, host, and on Windows list_folders, whose `args` run from a terminal opened as administrator), `state` (done, needed or blocked), `reason`, `args` (the words after `latch` that do it, null once done, or while something else must happen first) and, for a connector, `enabled` and `ready` (enabled and served by a running host). For the owner, the Google step asks Plow (read only) whether Google is connected there: it adds `accounts`, and `connect_url` (where to connect one) while none is; it is blocked when Plow cannot be asked. With an account connected it also asks Plow for their credentials, for up to 5 s, to add `needs_sign_in`: the accounts Google wants the owner to sign in with again (the step is needed when none works); said only when there are some. With --check-access, on a Mac, the Messages and Contacts steps add `access` (granted, not_granted or unknown): whether Plow Latch has Full Disk Access, checked once as the host would and saving nothing.",
         effect: Repeatable(
             "logs in, enables connectors and, when there are none, sets rules for agents from the preset the owner picks, with no host running, then starts the host if the owner says so; done steps are skipped. --status changes nothing",
         ),
@@ -1495,6 +1495,23 @@ const ENTRIES: &[Entry] = &[
                 "And whether Full Disk Access is granted",
                 &["setup", "--status", "--check-access"],
             ),
+        ],
+    },
+    Entry {
+        id: "volume-roots",
+        runs_on: |_| RunsOn::Local,
+        output: "`roots`: each fixed volume's `root`, `entry` (it lets latch's workers read the root's own attributes now), `changed` (this run added or took back that entry) and, when it is not as asked, `error`; and `list_folders` (granted, missing or partial, as `status --local` says it). `volume_roots_failed` unless every root is as asked (writing a root's access list needs an administrator); `unsupported_platform` off Windows, where agents list folders already.",
+        effect: Repeatable(
+            "adds or takes back one entry in each fixed volume's root's access list, for latch's workers alone: the root's own attributes, nothing on it listed or read. It stays if latch is uninstalled, and admits nothing without latch",
+        ),
+        owner_only: false,
+        connector: None,
+        examples: &[
+            ex(
+                "Let agents list folders, from a terminal opened as administrator",
+                &["volume-roots", "add"],
+            ),
+            ex("No longer", &["volume-roots", "remove"]),
         ],
     },
     Entry {
