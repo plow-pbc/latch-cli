@@ -138,17 +138,29 @@ impl World {
         let made = self.dir.path().join(format!("made-{build}"));
         let folder = made.join(&name);
         std::fs::create_dir_all(&folder).unwrap();
-        let script = format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\necho installing\n\
-             [ -e '{}' ] && {{ echo 'cannot replace latch' >&2; exit 1; }}\nexit 0\n",
-            self.installed().display(),
-            self.failing().display()
-        );
-        std::fs::write(folder.join("install-binary.sh"), script).unwrap();
-        std::fs::write(folder.join("latch"), format!("build {build}\n")).unwrap();
-        let archive = made.join(format!("{name}.tar.gz"));
-        let tar = std::process::Command::new("tar")
-            .arg("-czf")
+        // A stand-in installer: it writes down its arguments, one a line.
+        let script = if cfg!(windows) {
+            format!(
+                "[IO.File]::WriteAllLines('{}', [string[]]$args)\n'installing'\n\
+                 if (Test-Path '{}') {{ [Console]::Error.WriteLine('cannot replace latch'); exit 1 }}\nexit 0\n",
+                self.installed().display(),
+                self.failing().display()
+            )
+        } else {
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\necho installing\n\
+                 [ -e '{}' ] && {{ echo 'cannot replace latch' >&2; exit 1; }}\nexit 0\n",
+                self.installed().display(),
+                self.failing().display()
+            )
+        };
+        std::fs::write(folder.join(INSTALLER), script).unwrap();
+        let latch = if cfg!(windows) { "latch.exe" } else { "latch" };
+        std::fs::write(folder.join(latch), format!("build {build}\n")).unwrap();
+        let archive = made.join(format!("{name}.{ARCHIVE}"));
+        // On Windows, a zip (`-a` picks the format by its name).
+        let tar = std::process::Command::new(tar())
+            .arg(if cfg!(windows) { "-acf" } else { "-czf" })
             .arg(&archive)
             .arg("-C")
             .arg(&made)
@@ -158,12 +170,12 @@ impl World {
         assert!(tar.success());
         let archive = std::fs::read(archive).unwrap();
         let sums = format!(
-            "{}  {name}.tar.gz\n{}  install.sh\n",
+            "{}  {name}.{ARCHIVE}\n{}  install.sh\n",
             to_hex(&Sha256::digest(&archive)),
             "0".repeat(64)
         );
         let folder = format!("releases/{}", release.tag);
-        self.put(&format!("{folder}/{name}.tar.gz"), archive);
+        self.put(&format!("{folder}/{name}.{ARCHIVE}"), archive);
         self.put(
             &format!("{folder}/SHA256SUMS.minisig"),
             self.key.sign(sums.as_bytes()),
@@ -184,8 +196,11 @@ impl World {
         self.dir.path().join("fail-install")
     }
 
+    /// trace.log, its line ends as Unix writes them (PowerShell's are CRLF).
     fn trace_log(&self) -> String {
-        std::fs::read_to_string(self.state.path.join(crate::trace::FILE)).unwrap_or_default()
+        std::fs::read_to_string(self.state.path.join(crate::trace::FILE))
+            .unwrap_or_default()
+            .replace("\r\n", "\n")
     }
 
     fn arguments(&self) -> Option<Vec<String>> {
@@ -197,7 +212,6 @@ impl World {
 /// A newer build goes in through its own installer, into the folder the
 /// running latch is in (here ~/bin, not the installer's ~/.local/bin).
 #[tokio::test]
-#[cfg_attr(windows, ignore = "latch has no Windows release yet")]
 async fn a_newer_build_is_installed_by_its_own_installer_where_latch_runs() {
     let world = World::new();
     let release = world.release(1328);
@@ -230,10 +244,9 @@ async fn a_newer_build_is_installed_by_its_own_installer_where_latch_runs() {
             "--no-browser"
         ]
     );
-    assert!(
-        arguments[6].ends_with(&format!("latch-v0.1.0-1328-{}/latch", target().unwrap())),
-        "{arguments:?}"
-    );
+    let latch = Path::new(&format!("latch-v0.1.0-1328-{}", target().unwrap()))
+        .join(if cfg!(windows) { "latch.exe" } else { "latch" });
+    assert!(Path::new(&arguments[6]).ends_with(&latch), "{arguments:?}");
 }
 
 /// On Linux, latch is installed where this one runs from; on macOS the
@@ -268,7 +281,6 @@ fn an_update_installs_where_this_latch_runs() {
 }
 
 #[tokio::test]
-#[cfg_attr(windows, ignore = "latch has no Windows release yet")]
 async fn check_says_what_is_newer_and_installs_nothing() {
     let world = World::new();
     let release = world.release(1328);
@@ -288,7 +300,6 @@ async fn check_says_what_is_newer_and_installs_nothing() {
 }
 
 #[tokio::test]
-#[cfg_attr(windows, ignore = "latch has no Windows release yet")]
 async fn an_older_build_is_installed_only_when_its_tag_is_named() {
     let world = World::new();
     let older = world.release(1326);
@@ -314,13 +325,12 @@ async fn an_older_build_is_installed_only_when_its_tag_is_named() {
 }
 
 #[tokio::test]
-#[cfg_attr(windows, ignore = "latch has no Windows release yet")]
 async fn a_corrupted_archive_fails_before_anything_is_replaced() {
     let world = World::new();
     let release = world.release(1328);
     world.latest(&release);
     let name = format!(
-        "releases/v0.1.0-1328/latch-v0.1.0-1328-{}.tar.gz",
+        "releases/v0.1.0-1328/latch-v0.1.0-1328-{}.{ARCHIVE}",
         target().unwrap()
     );
     let mut archive = world.server.files.lock().unwrap()[&name].clone();
@@ -337,7 +347,6 @@ async fn a_corrupted_archive_fails_before_anything_is_replaced() {
 /// What tar and the installer print goes to trace.log, never this
 /// command's stdout or stderr, whether they succeed or fail.
 #[tokio::test]
-#[cfg_attr(windows, ignore = "latch has no Windows release yet")]
 async fn what_tar_and_the_installer_print_goes_to_trace_log() {
     let world = World::new();
     let release = world.release(1328);
@@ -366,7 +375,7 @@ async fn what_tar_and_the_installer_print_goes_to_trace_log() {
 
     // An archive its sums list, but no archive: tar's complaint goes there too.
     let name = format!(
-        "releases/v0.1.0-1329/latch-v0.1.0-1329-{}.tar.gz",
+        "releases/v0.1.0-1329/latch-v0.1.0-1329-{}.{ARCHIVE}",
         target().unwrap()
     );
     let release = world.release(1329);
@@ -392,7 +401,6 @@ async fn what_tar_and_the_installer_print_goes_to_trace_log() {
 }
 
 #[tokio::test]
-#[cfg_attr(windows, ignore = "latch has no Windows release yet")]
 async fn an_unsigned_or_wrongly_signed_release_is_refused() {
     let world = World::new();
     let release = world.release(1328);
@@ -434,7 +442,6 @@ async fn an_unsigned_or_wrongly_signed_release_is_refused() {
 }
 
 #[tokio::test]
-#[cfg_attr(windows, ignore = "latch has no Windows release yet")]
 async fn a_local_build_never_updates_itself() {
     let world = World::new();
     let release = world.release(1328);
@@ -492,7 +499,6 @@ fn only_a_release_tag_names_a_release() {
 /// next plain update installs this build again, and one with every helper
 /// in place does nothing.
 #[tokio::test]
-#[cfg_attr(windows, ignore = "latch has no Windows release yet")]
 async fn a_cut_off_update_is_finished_by_the_next_one() {
     let world = World::new();
     let release = world.release(1328);
@@ -504,6 +510,13 @@ async fn a_cut_off_update_is_finished_by_the_next_one() {
     let answer = update(&world.state, &world.source(), Some(1328), None, None, false)
         .await
         .unwrap();
+    // Windows' installer puts in no helpers (no gog, and Camoufox has no
+    // Windows build): an up-to-date install stays as it is.
+    if cfg!(windows) {
+        assert_eq!(answer["updated"], false, "{answer}");
+        assert!(world.arguments().is_none(), "the installer never ran");
+        return;
+    }
     assert_eq!(answer["updated"], true, "{answer}");
     assert_eq!(answer["to"]["build"], 1328);
     assert_eq!(answer["repaired"], json!(["gog", "camoufox"]));
@@ -553,7 +566,6 @@ fn the_installed_engines_are_the_ones_kept_up_to_date() {
 /// A machine installed with `--client-only` is updated the same way: latch
 /// alone, whatever else is in its state folder.
 #[tokio::test]
-#[cfg_attr(windows, ignore = "latch has no Windows release yet")]
 async fn a_client_only_install_is_updated_client_only() {
     let world = World::new();
     let release = world.release(1328);
@@ -572,7 +584,6 @@ async fn a_client_only_install_is_updated_client_only() {
 /// An agent updates its own computer, where latch is installed alone; on a
 /// host it gets `owner_only`. The owner's login updates either.
 #[tokio::test]
-#[cfg_attr(windows, ignore = "latch has no Windows release yet")]
 async fn an_agent_updates_only_its_own_client_only_computer() {
     let login = |world: &World, kind: &str| {
         let peer = crate::plow::Peer {
@@ -616,7 +627,6 @@ async fn an_agent_updates_only_its_own_client_only_computer() {
 }
 
 #[tokio::test]
-#[cfg_attr(windows, ignore = "latch has no Windows release yet")]
 async fn a_look_finds_a_newer_build_for_status_and_the_dashboard() {
     let world = World::new();
     let release = world.release(1328);
@@ -648,7 +658,6 @@ async fn a_look_finds_a_newer_build_for_status_and_the_dashboard() {
 /// Looks are a day apart, whether the last one worked or not; one that
 /// failed keeps what the last one that worked found.
 #[tokio::test]
-#[cfg_attr(windows, ignore = "latch has no Windows release yet")]
 async fn a_failed_look_keeps_what_was_found_and_the_next_is_a_day_later() {
     let world = World::new();
     let release = world.release(1328);

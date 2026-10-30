@@ -2,13 +2,14 @@
 //! latch's releases; and the host's daily look for a newer build.
 //!
 //! Releases are published under `RELEASES`. Each release's files are in
-//! `releases/<tag>/` and never change: the archive for each platform,
-//! `install.sh`, `SHA256SUMS` and that file's minisign signature.
+//! `releases/<tag>/` and never change: the archive for each platform (a
+//! zip on Windows), `install.sh`, `SHA256SUMS` and that file's minisign
+//! signature.
 //! `latest.json`, signed too, names the newest release. An update downloads
 //! this platform's archive, checks it against the signed `SHA256SUMS` and,
 //! on macOS, checks who signed the app inside it. Then it runs the release's
-//! own `install-binary.sh`, which replaces latch and restarts a host just as
-//! running `install.sh` again would.
+//! own `install-binary.sh` (`install-binary.ps1` on Windows), which replaces
+//! latch and restarts a host just as running `install.sh` again would.
 //!
 //! Nothing installs unless the owner runs `latch update`, or an agent runs
 //! it on its own computer, where latch is installed alone. A host only
@@ -374,10 +375,112 @@ fn hosts() -> Option<Vec<PathBuf>> {
     Some(found)
 }
 
-/// Windows cannot list them here yet: a host is taken to run.
+/// The executables of this machine's `latch serve` processes but this one:
+/// each process's image and command line, as far as this user may read
+/// them (another user's processes can't be opened, and aren't counted).
 #[cfg(windows)]
 fn hosts() -> Option<Vec<PathBuf>> {
-    None
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
+        TH32CS_SNAPPROCESS,
+    };
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    // SAFETY: a flag and no process id; INVALID_HANDLE_VALUE is failure.
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if snapshot == INVALID_HANDLE_VALUE {
+        return None;
+    }
+    let me = std::process::id();
+    let mut found = Vec::new();
+    // SAFETY: a plain C struct, valid as zeroes; its size is set before use.
+    let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
+    entry.dwSize = size_of::<PROCESSENTRY32W>() as u32;
+    // SAFETY: a live snapshot, and an entry its size says it can hold.
+    let mut more = unsafe { Process32FirstW(snapshot, &mut entry) } != 0;
+    while more {
+        let pid = entry.th32ProcessID;
+        if pid != me {
+            // SAFETY: plain values; null is failure.
+            let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+            if !process.is_null() {
+                if let Some(line) = command_line(process)
+                    && serves(
+                        line.split_whitespace()
+                            .skip(1)
+                            .map(std::borrow::Cow::Borrowed),
+                    )
+                    && let Some(exe) = image(process)
+                {
+                    found.push(exe);
+                }
+                // SAFETY: a live handle of ours, closed once, here.
+                unsafe { CloseHandle(process) };
+            }
+        }
+        // SAFETY: as for Process32FirstW.
+        more = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
+    }
+    // SAFETY: the snapshot, closed once, here.
+    unsafe { CloseHandle(snapshot) };
+    Some(found)
+}
+
+/// A process's executable, by its full path.
+#[cfg(windows)]
+fn image(process: windows_sys::Win32::Foundation::HANDLE) -> Option<PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::System::Threading::QueryFullProcessImageNameW;
+    let mut path = vec![0u16; 32_768];
+    let mut length = path.len() as u32;
+    // SAFETY: a live handle that may query, and a buffer of `length` units.
+    let ok = unsafe { QueryFullProcessImageNameW(process, 0, path.as_mut_ptr(), &mut length) };
+    (ok != 0).then(|| PathBuf::from(std::ffi::OsString::from_wide(&path[..length as usize])))
+}
+
+/// A process's command line, as it was started.
+#[cfg(windows)]
+fn command_line(process: windows_sys::Win32::Foundation::HANDLE) -> Option<String> {
+    use windows_sys::Wdk::System::Threading::{
+        NtQueryInformationProcess, ProcessCommandLineInformation,
+    };
+    use windows_sys::Win32::Foundation::UNICODE_STRING;
+    let mut needed = 0u32;
+    // SAFETY: a size query: no buffer, `needed` written.
+    unsafe {
+        NtQueryInformationProcess(
+            process,
+            ProcessCommandLineInformation,
+            std::ptr::null_mut(),
+            0,
+            &mut needed,
+        )
+    };
+    if needed < size_of::<UNICODE_STRING>() as u32 {
+        return None;
+    }
+    // u64s: aligned for the UNICODE_STRING at its start.
+    let mut buffer = vec![0u64; (needed as usize).div_ceil(8)];
+    // SAFETY: a buffer of at least `needed` bytes, for a live handle.
+    let status = unsafe {
+        NtQueryInformationProcess(
+            process,
+            ProcessCommandLineInformation,
+            buffer.as_mut_ptr().cast(),
+            needed,
+            &mut needed,
+        )
+    };
+    if status < 0 {
+        return None;
+    }
+    // SAFETY: on success the buffer starts with a UNICODE_STRING whose text
+    // follows it in the same buffer, `Length` bytes long.
+    let text = unsafe {
+        let string = &*buffer.as_ptr().cast::<UNICODE_STRING>();
+        std::slice::from_raw_parts(string.Buffer, string.Length as usize / 2)
+    };
+    Some(String::from_utf16_lossy(text))
 }
 
 /// The executables of this machine's `latch serve` processes but this one.
@@ -414,7 +517,6 @@ fn hosts() -> Option<Vec<PathBuf>> {
 }
 
 /// Whether a command line's words after the program run `latch serve`.
-#[cfg(unix)]
 fn serves<'a>(mut words: impl Iterator<Item = std::borrow::Cow<'a, str>>) -> bool {
     words.any(|word| word == "serve")
 }
@@ -437,8 +539,18 @@ fn host_after(was_running: bool, attached: bool, running: bool) -> Option<Value>
     Some(json!({"running": false, "next": start}))
 }
 
+/// This platform's archive, and the installer inside it: a zip and
+/// install-binary.ps1 on Windows, which has no sh.
+const ARCHIVE: &str = if cfg!(windows) { "zip" } else { "tar.gz" };
+const INSTALLER: &str = if cfg!(windows) {
+    "install-binary.ps1"
+} else {
+    "install-binary.sh"
+};
+
 /// Downloads `release`'s archive for this platform, checks it, and runs its
-/// `install-binary.sh` on this state folder, into `bin` if given.
+/// installer (`install-binary.sh`, or `.ps1` on Windows) on this state
+/// folder, into `bin` if given.
 async fn install(
     state: &StateDir,
     source: &Source,
@@ -448,33 +560,36 @@ async fn install(
     let name = format!("latch-{}-{}", release.tag, target()?);
     let folder = format!("releases/{}", release.tag);
     let sums = source.signed(&format!("{folder}/SHA256SUMS")).await?;
-    let archive = source.get(&format!("{folder}/{name}.tar.gz")).await?;
+    let archive = source.get(&format!("{folder}/{name}.{ARCHIVE}")).await?;
     let listed = String::from_utf8_lossy(&sums)
         .lines()
         .find_map(|line| {
             let (hash, file) = line.split_once("  ")?;
-            (file == format!("{name}.tar.gz")).then(|| hash.to_string())
+            (file == format!("{name}.{ARCHIVE}")).then(|| hash.to_string())
         })
         .ok_or_else(|| {
-            let message = format!("{}'s SHA256SUMS does not list {name}.tar.gz", release.tag);
+            let message = format!(
+                "{}'s SHA256SUMS does not list {name}.{ARCHIVE}",
+                release.tag
+            );
             Failure::new(code::bad_release, message)
         })?;
     if to_hex(&Sha256::digest(&archive)) != listed {
         let message = format!(
-            "the downloaded {name}.tar.gz is not the one {}'s SHA256SUMS lists; nothing was installed",
+            "the downloaded {name}.{ARCHIVE} is not the one {}'s SHA256SUMS lists; nothing was installed",
             release.tag
         );
         return Err(Failure::new(code::bad_download, message));
     }
     let unpacked = tempfile::tempdir().map_err(|err| io_failure("a download folder", err))?;
-    let path = unpacked.path().join(format!("{name}.tar.gz"));
+    let path = unpacked.path().join(format!("{name}.{ARCHIVE}"));
     std::fs::write(&path, &archive).map_err(|err| io_failure(&path.display().to_string(), err))?;
     // What tar and the installer print is for the owner, in trace.log: this
     // command's stdout is its JSON, its stderr only its error line.
     let log = crate::trace::file(state)?;
     let (out, err) = crate::trace::output(&log)?;
-    let untar = tokio::process::Command::new("tar")
-        .arg("-xzf")
+    let untar = tokio::process::Command::new(tar())
+        .arg(if cfg!(windows) { "-xf" } else { "-xzf" })
         .arg(&path)
         .arg("-C")
         .arg(unpacked.path())
@@ -487,7 +602,7 @@ async fn install(
         return Err(Failure::new(
             code::bad_download,
             format!(
-                "{name}.tar.gz could not be unpacked; tar's output is in {}",
+                "{name}.{ARCHIVE} could not be unpacked; tar's output is in {}",
                 state.path.join(crate::trace::FILE).display()
             ),
         ));
@@ -498,9 +613,21 @@ async fn install(
     }
     let dir = state.path.canonicalize().unwrap_or(state.path.clone());
     let (out, err) = crate::trace::output(&log)?;
-    let mut installer = tokio::process::Command::new("sh");
+    let mut installer = if cfg!(windows) {
+        let mut powershell = tokio::process::Command::new("powershell.exe");
+        powershell.args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+        ]);
+        powershell
+    } else {
+        tokio::process::Command::new("sh")
+    };
     installer
-        .arg(setup.join("install-binary.sh"))
+        .arg(setup.join(INSTALLER))
         .arg("--state-dir")
         .arg(&dir);
     if let Some(bin) = bin {
@@ -509,22 +636,32 @@ async fn install(
     let installed = installer
         .arg("--non-interactive")
         .args(helpers(&dir))
-        .arg(setup.join("latch"))
+        .arg(setup.join(if cfg!(windows) { "latch.exe" } else { "latch" }))
         .stdin(Stdio::null())
         .stdout(out)
         .stderr(err)
         .status()
         .await
-        .map_err(|err| io_failure("install-binary.sh", err))?;
+        .map_err(|err| io_failure(INSTALLER, err))?;
     if !installed.success() {
         let message = format!(
-            "{}'s install-binary.sh failed; its output, and what it says it left in place, is in {}",
+            "{}'s {INSTALLER} failed; its output, and what it says it left in place, is in {}",
             release.tag,
             state.path.join(crate::trace::FILE).display()
         );
         return Err(Failure::new(code::install_failed, message));
     }
     Ok(())
+}
+
+/// The tar that unpacks the archive: on Windows, Windows' own (bsdtar,
+/// which reads zips), not a Git or MSYS tar on PATH, which may not.
+fn tar() -> PathBuf {
+    #[cfg(windows)]
+    if let Some(root) = std::env::var_os("SystemRoot") {
+        return Path::new(&root).join("System32").join("tar.exe");
+    }
+    PathBuf::from("tar")
 }
 
 /// The release target this latch runs on.
@@ -534,6 +671,7 @@ fn target() -> Result<&'static str, Failure> {
         ("macos", "x86_64") => Ok("x86_64-apple-darwin"),
         ("linux", "aarch64") => Ok("aarch64-unknown-linux-musl"),
         ("linux", "x86_64") => Ok("x86_64-unknown-linux-musl"),
+        ("windows", "x86_64") => Ok("x86_64-pc-windows-msvc"),
         (os, arch) => Err(Failure::new(
             code::unsupported_platform,
             format!("latch has no release for {os} on {arch}"),
@@ -573,7 +711,11 @@ fn missing_helpers(state: &Path) -> Vec<&'static str> {
             .is_err_and(|failure| failure.code == code::engine_not_installed.name)
     };
     let mut missing = Vec::new();
-    if crate::google::host::gog_program(state, &crate::google::PIN.version).is_err() {
+    // Windows' installer puts in no gog (`plugins enable google` installs
+    // it), so an update could never repair it there.
+    if !cfg!(windows)
+        && crate::google::host::gog_program(state, &crate::google::PIN.version).is_err()
+    {
         missing.push("gog");
     }
     if state.join("plugins/cft").is_dir() && not_installed("cft") {
