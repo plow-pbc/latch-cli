@@ -305,7 +305,7 @@ const ENTRIES: &[Entry] = &[
         owner_only: false,
         connector: None,
         examples: &[ex(
-            "Send a script into the Pi's shared folder",
+            "Send a script into ~/scripts on the Pi",
             &["file", "put", "--host", "pi", "./check.sh", "scripts/"],
         )],
     },
@@ -470,7 +470,7 @@ const ENTRIES: &[Entry] = &[
                 ],
             ),
             ex(
-                "Use a credential through the program's environment, away from the remote judge",
+                "Use a credential through the program's environment, away from the gatekeeper",
                 &[
                     "exec",
                     "--host",
@@ -1712,7 +1712,13 @@ struct ErrorCodeHelp {
 struct Action {
     id: String,
     usage: String,
+    /// The first line of `about`, as `latch --help` lists the command.
+    summary: String,
     about: String,
+    /// Where its first example runs: `local` (this computer), `host` (the
+    /// selected host) or `either` (this computer's own state, or a host's
+    /// with --host).
+    runs_on: &'static str,
     inputs: Vec<Input>,
     output: &'static str,
     /// The answer's top-level fields, where they are known.
@@ -1761,6 +1767,22 @@ struct Input {
     about: String,
 }
 
+/// Where `entry`'s first example runs, as its own command line routes it.
+fn runs_on(entry: &Entry) -> &'static str {
+    let example = entry
+        .examples
+        .first()
+        .expect("every command has an example");
+    let matches = Cli::command()
+        .try_get_matches_from(std::iter::once("latch").chain(example.args.iter().copied()))
+        .expect("every example parses");
+    match (entry.runs_on)(selected(&matches).1) {
+        RunsOn::Local => "local",
+        RunsOn::Host => "host",
+        RunsOn::Either => "either",
+    }
+}
+
 fn describe(id: &str, command: &clap::Command) -> Action {
     let entry = entry(id);
     let about = command
@@ -1771,7 +1793,12 @@ fn describe(id: &str, command: &clap::Command) -> Action {
     Action {
         id: id.to_string(),
         usage: usage(command),
+        summary: command
+            .get_about()
+            .map(ToString::to_string)
+            .unwrap_or_default(),
         about,
+        runs_on: runs_on(entry),
         inputs: inputs(command),
         output: entry.output,
         output_fields: OUTPUT_FIELDS
@@ -1813,7 +1840,9 @@ fn describe_gog(allowed: &Allowed, google: &clap::Command) -> Action {
     Action {
         id: format!("google.{}", allowed.command),
         usage: format!("latch google [OPTIONS] -- {words} [GOG_ARGS]..."),
-        about: format!("gog's `{words}`, run on a host's Google account"),
+        summary: format!("Run `{words}` on a host's Google account"),
+        about: format!("Run `{words}` on a host's Google account"),
+        runs_on: "host",
         inputs,
         output: "gog's JSON answer.",
         output_fields: None,
@@ -1831,7 +1860,7 @@ fn describe_gog(allowed: &Allowed, google: &clap::Command) -> Action {
                 .collect(),
         ),
         examples: vec![ExampleHelp {
-            what: format!("gog's own usage for `{words}`"),
+            what: format!("The usage of `{words}`"),
             command: format!("latch {}", quoted(&help_args)),
         }],
     }
