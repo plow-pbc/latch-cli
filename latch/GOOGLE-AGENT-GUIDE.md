@@ -38,7 +38,7 @@ Google call: `{"accounts": [...]}`.
 connected account (at most four at a time) and come back as ONE merged
 answer:
 
-    {"items": [...], "accounts": [{"account", "status", "reason"?}], "truncated"?, "audit_id"}
+    {"items": [...], "accounts": [{"account", "status", "reason"?}], "truncated"?, "audit_id", "host"}
 
 Every item is tagged with its `"account"`. Mail is newest first, calendar
 soonest first. `accounts` has one row per account asked, `status` `ok`,
@@ -97,7 +97,7 @@ else: it pairs commitments that overlap each other on DIFFERENT calendars,
 so an empty result proves nothing about whether the owner is free.
 
 **Everything else runs on ONE account**, reads included: `{"account",
-"result", "files", "audit_id"}`, where `result` is gog's JSON. With more than
+"result", "files", "audit_id", "host"}`, where `result` is gog's JSON. With more than
 one account connected, pass `--account`; without it latch exits 2
 (`account_required`) listing the connected accounts. An account that is not
 connected exits 2 (`unknown_account`), listing them too.
