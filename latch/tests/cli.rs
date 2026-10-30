@@ -2915,6 +2915,28 @@ fn login_again_replaces_the_saved_login_with_a_new_one() {
     );
     assert_eq!(body(&requests[2])["key"], first["peer"]["key"]);
 
+    // A login anew that Plow refuses leaves the saved one as it was.
+    let activation = json!({"display_code": "TRY13", "activation_secret": "s3cret",
+                            "send_to": "+14155550100"});
+    let (api_url, server) = fake_plow(vec![
+        (200, activation),
+        (200, json!({"status": "verified", "token": "refused-again"})),
+        (401, json!({})),
+    ]);
+    let args = ["login", "--again", "--events", "--api-url", &api_url];
+    let refused = latch(&state, &args, &[]);
+    assert_ne!(refused.status.code(), Some(0), "{refused:?}");
+    server.join().unwrap();
+    let (api_url, server) = fake_plow(vec![(200, peer(Value::Null, "mac", "device", Value::Null))]);
+    let kept = latch(&state, &["login", "--api-url", &api_url], &[]);
+    assert_eq!(kept.status.code(), Some(0), "{kept:?}");
+    let requests = server.join().unwrap();
+    assert!(
+        requests[0].contains("authorization: Bearer texted-login\r\n"),
+        "{}",
+        requests[0]
+    );
+
     // With no terminal and nothing to log in with, it says how, and never
     // falls back on the saved login.
     let piped = latch(&state, &["login", "--again"], &[]);
