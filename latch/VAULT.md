@@ -14,7 +14,9 @@ over. Each item has a title, its sites (a login needs one; a card or
 identity may list the only sites it fills on) and a revision: an edit or
 removal against an older revision is refused. Items are not tied to browser
 sessions: any session may use any item, wherever its kind's site rule lets
-it fill.
+it fill. A card's number is kept as its digits alone, however it was typed
+or pasted (spaces and dashes are dropped), and must be 12 to 19 of them; a
+fill types those digits, a number an older latch kept with spaces too.
 
 Which fields are **secret** follows the Latch app's classifier, ported with
 its truth table (`tests/fixtures/maskClassification.json`): a login's

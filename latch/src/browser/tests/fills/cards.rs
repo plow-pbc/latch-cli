@@ -18,6 +18,7 @@ conformance!(
     a_card_with_no_sites_pays_on_any_shop,
     a_card_fills_a_providers_hosted_fields,
     a_card_fills_split_boxes_and_expiry_lists,
+    a_card_saved_with_spaces_fills_by_its_digits,
     agent_code_on_a_shop_keeps_the_card_out,
     a_page_that_shows_the_number_back_shows_the_agent_only_its_last_four,
     a_redrawn_number_field_does_not_show_its_value,
@@ -324,5 +325,64 @@ async fn a_redrawn_number_field_does_not_show_its_value(engine: &str) {
         !h.saw_the_card(),
         "the redrawn field's value reached the agent"
     );
+    h.call("close", json!({})).await.ok();
+}
+
+async fn a_card_saved_with_spaces_fills_by_its_digits(engine: &str) {
+    let (mut h, _, local, _, _keep) = shop(engine).await;
+    // As an older latch kept it: the number as it was typed.
+    let old = h
+        .browsers
+        .vault
+        .with(|s| {
+            s.add_as_stored(item(
+                CARD,
+                "Old card",
+                &[],
+                &[
+                    ("cardholder name", "Ada Lovelace"),
+                    ("number", " 4242 4242 4242 4242"),
+                    ("expiry month", "04"),
+                    ("expiry year", "2031"),
+                    ("code", CVV),
+                ],
+            ))
+        })
+        .unwrap()
+        .item;
+
+    // A number field that takes 16 characters, and four boxes of four.
+    h.call(
+        "open",
+        json!({"url": format!("{local}/checkout.html?max16")}),
+    )
+    .await
+    .unwrap();
+    let args = h.suggested(&old).await;
+    h.pay(args).await.unwrap();
+    let page = h.text().await;
+    assert!(page.contains(PAID), "{page}");
+
+    let split = h
+        .call("open", json!({"url": format!("{local}/card-split.html")}))
+        .await
+        .unwrap();
+    let boxes: Vec<String> = (1..=4)
+        .map(|n| find(&split, "textbox", &format!("Card number {n}")))
+        .collect();
+    let fields = json!([
+        ["cardholder name", [find(&split, "textbox", "Name on card")]],
+        ["number", boxes],
+        ["expiry month", [find(&split, "combobox", "Month")]],
+        ["expiry year", [find(&split, "combobox", "Year")]],
+        ["cvv", [find(&split, "textbox", "CVC")]],
+    ]);
+    let press = find(&split, "button", "Pay $10.00");
+    h.pay(json!({"item": old, "fields": fields, "press": press}))
+        .await
+        .unwrap();
+    let page = h.text().await;
+    assert!(page.contains(PAID), "{page}");
+    assert!(!h.saw_the_card(), "the card reached a result or the audit");
     h.call("close", json!({})).await.ok();
 }

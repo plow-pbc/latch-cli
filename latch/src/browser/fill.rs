@@ -1141,7 +1141,12 @@ fn release(item: &Item, label: &str) -> Result<String, Failure> {
         let params = totp::Params::parse(key).map_err(|why| Failure::new(code::bad_item, why))?;
         return Ok(params.current());
     }
-    classify::read(&item.raw, label).ok_or_else(missing)
+    let value = classify::read(&item.raw, label).ok_or_else(missing)?;
+    // An older latch kept a card's number as it was typed, spaces and all.
+    if label == "number" && item.meta().kind == "card" {
+        return Ok(crate::vault::item::card_digits(&value));
+    }
+    Ok(value)
 }
 
 /// A date reshaped to the field's own format (its placeholder or length,
