@@ -93,6 +93,14 @@ pub struct Permissions {
     pub call: bool,
 }
 
+/// Plow vouching for a phone page's key, from
+/// `GET /v1/latch/phone-grants/{key}`.
+#[derive(Deserialize, Debug)]
+struct PhoneGrant {
+    key: String,
+    request: String,
+}
+
 /// An agent, from `GET /v1/agents/{uid}`: its current name and the line
 /// it serves.
 #[derive(Deserialize, Debug)]
@@ -481,6 +489,30 @@ impl Plow {
             return Err(Failure::new(code::plow_error, message));
         }
         Ok(identity)
+    }
+
+    /// The phone link request Plow vouches `key` may open, as this
+    /// account's owner signed in on the phone page; `None` when it vouches
+    /// for none (none was given, it expired, or it is another account's).
+    pub async fn phone_grant(&self, key: &str) -> Result<Option<String>, Failure> {
+        let url = format!("{}/v1/latch/phone-grants/{key}", self.api_url);
+        let response = match self.send(self.http.get(url)).await {
+            Ok(response) => response,
+            Err(failure) if failure.code.as_str() == "not_found" => return Ok(None),
+            Err(failure) => return Err(failure),
+        };
+        let grant: PhoneGrant = response.json().await.map_err(|_| bad_answer())?;
+        // Trust the answer only if it is about the key we asked about.
+        if grant.key != key {
+            let message = "Plow answered about a different key".to_string();
+            return Err(Failure::new(code::plow_error, message));
+        }
+        Ok(Some(grant.request))
+    }
+
+    /// The Plow this client asks, as a phone page signs in to it.
+    pub fn api_url(&self) -> &str {
+        &self.api_url
     }
 
     /// One of the account's agents, with the line it serves.

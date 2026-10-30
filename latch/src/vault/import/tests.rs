@@ -564,6 +564,113 @@ fn passwords(vault: &OwnStore) -> Vec<String> {
     all
 }
 
+/// A Bitwarden export holding cards and notes, as the second argument
+/// gives them.
+fn cards_and_notes(items: Value) -> String {
+    json!({"encrypted": false, "items": items}).to_string()
+}
+
+#[test]
+fn reimported_cards_and_notes_are_duplicates_and_changed_ones_are_new() {
+    let (_dir, mut vault) = store();
+    let first = cards_and_notes(json!([
+        {"type": 3, "name": "Plow card", "card": {"brand": "Visa", "number": "4111 1111 1111 1111", "expMonth": "4", "expYear": "2027", "code": "737"}},
+        {"type": 2, "name": "Wi-Fi", "notes": "guest network"},
+    ]));
+    let (_, outcome) = run(&mut vault, &first);
+    assert_eq!(outcome.saved, 2);
+    let (parsed, again) = run(&mut vault, &first);
+    assert!(parsed.items.iter().all(|r| r.duplicate));
+    assert_eq!(
+        again,
+        Outcome {
+            duplicates: 2,
+            ..Outcome::default()
+        }
+    );
+
+    // Another number, even with the same last four digits, is another
+    // card; other text is another note; a second copy of a note the vault
+    // holds once is new too.
+    let others = cards_and_notes(json!([
+        {"type": 3, "name": "Plow card", "card": {"brand": "Visa", "number": "4000 0000 0000 1111", "expMonth": "4", "expYear": "2027", "code": "737"}},
+        {"type": 2, "name": "Wi-Fi", "notes": "office network"},
+        {"type": 2, "name": "Wi-Fi", "notes": "guest network"},
+        {"type": 2, "name": "Wi-Fi", "notes": "guest network"},
+    ]));
+    let (parsed, outcome) = run(&mut vault, &others);
+    let duplicates: Vec<bool> = parsed.items.iter().map(|r| r.duplicate).collect();
+    assert_eq!(duplicates, [false, false, true, false]);
+    assert!(parsed.items.iter().all(|r| r.update.is_none()));
+    assert_eq!((outcome.saved, outcome.duplicates), (3, 1));
+    assert_eq!(vault.list().len(), 5);
+}
+
+#[test]
+fn a_renewed_card_or_a_note_with_another_custom_field_is_new() {
+    let (_dir, mut vault) = store();
+    let card = |exp_year: &str, code: &str| json!({"type": 3, "name": "Plow card", "card": {"brand": "Visa", "number": "4111111111111111", "expMonth": "4", "expYear": exp_year, "code": code}});
+    let note = |value: &str| json!({"type": 2, "name": "Wi-Fi", "notes": "guest network", "fields": [{"name": "router", "value": value, "type": 0}]});
+    run(
+        &mut vault,
+        &cards_and_notes(json!([card("2027", "737"), note("upstairs")])),
+    );
+    let before: Vec<Item> = vault
+        .list()
+        .iter()
+        .map(|m| vault.item(&m.item).unwrap())
+        .collect();
+
+    // A new expiry and code, or another custom field, is another item:
+    // saved beside the one held, which stays as it was.
+    let (parsed, outcome) = run(
+        &mut vault,
+        &cards_and_notes(json!([card("2031", "123"), note("downstairs")])),
+    );
+    assert!(
+        parsed
+            .items
+            .iter()
+            .all(|r| !r.duplicate && r.update.is_none())
+    );
+    assert_eq!((outcome.saved, outcome.updated), (2, 0));
+    assert_eq!(vault.list().len(), 4);
+    for held in &before {
+        assert!(
+            vault.item(&held.id).as_ref() == Some(held),
+            "{} changed",
+            held.id
+        );
+    }
+    // The same again, custom field and all, is a duplicate.
+    let (_, again) = run(
+        &mut vault,
+        &cards_and_notes(json!([card("2031", "123"), note("downstairs")])),
+    );
+    assert_eq!((again.saved, again.duplicates), (0, 2));
+}
+
+#[test]
+fn an_import_writes_the_vault_once_and_a_failed_write_saves_no_row() {
+    use std::os::unix::fs::PermissionsExt;
+    let (dir, mut vault) = store();
+    let rows: Vec<Value> = (0..20)
+        .map(|i| json!({"type": 2, "name": format!("Note {i}"), "notes": "made up"}))
+        .collect();
+    // The vault's folder can't be written: the one write at the end fails,
+    // and so does every row, with nothing on disk.
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o500)).unwrap();
+    let (_, outcome) = run(&mut vault, &cards_and_notes(json!(rows)));
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!((outcome.saved, outcome.failed.len()), (0, 20));
+    assert!(OwnStore::open(dir.path()).unwrap().list().is_empty());
+
+    let mut vault = OwnStore::open(dir.path()).unwrap();
+    let (_, outcome) = run(&mut vault, &cards_and_notes(json!(rows)));
+    assert_eq!(outcome.saved, 20);
+    assert_eq!(OwnStore::open(dir.path()).unwrap().list().len(), 20);
+}
+
 #[test]
 fn imports_land_and_reimports_double_nothing() {
     let (_dir, mut vault) = store();

@@ -81,8 +81,11 @@ from all of them; a 1PUX's credit cards come along as cards, and a Bitwarden
 JSON's cards, identities and notes as themselves (1Password's CSV carries no
 card details). It shows every
 row (values reduced to whether they are there), marks rows the vault
-already holds or that would update a changed password, and imports only
-the rows you pick; nothing is picked by default. Without a prompt,
+already holds (a login by its title, username, site and secrets; a card
+or note only when every field it keeps is the same, custom fields
+included, so a renewed card is new) or that would update a changed
+password, and imports only the rows you pick,
+writing the vault once; nothing is picked by default. Without a prompt,
 `--preview` returns that preview as JSON, imports nothing and, like a
 rules preview, is not audited; and `--pick
 1,3-5` (or `all`) imports those rows of it. That pick reads the vault
@@ -97,7 +100,7 @@ quit, the connection drops, or you pick nothing within 15 minutes, it is
 dropped and nothing is saved. A local import reads the file in place;
 neither path deletes your original export.
 
-## From your phone: a link (prototype)
+## From your phone: a link
 
 `latch vault link` needs a running `serve`, including on this machine: the
 phone needs its live receiver. Without one, the command says to start
@@ -122,19 +125,59 @@ latch vault link --host my-mac --kind login --title Shop --site shop.example \
   (a browser cannot connect directly), on its own protocol name,
   `plow/latch-phone/1`, with a throwaway key. The handshake proves it
   reached the key in the link. The host sends the form itself, which the
-  shim shows in a sandboxed frame.
+  shim shows in a sandboxed frame. The shim says which computer it
+  reached, by the name that computer gives (it does not check the computer
+  is the owner's), says that what is typed goes straight there, encrypted,
+  and links to how it works (`how.html`).
 - **What the phone may do:** fetch its link's form and save its link's item.
-  The code lets it in; Plow is not asked who the phone is. Secret fields are
+  An owner's link lets it in with its code; Plow is not asked who the phone
+  is. An agent's link carries no code (see below). Secret fields are
   typed on the phone; the owner's non-secret `--field`s come filled in. A
   login's username and password, a card's number and code and a note's
   text are always asked for; `--ask LABEL` asks for any other field the
-  kind has (`--kind identity --ask ssn --ask "passport number"`).
+  kind has (`--kind identity --ask ssn --ask "passport number"`). The
+  website, title and username come filled in too, and the owner can change
+  them before saving; the vault's own rules apply to what is saved, and a
+  site named with a scheme other than `https://` is refused. The audit's
+  `submit` record names every field the save changed from the request
+  (`edited`), never a value.
+- **Whoever holds an owner's link's code can save any login under any
+  site.** The code is the only thing the host checks for an owner's link,
+  so the owner should keep it to themselves.
+- **An agent may ask for a login:** `latch vault link --kind login` from an
+  agent is judged by the host's gatekeeper like its other work, on the
+  site, title and username it names, and recorded in the audit; it sends
+  the link to the owner. Any other kind, any secret `--field`, and
+  `--page` are refused: an agent's link always opens the page its host
+  sets (`$LATCH_PHONE_PAGE` where `latch serve` runs, else
+  `https://plow.co/latch/phone`), since that page sees what the owner
+  types. `latch vault link-state LINK` then says whether the link is
+  `pending`, `saved` (with the new item's id) or `expired`; never a value.
+- **An agent's link carries no code, and opens only for the owner signed in
+  to Plow.** It names the request (`l=`) instead, and the Plow the page
+  signs in to (`p=`) when it is not `https://api.plow.co`. The page asks
+  for the owner's Plow phone number, Plow texts a code, and the page sends
+  it with its own throwaway key and the request to
+  `POST /v1/latch/phone-grants`; Plow keeps no login for the page, only a
+  grant: this key is the owner, for this request, for 10 minutes. The host
+  asks `GET /v1/latch/phone-grants/KEY` with its own login before it shows
+  the form or saves, and refuses a phone without a live grant for that
+  request in its own account (`phone_not_signed_in`). So holding the link
+  lets no one, the agent included, see the form or save anything. Not
+  covered: a lookalike sign-in page that relays the owner's code to Plow
+  as they type it.
 - **Audit:** `vault_link` records (`page`, `submit`) name the link and the
   item, never a value.
-- **Hosting the page:** `just phone-serve` serves it on this machine, for a
-  browser here or on the network. A phone away from home needs it on a
-  public HTTPS address; whoever serves it could change what it does, so
-  that choice is the owner's.
+- **Hosting the page:** plow.co serves it at `https://plow.co/latch/phone`,
+  the page a link opens by default, built with
+  `BASE=/latch/phone/ phone/build.sh`. Its policy lets it load only its own
+  files and connect only to itself, Plow (to sign the owner in) and the
+  iroh relays. Whoever serves it
+  could change what it does; the page is this open source code, so a change
+  can be seen. `just phone-serve` serves it on this machine instead, for a
+  browser here or on the network. The policy names the one Plow the page
+  signs in to; a build for a local or dev Plow names that one instead:
+  `PLOW_API=http://127.0.0.1:18904 phone/build.sh`.
 
 
 Both the field's frame and the top-level page must be HTTPS with a real

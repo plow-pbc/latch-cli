@@ -42,6 +42,11 @@ pub trait Backend: Send {
     /// Compares secrets without handing them out: which of `password` and
     /// `totp` differ from the item's.
     fn differs(&self, id: &str, password: &str, totp: &str) -> Result<(bool, bool), Failure>;
+    /// Holds every save until `save_held`, so many changes (an import's
+    /// rows) write the vault once.
+    fn hold_saves(&mut self);
+    /// Writes what was held, if anything changed, and stops holding.
+    fn save_held(&mut self) -> Result<(), Failure>;
 }
 
 const FILE: &str = "vault.json";
@@ -67,6 +72,8 @@ pub struct OwnStore {
     data_key: [u8; 32],
     items: Vec<Item>,
     next_id: u64,
+    /// While saves are held, whether anything changed since.
+    held: Option<bool>,
 }
 
 fn failed(message: String) -> Failure {
@@ -106,6 +113,7 @@ impl OwnStore {
                 data_key: rand::random(),
                 items: Vec::new(),
                 next_id: 1,
+                held: None,
             };
             store.save()?;
             return Ok(store);
@@ -144,10 +152,15 @@ impl OwnStore {
             data_key,
             items,
             next_id: file.next_id,
+            held: None,
         })
     }
 
     fn save(&mut self) -> Result<(), Failure> {
+        if let Some(changed) = &mut self.held {
+            *changed = true;
+            return Ok(());
+        }
         let custody = custody(&self.dir)?;
         let items = serde_json::to_vec(&self.items).expect("items serialize");
         let file = File {
@@ -259,6 +272,17 @@ impl Backend for OwnStore {
         // change; a source without a key does not remove the stored one.
         let totp_differs = !totp.is_empty() && !super::totp::same_key(&stored, totp);
         Ok((password_differs, totp_differs))
+    }
+
+    fn hold_saves(&mut self) {
+        self.held = Some(false);
+    }
+
+    fn save_held(&mut self) -> Result<(), Failure> {
+        match self.held.take() {
+            Some(true) => self.save(),
+            _ => Ok(()),
+        }
     }
 }
 

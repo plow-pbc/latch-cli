@@ -59,6 +59,11 @@ hand.
    one change.
 3. Update the docs in the same pull request when behavior changes:
    [README.md](README.md), [docs/](docs/) and the guides in `latch/*.md`.
+   The pages of plow.co/latch/docs are in [docs/site/](docs/site/), and
+   `docs/site/commands.md` is written from `latch help --json` by
+   `just docs-site OUT`; `just test` fails when it is out of date.
+   `just docs-publish [PLOW_CHECKOUT]` opens a plow PR with the rendered
+   pages; `--dry-run` prints the diff stat instead.
 4. Run `just test`; CI runs the Linux gate. Say in the pull request which
    ones you ran.
 5. Write the pull request's title and description so that someone who hasn't

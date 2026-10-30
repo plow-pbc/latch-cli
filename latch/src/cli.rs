@@ -140,7 +140,7 @@ read `do --history R` first, and never resend it.";
 #[command(
     name = "latch",
     version = version(),
-    about = "Reach your other machines over iroh, with Plow as the directory.",
+    about = "Let your agents use a machine you trust: its files, programs and browser, judged by its gatekeeper.",
     after_help = AGENT_HELP,
     disable_help_subcommand = true
 )]
@@ -163,15 +163,18 @@ pub struct Cli {
 pub enum Command {
     /// Log this machine or agent in to Plow: create its key if missing and register it
     Login(LoginArgs),
-    /// Log this state folder out: stop its host, then delete its key and
-    /// Plow token from the Keychain or its files; the vault and audit stay
-    /// readable after the next login
+    /// Log this machine out of Plow
+    ///
+    /// Stops this state folder's host, then deletes its key and Plow token
+    /// from the Keychain or its files; the vault and audit stay readable
+    /// after the next login
     Logout(LogoutArgs),
     /// List this account's machines, online or not, or remove one
     Devices(DevicesArgs),
-    /// The account's agents, with their lines and Plow status; with --host,
-    /// each one's standing on that host. Also shows, creates and removes
-    /// them (owner only)
+    /// List your agents, with their lines and Plow status
+    ///
+    /// With --host, each one's standing on that host. Its subcommands show,
+    /// create and remove agents (owner only)
     Agents(AgentsArgs),
     /// Print this machine, its login and account, and the account's hosts
     Status(StatusArgs),
@@ -191,23 +194,34 @@ pub enum Command {
     Exec(ExecArgs),
     /// Drive a real browser on a host: open, observe, act by ref
     Browser(BrowserArgs),
-    /// The host's vault: add, list, edit, remove and import items (owner devices only)
+    /// The host's vault: add, list, edit, remove and import items (owner only)
     Vault(VaultArgs),
-    /// The owner's standing rules for agents on a host, which the host's
-    /// gatekeeper reads at every judgment (owner devices only)
+    /// Your standing rules for agents on a host (owner only)
+    ///
+    /// The host's gatekeeper reads them at every judgment
     Rules(RulesArgs),
-    /// This host's connectors: its owner, on the host itself, turns one on
-    /// (running its setup) or off; `latch status` lists them
+    /// Turn this host's connectors on or off
+    ///
+    /// Its owner, on the host itself, turns one on (running its setup) or
+    /// off; `latch status` lists them
     Plugins(PluginsArgs),
-    /// This machine's own host settings, saved in its state folder: a
-    /// running host picks a change up at once, and a stopped one when it
-    /// starts. `status --local` reports what the host makes of them
+    /// This machine's own host settings
+    ///
+    /// Saved in its state folder: a running host picks a change up at once,
+    /// and a stopped one when it starts. `status --local` reports what the
+    /// host makes of them
     Settings(SettingsArgs),
-    /// This machine's host audit log (or another host's, with --host): its newest records as JSON lines, an earlier page, or with --follow each new one; its chain checked without the key, or a new key
+    /// Read a host's sealed audit log
+    ///
+    /// This machine's host's, or another host's with --host: its newest
+    /// records as JSON lines, an earlier page, or with --follow each new one;
+    /// its chain checked without the key, or a new key
     #[command(after_help = AUDIT_HELP)]
     Audit(AuditArgs),
-    /// Run this machine as a host, as a service of this user's: with its
-    /// dashboard (Ctrl-C stops the host), or detached with -d
+    /// Run this machine as a host
+    ///
+    /// As a service of this user's: with its dashboard (Ctrl-C stops the
+    /// host), or detached with -d
     #[command(after_help = SERVE_HELP)]
     Serve(ServeArgs),
     /// Stop the host on this state folder; its state is kept
@@ -216,22 +230,28 @@ pub enum Command {
     Dashboard,
     /// The host's diagnostics (serve.log)
     Logs(FollowArgs),
-    /// Open Plow Latch.app, the Mac app this latch belongs to (macOS); the
-    /// app picks its state folder itself
+    /// Open the Plow Latch app this latch belongs to (macOS)
+    ///
+    /// The app picks its state folder itself
     App,
     /// Help for a command, its examples, or every command as JSON
     Help(HelpArgs),
     /// Print SKILL.md, which teaches an agent how to use latch
     Skill,
-    /// Install the newest latch, or the build TAG names (also how to go
-    /// back), restarting a `serve -d` host on it; `--check` only says whether
-    /// a newer build is available. Run by the owner, or by an agent on its
-    /// own computer, where latch is installed alone
+    /// Install the newest latch, or the build TAG names
+    ///
+    /// Also how to go back. A host `serve -d` started restarts on the new
+    /// build; `--check` only says whether a newer build is available. Run by
+    /// the owner, or by an agent on its own computer, where latch is installed
+    /// alone
     Update(UpdateArgs),
-    /// Set this machine up, at a terminal: log in, connect Google, on a Mac
-    /// turn on Messages and Contacts, rules for agents from a preset when
-    /// there are none, all with no host running, then offer to start latch. Each step runs a latch command and is skipped once done,
-    /// so it can be run again any time; `--status` only lists the steps
+    /// Set this machine up, step by step, at a terminal
+    ///
+    /// Log in, connect Google, on a Mac turn on Messages and Contacts, rules
+    /// for agents from a preset when there are none, all with no host
+    /// running, then offer to start latch. Each step runs a latch command and
+    /// is skipped once done, so it can be run again any time; `--status` only
+    /// lists the steps
     Setup(SetupArgs),
     /// Internal: the sandboxed process a host starts for each file read or write, exec, Google call and startup probe
     #[command(hide = true)]
@@ -328,9 +348,11 @@ pub struct BrowserArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum BrowserCommand {
-    /// Start a new session, in a fresh browser of its own, load URL, and list
-    /// the elements on screen; answers the session's id, which every later
-    /// command needs. Its cookies and logins last until it closes
+    /// Start a new browser session and load URL
+    ///
+    /// The session runs in a fresh browser of its own. It lists the elements
+    /// on screen and answers the session's id, which every later command
+    /// needs. Its cookies and logins last until it closes
     Open {
         /// The browser engine the session runs on [default: chrome if the
         /// host has it, else camoufox]
@@ -362,7 +384,9 @@ pub enum BrowserCommand {
         #[arg(value_name = "PATH")]
         output: PathBuf,
     },
-    /// The plan command: up to 10 steps in order, each `click|type|select|press
+    /// Run a plan of up to 10 browser steps, in order
+    ///
+    /// Each step is `click|type|select|press
     /// eN ["text"]`, `fill [--item vN] --field F=eN… [--press eN]`, or a goal in
     /// words with its texts in double quotes, with an optional check after
     /// ` -> `: `do 'click e7 -> path: /cart' 'add the note "Ring twice"'`
@@ -399,7 +423,9 @@ pub enum BrowserCommand {
         #[arg(long, value_name = "S")]
         within: Option<f64>,
     },
-    /// One literal step on a ref from the last page latch returned:
+    /// Run one browser step on a ref from the last page
+    ///
+    /// A literal step on a ref from the last page latch returned:
     /// `act click e7`, `act type e3 "Acme"`, `act select e5 Large`,
     /// `act press e4 Enter`, `act scroll [eN] down`, `act back`; run as a
     /// plan of one step
@@ -417,9 +443,10 @@ pub enum BrowserCommand {
         #[arg(long, value_name = "CHECK")]
         check: Option<String>,
     },
-    /// Hand this session to the owner, who acts in its window (a CAPTCHA, a
-    /// texted code, a passkey, a sign-in): waits until they hand it back.
-    /// On the host, `handoff done [HASH]` hands a session back.
+    /// Hand this session to the owner, and wait until they hand it back
+    ///
+    /// The owner acts in its window: a CAPTCHA, a texted code, a passkey, a
+    /// sign-in. On the host, `handoff done [HASH]` hands a session back.
     Handoff {
         /// `done`: on the host, hand a pending session back to its agent
         action: Option<HandoffAction>,
@@ -459,8 +486,10 @@ pub enum BrowserCommand {
         #[arg(long, value_name = "S")]
         within: Option<f64>,
     },
-    /// Load URL in the session's active tab, and list its elements; a site
-    /// the session has not been judged for is judged first, as `tab new URL`
+    /// Load URL in the session's active tab
+    ///
+    /// It lists the page's elements. A site the session has not been judged
+    /// for is judged first, as `tab new URL`
     Goto { url: String },
     /// Open, switch to or close a tab
     Tab {
@@ -474,8 +503,10 @@ pub enum BrowserCommand {
         #[arg(long)]
         text: Option<String>,
     },
-    /// Run JavaScript from a file (or - for stdin) in the page's main frame;
-    /// prints its JSON value. The host audits the script.
+    /// Run JavaScript from a file in the page
+    ///
+    /// The file (or - for stdin) runs in the page's main frame; it prints the
+    /// script's JSON value. The host audits the script.
     Eval {
         #[arg(long, value_name = "FILE")]
         script_file: PathBuf,
@@ -495,7 +526,9 @@ pub enum BrowserCommand {
         #[command(subcommand)]
         command: DownloadCommand,
     },
-    /// Fill from a vault item, for every kind (a login, its authenticator
+    /// Fill a page's fields from a vault item
+    ///
+    /// For every kind of item (a login, its authenticator
     /// code as `otp`, a card, an identity, a note): `--field username=e4
     /// --field password=e5 --press e6`, or `--suggested S`, a mapping
     /// `observe` suggested. A secret needs --press eN, the button that
@@ -536,12 +569,15 @@ pub enum BrowserCommand {
     },
     /// Your open sessions, without their ids
     Sessions,
-    /// End the session, deleting its cookies and logins; an owner device
-    /// may name any session by the hash the host's dashboard shows
+    /// End the session, deleting its cookies and logins
+    ///
+    /// One of the owner's own machines may name any session by the hash the
+    /// host's dashboard shows
     Close,
-    /// Owner only, on the host itself: download and verify a browser
-    /// engine into this machine's state directory (after `install.sh
-    /// --no-browser`, say). An agent's browser call never downloads one
+    /// Download and verify a browser engine into this machine's state folder
+    ///
+    /// Owner only, on the host itself: after `install.sh --no-browser`, say.
+    /// An agent's browser call never downloads one
     Setup {
         #[arg(long, value_enum, default_value_t = EngineArg::Cft)]
         engine: EngineArg,
@@ -620,12 +656,13 @@ pub enum DialogAction {
 
 #[derive(Args, Debug)]
 pub struct VaultArgs {
-    /// Host to use (default: this machine's vault; naming this peer is local too)
+    /// Host to use (default: this machine's vault; naming this machine is local too)
     #[arg(long, env = "LATCH_HOST", global = true)]
     pub host: Option<String>,
-    /// The owner's Plow chat an agent's `list` acts for, when its line has
-    /// more than one: the host's gatekeeper reads what the owner asked
-    /// there. Refused on owner calls, local modes and every other command
+    /// The owner's Plow chat an agent's `list` or `link` acts for, when its
+    /// line has more than one: the host's gatekeeper reads what the owner
+    /// asked there. Refused on owner calls, local modes and every other
+    /// command
     #[arg(long, env = "LATCH_PLOW_CHAT", global = true)]
     pub plow_chat: Option<String>,
     #[command(subcommand)]
@@ -634,9 +671,9 @@ pub struct VaultArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum VaultCommand {
-    /// The items' metadata, a login's username included (never a secret
-    /// value): the first 50 unless --all, narrowed by --site, --search and
-    /// --kind
+    /// The items' metadata, a login's username included (never a secret value)
+    ///
+    /// The first 50 unless --all, narrowed by --site, --search and --kind
     List {
         /// Only items saved for this site: a domain or URL, matched by its
         /// registrable domain (www.shop.example finds shop.example)
@@ -657,9 +694,10 @@ pub enum VaultCommand {
     },
     /// One item's metadata and its non-secret values (never a secret one)
     Show { item: String },
-    /// Add an item; its secrets are asked for at a prompt, or read from
-    /// stdin with --stdin, never taken from the command line or the
-    /// environment
+    /// Add an item to the vault
+    ///
+    /// Its secrets are asked for at a prompt, or read from stdin with
+    /// --stdin, never taken from the command line or the environment
     Add {
         /// login, card, identity or note
         #[arg(long)]
@@ -688,7 +726,8 @@ pub enum VaultCommand {
         #[arg(long, conflicts_with_all = ["ask", "totp"])]
         stdin: bool,
     },
-    /// Change an item at its current revision: its title, sites and fields.
+    /// Change an item's title, sites or fields, at its current revision
+    ///
     /// Its secrets are asked for at a prompt, or read from stdin with
     /// --stdin, never taken from the command line or the environment; its
     /// kind never changes
@@ -725,10 +764,13 @@ pub enum VaultCommand {
         #[arg(long, conflicts_with = "ask")]
         stdin: bool,
     },
-    /// A one-time link through a running serve that adds an item from your phone: the phone page
-    /// connects to the host itself, and the value goes straight there.
+    /// Add an item from your phone, through a one-time link
+    ///
+    /// The link needs a running host: the phone page connects to the host
+    /// itself, and the value goes straight there.
     /// Prints the link, and a QR code on a terminal; it works once, for 15
-    /// minutes
+    /// minutes. An agent may ask for a login, judged like its other work,
+    /// and send the link to its owner; `link-state` says when it is saved
     Link {
         /// login, card, identity or note
         #[arg(long)]
@@ -747,10 +789,16 @@ pub enum VaultCommand {
         /// note's text are always asked for
         #[arg(long)]
         ask: Vec<String>,
-        /// The phone page's address (see `phone/`); the link adds the rest
-        /// after `#`
-        #[arg(long, env = "LATCH_PHONE_PAGE")]
-        page: String,
+        /// The phone page's address (see `phone/`), for the owner only; the
+        /// link adds the rest after `#` [default: the host's page]
+        #[arg(long)]
+        page: Option<String>,
+    },
+    /// Whether a phone link is still pending, saved (with the new item's
+    /// id) or expired; never a value
+    LinkState {
+        /// The link's id, as `link` printed it (`l…`)
+        link: String,
     },
     /// Remove an item at its current revision
     Remove {
@@ -758,8 +806,10 @@ pub enum VaultCommand {
         #[arg(long)]
         revision: u64,
     },
-    /// Import another password manager's export (1PUX, CSV, JSON): shows
-    /// what it holds and imports only the rows you pick
+    /// Import another password manager's export
+    ///
+    /// 1PUX, CSV or JSON: it shows what the export holds, and imports only
+    /// the rows you pick
     Import {
         file: std::path::PathBuf,
         /// Return the preview as JSON and import nothing: each row's
@@ -804,7 +854,9 @@ pub struct PluginsArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum PluginsCommand {
-    /// Run NAME's setup for this machine's host, running or not; NAME is
+    /// Turn a connector on, if its setup succeeds
+    ///
+    /// Runs NAME's setup for this machine's host, running or not; NAME is
     /// enabled only if it succeeds (owner only). When no Google account is
     /// connected in Plow, or none works until the owner signs in again,
     /// `enable google` gets a single-use sign-in link from Plow: at a
@@ -826,8 +878,10 @@ pub enum PluginsCommand {
         #[arg(long)]
         add_account: bool,
     },
-    /// Turn NAME off on this machine's host: a running one refuses new calls
-    /// at once, and this returns once its running ones have finished (owner only)
+    /// Turn a connector off
+    ///
+    /// On this machine's host, a running one refuses new calls at once, and
+    /// this returns once its running ones have finished (owner only)
     Disable { name: String },
 }
 
@@ -893,8 +947,9 @@ pub enum RulesCommand {
         #[command(flatten)]
         scope: RulesScope,
     },
-    /// Preview the verdict the gatekeeper would give a request right now,
-    /// without running it: as the agent --agent names, or as you. An agent
+    /// Preview the gatekeeper's verdict on a request, without running it
+    ///
+    /// As the agent --agent names, or as you. An agent
     /// is judged by the built-in policy and the rules alone, with no chat:
     /// what it may do whatever its chat says, though a real call's chat may
     /// add an OK or a no. The verdict is the gatekeeper's judgment at this
@@ -1063,21 +1118,25 @@ pub struct AgentsArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum AgentsAction {
-    /// One agent, by its uid or its exact name: its line and Plow status
-    /// (a cloud agent's starts as provisioning)
+    /// Show one agent, by its uid or its exact name
+    ///
+    /// Its line and Plow status (a cloud agent's starts as provisioning)
     Show { agent: String },
     /// The kinds of cloud agent Plow can run, for `agents new --cloud`
     Catalog,
-    /// How to start a cloud agent from a phone: Plow's number and, for each
-    /// kind, the text to send it, as a QR code's contents and an `sms:` link.
-    /// Plow sets the agent up on a line of its own and texts back its contact
-    /// card
+    /// Show how to start a cloud agent by texting Plow
+    ///
+    /// Plow's number and, for each kind, the text to send it, as a QR code's
+    /// contents and an `sms:` link. Plow sets the agent up on a line of its
+    /// own and texts back its contact card
     StartByText,
     /// Plow's phone lines, and which are free for a new agent
     Lines,
-    /// Create an agent on a free phone line: a cloud agent Plow runs, or
-    /// your own, whose credential is written to a new private file. It
-    /// returns at once; `agents show` follows a cloud agent's start
+    /// Create an agent on a free phone line
+    ///
+    /// A cloud agent Plow runs, or your own, whose credential is written to a
+    /// new private file. It returns at once; `agents show` follows a cloud
+    /// agent's start
     New {
         /// A cloud agent of this kind, from `latch agents catalog`
         #[arg(long, value_name = "KIND", required_unless_present = "own")]
@@ -1099,16 +1158,18 @@ pub enum AgentsAction {
         #[arg(long)]
         line: String,
     },
-    /// Save the contact card of an agent's line (a vCard, its persona's
-    /// photo included), by the agent's uid or exact name
+    /// Save the contact card of an agent's line, by the agent's uid or exact name
+    ///
+    /// A vCard, its persona's photo included
     Card {
         agent: String,
         /// Where to save it
         #[arg(long, short, value_name = "FILE")]
         output: PathBuf,
     },
-    /// Remove an agent, by its uid or its exact name: its credential stops
-    /// working and its line is freed
+    /// Remove an agent, by its uid or its exact name
+    ///
+    /// Its credential stops working and its line is freed
     Remove {
         agent: String,
         /// Remove without asking (required when no one is at a terminal)
@@ -1165,9 +1226,14 @@ pub struct AuditArgs {
 pub enum AuditAction {
     /// Check every record's place in the chain, without the key
     Verify,
-    /// Seal new records under a new key and keep every old one; a running `latch serve` uses it from its next record
+    /// Seal new records under a new key
+    ///
+    /// Every old key is kept; a running `latch serve` uses the new one from
+    /// its next record
     RotateKey,
-    /// What the gatekeeper sent Plow for one judgment call, and what it answered: rules, chat and action as the judge saw them
+    /// Show what the gatekeeper asked Plow for one judgment, and the answer
+    ///
+    /// The rules, chat and action as the gatekeeper saw them
     Judge {
         /// The call's id: a record's `kept_request`, in `details.gate` or its `layers`
         request: String,
@@ -1178,7 +1244,9 @@ pub enum AuditAction {
         #[arg(long)]
         host: Option<String>,
     },
-    /// A browser screenshot a record names, saved to --output: an action's number in a plan, or `final`
+    /// Save a browser screenshot an audit record names
+    ///
+    /// Saved to --output: an action's number in a plan, or `final`
     Shot {
         /// The record's id (a record line's `cursor`)
         record: String,
@@ -1417,8 +1485,10 @@ impl GoogleArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum MessagesCommand {
-    /// Messages whose text contains PHRASE (a literal, case-insensitive for
-    /// ASCII letters), newest first; with no PHRASE, by the filters alone
+    /// Search messages for PHRASE, newest first
+    ///
+    /// PHRASE is a literal, case-insensitive for ASCII letters; with no
+    /// PHRASE, the filters alone pick the messages
     Search {
         /// What the text contains
         phrase: Option<String>,
@@ -1506,8 +1576,10 @@ impl MessagesCommand {
 
 #[derive(Subcommand, Debug)]
 pub enum ContactsCommand {
-    /// People whose name, nickname or organization has every word of TEXT
-    /// (ignoring case and accents), each with every phone and email and the
+    /// Find people by name, nickname or organization
+    ///
+    /// Each person whose name, nickname or organization has every word of
+    /// TEXT (ignoring case and accents), with every phone and email and the
     /// handle to pass to `latch messages`
     Search {
         /// What to look for (required unless --cursor is given)
@@ -1566,7 +1638,7 @@ Input:
 Secrets:
   Use --secret-env NAME=VALUE for credentials, rather than program arguments.
   Values reach only the final program's environment after confinement. The
-  remote judge and audit see names and lengths; program output is returned as-is.
+  gatekeeper and audit see names and lengths; program output is returned as-is.
   Quoting protects shell syntax, but a program can interpret environment
   values as code. *_COMMAND, NODE_OPTIONS, BASH_ENV, PYTHONSTARTUP and
   GIT_CONFIG_* can run hidden instructions; the judge sees their names and

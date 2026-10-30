@@ -17,7 +17,7 @@ use std::io::{Cursor, Read};
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 
-use super::item::{CARD, IDENTITY, Item, LOGIN, Login, NOTE, Raw, Uri};
+use super::item::{CARD, IDENTITY, Item, LOGIN, Login, NOTE, Raw, Uri, kind_name};
 use super::sites;
 use super::store::Backend;
 use super::totp::Params;
@@ -884,6 +884,34 @@ pub fn mark_against(vault: &dyn Backend, parsed: &mut Parsed) -> Result<(), Fail
             row.warnings.push(TWINS_LEFT_ALONE.into());
         }
     }
+    // A card or note the vault already holds with every stored field the
+    // same (its custom fields too) is a duplicate; anything else is new,
+    // a renewed card included. Each held item answers one row.
+    let mut matched: Vec<&str> = Vec::new();
+    for row in &mut parsed.items {
+        let kind = row.item.raw.kind;
+        if kind != CARD && kind != NOTE {
+            continue;
+        }
+        // The row as the vault would store it (a card's expiry as 04).
+        let mut stored = row.item.clone();
+        if stored.validate().is_err() {
+            continue;
+        }
+        let same = held.iter().find(|m| {
+            m.kind == kind_name(kind)
+                && !matched.contains(&m.item.as_str())
+                && vault.item(&m.item).is_some_and(|held| {
+                    held.raw == stored.raw
+                        && held.sites == stored.sites
+                        && held.other_top_sites == stored.other_top_sites
+                })
+        });
+        if let Some(meta) = same {
+            row.duplicate = true;
+            matched.push(&meta.item);
+        }
+    }
     Ok(())
 }
 
@@ -1024,6 +1052,9 @@ pub struct Outcome {
 /// sink the rest.
 pub fn commit(vault: &mut dyn Backend, parsed: &Parsed, picks: &[usize]) -> Outcome {
     let mut outcome = Outcome::default();
+    // The rows saved or updated, written to the vault once at the end.
+    let mut done: Vec<&Imported> = Vec::new();
+    vault.hold_saves();
     for &pick in picks {
         let Some(row) = pick.checked_sub(1).and_then(|n| parsed.items.get(n)) else {
             outcome.failed.push(Skipped {
@@ -1062,7 +1093,10 @@ pub fn commit(vault: &mut dyn Backend, parsed: &Parsed, picks: &[usize]) -> Outc
                 login.totp = incoming.totp;
             }
             match vault.update(edited, update.revision) {
-                Ok(_) => outcome.updated += 1,
+                Ok(_) => {
+                    outcome.updated += 1;
+                    done.push(row);
+                }
                 Err(failure) if failure.code == "stale_revision" => fail(
                     &mut outcome,
                     Failure::new(
@@ -1075,8 +1109,23 @@ pub fn commit(vault: &mut dyn Backend, parsed: &Parsed, picks: &[usize]) -> Outc
             continue;
         }
         match vault.add(row.item.clone()) {
-            Ok(_) => outcome.saved += 1,
+            Ok(_) => {
+                outcome.saved += 1;
+                done.push(row);
+            }
             Err(failure) => fail(&mut outcome, failure),
+        }
+    }
+    // Nothing was written: each row that would have been fails with why.
+    if let Err(failure) = vault.save_held() {
+        outcome.saved = 0;
+        outcome.updated = 0;
+        for row in done {
+            outcome.failed.push(Skipped {
+                title: row.item.raw.name.clone(),
+                reason: failure.message.clone(),
+                vault: row.vault.clone(),
+            });
         }
     }
     outcome

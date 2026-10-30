@@ -35,11 +35,16 @@ pub async fn run(state: &StateDir, args: VaultArgs) -> Result<Value, Failure> {
         chat: None,
     };
     match args.command {
-        // An agent's list is judged in the chat it names, as its other calls are.
-        VaultCommand::List { .. } if target.host.is_none() && args.plow_chat.is_some() => Err(Failure::new(
+        // An agent's list or link is judged in the chat it names, as its
+        // other calls are.
+        VaultCommand::List { .. } | VaultCommand::Link { .. }
+            if target.host.is_none() && args.plow_chat.is_some() =>
+        {
+            Err(Failure::new(
             code::plow_chat_not_supported,
             "--plow-chat and LATCH_PLOW_CHAT select an agent's Plow chat on a host; this machine's own vault takes none: omit them".into(),
-        )),
+            ))
+        }
         VaultCommand::List {
             site,
             search,
@@ -158,22 +163,38 @@ pub async fn run(state: &StateDir, args: VaultArgs) -> Result<Value, Failure> {
             ask,
             page,
         } => {
+            // The page sees what the owner types: an agent's link always
+            // opens the one its host sets.
+            if page.is_some() && state.require_config()?.peer.kind == "agent" {
+                return Err(Failure::new(
+                    code::bad_arguments,
+                    "an agent's link opens the phone page its host sets; omit --page".into(),
+                ));
+            }
             let values = given(&kind, &field)?;
-            let request = call(json!({
-                "command": "link",
-                "kind": kind,
-                "title": title,
-                "sites": site,
-                "values": values,
-                "ask": ask,
-            }));
+            let request = Request {
+                chat: args.plow_chat,
+                ..call(json!({
+                    "command": "link",
+                    "kind": kind,
+                    "title": title,
+                    "sites": site,
+                    "values": values,
+                    "ask": ask,
+                }))
+            };
             let opened = target.call(request).await?;
-            let url = link_url(&page, &opened);
+            let page = page.as_deref().or(opened["page"].as_str()).unwrap_or_default();
+            let url = link_url(page, &opened);
             if term::interactive() {
                 eprintln!("{}", term::qr(&url));
                 eprintln!("Open on your phone; it works once, for 15 minutes.");
             }
             Ok(json!({"url": url, "link": opened["link"], "expires_in": opened["expires_in"]}))
+        }
+        VaultCommand::LinkState { link } => {
+            let request = call(json!({"command": "link_state", "link": link}));
+            target.call(request).await
         }
         VaultCommand::Import {
             file,
@@ -320,7 +341,8 @@ impl Target<'_> {
         if let Some(host) = &self.host {
             return dial::call(self.state, host, &request, ANSWER_WITHIN).await;
         }
-        if request.args["command"] == "link" {
+        // Open links live in the running host's memory.
+        if ["link", "link_state"].contains(&request.args["command"].as_str().unwrap_or_default()) {
             super::local::link(self.state, request.args).await
         } else {
             super::local::call(self.state, request.args)
@@ -511,13 +533,26 @@ fn prompted(kind: &str, asked: &[String], required: bool) -> Result<Map<String, 
     Ok(values)
 }
 
-/// The phone link: the page's address, then the host's key, its relay and
-/// the code after `#`, which a browser never sends to the page's server.
+/// The phone link: the page's address, then after `#`, which a browser
+/// never sends to the page's server, the host's key, its relay and an
+/// owner's link's code, or for an agent's link the request's id and the
+/// Plow the page signs the owner in to, when it is not Plow's own.
 fn link_url(page: &str, opened: &Value) -> String {
     let page = page.split('#').next().unwrap_or_default();
-    let part = |key: &str| opened[key].as_str().unwrap_or_default().to_string();
-    let relay: String = url::form_urlencoded::byte_serialize(part("relay").as_bytes()).collect();
-    format!("{page}#h={}&r={relay}&c={}", part("host"), part("code"))
+    let part = |key: &str| {
+        let value = opened[key].as_str().unwrap_or_default();
+        url::form_urlencoded::byte_serialize(value.as_bytes()).collect::<String>()
+    };
+    let mut url = format!("{page}#h={}&r={}", part("host"), part("relay"));
+    if opened["code"].is_string() {
+        url += &format!("&c={}", part("code"));
+    } else {
+        url += &format!("&l={}", part("link"));
+        if opened["plow"] != "https://api.plow.co" {
+            url += &format!("&p={}", part("plow"));
+        }
+    }
+    url
 }
 
 /// Sends the export and gets the preview; with `preview` that is the

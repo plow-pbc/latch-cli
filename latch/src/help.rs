@@ -305,7 +305,7 @@ const ENTRIES: &[Entry] = &[
         owner_only: false,
         connector: None,
         examples: &[ex(
-            "Send a script into the Pi's shared folder",
+            "Send a script into ~/scripts on the Pi",
             &["file", "put", "--host", "pi", "./check.sh", "scripts/"],
         )],
     },
@@ -470,7 +470,7 @@ const ENTRIES: &[Entry] = &[
                 ],
             ),
             ex(
-                "Use a credential through the program's environment, away from the remote judge",
+                "Use a credential through the program's environment, away from the gatekeeper",
                 &[
                     "exec",
                     "--host",
@@ -1016,25 +1016,60 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         id: "vault.link",
-        runs_on: |_| RunsOn::Either,
-        output: "A one-time link (and a QR code on a terminal) for 15 minutes.",
+        // An agent's link, the one that names a chat, goes to a host.
+        runs_on: |args| match args.try_get_one::<String>("plow_chat") {
+            Ok(Some(_)) => RunsOn::Host,
+            _ => RunsOn::Either,
+        },
+        output: "`url`, a one-time link (and a QR code on a terminal) for 15 minutes; `link`, its id for `vault link-state`; `expires_in`, in seconds. The link opens the host's phone page unless the owner names one with --page. An agent may ask only for a login, judged by the gatekeeper like its other work, never names the page, and never gives a secret: the owner types it on the phone.",
         effect: Once("makes a one-time link that adds an item from a phone"),
-        owner_only: true,
+        owner_only: false,
+        connector: None,
+        examples: &[
+            ex(
+                "Add a card from the phone",
+                &[
+                    "vault",
+                    "--host",
+                    "mac",
+                    "link",
+                    "--kind",
+                    "card",
+                    "--title",
+                    "Visa",
+                    "--page",
+                    "https://phone.example/latch",
+                ],
+            ),
+            ex(
+                "An agent asks its owner for a login, then sends them the url",
+                &[
+                    "vault",
+                    "--host",
+                    "mac",
+                    "link",
+                    "--kind",
+                    "login",
+                    "--title",
+                    "Shop",
+                    "--site",
+                    "shop.example",
+                    "--field",
+                    "username=owner@example.com",
+                ],
+            ),
+        ],
+    },
+    Entry {
+        id: "vault.link-state",
+        runs_on: |_| RunsOn::Either,
+        output: "`state`: `pending` (with `expires_in`), `saved` (with `item`, the new item's id) or `expired`. Never a value.",
+        effect: ReadOnly,
+        owner_only: false,
         connector: None,
         examples: &[ex(
-            "Add a card from the phone",
-            &[
-                "vault",
-                "--host",
-                "mac",
-                "link",
-                "--kind",
-                "card",
-                "--title",
-                "Visa",
-                "--page",
-                "https://phone.example/latch",
-            ],
+            "Whether the owner has saved the login yet",
+            &["vault", "--host", "mac", "link-state", "l3f09a2c1"],
         )],
     },
     Entry {
@@ -1681,7 +1716,13 @@ struct ErrorCodeHelp {
 struct Action {
     id: String,
     usage: String,
+    /// The first line of `about`, as `latch --help` lists the command.
+    summary: String,
     about: String,
+    /// Where its first example runs: `local` (this computer), `host` (the
+    /// selected host) or `either` (this computer's own state, or a host's
+    /// with --host).
+    runs_on: &'static str,
     inputs: Vec<Input>,
     output: &'static str,
     /// The answer's top-level fields, where they are known.
@@ -1730,6 +1771,22 @@ struct Input {
     about: String,
 }
 
+/// Where `entry`'s first example runs, as its own command line routes it.
+fn runs_on(entry: &Entry) -> &'static str {
+    let example = entry
+        .examples
+        .first()
+        .expect("every command has an example");
+    let matches = Cli::command()
+        .try_get_matches_from(std::iter::once("latch").chain(example.args.iter().copied()))
+        .expect("every example parses");
+    match (entry.runs_on)(selected(&matches).1) {
+        RunsOn::Local => "local",
+        RunsOn::Host => "host",
+        RunsOn::Either => "either",
+    }
+}
+
 fn describe(id: &str, command: &clap::Command) -> Action {
     let entry = entry(id);
     let about = command
@@ -1740,7 +1797,12 @@ fn describe(id: &str, command: &clap::Command) -> Action {
     Action {
         id: id.to_string(),
         usage: usage(command),
+        summary: command
+            .get_about()
+            .map(ToString::to_string)
+            .unwrap_or_default(),
         about,
+        runs_on: runs_on(entry),
         inputs: inputs(command),
         output: entry.output,
         output_fields: OUTPUT_FIELDS
@@ -1782,7 +1844,9 @@ fn describe_gog(allowed: &Allowed, google: &clap::Command) -> Action {
     Action {
         id: format!("google.{}", allowed.command),
         usage: format!("latch google [OPTIONS] -- {words} [GOG_ARGS]..."),
-        about: format!("gog's `{words}`, run on a host's Google account"),
+        summary: format!("Run `{words}` on a host's Google account"),
+        about: format!("Run `{words}` on a host's Google account"),
+        runs_on: "host",
         inputs,
         output: "gog's JSON answer.",
         output_fields: None,
@@ -1800,7 +1864,7 @@ fn describe_gog(allowed: &Allowed, google: &clap::Command) -> Action {
                 .collect(),
         ),
         examples: vec![ExampleHelp {
-            what: format!("gog's own usage for `{words}`"),
+            what: format!("The usage of `{words}`"),
             command: format!("latch {}", quoted(&help_args)),
         }],
     }

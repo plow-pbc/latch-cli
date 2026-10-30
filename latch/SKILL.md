@@ -93,6 +93,23 @@ one, narrow the list rather than reading all of it: `latch vault list
 title and sites, never a value, at most 50 at a time; `more` says when
 some are left out.
 
+When no login is saved for the site, ask the owner for one with a phone
+link; never ask for a password in chat:
+
+1. `latch vault --host H link --kind login --title TITLE --site SITE
+   [--field username=NAME]`: the site's address and a title, and the
+   username if you know it, never a password or code (refused). It is
+   judged like your other work; on `not_covered`, ask the owner first.
+2. Send the owner the answer's `url` in your Plow chat, with one sentence
+   on what it's for: "I need your login for shop.example to place the
+   order. Tap to add it; I won't see the password." They sign in to Plow
+   on the page, check the site, and save the login on their computer.
+3. Wait for the owner to say it's done, then `latch vault --host H
+   link-state LINK` with the answer's `link`: `saved` names the new item
+   (`vN`); sign in with it as above. `pending`: the owner hasn't saved it
+   yet. `expired` (15 minutes) or `no_such_link` (the host restarted): ask
+   for a new link.
+
 When the site then asks for a one-time code (`observe`'s
 `fill.page_offers` has `code`; a goal in words stops there with
 `needs_fields`), get the code yourself, in this order, each call judged:
