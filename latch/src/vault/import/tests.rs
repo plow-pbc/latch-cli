@@ -606,6 +606,22 @@ fn reimported_cards_and_notes_are_duplicates_and_changed_ones_are_new() {
     assert_eq!(vault.list().len(), 5);
 }
 
+/// A card an older latch kept with its number as it came, spaces and all,
+/// is the same card when the export is imported again.
+#[test]
+fn a_card_kept_with_spaces_is_a_duplicate_on_reimport() {
+    let (_dir, mut vault) = store();
+    let export = cards_and_notes(json!([
+        {"type": 3, "name": "Plow card", "card": {"brand": "Visa", "number": "4111 1111 1111 1111", "expMonth": "4", "expYear": "2027", "code": "737"}},
+    ]));
+    let parsed = parse_text(&export).unwrap();
+    vault.add_as_stored(parsed.items[0].item.clone()).unwrap();
+    let (parsed, again) = run(&mut vault, &export);
+    assert!(parsed.items[0].duplicate);
+    assert_eq!((again.saved, again.duplicates), (0, 1));
+    assert_eq!(vault.list().len(), 1);
+}
+
 #[test]
 fn a_renewed_card_or_a_note_with_another_custom_field_is_new() {
     let (_dir, mut vault) = store();

@@ -25,6 +25,8 @@ use crate::vault::totp::Params;
 
 const PASSWORD: &str = "made-up-pass-7c41";
 const NUMBER: &str = "4242424242424242";
+/// An Amex test number: 15 digits, which providers show as 4-6-5.
+const AMEX: &str = "378282246310005";
 const CVV: &str = "8640";
 const KEY: &str = "JBSWY3DPEHPK3PXP";
 
@@ -49,6 +51,7 @@ conformance!(
     no_vault_value_goes_into_an_editable_region,
     a_stored_password_with_a_line_break_fills_a_single_line_field,
     a_login_an_agent_asked_for_by_phone_link_fills_on_its_site,
+    a_login_field_that_drops_characters_does_not_hold_the_login,
     ;
     mac:
     vault_fills_go_only_where_the_item_allows_and_never_show_a_value,
@@ -307,7 +310,7 @@ fn site() -> u16 {
                             "latch paid",
                             format!(
                                 "payment: number {}, expiry {} ({}), cvv {}, name {}",
-                                check(get("cc-number") == NUMBER),
+                                check([NUMBER, AMEX].contains(&get("cc-number"))),
                                 check(get("cc-exp") == "04 / 31"),
                                 get("cc-exp"),
                                 check(get("cc-csc") == CVV),
@@ -1261,6 +1264,67 @@ async fn a_fill_pauses_its_own_session_and_no_other(engine: &str) {
             "a value reached a result, an error or the audit"
         );
     }
+}
+
+/// A login's fields are kept only as they were saved: a field that drops
+/// characters (an email's dots, a password's dashes) would sign in to
+/// another account, or with a wrong password, so the fill stops there.
+async fn a_login_field_that_drops_characters_does_not_hold_the_login(engine: &str) {
+    let (_dir, state, _area) = test_state(engine);
+    let vault = Vault::new(state.clone());
+    let login = vault
+        .with(|s| {
+            s.add(item(
+                LOGIN,
+                "Shop",
+                &["shop.example"],
+                &[
+                    ("username", "john.doe@shop.example"),
+                    ("password", PASSWORD),
+                ],
+            ))
+        })
+        .unwrap();
+    let local = format!("http://127.0.0.1:{}", site());
+    let mut browsers = Browsers::new(state.clone(), vault.clone(), super::HEADLESS);
+    browsers.test = Some((
+        latch(),
+        vec![(local.clone(), "https://login.shop.example".into())],
+    ));
+    let mut h = Harness::start(browsers, engine).await;
+    for (strip, field) in [("email", "username"), ("password", "password")] {
+        let page = h
+            .call(
+                "open",
+                json!({"url": format!("{local}/login-strips.html?strip={strip}")}),
+            )
+            .await
+            .unwrap();
+        let (stopped, _) = h
+            .fill(json!({
+                "item": login.item,
+                "fields": [["username", [find(&page, "textbox", "Email")]],
+                           ["password", [find(&page, "textbox", "Password")]]],
+                "press": find(&page, "button", "Sign in"),
+            }))
+            .await;
+        let stopped = stopped.unwrap_err();
+        println!(
+            "{strip} drops characters: {} ({})",
+            stopped.code, stopped.message
+        );
+        assert_eq!(stopped.code, "needs_owner");
+        assert!(
+            stopped.message.starts_with(&format!(
+                "the page did not keep the {field} latch typed: it changed it."
+            )),
+            "{}",
+            stopped.message
+        );
+        assert!(!h.text().await.contains("signed in"));
+    }
+    assert!(!h.shown.join("\n").contains(PASSWORD));
+    h.call("close", json!({})).await.ok();
 }
 
 /// Observe lists a login whose form sits in a frame on its own site, under

@@ -291,10 +291,15 @@ impl Item {
 
     /// Checks an item before it is stored: one of latch's four kinds, a
     /// title, sites that read as registrable domains (a login needs one),
-    /// a readable authenticator key and card expiry, valid profile names.
+    /// a readable authenticator key, card number and card expiry, valid
+    /// profile names.
     pub fn validate(&mut self) -> Result<(), Failure> {
-        // The vault keeps a card's expiry in its stored shape (04, 2031).
+        // The vault keeps a card's number as its digits alone, and its
+        // expiry in its stored shape (04, 2031).
         if let Some(card) = self.raw.card.as_mut() {
+            if let Some(Value::String(given)) = card.get("number").cloned() {
+                card.insert("number".into(), Value::String(card_digits(&given)));
+            }
             for part in ["expMonth", "expYear"] {
                 if let Some(Value::String(given)) = card.get(part).cloned()
                     && let Ok(stored) = dates::expiry_part(part, &given)
@@ -347,6 +352,17 @@ impl Item {
         if self.raw.kind == CARD
             && let Some(card) = &self.raw.card
         {
+            if let Some(number) = card.get("number").and_then(Value::as_str)
+                && !number.is_empty()
+                && !(number.len() >= 12
+                    && number.len() <= 19
+                    && number.chars().all(|c| c.is_ascii_digit()))
+            {
+                return Err(bad(
+                    "a card number is 12 to 19 digits (spaces and dashes between them are fine)"
+                        .into(),
+                ));
+            }
             for part in ["expMonth", "expYear"] {
                 if let Some(value) = card.get(part).and_then(Value::as_str)
                     && !value.is_empty()
@@ -357,6 +373,15 @@ impl Item {
         }
         Ok(())
     }
+}
+
+/// A card number as the vault keeps it and a fill types it: without the
+/// spaces and dashes a person or a site puts between its digits.
+pub fn card_digits(number: &str) -> String {
+    number
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != '-')
+        .collect()
 }
 
 #[cfg(test)]
@@ -378,6 +403,39 @@ mod tests {
         let login = entry_labels(LOGIN);
         let secret: Vec<&str> = login.iter().filter(|(_, s)| *s).map(|(l, _)| *l).collect();
         assert_eq!(secret, ["password", "totp"]);
+    }
+
+    #[test]
+    fn a_card_number_is_kept_as_its_digits_and_must_be_12_to_19() {
+        let card = |number: &str| Item {
+            id: String::new(),
+            revision: 0,
+            sites: vec![],
+            other_top_sites: vec![],
+            raw: Raw::from_labels(CARD, "Visa", &[("number".to_string(), number.to_string())])
+                .unwrap(),
+        };
+        let mut spaced = card(" 4242 4242 4242 4242");
+        spaced.validate().unwrap();
+        assert_eq!(
+            spaced.raw.get("number").as_deref(),
+            Some("4242424242424242")
+        );
+        let mut dashed = card("4242-4242-4242-4242");
+        dashed.validate().unwrap();
+        assert_eq!(
+            dashed.raw.get("number").as_deref(),
+            Some("4242424242424242")
+        );
+        for bad in ["abc", "123", "4242 4242 4242 4242 4242"] {
+            let refused = card(bad).validate().unwrap_err();
+            assert_eq!(refused.code, "bad_item", "{bad}");
+            assert!(
+                refused.message.contains("12 to 19 digits"),
+                "{bad}: {}",
+                refused.message
+            );
+        }
     }
 
     #[test]

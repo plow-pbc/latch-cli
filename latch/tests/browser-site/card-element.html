@@ -1,7 +1,9 @@
 <!doctype html><title>latch hosted card field</title>
 <!-- One of card-elements.html's provider fields (?field=number, expiry or
-     cvc). Like a provider's, it keeps what was typed as it is typed, and
-     the number's frame sends all three from there, to the top window. -->
+     cvc). Like a provider's, it formats what is typed (card-format.js),
+     keeps it as it is typed, and the number's frame sends all three from
+     there, the number as its digits, to the top window. -->
+<script src="card-format.js"></script>
 <style>body { margin: 0 } input { width: 100%; box-sizing: border-box }</style>
 <input id="field">
 <script>
@@ -15,6 +17,8 @@
   input.setAttribute('autocomplete', token);
   input.setAttribute('aria-label', label);
   input.placeholder = hint;
+  if (field === 'number') formatAs(input, cardFormat.number);
+  if (field === 'expiry') formatAs(input, cardFormat.expiry);
   window.held = '';
   input.addEventListener('input', () => { window.held = input.value; });
   window.addEventListener('message', (event) => {
@@ -24,7 +28,7 @@
     form.action = 'pay';
     form.target = '_top';
     const sent = {
-      'cc-number': window.held,
+      'cc-number': window.held.replace(/\D/g, ''),
       'cc-exp': parent.frames.expiry.held,
       'cc-csc': parent.frames.cvc.held,
       'cc-name': event.data.pay,

@@ -72,6 +72,8 @@ hand.
 [AGENTS.md](AGENTS.md) sets the engineering standard: the simplest change
 that solves the real problem, no compatibility layers, and tests that check
 behavior. [REVIEW.md](REVIEW.md) says what reviewers look for.
+[docs/RELEASING.md](docs/RELEASING.md) says how maintainers cut a release
+and write its notes.
 
 Report security problems privately, as [SECURITY.md](SECURITY.md) says, not
 in a public issue.

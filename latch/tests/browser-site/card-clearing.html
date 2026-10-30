@@ -1,0 +1,17 @@
+<!doctype html><title>latch clearing checkout test</title>
+<!-- A checkout whose card number field empties itself once it is full,
+     as a broken page might: a fill stops there. -->
+<h1>Checkout</h1>
+<form method="post" action="pay">
+  <p><label>Name on card <input name="cc-name" autocomplete="cc-name"></label></p>
+  <p><label>Card number <input name="cc-number" autocomplete="cc-number" inputmode="numeric"></label></p>
+  <p><label>Expiry <input name="cc-exp" autocomplete="cc-exp" placeholder="MM / YY"></label></p>
+  <p><label>CVV <input name="cc-csc" autocomplete="cc-csc" maxlength="4"></label></p>
+  <p><button type="submit">Pay</button></p>
+</form>
+<script>
+  const number = document.querySelector('[name=cc-number]');
+  number.addEventListener('input', () => {
+    if (number.value.replace(/\D/g, '').length >= 16) number.value = '';
+  });
+</script>
