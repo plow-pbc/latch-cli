@@ -212,6 +212,39 @@ async fn pick_file(window: tauri::Window, title: String, name: String, extension
         .map(|file| file.path().display().to_string())
 }
 
+/// Where Windows keeps this user's programs to start at logon, and this
+/// app's entry there: the Mac app's "Start when you log in". At logon the
+/// app starts latch's host (`--at-login`) and opens no window.
+const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+const RUN_NAME: &str = "Plow Latch";
+
+fn reg(args: &[&str]) -> std::io::Result<std::process::Output> {
+    Command::new("reg").args(args).creation_flags(CREATE_NO_WINDOW).output()
+}
+
+/// Whether Latch starts when this user logs in.
+#[tauri::command]
+fn login_item() -> bool {
+    reg(&["query", RUN_KEY, "/v", RUN_NAME]).is_ok_and(|out| out.status.success())
+}
+
+/// Starts Latch when this user logs in, or no longer.
+#[tauri::command]
+fn set_login_item(on: bool) -> Result<(), Value> {
+    let out = if on {
+        let exe = std::env::current_exe().map_err(|err| failure("io", &err.to_string()))?;
+        let command = format!("\"{}\" --at-login", exe.display());
+        reg(&["add", RUN_KEY, "/v", RUN_NAME, "/t", "REG_SZ", "/d", &command, "/f"])
+    } else {
+        reg(&["delete", RUN_KEY, "/v", RUN_NAME, "/f"])
+    }
+    .map_err(|err| failure("io", &err.to_string()))?;
+    if out.status.success() || (!on && !login_item()) {
+        return Ok(());
+    }
+    Err(failure("login_item", String::from_utf8_lossy(&out.stderr).trim()))
+}
+
 /// Whether the window shows the Mac app's snapshot fixtures instead of
 /// asking latch: a debug build started with `LATCH_APP_FAKE`, for stills
 /// beside the Mac's (ui/fake.js).
@@ -235,6 +268,14 @@ fn without_autofill(webview: &tauri::webview::PlatformWebview) -> windows_core::
 }
 
 fn main() {
+    // At logon (the Run entry above): start the host, open nothing.
+    if std::env::args().any(|arg| arg == "--at-login") {
+        if let Ok(mut child) = start(&["serve".into(), "-d".into()]) {
+            drop(child.stdin.take());
+            let _ = child.wait();
+        }
+        return;
+    }
     tauri::Builder::default()
         .manage(Streams::default())
         .setup(|app| {
@@ -264,7 +305,7 @@ fn main() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![run, run_file, pick_file, open_url, stream, stop, qr, fake_mode])
+        .invoke_handler(tauri::generate_handler![run, run_file, pick_file, open_url, stream, stop, qr, fake_mode, login_item, set_login_item])
         .build(tauri::generate_context!())
         .expect("the window builds")
         .run(|app, event| {
