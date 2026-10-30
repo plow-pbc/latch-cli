@@ -3827,7 +3827,11 @@ fn an_agent_asks_for_a_login_by_phone_link_and_learns_only_its_state() {
     let password = format!("password={secret}");
     let mut with_secret = ask("login", "username=ada@shop.example").to_vec();
     with_secret[13] = &password;
-    let refused = latch(&agent, &with_secret, &agent_env);
+    // Run directly, not through `latch`, which prints its arguments, this
+    // made-up secret among them, if the call unexpectedly works.
+    let refused = latch_command(&agent, &with_secret, &agent_env)
+        .output()
+        .unwrap();
     let (code, refused) = answered(&refused);
     assert_eq!(
         (code, &refused["error"]["code"]),
