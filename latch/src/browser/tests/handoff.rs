@@ -16,6 +16,7 @@ use crate::browser::handoff;
 use crate::browser::host::Browsers;
 
 const OWNER_AGENT: &str = "handoff-caller";
+const ANOTHER_AGENT: &str = "another-caller";
 
 conformance!(
     a_handoff_pauses_the_session_until_the_owner_hands_it_back,
@@ -43,21 +44,25 @@ async fn a_handoff_pauses_the_session_until_the_owner_hands_it_back(engine: &str
     let (_dir, state, _area) = test_state(engine);
     let page = local_page();
     let browsers = browsers(&state, true);
-    let open = || async {
-        let (opened, _) = super::run_as(
-            &browsers,
-            OWNER_AGENT.into(),
-            "open",
-            named(engine),
-            json!({"url": page}),
-        )
-        .await;
-        let opened = opened.unwrap();
-        (opened["session"].as_str().unwrap().to_string(), opened)
+    let open = |caller: &'static str| {
+        let (browsers, page) = (&browsers, &page);
+        async move {
+            let (opened, _) = super::run_as(
+                browsers,
+                caller.into(),
+                "open",
+                named(engine),
+                json!({"url": page}),
+            )
+            .await;
+            let opened = opened.unwrap();
+            (opened["session"].as_str().unwrap().to_string(), opened)
+        }
     };
-    let (id, opened) = open().await;
+    let (id, opened) = open(OWNER_AGENT).await;
     let old = opened["snapshot"].as_str().unwrap().to_string();
-    let (other, _) = open().await;
+    // Another agent's: one agent's profile runs one session at a time.
+    let (other, _) = open(ANOTHER_AGENT).await;
 
     // The handoff waits; meanwhile the pending handoff is where the
     // dashboard and `handoff done` read it.
@@ -99,8 +104,14 @@ async fn a_handoff_pauses_the_session_until_the_owner_hands_it_back(engine: &str
     // The session is paused; the runtime's other session goes on.
     let (paused, _) = super::run_as(&browsers, OWNER_AGENT.into(), "observe", &id, json!({})).await;
     assert_eq!(paused.unwrap_err().code, "session_paused");
-    let (going, _) =
-        super::run_as(&browsers, OWNER_AGENT.into(), "observe", &other, json!({})).await;
+    let (going, _) = super::run_as(
+        &browsers,
+        ANOTHER_AGENT.into(),
+        "observe",
+        &other,
+        json!({}),
+    )
+    .await;
     assert!(going.is_ok(), "the other session works during the handoff");
 
     // The owner hands it back on the host.
@@ -258,21 +269,25 @@ async fn refs_are_forgotten_even_while_another_session_holds_the_browser(engine:
     let (_dir, state, _area) = test_state(engine);
     let browsers = browsers(&state, true);
     let page = slow_page();
-    let open = || async {
-        let (opened, _) = super::run_as(
-            &browsers,
-            OWNER_AGENT.into(),
-            "open",
-            named(engine),
-            json!({"url": page}),
-        )
-        .await;
-        let opened = opened.unwrap();
-        (opened["session"].as_str().unwrap().to_string(), opened)
+    let open = |caller: &'static str| {
+        let (browsers, page) = (&browsers, &page);
+        async move {
+            let (opened, _) = super::run_as(
+                browsers,
+                caller.into(),
+                "open",
+                named(engine),
+                json!({"url": page}),
+            )
+            .await;
+            let opened = opened.unwrap();
+            (opened["session"].as_str().unwrap().to_string(), opened)
+        }
     };
-    let (id, opened) = open().await;
+    let (id, opened) = open(OWNER_AGENT).await;
     let old = opened["snapshot"].as_str().unwrap().to_string();
-    let (other, _) = open().await;
+    // Another agent's: one agent's profile runs one session at a time.
+    let (other, _) = open(ANOTHER_AGENT).await;
     let waiting = {
         let (browsers, id) = (browsers.clone(), id.clone());
         tokio::spawn(async move {

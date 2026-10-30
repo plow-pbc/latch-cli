@@ -1620,7 +1620,9 @@ async fn a_dialog_in_one_session_does_not_hold_another_sessions_download(engine:
     let (_dir, state, _area) = test_state(engine);
     let mut h = Host::new(&state);
     let (a, _) = h.open(CALLER, engine, json!({"url": local_page()})).await;
-    let (b, _) = h.open(CALLER, engine, json!({"url": local_page()})).await;
+    // Another caller's: one caller's profile runs one session at a time.
+    let other = "another-caller";
+    let (b, _) = h.open(other, engine, json!({"url": local_page()})).await;
     h.call(
         CALLER,
         "eval",
@@ -1639,12 +1641,12 @@ async fn a_dialog_in_one_session_does_not_hold_another_sessions_download(engine:
         document.body.append(frame);\n\
         setTimeout(() => frame.remove(), 800);\n\
       }, 1500); 1";
-    h.call(CALLER, "eval", &b, json!({"script": script}))
+    h.call(other, "eval", &b, json!({"script": script}))
         .await
         .unwrap();
     tokio::time::sleep(Duration::from_millis(4500)).await;
     let started = std::time::Instant::now();
-    let listed = h.call(CALLER, "downloads", &b, json!({})).await;
+    let listed = h.call(other, "downloads", &b, json!({})).await;
     let took = started.elapsed();
     println!("b's downloads after {took:?}: {listed:?}");
     listed.unwrap();
@@ -1652,8 +1654,8 @@ async fn a_dialog_in_one_session_does_not_hold_another_sessions_download(engine:
     h.call(CALLER, "dialog", &a, json!({"accept": true}))
         .await
         .unwrap();
-    for id in [&a, &b] {
-        h.call(CALLER, "close", id, json!({})).await.unwrap();
+    for (caller, id) in [(CALLER, &a), (other, &b)] {
+        h.call(caller, "close", id, json!({})).await.unwrap();
     }
 }
 
@@ -2560,9 +2562,11 @@ async fn one_sessions_wait_does_not_hold_the_browser_for_another(engine: &str) {
     let (a, _) = h
         .open(CALLER, engine, json!({"url": format!("{base}/next.html")}))
         .await;
+    // Another caller's: one caller's profile runs one session at a time.
+    let other = "another-caller";
     let (b, _) = h
         .open(
-            CALLER,
+            other,
             engine,
             json!({"url": format!("http://localhost:{cross}/files.html")}),
         )
@@ -2583,7 +2587,7 @@ async fn one_sessions_wait_does_not_hold_the_browser_for_another(engine: &str) {
         tokio::time::sleep(Duration::from_millis(300)).await;
         let mut done = Vec::new();
         for line in ["scroll down", "scroll up", "scroll down"] {
-            let (result, _) = run_as(&h.browsers, CALLER.into(), "do", &b, act(line)).await;
+            let (result, _) = run_as(&h.browsers, other.into(), "do", &b, act(line)).await;
             result.unwrap();
             done.push(started.elapsed());
         }
@@ -2597,8 +2601,8 @@ async fn one_sessions_wait_does_not_hold_the_browser_for_another(engine: &str) {
     // A's check waits out its 10 s; b's steps don't wait for it.
     assert!(slow_took >= Duration::from_secs(9));
     assert!(*quick.last().unwrap() < slow_took / 2, "{quick:?}");
-    for id in [&a, &b] {
-        h.call(CALLER, "close", id, json!({})).await.unwrap();
+    for (caller, id) in [(CALLER, &a), (other, &b)] {
+        h.call(caller, "close", id, json!({})).await.unwrap();
     }
 }
 
