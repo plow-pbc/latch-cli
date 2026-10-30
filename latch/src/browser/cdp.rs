@@ -8,9 +8,9 @@ use std::collections::{HashSet, VecDeque};
 use std::fs::File;
 use std::io::{self, Read, Write};
 #[cfg(unix)]
-use std::os::fd::{AsRawFd, OwnedFd as Owned};
+use std::os::fd::AsRawFd;
 #[cfg(windows)]
-use std::os::windows::io::{AsRawHandle, OwnedHandle as Owned};
+use std::os::windows::io::AsRawHandle;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
@@ -87,10 +87,16 @@ pub struct Cdp {
 /// Windows, not inheritable), so no other program the worker starts
 /// inherits one.
 pub struct Pipes {
-    pub chrome_reads: Owned,
-    pub chrome_writes: Owned,
+    pub chrome_reads: End,
+    pub chrome_writes: End,
     pub cdp: Cdp,
 }
+
+/// One end of a pipe: a descriptor, or on Windows a handle.
+#[cfg(unix)]
+pub type End = std::os::fd::OwnedFd;
+#[cfg(windows)]
+pub type End = std::os::windows::io::OwnedHandle;
 
 pub fn pipes() -> io::Result<Pipes> {
     let (chrome_reads, to_chrome) = io::pipe()?;
@@ -99,8 +105,8 @@ pub fn pipes() -> io::Result<Pipes> {
         chrome_reads: chrome_reads.into(),
         chrome_writes: chrome_writes.into(),
         cdp: Cdp {
-            to_chrome: File::from(Owned::from(to_chrome)),
-            from_chrome: File::from(Owned::from(from_chrome)),
+            to_chrome: File::from(End::from(to_chrome)),
+            from_chrome: File::from(End::from(from_chrome)),
             buffer: Vec::new(),
             next_id: 0,
             events: VecDeque::new(),

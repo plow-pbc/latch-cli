@@ -295,6 +295,7 @@ fn with_installed(state_dir: &Path, mut failure: Failure) -> Failure {
 /// checks out, else Camoufox when its does. With neither, the first one's
 /// error that is not just "not installed" (a changed build, or no build for
 /// this platform); with none installed, one naming the owner's setup.
+/// Camoufox with no build here (Windows) is left out, and not offered.
 pub fn default(state_dir: &Path) -> Result<&'static str, Failure> {
     let chrome = match CFT.verified(state_dir) {
         Ok(_) => return Ok("cft"),
@@ -304,17 +305,26 @@ pub fn default(state_dir: &Path) -> Result<&'static str, Failure> {
         Ok(_) => return Ok("camoufox"),
         Err(failure) => failure,
     };
-    for failure in [chrome, fox] {
+    let fox_here = fox.code != code::unsupported_platform.name;
+    for failure in [Some(chrome), fox_here.then_some(fox)]
+        .into_iter()
+        .flatten()
+    {
         if failure.code != code::engine_not_installed.name {
             return Err(failure);
         }
     }
     let setup = "latch browser setup --engine chrome";
+    let or_fox = if fox_here {
+        " (or `--engine camoufox`)"
+    } else {
+        ""
+    };
     let mut failure = Failure::new(
         code::engine_not_installed,
         format!(
-            "no browser engine is installed; the host's owner installs one with `{setup}` \
-             (or `--engine camoufox`) on the host"
+            "no browser engine is installed; the host's owner installs one with `{setup}`{or_fox} \
+             on the host"
         ),
     );
     failure.details = serde_json::json!({"setup": setup, "installed": [], "default": null});
