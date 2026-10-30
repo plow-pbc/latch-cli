@@ -1600,9 +1600,31 @@ async fn quoted_owner_words_without_an_owner_message_cannot_allow_chat_permissio
     )
     .judge(AGENT_CALLER, &order())
     .await;
+    let failure = judgment.verdict.unwrap_err();
     assert_eq!(
-        judgment.verdict.unwrap_err().details["reason"],
-        "not_covered"
+        failure.details,
+        json!({"reason": "not_covered", "chat_lookup": "found", "chat": "chat_a", "owner_messages": []})
+    );
+    assert!(failure.message.contains("in Plow chat chat_a"));
+    assert!(
+        failure
+            .message
+            .contains("None of the messages read is the owner's")
+    );
+    assert!(
+        failure
+            .message
+            .contains("latch has no approval prompt or dialog")
+    );
+    assert!(
+        failure
+            .message
+            .contains("saying so in that chat, or in their rules")
+    );
+    assert!(
+        failure
+            .message
+            .contains("if it is refused again, stop and tell them")
     );
     assert_eq!(judgment.gate["owner_messages"], json!([]));
 }
@@ -1641,13 +1663,39 @@ impl Provider for OwnerViewAnswers {
 
 #[tokio::test]
 async fn chat_permission_needs_both_judgments_and_either_failure_refuses() {
-    for (whole, will, expected) in [
-        ([0.9, 0.05, 0.05], Some([0.1, 0.85, 0.05]), "not_covered"),
-        ([0.1, 0.85, 0.05], Some([0.9, 0.05, 0.05]), "not_covered"),
-        ([0.9, 0.05, 0.05], Some([0.03, 0.12, 0.85]), "owner_said_no"),
-        ([0.03, 0.12, 0.85], Some([0.9, 0.05, 0.05]), "owner_said_no"),
-        ([0.9, 0.05, 0.05], None, "gatekeeper_unavailable"),
-        ([0.9, 0.05, 0.05], Some([0.9, 0.05, 0.05]), "allow"),
+    for (whole, will, expected, decided_by) in [
+        (
+            [0.9, 0.05, 0.05],
+            Some([0.1, 0.85, 0.05]),
+            "not_covered",
+            "rules",
+        ),
+        (
+            [0.1, 0.85, 0.05],
+            Some([0.9, 0.05, 0.05]),
+            "not_covered",
+            "rules",
+        ),
+        (
+            [0.9, 0.05, 0.05],
+            Some([0.03, 0.12, 0.85]),
+            "owner_said_no",
+            "will",
+        ),
+        (
+            [0.03, 0.12, 0.85],
+            Some([0.9, 0.05, 0.05]),
+            "owner_said_no",
+            "chat",
+        ),
+        (
+            [0.03, 0.12, 0.85],
+            Some([0.03, 0.12, 0.85]),
+            "owner_said_no",
+            "chat",
+        ),
+        ([0.9, 0.05, 0.05], None, "gatekeeper_unavailable", ""),
+        ([0.9, 0.05, 0.05], Some([0.9, 0.05, 0.05]), "allow", "chat"),
     ] {
         let (plow, _) = plow(one_chat());
         let keeper = Gatekeeper::new(
@@ -1658,6 +1706,14 @@ async fn chat_permission_needs_both_judgments_and_either_failure_refuses() {
         let judgment = keeper.judge(AGENT_CALLER, &order()).await;
         assert_eq!(judgment.gate["verdict"], expected);
         assert_eq!(judgment.verdict.is_ok(), expected == "allow");
+        if !decided_by.is_empty() {
+            assert_eq!(judgment.gate["decided_by"], decided_by);
+            assert_eq!(judgment.gate["p"], judgment.gate["layers"][decided_by]["p"]);
+        }
+        if decided_by == "will" {
+            assert_eq!(judgment.gate["p"]["FORBIDDEN"], 0.85);
+            assert_eq!(judgment.gate["layers"]["chat"]["p"]["COVERED"], 0.9);
+        }
     }
 }
 

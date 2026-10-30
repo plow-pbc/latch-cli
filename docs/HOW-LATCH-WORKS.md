@@ -135,13 +135,18 @@ login.
 
 | | You (any machine of yours, or on the host) | An agent |
 |---|---|---|
-| What the gatekeeper reads | Your request, plus the host's rules. | Two judgments of the same request. One reads a built-in policy, the host's rules for every agent and that agent's own rules, without the chat. The other, if the agent has a chat, reads your messages there plus the same rules. |
-| Allowed when | The rules don't forbid it. It's refused only when the gatekeeper finds "forbidden" at least as likely as "covered". | Neither judgment says no, and at least one is at least 50% sure it's allowed. |
+| What the gatekeeper reads | Your request, plus the host's rules. | The built-in policy and your rules, without chat. If there is a chat, two parallel judgments also read it: the whole conversation, and only your own messages with the message each answers. Both see the same rules. |
+| Allowed when | The rules don't forbid it. It's refused only when the gatekeeper finds "forbidden" at least as likely as "covered". | No judgment vetoes. The rules/defaults allow it, or both chat judgments allow it with an actual message from you in the window. Each allow needs at least 50% confidence. |
 | When refused | `gatekeeper_denied`, reason `owner_said_no` (exit 4). Change the rules to go ahead. | `gatekeeper_denied` (exit 4). `not_covered`: ask the owner in chat, saying exactly what you'll do, then retry. `owner_said_no`: don't retry unless the owner changes their mind. |
 
 - **Only you give permission.** Only your rules, the built-in policy and the
   chat messages Plow marks as yours count. Messages from the agent, other
   people, web pages or the action itself are context, never permission.
+  Chat permission needs an actual message from you in the window. Both
+  the whole-chat judgment and the owner-only judgment must allow it; the
+  latter sees only your messages and the message each answers. The whole
+  chat still supplies context and conditions such as “let me review it
+  first”.
 - **Everyday work needs no request.** Agents may look things up in your
   calendar, email, messages, contacts, files and the web, including opening
   links. They may create, edit, move and organize your files; run project
@@ -223,8 +228,11 @@ login.
   page can show.
 - The host also keeps each gatekeeper request and Plow's answer for 7 days,
   sealed the same way. `latch audit judge ID` shows one, ID being the
-  record's `kept_request`. They never hold a vault value, and agents can't
-  read them.
+  record's `kept_request`, or an agent's `layers.rules`, `layers.chat` and
+  `layers.will` kept-request ids. The `will` call is the owner-only
+  judgment. Each call records its probabilities, prompt/model identity
+  and cost; the gate's total includes all calls. They never hold a vault
+  value, and agents can't read them.
 
 ## 6. Managing a host
 

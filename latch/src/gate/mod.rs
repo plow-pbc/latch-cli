@@ -627,7 +627,10 @@ impl Gatekeeper {
         // the rules layer first.
         let decided_by = match says {
             (Says::Veto, _) => "rules",
-            (_, Some(Says::Veto)) => "chat",
+            (_, Some(Says::Veto)) => match whole_will {
+                Some((Says::Veto, _)) => "chat",
+                _ => "will",
+            },
             (Says::Allow, _) => "rules",
             (_, Some(Says::Allow)) => "chat",
             _ => "rules",
