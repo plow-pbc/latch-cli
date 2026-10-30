@@ -1088,35 +1088,9 @@ impl Drop for Desk {
 
 /// This process's user, as an SDDL SID string.
 fn user_sid() -> Result<String, String> {
-    let mut token: HANDLE = null_mut();
-    // SAFETY: a query-only token of this process, closed below.
-    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
-        return Err(format!(
-            "cannot read this user: {}",
-            std::io::Error::last_os_error()
-        ));
-    }
-    let mut buffer = vec![0u8; 256];
-    let mut size = 0u32;
-    // SAFETY: `buffer` is writable for its length; the token is ours.
-    let read = unsafe {
-        GetTokenInformation(
-            token,
-            TokenUser,
-            buffer.as_mut_ptr().cast(),
-            buffer.len() as u32,
-            &mut size,
-        )
-    };
-    // SAFETY: the token is ours and closed once.
-    unsafe { CloseHandle(token) };
-    if read == 0 {
-        return Err(format!(
-            "cannot read this user: {}",
-            std::io::Error::last_os_error()
-        ));
-    }
-    // SAFETY: GetTokenInformation filled a TOKEN_USER at the buffer's start.
+    let buffer = crate::state::owner::token(TokenUser)
+        .map_err(|err| format!("cannot read this user: {err}"))?;
+    // SAFETY: TOKEN_USER starts the buffer, which `token` filled.
     let user = unsafe { (*buffer.as_ptr().cast::<TOKEN_USER>()).User.Sid };
     sid_text(user)
 }

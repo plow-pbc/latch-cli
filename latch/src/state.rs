@@ -700,7 +700,7 @@ pub(crate) mod owner {
 
     /// What this process's token says of `class`, as a buffer that starts
     /// with its structure.
-    fn token(class: TOKEN_INFORMATION_CLASS) -> io::Result<Vec<u64>> {
+    pub(crate) fn token(class: TOKEN_INFORMATION_CLASS) -> io::Result<Vec<u64>> {
         let mut token: HANDLE = null_mut();
         // SAFETY: a query-only token of this process, closed below.
         if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
