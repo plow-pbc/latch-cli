@@ -53,9 +53,10 @@ pub async fn run(state: &StateDir, args: RulesArgs) -> Result<Value, Failure> {
         | RulesCommand::Clear { ref scope, .. }
         | RulesCommand::Show { ref scope } => scope,
     };
+    // `--host default` read once: an edit's save goes where its show went.
     let target = Target {
         state,
-        host: scope.host.clone(),
+        host: hosts::pinned(state, scope.host.clone())?,
     };
     // The operation still calls the agent `from`, as hosts of every
     // version read it.
@@ -64,14 +65,17 @@ pub async fn run(state: &StateDir, args: RulesArgs) -> Result<Value, Failure> {
         RulesCommand::Set {
             text,
             file,
+            preset,
             revision,
             ..
         } => {
-            let text = match (text, file) {
-                (Some(text), None) => text,
-                (None, Some(file)) => read_file(&file)?,
+            let text = match (text, file, preset) {
+                (Some(text), None, None) => text,
+                (None, Some(file), None) => read_file(&file)?,
+                (None, None, Some(preset)) => preset.text().to_string(),
                 _ => {
-                    let message = "give the rules as TEXT or --file F (- reads stdin)";
+                    let message =
+                        "give the rules as TEXT, --file F (- reads stdin) or --preset NAME";
                     return Err(Failure::new(code::bad_arguments, message.into()));
                 }
             };

@@ -142,19 +142,41 @@ login.
 - **Only you give permission.** Only your rules, the built-in policy and the
   chat messages Plow marks as yours count. Messages from the agent, other
   people, web pages or the action itself are context, never permission.
-- **What an agent may do on its own.** Your agents can look things up in
-  your calendar, email, messages and files, and create or edit ordinary
-  files, without asking first. What they read goes back to the agent.
-  Riskier actions need permission in your rules or your Plow chat: sending,
-  buying, deleting, changing calendars or shared systems, giving a program
-  internet access, using secrets or sending data elsewhere. Your rules stay
-  in force when you ask in chat, and they can restrict everyday work too.
+- **Everyday work needs no request.** Agents may look things up in your
+  calendar, email, messages, contacts, files and the web, including opening
+  links. They may create, edit, move and organize your files; run project
+  builds, tests and scripts; install packages the project already lists,
+  with network access; clear temporary files, caches and build output or
+  move files to the Trash; archive email or mark it read; add calendar
+  entries that invite no one; and write drafts. What they read goes back
+  to the agent.
+- **Other work needs your permission**, from a rule or your own Plow
+  messages: sending or posting, inviting or answering people, deleting
+  other files or mail, adding packages, pushing code, and changing
+  settings, accounts or shared systems. Some work must be named explicitly:
+  buying or paying, reading secrets, sending private data off the machine,
+  code that does either, downloaded code, bulk deletion, and rules that act
+  on mail later. An OK to read something does not let an agent change it.
+- **Permissions add; restrictions still apply.** A rule allowing builds in
+  one project leaves everyday work elsewhere allowed. “Do not”, “never”
+  and “only” set limits, including on everyday work. A time-limited rule
+  applies inside its window. Plain “never” stays absolute; “unless I ask in
+  chat” lets you approve the action yourself. That exception removes the
+  rules veto, but does not itself give permission: your chat must cover it.
   An agent with no chat and no rules is judged by the built-in policy
-  alone.
+  alone. A new host starts with no rules: `latch setup`, like the Mac
+  app's onboarding, offers a family or a work assistant's to start from
+  (`latch rules set --preset family`, or `work`).
 - **Which chat.** The agent's chat, if its line has one. If it has several,
   the agent names one with `--plow-chat ID` or `LATCH_PLOW_CHAT`. Otherwise
   the call stops with `which_chat` (exit 2), which lists the choices. Your
   own calls refuse the selector (`plow_chat_not_supported`, exit 2).
+- **When permission is missing.** A `not_covered` refusal names the Plow
+  chat read, if one was found, and the messages there that were yours.
+  Say what the agent may do in that chat, or allow it in the host's rules.
+  If no chat was found, only the rules can allow it. Latch has no approval
+  prompt or dialog. If a retry is refused again, the agent must stop and
+  tell you.
 - **Fresh every time.** The chat and the rules are read again at every
   judgment, so a "stop" or a rules change counts from the next call. The
   gatekeeper doesn't remember earlier calls: a repeat is judged again on
@@ -252,6 +274,15 @@ login.
 ever run a host. Otherwise your only host. With no hosts you get `no_host`,
 and with several and none named `host_required` (both exit 2).
 
+`--host default` (or `LATCH_HOST=default`) is the host `latch hosts default
+NAME` saved in this machine's state folder, its own or an agent's: a
+choice, not a permission, so it reaches no host the caller couldn't name.
+`latch hosts default` prints it and `--clear` forgets it; `latch status`
+shows it as `saved_default_host`. With none saved, `--host default` is
+`no_default_host` (exit 2), listing the hosts. A command without `--host`
+goes where it always did, and a host named `default` is reached only
+through the saved name.
+
 | Error | Exit | Meaning |
 |---|---|---|
 | `host_offline` | 3 | Plow doesn't list the host as online. Nothing was sent. |
@@ -317,11 +348,15 @@ For how to report a vulnerability, see [SECURITY.md](../SECURITY.md).
     `latch status --local` and on its dashboard. Nothing installs on its
     own. `LATCH_NO_UPDATE_CHECK=1` turns the looking off.
 - **Log out:** `latch logout` stops this machine's host, removes the machine
-  from your Plow account and deletes its key and Plow token. The vault and
-  audit log read as before after the next `latch login`. An agent's logout
-  leaves Plow alone.
-  - `latch logout --purge` also deletes the vault and audit keys and the
-    whole state folder.
+  from your Plow account and deletes its Plow token. It keeps the machine's
+  key, its name, the vault, the audit log, rules and settings, so after
+  the next `latch login` it is the same machine, under the same name, to
+  every agent. An agent's logout leaves Plow alone.
+  - It first says what it deletes and keeps, with the state folder's full
+    path and the vault's items by kind, and asks. With no one at a
+    terminal it refuses unless given `--yes`; `--dry-run` only says.
+  - `latch logout --purge` deletes every secret and the whole state folder;
+    at a terminal you type `delete` to confirm.
   - If Plow can't be reached, the local delete still happens. Remove the
     machine from another one with `latch devices remove NAME`.
 

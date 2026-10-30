@@ -11,6 +11,8 @@
 //! - `config.json`: the Plow API URL and this peer's record as Plow returned it.
 //! - `plow-url`: the Plow a saved token belongs to, written with it, so a
 //!   login that fails after the token arrived is retried against that Plow.
+//! - `name`: the name this peer had when it logged out, so the next login
+//!   given no `--name` comes back under it.
 //! - `audit.sealed.ndjson`, on a host: its audit log, each record sealed
 //!   (see `audit.rs`); `audit.keys`*: the keys that seal it; `audit.lock`:
 //!   held by what writes it. A plaintext `audit.ndjson` from an older latch
@@ -378,6 +380,22 @@ impl StateDir {
         let path = self.path.join("plow-url");
         write_private(&path, format!("{api_url}\n").as_bytes())
             .map_err(|err| self.io_failure(&path, err))
+    }
+
+    /// Keeps `name` for the next login, as this peer logs out.
+    pub fn save_name(&self, name: &str) -> Result<(), Failure> {
+        let path = self.path.join("name");
+        write_private(&path, format!("{name}\n").as_bytes())
+            .map_err(|err| self.io_failure(&path, err))
+    }
+
+    /// The name this peer had when it last logged out, if it did.
+    pub fn load_name(&self) -> Result<Option<String>, Failure> {
+        let path = self.path.join("name");
+        if !path.exists() {
+            return Ok(None);
+        }
+        Ok(Some(self.read(&path)?.trim().to_string()))
     }
 
     /// The Plow the saved token belongs to, if one was recorded with it.

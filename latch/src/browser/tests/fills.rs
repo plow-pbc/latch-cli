@@ -28,6 +28,8 @@ const NUMBER: &str = "4242424242424242";
 const CVV: &str = "8640";
 const KEY: &str = "JBSWY3DPEHPK3PXP";
 
+mod cards;
+
 conformance!(
     a_fill_that_cannot_finish_shows_no_value_and_keeps_the_agent_out,
     observe_lists_items_by_the_frames_that_hold_fields,

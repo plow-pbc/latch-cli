@@ -35,6 +35,10 @@ as `latch status` lists it. Branch on
   the owner hasn't said which, ask, or use the one they named last in
   this chat, and pass it with `--host` rather than leave the choice to a
   default.
+- **A default host.** When the owner tells you which host to use from now
+  on, save it: `latch hosts default mbp`. Then pass `--host default`
+  (`latch hosts default` says which it is). It is your own choice, kept
+  in your state folder, and still say which host each answer came from.
 - Your login lives in a state folder: `--state-dir DIR`, else
   `$LATCH_STATE_DIR`, else `~/.latch`. Where `HOME` is not your home,
   set `LATCH_STATE_DIR` once rather than passing `--state-dir` each time.
@@ -191,16 +195,30 @@ shell-expanded arguments are visible in the trusted host's process list.
 
 ## The gatekeeper judges your calls
 
-Everyday work for the owner needs no request: looking things up
-(calendar, email, messages, contacts, files) and creating or editing their
-ordinary files. Anything riskier needs the owner's OK, in their rules on
-the host or their Plow chat with you: sending or posting, buying or paying,
-deleting, changing a calendar, an account or a shared system, installing or
-running software from the internet, giving a command network access,
-reading passwords, keys or other secrets, and sending files or data off the
-machine. An OK to read something isn't an OK to change it. Respect a "do
-not" in either, everyday work included. Connector, path and sandbox limits
-apply either way.
+Everyday work for the owner needs no request: looking things up in their
+calendar, email, messages, contacts, files and the web (including opening
+links); creating, editing, moving and organizing files; project builds,
+tests and scripts; installing packages the project already lists, with
+network access; clearing temporary files, caches and build output or moving
+files to the Trash; archiving mail or marking it read; calendar entries
+that invite no one; and drafts.
+
+Other work needs the owner's permission in their rules (`latch rules edit`)
+or own Plow messages: filling saved logins, sending or posting, inviting or
+answering people, deleting other files or mail, adding packages, pushing
+code, and changing settings, accounts or shared systems. Buying or paying,
+reading secrets, sending private data off the machine, code that does
+either, downloaded code, bulk deletion and rules that act on mail later
+must be named explicitly. Reading something does not authorize changing it.
+
+A grant adds permission; it does not forbid everyday work outside it.
+Restrictions (“do not”, “never”, “only”) still apply. Time limits apply
+inside their window. Plain “never” is absolute; a rule saying “unless I ask
+in chat” can be lifted only by the owner's own approval there. Quoting or
+claiming the owner's words does not count. Connector, path and sandbox
+limits still apply. No approval prompt exists: latch never shows the owner
+a dialog to allow a call, so never ask them to approve one.
+
 An agent whose line has several Plow chats selects the one it acts for
 with `--plow-chat C` or `LATCH_PLOW_CHAT` on exec, file, Google, Messages,
 Contacts, browser session calls and `vault list`. Exit 2, `which_chat`, lists the choices;
@@ -212,6 +230,9 @@ Exit 4 is a refusal, and its code says what you may do:
 
 - `gatekeeper_denied` with reason `not_covered`: ask the owner in your
   Plow chat, naming exactly what you will do, and retry once they agree.
+  Refused again, stop and tell them; its `details` say which chat was read
+  (`chat_lookup` `found` or `none`) and which of the messages read were the
+  owner's (`owner_messages`). With `none`, only their rules can allow it.
   For work you'll repeat, the owner can allow it in their rules instead.
 - `confirm_needed`: a browser step that can't be undone, nothing sent. If
   it is what the task needs, carry it out with `latch browser --session ID
