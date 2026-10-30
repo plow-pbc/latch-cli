@@ -99,7 +99,7 @@ permission.
 
 **Each agent keeps one browser profile on a host.** Every `browser open`
 starts a browser of its own on the engine it names (`--engine chrome` or
-`--engine camoufox`; by default Chrome if the host has it, else Camoufox),
+`--engine camoufox`; by default Camoufox if the host has it, else Chrome),
 on that agent's profile for the engine. The profile outlives the session:
 cookies, logins and site storage carry to the agent's next session, through
 `browser close`, 30 idle minutes and host restarts; tabs don't. So a new

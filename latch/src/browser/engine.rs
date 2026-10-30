@@ -1,9 +1,10 @@
-//! The browser engines a host runs, as plugins: Chrome for Testing (CfT),
-//! the release pinned in `cft.json`, which install.sh downloads into the
-//! state directory's plugins folder, `<state-dir>/plugins/cft/<version>/`,
-//! beside older versions, with that pin copied in as `manifest.json`; and
-//! Camoufox, pinned in `camoufox.json` with the Node and Playwright runtime
-//! its helper runs on, which install.sh adds only with `--browser camoufox`.
+//! The browser engines a host runs, as plugins: Camoufox, pinned in
+//! `camoufox.json` with the Node and Playwright runtime its helper runs on,
+//! which install.sh downloads by default into the state directory's plugins
+//! folder, `<state-dir>/plugins/camoufox/<version>/`, beside older versions,
+//! with that pin copied in as `manifest.json`; and Chrome for Testing (CfT),
+//! the release pinned in `cft.json`, which install.sh adds only with
+//! `--browser chrome`, into `<state-dir>/plugins/cft/<version>/`.
 //! `latch browser setup` installs either later; an agent's call never
 //! downloads one.
 //!
@@ -259,11 +260,11 @@ pub fn verify(state_dir: &Path, engine: &str) -> Result<(), Failure> {
 /// default (`default`'s choice) first.
 fn installed(state_dir: &Path) -> Vec<&'static str> {
     let mut installed = Vec::new();
-    if CFT.verified(state_dir).is_ok() {
-        installed.push("chrome");
-    }
     if CAMOUFOX.verified(state_dir).is_ok() {
         installed.push("camoufox");
+    }
+    if CFT.verified(state_dir).is_ok() {
+        installed.push("chrome");
     }
     installed
 }
@@ -288,30 +289,30 @@ fn with_installed(state_dir: &Path, mut failure: Failure) -> Failure {
     failure
 }
 
-/// The engine an `open` that names none runs on: Chrome when its build
-/// checks out, else Camoufox when its does. With neither, the first one's
+/// The engine an `open` that names none runs on: Camoufox when its build
+/// checks out, else Chrome when its does. With neither, the first one's
 /// error that is not just "not installed" (a changed build, or no build for
 /// this platform); with none installed, one naming the owner's setup.
 pub fn default(state_dir: &Path) -> Result<&'static str, Failure> {
-    let chrome = match CFT.verified(state_dir) {
-        Ok(_) => return Ok("cft"),
-        Err(failure) => failure,
-    };
     let fox = match CAMOUFOX.verified(state_dir) {
         Ok(_) => return Ok("camoufox"),
         Err(failure) => failure,
     };
-    for failure in [chrome, fox] {
+    let chrome = match CFT.verified(state_dir) {
+        Ok(_) => return Ok("cft"),
+        Err(failure) => failure,
+    };
+    for failure in [fox, chrome] {
         if failure.code != code::engine_not_installed.name {
             return Err(failure);
         }
     }
-    let setup = "latch browser setup --engine chrome";
+    let setup = "latch browser setup";
     let mut failure = Failure::new(
         code::engine_not_installed,
         format!(
-            "no browser engine is installed; the host's owner installs one with `{setup}` \
-             (or `--engine camoufox`) on the host"
+            "no browser engine is installed; the host's owner installs Camoufox with `{setup}` \
+             (or Chrome with `--engine chrome`) on the host"
         ),
     );
     failure.details = serde_json::json!({"setup": setup, "installed": [], "default": null});
@@ -629,7 +630,7 @@ mod tests {
     }
 
     #[test]
-    fn with_no_engine_named_chrome_runs_if_it_checks_out_else_camoufox() {
+    fn with_no_engine_named_camoufox_runs_if_it_checks_out_else_chrome() {
         let none = tempfile::tempdir().unwrap();
         let missing = default(none.path()).unwrap_err();
         assert_eq!(missing.code, "engine_not_installed");
@@ -637,42 +638,33 @@ mod tests {
             (&missing.details["installed"], &missing.details["default"]),
             (&serde_json::json!([]), &serde_json::Value::Null)
         );
-        assert_eq!(
-            missing.details["setup"],
-            "latch browser setup --engine chrome"
-        );
+        assert_eq!(missing.details["setup"], "latch browser setup");
         assert!(
-            missing.message.contains("--engine camoufox"),
+            missing.message.contains("--engine chrome"),
             "{}",
             missing.message
         );
 
-        // Camoufox alone, as on an agent's machine; then Chrome beside it.
+        // Chrome alone, as on a host installed before Camoufox was the
+        // default; then Camoufox beside it.
         let state = tempfile::tempdir().unwrap();
-        fake_install(state.path(), "camoufox");
-        assert_eq!(default(state.path()).unwrap(), "camoufox");
         fake_install(state.path(), "cft");
         assert_eq!(default(state.path()).unwrap(), "cft");
-        // A Chrome that no longer checks out gives way to Camoufox.
-        let build = &CFT.builds[platform().unwrap()];
-        let exe = CFT
-            .folder(state.path())
-            .join(&build.folder)
-            .join(&build.executable);
-        fs::write(&exe, b"not chrome").unwrap();
+        fake_install(state.path(), "camoufox");
         assert_eq!(default(state.path()).unwrap(), "camoufox");
+        // A Camoufox that no longer checks out gives way to Chrome.
+        fs::write(
+            CAMOUFOX.folder(state.path()).join("node/changed"),
+            b"not node",
+        )
+        .unwrap();
+        assert_eq!(default(state.path()).unwrap(), "cft");
 
         // With nothing to give way to, its own error says why.
         let alone = tempfile::tempdir().unwrap();
-        fake_install(alone.path(), "cft");
-        assert_eq!(default(alone.path()).unwrap(), "cft");
-        fs::write(
-            CFT.folder(alone.path())
-                .join(&build.folder)
-                .join(&build.executable),
-            b"x",
-        )
-        .unwrap();
+        fake_install(alone.path(), "camoufox");
+        assert_eq!(default(alone.path()).unwrap(), "camoufox");
+        fs::write(CAMOUFOX.folder(alone.path()).join("node/changed"), b"x").unwrap();
         assert_eq!(default(alone.path()).unwrap_err().code, "engine_unverified");
     }
 

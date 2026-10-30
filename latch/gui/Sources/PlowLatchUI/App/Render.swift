@@ -27,18 +27,6 @@ enum Render {
         try png.write(to: file)
     }
 
-    /// A window drawn from its own views, title bar included: works off
-    /// screen, but without what only the window server draws (the
-    /// sidebar's materials and the rows over them).
-    static func frame(_ window: NSWindow, to file: URL) throws {
-        guard let frame = window.contentView?.superview,
-              let rep = frame.bitmapImageRepForCachingDisplay(in: frame.bounds)
-        else { throw CocoaError(.fileWriteUnknown) }
-        frame.cacheDisplay(in: frame.bounds, to: rep)
-        guard let png = rep.representation(using: .png, properties: [:]) else { throw CocoaError(.fileWriteUnknown) }
-        try png.write(to: file)
-    }
-
     /// A window of this app as the window server shows it, system materials,
     /// sidebar and toolbar included, even off screen. A process may read
     /// its own windows without screen-recording permission. Swift no longer

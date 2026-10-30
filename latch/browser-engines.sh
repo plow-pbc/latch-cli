@@ -20,8 +20,9 @@
 #
 # camoufox: the Camoufox build, the Node it runs its helper on, and
 # the helper's runtime (Playwright and camoufox-js, from camoufox/'s
-# lockfile, with `npm ci`), into <state-dir>/plugins/camoufox/<version>/.
-# About 1 GB on macOS and 1.5 GB on Linux.
+# lockfile, with `npm ci`), on macOS and Linux arm64/x86_64, into
+# <state-dir>/plugins/camoufox/<version>/. About 1 GB on macOS and 1.5 GB on
+# Linux. On another platform it says so and installs nothing.
 #
 # Running it again changes nothing that is already in place.
 set -eu
@@ -118,16 +119,20 @@ chrome() {
 # hashes each unpacked part before every launch. No package's install
 # script runs. The manifest goes in last.
 camoufox() {
-  fox_pin="$here/src/browser/camoufox.json"
-  fox_package="$here/camoufox"
-  [ -f "$fox_pin" ] && [ -f "$fox_package/package-lock.json" ] || die "$fox_pin or $fox_package not found; run install.sh from the latch workspace"
   case "$(uname -s)/$(uname -m)" in
     Darwin/arm64) fox_build=mac_arm64 ;;
     Darwin/x86_64) fox_build=mac_x64 ;;
+    Darwin/*) die "no Camoufox build for $(uname -m)" ;;
     Linux/aarch64 | Linux/arm64) fox_build=linux_arm64 ;;
     Linux/x86_64) fox_build=linux_x64 ;;
-    *) die "no Camoufox build for $(uname -s) $(uname -m)" ;;
+    *)
+      say "no Camoufox build for $(uname -s) $(uname -m): this host runs no browser"
+      return 0
+      ;;
   esac
+  fox_pin="$here/src/browser/camoufox.json"
+  fox_package="$here/camoufox"
+  [ -f "$fox_pin" ] && [ -f "$fox_package/package-lock.json" ] || die "$fox_pin or $fox_package not found; run install.sh from the latch workspace"
   fox() { # Part and field, within this platform's build.
     value=$(sed -n "/^    \"$fox_build\": {/,/^    }/p" "$fox_pin" |
       sed -n "/^      \"$1\": {/,/^      }/s/^ *\"$2\": *\"\([^\"]*\)\".*/\1/p")
@@ -185,8 +190,8 @@ if [ "$(uname -s)" = Linux ]; then
   missing=""
   libraries=$(PATH="$PATH:/sbin:/usr/sbin" ldconfig -p 2>/dev/null || true)
   for engine in $engines; do
-    case "$engine/$(uname -m)" in
-      chrome/aarch64 | chrome/arm64 | chrome/x86_64 | camoufox/*) ;;
+    case "$(uname -m)" in
+      aarch64 | arm64 | x86_64) ;;
       *) continue ;;
     esac
     command -v unzip >/dev/null 2>&1 || missing="${missing:+$missing }unzip"

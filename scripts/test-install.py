@@ -35,17 +35,17 @@ def seed_gog(setup, state):
         "version": "1.0", "sha256": hashlib.sha256(gog.read_bytes()).hexdigest()}, indent=2))
 
 
-def seed_cft(setup, state):
-    """Chrome for Testing already in `state`, as `setup`'s pin names it for a
-    Mac on arm64: nothing to download."""
-    pin = setup / "src/browser/cft.json"
+def seed_camoufox(setup, state):
+    """Camoufox already in `state`, as `setup`'s pin names it: nothing to
+    download."""
+    pin = setup / "src/browser/camoufox.json"
     pin.parent.mkdir(parents=True, exist_ok=True)
     # The pin's fixed shape, as browser-engines.sh reads it with sed.
-    pin.write_text('{\n  "version": "1.0",\n  "builds": {\n    "mac_arm64": {\n'
-                   '      "folder": "chrome-mac-arm64",\n      "executable": "chrome"\n    }\n  }\n}\n')
-    installed = state / "plugins/cft/1.0"
-    (installed / "chrome-mac-arm64").mkdir(parents=True)
-    (installed / "chrome-mac-arm64/chrome").write_bytes(b"")
+    pin.write_text('{\n  "version": "1.0-beta.1"\n}\n')
+    (setup / "camoufox").mkdir(exist_ok=True)
+    (setup / "camoufox/package-lock.json").write_text("{}\n")
+    installed = state / "plugins/camoufox/1.0-beta.1"
+    installed.mkdir(parents=True)
     shutil.copyfile(pin, installed / "manifest.json")
 
 
@@ -106,7 +106,7 @@ class BinaryInstall(unittest.TestCase):
             root = Path(directory)
             home = root / "home"
             state = home / ".latch" if no_args else root / "state"
-            # On this fixture OS Chrome for Testing has no build: says so.
+            # On this fixture OS Camoufox has no build: says so.
             setup, binary, tools = fixture(root, state, "#!/bin/sh\necho installed-fixture\n")
             options = [] if no_args else ["--state-dir", str(state)]
             destination = home / ".local/bin/latch"
@@ -356,8 +356,8 @@ class BinaryInstall(unittest.TestCase):
             home = root / "home"
             state = root / "state"
             seed_gog(setup, state)
-            # Chrome for Testing already in place, so nothing is downloaded.
-            seed_cft(setup, state)
+            # Camoufox already in place, so nothing is downloaded.
+            seed_camoufox(setup, state)
             tools = root / "tools"
             tools.mkdir()
             uname = tools / "uname"
@@ -715,8 +715,8 @@ class HostUpgrade(unittest.TestCase):
         home = root / "home"
         setup, _, tools = fixture(root, state, "", system="Darwin", machine="arm64")
         (setup / "latch").unlink()
-        # Chrome for Testing already in place, so nothing is downloaded.
-        seed_cft(setup, state)
+        # Camoufox already in place, so nothing is downloaded.
+        seed_camoufox(setup, state)
         for app, version, window in [(setup / "Plow Latch.app", new_version, new_window),
                                      (home / "Applications/Plow Latch.app", old_version, old_window)]:
             (app / "Contents/MacOS").mkdir(parents=True)
@@ -831,7 +831,7 @@ class MacAppFolder(unittest.TestCase):
         log = root / "calls"
         setup, _, tools = fixture(root, state, "", system="Darwin", machine="arm64")
         (setup / "latch").unlink()
-        seed_cft(setup, state)
+        seed_camoufox(setup, state)
         new = fake_latch("0.1.0 (2)", log, running=host != "none", managed=host == "managed",
                          other_version=host == "other_version", login_item=login_item)
         apps = [(setup / "Plow Latch.app", new)]
@@ -1018,8 +1018,8 @@ class MessagesReaderInstall(unittest.TestCase):
             script = '#!/bin/sh\necho \'{"version":"9.9.9 (fixture)"}\'\n'
             setup, _, tools = fixture(root, state, script, system="Darwin", machine="arm64")
             (setup / "latch-messages").write_bytes(b"reader-fixture")
-            # A Mac install also puts Chrome for Testing in place: one already there.
-            seed_cft(setup, state)
+            # A Mac install also puts Camoufox in place: one already there.
+            seed_camoufox(setup, state)
             args = ["sh", str(setup / "install-binary.sh"), "--state-dir", str(state),
                     "--bin-dir", str(root / "bin")]
             env = {**os.environ, "HOME": str(root / "home"), "PATH": f"{tools}:{os.environ['PATH']}"}
@@ -1207,8 +1207,9 @@ class BrowserEngines(unittest.TestCase):
     def tearDown(self):
         self.directory.cleanup()
 
-    def engines_chosen(self, *options):
-        """The engines install-binary.sh hands browser-engines.sh, or None if it runs none."""
+    def engines_chosen(self, *options, system="FixtureOS"):
+        """The engines install-binary.sh hands browser-engines.sh on `system`, or None if it
+        runs none."""
         setup = self.root / "setup"
         shutil.rmtree(setup, ignore_errors=True)
         (setup / "src/google").mkdir(parents=True)
@@ -1220,15 +1221,20 @@ class BrowserEngines(unittest.TestCase):
         chosen = self.root / "chosen"
         chosen.unlink(missing_ok=True)
         tool(setup, "browser-engines.sh", f'shift 2\necho "$@" > "{chosen}"\n')
-        tool(self.tools, "uname", 'case "$1" in -s) echo FixtureOS;; -m) echo x86_64;; esac\n')
+        tool(self.tools, "uname", f'case "$1" in -s) echo {system};; -m) echo x86_64;; esac\n')
+        # Linux's sandbox is in place already: nothing asks for root.
+        tool(self.tools, "bwrap", "")
+        tool(self.tools, "sw_vers", "echo 26.0\n")
         result = subprocess.run(["sh", str(setup / "install-binary.sh"), "--state-dir", str(state),
                                  *options, str(setup / "latch")],
                                 cwd=self.root, env=self.env, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         return chosen.read_text().strip() if chosen.exists() else None
 
-    def test_chrome_by_default_none_with_no_browser_or_the_ones_named(self):
-        self.assertEqual(self.engines_chosen(), "chrome")
+    def test_camoufox_by_default_none_with_no_browser_or_the_ones_named(self):
+        for system in ["Darwin", "Linux"]:
+            self.assertEqual(self.engines_chosen(system=system), "camoufox", system)
+        self.assertEqual(self.engines_chosen("--browser", "chrome"), "chrome")
         self.assertIsNone(self.engines_chosen("--no-browser"))
         self.assertEqual(self.engines_chosen("--browser", "camoufox"), "camoufox")
         self.assertEqual(self.engines_chosen("--browser", "chrome", "--browser", "camoufox"),

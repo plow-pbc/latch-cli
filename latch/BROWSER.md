@@ -1,16 +1,21 @@
 # Browsers on a latch host
 
-A host runs Chrome for Testing (CfT), the release pinned in
-`src/browser/cft.json`. latch downloads it, it does not ship it: on macOS
-and on Linux arm64/x86_64 `install.sh` fetches the zip for the machine's
-architecture by default, checks its sha256 against the pin, unpacks it
-(`ditto` on macOS, `unzip` on Linux) into `<state-dir>/plugins/cft/<version>/`
-(beside older versions, as gog's are, until the new latch removes them
-once no host of an older one runs) and copies the pin in as
-`manifest.json`, which marks the install complete. On Linux it also
-installs Xvfb, for hosts with no screen. `install.sh --no-browser` installs
-no engine; `--browser camoufox` installs Camoufox instead (name both
-engines with `--browser chrome --browser camoufox`).
+A host runs Camoufox, a Firefox build (see "Camoufox, the default
+engine"), and Chrome for Testing (CfT) if its owner adds it. latch
+downloads them, it does not ship them: on macOS and on Linux arm64/x86_64
+`install.sh` installs Camoufox by default, about 1 GB on macOS and 1.5 GB
+on Linux. `--browser chrome` installs Chrome instead, about 360 MB (name
+both engines with `--browser camoufox --browser chrome`), and
+`install.sh --no-browser` installs no engine. On another platform it says
+there is no build and installs none. On Linux it also installs Xvfb, for
+hosts with no screen.
+
+Chrome is the release pinned in `src/browser/cft.json`: the installer
+fetches the zip for the machine's architecture, checks its sha256 against
+the pin, unpacks it (`ditto` on macOS, `unzip` on Linux) into
+`<state-dir>/plugins/cft/<version>/` (beside older versions, as gog's are,
+until the new latch removes them once no host of an older one runs) and
+copies the pin in as `manifest.json`, which marks the install complete.
 
 On Linux, each runtime's engine draws on a private Xvfb display of its own
 (see "Handoff and screenless hosts"), or on none with `latch serve
@@ -19,12 +24,14 @@ On Linux, each runtime's engine draws on a private Xvfb display of its own
 The download is `browser-engines.sh`'s, beside `install-binary.sh`, which
 `install.sh` runs. `latch browser setup [--engine chrome|camoufox]` runs a
 copy of it that latch carries, with the same pins, to install an engine
-later; it is the host's owner's command, run on the host, and refuses a
-latch logged in as an agent. On Linux, installing Chrome either way first
+later (Camoufox unless it names `--engine chrome`); it is the host's
+owner's command, run on the host, and refuses a
+latch logged in as an agent. On Linux, installing an engine either way first
 installs unzip, Xvfb and its runtime libraries if they are missing, asking for sudo once. An agent's browser call never downloads anything: with no engine it
 fails with `engine_not_installed`, whose `details.setup` is the owner's
-command (`latch browser setup --engine chrome`; an `open` that names no
-engine also mentions `--engine camoufox`). Its `details.installed` lists the
+command (`latch browser setup --engine chrome` for an `open` that names
+Chrome; `latch browser setup` for one that names no engine, whose message
+also mentions `--engine chrome`). Its `details.installed` lists the
 engines the host does have (`chrome`, `camoufox`; empty with none) and
 `details.default` the one an `open` that names no engine runs on (null with
 none), and its message says the same: an agent can `open` again on one of
@@ -57,10 +64,10 @@ own user, whom latch trusts with its state directory anyway.
 To pin a new release, run `python3 scripts/cft-pin.py VERSION` on a Mac
 and put its output in `builds`.
 
-## Camoufox, the second engine
+## Camoufox, the default engine
 
-`install.sh --browser camoufox` (macOS and Linux arm64/x86_64), or `latch browser setup --engine
-camoufox` later, installs Camoufox, pinned in
+`install.sh` (macOS and Linux arm64/x86_64), or `latch browser setup`
+later, installs Camoufox, pinned in
 `src/browser/camoufox.json` with the runtime latch drives it through, into
 `<state-dir>/plugins/camoufox/<version>/`, about 1 GB on macOS and 1.5 GB on Linux:
 
@@ -92,9 +99,9 @@ Camoufox version makes a new one.
 Camoufox ships with password saving and form autofill off; its uBlock
 add-on is left out.
 
-`open` names Camoufox to run on it where Chrome is installed too:
+`open` names Chrome to run on it where Camoufox is installed too:
 
-    latch browser open --engine camoufox https://example.com
+    latch browser open --engine chrome https://example.com
 
 A site may silently drop a sign-in from one engine and take it from the
 other. Agents are taught (`SKILL.md`) to retry a sign-in that doesn't move
@@ -122,8 +129,8 @@ returns `serve_required`, with instructions to start `latch serve`.
 
 Each `open` makes a new **session** in a browser of its own, its
 **runtime**: its caller's profile (below), the engine `open` names (`--engine chrome`
-or `--engine camoufox`; with neither, Chrome if the host has it and it
-checks out, else Camoufox, and the answer's `engine` says which), and one
+or `--engine camoufox`; with neither, Camoufox if the host has it and it
+checks out, else Chrome, and the answer's `engine` says which), and one
 long-lived browser worker
 (`latch browser-worker`, hidden) driving it, which the host talks to over
 stdio. The worker drives CfT over `--remote-debugging-pipe` only: CDP on

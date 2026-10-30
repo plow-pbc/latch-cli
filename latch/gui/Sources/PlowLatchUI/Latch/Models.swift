@@ -296,6 +296,12 @@ nonisolated struct UpdateCheck: Decodable, Equatable {
     var latest: Release?
 }
 
+/// `latch update`: whether it installed a build; false when this one was
+/// already the newest.
+nonisolated struct UpdateResult: Decodable, Equatable {
+    var updated: Bool
+}
+
 /// A vault item as the person wrote it, for `vault add` or `vault edit`:
 /// the title and sites go in argv, every value only on stdin.
 nonisolated struct VaultDraft: Equatable, Sendable {

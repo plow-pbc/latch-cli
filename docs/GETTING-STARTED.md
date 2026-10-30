@@ -40,7 +40,7 @@ SHA-256 tool, which most systems have, and on Linux OpenSSL 3.
 | The `latch` command | `~/.local/bin/latch` |
 | The Plow Latch app (Mac only) | `/Applications/Plow Latch.app`, or `~/Applications` if you can't write to `/Applications`. On a Mac, `~/.local/bin/latch` is a link into the app. |
 | Latch's state folder: its key, Plow login, settings, vault and audit log | `~/.latch` |
-| Chrome for Testing, the browser a host drives for agents | `~/.latch/plugins/cft/` |
+| Camoufox, the browser a host drives for agents (about 1 GB on a Mac, 1.5 GB on Linux) | `~/.latch/plugins/camoufox/` |
 | The tool a host runs for Gmail and Calendar | `~/.latch/plugins/gog/` |
 
 **PATH.** If `~/.local/bin` isn't on your `PATH`, the installer adds it in
@@ -81,8 +81,8 @@ bubblewrap work. For Docker, see [DOCKER.md](../latch/DOCKER.md).
 | `--no-login` | With `--client-only` at a terminal, doesn't log in at the end. |
 | `--bin-dir FOLDER` | Puts `latch` in `FOLDER`. |
 | `--state-dir FOLDER` | Uses `FOLDER` as the state folder. Then pass the same `--state-dir FOLDER` to every `latch` command, or set `LATCH_STATE_DIR=FOLDER`. |
-| `--browser chrome`, `--browser camoufox` | Chooses the browser to install. Repeat it to install both. |
-| `--no-browser` | Installs no browser. `latch browser setup --engine chrome` adds one later. |
+| `--browser chrome`, `--browser camoufox` | Chooses the browser to install, instead of Camoufox alone. `--browser chrome` installs Chrome for Testing (about 360 MB) into `~/.latch/plugins/cft/`. Repeat it to install both. |
+| `--no-browser` | Installs no browser. `latch browser setup` adds Camoufox later, `latch browser setup --engine chrome` Chrome. |
 | `--non-interactive` | Doesn't start setup at the end, and leaves your shell profile alone. |
 | `--no-modify-path` | Leaves your shell profile alone. |
 
@@ -323,7 +323,10 @@ Latch checks the release's signature first, and on a Mac that Plow signed
 the app. A host started with `latch serve -d` restarts on the new version.
 A host running in a terminal stops, and the update tells you to start it
 again. A running host checks for a new release once a day and shows it in
-`latch` and on its dashboard. Nothing installs on its own.
+`latch` and on its dashboard. On a Mac, Latch's window also checks every few
+hours (Settings turns that off) and shows **Update** in its
+toolbar; clicking it runs `latch update`, and the window opens again on the
+new version. Nothing installs on its own.
 
 An agent runs `latch update` on its own computer too, where latch is
 installed alone (`install.sh --client-only`) and no host runs. An agent's

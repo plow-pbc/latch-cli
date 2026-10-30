@@ -4,6 +4,12 @@
 import AppKit
 import PlowLatchUI
 
-NSApplication.shared.setActivationPolicy(.accessory)
+/// Draws as the app in front, as people see it in use, without taking the
+/// front from whatever has it: nothing here shows on a display.
+final class FrontApplication: NSApplication {
+    override var isActive: Bool { true }
+}
+
+FrontApplication.shared.setActivationPolicy(.accessory)
 let arguments = CommandLine.arguments.dropFirst()
 try await SnapshotRunner.run(into: URL(filePath: arguments.first ?? "snapshots"), only: Array(arguments.dropFirst()))
