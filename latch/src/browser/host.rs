@@ -155,6 +155,47 @@ pub(super) struct Entry {
     /// The numbers of the cards filled in this session, digits only: what
     /// its answers and journals are masked for.
     pub(super) cards: super::journal::Cards,
+    /// A confirmed card fill the page answered with an error: the same
+    /// fill again, at the same checkout, goes through on that confirmation
+    /// for a few minutes.
+    pub(super) retry: std::sync::Mutex<Option<Retry>>,
+}
+
+/// What a confirmed card fill was confirmed for, kept after the page
+/// answered its press with an error.
+pub(super) struct Retry {
+    pub(super) item: String,
+    pub(super) frames: Value,
+    pub(super) press: Value,
+    /// The amounts the lines around the press showed.
+    pub(super) amounts: Vec<String>,
+    pub(super) until: Instant,
+}
+
+/// How long a confirmed card fill the page refused may be filled again
+/// without a new confirmation.
+pub(super) const RETRY: Duration = Duration::from_secs(5 * 60);
+
+/// The amounts `lines` show ($10.00, 10,00 €, USD 10): what a retry's
+/// checkout must still show.
+pub(super) fn amounts(lines: &Value) -> Vec<String> {
+    let mut found = Vec::new();
+    for line in lines
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+    {
+        for word in line.split_whitespace() {
+            let word = word.trim_matches(|c: char| !c.is_alphanumeric() && !"$€£¥".contains(c));
+            let money = word.chars().any(|c| "$€£¥".contains(c))
+                || ["USD", "EUR", "GBP"].iter().any(|code| word.contains(code));
+            if money && word.chars().any(|c| c.is_ascii_digit()) {
+                found.push(word.to_string());
+            }
+        }
+    }
+    found
 }
 
 impl Entry {
@@ -381,6 +422,7 @@ impl Browsers {
             handing: Default::default(),
             judged_sites: Default::default(),
             cards: Default::default(),
+            retry: Default::default(),
         });
         self.sessions.lock().await.insert(id.clone(), entry.clone());
         Ok((id, entry))
@@ -655,7 +697,61 @@ pub(super) async fn fill(
         )
         .await?;
     }
-    fill_resolved(browsers, entry, session, caller.key, &args, audit).await
+    let stopped = fill_resolved(browsers, entry, session, caller.key, &args, audit).await;
+    match stopped {
+        Err(stop) if stop.code == "confirm_needed" => {
+            let confirmation = &stop.details["confirmation"];
+            let Some(id) = again_on(entry, &args, confirmation) else {
+                return Err(stop);
+            };
+            // The page refused this fill a moment ago for what the agent
+            // has put right since: the confirmation it gave then covers it,
+            // judged again as a confirmed release.
+            let fill = super::steps::fill_to_confirm(entry, &id).unwrap_or_default();
+            if caller.gate.is_some() {
+                let site = judged::site(browsers, entry).await?;
+                judged::judge(
+                    caller.gate,
+                    judged::fill(browsers, &fill, site, true),
+                    &entry.card_numbers(),
+                    audit,
+                )
+                .await?;
+            }
+            let request = format!("{}-again", args["request"].as_str().unwrap_or("fill"));
+            let mut done = super::steps::run(
+                browsers,
+                entry,
+                session,
+                caller.key,
+                caller.gate,
+                &json!({"request": request, "plan": {"steps": []}, "confirm": id}),
+                audit,
+            )
+            .await?;
+            done["confirmed_by"] = json!("the confirmation of this fill the page refused before");
+            Ok(done)
+        }
+        other => other,
+    }
+}
+
+/// The confirmation just issued for `args`, when it is the same fill a
+/// page refused within the last few minutes: the same item, frames, press
+/// and amounts. Used once.
+fn again_on(entry: &Entry, args: &Value, confirmation: &Value) -> Option<String> {
+    let mut retry = entry.retry.lock().expect("retry lock");
+    let earlier = retry.as_ref()?;
+    let same = earlier.until > Instant::now()
+        && args["item"] == earlier.item.as_str()
+        && confirmation["frames"] == earlier.frames
+        && confirmation["target"]["name"] == earlier.press
+        && amounts(&confirmation["lines"]) == earlier.amounts;
+    if !same {
+        return None;
+    }
+    *retry = None;
+    confirmation["id"].as_str().map(str::to_string)
 }
 
 async fn fill_resolved(

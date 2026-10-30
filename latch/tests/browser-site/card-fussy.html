@@ -1,0 +1,57 @@
+<!doctype html><title>latch fussy checkout test</title>
+<!-- A checkout that checks its form on Pay, as a provider's does: a code
+     or ZIP missing gets an error on its field (aria-invalid, its text
+     beside it) and nothing is sent; otherwise it posts to /pay. A second,
+     older security code field takes a code but isn't the one the page
+     checks. With ?required the ZIP is marked required; with ?keep the page
+     stays on Pay and says nothing; with ?takeback the number empties when
+     the expiry changes. As the number is typed, ?hint shows the card's
+     brand beside Pay, and ?reprice adds tax: the total and Pay become
+     $12.00. With ?flash, Pay shows an alert for a moment, then goes on
+     to /pay all the same, as a payment that was still processing. -->
+<h1>Checkout</h1>
+<p>Total $10.00</p>
+<form method="post" action="pay" id="pay" novalidate>
+  <p><label>Name on card <input name="cc-name" autocomplete="cc-name"></label></p>
+  <p><label>Card number <input name="cc-number" autocomplete="cc-number" inputmode="numeric"></label></p>
+  <p><label>Expiry <input name="cc-exp" autocomplete="cc-exp" placeholder="MM / YY"></label></p>
+  <p><label>Security code (old) <input name="old-csc" inputmode="numeric"></label></p>
+  <p><label>CVC <input name="cc-csc" id="cvc" autocomplete="cc-csc" maxlength="4" aria-describedby="cvc-error"></label>
+     <span id="cvc-error"></span></p>
+  <p><label>ZIP <input name="zip" id="zip" autocomplete="postal-code" aria-describedby="zip-error"></label>
+     <span id="zip-error"></span></p>
+  <p id="note">Total $10.00</p>
+  <p id="flash" role="alert"></p>
+  <p><button type="submit" id="go">Pay $10.00</button></p>
+</form>
+<script>
+  const given = new URLSearchParams(location.search);
+  const form = document.getElementById('pay');
+  if (given.has('required')) zip.required = true;
+  if (given.has('takeback')) {
+    form.elements['cc-exp'].addEventListener('input', () => { form.elements['cc-number'].value = ''; });
+  }
+  form.elements['cc-number'].addEventListener('input', () => {
+    if (given.has('hint')) note.textContent = 'Total $10.00, paying with Visa';
+    if (given.has('reprice')) {
+      note.textContent = 'Total $12.00 with tax';
+      go.textContent = 'Pay $12.00';
+    }
+  });
+  const check = (field, error, message) => {
+    const wrong = field.value.trim() === '';
+    field.setAttribute('aria-invalid', String(wrong));
+    error.textContent = wrong ? message : '';
+    return !wrong;
+  };
+  form.addEventListener('submit', (event) => {
+    const cvcOk = check(cvc, document.getElementById('cvc-error'), "Your card's security code is incomplete.");
+    const zipOk = check(zip, document.getElementById('zip-error'), 'Your ZIP is incomplete.');
+    if (!cvcOk || !zipOk || given.has('keep')) event.preventDefault();
+    else if (given.has('flash')) {
+      event.preventDefault();
+      flash.textContent = 'Please try again.';
+      setTimeout(() => form.submit(), 1000);
+    }
+  });
+</script>

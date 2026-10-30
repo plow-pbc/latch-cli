@@ -546,15 +546,16 @@ button, whether it came standalone, as a plan step or as the model's
 choice. The agent confirms
 with `do --confirm C [STEP…]`, and only so: a click sent any other way,
 `act click` on the same ref included, is judged again and stops with a new
-confirmation if it still looks consequential. A confirmation is used once, in the same session and document, and
-only while the element and the reviewed lines are unchanged; otherwise
-`confirm_stale` with a fresh page (a total that changes from $10.00 to
-$100.00 is refused, even with the same ref, URL and button name). It needs
-no new risk decision, so it still works while the model is down. A
-confirmed fill checks again at its press: if the button or the lines
-around it changed once the values went in (a total that reprices as the
-card number arrives), it does not press, clears the values, and answers
-`confirm_stale`. A step
+confirmation if it still looks consequential. A confirmation is used once, in the same session and document; a
+confirmed click or keys only while the element and the reviewed lines are
+unchanged, otherwise `confirm_stale` with a fresh page (a total that
+changes from $10.00 to $100.00 is refused, even with the same ref, URL and
+button name). It needs no new risk decision, so it still works while the
+model is down. A confirmed fill goes on though the lines around its press
+changed (a page shows the card's brand, or a total with tax, as the card
+goes in): its press is made, and its answer says what changed,
+`since_confirmation` ("amounts $10.00 → $100.00; button \"Pay\"
+unchanged"). A step
 whose `new text` check already holds stops before the confirmation is
 spent.
 

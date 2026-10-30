@@ -320,6 +320,11 @@
       readonly: !!el.readOnly,
       covered: over !== null,
       cover: over ?? undefined,
+      // A field the form requires that holds nothing yet: a fill lists it
+      // before it presses.
+      required: !!(el.required || el.getAttribute('aria-required') === 'true'),
+      empty: ['input', 'select', 'textarea'].includes(el.localName)
+        && !['checkbox', 'radio'].includes(el.type) && String(el.value || '').trim() === '',
     };
   };
 
@@ -499,6 +504,34 @@
     const whole = bare(value);
     const page = now === '' ? 'cleared' : now !== whole && whole.startsWith(now) ? 'cut_short' : 'changed';
     return { held: false, page };
+  };
+
+  // Whether field `index` of snapshot `snap` still holds `value`, as a fill
+  // checks every field again before it presses.
+  const heldNow = (snap, index, value, formatted) => {
+    const el = element(snap, index);
+    return el ? held(el, value, formatted) : { held: false, page: 'removed' };
+  };
+  // The errors the page shows now: each field it marks invalid, with the
+  // text that describes it, and each alert. Never a field's value.
+  const pageErrors = () => {
+    const errors = [];
+    const textOf = (ids) => ids.split(/\s+/).filter(Boolean)
+      .map((id) => document.getElementById(id))
+      .filter((el) => el && rendered(el))
+      .map((el) => clean(el.innerText, 200))
+      .filter(Boolean)
+      .join(' ');
+    for (const el of document.querySelectorAll('[aria-invalid=true]')) {
+      if (!rendered(el)) continue;
+      const ids = [el.getAttribute('aria-errormessage'), el.getAttribute('aria-describedby')].join(' ');
+      errors.push({ field: name(el), text: textOf(ids) });
+    }
+    for (const el of document.querySelectorAll('[role=alert]')) {
+      const text = rendered(el) ? clean(el.innerText, 200) : '';
+      if (text && !errors.some((e) => e.text.includes(text))) errors.push({ field: null, text });
+    }
+    return errors;
   };
 
   // How many filled elements still hold something.
@@ -729,5 +762,7 @@
     typeEnd,
     holding,
     clearFilled,
+    heldNow,
+    pageErrors,
   };
 })();

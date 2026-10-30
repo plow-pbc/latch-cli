@@ -39,6 +39,9 @@ use crate::failure::{Failure, code};
 const CLEANUP: Duration = Duration::from_secs(15);
 /// How long latch watches fields it emptied before calling them empty.
 const SETTLED: Duration = Duration::from_millis(500);
+/// How long a page that shows an error after the press has to move on
+/// before latch takes the error as its answer.
+const ERROR_SETTLED: Duration = Duration::from_secs(3);
 /// How long a login's next stage has to show after its identifier stage.
 const NEXT_STAGE: Duration = Duration::from_secs(15);
 /// How long a changed page must stay unchanged to count as the next stage,
@@ -67,6 +70,64 @@ struct Target {
     token: String,
 }
 
+/// A filled field and the value it should still hold.
+#[derive(Deserialize, Debug)]
+pub struct Check {
+    target: String,
+    value: String,
+    #[serde(default)]
+    formatted: bool,
+}
+
+/// What changed around a confirmed fill's press button between the
+/// confirmation and the press: its amounts, the button's name, the rest.
+fn changed_since(guard: &super::Guard, now: &Value) -> String {
+    let lines: Vec<String> = now["lines"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|l| l.as_str().map(str::to_string))
+        .collect();
+    let (before, after) = (amounts(&guard.lines), amounts(&lines));
+    let name = now["element"]["name"].as_str().unwrap_or_default();
+    let mut said = Vec::new();
+    if before != after {
+        said.push(format!("amounts {} → {}", list(&before), list(&after)));
+    }
+    if name == guard.name {
+        said.push(format!("button {:?} unchanged", guard.name));
+    } else {
+        said.push(format!("button {:?} → {:?}", guard.name, name));
+    }
+    if before == after && lines != guard.lines {
+        said.push("other text around the button changed".into());
+    }
+    format!("since the confirmation: {}", said.join("; "))
+}
+
+/// The amounts `lines` show: words with a currency sign or code and a digit.
+fn amounts(lines: &[String]) -> Vec<String> {
+    lines
+        .iter()
+        .flat_map(|line| line.split_whitespace())
+        .map(|word| word.trim_matches(|c: char| !c.is_alphanumeric() && !"$€£¥".contains(c)))
+        .filter(|word| {
+            (word.chars().any(|c| "$€£¥".contains(c))
+                || ["USD", "EUR", "GBP"].iter().any(|code| word.contains(code)))
+                && word.chars().any(|c| c.is_ascii_digit())
+        })
+        .map(str::to_string)
+        .collect()
+}
+
+fn list(words: &[String]) -> String {
+    if words.is_empty() {
+        "none".into()
+    } else {
+        words.join(", ")
+    }
+}
+
 /// How many of a value's last characters a fill types as keys: every one
 /// of a password, a code or a card number.
 const TYPED_KEYS: usize = 64;
@@ -87,6 +148,8 @@ pub struct State {
     /// Secrets filled into the page, which no GET request may carry while
     /// they may be on it (`Driver::guard`).
     guarded: Vec<String>,
+    /// The errors the page showed before the press: not the press's.
+    errors_before: Vec<Value>,
 }
 
 /// The filled frames still open, in the active tab and in others.
@@ -453,45 +516,64 @@ impl<D: Driver> Core<D> {
         guard: Option<&super::Guard>,
     ) -> Result<Value, Failure> {
         let prepared = self.fill.snapshot.clone();
+        // A page changes as a card goes in (the brand, a hint, a total
+        // with tax): the press goes on, and the answer says what changed.
+        let mut since = None;
         if let Some(guard) = guard {
             let now = self.review(prepared.as_deref(), target, guard.enter, &mut Map::new())?;
             if super::fingerprint(&now) != guard.fingerprint {
-                return Err(Failure::new(
-                    code::context_changed,
-                    "the button, or the lines around it, changed after the fill was confirmed; it was not pressed".into(),
-                ));
+                since = Some(changed_since(guard, &now));
             }
         }
         let (snapshot, position) = self.bound(prepared.as_deref(), target)?;
         let at = self.locate(&snapshot, position)?;
+        self.fill.errors_before = self.page_errors();
         self.driver.click(at.x, at.y)?;
         let events = self.settle()?;
         self.no_secret_sent()?;
-        Ok(json!({"pressed": target, "events": events}))
+        let mut answer = json!({"pressed": target, "events": events});
+        if let Some(since) = since {
+            answer["since_confirmation"] = json!(since);
+        }
+        Ok(answer)
     }
 
     /// Waits until every document a value went into is replaced or empty of
     /// filled values, clearing them itself once the wait is over. Answers
     /// `clean: false` when that cannot be confirmed; the session then stays
     /// paused.
-    pub(super) fn fill_cleanup(&mut self) -> Result<Value, Failure> {
+    /// The page's own errors, read as it waits (`page_errors`): a page that
+    /// shows one keeps the values, and latch stops waiting.
+    pub(super) fn fill_cleanup(&mut self, now: bool) -> Result<Value, Failure> {
         // Unconfirmed until this cleanup positively confirms: an error on
         // the way leaves the session paused too.
         self.fill.unclean = true;
-        let deadline = Instant::now() + CLEANUP;
+        let deadline = Instant::now() + if now { Duration::ZERO } else { CLEANUP };
         // What the page did while latch waited, a refused request among it.
         let mut events = Vec::new();
-        loop {
+        // A page that shows an error after the press is given a moment to
+        // move on all the same (a payment still processing), then latch
+        // stops waiting for it.
+        let mut shown_since: Option<Instant> = None;
+        let errors = loop {
             if self.holding().ok() == Some(0) {
                 self.fill.unclean = false;
-                return Ok(json!({"clean": true, "cleared_by_latch": false, "events": events}));
+                return Ok(
+                    json!({"clean": true, "cleared_by_latch": false, "events": events,
+                                 "page_errors": self.new_errors()}),
+                );
             }
-            if Instant::now() >= deadline || self.driver.dialog_open() {
-                break;
+            let errors = self.new_errors();
+            if !errors.is_empty() {
+                shown_since.get_or_insert_with(Instant::now);
+            }
+            let settled = shown_since.is_some_and(|since| since.elapsed() >= ERROR_SETTLED);
+            if settled || Instant::now() >= deadline || self.driver.dialog_open() {
+                break errors;
             }
             std::thread::sleep(Duration::from_millis(200));
             events.extend(self.settle().unwrap_or_default());
-        }
+        };
         for (_, frame) in self.live_filled()?.here {
             let _ = self.driver.run(&frame, "__latch.clearFilled()");
         }
@@ -500,7 +582,89 @@ impl<D: Driver> Core<D> {
         std::thread::sleep(SETTLED);
         let clean = self.holding().ok() == Some(0);
         self.fill.unclean = !clean;
-        Ok(json!({"clean": clean, "cleared_by_latch": clean, "events": events}))
+        Ok(
+            json!({"clean": clean, "cleared_by_latch": clean, "events": events,
+                  "page_errors": errors}),
+        )
+    }
+
+    /// The errors the page shows now that it didn't before the press.
+    fn new_errors(&mut self) -> Vec<Value> {
+        let before = std::mem::take(&mut self.fill.errors_before);
+        let errors = self
+            .page_errors()
+            .into_iter()
+            .filter(|error| !before.contains(error))
+            .collect();
+        self.fill.errors_before = before;
+        errors
+    }
+
+    /// Every error the page's frames show now.
+    fn page_errors(&mut self) -> Vec<Value> {
+        let mut errors = Vec::new();
+        for frame in self.driver.frames().unwrap_or_default() {
+            if let Ok(found) = self.driver.run(&frame, "__latch.pageErrors()") {
+                errors.extend(found.as_array().cloned().unwrap_or_default());
+            }
+        }
+        errors
+    }
+
+    /// Whether each filled field still holds its value: `[{target, held,
+    /// page}]`, never a value.
+    pub(super) fn fill_held(&mut self, checks: &[Check]) -> Result<Value, Failure> {
+        let mut answers = Vec::new();
+        for check in checks {
+            let Some(target) = self
+                .fill
+                .targets
+                .iter()
+                .find(|t| t.reference == check.target)
+            else {
+                continue;
+            };
+            let (frame, snapshot, index) =
+                (target.frame.clone(), target.snapshot.clone(), target.index);
+            let answer = self.driver.call(
+                &frame,
+                "function (s, i, v, f) { return __latch.heldNow(s, i, v, f); }",
+                vec![
+                    json!(snapshot),
+                    json!(index),
+                    json!(check.value),
+                    json!(check.formatted),
+                ],
+            )?;
+            answers.push(
+                json!({"target": check.target, "held": answer["held"] == true,
+                                "page": answer["page"]}),
+            );
+        }
+        Ok(json!(answers))
+    }
+
+    /// The fields the form requires that hold nothing, the fill's own
+    /// aside: `[{ref, name}]`, on the snapshot the fill was prepared on.
+    pub(super) fn fill_missing(&mut self) -> Result<Value, Failure> {
+        let snapshot = self.fill.snapshot.clone().ok_or_else(stale)?;
+        let inventory = self.inventory(&snapshot)?;
+        let ours: Vec<String> = self
+            .fill
+            .targets
+            .iter()
+            .map(|t| t.reference.clone())
+            .collect();
+        let missing: Vec<Value> = inventory["controls"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|c| c["required"] == true && c["empty"] == true)
+            .filter(|c| c["hidden"] != true && c["disabled"] != true)
+            .filter(|c| !ours.iter().any(|r| c["ref"] == r.as_str()))
+            .map(|c| json!({"ref": c["ref"], "name": c["name"]}))
+            .collect();
+        Ok(json!(missing))
     }
 
     /// Lets the agent back in, unless a cleanup could not confirm the values
@@ -733,7 +897,10 @@ mod tests {
                 document: "d1".into(),
             },
         ));
-        let cleaned = core.call(Call::FillCleanup, None).err().unwrap();
+        let cleaned = core
+            .call(Call::FillCleanup { now: false }, None)
+            .err()
+            .unwrap();
         assert_eq!(cleaned.code, "engine_error");
         // As after a later fill that failed before releasing anything.
         let resumed = core.call(Call::FillResume, None).err().unwrap();

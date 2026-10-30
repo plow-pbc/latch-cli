@@ -86,9 +86,10 @@ fn item_of(browsers: &Browsers, args: &Value) -> Result<Item, Failure> {
 /// Anything else is refused before the fill is judged, so the judge is
 /// shown the item as the vault holds it.
 pub async fn named(browsers: &Browsers, entry: &Entry, args: &Value) -> Result<Value, Failure> {
-    let id = match args["item"].as_str() {
-        Some(given) => known(browsers, given)?,
-        None => saved_here(browsers, entry).await?,
+    let id = match (args["item"].as_str(), args["suggested"].as_str()) {
+        (Some(given), _) => known(browsers, given)?,
+        (None, Some(suggested)) => suggested_item(browsers, entry, args, suggested).await?,
+        (None, None) => saved_here(browsers, entry).await?,
     };
     let mut named = args.clone();
     named["item"] = json!(id);
@@ -122,6 +123,10 @@ pub async fn named_in_plan(
             known(browsers, given)?;
             continue;
         }
+        if let Some(suggested) = &literal.suggestion {
+            literal.item = Some(suggested_item(browsers, entry, &json!({}), suggested).await?);
+            continue;
+        }
         literal.item = Some(match &here {
             Some(id) => id.clone(),
             None => here.insert(saved_here(browsers, entry).await?).clone(),
@@ -130,6 +135,35 @@ pub async fn named_in_plan(
     let mut named = args.clone();
     named["plan"] = serde_json::to_value(&plan).expect("a plan serializes");
     Ok(named)
+}
+
+/// The item suggestion `id` on the page fills: a suggestion names its item,
+/// a card as much as a login.
+async fn suggested_item(
+    browsers: &Browsers,
+    entry: &Entry,
+    args: &Value,
+    id: &str,
+) -> Result<String, Failure> {
+    let inventory = worker(
+        entry,
+        json!({"op": "fill_inventory", "snapshot": args["snapshot"]}),
+    )
+    .await?;
+    offered(browsers, &inventory)["suggestions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|suggestion| suggestion["id"] == id)
+        .and_then(|suggestion| suggestion["item"].as_str().map(str::to_string))
+        .ok_or_else(|| {
+            Failure::new(
+                code::stale_snapshot,
+                format!(
+                    "suggestion {id} isn't on the page as it is now; nothing was released. `observe` again for fresh suggestions, or name the item with --item"
+                ),
+            )
+        })
 }
 
 /// Where a caller finds an item's id.
@@ -476,6 +510,22 @@ pub async fn run(
             cards.push(digits);
         }
     }
+    // A confirmed card fill the page answered with an error: the same fill
+    // again may go through on this confirmation for a few minutes.
+    if meta.kind == "card"
+        && args["review"].is_object()
+        && result
+            .as_ref()
+            .is_ok_and(|done| done["outcome"] == "page_error")
+    {
+        *entry.retry.lock().expect("retry lock") = Some(super::host::Retry {
+            item: item.id.clone(),
+            frames: args["confirmed"]["frames"].clone(),
+            press: args["review"]["press"].clone(),
+            amounts: super::host::amounts(&args["review"]["lines"]),
+            until: std::time::Instant::now() + super::host::RETRY,
+        });
+    }
     entry.runtime.filling.store(false, Ordering::SeqCst);
     result
 }
@@ -634,8 +684,17 @@ async fn fill(
             return Err(resume_after(session, failure, audit).await);
         }
     }
-    if let Err(failure) = release_and_set(browsers, session, item, &prepared, audit).await {
-        return Err(stop(session, failure, audit).await);
+    if let Err(failure) = release_and_set(
+        browsers,
+        session,
+        item,
+        &prepared,
+        plan.press.as_deref(),
+        audit,
+    )
+    .await
+    {
+        return Err(stop_now(session, failure, audit).await);
     }
     let mut stages = 1;
     // What the presses and the waits after them set off, a request the
@@ -644,11 +703,25 @@ async fn fill(
     let mut events: Vec<Value> = Vec::new();
     let mut sites = fill_origins(&prepared);
     let mut cleared = false;
+    let mut page_errors: Vec<Value> = Vec::new();
+    let mut since: Option<Value> = None;
     if let Some(press) = &plan.press {
+        // A form that still needs a field the fill doesn't hold would only
+        // refuse the press: the agent fills it first.
+        let missing = match step(session, json!({"op": "fill_missing"}), audit).await {
+            Ok(missing) => missing,
+            Err(failure) => return Err(stop_now(session, failure, audit).await),
+        };
+        if let Some(listed) = missing.as_array().filter(|m| !m.is_empty()) {
+            return Err(stop_now(session, needs_more(listed), audit).await);
+        }
         audit.insert("pressed".into(), json!(press));
         let pressed = json!({"op": "fill_submit", "target": press, "guard": args["guard"]});
         match step(session, pressed, audit).await {
-            Ok(pressed) => events.extend(listed(&pressed["events"])),
+            Ok(pressed) => {
+                events.extend(listed(&pressed["events"]));
+                since = pressed.get("since_confirmation").cloned();
+            }
             Err(failure) => return Err(stop(session, failure, audit).await),
         }
         if plan.identifier_stage(&meta) {
@@ -679,6 +752,7 @@ async fn fill(
             );
             events.extend(listed(&cleaned["events"]));
             cleared = cleaned["cleared_by_latch"] == true;
+            page_errors = listed(&cleaned["page_errors"]);
         }
         if !cleaned.as_ref().is_ok_and(|c| c["clean"] == true) {
             // The values may still be on the page: the agent stays out.
@@ -700,12 +774,91 @@ async fn fill(
         object.insert("stages".into(), json!(stages));
         object.insert("submitted".into(), json!(plan.press.is_some()));
         answer_events(object, events, &sites);
-        if cleared {
-            let engine = session.ready["engine"].as_str().unwrap_or_default();
-            object.insert("next".into(), json!(kept(meta.kind, engine)));
+        if plan.press.is_some() {
+            // What the page did with the press: moved on, showed an error
+            // (the agent can put it right and fill again), or neither.
+            let outcome = if !page_errors.is_empty() {
+                "page_error"
+            } else if cleared {
+                "uncertain"
+            } else {
+                "moved_on"
+            };
+            object.insert("outcome".into(), json!(outcome));
+            if let Some(since) = since {
+                object.insert("since_confirmation".into(), since);
+            }
+            if !page_errors.is_empty() {
+                object.insert("page_errors".into(), json!(page_errors));
+                object.insert("next".into(), json!(fix_and_retry(&page_errors, args)));
+            } else if cleared {
+                let engine = session.ready["engine"].as_str().unwrap_or_default();
+                object.insert("next".into(), json!(kept(meta.kind, engine)));
+            }
         }
     }
     Ok(result)
+}
+
+/// A fill refused before its press: the form's required fields it left
+/// empty, by name and ref.
+fn needs_more(missing: &[Value]) -> Failure {
+    let named: Vec<String> = missing
+        .iter()
+        .map(|m| {
+            format!(
+                "{} ({})",
+                m["name"].as_str().unwrap_or("a field"),
+                m["ref"].as_str().unwrap_or("?")
+            )
+        })
+        .collect();
+    let mut failure = Failure::new(
+        code::needs_fields,
+        format!(
+            "the form still needs {}, which this fill doesn't hold; nothing was pressed, and latch cleared what it filled. Fill those first (`latch browser --session ID do 'type eN \"…\"'`, or a fill from an identity), then run this fill again",
+            named.join(", ")
+        ),
+    );
+    failure.details = json!({"missing": missing});
+    failure
+}
+
+/// The way on after a press the page answered with errors: put right what
+/// they name, then the same fill again.
+fn fix_and_retry(errors: &[Value], args: &Value) -> String {
+    let said: Vec<String> = errors
+        .iter()
+        .map(|e| match e["field"].as_str() {
+            Some(field) if !field.is_empty() => {
+                format!("{field}: {}", e["text"].as_str().unwrap_or(""))
+            }
+            _ => e["text"].as_str().unwrap_or("").to_string(),
+        })
+        .collect();
+    let mapping: Vec<(&str, Vec<&str>)> = args["fields"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|pair| {
+            let refs = pair[1]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .collect();
+            (pair[0].as_str().unwrap_or_default(), refs)
+        })
+        .collect();
+    let again = fill_command(
+        args["item"].as_str().unwrap_or_default(),
+        &mapping,
+        args["press"].as_str(),
+    );
+    format!(
+        "the page stayed and says what's wrong ({}); latch cleared the card fields. Put right what it names (a field the fill doesn't hold: `do 'type eN \"…\"'`), then fill again: {again}",
+        said.join("; ")
+    )
 }
 
 /// The way on after a submit the page kept: it neither left nor emptied the
@@ -859,7 +1012,15 @@ async fn next_stage(
     });
     let prepared = step(session, prepare, audit).await?;
     let outcomes = checked(&meta, &prepared)?;
-    release_and_set(browsers, session, item, &prepared, audit).await?;
+    release_and_set(
+        browsers,
+        session,
+        item,
+        &prepared,
+        Some(&submit.reference),
+        audit,
+    )
+    .await?;
     audit.insert("pressed".into(), json!(submit.reference));
     let pressed = step(
         session,
@@ -926,7 +1087,26 @@ async fn stage_ended(
 /// lets the agent back in only once that is confirmed; otherwise the
 /// session stays paused, and that is the answer.
 async fn stop(session: &mut Session, failure: Failure, audit: &mut Map<String, Value>) -> Failure {
-    let cleaned = step(session, json!({"op": "fill_cleanup"}), audit).await;
+    stop_after(session, failure, false, audit).await
+}
+
+/// `stop` for a fill that ended before its press: nothing was sent for the
+/// page to take its values, so they are cleared at once.
+async fn stop_now(
+    session: &mut Session,
+    failure: Failure,
+    audit: &mut Map<String, Value>,
+) -> Failure {
+    stop_after(session, failure, true, audit).await
+}
+
+async fn stop_after(
+    session: &mut Session,
+    failure: Failure,
+    now: bool,
+    audit: &mut Map<String, Value>,
+) -> Failure {
+    let cleaned = step(session, json!({"op": "fill_cleanup", "now": now}), audit).await;
     if cleaned.as_ref().is_ok_and(|c| c["clean"] == true) {
         return resume_after(session, failure, audit).await;
     }
@@ -1014,6 +1194,7 @@ async fn release_and_set(
     session: &mut Session,
     item: &Item,
     prepared: &Value,
+    press: Option<&str>,
     audit: &mut Map<String, Value>,
 ) -> Result<(), Failure> {
     let meta = item.meta();
@@ -1070,6 +1251,23 @@ async fn release_and_set(
         .iter()
         .map(|field| field["field"].as_str().unwrap_or_default())
         .collect();
+    // The fill as given, for the retry a refusal names.
+    let mapping: Vec<(&str, Vec<&str>)> = fields
+        .iter()
+        .zip(&labels)
+        .map(|(field, label)| {
+            let refs = field["boxes"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|b| b["ref"].as_str())
+                .collect();
+            (*label, refs)
+        })
+        .collect();
+    let again = fill_command(&item.id, &mapping, press);
+    // Each value as set, checked again once every field is filled.
+    let mut checks: Vec<(usize, Value)> = Vec::new();
     for (at, field) in fields.iter().enumerate() {
         let label = labels[at];
         let boxes: Vec<Value> = field["boxes"].as_array().cloned().unwrap_or_default();
@@ -1096,11 +1294,17 @@ async fn release_and_set(
                 return Err(not_kept(
                     browsers,
                     &meta,
-                    &labels,
-                    at,
+                    labels[at],
                     answer["page"].as_str(),
+                    (&labels[..at], &labels[at + 1..]),
+                    &again,
                 ));
             }
+            checks.push((
+                at,
+                json!({"target": target["ref"], "value": piece,
+                       "formatted": formatted(meta.kind, label)}),
+            ));
             // Worth fixing in the vault, though the fill went through.
             if dropped {
                 let fields = audit
@@ -1114,22 +1318,64 @@ async fn release_and_set(
             }
         }
     }
+    // A page can take a field back as another is filled (a provider that
+    // empties the code once the number changes): nothing is pressed
+    // unless every field still holds its value.
+    let held = step(
+        session,
+        json!({"op": "fill_held", "checks": checks.iter().map(|(_, c)| c).collect::<Vec<_>>()}),
+        audit,
+    )
+    .await?;
+    for ((at, _), answer) in checks.iter().zip(held.as_array().into_iter().flatten()) {
+        if answer["held"] != true {
+            let others: Vec<&str> = labels
+                .iter()
+                .filter(|label| **label != labels[*at])
+                .copied()
+                .collect();
+            return Err(not_kept(
+                browsers,
+                &meta,
+                labels[*at],
+                answer["page"].as_str(),
+                (&others, &[]),
+                &again,
+            ));
+        }
+    }
     Ok(())
 }
 
-/// A fill stopped at field `labels[at]`, which the page did not keep as
-/// latch typed it: what the page did (`page`, from the reader: cleared,
-/// cut short, changed), what had gone in and what had not.
+/// The `fill` command for `item` with `mapping` and `press`, as an agent
+/// would type it again.
+fn fill_command(item: &str, mapping: &[(&str, Vec<&str>)], press: Option<&str>) -> String {
+    let mut command = format!("latch browser --session ID fill --item {item}");
+    for (label, refs) in mapping {
+        command.push_str(&format!(" --field \"{label}={}\"", refs.join(",")));
+    }
+    if let Some(press) = press {
+        command.push_str(&format!(" --press {press}"));
+    }
+    command
+}
+
+/// A fill stopped at field `label`, which the page did not keep as latch
+/// typed it: what the page did (`page`, from the reader: cleared, cut
+/// short, changed, removed), what had gone in and what had not, and the
+/// fill to run again once the field is right.
 fn not_kept(
     browsers: &Browsers,
     meta: &crate::vault::item::Meta,
-    labels: &[&str],
-    at: usize,
+    label: &str,
     page: Option<&str>,
+    (filled, unfilled): (&[&str], &[&str]),
+    again: &str,
 ) -> Failure {
     let did = match page {
         Some("cleared") => "cleared it",
         Some("cut_short") => "kept only the start of it",
+        Some("removed") => "removed the field",
         _ => "changed it",
     };
     let list = |labels: &[&str]| match labels {
@@ -1142,15 +1388,16 @@ fn not_kept(
             super::handoff::to_owner(browsers.screen(), "signin")
         )
     } else {
-        "tell the owner what the page did; latch can't fill it there".to_string()
+        format!(
+            "`observe` the page, then fill again with the {label} mapped to the field the page means: {again}; if it still won't keep it, tell the owner what the page did"
+        )
     };
     Failure::new(
         code::needs_owner,
         format!(
-            "the page did not keep the {} latch typed: it {did}. This stage was not submitted; filled before it, and cleared again: {}; not filled: {}. {next}",
-            labels[at],
-            list(&labels[..at]),
-            list(&labels[at + 1..]),
+            "the page did not keep the {label} latch typed: it {did}. This stage was not submitted; filled, and cleared again: {}; not filled: {}. {next}",
+            list(filled),
+            list(unfilled),
         ),
     )
 }

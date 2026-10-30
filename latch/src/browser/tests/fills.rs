@@ -772,7 +772,7 @@ async fn vault_fills_go_only_where_the_item_allows_and_never_show_a_value(engine
     assert!(!after.contains(NUMBER) && !after.contains(CVV));
 
     // A confirmed card fill whose page reprices once the number is in: Pay
-    // is not pressed, the values are cleared, and the agent is let back in.
+    // is pressed, and the answer says the total changed.
     let checkout = h
         .call(
             "open",
@@ -808,32 +808,16 @@ async fn vault_fills_go_only_where_the_item_allows_and_never_show_a_value(engine
         &mut audit,
     )
     .await
-    .unwrap_err();
-    h.shown.push(seen_failure(&repriced));
+    .unwrap();
+    h.shown.push(seen(&repriced));
     h.shown.push(seen(&Value::Object(audit.clone())));
-    println!(
-        "repriced during the fill: {} ({})",
-        repriced.code, repriced.message
-    );
+    // The press went on, and the answer says the total changed.
+    println!("repriced during the fill: {}", repriced["trail"][0]);
     assert_eq!(
-        (repriced.exit, repriced.code.as_str()),
-        (crate::failure::Exit::Denied, "confirm_stale")
+        repriced["trail"][0]["since_confirmation"],
+        "since the confirmation: amounts $10.00 → $100.00; button \"Pay\" unchanged"
     );
-    let page = h.text().await;
-    assert!(
-        page.contains("$100.00") && !page.contains("payment:"),
-        "{page}"
-    );
-    // The agent is back (the cleanup was confirmed), and the fields are
-    // empty: eval, refused while one holds anything, reads them.
-    let left = h
-        .call(
-            "eval",
-            json!({"script": "['cc-number', 'cc-exp', 'cc-csc'].map((n) => document.querySelector(`[name=${n}]`).value)"}),
-        )
-        .await
-        .unwrap();
-    assert_eq!(left["value"], json!(["", "", ""]));
+    assert!(h.text().await.contains("payment:"));
 
     // An identity's ordinary fields fill without --press; while they are on
     // the page, eval is refused.

@@ -163,6 +163,14 @@ pub enum Call {
         #[serde(default)]
         formatted: bool,
     },
+    /// Whether each filled field still holds its value, checked again
+    /// before the press: `[{target, value, formatted}]`.
+    FillHeld {
+        checks: Vec<fill::Check>,
+    },
+    /// The fields the form requires that hold nothing, other than the
+    /// fill's own, before the press.
+    FillMissing,
     FillSubmit {
         target: String,
         /// A confirmed fill's press: made only while the button and the
@@ -172,7 +180,12 @@ pub enum Call {
     },
     /// After a login's identifier stage: its next stage, read privately.
     NextStage,
-    FillCleanup,
+    /// With `now`, empties the filled fields at once: the fill stopped
+    /// before its press, and nothing was sent for the page to take them.
+    FillCleanup {
+        #[serde(default)]
+        now: bool,
+    },
     FillResume,
     /// Closes the browser, ending the session.
     Close,
@@ -212,6 +225,12 @@ pub struct Guard {
     pub fingerprint: String,
     #[serde(default)]
     pub enter: bool,
+    /// A confirmed fill's: the press button's name and the lines around it
+    /// as confirmed, to say what changed since.
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub lines: Vec<String>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Copy, PartialEq)]
@@ -359,9 +378,11 @@ impl<D: Driver> Core<D> {
             call,
             Call::PrepareFill(_)
                 | Call::SetValue { .. }
+                | Call::FillHeld { .. }
+                | Call::FillMissing
                 | Call::FillSubmit { .. }
                 | Call::NextStage
-                | Call::FillCleanup
+                | Call::FillCleanup { .. }
                 | Call::FillResume
                 | Call::Tabs
         );
@@ -418,7 +439,9 @@ impl<D: Driver> Core<D> {
                 formatted,
             } => self.set_value(&target, &value, secret, formatted),
             Call::FillSubmit { target, guard } => self.fill_submit(&target, guard.as_ref()),
-            Call::FillCleanup => self.fill_cleanup(),
+            Call::FillHeld { checks } => self.fill_held(&checks),
+            Call::FillMissing => self.fill_missing(),
+            Call::FillCleanup { now } => self.fill_cleanup(now),
             Call::FillResume => self.fill_resume(&mut audit),
             Call::Open { url } => self.open(url.as_deref(), &mut audit),
             Call::Observe { tab, scope } => {

@@ -964,7 +964,10 @@ impl Run<'_> {
         if reviewed["document"] != document.as_str() || reviewed["uid"] != uid {
             return Err(stale("is for an element no longer on the page"));
         }
-        if fingerprint(&reviewed) != print {
+        // A fill goes on though the lines changed (a page shows the card's
+        // brand, a total with tax, as the card goes in): its press says
+        // what changed. A click or keys are made only on what was confirmed.
+        if fingerprint(&reviewed) != print && !matches!(kind, Confirms::Fill(_)) {
             return Err(stale(
                 "no longer matches the page: the element or the lines around it changed",
             ));
@@ -1232,8 +1235,16 @@ impl Run<'_> {
             shown["fields"] = filled["fields"].clone();
             shown["stages"] = filled["stages"].clone();
             shown["submitted"] = filled["submitted"].clone();
-            if let Some(events) = filled.get("events") {
-                shown["events"] = events.clone();
+            for key in [
+                "events",
+                "outcome",
+                "page_errors",
+                "next",
+                "since_confirmation",
+            ] {
+                if let Some(value) = filled.get(key) {
+                    shown[key] = value.clone();
+                }
             }
         }
         self.trail.push(shown);
@@ -1570,7 +1581,8 @@ pub async fn confirm_fill(
     let mut fill = args.clone();
     fill["snapshot"] = reviewed["snapshot"].clone();
     // Its press is made only while the page still shows what was confirmed.
-    fill["guard"] = json!({"fingerprint": fingerprint(&reviewed)});
+    fill["guard"] = json!({"fingerprint": fingerprint(&reviewed),
+                           "name": reviewed["element"]["name"], "lines": reviewed["lines"]});
     // Its values go only where they were confirmed to go.
     fill["confirmed"] = json!({"frames": frames, "revision": revision});
     // What the gatekeeper is shown of the checkout when it is confirmed.

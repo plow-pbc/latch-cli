@@ -269,9 +269,10 @@ A fill that releases a card or identity secret stops with
 names the item, the exact mapping by the page's names, the site of each
 frame a value goes into and the press button, and `latch browser do
 --confirm C` then fills, presses and cleans up as one step
-([BROWSER.md](BROWSER.md)), once, and only while that mapping, those frames,
-the item and the reviewed lines are as confirmed; otherwise it clears the
-values and answers `confirm_stale`.
+([BROWSER.md](BROWSER.md)), once, and only while that mapping, those frames
+and the item are as confirmed; otherwise it clears the values and answers
+`confirm_stale`. Lines around the press that changed since (a hint, a
+total) don't stop it: the answer says what changed (`since_confirmation`).
 
 While a fill runs, its session is paused: every other call in it answers
 `session_paused`. Each value goes in after the field's element,

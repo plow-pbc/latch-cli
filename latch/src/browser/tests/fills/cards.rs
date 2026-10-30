@@ -23,6 +23,12 @@ conformance!(
     a_two_digit_year_field_gets_two_digits,
     an_amex_number_in_four_boxes_of_four_says_it_does_not_split,
     a_field_that_clears_itself_says_what_happened_and_what_was_filled,
+    a_page_error_after_pay_names_its_field_and_the_same_fill_goes_again,
+    a_page_that_stays_silent_after_pay_is_uncertain_and_not_retried,
+    a_required_field_left_empty_is_named_before_pay,
+    a_field_the_page_takes_back_stops_the_fill_before_pay,
+    a_page_that_changes_as_the_card_goes_in_is_still_paid_and_says_so,
+    an_alert_that_passes_as_the_page_moves_on_is_no_page_error,
     agent_code_on_a_shop_keeps_the_card_out,
     a_page_that_shows_the_number_back_shows_the_agent_only_its_last_four,
     a_redrawn_number_field_does_not_show_its_value,
@@ -110,7 +116,9 @@ async fn a_card_with_no_sites_pays_on_any_shop(engine: &str) {
         (listed["item"].as_str(), listed["kind"].as_str()),
         (Some(card.as_str()), Some("card"))
     );
-    let args = h.suggested(&card).await;
+    // A suggestion names its item: `--suggested` alone takes the card.
+    let mut args = h.suggested(&card).await;
+    args.as_object_mut().unwrap().remove("item");
     let paid = h.pay(args).await.unwrap();
     println!("paid: {}", paid["trail"]);
     let page = h.text().await;
@@ -525,11 +533,211 @@ async fn a_field_that_clears_itself_says_what_happened_and_what_was_filled(engin
     );
     assert!(
         refused.message.contains(
-            "the page did not keep the number latch typed: it cleared it. This stage was not submitted; filled before it, and cleared again: cardholder name; not filled: expiry, cvv. tell the owner what the page did; latch can't fill it there"
+            "the page did not keep the number latch typed: it cleared it. This stage was not submitted; filled, and cleared again: cardholder name; not filled: expiry, cvv. `observe` the page, then fill again with the number mapped to the field the page means"
         ),
         "{}",
         refused.message
     );
     assert!(!h.text().await.contains("payment:"));
+    h.call("close", json!({})).await.ok();
+}
+
+/// The fussy checkout's page, its fields by name, and a mapping of the
+/// card's fields with the code into `code_field`.
+async fn fussy(h: &mut Harness, local: &str, query: &str, code_field: &str) -> (Value, Value) {
+    let page = h
+        .call(
+            "open",
+            json!({"url": format!("{local}/card-fussy.html{query}")}),
+        )
+        .await
+        .unwrap();
+    let fields = json!([
+        ["cardholder name", [find(&page, "textbox", "Name on card")]],
+        ["number", [find(&page, "textbox", "Card number")]],
+        ["expiry", [find(&page, "textbox", "Expiry")]],
+        ["cvv", [find(&page, "textbox", code_field)]],
+    ]);
+    (page, fields)
+}
+
+/// Types `text` into the field named `name` on `page`, as an agent's
+/// literal step does.
+async fn type_into(h: &mut Harness, page: &Value, name: &str, text: &str) {
+    let step = format!("type {} \"{text}\"", find(page, "textbox", name));
+    h.call(
+        "do",
+        json!({"request": format!("r-type-{}", h.shown.len()),
+               "plan": {"steps": [crate::browser::plan::short_step(&step).unwrap()]}}),
+    )
+    .await
+    .unwrap();
+}
+
+async fn a_page_error_after_pay_names_its_field_and_the_same_fill_goes_again(engine: &str) {
+    let (mut h, card, local, _, _keep) = shop(engine).await;
+    // The code goes into the page's older field, which it doesn't check.
+    let (page, fields) = fussy(&mut h, &local, "", "Security code (old)").await;
+    type_into(&mut h, &page, "ZIP", "94110").await;
+    let press = find(&page, "button", "Pay $10.00");
+    let paid = h
+        .pay(json!({"item": card, "fields": fields, "press": press}))
+        .await
+        .unwrap();
+    let step = &paid["trail"][0];
+    println!("the page refused it: {step}");
+    assert_eq!(step["outcome"], "page_error");
+    assert_eq!(
+        step["page_errors"],
+        json!([{"field": "CVC", "text": "Your card's security code is incomplete."}])
+    );
+    let next = step["next"].as_str().unwrap();
+    assert!(
+        next.contains("CVC: Your card's security code is incomplete.")
+            && next.contains(&format!("fill --item {card}")),
+        "{next}"
+    );
+    assert!(!h.text().await.contains("payment:"));
+
+    // The same fill, the code now in the field the page checks: it goes
+    // through on the confirmation already given.
+    let fields = json!([
+        ["cardholder name", [find(&page, "textbox", "Name on card")]],
+        ["number", [find(&page, "textbox", "Card number")]],
+        ["expiry", [find(&page, "textbox", "Expiry")]],
+        ["cvv", [find(&page, "textbox", "CVC")]],
+    ]);
+    let (again, _) = h
+        .gated_fill(json!({"item": card, "fields": fields, "press": press}))
+        .await;
+    let again = again.unwrap();
+    println!("filled again: {again}");
+    assert!(again["confirmed_by"].is_string(), "{again}");
+    let page = h.text().await;
+    assert!(page.contains(PAID), "{page}");
+    assert!(!h.saw_the_card(), "the card reached a result or the audit");
+    h.call("close", json!({})).await.ok();
+}
+
+async fn a_page_that_stays_silent_after_pay_is_uncertain_and_not_retried(engine: &str) {
+    let (mut h, card, local, _, _keep) = shop(engine).await;
+    let (page, fields) = fussy(&mut h, &local, "?keep", "CVC").await;
+    type_into(&mut h, &page, "ZIP", "94110").await;
+    let press = find(&page, "button", "Pay $10.00");
+    let paid = h
+        .pay(json!({"item": card, "fields": fields, "press": press}))
+        .await
+        .unwrap();
+    let step = &paid["trail"][0];
+    println!("the page said nothing: {step}");
+    assert_eq!(step["outcome"], "uncertain");
+    assert!(step["page_errors"].is_null());
+    let next = step["next"].as_str().unwrap();
+    assert!(
+        next.contains("don't submit again") && !next.contains("fill --item"),
+        "{next}"
+    );
+    // No retry without a new confirmation.
+    let (again, _) = h
+        .gated_fill(json!({"item": card, "fields": fields, "press": press}))
+        .await;
+    assert_eq!(again.unwrap_err().code, "confirm_needed");
+    h.call("close", json!({})).await.ok();
+}
+
+async fn a_required_field_left_empty_is_named_before_pay(engine: &str) {
+    let (mut h, card, local, _, _keep) = shop(engine).await;
+    let (page, fields) = fussy(&mut h, &local, "?required", "CVC").await;
+    let press = find(&page, "button", "Pay $10.00");
+    let zip = find(&page, "textbox", "ZIP");
+    let refused = h
+        .pay(json!({"item": card, "fields": fields, "press": press}))
+        .await
+        .unwrap_err();
+    println!("before pay: {} ({})", refused.code, refused.message);
+    assert!(
+        refused.message.contains(&format!(
+            "the form still needs ZIP ({zip}), which this fill doesn't hold; nothing was pressed"
+        )),
+        "{}",
+        refused.message
+    );
+    // Nothing was submitted, and the agent is back to fill the ZIP.
+    assert!(!h.text().await.contains("security code is incomplete"));
+    type_into(&mut h, &page, "ZIP", "94110").await;
+    h.pay(json!({"item": card, "fields": fields, "press": press}))
+        .await
+        .unwrap();
+    let page = h.text().await;
+    assert!(page.contains(PAID), "{page}");
+    h.call("close", json!({})).await.ok();
+}
+
+async fn a_field_the_page_takes_back_stops_the_fill_before_pay(engine: &str) {
+    let (mut h, card, local, _, _keep) = shop(engine).await;
+    let (page, fields) = fussy(&mut h, &local, "?takeback", "CVC").await;
+    type_into(&mut h, &page, "ZIP", "94110").await;
+    let press = find(&page, "button", "Pay $10.00");
+    let refused = h
+        .pay(json!({"item": card, "fields": fields, "press": press}))
+        .await
+        .unwrap_err();
+    println!("taken back: {} ({})", refused.code, refused.message);
+    assert!(
+        refused.message.contains(
+            "the page did not keep the number latch typed: it cleared it. This stage was not submitted; filled, and cleared again: cardholder name, expiry, cvv; not filled: none."
+        ),
+        "{}",
+        refused.message
+    );
+    assert!(!h.text().await.contains("security code is incomplete"));
+    h.call("close", json!({})).await.ok();
+}
+
+async fn a_page_that_changes_as_the_card_goes_in_is_still_paid_and_says_so(engine: &str) {
+    let (mut h, card, local, _, _keep) = shop(engine).await;
+    for (query, said) in [
+        (
+            "?hint",
+            "since the confirmation: button \"Pay $10.00\" unchanged; other text around the button changed",
+        ),
+        (
+            "?reprice",
+            "since the confirmation: amounts $10.00, $10.00 → $12.00, $12.00; button \"Pay $10.00\" → \"Pay $12.00\"",
+        ),
+    ] {
+        let (page, fields) = fussy(&mut h, &local, query, "CVC").await;
+        type_into(&mut h, &page, "ZIP", "94110").await;
+        let press = find(&page, "button", "Pay $10.00");
+        let paid = h
+            .pay(json!({"item": card, "fields": fields, "press": press}))
+            .await
+            .unwrap();
+        let step = &paid["trail"][0];
+        println!("{query}: {step}");
+        assert_eq!(step["since_confirmation"], said, "{query}");
+        let text = h.text().await;
+        assert!(text.contains(PAID), "{query}: {text}");
+    }
+    h.call("close", json!({})).await.ok();
+}
+
+/// A payment still processing may flash an alert before its page moves
+/// on: that is the page moving on, not an error to fill again for.
+async fn an_alert_that_passes_as_the_page_moves_on_is_no_page_error(engine: &str) {
+    let (mut h, card, local, _, _keep) = shop(engine).await;
+    let (page, fields) = fussy(&mut h, &local, "?flash", "CVC").await;
+    type_into(&mut h, &page, "ZIP", "94110").await;
+    let press = find(&page, "button", "Pay $10.00");
+    let paid = h
+        .pay(json!({"item": card, "fields": fields, "press": press}))
+        .await
+        .unwrap();
+    let step = &paid["trail"][0];
+    println!("a flashed alert: {step}");
+    assert_eq!(step["outcome"], "moved_on");
+    assert!(step["next"].is_null(), "{step}");
+    let text = h.text().await;
+    assert!(text.contains(PAID), "{text}");
     h.call("close", json!({})).await.ok();
 }
