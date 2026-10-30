@@ -193,6 +193,18 @@ impl OwnStore {
         }
         Ok(())
     }
+
+    /// An item as an older latch may have stored it, unchecked: what a
+    /// vault already holds, for tests.
+    #[cfg(test)]
+    pub fn add_as_stored(&mut self, mut item: Item) -> Result<Meta, Failure> {
+        item.id = format!("v{}", self.next_id);
+        item.revision = 1;
+        self.next_id += 1;
+        self.items.push(item);
+        self.save()?;
+        Ok(self.items.last().expect("just added").meta())
+    }
 }
 
 impl Backend for OwnStore {

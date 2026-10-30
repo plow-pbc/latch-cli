@@ -14,7 +14,9 @@ over. Each item has a title, its sites (a login needs one; a card or
 identity may list the only sites it fills on) and a revision: an edit or
 removal against an older revision is refused. Items are not tied to browser
 sessions: any session may use any item, wherever its kind's site rule lets
-it fill.
+it fill. A card's number is kept as its digits alone, however it was typed
+or pasted (spaces and dashes are dropped), and must be 12 to 19 of them; a
+fill types those digits, a number an older latch kept with spaces too.
 
 Which fields are **secret** follows the Latch app's classifier, ported with
 its truth table (`tests/fixtures/maskClassification.json`): a login's
@@ -280,10 +282,14 @@ the focus and its caret has not gone back; only the head of a value
 longer than 64 characters is set in one step. A field that takes no keys,
 or only the first ones, gets the value in one step, as does any other
 field (a list, a date) and a value with a line break or a tab. A field that
-formats what it gets (a code as "123 456", a card number in fours) still
-holds the value: only spaces, dashes, dots, slashes, parentheses and plus
-signs may come between its characters, none lost, added or moved; a field
-that holds anything else ends the fill with `needs_owner`. latch then presses
+formats what it gets (a code as "123 456") still holds the value: only
+spaces, dashes, dots, slashes, parentheses and plus signs may come between
+its characters, none lost, added or moved. A value sites format as they
+like (a card's number and expiry) is held whatever of those separators
+either the field or the stored value puts between its characters; every
+other value, a login's username and password above all, never is. A field
+that holds anything else ends the fill with `needs_owner`, naming the
+field, what the page did with it and what went in before it. latch then presses
 submit and waits until the values have left the page (clearing them itself
 if the page keeps them; the fill's answer then has a `next`. Kept fields
 don't prove the submit failed. For a login it says to check the page,
