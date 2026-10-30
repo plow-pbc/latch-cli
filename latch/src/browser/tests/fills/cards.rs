@@ -5,11 +5,9 @@
 //! under the shop's own Pay button; a number in four boxes and the expiry
 //! as two lists), and what an agent can read of the number afterwards.
 
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 
-use super::{
-    CALLER, CVV, Harness, NUMBER, find, item, latch, seen, seen_failure, site, test_state,
-};
+use super::{CVV, Harness, NUMBER, find, item, latch, site, test_state};
 use crate::browser::host::Browsers;
 use crate::failure::Failure;
 use crate::vault::host::Vault;
@@ -66,31 +64,19 @@ async fn shop(engine: &str) -> (Harness, String, String, u16, impl Sized) {
 
 impl Harness {
     /// A card fill as an agent makes one: it stops for a confirmation,
-    /// which the agent then gives with `do --confirm`, through the host.
-    async fn pay(&mut self, args: Value) -> (Result<Value, Failure>, Map<String, Value>) {
+    /// which the agent then gives with `do --confirm`.
+    async fn pay(&mut self, args: Value) -> Result<Value, Failure> {
         let (stop, _) = self.gated_fill(args).await;
         let stop = stop.expect_err("a card fill stops for a confirmation first");
         assert_eq!(stop.code, "confirm_needed", "{}", stop.message);
         println!("confirmation: {}", stop.details["confirmation"]);
-        let mut audit = Map::new();
-        let done = super::super::host_call(
-            &self.browsers,
-            CALLER.into(),
+        let request = format!("r-pay-{}", self.shown.len());
+        self.call(
             "do",
-            &self.id,
-            &json!({"request": format!("r-pay-{}", self.shown.len()), "plan": {"steps": []},
-                    "confirm": stop.details["confirmation"]["id"]}),
-            None,
-            &mut audit,
+            json!({"request": request, "plan": {"steps": []},
+                   "confirm": stop.details["confirmation"]["id"]}),
         )
         .await
-        .map(|(done, _)| done);
-        self.shown.push(seen(&Value::Object(audit.clone())));
-        match &done {
-            Ok(value) => self.shown.push(seen(value)),
-            Err(failure) => self.shown.push(seen_failure(failure)),
-        }
-        (done, audit)
     }
 
     /// Whether the card's number or code reached anything the agent or
@@ -106,7 +92,7 @@ async fn a_card_with_no_sites_pays_on_any_shop(engine: &str) {
 
     // The shop's own form, with its hints: latch lists the card and
     // suggests the whole mapping, Pay included.
-    h.call("open", json!({"url": format!("{local}/card-form.html")}))
+    h.call("open", json!({"url": format!("{local}/checkout.html")}))
         .await
         .unwrap();
     let observed = h.call("observe", json!({})).await.unwrap();
@@ -117,12 +103,8 @@ async fn a_card_with_no_sites_pays_on_any_shop(engine: &str) {
         (Some(card.as_str()), Some("card"))
     );
     let args = h.suggested(&card).await;
-    let (paid, audit) = h.pay(args).await;
-    println!(
-        "paid: {}; audit {}",
-        paid.unwrap()["trail"],
-        Value::Object(audit)
-    );
+    let paid = h.pay(args).await.unwrap();
+    println!("paid: {}", paid["trail"]);
     let page = h.text().await;
     assert!(page.contains(PAID), "{page}");
 
@@ -130,7 +112,7 @@ async fn a_card_with_no_sites_pays_on_any_shop(engine: &str) {
     // own mapping pays.
     h.call(
         "open",
-        json!({"url": format!("{local}/card-form.html?bare")}),
+        json!({"url": format!("{local}/checkout.html?bare")}),
     )
     .await
     .unwrap();
@@ -140,13 +122,12 @@ async fn a_card_with_no_sites_pays_on_any_shop(engine: &str) {
         ["cardholder name", [find(&bare, "textbox", "Name on card")]],
         ["number", [find(&bare, "textbox", "Card number")]],
         ["expiry", [find(&bare, "textbox", "Expiry")]],
-        ["cvv", [find(&bare, "textbox", "CVC")]],
+        ["cvv", [find(&bare, "textbox", "CVV")]],
     ]);
-    let press = find(&bare, "button", "Pay $10.00");
-    let (paid, _) = h
-        .pay(json!({"item": card, "fields": fields, "press": press}))
-        .await;
-    paid.unwrap();
+    let press = find(&bare, "button", "Pay");
+    h.pay(json!({"item": card, "fields": fields, "press": press}))
+        .await
+        .unwrap();
     let page = h.text().await;
     assert!(page.contains(PAID), "{page}");
 
@@ -168,17 +149,14 @@ async fn a_card_fills_a_providers_hosted_fields(engine: &str) {
     println!("hosted fields: fill {}", observed["fill"]);
     let suggestion = &observed["fill"]["suggestions"][0];
     assert_eq!(suggestion["press"], Value::Null);
-    let (paid, audit) = h
+    let paid = h
         .pay(
             json!({"item": card, "suggested": suggestion["id"], "snapshot": observed["snapshot"],
                     "press": find(&observed, "button", "Pay $10.00")}),
         )
-        .await;
-    println!(
-        "paid: {:?}; audit {}",
-        paid.map(|p| p["trail"].clone()),
-        Value::Object(audit)
-    );
+        .await
+        .unwrap();
+    println!("paid: {}", paid["trail"]);
     h.call("wait", json!({"text": "payment:", "within": 5}))
         .await
         .unwrap();
@@ -210,14 +188,11 @@ async fn a_card_fills_split_boxes_and_expiry_lists(engine: &str) {
         ["cvv", [find(&checkout, "textbox", "CVC")]],
     ]);
     let press = find(&checkout, "button", "Pay $10.00");
-    let (paid, audit) = h
+    let paid = h
         .pay(json!({"item": card, "fields": fields, "press": press}))
-        .await;
-    println!(
-        "paid: {:?}; audit {}",
-        paid.map(|p| p["trail"].clone()),
-        Value::Object(audit)
-    );
+        .await
+        .unwrap();
+    println!("paid: {}", paid["trail"]);
     let page = h.text().await;
     assert!(page.contains(PAID), "{page}");
     assert!(!h.saw_the_card(), "the card reached a result or the audit");
