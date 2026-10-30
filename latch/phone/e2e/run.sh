@@ -8,7 +8,7 @@
 #    and a link opened in a tab that shows another must load.
 # 2. The host lists the items without a value.
 # 3. A browser session on the host signs in to a practice site with the
-#    saved login (`latch browser login`, as an agent calls it), and the
+#    saved login (`latch browser fill`, as an agent calls it), and the
 #    page must show that it is signed in.
 # 4. The items are removed, and no made-up value may appear in the host's
 #    serve log, its state folder (audit log included; the vault is sealed),
@@ -47,7 +47,6 @@ password="Qz-made-up-$run"
 ssn="Kw-ssn-$run"
 passport="Jx-passport-$run"
 note="Vy-note-$run"
-session="phone-e2e"
 
 # Every client call's output goes to a file in $out, which step 4 searches.
 client() { # NAME ARGS…
@@ -90,19 +89,24 @@ cat "$out/saved.txt"
 login_item=$(awk '$3=="login"{print $1}' "$out/saved.txt")
 
 # 3. A browser session on the host signs in with the saved login.
-client open browser --host "$host" --session "$session" open https://quotes.toscrape.com/login
+client open browser --host "$host" open https://quotes.toscrape.com/login
+session=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["session"])' "$out/open.json")
 client observe browser --host "$host" --session "$session" observe
-client login browser --host "$host" --session "$session" login --item "$login_item"
+# The suggestion observe makes for the saved login: its fields and button.
+suggested=$(python3 - "$out/observe.json" "$login_item" <<'PY'
+import json, sys
+fill = json.load(open(sys.argv[1]))["fill"]
+print(next(s["id"] for s in fill["suggestions"] if s["item"] == sys.argv[2]))
+PY
+)
+client fill browser --host "$host" --session "$session" fill --item "$login_item" --suggested "$suggested"
+client text browser --host "$host" --session "$session" text
 client close browser --host "$host" --session "$session" close
 python3 - "$out" "$login_item" <<'PY'
 import json, sys
 out, item = sys.argv[1], sys.argv[2]
-observed = json.load(open(f"{out}/observe.json"))
-assert any(v["item"] == item for v in observed["vault"]), observed["vault"]
-login = json.load(open(f"{out}/login.json"))
-assert login["submitted"] is True, login
-assert "Logout" in login["lines"], login["lines"]
-print(f"browser login with {item}: submitted, page shows Logout")
+assert "Logout" in json.load(open(f"{out}/text.json"))["text"], "not signed in"
+print(f"browser fill with {item}: page shows Logout")
 PY
 
 # 4. Remove the items, then look for the values everywhere they must not be.

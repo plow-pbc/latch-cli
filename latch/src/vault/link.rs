@@ -591,16 +591,6 @@ mod tests {
     }
 
     #[test]
-    fn a_link_refuses_to_ask_for_a_field_its_kind_lacks() {
-        let dir = tempfile::tempdir().unwrap();
-        let vault = Vault::new(dir.path().into());
-        let args = json!({"kind": "identity", "title": "Me", "ask": ["cvv"]});
-        let refused = open(&vault, &here(), &args, false, &mut Map::new()).unwrap_err();
-        assert_eq!(refused.code, "bad_item");
-        assert!(vault.links.lock().unwrap().is_empty());
-    }
-
-    #[test]
     fn a_link_saves_nothing_until_its_secrets_or_a_notes_text_are_filled() {
         let dir = tempfile::tempdir().unwrap();
         let vault = Vault::new(dir.path().into());
@@ -839,23 +829,6 @@ mod tests {
     }
 
     #[test]
-    fn a_link_never_takes_a_secret_from_whoever_opens_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let vault = Vault::new(dir.path().into());
-        let args = json!({
-            "kind": "login", "title": "Shop", "sites": ["shop.example"],
-            "values": {"password": "made-up-pass-90ab"},
-        });
-        let refused = open(&vault, &here(), &args, false, &mut Map::new()).unwrap_err();
-        assert_eq!(
-            (refused.exit, refused.code.as_str()),
-            (Exit::Usage, "secret_in_argv")
-        );
-        assert!(!refused.message.contains("made-up-pass-90ab"));
-        assert!(vault.links.lock().unwrap().is_empty());
-    }
-
-    #[test]
     fn an_old_link_is_expired() {
         let dir = tempfile::tempdir().unwrap();
         let vault = Vault::new(dir.path().into());
@@ -882,12 +855,31 @@ mod tests {
     }
 
     #[test]
-    fn a_link_with_a_bad_item_is_refused_before_it_opens() {
+    fn rejected_link_requests_open_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let vault = Vault::new(dir.path().into());
-        let args = json!({"kind": "login", "title": "Shop", "sites": []});
-        let refused = open(&vault, &here(), &args, false, &mut Map::new()).unwrap_err();
-        assert_eq!(refused.code, "bad_item");
+        for (args, code) in [
+            // A field the kind lacks.
+            (
+                json!({"kind": "identity", "title": "Me", "ask": ["cvv"]}),
+                "bad_item",
+            ),
+            // A secret given with the link, by whoever opens it.
+            (
+                json!({"kind": "login", "title": "Shop", "sites": ["shop.example"],
+                       "values": {"password": "made-up-pass-90ab"}}),
+                "secret_in_argv",
+            ),
+            // A login with no site.
+            (
+                json!({"kind": "login", "title": "Shop", "sites": []}),
+                "bad_item",
+            ),
+        ] {
+            let refused = open(&vault, &here(), &args, false, &mut Map::new()).unwrap_err();
+            assert_eq!(refused.code, code, "{args}");
+            assert!(!refused.message.contains("made-up-pass-90ab"));
+        }
         assert!(vault.links.lock().unwrap().is_empty());
     }
 }

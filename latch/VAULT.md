@@ -169,7 +169,9 @@ latch vault link --host my-mac --kind login --title Shop --site shop.example \
   iroh relays. Whoever serves it
   could change what it does; the page is this open source code, so a change
   can be seen. `just phone-serve` serves it on this machine instead, for a
-  browser here or on the network.
+  browser here or on the network. The policy names the one Plow the page
+  signs in to; a build for a local or dev Plow names that one instead:
+  `PLOW_API=http://127.0.0.1:18904 phone/build.sh`.
 
 
 Both the field's frame and the top-level page must be HTTPS with a real

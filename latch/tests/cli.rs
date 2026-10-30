@@ -3675,6 +3675,7 @@ fn phone_request(
             send.write_all(&bytes).await.unwrap();
             send.finish().unwrap();
             let len = recv.read_u32().await.unwrap();
+            assert!(len < 100_000, "a {len}-byte answer");
             let mut bytes = vec![0; len as usize];
             recv.read_exact(&mut bytes).await.unwrap();
             connection.close(0u32.into(), b"done");
@@ -6268,46 +6269,15 @@ fn local_vault_edits_are_visible_to_serve_and_phone_links_stay_live() {
     );
     assert!(opened.status.success(), "link creation failed");
     let opened: Value = serde_json::from_slice(&opened.stdout).unwrap();
-    let url = url::Url::parse(opened["url"].as_str().unwrap()).unwrap();
-    let parts: std::collections::HashMap<_, _> =
-        url::form_urlencoded::parse(url.fragment().unwrap().as_bytes())
-            .into_owned()
-            .collect();
-    runtime.block_on(async {
-        use tokio::io::AsyncReadExt;
-        tokio::time::timeout(std::time::Duration::from_secs(15), async {
-            let endpoint = loopback_endpoint()
-                .relay_mode(iroh::RelayMode::custom([relay.parse().unwrap()]))
-                .bind()
-                .await
-                .unwrap();
-            let addr = iroh::EndpointAddr::new(parts["h"].parse().unwrap())
-                .with_relay_url(relay.parse().unwrap());
-            let connection = endpoint.connect(addr, b"plow/latch-phone/1").await.unwrap();
-            for op in ["page", "submit"] {
-                let (mut send, mut recv) = connection.open_bi().await.unwrap();
-                let bytes = serde_json::to_vec(
-                    &json!({"op": op, "args": {"code": parts["c"], "values": {}}}),
-                )
-                .unwrap();
-                send.write_all(&(bytes.len() as u32).to_be_bytes())
-                    .await
-                    .unwrap();
-                send.write_all(&bytes).await.unwrap();
-                send.finish().unwrap();
-                let len = recv.read_u32().await.unwrap();
-                assert!(len < 100_000);
-                let mut bytes = vec![0; len as usize];
-                recv.read_exact(&mut bytes).await.unwrap();
-                let response: Value = serde_json::from_slice(&bytes).unwrap();
-                assert!(response.get("ok").is_some(), "phone request refused");
-            }
-            connection.close(0u32.into(), b"done");
-            endpoint.close().await;
-        })
-        .await
-        .expect("phone link timed out");
-    });
+    let url = opened["url"].as_str().unwrap();
+    let phone = iroh::SecretKey::generate();
+    for op in ["page", "submit"] {
+        let response = phone_request(&runtime, &relay, url, &phone, op, json!({"values": {}}));
+        assert!(
+            response.get("ok").is_some(),
+            "phone request refused: {response}"
+        );
+    }
     assert_eq!(
         remote(&["vault", "list", "--host", "host"])["items"]
             .as_array()
