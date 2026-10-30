@@ -75,6 +75,7 @@ pub fn never_readable(home: &Path) -> Vec<PathBuf> {
 
 /// The kernel's path for an already open object, rather than another lookup
 /// through a name that a concurrent command can replace with a symlink.
+#[cfg(unix)]
 pub(crate) fn opened_path(file: &std::fs::File) -> std::io::Result<PathBuf> {
     use std::os::fd::AsRawFd;
     #[cfg(target_os = "linux")]
@@ -98,6 +99,7 @@ pub(crate) fn opened_path(file: &std::fs::File) -> std::io::Result<PathBuf> {
 /// The folder `path` names, opened without following a symlink at it and
 /// checked to be that folder still, a folder above it swapped included: the
 /// handle the host anchors a judged write to (`open_at`, `mkdirat`, …).
+#[cfg(unix)]
 pub(crate) fn open_folder(path: &Path) -> std::io::Result<std::fs::File> {
     use std::os::unix::fs::OpenOptionsExt;
     let folder = std::fs::OpenOptions::new()
@@ -115,6 +117,7 @@ pub(crate) fn open_folder(path: &Path) -> std::io::Result<std::fs::File> {
 
 /// `openat(folder, name, flags, mode)`, close-on-exec: `name` is looked up
 /// in `folder` alone.
+#[cfg(unix)]
 pub(crate) fn open_at(
     folder: &std::fs::File,
     name: &std::ffi::OsStr,
@@ -233,7 +236,9 @@ pub fn confine_browser(view: &BrowserView) -> Result<(), String> {
 
 /// Checks, without confining anything, that this system can apply the
 /// worker sandbox at all. The host runs it once at startup, so a kernel
-/// without the sandbox is refused there, not by every call later.
+/// without the sandbox is refused there, not by every call later. Windows
+/// has none yet, and its host does without (see `serve::run`).
+#[cfg(unix)]
 pub fn check() -> Result<(), String> {
     platform::check()
 }
@@ -259,6 +264,7 @@ pub fn page_isolation_off() -> bool {
 /// `page_isolation_off`.
 pub const PAGE_ISOLATION_OFF: &str = "page isolation off on this host";
 
+#[cfg(unix)]
 pub fn name() -> &'static str {
     if cfg!(target_os = "linux") {
         "bubblewrap + seccomp"
@@ -788,10 +794,6 @@ mod platform;
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 mod platform {
     use super::Policy;
-
-    pub fn check() -> Result<(), String> {
-        Err("no worker sandbox on this operating system yet".to_string())
-    }
 
     pub fn confine(_policy: &Policy) -> Result<(), String> {
         Err("no worker sandbox on this operating system yet".to_string())

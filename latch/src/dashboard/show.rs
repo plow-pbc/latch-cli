@@ -158,11 +158,31 @@ fn read_keys(raw: bool) -> tokio::sync::mpsc::Receiver<Key> {
 }
 
 /// The terminal in key-at-a-time mode, without echo, until dropped. Its
+/// Ctrl-C stays a signal, and keys come as the escape sequences `parse` reads.
+#[cfg(windows)]
+struct Raw(#[allow(dead_code)] crate::term::Console);
+
+#[cfg(windows)]
+impl Raw {
+    fn start() -> Option<Raw> {
+        use windows_sys::Win32::System::Console::{
+            ENABLE_ECHO_INPUT, ENABLE_LINE_INPUT, ENABLE_VIRTUAL_TERMINAL_INPUT,
+        };
+        crate::term::Console::set(crate::term::Console::stdin(), |mode| {
+            mode & !(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT) | ENABLE_VIRTUAL_TERMINAL_INPUT
+        })
+        .map(Raw)
+    }
+}
+
+/// The terminal in key-at-a-time mode, without echo, until dropped. Its
 /// Ctrl-C stays a signal.
+#[cfg(unix)]
 struct Raw {
     saved: libc::termios,
 }
 
+#[cfg(unix)]
 impl Raw {
     fn start() -> Option<Raw> {
         let fd = libc::STDIN_FILENO;
@@ -182,6 +202,7 @@ impl Raw {
     }
 }
 
+#[cfg(unix)]
 impl Drop for Raw {
     fn drop(&mut self) {
         // SAFETY: restoring what tcgetattr read.

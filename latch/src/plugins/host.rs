@@ -7,8 +7,6 @@
 #[cfg(target_os = "macos")]
 use std::path::Path;
 
-use std::os::unix::fs::PermissionsExt;
-
 use serde_json::{Map, Value, json};
 
 use super::{Connector, Plugins, Setting};
@@ -112,6 +110,14 @@ pub(super) async fn disable(plugins: &Plugins, connector: Connector) -> Result<V
     Ok(json!({"plugin": connector.name(), "state": "disabled", "waited_for": running}))
 }
 
+/// Whether a file's mode lets it run. Windows runs any file it can read.
+fn runnable(meta: &std::fs::Metadata) -> bool {
+    #[cfg(unix)]
+    return std::os::unix::fs::PermissionsExt::mode(&meta.permissions()) & 0o111 != 0;
+    #[cfg(windows)]
+    return meta.is_file();
+}
+
 /// Google's setup: the pinned gog is installed, and Plow has a Google account
 /// connected that it gives this host credentials for. Nothing is kept here:
 /// Plow still hands out short-lived credentials per operation.
@@ -119,8 +125,7 @@ async fn google(workers: &WorkerSetup, plow: &Plow) -> Result<Value, Failure> {
     let gog = crate::google::host::gog_program(&workers.state_dir, &crate::google::PIN.version)?;
     // The check every Google worker makes before it runs gog.
     crate::google::process::verify(&gog)?;
-    let executable = std::fs::metadata(&gog)
-        .is_ok_and(|gog| gog.is_file() && gog.permissions().mode() & 0o111 != 0);
+    let executable = std::fs::metadata(&gog).is_ok_and(|gog| gog.is_file() && runnable(&gog));
     if !executable {
         let message = format!("{} cannot be run; run install.sh again", gog.display());
         return Err(Failure::new(code::gog_not_executable, message));

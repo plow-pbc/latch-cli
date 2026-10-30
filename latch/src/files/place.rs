@@ -15,16 +15,23 @@
 //! A folder swapped for a symlink after judging cannot redirect the write,
 //! and a put that breaks off leaves the old file as it was.
 
+#[cfg(unix)]
 use std::ffi::CString;
+#[cfg(unix)]
 use std::fs::File;
+#[cfg(unix)]
 use std::io;
+#[cfg(unix)]
 use std::os::fd::AsRawFd;
+#[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use crate::exec::{check_path, is_hidden, resolve};
 use crate::failure::{Failure, code};
+#[cfg(unix)]
 use crate::sandbox::{open_at, open_folder};
 use crate::worker::WorkerSetup;
 
@@ -79,6 +86,7 @@ pub fn destination(
 }
 
 /// Moves the file at `staged` to `path`, which `destination` resolved.
+#[cfg(unix)]
 pub fn place(staged: &Path, path: &Path, workers: &WorkerSetup) -> Result<(), Failure> {
     let (Some(folder), Some(name)) = (path.parent(), path.file_name()) else {
         let message = format!("{} names no file", path.display());
@@ -128,6 +136,7 @@ pub fn place(staged: &Path, path: &Path, workers: &WorkerSetup) -> Result<(), Fa
 /// one (a link there is not followed).
 // `mode_t` is a u16 on macOS and a u32 on Linux.
 #[allow(clippy::unnecessary_cast)]
+#[cfg(unix)]
 fn mode_of(dir: &File, name: &[u8]) -> Option<u32> {
     let name = c_name(name).ok()?;
     let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
@@ -146,6 +155,7 @@ fn mode_of(dir: &File, name: &[u8]) -> Option<u32> {
     (stat.st_mode & libc::S_IFMT == libc::S_IFREG).then_some(stat.st_mode as u32 & 0o7777)
 }
 
+#[cfg(unix)]
 fn changed(folder: &Path) -> Failure {
     Failure::new(
         code::destination_changed,
@@ -156,10 +166,12 @@ fn changed(folder: &Path) -> Failure {
     )
 }
 
+#[cfg(unix)]
 fn c_name(name: &[u8]) -> io::Result<CString> {
     CString::new(name).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))
 }
 
+#[cfg(unix)]
 fn rename(dir: &File, from: &str, to: &[u8]) -> io::Result<()> {
     let (from, to) = (c_name(from.as_bytes())?, c_name(to)?);
     let fd = dir.as_raw_fd();
@@ -170,6 +182,7 @@ fn rename(dir: &File, from: &str, to: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 fn unlink(dir: &File, name: &str) -> io::Result<()> {
     let name = c_name(name.as_bytes())?;
     // SAFETY: `name` is NUL-terminated and outlives the call; `dir` is open.
@@ -177,6 +190,13 @@ fn unlink(dir: &File, name: &str) -> io::Result<()> {
         return Err(io::Error::last_os_error());
     }
     Ok(())
+}
+
+/// Windows has no worker sandbox yet, so no worker stages an upload to place.
+#[cfg(windows)]
+pub fn place(_staged: &Path, path: &Path, _workers: &WorkerSetup) -> Result<(), Failure> {
+    let message = format!("{}: no worker sandbox on Windows yet", path.display());
+    Err(Failure::new(code::sandbox_unavailable, message))
 }
 
 #[cfg(test)]

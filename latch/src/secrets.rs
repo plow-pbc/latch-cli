@@ -17,11 +17,10 @@
 
 use std::fs;
 use std::io::{ErrorKind, Write};
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use crate::failure::{Failure, code};
-use crate::state::write_private;
+use crate::state::{OwnerOnly, write_private};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Secret {
@@ -129,7 +128,7 @@ impl Secrets {
             let file = fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
-                .mode(0o600)
+                .owner_only()
                 .open(&path);
             return match file {
                 Ok(mut file) => file

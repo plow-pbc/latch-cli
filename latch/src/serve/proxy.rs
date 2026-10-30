@@ -10,7 +10,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use iroh::endpoint::{Connection, VarInt};
 use serde_json::json;
 use tokio::io::{AsyncReadExt, DuplexStream};
-use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 
 use super::{Host, Stopping, answer, failed};
 use crate::dial;
@@ -18,9 +17,10 @@ use crate::failure::code;
 use crate::log::log;
 use crate::plow::Peer;
 use crate::proxy::{self, Ended};
+use crate::transport::{LocalRead, LocalWrite};
 use crate::wire::{self, Request, Response};
 
-pub async fn serve(host: &Host, request: &Request, mut send: OwnedWriteHalf, recv: OwnedReadHalf) {
+pub async fn serve(host: &Host, request: &Request, mut send: LocalWrite, recv: LocalRead) {
     let Ok(peer) = serde_json::from_value::<Peer>(request.args["host"].clone()) else {
         let message = "a proxy request names the host to call".to_string();
         return answer(&mut send, &failed(code::bad_request, message)).await;
@@ -63,7 +63,7 @@ pub async fn serve(host: &Host, request: &Request, mut send: OwnedWriteHalf, rec
 /// The caller's bytes into `to_remote`, until it finishes its side and
 /// then goes away, or goes away without finishing: either way, its call
 /// is over.
-async fn caller(mut recv: OwnedReadHalf, mut to_remote: DuplexStream) {
+async fn caller(mut recv: LocalRead, mut to_remote: DuplexStream) {
     let ended = proxy::recv_bytes(&mut recv, &mut to_remote).await;
     drop(to_remote);
     if matches!(ended, Ok(Ended::Finished)) {
@@ -77,7 +77,7 @@ async fn forward(
     connection: &Connection,
     peer: &Peer,
     mut from_caller: DuplexStream,
-    send: &mut OwnedWriteHalf,
+    send: &mut LocalWrite,
     follow: &AtomicBool,
 ) {
     let Ok(frame) = wire::read_frame(&mut from_caller).await else {

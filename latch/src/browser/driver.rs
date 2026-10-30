@@ -218,6 +218,7 @@ pub trait Runtime: Driver {
     }
     /// What the engine writes to that the worker wakes on between calls,
     /// to tend it then.
+    #[cfg(unix)]
     fn wakes(&self) -> Option<std::os::fd::RawFd> {
         None
     }

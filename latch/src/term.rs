@@ -63,6 +63,26 @@ pub fn ask(question: &str) -> String {
 /// Asks for a secret on stderr without echoing what is typed (when stdin is
 /// a terminal; piped input is read as it comes). Never from argv or the
 /// environment.
+#[cfg(windows)]
+pub fn ask_secret(question: &str) -> String {
+    use windows_sys::Win32::System::Console::ENABLE_ECHO_INPUT;
+    eprint!("{question}");
+    let quiet = std::io::stdin()
+        .is_terminal()
+        .then(|| Console::set(Console::stdin(), |mode| mode & !ENABLE_ECHO_INPUT))
+        .flatten();
+    let mut answer = String::new();
+    let _ = std::io::stdin().read_line(&mut answer);
+    if quiet.is_some() {
+        eprintln!();
+    }
+    answer.trim_end_matches(['\n', '\r']).to_string()
+}
+
+/// Asks for a secret on stderr without echoing what is typed (when stdin is
+/// a terminal; piped input is read as it comes). Never from argv or the
+/// environment.
+#[cfg(unix)]
 pub fn ask_secret(question: &str) -> String {
     eprint!("{question}");
     let fd = libc::STDIN_FILENO;
@@ -131,6 +151,25 @@ pub fn up(lines: usize) -> String {
 }
 
 /// The terminal's size in columns and rows (80 × 24 if it cannot be read).
+#[cfg(windows)]
+pub fn size() -> (usize, usize) {
+    use windows_sys::Win32::System::Console::{
+        CONSOLE_SCREEN_BUFFER_INFO, GetConsoleScreenBufferInfo, GetStdHandle, STD_OUTPUT_HANDLE,
+    };
+    // SAFETY: the struct holds only integers, for which zero is valid.
+    let mut info: CONSOLE_SCREEN_BUFFER_INFO = unsafe { std::mem::zeroed() };
+    // SAFETY: `info` is writable storage for the call; only success is used.
+    if unsafe { GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &mut info) } == 0 {
+        return (80, 24);
+    }
+    let window = info.srWindow;
+    let columns = (window.Right - window.Left + 1) as usize;
+    let rows = (window.Bottom - window.Top + 1) as usize;
+    (columns.max(1), rows.max(1))
+}
+
+/// The terminal's size in columns and rows (80 × 24 if it cannot be read).
+#[cfg(unix)]
 pub fn size() -> (usize, usize) {
     // `winsize` is the C struct the TIOCGWINSZ request fills in.
     let mut size = libc::winsize {
@@ -171,5 +210,63 @@ mod tests {
     fn control_characters_never_reach_the_screen() {
         assert_eq!(one_line("a\nb\r\nc"), "a⏎b⏎⏎c");
         assert_eq!(one_line("tab\there \x1b[2J"), "tab here  [2J");
+    }
+}
+
+/// A Windows console's mode, changed until dropped.
+#[cfg(windows)]
+pub(crate) struct Console {
+    handle: windows_sys::Win32::Foundation::HANDLE,
+    saved: u32,
+}
+
+#[cfg(windows)]
+impl Console {
+    pub(crate) fn stdin() -> windows_sys::Win32::Foundation::HANDLE {
+        use windows_sys::Win32::System::Console::{GetStdHandle, STD_INPUT_HANDLE};
+        // SAFETY: GetStdHandle takes a constant and returns a handle or null.
+        unsafe { GetStdHandle(STD_INPUT_HANDLE) }
+    }
+
+    /// `change`'s mode for the console `handle`, or `None` when it is no console.
+    pub(crate) fn set(
+        handle: windows_sys::Win32::Foundation::HANDLE,
+        change: impl FnOnce(u32) -> u32,
+    ) -> Option<Console> {
+        use windows_sys::Win32::System::Console::{GetConsoleMode, SetConsoleMode};
+        let mut saved = 0;
+        // SAFETY: `saved` is writable for the mode; a handle that is no
+        // console fails, and nothing changes.
+        if unsafe { GetConsoleMode(handle, &mut saved) } == 0 {
+            return None;
+        }
+        // SAFETY: a mode derived from the one just read, for the same handle.
+        unsafe { SetConsoleMode(handle, change(saved)) };
+        Some(Console { handle, saved })
+    }
+
+    /// Lets stdout and stderr draw with the escape sequences latch writes
+    /// (colors, links, cursor moves), as every other terminal does. Kept on
+    /// for the process's life.
+    pub(crate) fn draw_escapes() {
+        use windows_sys::Win32::System::Console::{
+            ENABLE_VIRTUAL_TERMINAL_PROCESSING, GetStdHandle, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE,
+        };
+        for which in [STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+            // SAFETY: GetStdHandle takes a constant and returns a handle or null.
+            let handle = unsafe { GetStdHandle(which) };
+            std::mem::forget(Console::set(handle, |mode| {
+                mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING
+            }));
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for Console {
+    fn drop(&mut self) {
+        use windows_sys::Win32::System::Console::SetConsoleMode;
+        // SAFETY: restoring the mode read from this same handle.
+        unsafe { SetConsoleMode(self.handle, self.saved) };
     }
 }

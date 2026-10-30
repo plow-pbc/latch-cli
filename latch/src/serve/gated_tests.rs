@@ -230,7 +230,11 @@ impl TestHost {
 
     async fn local_request(&self, request: Request) -> Response {
         let (mine, hosts) = tokio::net::UnixStream::pair().unwrap();
-        tokio::spawn(serve_local(self.host.clone(), hosts));
+        tokio::spawn(serve_local(
+            self.host.clone(),
+            hosts,
+            crate::transport::Admission {},
+        ));
         let (mut recv, mut send) = mine.into_split();
         wire::write_frame(&mut send, &serde_json::to_vec(&request).unwrap())
             .await

@@ -16,9 +16,9 @@
 //! streams one to the client. A request's journal and screenshots are kept
 //! for 7 days, whether or not its session is still open.
 
+use crate::state::OwnerOnly;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
@@ -66,13 +66,13 @@ impl Journal {
         let folder = folder(state_dir, session);
         fs::DirBuilder::new()
             .recursive(true)
-            .mode(0o700)
+            .owner_only()
             .create(&folder)
             .map_err(lost)?;
         let file = OpenOptions::new()
             .append(true)
             .create_new(true)
-            .mode(0o600)
+            .owner_only()
             .open(folder.join(format!("{request}.jsonl")))
             .map_err(|err| match err.kind() {
                 std::io::ErrorKind::AlreadyExists => Failure::new(
@@ -160,14 +160,14 @@ pub fn save_shot(
     let folder = folder(state_dir, session).join(request);
     fs::DirBuilder::new()
         .recursive(true)
-        .mode(0o700)
+        .owner_only()
         .create(&folder)
         .map_err(lost)?;
     let mut file = OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(true)
-        .mode(0o600)
+        .owner_only()
         .open(folder.join(format!("{shot}.png")))
         .map_err(lost)?;
     file.write_all(png).map_err(lost)

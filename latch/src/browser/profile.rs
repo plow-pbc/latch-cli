@@ -16,9 +16,9 @@
 //! `<state-dir>/browser/sessions/` or a named one under
 //! `<state-dir>/browser/profiles/`, are removed when a host starts.
 
+use crate::state::OwnerOnly;
 use std::fs;
 use std::io;
-use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
@@ -62,7 +62,7 @@ pub fn of(state_dir: &Path, principal: &str, engine: &str) -> Result<PathBuf, Fa
 pub fn make(dir: PathBuf) -> Result<PathBuf, Failure> {
     fs::DirBuilder::new()
         .recursive(true)
-        .mode(0o700)
+        .owner_only()
         .create(&dir)
         .map_err(|err| Failure::new(code::profile_failed, format!("{}: {err}", dir.display())))?;
     Ok(dir)

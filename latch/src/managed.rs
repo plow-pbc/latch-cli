@@ -22,8 +22,8 @@
 use std::ffi::OsString;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
 use std::process::Command;
 use std::time::{Duration, Instant};
 
@@ -31,17 +31,15 @@ use clap::Parser;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
-use tokio::net::UnixStream;
-use tokio::net::unix::OwnedWriteHalf;
 
 use crate::cli::ServeArgs;
 use crate::dashboard::{self, Board};
 use crate::failure::{Failure, code};
 use crate::lifecycle::{self, Phase};
 use crate::serve::DETACH;
-use crate::state::{StateDir, to_hex};
+use crate::state::{OwnerOnly, StateDir, to_hex};
 use crate::term;
-use crate::transport;
+use crate::transport::{self, LocalStream, LocalWrite};
 use crate::wire::{self, Request, Response};
 
 /// How long a starting host has to answer on its socket: past the relay's
@@ -515,7 +513,6 @@ async fn show(
     boards: tokio::sync::mpsc::Receiver<Board>,
     attached: bool,
 ) -> dashboard::Ending {
-    use tokio::signal::unix::{SignalKind, signal};
     let theirs = hello["version"].as_str().unwrap_or("unknown");
     let notice = (theirs != crate::cli::version()).then(|| {
         format!(
@@ -523,15 +520,30 @@ async fn show(
             crate::cli::version()
         )
     });
-    // Install every handler before the first frame advertises Ctrl-C.
-    let mut interrupt = signal(SignalKind::interrupt()).expect("an interrupt handler");
-    let mut hangup = signal(SignalKind::hangup()).expect("a hangup handler");
-    let mut terminate = signal(SignalKind::terminate()).expect("a terminate handler");
+    // Install every handler before the first frame advertises Ctrl-C. On
+    // Windows the terminal going away is the console closing, which
+    // `Terminate` hears.
+    #[cfg(unix)]
+    let (mut interrupt, mut hangup) = {
+        use tokio::signal::unix::{SignalKind, signal};
+        let interrupt = signal(SignalKind::interrupt()).expect("an interrupt handler");
+        (
+            interrupt,
+            signal(SignalKind::hangup()).expect("a hangup handler"),
+        )
+    };
+    #[cfg(windows)]
+    let mut interrupt = tokio::signal::windows::ctrl_c().expect("an interrupt handler");
+    let mut terminate = crate::serve::Terminate::listen().expect("a terminate handler");
     let until = async move {
+        #[cfg(unix)]
+        let hung_up = hangup.recv();
+        #[cfg(windows)]
+        let hung_up = std::future::pending::<Option<()>>();
         tokio::select! {
             _ = interrupt.recv() => {}
-            _ = hangup.recv() => {}
-            _ = terminate.recv() => {}
+            _ = hung_up => {}
+            () = terminate.recv() => {}
         }
     };
     dashboard::show(boards, until, attached, notice).await
@@ -543,7 +555,7 @@ async fn show(
 async fn watch(
     dir: &Path,
     op: &str,
-) -> Result<(Value, tokio::sync::mpsc::Receiver<Board>, OwnedWriteHalf), Failure> {
+) -> Result<(Value, tokio::sync::mpsc::Receiver<Board>, LocalWrite), Failure> {
     let (hello, socket) = request(dir, op, json!({})).await?;
     let (mut reading, writing) = socket.into_split();
     let (send, boards) = tokio::sync::mpsc::channel(4);
@@ -574,7 +586,7 @@ async fn ask(dir: &Path, op: &str, args: Value) -> Result<Value, Failure> {
 
 /// Sends `op` to the host on `dir`; returns its first answer, within
 /// `ANSWER_WITHIN`, and the connection, for what the host sends next.
-async fn request(dir: &Path, op: &str, args: Value) -> Result<(Value, UnixStream), Failure> {
+async fn request(dir: &Path, op: &str, args: Value) -> Result<(Value, LocalStream), Failure> {
     tokio::time::timeout(ANSWER_WITHIN, request_now(dir, op, args))
         .await
         .unwrap_or_else(|_| {
@@ -586,7 +598,7 @@ async fn request(dir: &Path, op: &str, args: Value) -> Result<(Value, UnixStream
         })
 }
 
-async fn request_now(dir: &Path, op: &str, args: Value) -> Result<(Value, UnixStream), Failure> {
+async fn request_now(dir: &Path, op: &str, args: Value) -> Result<(Value, LocalStream), Failure> {
     let mut socket = transport::connect_local(dir).await?;
     let request = Request {
         op: op.to_string(),
@@ -623,7 +635,7 @@ async fn launch_lock(dir: &Path, until: Instant) -> Result<Option<File>, Failure
         .write(true)
         .create(true)
         .truncate(false)
-        .mode(0o600)
+        .owner_only()
         .open(&path)
         .map_err(|err| io_failure(&path, err))?;
     loop {
@@ -734,10 +746,12 @@ pub async fn run_as_app(
 }
 
 /// A command still running at its deadline.
+#[cfg(unix)]
 struct TimedOut;
 
 /// `command`'s output, `None` if it could not run. With `until`, a command
 /// still running then is killed and reaped, so none is left behind.
+#[cfg(unix)]
 fn output_by(
     command: &mut Command,
     until: Option<Instant>,
@@ -767,6 +781,7 @@ fn output_by(
 }
 
 /// Runs a service manager command; its own words on failure.
+#[cfg(unix)]
 fn manager(command: &mut Command) -> Result<(), Failure> {
     let output = command
         .output()
@@ -888,6 +903,100 @@ mod platform {
         text.replace('&', "&amp;")
             .replace('<', "&lt;")
             .replace('>', "&gt;")
+    }
+}
+
+/// Windows has no service manager a user may use without an administrator,
+/// so the host is a background process of the user's own: detached, with no
+/// console, its output appended to `serve.log`, and its pid in a file named
+/// after the service, which is how it is found again.
+#[cfg(windows)]
+mod platform {
+    use std::ffi::OsString;
+    use std::fs::OpenOptions;
+    use std::os::windows::process::CommandExt;
+    use std::path::{Path, PathBuf};
+    use std::process::{Command, Stdio};
+    use std::time::Instant;
+
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, WAIT_TIMEOUT};
+    use windows_sys::Win32::System::Threading::{
+        CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS, OpenProcess, PROCESS_SYNCHRONIZE,
+        PROCESS_TERMINATE, TerminateProcess, WaitForSingleObject,
+    };
+
+    use crate::failure::{Failure, code};
+
+    fn pid_file(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("{label}.pid"))
+    }
+
+    /// The service's process, while it runs: a handle that may wait on it
+    /// and end it.
+    fn running(label: &str) -> Option<HANDLE> {
+        let pid: u32 = std::fs::read_to_string(pid_file(label))
+            .ok()?
+            .trim()
+            .parse()
+            .ok()?;
+        // SAFETY: OpenProcess takes plain values; a null handle is a failure.
+        let process = unsafe { OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_TERMINATE, 0, pid) };
+        if process.is_null() {
+            return None;
+        }
+        // SAFETY: `process` is a live handle this function owns.
+        let alive = unsafe { WaitForSingleObject(process, 0) } == WAIT_TIMEOUT;
+        if alive {
+            return Some(process);
+        }
+        // SAFETY: as above; it is closed once.
+        unsafe { CloseHandle(process) };
+        None
+    }
+
+    pub fn registered(label: &str, _until: Option<Instant>) -> Option<bool> {
+        let process = running(label);
+        if let Some(process) = process {
+            // SAFETY: `running` handed over this live handle.
+            unsafe { CloseHandle(process) };
+        }
+        Some(process.is_some())
+    }
+
+    pub fn start(label: &str, dir: &Path, argv: &[OsString]) -> Result<(), Failure> {
+        let failed =
+            |err: std::io::Error| Failure::new(code::service_failed, format!("{argv:?}: {err}"));
+        let log = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dir.join("serve.log"))
+            .map_err(failed)?;
+        let child = Command::new(&argv[0])
+            .args(&argv[1..])
+            .stdin(Stdio::null())
+            .stdout(log.try_clone().map_err(failed)?)
+            .stderr(log)
+            .creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
+            .spawn()
+            .map_err(failed)?;
+        std::fs::write(pid_file(label), child.id().to_string()).map_err(failed)
+    }
+
+    pub fn remove(label: &str) -> Result<(), Failure> {
+        if let Some(process) = running(label) {
+            // SAFETY: `running` handed over this live handle; it is closed once.
+            unsafe {
+                TerminateProcess(process, 1);
+                CloseHandle(process);
+            }
+        }
+        match std::fs::remove_file(pid_file(label)) {
+            Err(err) if err.kind() != std::io::ErrorKind::NotFound => Err(Failure::new(
+                code::service_failed,
+                format!("{}: {err}", pid_file(label).display()),
+            )),
+            _ => Ok(()),
+        }
     }
 }
 

@@ -9,7 +9,6 @@ use std::io::Write;
 use std::time::Duration;
 
 use serde_json::Value;
-use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::dial::{self, ANSWER_WITHIN};
@@ -191,11 +190,11 @@ fn dropped(host: &Peer) -> Failure {
 /// SIGTERM, Ctrl-C, or (when it is a pipe) stdin closing: whoever started
 /// this wants it to stop.
 pub(crate) async fn stop_requested() {
-    let mut terminate = signal(SignalKind::terminate()).expect("SIGTERM can be handled");
+    let mut terminate = crate::serve::Terminate::listen().expect("SIGTERM can be handled");
     tokio::select! {
         () = stdin_closed() => {}
         _ = tokio::signal::ctrl_c() => {}
-        _ = terminate.recv() => {}
+        () = terminate.recv() => {}
     }
 }
 

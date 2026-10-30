@@ -119,6 +119,7 @@ pub async fn read_frame(input: &mut (impl AsyncRead + Unpin)) -> std::io::Result
 }
 
 /// The same framing for the single-threaded worker, before any runtime starts.
+#[cfg_attr(windows, allow(dead_code))]
 pub fn read_frame_sync(input: &mut impl std::io::Read) -> std::io::Result<Vec<u8>> {
     let mut length = [0u8; 4];
     input.read_exact(&mut length)?;
