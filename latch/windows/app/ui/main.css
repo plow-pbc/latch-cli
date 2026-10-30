@@ -51,6 +51,8 @@ body:has(.app:not([hidden])) { background: var(--win-bg); }
   font: 14px/1.43 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
 }
 .app button { font: inherit; color: inherit; }
+.app.no-sidebar { grid-template-columns: 0 1fr; }
+.app.no-sidebar .sidebar { visibility: hidden; }
 .app svg.icon, .app svg.chevron {
   fill: none;
   stroke: currentColor;

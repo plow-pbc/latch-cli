@@ -253,9 +253,12 @@ fn fake_mode() -> bool {
     cfg!(debug_assertions) && std::env::var_os("LATCH_APP_FAKE").is_some()
 }
 
-/// WebView2 keeps no form data and no passwords of its own: a vault item's
-/// fields are typed in this window, and general autofill is on by default.
-fn without_autofill(webview: &tauri::webview::PlatformWebview) -> windows_core::Result<()> {
+/// WebView2 as an app's window, not a browser's: it keeps no form data and
+/// no passwords of its own (a vault item's fields are typed here, and
+/// general autofill is on by default), and the browser's own keys (F5 and
+/// Ctrl+R reload, Ctrl+P prints, Ctrl+F finds) are off; the pages' own
+/// shortcuts still work.
+fn as_an_app(webview: &tauri::webview::PlatformWebview) -> windows_core::Result<()> {
     use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings4;
     use windows_core::Interface;
     // SAFETY: COM calls on the window's own live controller, on its thread.
@@ -263,6 +266,7 @@ fn without_autofill(webview: &tauri::webview::PlatformWebview) -> windows_core::
         let settings: ICoreWebView2Settings4 = webview.controller().CoreWebView2()?.Settings()?.cast()?;
         settings.SetIsGeneralAutofillEnabled(false.into())?;
         settings.SetIsPasswordAutosaveEnabled(false.into())?;
+        settings.SetAreBrowserAcceleratorKeysEnabled(false.into())?;
     }
     Ok(())
 }
@@ -294,7 +298,7 @@ fn main() {
             made.build()?;
             if let Some(window) = app.get_webview_window("main") {
                 window.with_webview(|webview| {
-                    let _ = without_autofill(&webview);
+                    let _ = as_an_app(&webview);
                 })?;
                 // Fake mode only: `LATCH_APP_STILL` is the address's query
                 // (`place=vault&host=pi-kitchen`), for stills beside the Mac's.

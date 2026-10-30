@@ -94,6 +94,7 @@ export async function open(into) {
   });
   await readAccount();
   setInterval(readAccount, 30_000);
+  document.addEventListener("keydown", shortcut);
   if (asked.get("host")) app.hostName = asked.get("host");
   if (asked.get("inspect")) app.inspecting[asked.get("place")] = asked.get("inspect") !== "0";
   if (asked.get("search")) app.search[asked.get("place")] = asked.get("search");
@@ -207,6 +208,27 @@ function go(place) {
   const page = pageOf(place);
   const entry = host();
   if (page?.enter && (entry || isAccount(place))) page.enter(app, entry).then(() => drawPage());
+}
+
+/** The Mac app's menu commands, as Windows' Ctrl keys (Main/WindowCommands.swift):
+ * Ctrl+1–5 a host's screens, Ctrl+F search, Ctrl+N a new vault item,
+ * Ctrl+Alt+I the inspector, Ctrl+Alt+S the sidebar. Rules saves itself with
+ * Ctrl+S. Nothing while a sheet is up. */
+function shortcut(event) {
+  if (!event.ctrlKey || event.metaKey || root.hidden || root.querySelector("dialog[open]")) return;
+  const key = event.key.toLowerCase();
+  const screen = SCREENS[Number(event.key) - 1];
+  if (!event.altKey && screen && host()) go(screen[0]);
+  else if (!event.altKey && key === "f") root.querySelector(".head input.search")?.focus();
+  else if (!event.altKey && key === "n" && app.place === "vault") {
+    [...root.querySelectorAll(".page button")].find((button) => button.textContent.trim() === "New Item")?.click();
+  } else if (event.altKey && key === "i" && pageOf(app.place)?.inspector) {
+    app.inspecting[app.place] = !app.inspecting[app.place];
+    draw();
+  } else if (event.altKey && key === "s") {
+    root.classList.toggle("no-sidebar");
+  } else return;
+  event.preventDefault();
 }
 
 function draw({ page = true } = {}) {
