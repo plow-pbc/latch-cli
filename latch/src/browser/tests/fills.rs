@@ -25,6 +25,8 @@ use crate::vault::totp::Params;
 
 const PASSWORD: &str = "made-up-pass-7c41";
 const NUMBER: &str = "4242424242424242";
+/// An Amex test number: 15 digits, which providers show as 4-6-5.
+const AMEX: &str = "378282246310005";
 const CVV: &str = "8640";
 const KEY: &str = "JBSWY3DPEHPK3PXP";
 
@@ -37,7 +39,6 @@ conformance!(
     observe_suggests_from_hints_and_the_checks_refuse_contradictions,
     a_card_confirmation_binds_its_mapping_and_frames,
     a_fill_pauses_its_own_session_and_no_other,
-    agent_code_is_noted_per_site_for_its_session_only,
     a_login_after_an_edit_fills_the_new_password,
     a_sign_in_the_site_refuses_says_so,
     a_login_whose_page_replaces_its_email_field_still_fills_whole,
@@ -50,6 +51,7 @@ conformance!(
     no_vault_value_goes_into_an_editable_region,
     a_stored_password_with_a_line_break_fills_a_single_line_field,
     a_login_an_agent_asked_for_by_phone_link_fills_on_its_site,
+    a_login_field_that_drops_characters_does_not_hold_the_login,
     ;
     mac:
     vault_fills_go_only_where_the_item_allows_and_never_show_a_value,
@@ -308,7 +310,7 @@ fn site() -> u16 {
                             "latch paid",
                             format!(
                                 "payment: number {}, expiry {} ({}), cvv {}, name {}",
-                                check(get("cc-number") == NUMBER),
+                                check([NUMBER, AMEX].contains(&get("cc-number"))),
                                 check(get("cc-exp") == "04 / 31"),
                                 get("cc-exp"),
                                 check(get("cc-csc") == CVV),
@@ -593,7 +595,6 @@ async fn vault_fills_go_only_where_the_item_allows_and_never_show_a_value(engine
     );
     assert_eq!(signed_in["submitted"], true);
     assert!(h.text().await.contains("password accepted"));
-    assert_eq!(audit["agent_code_before_fill"], false);
     assert!(audit["mapping"]["username"].is_array() && audit["mapping"]["password"].is_array());
     assert!(audit["source"].as_str().unwrap().starts_with('s'));
 
@@ -666,11 +667,10 @@ async fn vault_fills_go_only_where_the_item_allows_and_never_show_a_value(engine
     let (slow, audit) = filling.await.unwrap();
     h.shown.push(seen(&Value::Object(audit.clone())));
     assert_eq!(slow.unwrap()["submitted"], true);
-    // Agent code ran in this session before that fill, and the audit says so.
-    assert_eq!(audit["agent_code_before_fill"], true);
     assert!(h.text().await.contains("password accepted"));
 
     // A card: secret fields only with --press; reshaped expiry; gone after.
+    h.new_session().await;
     let checkout = h
         .call("open", json!({"url": format!("{local}/checkout.html")}))
         .await
@@ -1062,7 +1062,7 @@ async fn a_fill_that_cannot_finish_shows_no_value_and_keeps_the_agent_out(engine
     );
     assert_eq!(refused.code, "press_required");
     assert!(
-        h.call("eval", json!({"script": "1"})).await.is_ok(),
+        h.call("screenshot", json!({})).await.is_ok(),
         "nothing was left on the page"
     );
 
@@ -1266,10 +1266,10 @@ async fn a_fill_pauses_its_own_session_and_no_other(engine: &str) {
     }
 }
 
-/// Agent code is noted per site, for the session: a fill's audit says
-/// whether `eval` ran on its sites earlier in the session, and not when it
-/// ran only on another site, or in another session.
-async fn agent_code_is_noted_per_site_for_its_session_only(engine: &str) {
+/// A login's fields are kept only as they were saved: a field that drops
+/// characters (an email's dots, a password's dashes) would sign in to
+/// another account, or with a wrong password, so the fill stops there.
+async fn a_login_field_that_drops_characters_does_not_hold_the_login(engine: &str) {
     let (_dir, state, _area) = test_state(engine);
     let vault = Vault::new(state.clone());
     let login = vault
@@ -1278,50 +1278,53 @@ async fn agent_code_is_noted_per_site_for_its_session_only(engine: &str) {
                 LOGIN,
                 "Shop",
                 &["shop.example"],
-                &[("username", "ada@shop.example"), ("password", PASSWORD)],
+                &[
+                    ("username", "john.doe@shop.example"),
+                    ("password", PASSWORD),
+                ],
             ))
         })
         .unwrap();
-    let pages = site();
-    let local = format!("http://127.0.0.1:{pages}");
-    let elsewhere = format!("http://localhost:{pages}");
+    let local = format!("http://127.0.0.1:{}", site());
     let mut browsers = Browsers::new(state.clone(), vault.clone(), super::HEADLESS);
     browsers.test = Some((
         latch(),
         vec![(local.clone(), "https://login.shop.example".into())],
     ));
     let mut h = Harness::start(browsers, engine).await;
-    // In the session the harness has: `goto` stays in it, `open` starts another.
-    let login_once = async |h: &mut Harness| {
-        h.call("goto", json!({"url": format!("{local}/login.html")}))
+    for (strip, field) in [("email", "username"), ("password", "password")] {
+        let page = h
+            .call(
+                "open",
+                json!({"url": format!("{local}/login-strips.html?strip={strip}")}),
+            )
             .await
             .unwrap();
-        let (signed_in, audit) = h.login(&login.item).await;
-        assert_eq!(signed_in.unwrap()["submitted"], true);
-        audit["agent_code_before_fill"].clone()
-    };
-
-    // Agent code on another site: a fill here is not flagged.
-    h.call("goto", json!({"url": format!("{elsewhere}/next.html")}))
-        .await
-        .unwrap();
-    h.call("eval", json!({"script": "1"})).await.unwrap();
-    let flagged = login_once(&mut h).await;
-    println!("after eval on localhost, a fill on 127.0.0.1: agent_code_before_fill {flagged}");
-    assert_eq!(flagged, false);
-
-    // On this site, earlier in the session: a later fill is flagged.
-    h.call("eval", json!({"script": "1"})).await.unwrap();
-    let flagged = login_once(&mut h).await;
-    println!("after eval on 127.0.0.1, a fill there: agent_code_before_fill {flagged}");
-    assert_eq!(flagged, true);
-
-    // A new session starts with none: nothing of the last one is in it.
-    h.new_session().await;
-    let flagged = login_once(&mut h).await;
-    println!("in a new session, a fill on 127.0.0.1: agent_code_before_fill {flagged}");
-    assert_eq!(flagged, false);
-    h.call("close", json!({})).await.unwrap();
+        let (stopped, _) = h
+            .fill(json!({
+                "item": login.item,
+                "fields": [["username", [find(&page, "textbox", "Email")]],
+                           ["password", [find(&page, "textbox", "Password")]]],
+                "press": find(&page, "button", "Sign in"),
+            }))
+            .await;
+        let stopped = stopped.unwrap_err();
+        println!(
+            "{strip} drops characters: {} ({})",
+            stopped.code, stopped.message
+        );
+        assert_eq!(stopped.code, "needs_owner");
+        assert!(
+            stopped.message.starts_with(&format!(
+                "the page did not keep the {field} latch typed: it changed it."
+            )),
+            "{}",
+            stopped.message
+        );
+        assert!(!h.text().await.contains("signed in"));
+    }
+    assert!(!h.shown.join("\n").contains(PASSWORD));
+    h.call("close", json!({})).await.ok();
 }
 
 /// Observe lists a login whose form sits in a frame on its own site, under

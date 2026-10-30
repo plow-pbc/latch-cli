@@ -901,7 +901,10 @@ pub fn mark_against(vault: &dyn Backend, parsed: &mut Parsed) -> Result<(), Fail
         let same = held.iter().find(|m| {
             m.kind == kind_name(kind)
                 && !matched.contains(&m.item.as_str())
-                && vault.item(&m.item).is_some_and(|held| {
+                && vault.item(&m.item).is_some_and(|mut held| {
+                    // As the vault would store it now: an older latch kept
+                    // a card's number as it came.
+                    let _ = held.validate();
                     held.raw == stored.raw
                         && held.sites == stored.sites
                         && held.other_top_sites == stored.other_top_sites

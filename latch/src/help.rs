@@ -279,7 +279,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "hosts.default",
         runs_on: |_| RunsOn::Local,
-        output: "`default_host`: the host `--host default` (or `LATCH_HOST=default`) names, saved in this state folder for this machine or agent alone; null when none is. NAME must be a host this account has; `--clear` forgets it. A command without --host goes where it always did, and a host named `default` is reached only through this.",
+        output: "`default_host`: the host `--host default` (or `LATCH_HOST=default`) names, saved in this state folder for this machine or agent alone; null when none is. With one saved, `next` says how it is used: saved; use --host default (or LATCH_HOST=default) to use it; commands without --host are unchanged. NAME must be a host this account has; `--clear` forgets it. A host named `default` is reached only through this.",
         effect: Repeatable("saves or clears this state folder's default host"),
         owner_only: false,
         connector: None,

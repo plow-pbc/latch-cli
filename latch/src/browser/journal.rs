@@ -30,7 +30,13 @@ use crate::state::to_hex;
 
 pub struct Journal {
     file: File,
+    /// The numbers of the cards filled in the request's session: each
+    /// record is written with them masked (`shown::mask_cards`).
+    cards: Option<Cards>,
 }
+
+/// The numbers of the cards filled in a session, digits only.
+pub type Cards = std::sync::Arc<std::sync::Mutex<Vec<String>>>;
 
 /// How long a request's journal and screenshots are kept.
 pub const KEEP: Duration = Duration::from_secs(7 * 24 * 60 * 60);
@@ -83,13 +89,25 @@ impl Journal {
                 ),
                 _ => lost(err),
             })?;
-        let mut journal = Journal { file };
+        let mut journal = Journal { file, cards: None };
         journal.write(json!({"t": "start", "caller": caller, "steps": steps}))?;
         Ok(journal)
     }
 
+    /// The journal, its records written with `cards` masked from here on.
+    pub fn masking(self, cards: Cards) -> Journal {
+        Journal {
+            cards: Some(cards),
+            ..self
+        }
+    }
+
     /// Appends one record and syncs it to disk.
-    pub fn write(&mut self, record: Value) -> Result<(), Failure> {
+    pub fn write(&mut self, mut record: Value) -> Result<(), Failure> {
+        if let Some(cards) = &self.cards {
+            let cards = cards.lock().expect("cards lock").clone();
+            super::shown::mask_cards(&mut record, &cards);
+        }
         let mut line = serde_json::to_vec(&record).expect("serializes");
         line.push(b'\n');
         self.file.write_all(&line).map_err(lost)?;

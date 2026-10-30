@@ -199,7 +199,9 @@ login.
   file paths, sizes and names; the full Google command; a browser plan as
   written, with its values and its site. For a vault fill it sees the
   item's kind and title, the sites it's saved for and the fields mapped,
-  never their values. For `--secret-env` it sees only names and lengths.
+  never their values; for a confirmed card fill, also the checkout: the
+  page's title, the sites the values go into, the button pressed and the
+  lines around it, and the card's last four digits. For `--secret-env` it sees only names and lengths.
   The judgment runs at Plow, so keep credentials out of arguments.
 - **Signing in with the vault.** A saved login fills only on its own sites,
   and the agent never receives its values. Its site says where a login may

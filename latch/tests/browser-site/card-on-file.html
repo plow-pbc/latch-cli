@@ -1,0 +1,11 @@
+<!doctype html><title>latch card on file test</title>
+<!-- A checkout that shows the whole number of the card it has on file
+     beside its Pay button, as a careless shop might. -->
+<h1>Checkout</h1>
+<form method="post" action="pay">
+  <p>Card on file: 4242 4242 4242 4242</p>
+  <p><label>Card number <input name="cc-number" autocomplete="cc-number" inputmode="numeric"></label></p>
+  <p><label>Expiry <input name="cc-exp" autocomplete="cc-exp" placeholder="MM / YY"></label></p>
+  <p><label>CVV <input name="cc-csc" autocomplete="cc-csc" maxlength="4"></label></p>
+  <p><button type="submit">Pay $10.00</button></p>
+</form>

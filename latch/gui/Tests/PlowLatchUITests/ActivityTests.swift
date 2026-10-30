@@ -21,7 +21,7 @@ struct ActivityTests {
         let all = try records(Fixtures.studioAudit) + records(Fixtures.kitchenAudit)
         let titles = Set(all.map(\.status.title))
         #expect(titles.isSuperset(of: [
-            "Connected", "Allowed", "Refused · needed your OK", "Refused · you said no",
+            "Connected", "Allowed", "Refused by gatekeeper · needed your OK", "Refused by gatekeeper · you said no",
             "Refused · exec is off for this agent", "Refused · Google is off",
         ]))
     }
@@ -302,7 +302,7 @@ struct RecordShapeTests {
     // beside what was judged.
     @Test func aBrowserJudgmentIsRead() throws {
         let refused = try record(#"{"agent":"a1","caller":"k","caller_name":"scout","decision":"deny","details":{"args":{"command":"open","origin":"https://shop.example","judged":{"kind":"open"},"gate":{"verdict":"owner_said_no","source":"chat_and_rules","p":{"COVERED":0.1,"FORBIDDEN":0.9,"NOT_COVERED":0.0}}},"gate":null,"started":null},"id":"b1","op":"browser","outcome":"gatekeeper_denied","time":"2026-10-23T05:27:23Z"}"#)
-        #expect(refused.status == .refused("you said no"))
+        #expect(refused.status == .gatekeeper(saidNo: true))
         #expect(refused.gate?.source == "chat_and_rules")
         #expect(!RecordInspector.otherFields(of: refused).map(\.key).contains("gate"))
     }
@@ -311,8 +311,27 @@ struct RecordShapeTests {
     // gate `{"caller":"owner_on_host"}`; the judgment is still the args'.
     @Test func aLocalBrowserJudgmentIsReadPastTheHostMarker() throws {
         let refused = try record(#"{"agent":null,"caller":"k","caller_name":"studio","decision":"deny","details":{"args":{"command":"open","judged":{"kind":"open"},"gate":{"verdict":"owner_said_no","source":"owner_request"}},"gate":{"caller":"owner_on_host"},"started":null},"id":"b2","op":"browser","outcome":"gatekeeper_denied","time":"2026-10-23T05:27:23Z"}"#)
-        #expect(refused.status == .refused("you said no"))
+        #expect(refused.status == .gatekeeper(saidNo: true))
         #expect(refused.gate?.source == "owner_request")
+    }
+
+    // latch denies more than the gatekeeper does: a stop of its own says
+    // what happened, never "Refused by gatekeeper".
+    @Test(arguments: [
+        ("confirm_needed", "Needs confirmation"), ("no_such_field", "Field not found"),
+        ("no_such_item", "Item not found"), ("secret_on_page", "Secret on page"),
+    ])
+    func latchsOwnStopsSayWhatHappened(_ outcome: String, _ title: String) throws {
+        let stopped = try record(#"{"agent":"a1","caller":"k","caller_name":"scout","decision":"deny","details":{"args":{"command":"do","gate":{"verdict":"allow"}},"gate":null,"started":null},"id":"s1","op":"browser","outcome":"\#(outcome)","time":"2026-10-23T05:27:23Z"}"#)
+        #expect(stopped.status == .stopped(title))
+        #expect(stopped.status.title == title)
+    }
+
+    @Test func onlyTheGatekeepersDenialsAreItsRefusals() throws {
+        let notCovered = try record(#"{"agent":"a1","caller":"k","caller_name":"scout","decision":"deny","details":{"args":{"argv":["rm","x"]},"gate":{"verdict":"not_covered"},"started":null},"id":"g1","op":"exec","outcome":"gatekeeper_denied","time":"2026-10-23T05:27:23Z"}"#)
+        #expect(notCovered.status.title == "Refused by gatekeeper · needed your OK")
+        let execOff = try record(#"{"agent":"a1","caller":"k","caller_name":"scout","decision":"deny","details":{"args":{"argv":["ls"]},"gate":null,"started":null},"id":"g2","op":"exec","outcome":"exec_denied","time":"2026-10-23T05:27:23Z"}"#)
+        #expect(execOff.status.title == "Refused · exec is off for this agent")
     }
 
     // `serve.rs` records a refused connection with decision deny.
