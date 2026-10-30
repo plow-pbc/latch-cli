@@ -1398,7 +1398,8 @@ async fn serve_request(
                 Err(message) => failed(code::audit_failed, message),
             };
             // Answered before the board's name for the caller, which may ask Plow.
-            answer(&mut send, &with_permissions(response, exec_permissions)).await;
+            let response = with_permissions(response, exec_permissions);
+            answer(&mut send, &with_host(response, &host.name)).await;
             let name = host.shown_name(&identity).await;
             host.dashboard.end(
                 on_board,
@@ -1413,7 +1414,26 @@ async fn serve_request(
             return;
         }
     };
-    answer(&mut send, &with_permissions(response, exec_permissions)).await;
+    let response = with_permissions(response, exec_permissions);
+    answer(&mut send, &with_host(response, &host.name)).await;
+}
+
+/// Names the host that answered, as Plow lists it, in `host`: on a result,
+/// and on an error's details, unless the answer names one already.
+fn with_host(mut response: Response, name: &str) -> Response {
+    let named = match &mut response {
+        Response::Ok(result) => result.as_object_mut(),
+        Response::Error { details, .. } => {
+            if details.is_null() {
+                *details = json!({});
+            }
+            details.as_object_mut()
+        }
+    };
+    if let Some(named) = named {
+        named.entry("host").or_insert_with(|| json!(name));
+    }
+    response
 }
 
 /// An exec's refusal, with the writes and network it asked for.

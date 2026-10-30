@@ -141,6 +141,9 @@ async fn the_owner_reads_the_same_status_and_audit_as_on_the_host_masked_as_ther
     let (status, _) = t.call(&device, "status", json!({})).await;
     let mut status = ok(status);
     status.as_object_mut().unwrap().remove("audit_id");
+    // The answer names the host; the rest is its status as printed there.
+    let named = status.as_object_mut().unwrap().remove("host");
+    assert_eq!(named, Some(json!("test-host")));
     let here = crate::status::local(&StateDir {
         path: t.state.clone(),
     })
@@ -399,6 +402,8 @@ async fn judge(t: &TestHost, device: &Endpoint, id: &Value, raw: bool) -> Value 
     let (answer, _) = t.call(device, "audit_judge", args).await;
     let mut there = ok(answer);
     there.as_object_mut().unwrap().remove("audit_id");
+    let named = there.as_object_mut().unwrap().remove("host");
+    assert_eq!(named, Some(json!("test-host")));
     assert_eq!(there, here);
     here
 }

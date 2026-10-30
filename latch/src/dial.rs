@@ -143,7 +143,13 @@ fn offline(host: &Peer) -> Failure {
         "host {:?} is not online{seen}; nothing was sent. Start `latch serve` there",
         host.name
     );
-    Failure::new(code::host_offline, message)
+    named(Failure::new(code::host_offline, message), host)
+}
+
+/// A failure to reach `host`, naming it in `host` as its answers do.
+fn named(mut failure: Failure, host: &Peer) -> Failure {
+    failure.details = serde_json::json!({"host": host.name});
+    failure
 }
 
 /// Why dialing `host` failed: it speaks another protocol, or it could not
@@ -159,7 +165,7 @@ fn not_connected(host: &Peer, err: &ConnectError) -> Failure {
             String::from_utf8_lossy(wire::ALPN),
             crate::cli::version(),
         );
-        return Failure::new(code::protocol_mismatch, message);
+        return named(Failure::new(code::protocol_mismatch, message), host);
     }
     tracing::info!(host = %host.name, error = ?err, "could not connect");
     let message = format!(
@@ -167,7 +173,7 @@ fn not_connected(host: &Peer, err: &ConnectError) -> Failure {
         host.name,
         reasons(err)
     );
-    Failure::new(code::host_unreachable, message)
+    named(Failure::new(code::host_unreachable, message), host)
 }
 
 fn not_connected_within(host: &Peer, within: Duration) -> Failure {
@@ -177,7 +183,7 @@ fn not_connected_within(host: &Peer, within: Duration) -> Failure {
         host.name,
         within.as_secs_f32()
     );
-    Failure::new(code::host_unreachable, message)
+    named(Failure::new(code::host_unreachable, message), host)
 }
 
 /// Sends `request` to each of `hosts` at once, through one endpoint, and
@@ -526,6 +532,7 @@ mod tests {
         let started = Instant::now();
         let failure = connect(&state, &host).await.err().unwrap();
         assert_eq!(failure.code, "host_offline");
+        assert_eq!(failure.details, serde_json::json!({"host": "mac"}));
         assert!(
             failure
                 .message

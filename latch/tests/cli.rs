@@ -3488,7 +3488,10 @@ fn a_host_runs_exec_and_files_under_home() {
     // The owner reads its status as it prints it there.
     let remote = latch(&owner, &["status", "--host", "host"], &[]);
     assert_eq!(remote.status.code(), Some(0), "{remote:?}");
-    let remote: Value = serde_json::from_slice(&remote.stdout).unwrap();
+    let mut remote: Value = serde_json::from_slice(&remote.stdout).unwrap();
+    // Named, as every answer from a host is; the rest as printed there.
+    let named = remote.as_object_mut().unwrap().remove("host");
+    assert_eq!(named, Some(json!("host")));
     assert_eq!(remote, local);
 
     let into = dir.path().join("hosts");
@@ -4787,6 +4790,55 @@ fn exec_true(from: &Path, host: &str) {
         "after {:?}: {output:?}",
         started.elapsed()
     );
+}
+
+/// Every answer from a host names it in `host`, as Plow lists it: a
+/// result, and an error's `error` object, whether it came from another
+/// host or from this machine's own.
+#[test]
+fn every_answer_from_a_host_names_the_host() {
+    let owners = Owners::start();
+    let _host = owners.serve(&owners.host);
+    let _studio = owners.serve(&owners.studio);
+    let run = |from: &Path, args: &[&str]| {
+        let output = latch(from, args, &[]);
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+        println!("latch {}: {result}", args.join(" "));
+        result
+    };
+    for host in ["host", "studio"] {
+        let ran = run(
+            &owners.laptop,
+            &["exec", "--host", host, "--", "echo", "hi"],
+        );
+        assert_eq!(ran["host"], host);
+    }
+    // On the studio itself, through its own socket.
+    let here = run(&owners.studio, &["exec", "--", "echo", "hi"]);
+    assert_eq!(here["host"], "studio");
+    let status = run(&owners.laptop, &["status", "--host", "studio"]);
+    assert_eq!(status["host"], "studio");
+
+    let got = owners.dir.path().join("got");
+    let missing = latch(
+        &owners.laptop,
+        &[
+            "file",
+            "get",
+            "--host",
+            "studio",
+            "/no/such/file",
+            got.to_str().unwrap(),
+        ],
+        &[],
+    );
+    let error = one_error_line(
+        &String::from_utf8_lossy(&missing.stderr),
+        missing.status.code(),
+    );
+    println!("latch file get --host studio /no/such/file: {error}");
+    assert_eq!(error["error"]["host"], "studio", "{error}");
 }
 
 /// Each call from a machine whose host serves goes through that host,
