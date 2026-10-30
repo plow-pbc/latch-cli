@@ -1027,21 +1027,6 @@ const ENTRIES: &[Entry] = &[
         connector: None,
         examples: &[
             ex(
-                "Add a card from the phone",
-                &[
-                    "vault",
-                    "--host",
-                    "mac",
-                    "link",
-                    "--kind",
-                    "card",
-                    "--title",
-                    "Visa",
-                    "--page",
-                    "https://phone.example/latch",
-                ],
-            ),
-            ex(
                 "An agent asks its owner for a login, then sends them the url",
                 &[
                     "vault",
@@ -1056,6 +1041,21 @@ const ENTRIES: &[Entry] = &[
                     "shop.example",
                     "--field",
                     "username=owner@example.com",
+                ],
+            ),
+            ex(
+                "Add a card from the phone",
+                &[
+                    "vault",
+                    "--host",
+                    "mac",
+                    "link",
+                    "--kind",
+                    "card",
+                    "--title",
+                    "Visa",
+                    "--page",
+                    "https://phone.example/latch",
                 ],
             ),
         ],
