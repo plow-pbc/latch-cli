@@ -6460,17 +6460,17 @@ fn a_signed_latch_keeps_every_secret_in_the_keychain_and_none_in_files() {
         assert_eq!(out["from"], "keychain", "{out}");
         assert_eq!(
             out["removed"],
-            json!(["key", "plow-token", "config.json"]),
+            json!(["plow-token", "config.json"]),
             "{out}"
         );
         assert_eq!(logout(state, &[])["removed"], json!([]));
     }
     assert!(eventually(10, || serve.0.try_wait().unwrap().is_some()));
-    // --purge takes the vault and audit keys too, and the folders.
+    // --purge takes the key and the vault and audit keys too, and the folders.
     let purged = logout(&host, &["--purge"]);
     assert_eq!(
         purged["removed"],
-        json!(["vault.key", "audit.keys"]),
+        json!(["key", "vault.key", "audit.keys"]),
         "{purged}"
     );
     logout(&owner, &["--purge"]);
@@ -6491,13 +6491,13 @@ fn a_signed_latch_logs_out_a_state_folder_deleted_by_hand() {
     // login would, and still takes the machine out and deletes its login.
     let env = [("PLOW_API_URL", Path::new(&plow.url))];
     let logout = |args: &[&str]| -> Value {
-        let output = latch(&host, &[&["logout"], args].concat(), &env);
+        let output = latch(&host, &[&["logout", "--yes"], args].concat(), &env);
         assert_eq!(output.status.code(), Some(0), "{output:?}");
         serde_json::from_slice(&output.stdout).unwrap()
     };
     let out = logout(&[]);
     assert_eq!(out["from"], "keychain", "{out}");
-    assert_eq!(out["removed"], json!(["key", "plow-token"]), "{out}");
+    assert_eq!(out["removed"], json!(["plow-token"]), "{out}");
     assert_eq!(
         out["device"],
         json!({"name": "host", "removed": true}),
@@ -6505,30 +6505,175 @@ fn a_signed_latch_logs_out_a_state_folder_deleted_by_hand() {
     );
     assert!(plow.state.lock().unwrap().peers.is_empty());
     assert!(!host.exists());
-    // --purge finds the vault and audit keys the folder left.
+    // --purge finds the key and the vault and audit keys the folder left.
     let purged = logout(&["--purge"]);
     assert_eq!(
         purged["removed"],
-        json!(["vault.key", "audit.keys"]),
+        json!(["key", "vault.key", "audit.keys"]),
         "{purged}"
     );
     assert_eq!(purged["device"], Value::Null, "{purged}");
     assert_eq!(logout(&["--purge"])["removed"], json!([]));
 }
 
-/// `latch logout ARGS` on `state`, which must work: what it printed.
+/// `latch logout --yes ARGS` on `state`, which must work: what it printed.
 fn logout(state: &Path, args: &[&str]) -> Value {
-    let output = latch(state, &[&["logout"], args].concat(), &[]);
+    let output = latch(state, &[&["logout", "--yes"], args].concat(), &[]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     serde_json::from_slice(&output.stdout).unwrap()
 }
 
 #[test]
-fn logout_stops_the_host_and_deletes_only_the_login_so_the_vault_and_audit_still_read() {
+fn logout_says_what_it_deletes_and_keeps_and_asks_first() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let export = dir.path().join("export.json");
+    let items = json!([
+        {"type": 1, "name": "Shop", "login": {"username": "ada", "password": "made-up-shop-pw", "uris": [{"uri": "https://shop.example/login"}]}},
+        {"type": 1, "name": "Bank", "login": {"username": "ada", "password": "made-up-bank-pw", "uris": [{"uri": "https://bank.example/login"}]}},
+        {"type": 3, "name": "Plow card", "card": {"brand": "Visa", "number": "4111111111111111", "code": "737"}},
+        {"type": 2, "name": "Wi-Fi", "notes": "made-up-guest-network"},
+    ]);
+    fs::write(
+        &export,
+        json!({"encrypted": false, "items": items}).to_string(),
+    )
+    .unwrap();
+    let import = latch(
+        &host,
+        &["vault", "import", export.to_str().unwrap(), "--pick", "all"],
+        &[],
+    );
+    assert_eq!(import.status.code(), Some(0), "{import:?}");
+    let all_secrets = SECRET_FILES.map(|file| (file, fs::read(host.join(file)).unwrap()));
+    let state_dir = host.canonicalize().unwrap();
+    let secret_values = [
+        "made-up-shop-pw",
+        "made-up-bank-pw",
+        "4111111111111111",
+        "737",
+        "made-up-guest-network",
+        "owner-login",
+    ];
+    let nothing_secret = |text: &str| {
+        for value in secret_values {
+            assert!(!text.contains(value), "{value} shown: {text}");
+        }
+    };
+    let untouched = || {
+        for (file, bytes) in &all_secrets {
+            assert_eq!(&fs::read(host.join(file)).unwrap(), bytes, "{file}");
+        }
+        assert!(host.join("config.json").exists());
+    };
+
+    // No one at a terminal: refused, with what it would have deleted.
+    let refused = latch(&host, &["logout"], &[]);
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    let error = one_error_line(&stderr, refused.status.code());
+    assert_eq!(error["error"]["code"], "confirmation_required", "{error}");
+    assert_eq!(error["error"]["next"], "latch logout --yes", "{error}");
+    let summary = &error["error"]["summary"];
+    assert_eq!(
+        summary,
+        &json!({
+            "state_dir": state_dir,
+            "default_state_dir": false,
+            "login": {"name": "host", "kind": "device"},
+            "leaves_plow": true,
+            "host_running": false,
+            "keychain_items": [],
+            "files": [state_dir.join("plow-token"), state_dir.join("config.json")],
+            "deletes_folder": false,
+            "vault": {"card": 1, "login": 2, "note": 1},
+            "audit_records": summary["audit_records"],
+        })
+    );
+    assert!(summary["audit_records"].as_u64().unwrap() > 0, "{summary}");
+    nothing_secret(&stderr);
+    untouched();
+
+    // --dry-run says what --purge would delete, and deletes nothing.
+    let dry = latch(&host, &["logout", "--purge", "--dry-run"], &[]);
+    assert_eq!(dry.status.code(), Some(0), "{dry:?}");
+    let dry: Value = serde_json::from_slice(&dry.stdout).unwrap();
+    assert_eq!(dry["dry_run"], true, "{dry}");
+    assert_eq!(dry["summary"]["deletes_folder"], true, "{dry}");
+    let files: Vec<PathBuf> = SECRET_FILES
+        .iter()
+        .map(|file| state_dir.join(file))
+        .collect();
+    assert_eq!(dry["summary"]["files"], json!(files), "{dry}");
+    nothing_secret(&dry.to_string());
+    untouched();
+
+    // At a terminal: what it deletes and keeps, by path and count, then a
+    // question; no keeps everything.
+    let (code, shown, _) = latch_at_a_terminal(&host, &["logout"], "n\n", false, &[]);
+    assert_eq!(code, Some(2), "{shown}");
+    for line in [
+        format!("latch logout on {} will:", state_dir.display()),
+        "take \"host\" out of your Plow account and sign out its login".to_string(),
+        format!("      {}", state_dir.join("plow-token").display()),
+        format!("      {}", state_dir.join("config.json").display()),
+        "It keeps:".to_string(),
+        "  - the vault: 1 card, 2 logins, 1 note".to_string(),
+        "rules, settings, plugins and this machine's key: `latch login` brings it back as \"host\""
+            .to_string(),
+        "Log out? [y/N]".to_string(),
+    ] {
+        assert!(shown.contains(&line), "{line:?} not in {shown}");
+    }
+    assert_eq!(last_error_line(&shown)["error"]["code"], "not_removed");
+    nothing_secret(&shown);
+    untouched();
+
+    // --purge wants the word typed, not a y.
+    let (code, shown, _) = latch_at_a_terminal(&host, &["logout", "--purge"], "y\n", false, &[]);
+    assert_eq!(code, Some(2), "{shown}");
+    for line in [
+        format!("  - delete {} and everything in it:", state_dir.display()),
+        "      the vault: 1 card, 2 logins, 1 note".to_string(),
+        "This cannot be undone.".to_string(),
+        "Type delete to delete all of it:".to_string(),
+    ] {
+        assert!(shown.contains(&line), "{line:?} not in {shown}");
+    }
+    nothing_secret(&shown);
+    untouched();
+
+    // Yes logs out, and keeps the rest.
+    let (code, shown, stdout) = latch_at_a_terminal(&host, &["logout"], "y\n", false, &[]);
+    assert_eq!(code, Some(0), "{shown}");
+    let out: Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(
+        out["removed"],
+        json!(["plow-token", "config.json"]),
+        "{out}"
+    );
+    assert_eq!(secret_files_in(&host), ["key", "vault.key", "audit.keys"]);
+    nothing_secret(&shown);
+
+    // Typing delete purges.
+    let (code, shown, _) =
+        latch_at_a_terminal(&host, &["logout", "--purge"], "delete\n", false, &[]);
+    assert_eq!(code, Some(0), "{shown}");
+    assert!(!host.exists());
+}
+
+#[test]
+fn logout_stops_the_host_and_deletes_only_the_login_so_a_login_again_is_the_same_machine() {
     let plow = LivePlow::start();
     let (_relay, relay) = local_relay();
     let dir = test_dir();
     let host = owner_host_on(&plow, dir.path());
+    let peer_key = |host: &Path| {
+        let config: Value =
+            serde_json::from_slice(&fs::read(host.join("config.json")).unwrap()).unwrap();
+        config["peer"]["key"].clone()
+    };
+    let key = peer_key(&host);
     let set = latch(&host, &["rules", "set", "Never send email."], &[]);
     assert_eq!(set.status.code(), Some(0), "{set:?}");
     let mut serve = serving(&host, &relay);
@@ -6539,7 +6684,7 @@ fn logout_stops_the_host_and_deletes_only_the_login_so_the_vault_and_audit_still
     assert_eq!(out["from"], "files", "{out}");
     assert_eq!(
         out["removed"],
-        json!(["key", "plow-token", "config.json"]),
+        json!(["plow-token", "config.json"]),
         "{out}"
     );
     assert_eq!(out["stopped"], true, "{out}");
@@ -6560,7 +6705,7 @@ fn logout_stops_the_host_and_deletes_only_the_login_so_the_vault_and_audit_still
         "{seen:?}"
     );
     assert!(plow.state.lock().unwrap().peers.is_empty());
-    assert_eq!(secret_files_in(&host), ["vault.key", "audit.keys"]);
+    assert_eq!(secret_files_in(&host), ["key", "vault.key", "audit.keys"]);
     // Logged out as far as setup and an app can tell: no login, and
     // anything needing the login says to log in.
     let local = latch(&host, &["status", "--local"], &[]);
@@ -6586,6 +6731,21 @@ fn logout_stops_the_host_and_deletes_only_the_login_so_the_vault_and_audit_still
     ];
     let login = latch(&host, &args, &[]);
     assert_eq!(login.status.code(), Some(0), "{login:?}");
+    // The same key under the same name: to an agent, the machine it knew.
+    let again: Value = serde_json::from_slice(&login.stdout).unwrap();
+    assert_eq!(again["key_created"], false, "{again}");
+    assert_eq!(peer_key(&host), key);
+    let peers = plow.state.lock().unwrap().peers.clone();
+    assert_eq!(peers.len(), 1, "{peers:?}");
+    assert_eq!(
+        (&peers[0].0["name"], &peers[0].0["key"]),
+        (&json!("host"), &key)
+    );
+    let shown = latch(&host, &["rules", "show"], &[]);
+    assert!(
+        String::from_utf8_lossy(&shown.stdout).contains("Never send email."),
+        "{shown:?}"
+    );
     let list = latch(&host, &["vault", "list"], &[]);
     assert_eq!(list.status.code(), Some(0), "{list:?}");
     let ops: Vec<Value> = audit_records(&host)
@@ -6624,10 +6784,10 @@ fn logout_without_plow_still_deletes_the_login_and_says_the_machine_is_still_lis
 
     assert_eq!(
         out["removed"],
-        json!(["key", "plow-token", "config.json"]),
+        json!(["plow-token", "config.json"]),
         "{out}"
     );
-    assert_eq!(secret_files_in(&host), Vec::<&str>::new());
+    assert_eq!(secret_files_in(&host), ["key"]);
     let device = &out["device"];
     assert_eq!(
         (&device["name"], &device["removed"]),
@@ -6686,7 +6846,7 @@ fn no_host_starts_while_logout_holds_the_state_folder() {
     let held = dir.path().join("held");
     let logout = latch_command(
         &host,
-        &["logout"],
+        &["logout", "--yes"],
         &[("LATCH_TEST_LOGOUT_HELD", held.as_path())],
     )
     .stdout(std::process::Stdio::piped())
@@ -6726,7 +6886,7 @@ fn no_host_starts_while_logout_holds_the_state_folder() {
     let out: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(
         out["removed"],
-        json!(["key", "plow-token", "config.json"]),
+        json!(["plow-token", "config.json"]),
         "{out}"
     );
 }

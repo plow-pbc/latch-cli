@@ -42,8 +42,9 @@ impl Secret {
         Secret::VaultKey,
         Secret::AuditKeys,
     ];
-    /// This peer's identity and login, without which it is logged out.
-    pub const LOGIN: [Secret; 2] = [Secret::Key, Secret::PlowToken];
+    /// This peer's login, without which it is logged out. Its key is its
+    /// identity, which a login again keeps.
+    pub const LOGIN: [Secret; 1] = [Secret::PlowToken];
 
     /// The file it is kept in by a build without the Keychain.
     pub fn file(self) -> &'static str {
@@ -564,12 +565,12 @@ mod tests {
         let theirs = in_memory(other.path(), &memory).unwrap();
         theirs.create(Secret::Key, b"their-key").unwrap();
 
-        assert_eq!(
-            secrets.remove_each(&Secret::LOGIN).unwrap(),
-            ["key", "plow-token"]
-        );
+        assert_eq!(secrets.remove_each(&Secret::LOGIN).unwrap(), ["plow-token"]);
         assert_eq!(secrets.read(Secret::AuditKeys).unwrap().unwrap(), b"audit");
-        assert_eq!(secrets.remove_each(&Secret::ALL).unwrap(), ["audit.keys"]);
+        assert_eq!(
+            secrets.remove_each(&Secret::ALL).unwrap(),
+            ["key", "audit.keys"]
+        );
         assert_eq!(
             secrets.remove_each(&Secret::ALL).unwrap(),
             Vec::<&str>::new()
@@ -601,7 +602,7 @@ mod tests {
 
         let secrets = in_memory(&dir, &memory).unwrap();
         assert_eq!(secrets.read(Secret::Key).unwrap().unwrap(), b"key");
-        assert_eq!(secrets.remove_each(&Secret::LOGIN).unwrap(), ["key"]);
+        assert_eq!(secrets.remove_each(&[Secret::Key]).unwrap(), ["key"]);
         assert!(memory.items.lock().unwrap().is_empty());
     }
 

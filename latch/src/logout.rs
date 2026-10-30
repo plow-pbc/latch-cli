@@ -1,15 +1,21 @@
 //! `latch logout`: once any host on this state folder has stopped, an
 //! owner's machine is taken out of the Plow account and its login revoked
-//! there; then its identity and login are deleted (its key and Plow
-//! token), from the
-//! Keychain on a signed macOS latch and as files on any other, and with
-//! them `config.json`, the record that this folder is logged in. The vault
-//! and audit keys stay, so after `latch login` the vault and audit log
-//! read as before. `--purge` deletes those two keys as well, and then the
-//! state folder itself: the flag is the consent. If Plow cannot be reached
-//! or refuses, the local delete goes ahead and the output says the machine
-//! is still in the account, for `latch devices remove` from another of the
-//! owner's machines.
+//! there; then its Plow token is deleted (from the Keychain on a signed
+//! macOS latch and as a file on any other), and with it `config.json`, the
+//! record that this folder is logged in. Everything else stays: this
+//! machine's key, the vault and audit log and their keys, rules, settings
+//! and plugins. `latch login` then registers the same key, so under the
+//! same name (the hostname, or the `--name` given again) an agent finds the
+//! machine it knew. `--purge` deletes
+//! every secret, and then the state folder itself. If Plow cannot be
+//! reached or refuses, the local delete goes ahead and the output says the
+//! machine is still in the account, for `latch devices remove` from
+//! another of the owner's machines.
+//!
+//! Before it changes anything, logout says what it will delete and what it
+//! keeps (`Summary`), and a person at a terminal confirms it: y for a
+//! logout, typing `delete` for `--purge`. With no one at a terminal it
+//! refuses, with that summary, unless given `--yes`. `--dry-run` only says.
 //!
 //! A folder deleted by hand leaves its Keychain items behind: logout on a
 //! missing folder still takes the machine out of Plow, if its token is
@@ -19,13 +25,17 @@
 //! link to one. From the stop on, logout holds `serve.lock` as a host
 //! would, so no host starts until it is done.
 
+use std::collections::BTreeMap;
+use std::fmt::Write;
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use serde::Serialize;
 use serde_json::{Value, json};
 
+use crate::cli::LogoutArgs;
 use crate::credential;
 use crate::failure::{Failure, code};
 use crate::lifecycle;
@@ -34,35 +44,58 @@ use crate::managed;
 use crate::plow::Plow;
 use crate::secrets::{Secret, Secrets};
 use crate::state::StateDir;
+use crate::term;
+use crate::vault::store::{Backend, OwnStore};
 
 /// How long logout waits for a `latch plugins` command to let go of the
 /// folder; a host never does, and is refused at once.
 const HOLD_WITHIN: Duration = Duration::from_secs(60);
 
-pub async fn run(state: &StateDir, purge: bool) -> Result<Value, Failure> {
+pub async fn run(state: &StateDir, args: &LogoutArgs) -> Result<Value, Failure> {
     let refused = |why: &str| {
         let message = format!("{} {why}; nothing was deleted", state.path.display());
         Failure::new(code::state_format, message)
     };
-    match fs::symlink_metadata(&state.path) {
-        Err(err) if err.kind() == io::ErrorKind::NotFound => {
-            return forget_missing(state, purge).await;
-        }
+    let found = match fs::symlink_metadata(&state.path) {
+        Err(err) if err.kind() == io::ErrorKind::NotFound => None,
         Err(err) => return Err(io_failure(&state.path, err)),
         Ok(found) if found.file_type().is_symlink() => {
             return Err(refused("is a link; name the state folder itself"));
         }
-        Ok(_) => {}
+        Ok(_) => {
+            let path = state
+                .path
+                .canonicalize()
+                .map_err(|err| io_failure(&state.path, err))?;
+            if !path.join("latch.json").is_file() {
+                return Err(refused(
+                    "has no latch.json, so it is not a latch state folder",
+                ));
+            }
+            Some(path)
+        }
+    };
+    let summary = Summary::of(
+        found.as_deref().unwrap_or(&state.path),
+        found.is_some(),
+        args.purge,
+    )?;
+    if args.dry_run {
+        if term::stderr_is_terminal() {
+            eprint!("{}", summary.described(args.purge));
+        }
+        return Ok(json!({"dry_run": true, "summary": summary}));
     }
-    let path = state
-        .path
-        .canonicalize()
-        .map_err(|err| io_failure(&state.path, err))?;
-    if !path.join("latch.json").is_file() {
-        return Err(refused(
-            "has no latch.json, so it is not a latch state folder",
-        ));
-    }
+    confirm(&summary, args)?;
+    let mut output = match found {
+        Some(path) => log_out(path, args.purge).await?,
+        None => forget_missing(state, args.purge).await?,
+    };
+    output["summary"] = json!(summary);
+    Ok(output)
+}
+
+async fn log_out(path: PathBuf, purge: bool) -> Result<Value, Failure> {
     let stopped = managed::stop(&StateDir { path: path.clone() }).await?;
     let serving = |holder: &str| holder.starts_with("latch serve");
     let taken =
@@ -103,6 +136,259 @@ pub async fn run(state: &StateDir, purge: bool) -> Result<Value, Failure> {
         "device": device,
         "state_dir": path,
     }))
+}
+
+/// What a logout will do, worked out before it does any of it: what it
+/// deletes, by full path, and what is in the vault and audit log it keeps
+/// or, with `--purge`, deletes. Counts and names only, never a value.
+#[derive(Serialize)]
+pub struct Summary {
+    state_dir: PathBuf,
+    /// Whether it is `~/.latch`, the folder every latch uses by default.
+    default_state_dir: bool,
+    /// The login this folder has; null when it has none.
+    login: Option<Login>,
+    /// Whether Plow is asked to take this machine out of the account and
+    /// sign out its login: an owner's machine, or a folder that is gone
+    /// but left its Plow token.
+    leaves_plow: bool,
+    host_running: bool,
+    /// The Keychain items it deletes, by name (the folder's path and the
+    /// secret's file name); none on a build that keeps secrets as files.
+    keychain_items: Vec<String>,
+    files: Vec<PathBuf>,
+    /// Whether the state folder goes too, with everything in it.
+    deletes_folder: bool,
+    /// The vault's items by kind; null with no vault.
+    vault: Option<VaultCount>,
+    /// The audit log's records; null with no audit log.
+    audit_records: Option<usize>,
+}
+
+#[derive(Serialize)]
+struct Login {
+    name: String,
+    kind: String,
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum VaultCount {
+    Items(BTreeMap<&'static str, usize>),
+    /// A vault that can't be opened, its key gone, say.
+    Unreadable {
+        error: String,
+    },
+}
+
+impl Summary {
+    fn of(path: &Path, exists: bool, purge: bool) -> Result<Summary, Failure> {
+        let state = StateDir {
+            path: path.to_path_buf(),
+        };
+        let config = if exists { state.load_config()? } else { None };
+        let secrets = Secrets::open(path)?;
+        let mut keychain_items = Vec::new();
+        let mut files = Vec::new();
+        for &secret in if purge {
+            &Secret::ALL[..]
+        } else {
+            &Secret::LOGIN[..]
+        } {
+            if secrets.read(secret)?.is_none() {
+                continue;
+            }
+            let at = path.join(secret.file());
+            if secrets.in_keychain() {
+                keychain_items.push(at.display().to_string());
+            } else {
+                files.push(at);
+            }
+        }
+        if !purge && path.join("config.json").exists() {
+            files.push(path.join("config.json"));
+        }
+        let leaves_plow = match &config {
+            Some(config) => config.peer.kind == "device",
+            None => !exists && state.load_token()?.is_some(),
+        };
+        let vault = exists.then(|| vault_count(path)).flatten();
+        let audit_records = fs::read_to_string(path.join(crate::audit::FILE))
+            .ok()
+            .map(|log| log.lines().count());
+        let default = StateDir::new(None)?.path;
+        Ok(Summary {
+            state_dir: path.to_path_buf(),
+            default_state_dir: default.canonicalize().unwrap_or(default) == path,
+            login: config.map(|config| Login {
+                name: config.peer.name,
+                kind: config.peer.kind,
+            }),
+            leaves_plow,
+            host_running: exists && lifecycle::now(path).running,
+            keychain_items,
+            files,
+            deletes_folder: purge && exists,
+            vault,
+            audit_records,
+        })
+    }
+
+    /// The summary as a person reads it, before they confirm.
+    fn described(&self, purge: bool) -> String {
+        let command = if purge {
+            "latch logout --purge"
+        } else {
+            "latch logout"
+        };
+        let folder = self.state_dir.display();
+        let default = if self.default_state_dir {
+            " (the default state folder)"
+        } else {
+            ""
+        };
+        let mut text = format!("{command} on {folder}{default} will:\n");
+        if self.host_running {
+            text += "  - stop the host running on it\n";
+        }
+        if self.leaves_plow {
+            match &self.login {
+                Some(login) => {
+                    let _ = writeln!(
+                        text,
+                        "  - take {:?} out of your Plow account and sign out its login",
+                        login.name
+                    );
+                }
+                None => {
+                    text +=
+                        "  - take this machine out of your Plow account and sign out its login\n"
+                }
+            }
+        }
+        if !self.keychain_items.is_empty() {
+            text += "  - delete these Keychain items:\n";
+            for item in &self.keychain_items {
+                let _ = writeln!(text, "      latch: {item}");
+            }
+        }
+        if !self.files.is_empty() {
+            text += "  - delete these files:\n";
+            for file in &self.files {
+                let _ = writeln!(text, "      {}", file.display());
+            }
+        }
+        let contents = self.contents();
+        if self.deletes_folder {
+            let _ = writeln!(text, "  - delete {folder} and everything in it:");
+            for line in &contents {
+                let _ = writeln!(text, "      {line}");
+            }
+            text += "      rules, settings, plugins and this machine's key\n";
+            text += "This cannot be undone.\n";
+        } else if !purge {
+            text += "It keeps:\n";
+            for line in &contents {
+                let _ = writeln!(text, "  - {line}");
+            }
+            text += "  - rules, settings, plugins and this machine's key";
+            if let Some(login) = &self.login {
+                let _ = write!(text, ": `latch login` brings it back as {:?}", login.name);
+            }
+            text += "\n";
+        }
+        text
+    }
+
+    /// The vault and audit log, a line each, as `described` lists them.
+    fn contents(&self) -> Vec<String> {
+        let mut lines = Vec::new();
+        match &self.vault {
+            Some(VaultCount::Items(kinds)) if kinds.is_empty() => {
+                lines.push("the vault: empty".to_string());
+            }
+            Some(VaultCount::Items(kinds)) => {
+                let counts: Vec<String> = kinds.iter().map(|(kind, n)| counted(*n, kind)).collect();
+                lines.push(format!("the vault: {}", counts.join(", ")));
+            }
+            Some(VaultCount::Unreadable { error }) => {
+                lines.push(format!("the vault (unreadable: {error})"));
+            }
+            None => {}
+        }
+        if let Some(records) = self.audit_records {
+            lines.push(format!("the audit log: {}", counted(records, "record")));
+        }
+        lines
+    }
+}
+
+fn vault_count(path: &Path) -> Option<VaultCount> {
+    // Opening a folder with no vault would make one.
+    if !path.join("vault.json").exists() {
+        return None;
+    }
+    Some(match OwnStore::open(path) {
+        Ok(vault) => {
+            let mut kinds = BTreeMap::new();
+            for item in vault.list() {
+                *kinds.entry(item.kind).or_insert(0) += 1;
+            }
+            VaultCount::Items(kinds)
+        }
+        Err(failure) => VaultCount::Unreadable {
+            error: failure.message,
+        },
+    })
+}
+
+/// `n` and `kind`, made plural for any `n` but 1: "3 logins", "1 card".
+fn counted(n: usize, kind: &str) -> String {
+    let kind = kind.replace('_', " ");
+    match (n, kind.as_str()) {
+        (1, _) => format!("1 {kind}"),
+        (_, "identity") => format!("{n} identities"),
+        _ => format!("{n} {kind}s"),
+    }
+}
+
+/// Asks before anything is deleted: a person at a terminal says yes (types
+/// `delete` for `--purge`); a program passes `--yes`, or is refused with
+/// the summary, so it can show it to whoever decides.
+fn confirm(summary: &Summary, args: &LogoutArgs) -> Result<(), Failure> {
+    let described = summary.described(args.purge);
+    if args.yes {
+        if term::stderr_is_terminal() {
+            eprint!("{described}");
+        }
+        return Ok(());
+    }
+    if !term::interactive() {
+        let message = "latch logout asks before it deletes anything, and no one is at a \
+                       terminal to answer; `summary` says what it would delete. Nothing \
+                       was deleted"
+            .to_string();
+        let mut failure = Failure::new(code::confirmation_required, message);
+        let command = if args.purge {
+            "latch logout --purge --yes"
+        } else {
+            "latch logout --yes"
+        };
+        failure.next = Some(command.into());
+        failure.details = json!({"summary": summary});
+        return Err(failure);
+    }
+    eprint!("{described}");
+    let agreed = if args.purge {
+        term::ask("Type delete to delete all of it: ") == "delete"
+    } else {
+        term::confirm("Log out?")
+    };
+    if !agreed {
+        let message = "kept everything; nothing was deleted".to_string();
+        return Err(Failure::new(code::not_removed, message));
+    }
+    Ok(())
 }
 
 /// Takes this machine out of the Plow account and revokes its login there.

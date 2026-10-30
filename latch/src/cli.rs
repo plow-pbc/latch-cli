@@ -163,9 +163,9 @@ pub struct Cli {
 pub enum Command {
     /// Log this machine or agent in to Plow: create its key if missing and register it
     Login(LoginArgs),
-    /// Log this state folder out: stop its host, then delete its key and
-    /// Plow token from the Keychain or its files; the vault and audit stay
-    /// readable after the next login
+    /// Log this state folder out: say what it deletes and ask, stop its
+    /// host, then delete its Plow token; its key, vault, audit, rules and
+    /// settings stay, so the next login is the same machine
     Logout(LogoutArgs),
     /// List this account's machines, online or not, or remove one
     Devices(DevicesArgs),
@@ -1281,10 +1281,17 @@ pub const EVERY_AGENT: &str = "*";
 
 #[derive(Args, Debug)]
 pub struct LogoutArgs {
-    /// Also delete the vault and audit keys, and then the state folder
-    /// itself, with everything in it
+    /// Delete every secret, and then the state folder itself, with
+    /// everything in it: the vault, audit log, rules and settings
     #[arg(long)]
     pub purge: bool,
+    /// Log out without asking, still saying what it deletes (required when
+    /// no one is at a terminal)
+    #[arg(long)]
+    pub yes: bool,
+    /// Say what it would delete and keep, and change nothing
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 #[derive(Args, Debug)]

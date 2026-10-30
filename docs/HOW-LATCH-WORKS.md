@@ -313,11 +313,16 @@ For how to report a vulnerability, see [SECURITY.md](../SECURITY.md).
     `latch status --local` and on its dashboard. Nothing installs on its
     own. `LATCH_NO_UPDATE_CHECK=1` turns the looking off.
 - **Log out:** `latch logout` stops this machine's host, removes the machine
-  from your Plow account and deletes its key and Plow token. The vault and
-  audit log read as before after the next `latch login`. An agent's logout
+  from your Plow account and deletes its Plow token. It keeps the machine's
+  key, the vault, the audit log, rules and settings, so after the next
+  `latch login` (with the same `--name`, if it had one other than the
+  hostname) it is the same machine to every agent. An agent's logout
   leaves Plow alone.
-  - `latch logout --purge` also deletes the vault and audit keys and the
-    whole state folder.
+  - It first says what it deletes and keeps, with the state folder's full
+    path and the vault's items by kind, and asks. With no one at a
+    terminal it refuses unless given `--yes`; `--dry-run` only says.
+  - `latch logout --purge` deletes every secret and the whole state folder;
+    at a terminal you type `delete` to confirm.
   - If Plow can't be reached, the local delete still happens. Remove the
     machine from another one with `latch devices remove NAME`.
 

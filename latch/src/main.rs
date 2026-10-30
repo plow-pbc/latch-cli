@@ -288,7 +288,7 @@ async fn run(
             }
             json(pretty, output)
         }
-        Command::Logout(args) => json(pretty, logout::run(&state, args.purge).await?),
+        Command::Logout(args) => json(pretty, logout::run(&state, &args).await?),
         Command::Agents(args) => json(pretty, agents::run(&state, args).await?),
         Command::Devices(args) => match args.action {
             None => json(pretty, devices::list(&state).await?),
