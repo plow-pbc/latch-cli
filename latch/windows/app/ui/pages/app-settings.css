@@ -1,0 +1,14 @@
+/* Settings: the Mac's Settings window as a Settings-style page of cards. */
+
+.app-settings-page .st-foot { margin: 8px 2px 0; font-size: 12px; color: var(--text-2); }
+.app-settings-page .st-quiet { color: var(--text-2); }
+.app-settings-page .st-bad { color: var(--bad); }
+.app-settings-page .st-bad .ag-error details { color: var(--text-2); }
+.app-settings-page .line > button { flex: none; }
+.app-settings-page code {
+  font-family: "Cascadia Mono", Consolas, ui-monospace, monospace;
+  font-size: 13px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: var(--seg);
+}

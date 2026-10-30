@@ -22,6 +22,7 @@ import * as vault from "./pages/vault.js";
 import * as settings from "./pages/settings.js";
 import * as agents from "./pages/agents.js";
 import * as connections from "./pages/connections.js";
+import * as appSettings from "./pages/app-settings.js";
 
 const SCREENS = [
   ["home", "Home", home],
@@ -33,6 +34,8 @@ const SCREENS = [
 const ACCOUNT = [
   ["agents", "Agents", "agents", agents],
   ["connections", "Connections", "connections", connections],
+  // The Mac app's Settings window (⌘,): here a page, from the sidebar's foot.
+  ["app-settings", "Settings", "settings", appSettings],
 ];
 
 export const app = {
