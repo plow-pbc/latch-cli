@@ -1677,12 +1677,30 @@ async fn serve_phone(host: &Host, caller: &str, connection: &Connection) {
         let started = Instant::now();
         let mut audit_args = serde_json::Map::new();
         audit_args.insert("command".into(), Value::String(request.op.clone()));
-        let result = match request.op.as_str() {
+        // An agent's link names its request, not a code: the host serves it
+        // only to a phone Plow vouches is the owner, for that request.
+        let granted = match request.args["link"].is_string() && !host.binary.replaced() {
+            true => host.plow.phone_grant(caller).await,
+            false => Ok(None),
+        };
+        let result = match (request.op.as_str(), granted) {
             // The link's item would be saved by this old host's code.
             _ if host.binary.replaced() => Err(host_upgraded()),
-            "page" => link::page(&host.vault, &host.here(), &request.args, &mut audit_args),
-            "submit" => link::submit(&host.vault, &request.args, &mut audit_args),
-            op => Err(Failure::new(
+            (_, Err(failure)) => Err(failure),
+            ("page", Ok(granted)) => link::page(
+                &host.vault,
+                &host.here(),
+                &request.args,
+                granted.as_deref(),
+                &mut audit_args,
+            ),
+            ("submit", Ok(granted)) => link::submit(
+                &host.vault,
+                &request.args,
+                granted.as_deref(),
+                &mut audit_args,
+            ),
+            (op, Ok(_)) => Err(Failure::new(
                 code::not_on_a_phone_link,
                 format!("a phone link cannot run `{op}`"),
             )),
@@ -1802,6 +1820,7 @@ impl Host {
             key: self.endpoint.id().to_string(),
             name: self.name.clone(),
             relay: self.endpoint.addr().relay_urls().next().cloned(),
+            plow: self.plow.api_url().to_string(),
         }
     }
 

@@ -623,9 +623,10 @@ pub struct VaultArgs {
     /// Host to use (default: this machine's vault; naming this peer is local too)
     #[arg(long, env = "LATCH_HOST", global = true)]
     pub host: Option<String>,
-    /// The owner's Plow chat an agent's `list` acts for, when its line has
-    /// more than one: the host's gatekeeper reads what the owner asked
-    /// there. Refused on owner calls, local modes and every other command
+    /// The owner's Plow chat an agent's `list` or `link` acts for, when its
+    /// line has more than one: the host's gatekeeper reads what the owner
+    /// asked there. Refused on owner calls, local modes and every other
+    /// command
     #[arg(long, env = "LATCH_PLOW_CHAT", global = true)]
     pub plow_chat: Option<String>,
     #[command(subcommand)]
@@ -728,7 +729,8 @@ pub enum VaultCommand {
     /// A one-time link through a running serve that adds an item from your phone: the phone page
     /// connects to the host itself, and the value goes straight there.
     /// Prints the link, and a QR code on a terminal; it works once, for 15
-    /// minutes
+    /// minutes. An agent may ask for a login, judged like its other work,
+    /// and send the link to its owner; `link-state` says when it is saved
     Link {
         /// login, card, identity or note
         #[arg(long)]
@@ -747,10 +749,16 @@ pub enum VaultCommand {
         /// note's text are always asked for
         #[arg(long)]
         ask: Vec<String>,
-        /// The phone page's address (see `phone/`); the link adds the rest
-        /// after `#`
-        #[arg(long, env = "LATCH_PHONE_PAGE")]
-        page: String,
+        /// The phone page's address (see `phone/`), for the owner only; the
+        /// link adds the rest after `#` [default: the host's page]
+        #[arg(long)]
+        page: Option<String>,
+    },
+    /// Whether a phone link is still pending, saved (with the new item's
+    /// id) or expired; never a value
+    LinkState {
+        /// The link's id, as `link` printed it (`l…`)
+        link: String,
     },
     /// Remove an item at its current revision
     Remove {

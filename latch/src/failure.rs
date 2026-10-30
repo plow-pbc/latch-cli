@@ -397,6 +397,7 @@ codes! {
     output_too_large: Failed,
     own_machine: Usage,
     owner_only: Denied,
+    phone_not_signed_in: Denied,
     plan_budget: Failed,
     plow_chat_not_supported: Usage,
     plow_denied: Denied,
