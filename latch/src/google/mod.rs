@@ -37,6 +37,8 @@ pub struct Pin {
 }
 pub static PIN: LazyLock<Pin> =
     LazyLock::new(|| serde_json::from_str(include_str!("pin.json")).expect("gog pin"));
+/// gog's file name in its plugin folder.
+pub const GOG: &str = if cfg!(windows) { "gog.exe" } else { "gog" };
 
 /// A connected Google account and its access token. `None` when Plow could
 /// not mint one: a call on that account then fails, as

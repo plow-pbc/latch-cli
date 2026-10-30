@@ -135,7 +135,15 @@ fn execute(
     fs::create_dir_all(&home).map_err(io_error)?;
     let token = std::env::var("GOG_ACCESS_TOKEN")
         .map_err(|_| super::needs_sign_in_on(vec![account.to_string()]))?;
-    let mut child = Command::new(program)
+    // An AppContainer may not open the NUL device `Stdio::null` opens: on
+    // Windows gog's stdin and stderr are pipes whose other ends close as it
+    // starts, so it reads nothing and its errors go nowhere.
+    #[cfg(windows)]
+    let (stdin, stderr) = (Stdio::piped(), Stdio::piped());
+    #[cfg(unix)]
+    let (stdin, stderr) = (Stdio::null(), Stdio::null());
+    let mut command = Command::new(program);
+    command
         .args(["--json", "--no-input", "--wrap-untrusted", "--color=never"])
         .args(if plan.fanout() && plan.projected() {
             vec!["--results-only"]
@@ -156,11 +164,26 @@ fn execute(
         .env("HOME", &home)
         .env("XDG_CONFIG_HOME", &home)
         .current_dir(root)
-        .stdin(Stdio::null())
+        .stdin(stdin)
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(io_error)?;
+        .stderr(stderr);
+    // Go starts Windows' sockets only with SystemRoot set. The folders it
+    // asks Windows for are the call's: its home, and a temp folder apart
+    // from the files it writes.
+    #[cfg(windows)]
+    {
+        if let Some(system) = std::env::var_os("SystemRoot") {
+            command.env("SystemRoot", system);
+        }
+        for name in ["USERPROFILE", "APPDATA", "LOCALAPPDATA"] {
+            command.env(name, &home);
+        }
+        let temp = root.join("tmp");
+        fs::create_dir(&temp).map_err(io_error)?;
+        command.env("TEMP", &temp).env("TMP", &temp);
+    }
+    let mut child = command.spawn().map_err(io_error)?;
+    drop((child.stdin.take(), child.stderr.take()));
     let mut bytes = Vec::new();
     child
         .stdout
@@ -214,12 +237,9 @@ fn rewrite_download_paths(
     match value {
         serde_json::Value::Object(fields) => {
             if let Some(path) = fields.get("path").and_then(|v| v.as_str())
-                && let Ok(relative) = Path::new(path).strip_prefix(output)
+                && let Some(relative) = relative(Path::new(path), output)
             {
-                fields.insert(
-                    "path".into(),
-                    json!(plan.destination(&relative.to_string_lossy())?),
-                );
+                fields.insert("path".into(), json!(plan.destination(&relative)?));
             }
             for value in fields.values_mut() {
                 rewrite_download_paths(value, output, plan)?;
@@ -248,12 +268,7 @@ fn collect(root: &Path, folder: &Path, files: &mut Vec<MovedFile>) -> io::Result
             let size = file.metadata()?.len();
             let hash = sha256(&mut file)?;
             files.push(MovedFile {
-                path: entry
-                    .path()
-                    .strip_prefix(root)
-                    .expect("child")
-                    .to_string_lossy()
-                    .into_owned(),
+                path: relative(&entry.path(), root).expect("child"),
                 size,
                 sha256: hash,
             });
@@ -263,6 +278,18 @@ fn collect(root: &Path, folder: &Path, files: &mut Vec<MovedFile>) -> io::Result
     }
     Ok(())
 }
+/// `path` below `root`, its parts joined by `/` on every system, as the
+/// client's `Plan::destination` reads it.
+fn relative(path: &Path, root: &Path) -> Option<String> {
+    let parts: Vec<_> = path
+        .strip_prefix(root)
+        .ok()?
+        .components()
+        .map(|part| part.as_os_str().to_string_lossy())
+        .collect();
+    Some(parts.join("/"))
+}
+
 /// An I/O failure inside the worker. Only the code `google_worker_failed`
 /// is reported, not the error's text.
 fn io_error(_: io::Error) -> Failure {
