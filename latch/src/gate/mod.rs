@@ -543,9 +543,7 @@ impl Gatekeeper {
         // its veto is none, and the chat layer judges their OK.
         // A time-limited rule that forbids the action now is a veto,
         // however the decision splits FORBIDDEN against NOT_COVERED.
-        let time_banned = layers["rules"]["p_time_ban"]
-            .as_f64()
-            .is_some_and(|p| p >= TIME_BAN_P);
+        let time_banned = rules_p.time_ban.is_some_and(|p| p >= TIME_BAN_P);
         let rules_says = if time_banned {
             Says::Veto
         } else {
@@ -554,10 +552,7 @@ impl Gatekeeper {
         if time_banned {
             layers["rules"]["time_banned"] = json!(true);
         }
-        let waits = rules_says == Says::Veto
-            && layers["rules"]["p_exception"]
-                .as_f64()
-                .is_some_and(|p| p >= EXCEPTION_P);
+        let waits = rules_says == Says::Veto && rules_p.exception.is_some_and(|p| p >= EXCEPTION_P);
         let says = (
             if waits { Says::Neither } else { rules_says },
             chat_p.map(P::chat_says),
@@ -660,13 +655,21 @@ impl Gatekeeper {
             covered: p("COVERED"),
             not_covered: p("NOT_COVERED"),
             forbidden: p("FORBIDDEN"),
+            exception: match answers.get("exception") {
+                Some(Answer::Yes(p)) => Some(*p),
+                _ => None,
+            },
+            time_ban: match answers.get("time_ban") {
+                Some(Answer::Yes(p)) => Some(*p),
+                _ => None,
+            },
         };
         call["p"] =
             json!({"COVERED": p.covered, "NOT_COVERED": p.not_covered, "FORBIDDEN": p.forbidden});
-        if let Some(Answer::Yes(yes)) = answers.get("exception") {
+        if let Some(yes) = p.exception {
             call["p_exception"] = json!(yes);
         }
-        if let Some(Answer::Yes(yes)) = answers.get("time_ban") {
+        if let Some(yes) = p.time_ban {
             call["p_time_ban"] = json!(yes);
         }
         Ok(p)
@@ -705,6 +708,8 @@ struct P {
     covered: f64,
     not_covered: f64,
     forbidden: f64,
+    exception: Option<f64>,
+    time_ban: Option<f64>,
 }
 
 /// What one of an agent's layers says of its action.

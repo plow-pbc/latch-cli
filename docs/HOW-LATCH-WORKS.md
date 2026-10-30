@@ -142,13 +142,27 @@ login.
 - **Only you give permission.** Only your rules, the built-in policy and the
   chat messages Plow marks as yours count. Messages from the agent, other
   people, web pages or the action itself are context, never permission.
-- **What an agent may do on its own.** Your agents can look things up in
-  your calendar, email, messages and files, and create or edit ordinary
-  files, without asking first. What they read goes back to the agent.
-  Riskier actions need permission in your rules or your Plow chat: sending,
-  buying, deleting, changing calendars or shared systems, giving a program
-  internet access, using secrets or sending data elsewhere. Your rules stay
-  in force when you ask in chat, and they can restrict everyday work too.
+- **Everyday work needs no request.** Agents may look things up in your
+  calendar, email, messages, contacts, files and the web, including opening
+  links. They may create, edit, move and organize your files; run project
+  builds, tests and scripts; install packages the project already lists,
+  with network access; clear temporary files, caches and build output or
+  move files to the Trash; archive email or mark it read; add calendar
+  entries that invite no one; and write drafts. What they read goes back
+  to the agent.
+- **Other work needs your permission**, from a rule or your own Plow
+  messages: sending or posting, inviting or answering people, deleting
+  other files or mail, adding packages, pushing code, and changing
+  settings, accounts or shared systems. Some work must be named explicitly:
+  buying or paying, reading secrets, sending private data off the machine,
+  code that does either, downloaded code, bulk deletion, and rules that act
+  on mail later. An OK to read something does not let an agent change it.
+- **Permissions add; restrictions still apply.** A rule allowing builds in
+  one project leaves everyday work elsewhere allowed. “Do not”, “never”
+  and “only” set limits, including on everyday work. A time-limited rule
+  applies inside its window. Plain “never” stays absolute; “unless I ask in
+  chat” lets you approve the action yourself. That exception removes the
+  rules veto, but does not itself give permission: your chat must cover it.
   An agent with no chat and no rules is judged by the built-in policy
   alone. A new host starts with no rules: `latch setup`, like the Mac
   app's onboarding, offers a family or a work assistant's to start from
@@ -157,6 +171,12 @@ login.
   the agent names one with `--plow-chat ID` or `LATCH_PLOW_CHAT`. Otherwise
   the call stops with `which_chat` (exit 2), which lists the choices. Your
   own calls refuse the selector (`plow_chat_not_supported`, exit 2).
+- **When permission is missing.** A `not_covered` refusal names the Plow
+  chat read, if one was found, and the messages there that were yours.
+  Say what the agent may do in that chat, or allow it in the host's rules.
+  If no chat was found, only the rules can allow it. Latch has no approval
+  prompt or dialog. If a retry is refused again, the agent must stop and
+  tell you.
 - **Fresh every time.** The chat and the rules are read again at every
   judgment, so a "stop" or a rules change counts from the next call. The
   gatekeeper doesn't remember earlier calls: a repeat is judged again on

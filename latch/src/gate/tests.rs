@@ -719,6 +719,8 @@ fn a_layer_allows_at_one_half_and_vetoes_where_forbidden_outweighs_the_rest() {
             covered,
             not_covered,
             forbidden,
+            exception: None,
+            time_ban: None,
         }
         .says()
     };
@@ -767,6 +769,8 @@ fn no_refusal_claims_an_approval_prompt() {
             covered: 0.1,
             not_covered: 0.1,
             forbidden: 0.8,
+            exception: None,
+            time_ban: None,
         }),
     ];
     let mut said: Vec<(String, String)> = refusals
