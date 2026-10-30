@@ -235,7 +235,8 @@ function header(entry) {
   const page = pageOf(app.place);
   const tools = el("div", { class: "tools" }, searchField(page), inspectorToggle(page));
   if (isAccount(app.place)) {
-    return el("header", { class: "head" }, el("div", { class: "title" }, ACCOUNT.find(([id]) => id === app.place)[1]), tools);
+    return el("header", { class: "head" }, el("div", { class: "title" }, ACCOUNT.find(([id]) => id === app.place)[1]),
+      app.place === "app-settings" ? null : el("div", { class: "subtitle" }, "Your account"), tools);
   }
   return el("header", { class: "head" },
     el("div", { class: "title" }, entry?.name ?? "Latch"),

@@ -39,7 +39,7 @@
 
 /* ── the table ── */
 .activity .table {
-  --cols: minmax(96px, 112px) minmax(140px, 1fr) minmax(160px, 1.5fr) minmax(110px, 0.85fr);
+  --cols: minmax(84px, 112px) minmax(96px, 1fr) minmax(112px, 1.5fr) minmax(80px, 0.85fr);
   flex: 1;
   min-height: 0;
   overflow: auto;
@@ -51,7 +51,7 @@
   display: grid;
   grid-template-columns: var(--cols);
   align-items: center;
-  min-width: 520px;
+  min-width: 380px;
   height: 32px;
   padding: 0 4px;
   border-radius: 4px;
