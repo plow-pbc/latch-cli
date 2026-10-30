@@ -35,20 +35,20 @@ Windows window's fake mode shows the same data, for side-by-side stills.
 | Mac | Windows | Notes |
 | --- | --- | --- |
 | Sidebar: Your account (Agents, Connections), Hosts with state words, "Logged in as" | Built | |
-| Sidebar: Plow unreachable notice; viewer-only "Start Hosting on This Mac…" | In progress | notice built; viewer-only not started |
+| Sidebar: Plow unreachable notice; viewer-only "Start Hosting on This Mac…" | Built / Not started | notice built; viewer-only not started |
 | Host bar: screen tabs, search, inspector toggle | Built | |
 | Home: needs you, today, recent activity, on this host, offline host | Built | |
-| Home: viewer-only section, Load Earlier | Not started | |
-| Activity: table, filters, agent chip, search, live feed, load earlier, states | In progress | |
-| Activity: record inspector, gatekeeper request, screenshots | In progress | |
-| Rules: every agent / per agent, edit, save, clear, revisions, try box | In progress | |
-| Vault: list, search, inspector (no secret values), remove | In progress | |
-| Vault: new item, edit, import (preview, pick, conflicts) | In progress | native Open dialog added for import |
-| Host Settings: start/stop/restart, plugins, version, keep awake | In progress | |
-| Agents: list, detail, menu, remove, contact card, hub | In progress | |
-| New Agent sheet: catalog, start by text (QR), community, failed | In progress | |
-| Connections: Google accounts and sign-in sheet, devices | In progress | Google itself: eng-65 |
-| App settings: log out, update check | In progress | here a page; on the Mac, a Settings window |
+| Home: Load Earlier; viewer-only section | Built / Not started | viewer-only not started |
+| Activity: table, filters, agent chip, search, live feed, states | Built | |
+| Activity: record inspector, gatekeeper request, screenshots | Built | screenshots through run_file |
+| Rules: every agent / per agent, edit, save, clear, revisions, try box | Built | |
+| Vault: list, search, inspector (no secret values), remove | Built | WebView2 autofill off |
+| Vault: new item, edit, import (preview, pick, conflicts) | Built | native Open dialog |
+| Host Settings: start/stop/restart, plugins, version, keep awake | Built | keep awake: latch says unsupported on Windows |
+| Agents: list, detail, menu, remove, contact card, hub | Built | Message (opens Messages): Mac only |
+| New Agent sheet: catalog, start by text (QR), community, failed | Built | Open in Messages: Mac only |
+| Connections: Google accounts and sign-in sheet, devices | Built | Google itself: eng-65 |
+| App settings: log out, update check | Built | here a page; on the Mac, a Settings window |
 | Menu commands: New Item, Import, Save, Find, Show Sidebar/Inspector, screens ⌘1–5 | Not started | Windows: the same as Ctrl shortcuts |
 | Quick Look for screenshots and cards | Not started | Windows: open with the default app |
 
