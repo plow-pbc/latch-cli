@@ -18,6 +18,7 @@ conformance!(
     a_card_with_no_sites_pays_on_any_shop,
     a_card_fills_a_providers_hosted_fields,
     a_card_fills_split_boxes_and_expiry_lists,
+    agent_code_on_a_shop_keeps_the_card_out,
 );
 
 /// What the shop's `/pay` says when the test card arrived whole.
@@ -193,6 +194,43 @@ async fn a_card_fills_split_boxes_and_expiry_lists(engine: &str) {
         .await
         .unwrap();
     println!("paid: {}", paid["trail"]);
+    let page = h.text().await;
+    assert!(page.contains(PAID), "{page}");
+    assert!(!h.saw_the_card(), "the card reached a result or the audit");
+    h.call("close", json!({})).await.ok();
+}
+
+async fn agent_code_on_a_shop_keeps_the_card_out(engine: &str) {
+    let (mut h, card, local, _, _keep) = shop(engine).await;
+    h.call("open", json!({"url": format!("{local}/checkout.html")}))
+        .await
+        .unwrap();
+    // The agent's script stays behind on the shop and copies what is typed.
+    let planted = "document.addEventListener('input', (e) => localStorage.setItem('copied-' + e.target.name, e.target.value), true); 1";
+    h.call("eval", json!({"script": planted})).await.unwrap();
+    let args = h.suggested(&card).await;
+    let refused = h.pay(args).await.unwrap_err();
+    println!(
+        "after the agent's script: {} ({})",
+        refused.code, refused.message
+    );
+    assert_eq!(refused.code, "agent_code_on_site");
+    let copied = h
+        .call(
+            "eval",
+            json!({"script": "localStorage.getItem('copied-cc-number')"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(copied["value"], Value::Null, "{copied}");
+
+    // A new session has none of it: the card pays there.
+    h.new_session().await;
+    h.call("open", json!({"url": format!("{local}/checkout.html")}))
+        .await
+        .unwrap();
+    let args = h.suggested(&card).await;
+    h.pay(args).await.unwrap();
     let page = h.text().await;
     assert!(page.contains(PAID), "{page}");
     assert!(!h.saw_the_card(), "the card reached a result or the audit");

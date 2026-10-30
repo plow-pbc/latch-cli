@@ -35,7 +35,8 @@
 //! by ref, where it came from (a suggestion's id, or the agent), the
 //! stages, the origins, any `hint_mismatch`, whether agent code ever ran on
 //! those sites in the session (`agent_code_before_fill`), and the outcome:
-//! never a value.
+//! never a value. A card is never filled where agent code ran
+//! (`agent_code_on_site`): what the script left could read it.
 
 use std::sync::atomic::Ordering;
 
@@ -1024,10 +1025,14 @@ async fn release_and_set(
         .chain([top])
         .filter_map(sites::site_of)
         .collect();
-    audit.insert(
-        "agent_code_before_fill".into(),
-        json!(session.runtime.agent_code_on(&touched)),
-    );
+    let agent_code = session.runtime.agent_code_on(&touched);
+    audit.insert("agent_code_before_fill".into(), json!(agent_code));
+    if agent_code && meta.kind == "card" {
+        return Err(Failure::new(
+            code::agent_code_on_site,
+            "nothing was filled: your own script ran on this site earlier in this browser session, and what it left behind could read the card; open a new session (`latch browser open`) and fill the card there".into(),
+        ));
+    }
     for field in &fields {
         let label = field["field"].as_str().unwrap_or_default();
         let boxes: Vec<Value> = field["boxes"].as_array().cloned().unwrap_or_default();
