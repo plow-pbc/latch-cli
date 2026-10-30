@@ -182,6 +182,47 @@ nonisolated final class LatchProcess: @unchecked Sendable {
         }
     }
 
+    /// Runs latch as nothing the app holds: in a session of its own, stdin
+    /// from /dev/null, stdout and stderr into `out` and `err` (never a pipe),
+    /// none of the app's other descriptors, and not among the processes
+    /// `terminateAll` stops. For `latch update`, whose installer quits the
+    /// app partway through: the update goes on without it. Returns stdout,
+    /// or throws latch's error, if the app is still here when it ends.
+    nonisolated static func detached(executable: URL, arguments: [String], environment: [String: String],
+                                     out: URL, err: URL) async throws -> Data {
+        var actions: posix_spawn_file_actions_t?
+        posix_spawn_file_actions_init(&actions)
+        defer { posix_spawn_file_actions_destroy(&actions) }
+        posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0)
+        posix_spawn_file_actions_addopen(&actions, 1, out.path, O_WRONLY | O_CREAT | O_TRUNC, 0o600)
+        posix_spawn_file_actions_addopen(&actions, 2, err.path, O_WRONLY | O_CREAT | O_TRUNC, 0o600)
+        var attributes: posix_spawnattr_t?
+        posix_spawnattr_init(&attributes)
+        defer { posix_spawnattr_destroy(&attributes) }
+        posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETSID | POSIX_SPAWN_CLOEXEC_DEFAULT))
+
+        let argv = ([executable.path] + arguments).map { strdup($0) } + [nil]
+        let envp = environment.map { strdup("\($0.key)=\($0.value)") } + [nil]
+        defer { (argv + envp).forEach { free($0) } }
+        var pid: pid_t = 0
+        let spawned = posix_spawn(&pid, executable.path, &actions, &attributes, argv, envp)
+        guard spawned == 0 else {
+            throw LatchError.unreachable("Latch couldn't start.", detail: String(cString: strerror(spawned)))
+        }
+        // Waited for off Swift's threads; a cancelled caller leaves it running.
+        let status = await withCheckedContinuation { continuation in
+            DispatchQueue.global().async {
+                var status: Int32 = 0
+                while waitpid(pid, &status, 0) == -1 && errno == EINTR {}
+                continuation.resume(returning: status)
+            }
+        }
+        // An exit's code, or a signal's number as `Process` gives it.
+        let code = status & 0x7f == 0 ? (status >> 8) & 0xff : status & 0x7f
+        guard code == 0 else { throw failure(status: code, stderr: (try? Data(contentsOf: err)) ?? Data()) }
+        return (try? Data(contentsOf: out)) ?? Data()
+    }
+
     private struct ErrorLine: Decodable { var error: LatchFailure }
 
     private nonisolated static func failure(status: Int32, stderr: Data) -> LatchError {

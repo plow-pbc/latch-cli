@@ -13,16 +13,15 @@ struct AppSettingsView: View {
             Section("Updates") {
                 HStack {
                     LabeledContent("Latch", value: updateText)
+                    if app.updateAvailable, !app.updateInstalled { InstallUpdateButton() }
                     Button(app.checkingUpdate ? "Checking…" : "Check Now") { Task { await app.checkForUpdate() } }
-                        .disabled(app.checkingUpdate)
+                        .disabled(app.checkingUpdate || app.installingUpdate)
                 }
                 if case .failure? = app.update {
                     Text("Couldn't check for updates. Try again in a moment.").foregroundStyle(.red)
                 }
-                if available {
-                    Text("Installing it from the app isn't available yet: run `latch update` in Terminal. It restarts Latch on this Mac and reopens this window on the new version.")
-                        .foregroundStyle(.secondary)
-                }
+                UpdateProgress()
+                Toggle("Check automatically", isOn: checksForUpdates)
             }
             Section {
                 if let name = app.status?.loggedInAs {
@@ -71,20 +70,79 @@ struct AppSettingsView: View {
         Binding { app.logOutWarning != nil } set: { if !$0 { app.acknowledgeLogOutWarning() } }
     }
 
-    private var available: Bool {
-        if case let .success(check)? = app.update { return check.available }
-        return app.status?.update?.available == true
+    private var checksForUpdates: Binding<Bool> {
+        Binding { app.checksForUpdates } set: { app.checksForUpdates = $0 }
     }
 
     private var updateText: String {
         switch app.update {
         case let .success(check)?:
-            if check.available { return "Build \(check.latest?.build.map(String.init) ?? "?") is available" }
+            if check.available { return "Build \(check.latest?.build.map(String.init) ?? "?") available" }
             guard let current = check.current else { return "A local build · latest is \(check.latest?.tag ?? "unknown")" }
             return "Up to date · build \(current)"
         default:
-            if let update = app.status?.update, update.available { return "Build \(update.build.map(String.init) ?? "?") is available" }
+            if app.updateAvailable { return "Build \(app.availableBuild.map(String.init) ?? "?") available" }
             return "Not checked yet"
         }
+    }
+}
+
+/// Installs the newest build with `latch update`; again after a failure.
+struct InstallUpdateButton: View {
+    @Environment(AppModel.self) private var app
+
+    var body: some View {
+        Button(app.installingUpdate ? "Updating…" : app.installUpdateError == nil ? "Install Update" : "Retry") {
+            Task { await app.installUpdate() }
+        }
+        .disabled(app.installingUpdate)
+    }
+}
+
+/// An install of the update: while latch installs it, how it failed in
+/// latch's words, or that it's in and this window still runs the old one.
+struct UpdateProgress: View {
+    @Environment(AppModel.self) private var app
+
+    var body: some View {
+        if app.installingUpdate {
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Latch will restart.")
+                    .foregroundStyle(.secondary)
+            }
+        } else if let error = app.installUpdateError {
+            ErrorText(error: error, said: "Couldn't update.").foregroundStyle(.red)
+        } else if app.updateInstalled {
+            Text("Installed. Reopen Latch.").foregroundStyle(.secondary)
+        }
+    }
+}
+
+/// The toolbar's pill while a newer Latch waits: one click installs it,
+/// then it says so until latch quits this window for the install.
+struct UpdatePill: View {
+    @Environment(AppModel.self) private var app
+
+    var body: some View {
+        Button { Task { await app.installUpdate() } } label: {
+            HStack(spacing: 5) {
+                if app.installingUpdate {
+                    ProgressView().controlSize(.mini).tint(.white)
+                } else {
+                    Image(systemName: app.installUpdateError == nil ? "arrow.down.circle.fill" : "exclamationmark.circle.fill")
+                }
+                Text(app.installingUpdate ? "Updating…" : app.installUpdateError == nil ? "Update" : "Update failed · Retry")
+            }
+            .font(.callout.weight(.semibold))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .background(app.installUpdateError == nil ? Color.accentColor : Color.red, in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .disabled(app.installingUpdate)
+        .help(app.availableBuild.map { "Install build \($0)" } ?? "Install update")
+        .accessibilityLabel(app.installingUpdate ? "Updating Latch" : "Update Latch")
     }
 }
