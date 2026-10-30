@@ -55,6 +55,18 @@ export async function lines(args) {
   return [await run(args)];
 }
 
+/** A file a command would write: a small grey PNG (a screenshot's place),
+ * or a contact card. */
+export async function file(args, kind) {
+  if (kind === "vcf") return `data:text/vcard;base64,${btoa("BEGIN:VCARD\nVERSION:3.0\nFN:scout\nEND:VCARD\n")}`;
+  return "data:image/svg+xml;base64," + btoa('<svg xmlns="http://www.w3.org/2000/svg" width="640" height="400"><rect width="640" height="400" fill="#d9d9d9"/><text x="320" y="205" font-size="22" text-anchor="middle" fill="#666">screenshot</text></svg>');
+}
+
+/** The Open dialog's answer: the Mac's import fixture's file. */
+export async function pick() {
+  return "C:\\Users\\me\\Downloads\\passwords.csv";
+}
+
 /** A stream's lines, then nothing more until it's stopped, as the Mac's
  * fake `statusFollow` and `auditFollow` do. */
 export function stream(args, line) {

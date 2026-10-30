@@ -148,6 +148,47 @@ fn qr(text: String) -> Result<String, Value> {
         .build())
 }
 
+/// Runs a latch command that writes a file, its `{file}` argument a path in
+/// the temp folder, and answers with that file as a data URL (`audit shot`'s
+/// screenshot, `agents card`'s contact card); the file goes once read.
+#[tauri::command]
+async fn run_file(args: Vec<String>, kind: String) -> Result<String, Value> {
+    use base64::Engine;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_nanos());
+    let path = std::env::temp_dir().join(format!("latch-window-{}-{stamp}.{kind}", std::process::id()));
+    let file = path.to_string_lossy().into_owned();
+    let args = args
+        .into_iter()
+        .map(|arg| if arg == "{file}" { file.clone() } else { arg })
+        .collect();
+    let ran = run(args, None, None).await;
+    let read = std::fs::read(&path);
+    let _ = std::fs::remove_file(&path);
+    ran?;
+    let bytes = read.map_err(|err| failure("io", &err.to_string()))?;
+    let mime = match kind.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "vcf" => "text/vcard",
+        _ => "application/octet-stream",
+    };
+    Ok(format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes)))
+}
+
+/// The native Open dialog: the path picked, or nothing if it was cancelled.
+#[tauri::command]
+async fn pick_file(window: tauri::Window, title: String, name: String, extensions: Vec<String>) -> Option<String> {
+    rfd::AsyncFileDialog::new()
+        .set_title(title)
+        .add_filter(name, &extensions)
+        .set_parent(&window)
+        .pick_file()
+        .await
+        .map(|file| file.path().display().to_string())
+}
+
 /// Whether the window shows the Mac app's snapshot fixtures instead of
 /// asking latch: a debug build started with `LATCH_APP_FAKE`, for stills
 /// beside the Mac's (ui/fake.js).
@@ -159,7 +200,7 @@ fn fake_mode() -> bool {
 fn main() {
     tauri::Builder::default()
         .manage(Streams::default())
-        .invoke_handler(tauri::generate_handler![run, stream, stop, qr, fake_mode])
+        .invoke_handler(tauri::generate_handler![run, run_file, pick_file, stream, stop, qr, fake_mode])
         .build(tauri::generate_context!())
         .expect("the window builds")
         .run(|app, event| {

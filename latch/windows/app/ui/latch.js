@@ -22,6 +22,17 @@ export function latchLines(args) {
   return fake ? fake.lines(args) : tauri.core.invoke("run", { args, lines: true });
 }
 
+/** A command that writes a file, its `{file}` argument a temp path: that
+ * file as a data URL (`kind` its extension: png, vcf…). */
+export function latchFile(args, kind) {
+  return fake ? fake.file(args, kind) : tauri.core.invoke("run_file", { args, kind });
+}
+
+/** The native Open dialog: the path picked, or null if cancelled. */
+export function pickFile(title, name, extensions) {
+  return fake ? fake.pick(title, name, extensions) : tauri.core.invoke("pick_file", { title, name, extensions });
+}
+
 const followers = new Map();
 if (tauri) {
   tauri.event.listen("latch-line", ({ payload }) => followers.get(payload.id)?.line(payload.line));

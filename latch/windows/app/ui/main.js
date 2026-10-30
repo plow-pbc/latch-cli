@@ -5,8 +5,11 @@
 // nothing: what this module holds is only what the pages last read.
 //
 // A page is a module in pages/ with `render(app, host)` (its nodes), and
-// optionally `enter(app, host)` (reads when it shows), `inspector(app,
-// host)` (the pane's nodes, or null) and `search` (the bar's placeholder).
+// optionally `enter(app, host)` (reads when it shows), `leave(app)` (when
+// another place shows: a stream it follows ends), `inspector(app, host)`
+// (the pane's nodes, or null) and `search` (the bar's placeholder).
+// latch.js's latchFile() shows a file latch writes, and pickFile() asks
+// for one.
 
 import { latch, latchLines, follow, said } from "./latch.js";
 import { el, icon, clock, sameDay } from "./dom.js";
@@ -179,6 +182,8 @@ const isAccount = (place) => ACCOUNT.some(([id]) => id === place);
 const pageOf = (place) => (SCREENS.find(([id]) => id === place) ?? ACCOUNT.find(([id]) => id === place))?.at(-1);
 
 function go(place) {
+  // Even the same place again (another host's): what it follows ends.
+  pageOf(app.place)?.leave?.(app);
   app.place = place;
   draw();
   const page = pageOf(place);
