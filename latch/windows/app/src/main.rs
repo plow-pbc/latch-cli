@@ -220,9 +220,37 @@ fn fake_mode() -> bool {
     cfg!(debug_assertions) && std::env::var_os("LATCH_APP_FAKE").is_some()
 }
 
+/// WebView2 keeps no form data and no passwords of its own: a vault item's
+/// fields are typed in this window, and general autofill is on by default.
+fn without_autofill(webview: &tauri::webview::PlatformWebview) -> windows_core::Result<()> {
+    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings4;
+    use windows_core::Interface;
+    // SAFETY: COM calls on the window's own live controller, on its thread.
+    unsafe {
+        let settings: ICoreWebView2Settings4 = webview.controller().CoreWebView2()?.Settings()?.cast()?;
+        settings.SetIsGeneralAutofillEnabled(false.into())?;
+        settings.SetIsPasswordAutosaveEnabled(false.into())?;
+    }
+    Ok(())
+}
+
 fn main() {
     tauri::Builder::default()
         .manage(Streams::default())
+        .setup(|app| {
+            if let Some(window) = app.get_webview_window("main") {
+                window.with_webview(|webview| {
+                    let _ = without_autofill(&webview);
+                })?;
+                // Fake mode only: `LATCH_APP_STILL` is the address's query
+                // (`place=vault&host=pi-kitchen`), for stills beside the Mac's.
+                if let (true, Ok(still)) = (fake_mode(), std::env::var("LATCH_APP_STILL")) {
+                    let query = serde_json::to_string(&still).unwrap_or_default();
+                    window.eval(&format!("if (!location.search) location.search = {query}"))?;
+                }
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![run, run_file, pick_file, open_url, stream, stop, qr, fake_mode])
         .build(tauri::generate_context!())
         .expect("the window builds")

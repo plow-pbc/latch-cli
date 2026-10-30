@@ -23,3 +23,6 @@ base64 = "0.22"
 # The native Open dialog, for a vault import's file (what Tauri's own dialog
 # plugin uses).
 rfd = "0.15"
+# WebView2's own settings (autofill off), at the versions Tauri's wry uses.
+webview2-com = "0.39.1"
+windows-core = "0.62.2"
