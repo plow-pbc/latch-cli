@@ -114,7 +114,7 @@ latch browser open --host my-mac https://example.com
 | `latch vault show` | Host | One item's metadata and its non-secret values (never a secret one). Owner only.<br>Show an item: `latch vault --host mac show v3` |
 | `latch vault add` | Host | Add an item to the vault. Owner only.<br>Add a login with its password as JSON on stdin: `latch vault add --kind login --title Shop --site shop.example --field username=ada --stdin` |
 | `latch vault edit` | Host | Change an item's title, sites or fields, at its current revision. Owner only.<br>Change a login's password, given as JSON on stdin: `latch vault edit v1 --revision 2 --stdin` |
-| `latch vault link` | Host Agent | Add an item from your phone, through a one-time link.<br>Add a card from the phone: `latch vault --host mac link --kind card --title Visa --page https://phone.example/latch` |
+| `latch vault link` | Host Agent | Add an item from your phone, through a one-time link.<br>An agent asks its owner for a login, then sends them the url: `latch vault --host mac link --kind login --title Shop --site shop.example --field username=owner@example.com` |
 | `latch vault link-state` | Host Agent | Whether a phone link is still pending, saved (with the new item's id) or expired; never a value.<br>Whether the owner has saved the login yet: `latch vault --host mac link-state l3f09a2c1` |
 | `latch vault remove` | Host | Remove an item at its current revision. Owner only.<br>Remove an item: `latch vault --host mac remove v3 --revision 1` |
 | `latch vault import` | Host | Import another password manager's export. Owner only.<br>Import a 1Password export: `latch vault --host mac import export.1pux` |
