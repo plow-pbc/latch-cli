@@ -5069,17 +5069,20 @@ fn a_starting_host_waits_for_a_direct_call_and_a_direct_follow_makes_way() {
         error["next"],
         "run this again: it then goes through that host"
     );
-    let waiting = latch(&owners.studio, &["status", "--local"], &[]);
-    let waiting: Value = serde_json::from_slice(&waiting.stdout).unwrap();
-    let hosting = &waiting["this_machine"]["hosting"];
-    assert_eq!(hosting["state"], "starting", "{hosting}");
-    assert!(
+    // The follow ends when the host records that it is starting, and the
+    // host records its wait only after that, once it finds the exec still
+    // using the key: the wait shows soon, not at once.
+    let mut hosting = Value::Null;
+    let waits = eventually(10, || {
+        let status = latch(&owners.studio, &["status", "--local"], &[]);
+        let status: Value = serde_json::from_slice(&status.stdout).unwrap();
+        hosting = status["this_machine"]["hosting"].clone();
         hosting["waiting"]
             .as_str()
-            .unwrap_or_default()
-            .contains("waiting for latch commands"),
-        "{hosting}"
-    );
+            .is_some_and(|why| why.contains("waiting for latch commands"))
+    });
+    assert!(waits, "{hosting}");
+    assert_eq!(hosting["state"], "starting", "{hosting}");
     direct_exec.release();
     let (serve, _log, lines) = started.join().unwrap();
     until_serving(&owners.studio, &serve);
