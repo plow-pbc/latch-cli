@@ -195,8 +195,8 @@ fn unlink(dir: &File, name: &str) -> io::Result<()> {
 /// not through a link at it, and must still be the folder that was judged;
 /// the new file is made in it and checked by its handle to be there; and it
 /// is renamed over the destination relative to that open folder, so a folder
-/// swapped meanwhile cannot redirect it. The new file takes the folder's
-/// access list, not the one of a file it replaces.
+/// swapped meanwhile cannot redirect it. A file it replaces keeps its
+/// access list: the new one has it before any bytes are in it.
 #[cfg(windows)]
 pub fn place(staged: &Path, path: &Path, workers: &WorkerSetup) -> Result<(), Failure> {
     use std::fs::{File, OpenOptions};
@@ -204,8 +204,10 @@ pub fn place(staged: &Path, path: &Path, workers: &WorkerSetup) -> Result<(), Fa
     use std::os::windows::fs::OpenOptionsExt;
     use windows_sys::Win32::Foundation::GENERIC_WRITE;
     use windows_sys::Win32::Storage::FileSystem::{
-        DELETE, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+        DELETE, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, WRITE_DAC,
     };
+
+    use crate::sandbox::final_path;
 
     let (Some(folder), Some(name)) = (path.parent(), path.file_name()) else {
         let message = format!("{} names no file", path.display());
@@ -230,10 +232,11 @@ pub fn place(staged: &Path, path: &Path, workers: &WorkerSetup) -> Result<(), Fa
         std::process::id(),
         rand::random::<u32>()
     ));
-    // Never an existing name, nor a link at it; DELETE, so it can be renamed.
+    // Never an existing name, nor a link at it; DELETE, so it can be
+    // renamed, and WRITE_DAC, so it can take a replaced file's access list.
     let mut file = OpenOptions::new()
         .write(true)
-        .access_mode(GENERIC_WRITE | DELETE)
+        .access_mode(GENERIC_WRITE | DELETE | WRITE_DAC)
         .create_new(true)
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
         .open(&temp)
@@ -245,6 +248,7 @@ pub fn place(staged: &Path, path: &Path, workers: &WorkerSetup) -> Result<(), Fa
                 "the folder changed while the file was made",
             )),
         })
+        .and_then(|()| keep_access(&path, &file))
         .and_then(|()| File::open(staged))
         .and_then(|mut staged| io::copy(&mut staged, &mut file))
         .and_then(|_| file.sync_all())
@@ -257,28 +261,80 @@ pub fn place(staged: &Path, path: &Path, workers: &WorkerSetup) -> Result<(), Fa
     Ok(())
 }
 
-/// Where the open `file` really is, as `canonicalize` names it.
+/// Gives the new `file` the access list of the file at `path` it replaces,
+/// as protected from inheriting as that one was: an owner-only key stays
+/// owner-only in a folder others read. A new name keeps the folder's.
 #[cfg(windows)]
-fn final_path(file: &std::fs::File) -> std::io::Result<PathBuf> {
-    use std::os::windows::ffi::OsStringExt;
+fn keep_access(path: &Path, file: &std::fs::File) -> std::io::Result<()> {
+    use std::os::windows::fs::OpenOptionsExt;
     use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::Storage::FileSystem::GetFinalPathNameByHandleW;
-    let mut buffer = vec![0u16; 1024];
-    // SAFETY: `buffer` is writable for its length; the handle is live.
-    let length = unsafe {
-        GetFinalPathNameByHandleW(
-            file.as_raw_handle(),
-            buffer.as_mut_ptr(),
-            buffer.len() as u32,
-            0,
+    use std::ptr::null_mut;
+    use windows_sys::Win32::Foundation::{ERROR_SUCCESS, LocalFree};
+    use windows_sys::Win32::Security::Authorization::{
+        GetSecurityInfo, SE_FILE_OBJECT, SetSecurityInfo,
+    };
+    use windows_sys::Win32::Security::{
+        ACL, DACL_SECURITY_INFORMATION, GetSecurityDescriptorControl,
+        PROTECTED_DACL_SECURITY_INFORMATION, SE_DACL_PROTECTED,
+        UNPROTECTED_DACL_SECURITY_INFORMATION,
+    };
+    use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_OPEN_REPARSE_POINT, READ_CONTROL};
+
+    let old = match std::fs::OpenOptions::new()
+        .access_mode(READ_CONTROL)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+    {
+        Ok(old) => old,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err),
+    };
+    let (mut dacl, mut descriptor): (*mut ACL, _) = (null_mut(), null_mut());
+    // SAFETY: a live handle with READ_CONTROL; the descriptor holding `dacl`
+    // is freed below.
+    let read = unsafe {
+        GetSecurityInfo(
+            old.as_raw_handle(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            null_mut(),
+            null_mut(),
+            &mut dacl,
+            null_mut(),
+            &mut descriptor,
         )
-    } as usize;
-    if length == 0 || length > buffer.len() {
-        return Err(std::io::Error::last_os_error());
+    };
+    if read != ERROR_SUCCESS {
+        return Err(std::io::Error::from_raw_os_error(read as i32));
     }
-    Ok(PathBuf::from(std::ffi::OsString::from_wide(
-        &buffer[..length],
-    )))
+    let (mut control, mut revision) = (0u16, 0u32);
+    // SAFETY: `descriptor` is live; `file` has WRITE_DAC; `dacl` lives in
+    // `descriptor`, freed once after.
+    let written = unsafe {
+        if GetSecurityDescriptorControl(descriptor, &mut control, &mut revision) == 0 {
+            std::io::Error::last_os_error().raw_os_error().unwrap_or(1) as u32
+        } else {
+            let protection = match control & SE_DACL_PROTECTED != 0 {
+                true => PROTECTED_DACL_SECURITY_INFORMATION,
+                false => UNPROTECTED_DACL_SECURITY_INFORMATION,
+            };
+            SetSecurityInfo(
+                file.as_raw_handle(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION | protection,
+                null_mut(),
+                null_mut(),
+                dacl,
+                null_mut(),
+            )
+        }
+    };
+    // SAFETY: allocated by GetSecurityInfo, freed once.
+    unsafe { LocalFree(descriptor) };
+    match written {
+        ERROR_SUCCESS => Ok(()),
+        err => Err(std::io::Error::from_raw_os_error(err as i32)),
+    }
 }
 
 /// Renames the open `file` to `name` in the open folder `dir`, replacing

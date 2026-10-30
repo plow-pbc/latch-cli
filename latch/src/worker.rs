@@ -622,6 +622,11 @@ pub fn run(args: WorkerArgs) -> ExitCode {
             }
             _ => None,
         },
+        #[cfg(windows)]
+        workdir: match &args.action {
+            WorkerAction::Exec { workdir, .. } => workdir.clone(),
+            _ => None,
+        },
         break_for_test: args.break_sandbox_for_test,
     };
     if policy.exec {
@@ -679,11 +684,18 @@ pub fn run(args: WorkerArgs) -> ExitCode {
                     Err(exit) => return exit,
                 },
             };
+            // On Windows the folder it runs in may be one only entered (the
+            // host judged it; the container reaches no more of it).
+            #[cfg(windows)]
+            let entered = &policy.workdir;
+            #[cfg(unix)]
+            let entered = &None::<PathBuf>;
             return exec(
                 &policy
                     .reads
                     .iter()
                     .chain(&policy.areas)
+                    .chain(entered)
                     .cloned()
                     .collect::<Vec<_>>(),
                 workdir.as_deref(),

@@ -1391,7 +1391,9 @@ Without --follow it ignores stdin and prints the whole page; with
 const SERVE_HELP: &str = "\
 What callers can reach (each exec and file call is judged):
   Read: your home folder and system files (programs, libraries, developer
-  tools and certificates). No shared-folder setup is needed.
+  tools and certificates). No shared-folder setup is needed. On Windows,
+  exec reads only its --write folders, named files and system files, with
+  no tool-cache writes; file get reads named home files.
   Hidden: ~/.latch, this host's state directory, and on macOS ~/Library
   except ~/Library/Caches. Other home content, including credential dotfiles
   such as ~/.ssh, is readable: the gatekeeper judges the requested use.
