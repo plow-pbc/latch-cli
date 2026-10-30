@@ -189,8 +189,9 @@ struct StatusLabel: View {
         switch status {
         case .connected: .secondary
         case .allowed: .green
-        case .notCovered: .orange
-        case .refused: .red
+        case .gatekeeper(saidNo: false): .orange
+        case .gatekeeper(saidNo: true), .refused: .red
+        case .stopped: .yellow
         }
     }
 }

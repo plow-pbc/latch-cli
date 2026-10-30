@@ -214,6 +214,13 @@ nonisolated enum Fixtures {
     // `latch audit` on studio and, from laptop, `latch audit --host pi-kitchen`:
     // real runs, with names and home folders shortened, and each record's
     // `command` as latch now prints it.
+    // Two stops of latch's own, as a browser plan and a vault fill are
+    // recorded: a press that needs confirming, and a field the item lacks.
+    static let stops = #"""
+{"cursor":"5709a0d1e1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c","record":{"agent":"a74f38668570a45ddc4b762ba0465d74","caller":"c14846ee","caller_name":"scout","decision":"deny","details":{"args":{"command":"do","gate":{"verdict":"allow"}},"gate":null,"started":null},"id":"5709a0d1e1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c","op":"browser","outcome":"confirm_needed","time":"2026-10-23T09:00:00Z","command":"latch browser do"},"type":"record"}
+{"cursor":"6809b1e2f2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d","record":{"agent":"a74f38668570a45ddc4b762ba0465d74","caller":"c14846ee","caller_name":"scout","decision":"deny","details":{"args":{"command":"fill","gate":{"verdict":"allow"}},"gate":null,"started":null},"id":"6809b1e2f2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d","op":"browser","outcome":"no_such_field","time":"2026-10-23T09:01:00Z","command":"latch browser fill"},"type":"record"}
+
+"""#
     static let studioAudit = #"""
 {"schema":1,"type":"hello"}
 {"cursor":"0000000000000000000000000000000000000000000000000000000000000000","has_older":false,"type":"snapshot"}
@@ -613,6 +620,22 @@ package enum SnapshotRunner {
                 _ = app.stage(.done, progress: full)
                 try await renderWindow(app, size: CGSize(width: 1180, height: 640), dark: dark,
                                  file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
+            }
+            // latch's own stops among studio's refusals: each says what
+            // happened, not "Refused by gatekeeper".
+            if wanted(output.appending(path: "14-activity-studio-stops-\(dark ? "dark" : "light").png")) {
+                let app = AppModel(client: FakeLatchClient(), still: true)
+                app.stage(status: try Fixtures.decode(Fixtures.serving))
+                app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
+                app.place = .host(.activity)
+                app.activityFilter = .refused
+                if let studio = app.host {
+                    let stops = Fixtures.studioAudit.replacingOccurrences(of: #"{"cursor":"afe3958"#, with: Fixtures.stops + #"{"cursor":"afe3958"#)
+                    app.feed(for: studio).stage(stops)
+                }
+                _ = app.stage(.done, progress: full)
+                try await renderWindow(app, size: CGSize(width: 1180, height: 640), dark: dark,
+                                       file: output.appending(path: "14-activity-studio-stops-\(dark ? "dark" : "light").png"))
             }
             // Activity's scope bar at the default and narrowest sizes: an
             // agent's link (its chip), no match in what's loaded, reading,

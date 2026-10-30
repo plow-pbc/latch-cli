@@ -333,8 +333,9 @@ final class ActivityController: NSViewController, NSTableViewDataSource, NSTable
         switch status {
         case .connected: .secondaryLabelColor
         case .allowed: .systemGreen
-        case .notCovered: .systemOrange
-        case .refused: .systemRed
+        case .gatekeeper(saidNo: false): .systemOrange
+        case .gatekeeper(saidNo: true), .refused: .systemRed
+        case .stopped: .systemYellow
         }
     }
 
