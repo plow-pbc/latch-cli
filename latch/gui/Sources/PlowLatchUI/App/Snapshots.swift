@@ -436,6 +436,8 @@ package enum SnapshotRunner {
             ("07-start-background-off", .start, Fixtures.stopped, Progress(), { $0.runInBackground = false }),
             ("07-start-already-running", .start, Fixtures.serving, Progress(), { _ in }),
             ("07-start-keep-awake-held", .start, Fixtures.keepAwake(#"{"enabled":true,"held":true,"reason":null}"#), Progress(), { _ in }),
+            // Kept awake once it runs; Run Latch now is on but not yet done.
+            ("07-start-keep-awake-not-running", .start, Fixtures.keepAwake(#"{"enabled":true,"held":false,"reason":"not_serving"}"#, in: Fixtures.stopped), Progress(), { _ in }),
             ("07-start-keep-awake-off", .start, Fixtures.keepAwake(#"{"enabled":false,"held":false,"reason":"disabled"}"#, in: Fixtures.stopped), Progress(), { _ in }),
             ("07-start-other-version", .start, Fixtures.otherVersion, Progress(), { _ in }),
             ("07-start-error", .start, Fixtures.stopped, Progress(), {

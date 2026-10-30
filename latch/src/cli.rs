@@ -225,7 +225,8 @@ pub enum Command {
     Skill,
     /// Install the newest latch, or the build TAG names (also how to go
     /// back), restarting a `serve -d` host on it; `--check` only says whether
-    /// a newer build is available. Owner only
+    /// a newer build is available. Run by the owner, or by an agent on its
+    /// own computer, where latch is installed alone
     Update(UpdateArgs),
     /// Set this machine up, at a terminal: log in, connect Google, on a Mac
     /// turn on Messages and Contacts, all with no host running, then offer to
@@ -242,6 +243,15 @@ pub enum Command {
     /// unless a host runs on the state folder; the installer runs it
     #[command(hide = true)]
     PruneHelpers,
+    /// Internal: on a Mac, install.sh's check that FILE is signed, by
+    /// FILE.minisig, with the release key it carries
+    #[command(hide = true)]
+    VerifySignature {
+        /// The minisign public key: the base64 line of its key file
+        #[arg(long)]
+        key: String,
+        file: PathBuf,
+    },
     /// Internal: the app's "Start when you log in" item, as ServiceManagement
     /// reports it; with --again, registered again from this app, which the
     /// installer does once it moves the app to another folder

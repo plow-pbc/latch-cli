@@ -333,9 +333,9 @@ fn onepux_reads_logins_from_every_vault_and_sets_others_aside() {
         .iter()
         .map(|r| r.item.raw.name.as_str())
         .collect();
-    assert_eq!(titles, ["Mixed", "Live"]);
+    assert_eq!(titles, ["Visa", "Mixed", "Live"]);
     assert!(
-        parsed.items[0].warnings.contains(
+        parsed.items[1].warnings.contains(
             &"one of its website addresses could not be read and was left off".to_string()
         )
     );
@@ -348,7 +348,6 @@ fn onepux_reads_logins_from_every_vault_and_sets_others_aside() {
         reasons,
         [
             ("Old", "archived in 1Password"),
-            ("Visa", "a credit card, not a login"),
             ("deploy key", "an SSH key, not a login"),
             (
                 "Router",
@@ -356,6 +355,113 @@ fn onepux_reads_logins_from_every_vault_and_sets_others_aside() {
             ),
         ]
     );
+}
+
+/// A 1PUX credit card, its fields as 1Password writes them.
+fn pux_card(title: &str) -> Value {
+    json!({
+        "uuid": title.to_lowercase(), "categoryUuid": "002", "state": "active",
+        "overview": {"title": title},
+        "details": {"loginFields": [], "notesPlain": "company card", "sections": [{"title": "", "name": "", "fields": [
+            {"title": "cardholder name", "id": "cardholder", "value": {"string": "Ada Lovelace"}},
+            {"title": "type", "id": "type", "value": {"creditCardType": "mc"}},
+            {"title": "number", "id": "ccnum", "value": {"creditCardNumber": "5555 5555 5555 4444"}},
+            {"title": "verification number", "id": "cvv", "value": {"concealed": "737"}},
+            {"title": "expiry date", "id": "expiry", "value": {"monthYear": 203104}},
+            {"title": "valid from", "id": "validFrom", "value": {"monthYear": 202304}}
+        ]}]},
+    })
+}
+
+#[test]
+fn onepux_credit_cards_come_along_as_cards() {
+    let mut old = pux_card("Old card");
+    old["state"] = json!("archived");
+    let mut odd = pux_card("Odd expiry");
+    odd["details"]["sections"][0]["fields"][4]["value"] = json!({"monthYear": 203113});
+    let mut parsed = parse(&onepux(
+        json!([vault(
+            "Work",
+            json!([pux_card("Plow card"), old, odd, pux_login("Shop")])
+        )]),
+        false,
+    ))
+    .unwrap();
+    let rows: Vec<(&str, &str)> = parsed
+        .items
+        .iter()
+        .map(|r| {
+            (
+                r.item.raw.name.as_str(),
+                crate::vault::item::kind_name(r.item.raw.kind),
+            )
+        })
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ("Plow card", "card"),
+            ("Odd expiry", "card"),
+            ("Shop", "login")
+        ]
+    );
+    assert_eq!(
+        (
+            parsed.skipped[0].title.as_str(),
+            parsed.skipped[0].reason.as_str()
+        ),
+        ("Old card", "archived in 1Password")
+    );
+    let card = &parsed.items[0].item.raw;
+    for (label, value) in [
+        ("cardholder name", "Ada Lovelace"),
+        ("brand", "Mastercard"),
+        ("number", "5555555555554444"),
+        ("code", "737"),
+        ("expiry month", "4"),
+        ("expiry year", "2031"),
+    ] {
+        // Compared, never printed: a card's number and code are secrets.
+        assert!(card.get(label).as_deref() == Some(value), "{label}");
+    }
+    assert_eq!(card.notes.as_deref(), Some("company card"));
+    assert!(parsed.items[0].warnings.is_empty());
+    assert_eq!(
+        parsed.items[1].warnings,
+        ["its expiry date could not be read and was left off"]
+    );
+    let shown = preview(&parsed);
+    assert_eq!(shown["items"][0]["kind"], "card");
+    let text = shown.to_string();
+    assert!(!text.contains("5555555555554444") && !text.contains("737"));
+
+    // Saved, it is a card the vault keeps its number and code secret in.
+    let (_dir, mut vault) = store();
+    mark_against(&vault, &mut parsed).unwrap();
+    let outcome = commit(&mut vault, &parsed, &[1]);
+    assert_eq!(outcome.saved, 1);
+    let meta = &vault.list()[0];
+    assert_eq!((meta.kind, meta.title.as_str()), ("card", "Plow card"));
+    let secret: Vec<&str> = meta
+        .fields
+        .iter()
+        .filter(|f| f.hidden)
+        .map(|f| f.label.as_str())
+        .collect();
+    assert_eq!(secret, ["number", "code"]);
+    assert!(vault.release(&meta.item, "number").unwrap() == "5555555555554444");
+}
+
+#[test]
+fn a_onepassword_csv_card_row_says_to_export_a_1pux() {
+    let parsed = parse_text(
+        "Title,Url,Username,Password,OTPAuth,Favorite,Archived,Tags,Notes\n\
+         Plow card,,,,,false,false,,company card\n",
+    )
+    .unwrap();
+    assert!(parsed.items.is_empty());
+    assert_eq!(parsed.skipped[0].title, "Plow card");
+    assert!(parsed.skipped[0].reason.contains("export a 1PUX"));
 }
 
 #[test]
@@ -402,8 +508,8 @@ fn the_onepux_fixture_previews_with_its_vaults_and_no_value() {
         .iter()
         .map(|r| r.item.raw.name.as_str())
         .collect();
-    assert_eq!(titles, ["Practice login", "Shared wiki"]);
-    assert_eq!(parsed.skipped.len(), 2);
+    assert_eq!(titles, ["Practice login", "Made-up Visa", "Shared wiki"]);
+    assert_eq!(parsed.skipped.len(), 1);
     assert_eq!(shown["items"][0]["has_totp"], true);
 }
 

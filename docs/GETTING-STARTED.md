@@ -30,9 +30,10 @@ When it fails, it prints one `{"error": …}` line on stderr instead.
 curl -fsSLO https://releases.plow.co/latch-cli/install.sh && sh install.sh
 ```
 
-The installer downloads the newest release for your machine, checks it
-against the release's `SHA256SUMS` and installs it. You need `curl`, `tar`
-and a SHA-256 tool, which most systems have.
+The installer downloads the newest release for your machine, checks that
+it is signed with Latch's release key, as `latch update` does, and on a Mac
+that Plow signed the app, then installs it. You need `curl`, `tar` and a
+SHA-256 tool, which most systems have, and on Linux OpenSSL 3.
 
 | What | Where |
 |---|---|
@@ -317,6 +318,10 @@ the app. A host started with `latch serve -d` restarts on the new version.
 A host running in a terminal stops, and the update tells you to start it
 again. A running host checks for a new release once a day and shows it in
 `latch` and on its dashboard. Nothing installs on its own.
+
+An agent runs `latch update` on its own computer too, where latch is
+installed alone (`install.sh --client-only`) and no host runs. An agent's
+login can't update a host, or a computer where a host runs: the owner does.
 
 ## 6. Troubleshooting
 

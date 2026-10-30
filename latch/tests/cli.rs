@@ -2176,22 +2176,66 @@ fn an_agent_gets_owner_only_for_browser_setup_and_nothing_is_downloaded() {
     assert!(!state.join("plugins").exists());
 }
 
+/// An agent's login updates only its own computer, where latch is installed
+/// alone: on a host it gets owner_only, and there is no `--host` to aim it at
+/// another. Its own state folder installed alone is not enough while a host
+/// on another state folder runs the same latch: the update would replace
+/// that host's latch too. The agent runs its own copy of this build, which
+/// no other test's host runs; a local build, so on its own computer the
+/// update stops at `local_build`, past the agent's check and before any
+/// download.
 #[test]
-fn an_agent_gets_owner_only_for_update_and_nothing_is_installed() {
+fn an_agent_updates_only_its_own_client_only_computer() {
     let (dir, token, server) = logged_in_agent(vec![]);
     server.join().unwrap();
     let state = dir.path().join("state");
+    let installed = dir.path().join("installed/latch");
+    fs::create_dir_all(installed.parent().unwrap()).unwrap();
+    fs::copy(latch_bin(), &installed).unwrap();
+    let update = |args: &[&str]| {
+        let mut command = Command::new(&installed);
+        command
+            .env("HOME", dir.path())
+            .env("LATCH_APPLICATIONS", dir.path().join("Applications"))
+            .env("PLOW_TOKEN_FILE", &token)
+            .env_remove("PLOW_API_URL")
+            .env_remove("PLOW_API_BASE")
+            .env_remove("PLOW_AGENT_TOKEN")
+            .env_remove("LATCH_STATE_DIR")
+            .arg("--state-dir")
+            .arg(&state)
+            .args(args);
+        let output = command.output().unwrap();
+        let error = serde_json::from_slice::<Value>(&output.stderr).unwrap_or_default();
+        (output.status.code(), error["error"]["code"].clone())
+    };
     for args in [
         &["update"][..],
         &["update", "--check"],
         &["update", "v0.1.0-1"],
     ] {
-        let output = latch(&state, args, &[("PLOW_TOKEN_FILE", token.as_path())]);
-        assert_eq!(output.status.code(), Some(4), "{args:?}: {output:?}");
-        let error: Value = serde_json::from_slice(&output.stderr).unwrap();
-        assert_eq!(error["error"]["code"], "owner_only");
+        assert_eq!(update(args), (Some(4), json!("owner_only")), "{args:?}");
     }
     assert!(!dir.path().join(".local").exists());
+    assert_eq!(update(&["update", "--host", "studio"]).0, Some(2));
+    fs::create_dir_all(state.join("plugins")).unwrap();
+    fs::write(state.join("plugins/client-only"), "").unwrap();
+    for args in [&["update"][..], &["update", "v0.1.0-1"]] {
+        assert_eq!(update(args), (Some(1), json!("local_build")), "{args:?}");
+    }
+
+    // A host on another state folder, from the same latch.
+    let plow = LivePlow::start();
+    let host = owner_host_on(&plow, dir.path());
+    let (_relay, relay) = local_relay();
+    let mut command = Command::new(&installed);
+    command.env("LATCH_TEST_LOOPBACK", "1");
+    let (serving, log, _) = serving_with(configure_serve_command(command, &host, &relay));
+    thread::spawn(move || log.lines().for_each(drop));
+    until_serving(&host, &serving);
+    assert_eq!(update(&["update"]), (Some(4), json!("owner_only")));
+    drop(serving);
+    assert_eq!(update(&["update"]), (Some(1), json!("local_build")));
 }
 
 /// A newer build the host found shows in `status --local`, and a piped

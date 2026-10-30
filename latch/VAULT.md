@@ -76,7 +76,10 @@ kind never changes. The answer and the audit name the fields that changed
 and the new revision, never a value.
 
 `import` reads 1Password's 1PUX, CSV and "Copy item JSON", Apple Passwords'
-CSV, Chrome's CSV and Bitwarden's CSV and unencrypted JSON. It shows every
+CSV, Chrome's CSV and Bitwarden's CSV and unencrypted JSON. Logins come
+from all of them; a 1PUX's credit cards come along as cards, and a Bitwarden
+JSON's cards, identities and notes as themselves (1Password's CSV carries no
+card details). It shows every
 row (values reduced to whether they are there), marks rows the vault
 already holds or that would update a changed password, and imports only
 the rows you pick; nothing is picked by default. Without a prompt,

@@ -589,6 +589,8 @@ final class AppModel {
     private(set) var keepAwakeError: LatchError?
 
     func setKeepAwake(_ on: Bool) async {
+        // One save at a time; a click meanwhile is dropped.
+        guard !settingKeepAwake else { return }
         settingKeepAwake = true
         defer { settingKeepAwake = false }
         do {
