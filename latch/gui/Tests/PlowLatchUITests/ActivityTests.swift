@@ -579,24 +579,24 @@ nonisolated final class HeldJudgeClient: LatchClient, @unchecked Sendable {
 @MainActor
 struct GatekeeperRequestTests {
     /// The owner's call is kept as one; an agent's as its rules layer, then
-    /// its chat layer. Records from before have none.
+    /// its whole-chat and owner-only calls. Records from before have none.
     @Test func aJudgedRecordNamesTheCallsItsHostKept() throws {
         let decode = { (gate: String) in try LatchJSON.decoder.decode(AuditRecord.Gate.self, from: Data(gate.utf8)) }
         #expect(try decode(#"{"verdict":"allow","kept_request":"g1"}"#).keptRequests == ["g1"])
-        let agent = #"{"layers":{"chat":{"kept_request":"g3"},"rules":{"kept_request":"g2"}}}"#
-        #expect(try decode(agent).keptRequests == ["g2", "g3"])
+        let agent = #"{"layers":{"chat":{"kept_request":"g3"},"rules":{"kept_request":"g2"},"will":{"kept_request":"g4"}}}"#
+        #expect(try decode(agent).keptRequests == ["g2", "g3", "g4"])
         #expect(try decode(#"{"verdict":"allow"}"#).keptRequests.isEmpty)
     }
 
-    /// Each is read from the record's own host; an agent's two as one JSON list.
+    /// Each is read from the record's own host; an agent's three as one JSON list.
     @Test func theRequestsReadAsOneJSONDocument() async throws {
         let client = JudgeClient()
         let one = try await RecordInspector.judged(["g1"], client: client, host: nil)
         #expect(try JSONSerialization.jsonObject(with: Data(one.utf8)) as? [String: String] == ["id": "g1"])
-        let both = try await RecordInspector.judged(["g2", "g3"], client: client, host: "pi-kitchen")
+        let both = try await RecordInspector.judged(["g2", "g3", "g4"], client: client, host: "pi-kitchen")
         let list = try #require(try JSONSerialization.jsonObject(with: Data(both.utf8)) as? [[String: String]])
-        #expect(list.map { $0["id"] } == ["g2", "g3"])
-        #expect(client.asked == ["g1 -", "g2 pi-kitchen", "g3 pi-kitchen"])
+        #expect(list.map { $0["id"] } == ["g2", "g3", "g4"])
+        #expect(client.asked == ["g1 -", "g2 pi-kitchen", "g3 pi-kitchen", "g4 pi-kitchen"])
     }
 
     /// A read still going when its record is left gives nothing to show:

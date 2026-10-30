@@ -503,12 +503,15 @@ async fn the_owners_reply_lets_the_retry_through_and_every_call_is_judged() {
     assert_eq!(gate["owner_messages"], json!(["m1", "m4"]));
     assert_eq!(gate["window"]["count"], 4);
     assert_eq!(gate["model"], gate::MODEL);
-    assert_eq!(gate["cost"], 0.0002, "both layers' calls");
+    assert!(
+        (gate["cost"].as_f64().unwrap() - 0.0003).abs() < 1e-12,
+        "all three calls"
+    );
     // The owner's yes is in the chat: the chat layer allowed it.
     assert_eq!(gate["decided_by"], "chat");
     assert_eq!(gate["layers"]["chat"]["says"], "allow");
     assert_eq!(gate["layers"]["rules"]["says"], "neither");
-    for layer in ["rules", "chat"] {
+    for layer in ["rules", "chat", "will"] {
         assert_eq!(gate["layers"][layer]["model_request"], "req_fake");
         assert!(gate["layers"][layer]["latency_ms"].is_u64(), "{gate}");
     }

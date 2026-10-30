@@ -38,7 +38,7 @@ use crate::state::to_hex;
 pub struct Kept<'a> {
     pub id: &'a str,
     pub time: String,
-    /// `owner`, or an agent's `rules` or `chat` layer.
+    /// `owner`, or an agent's `rules`, `chat` or `will` call.
     pub layer: &'static str,
     pub request: &'a RawValue,
     /// Plow's reply, if one came.

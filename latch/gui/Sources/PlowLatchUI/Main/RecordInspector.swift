@@ -137,7 +137,7 @@ struct RecordInspector: View {
         await AppModel.result { try await judged(ids, client: client, host: host) }
     }
 
-    /// Each kept call, as latch prints it; an agent's two layers as one
+    /// Each kept call, as latch prints it; an agent's three calls as one
     /// JSON list.
     static func judged(_ ids: [String], client: any LatchClient, host: String?) async throws -> String {
         var calls: [String] = []

@@ -100,7 +100,7 @@ nonisolated struct AuditRecord: Decodable, Equatable, Identifiable {
         var rule: String?
         /// The owner's call as the host kept it (`latch audit judge`).
         var keptRequest: String?
-        /// An agent's layers, `rules` and `chat`, each kept on its own.
+        /// An agent's layers, `rules`, `chat` and `will`, each kept on its own.
         var layers: [String: Layer]?
 
         struct Rules: Decodable, Equatable {
@@ -114,9 +114,9 @@ nonisolated struct AuditRecord: Decodable, Equatable, Identifiable {
         }
 
         /// Each call the host kept of this judgment: the owner's one, or an
-        /// agent's rules layer, then its chat layer.
+        /// agent's rules, whole-chat and owner-only calls.
         var keptRequests: [String] {
-            [keptRequest, layers?["rules"]?.keptRequest, layers?["chat"]?.keptRequest].compactMap { $0 }
+            [keptRequest, layers?["rules"]?.keptRequest, layers?["chat"]?.keptRequest, layers?["will"]?.keptRequest].compactMap { $0 }
         }
     }
 
