@@ -17,7 +17,8 @@
   input.setAttribute('autocomplete', token);
   input.setAttribute('aria-label', label);
   input.placeholder = hint;
-  if (field !== 'cvc') formatAs(input, field);
+  if (field === 'number') formatAs(input, cardFormat.number);
+  if (field === 'expiry') formatAs(input, cardFormat.expiry);
   window.held = '';
   input.addEventListener('input', () => { window.held = input.value; });
   window.addEventListener('message', (event) => {

@@ -15,8 +15,8 @@
   <p><button type="submit">Pay $10.00</button></p>
 </form>
 <script>
-  formatAs(number, 'number');
-  formatAs(expiry, 'expiry');
+  formatAs(number, cardFormat.number);
+  formatAs(expiry, cardFormat.expiry);
   document.getElementById('pay').addEventListener('submit', () => {
     const form = document.getElementById('pay');
     form.elements['cc-number'].value = number.value.replace(/\D/g, '');

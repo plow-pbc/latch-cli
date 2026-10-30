@@ -19,5 +19,5 @@ const cardFormat = {
     return digits.length > 2 ? digits.slice(0, 2) + ' / ' + digits.slice(2) : digits;
   },
 };
-const formatAs = (input, kind) =>
-  input.addEventListener('input', () => { input.value = cardFormat[kind](input.value); });
+const formatAs = (input, format) =>
+  input.addEventListener('input', () => { input.value = format(input.value); });

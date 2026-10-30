@@ -20,7 +20,6 @@ conformance!(
     a_card_fills_split_boxes_and_expiry_lists,
     a_card_saved_with_spaces_fills_by_its_digits,
     a_hosted_checkout_takes_a_number_however_it_was_saved,
-    a_providers_formatting_fields_take_a_number_saved_with_spaces,
     a_two_digit_year_field_gets_two_digits,
     an_amex_number_in_four_boxes_of_four_says_it_does_not_split,
     a_field_that_clears_itself_says_what_happened_and_what_was_filled,
@@ -145,7 +144,10 @@ async fn a_card_with_no_sites_pays_on_any_shop(engine: &str) {
 }
 
 async fn a_card_fills_a_providers_hosted_fields(engine: &str) {
-    let (mut h, card, local, processor, _keep) = shop(engine).await;
+    let (mut h, _, local, processor, _keep) = shop(engine).await;
+    // Kept with spaces, as an older latch did; the provider's fields format
+    // the number and expiry as they are typed.
+    let card = add_as_stored(&h, "Spaced card", " 4242 4242 4242 4242");
     h.call(
         "open",
         json!({"url": format!("{local}/card-elements.html?frame={processor}")}),
@@ -156,8 +158,21 @@ async fn a_card_fills_a_providers_hosted_fields(engine: &str) {
     // another document than the fields. The agent names it.
     let observed = h.call("observe", json!({})).await.unwrap();
     println!("hosted fields: fill {}", observed["fill"]);
-    let suggestion = &observed["fill"]["suggestions"][0];
+    let suggestion = observed["fill"]["suggestions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["item"] == card.as_str())
+        .unwrap()
+        .clone();
     assert_eq!(suggestion["press"], Value::Null);
+    assert_eq!(
+        suggestion["frames"],
+        json!([
+            "https://www.merchant.example",
+            "https://js.processor.example"
+        ])
+    );
     let paid = h
         .pay(
             json!({"item": card, "suggested": suggestion["id"], "snapshot": observed["snapshot"],
@@ -165,7 +180,10 @@ async fn a_card_fills_a_providers_hosted_fields(engine: &str) {
         )
         .await
         .unwrap();
-    println!("paid: {}", paid["trail"]);
+    // In the order the provider's frames came, which varies.
+    let mut fields = filled(&paid);
+    fields.sort();
+    assert_eq!(fields, ["cardholder name", "code", "expiry", "number"]);
     h.call("wait", json!({"text": "payment:", "within": 5}))
         .await
         .unwrap();
@@ -177,7 +195,9 @@ async fn a_card_fills_a_providers_hosted_fields(engine: &str) {
 }
 
 async fn a_card_fills_split_boxes_and_expiry_lists(engine: &str) {
-    let (mut h, card, local, _, _keep) = shop(engine).await;
+    let (mut h, _, local, _, _keep) = shop(engine).await;
+    // Kept with spaces, as an older latch did: its digits split.
+    let card = add_as_stored(&h, "Spaced card", " 4242 4242 4242 4242");
     let checkout = h
         .call("open", json!({"url": format!("{local}/card-split.html")}))
         .await
@@ -335,28 +355,8 @@ async fn a_redrawn_number_field_does_not_show_its_value(engine: &str) {
 
 async fn a_card_saved_with_spaces_fills_by_its_digits(engine: &str) {
     let (mut h, _, local, _, _keep) = shop(engine).await;
-    // As an older latch kept it: the number as it was typed.
-    let old = h
-        .browsers
-        .vault
-        .with(|s| {
-            s.add_as_stored(item(
-                CARD,
-                "Old card",
-                &[],
-                &[
-                    ("cardholder name", "Ada Lovelace"),
-                    ("number", " 4242 4242 4242 4242"),
-                    ("expiry month", "04"),
-                    ("expiry year", "2031"),
-                    ("code", CVV),
-                ],
-            ))
-        })
-        .unwrap()
-        .item;
-
-    // A number field that takes 16 characters, and four boxes of four.
+    // As an older latch kept it, into a number field of 16 characters.
+    let old = add_as_stored(&h, "Old card", " 4242 4242 4242 4242");
     h.call(
         "open",
         json!({"url": format!("{local}/checkout.html?max16")}),
@@ -365,27 +365,6 @@ async fn a_card_saved_with_spaces_fills_by_its_digits(engine: &str) {
     .unwrap();
     let args = h.suggested(&old).await;
     h.pay(args).await.unwrap();
-    let page = h.text().await;
-    assert!(page.contains(PAID), "{page}");
-
-    let split = h
-        .call("open", json!({"url": format!("{local}/card-split.html")}))
-        .await
-        .unwrap();
-    let boxes: Vec<String> = (1..=4)
-        .map(|n| find(&split, "textbox", &format!("Card number {n}")))
-        .collect();
-    let fields = json!([
-        ["cardholder name", [find(&split, "textbox", "Name on card")]],
-        ["number", boxes],
-        ["expiry month", [find(&split, "combobox", "Month")]],
-        ["expiry year", [find(&split, "combobox", "Year")]],
-        ["cvv", [find(&split, "textbox", "CVC")]],
-    ]);
-    let press = find(&split, "button", "Pay $10.00");
-    h.pay(json!({"item": old, "fields": fields, "press": press}))
-        .await
-        .unwrap();
     let page = h.text().await;
     assert!(page.contains(PAID), "{page}");
     assert!(!h.saw_the_card(), "the card reached a result or the audit");
@@ -448,50 +427,6 @@ async fn a_hosted_checkout_takes_a_number_however_it_was_saved(engine: &str) {
     }
     assert!(!h.saw_the_card(), "the card reached a result or the audit");
     assert!(!h.shown.join("\n").replace(' ', "").contains(AMEX));
-    h.call("close", json!({})).await.ok();
-}
-
-async fn a_providers_formatting_fields_take_a_number_saved_with_spaces(engine: &str) {
-    let (mut h, _, local, processor, _keep) = shop(engine).await;
-    let spaced = add_as_stored(&h, "Spaced card", " 4242 4242 4242 4242");
-    h.call(
-        "open",
-        json!({"url": format!("{local}/card-elements.html?frame={processor}")}),
-    )
-    .await
-    .unwrap();
-    let observed = h.call("observe", json!({})).await.unwrap();
-    let suggestion = observed["fill"]["suggestions"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|s| s["item"] == spaced.as_str())
-        .unwrap()
-        .clone();
-    assert_eq!(
-        suggestion["frames"],
-        json!([
-            "https://www.merchant.example",
-            "https://js.processor.example"
-        ])
-    );
-    let paid = h
-        .pay(
-            json!({"item": spaced, "suggested": suggestion["id"], "snapshot": observed["snapshot"],
-                   "press": find(&observed, "button", "Pay $10.00")}),
-        )
-        .await
-        .unwrap();
-    // In the order the provider's frames came, which varies.
-    let mut fields = filled(&paid);
-    fields.sort();
-    assert_eq!(fields, ["cardholder name", "code", "expiry", "number"]);
-    h.call("wait", json!({"text": "payment:", "within": 5}))
-        .await
-        .unwrap();
-    let page = h.text().await;
-    assert!(page.contains(PAID), "{page}");
-    assert!(!h.saw_the_card(), "the card reached a result or the audit");
     h.call("close", json!({})).await.ok();
 }
 
@@ -590,7 +525,7 @@ async fn a_field_that_clears_itself_says_what_happened_and_what_was_filled(engin
     );
     assert!(
         refused.message.contains(
-            "the page did not keep the number latch typed: it cleared it. Nothing was submitted; filled before it, and cleared again: cardholder name; not filled: expiry, cvv. tell the owner what the page did; latch can't fill it there"
+            "the page did not keep the number latch typed: it cleared it. This stage was not submitted; filled before it, and cleared again: cardholder name; not filled: expiry, cvv. tell the owner what the page did; latch can't fill it there"
         ),
         "{}",
         refused.message

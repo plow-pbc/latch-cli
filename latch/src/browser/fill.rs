@@ -1147,7 +1147,7 @@ fn not_kept(
     Failure::new(
         code::needs_owner,
         format!(
-            "the page did not keep the {} latch typed: it {did}. Nothing was submitted; filled before it, and cleared again: {}; not filled: {}. {next}",
+            "the page did not keep the {} latch typed: it {did}. This stage was not submitted; filled before it, and cleared again: {}; not filled: {}. {next}",
             labels[at],
             list(&labels[..at]),
             list(&labels[at + 1..]),

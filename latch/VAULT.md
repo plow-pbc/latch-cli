@@ -282,10 +282,14 @@ the focus and its caret has not gone back; only the head of a value
 longer than 64 characters is set in one step. A field that takes no keys,
 or only the first ones, gets the value in one step, as does any other
 field (a list, a date) and a value with a line break or a tab. A field that
-formats what it gets (a code as "123 456", a card number in fours) still
-holds the value: only spaces, dashes, dots, slashes, parentheses and plus
-signs may come between its characters, none lost, added or moved; a field
-that holds anything else ends the fill with `needs_owner`. latch then presses
+formats what it gets (a code as "123 456") still holds the value: only
+spaces, dashes, dots, slashes, parentheses and plus signs may come between
+its characters, none lost, added or moved. A value sites format as they
+like (a card's fields, an identity's phone, SSN and postal code) is held
+whatever of those separators either the field or the stored value puts
+between its characters; a login's username and password never are. A field
+that holds anything else ends the fill with `needs_owner`, naming the
+field, what the page did with it and what went in before it. latch then presses
 submit and waits until the values have left the page (clearing them itself
 if the page keeps them; the fill's answer then has a `next`. Kept fields
 don't prove the submit failed. For a login it says to check the page,
