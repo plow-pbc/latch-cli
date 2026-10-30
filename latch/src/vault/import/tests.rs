@@ -468,36 +468,77 @@ fn cards_and_notes(items: Value) -> String {
 fn reimported_cards_and_notes_are_duplicates_and_changed_ones_are_new() {
     let (_dir, mut vault) = store();
     let first = cards_and_notes(json!([
-        {"type": 3, "name": "Plow card", "card": {"brand": "Visa", "number": "4111 1111 1111 1111", "code": "737"}},
-        {"type": 3, "name": "Plow card", "card": {"brand": "Visa", "number": "4000056655665556", "code": "123"}},
+        {"type": 3, "name": "Plow card", "card": {"brand": "Visa", "number": "4111 1111 1111 1111", "expMonth": "4", "expYear": "2027", "code": "737"}},
         {"type": 2, "name": "Wi-Fi", "notes": "guest network"},
     ]));
     let (_, outcome) = run(&mut vault, &first);
-    assert_eq!(outcome.saved, 3);
+    assert_eq!(outcome.saved, 2);
     let (parsed, again) = run(&mut vault, &first);
     assert!(parsed.items.iter().all(|r| r.duplicate));
     assert_eq!(
         again,
         Outcome {
-            duplicates: 3,
+            duplicates: 2,
             ..Outcome::default()
         }
     );
 
-    // Another last four digits, brand or text is another item; a third
-    // copy of a card the vault holds once is new too.
-    let changed = cards_and_notes(json!([
-        {"type": 3, "name": "Plow card", "card": {"brand": "Visa", "number": "4111111111114242"}},
-        {"type": 3, "name": "Plow card", "card": {"brand": "Mastercard", "number": "4111111111111111"}},
+    // Another number, even with the same last four digits, is another
+    // card; other text is another note; a second copy of a note the vault
+    // holds once is new too.
+    let others = cards_and_notes(json!([
+        {"type": 3, "name": "Plow card", "card": {"brand": "Visa", "number": "4000 0000 0000 1111", "expMonth": "4", "expYear": "2027", "code": "737"}},
         {"type": 2, "name": "Wi-Fi", "notes": "office network"},
         {"type": 2, "name": "Wi-Fi", "notes": "guest network"},
         {"type": 2, "name": "Wi-Fi", "notes": "guest network"},
     ]));
-    let (parsed, outcome) = run(&mut vault, &changed);
+    let (parsed, outcome) = run(&mut vault, &others);
     let duplicates: Vec<bool> = parsed.items.iter().map(|r| r.duplicate).collect();
-    assert_eq!(duplicates, [false, false, false, true, false]);
-    assert_eq!((outcome.saved, outcome.duplicates), (4, 1));
-    assert_eq!(vault.list().len(), 7);
+    assert_eq!(duplicates, [false, false, true, false]);
+    assert!(parsed.items.iter().all(|r| r.update.is_none()));
+    assert_eq!((outcome.saved, outcome.duplicates), (3, 1));
+    assert_eq!(vault.list().len(), 5);
+}
+
+#[test]
+fn a_renewed_card_updates_the_card_it_renews() {
+    let (_dir, mut vault) = store();
+    let card = |exp_year: &str, code: &str| {
+        cards_and_notes(json!([
+            {"type": 3, "name": "Plow card", "card": {"brand": "Visa", "number": "4111111111111111", "expMonth": "4", "expYear": exp_year, "code": code}},
+        ]))
+    };
+    run(&mut vault, &card("2027", "737"));
+    let held = vault.list()[0].clone();
+
+    let mut parsed = parse_text(&card("2031", "123")).unwrap();
+    mark_against(&vault, &mut parsed).unwrap();
+    let update = parsed.items[0].update.clone().unwrap();
+    assert!(!parsed.items[0].duplicate);
+    assert_eq!(
+        (update.item.as_str(), update.revision),
+        (held.item.as_str(), 1)
+    );
+    assert_eq!(update.fields, ["expiry year", "code"]);
+    let shown = preview(&parsed);
+    assert_eq!(shown["items"][0]["changed"], json!(["expiry year", "code"]));
+    assert!(!shown.to_string().contains("123"));
+
+    let outcome = commit(&mut vault, &parsed, &[1]);
+    assert_eq!((outcome.saved, outcome.updated), (0, 1));
+    assert_eq!(vault.list().len(), 1);
+    // Compared, never printed: a card's code is a secret.
+    assert!(vault.release(&held.item, "code").unwrap() == "123");
+    assert!(
+        vault
+            .item(&held.item)
+            .unwrap()
+            .raw
+            .get("expiry year")
+            .as_deref()
+            == Some("2031")
+    );
+    assert!(vault.item(&held.item).unwrap().raw.login.is_none());
 }
 
 #[test]

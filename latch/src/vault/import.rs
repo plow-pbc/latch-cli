@@ -17,7 +17,7 @@ use std::io::{Cursor, Read};
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 
-use super::item::{CARD, IDENTITY, Item, LOGIN, Login, NOTE, Raw, Uri, kind_name};
+use super::item::{CARD, IDENTITY, Item, LOGIN, Login, Meta, NOTE, Raw, Uri, kind_name};
 use super::sites;
 use super::store::Backend;
 use super::totp::Params;
@@ -57,6 +57,9 @@ pub struct Update {
     pub revision: u64,
     pub password: bool,
     pub totp: bool,
+    /// A card's fields that changed, by label (a renewed card's expiry
+    /// and code); a login's are `password` and `totp`.
+    pub fields: Vec<&'static str>,
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
@@ -784,6 +787,7 @@ pub fn mark_against(vault: &dyn Backend, parsed: &mut Parsed) -> Result<(), Fail
                 revision: items[*j].revision,
                 password,
                 totp,
+                fields: Vec::new(),
             });
             continue;
         }
@@ -793,47 +797,96 @@ pub fn mark_against(vault: &dyn Backend, parsed: &mut Parsed) -> Result<(), Fail
             row.warnings.push(TWINS_LEFT_ALONE.into());
         }
     }
-    // A card or note the vault already holds, by its title and what tells
-    // one from another, is a duplicate; each held item answers one row.
+    // A card or note the vault already holds with every field the same is a
+    // duplicate. A card with the same title and number but another field
+    // changed (renewed: a new expiry or code) updates that card; a note
+    // with other text, or a card with another number, is new. Each held
+    // item answers one row.
     let mut matched: Vec<&str> = Vec::new();
     for row in &mut parsed.items {
         let kind = row.item.raw.kind;
         if kind != CARD && kind != NOTE {
             continue;
         }
-        let same = held.iter().find(|m| {
-            m.kind == kind_name(kind)
-                && m.title == row.item.raw.name
-                && !matched.contains(&m.item.as_str())
-                && vault
-                    .item(&m.item)
-                    .is_some_and(|held| same_card_or_note(&row.item, &held))
-        });
-        if let Some(meta) = same {
+        let candidates: Vec<(&Meta, Item)> = held
+            .iter()
+            .filter(|m| {
+                m.kind == kind_name(kind)
+                    && m.title == row.item.raw.name
+                    && !matched.contains(&m.item.as_str())
+            })
+            .filter_map(|m| vault.item(&m.item).map(|item| (m, item)))
+            .filter(|(_, item)| kind == NOTE || digits(item) == digits(&row.item))
+            .collect();
+        if let Some((meta, _)) = candidates
+            .iter()
+            .find(|(_, item)| changed_fields(&row.item, item).is_empty())
+        {
             row.duplicate = true;
+            matched.push(&meta.item);
+        } else if kind == CARD
+            && let Some((meta, item)) = candidates.first()
+        {
+            row.update = Some(Update {
+                item: meta.item.clone(),
+                revision: meta.revision,
+                password: false,
+                totp: false,
+                fields: changed_fields(&row.item, item),
+            });
             matched.push(&meta.item);
         }
     }
     Ok(())
 }
 
-/// One card for another: the same brand and the same last four digits.
-/// One note for another: the same text.
-fn same_card_or_note(row: &Item, held: &Item) -> bool {
-    if row.raw.kind == CARD {
-        let last_four = |item: &Item| {
-            let digits: String = item
-                .raw
-                .get("number")
-                .unwrap_or_default()
-                .chars()
-                .filter(char::is_ascii_digit)
-                .collect();
-            digits[digits.len().saturating_sub(4)..].to_string()
-        };
-        return last_four(row) == last_four(held) && row.raw.get("brand") == held.raw.get("brand");
-    }
-    row.raw.notes == held.raw.notes
+/// A card's number, its digits only.
+fn digits(item: &Item) -> String {
+    item.raw
+        .get("number")
+        .unwrap_or_default()
+        .chars()
+        .filter(char::is_ascii_digit)
+        .collect()
+}
+
+/// The fields of a card or note that differ between `row` and `held`, by
+/// label: every field a card or note keeps, and its notes.
+fn changed_fields(row: &Item, held: &Item) -> Vec<&'static str> {
+    let labels: &[&'static str] = if row.raw.kind == CARD {
+        &[
+            "cardholder name",
+            "brand",
+            "number",
+            "expiry month",
+            "expiry year",
+            "code",
+            "notes",
+        ]
+    } else {
+        &["notes"]
+    };
+    labels
+        .iter()
+        .copied()
+        .filter(|label| {
+            // An expiry as the vault stores it: "4" and "04" are one month.
+            let value = |item: &Item| {
+                let given = item.raw.get(label).unwrap_or_default();
+                let part = match *label {
+                    "expiry month" => "expMonth",
+                    "expiry year" => "expYear",
+                    _ => return given,
+                };
+                super::dates::expiry_part(part, &given).unwrap_or(given)
+            };
+            if *label == "number" {
+                digits(row) != digits(held)
+            } else {
+                value(row) != value(held)
+            }
+        })
+        .collect()
 }
 
 const TWINS_LEFT_ALONE: &str = "several entries share this name, username and site; left alone rather than guess which updates which";
@@ -869,6 +922,7 @@ pub fn preview(parsed: &Parsed) -> Value {
                 if update.totp {
                     changed.push("totp");
                 }
+                changed.extend(&update.fields);
             }
             let mut entry = json!({
                 "pick": n + 1,
@@ -916,7 +970,7 @@ pub fn expect(parsed: &Parsed) -> String {
             let update = row
                 .update
                 .as_ref()
-                .map(|u| json!([u.item, u.revision, u.password, u.totp]));
+                .map(|u| json!([u.item, u.revision, u.password, u.totp, u.fields]));
             json!([
                 row.item.raw.kind,
                 row.item.raw.name,
@@ -1005,13 +1059,19 @@ pub fn commit(vault: &mut dyn Backend, parsed: &Parsed, picks: &[usize]) -> Outc
                 continue;
             };
             let mut edited = current;
-            let incoming = row.item.raw.login.clone().unwrap_or_default();
-            let login = edited.raw.login.get_or_insert_with(Login::default);
-            if update.password {
-                login.password = incoming.password;
+            for label in &update.fields {
+                let value = row.item.raw.get(label).unwrap_or_default();
+                let _ = edited.raw.set(label, &value);
             }
-            if update.totp {
-                login.totp = incoming.totp;
+            if update.password || update.totp {
+                let incoming = row.item.raw.login.clone().unwrap_or_default();
+                let login = edited.raw.login.get_or_insert_with(Login::default);
+                if update.password {
+                    login.password = incoming.password;
+                }
+                if update.totp {
+                    login.totp = incoming.totp;
+                }
             }
             match vault.update(edited, update.revision) {
                 Ok(_) => {
