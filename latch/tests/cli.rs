@@ -3666,6 +3666,50 @@ fn an_agents_vault_list_names_its_plow_chat() {
     }
 }
 
+/// An agent's list names each item's kind, never a value, and narrows as
+/// the owner's does: the cards, or the logins saved for one site.
+#[test]
+fn an_agents_vault_list_shows_kinds_and_narrows() {
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    big_vault(&host, dir.path());
+    let agent_token = dir.path().join("agent.token");
+    fs::write(&agent_token, "agent-credential\n").unwrap();
+    let agent = dir.path().join("agent");
+    let agent_env = [("PLOW_TOKEN_FILE", agent_token.as_path())];
+    let login = latch(&agent, &["login", "--api-url", &plow.url], &agent_env);
+    assert_eq!(login.status.code(), Some(0), "{login:?}");
+    let _serve = serving(&host, &relay);
+    let list = |args: &[&str]| {
+        let output = latch(
+            &agent,
+            &[&["vault", "--host", "host", "list"], args].concat(),
+            &agent_env,
+        );
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        assert!(!String::from_utf8_lossy(&output.stdout).contains("4111111111111111"));
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
+    };
+    let first = list(&[]);
+    assert_eq!(first["items"].as_array().unwrap().len(), 50);
+    assert_eq!(first["total"], 120);
+    assert!(
+        first["next"].as_str().unwrap().contains("cards"),
+        "{}",
+        first["next"]
+    );
+    assert_eq!(
+        list(&["--kind", "card"])["items"],
+        json!([{"item": "v120", "kind": "card", "title": "Plow card", "sites": []}])
+    );
+    assert_eq!(
+        list(&["--site", "crateandbarrel.com"])["items"],
+        json!([{"item": "v119", "kind": "login", "title": "Crate & Barrel", "sites": ["crateandbarrel.com"]}])
+    );
+}
+
 #[test]
 fn latch_trace_goes_to_the_state_folder_and_a_hosts_log_never_to_a_commands_stderr() {
     let plow = LivePlow::start();
@@ -6076,6 +6120,81 @@ fn local_vault_edits_are_visible_to_serve_and_phone_links_stay_live() {
         .map(|r| r["args"]["command"].clone())
         .collect::<Vec<_>>();
     assert_eq!(imports, [json!("import"), json!("import")]);
+}
+
+/// A vault of 120 made-up items, imported into `host`'s state: logins
+/// for shop0000.com…, one for crateandbarrel.com and one card. Every row
+/// an import saves writes the vault again, so a bigger one is slow to make.
+fn big_vault(host: &Path, dir: &Path) {
+    let mut items: Vec<Value> = (0..118)
+        .map(|i| json!({"type": 1, "name": format!("Shop {i:04}"), "login": {"username": "ada", "password": "made-up", "uris": [{"uri": format!("https://www.shop{i:04}.com/login")}]}}))
+        .collect();
+    items.push(json!({"type": 1, "name": "Crate & Barrel", "login": {"username": "ada", "password": "made-up", "uris": [{"uri": "https://www.crateandbarrel.com/account"}]}}));
+    items.push(json!({"type": 3, "name": "Plow card", "card": {"number": "4111111111111111", "code": "737"}}));
+    let file = dir.join("big.json");
+    fs::write(
+        &file,
+        json!({"encrypted": false, "items": items}).to_string(),
+    )
+    .unwrap();
+    let output = latch(
+        host,
+        &["vault", "import", file.to_str().unwrap(), "--pick", "all"],
+        &[],
+    );
+    assert!(output.status.success(), "{output:?}");
+}
+
+/// A big vault lists 50 items at a time, says how many more there are,
+/// and narrows by site (its registrable domain), words and kind.
+#[test]
+fn a_big_vault_lists_a_page_and_narrows_by_site_search_and_kind() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    big_vault(&host, dir.path());
+    let list = |args: &[&str]| {
+        let output = latch(&host, &[&["vault", "list"], args].concat(), &[]);
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
+    };
+    let titles = |listed: &Value| -> Vec<String> {
+        listed["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["title"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let first = list(&[]);
+    assert_eq!(first["items"].as_array().unwrap().len(), 50);
+    assert_eq!(first["total"], 120);
+    assert!(
+        first["more"]
+            .as_str()
+            .unwrap()
+            .starts_with("70 more; narrow with --site"),
+        "{}",
+        first["more"]
+    );
+    let all = list(&["--all"]);
+    assert_eq!(all["items"].as_array().unwrap().len(), 120);
+    assert!(all.get("more").is_none());
+
+    let site = list(&["--site", "https://www.crateandbarrel.com/checkout"]);
+    assert_eq!(titles(&site), ["Crate & Barrel"]);
+    assert_eq!(site["total"], 1);
+    assert_eq!(titles(&list(&["--site", "shop0042.com"])), ["Shop 0042"]);
+    assert_eq!(list(&["--site", "nothere.com"])["total"], 0);
+    assert_eq!(titles(&list(&["--kind", "card"])), ["Plow card"]);
+    assert_eq!(titles(&list(&["--search", "BARREL"])), ["Crate & Barrel"]);
+    let limited = list(&["--search", "shop 011", "--limit", "3"]);
+    assert_eq!(titles(&limited), ["Shop 0110", "Shop 0111", "Shop 0112"]);
+    assert_eq!(limited["total"], 8);
+
+    let refused = latch(&host, &["vault", "list", "--kind", "wallet"], &[]);
+    let error = one_error_line(&String::from_utf8_lossy(&refused.stderr), Some(2));
+    assert_eq!(error["error"]["code"], "usage", "{error}");
 }
 
 #[test]
