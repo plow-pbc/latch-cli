@@ -193,7 +193,11 @@ impl Provider for Judge {
                 exchange: None,
             };
             Ok((
-                std::collections::HashMap::from([("decision".to_string(), answer)]),
+                std::collections::HashMap::from([
+                    ("decision".to_string(), answer),
+                    ("exception".to_string(), Answer::Yes(0.0)),
+                    ("time_ban".to_string(), Answer::Yes(0.0)),
+                ]),
                 meta,
             ))
         })
