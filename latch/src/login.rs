@@ -57,6 +57,10 @@ enum Source {
 }
 
 pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failure> {
+    // A Windows state folder another user owns could never keep this
+    // login's secrets: it is refused before anyone is asked to text.
+    #[cfg(windows)]
+    state.create()?;
     let saved = state.load_config()?;
     // A plain `latch login` where one is saved changes nothing: an option
     // asks for a change (a token, a name, a Plow, by text), and --again for

@@ -442,20 +442,19 @@ mod linux {
 #[cfg(windows)]
 mod windows {
     use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::{AsRawHandle, BorrowedHandle, FromRawHandle, OwnedHandle};
     use std::ptr::null;
 
     use windows_sys::Win32::Foundation::{
-        CloseHandle, DUPLICATE_SAME_ACCESS, DuplicateHandle, HANDLE, INVALID_HANDLE_VALUE,
-        WAIT_FAILED, WAIT_OBJECT_0,
+        HANDLE, INVALID_HANDLE_VALUE, WAIT_FAILED, WAIT_OBJECT_0,
     };
     use windows_sys::Win32::Storage::FileSystem::{
         FILE_NOTIFY_CHANGE_DIR_NAME, FILE_NOTIFY_CHANGE_FILE_NAME, FILE_NOTIFY_CHANGE_LAST_WRITE,
         FILE_NOTIFY_CHANGE_SIZE, FindCloseChangeNotification, FindFirstChangeNotificationW,
-        FindNextChangeNotification, ReadFile,
+        FindNextChangeNotification,
     };
     use windows_sys::Win32::System::Threading::{
-        CreateEventW, GetCurrentProcess, INFINITE, OpenProcess, PROCESS_SYNCHRONIZE, SetEvent,
-        WaitForMultipleObjects,
+        CreateEventW, INFINITE, OpenProcess, PROCESS_SYNCHRONIZE, SetEvent, WaitForMultipleObjects,
     };
 
     use super::*;
@@ -464,65 +463,32 @@ mod windows {
     /// files in it too), the host's process handle, and an event a thread of
     /// the watch's own sets once the hang-up closes, all waited on at once.
     pub struct Watch {
+        /// Closed with FindCloseChangeNotification, not CloseHandle.
         change: HANDLE,
         process: Option<u32>,
-        handle: Option<HANDLE>,
-        hung_up: Option<HANDLE>,
+        handle: Option<OwnedHandle>,
+        hung_up: Option<OwnedHandle>,
         pending: bool,
-    }
-
-    /// `handle` again, for a thread to own and close.
-    fn duplicate(handle: HANDLE) -> io::Result<HANDLE> {
-        let mut copy = std::ptr::null_mut();
-        // SAFETY: both process handles are this process's pseudo-handle, and
-        // `copy` is writable for the duplicate, checked before use.
-        let ok = unsafe {
-            DuplicateHandle(
-                GetCurrentProcess(),
-                handle,
-                GetCurrentProcess(),
-                &mut copy,
-                0,
-                0,
-                DUPLICATE_SAME_ACCESS,
-            )
-        };
-        if ok == 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(copy)
     }
 
     /// Sets an event once `hangup`'s writer closes it, from a thread that
     /// reads and drops what it has. The thread owns copies of both handles,
     /// so the watch may end before the writer does.
-    fn on_hang_up(hangup: Hangup) -> io::Result<HANDLE> {
+    fn on_hang_up(hangup: Hangup) -> io::Result<OwnedHandle> {
         // SAFETY: a manual-reset, unsignaled, unnamed event; null is failure.
         let event = unsafe { CreateEventW(null(), 1, 0, null()) };
         if event.is_null() {
             return Err(io::Error::last_os_error());
         }
-        let (reader, signal) = (duplicate(hangup)? as usize, duplicate(event)? as usize);
+        // SAFETY: a new handle nothing else owns.
+        let event = unsafe { OwnedHandle::from_raw_handle(event) };
+        // SAFETY: the caller keeps `hangup` open while the watch is made.
+        let reader = unsafe { BorrowedHandle::borrow_raw(hangup) }.try_clone_to_owned()?;
+        let signal = event.try_clone()?;
         std::thread::spawn(move || {
-            let (reader, signal) = (reader as HANDLE, signal as HANDLE);
-            let mut buffer = [0u8; 512];
-            let mut read = 0;
-            // SAFETY: the thread owns both duplicates; `buffer` is writable
-            // for its length, and each handle is closed once, here.
-            unsafe {
-                while ReadFile(
-                    reader,
-                    buffer.as_mut_ptr(),
-                    buffer.len() as u32,
-                    &mut read,
-                    std::ptr::null_mut(),
-                ) != 0
-                    && read > 0
-                {}
-                SetEvent(signal);
-                CloseHandle(reader);
-                CloseHandle(signal);
-            }
+            let _ = io::copy(&mut std::fs::File::from(reader), &mut io::sink());
+            // SAFETY: the thread's own copy of the event.
+            unsafe { SetEvent(signal.as_raw_handle()) };
         });
         Ok(event)
     }
@@ -557,17 +523,15 @@ mod windows {
                 return;
             }
             self.process = pid;
-            if let Some(handle) = self.handle.take() {
-                // SAFETY: the watch owned this handle; take means it is closed once.
-                unsafe { CloseHandle(handle) };
-            }
+            self.handle = None;
             if let Some(pid) = pid {
                 // SAFETY: OpenProcess takes plain values; null is failure.
                 let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
                 if handle.is_null() {
                     self.pending = true;
                 } else {
-                    self.handle = Some(handle);
+                    // SAFETY: a new handle nothing else owns.
+                    self.handle = Some(unsafe { OwnedHandle::from_raw_handle(handle) });
                 }
             }
         }
@@ -582,8 +546,10 @@ mod windows {
             if std::mem::take(&mut self.pending) {
                 return Ok(Woke::Changed);
             }
+            let hung_up = self.hung_up.as_ref().map(|event| event.as_raw_handle());
+            let process = self.handle.as_ref().map(|handle| handle.as_raw_handle());
             // The hang-up first: when it and a change come together, it wins.
-            let handles: Vec<HANDLE> = [self.hung_up, Some(self.change), self.handle]
+            let handles: Vec<HANDLE> = [hung_up, Some(self.change), process]
                 .into_iter()
                 .flatten()
                 .collect();
@@ -595,7 +561,7 @@ mod windows {
                 return Err(io::Error::last_os_error());
             }
             let which = handles[(woke - WAIT_OBJECT_0) as usize];
-            if Some(which) == self.hung_up {
+            if Some(which) == hung_up {
                 return Ok(Woke::HungUp);
             }
             if which == self.change {
@@ -613,14 +579,8 @@ mod windows {
 
     impl Drop for Watch {
         fn drop(&mut self) {
-            self.process(None);
-            // SAFETY: the watch owns these handles and drops them once.
-            unsafe {
-                FindCloseChangeNotification(self.change);
-                if let Some(event) = self.hung_up {
-                    CloseHandle(event);
-                }
-            }
+            // SAFETY: the watch's notification handle, closed once.
+            unsafe { FindCloseChangeNotification(self.change) };
         }
     }
 }

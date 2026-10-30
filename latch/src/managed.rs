@@ -679,7 +679,7 @@ impl Service {
     /// `registered`, or `None` if the service manager has not answered by
     /// `until`: then its command is killed and reaped.
     pub fn registered_by(&self, until: Option<Instant>) -> Option<bool> {
-        platform::registered(&self.label, until)
+        platform::registered(&self.label, &self.dir, until)
     }
 
     /// Runs `argv` as this service, with this process's environment, its
@@ -696,7 +696,7 @@ impl Service {
         // A host that just ended may take its service with it meanwhile
         // (systemd forgets a transient unit once its process ends): gone
         // is what was wanted.
-        match platform::remove(&self.label) {
+        match platform::remove(&self.label, &self.dir) {
             Err(_) if !self.registered() => Ok(()),
             removed => removed,
         }
@@ -741,7 +741,7 @@ pub async fn run_as_app(
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     };
-    platform::remove(&label)?;
+    platform::remove(&label, dir)?;
     printed
 }
 
@@ -812,7 +812,7 @@ mod platform {
         format!("gui/{}", unsafe { libc::getuid() })
     }
 
-    pub fn registered(label: &str, until: Option<Instant>) -> Option<bool> {
+    pub fn registered(label: &str, _dir: &Path, until: Option<Instant>) -> Option<bool> {
         let mut command = Command::new("launchctl");
         command.args(["print", &format!("{}/{label}", domain())]);
         let output = output_by(&mut command, until).ok()?;
@@ -855,7 +855,7 @@ mod platform {
         )
     }
 
-    pub fn remove(label: &str) -> Result<(), Failure> {
+    pub fn remove(label: &str, _dir: &Path) -> Result<(), Failure> {
         manager(Command::new("launchctl").args(["bootout", &format!("{}/{label}", domain())]))
     }
 
@@ -933,8 +933,9 @@ mod platform {
 
     use crate::failure::{Failure, code};
 
-    fn pid_file(label: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("{label}.pid"))
+    /// The host's pid and when it started, in its state folder.
+    fn pid_file(dir: &Path) -> PathBuf {
+        dir.join("serve.pid")
     }
 
     /// When `process` started, which tells it from a later process that
@@ -954,8 +955,8 @@ mod platform {
     /// The service's process, while it runs: a handle that may wait on it
     /// and end it. The pid file holds its pid and when it started, so a
     /// later process given the same pid is never taken for it.
-    fn running(label: &str) -> Option<HANDLE> {
-        let written = std::fs::read_to_string(pid_file(label)).ok()?;
+    fn running(dir: &Path) -> Option<HANDLE> {
+        let written = std::fs::read_to_string(pid_file(dir)).ok()?;
         let (pid, when) = written.trim().split_once(' ')?;
         let (pid, when): (u32, u64) = (pid.parse().ok()?, when.parse().ok()?);
         // SAFETY: OpenProcess takes plain values; a null handle is a failure.
@@ -979,8 +980,8 @@ mod platform {
         None
     }
 
-    pub fn registered(label: &str, _until: Option<Instant>) -> Option<bool> {
-        let process = running(label);
+    pub fn registered(_label: &str, dir: &Path, _until: Option<Instant>) -> Option<bool> {
+        let process = running(dir);
         if let Some(process) = process {
             // SAFETY: `running` handed over this live handle.
             unsafe { CloseHandle(process) };
@@ -988,7 +989,7 @@ mod platform {
         Some(process.is_some())
     }
 
-    pub fn start(label: &str, dir: &Path, argv: &[OsString]) -> Result<(), Failure> {
+    pub fn start(_label: &str, dir: &Path, argv: &[OsString]) -> Result<(), Failure> {
         let failed =
             |err: std::io::Error| Failure::new(code::service_failed, format!("{argv:?}: {err}"));
         let log = OpenOptions::new()
@@ -1014,21 +1015,21 @@ mod platform {
             .map_err(failed)?;
         let when = started(std::os::windows::io::AsRawHandle::as_raw_handle(&child))
             .ok_or_else(|| failed(std::io::Error::last_os_error()))?;
-        std::fs::write(pid_file(label), format!("{} {when}", child.id())).map_err(failed)
+        std::fs::write(pid_file(dir), format!("{} {when}", child.id())).map_err(failed)
     }
 
-    pub fn remove(label: &str) -> Result<(), Failure> {
-        if let Some(process) = running(label) {
+    pub fn remove(_label: &str, dir: &Path) -> Result<(), Failure> {
+        if let Some(process) = running(dir) {
             // SAFETY: `running` handed over this live handle; it is closed once.
             unsafe {
                 TerminateProcess(process, 1);
                 CloseHandle(process);
             }
         }
-        match std::fs::remove_file(pid_file(label)) {
+        match std::fs::remove_file(pid_file(dir)) {
             Err(err) if err.kind() != std::io::ErrorKind::NotFound => Err(Failure::new(
                 code::service_failed,
-                format!("{}: {err}", pid_file(label).display()),
+                format!("{}: {err}", pid_file(dir).display()),
             )),
             _ => Ok(()),
         }
@@ -1050,7 +1051,7 @@ mod platform {
         format!("{label}.service")
     }
 
-    pub fn registered(label: &str, until: Option<Instant>) -> Option<bool> {
+    pub fn registered(label: &str, _dir: &Path, until: Option<Instant>) -> Option<bool> {
         let mut command = Command::new("systemctl");
         command.args([
             "--user",
@@ -1098,7 +1099,7 @@ mod platform {
         manager(command.arg("--").args(argv))
     }
 
-    pub fn remove(label: &str) -> Result<(), Failure> {
+    pub fn remove(label: &str, _dir: &Path) -> Result<(), Failure> {
         manager(Command::new("systemctl").args(["--user", "stop", &unit(label)]))
     }
 }

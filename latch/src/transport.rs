@@ -3,8 +3,10 @@
 //! The local socket is a Unix socket, which only this OS user can open. Windows
 //! has none that tokio drives, and its named pipes cannot close one direction
 //! while the other stays open, which a local stream needs: there it is a
-//! loopback TCP socket that serves a caller only once it has sent the secret
-//! the endpoint file holds, in the state folder only this user can read.
+//! loopback TCP socket, and each end proves to the other that it knows the
+//! secret in the endpoint file, in the state folder only this user can read,
+//! before anything else crosses it (`handshake`). The secret never does: a
+//! port another user took over learns nothing, and is sent nothing.
 
 use std::fs;
 use std::io;
@@ -17,8 +19,6 @@ use std::task::{Context, Poll};
 
 use iroh::endpoint::{ConnectionError, VarInt};
 use tokio::io::{AsyncRead, AsyncWrite, DuplexStream, ReadBuf};
-#[cfg(windows)]
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 #[cfg(windows)]
 use tokio::net::TcpListener;
 #[cfg(windows)]
@@ -260,11 +260,89 @@ pub async fn connect_local(state: &Path) -> Result<LocalStream, Failure> {
             ))
         })?;
         let mut stream = LocalStream::connect(address).await.map_err(failed)?;
+        let within = std::time::Duration::from_secs(5);
+        match tokio::time::timeout(within, handshake::caller(&mut stream, secret.as_bytes())).await
+        {
+            Ok(Ok(true)) => Ok(stream),
+            Ok(Err(err)) => Err(failed(err)),
+            _ => Err(Failure::new(
+                code::local_socket,
+                "what listens at this state folder's endpoint did not prove it is its host; \
+                 nothing was sent to it"
+                    .into(),
+            )),
+        }
+    }
+}
+
+/// The two proofs of the Windows local socket. The host sends a nonce; the
+/// caller answers with its own and HMAC-SHA256(secret, "latch caller" ‖
+/// host's ‖ caller's); the host answers HMAC-SHA256(secret, "latch host" ‖
+/// caller's ‖ host's), which the caller checks before it sends a request.
+#[cfg(windows)]
+mod handshake {
+    use sha2::{Digest, Sha256};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    use super::{LocalRead, LocalStream, LocalWrite};
+
+    const NONCE: usize = 32;
+
+    fn hmac(key: &[u8], parts: &[&[u8]]) -> [u8; 32] {
+        let mut block = [0u8; 64];
+        if key.len() > block.len() {
+            block[..32].copy_from_slice(&Sha256::digest(key));
+        } else {
+            block[..key.len()].copy_from_slice(key);
+        }
+        let mut inner = Sha256::new();
+        inner.update(block.map(|byte| byte ^ 0x36));
+        for part in parts {
+            inner.update(part);
+        }
+        let mut outer = Sha256::new();
+        outer.update(block.map(|byte| byte ^ 0x5c));
+        outer.update(inner.finalize());
+        outer.finalize().into()
+    }
+
+    /// Equal, in a time that does not say where they differ.
+    fn same(a: &[u8], b: &[u8]) -> bool {
+        a.len() == b.len() && a.iter().zip(b).fold(0, |differ, (x, y)| differ | (x ^ y)) == 0
+    }
+
+    /// The caller's side: whether the other end proved it is the host.
+    pub async fn caller(stream: &mut LocalStream, secret: &[u8]) -> std::io::Result<bool> {
+        let mut host = [0u8; NONCE];
+        stream.read_exact(&mut host).await?;
+        let mine: [u8; NONCE] = rand::random();
+        let proof = hmac(secret, &[b"latch caller", &host, &mine]);
         stream
-            .write_all(format!("{secret}\n").as_bytes())
-            .await
-            .map_err(failed)?;
-        Ok(stream)
+            .write_all(&[mine.as_slice(), &proof].concat())
+            .await?;
+        let mut answer = [0u8; 32];
+        stream.read_exact(&mut answer).await?;
+        Ok(same(&answer, &hmac(secret, &[b"latch host", &mine, &host])))
+    }
+
+    /// The host's side: whether the caller proved it knows the secret; if it
+    /// did, the host's own proof has been sent back.
+    pub async fn host(
+        recv: &mut LocalRead,
+        send: &mut LocalWrite,
+        secret: &[u8],
+    ) -> std::io::Result<bool> {
+        let mine: [u8; NONCE] = rand::random();
+        send.write_all(&mine).await?;
+        let mut theirs = [0u8; NONCE + 32];
+        recv.read_exact(&mut theirs).await?;
+        let (caller, proof) = theirs.split_at(NONCE);
+        if !same(proof, &hmac(secret, &[b"latch caller", &mine, caller])) {
+            return Ok(false);
+        }
+        send.write_all(&hmac(secret, &[b"latch host", caller, &mine]))
+            .await?;
+        Ok(true)
     }
 }
 
@@ -331,9 +409,9 @@ impl LocalSocket {
     }
 }
 
-/// What a local caller must show before the host serves it: on Windows the
-/// endpoint file's secret, within a few seconds. A Unix socket's mode has
-/// already let in only this user.
+/// What a local caller must show before the host serves it: on Windows that
+/// it knows the endpoint file's secret (`handshake`), within a few seconds. A
+/// Unix socket's mode has already let in only this user.
 #[derive(Clone)]
 pub struct Admission {
     #[cfg(windows)]
@@ -341,18 +419,15 @@ pub struct Admission {
 }
 impl Admission {
     #[cfg(unix)]
-    pub async fn check(&self, _recv: &mut LocalRead) -> bool {
+    pub async fn check(&self, _recv: &mut LocalRead, _send: &mut LocalWrite) -> bool {
         true
     }
 
     #[cfg(windows)]
-    pub async fn check(&self, recv: &mut LocalRead) -> bool {
-        let mut sent = [0; SECRET_LEN + 1];
+    pub async fn check(&self, recv: &mut LocalRead, send: &mut LocalWrite) -> bool {
         let within = std::time::Duration::from_secs(5);
-        match tokio::time::timeout(within, recv.read_exact(&mut sent)).await {
-            Ok(Ok(_)) => sent[..SECRET_LEN] == *self.secret.as_bytes() && sent[SECRET_LEN] == b'\n',
-            _ => false,
-        }
+        let proved = handshake::host(recv, send, self.secret.as_bytes());
+        matches!(tokio::time::timeout(within, proved).await, Ok(Ok(true)))
     }
 }
 impl Drop for LocalSocket {
