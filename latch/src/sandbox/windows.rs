@@ -31,6 +31,7 @@
 
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
+use std::os::windows::io::AsRawHandle;
 use std::path::{Path, PathBuf};
 use std::ptr::{null, null_mut};
 use std::sync::OnceLock;
@@ -41,7 +42,7 @@ use windows_sys::Win32::Foundation::{
     WAIT_ABANDONED, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Security::Authorization::{
-    ConvertStringSidToSidW, DENY_ACCESS, EXPLICIT_ACCESS_W, GRANT_ACCESS, GetNamedSecurityInfoW,
+    ConvertStringSidToSidW, DENY_ACCESS, EXPLICIT_ACCESS_W, GRANT_ACCESS, GetSecurityInfo,
     NO_MULTIPLE_TRUSTEE, SE_FILE_OBJECT, SetEntriesInAclW, SetNamedSecurityInfoW, TRUSTEE_IS_SID,
     TRUSTEE_IS_UNKNOWN, TRUSTEE_W,
 };
@@ -50,12 +51,17 @@ use windows_sys::Win32::Security::Isolation::{
 };
 use windows_sys::Win32::Security::{
     ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, ACL_SIZE_INFORMATION, AclSizeInformation, AddAce,
-    DACL_SECURITY_INFORMATION, EqualSid, FreeSid, GetAce, GetAclInformation, GetTokenInformation,
-    INHERITED_ACE, InitializeAcl, NO_INHERITANCE, PSID, SECURITY_CAPABILITIES, SID_AND_ATTRIBUTES,
-    SUB_CONTAINERS_AND_OBJECTS_INHERIT, TOKEN_QUERY, TokenIsAppContainer,
+    DACL_SECURITY_INFORMATION, EqualSid, FreeSid, GetAce, GetAclInformation,
+    GetSecurityDescriptorControl, GetTokenInformation, INHERITED_ACE, InitializeAcl,
+    InitializeSecurityDescriptor, NO_INHERITANCE, PSECURITY_DESCRIPTOR, PSID,
+    SE_DACL_AUTO_INHERITED, SE_DACL_PROTECTED, SECURITY_CAPABILITIES, SECURITY_DESCRIPTOR,
+    SID_AND_ATTRIBUTES, SUB_CONTAINERS_AND_OBJECTS_INHERIT, SetKernelObjectSecurity,
+    SetSecurityDescriptorControl, SetSecurityDescriptorDacl, TOKEN_QUERY, TokenIsAppContainer,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    DELETE, FILE_GENERIC_EXECUTE, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
+    DELETE, FILE_FLAG_BACKUP_SEMANTICS, FILE_GENERIC_EXECUTE, FILE_GENERIC_READ,
+    FILE_GENERIC_WRITE, FILE_READ_ATTRIBUTES, FILE_READ_DATA, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    FILE_TRAVERSE, GetFinalPathNameByHandleW, READ_CONTROL, SYNCHRONIZE, WRITE_DAC,
 };
 use windows_sys::Win32::System::Console::{
     GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
@@ -68,14 +74,16 @@ use windows_sys::Win32::System::JobObjects::{
 };
 use windows_sys::Win32::System::SystemServices::{
     ACCESS_ALLOWED_ACE_TYPE, ACCESS_DENIED_ACE_TYPE, MAXDWORD, SE_GROUP_ENABLED,
+    SECURITY_DESCRIPTOR_REVISION,
 };
 use windows_sys::Win32::System::Threading::{
-    CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateMutexW, CreateProcessW, DeleteProcThreadAttributeList,
-    EXTENDED_STARTUPINFO_PRESENT, GetCurrentProcess, GetExitCodeProcess, INFINITE,
-    InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST, OpenProcess, OpenProcessToken,
-    PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
-    PROCESS_INFORMATION, PROCESS_SYNCHRONIZE, ReleaseMutex, ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOEXW,
-    TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
+    CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateMutexW, CreateProcessW,
+    DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetCurrentProcess,
+    GetExitCodeProcess, INFINITE, InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST,
+    OpenProcess, OpenProcessToken, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+    PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, PROCESS_INFORMATION, PROCESS_SYNCHRONIZE,
+    ReleaseMutex, ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOEXW, TerminateProcess,
+    UpdateProcThreadAttribute, WaitForSingleObject,
 };
 
 use super::Policy;
@@ -87,6 +95,8 @@ const INNER: &str = "LATCH_SANDBOX_INNER";
 const READ: u32 = FILE_GENERIC_READ | FILE_GENERIC_EXECUTE;
 /// An area's: that, write, and delete what is in it.
 const WRITE: u32 = READ | FILE_GENERIC_WRITE | DELETE;
+/// A folder a program runs in: entered, nothing in it listed or read.
+const ENTER: u32 = FILE_TRAVERSE | FILE_READ_ATTRIBUTES | SYNCHRONIZE;
 
 /// The capability a container needs for outbound connections.
 const INTERNET_CLIENT: &str = "S-1-15-3-1";
@@ -151,8 +161,19 @@ fn in_container() -> bool {
 #[derive(Serialize, Deserialize)]
 struct Grant {
     path: PathBuf,
-    write: bool,
-    deny: bool,
+    access: Access,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq)]
+enum Access {
+    /// Read it, and everything below a folder.
+    Read,
+    /// Read and write it, and everything below a folder.
+    Write,
+    /// Nothing, whatever a grant above it says.
+    Deny,
+    /// Enter a folder (the one a program runs in), nothing in it listed or read.
+    Enter,
 }
 
 /// What a launcher granted, kept until it has taken it all back.
@@ -207,8 +228,7 @@ fn grants(policy: &Policy) -> Result<Vec<Grant>, String> {
         if area.exists() {
             grants.push(Grant {
                 path: area.clone(),
-                write: true,
-                deny: false,
+                access: Access::Write,
             });
         }
     }
@@ -233,8 +253,7 @@ fn grants(policy: &Policy) -> Result<Vec<Grant>, String> {
         if read.exists() {
             grants.push(Grant {
                 path: read.clone(),
-                write: false,
-                deny: false,
+                access: Access::Read,
             });
         }
     }
@@ -247,22 +266,27 @@ fn grants(policy: &Policy) -> Result<Vec<Grant>, String> {
         if path.exists() && granted.iter().any(|open| path.starts_with(open)) {
             grants.push(Grant {
                 path: path.clone(),
-                write: false,
-                deny: true,
+                access: Access::Deny,
             });
         }
+    }
+    // The folder it runs in, when no grant reaches it: entered, nothing in
+    // it listed or read.
+    if let Some(dir) = &policy.workdir
+        && dir.is_dir()
+        && !granted.iter().any(|open| dir.starts_with(open))
+    {
+        grants.push(Grant {
+            path: dir.clone(),
+            access: Access::Enter,
+        });
     }
     Ok(grants)
 }
 
 fn grant_all(sid: &Sid, grants: &[Grant]) -> Result<(), String> {
     for grant in grants {
-        let (access, mode) = match (grant.deny, grant.write) {
-            (true, _) => (WRITE, DENY_ACCESS),
-            (false, true) => (WRITE, GRANT_ACCESS),
-            (false, false) => (READ, GRANT_ACCESS),
-        };
-        set_entry(&grant.path, sid.0, access, mode).map_err(|err| {
+        set_entry(grant, sid.0).map_err(|err| {
             format!(
                 "{}: cannot grant the sandbox access: {err}",
                 grant.path.display()
@@ -312,25 +336,106 @@ impl Drop for EditLock {
 }
 
 /// Takes back every entry for the container: grants and denials alike.
+/// One that is gone, or no longer at its path, keeps an entry for a
+/// container no process can run in again.
 fn take_back(sid: &Sid, grants: &[Grant]) {
     for grant in grants {
-        let _ = remove_entries(&grant.path, sid.0);
+        let _ = with_dacl(
+            &grant.path,
+            grant.access != Access::Enter,
+            |old, _, write| {
+                // SAFETY: `old` is the object's access list, live meanwhile.
+                match unsafe { without(old, sid.0) }? {
+                    Some(mut new) => write(new.as_mut_ptr().cast()),
+                    None => Ok(()),
+                }
+            },
+        );
     }
 }
 
-/// Writes `path`'s access list again without the entries of its own for
-/// `sid`, allowed and denied (`REVOKE_ACCESS` removes only the allowed);
-/// Windows takes their inherited copies off what is below a folder.
-fn remove_entries(path: &Path, sid: PSID) -> std::io::Result<()> {
+/// The object at a judged path, held open while its access list is
+/// written: neither it nor a folder above it can be renamed meanwhile, so
+/// its name cannot be pointed elsewhere (a folder swapped for a junction
+/// into latch's state). Opened through any links, it must be that path.
+struct Pin {
+    file: std::fs::File,
+    folder: bool,
+}
+
+impl Pin {
+    fn open(path: &Path) -> std::io::Result<Pin> {
+        use std::os::windows::fs::OpenOptionsExt;
+        // Reading its data, not only its attributes, is what makes Windows
+        // check the sharing: without delete, no rename.
+        let file = std::fs::OpenOptions::new()
+            .access_mode(
+                FILE_READ_DATA | FILE_READ_ATTRIBUTES | READ_CONTROL | WRITE_DAC | SYNCHRONIZE,
+            )
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(path)?;
+        if !same(&final_path(&file)?, path) {
+            return Err(std::io::Error::other(
+                "it is not what was judged at that path",
+            ));
+        }
+        let folder = file.metadata()?.is_dir();
+        Ok(Pin { file, folder })
+    }
+}
+
+/// The same path, apart from a `\\?\` prefix and case.
+fn same(a: &Path, b: &Path) -> bool {
+    let plain = |path: &Path| {
+        let text = path.to_string_lossy();
+        text.strip_prefix(r"\\?\").unwrap_or(&text).to_lowercase()
+    };
+    plain(a) == plain(b)
+}
+
+/// Where the open `file` really is, as `canonicalize` names it.
+pub(crate) fn final_path(file: &std::fs::File) -> std::io::Result<PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    let mut buffer = vec![0u16; 1024];
+    // SAFETY: `buffer` is writable for its length; the handle is live.
+    let length = unsafe {
+        GetFinalPathNameByHandleW(
+            file.as_raw_handle(),
+            buffer.as_mut_ptr(),
+            buffer.len() as u32,
+            0,
+        )
+    } as usize;
+    if length == 0 || length > buffer.len() {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(PathBuf::from(std::ffi::OsString::from_wide(
+        &buffer[..length],
+    )))
+}
+
+/// Writes the access list of the object at `path` again, from its current
+/// one: `edit` gets it, whether the object is a folder, and the writer for
+/// the list it makes. One edit at a time (`EditLock`), the object pinned
+/// (`Pin`). A folder's inherited entries are written by name, so Windows
+/// carries them down to everything below it (a walk of the whole folder);
+/// anything else through the handle, which walks nothing.
+fn with_dacl(
+    path: &Path,
+    inherited: bool,
+    edit: impl FnOnce(*mut ACL, bool, &dyn Fn(*mut ACL) -> std::io::Result<()>) -> std::io::Result<()>,
+) -> std::io::Result<()> {
     let _one_at_a_time = EditLock::take()?;
-    let name = wide(path.as_os_str());
+    let pin = Pin::open(path)?;
+    let handle = pin.file.as_raw_handle();
     let mut old: *mut ACL = null_mut();
-    let mut descriptor = null_mut();
-    // SAFETY: `name` is NUL-terminated; the descriptor holding `old` is
-    // freed below with LocalFree.
+    let mut descriptor: PSECURITY_DESCRIPTOR = null_mut();
+    // SAFETY: a live handle with READ_CONTROL; the descriptor holding `old`
+    // is freed below with LocalFree.
     let read = unsafe {
-        GetNamedSecurityInfoW(
-            name.as_ptr(),
+        GetSecurityInfo(
+            handle,
             SE_FILE_OBJECT,
             DACL_SECURITY_INFORMATION,
             null_mut(),
@@ -343,28 +448,64 @@ fn remove_entries(path: &Path, sid: PSID) -> std::io::Result<()> {
     if read != ERROR_SUCCESS {
         return Err(std::io::Error::from_raw_os_error(read as i32));
     }
-    // SAFETY: `old` is the access list in `descriptor`, live until it is freed.
-    let written = unsafe { without(old, sid) }.and_then(|new| match new {
-        None => Ok(()),
-        // SAFETY: `name` and the list are live; no owner, group or SACL change.
-        Some(mut new) => match unsafe {
-            SetNamedSecurityInfoW(
-                name.as_ptr(),
-                SE_FILE_OBJECT,
-                DACL_SECURITY_INFORMATION,
-                null_mut(),
-                null_mut(),
-                new.as_mut_ptr().cast(),
-                null(),
-            )
-        } {
-            ERROR_SUCCESS => Ok(()),
-            err => Err(std::io::Error::from_raw_os_error(err as i32)),
-        },
-    });
-    // SAFETY: allocated by GetNamedSecurityInfoW, freed once.
+    let name = wide(path.as_os_str());
+    let by_name = inherited && pin.folder;
+    let write = |new: *mut ACL| {
+        if by_name {
+            // SAFETY: `name` and `new` are live; no owner, group or SACL change.
+            match unsafe {
+                SetNamedSecurityInfoW(
+                    name.as_ptr(),
+                    SE_FILE_OBJECT,
+                    DACL_SECURITY_INFORMATION,
+                    null_mut(),
+                    null_mut(),
+                    new,
+                    null(),
+                )
+            } {
+                ERROR_SUCCESS => Ok(()),
+                err => Err(std::io::Error::from_raw_os_error(err as i32)),
+            }
+        } else {
+            // SAFETY: the pinned handle has WRITE_DAC; `descriptor` is live.
+            unsafe { write_through(handle, descriptor, new) }
+        }
+    };
+    let result = edit(old, pin.folder, &write);
+    // SAFETY: allocated by GetSecurityInfo, freed once.
     unsafe { LocalFree(descriptor) };
-    written
+    result
+}
+
+/// Sets `new` as the access list of the object open at `handle`, as
+/// protected and auto-inherited as `like` says its old one was.
+///
+/// # Safety
+/// `handle` must be live with WRITE_DAC, `like` a live descriptor, `new` a
+/// live access list.
+unsafe fn write_through(
+    handle: HANDLE,
+    like: PSECURITY_DESCRIPTOR,
+    new: *mut ACL,
+) -> std::io::Result<()> {
+    let (mut control, mut revision) = (0u16, 0u32);
+    let mut descriptor: SECURITY_DESCRIPTOR = unsafe { std::mem::zeroed() };
+    let built = (&raw mut descriptor).cast();
+    let kept = SE_DACL_PROTECTED | SE_DACL_AUTO_INHERITED;
+    // SAFETY: as the caller promised; `descriptor` is ours and outlives the
+    // calls.
+    let done = unsafe {
+        GetSecurityDescriptorControl(like, &mut control, &mut revision) != 0
+            && InitializeSecurityDescriptor(built, SECURITY_DESCRIPTOR_REVISION) != 0
+            && SetSecurityDescriptorDacl(built, 1, new, 0) != 0
+            && SetSecurityDescriptorControl(built, kept, control & kept) != 0
+            && SetKernelObjectSecurity(handle, DACL_SECURITY_INFORMATION, built) != 0
+    };
+    if !done {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 /// A copy of the access list `old` without its own entries for `sid`, or
@@ -441,75 +582,44 @@ unsafe fn without(old: *const ACL, sid: PSID) -> std::io::Result<Option<Vec<u32>
     Ok(removed.then_some(new))
 }
 
-/// Adds to `path`'s access list an entry for `sid`, inherited by everything
-/// below a folder. Windows carries it down to what is already there.
-fn set_entry(path: &Path, sid: PSID, access: u32, mode: i32) -> std::io::Result<()> {
-    let _one_at_a_time = EditLock::take()?;
-    let name = wide(path.as_os_str());
-    let mut old: *mut ACL = null_mut();
-    let mut descriptor = null_mut();
-    // SAFETY: `name` is NUL-terminated; the descriptor holding `old` is
-    // freed below with LocalFree.
-    let read = unsafe {
-        GetNamedSecurityInfoW(
-            name.as_ptr(),
-            SE_FILE_OBJECT,
-            DACL_SECURITY_INFORMATION,
-            null_mut(),
-            null_mut(),
-            &mut old,
-            null_mut(),
-            &mut descriptor,
-        )
+/// Adds to the access list of `grant`'s path an entry for `sid`, inherited
+/// by everything below a folder (but a folder's to enter).
+fn set_entry(grant: &Grant, sid: PSID) -> std::io::Result<()> {
+    let (access, mode) = match grant.access {
+        Access::Read => (READ, GRANT_ACCESS),
+        Access::Write => (WRITE, GRANT_ACCESS),
+        Access::Deny => (WRITE, DENY_ACCESS),
+        Access::Enter => (ENTER, GRANT_ACCESS),
     };
-    if read != ERROR_SUCCESS {
-        return Err(std::io::Error::from_raw_os_error(read as i32));
-    }
-    let inheritance = if path.is_dir() {
-        SUB_CONTAINERS_AND_OBJECTS_INHERIT
-    } else {
-        NO_INHERITANCE
-    };
-    let entry = EXPLICIT_ACCESS_W {
-        grfAccessPermissions: access,
-        grfAccessMode: mode,
-        grfInheritance: inheritance,
-        Trustee: TRUSTEE_W {
-            pMultipleTrustee: null_mut(),
-            MultipleTrusteeOperation: NO_MULTIPLE_TRUSTEE,
-            TrusteeForm: TRUSTEE_IS_SID,
-            TrusteeType: TRUSTEE_IS_UNKNOWN,
-            ptstrName: sid.cast(),
-        },
-    };
-    let mut new: *mut ACL = null_mut();
-    // SAFETY: one entry in, `old` from the call above, `new` freed below.
-    let merged = unsafe { SetEntriesInAclW(1, &entry, old, &mut new) };
-    let written = if merged == ERROR_SUCCESS {
-        // SAFETY: `name` and `new` are live; no owner, group or SACL change.
-        unsafe {
-            SetNamedSecurityInfoW(
-                name.as_ptr(),
-                SE_FILE_OBJECT,
-                DACL_SECURITY_INFORMATION,
-                null_mut(),
-                null_mut(),
-                new,
-                null(),
-            )
+    let inherited = grant.access != Access::Enter;
+    with_dacl(&grant.path, inherited, |old, folder, write| {
+        let entry = EXPLICIT_ACCESS_W {
+            grfAccessPermissions: access,
+            grfAccessMode: mode,
+            grfInheritance: if inherited && folder {
+                SUB_CONTAINERS_AND_OBJECTS_INHERIT
+            } else {
+                NO_INHERITANCE
+            },
+            Trustee: TRUSTEE_W {
+                pMultipleTrustee: null_mut(),
+                MultipleTrusteeOperation: NO_MULTIPLE_TRUSTEE,
+                TrusteeForm: TRUSTEE_IS_SID,
+                TrusteeType: TRUSTEE_IS_UNKNOWN,
+                ptstrName: sid.cast(),
+            },
+        };
+        let mut new: *mut ACL = null_mut();
+        // SAFETY: one entry in, `old` live meanwhile, `new` freed below.
+        let merged = unsafe { SetEntriesInAclW(1, &entry, old, &mut new) };
+        if merged != ERROR_SUCCESS {
+            return Err(std::io::Error::from_raw_os_error(merged as i32));
         }
-    } else {
-        merged
-    };
-    // SAFETY: both were allocated by the calls above, and are freed once.
-    unsafe {
-        LocalFree(new.cast());
-        LocalFree(descriptor);
-    }
-    match written {
-        ERROR_SUCCESS => Ok(()),
-        err => Err(std::io::Error::from_raw_os_error(err as i32)),
-    }
+        let written = write(new);
+        // SAFETY: allocated by SetEntriesInAclW, freed once.
+        unsafe { LocalFree(new.cast()) };
+        written
+    })
 }
 
 /// Runs this worker's own command line again, in the container `sid` and a

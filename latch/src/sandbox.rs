@@ -60,6 +60,10 @@ pub struct Policy {
     pub kill_after: Option<u64>,
     /// A Google or Messages worker may run only this pinned program.
     pub program: Option<PathBuf>,
+    /// An `exec` worker's folder to run in, which Windows lets it enter
+    /// (only) when no grant reaches it.
+    #[cfg(windows)]
+    pub workdir: Option<PathBuf>,
     /// Test only: make the OS refuse the sandbox, to show that a sandbox
     /// that cannot be applied fails the operation.
     pub break_for_test: bool,
@@ -796,6 +800,8 @@ mod platform;
 #[path = "sandbox/windows.rs"]
 mod platform;
 
+#[cfg(windows)]
+pub(crate) use platform::final_path;
 #[cfg(windows)]
 pub use platform::{sweep, tie_to_host};
 
