@@ -751,9 +751,15 @@ mod tests {
         };
         let missing = gog_program(state.path(), "0.36.0").unwrap_err();
         assert_eq!(missing.code, "gog_not_configured");
+        // What puts it there: install.sh, or on Windows turning Google on.
+        let fix = match cfg!(windows) {
+            true => "`latch plugins enable google` installs it",
+            false => "run install.sh",
+        };
         assert!(
-            missing.message.contains(&in_plugins("0.36.0"))
-                && missing.message.contains("install.sh")
+            missing.message.contains(&in_plugins("0.36.0")) && missing.message.contains(fix),
+            "{}",
+            missing.message
         );
         // The old place (~/.local/share/latch/gog) is never used.
         installed(&state.path().join(".local/share/latch/gog"), "0.36.0");

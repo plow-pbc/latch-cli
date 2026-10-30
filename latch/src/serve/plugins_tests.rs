@@ -175,6 +175,9 @@ fn gog_folder(t: &TestHost) -> PathBuf {
         .join(&crate::google::PIN.version)
 }
 
+// On Windows turning Google on installs a missing or changed gog instead
+// (`google::install`).
+#[cfg(unix)]
 #[tokio::test]
 async fn google_setup_refuses_a_missing_or_unverified_gog_and_stays_off() {
     let t = start(covered()).await;
