@@ -28,6 +28,8 @@ use std::future::Future;
 use std::os::unix::fs::MetadataExt;
 #[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
+#[cfg(windows)]
+use std::os::windows::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::sync::{Arc, Mutex};
@@ -43,7 +45,7 @@ use tokio::task::JoinHandle;
 use crate::failure::{Code, Failure, code};
 use crate::log::log;
 use crate::serve::Done;
-use crate::state::to_hex;
+use crate::state::{OwnerOnly, to_hex};
 use crate::wire::Response;
 use crate::worker::{WorkerSetup, authenticated_worker_error};
 
@@ -279,6 +281,11 @@ pub(crate) fn check_path(workers: &WorkerSetup, path: &Path, write: bool) -> Res
 
 /// Only existing, plain cache directories receive implicit write access.
 pub(crate) fn caches(workers: &WorkerSetup) -> Vec<PathBuf> {
+    // On Windows a grant rewrites the access list of everything below it,
+    // which for a large cache would slow every call: none yet.
+    if cfg!(windows) {
+        return Vec::new();
+    }
     [
         ".cache",
         ".npm",
@@ -299,24 +306,8 @@ pub(crate) fn caches(workers: &WorkerSetup) -> Vec<PathBuf> {
     .collect()
 }
 
-/// `exec` on Windows, where no sandbox confines a program yet: refused,
-/// and nothing runs.
-#[cfg(windows)]
-pub async fn run(
-    _workers: &WorkerSetup,
-    prepared: PreparedExec,
-    _cut_off: impl Future<Output = Code>,
-) -> Done {
-    let args = prepared.0;
-    let audit = json!({ "argv": args.argv, "workdir": args.workdir, "writes": args.writes,
-                        "network": args.network, "timeout": args.timeout });
-    let message = "no worker sandbox on Windows yet, so programs do not run here".to_string();
-    Done::failed(code::sandbox_unavailable, message, audit)
-}
-
 /// `exec`: runs `args.argv` and returns its result. If `cut_off` finishes
 /// first, the program is killed, and its outcome is the one `cut_off` gives.
-#[cfg(unix)]
 pub async fn run(
     workers: &WorkerSetup,
     prepared: PreparedExec,
@@ -377,6 +368,13 @@ pub async fn run(
     done
 }
 
+/// Windows has no `mkdirat`; the folder is made by name, and the worker's
+/// container reaches it only through the grant that names it.
+#[cfg(windows)]
+fn create_write_dir(path: &Path) -> std::io::Result<()> {
+    std::fs::create_dir(path)
+}
+
 #[cfg(unix)]
 fn create_write_dir(path: &Path) -> std::io::Result<()> {
     use std::os::fd::AsRawFd;
@@ -408,9 +406,7 @@ pub fn stdin_audit(bytes: &[u8]) -> Value {
 /// A new, empty folder `latch-exec-<host pid>-<random>` in the OS temp
 /// folder, for this user only. Its real path, since the sandbox matches
 /// real paths (macOS's temp folder is behind the `/var` link).
-#[cfg(unix)]
 fn make_tmpdir() -> std::io::Result<PathBuf> {
-    use std::os::unix::fs::DirBuilderExt;
     let name = format!(
         "latch-exec-{}-{:016x}",
         std::process::id(),
@@ -418,7 +414,11 @@ fn make_tmpdir() -> std::io::Result<PathBuf> {
     );
     let path = std::env::temp_dir().join(name);
     // `create` (not `recursive`) fails if the name already exists.
-    std::fs::DirBuilder::new().mode(0o700).create(&path)?;
+    std::fs::DirBuilder::new().owner_only().create(&path)?;
+    // Windows matches no paths, so the name its programs can read is kept.
+    if cfg!(windows) {
+        return Ok(path);
+    }
     path.canonicalize()
 }
 
@@ -426,7 +426,6 @@ fn make_tmpdir() -> std::io::Result<PathBuf> {
 /// `latch-exec-<pid>-…` folders in the OS temp folder whose host no longer
 /// runs. Those of hosts still running (this one, or another on another
 /// state folder) stay.
-#[cfg(unix)]
 pub fn sweep_tmpdirs() {
     let temp = std::env::temp_dir();
     let Ok(entries) = std::fs::read_dir(&temp) else {
@@ -434,6 +433,7 @@ pub fn sweep_tmpdirs() {
     };
     // SAFETY: std has no UID API. getuid takes no arguments, accesses no Rust
     // memory, and returns our real UID for the ownership check below.
+    #[cfg(unix)]
     let me = unsafe { libc::getuid() };
     for entry in entries.flatten() {
         let name = entry.file_name();
@@ -441,14 +441,18 @@ pub fn sweep_tmpdirs() {
             .to_str()
             .and_then(|name| name.strip_prefix("latch-exec-"))
             .and_then(|rest| rest.split_once('-'))
-            .and_then(|(pid, _)| pid.parse::<libc::pid_t>().ok());
+            .and_then(|(pid, _)| pid.parse::<u32>().ok());
         let Some(host) = host.filter(|pid| *pid > 0) else {
             continue;
         };
         let Ok(meta) = entry.path().symlink_metadata() else {
             continue;
         };
-        if !meta.is_dir() || meta.uid() != me || running(host) {
+        #[cfg(unix)]
+        let theirs = meta.uid() != me;
+        #[cfg(windows)]
+        let theirs = false;
+        if !meta.is_dir() || theirs || running(host) {
             continue;
         }
         match std::fs::remove_dir_all(entry.path()) {
@@ -464,29 +468,41 @@ pub fn sweep_tmpdirs() {
     }
 }
 
-/// Windows runs no programs for exec yet, so leaves no folders behind.
-#[cfg(windows)]
-pub fn sweep_tmpdirs() {}
-
 /// Whether a process `pid` runs (one of another user counts too).
-#[cfg(unix)]
-fn running(pid: libc::pid_t) -> bool {
-    // SAFETY: std cannot probe an arbitrary PID. Signal 0 checks existence
-    // without delivering a signal; this scalar-only call accesses no Rust memory.
-    let found = unsafe { libc::kill(pid, 0) } == 0;
-    found || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+fn running(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        // SAFETY: std cannot probe an arbitrary PID. Signal 0 checks existence
+        // without delivering a signal; this scalar-only call accesses no Rust memory.
+        let found = unsafe { libc::kill(pid as libc::pid_t, 0) } == 0;
+        found || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::{CloseHandle, WAIT_TIMEOUT};
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject,
+        };
+        // SAFETY: OpenProcess takes plain values; null is failure.
+        let process = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
+        if process.is_null() {
+            return false;
+        }
+        // SAFETY: a live handle of ours, closed once.
+        let alive = unsafe { WaitForSingleObject(process, 0) } == WAIT_TIMEOUT;
+        unsafe { CloseHandle(process) };
+        alive
+    }
 }
 
 /// When a program must stop: at `timeout` seconds, or when `cut_off`
 /// finishes, with the outcome it gives.
-#[cfg(unix)]
 struct Limits<F> {
     timeout: u64,
     cut_off: F,
 }
 
 /// How the wait for a program ended.
-#[cfg(unix)]
 enum End {
     Exited,
     TimedOut,
@@ -495,7 +511,6 @@ enum End {
 }
 
 /// Starts the program and waits for it, within `limits`.
-#[cfg(unix)]
 async fn run_program(
     workers: &WorkerSetup,
     args: &ExecArgs,
@@ -531,6 +546,13 @@ async fn run_program(
         });
     }
     let (status, end) = wait_or_kill(&mut child, limits).await;
+    // A Windows launcher killed here could not take its grants back; it has
+    // ended, so its ledger is swept now rather than at the next start.
+    #[cfg(windows)]
+    if !matches!(end, End::Exited) {
+        let state_dir = workers.state_dir.clone();
+        let _ = tokio::task::spawn_blocking(move || crate::sandbox::sweep(&state_dir)).await;
+    }
     let timed_out = matches!(end, End::TimedOut);
     // Both streams get the same grace, side by side.
     let ((stdout, stdout_cut), (stderr, stderr_cut)) = tokio::join!(
@@ -548,7 +570,10 @@ async fn run_program(
     }
 
     let exit_code = status.code();
+    #[cfg(unix)]
     let signal = status.signal().map(signal_name);
+    #[cfg(windows)]
+    let signal: Option<String> = None;
     audit["exit_code"] = json!(exit_code);
     audit["signal"] = json!(signal);
     audit["timed_out"] = json!(timed_out);
@@ -585,7 +610,6 @@ fn argv_is_usable(argv: &[String]) -> bool {
 
 /// Waits for the program, within `limits`. Past them, kills the program's
 /// whole process group and returns its (killed) status, and why.
-#[cfg(unix)]
 async fn wait_or_kill(
     child: &mut Child,
     limits: Limits<impl Future<Output = Code>>,
@@ -599,6 +623,11 @@ async fn wait_or_kill(
         },
         outcome = limits.cut_off => End::Cut(outcome),
     };
+    // On Windows the child is the worker's launcher: its job dies with it,
+    // and takes the program and all it started.
+    #[cfg(windows)]
+    let _ = child.start_kill();
+    #[cfg(unix)]
     if let Some(pid) = child.id() {
         // The worker started the program as the leader of a new process
         // group whose id is its pid, so this reaches every process in it.
@@ -606,10 +635,11 @@ async fn wait_or_kill(
         // PID names the group we created for it; killpg takes only scalar arguments.
         unsafe { libc::killpg(pid as libc::pid_t, libc::SIGKILL) };
     }
-    let status = child
-        .wait()
-        .await
-        .unwrap_or_else(|_| ExitStatus::from_raw(libc::SIGKILL));
+    #[cfg(unix)]
+    let killed = ExitStatus::from_raw(libc::SIGKILL);
+    #[cfg(windows)]
+    let killed = ExitStatus::from_raw(1);
+    let status = child.wait().await.unwrap_or(killed);
     (status, end)
 }
 
@@ -618,7 +648,6 @@ async fn wait_or_kill(
 /// through an `Arc<Mutex<…>>`: `Arc` lets both hold it, `Mutex` lets one at
 /// a time change it.
 #[derive(Default)]
-#[cfg(unix)]
 struct Captured {
     /// The first `OUTPUT_CAP` bytes.
     kept: Vec<u8>,
@@ -627,14 +656,12 @@ struct Captured {
 }
 
 /// A stream being read in the background: its output so far, and the task.
-#[cfg(unix)]
 struct Capture {
     captured: Arc<Mutex<Captured>>,
     task: JoinHandle<()>,
 }
 
 /// Starts reading `stream` in the background.
-#[cfg(unix)]
 fn capture(stream: impl AsyncRead + Unpin + Send + 'static) -> Capture {
     let captured = Arc::new(Mutex::new(Captured::default()));
     let task = tokio::spawn(read_capped(stream, captured.clone()));
@@ -643,7 +670,6 @@ fn capture(stream: impl AsyncRead + Unpin + Send + 'static) -> Capture {
 
 /// Reads a stream to its end into `captured`, keeping the first
 /// `OUTPUT_CAP` bytes and noting whether more came.
-#[cfg(unix)]
 async fn read_capped(mut stream: impl AsyncRead + Unpin, captured: Arc<Mutex<Captured>>) {
     let mut buffer = vec![0u8; 64 * 1024];
     loop {
@@ -662,7 +688,6 @@ async fn read_capped(mut stream: impl AsyncRead + Unpin, captured: Arc<Mutex<Cap
 /// `grace`, whichever comes first. A stream still open after the grace (a
 /// background process the program left behind holds it) keeps everything
 /// read so far, and is marked cut, since more may follow.
-#[cfg(unix)]
 async fn collected(capture: Capture, grace: Duration) -> (Vec<u8>, bool) {
     let abort = capture.task.abort_handle();
     let finished = tokio::time::timeout(grace, capture.task).await.is_ok();
