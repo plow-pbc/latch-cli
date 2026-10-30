@@ -91,6 +91,8 @@ nonisolated protocol LatchClient: Sendable {
     func agentCatalog() async throws -> AgentCatalog
     /// `latch agents start-by-text`: what to text Plow to start an agent.
     func agentStartByText() async throws -> AgentStartByText
+    /// `latch agents card UID --output FILE`: its line's contact card, a vCard.
+    func agentCard(_ uid: String) async throws -> Data
     /// `latch agents remove UID --yes`: its credential stops working and
     /// its line is freed. Always by uid: names need not be unique.
     func removeAgent(_ uid: String) async throws
@@ -246,7 +248,7 @@ nonisolated struct LiveLatchClient: LatchClient {
 
 
     func vaultList(host: String?) async throws -> VaultList {
-        try decode(VaultList.self, try await run(["vault", "list"] + on(host)))
+        try decode(VaultList.self, try await run(["vault", "list", "--all"] + on(host)))
     }
 
     func vaultShow(_ item: String, host: String?) async throws -> VaultShow {
@@ -328,6 +330,14 @@ nonisolated struct LiveLatchClient: LatchClient {
 
     func agentCatalog() async throws -> AgentCatalog {
         try decode(AgentCatalog.self, try await run(["agents", "catalog"]))
+    }
+
+    func agentCard(_ uid: String) async throws -> Data {
+        let folder = try ShotFolder.make()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let file = folder.appending(path: "card.vcf")
+        _ = try await run(["agents", "card", uid, "--output", file.path])
+        return try Data(contentsOf: file)
     }
 
     func agentStartByText() async throws -> AgentStartByText {

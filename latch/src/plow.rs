@@ -169,6 +169,10 @@ pub struct ListedLine {
     /// The phone number or address.
     pub provider_key: String,
     pub display_name: Option<String>,
+    /// Its persona's contact card (a vCard, photo included); none for an
+    /// unnamed line, or from a Plow that doesn't say.
+    #[serde(default)]
+    pub card_url: Option<String>,
 }
 
 /// A kind of agent Plow can run, from its catalog.
@@ -526,6 +530,14 @@ impl Plow {
         let url = format!("{}/v1/signup", self.api_url);
         let response = self.send(self.http.get(url)).await?;
         response.json().await.map_err(|_| bad_answer())
+    }
+
+    /// The file at `url`, which Plow named (a line's contact card), asked
+    /// for with this client's credential: an anonymous client sends none.
+    pub async fn fetch(&self, url: &str) -> Result<Vec<u8>, Failure> {
+        let response = self.send(self.http.get(url)).await?;
+        let body = response.bytes().await.map_err(|_| bad_answer())?;
+        Ok(body.to_vec())
     }
 
     /// Every phone line of Plow's, and whether each is free for an agent.

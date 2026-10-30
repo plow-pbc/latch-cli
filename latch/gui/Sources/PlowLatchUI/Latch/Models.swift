@@ -46,11 +46,12 @@ nonisolated struct LocalStatus: Decodable, Equatable {
         var reason: String?
 
         /// What the host is doing about it, in words; nil when the switch
-        /// says it all.
-        var said: String? {
+        /// says it all. `willRun`: a host not running yet is about to start.
+        func said(willRun: Bool = false) -> String? {
             guard enabled, held != nil else { return nil }
             if held == true { return "Latch is keeping this Mac awake while it's plugged in." }
             return switch reason {
+            case "not_serving" where willRun: "Once Latch is running, it keeps this Mac awake while it's plugged in."
             case "not_serving": "Latch isn't running, so this Mac sleeps as usual."
             case "on_battery": "On battery, this Mac sleeps as usual."
             case "refused": "macOS didn't let Latch keep this Mac awake."
@@ -178,7 +179,13 @@ nonisolated struct RulesShow: Decodable, Equatable {
 /// each one's standing there.
 nonisolated struct AgentsList: Decodable, Equatable {
     struct Agent: Decodable, Equatable, Identifiable {
-        struct Line: Decodable, Equatable { var number: String?; var name: String? }
+        struct Line: Decodable, Equatable {
+            var number: String?
+            var name: String?
+            /// Its persona's contact card (a vCard, photo included); nil
+            /// for an unnamed line.
+            var cardUrl: String?
+        }
         struct Standing: Decodable, Equatable {
             /// It has rules of its own on that host.
             var ownRules: Bool?

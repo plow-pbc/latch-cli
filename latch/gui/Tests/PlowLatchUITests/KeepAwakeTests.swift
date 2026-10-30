@@ -25,7 +25,7 @@ struct KeepAwakeTests {
         app.keepAwakeBinding.wrappedValue = true
         await waitUntil { client.performed.count == 2 && !app.settingKeepAwake }
         #expect(app.keepAwakeBinding.wrappedValue)
-        #expect(app.status?.thisMachine.hosting.keepAwake?.said == "Latch is keeping this Mac awake while it's plugged in.")
+        #expect(app.status?.thisMachine.hosting.keepAwake?.said() == "Latch is keeping this Mac awake while it's plugged in.")
         client.status = off
         app.keepAwakeBinding.wrappedValue = false
         await waitUntil { client.performed.count == 3 && !app.settingKeepAwake }
@@ -54,8 +54,30 @@ struct KeepAwakeTests {
         let flow = app.stage(.start)
         let showing = Task { await flow.startAppeared() }
         await waitUntil { app.status?.thisMachine.hosting.keepAwake?.reason == "on_battery" }
-        #expect(app.status?.thisMachine.hosting.keepAwake?.said == "On battery, this Mac sleeps as usual.")
+        #expect(app.status?.thisMachine.hosting.keepAwake?.said() == "On battery, this Mac sleeps as usual.")
         showing.cancel()
+    }
+
+    /// While a save runs the switch stays settable, so it's never disabled
+    /// in the middle of its own click (which left it drawn with no knob); a
+    /// second click meanwhile is dropped.
+    @Test func theSwitchStaysSettableWhileItSaves() async {
+        let client = ScriptedClient { _ in nil }
+        client.status = off
+        let saving = Gate()
+        client.holds["settings set --keep-awake on"] = saving
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
+        await app.refreshStatus()
+        app.keepAwakeBinding.wrappedValue = true
+        await waitUntil { app.settingKeepAwake }
+        #expect(app.canSetKeepAwake)
+        app.keepAwakeBinding.wrappedValue = false
+        await Task.yield()
+        client.status = held
+        saving.open()
+        await waitUntil { !app.settingKeepAwake }
+        #expect(client.performed == [["settings", "set", "--keep-awake", "on"]])
+        #expect(app.keepAwakeBinding.wrappedValue)
     }
 
     /// Unreadable settings: no switch to set.
@@ -70,12 +92,15 @@ struct KeepAwakeTests {
 
     /// What the host makes of an on switch, in words; off says nothing.
     @Test func eachReasonIsSaid() {
-        func said(_ held: Bool?, _ reason: String?, enabled: Bool = true) -> String? {
-            LocalStatus.KeepAwake(enabled: enabled, held: held, reason: reason).said
+        func said(_ held: Bool?, _ reason: String?, enabled: Bool = true, willRun: Bool = false) -> String? {
+            LocalStatus.KeepAwake(enabled: enabled, held: held, reason: reason).said(willRun: willRun)
         }
         #expect(said(false, "disabled", enabled: false) == nil)
         #expect(said(nil, nil) == nil)
         #expect(said(false, "not_serving") == "Latch isn't running, so this Mac sleeps as usual.")
+        // Start, with Run Latch now on: it's about to run.
+        #expect(said(false, "not_serving", willRun: true) == "Once Latch is running, it keeps this Mac awake while it's plugged in.")
+        #expect(said(false, "on_battery", willRun: true) == "On battery, this Mac sleeps as usual.")
         #expect(said(false, "on_battery") == "On battery, this Mac sleeps as usual.")
         #expect(said(false, "refused") == "macOS didn't let Latch keep this Mac awake.")
         #expect(said(false, "unknown") == "Latch can't tell whether this Mac is plugged in, so it sleeps as usual.")

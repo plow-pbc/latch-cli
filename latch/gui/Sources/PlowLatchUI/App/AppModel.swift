@@ -589,6 +589,8 @@ final class AppModel {
     private(set) var keepAwakeError: LatchError?
 
     func setKeepAwake(_ on: Bool) async {
+        // One save at a time; a click meanwhile is dropped.
+        guard !settingKeepAwake else { return }
         settingKeepAwake = true
         defer { settingKeepAwake = false }
         do {
@@ -697,6 +699,26 @@ final class AppModel {
     }
 
     func agentStartByText() async throws -> AgentStartByText { try await client.agentStartByText() }
+
+    /// Each persona's photo, by its card's URL: read once a session, when an
+    /// agent with that card is first shown. One that couldn't be read isn't
+    /// asked again; its agent keeps its monogram.
+    private(set) var agentPhotos: [String: CGImage] = [:]
+    @ObservationIgnored private var photosAsked: Set<String> = []
+
+    func loadPhoto(of agent: AgentsList.Agent) async {
+        guard let url = agent.line?.cardUrl, photosAsked.insert(url).inserted else { return }
+        switch await Self.result({ try await self.client.agentCard(agent.uid) }) {
+        case nil: photosAsked.remove(url)
+        case let .success(card)?:
+            let photo = await Task.detached { AgentPhoto.image(fromCard: card) }.value
+            if let photo { agentPhotos[url] = photo }
+        case .failure?: break
+        }
+    }
+
+    /// For snapshots: a persona's photo, as its card gave it.
+    func stage(photo: CGImage, card url: String) { agentPhotos[url] = photo }
 
     /// For snapshots: as latch said.
     func stage(devices: DeviceList?, update: UpdateCheck?) {

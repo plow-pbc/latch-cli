@@ -225,7 +225,8 @@ pub enum Command {
     Skill,
     /// Install the newest latch, or the build TAG names (also how to go
     /// back), restarting a `serve -d` host on it; `--check` only says whether
-    /// a newer build is available. Owner only
+    /// a newer build is available. Run by the owner, or by an agent on its
+    /// own computer, where latch is installed alone
     Update(UpdateArgs),
     /// Set this machine up, at a terminal: log in, connect Google, on a Mac
     /// turn on Messages and Contacts, all with no host running, then offer to
@@ -242,6 +243,15 @@ pub enum Command {
     /// unless a host runs on the state folder; the installer runs it
     #[command(hide = true)]
     PruneHelpers,
+    /// Internal: on a Mac, install.sh's check that FILE is signed, by
+    /// FILE.minisig, with the release key it carries
+    #[command(hide = true)]
+    VerifySignature {
+        /// The minisign public key: the base64 line of its key file
+        #[arg(long)]
+        key: String,
+        file: PathBuf,
+    },
     /// Internal: the app's "Start when you log in" item, as ServiceManagement
     /// reports it; with --again, registered again from this app, which the
     /// installer does once it moves the app to another folder
@@ -494,8 +504,9 @@ pub enum BrowserCommand {
     Fill {
         #[arg(long)]
         snapshot: Option<String>,
-        /// The vault item's id, which `vault list` shows; left out, the login
-        /// saved for the site of the page
+        /// The vault item's id, which `vault list` shows: a card's at a
+        /// checkout, which `observe` lists under `fill.items`; left out, the
+        /// login saved for the site of the page
         #[arg(long)]
         item: Option<String>,
         /// FIELD=eN, or FIELD=eN,eN,… to split it across boxes
@@ -623,8 +634,27 @@ pub struct VaultArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum VaultCommand {
-    /// Every item's metadata, a login's username included (never a secret value)
-    List,
+    /// The items' metadata, a login's username included (never a secret
+    /// value): the first 50 unless --all, narrowed by --site, --search and
+    /// --kind
+    List {
+        /// Only items saved for this site: a domain or URL, matched by its
+        /// registrable domain (www.shop.example finds shop.example)
+        #[arg(long)]
+        site: Option<String>,
+        /// Only items whose title or a site contains this text, any case
+        #[arg(long)]
+        search: Option<String>,
+        /// Only items of this kind: login, card, identity or note
+        #[arg(long)]
+        kind: Option<String>,
+        /// Show at most this many of the matching items
+        #[arg(long, default_value_t = 50, conflicts_with = "all")]
+        limit: usize,
+        /// Show every matching item
+        #[arg(long)]
+        all: bool,
+    },
     /// One item's metadata and its non-secret values (never a secret one)
     Show { item: String },
     /// Add an item; its secrets are asked for at a prompt, or read from
@@ -1065,6 +1095,14 @@ pub enum AgentsAction {
         /// `latch agents lines`
         #[arg(long)]
         line: String,
+    },
+    /// Save the contact card of an agent's line (a vCard, its persona's
+    /// photo included), by the agent's uid or exact name
+    Card {
+        agent: String,
+        /// Where to save it
+        #[arg(long, short, value_name = "FILE")]
+        output: PathBuf,
     },
     /// Remove an agent, by its uid or its exact name: its credential stops
     /// working and its line is freed
