@@ -46,17 +46,6 @@ async function refreshStatus(app) {
   app.draw({ page: false });
 }
 
-/** `status`, after a start: Plow's hosts, this PC among them once it hosts. */
-async function refreshAccount(app) {
-  try {
-    app.account = await latch(["status"]);
-    app.accountError = null;
-  } catch (failure) {
-    app.accountError = failure;
-  }
-  app.draw({ page: false });
-}
-
 /** Draws the page again where the person was. */
 function redraw(app) {
   if (app.place !== "settings") return;
@@ -72,7 +61,7 @@ function redraw(app) {
  * words after `latch`: `serve -d` with the last serve's flags). Nothing to
  * do when it isn't needed; a host latch says can't start now throws, with
  * latch's reason as detail. */
-async function startHost() {
+export async function startHost() {
   const setup = await latch(["setup", "--status"]);
   if (!Array.isArray(setup?.steps)) throw unreachable("Latch returned an unreadable response.");
   const step = setup.steps.find((s) => s.step === "host");
@@ -82,7 +71,7 @@ async function startHost() {
 }
 
 /** Start Latch: starts this PC's host, then reads back what latch and
- * Plow say. Home's own start can be this too. */
+ * Plow say. Home's own start is this too: it shows the failure returned. */
 export async function startHosting(app) {
   const s = state(app);
   if (s.starting) return;
@@ -95,9 +84,11 @@ export async function startHosting(app) {
     s.startError = error;
   }
   await refreshStatus(app);
-  await refreshAccount(app);
+  // Plow's hosts, this PC among them once it hosts.
+  await app.readAccount();
   s.starting = false;
   redraw(app);
+  return s.startError;
 }
 
 /** A stop or restart while it runs; then this PC's status, read again. */

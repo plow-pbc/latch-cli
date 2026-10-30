@@ -31,19 +31,6 @@
 .settings-page .line.buttons { gap: 8px; }
 .settings-page .doing { display: inline-flex; align-items: center; gap: 10px; color: var(--text-2); }
 
-/* ProgressRing, small. */
-.settings-page .ring {
-  display: inline-block;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  border: 2px solid var(--track);
-  border-top-color: var(--accent);
-  animation: settings-spin 0.9s linear infinite;
-}
-@keyframes settings-spin { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) { .settings-page .ring { animation: none; } }
-
 /* Expander: Details, its rows inside. */
 .settings-page details.expander { display: block; padding: 0; }
 .settings-page details.expander summary {
@@ -61,35 +48,6 @@
 .settings-page details.expander .chevron { transform: rotate(90deg); transition: transform 0.12s ease-out; }
 .settings-page details.expander[open] .chevron { transform: rotate(-90deg); }
 .settings-page details.expander > .line { padding-left: 32px; }
-
-/* ToggleSwitch, its On/Off before it as Windows' Settings shows it. */
-.settings-page .switch { position: relative; display: inline-flex; align-items: center; gap: 12px; }
-.settings-page .switch .state { min-width: 22px; text-align: right; }
-.settings-page .switch input { position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: default; }
-.settings-page .switch .track { pointer-events: none; }
-.settings-page .switch .track {
-  position: relative;
-  width: 40px;
-  height: 20px;
-  border-radius: 10px;
-  border: 1px solid var(--field-under);
-  background: var(--field);
-}
-.settings-page .switch .track::after {
-  content: "";
-  position: absolute;
-  top: 3px;
-  left: 3px;
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  background: var(--text-2);
-  transition: transform 0.12s ease-out;
-}
-.settings-page .switch input:checked + .track { background: var(--accent); border-color: var(--accent); }
-.settings-page .switch input:checked + .track::after { transform: translateX(20px); background: var(--card); }
-.settings-page .switch input:focus-visible + .track { outline: 2px solid var(--text-1); outline-offset: 2px; }
-.settings-page .switch:has(input:disabled) { opacity: 0.4; }
 
 /* Errors: the sentence, and latch's own words under Details. */
 .settings-page .error-text { display: flex; flex-direction: column; gap: 2px; }

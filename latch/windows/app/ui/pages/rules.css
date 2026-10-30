@@ -69,18 +69,6 @@
 .rules-page .line.buttons { justify-content: flex-end; gap: 8px; }
 .rules-page .line.buttons > :first-child { flex: none; }
 
-/* ProgressRing, small. */
-.rules-page .ring {
-  flex: none !important;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  border: 2px solid var(--track);
-  border-top-color: var(--accent);
-  animation: rules-spin 0.9s linear infinite;
-}
-@keyframes rules-spin { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) { .rules-page .ring { animation: none; } }
 .rules-page .line.reading { justify-content: center; gap: 10px; color: var(--text-2); }
 .rules-page .line.reading > :last-child { flex: none; }
 
@@ -97,34 +85,6 @@
 .rules-page .error-details summary { cursor: default; width: max-content; color: var(--text-2); }
 .rules-page .error-details summary:hover { color: var(--text-1); }
 .rules-page .error-details .said { margin-top: 4px; user-select: text; overflow-wrap: anywhere; }
-
-/* ToggleSwitch, its On/Off before it as Windows' Settings shows it. */
-.rules-page .switch { position: relative; display: inline-flex; align-items: center; gap: 12px; flex: none; }
-.rules-page .switch .state { color: var(--text-1); min-width: 22px; text-align: right; }
-.rules-page .switch input { position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: default; }
-.rules-page .switch .track { pointer-events: none; }
-.rules-page .switch .track {
-  position: relative;
-  width: 40px;
-  height: 20px;
-  border-radius: 10px;
-  border: 1px solid var(--field-under);
-  background: var(--field);
-}
-.rules-page .switch .track::after {
-  content: "";
-  position: absolute;
-  top: 3px;
-  left: 3px;
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  background: var(--text-2);
-  transition: transform 0.12s ease-out;
-}
-.rules-page .switch input:checked + .track { background: var(--accent); border-color: var(--accent); }
-.rules-page .switch input:checked + .track::after { transform: translateX(20px); background: var(--card); }
-.rules-page .switch input:focus-visible + .track { outline: 2px solid var(--text-1); outline-offset: 2px; }
 
 /* DropDownButton and its MenuFlyout. */
 .rules-page .menu-wrap { position: relative; }
