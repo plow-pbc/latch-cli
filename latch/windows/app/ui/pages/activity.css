@@ -1,0 +1,261 @@
+/* Activity: the heading and scope bar over the table, the footer under it,
+   all in the page's height, where only the table scrolls (the Mac's layout),
+   drawn as Windows 11 draws a details list: a header of columns, rows that
+   highlight with the accent's pill, and no stripes. */
+.page:has(> .activity) { display: flex; flex-direction: column; padding: 0; overflow: hidden; }
+.activity { display: flex; flex-direction: column; flex: 1; min-height: 0; --on-accent: #FFFFFF; }
+@media (prefers-color-scheme: dark) {
+  .activity { --on-accent: #000000; }
+}
+
+/* ── heading and scope bar ── */
+.activity .heading { display: flex; flex-direction: column; gap: 10px; padding: 8px 28px 12px; }
+.activity .titled { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.activity .titled h2 { margin: 0; font: 600 20px/28px "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif; }
+.app .activity .titled button.toggle { display: grid; place-items: center; width: 36px; padding: 0; }
+.app .activity .titled button.toggle .icon { width: 18px; height: 18px; }
+.app .activity .titled button.toggle.on { background: var(--accent); border-color: transparent; color: var(--on-accent); }
+.activity .scope { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.activity .scope .show { display: flex; align-items: center; gap: 12px; min-width: 0; max-width: 100%; }
+/* Too narrow for its words, the outcome's segments narrow to fit. */
+.activity .segmented { display: inline-flex; min-width: 0; padding: 2px; gap: 2px; border-radius: 6px; background: var(--seg); }
+.app .activity .segmented button.seg {
+  min-height: 28px;
+  padding: 3px 16px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--text-2);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.app .activity .segmented button.seg:hover { color: var(--text-1); }
+.app .activity .segmented button.seg.on { background: var(--seg-on); color: var(--text-1); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1); }
+.app .activity .scope button.chip { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 4px 12px 4px 8px; }
+.app .activity .scope button.chip .icon { width: 16px; height: 16px; color: var(--text-2); }
+.app .activity .scope button.chip:hover { background: var(--hover); }
+
+/* ── the table ── */
+.activity .table {
+  --cols: minmax(84px, 112px) minmax(96px, 1fr) minmax(112px, 1.5fr) minmax(80px, 0.85fr);
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  margin: 0 16px;
+  outline: none;
+}
+.activity .tr {
+  position: relative;
+  display: grid;
+  grid-template-columns: var(--cols);
+  align-items: center;
+  min-width: 380px;
+  height: 32px;
+  padding: 0 4px;
+  border-radius: 4px;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 32px;
+}
+.activity .tr:not(.th):hover { background: var(--hover); }
+.activity .tr.selected, .activity .tr.selected:hover { background: var(--pressed); }
+.activity .tr.selected::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 3px;
+  height: 16px;
+  margin-top: -8px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+.activity .table:focus-visible .tr.selected { outline: 2px solid var(--text-1); outline-offset: -2px; }
+.activity .tr.th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  height: 34px;
+  margin-bottom: 2px;
+  border-radius: 0;
+  border-bottom: 1px solid var(--card-line);
+  background: var(--pane);
+  content-visibility: visible;
+}
+.activity [role="columnheader"] { min-width: 0; padding: 0 2px; border-left: 1px solid var(--card-line); }
+.activity [role="columnheader"]:first-child { border-left: 0; }
+.app .activity .tr.th button.sort {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  width: 100%;
+  min-height: 28px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  font-size: 12px;
+  color: var(--text-2);
+  text-align: left;
+}
+.app .activity .tr.th button.sort:hover { background: var(--hover); color: var(--text-1); }
+.app .activity .tr.th button.sort.on { color: var(--text-1); }
+.activity .tr.th .chevron { width: 12px; height: 12px; flex: none; }
+.activity .tr.th .chevron.up { transform: rotate(-90deg); }
+.activity .tr.th .chevron.down { transform: rotate(90deg); }
+.activity [role="gridcell"] { min-width: 0; padding: 0 8px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.activity [role="gridcell"].when { color: var(--text-2); font-variant-numeric: tabular-nums; }
+.activity [role="gridcell"].verdict { display: flex; align-items: center; gap: 6px; }
+.activity [role="gridcell"].verdict .pip { flex: none; }
+.activity [role="gridcell"].verdict span { overflow: hidden; text-overflow: ellipsis; }
+.activity [role="gridcell"].asked { display: flex; white-space: pre; }
+.activity [role="gridcell"].asked .start { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.activity [role="gridcell"].asked .tail { flex: none; }
+.activity [role="gridcell"].who span { color: var(--text-2); }
+
+/* ── why there are no rows ── */
+.activity .state {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  text-align: center;
+  color: var(--text-2);
+}
+.activity .state h3 { max-width: 420px; margin: 12px 0 6px; font-size: 16px; font-weight: 600; color: var(--text-1); }
+.activity .state p { max-width: 420px; margin: 0 0 4px; }
+.activity .state .icon.big { width: 40px; height: 40px; color: var(--text-3); }
+.activity .state .ring { margin-bottom: 12px; }
+.activity .state .error-text { display: flex; flex-direction: column; align-items: center; gap: 6px; max-width: 420px; }
+.activity .state .error-text > span { white-space: pre-line; }
+.activity .state .error-details { font-size: 12px; }
+.activity .state .error-details summary { cursor: default; }
+.activity .state .error-details .said { margin-top: 4px; text-align: left; user-select: text; overflow-wrap: anywhere; }
+.activity .ring, .activity-record .ring {
+  width: 32px;
+  height: 32px;
+  border: 3px solid transparent;
+  border-top-color: var(--accent);
+  border-right-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.9s linear infinite;
+}
+.activity-record .ring.small { width: 18px; height: 18px; border-width: 2px; }
+
+/* ── footer ── */
+.activity .footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  height: 32px;
+  flex: none;
+  padding: 0 28px;
+  border-top: 1px solid var(--card-line);
+  font-size: 12px;
+  color: var(--text-2);
+}
+.activity .footer .counts { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.activity .footer .trouble { display: inline-flex; align-items: center; gap: 6px; }
+.activity .footer .trouble .icon { width: 14px; height: 14px; flex: none; }
+
+/* ── the row's menu ── */
+.activity-menu {
+  position: fixed;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  min-width: 220px;
+  padding: 4px;
+  border: 1px solid var(--card-line);
+  border-radius: 8px;
+  background: var(--card);
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.14);
+}
+.app .activity-menu button.item[role="menuitem"] {
+  min-height: 30px;
+  padding: 4px 12px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  text-align: left;
+}
+.app .activity-menu button.item[role="menuitem"]:hover, .app .activity-menu button.item[role="menuitem"]:focus-visible { background: var(--hover); outline: none; }
+.activity-menu hr { margin: 4px 0; border: 0; border-top: 1px solid var(--card-line); }
+
+/* ── the inspector ── */
+.activity-none { margin: 120px auto 0; max-width: 260px; text-align: center; color: var(--text-2); }
+.activity-none .icon.big { width: 40px; height: 40px; color: var(--text-3); }
+.activity-none h3 { margin: 12px 0 6px; font-size: 16px; font-weight: 600; color: var(--text-1); }
+.activity-none p { margin: 0; font-size: 13px; }
+.activity-record { font-size: 13px; }
+.activity-record .group { margin-bottom: 12px; }
+.activity-record .group h3 { margin: 12px 2px 6px; font-size: 13px; }
+.activity-record .line { min-height: 36px; padding: 7px 12px; gap: 10px; align-items: flex-start; line-height: 20px; }
+.activity-record .line .value {
+  max-width: 64%;
+  overflow-wrap: anywhere;
+  white-space: pre-line;
+  user-select: text;
+}
+.activity-record .line .value.mono { font-size: 12px; }
+.activity-record .line.command { font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+.activity-record .line.id { font-size: 11px; color: var(--text-2); overflow-wrap: anywhere; user-select: text; }
+.activity-record .line .state { display: inline-flex; align-items: center; gap: 6px; }
+.activity-record .line.likely { flex-direction: column; align-items: stretch; gap: 6px; }
+.activity-record .line.likely .said { display: flex; justify-content: space-between; gap: 10px; }
+.activity-record .meter { display: block; height: 4px; border-radius: 2px; background: var(--seg); overflow: hidden; }
+.activity-record .meter i { display: block; height: 100%; border-radius: 2px; }
+.activity-record .meter.ok i { background: var(--ok); }
+.activity-record .meter.warn i { background: #F7630C; }
+.activity-record .meter.bad i { background: var(--bad); }
+.activity-record details.more { border-top: 1px solid var(--card-line); }
+.activity-record details.more summary { padding: 8px 12px; cursor: default; }
+.activity-record details.more summary:hover { background: var(--hover); }
+.activity-record .line.shots { flex-direction: column; align-items: stretch; gap: 6px; }
+.activity-record .line.shots > small { font-size: 12px; color: var(--text-2); }
+.activity-record .tiles { display: flex; gap: 8px; overflow-x: auto; padding: 2px 0; }
+.app .activity-record .tiles .tile, .app .activity-record .tiles button.tile:not(.line) {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: none;
+  width: 128px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  text-align: left;
+}
+.activity-record .tile .face {
+  display: grid;
+  place-items: center;
+  width: 128px;
+  height: 80px;
+  overflow: hidden;
+  border-radius: 4px;
+  background: var(--seg);
+  color: var(--text-2);
+}
+.activity-record .tile .face img { width: 100%; height: 100%; object-fit: contain; }
+.activity-record .tile .face .icon { width: 22px; height: 22px; }
+.activity-record .tile small { font-size: 12px; color: var(--text-2); }
+
+/* ── its sheets: the gatekeeper's request, a screenshot ── */
+.sheet .activity-judged {
+  max-height: 60vh;
+  margin: 0;
+  padding: 12px;
+  overflow: auto;
+  border-radius: 4px;
+  background: var(--win-bg);
+  font-size: 12px;
+  white-space: pre;
+  user-select: text;
+}
+.sheet .activity-shot img { display: block; max-width: 100%; max-height: 65vh; margin: 0 auto; border-radius: 4px; }
+.activity-record .line > button { flex: none; }
