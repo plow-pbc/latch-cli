@@ -342,17 +342,7 @@ async fn card(plow: &Plow, api_url: &str, named: &str, output: &Path) -> Result<
         return Err(Failure::new(code::no_card, message));
     };
     let vcard = Plow::anonymous(api_url)?.fetch(&url).await?;
-    let staged = crate::transfer::Staged::beside(output)?;
-    let mut file = staged.file()?;
-    let written = async {
-        use tokio::io::AsyncWriteExt;
-        file.write_all(&vcard).await?;
-        file.flush().await
-    };
-    written
-        .await
-        .map_err(|err| Failure::new(code::local_file, format!("{}: {err}", output.display())))?;
-    staged.place(output)?;
+    crate::transfer::save(output, &vcard).await?;
     Ok(json!({"agent": agent.uid, "card_url": url, "path": output, "size": vcard.len()}))
 }
 

@@ -2314,14 +2314,28 @@ impl Http {
 }
 
 fn respond(socket: &mut impl Write, status: u16, body: &Value) {
-    let body = body.to_string();
+    respond_bytes(
+        socket,
+        status,
+        "application/json",
+        body.to_string().as_bytes(),
+    );
+}
+
+fn respond_bytes(socket: &mut impl Write, status: u16, content_type: &str, body: &[u8]) {
     let head = format!(
-        "HTTP/1.1 {status} Fake\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {status} Fake\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     );
     let _ = socket.write_all(head.as_bytes());
-    let _ = socket.write_all(body.as_bytes());
+    let _ = socket.write_all(body);
 }
+
+/// The research line's contact card, as plow.co serves one: a vCard with
+/// its persona's photo.
+const RESEARCH_CARD: &[u8] = b"BEGIN:VCARD\r\nVERSION:3.0\r\nN:by Plow;Research;;;\r\nFN:Research line\r\n\
+PHOTO;ENCODING=b;TYPE=PNG:iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAwS2OUAAAAABJRU5ErkJggg==\r\n\
+END:VCARD\r\n";
 
 const AGENT_UID: &str = "0123456789abcdef0123456789abcdef";
 
@@ -2404,8 +2418,15 @@ impl LivePlow {
                     let mut socket = socket.unwrap();
                     let mut reader = BufReader::new(socket.try_clone().unwrap());
                     if let Some(request) = Http::read(&mut reader) {
-                        let (status, body) = plow.answer(&request);
-                        respond(&mut socket, status, &body);
+                        match plow.card(&request) {
+                            Some((status, card)) => {
+                                respond_bytes(&mut socket, status, "text/vcard", card)
+                            }
+                            None => {
+                                let (status, body) = plow.answer(&request);
+                                respond(&mut socket, status, &body);
+                            }
+                        }
                     }
                 });
             }
@@ -2435,6 +2456,16 @@ impl LivePlow {
 
     fn seen(&self) -> Vec<(String, Option<String>)> {
         self.state.lock().unwrap().seen.clone()
+    }
+
+    /// The research line's contact card, public: asked with a credential,
+    /// it refuses, so a test sees none is sent.
+    fn card(&self, request: &Http) -> Option<(u16, &'static [u8])> {
+        let asked = request.line().starts_with("GET /cards/research.vcf ");
+        asked.then(|| match request.bearer() {
+            Some(_) => (400, b"sent a credential".as_slice()),
+            None => (200, RESEARCH_CARD),
+        })
     }
 
     fn answer(&self, request: &Http) -> (u16, Value) {
@@ -2474,14 +2505,6 @@ impl LivePlow {
                            {"id": "exe:life", "name": "Life Assistant", "phrases": ["Set this up for me: aiworthusing.com/agent-index/life"]},
                            {"id": "exe:quiet", "name": "Quiet", "phrases": []}]}),
             );
-        }
-        // The research line's contact card, public: asked with a
-        // credential, it refuses, so a test sees none is sent.
-        if request.line().starts_with("GET /cards/research.vcf ") {
-            return match bearer {
-                Some(_) => (400, json!({"detail": "sent a credential"})),
-                None => (200, json!("BEGIN:VCARD\nFN:Research line\nEND:VCARD")),
-            };
         }
         let token = bearer.unwrap_or_default();
         let kind = if token == state.owner {
@@ -3829,14 +3852,10 @@ fn agents_are_shown_created_and_removed_by_their_owner() {
     let card_path = card_file.to_str().unwrap();
     let (code, saved, _) = run(&["agents", "card", "Research bot", "--output", card_path]);
     assert_eq!(code, Some(0), "{saved}");
-    let vcard = fs::read_to_string(&card_file).unwrap();
-    assert!(
-        vcard.contains("BEGIN:VCARD") && vcard.contains("FN:Research line"),
-        "{vcard}"
-    );
+    assert_eq!(fs::read(&card_file).unwrap(), RESEARCH_CARD);
     assert_eq!(
         saved,
-        json!({"agent": AGENT_UID, "card_url": card_url, "path": card_path, "size": vcard.len()})
+        json!({"agent": AGENT_UID, "card_url": card_url, "path": card_path, "size": RESEARCH_CARD.len()})
     );
 
     let (code, shown, _) = run(&["agents", "show", "Research bot"]);

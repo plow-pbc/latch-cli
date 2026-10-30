@@ -192,6 +192,20 @@ impl Staged {
     }
 }
 
+/// Saves `bytes` as `local`, staged beside it first, so a write that fails
+/// leaves whatever was under that name as it was.
+pub async fn save(local: &Path, bytes: &[u8]) -> Result<(), Failure> {
+    use tokio::io::AsyncWriteExt;
+    let staged = Staged::beside(local)?;
+    let mut file = staged.file()?;
+    let written = async {
+        file.write_all(bytes).await?;
+        file.flush().await
+    };
+    written.await.map_err(|err| local_failure(local, err))?;
+    staged.place(local)
+}
+
 /// Sends `request`, then reads the host's first answer with the size,
 /// exactly that many bytes, and the host's last answer, whose sha256 must
 /// match. The bytes are staged beside `local` and take its place only once
