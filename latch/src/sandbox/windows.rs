@@ -276,16 +276,14 @@ fn grants(policy: &Policy) -> Result<Vec<Grant>, String> {
             .flatten()
             .any(|home| within(path, home))
     };
-    let reads = policy
-        .reads
-        .iter()
-        .chain(&policy.program)
-        .filter(|read| in_home(read));
-    // The latch it runs, wherever it is: unless every container may run it
-    // already (Program Files), whose access list this user may not change.
+    let reads = policy.reads.iter().filter(|read| in_home(read));
+    // The latch it runs, wherever it is, unless every container may run it
+    // already (Program Files), whose access list this user may not change;
+    // and the helper the host checked (gog), wherever it is: a state folder
+    // outside home keeps its gog there.
     let program_open = every_container_runs(&program);
     let program_read = std::iter::once(&program).filter(|_| !program_open);
-    for read in reads.chain(program_read) {
+    for read in reads.chain(&policy.program).chain(program_read) {
         if read.exists() {
             grants.push(Grant {
                 path: read.clone(),
