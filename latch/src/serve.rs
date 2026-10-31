@@ -1283,9 +1283,7 @@ async fn serve_request(
                     "rules" => {
                         crate::gate::owner::run(
                             &host.workers.state_dir,
-                            &host.plow,
                             &host.endpoint.id().to_string(),
-                            &host.name,
                             &identity.kind,
                             &request.args,
                         )

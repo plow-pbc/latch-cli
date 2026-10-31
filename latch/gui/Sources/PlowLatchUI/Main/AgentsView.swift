@@ -222,8 +222,8 @@ private struct AgentHostRow: View {
                     Text(host.isThisMac ? "\(host.name) (this Mac)" : host.name)
                     if !offline, case let .failure(error)? = app.standings[host.name] {
                         ErrorText(error: error, host: host.spoken).font(.callout).foregroundStyle(.secondary)
-                    } else {
-                        Text(agent.standing(on: host, app.standings[host.name])).font(.callout).foregroundStyle(.secondary)
+                    } else if let standing = agent.standing(on: host, app.standings[host.name]) {
+                        Text(standing).font(.callout).foregroundStyle(.secondary)
                     }
                 }
             }
@@ -300,18 +300,14 @@ extension AgentsList.Agent {
     /// The host is known to be offline, so its standing there can't be read.
     func isOffline(_ host: HostEntry) -> Bool { !host.isThisMac && host.online == false }
 
-    /// Its standing on a host, in words: offline, not read yet, or which
-    /// rules judge it there and whether it may run programs.
-    func standing(on host: HostEntry, _ read: Result<[String: Standing], LatchError>?) -> String {
-        if isOffline(host) { return "Offline, so its rules there can't be checked" }
+    /// Its standing on a host, in words: offline, not read yet, or that it
+    /// can't run programs there; nil when there's nothing to say.
+    func standing(on host: HostEntry, _ read: Result<[String: Standing], LatchError>?) -> String? {
+        if isOffline(host) { return "Offline" }
         switch read {
         case nil: return "Checking…"
         case let .failure(error)?: return ErrorCopy.said(error, host: host.spoken)
-        case let .success(byAgent)?:
-            let standing = byAgent[uid]
-            let blocked = standing?.execBlocked == true
-            let rules = standing?.ownRules == true ? "Shared rules + own rules" : blocked ? "Shared rules" : "Shared rules only"
-            return blocked ? "\(rules) · can't run programs" : rules
+        case let .success(byAgent)?: return byAgent[uid]?.execBlocked == true ? "Can't run programs" : nil
         }
     }
 

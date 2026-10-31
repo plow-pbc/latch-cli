@@ -52,7 +52,7 @@ impl RulesSource for Rules {
 }
 
 /// Rules to start from, by the kind of assistant: what `latch setup` offers
-/// and `rules set --preset` saves. The Mac app's onboarding offers the same
+/// and `rules add --preset` adds. The Mac app's onboarding offers the same
 /// texts (`Onboarding.decks`).
 #[derive(clap::ValueEnum, Clone, Copy, PartialEq, Debug)]
 pub enum Preset {
@@ -172,6 +172,17 @@ impl Rule {
             hosts,
             updated: now(),
             deleted: false,
+        }
+    }
+
+    /// This rule with a new text and scope, as a change newer than it.
+    pub fn edited(&self, text: &str, agents: Covers, hosts: Covers) -> Rule {
+        Rule {
+            text: text.to_string(),
+            agents,
+            hosts,
+            updated: now().max(self.updated + 1),
+            ..self.clone()
         }
     }
 
@@ -445,40 +456,9 @@ fn parse(text: &str) -> Result<Vec<Rule>, serde_json::Error> {
     Ok(serde_json::from_str::<Stored>(text)?.rules)
 }
 
-/// Which of the owner's texts a command is about.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Scope {
-    /// The rules for every agent on this host.
-    Host,
-    /// The rules for the agent with this uid.
-    Agent(String),
-}
-
-impl Scope {
-    fn covers(&self, agents: &Covers) -> bool {
-        match self {
-            Scope::Host => *agents == Covers::All,
-            Scope::Agent(uid) => matches!(agents, Covers::Only(ids) if ids.contains(uid)),
-        }
-    }
-
-    fn text(&self, rules: &[Rule], host: &str) -> Option<String> {
-        match self {
-            Scope::Host => render(rules, host, "").host,
-            Scope::Agent(uid) => render(rules, host, uid).agent,
-        }
-    }
-}
-
-/// A text's revision: its sha256, as hex.
-pub fn revision(text: &str) -> String {
+/// A text's sha256, as hex.
+fn revision(text: &str) -> String {
     to_hex(&Sha256::digest(text.as_bytes()))
-}
-
-/// A change to one text, by revision: `None` is no text.
-pub struct Change {
-    pub before: Option<String>,
-    pub after: Option<String>,
 }
 
 /// The rule list in a host's state folder, as the owner's commands change
@@ -527,135 +507,6 @@ impl RulesDir {
             self.write(&rules)?;
         }
         Ok(changed)
-    }
-
-    pub fn text(&self, scope: &Scope) -> Result<Option<String>, Failure> {
-        Ok(scope.text(&self.list()?, &self.host))
-    }
-
-    /// The peer key stored for `uid` when its rules were set, if it had one.
-    pub fn peer(&self, uid: &str) -> Result<Option<String>, Failure> {
-        self.read_file(&format!("{uid}.peer"))
-    }
-
-    /// The uids that have rules of their own on this host.
-    pub fn agents(&self) -> Result<Vec<String>, Failure> {
-        Ok(named(&self.list()?, &self.host))
-    }
-
-    /// Replaces `scope`'s text with `text`: its rules here are removed and
-    /// one rule with the text takes their place. With `expected`, only if
-    /// the current text is still at that revision (`None`: there is none).
-    /// An agent's `peer`, its peer key now, is stored beside its rules.
-    /// Refused, nothing changes.
-    pub fn set(
-        &self,
-        scope: &Scope,
-        text: &str,
-        expected: Option<Option<&str>>,
-        peer: Option<&str>,
-    ) -> Result<Change, Failure> {
-        if text.trim().is_empty() {
-            let message = "the rules are empty; to remove them, use `latch rules clear`";
-            return Err(Failure::new(code::empty_rules, message.into()));
-        }
-        let mut before = None;
-        self.change(|rules| {
-            before = self.current(rules, scope, expected)?;
-            let agents = match scope {
-                Scope::Host => Covers::All,
-                Scope::Agent(uid) => Covers::Only(vec![uid.clone()]),
-            };
-            let mut changes = self.removing(rules, scope);
-            changes.push(Rule::new(
-                text,
-                agents,
-                Covers::Only(vec![self.host.clone()]),
-            ));
-            let mut after = rules.to_vec();
-            merge(&mut after, &changes);
-            self.refuse_overgrown(rules, &after)?;
-            if let Scope::Agent(uid) = scope {
-                let peer_file = format!("{uid}.peer");
-                match peer {
-                    Some(key) => self.replace(&peer_file, key)?,
-                    None => self.remove(&peer_file)?,
-                }
-            }
-            Ok(changes)
-        })?;
-        Ok(Change {
-            before,
-            after: Some(revision(text)),
-        })
-    }
-
-    /// Refuses going from `before` to `after` where it would push this
-    /// host's rules over the budget.
-    fn refuse_overgrown(&self, before: &[Rule], after: &[Rule]) -> Result<(), Failure> {
-        if let Some(over) = overgrown(before, after, &[&self.host]).first() {
-            let whose = match &over.agent {
-                Some(uid) => format!(" for agent {uid}"),
-                None => String::new(),
-            };
-            let mut refused = Failure::new(
-                code::rules_too_long,
-                format!(
-                    "Your change wasn't saved because the rules{whose} on this host would exceed {MAX_RULES} bytes."
-                ),
-            );
-            refused.details = json!({"limit_bytes": MAX_RULES, "hosts": [over]});
-            return Err(refused);
-        }
-        Ok(())
-    }
-
-    /// Removes `scope`'s rules here, and an agent's stored peer key. With
-    /// `expected`, only if its text is still at that revision, as `set`.
-    pub fn clear(&self, scope: &Scope, expected: Option<Option<&str>>) -> Result<Change, Failure> {
-        let mut before = None;
-        self.change(|rules| {
-            before = self.current(rules, scope, expected)?;
-            if let Scope::Agent(uid) = scope {
-                self.remove(&format!("{uid}.peer"))?;
-            }
-            Ok(self.removing(rules, scope))
-        })?;
-        Ok(Change {
-            before,
-            after: None,
-        })
-    }
-
-    /// The removals of `scope`'s rules here.
-    fn removing(&self, rules: &[Rule], scope: &Scope) -> Vec<Rule> {
-        rules
-            .iter()
-            .filter(|rule| rule.applies_on(&self.host) && scope.covers(&rule.agents))
-            .map(Rule::removed)
-            .collect()
-    }
-
-    /// `scope`'s revision now, under the lock: refused if it is not
-    /// `expected`, when there is one.
-    fn current(
-        &self,
-        rules: &[Rule],
-        scope: &Scope,
-        expected: Option<Option<&str>>,
-    ) -> Result<Option<String>, Failure> {
-        let before = scope.text(rules, &self.host).as_deref().map(revision);
-        if let Some(expected) = expected
-            && expected != before.as_deref()
-        {
-            let mut refused = Failure::new(
-                code::stale_revision,
-                "the rules changed since they were read; nothing was changed, and the current text is kept".into(),
-            );
-            refused.details = serde_json::json!({"revision": before});
-            return Err(refused);
-        }
-        Ok(before)
     }
 
     /// The lock every change is made under. A host's rules from before the
@@ -802,17 +653,17 @@ impl RulesDir {
         write_private(&path, text.as_bytes()).map_err(|err| self.failure(&path, err))
     }
 
-    fn remove(&self, name: &str) -> Result<(), Failure> {
-        let path = self.dir.join(name);
-        match fs::remove_file(&path) {
-            Err(err) if err.kind() != ErrorKind::NotFound => Err(self.failure(&path, err)),
-            _ => Ok(()),
-        }
-    }
-
     fn failure(&self, path: &Path, err: std::io::Error) -> Failure {
         Failure::new(code::rules_io, format!("{}: {err}", path.display()))
     }
+}
+
+/// The host operation that adds a rule with `text`, for every agent, or
+/// for `agent` alone, on every host: for tests of a host's side.
+#[cfg(test)]
+pub(crate) fn adding(text: &str, agent: Option<&str>) -> serde_json::Value {
+    let agents = agent.map_or(Covers::All, |uid| Covers::Only(vec![uid.to_string()]));
+    json!({"command": "add", "rules": [Rule::new(text, agents, Covers::All)]})
 }
 
 /// Whether `id` has the shape of a Plow agent uid.

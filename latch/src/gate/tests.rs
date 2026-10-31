@@ -720,7 +720,7 @@ async fn the_answer_decides_allow_ask_or_stop_and_a_failed_model_refuses() {
             assert!(!message.contains("chat"), "{message}");
             assert!(message.contains("this host's rules"), "{message}");
             assert!(
-                message.contains("`latch rules show`") && message.contains("`latch rules edit`"),
+                message.contains("`latch rules list`") && message.contains("`latch rules edit ID`"),
                 "{message}"
             );
         }
@@ -1491,21 +1491,22 @@ async fn a_host_over_budget_refuses_every_judgment_until_its_owner_trims() {
 
     // The owner's rules commands still work there, and a shorter text for
     // Juno is accepted: the host judges again.
-    let plow = plow(World::default()).0;
-    let show = json!({"command": "show"});
-    let shown = match owner::run(&state, &plow, HOST_KEY, "studio", "device", &show)
+    let listed = match owner::run(&state, HOST_KEY, "device", &json!({"command": "list"}))
         .await
         .response
     {
-        crate::wire::Response::Ok(shown) => shown,
+        crate::wire::Response::Ok(listed) => listed,
         other => panic!("{other:?}"),
     };
-    assert_eq!(shown["agents"][0]["agent_uid"], AGENT);
-    let trimmed = json!({"command": "set", "from": AGENT, "text": "Only pytest."});
+    let rules: Vec<Rule> = serde_json::from_value(listed["rules"].clone()).unwrap();
+    let juno = rules
+        .iter()
+        .find(|rule| rule.agents != Covers::All)
+        .unwrap();
+    let trimmed = juno.edited("Only pytest.", juno.agents.clone(), juno.hosts.clone());
+    let edit = json!({"command": "edit", "rules": [trimmed]});
     assert!(matches!(
-        owner::run(&state, &plow, HOST_KEY, "studio", "device", &trimmed)
-            .await
-            .response,
+        owner::run(&state, HOST_KEY, "device", &edit).await.response,
         crate::wire::Response::Ok(_)
     ));
     assert!(
@@ -1533,16 +1534,9 @@ async fn an_owner_command_applies_to_the_next_judgment() {
         "the built-in policy alone"
     );
 
-    let set = json!({"command": "set", "text": "Run tests in ~/work."});
-    let done = owner::run(
-        dir.path(),
-        &plow(World::default()).0,
-        "studio-key",
-        "studio",
-        "device",
-        &set,
-    )
-    .await;
+    let rule = Rule::new("Run tests in ~/work.", Covers::All, Covers::All);
+    let add = json!({"command": "add", "rules": [rule]});
+    let done = owner::run(dir.path(), "studio-key", "device", &add).await;
     assert!(matches!(done.response, crate::wire::Response::Ok(_)));
     gatekeeper.judge(AGENT_CALLER, &order()).await;
     assert_eq!(

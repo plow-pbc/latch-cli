@@ -41,6 +41,8 @@ enum RunsOn {
     Host,
     /// Local state by default, or the selected host's state.
     Either,
+    /// This machine's state and every host of the account it can reach.
+    Account,
 }
 
 /// What running a command changes, which decides whether to resend it.
@@ -136,7 +138,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "agents",
         runs_on: |_| RunsOn::Either,
-        output: "`host` (with --host: its `name` and whether it is `online`; else null) and `agents`, in Plow's order: each one's `uid`, `name`, `kind` (cloud or own), `cloud_kind`, `line` (`number`, `name`, `card_url`: its persona's contact card, null for an unnamed line), `created_at`, `status` (a cloud agent's phase in Plow; null for own agents), `failure_code`, `last_seen_at` (its credential's last use, not proof it runs) and `standing` on the host (`own_rules`, `exec_blocked`; null without --host).",
+        output: "`host` (with --host: its `name` and whether it is `online`; else null) and `agents`, in Plow's order: each one's `uid`, `name`, `kind` (cloud or own), `cloud_kind`, `line` (`number`, `name`, `card_url`: its persona's contact card, null for an unnamed line), `created_at`, `status` (a cloud agent's phase in Plow; null for own agents), `failure_code`, `last_seen_at` (its credential's last use, not proof it runs) and `standing` on the host (`exec_blocked`; null without --host).",
         effect: ReadOnly,
         owner_only: true,
         connector: None,
@@ -1148,66 +1150,85 @@ const ENTRIES: &[Entry] = &[
         ],
     },
     Entry {
-        id: "rules.set",
-        runs_on: |_| RunsOn::Either,
-        output: "The rules saved, with their revision.",
-        effect: Repeatable("replaces the rules"),
+        id: "rules.list",
+        runs_on: |_| RunsOn::Account,
+        output: "`rules`: each live rule, oldest change first: `id`, `text`, `agents` and `hosts` (`\"all\"`, agents and hosts added later included, or a list of `{uid}` / `{key}`; agents and hosts the account no longer has are left out, and a rule none of whose agents, or hosts, are left is not shown), and `behind_hosts` (keys of hosts the rule applies on that answered and still lack its newest version). `hosts`: this machine and every host of the account: `key`, `name`, `self`, Plow's `online`, `observed` and `delivery` (its copy before and after this read: `current`; `behind`, it answered and lacks the newest list; or `unknown`, it couldn't be asked or its answer was lost), `reason` (why it is behind or unknown, as an error code: `host_outdated` means its latch can't sync these rules until it is updated there; null otherwise) and `budget` (`limit_bytes`, `max_bytes`: the rules for every agent and the largest agent's own there together, `over_budget`, `agents_over`: `\"all\"` or the uids whose rules are over), worked out from the merged list for every host. A host over budget refuses every request (gatekeeper_unavailable, reason rules_too_long) until its rules are shortened; reading and changing rules still work there. --agent and --host show only the rules that apply to that agent or on that host, `all` rules included; `hosts` is always the whole account.",
+        effect: Repeatable(
+            "brings every copy it reads that is behind up to date, this machine's and each host's; reading and repairing again changes nothing more",
+        ),
         owner_only: true,
         connector: None,
         examples: &[
             ex(
-                "Let agents read mail, never send it",
+                "Your rules, from every host you can reach",
+                &["rules", "list"],
+            ),
+            ex(
+                "The rules that apply to Maple on cloud",
+                &["rules", "list", "--agent", "Maple", "--host", "cloud"],
+            ),
+        ],
+    },
+    Entry {
+        id: "rules.add",
+        runs_on: |_| RunsOn::Account,
+        output: "The same answer as `rules list`, after the change, and `change`: `kind` (add), `id`, `saved`, `changed`, `reason` (`rules_exist` when --if-empty found rules and added nothing) and `rule` (the rule as saved, or null). A host that couldn't be reached is in `hosts`, not an error: the rule is saved on this machine first and reaches it on a later read. Refused with rules_too_long, and nothing saved, where it would push an agent's rules on a host over 8 KiB.",
+        effect: Once("adds a rule"),
+        owner_only: true,
+        connector: None,
+        examples: &[
+            ex(
+                "Let agents read mail, never send it, everywhere",
                 &[
                     "rules",
-                    "set",
+                    "add",
                     "Agents may search my mail but never send any.",
                 ],
             ),
             ex(
-                "Start from the rules the Mac app offers a family assistant, only if there are none yet",
-                &["rules", "set", "--preset", "family", "--revision", "none"],
+                "Only Maple and Oak, only on cloud",
+                &[
+                    "rules",
+                    "add",
+                    "Keep grocery orders under $200 a week.",
+                    "--agents",
+                    "Maple,Oak",
+                    "--hosts",
+                    "cloud",
+                ],
             ),
             ex(
-                "Save over the rules only if they are still at the revision `rules show` gave (`none`: there were none); otherwise stale_revision, with the revision they are at",
-                &["rules", "set", "--revision", "9f2c…", "--file", "rules.txt"],
+                "Start from the rule the Mac app offers a family assistant, only if no rule for every agent applies on this machine's host yet",
+                &["rules", "add", "--preset", "family", "--if-empty"],
             ),
         ],
     },
     Entry {
         id: "rules.edit",
-        runs_on: |_| RunsOn::Either,
-        output: "At a terminal, the person's editor, then a line when the rules are saved; without one, `no_terminal` (use `rules set`).",
-        effect: Once("changes the rules"),
-        owner_only: true,
-        connector: None,
-        examples: &[ex(
-            "Edit one agent's rules",
-            &["rules", "edit", "--agent", "ada"],
-        )],
-    },
-    Entry {
-        id: "rules.clear",
-        runs_on: |_| RunsOn::Either,
-        output: "The rules removed.",
-        effect: Repeatable("removes the rules"),
+        runs_on: |_| RunsOn::Account,
+        output: "The same answer as `rules list`, after the change, and `change` (`kind` edit; `changed` false when it was saved like this already). Refused with no_such_rule when the rule was removed (`removed: true`) or can't be found among the copies checked, and with rules_too_long as `add` is.",
+        effect: Repeatable("changes the rule"),
         owner_only: true,
         connector: None,
         examples: &[
-            ex("Remove every agent's rules", &["rules", "clear"]),
             ex(
-                "Remove one agent's rules only if they are still at the revision `rules show` gave",
-                &["rules", "clear", "--agent", "ada", "--revision", "9f2c…"],
+                "Change a rule's text",
+                &["rules", "edit", "3f9a…", "Never send email after 9 PM."],
+            ),
+            ex(
+                "Make a rule cover every agent",
+                &["rules", "edit", "3f9a…", "--agents", "all"],
             ),
         ],
     },
     Entry {
-        id: "rules.show",
-        runs_on: |_| RunsOn::Either,
-        output: "The rules for every agent and each agent's own, with their revisions, and `deny_exec`: the agents the host refuses exec (`every_agent`, `agent_uids`), as it runs or last ran, null if its saved flags are unreadable.",
-        effect: ReadOnly,
+        id: "rules.remove",
+        runs_on: |_| RunsOn::Account,
+        output: "The same answer as `rules list`, after the change, and `change` (`kind` remove, `rule` null; `changed` false when it was removed already). A removed rule can't be edited back, and a host that missed the removal can't bring it back.",
+        effect: Repeatable("removes the rule"),
         owner_only: true,
         connector: None,
-        examples: &[ex("Show the rules", &["rules", "show"])],
+        examples: &[ex("Remove a rule", &["rules", "remove", "3f9a…"])],
     },
     Entry {
         id: "rules.try",
@@ -1811,6 +1832,7 @@ fn runs_on(entry: &Entry) -> &'static str {
         RunsOn::Local => "local",
         RunsOn::Host => "host",
         RunsOn::Either => "either",
+        RunsOn::Account => "account",
     }
 }
 

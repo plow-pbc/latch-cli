@@ -31,6 +31,7 @@
 //! never chat text, rules text or a secret. The host keeps each call's
 //! request and answer apart from it, for its owner (`requests.rs`).
 
+mod account;
 mod action;
 mod chat;
 pub mod client;
@@ -817,7 +818,7 @@ impl Says {
 }
 
 /// How the owner sees and changes the rules that judged their own call.
-const OWNER_RULES: &str = "See them with `latch rules show` and change them with `latch rules edit` (with `--host NAME` from another machine), then retry.";
+const OWNER_RULES: &str = "See them with `latch rules list` and change them with `latch rules edit ID`, `latch rules remove ID` or `latch rules add`, then retry.";
 
 /// The verdict rule, in the words the dashboard shows the probabilities
 /// in.
@@ -887,7 +888,7 @@ fn agent_verdict(rules: Says, chat: Option<(Says, ChatRead)>) -> Result<(), Fail
             let mut failure = denied(
                 "not_covered",
                 format!(
-                    "Neither the owner's rules nor their messages allow this. This host found no Plow chat between you and the owner, so it read none of their messages and only their rules can allow this. {NO_PROMPT} tell the owner exactly what you will do (item, total, recipient) and that it needs their rules on this host (`latch rules edit`)."
+                    "Neither the owner's rules nor their messages allow this. This host found no Plow chat between you and the owner, so it read none of their messages and only their rules can allow this. {NO_PROMPT} tell the owner exactly what you will do (item, total, recipient) and that it needs their rules on this host (`latch rules add`)."
                 ),
             );
             failure.details["chat_lookup"] = json!("none");
