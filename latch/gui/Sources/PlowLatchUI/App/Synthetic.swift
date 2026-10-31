@@ -4,8 +4,8 @@ import Synchronization
 
 /// A latch with made-up data at the sizes the main window is measured at,
 /// for a test-hooks app opened with `hooks.sh open --fixture SPEC`: this Mac
-/// serving and logged in, its hosts, each host's records, vault items and
-/// rules, and the account's agents. It never runs latch, reaches Plow, or
+/// serving and logged in, its hosts, each host's records and vault items,
+/// the account's rules and its agents. It never runs latch, reaches Plow, or
 /// holds a secret; anything it can't make up is `FakeLatchClient`'s. With
 /// `connectors`, this Mac's plugins and the account's Google accounts change
 /// as they're changed, and stay so.
@@ -155,17 +155,23 @@ nonisolated struct SyntheticLatchClient: LatchClient {
 
     func agents(host: String?) async throws -> AgentsList {
         let agents = Spec.agentNames.prefix(spec.agents).enumerated().map { index, name in
-            let standing = host == nil ? "null" : #"{"exec_blocked":\#(index % 3 == 2),"own_rules":\#(index % 2 == 0)}"#
+            let standing = host == nil ? "null" : #"{"exec_blocked":\#(index % 3 == 2)}"#
             return #"{"cloud_kind":null,"created_at":"2026-10-23T05:37:45","failure_code":null,"kind":"own","last_seen_at":"2026-10-23T05:37:45","line":{"name":null,"number":"+1555000\#(String(format: "%04d", index + 2))"},"name":"\#(name)","standing":\#(standing),"status":null,"uid":"\#(agentUid(index))"}"#
         }
         return try await read(#"{"agents":[\#(agents.joined(separator: ","))]}"#)
     }
 
-    func rulesShow(host: String?) async throws -> RulesShow {
-        let own = Spec.agentNames.prefix(spec.agents).enumerated().filter { $0.offset % 2 == 0 }.map { index, name in
-            #"{"agent_name":"\#(name)","agent_uid":"\#(agentUid(index))","revision":"\#(Self.hex(index, salt: 0x7e11, width: 64))","text":"\#(name) may run builds and tests in ~/Projects.\n\#(name) may read ~/Documents/Reports but never write there.\nAsk me before \#(name) sends anything outside this host."}"#
+    /// A rule for every agent on every host, and one of each agent's own
+    /// on this Mac, every host holding them all.
+    func rulesList() async throws -> RulesList {
+        let own = Spec.agentNames.prefix(spec.agents).enumerated().map { index, name in
+            #"{"id":"rl_\#(Self.hex(index, salt: 0x7e11, width: 16))","text":"\#(name) may run builds and tests in ~/Projects, and may read ~/Documents/Reports but never write there.","agents":[{"uid":"\#(agentUid(index))"}],"hosts":[{"key":"\#(key(hostNames[0]))"}],"behind_hosts":[]}"#
         }
-        return try await read(#"{"agents":[\#(own.joined(separator: ","))],"deny_exec":{"agent_uids":[],"every_agent":false},"every_agent":{"revision":"\#(Self.hex(0, salt: 0x5a7e, width: 64))","text":"Agents may list and read files in ~/Projects.\nNever delete anything.\nNever touch ~/Finance.\n"},"host":"\#(self.host(host))"}"#)
+        let every = #"{"id":"rl_\#(Self.hex(0, salt: 0x5a7e, width: 16))","text":"Agents may list and read files in ~/Projects. Never delete anything, and never touch ~/Finance.","agents":"all","hosts":"all","behind_hosts":[]}"#
+        let hosts = hostNames.enumerated().map { index, name in
+            #"{"key":"\#(key(name))","name":"\#(name)","self":\#(index == 0),"delivery":"\#(name == "sidecar" ? "unknown" : "current")","reason":\#(name == "sidecar" ? #""host_offline""# : "null"),"budget":{"over_budget":false}}"#
+        }
+        return try await read(#"{"rules":[\#(([every] + own).joined(separator: ","))],"hosts":[\#(hosts.joined(separator: ","))]}"#)
     }
 
     func vaultList(host: String?) async throws -> VaultList {
@@ -196,7 +202,7 @@ nonisolated struct SyntheticLatchClient: LatchClient {
         case 0: #""agent":"\#(agentUid(agent))","caller":"\#(Self.hex(agent, salt: 0xca11, width: 64))","caller_name":"\#(name)","decision":"allow","details":null,"op":"connect","outcome":"ok""#
         case 1, 2: #""agent":"\#(agentUid(agent))","caller":"\#(Self.hex(agent, salt: 0xca11, width: 64))","caller_name":"\#(name)","decision":"allow","details":{"args":{"argv":["ls","Projects/\#(n)"],"network":false,"secret_env":[],"workdir":"/Users/me","writes":[]}},"op":"exec","outcome":"ok","command":"latch exec ls Projects/\#(n)""#
         case 3: #""agent":"\#(agentUid(agent))","caller":"\#(Self.hex(agent, salt: 0xca11, width: 64))","caller_name":"\#(name)","decision":"deny","details":{"args":{"argv":["cat","Finance/\#(n).csv"],"network":false,"secret_env":[],"workdir":"/Users/me","writes":[]}},"op":"exec","outcome":"gatekeeper_denied","command":"latch exec cat Finance/\#(n).csv""#
-        default: #""agent":null,"caller":"\#(key(hostNames[0]))","caller_name":"\#(hostNames[0])","decision":"allow","details":null,"op":"rules","outcome":"ok","command":"latch rules show""#
+        default: #""agent":null,"caller":"\#(key(hostNames[0]))","caller_name":"\#(hostNames[0])","decision":"allow","details":{"args":{"command":"list"}},"op":"rules","outcome":"ok","command":"latch rules list""#
         }
         return #"{"cursor":"\#(id)","record":{"id":"\#(id)","time":"\#(time)",\#(line)},"type":"record"}"#
     }
@@ -271,8 +277,14 @@ nonisolated struct SyntheticLatchClient: LatchClient {
             continuation.finish()
         }
     }
-    func rulesSet(_ text: String) async throws {}
-    func rulesSet(_ text: String, host: String?, agent: String?, revision: String?) async throws {}
+    func rulesAdd(_ text: String, agents: RulesList.Scope, hosts: RulesList.Scope) async throws -> RulesWrite {
+        try await base.rulesAdd(text, agents: agents, hosts: hosts)
+    }
+    func rulesAddIfEmpty(_ text: String) async throws -> RulesWrite { try await base.rulesAddIfEmpty(text) }
+    func rulesEdit(_ id: String, text: String?, agents: RulesList.Scope?, hosts: RulesList.Scope?) async throws -> RulesWrite {
+        try await base.rulesEdit(id, text: text, agents: agents, hosts: hosts)
+    }
+    func rulesRemove(_ id: String) async throws -> RulesWrite { try await base.rulesRemove(id) }
     func rulesTry(_ request: TryRequest, host: String?, agent: String?, newAgent: Bool, draft: String?) async throws -> RulesTry {
         try await base.rulesTry(request, host: host, agent: agent, newAgent: newAgent, draft: draft)
     }

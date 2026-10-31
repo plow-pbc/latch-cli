@@ -135,25 +135,27 @@ nonisolated struct AuditRecord: Decodable, Equatable, Identifiable {
     var gate: Gate? { details?.args?.gate ?? details?.gate }
     var isRefused: Bool { decision != "allow" }
 
-    /// The owner looking, not acting: `rules show`, `vault list`/`show`,
+    /// The owner looking, not acting: `rules list`, `vault list`/`show`,
     /// `plugins list`, `status`, `audit`, its screenshots and gatekeeper requests (the app's own reads among them).
     /// Home leaves them out; Activity shows them with connections.
     var isOwnerRead: Bool {
         guard agent == nil else { return false }
         switch op {
         case "status", "audit", "audit_shot", "audit_judge": return true
-        case "rules": return args?.command == "show"
+        case "rules": return args?.command == "list"
         case "vault": return ["list", "show"].contains(args?.command)
         case "plugins": return args?.command == "list"
         default: return false
         }
     }
 
-    /// A connection, an owner's read, or any caller's list of plugins that
-    /// was answered (every `latch status` asks each host for it): shown in
-    /// Activity only on request. A refused one stays in view.
+    /// A connection, an owner's read, latch bringing a host's rules up to
+    /// date as it read them (`rules repair`), or any caller's list of
+    /// plugins that was answered (every `latch status` asks each host for
+    /// it): shown in Activity only on request. A refused one stays in view.
     var isBackground: Bool {
         (op == "connect" && decision == "allow") || isOwnerRead
+            || (op == "rules" && agent == nil && args?.command == "repair")
             || (op == "plugins" && args?.command == "list" && outcome == "ok")
     }
 }

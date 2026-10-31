@@ -12,20 +12,24 @@ nonisolated protocol LatchClient: Sendable {
     /// `latch login --events [--name NAME] [--replace]`: the code to text,
     /// then how it ends. Stopping the iteration cancels the login.
     func login(name: String?, replace: Bool) -> AsyncThrowingStream<LoginEvent, Error>
-    /// `latch rules show`, on this Mac's host or, with `host`, another.
-    func rulesShow(host: String?) async throws -> RulesShow
-    /// `latch rules set --file -`, the text on stdin.
-    func rulesSet(_ text: String) async throws
+    /// `latch rules list`: the account's rules, from every host latch can
+    /// reach and this Mac's own copy, each host brought up to date.
+    func rulesList() async throws -> RulesList
+    /// `latch rules add --file - --agents … --hosts …`, the text on stdin.
+    func rulesAdd(_ text: String, agents: RulesList.Scope, hosts: RulesList.Scope) async throws -> RulesWrite
+    /// `latch rules add --file - --if-empty`: one rule for all agents on all
+    /// hosts, added only if no rule for every agent applies on this Mac yet.
+    func rulesAddIfEmpty(_ text: String) async throws -> RulesWrite
+    /// `latch rules edit ID`, with only what changed: the text on stdin, and
+    /// a scope given replaces the rule's.
+    func rulesEdit(_ id: String, text: String?, agents: RulesList.Scope?, hosts: RulesList.Scope?) async throws -> RulesWrite
+    /// `latch rules remove ID`.
+    func rulesRemove(_ id: String) async throws -> RulesWrite
     /// `latch setup --status`: what's set up, read from the state folder.
     func setupStatus() async throws -> SetupStatus
     /// The same, with `--check-access`: whether Plow Latch has Full Disk
     /// Access, which takes a moment.
     func setupStatusCheckingAccess() async throws -> SetupStatus
-    /// `latch rules set --file -` (or `rules clear` for no text) on a host,
-    /// for every agent or, with `agent` (a uid), that agent's own, only if
-    /// they are still at `revision` (nil: there were none); otherwise latch
-    /// refuses with `stale_revision` and nothing changes.
-    func rulesSet(_ text: String, host: String?, agent: String?, revision: String?) async throws
     /// `latch agents [--host NAME]`.
     func agents(host: String?) async throws -> AgentsList
     /// `latch rules try`: the verdict `request` (as an agent would send it)
@@ -100,10 +104,6 @@ nonisolated protocol LatchClient: Sendable {
     /// `latch agents remove UID --yes`: its credential stops working and
     /// its line is freed. Always by uid: names need not be unique.
     func removeAgent(_ uid: String) async throws
-}
-
-extension LatchClient {
-    func rulesShow() async throws -> RulesShow { try await rulesShow(host: nil) }
 }
 
 /// What `latch rules try` is asked to judge: a request as an agent sends
@@ -211,12 +211,27 @@ nonisolated struct LiveLatchClient: LatchClient {
         }
     }
 
-    func rulesShow(host: String?) async throws -> RulesShow {
-        try decode(RulesShow.self, try await run(["rules", "show"] + on(host)))
+    func rulesList() async throws -> RulesList {
+        try decode(RulesList.self, try await run(["rules", "list"]))
     }
 
-    func rulesSet(_ text: String) async throws {
-        _ = try await run(["rules", "set", "--file", "-"], input: Data(text.utf8))
+    func rulesAdd(_ text: String, agents: RulesList.Scope, hosts: RulesList.Scope) async throws -> RulesWrite {
+        try decode(RulesWrite.self, try await run(["rules", "add", "--file", "-", "--agents", agents.argument, "--hosts", hosts.argument],
+                                                  input: Data(text.utf8)))
+    }
+
+    func rulesAddIfEmpty(_ text: String) async throws -> RulesWrite {
+        try decode(RulesWrite.self, try await run(["rules", "add", "--file", "-", "--if-empty"], input: Data(text.utf8)))
+    }
+
+    func rulesEdit(_ id: String, text: String?, agents: RulesList.Scope?, hosts: RulesList.Scope?) async throws -> RulesWrite {
+        let arguments = ["rules", "edit", id] + (text == nil ? [] : ["--file", "-"])
+            + (agents.map { ["--agents", $0.argument] } ?? []) + (hosts.map { ["--hosts", $0.argument] } ?? [])
+        return try decode(RulesWrite.self, try await run(arguments, input: text.map { Data($0.utf8) }))
+    }
+
+    func rulesRemove(_ id: String) async throws -> RulesWrite {
+        try decode(RulesWrite.self, try await run(["rules", "remove", id]))
     }
 
     func setupStatus() async throws -> SetupStatus {
@@ -225,17 +240,6 @@ nonisolated struct LiveLatchClient: LatchClient {
 
     func setupStatusCheckingAccess() async throws -> SetupStatus {
         try decode(SetupStatus.self, try await run(["setup", "--status", "--check-access"]))
-    }
-
-    func rulesSet(_ text: String, host: String?, agent: String?, revision: String?) async throws {
-        let whose = on(host) + (agent.map { ["--agent", $0] } ?? [])
-        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            // No rules to clear when there were none.
-            guard let revision else { return }
-            _ = try await run(["rules", "clear", "--revision", revision] + whose)
-        } else {
-            _ = try await run(["rules", "set", "--revision", revision ?? "none", "--file", "-"] + whose, input: Data(text.utf8))
-        }
     }
 
     func agents(host: String?) async throws -> AgentsList {

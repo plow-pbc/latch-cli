@@ -7,18 +7,20 @@ import SwiftUI
 nonisolated struct FakeLatchClient: LatchClient {
     var stateDir = "/Users/me/.latch"
     var status = Fixtures.serving
-    var rules: String? = nil
+    var rules = Fixtures.rulesList()
     var account = Fixtures.studioHosts
 
     func localStatus() async throws -> LocalStatus { try Fixtures.decode(status) }
     func accountStatus() async throws -> AccountStatus { try Fixtures.decode(account) }
     func hostStatus(_ host: String) async throws -> LocalStatus { try Fixtures.decode(Fixtures.piStatus) }
     func login(name: String?, replace: Bool) -> AsyncThrowingStream<LoginEvent, Error> { AsyncThrowingStream { $0.finish() } }
-    func rulesShow(host: String?) async throws -> RulesShow {
-        try Fixtures.decode(rules.map { #"{"agents":[],"every_agent":{"revision":"r1","text":"\#($0)"},"host":"studio"}"# }
-            ?? #"{"agents":[],"every_agent":null,"host":"studio"}"#)
+    func rulesList() async throws -> RulesList { try Fixtures.decode(rules) }
+    func rulesAdd(_ text: String, agents: RulesList.Scope, hosts: RulesList.Scope) async throws -> RulesWrite { throw LatchError.unreachable("a still") }
+    func rulesAddIfEmpty(_ text: String) async throws -> RulesWrite { throw LatchError.unreachable("a still") }
+    func rulesEdit(_ id: String, text: String?, agents: RulesList.Scope?, hosts: RulesList.Scope?) async throws -> RulesWrite {
+        throw LatchError.unreachable("a still")
     }
-    func rulesSet(_ text: String) async throws {}
+    func rulesRemove(_ id: String) async throws -> RulesWrite { throw LatchError.unreachable("a still") }
     var connectorsOn: [String] = []
     /// Whether the host still keeps a plan's screenshots.
     var shotsKept = true
@@ -54,7 +56,6 @@ nonisolated struct FakeLatchClient: LatchClient {
     func auditJudge(_ id: String, host: String?) async throws -> String {
         #"{"id": "\#(id)", "layer": "rules", "request": {"model": "typesafe/jev-1.14"}, "answer": null}"#
     }
-    func rulesSet(_ text: String, host: String?, agent: String?, revision: String?) async throws {}
     func agents(host: String?) async throws -> AgentsList {
         switch host {
         case nil: try Fixtures.decode(Fixtures.agents)
@@ -176,16 +177,14 @@ nonisolated enum Fixtures {
     static let laptopHosts = #"{"account":{"owner_uid":"usr_5f2c9a7e","display_name":"Morgan"},"hosts":[{"name":"pi-kitchen","key":"78d8cd12e343e28d70b1da3ac8a0bb8c37593b5f8d535a58b716b776a91f2edc","self":false,"online":true,"last_seen_at":"2026-10-22T22:06:30.037004Z"},{"name":"sidecar","key":"b58ac41605d91211b1d5c052addea8d6e7b81702d4902f746e6d639e38909364","self":false,"online":true,"last_seen_at":"2026-10-22T22:06:33.384336Z"},{"name":"studio","key":"6b55a78fcd1400f6ac14f129cd1825744125406e25a2892be4abda157baaa23f","self":false,"online":true,"last_seen_at":"2026-10-22T22:06:26.724881Z"}],"default_host":null,"default_host_reason":"host_required","api_url":"http://127.0.0.1:18934"}"#
     static let laptopHostsPiOffline = #"{"account":{"owner_uid":"usr_5f2c9a7e","display_name":"Morgan"},"hosts":[{"name":"pi-kitchen","key":"78d8cd12e343e28d70b1da3ac8a0bb8c37593b5f8d535a58b716b776a91f2edc","self":false,"online":false,"last_seen_at":null},{"name":"sidecar","key":"b58ac41605d91211b1d5c052addea8d6e7b81702d4902f746e6d639e38909364","self":false,"online":true,"last_seen_at":"2026-10-22T22:06:33.384336Z"},{"name":"studio","key":"6b55a78fcd1400f6ac14f129cd1825744125406e25a2892be4abda157baaa23f","self":false,"online":true,"last_seen_at":"2026-10-22T22:06:26.724881Z"}],"default_host":null,"default_host_reason":"host_required","api_url":"http://127.0.0.1:18934"}"#
     static let noHosts = #"{"account":{"owner_uid":"usr_5f2c9a7e","display_name":"Morgan"},"hosts":[],"default_host":null,"default_host_reason":"no_host","api_url":"http://127.0.0.1:18934"}"#
-    // `rules show`, `vault list` and `status --local`'s `plugins` on studio,
-    // and on pi-kitchen (read from laptop with `--host`).
-    static let studioRules = #"{"agents":[{"agent_name":"scout","agent_uid":"0432eb0ee1e99e24c40c54fc2bada229","note":"no latch registered when set","revision":"8be9ed94de19f40ae8a8f06b98bb6ee54da22900b8191b70dd2f2486edf1a1f0","text":"scout may run builds and tests in ~/Projects/latch-demo with --write there, and may use the network for package downloads."}],"audit_id":"81c7dce2aa3758db17a746b2284596fcfb4e2773a99d34cc49cee9e6071b2e3f","every_agent":{"revision":"9b1e8ee3911c42472937f948983a24e6c087c4f70d5bc5b924b84c799f0bff05","text":"Agents may read and summarize anything in ~/Projects. Ask me before sending any email or deleting files. Never touch ~/Finance."},"host":"studio","warning":"Freeform rules are judged, not guaranteed. --deny-exec is enforced in code."}"#
+    // `vault list` and `status --local`'s `plugins` on studio, and on
+    // pi-kitchen (read from laptop with `--host`).
     static let studioVault = #"{"audit_id":"bcaf28dedfe777a60303c3ccd802a8a2380237b6f02988bc33dabb307431e0a6","items":[{"fields":[{"alias":false,"custom":false,"hidden":false,"label":"username"},{"alias":false,"custom":false,"hidden":true,"label":"password"}],"item":"v1","kind":"login","revision":1,"sites":["shop.example"],"title":"Shop (test)","totp":false,"username":"ada"},{"fields":[{"alias":false,"custom":false,"hidden":false,"label":"username"},{"alias":false,"custom":false,"hidden":true,"label":"password"}],"item":"v2","kind":"login","other_top_sites":["grocer-login.example"],"revision":1,"sites":["grocer.example"],"title":"Grocer (test)","totp":false,"username":"ada@example.com"},{"fields":[],"item":"v3","kind":"note","revision":1,"sites":[],"title":"Building notes (test)","totp":false},{"fields":[{"alias":false,"custom":false,"hidden":true,"label":"number"},{"alias":false,"custom":false,"hidden":true,"label":"code"},{"alias":false,"custom":false,"hidden":false,"label":"cardholder name"}],"item":"v4","kind":"card","revision":1,"sites":["shop.example"],"title":"Visa (test)","totp":false}]}"#
     static let studioPlugins = #"[{"enable":"latch plugins enable google","name":"google","reason":"its owner has not enabled it on this host","state":"disabled"},{"enable":"latch plugins enable messages","name":"messages","reason":"its owner has not enabled it on this host","state":"disabled"},{"enable":"latch plugins enable contacts","name":"contacts","reason":"its owner has not enabled it on this host","state":"disabled"}]"#
     /// studio's after turning Google on, with Messages lacking Full Disk Access.
     static let studioPluginsSetUp = #"[{"enable":null,"name":"google","reason":"enabled; agents can use it once latch is running","state":"enabled"},{"enable":"latch plugins enable messages","name":"messages","reason":"this host has no Full Disk Access; turn it on for /Applications/Plow Latch.app in System Settings (x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles), then run `latch plugins enable messages` again","state":"needs_setup"},{"enable":"latch plugins enable contacts","name":"contacts","reason":"its owner has not enabled it on this host","state":"disabled"}]"#
     /// pi-kitchen's own `status --local`, as `status --host pi-kitchen` gives it.
-    static let piStatus = #"{"login":{"kind":"device"},"this_machine":{"name":"pi-kitchen","key":"78d8cd12e343e28d70b1da3ac8a0bb8c37593b5f8d535a58b716b776a91f2edc","hosting":{"running":true,"ready":true,"configuring":false,"managed":true,"attached":false,"state":"serving","pid":811,"blocked":null}},"update":{"available":false,"build":138,"checked_at":"2026-10-23T08:00:00Z"},"last_error":null,"state_dir":"/home/pi/.latch","version":"0.1.0 (138): commit 4c1e0a2b9, built 2026-10-22 18:04 UTC, standalone, protocol plow/latch/4","protocol":4}"#
-    static let piRules = #"{"agents":[],"audit_id":"c57f1209db34c3767c262960f596b34ec61e8b932a2b3011b3677db297f74bea","every_agent":{"revision":"8419fd077d6e4e3adc59789beedadb9864635746da5e22ae63b727c9b42c8715","text":"This Pi runs the kitchen display. Agents may read ~/recipes and write only to ~/recipes/drafts."},"host":"pi-kitchen","warning":"Freeform rules are judged, not guaranteed. --deny-exec is enforced in code."}"#
+    static let piStatus = #"{"login":{"kind":"device"},"this_machine":{"name":"pi-kitchen","key":"78d8cd12e343e28d70b1da3ac8a0bb8c37593b5f8d535a58b716b776a91f2edc","hosting":{"running":true,"ready":true,"configuring":false,"managed":true,"attached":false,"state":"serving","pid":811,"blocked":null,"deny_exec":{"agent_uids":["3971582e59baad83250141c8dcc95855"],"every_agent":false}}},"update":{"available":false,"build":138,"checked_at":"2026-10-23T08:00:00Z"},"last_error":null,"state_dir":"/home/pi/.latch","version":"0.1.0 (138): commit 4c1e0a2b9, built 2026-10-22 18:04 UTC, standalone, protocol plow/latch/4","protocol":4}"#
     /// `status` with `plugins` in it, as `status --local` lists them.
     static func status(_ status: String, plugins: String) -> String {
         "{\"plugins\":\(plugins)," + status.dropFirst()
@@ -314,8 +313,53 @@ nonisolated enum Fixtures {
     static let trioStudio = #"{"agents":[{"cloud_kind":"exe:hermes","created_at":"2026-10-21T17:02:11.204518","failure_code":null,"kind":"cloud","last_seen_at":null,"line":{"card_url":"https://plow.co/aspen.vcf","name":"Aspen","number":"+16505550136"},"name":"openclaw-test2","standing":{"exec_blocked":false,"own_rules":false},"status":"running","uid":"a5be0c1d2e3f40516273849506a7b8c9"},{"cloud_kind":null,"created_at":"2026-10-22T09:41:57.880113","failure_code":null,"kind":"own","last_seen_at":null,"line":{"name":null,"number":"+16505550104"},"name":"grok-bot","standing":{"exec_blocked":false,"own_rules":true},"status":null,"uid":"e1f0d2c3b4a5968778695a4b3c2d1e0f"},{"cloud_kind":"exe:meals-planner","created_at":"2026-10-24T12:15:03.551920","failure_code":null,"kind":"cloud","last_seen_at":null,"line":{"card_url":"https://plow.co/willow.vcf","name":"Willow","number":"+16505550171"},"name":"willow-meals","standing":{"exec_blocked":false,"own_rules":false},"status":"running","uid":"77a1b2c3d4e5f60718293a4b5c6d7e8f"}],"host":{"name":"studio","online":true}}"#
     static let trioKitchen = #"{"agents":[{"cloud_kind":"exe:hermes","created_at":"2026-10-21T17:02:11.204518","failure_code":null,"kind":"cloud","last_seen_at":null,"line":{"card_url":"https://plow.co/aspen.vcf","name":"Aspen","number":"+16505550136"},"name":"openclaw-test2","standing":{"exec_blocked":true,"own_rules":false},"status":"running","uid":"a5be0c1d2e3f40516273849506a7b8c9"},{"cloud_kind":null,"created_at":"2026-10-22T09:41:57.880113","failure_code":null,"kind":"own","last_seen_at":null,"line":{"name":null,"number":"+16505550104"},"name":"grok-bot","standing":{"exec_blocked":false,"own_rules":false},"status":null,"uid":"e1f0d2c3b4a5968778695a4b3c2d1e0f"},{"cloud_kind":"exe:meals-planner","created_at":"2026-10-24T12:15:03.551920","failure_code":null,"kind":"cloud","last_seen_at":null,"line":{"card_url":"https://plow.co/willow.vcf","name":"Willow","number":"+16505550171"},"name":"willow-meals","standing":{"exec_blocked":false,"own_rules":false},"status":"running","uid":"77a1b2c3d4e5f60718293a4b5c6d7e8f"}],"host":{"name":"pi-kitchen","online":true}}"#
     static let agentsKitchenOffline = #"{"error":{"code":"host_offline","message":"host \"pi-kitchen\" is offline; nothing was sent. Start `latch serve` there"}}"#
-    static let rulesStudio = #"{"agents":[{"agent_name":"scout","agent_uid":"ba3c0b3ad1eba7a9a1eb04b67c9db0dd","revision":"a33189e9c51bcecdd839cfc226d392a7ce6c00eb700b08ce25fa325e2c29f780","text":"scout may run builds and tests in ~/Projects/latch-demo."}],"audit_id":"94b02a5438b53063f41edeb8a2babaaefb3ffaefee225dbfe5e94a2ddff078bf","deny_exec":{"agent_uids":[],"every_agent":false},"every_agent":{"revision":"ea4ac6c6bd9184d7479f8312f4ebca18db1804f21bba03212ac8f0dc80f35c7c","text":"Agents may list and read files in ~/Projects. Never delete anything, and never touch ~/Finance.\n"},"host":"studio","warning":"Freeform rules are judged, not guaranteed. --deny-exec is enforced in code."}"#
-    static let rulesKitchen = #"{"agents":[],"audit_id":"d5776f75782524ce226a62a46607b95c3382c957b8b44a342456171d2345fd49","deny_exec":{"agent_uids":["3971582e59baad83250141c8dcc95855"],"every_agent":false},"every_agent":null,"host":"pi-kitchen","warning":"Freeform rules are judged, not guaranteed. --deny-exec is enforced in code."}"#
+    // `rules list`, `rules add` (a rule for this host, then a guarded add
+    // skipped) and their refusals, as the debug latch printed them on a
+    // logged-in state folder with no host serving.
+    static let rulesListed = #"{"hosts":[{"budget":{"agents_over":[],"limit_bytes":8192,"max_bytes":88,"over_budget":false},"delivery":"current","key":"a20b57d5f009b01c518532544e3bb40c899ea121d2adec80ae03a153a55821ad","name":"rules-mac-contract","observed":"current","online":null,"reason":null,"self":true}],"rules":[{"agents":"all","behind_hosts":[],"hosts":"all","id":"f12b592500d601e6447b5d62ae1d9cc4","text":"Ask me before sending any email.\n"},{"agents":"all","behind_hosts":[],"hosts":[{"key":"a20b57d5f009b01c518532544e3bb40c899ea121d2adec80ae03a153a55821ad"}],"id":"8840ab210a979e0ce2c104937758adb0","text":"Agents may read and summarize anything in ~/Projects."}]}"#
+    static let ruleAdded = #"{"change":{"changed":true,"id":"8840ab210a979e0ce2c104937758adb0","kind":"add","reason":null,"rule":{"agents":"all","behind_hosts":[],"hosts":[{"key":"a20b57d5f009b01c518532544e3bb40c899ea121d2adec80ae03a153a55821ad"}],"id":"8840ab210a979e0ce2c104937758adb0","text":"Agents may read and summarize anything in ~/Projects."},"saved":true},"hosts":[{"budget":{"agents_over":[],"limit_bytes":8192,"max_bytes":88,"over_budget":false},"delivery":"current","key":"a20b57d5f009b01c518532544e3bb40c899ea121d2adec80ae03a153a55821ad","name":"rules-mac-contract","observed":"current","online":null,"reason":null,"self":true}],"rules":[{"agents":"all","behind_hosts":[],"hosts":"all","id":"f12b592500d601e6447b5d62ae1d9cc4","text":"Ask me before sending any email.\n"},{"agents":"all","behind_hosts":[],"hosts":[{"key":"a20b57d5f009b01c518532544e3bb40c899ea121d2adec80ae03a153a55821ad"}],"id":"8840ab210a979e0ce2c104937758adb0","text":"Agents may read and summarize anything in ~/Projects."}]}"#
+    static let ruleAddSkipped = #"{"change":{"changed":false,"id":null,"kind":"add","reason":"rules_exist","rule":null,"saved":false},"hosts":[{"budget":{"agents_over":[],"limit_bytes":8192,"max_bytes":88,"over_budget":false},"delivery":"current","key":"a20b57d5f009b01c518532544e3bb40c899ea121d2adec80ae03a153a55821ad","name":"rules-mac-contract","observed":"current","online":null,"reason":null,"self":true}],"rules":[{"agents":"all","behind_hosts":[],"hosts":"all","id":"f12b592500d601e6447b5d62ae1d9cc4","text":"Ask me before sending any email.\n"},{"agents":"all","behind_hosts":[],"hosts":[{"key":"a20b57d5f009b01c518532544e3bb40c899ea121d2adec80ae03a153a55821ad"}],"id":"8840ab210a979e0ce2c104937758adb0","text":"Agents may read and summarize anything in ~/Projects."}]}"#
+    static let ruleRefusals: [String: String] = [
+        "no_such_rule removed": #"{"error":{"code":"no_such_rule","exit":2,"id":"ef50ea5e1ce0fdfe0cd5dab754a003f0","message":"This rule was deleted, so your change wasn't saved.","next":"latch rules list","removed":true,"unchecked_hosts":[]}}"#,
+        "no_such_rule": #"{"error":{"code":"no_such_rule","exit":2,"id":"nope","message":"This rule could not be found among the copies checked.","next":"latch rules list","removed":false,"unchecked_hosts":[]}}"#,
+        "empty_rules": #"{"error":{"code":"empty_rules","exit":2,"message":"A rule needs text, so your change wasn't saved.","next":"Enter the rule text."}}"#,
+        "rules_too_long": #"{"error":{"code":"rules_too_long","exit":2,"hosts":[{"after_bytes":9035,"agent":null,"before_bytes":33,"key":"a20b57d5f009b01c518532544e3bb40c899ea121d2adec80ae03a153a55821ad","name":"rules-mac-contract"}],"limit_bytes":8192,"message":"Your change wasn't saved because the rules on rules-mac-contract would exceed 8192 bytes.","next":"latch rules list --host rules-mac-contract"}}"#,
+        "no_such_agent": #"{"error":{"code":"no_such_agent","exit":2,"message":"Your change wasn't saved because no agent in your account is called \"nobody\".","next":"latch agents"}}"#,
+    ]
+    /// `rules list` in the shape latch prints it (`rulesListed`), for studio's
+    /// account: five rules (one migrated from studio's rules for every
+    /// agent, one from scout's own) over studio, pi-kitchen and sidecar.
+    /// `behind`: pi-kitchen answered without its newest rules; `unchecked`:
+    /// sidecar couldn't be checked, for that reason; `over`: pi-kitchen's
+    /// rules are too long; `empty`: no rules; `only`: those rules alone.
+    static func rulesList(behind: Bool = false, unchecked: String? = nil, over: Bool = false, empty: Bool = false,
+                          only: [Int]? = nil) -> String {
+        let studio = "6b55a78fcd1400f6ac14f129cd1825744125406e25a2892be4abda157baaa23f"
+        let kitchen = "78d8cd12e343e28d70b1da3ac8a0bb8c37593b5f8d535a58b716b776a91f2edc"
+        let sidecar = "b58ac41605d91211b1d5c052addea8d6e7b81702d4902f746e6d639e38909364"
+        let scout = "ba3c0b3ad1eba7a9a1eb04b67c9db0dd", helper = "3971582e59baad83250141c8dcc95855"
+        let late = behind ? #"[{"key":"\#(kitchen)"}]"# : "[]"
+        let rules = [
+            #"{"id":"rl_7f3a9c2e","text":"Ask me before sending any email or text on my behalf.","agents":"all","hosts":"all","behind_hosts":\#(late)}"#,
+            #"{"id":"rl_1b84d0f6","text":"Agents may read and summarize anything in ~/Projects. Never touch ~/Finance.","agents":"all","hosts":[{"key":"\#(studio)"}],"behind_hosts":[]}"#,
+            #"{"id":"rl_c0e5a713","text":"scout may run builds and tests in ~/Projects/latch-demo, and may use the network for package downloads.","agents":[{"uid":"\#(scout)"}],"hosts":[{"key":"\#(studio)"}],"behind_hosts":[]}"#,
+            #"{"id":"rl_92d6be48","text":"helper may read the shopping list in ~/Kitchen and add to it.","agents":[{"uid":"\#(helper)"}],"hosts":[{"key":"\#(kitchen)"}],"behind_hosts":\#(late)}"#,
+            #"{"id":"rl_e41f07ad","text":"Never buy anything over $50 without asking me first.","agents":[{"uid":"\#(scout)"},{"uid":"\#(helper)"}],"hosts":"all","behind_hosts":[]}"#,
+        ]
+        func host(_ name: String, _ key: String, this: Bool = false, delivery: String = "current", reason: String? = nil,
+                  bytes: Int = 412, over: Bool = false) -> String {
+            let online = delivery == "unknown" && reason == "host_offline" ? "false" : "true"
+            return #"{"key":"\#(key)","name":"\#(name)","self":\#(this),"online":\#(online),"observed":"\#(delivery)","delivery":"\#(delivery)","reason":\#(reason.map { "\"\($0)\"" } ?? "null"),"budget":{"limit_bytes":8192,"max_bytes":\#(over ? 9214 : bytes),"over_budget":\#(over),"agents_over":\#(over ? "\"all\"" : "[]")}}"#
+        }
+        let hosts = [
+            host("studio", studio, this: true, bytes: 412),
+            host("pi-kitchen", kitchen, delivery: behind ? "behind" : "current", reason: behind ? "rules_io" : nil, bytes: 236, over: over),
+            host("sidecar", sidecar, delivery: unchecked == nil ? "current" : "unknown", reason: unchecked, bytes: 160),
+        ]
+        let listed = empty ? [] : only.map { $0.map { rules[$0] } } ?? rules
+        return #"{"rules":[\#(listed.joined(separator: ","))],"hosts":[\#(hosts.joined(separator: ","))]}"#
+    }
+
     static let tries: [String: String] = [
         "allow-owner": #"{"as":"owner","gate":{"caller":"owner_device","cost":0.000011,"latency_ms":268,"model":"typesafe/jev-1.14-20261014","model_request":"req_nzfeeqvhlqnslxsf","p":{"COVERED":0.9,"FORBIDDEN":0.08,"NOT_COVERED":0.02},"rule":"refused when forbidden >= within instructions","rules":{"agent":null,"host":"ea4ac6c6bd9184d7479f8312f4ebca18db1804f21bba03212ac8f0dc80f35c7c"},"source":"owner_request","verdict":"allow"},"host":"studio","request":{"action":{"argv":["ls","Projects"],"network":false,"operation":"exec","secret_env":[],"working_folder":"/Users/me","writes":[]},"op":"exec"},"verdict":"allow"}"#,
         "allow-scout": #"{"as":{"agent_name":"scout","agent_uid":"ba3c0b3ad1eba7a9a1eb04b67c9db0dd"},"gate":{"caller":"agent","cost":0.00001,"latency_ms":230,"model":"typesafe/jev-1.14-20261014","model_request":"req_xcxovwucwqgsvcis","p":{"COVERED":0.56,"FORBIDDEN":0.01,"NOT_COVERED":0.43},"rule":"allowed when within instructions >= 0.50","rules":{"agent":"a33189e9c51bcecdd839cfc226d392a7ce6c00eb700b08ce25fa325e2c29f780","host":"ea4ac6c6bd9184d7479f8312f4ebca18db1804f21bba03212ac8f0dc80f35c7c"},"source":"rules","verdict":"allow"},"host":"studio","request":{"action":{"argv":["make","test"],"network":false,"operation":"exec","secret_env":[],"working_folder":"/Users/me/Projects/latch-demo","writes":[]},"op":"exec"},"verdict":"allow"}"#,
@@ -551,7 +595,6 @@ package enum SnapshotRunner {
                 ("12-home-remote-offline-viewer", Fixtures.laptop, Fixtures.laptopHostsPiOffline, "pi-kitchen", .host(.home)),
                 ("13-agents-on-studio", Fixtures.serving, Fixtures.studioHosts, nil, .account(.agents)),
                 ("13-agents-after-switch-to-pi-kitchen", Fixtures.serving, Fixtures.studioHosts, "pi-kitchen", .account(.agents)),
-                ("13-rules-on-pi-kitchen", Fixtures.serving, Fixtures.studioHosts, "pi-kitchen", .host(.rules)),
             ]
             for (name, status, account, chosen, place) in homes {
                 let app = AppModel(client: FakeLatchClient(), still: true)
@@ -591,11 +634,9 @@ package enum SnapshotRunner {
             let stopped = LatchError.failed(LatchFailure(code: "host_stopped", message: #"host "pi-kitchen" stopped serving"#))
             let busy = LatchError.failed(LatchFailure(code: "state_busy", message: "another latch is changing /Users/me/.latch; try again"))
             let errors: [(String, String?, HostScreen, HostSummary)] = [
-                ("23-error-rules-pi-kitchen-unreachable", "pi-kitchen", .rules, HostSummary(rules: .failure(unreachable))),
                 ("23-error-activity-pi-kitchen-stopped", "pi-kitchen", .activity, HostSummary()),
-                ("23-error-rules-unknown-code", nil, .rules, HostSummary(rules: .failure(busy))),
-                ("23-error-home-pi-kitchen-rules-unreachable", "pi-kitchen", .home,
-                 HostSummary(rules: .failure(unreachable), vault: .success(try Fixtures.decode(Fixtures.piVault)))),
+                ("23-error-home-pi-kitchen-vault-unreachable", "pi-kitchen", .home, HostSummary(vault: .failure(unreachable))),
+                ("23-error-vault-unknown-code", nil, .vault, HostSummary(vault: .failure(busy))),
             ]
             for (name, chosen, screen, summary) in errors {
                 let app = AppModel(client: FakeLatchClient(), still: true)
@@ -654,6 +695,28 @@ package enum SnapshotRunner {
                 _ = app.stage(.done, progress: full)
                 try await renderWindow(app, size: CGSize(width: 1180, height: 640), dark: dark,
                                        file: output.appending(path: "14-activity-studio-stops-\(dark ? "dark" : "light").png"))
+            }
+            // A rule edited on the Rules page, then read again on the next
+            // visit: the edit is a normal entry; the read of every host's
+            // rules and the repair it made are background, shown only with
+            // connections.
+            for connections in [false, true] {
+                let file = output.appending(path: "14-activity-studio-rule-edited\(connections ? "-with-connections" : "")-\(dark ? "dark" : "light").png")
+                guard wanted(file) else { continue }
+                let app = AppModel(client: FakeLatchClient(), still: true)
+                app.stage(status: try Fixtures.decode(Fixtures.serving))
+                app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
+                app.place = .host(.activity)
+                app.showConnections = connections
+                if let studio = app.host {
+                    let rules = [("e1", "edit", "rl_c0e5a713"), ("e2", "list", nil), ("e3", "repair", nil)].map { id, command, rule in
+                        let cursor = String(repeating: id, count: 32)
+                        return #"{"cursor":"\#(cursor)","record":{"agent":null,"caller":"6b55a78f","caller_name":"studio","decision":"allow","details":{"args":{"command":"\#(command)"\#(rule.map { #","id":"\#($0)""# } ?? "")},"gate":null,"started":null},"id":"\#(cursor)","op":"rules","outcome":"ok","time":"2026-10-23T09:1\#(id.last!):00Z","command":"latch rules \#(command)\#(rule.map { " \($0)" } ?? "")"},"type":"record"}"#
+                    }
+                    app.feed(for: studio).stage(Fixtures.studioAudit + "\n" + rules.joined(separator: "\n"))
+                }
+                _ = app.stage(.done, progress: full)
+                try await renderWindow(app, size: CGSize(width: 1180, height: 640), dark: dark, file: file)
             }
             // Activity's scope bar at the default and narrowest sizes: an
             // agent's link (its chip), no match in what's loaded, reading,
@@ -827,52 +890,88 @@ package enum SnapshotRunner {
                     .environment(app), size: CGSize(width: 640, height: 500), dark: dark, file: menu)
             }
         }
-        // Rules: real agents and standings (sidecar offline), a host's
-        // rules, and Try a request's verdicts.
+        // Rules: the account's rules (as cli-design's agreed `rules list`
+        // gives them), filtered, each state of the page and its notices, at
+        // the default and narrowest sizes; then its sheets.
         for dark in [false, true] {
-            let sidecarOffline = Fixtures.studioHosts.replacingOccurrences(
-                of: #""self":false,"online":true,"last_seen_at":"2026-10-22T22:06:33.384336Z""#,
-                with: #""self":false,"online":false,"last_seen_at":null"#)
+            let mode = dark ? "dark" : "light"
             let scout = "ba3c0b3ad1eba7a9a1eb04b67c9db0dd", helper = "3971582e59baad83250141c8dcc95855"
-            let screens: [(String, Place, String?, (AppModel) throws -> Void)] = [
-                ("16-rules-studio-scout-try-allowed", .host(.rules), nil, { app in
-                    if let studio = app.host { app.openRules(studio, agent: scout) }
-                    app.trial.stage(try Fixtures.decode(Fixtures.tries["allow-scout"]!), request: "exec --workdir ~/Projects/latch-demo -- make test",
-                                    caller: .agent(scout), on: "studio")
-                }),
-                ("16-rules-studio-try-you-said-no", .host(.rules), nil, { app in
-                    app.trial.stage(try Fixtures.decode(Fixtures.tries["said-no"]!), request: "exec -- cat Finance/2026.csv",
-                                    caller: .agent(scout), on: "studio")
-                }),
-                // An item picked from Try a request's Examples menu, to edit.
-                ("16-rules-studio-try-example-filled", .host(.rules), nil, { app in app.trial.use(Trial.examples[1]) }),
-                ("16-rules-studio-unsaved-draft", .host(.rules), nil, { app in
-                    let key = AppModel.RulesKey(host: "studio", agent: nil)
-                    let saved = app.savedRules(key)
-                    app.rulesDrafts[key] = .init(text: (saved?.text ?? "") + "Never send email without asking me.", base: saved?.revision)
-                }),
-                ("16-rules-pi-kitchen-helper-exec-refused", .host(.rules), "pi-kitchen", { app in
-                    if let kitchen = app.host { app.openRules(kitchen, agent: helper) }
-                    app.trial.stage(try Fixtures.decode(Fixtures.tries["host-refused"]!), request: "exec -- ls",
-                                    caller: .agent(helper), on: "pi-kitchen")
-                }),
-            ]
-            for (name, place, chosen, stage) in screens {
+            let kitchen = "78d8cd12e343e28d70b1da3ac8a0bb8c37593b5f8d535a58b716b776a91f2edc"
+            let studio = "6b55a78fcd1400f6ac14f129cd1825744125406e25a2892be4abda157baaa23f"
+            let busy = LatchError.failed(LatchFailure(code: "plow_unreachable", message: "could not reach Plow at http://127.0.0.1:18934: error sending request for url (http://127.0.0.1:18934/v1/latch/peers)"))
+            func rulesApp(_ rules: String?, error: LatchError? = nil) throws -> AppModel {
                 let app = AppModel(client: FakeLatchClient(), still: true)
                 app.stage(status: try Fixtures.decode(Fixtures.serving))
-                app.stage(account: try Fixtures.decode(sidecarOffline))
-                app.stage(agents: try Fixtures.decode(Fixtures.agents), standings: [
-                    "studio": .success(try Fixtures.decode(Fixtures.agentsStudio)),
-                    "pi-kitchen": .success(try Fixtures.decode(Fixtures.agentsKitchen)),
-                ])
-                app.stage(summary: HostSummary(rules: .success(try Fixtures.decode(Fixtures.rulesStudio))), for: "studio")
-                app.stage(summary: HostSummary(rules: .success(try Fixtures.decode(Fixtures.rulesKitchen))), for: "pi-kitchen")
-                app.chosenHost = chosen
-                app.place = place
-                try stage(app)
+                app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
+                app.stage(agents: try Fixtures.decode(Fixtures.agents), standings: [:])
+                app.stage(rules: try rules.map { try Fixtures.decode($0) }, error: error)
+                app.place = .account(.rules)
                 _ = app.stage(.done, progress: full)
-                try await renderWindow(app, size: CGSize(width: 1120, height: 700), dark: dark,
-                                       file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
+                return app
+            }
+            let screens: [(String, String?, LatchError?, (AppModel) -> Void)] = [
+                ("16-rules-list", Fixtures.rulesList(), nil, { $0.selectedRule = "rl_c0e5a713" }),
+                ("16-rules-filtered-scout", Fixtures.rulesList(), nil, { $0.rulesFilter.agent = scout }),
+                ("16-rules-filtered-pi-kitchen", Fixtures.rulesList(), nil, { $0.rulesFilter.host = kitchen }),
+                ("16-rules-empty", Fixtures.rulesList(empty: true), nil, { _ in }),
+                ("16-rules-filtered-empty", Fixtures.rulesList(only: [2, 3]), nil, { app in
+                    app.rulesFilter = .init(agent: helper, host: studio)
+                }),
+                ("16-rules-reading", nil, nil, { _ in }),
+                ("16-rules-read-failed", nil, busy, { _ in }),
+                ("16-rules-refresh-failed", Fixtures.rulesList(), busy, { _ in }),
+                ("16-rules-couldnt-check-sidecar", Fixtures.rulesList(unchecked: "host_unreachable"), nil, { _ in }),
+                ("16-rules-couldnt-check-outdated", Fixtures.rulesList(unchecked: "host_outdated"), nil, { _ in }),
+                ("16-rules-over-budget", Fixtures.rulesList(over: true), nil, { _ in }),
+                ("16-rules-not-on-pi-kitchen-yet", Fixtures.rulesList(behind: true), nil, { _ in }),
+                ("16-rules-delete-failed", Fixtures.rulesList(), nil, { app in
+                    app.ruleDeleteError = .failed(LatchFailure(code: "rules_io", message: "could not write /Users/me/.latch/rules/rules.json: disk full"))
+                }),
+            ]
+            for (name, rules, error, stage) in screens {
+                for (label, size) in [("", CGSize(width: 1120, height: 700)), ("-narrow", narrowSize)] {
+                    let file = output.appending(path: "\(name)\(label)-\(mode).png")
+                    guard wanted(file), label.isEmpty || name == "16-rules-list" || name == "16-rules-not-on-pi-kitchen-yet" else { continue }
+                    let app = try rulesApp(rules, error: error)
+                    stage(app)
+                    try await renderWindow(app, size: size, dark: dark, file: file)
+                }
+            }
+            // The sheets: New Rule, an Edit with Delete…, a refused save,
+            // and Try a Request with a verdict.
+            let app = try rulesApp(Fixtures.rulesList())
+            let list = app.rules?.rules ?? []
+            let new = RuleEditor()
+            new.text = "Ask me before deleting anything in ~/Projects."
+            let edit = RuleEditor(editing: list[4])
+            let refused = RuleEditor(editing: list[2])
+            refused.text += " scout may also run the full integration suite, with its fixtures, whenever it likes."
+            refused.error = .failed(LatchFailure(code: "rules_too_long",
+                                                 message: "Your change wasn't saved because the rules for scout on studio would exceed 8192 bytes.",
+                                                 hosts: [.init(name: "studio", agent: scout)]))
+            let narrowed = RuleEditor()
+            narrowed.text = "helper may add to the shopping list."
+            narrowed.agents = .only([])
+            let sheets: [(String, AnyView)] = [
+                ("16-rules-new", AnyView(RuleSheet(editor: new))),
+                ("16-rules-new-no-agent", AnyView(RuleSheet(editor: narrowed))),
+                ("16-rules-edit", AnyView(RuleSheet(editor: edit))),
+                ("16-rules-edit-too-long", AnyView(RuleSheet(editor: refused))),
+            ]
+            for (name, sheet) in sheets {
+                try await render(sheet.environment(app), size: CGSize(width: 480, height: 420), dark: dark,
+                                 file: output.appending(path: "\(name)-\(mode).png"))
+            }
+            let tries: [(String, String, String, Caller, String)] = [
+                ("16-rules-try-allowed", "allow-scout", "exec --workdir ~/Projects/latch-demo -- make test", .agent(scout), "studio"),
+                ("16-rules-try-you-said-no", "said-no", "exec -- cat Finance/2026.csv", .agent(scout), "studio"),
+                ("16-rules-try-host-refused", "host-refused", "exec -- ls", .agent(helper), "pi-kitchen"),
+            ]
+            for (name, verdict, request, caller, host) in tries {
+                let app = try rulesApp(Fixtures.rulesList())
+                app.trial.stage(try Fixtures.decode(Fixtures.tries[verdict]!), request: request, caller: caller, on: host)
+                try await render(TrySheet().environment(app), size: CGSize(width: 520, height: 580), dark: dark,
+                                 file: output.appending(path: "\(name)-\(mode).png"))
             }
         }
         // The Agents hub at 5 agents × 8 hosts, every one of its 40 rows,
@@ -995,9 +1094,8 @@ package enum SnapshotRunner {
                 app.stage(status: try Fixtures.decode(Fixtures.status(status, plugins: plugins)))
                 app.stage(account: try Fixtures.decode(account))
                 app.stage(agents: try Fixtures.decode(Fixtures.agents), standings: [:])
-                app.stage(summary: HostSummary(rules: .success(try Fixtures.decode(Fixtures.rulesStudio))), for: "studio")
-                app.stage(summary: HostSummary(status: .success(try Fixtures.decode(Fixtures.status(Fixtures.piStatus, plugins: Fixtures.piPlugins))),
-                                               rules: .success(try Fixtures.decode(Fixtures.rulesKitchen))), for: "pi-kitchen")
+                app.stage(summary: HostSummary(status: .success(try Fixtures.decode(Fixtures.status(Fixtures.piStatus, plugins: Fixtures.piPlugins)))),
+                          for: "pi-kitchen")
                 app.stage(devices: try Fixtures.decode(Fixtures.devices), update: checked ? try Fixtures.decode(Fixtures.updateCheck) : nil)
                 app.stage(connections: Connections(try Fixtures.decode(Fixtures.setup(on: [], google: google)) as SetupStatus))
                 app.chosenHost = chosen
@@ -1111,13 +1209,10 @@ package enum SnapshotRunner {
     }
 
     private static let mainSize = CGSize(width: 860, height: 560)
-    /// studio's and pi-kitchen's rules and vault, and pi-kitchen's status.
+    /// studio's and pi-kitchen's vault, and pi-kitchen's status.
     private static func stageSummaries(_ app: AppModel) throws {
-        app.stage(summary: HostSummary(rules: .success(try Fixtures.decode(Fixtures.studioRules)),
-                                       vault: .success(try Fixtures.decode(Fixtures.studioVault))),
-                  for: "studio")
+        app.stage(summary: HostSummary(vault: .success(try Fixtures.decode(Fixtures.studioVault))), for: "studio")
         app.stage(summary: HostSummary(status: .success(try Fixtures.decode(Fixtures.status(Fixtures.piStatus, plugins: Fixtures.piPlugins))),
-                                       rules: .success(try Fixtures.decode(Fixtures.piRules)),
                                        vault: .success(try Fixtures.decode(Fixtures.piVault))),
                   for: "pi-kitchen")
     }

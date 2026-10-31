@@ -29,9 +29,12 @@ final class CountingClient: LatchClient, @unchecked Sendable {
         return try Fixtures.decode(Fixtures.setup(on: []))
     }
     func setupStatusCheckingAccess() async throws -> SetupStatus { try await setupStatus() }
-    func rulesShow(host: String?) async throws -> RulesShow {
-        await ran("rules show", host: host)
-        return try Fixtures.decode(Fixtures.studioRules)
+    /// `rules list` fails with this, when a test gives one.
+    var listFailure: LatchFailure?
+    func rulesList() async throws -> RulesList {
+        await ran("rules list")
+        if let listFailure { throw LatchError.failed(listFailure) }
+        return try Fixtures.decode(Fixtures.rulesList())
     }
     func agents(host: String?) async throws -> AgentsList {
         await ran(host == nil ? "agents" : "agents --host", host: host)
@@ -78,8 +81,7 @@ struct EntryTests {
         return app
     }
 
-    @Test(arguments: [Place.host(.home), .host(.settings), .host(.rules), .host(.vault), .account(.agents), .account(.connections),
-                      .host(.activity)])
+    @Test(arguments: [Place.host(.home), .host(.settings), .host(.vault), .account(.agents), .account(.connections), .host(.activity)])
     func comingBackToALoadedScreenStartsNoLatch(_ place: Place) async throws {
         let client = CountingClient()
         let app = try app(client)
@@ -97,18 +99,19 @@ struct EntryTests {
         let client = CountingClient()
         let app = try app(client)
         let mac = app.hosts[0], kitchen = app.hosts[1]
-        // This Mac's plugins are in its own status, which the app holds.
+        // This Mac's plugins and what it refuses agents are in its own
+        // status, which the app holds.
         await app.enter(.host(.settings, mac))
-        #expect(client.calls == ["rules show"])
+        #expect(client.calls == [])
         await app.enter(.host(.settings, kitchen))
-        #expect(client.calls.dropFirst(1).sorted() == ["rules show", "status --host"])
+        #expect(client.calls == ["status --host"])
         await app.enter(.host(.activity, mac))
-        #expect(client.calls.count == 3)
+        #expect(client.calls.count == 1)
         await app.enter(.host(.home, mac))
-        #expect(client.calls.dropFirst(3) == ["vault list"])
+        #expect(client.calls.dropFirst(1) == ["vault list"])
         // Another host's are in its status, which Settings already read.
         await app.enter(.host(.home, kitchen))
-        #expect(client.calls.dropFirst(4) == ["vault list"])
+        #expect(client.calls.dropFirst(2) == ["vault list"])
     }
 
     // Home on a host asks only that host, never the others it could: its
@@ -137,7 +140,7 @@ struct EntryTests {
         let app = try app(client)
         await app.enter(.host(.home, app.host))
         await app.enter(.host(.home, app.host), refresh: true)
-        #expect(client.calls.sorted() == ["rules show", "rules show", "vault list", "vault list"])
+        #expect(client.calls.sorted() == ["vault list", "vault list"])
     }
 
     // Leaving a screen while its reads run (side by side): what was held
@@ -145,17 +148,18 @@ struct EntryTests {
     @Test func leavingCancelsTheReadsUnderWay() async throws {
         let client = CountingClient()
         let gate = Gate()
-        client.held["rules show"] = gate
+        client.held["status --host"] = gate
         client.held["vault list"] = gate
         let app = try app(client)
-        let entering = Task { await app.enter(.host(.home, app.host)) }
-        await waitUntil { client.calls.sorted() == ["rules show", "vault list"] }
+        let kitchen = app.hosts[1]
+        let entering = Task { await app.enter(.host(.home, kitchen)) }
+        await waitUntil { client.calls.sorted() == ["status --host", "vault list"] }
         entering.cancel()
         gate.open()
         await entering.value
-        #expect(client.calls.sorted() == ["rules show", "vault list"])
-        #expect(app.summaries[app.hosts[0].name]?.rules == nil)
-        #expect(app.summaries[app.hosts[0].name]?.vault == nil)
+        #expect(client.calls.sorted() == ["status --host", "vault list"])
+        #expect(app.summaries[kitchen.name]?.status == nil)
+        #expect(app.summaries[kitchen.name]?.vault == nil)
     }
 
     @Test func aCancelledReadIsNoFailure() async {
@@ -192,7 +196,7 @@ struct EntryTests {
         let home = try #require(app.activityFeed)
         app.place = .host(.activity)
         #expect(app.activityFeed === home)
-        app.place = .host(.rules)
+        app.place = .account(.rules)
         #expect(app.activityFeed == nil)
         app.place = .host(.activity)
         app.chosenHost = "pi-kitchen"
@@ -273,7 +277,7 @@ struct FeedGraceTests {
 /// Back in front, the app reads again the screen showing, whichever it is.
 @MainActor
 struct ActivationTests {
-    @Test(arguments: [HostScreen.rules, .vault, .home])
+    @Test(arguments: [HostScreen.vault, .home])
     func comingToTheFrontReadsTheVisibleScreenAgain(_ section: HostScreen) async throws {
         let client = CountingClient()
         let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
@@ -284,7 +288,7 @@ struct ActivationTests {
         let first = client.calls
         await app.activated()
         let again = Array(client.calls.dropFirst(first.count))
-        #expect(again.contains(section == .vault ? "vault list" : "rules show"), "\(section): \(again)")
+        #expect(again.contains("vault list"), "\(section): \(again)")
     }
 
     // Agents asks every reachable host for its agents' standing at once,
@@ -306,17 +310,55 @@ struct ActivationTests {
         #expect(reachable.allSatisfy { AppModel.held(app.standings[$0.name]) })
     }
 
-    // Rules names the agents but doesn't show their standing on each host:
-    // neither showing it nor coming back to the front asks each host.
-    @Test func rulesReadsTheAgentListAndNoHostsStanding() async throws {
+    // Rules reads the account's rules on every visit (latch brings each
+    // host up to date as it reads) and on coming to the front; the agents
+    // it names only when they aren't held; never each host's standing.
+    @Test func rulesReadsOnEveryVisitAndTheAgentsOnce() async throws {
         let client = CountingClient()
         let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
         app.stage(status: try Fixtures.decode(Fixtures.serving))
         app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
-        app.place = .host(.rules)
-        await app.enter(.host(.rules, app.host))
+        app.place = .account(.rules)
+        await app.enter(app.route)
+        #expect(client.calls.sorted() == ["agents", "rules list"])
+        await app.enter(app.route)
+        #expect(client.calls.dropFirst(2) == ["rules list"])
         await app.activated()
-        #expect(client.calls.sorted() == ["agents", "agents", "rules show", "rules show"])
+        #expect(client.calls.dropFirst(3).filter { $0.hasPrefix("rules") || $0.hasPrefix("agents") }.sorted() == ["agents", "rules list"])
         #expect(!client.calls.contains("agents --host"))
+    }
+
+    // The filters narrow the list held: what the window keys its reads by
+    // doesn't change, so nothing is read.
+    @Test func changingAFilterReadsNothing() async throws {
+        let app = AppModel(client: CountingClient(), store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
+        app.place = .account(.rules)
+        let entry = app.entry
+        app.rulesFilter = .init(agent: "ba3c0b3ad1eba7a9a1eb04b67c9db0dd", host: "6b55a78fcd1400f6ac14f129cd1825744125406e25a2892be4abda157baaa23f")
+        #expect(app.entry == entry)
+    }
+
+    // Leaving Rules while it reads keeps the list held; a refresh that
+    // fails keeps it too, with why, for the page's notice.
+    @Test func aRulesReadLeftOrFailedKeepsTheListHeld() async throws {
+        let client = CountingClient()
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
+        app.place = .account(.rules)
+        await app.enter(app.route)
+        let held = try #require(app.rules)
+        let gate = Gate()
+        client.held["rules list"] = gate
+        let entering = Task { await app.enter(app.route) }
+        await waitUntil { client.calls.filter { $0 == "rules list" }.count == 2 }
+        entering.cancel()
+        gate.open()
+        await entering.value
+        #expect(app.rules == held && app.rulesError == nil)
+
+        client.held["rules list"] = nil
+        client.listFailure = LatchFailure(code: "plow_unreachable", message: "could not reach Plow")
+        await app.enter(app.route)
+        #expect(app.rules == held)
+        #expect(app.rulesError?.code == "plow_unreachable")
     }
 }

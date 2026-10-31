@@ -314,8 +314,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     private var searches: Bool { app.place == .host(.activity) || app.place == .host(.vault) }
 
     /// The screen's commands answer from anywhere in the window, as a
-    /// document's do: New Item works with the focus in the sidebar, and
-    /// Save asks the screen, which has one only for a focused editor.
+    /// document's do: New Item works with the focus in the sidebar.
     override func supplementalTarget(forAction action: Selector, sender: Any?) -> Any? {
         screens.responds(to: action) ? screens : super.supplementalTarget(forAction: action, sender: sender)
     }
@@ -454,14 +453,12 @@ final class ScreenController: NSViewController, NSUserInterfaceValidations {
 
     @objc func newDocument(_ sender: Any?) { shown?.actions.newItem?() }
     @objc func importItems(_ sender: Any?) { shown?.actions.importItems?() }
-    @objc func saveDocument(_ sender: Any?) { shown?.actions.save?() }
 
     func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
         let actions = shown?.actions
         switch item.action {
         case #selector(newDocument(_:)): return actions?.newItem != nil
         case #selector(importItems(_:)): return actions?.importItems != nil
-        case #selector(saveDocument(_:)): return actions?.save != nil
         default: return true
         }
     }
@@ -470,9 +467,9 @@ final class ScreenController: NSViewController, NSUserInterfaceValidations {
         switch place {
         case .account(.agents): AgentsView()
         case .account(.connections): ConnectionsView()
+        case .account(.rules): RulesPage()
         case .host(.home): HomeView()
         case .host(.activity): EmptyView()
-        case .host(.rules): HostRulesView()
         case .host(.vault): VaultView()
         case .host(.settings): HostSettingsView()
         }

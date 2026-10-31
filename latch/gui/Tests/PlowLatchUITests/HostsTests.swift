@@ -23,15 +23,15 @@ struct HostsTests {
 
     @Test func pickingAHostChangesTheHostTierOnly() throws {
         let app = try app(status: Fixtures.serving, account: Fixtures.studioHosts)
-        app.place = .host(.rules)
+        app.place = .host(.vault)
         app.chosenHost = "pi-kitchen"
         #expect(app.host?.name == "pi-kitchen")
-        #expect(app.place == .host(.rules))
+        #expect(app.place == .host(.vault))
     }
 
     // A stopped Mac is this Mac's host whether Plow is unreachable (only
     // its list could say the Mac never served) or counts it offline: its
-    // rules and vault are read locally, and it can be started.
+    // vault is read locally, and it can be started.
     @Test(arguments: [false, true])
     func aStoppedMacRemainsLocallyReadable(plowAnswered: Bool) async throws {
         let app = AppModel(client: FakeLatchClient(status: Fixtures.stopped),
@@ -43,7 +43,6 @@ struct HostsTests {
         #expect(app.hosts.map(\.name) == (plowAnswered ? ["studio", "pi-kitchen", "sidecar"] : ["studio"]))
         #expect(app.host?.isThisMac == true && !app.viewerOnly)
         await app.enter(.host(.home, app.host))
-        #expect(app.summaries["studio"]?.rules != nil)
         #expect(app.summaries["studio"]?.vault != nil)
     }
 
@@ -226,8 +225,6 @@ final class AccountClient: LatchClient, @unchecked Sendable {
     func login(name: String?, replace: Bool) -> AsyncThrowingStream<LoginEvent, Error> { AsyncThrowingStream { $0.finish() } }
     func setupStatus() async throws -> SetupStatus { try Fixtures.decode(Fixtures.setup(on: [])) }
     func setupStatusCheckingAccess() async throws -> SetupStatus { try await setupStatus() }
-    func rulesShow(host: String?) async throws -> RulesShow { try Fixtures.decode(Fixtures.rulesStudio) }
-    func rulesSet(_ text: String) async throws {}
     func vaultList(host: String?) async throws -> VaultList { try Fixtures.decode(#"{"items":[]}"#) }
     func enable(_ plugin: String) async throws -> GoogleEnabled? { nil }
     func statusFollow() -> AsyncThrowingStream<LocalStatus, Error> { AsyncThrowingStream { _ in } }

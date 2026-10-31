@@ -4,10 +4,9 @@ import Synchronization
 import Testing
 @testable import PlowLatchUI
 
-/// Agents' Remove… and Rules buttons: a removal names the agent by uid, and
-/// a request for an agent's rules is taken only by that host's editor. And
-/// how Agents names an agent, writes its number and says its standing on
-/// each host.
+/// Agents' Remove… button: a removal names the agent by uid. And how
+/// Agents names an agent, writes its number and says its standing on each
+/// host.
 @MainActor
 struct AgentsHubTests {
     /// Two agents both called scout; records each removal's uid.
@@ -98,43 +97,20 @@ struct AgentsHubTests {
     }
 
     // Each host's row says what's known of the agent there: offline (this
-    // Mac never is), not read yet, unreadable, or its rules and exec.
+    // Mac never is), not read yet, unreadable, or that it can't run
+    // programs; nothing else.
     @Test func eachHostRowSaysTheAgentsStandingThere() throws {
         let agent: AgentsList.Agent = try Fixtures.decode(#"{"uid":"u1","name":"scout","kind":"own"}"#)
         let pi = HostEntry(name: "pi", isThisMac: false, online: true), mac = HostEntry(name: "mac", isThisMac: true, online: false)
-        func standing(own: Bool, blocked: Bool) -> Result<[String: AgentsList.Agent.Standing], LatchError> {
-            .success(["u1": .init(ownRules: own, execBlocked: blocked)])
+        func standing(blocked: Bool) -> Result<[String: AgentsList.Agent.Standing], LatchError> {
+            .success(["u1": .init(execBlocked: blocked)])
         }
-        #expect(agent.standing(on: HostEntry(name: "pi", isThisMac: false, online: false), standing(own: true, blocked: false))
-            == "Offline, so its rules there can't be checked")
+        #expect(agent.standing(on: HostEntry(name: "pi", isThisMac: false, online: false), standing(blocked: false)) == "Offline")
         #expect(agent.standing(on: pi, nil) == "Checking…")
-        #expect(agent.standing(on: mac, standing(own: false, blocked: false)) == "Shared rules only")
-        #expect(agent.standing(on: pi, standing(own: true, blocked: false)) == "Shared rules + own rules")
-        #expect(agent.standing(on: pi, standing(own: false, blocked: true)) == "Shared rules · can't run programs")
-        #expect(agent.standing(on: pi, standing(own: true, blocked: true)) == "Shared rules + own rules · can't run programs")
-        #expect(agent.standing(on: pi, .success([:])) == "Shared rules only")
+        #expect(agent.standing(on: mac, standing(blocked: false)) == nil)
+        #expect(agent.standing(on: pi, standing(blocked: true)) == "Can't run programs")
+        #expect(agent.standing(on: pi, .success([:])) == nil)
         #expect(agent.standing(on: pi, .failure(.unreachable("no answer"))) == ErrorCopy.said(.unreachable("no answer"), host: "pi"))
-    }
-
-    // A request for helper's rules on pi-kitchen: taken only by
-    // pi-kitchen's helper editor, once; gone if another host is picked
-    // first, so it can't take the focus there or later.
-    @Test func aRulesRequestIsTakenOnlyByItsHostsEditor() throws {
-        let app = AppModel(client: FakeLatchClient(), store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
-        app.stage(status: try Fixtures.decode(Fixtures.serving))
-        app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
-        let kitchen = try #require(app.hosts.first { $0.name == "pi-kitchen" })
-        let helper = "3971582e59baad83250141c8dcc95855", scout = "ba3c0b3ad1eba7a9a1eb04b67c9db0dd"
-        app.openRules(kitchen, agent: helper)
-        #expect(!app.takeRulesFocus(AgentTarget(host: "studio", agent: helper)))
-        #expect(!app.takeRulesFocus(AgentTarget(host: "pi-kitchen", agent: scout)))
-        #expect(app.takeRulesFocus(AgentTarget(host: "pi-kitchen", agent: helper)))
-        #expect(!app.takeRulesFocus(AgentTarget(host: "pi-kitchen", agent: helper)))
-
-        app.openRules(kitchen, agent: helper)
-        app.showHost("studio")
-        #expect(app.rulesFocus == nil)
-        #expect(!app.takeRulesFocus(AgentTarget(host: "pi-kitchen", agent: helper)))
     }
 }
 

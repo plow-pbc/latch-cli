@@ -81,9 +81,9 @@ struct PlowLatchApp: App {
 
         // The main window is AppKit's (`MainWindowController`), opened by
         // the app delegate at launch once set up. Its commands go along its
-        // responder chain: one Save, the rules editor with the keyboard
-        // focus; New Item and Import on the Vault; Find, the sidebar and
-        // the inspector. And a shortcut for each host screen.
+        // responder chain: New Item on the Vault and Rules, Import on the
+        // Vault; Find, the sidebar and the inspector. And a shortcut for
+        // each host screen.
         .commands {
             WindowCommands(menu: .shared)
             ScreenCommands(app: model)
@@ -96,7 +96,7 @@ struct PlowLatchApp: App {
     }
 }
 
-/// View › a host screen, ⌘1 to ⌘5: the selected host's workspace on it.
+/// View › a host screen, ⌘1 to ⌘4: the selected host's workspace on it.
 private struct ScreenCommands: Commands {
     var app: AppModel
 
