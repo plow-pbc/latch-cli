@@ -394,7 +394,7 @@ impl RuleFiles {
     /// checked once: they stay inside protected state, where a caller
     /// cannot rewrite them, and the list can be read. A list over budget
     /// still serves, so the owner can fix it; its judgments are refused.
-    /// Rules a host kept before the list are moved into it here.
+    /// Rules a host kept before the list are copied into it here.
     pub fn new(state_dir: &Path, host_key: &str, name: &str) -> Result<RuleFiles, Failure> {
         let refuse = |message: String| Failure::new(code::bad_rules, message);
         let state = state_dir
@@ -510,7 +510,7 @@ impl RulesDir {
     }
 
     /// The lock every change is made under. A host's rules from before the
-    /// list are moved into it first, once.
+    /// list are copied into it first.
     fn lock(&self) -> Result<File, Failure> {
         fs::DirBuilder::new()
             .recursive(true)
@@ -526,17 +526,19 @@ impl RulesDir {
             .open(&path)
             .map_err(|err| self.failure(&path, err))?;
         file.lock().map_err(|err| self.failure(&path, err))?;
-        self.move_old()?;
+        self.copy_old()?;
         Ok(file)
     }
 
-    /// Moves the old files into the list: the rules for every agent become
+    /// Copies the old files into the list: the rules for every agent become
     /// one rule for every agent on this host, and each agent's one rule for
-    /// that agent here, their text as it was. Each moved rule's id comes
-    /// from what it moved, so a move cut short and run again adds nothing.
-    /// An old file that resolves outside protected state is refused, and
-    /// nothing moves.
-    fn move_old(&self) -> Result<(), Failure> {
+    /// that agent here, their text as it was. The files stay, for a latch
+    /// from before the list still serving this folder: it reads them at
+    /// every judgment, and a missing one as no rules. Each copied rule's id
+    /// comes from what it copied, unchanged since, so copying again adds
+    /// nothing and any later change or removal of it wins. An old file that
+    /// resolves outside protected state is refused, and nothing is copied.
+    fn copy_old(&self) -> Result<(), Failure> {
         let mut files = vec![OLD_HOST_FILE.to_string()];
         files.extend(self.old_agents()?.iter().map(|uid| format!("{uid}.txt")));
         for file in &files {
@@ -559,7 +561,7 @@ impl RulesDir {
             return Ok(());
         }
         let mut rules = self.read()?;
-        let moved: Vec<Rule> = old
+        let copied: Vec<Rule> = old
             .iter()
             .filter(|(_, _, text)| !text.trim().is_empty())
             .map(|(file, agents, text)| Rule {
@@ -571,10 +573,8 @@ impl RulesDir {
                 deleted: false,
             })
             .collect();
-        merge(&mut rules, &moved);
-        self.write(&rules)?;
-        for (file, _, _) in old {
-            self.remove(&file)?;
+        if !merge(&mut rules, &copied).is_empty() {
+            self.write(&rules)?;
         }
         Ok(())
     }
