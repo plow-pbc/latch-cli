@@ -662,14 +662,6 @@ impl RulesDir {
         write_private(&path, text.as_bytes()).map_err(|err| self.failure(&path, err))
     }
 
-    fn remove(&self, name: &str) -> Result<(), Failure> {
-        let path = self.dir.join(name);
-        match fs::remove_file(&path) {
-            Err(err) if err.kind() != ErrorKind::NotFound => Err(self.failure(&path, err)),
-            _ => Ok(()),
-        }
-    }
-
     fn failure(&self, path: &Path, err: std::io::Error) -> Failure {
         Failure::new(code::rules_io, format!("{}: {err}", path.display()))
     }
