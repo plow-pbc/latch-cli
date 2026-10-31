@@ -2,9 +2,9 @@ import Foundation
 import Testing
 @testable import PlowLatchUI
 
-/// Where the main window goes: an agent's rules or activity on exactly the
-/// host asked for, account pages on no host, and reads only for the route
-/// that asked.
+/// Where the main window goes: an agent's activity on exactly the host
+/// asked for, account pages on no host, and reads only for the route that
+/// asked.
 @MainActor
 struct TargetTests {
     private let scout = "ba3c0b3ad1eba7a9a1eb04b67c9db0dd", helper = "3971582e59baad83250141c8dcc95855"
@@ -14,23 +14,7 @@ struct TargetTests {
         app.stage(status: try Fixtures.decode(Fixtures.serving))
         app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
         app.stage(agents: try Fixtures.decode(Fixtures.agents), standings: [:])
-        app.stage(summary: HostSummary(rules: .success(try Fixtures.decode(Fixtures.rulesStudio))), for: "studio")
-        app.stage(summary: HostSummary(rules: .success(try Fixtures.decode(Fixtures.rulesKitchen))), for: "pi-kitchen")
         return app
-    }
-
-    @Test func rulesOpensOnTheHostAndAgentAskedForAndNowhereElse() throws {
-        let app = try app()
-        app.place = .account(.agents)
-        let kitchen = try #require(app.hosts.first { $0.name == "pi-kitchen" })
-        app.openRules(kitchen, agent: helper)
-        #expect(app.route == .host(.rules, kitchen))
-        #expect(app.rulesFocus == AgentTarget(host: "pi-kitchen", agent: helper))
-        #expect(app.rulesScrollTarget(on: kitchen) == helper)
-        // Another host picked before the editor came into view: the request
-        // is pi-kitchen's, and never lands on studio's editors.
-        app.chosenHost = "studio"
-        #expect(app.rulesScrollTarget(on: try #require(app.host)) == nil)
     }
 
     @Test func activityOpensOnTheHostAndAgentAskedForWithEveryOutcomeAndNoSearch() throws {
@@ -91,21 +75,20 @@ struct TargetTests {
     @Test func aCancelledReadCantOverwriteAnotherTarget() async throws {
         let client = CountingClient()
         let gate = Gate()
-        for command in ["rules show", "vault list", "status --host"] { client.held[command] = gate }
+        for command in ["vault list", "status --host"] { client.held[command] = gate }
         let app = try app(client)
         app.stage(summary: HostSummary(), for: "studio")
         app.stage(summary: HostSummary(), for: "pi-kitchen")
         let mac = app.hosts[0], kitchen = app.hosts[1]
         let first = Task { await app.enter(.host(.home, kitchen)) }
-        await waitUntil { client.calls.count == 3 }
+        await waitUntil { client.calls.count == 2 }
         first.cancel()
         let second = Task { await app.enter(.host(.home, mac)) }
-        await waitUntil { client.calls.count == 5 }
+        await waitUntil { client.calls.count == 3 }
         gate.open()
         await first.value
         await second.value
         #expect(app.summaries["pi-kitchen"] == HostSummary())
-        #expect(AppModel.held(app.summaries["studio"]?.rules))
         #expect(AppModel.held(app.summaries["studio"]?.vault))
     }
 }

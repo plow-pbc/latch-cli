@@ -19,9 +19,9 @@ struct ShellTests {
     @Test func pickingAHostKeepsTheScreenEvenAfterAnAccountPage() throws {
         let app = try app()
         #expect(app.inspecting == HostScreen.inspected)
-        app.place = .host(.rules)
+        app.place = .host(.settings)
         app.showHost("pi-kitchen")
-        #expect(app.route == .host(.rules, try host(app, "pi-kitchen")))
+        #expect(app.route == .host(.settings, try host(app, "pi-kitchen")))
         app.place = .host(.vault)
         app.place = .account(.agents)
         #expect(app.route == .account(.agents))
@@ -39,10 +39,24 @@ struct ShellTests {
         #expect(app.route == .host(.home, try host(app, "studio")))
     }
 
-    @Test(arguments: [Place.account(.agents), .account(.connections), .host(.home), .host(.activity), .host(.rules), .host(.vault),
+    @Test(arguments: [Place.account(.agents), .account(.connections), .account(.rules), .host(.home), .host(.activity), .host(.vault),
                       .host(.settings)])
     func aPlaceIsKeptAsTextAndComesBack(_ place: Place) {
         #expect(Place(rawValue: place.rawValue) == place)
+    }
+
+    // The account's Rules is kept as "account-rules": a window saved on a
+    // host's Rules, which is gone, comes back to Home; from Rules, picking
+    // a host lands on a screen that host has.
+    @Test func rulesRestoresAsTheAccountsAndTheOldHostRulesAsHome() throws {
+        let app = try app()
+        #expect(Place.account(.rules).rawValue == "account-rules")
+        app.restore(place: "account-rules", host: "pi-kitchen")
+        #expect(app.route == .account(.rules))
+        app.showHost("pi-kitchen")
+        #expect(app.route == .host(.home, try host(app, "pi-kitchen")))
+        app.restore(place: "rules", host: "pi-kitchen")
+        #expect(app.route == .host(.home, try host(app, "pi-kitchen")))
     }
 
     @Test func aRestoredWindowComesBackToAPlaceAndHostThatExist() throws {

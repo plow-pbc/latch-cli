@@ -4,10 +4,9 @@ import Synchronization
 import Testing
 @testable import PlowLatchUI
 
-/// Agents' Remove… and Rules buttons: a removal names the agent by uid, and
-/// a request for an agent's rules is taken only by that host's editor. And
-/// how Agents names an agent, writes its number and says its standing on
-/// each host.
+/// Agents' Remove… button: a removal names the agent by uid. And how
+/// Agents names an agent, writes its number and says its standing on each
+/// host.
 @MainActor
 struct AgentsHubTests {
     /// Two agents both called scout; records each removal's uid.
@@ -112,27 +111,6 @@ struct AgentsHubTests {
         #expect(agent.standing(on: pi, standing(blocked: true)) == "Can't run programs")
         #expect(agent.standing(on: pi, .success([:])) == nil)
         #expect(agent.standing(on: pi, .failure(.unreachable("no answer"))) == ErrorCopy.said(.unreachable("no answer"), host: "pi"))
-    }
-
-    // A request for helper's rules on pi-kitchen: taken only by
-    // pi-kitchen's helper editor, once; gone if another host is picked
-    // first, so it can't take the focus there or later.
-    @Test func aRulesRequestIsTakenOnlyByItsHostsEditor() throws {
-        let app = AppModel(client: FakeLatchClient(), store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
-        app.stage(status: try Fixtures.decode(Fixtures.serving))
-        app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
-        let kitchen = try #require(app.hosts.first { $0.name == "pi-kitchen" })
-        let helper = "3971582e59baad83250141c8dcc95855", scout = "ba3c0b3ad1eba7a9a1eb04b67c9db0dd"
-        app.openRules(kitchen, agent: helper)
-        #expect(!app.takeRulesFocus(AgentTarget(host: "studio", agent: helper)))
-        #expect(!app.takeRulesFocus(AgentTarget(host: "pi-kitchen", agent: scout)))
-        #expect(app.takeRulesFocus(AgentTarget(host: "pi-kitchen", agent: helper)))
-        #expect(!app.takeRulesFocus(AgentTarget(host: "pi-kitchen", agent: helper)))
-
-        app.openRules(kitchen, agent: helper)
-        app.showHost("studio")
-        #expect(app.rulesFocus == nil)
-        #expect(!app.takeRulesFocus(AgentTarget(host: "pi-kitchen", agent: helper)))
     }
 }
 
