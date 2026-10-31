@@ -711,11 +711,7 @@ fn missing_helpers(state: &Path) -> Vec<&'static str> {
             .is_err_and(|failure| failure.code == code::engine_not_installed.name)
     };
     let mut missing = Vec::new();
-    // Windows' installer puts in no gog (`plugins enable google` installs
-    // it), so an update could never repair it there.
-    if !cfg!(windows)
-        && crate::google::host::gog_program(state, &crate::google::PIN.version).is_err()
-    {
+    if crate::google::host::gog_program(state, &crate::google::PIN.version).is_err() {
         missing.push("gog");
     }
     if state.join("plugins/cft").is_dir() && not_installed("cft") {
