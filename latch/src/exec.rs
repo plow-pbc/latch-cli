@@ -408,11 +408,92 @@ pub async fn run(
     done
 }
 
-/// Windows has no `mkdirat`; the folder is made by name, and the worker's
-/// container reaches it only through the grant that names it.
+/// Windows' `mkdirat`: the judged parent opened as itself (a link at it
+/// refused) and checked to be the folder that was judged, held open with no
+/// delete sharing, and the new folder made in it by its name alone
+/// (`NtCreateFile` relative to that handle). A folder swapped for a junction
+/// after judging, by a worker an area lets delete it, can't redirect the
+/// host's make into another place, latch's state among them.
 #[cfg(windows)]
 fn create_write_dir(path: &Path) -> std::io::Result<()> {
-    std::fs::create_dir(path)
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
+    use windows_sys::Wdk::Storage::FileSystem::{
+        FILE_CREATE, FILE_DIRECTORY_FILE, FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT,
+        NtCreateFile,
+    };
+    use windows_sys::Win32::Foundation::{CloseHandle, RtlNtStatusToDosError, UNICODE_STRING};
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ADD_SUBDIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_BACKUP_SEMANTICS,
+        FILE_FLAG_OPEN_REPARSE_POINT, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_READ,
+        FILE_SHARE_WRITE, SYNCHRONIZE,
+    };
+    use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
+
+    let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+        return Err(std::io::Error::other("no parent folder"));
+    };
+    let folder = std::fs::OpenOptions::new()
+        .access_mode(
+            FILE_LIST_DIRECTORY | FILE_ADD_SUBDIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        )
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(parent)?;
+    let real = crate::sandbox::final_path(&folder)?;
+    let same = crate::sandbox::within(&real, parent) && crate::sandbox::within(parent, &real);
+    if folder.metadata()?.file_type().is_symlink() || !same {
+        return Err(std::io::Error::other(format!(
+            "{} changed after it was checked",
+            parent.display()
+        )));
+    }
+    let mut wide: Vec<u16> = name.encode_wide().collect();
+    let bytes = (wide.len() * 2) as u16;
+    let name = UNICODE_STRING {
+        Length: bytes,
+        MaximumLength: bytes,
+        Buffer: wide.as_mut_ptr(),
+    };
+    let attributes = OBJECT_ATTRIBUTES {
+        Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
+        RootDirectory: folder.as_raw_handle(),
+        ObjectName: &name,
+        // OBJ_CASE_INSENSITIVE, as Win32 names are.
+        Attributes: 0x40,
+        SecurityDescriptor: std::ptr::null(),
+        SecurityQualityOfService: std::ptr::null(),
+    };
+    let mut status = IO_STATUS_BLOCK::default();
+    let mut made = std::ptr::null_mut();
+    // SAFETY: a live folder handle and name, `made` and `status` writable;
+    // the new folder's handle is closed below.
+    let result = unsafe {
+        NtCreateFile(
+            &mut made,
+            FILE_LIST_DIRECTORY | SYNCHRONIZE,
+            &attributes,
+            &mut status,
+            std::ptr::null(),
+            FILE_ATTRIBUTE_NORMAL,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            FILE_CREATE,
+            FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_REPARSE_POINT,
+            std::ptr::null(),
+            0,
+        )
+    };
+    if result < 0 {
+        // SAFETY: converts a status code.
+        return Err(std::io::Error::from_raw_os_error(
+            unsafe { RtlNtStatusToDosError(result) } as i32,
+        ));
+    }
+    // SAFETY: the new folder's handle, closed once.
+    unsafe { CloseHandle(made) };
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -1166,6 +1247,38 @@ mod windows_tests {
         check_path(&workers, &root.join("work"), true).unwrap();
         // Read, it is as any other folder.
         check_path(&workers, &root.join("bin"), false).unwrap();
+    }
+
+    /// The bot's probe on fe7a221: a worker its area lets delete
+    /// `work/sub` swaps it for a junction into latch's state after another
+    /// call's `work/sub/host.txt` was judged; the host's make of that missing
+    /// folder must not land in the state.
+    #[test]
+    fn a_new_write_folder_is_made_in_the_judged_folder_not_through_a_link() {
+        let home = std::env::home_dir().unwrap().canonicalize().unwrap();
+        let dir = tempfile::tempdir_in(&home).unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let (sub, rules) = (
+            root.join("work").join("sub"),
+            root.join("state").join("rules"),
+        );
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::create_dir_all(&rules).unwrap();
+        let judged = sub.join("host.txt");
+        std::fs::rename(&sub, root.join("work").join("moved")).unwrap();
+        let plain = |path: &Path| path.display().to_string().replace(r"\\?\", "");
+        let linked = std::process::Command::new("cmd")
+            .args(["/c", "mklink", "/J", &plain(&sub), &plain(&rules)])
+            .output()
+            .unwrap();
+        assert!(linked.status.success(), "{linked:?}");
+        assert!(create_write_dir(&judged).is_err());
+        assert!(!rules.join("host.txt").exists(), "made in the state");
+        // The folder that was judged, back in place, takes it.
+        std::fs::remove_dir(&sub).unwrap();
+        std::fs::rename(root.join("work").join("moved"), &sub).unwrap();
+        create_write_dir(&judged).unwrap();
+        assert!(judged.is_dir());
     }
 
     #[test]
