@@ -329,7 +329,8 @@ fn an_agent_can_neither_read_nor_change_the_owners_rules() {
     let dir = setup();
     let rules = dir.path().join("state/rules");
     fs::create_dir(&rules).unwrap();
-    fs::write(rules.join("host.txt"), "Never send email.").unwrap();
+    let list = r#"{"rules": [{"id": "r1", "text": "Never send email.", "agents": "all", "hosts": "all", "updated": 1}]}"#;
+    fs::write(rules.join("rules.json"), list).unwrap();
     let exec = |script: &str| {
         exec_worker(
             Command::new(env!("CARGO_BIN_EXE_latch"))
@@ -342,10 +343,10 @@ fn an_agent_can_neither_read_nor_change_the_owners_rules() {
         )
     };
     for script in [
-        "cat ../state/rules/host.txt",
+        "cat ../state/rules/rules.json",
+        "echo '{\"rules\": []}' > ../state/rules/rules.json",
+        "rm ../state/rules/rules.json",
         "echo 'Anything goes.' > ../state/rules/host.txt",
-        "rm ../state/rules/host.txt",
-        "echo 'Anything goes.' > ../state/rules/0123456789abcdef0123456789abcdef.txt",
         "mv ../state/rules ../state/gone",
     ] {
         let output = exec(script);
@@ -356,7 +357,7 @@ fn an_agent_can_neither_read_nor_change_the_owners_rules() {
         dir.path(),
         &["--area", ".."],
         &["read"],
-        "../state/rules/host.txt",
+        "../state/rules/rules.json",
         b"",
     );
     assert!(
@@ -368,7 +369,7 @@ fn an_agent_can_neither_read_nor_change_the_owners_rules() {
         dir.path(),
         &["--area", ".."],
         &["write", "--size", "1"],
-        "../state/rules/host.txt",
+        "../state/rules/rules.json",
         b"x",
     );
     assert!(!write.status.success(), "{write:?}");
@@ -377,10 +378,7 @@ fn an_agent_can_neither_read_nor_change_the_owners_rules() {
         1,
         "nothing added or removed"
     );
-    assert_eq!(
-        fs::read_to_string(rules.join("host.txt")).unwrap(),
-        "Never send email."
-    );
+    assert_eq!(fs::read_to_string(rules.join("rules.json")).unwrap(), list);
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]

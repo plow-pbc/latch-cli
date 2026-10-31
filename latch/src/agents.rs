@@ -156,8 +156,15 @@ async fn rules_on(
         let config = state.require_config()?;
         // The same read `rules show` makes, but a list is not a command on
         // the rules, so it is not audited.
-        let done =
-            crate::gate::owner::run(&state.path, plow, &config.peer.name, "device", &show).await;
+        let done = crate::gate::owner::run(
+            &state.path,
+            plow,
+            &config.peer.key,
+            &config.peer.name,
+            "device",
+            &show,
+        )
+        .await;
         let rules = done.response.into_result()?;
         let online = crate::status::local(state)?.this_machine.hosting.ready;
         // Named as Plow lists it, not as asked (`default`).

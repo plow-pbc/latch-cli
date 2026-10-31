@@ -1975,6 +1975,19 @@ fn use_plow(state: &Path, url: &str) {
     config["api_url"] = json!(url);
     fs::write(&config_path, config.to_string()).unwrap();
 }
+/// The text of `state`'s live rule for `agents` (`"all"`, or a list of
+/// uids), as its host keeps it.
+fn saved_rule(state: &Path, agents: Value) -> Option<String> {
+    let list = fs::read_to_string(state.join("rules/rules.json")).ok()?;
+    let list: Value = serde_json::from_str(&list).unwrap();
+    list["rules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|rule| rule["agents"] == agents && rule["deleted"] != true)
+        .map(|rule| rule["text"].as_str().unwrap().to_string())
+}
+
 /// `rules set --preset` saves the preset's text, as `setup` offers it, and
 /// with `--revision none` only while there are no rules yet.
 #[test]
@@ -1986,7 +1999,12 @@ fn rules_set_a_preset_only_where_there_are_none() {
         &[],
     );
     assert_eq!(set.status.code(), Some(0), "{set:?}");
-    let saved = fs::read_to_string(state.join("rules/host.txt")).unwrap();
+    let shown = |state: &Path| {
+        let show = latch(state, &["rules", "show"], &[]);
+        let shown: Value = serde_json::from_slice(&show.stdout).unwrap();
+        shown["every_agent"]["text"].as_str().unwrap().to_string()
+    };
+    let saved = shown(&state);
     assert!(
         saved.starts_with("Allow my work assistant to read and send my email"),
         "{saved}"
@@ -1997,10 +2015,7 @@ fn rules_set_a_preset_only_where_there_are_none() {
         &[],
     );
     assert_ne!(again.status.code(), Some(0), "{again:?}");
-    assert_eq!(
-        fs::read_to_string(state.join("rules/host.txt")).unwrap(),
-        saved
-    );
+    assert_eq!(shown(&state), saved);
     let both = latch(
         &state,
         &["rules", "set", "Never send email.", "--preset", "work"],
@@ -2052,7 +2067,7 @@ fn rules_on_this_machines_own_host_state_are_set_edited_shown_and_audited() {
         (Some(ADA), Some("Ada"))
     );
     assert_eq!(
-        fs::read_to_string(state.join(format!("rules/{ADA}.txt"))).unwrap(),
+        saved_rule(&state, json!([ADA])).unwrap(),
         "Only pytest in ~/work."
     );
     assert_eq!(
@@ -2074,7 +2089,7 @@ fn rules_on_this_machines_own_host_state_are_set_edited_shown_and_audited() {
     assert_eq!(code, Some(0), "{shown}");
     assert_eq!(shown.trim(), "Saved the rules for every agent on studio.");
     assert_eq!(
-        fs::read_to_string(state.join("rules/host.txt")).unwrap(),
+        saved_rule(&state, json!("all")).unwrap(),
         "Never send email.\nNever buy anything."
     );
 
@@ -2122,7 +2137,7 @@ fn rules_on_this_machines_own_host_state_are_set_edited_shown_and_audited() {
         assert_eq!(refused["error"]["revision"], now);
     }
     assert_eq!(
-        fs::read_to_string(state.join("rules/host.txt")).unwrap(),
+        saved_rule(&state, json!("all")).unwrap(),
         "Never send email.\nNever buy anything."
     );
     let saved = latch(
@@ -2135,7 +2150,7 @@ fn rules_on_this_machines_own_host_state_are_set_edited_shown_and_audited() {
     let saved = saved["revision"].as_str().unwrap();
     let cleared = latch(&state, &["rules", "clear", "--revision", saved], &[]);
     assert_eq!(cleared.status.code(), Some(0), "{cleared:?}");
-    assert!(!state.join("rules/host.txt").exists());
+    assert_eq!(saved_rule(&state, json!("all")), None);
 
     // Every command is in the host's audit log, by this machine's key, with
     // revisions and never the text.
@@ -2344,7 +2359,7 @@ fn a_local_rules_command_on_a_broken_audit_log_changes_nothing() {
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let error: Value = serde_json::from_slice(&output.stderr).unwrap();
     assert_eq!(error["error"]["code"], "audit_broken");
-    assert!(!state.join("rules/host.txt").exists());
+    assert_eq!(saved_rule(&state, json!("all")), None);
 }
 
 #[test]
@@ -2358,7 +2373,7 @@ fn a_local_rules_command_on_an_audit_log_it_cannot_write_changes_nothing() {
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let error: Value = serde_json::from_slice(&output.stderr).unwrap();
     assert_eq!(error["error"]["code"], "audit_io");
-    assert!(!state.join("rules/host.txt").exists());
+    assert_eq!(saved_rule(&state, json!("all")), None);
 }
 
 /// One HTTP request as a fake reads it: the head (request line and
@@ -4711,7 +4726,7 @@ fn the_owners_rules_commands_reach_a_host_and_an_agents_never_do() {
     .iter()
     .map(|args| run(&agent, args, &[("EDITOR", editor.as_path()), agent_env[0]]))
     .collect();
-    let rules_after_agent = fs::read_to_string(host.join(format!("rules/{AGENT_UID}.txt")));
+    let rules_after_agent = saved_rule(&host, json!([AGENT_UID]));
     let cleared = run(
         &owner,
         &[
@@ -4755,9 +4770,9 @@ fn the_owners_rules_commands_reach_a_host_and_an_agents_never_do() {
     assert_eq!(rules_after_agent.unwrap(), edited_text);
     assert_eq!(cleared.0, Some(0), "{}", cleared.1);
     assert_eq!(cleared.1["cleared"], true);
-    assert!(!host.join(format!("rules/{AGENT_UID}.txt")).exists());
+    assert_eq!(saved_rule(&host, json!([AGENT_UID])), None);
     assert_eq!(
-        fs::read_to_string(host.join("rules/host.txt")).unwrap(),
+        saved_rule(&host, json!("all")).unwrap(),
         "Never send email."
     );
     // Nothing was written on the machines the commands came from.
@@ -4890,7 +4905,7 @@ fn a_state_folder_from_a_newer_latch_is_refused_before_anything_is_read() {
     let dir = test_dir();
     let state = dir.path().join("state");
     fs::create_dir(&state).unwrap();
-    let marker = r#"{"format": 3, "written_by": "0.3.0"}"#;
+    let marker = r#"{"format": 4, "written_by": "0.3.0"}"#;
     fs::write(state.join("latch.json"), marker).unwrap();
     // Not valid for this latch either way: a newer layout it would misread.
     fs::write(state.join("config.json"), "{\"layout\": \"newer\"}").unwrap();
@@ -7826,7 +7841,7 @@ fn logout_refuses_a_link_to_a_state_folder_or_a_folder_that_is_not_one() {
     fs::create_dir(&other).unwrap();
     fs::write(
         real.join("latch.json"),
-        r#"{"format": 2, "written_by": "test"}"#,
+        r#"{"format": 3, "written_by": "test"}"#,
     )
     .unwrap();
     for (folder, file) in [&real, &other]

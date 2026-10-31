@@ -653,7 +653,7 @@ mod tests {
         };
         let plow = fake::serve(world);
         let provider = crate::model::Plow::new(&plow.url, "made-up-login".into());
-        let rules = Box::new(RuleFiles::new(&state).unwrap());
+        let rules = Box::new(RuleFiles::new(&state, "test-key", "test-host").unwrap());
         let keeper = Gatekeeper::new(plow.client(), std::sync::Arc::new(provider), rules)
             .keeping_requests(&state);
         let action = serde_json::value::to_raw_value(&action).unwrap();

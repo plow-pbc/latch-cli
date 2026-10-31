@@ -256,6 +256,7 @@ impl Target<'_> {
         let done = owner::run(
             &self.state.path,
             &plow,
+            &config.peer.key,
             &config.peer.name,
             &config.peer.kind,
             &args,
