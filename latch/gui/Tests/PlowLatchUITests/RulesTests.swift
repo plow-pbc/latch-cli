@@ -304,6 +304,33 @@ struct RulesTests {
         #expect(app.rules?.rules.first { $0.id == "rl_c0e5a713" }?.text != editor.text)
     }
 
+    // A change latch refuses (here, a rule deleted on another device) reads
+    // the rules again: the deleted rule leaves the list, and the sheet keeps
+    // the draft and says why.
+    @Test func aRefusedChangeReadsTheRulesAgain() async throws {
+        let client = RulesClient()
+        let app = try await app(client)
+        let editor = RuleEditor(editing: try #require(app.rules?.rules.first { $0.id == "rl_92d6be48" }))
+        editor.text = "helper may read the list."
+        app.sheet = .rule(editor)
+        // Deleted elsewhere: latch's copies no longer hold it.
+        _ = try await client.rulesRemove("rl_92d6be48")
+        client.refuse(.failed(LatchFailure(code: "no_such_rule", message: "This rule was deleted, so your change wasn't saved.", removed: true)))
+        let reads = client.asked.filter { $0 == "rules list" }.count
+        #expect(await !editor.save(app: app))
+        #expect(client.asked.filter { $0 == "rules list" }.count == reads + 1)
+        #expect(app.rules?.rules.contains { $0.id == "rl_92d6be48" } == false)
+        #expect(app.sheet == .rule(editor) && editor.text == "helper may read the list.")
+        #expect(ErrorCopy.sentence(try #require(editor.error), place: .rules) == "This rule was deleted, so your change wasn't saved.")
+
+        // From the list too: the delete's refusal is kept to say, over the
+        // rules read again.
+        let rule = try #require(app.rules?.rules.first)
+        await app.deleteRule(rule)
+        #expect(client.asked.filter { $0 == "rules list" }.count == reads + 2)
+        #expect(app.ruleDeleteError?.code == "no_such_rule")
+    }
+
     // Saved on this Mac but not every host reached: it's saved. The sheet
     // closes, the rule is listed, and the page says which host couldn't
     // be checked; nothing invites a second Add.

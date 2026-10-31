@@ -936,9 +936,17 @@ final class AppModel {
     /// A change saved, on this Mac and whichever hosts latch reached: its
     /// answer is the account's rules after it (as `rules list` gives them,
     /// read as part of the change), held over any read still under way;
-    /// the rule added or changed is selected.
+    /// the rule added or changed is selected. A change latch refused reads
+    /// the rules again before saying why, so the list shows what latch
+    /// holds (a rule deleted elsewhere goes).
     private func ruleChange(_ change: () async throws -> RulesWrite) async throws {
-        let written = try await change()
+        let written: RulesWrite
+        do {
+            written = try await change()
+        } catch {
+            await refreshRules()
+            throw error
+        }
         ruleChanges += 1
         rules = written.list
         rulesError = nil
