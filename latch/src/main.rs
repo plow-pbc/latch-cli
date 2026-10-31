@@ -201,10 +201,11 @@ fn main() -> ExitCode {
                 }
             };
         }
-        // Run from a terminal opened as administrator, maybe another
-        // account's: no state folder needed, and no runtime.
-        Command::VolumeRoots { change } => {
-            return match setup::volume_roots(change).and_then(|done| json(cli.pretty, done)) {
+        // Run as administrator by `latch setup`, maybe as another account:
+        // no state folder needed, and no runtime.
+        #[cfg(windows)]
+        Command::GrantListing => {
+            return match setup::grant_listing().and_then(|done| json(cli.pretty, done)) {
                 Ok(Printed(text)) => {
                     term::print_out(&format!("{text}\n"));
                     ExitCode::SUCCESS
@@ -547,10 +548,11 @@ async fn run(
         | Command::Help(_)
         | Command::Skill
         | Command::App
-        | Command::VerifySignature { .. }
-        | Command::VolumeRoots { .. } => {
+        | Command::VerifySignature { .. } => {
             unreachable!("handled in main")
         }
+        #[cfg(windows)]
+        Command::GrantListing => unreachable!("handled in main"),
     }
 }
 

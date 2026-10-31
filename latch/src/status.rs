@@ -316,7 +316,7 @@ pub struct ThisMachine {
     pub key: Option<String>,
     pub hosting: Hosting,
     /// Windows: whether agents may list folders here (`granted`, `missing`
-    /// or `partial`), as `latch volume-roots` lets them. Not said elsewhere.
+    /// or `partial`), as `latch setup` lets them. Not said elsewhere.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub list_folders: Option<&'static str>,
 }
@@ -471,7 +471,7 @@ pub fn follow(
             }
             sent = Some(status);
         }
-        // A volume root's access list (`latch volume-roots`) wakes no
+        // A volume root's access list (`latch setup`) wakes no
         // watch, so on Windows the grant is looked at again every few
         // seconds, and the status read again once it changed.
         #[cfg(windows)]

@@ -765,7 +765,7 @@ async fn run_program(
         "truncated": stdout_cut || stderr_cut,
     });
     // Windows: a listing that failed may be for want of the volume root's
-    // entry (`latch volume-roots`), so the agent is told how it is got.
+    // entry (`latch setup`), so the agent is told how it is got.
     if (exit_code != Some(0) || !stderr.is_empty())
         && crate::sandbox::list_folders().is_some_and(|granted| granted != "granted")
     {
@@ -781,8 +781,8 @@ async fn run_program(
 /// What a failed exec says where agents may not list folders (Windows).
 const LIST_FOLDERS_HINT: &str = "If it failed listing a folder: this Windows PC doesn't let \
 agents list folders yet, so cmd's dir and vol are denied even in a folder you may write. Its \
-owner allows it by running `latch volume-roots add` once from a terminal opened as \
-administrator. Meanwhile `cmd /c for %f in (*) do @echo %f` lists one, and so does PowerShell's \
+owner allows it by running `latch setup`, which asks Windows for an administrator's \
+permission once. Meanwhile `cmd /c for %f in (*) do @echo %f` lists one, and so does PowerShell's \
 Get-ChildItem given the folder's full path (-LiteralPath).";
 
 fn argv_is_usable(argv: &[String]) -> bool {

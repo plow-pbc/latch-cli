@@ -35,7 +35,7 @@ PAGES = ["index", "connect-an-agent", "how-latch-works", "troubleshooting", "com
 # Where each command goes on the Commands page, by the first word of its id.
 GROUPS = [
     ("Set up", ["setup", "login", "logout", "status", "devices", "hosts", "update", "app", "help", "skill"]),
-    ("Run a host", ["serve", "stop", "dashboard", "logs", "settings", "volume-roots"]),
+    ("Run a host", ["serve", "stop", "dashboard", "logs", "settings"]),
     ("Agents", ["agents"]),
     ("Programs and files", ["exec", "file"]),
     ("Browser", ["browser"]),

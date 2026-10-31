@@ -126,9 +126,9 @@ const INTERNET_CLIENT: &str = "S-1-15-3-1";
 /// `DeriveCapabilitySidsFromName` derives it from `latchWorkerVolumeRoot`.
 /// Programs open a volume's root for its details (cmd's `dir` and `vol`),
 /// and a root admits no AppContainer, so they fail even in a folder the
-/// worker may list. `latch volume-roots add`, run once from a terminal
-/// opened as administrator, gives this capability `ROOT_ACCESS` on each
-/// fixed volume's root, and nothing below it. Windows' own `isolatedWin32-volumeRootMinimal`, which roots already
+/// worker may list. `latch setup`, through Windows' administrator prompt
+/// once, gives this capability `ROOT_ACCESS` on each fixed volume's root,
+/// and nothing below it. Windows' own `isolatedWin32-volumeRootMinimal`, which roots already
 /// admit, cannot be given to a plain AppContainer: CreateProcess refuses it.
 pub(crate) const VOLUME_ROOT: &str = "S-1-15-3-1024-2072464065-3400578307-2891438376-2029114129-1094856869-133864159-224730807-2445515868";
 
@@ -887,7 +887,7 @@ fn fixed_roots() -> Vec<PathBuf> {
         .collect()
 }
 
-/// Whether `root` admits the workers' capability as `volume_roots` makes
+/// Whether `root` admits the workers' capability as `grant_listing` makes
 /// it: an entry of its own allowing at least `ROOT_ACCESS`. A root with no
 /// access list (FAT) admits every program already. Reading the list needs
 /// no administrator.
@@ -1002,73 +1002,36 @@ pub(crate) fn lists_in(path: &Path) -> bool {
         && Sid::from_string(VOLUME_ROOT).is_ok_and(|sid| admits(&root, &sid).unwrap_or(false))
 }
 
-/// One fixed volume's root, as `volume_roots` left it.
-#[derive(Serialize)]
-pub struct Root {
-    pub root: PathBuf,
-    /// It admits the workers' capability now.
-    pub entry: bool,
-    /// This run added or removed its entry.
-    pub changed: bool,
-    /// Why it is not as asked.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-}
-
-/// `latch volume-roots add` (or `remove`): gives the workers' capability
-/// `ROOT_ACCESS` on each fixed volume's root, its own entry with nothing
-/// inherited below, or takes it back. Writing a root's access list needs
-/// an administrator. Each root as it is afterwards.
-pub fn volume_roots(add: bool) -> Vec<Root> {
+/// `latch grant-listing`, which `latch setup` runs as administrator
+/// (writing a root's access list needs one): gives the workers' capability
+/// `ROOT_ACCESS` on each fixed volume's root that lacks it, its own entry
+/// with nothing inherited below. Each root it could not change, and why.
+pub fn grant_listing() -> Vec<String> {
     let sid = match Sid::from_string(VOLUME_ROOT) {
         Ok(sid) => sid,
-        Err(message) => {
-            return fixed_roots()
-                .into_iter()
-                .map(|root| Root {
-                    root,
-                    entry: false,
-                    changed: false,
-                    error: Some(message.clone()),
-                })
-                .collect();
-        }
+        Err(message) => return vec![message],
     };
-    fixed_roots()
+    let roots = fixed_roots();
+    if roots.is_empty() {
+        return vec!["no fixed volume found".into()];
+    }
+    roots
         .into_iter()
-        .map(|root| {
-            let before = admits(&root, &sid);
-            let changed = match before {
-                Ok(had) if had == add => Ok(false),
-                _ => with_dacl(&root, false, |old, _, write| {
-                    if add {
-                        // SAFETY: `old` is the root's access list, live
-                        // meanwhile; `sid` is live.
-                        unsafe {
-                            add_entry(old, ROOT_ACCESS, GRANT_ACCESS, NO_INHERITANCE, sid.0, write)
-                        }
-                    } else {
-                        // SAFETY: as above.
-                        match unsafe { without(old, sid.0) }? {
-                            Some(mut new) => write(new.as_mut_ptr().cast()),
-                            None => Ok(()),
-                        }
-                    }
-                })
-                .map(|()| true),
-            };
-            let after = admits(&root, &sid);
-            let error = match (&changed, &after) {
-                (Err(err), _) | (_, Err(err)) => Some(err.to_string()),
-                (Ok(_), Ok(entry)) if *entry != add => Some("its entry did not change".into()),
-                _ => None,
-            };
-            Root {
-                entry: after.unwrap_or(false),
-                changed: changed.unwrap_or(false),
-                error,
-                root,
+        .filter_map(|root| {
+            if admits(&root, &sid).unwrap_or(false) {
+                return None;
             }
+            let added = with_dacl(&root, false, |old, _, write| {
+                // SAFETY: `old` is the root's access list, live meanwhile;
+                // `sid` is live.
+                unsafe { add_entry(old, ROOT_ACCESS, GRANT_ACCESS, NO_INHERITANCE, sid.0, write) }
+            });
+            let error = match (added, admits(&root, &sid)) {
+                (Err(err), _) | (_, Err(err)) => err.to_string(),
+                (Ok(()), Ok(true)) => return None,
+                (Ok(()), Ok(false)) => "its entry did not change".into(),
+            };
+            Some(format!("{}: {error}", root.display()))
         })
         .collect()
 }

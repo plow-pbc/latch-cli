@@ -2344,7 +2344,7 @@ async fn an_exec_is_audited_whole_and_shown_with_its_credentials_hidden() {
 }
 
 /// Windows: what an agent's program may list. A write area lists once
-/// `latch volume-roots add` let workers read its volume's root, and until
+/// `latch setup` let workers read its volume's root, and until
 /// then the answer says why (`hint`) and `for` still lists it; a folder it
 /// only runs in never lists, nor does the volume's root.
 #[cfg(windows)]
@@ -2383,7 +2383,7 @@ async fn a_write_area_lists_once_allowed_and_an_entered_folder_or_the_root_never
     assert!(shown[1]["hint"].is_null(), "{}", shown[1]);
     if !allowed {
         let hint = shown[0]["hint"].as_str().unwrap();
-        assert!(hint.contains("latch volume-roots add"), "{hint}");
+        assert!(hint.contains("latch setup"), "{hint}");
     }
     // The folder it only runs in, and the volume's root: nothing listed.
     assert!(!out(2).contains("inside.txt") && !out(3).contains("inside.txt"));
