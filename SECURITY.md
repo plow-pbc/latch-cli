@@ -87,7 +87,10 @@ are welcome.
   what it does may get through. A new browser session no longer starts
   clean: each agent's sessions on a host share one persistent profile, so
   what a script stored for a site (a service worker, site storage) is still
-  there in that agent's later sessions. Only its tabs start fresh.
+  there in that agent's later sessions. Only its tabs start fresh. Answers
+  mask the vault's current card numbers and identity secrets in every
+  session; a value a site saved before you changed or removed it in the
+  vault isn't masked.
 - **On macOS, the browser engine runs outside Latch's sandbox**, in its own
   sandbox. A compromised engine could read the host's state folder.
 - **Outside the signed macOS app, secrets are files** that only the OS user

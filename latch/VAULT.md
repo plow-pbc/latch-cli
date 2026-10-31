@@ -299,14 +299,17 @@ they hold: on Chrome for Testing the guard stands until the browser exits;
 on Camoufox the browser is killed. No reading is taken while a fill holds the
 browser, and an element list marks a field holding a filled value as
 `filled`, never showing the value. A page may show a card's number back
-(a confirmation that repeats it, a field it draws again): every answer in
-the session that filled it, and its plans' journals, show that number only
-as its last four digits (`•••• 4242`), whole or in groups set apart by
-single spaces or dashes, as a site prints it; the last four alone
-("ending in 4242") are left as they are. An identity's secret that a
-fill released (an SSN, a passport number) is masked whole the same way:
-the session's text answers and its plans' journals (`do --history`) show
-it as `••••`, written as it was filled or as its digits in groups. A
+(a confirmation that repeats it, a field it draws again, or a site that
+saved it and shows it in a later session on the agent's profile): every
+answer in every session, its first included, and its plans' journals, show
+that number only as its last four digits (`•••• 4242`), whole or in groups
+set apart by single spaces or dashes, as a site prints it; the last four
+alone ("ending in 4242") are left as they are. An identity's secret (an
+SSN, a passport number) is masked whole the same way: text answers and
+plans' journals (`do --history`) show it as `••••`, written as it is saved
+or as its digits in groups. Masking covers the vault's current card numbers
+and identity secrets: a value a site saved before you changed or removed it
+in the vault isn't masked. A
 script (`eval`) is refused
 while a filled value may be in a field, as for a password (below), and
 runs once the page was submitted and its fields are empty: from then on
