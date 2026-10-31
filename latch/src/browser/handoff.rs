@@ -1,5 +1,5 @@
 //! `handoff`: one session handed to the owner, who acts in its browser
-//! window (a CAPTCHA, a texted code, a passkey, a sign-in) and hands it
+//! window (a CAPTCHA, a texted code, a sign-in) and hands it
 //! back with `latch browser handoff done` on the host.
 //!
 //! The agent's `handoff` call waits until then, at most `--within` seconds

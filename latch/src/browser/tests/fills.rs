@@ -42,6 +42,7 @@ conformance!(
     a_fill_pauses_its_own_session_and_no_other,
     a_login_after_an_edit_fills_the_new_password,
     a_sign_in_the_site_refuses_says_so,
+    a_sign_in_that_bounces_says_what_the_page_shows,
     a_login_whose_page_replaces_its_email_field_still_fills_whole,
     a_login_is_typed_with_the_engines_own_keys,
     no_part_of_a_typed_secret_goes_into_an_address,
@@ -2674,6 +2675,66 @@ async fn a_login_whose_page_replaces_its_email_field_still_fills_whole(engine: &
     let (signed_in, _) = h.login(&login.item).await;
     assert_eq!(signed_in.unwrap()["submitted"], true);
     assert!(h.text().await.contains("password accepted"));
+    h.call("close", json!({})).await.ok();
+}
+
+/// A sign-in the site silently drops comes back to its form, the
+/// password field empty: the fill's answer says so, and what the page says
+/// when it says why.
+async fn a_sign_in_that_bounces_says_what_the_page_shows(engine: &str) {
+    let (_dir, state, _area) = test_state(engine);
+    let vault = Vault::new(state.clone());
+    let login = vault
+        .with(|s| {
+            s.add(item(
+                LOGIN,
+                "Shop",
+                &["shop.example"],
+                &[("username", "ada@shop.example"), ("password", PASSWORD)],
+            ))
+        })
+        .unwrap();
+    let pages = site();
+    let local = format!("http://127.0.0.1:{pages}");
+    let mut browsers = Browsers::new(state.clone(), vault.clone(), super::HEADLESS);
+    browsers.test = Some((
+        latch(),
+        vec![(local.clone(), "https://login.shop.example".into())],
+    ));
+    let mut h = Harness::start(browsers, engine).await;
+
+    for (query, says) in [
+        ("", "no error"),
+        ("?error", "the error \"Your password is incorrect\""),
+    ] {
+        h.call(
+            "open",
+            json!({"url": format!("{local}/bounce-login.html{query}")}),
+        )
+        .await
+        .unwrap();
+        let (signed_in, _) = h.login(&login.item).await;
+        let signed_in = signed_in.unwrap();
+        println!("bounced sign-in{query}: {}", signed_in["shows"]);
+        assert_eq!(signed_in["submitted"], true);
+        assert_eq!(
+            signed_in["shows"],
+            format!(
+                "after the submit, the page (/bounce-login.html) shows the password field, \
+                 empty, with {says}"
+            )
+        );
+    }
+
+    // A sign-in that moved on shows no sign-in field.
+    h.call("open", json!({"url": format!("{local}/login.html")}))
+        .await
+        .unwrap();
+    let (signed_in, _) = h.login(&login.item).await;
+    assert_eq!(
+        signed_in.unwrap()["shows"],
+        "after the submit, the page (/welcome) shows no password or username field, with no error"
+    );
     h.call("close", json!({})).await.ok();
 }
 

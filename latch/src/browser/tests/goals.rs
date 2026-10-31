@@ -1213,7 +1213,12 @@ async fn fills_inside_plans_take_latchs_suggestions_or_stop() {
             details["stop"]["page_offers"]
         );
         assert_eq!(code, "needs_fields");
-        assert!(stopped.message.contains("handoff --reason passkey"));
+        assert!(
+            stopped.message.contains("stop and tell the owner")
+                && !stopped.message.contains("handoff --reason"),
+            "{}",
+            stopped.message
+        );
         assert_eq!(told.passes(), asked);
         assert_eq!(details["stop"]["page_offers"], json!(["passkey"]));
     }
