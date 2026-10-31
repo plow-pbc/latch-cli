@@ -9,7 +9,7 @@ run-name: "Package check: ${{ github.event.head_commit.message }}"
 on:
   push:
     branches: [main]
-    paths: ['latch/**', 'scripts/**', 'install.sh', '.github/workflows/package.yml', '!**/*.md']
+    paths: ['latch/**', 'scripts/**', 'install.sh', 'install.ps1', '.github/workflows/package.yml', '!**/*.md']
   workflow_call:
     inputs:
       tag:
@@ -148,10 +148,10 @@ jobs:
           merge-multiple: true
           path: dist
       - run: |
-          cp install.sh dist/
+          cp install.sh install.ps1 dist/
           cd dist
           shopt -s nullglob
-          sha256sum *.tar.gz *.zip install.sh > SHA256SUMS
+          sha256sum *.tar.gz *.zip install.sh install.ps1 > SHA256SUMS
       - uses: actions/upload-artifact@v4
         with:
           name: release-downloads

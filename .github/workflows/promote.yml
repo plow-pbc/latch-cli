@@ -46,7 +46,8 @@ jobs:
           role-to-assume: ${{ vars.AWS_LATCH_RELEASE_ROLE_ARN }}
           aws-region: us-west-2
       # Promote only what the release workflow uploaded and signed: its
-      # SHA256SUMS signed with this key, and its install.sh as listed there.
+      # SHA256SUMS signed with this key, and its install.sh (and, from the
+      # first release with Windows, install.ps1) as listed there.
       - name: Check the release
         shell: bash
         env:
@@ -61,6 +62,10 @@ jobs:
           done
           minisign -V -p "$RUNNER_TEMP/minisign.pub" -m SHA256SUMS | grep -Fx "Trusted comment: latch $TAG"
           grep -E '  install\.sh$' SHA256SUMS | sha256sum -c
+          if grep -qE '  install\.ps1$' SHA256SUMS; then
+            aws s3 cp "$RELEASES/releases/$TAG/install.ps1" install.ps1
+            grep -E '  install\.ps1$' SHA256SUMS | sha256sum -c
+          fi
           printf '{"tag":"%s","build":%s}\n' "$TAG" "$BUILD" > latest.json
           minisign -S -s "$key" -m latest.json -t "latch $TAG"
           rm "$key"
@@ -68,7 +73,10 @@ jobs:
       - name: Promote
         run: |
           aws s3 cp install.sh "$RELEASES/install.sh" --cache-control no-cache --content-type text/x-shellscript
+          if [ -f install.ps1 ]; then
+            aws s3 cp install.ps1 "$RELEASES/install.ps1" --cache-control no-cache --content-type text/plain
+          fi
           aws s3 cp latest.json.minisig "$RELEASES/latest.json.minisig" --cache-control no-cache
           aws s3 cp latest.json "$RELEASES/latest.json" --cache-control no-cache --content-type application/json
           aws cloudfront create-invalidation --distribution-id '${{ vars.AWS_LATCH_RELEASES_DISTRIBUTION_ID }}' \
-            --paths /latch-cli/install.sh /latch-cli/latest.json /latch-cli/latest.json.minisig
+            --paths /latch-cli/install.sh /latch-cli/install.ps1 /latch-cli/latest.json /latch-cli/latest.json.minisig

@@ -510,13 +510,6 @@ async fn a_cut_off_update_is_finished_by_the_next_one() {
     let answer = update(&world.state, &world.source(), Some(1328), None, None, false)
         .await
         .unwrap();
-    // Windows' installer puts in no helpers (no gog, and Camoufox has no
-    // Windows build): an up-to-date install stays as it is.
-    if cfg!(windows) {
-        assert_eq!(answer["updated"], false, "{answer}");
-        assert!(world.arguments().is_none(), "the installer never ran");
-        return;
-    }
     assert_eq!(answer["updated"], true, "{answer}");
     assert_eq!(answer["to"]["build"], 1328);
     assert_eq!(answer["repaired"], json!(["gog", "camoufox"]));
@@ -534,7 +527,7 @@ async fn a_cut_off_update_is_finished_by_the_next_one() {
         .join("plugins/gog")
         .join(&crate::google::PIN.version);
     std::fs::create_dir_all(&gog).unwrap();
-    std::fs::write(gog.join("gog"), "").unwrap();
+    std::fs::write(gog.join(if cfg!(windows) { "gog.exe" } else { "gog" }), "").unwrap();
     let answer = update(
         &complete.state,
         &complete.source(),
