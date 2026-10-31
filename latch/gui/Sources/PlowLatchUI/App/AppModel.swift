@@ -882,14 +882,20 @@ final class AppModel {
         var host: String?
     }
 
-    /// Reads the account's rules again; a failure keeps what was held.
+    /// Counts the changes saved: a read begun before the last of them
+    /// answers with the rules as they were before it.
+    @ObservationIgnored private var ruleChanges = 0
+
+    /// Reads the account's rules again; a failure keeps what was held, and
+    /// an answer older than a change saved meanwhile is dropped.
     func refreshRules() async {
-        switch await Self.result({ try await self.client.rulesList() }) {
-        case nil: return
-        case let .success(list)?:
+        let changes = ruleChanges
+        guard let read = await Self.result({ try await self.client.rulesList() }), changes == ruleChanges else { return }
+        switch read {
+        case let .success(list):
             rules = list
             rulesError = nil
-        case let .failure(error)?:
+        case let .failure(error):
             rulesError = error
         }
     }
@@ -927,10 +933,12 @@ final class AppModel {
     }
 
     /// A change saved, on this Mac and whichever hosts latch reached: its
-    /// answer is the account's rules after it, held at once; the rule
-    /// added or changed is selected.
+    /// answer is the account's rules after it, held at once over any read
+    /// still under way; the rule added or changed is selected. Then the
+    /// rules are read again, without holding up whoever saved.
     private func ruleChange(_ change: () async throws -> RulesWrite) async throws {
         let written = try await change()
+        ruleChanges += 1
         rules = written.list
         rulesError = nil
         if written.change.kind == "remove" {
@@ -938,6 +946,7 @@ final class AppModel {
         } else if let id = written.change.id {
             selectedRule = id
         }
+        Task { await refreshRules() }
     }
 
     /// For snapshots: as `rules list` said.

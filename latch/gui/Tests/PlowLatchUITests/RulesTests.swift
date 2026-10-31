@@ -27,6 +27,8 @@ final class RulesClient: LatchClient, @unchecked Sendable {
     private let state: Mutex<State>
     /// Holds each write until opened.
     var writeGate: Gate?
+    /// Holds each `rules list` until opened.
+    var listGate: Gate?
     /// What each `rules try` answers, by the host asked (nil: this Mac).
     var tryAnswer: @Sendable (String?) async throws -> RulesTry = { _ in try Fixtures.decode(Fixtures.tries["allow-owner"]!) }
 
@@ -36,6 +38,8 @@ final class RulesClient: LatchClient, @unchecked Sendable {
     }
 
     var asked: [String] { state.withLock { $0.asked } }
+    /// The changes asked, without the reads between them.
+    var writes: [String] { asked.filter { $0 != "rules list" } }
     var tried: [(request: TryRequest, host: String?, agent: String?, newAgent: Bool)] { state.withLock { $0.tried } }
     func refuse(_ error: LatchError?) { state.withLock { $0.refusal = error } }
     /// The hosts a write reaches no more: latch couldn't check them.
@@ -71,11 +75,13 @@ final class RulesClient: LatchClient, @unchecked Sendable {
         return #"{"rules":[\#(rules.joined(separator: ","))],"hosts":[\#(hosts.joined(separator: ","))]"# + (change.map { #","change":\#($0)"# } ?? "") + "}"
     }
 
+    /// The rules as they were when asked, answered once the gate opens.
     func rulesList() async throws -> RulesList {
         let json = state.withLock { state in
             state.asked.append("rules list")
             return Self.json(state)
         }
+        await listGate?.wait()
         return try Fixtures.decode(json)
     }
 
@@ -227,7 +233,7 @@ struct RulesTests {
         new.agents = .only([helper])
         app.sheet = .rule(new)
         #expect(await new.save(app: app))
-        #expect(client.asked.last == "rules add --file - --agents \(helper) --hosts all <<< Ask me before deleting anything.")
+        #expect(client.writes.last == "rules add --file - --agents \(helper) --hosts all <<< Ask me before deleting anything.")
         #expect(app.rules?.rules.last?.text == "Ask me before deleting anything.")
         #expect(app.selectedRule == "rl_new" && app.sheet == nil)
 
@@ -235,15 +241,15 @@ struct RulesTests {
         let edit = RuleEditor(editing: rule)
         edit.text += " Never on Sundays."
         #expect(await edit.save(app: app))
-        #expect(client.asked.last == "rules edit rl_c0e5a713 --file - <<< \(rule.text) Never on Sundays.")
+        #expect(client.writes.last == "rules edit rl_c0e5a713 --file - <<< \(rule.text) Never on Sundays.")
         let scoped = RuleEditor(editing: try #require(app.rules?.rules.first { $0.id == "rl_c0e5a713" }))
         scoped.hosts = .all
         #expect(await scoped.save(app: app))
-        #expect(client.asked.last == "rules edit rl_c0e5a713 --hosts all")
+        #expect(client.writes.last == "rules edit rl_c0e5a713 --hosts all")
         // Nothing changed: nothing to ask.
-        let count = client.asked.count
+        let count = client.writes.count
         #expect(await RuleEditor(editing: try #require(app.rules?.rules.first)).save(app: app))
-        #expect(client.asked.count == count)
+        #expect(client.writes.count == count)
     }
 
     // A refusal keeps the sheet and what's in it, with latch's reason in
@@ -282,6 +288,38 @@ struct RulesTests {
         #expect(client.asked.filter { $0.hasPrefix("rules add") }.count == 1)
     }
 
+    // A read begun before a save answers after it, with the rules as they
+    // were: the save's rules stay. Then they're read again.
+    @Test func anOlderReadNeverUndoesASave() async throws {
+        let client = RulesClient()
+        let app = try await app(client)
+        let gate = Gate()
+        client.listGate = gate
+        let reading = Task { await app.refreshRules() }
+        await waitUntil { client.asked.filter { $0 == "rules list" }.count == 2 }
+        client.listGate = nil
+        let editor = RuleEditor()
+        editor.text = "Ask me first."
+        app.sheet = .rule(editor)
+        #expect(await editor.save(app: app))
+        await waitUntil { client.asked.filter { $0 == "rules list" }.count == 3 }
+        gate.open()
+        await reading.value
+        #expect(app.rules?.rules.contains { $0.text == "Ask me first." } == true)
+        #expect(client.writes.last?.hasPrefix("rules add") == true && client.asked.last == "rules list")
+
+        let removing = RuleEditor(editing: try #require(app.rules?.rules.first { $0.id == "rl_92d6be48" }))
+        client.listGate = Gate()
+        let stale = Task { await app.refreshRules() }
+        await waitUntil { client.asked.filter { $0 == "rules list" }.count >= 4 }
+        let held = client.listGate
+        client.listGate = nil
+        await removing.delete(app: app)
+        held?.open()
+        await stale.value
+        #expect(app.rules?.rules.contains { $0.id == "rl_92d6be48" } == false)
+    }
+
     // A save that finishes after its sheet was closed, and another opened,
     // closes nothing.
     @Test func aLateSaveDoesntCloseAnotherSheet() async throws {
@@ -317,7 +355,7 @@ struct RulesTests {
         #expect(app.sheet == .rule(editor) && editor.text == "helper may read the list." && editor.hosts == .all)
         #expect(!client.asked.contains { $0.hasPrefix("rules remove") })
         await editor.delete(app: app)
-        #expect(client.asked.last == "rules remove rl_92d6be48")
+        #expect(client.writes.last == "rules remove rl_92d6be48")
         #expect(app.sheet == nil && app.rules?.rules.contains { $0.id == "rl_92d6be48" } == false)
     }
 
