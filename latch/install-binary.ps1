@@ -98,8 +98,11 @@ $hosting = $status.this_machine.hosting
 if ($hosting.running) {
   $stopped = & $src @state stop | Select-Object -Last 1 | ConvertFrom-Json -ErrorAction SilentlyContinue
   if ($LASTEXITCODE -ne 0 -or -not $stopped.stopped) { Die "could not stop the host on the state folder; nothing was changed" }
-  if ($hosting.attached) { Say "stopped the host, which ran in a terminal; run ``latch serve`` again to start it with the new latch" }
-  else { $restart = $true; Say "stopped the host; it starts again with the new latch once the install is done" }
+  # Only a host `serve -d` started (managed, not attached) is started again,
+  # as install-binary.sh does: one in a terminal, or `serve --foreground`,
+  # is its starter's to start.
+  if ($hosting.managed -and -not $hosting.attached) { $restart = $true; Say "stopped the host; it starts again with the new latch once the install is done" }
+  else { Say "stopped the host, which ran in a terminal; run ``latch serve`` again to start it with the new latch" }
 }
 
 # 1. latch itself.
