@@ -1,0 +1,10 @@
+<!doctype html><title>latch card to button test</title>
+<!-- A checkout whose number field, named by its placeholder alone, turns
+     itself into a button once it holds a whole number: a reader names a
+     button by its value. Nothing is sent anywhere. -->
+<h1>Checkout</h1>
+<form id="pay">
+  <p><input name="cc-number" autocomplete="cc-number" inputmode="numeric" placeholder="Card number"
+    oninput="if (this.value.replace(/\D/g, '').length >= 16) this.type = 'button'"></p>
+  <p><button type="submit">Pay $10.00</button></p>
+</form>

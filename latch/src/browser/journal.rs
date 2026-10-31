@@ -30,13 +30,7 @@ use crate::state::to_hex;
 
 pub struct Journal {
     file: File,
-    /// The values filled in the request's session that are never shown:
-    /// each record is written with them masked (`shown::mask_filled`).
-    masks: Option<Masks>,
 }
-
-/// The values filled in a session that are never shown whole.
-pub type Masks = std::sync::Arc<std::sync::Mutex<Vec<super::shown::Filled>>>;
 
 /// How long a request's journal and screenshots are kept.
 pub const KEEP: Duration = Duration::from_secs(7 * 24 * 60 * 60);
@@ -89,25 +83,13 @@ impl Journal {
                 ),
                 _ => lost(err),
             })?;
-        let mut journal = Journal { file, masks: None };
+        let mut journal = Journal { file };
         journal.write(json!({"t": "start", "caller": caller, "steps": steps}))?;
         Ok(journal)
     }
 
-    /// The journal, its records written with `masks` masked from here on.
-    pub fn masking(self, masks: Masks) -> Journal {
-        Journal {
-            masks: Some(masks),
-            ..self
-        }
-    }
-
     /// Appends one record and syncs it to disk.
-    pub fn write(&mut self, mut record: Value) -> Result<(), Failure> {
-        if let Some(masks) = &self.masks {
-            let filled = masks.lock().expect("masks lock").clone();
-            super::shown::mask_filled(&mut record, &filled);
-        }
+    pub fn write(&mut self, record: Value) -> Result<(), Failure> {
         let mut line = serde_json::to_vec(&record).expect("serializes");
         line.push(b'\n');
         self.file.write_all(&line).map_err(lost)?;

@@ -7,9 +7,11 @@
 //! and an `observe`) shows it; the audit, the gatekeeper and reservations
 //! read full addresses from the page, never from this.
 //!
-//! A card number a session filled is shown in its answers by its last four
-//! digits only, and an identity's secret not at all (`mask_filled`),
-//! wherever the page put it.
+//! A card number a session filled is shown to the gatekeeper by its last
+//! four digits only, and an identity's secret not at all (`mask_filled`),
+//! wherever the page put it. The agent's answers are not masked: latch
+//! keeps a filled value out of its reads of the field it went into, and
+//! what the site shows of it elsewhere is the site's.
 
 use serde_json::{Map, Value, json};
 
@@ -121,7 +123,7 @@ fn short(url: &str) -> String {
     shown
 }
 
-/// A value a session filled that its answers never show whole.
+/// A value a session filled that the gatekeeper is never shown whole.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Filled {
     /// A card's number, digits only: shown by its last four digits.
