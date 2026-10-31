@@ -36,7 +36,7 @@ guides cover the [browser](../latch/BROWSER.md), [vault](../latch/VAULT.md),
 |---|---|---|---|---|---|
 | **Owner** | One of your machines, logged in with your own Plow login: by text, or with `--token-file`. | Yes, any host in your account. | Rules for the whole account, from any of your machines. Vault on any host (`--host NAME`). Connectors: listed on any host, turned on or off only on the host itself. | Yes. | As your own request: refused only where the host's rules forbid it. |
 | **Owner on the host** | Anything running as the host's OS user that uses the host's own state folder, with no `--host` naming another machine. An agent running there counts. | That host, through its private local socket. Other hosts, as the owner. | Yes, on that host. Rules and vault work even while the host is stopped. | It is the host. | Exactly like the owner. The audit records it as `owner_on_host`. |
-| **Agent** | An agent logged in with its own Plow agent credential, in its own state folder. | Yes. | No: `owner_only` (exit 4). It may run `vault list`, which shows each item's id, title and saved sites, and `vault link --kind login`, which asks you for a login on your phone (it sees only whether it was saved, and the new item's id), and it sees which connectors each host has on. On its own computer, where latch is installed alone, it runs `latch update`. | No: its login saves no Plow token, so `latch serve` stops with `not_logged_in`. | Against your rules and your messages in your Plow chat with that agent. |
+| **Agent** | An agent logged in with its own Plow agent credential, in its own state folder. | Yes. | No: `owner_only` (exit 4). It may run `vault list`, which shows each item's id, title and saved sites, and `vault link --kind login`, which asks you for a login on your phone (it sees only whether it was saved, and the new item's id), and it sees which connectors each host has on. On its own computer, where latch is installed alone, it runs `latch update`. | Only with its credential given by `--token-file`: logged in from the environment alone, it saves no Plow token, and `latch serve` stops with `not_logged_in`. Its host gets no rules from your account. | Against your rules and your messages in your Plow chat with that agent. |
 
 - **A host knows a remote caller only by its key.** It asks Plow who that
   key is when the caller connects, and again before every operation. If
@@ -264,8 +264,9 @@ at least as likely as not covered.
   or `--hosts` say otherwise; `latch rules edit ID` and `latch rules
   remove ID` take the id `latch rules list` gives. Rules covering every
   agent are judged against your own calls too.
-  - Every host keeps the whole list, and so does each of your machines.
-    A change is saved on this machine first, then on every host it can
+  - Every host keeps the whole list, and so does each of your machines,
+    except a host running on an agent's login: it is never asked for its
+    rules or sent the list. A change is saved on this machine first, then on every host it can
     reach. A host that was offline catches up the next time you list or
     change rules while it's online. `latch rules list` reports each host
     as `current`, `behind` (it answered and lacks the newest rules) or
@@ -407,7 +408,7 @@ For how to report a vulnerability, see [SECURITY.md](../SECURITY.md).
 | Google beyond Gmail and Calendar | Not supported |
 | Messages and Contacts on a Linux host | Not supported (`unsupported_platform`) |
 | Browser handoff on a Linux host or with `--headless-browsers` | Not supported |
-| An agent's login running a host | Not supported: it saves no Plow token, so `latch serve` stops with `not_logged_in` |
+| Your rules on a host running on an agent's login | Not synced: it is never asked for its rules or sent the list, and rules it already holds are unchanged. Naming it in `--hosts` or `rules list --host` is refused (`unknown_host`) |
 | Turning connectors on or off from another machine | Not supported |
 | Another machine's dashboard or logs | Not supported |
 | Exec stdin over 16 KiB, or stdin that isn't UTF-8 text | Refused (`stdin_not_judgeable`, exit 2) |

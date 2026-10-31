@@ -203,11 +203,13 @@ pub enum Command {
     /// Your standing rules for agents on your hosts (owner only)
     ///
     /// Every host keeps the whole list, and its gatekeeper reads the rules
-    /// that apply there at every judgment. On add and edit, --agents and
-    /// --hosts say which agents and hosts a rule covers; on list, --agent and
-    /// --host only narrow what it shows; on try, --host is the host to preview
-    /// on. Only the owner's own devices can use them. Freeform rules are
-    /// judged, not guaranteed. --deny-exec is enforced in code
+    /// that apply there at every judgment. A host running on an agent's login
+    /// is never asked for its rules or sent the list; rules it already holds
+    /// are unchanged. On add and edit, --agents and --hosts say which agents
+    /// and hosts a rule covers; on list, --agent and --host only narrow what
+    /// it shows; on try, --host is the host to preview on. Only the owner's
+    /// own devices can use them. Freeform rules are judged, not guaranteed.
+    /// --deny-exec is enforced in code
     Rules(RulesArgs),
     /// Turn this host's connectors on or off
     ///

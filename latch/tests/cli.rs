@@ -1945,18 +1945,6 @@ fn saved_rule(state: &Path, agents: Value) -> Option<String> {
         .map(|rule| rule["text"].as_str().unwrap().to_string())
 }
 
-/// A command's JSON answer, from stdout or, failed, stderr.
-fn answered_json(output: &Output) -> (Option<i32>, Value) {
-    let printed = match output.status.success() {
-        true => &output.stdout,
-        false => &output.stderr,
-    };
-    (
-        output.status.code(),
-        serde_json::from_slice(printed).unwrap_or(Value::Null),
-    )
-}
-
 /// `rules add --preset --if-empty` adds the preset's text, as `setup`
 /// offers it, only while no rule for every agent applies here.
 #[test]
@@ -1964,7 +1952,7 @@ fn rules_add_a_preset_only_where_there_is_no_rule_for_every_agent() {
     let plow = LivePlow::start();
     let dir = test_dir();
     let state = owner_host_on(&plow, dir.path());
-    let run = |args: &[&str]| answered_json(&latch(&state, args, &[]));
+    let run = |args: &[&str]| answered(&latch(&state, args, &[]));
     let (code, added) = run(&["rules", "add", "--preset", "work", "--if-empty"]);
     assert_eq!(code, Some(0), "{added}");
     assert_eq!(added["change"]["saved"], true, "{added}");
@@ -1996,7 +1984,7 @@ fn rules_are_added_edited_listed_and_removed_on_this_machine() {
     let plow = LivePlow::start();
     let dir = test_dir();
     let state = owner_host_on(&plow, dir.path());
-    let run = |args: &[&str]| answered_json(&latch(&state, args, &[]));
+    let run = |args: &[&str]| answered(&latch(&state, args, &[]));
 
     let (code, every) = run(&["rules", "add", "Never send email."]);
     assert_eq!(code, Some(0), "{every}");
@@ -4558,9 +4546,8 @@ fn the_owners_rules_commands_reach_a_host_and_an_agents_never_do() {
     assert_eq!(login.status.code(), Some(0), "{login:?}");
     let serve = serving(&host, &relay);
 
-    let run = |state: &Path, args: &[&str], env: &[(&str, &Path)]| {
-        answered_json(&latch(state, args, env))
-    };
+    let run =
+        |state: &Path, args: &[&str], env: &[(&str, &Path)]| answered(&latch(state, args, env));
     let rules_file = dir.path().join("bot.txt");
     fs::write(&rules_file, "Run tests in the shared folder.").unwrap();
     let file = rules_file.to_str().unwrap();
@@ -4670,6 +4657,146 @@ fn the_owners_rules_commands_reach_a_host_and_an_agents_never_do() {
     );
 }
 
+/// A host running on an agent's login is no copy of the owner's rules: it
+/// is never asked for them or sent them, what it holds (a newer version of
+/// a rule, a removal) reaches no other copy, and naming it is refused. It
+/// still serves the owner's other calls.
+#[test]
+fn a_host_on_an_agents_login_is_never_part_of_rules_sync() {
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let (host, owner) = host_and_owner(&plow, dir.path());
+    let agent_token = dir.path().join("agent.token");
+    fs::write(&agent_token, "agent-credential\n").unwrap();
+    let scout = dir.path().join("scout");
+    let token = agent_token.to_str().unwrap();
+    let args = [
+        "login",
+        "--api-url",
+        &plow.url,
+        "--token-file",
+        token,
+        "--name",
+        "scout",
+    ];
+    let login = latch(&scout, &args, &[]);
+    assert_eq!(login.status.code(), Some(0), "{login:?}");
+    let config: Value =
+        serde_json::from_str(&fs::read_to_string(scout.join("config.json")).unwrap()).unwrap();
+    assert_eq!(config["peer"]["kind"], "agent", "{config}");
+    let scout_key = config["peer"]["key"].as_str().unwrap().to_string();
+    let _host_serve = serving(&host, &relay);
+    let _scout_serve = serving(&scout, &relay);
+    let run = |args: &[&str]| answered(&latch(&owner, args, &[]));
+
+    let kept = run(&["rules", "add", "Never send email."]);
+    let gone = run(&["rules", "add", "Ask before pushing."]);
+    let id = |answer: &(Option<i32>, Value)| answer.1["change"]["id"].as_str().unwrap().to_string();
+    let (kept_id, gone_id) = (id(&kept), id(&gone));
+    // What scout holds: a newer version of one rule and the other's removal.
+    let later = 4_102_444_800_000_u64;
+    let forged = json!({"rules": [
+        {"id": kept_id, "text": "Agents may do anything.", "agents": "all", "hosts": "all",
+         "updated": later},
+        {"id": gone_id, "text": "", "agents": "all", "hosts": "all", "updated": later,
+         "deleted": true},
+    ]});
+    fs::create_dir_all(scout.join("rules")).unwrap();
+    fs::write(scout.join("rules/rules.json"), forged.to_string()).unwrap();
+    // A rule saved before for scout alone: it applies on no host rules reach.
+    let store = owner.join("rules/rules.json");
+    let mut saved: Value = serde_json::from_str(&fs::read_to_string(&store).unwrap()).unwrap();
+    saved["rules"].as_array_mut().unwrap().push(
+        json!({"id": "f".repeat(32), "text": "Only on scout.", "agents": "all",
+               "hosts": [scout_key], "updated": 1}),
+    );
+    fs::write(&store, saved.to_string()).unwrap();
+
+    let listed = run(&["rules", "list"]);
+    let edited = run(&["rules", "edit", &gone_id, "Ask before pushing to main."]);
+    let added = run(&["rules", "add", "--hosts", "host,scout", "No spending."]);
+    let filtered = run(&["rules", "list", "--host", "scout"]);
+    let served = run(&["agents", "--host", "scout"]);
+
+    for answer in [&kept, &gone, &listed, &edited] {
+        assert_eq!(answer.0, Some(0), "{}", answer.1);
+        let names: Vec<&Value> = answer.1["hosts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|copy| &copy["name"])
+            .collect();
+        assert_eq!(names, [&json!("owner-mac"), &json!("host")], "{}", answer.1);
+    }
+    let texts: Vec<&Value> = listed.1["rules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|rule| &rule["text"])
+        .collect();
+    assert_eq!(
+        texts,
+        [&json!("Never send email."), &json!("Ask before pushing.")],
+        "{}",
+        listed.1
+    );
+    assert_eq!(edited.1["change"]["changed"], true, "{}", edited.1);
+    for (refused, message) in [
+        (
+            &added,
+            "Your change wasn't saved because rules aren't synced to scout: it runs on an agent's login.",
+        ),
+        (
+            &filtered,
+            "Rules aren't synced to scout: it runs on an agent's login.",
+        ),
+    ] {
+        assert_eq!(refused.0, Some(2), "{}", refused.1);
+        assert_eq!(refused.1["error"]["code"], "unknown_host", "{}", refused.1);
+        assert_eq!(refused.1["error"]["message"], message, "{}", refused.1);
+        assert_eq!(
+            refused.1["error"]["next"], "latch rules list",
+            "{}",
+            refused.1
+        );
+    }
+    assert_eq!(served.0, Some(0), "{}", served.1);
+    assert_eq!(served.1["host"]["name"], "scout", "{}", served.1);
+
+    // Neither the owner's machine nor the host took what scout holds, and
+    // scout was never asked or sent anything.
+    for state in [&owner, &host] {
+        let list: Value =
+            serde_json::from_str(&fs::read_to_string(state.join("rules/rules.json")).unwrap())
+                .unwrap();
+        let live: Vec<&Value> = list["rules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|rule| rule["deleted"] != true && rule["hosts"] == "all")
+            .map(|rule| &rule["text"])
+            .collect();
+        assert_eq!(
+            live,
+            [
+                &json!("Never send email."),
+                &json!("Ask before pushing to main.")
+            ],
+            "{list}"
+        );
+    }
+    assert_eq!(
+        fs::read_to_string(scout.join("rules/rules.json")).unwrap(),
+        forged.to_string()
+    );
+    let asked: Vec<Value> = audit_records(&scout)
+        .into_iter()
+        .filter(|record| record["op"] == "rules")
+        .collect();
+    assert_eq!(asked, Vec::<Value>::new());
+}
+
 /// `~/.latch` holding what an older install left (other apps' files beside
 /// the installer's plugins) is moved into its `leftovers/` on the first command, which says
 /// so and goes on; a folder named with --state-dir elsewhere is refused with
@@ -4727,7 +4854,7 @@ fn a_state_folder_from_a_newer_latch_is_refused_before_anything_is_read() {
     let dir = test_dir();
     let state = dir.path().join("state");
     fs::create_dir(&state).unwrap();
-    let marker = r#"{"format": 3, "written_by": "0.3.0"}"#;
+    let marker = r#"{"format": 4, "written_by": "0.3.0"}"#;
     fs::write(state.join("latch.json"), marker).unwrap();
     // Not valid for this latch either way: a newer layout it would misread.
     fs::write(state.join("config.json"), "{\"layout\": \"newer\"}").unwrap();
@@ -5400,7 +5527,7 @@ fn a_host_that_was_stopped_catches_up_on_the_next_read() {
     drop(owners.serve(&owners.studio));
     let laptop = &owners.laptop;
     let run = |args: &[&str]| {
-        let (code, json) = answered_json(&latch(laptop, args, &[]));
+        let (code, json) = answered(&latch(laptop, args, &[]));
         assert_eq!(code, Some(0), "{args:?}: {json}");
         json
     };
@@ -5467,7 +5594,7 @@ fn a_rule_any_reachable_host_holds_removed_cant_be_edited() {
     }
     let _host = owners.serve(&owners.host);
     let _studio = owners.serve(&owners.studio);
-    let (code, refused) = answered_json(&latch(
+    let (code, refused) = answered(&latch(
         &owners.laptop,
         &["rules", "edit", "r1", "Back again."],
         &[],
@@ -7695,7 +7822,7 @@ fn logout_refuses_a_link_to_a_state_folder_or_a_folder_that_is_not_one() {
     fs::create_dir(&other).unwrap();
     fs::write(
         real.join("latch.json"),
-        r#"{"format": 2, "written_by": "test"}"#,
+        r#"{"format": 3, "written_by": "test"}"#,
     )
     .unwrap();
     for (folder, file) in [&real, &other]
