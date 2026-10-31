@@ -142,14 +142,11 @@ enum TestHooks {
         }
         // Agents' Activity button on a host's row, "HOST|UID"; and Remove…,
         // confirmed: "UID".
-        func onAgentRow(_ command: String, _ act: @escaping @MainActor (HostEntry, String) -> Void) {
-            on(command) { argument in
-                guard let parts = argument?.split(separator: "|"), parts.count == 2,
-                      let host = app.hosts.first(where: { $0.name == parts[0] }) else { return }
-                act(host, String(parts[1]))
-            }
+        on("agent-activity") { argument in
+            guard let parts = argument?.split(separator: "|"), parts.count == 2,
+                  let host = app.hosts.first(where: { $0.name == parts[0] }) else { return }
+            app.openActivity(host, agent: String(parts[1]))
         }
-        onAgentRow("agent-activity") { host, uid in app.openActivity(host, agent: uid) }
         on("agent-remove") { uid in
             guard let agent = app.agents?.first(where: { $0.uid == uid }) else { return }
             Task { await app.removeAgent(agent) }

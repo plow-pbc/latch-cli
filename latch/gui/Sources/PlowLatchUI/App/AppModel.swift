@@ -886,6 +886,8 @@ final class AppModel {
     /// Counts the changes saved: a read begun before the last of them
     /// answers with the rules as they were before it.
     @ObservationIgnored private var ruleChanges = 0
+    /// The last change asked, which the next waits for.
+    @ObservationIgnored private var lastRuleChange: Task<Void, Never>?
 
     /// Reads the account's rules again; a failure keeps what was held, and
     /// an answer older than a change saved meanwhile is dropped.
@@ -938,23 +940,30 @@ final class AppModel {
     /// read as part of the change), held over any read still under way;
     /// the rule added or changed is selected. A change latch refused reads
     /// the rules again before saying why, so the list shows what latch
-    /// holds (a rule deleted elsewhere goes).
-    private func ruleChange(_ change: () async throws -> RulesWrite) async throws {
-        let written: RulesWrite
-        do {
-            written = try await change()
-        } catch {
-            await refreshRules()
-            throw error
+    /// holds (a rule deleted elsewhere goes). Changes run one at a time, in
+    /// the order asked, so an earlier one's answer never replaces a later's.
+    private func ruleChange(_ change: @escaping () async throws -> RulesWrite) async throws {
+        let previous = lastRuleChange
+        let this = Task {
+            await previous?.value
+            let written: RulesWrite
+            do {
+                written = try await change()
+            } catch {
+                await refreshRules()
+                throw error
+            }
+            ruleChanges += 1
+            rules = written.list
+            rulesError = nil
+            if written.change.kind == "remove" {
+                if selectedRule == written.change.id { selectedRule = nil }
+            } else if let id = written.change.id {
+                selectedRule = id
+            }
         }
-        ruleChanges += 1
-        rules = written.list
-        rulesError = nil
-        if written.change.kind == "remove" {
-            if selectedRule == written.change.id { selectedRule = nil }
-        } else if let id = written.change.id {
-            selectedRule = id
-        }
+        lastRuleChange = Task { _ = await this.result }
+        try await this.value
     }
 
     /// For snapshots: as `rules list` said.
