@@ -34,7 +34,7 @@ guides cover the [browser](../latch/BROWSER.md), [vault](../latch/VAULT.md),
 
 | | What it is | Calls hosts | Rules, vault, connectors | Runs a host | How its calls are judged |
 |---|---|---|---|---|---|
-| **Owner** | One of your machines, logged in with your own Plow login: by text, or with `--token-file`. | Yes, any host in your account. | Rules and vault on any host (`--host NAME`). Connectors: listed on any host, turned on or off only on the host itself. | Yes. | As your own request: refused only where the host's rules forbid it. |
+| **Owner** | One of your machines, logged in with your own Plow login: by text, or with `--token-file`. | Yes, any host in your account. | Rules for the whole account, from any of your machines. Vault on any host (`--host NAME`). Connectors: listed on any host, turned on or off only on the host itself. | Yes. | As your own request: refused only where the host's rules forbid it. |
 | **Owner on the host** | Anything running as the host's OS user that uses the host's own state folder, with no `--host` naming another machine. An agent running there counts. | That host, through its private local socket. Other hosts, as the owner. | Yes, on that host. Rules and vault work even while the host is stopped. | It is the host. | Exactly like the owner. The audit records it as `owner_on_host`. |
 | **Agent** | An agent logged in with its own Plow agent credential, in its own state folder. | Yes. | No: `owner_only` (exit 4). It may run `vault list`, which shows each item's id, title and saved sites, and `vault link --kind login`, which asks you for a login on your phone (it sees only whether it was saved, and the new item's id), and it sees which connectors each host has on. On its own computer, where latch is installed alone, it runs `latch update`. | No: its login saves no Plow token, so `latch serve` stops with `not_logged_in`. | Against your rules and your messages in your Plow chat with that agent. |
 
@@ -166,16 +166,17 @@ login.
   unanswered messages from others; the whole-chat judgment still checks
   context and conditions such as “let me review it first”. Rules/defaults
   may allow work even with no chat.
-  A new host starts with no rules: `latch setup`, like the Mac app's
-  onboarding, offers a family or a work assistant's to start from
-  (`latch rules set --preset family`, or `work`).
+  When no rule for every agent applies on a machine yet, `latch setup`,
+  like the Mac app's onboarding, offers a family or a work assistant's
+  rule to start from, for all your agents on all your hosts
+  (`latch rules add --preset family --if-empty`, or `work`).
 - **Which chat.** The agent's chat, if its line has one. If it has several,
   the agent names one with `--plow-chat ID` or `LATCH_PLOW_CHAT`. Otherwise
   the call stops with `which_chat` (exit 2), which lists the choices. Your
   own calls refuse the selector (`plow_chat_not_supported`, exit 2).
 - **When permission is missing.** A `not_covered` refusal names the Plow
   chat read, if one was found, and the messages there that were yours.
-  Say what the agent may do in that chat, or allow it in the host's rules.
+  Say what the agent may do in that chat, or allow it in a rule (`latch rules add`).
   If no chat was found, only the rules can allow it. Latch has no approval
   prompt or dialog. If a retry is refused again, the agent must stop and
   tell you.
@@ -248,7 +249,7 @@ at least as likely as not covered.
 
 | Task | On the host | From another of your machines | Works while the host is stopped |
 |---|---|---|---|
-| Rules | `latch rules show\|set\|edit\|clear\|try`, `--agent AGENT` for one agent's rules | add `--host NAME` | Yes |
+| Rules | `latch rules list\|add\|edit\|remove\|try`, for the whole account | The same: each reaches every host it can. `rules try --host NAME` previews on that host | Yes |
 | Vault | `latch vault list\|show\|add\|edit\|remove\|import\|link\|link-state` | add `--host NAME` | Yes, except `vault link` and `link-state` |
 | Connectors | `latch plugins enable\|disable google` (on a Mac, also `messages` and `contacts`) | `latch status` shows the ones each host has on; `latch status --host NAME` lists them all | Yes |
 | Refuse exec to agents | `latch serve --deny-exec` or `--deny-exec=AGENT_UID` | No | Set when the host starts |
@@ -256,9 +257,26 @@ at least as likely as not covered.
 | Audit log | `latch audit` (`--before ID`, `--all`, `--follow`), `latch audit judge ID`, `latch audit shot ID N --output FILE`, `latch audit verify`, `latch audit rotate-key` | `audit`, `audit judge` and `audit shot` with `--host NAME`; `verify` and `rotate-key` only on the host | Yes |
 | Watch it | `latch dashboard`, `latch logs [-f]`, `latch audit --follow`, `latch status --local --follow` | `latch audit --follow --host NAME`, `latch status --host NAME --follow` | Yes, except `dashboard` |
 
-- **Rules** are plain text in your own words. There is one text for every
-  agent, which your own calls are judged against too, and one per agent.
-  Together they are at most 8 KiB.
+- **Rules** are one list for your whole account. Each rule is a short
+  text in your own words, the agents it covers and the hosts it applies
+  on, each `all` (those added later included) or the ones you name.
+  `latch rules add TEXT` covers all agents on all hosts unless `--agents`
+  or `--hosts` say otherwise; `latch rules edit ID` and `latch rules
+  remove ID` take the id `latch rules list` gives. Rules covering every
+  agent are judged against your own calls too.
+  - Every host keeps the whole list, and so does each of your machines.
+    A change is saved on this machine first, then on every host it can
+    reach. A host that was offline catches up the next time you list or
+    change rules while it's online. `latch rules list` reports each host
+    as `current`, `behind` (it answered and lacks the newest rules) or
+    `unknown` (it couldn't be checked; `host_outdated` means update latch
+    there).
+  - A removed rule can't be edited back, and a host that missed the
+    removal can't bring it back.
+  - On each host, the rules for every agent plus one agent's own are at
+    most 8 KiB. A change that would pass that is refused with
+    `rules_too_long`. If rules combined from different machines pass it,
+    that host refuses every request until you shorten or remove some.
 - **Vault** secrets never come from the command line or the environment.
   You type them at a prompt, import another password manager's export, or
   add them from your phone with `vault link`. See [VAULT.md](../latch/VAULT.md).
@@ -287,8 +305,9 @@ at least as likely as not covered.
 - From another machine, the host has to be running. A failed `--host` call
   never falls back to this machine's rules or vault.
 
-**Which host a command goes to.** `--host NAME`, or `LATCH_HOST`. (`rules`,
-`audit` and `status` read only `--host`.) Otherwise this machine, if it has
+**Which host a command goes to.** `--host NAME`, or `LATCH_HOST`. (`rules try`,
+`audit` and `status` read only `--host`; the other `rules` commands are
+the account's.) Otherwise this machine, if it has
 ever run a host. Otherwise your only host. With no hosts you get `no_host`,
 and with several and none named `host_required` (both exit 2).
 
