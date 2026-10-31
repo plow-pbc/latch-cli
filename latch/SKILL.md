@@ -258,7 +258,61 @@ Exit 4 is a refusal, and its code says what you may do:
 - Any other exit 4 (`owner_said_no`, `exec_denied`, …) means no.
 
 Exit 3: the host was unreachable or could not judge; its message says what
-fixes it.
+fixes it. With reason `rules_too_long`, that host's rules are over its size
+limit and it refuses every request: ask the owner to shorten or delete
+rules for it.
+
+## Rules
+
+The owner's rules are one list for their whole account. Only the owner's
+own devices can read or change them: from your own agent login every
+`latch rules` command is `owner_only` (exit 4). Running on the owner's
+device or on the host itself as its owner, you can manage them when the
+owner asks you to.
+
+- `latch rules list` reads every host it can reach and merges their copies,
+  the newest change of each rule winning. Each rule has an `id`, its
+  `text`, `agents` and `hosts`: `"all"` (those added later included) or
+  the ones named. Edit and remove a rule by that id:
+  `latch rules edit ID TEXT`, `latch rules remove ID`.
+- **Scope, filter, route.** On `add` and `edit`, `--agents a,b|all` and
+  `--hosts h1,h2|all` say which agents and hosts a rule covers; on `edit`,
+  either replaces the whole set and one left out stays as it is. On
+  `list`, `--agent` and `--host` only narrow `rules` to those that apply
+  there, `all` rules included. On `rules try`, `--host` is the host to
+  preview on. An agent or host named `all`, or with a comma in its name, is
+  given by its uid or key.
+- **Defaults.** `add` covers all agents on all hosts, presets
+  (`--preset family|work`) included, unless the owner asks for less: then
+  name them. `--if-empty` adds only when no rule for every agent applies on
+  this machine's host yet; otherwise `change.saved` is false with `reason`
+  `rules_exist` and the answer lists the rules there are.
+- **Delivery.** A change is saved on this machine first, then on every host
+  it can reach; a host it couldn't reach is reported, not an error. In
+  `hosts`, each host's `delivery` is `current` (it has the newest list),
+  `behind` (it answered and lacks it; `reason` says why) or `unknown` (it
+  couldn't be checked: offline, a lost reply, or `host_outdated`: latch
+  there needs an update before it can sync rules). A host that was behind
+  catches up on a later `rules list` while it is online. A rule's
+  `behind_hosts` names the hosts it applies on that are confirmed behind.
+  Tell the owner which hosts don't have the change yet.
+- **Size.** On each host, the rules for every agent plus one agent's own
+  must fit in 8192 bytes, counted on the merged list. A change past that is
+  refused with `rules_too_long` and nothing saved; its message names the
+  agent and host. Rules merged from different machines can still pass it:
+  `hosts[].budget.over_budget` shows it, and that host refuses every
+  request until the owner shortens or removes some.
+- **Retrying.** `list`, `edit` and `remove` are safe to repeat: the same
+  edit again answers `changed: false`, and removing a removed rule
+  succeeds. `add` adds a new rule each time, so after an unclear failure
+  `rules list` before adding again. A removed rule can't be edited back
+  (`no_such_rule`, `removed: true`).
+- **Trying.** `latch rules try [--agent A | --new-agent] [--host H] --
+  REQUEST` previews the gatekeeper's verdict on one host's saved rules,
+  without running the request; `--draft F` replaces the rules for every
+  agent for that preview and is never saved. Each try is billed to the
+  owner's Plow balance like a real judgment (about $0.0001), so try only
+  what you need.
 
 ## Browsing
 

@@ -54,17 +54,24 @@ browser's risky steps.
 - **It fails closed.** If the host can't judge a step, that step doesn't run.
   Earlier steps of a browser plan may already have acted.
 
-**Your rules** are plain words, kept on each host: one text for every agent,
-and one for each agent. A new host has none until setup offers a family or
-a work assistant's to start from (`latch rules set --preset family`, or
-`work`). Edit them on the host, or from another of your computers with
-`--host`:
+**Your rules** are one list for your whole account, in plain words. Each
+rule says which agents it covers and which hosts it applies on: all of them,
+unless you name some. Every host keeps the whole list, and one that was
+offline catches up the next time you list or change rules while it's online.
+Until a rule for every agent applies, setup offers a family or a work
+assistant's to start from (`latch rules add --preset family --if-empty`, or
+`work`). Manage them from any of your computers:
 
 ```sh host
-latch rules edit
-latch rules edit --agent my-agent
-latch rules edit --host my-mac
+latch rules list
+latch rules add "Never send email after 9 PM."
+latch rules add "Only run tests." --agents my-agent --hosts my-mac
+latch rules edit 3f9a… "Never send email after 10 PM."
+latch rules remove 3f9a…
 ```
+
+`latch rules list` gives each rule's id, and says which hosts don't have the
+newest rules yet.
 
 `latch rules try` previews the verdict a request would get, without running
 it. A model judges the rules, so they aren't a guarantee.

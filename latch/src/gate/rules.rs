@@ -361,8 +361,10 @@ pub fn overgrown(before: &[Rule], after: &[Rule], hosts: &[&str]) -> Vec<Overgro
     found
 }
 
-/// The judgment a host over budget gives every caller: none.
-fn over_budget(name: &str, budget: &Budget) -> Failure {
+/// The judgment a host over budget gives every caller: none. The owner
+/// (`agent` is "owner") is shown the rules to trim; an agent, who can't
+/// change them, is told to ask.
+fn over_budget(name: &str, agent: &str, budget: &Budget) -> Failure {
     let mut refused = Failure::new(
         code::gatekeeper_unavailable,
         format!(
@@ -376,7 +378,14 @@ fn over_budget(name: &str, budget: &Budget) -> Failure {
         "max_bytes": budget.max_bytes,
         "agents_over": budget.agents_over,
     });
-    refused.next = Some(format!("Ask the owner to shorten or delete rules for {name}.").into());
+    refused.next = Some(
+        if agent == "owner" {
+            format!("latch rules list --host {name}")
+        } else {
+            format!("Ask the owner to shorten or delete rules for {name}.")
+        }
+        .into(),
+    );
     refused
 }
 
@@ -446,7 +455,7 @@ impl RulesSource for RuleFiles {
         })?;
         let budget = budget(&rules, &self.store.host);
         if budget.over_budget {
-            return Err(over_budget(&self.name, &budget));
+            return Err(over_budget(&self.name, agent, &budget));
         }
         Ok(render(&rules, &self.store.host, agent))
     }

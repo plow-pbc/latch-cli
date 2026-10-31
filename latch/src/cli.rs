@@ -205,8 +205,11 @@ pub enum Command {
     /// Every host keeps the whole list, and its gatekeeper reads the rules
     /// that apply there at every judgment. A host running on an agent's login
     /// is never asked for its rules or sent the list; rules it already holds
-    /// are unchanged. Freeform rules are judged, not
-    /// guaranteed. --deny-exec is enforced in code
+    /// are unchanged. On add and edit, --agents and --hosts say which agents
+    /// and hosts a rule covers; on list, --agent and --host only narrow what
+    /// it shows; on try, --host is the host to preview on. Only the owner's
+    /// own devices can use them. Freeform rules are judged, not guaranteed.
+    /// --deny-exec is enforced in code
     Rules(RulesArgs),
     /// Turn this host's connectors on or off
     ///
@@ -929,7 +932,12 @@ pub enum RulesCommand {
     /// Each host keeps the whole list; this merges their copies, the newest
     /// change of each rule winning, and brings any host that is behind up to
     /// date. --agent and --host show only the rules that apply to that agent
-    /// or on that host, `all` rules included
+    /// or on that host, `all` rules included. Each host's `delivery` is
+    /// current (it holds the newest list), behind (it answered and lacks it;
+    /// `reason` says why) or unknown (it couldn't be checked: offline, or
+    /// `host_outdated`: update latch there). A host whose rules for every agent
+    /// plus one agent's own pass 8192 bytes refuses every request until they
+    /// are shortened
     List {
         /// Only rules that apply to this agent: its name, the peer name of
         /// the latch it calls from, or its uid
@@ -942,11 +950,16 @@ pub enum RulesCommand {
     /// Add a rule: TEXT, the text of --file F (- reads stdin), or a preset's
     ///
     /// It covers all agents on all hosts unless --agents or --hosts say
-    /// otherwise, and is saved on this machine first, then on every host you
-    /// can reach
+    /// otherwise, presets included, and is saved on this machine first, then
+    /// on every host you can reach. A host that can't be reached gets it on a
+    /// later `rules list`. Refused with rules_too_long, and nothing saved,
+    /// where it would push the rules for every agent plus one agent's own
+    /// past 8192 bytes on a host
     Add {
+        /// The rule, in your own words
         #[arg(conflicts_with_all = ["file", "preset"])]
         text: Option<String>,
+        /// Read the rule from F; - reads stdin
         #[arg(long, value_name = "F", conflicts_with = "preset")]
         file: Option<PathBuf>,
         /// A rule to start from: family (a family assistant: calendar, texts and email, groceries; never documents or passwords) or work (a work assistant: email, calendar, GitHub; not personal texts and chats), as the Mac app offers them
@@ -963,12 +976,14 @@ pub enum RulesCommand {
     /// Change a rule's text, the agents it covers or the hosts it applies on
     ///
     /// What isn't given stays as it is; --agents or --hosts replace the
-    /// whole set
+    /// whole set. A removed rule can't be edited back (no_such_rule)
     Edit {
         /// The rule's id, as `rules list` gives it
         id: String,
+        /// The rule's new text
         #[arg(conflicts_with = "file")]
         text: Option<String>,
+        /// Read the new text from F; - reads stdin
         #[arg(long, value_name = "F")]
         file: Option<PathBuf>,
         #[command(flatten)]
