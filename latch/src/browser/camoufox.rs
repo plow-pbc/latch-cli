@@ -13,8 +13,6 @@
 //! starts run in a job the worker holds, not in a worker's AppContainer;
 //! Firefox's own sandbox runs inside it.
 
-use std::collections::BTreeMap;
-use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::{ErrorKind, Read, Write};
 #[cfg(unix)]
@@ -40,12 +38,6 @@ const STARTUP: Duration = Duration::from_secs(90);
 const COMMAND: Duration = Duration::from_secs(90);
 /// How long a closing browser has before its process groups are killed.
 const CLOSING: Duration = Duration::from_secs(10);
-
-/// The only variables the helper and the engine get.
-#[cfg(unix)]
-const PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
-#[cfg(windows)]
-use crate::worker::PATH;
 
 /// What holds every process of the helper and the browser, so they can be
 /// ended together: on Unix the process groups they lead, which need
@@ -132,7 +124,8 @@ impl Camoufox {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(log);
-        let environment = environment(scratch);
+        // The helper gets the browser's environment too.
+        let environment = super::worker::environment(scratch);
         for (name, value) in &environment {
             command.env(name, value);
         }
@@ -684,34 +677,6 @@ fn plain(path: &Path) -> PathBuf {
 
 fn io_failure(err: std::io::Error) -> Failure {
     Failure::new(code::engine_failed, err.to_string())
-}
-
-/// The environment the helper and the browser get, and nothing else: a
-/// plain `PATH`, and a home and a temp folder in the session's `scratch`
-/// folder; on Windows first what Windows needs to start a program, as a
-/// worker gets it, with the user's own folders in `scratch` too.
-fn environment(scratch: &Path) -> BTreeMap<&'static str, OsString> {
-    let mut env = BTreeMap::from([("PATH", OsString::from(PATH))]);
-    #[cfg(unix)]
-    env.extend([
-        ("HOME", scratch.into()),
-        ("TMPDIR", scratch.join("tmp").into()),
-    ]);
-    #[cfg(windows)]
-    {
-        for name in crate::worker::WINDOWS_ENV {
-            if let Some(value) = std::env::var_os(name) {
-                env.insert(name, value);
-            }
-        }
-        for name in ["USERPROFILE", "APPDATA", "LOCALAPPDATA"] {
-            env.insert(name, scratch.into());
-        }
-        for name in ["TEMP", "TMP"] {
-            env.insert(name, scratch.join("tmp").into());
-        }
-    }
-    env
 }
 
 /// Makes `pid`'s app the front one; false if it is no app or macOS

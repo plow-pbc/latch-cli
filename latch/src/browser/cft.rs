@@ -42,12 +42,6 @@ const CLOSING: Duration = Duration::from_secs(10);
 const NAVIGATION_STARTS: Duration = Duration::from_millis(350);
 const LOADING: Duration = Duration::from_secs(15);
 
-/// The only variables the engine gets.
-#[cfg(unix)]
-const PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
-#[cfg(windows)]
-use crate::worker::PATH;
-
 /// What holds all of Chrome's processes, so they can be ended together:
 /// on Unix the process group Chrome leads, which needs nothing kept; on
 /// Windows the job they run in, which also ends them when the worker ends.
@@ -1817,7 +1811,7 @@ fn start(
         .arg("--force-webrtc-ip-handling-policy=disable_non_proxied_udp")
         .arg(format!("--user-data-dir={}", data.display()))
         .env_clear()
-        .env("PATH", PATH)
+        .envs(super::worker::environment(scratch))
         .current_dir(scratch)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -1832,8 +1826,6 @@ fn start(
     {
         let (reads, writes) = (reads.as_raw_fd(), writes.as_raw_fd());
         command
-            .env("HOME", scratch)
-            .env("TMPDIR", scratch.join("tmp"))
             // Chrome's crash reporter writes here instead of the user's Library.
             .env("BREAKPAD_DUMP_LOCATION", scratch.join("crash"))
             .process_group(0);
@@ -1872,19 +1864,6 @@ fn start(
             reads.as_raw_handle() as usize,
             writes.as_raw_handle() as usize
         ));
-        // What Windows needs to run it, then a home and a temp folder in the
-        // runtime's scratch folder, as elsewhere.
-        for name in crate::worker::WINDOWS_ENV {
-            if let Some(value) = std::env::var_os(name) {
-                command.env(name, value);
-            }
-        }
-        for name in ["USERPROFILE", "APPDATA", "LOCALAPPDATA"] {
-            command.env(name, scratch);
-        }
-        command
-            .env("TEMP", scratch.join("tmp"))
-            .env("TMP", scratch.join("tmp"));
         // Chrome's two ends become inheritable for this start alone; the
         // worker's own handles are not (`browser::worker`).
         for end in [reads, writes] {

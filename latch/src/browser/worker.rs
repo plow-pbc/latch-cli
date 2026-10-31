@@ -48,6 +48,8 @@
 //! browser end by its limit (`Call::limit`, from `--call-limit`), and a
 //! browser that leaves several calls in a row unanswered is closed as gone.
 
+use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::mem::ManuallyDrop;
@@ -78,6 +80,41 @@ use crate::wire::Response;
 /// the worker counts it gone: it closes it and ends, and the next session
 /// starts a new one.
 const UNANSWERED_IN_A_ROW: usize = 3;
+
+/// The only `PATH` an engine gets.
+#[cfg(unix)]
+const PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
+#[cfg(windows)]
+use crate::worker::PATH;
+
+/// The environment an engine's processes get (Chrome, or Camoufox's
+/// helper and browser), and nothing else: a plain `PATH`, and a home and a
+/// temp folder in the session's `scratch` folder; on Windows first what
+/// Windows needs to start a program, as a worker gets it, with the user's
+/// own folders in `scratch` too.
+pub fn environment(scratch: &Path) -> BTreeMap<&'static str, OsString> {
+    let mut env = BTreeMap::from([("PATH", OsString::from(PATH))]);
+    #[cfg(unix)]
+    env.extend([
+        ("HOME", scratch.into()),
+        ("TMPDIR", scratch.join("tmp").into()),
+    ]);
+    #[cfg(windows)]
+    {
+        for name in crate::worker::WINDOWS_ENV {
+            if let Some(value) = std::env::var_os(name) {
+                env.insert(name, value);
+            }
+        }
+        for name in ["USERPROFILE", "APPDATA", "LOCALAPPDATA"] {
+            env.insert(name, scratch.into());
+        }
+        for name in ["TEMP", "TMP"] {
+            env.insert(name, scratch.join("tmp").into());
+        }
+    }
+    env
+}
 
 /// The process groups the engine's processes lead (the worker starts each
 /// engine in a group of its own), for `die_with_host`.
