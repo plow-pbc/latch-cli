@@ -487,6 +487,7 @@ pub struct Change {
 /// the new, never part.
 pub struct RulesDir {
     dir: PathBuf,
+    state: PathBuf,
     /// The key of the host this folder is the state of.
     host: String,
 }
@@ -495,6 +496,7 @@ impl RulesDir {
     pub fn new(state_dir: &Path, host_key: &str) -> RulesDir {
         RulesDir {
             dir: state_dir.join(RULES_DIR),
+            state: state_dir.to_path_buf(),
             host: host_key.to_string(),
         }
     }
@@ -506,6 +508,25 @@ impl RulesDir {
             return self.read();
         }
         self.read()
+    }
+
+    /// One change to the list, under the lock: `change` is given the list
+    /// as it is and says which rules to merge into it, the newer version
+    /// of each winning, removals included. Never refused for size, so
+    /// hosts always converge; refused by `change`, nothing is written.
+    /// Returns the ids that changed.
+    pub fn change(
+        &self,
+        change: impl FnOnce(&[Rule]) -> Result<Vec<Rule>, Failure>,
+    ) -> Result<Vec<String>, Failure> {
+        let _lock = self.lock()?;
+        let mut rules = self.read()?;
+        let incoming = change(&rules)?;
+        let changed = merge(&mut rules, &incoming);
+        if !changed.is_empty() {
+            self.write(&rules)?;
+        }
+        Ok(changed)
     }
 
     pub fn text(&self, scope: &Scope) -> Result<Option<String>, Failure> {
@@ -538,23 +559,41 @@ impl RulesDir {
             let message = "the rules are empty; to remove them, use `latch rules clear`";
             return Err(Failure::new(code::empty_rules, message.into()));
         }
-        let _lock = self.lock()?;
-        let rules = self.read()?;
-        let before = self.current(&rules, scope, expected)?;
-        let agents = match scope {
-            Scope::Host => Covers::All,
-            Scope::Agent(uid) => Covers::Only(vec![uid.clone()]),
-        };
-        let mut after = self.without(&rules, scope);
-        merge(
-            &mut after,
-            &[Rule::new(
+        let mut before = None;
+        self.change(|rules| {
+            before = self.current(rules, scope, expected)?;
+            let agents = match scope {
+                Scope::Host => Covers::All,
+                Scope::Agent(uid) => Covers::Only(vec![uid.clone()]),
+            };
+            let mut changes = self.removing(rules, scope);
+            changes.push(Rule::new(
                 text,
                 agents,
                 Covers::Only(vec![self.host.clone()]),
-            )],
-        );
-        if let Some(over) = overgrown(&rules, &after, &[&self.host]).first() {
+            ));
+            let mut after = rules.to_vec();
+            merge(&mut after, &changes);
+            self.refuse_overgrown(rules, &after)?;
+            if let Scope::Agent(uid) = scope {
+                let peer_file = format!("{uid}.peer");
+                match peer {
+                    Some(key) => self.replace(&peer_file, key)?,
+                    None => self.remove(&peer_file)?,
+                }
+            }
+            Ok(changes)
+        })?;
+        Ok(Change {
+            before,
+            after: Some(revision(text)),
+        })
+    }
+
+    /// Refuses going from `before` to `after` where it would push this
+    /// host's rules over the budget.
+    fn refuse_overgrown(&self, before: &[Rule], after: &[Rule]) -> Result<(), Failure> {
+        if let Some(over) = overgrown(before, after, &[&self.host]).first() {
             let whose = match &over.agent {
                 Some(uid) => format!(" for agent {uid}"),
                 None => String::new(),
@@ -568,46 +607,32 @@ impl RulesDir {
             refused.details = json!({"limit_bytes": MAX_RULES, "hosts": [over]});
             return Err(refused);
         }
-        if let Scope::Agent(uid) = scope {
-            let peer_file = format!("{uid}.peer");
-            match peer {
-                Some(key) => self.replace(&peer_file, key)?,
-                None => self.remove(&peer_file)?,
-            }
-        }
-        self.write(&after)?;
-        Ok(Change {
-            before,
-            after: Some(revision(text)),
-        })
+        Ok(())
     }
 
     /// Removes `scope`'s rules here, and an agent's stored peer key. With
     /// `expected`, only if its text is still at that revision, as `set`.
     pub fn clear(&self, scope: &Scope, expected: Option<Option<&str>>) -> Result<Change, Failure> {
-        let _lock = self.lock()?;
-        let rules = self.read()?;
-        let before = self.current(&rules, scope, expected)?;
-        self.write(&self.without(&rules, scope))?;
-        if let Scope::Agent(uid) = scope {
-            self.remove(&format!("{uid}.peer"))?;
-        }
+        let mut before = None;
+        self.change(|rules| {
+            before = self.current(rules, scope, expected)?;
+            if let Scope::Agent(uid) = scope {
+                self.remove(&format!("{uid}.peer"))?;
+            }
+            Ok(self.removing(rules, scope))
+        })?;
         Ok(Change {
             before,
             after: None,
         })
     }
 
-    /// `rules` with `scope`'s rules here removed.
-    fn without(&self, rules: &[Rule], scope: &Scope) -> Vec<Rule> {
+    /// The removals of `scope`'s rules here.
+    fn removing(&self, rules: &[Rule], scope: &Scope) -> Vec<Rule> {
         rules
             .iter()
-            .map(
-                |rule| match rule.applies_on(&self.host) && scope.covers(&rule.agents) {
-                    true => rule.removed(),
-                    false => rule.clone(),
-                },
-            )
+            .filter(|rule| rule.applies_on(&self.host) && scope.covers(&rule.agents))
+            .map(Rule::removed)
             .collect()
     }
 
@@ -658,7 +683,17 @@ impl RulesDir {
     /// one rule for every agent on this host, and each agent's one rule for
     /// that agent here, their text as it was. Each moved rule's id comes
     /// from what it moved, so a move cut short and run again adds nothing.
+    /// An old file that resolves outside protected state is refused, and
+    /// nothing moves.
     fn move_old(&self) -> Result<(), Failure> {
+        let mut files = vec![OLD_HOST_FILE.to_string()];
+        files.extend(self.old_agents()?.iter().map(|uid| format!("{uid}.txt")));
+        for file in &files {
+            let path = self.dir.join(file);
+            if path.exists() || path.is_symlink() {
+                self.protected(&path)?;
+            }
+        }
         let mut old = Vec::new();
         if let Some(text) = self.read_file(OLD_HOST_FILE)? {
             old.push((OLD_HOST_FILE.to_string(), Covers::All, text));
@@ -691,6 +726,26 @@ impl RulesDir {
             self.remove(&file)?;
         }
         Ok(())
+    }
+
+    /// `path` as it resolves, if inside this host's state folder.
+    fn protected(&self, path: &Path) -> Result<PathBuf, Failure> {
+        let refuse = |message: String| Failure::new(code::bad_rules, message);
+        let state = self
+            .state
+            .canonicalize()
+            .map_err(|err| refuse(format!("{}: {err}", self.state.display())))?;
+        let real = path
+            .canonicalize()
+            .map_err(|err| refuse(format!("{}: {err}", path.display())))?;
+        if !real.starts_with(&state) {
+            return Err(refuse(format!(
+                "{} resolves outside protected state {}",
+                path.display(),
+                state.display()
+            )));
+        }
+        Ok(real)
     }
 
     /// The uids with an old `<agent_uid>.txt`.
@@ -871,6 +926,61 @@ mod tests {
         merge(&mut a, &[rival]);
         merge(&mut b, &[edited]);
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn a_merge_into_the_list_is_kept_newest_first_and_never_refused_for_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let reopened = || RulesDir::new(dir.path(), STUDIO).list().unwrap();
+        let store = RulesDir::new(dir.path(), STUDIO);
+        let first = Rule {
+            updated: 10,
+            ..Rule::new("one", Covers::All, Covers::All)
+        };
+        let edited = Rule {
+            text: "two".into(),
+            updated: 20,
+            ..first.clone()
+        };
+
+        assert_eq!(
+            store.change(|_| Ok(vec![first.clone()])).unwrap(),
+            vec![first.id.clone()]
+        );
+        assert_eq!(reopened(), vec![first.clone()]);
+        store.change(|_| Ok(vec![edited.clone()])).unwrap();
+        assert_eq!(reopened(), vec![edited.clone()]);
+
+        // A stale version changes nothing, and nothing is written.
+        assert!(
+            store
+                .change(|_| Ok(vec![first.clone()]))
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(reopened(), vec![edited.clone()]);
+
+        // A removal is kept, and a stale copy can't bring the rule back.
+        let removed = edited.removed();
+        store.change(|_| Ok(vec![removed.clone()])).unwrap();
+        assert!(
+            store
+                .change(|_| Ok(vec![edited.clone()]))
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(reopened(), vec![removed]);
+
+        // Rules that come to more than the budget together are kept.
+        let long = |agents| Rule::new(&"r".repeat(5000), agents, Covers::All);
+        store.change(|_| Ok(vec![long(Covers::All)])).unwrap();
+        store.change(|_| Ok(vec![long(only(ADA))])).unwrap();
+        assert!(budget(&reopened(), STUDIO).over_budget);
+
+        // Refused by the change, nothing is written.
+        let refused = store.change(|_| Err(Failure::new(code::rules_io, "no".into())));
+        assert_eq!(refused.unwrap_err().code, "rules_io");
+        assert_eq!(reopened().len(), 3);
     }
 
     #[test]

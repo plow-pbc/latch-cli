@@ -12,9 +12,7 @@ use jiff::Timestamp;
 use serde_json::{Value, json};
 
 use super::fake::{self, AGENT, LINE, World, agent_self, member, message, owner};
-use super::rules::{
-    Covers, RULES_DIR, Rule, RuleFiles, Rules, RulesDir, RulesSource, budget, merge,
-};
+use super::rules::{Covers, RULES_DIR, Rule, RuleFiles, Rules, RulesDir, RulesSource, budget};
 use super::*;
 use crate::failure::Exit;
 use crate::model::{Asked, CallFailed, CallMeta, system_one};
@@ -1399,26 +1397,53 @@ async fn a_hosts_old_rules_move_into_the_list_and_read_the_same() {
     assert_eq!(std::fs::read(old.join("rules.json")).unwrap(), written);
 }
 
+#[test]
+fn old_rules_redirected_outside_protected_state_are_refused_and_not_moved() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    let old = state.join(RULES_DIR);
+    std::fs::create_dir_all(&old).unwrap();
+    let outside = dir.path().join("outside.txt");
+    std::fs::write(&outside, "Anything goes.").unwrap();
+    for file in ["host.txt".to_string(), format!("{AGENT}.txt")] {
+        let link = old.join(&file);
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        let refused = RuleFiles::new(&state, HOST_KEY, "studio").err().unwrap();
+        assert_eq!(refused.code, "bad_rules", "{file}");
+        assert!(refused.message.contains("protected state"), "{file}");
+        // Nothing moved; the link and what it points at are as they were.
+        assert!(!old.join("rules.json").exists(), "{file}");
+        assert!(link.is_symlink(), "{file}");
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "Anything goes.");
+        // The owner's commands refuse to move it too.
+        let shown = RulesDir::new(&state, HOST_KEY).list().err().unwrap();
+        assert_eq!(shown.code, "bad_rules", "{file}");
+        std::fs::remove_file(&link).unwrap();
+    }
+}
+
 #[tokio::test]
 async fn a_host_over_budget_refuses_every_judgment_until_its_owner_trims() {
     let dir = tempfile::tempdir().unwrap();
     let state = dir.path().join("state");
-    // Each written apart within the budget; merged, Juno's are over it.
+    // Each made apart within the budget; merged into the host's list, as
+    // syncing does, Juno's are over it, and the merge is kept anyway.
     let every = vec![Rule::new(&"e".repeat(3000), Covers::All, Covers::All)];
-    let mut juno = vec![Rule::new(
+    let juno = vec![Rule::new(
         &"j".repeat(6000),
         Covers::Only(vec![AGENT.into()]),
         Covers::All,
     )];
     assert!(!budget(&every, HOST_KEY).over_budget);
     assert!(!budget(&juno, HOST_KEY).over_budget);
-    merge(&mut juno, &every);
-    let merged = budget(&juno, HOST_KEY);
+    let store = RulesDir::new(&state, HOST_KEY);
+    store.change(|_| Ok(every)).unwrap();
+    store.change(|_| Ok(juno)).unwrap();
+    let merged = budget(&RulesDir::new(&state, HOST_KEY).list().unwrap(), HOST_KEY);
     assert_eq!(
         (merged.over_budget, merged.max_bytes, &merged.agents_over),
         (true, 9000, &Covers::Only(vec![AGENT.into()]))
     );
-    write_rules(&state, &juno);
 
     let model = Recorder::answering(0.9, 0.05, 0.05);
     let gatekeeper = gatekeeper(
