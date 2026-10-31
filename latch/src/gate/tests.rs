@@ -1470,6 +1470,11 @@ async fn a_host_over_budget_refuses_every_judgment_until_its_owner_trims() {
             refused.message,
             "The gatekeeper on studio could not judge this request because its rules are too long."
         );
+        let next = match caller {
+            Caller::Owner => "latch rules list --host studio",
+            _ => "Ask the owner to shorten or delete rules for studio.",
+        };
+        assert_eq!(refused.next.as_deref(), Some(next));
     }
     assert_eq!(model.calls(), 0);
 
