@@ -1,6 +1,8 @@
 //! `latch rules list|add|edit|remove`: the owner's commands on the account's
 //! rules. Every host keeps the whole list (`rules.rs`), and so does this
-//! machine, whether or not it serves. A command reads this machine's copy
+//! machine, whether or not it serves. A host running on an agent's login is
+//! no copy: an agent can neither read nor write the owner's rules, so it is
+//! never asked for its list or sent one. A command reads this machine's copy
 //! and every host's it can reach at once, merges them by id (the newest
 //! change of each rule winning, removals included), and brings any copy that
 //! is behind up to date. A change is saved in this machine's copy first,
@@ -10,10 +12,10 @@
 //! lacks the newest list) or unknown (it couldn't be asked, or its answer
 //! was lost).
 //!
-//! Agents and hosts are named by stable id. Those the account no longer has
-//! are left out of what a rule shows, and a rule none of whose agents, or
-//! none of whose hosts, are left is not shown at all; nothing is removed
-//! for it.
+//! Agents and hosts are named by stable id. Those the account no longer has,
+//! and hosts on an agent's login, are left out of what a rule shows, and a
+//! rule none of whose agents, or none of whose hosts, are left is not shown
+//! at all; nothing is removed for it.
 
 use std::time::Duration;
 
@@ -225,7 +227,10 @@ impl Session {
         // A log that can't be written to stops the command before it changes anything.
         let log = AuditLog::open(state.path.join(audit::FILE))?;
         let account = Account::read(&Plow::from_state(state)?).await?;
-        let listed = hosts::only_hosts(account.peers.clone(), &config.peer.key);
+        let listed: Vec<Peer> = hosts::only_hosts(account.peers.clone(), &config.peer.key)
+            .into_iter()
+            .filter(|host| host.kind == "device")
+            .collect();
         let this_machine = listed
             .iter()
             .find(|host| host.this_machine)
@@ -531,6 +536,21 @@ impl Session {
         if let Some(peer) = found {
             return Ok(peer.key.clone());
         }
+        let agents_login = self.account.peers.iter().find(|peer| {
+            peer.kind != "device"
+                && peer.relay_url.is_some()
+                && (peer.name == name || peer.key == name)
+        });
+        if let Some(peer) = agents_login {
+            let synced = format!("synced to {}: it runs on an agent's login.", peer.name);
+            let message = match saving {
+                true => format!("Your change wasn't saved because rules aren't {synced}"),
+                false => format!("Rules aren't {synced}"),
+            };
+            let mut failure = Failure::new(code::unknown_host, message);
+            failure.next = Some("latch rules list".into());
+            return Err(failure);
+        }
         let mut failure = match saving {
             true => Failure::new(
                 code::unknown_host,
@@ -584,13 +604,15 @@ impl Session {
         json!({"rules": rules, "hosts": hosts})
     }
 
-    /// `rule` as the commands show it: its agents and hosts the account
-    /// still has, and the hosts it applies on that are confirmed behind.
+    /// `rule` as the commands show it: its agents and the hosts the account
+    /// still has that rules reach, and the hosts it applies on that are
+    /// confirmed behind.
     /// `None` when none of its agents, or none of its hosts, are left.
     fn shown(&self, rule: &Rule) -> Option<Value> {
         let agent = |uid: &str| self.account.agents.iter().any(|agent| agent.uid == uid);
         let host = |key: &str| {
-            key == self.config.peer.key || self.account.peers.iter().any(|peer| peer.key == key)
+            key == self.config.peer.key
+                || (self.account.peers.iter()).any(|peer| peer.key == key && peer.kind == "device")
         };
         let behind: Vec<&str> = self
             .copies
