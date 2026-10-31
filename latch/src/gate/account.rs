@@ -156,9 +156,8 @@ pub async fn edit(
     }
     let mut session = Session::open(state).await?;
     session.read().await?;
-    let removed = session.removed();
     let unchecked = session.unchecked();
-    let current = edited_from(&session.merged, &id, &removed, &unchecked)?;
+    let current = edited_from(&session.merged, &id, &unchecked)?;
     // Only what is given replaces; the rest stays as it is under the lock.
     let agents = agents
         .map(|given| session.agents(Some(&given), Some(&current.agents)))
@@ -167,7 +166,7 @@ pub async fn edit(
         .map(|given| session.hosts(Some(&given), Some(&current.hosts)))
         .transpose()?;
     let change: Change = Box::new(move |now| {
-        let current = edited_from(now, &id, &removed, &unchecked)?;
+        let current = edited_from(now, &id, &unchecked)?;
         Ok(edit_of(&current, text.as_deref(), agents, hosts))
     });
     let changed = session.commit("edit", change).await?;
@@ -424,22 +423,6 @@ impl Session {
         record.args = args;
         self.log.append(record)?;
         Ok(())
-    }
-
-    /// The ids of rules removed in any copy read: a rule removed anywhere
-    /// it can be seen can't be edited back, even where a newer version
-    /// won the merge.
-    fn removed(&self) -> Vec<String> {
-        let mut removed: Vec<String> = self
-            .copies
-            .iter()
-            .flat_map(|copy| copy.held.iter().flatten())
-            .filter(|rule| rule.deleted)
-            .map(|rule| rule.id.clone())
-            .collect();
-        removed.sort();
-        removed.dedup();
-        removed
     }
 
     /// The hosts whose copies couldn't be read, by name.
@@ -703,18 +686,11 @@ fn same(a: &[Rule], b: &[Rule]) -> bool {
 }
 
 /// The rule `id` in `rules`, to edit; refused as removed when it is, or
-/// when any copy read holds its removal (`removed`), or as not found among
-/// the copies checked (`unchecked` names those that weren't).
-fn edited_from(
-    rules: &[Rule],
-    id: &str,
-    removed: &[String],
-    unchecked: &[String],
-) -> Result<Rule, Failure> {
+/// as not found among the copies checked (`unchecked` names those that
+/// weren't).
+fn edited_from(rules: &[Rule], id: &str, unchecked: &[String]) -> Result<Rule, Failure> {
     match rules.iter().find(|rule| rule.id == id) {
-        Some(rule) if rule.deleted || removed.iter().any(|gone| gone == id) => {
-            Err(no_such_rule(id, true, unchecked))
-        }
+        Some(rule) if rule.deleted => Err(no_such_rule(id, true, unchecked)),
         Some(rule) => Ok(rule.clone()),
         None => Err(no_such_rule(id, false, unchecked)),
     }
@@ -836,27 +812,19 @@ mod tests {
     }
 
     #[test]
-    fn a_rule_removed_in_any_copy_read_cant_be_edited_back() {
+    fn a_removed_rule_cant_be_edited_back() {
         let rule = Rule::new("one", Covers::All, Covers::All);
         let unchecked = vec!["cloud".to_string()];
-        // A newer version won the merge, but a copy read holds the removal.
-        let revived = rule.edited("two", Covers::All, Covers::All);
-        let refused = edited_from(
-            std::slice::from_ref(&revived),
-            &rule.id,
-            std::slice::from_ref(&rule.id),
-            &unchecked,
-        );
-        let refused = refused.unwrap_err();
+        let refused = edited_from(&[rule.removed()], &rule.id, &unchecked).unwrap_err();
         assert_eq!(
             (refused.code.as_str(), &refused.details["removed"]),
             ("no_such_rule", &json!(true))
         );
         assert_eq!(
-            edited_from(std::slice::from_ref(&revived), &rule.id, &[], &unchecked).unwrap(),
-            revived
+            edited_from(std::slice::from_ref(&rule), &rule.id, &unchecked).unwrap(),
+            rule
         );
-        let missing = edited_from(&[], &rule.id, &[], &unchecked).unwrap_err();
+        let missing = edited_from(&[], &rule.id, &unchecked).unwrap_err();
         assert_eq!(missing.details["removed"], false);
         assert_eq!(missing.details["unchecked_hosts"], json!(["cloud"]));
     }
