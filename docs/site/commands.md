@@ -21,14 +21,14 @@ host. With several hosts and none named, it stops with `host_required`.
 `--host default` is the host `latch hosts default NAME` saved on this
 computer, or for this agent.
 
-`rules`, `vault` and `audit` work on this computer's own host, or on another
-of your hosts with `--host NAME`. Bare `latch status` reports this computer
+`vault` and `audit` work on this computer's own host, or on another of your
+hosts with `--host NAME`; `rules` work on every host of your account at once. Bare `latch status` reports this computer
 and ignores `LATCH_HOST`; `latch status --host NAME` reports another host, for
 you only, never for an agent. `latch browser setup` runs only on the computer
 you're at: with `--host` it stops with `host_not_supported`.
 
 ```sh host
-latch rules show --host my-pi
+latch vault list --host my-pi
 ```
 
 ```sh agent
@@ -126,10 +126,10 @@ latch browser open --host my-mac https://example.com
 
 | Command | For | What it does, and an example |
 |---|---|---|
-| `latch rules set` | Host | Replace the rules with TEXT, with the text of --file F (- reads stdin), or with a preset's. Owner only.<br>Let agents read mail, never send it: `latch rules set 'Agents may search my mail but never send any.'` |
-| `latch rules edit` | Host | Change the rules in $EDITOR; saved only if they did not change meanwhile. Owner only.<br>Edit one agent's rules: `latch rules edit --agent ada` |
-| `latch rules clear` | Host | Remove the rules. Owner only. |
-| `latch rules show` | Host | The rules for every agent and each agent's own, with their revisions. Owner only. |
+| `latch rules list` | Host | Your rules for every host, read from each host you can reach. Owner only. |
+| `latch rules add` | Host | Add a rule: TEXT, the text of --file F (- reads stdin), or a preset's. Owner only.<br>Let agents read mail, never send it, everywhere: `latch rules add 'Agents may search my mail but never send any.'` |
+| `latch rules edit` | Host | Change a rule's text, the agents it covers or the hosts it applies on. Owner only.<br>Change a rule's text: `latch rules edit '3f9a…' 'Never send email after 9 PM.'` |
+| `latch rules remove` | Host | Remove a rule, on this machine first, then on every host you can reach. Owner only.<br>Remove a rule: `latch rules remove '3f9a…'` |
 | `latch rules try` | Host | Preview the gatekeeper's verdict on a request, without running it. Owner only.<br>Would Penny be allowed to build the site? `latch rules try --agent Penny -- exec --write ~/site -- npm run build` |
 
 ## Connectors

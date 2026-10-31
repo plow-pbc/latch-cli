@@ -363,6 +363,7 @@ codes! {
     no_such_record: Usage,
     no_such_release: Failed,
     no_such_request: Usage,
+    no_such_rule: Usage,
     no_such_session: Failed,
     no_such_shot: Usage,
     no_such_tab: Usage,

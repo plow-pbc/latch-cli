@@ -121,7 +121,6 @@ fn latch(state: &Path, args: &[&str], env: &[(&str, &Path)]) -> Output {
         _ if options.iter().any(|word| ["-h", "--help"].contains(word)) => true,
         ["setup", rest @ ..] => !rest.contains(&"--status"),
         ["help", rest @ ..] => !rest.contains(&"--json"),
-        ["rules", "edit", ..] => true,
         [first, ..] => ["dashboard", "skill"].contains(first),
         [] => false,
     };
@@ -963,9 +962,7 @@ fn a_login_that_knows_no_plow_says_so_in_the_same_json_at_a_terminal_and_piped()
 #[test]
 fn pretty_json_holds_the_same_content() {
     let (_dir, state, _key) = owner_host();
-    let set = latch(&state, &["rules", "set", "Never send email."], &[]);
-    assert_eq!(set.status.code(), Some(0), "{set:?}");
-    for args in [&["rules", "show"][..], &["--version"], &["help", "--json"]] {
+    for args in [&["vault", "list"][..], &["--version"], &["help", "--json"]] {
         let compact = latch(&state, args, &[]);
         let mut pretty_args = args.to_vec();
         pretty_args.push("--pretty");
@@ -1130,46 +1127,6 @@ fn help_lists_every_error_code_with_its_exit() {
         .map(|exit| &exit["code"])
         .collect();
     assert!(codes.iter().all(|code| exits.contains(&&code["exit"])));
-}
-
-/// `rules edit` is a person's command: once their editor opened, a failed
-/// save or editor is a plain line for them, not JSON.
-#[test]
-fn a_failed_rules_edit_says_why_in_a_plain_line() {
-    let (dir, state, _) = owner_host();
-    let set = latch(&state, &["rules", "set", "Never send email."], &[]);
-    assert_eq!(set.status.code(), Some(0), "{set:?}");
-    // An editor during whose edit the rules change: the save is refused,
-    // with the revision it found in the failure's details.
-    let editor = dir.path().join("editor");
-    fs::write(
-        &editor,
-        format!(
-            "#!/bin/sh\n'{}' --state-dir '{}' rules set 'Changed meanwhile.' >/dev/null\n\
-             echo 'Mine.' > \"$1\"\n",
-            latch_bin().display(),
-            state.display()
-        ),
-    )
-    .unwrap();
-    fs::set_permissions(&editor, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-    let env = [("EDITOR", editor.as_path())];
-    let (code, shown, _) = latch_at_a_terminal(&state, &["rules", "edit"], "", false, &env);
-    assert_eq!(code, Some(4), "{shown}");
-    assert!(
-        shown
-            .trim()
-            .starts_with("the rules changed since they were read"),
-        "{shown}"
-    );
-    assert!(!shown.contains("{\"error\""), "{shown}");
-
-    // An editor that fails: nothing is saved, and the person reads why.
-    let failing = [("EDITOR", Path::new("false"))];
-    let (code, shown, _) = latch_at_a_terminal(&state, &["rules", "edit"], "", false, &failing);
-    assert_eq!(code, Some(1), "{shown}");
-    assert!(shown.contains("nothing was saved"), "{shown}");
-    assert!(!shown.contains("{\"error\""), "{shown}");
 }
 
 /// Without a terminal, `vault add` never prompts for a secret: they come
@@ -1988,221 +1945,163 @@ fn saved_rule(state: &Path, agents: Value) -> Option<String> {
         .map(|rule| rule["text"].as_str().unwrap().to_string())
 }
 
-/// `rules set --preset` saves the preset's text, as `setup` offers it, and
-/// with `--revision none` only while there are no rules yet.
-#[test]
-fn rules_set_a_preset_only_where_there_are_none() {
-    let (_dir, state, _key) = owner_host();
-    let set = latch(
-        &state,
-        &["rules", "set", "--preset", "work", "--revision", "none"],
-        &[],
-    );
-    assert_eq!(set.status.code(), Some(0), "{set:?}");
-    let shown = |state: &Path| {
-        let show = latch(state, &["rules", "show"], &[]);
-        let shown: Value = serde_json::from_slice(&show.stdout).unwrap();
-        shown["every_agent"]["text"].as_str().unwrap().to_string()
+/// A command's JSON answer, from stdout or, failed, stderr.
+fn answered_json(output: &Output) -> (Option<i32>, Value) {
+    let printed = match output.status.success() {
+        true => &output.stdout,
+        false => &output.stderr,
     };
-    let saved = shown(&state);
+    (
+        output.status.code(),
+        serde_json::from_slice(printed).unwrap_or(Value::Null),
+    )
+}
+
+/// `rules add --preset --if-empty` adds the preset's text, as `setup`
+/// offers it, only while no rule for every agent applies here.
+#[test]
+fn rules_add_a_preset_only_where_there_is_no_rule_for_every_agent() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let state = owner_host_on(&plow, dir.path());
+    let run = |args: &[&str]| answered_json(&latch(&state, args, &[]));
+    let (code, added) = run(&["rules", "add", "--preset", "work", "--if-empty"]);
+    assert_eq!(code, Some(0), "{added}");
+    assert_eq!(added["change"]["saved"], true, "{added}");
+    let saved = saved_rule(&state, json!("all")).unwrap();
     assert!(
         saved.starts_with("Allow my work assistant to read and send my email"),
         "{saved}"
     );
-    let again = latch(
-        &state,
-        &["rules", "set", "--preset", "family", "--revision", "none"],
-        &[],
+    assert_eq!(added["change"]["rule"]["hosts"], "all", "{added}");
+
+    let (code, again) = run(&["rules", "add", "--preset", "family", "--if-empty"]);
+    assert_eq!(code, Some(0), "{again}");
+    assert_eq!(
+        again["change"],
+        json!({"kind": "add", "id": null, "saved": false, "changed": false,
+               "reason": "rules_exist", "rule": null})
     );
-    assert_ne!(again.status.code(), Some(0), "{again:?}");
-    assert_eq!(shown(&state), saved);
-    let both = latch(
-        &state,
-        &["rules", "set", "Never send email.", "--preset", "work"],
-        &[],
-    );
-    assert_eq!(both.status.code(), Some(2), "{both:?}");
+    assert_eq!(again["rules"].as_array().unwrap().len(), 1);
+    assert_eq!(saved_rule(&state, json!("all")).unwrap(), saved);
+    let (code, both) = run(&["rules", "add", "Never send email.", "--preset", "work"]);
+    assert_eq!(code, Some(2), "{both}");
 }
 
+/// On a machine of the account with no other host: rules are added,
+/// listed, edited and removed in its own copy, refused as they should be,
+/// and audited by version, never by text.
 #[test]
-fn rules_on_this_machines_own_host_state_are_set_edited_shown_and_audited() {
-    const ADA: &str = "0123456789abcdef0123456789abcdef";
-    let ada_key = "a".repeat(64);
-    let account = [
-        (200, json!([{"uid": ADA, "name": "Ada"}])),
-        (
-            200,
-            json!({"data": [peer(json!(ada_key), "ada-latch", "agent", Value::Null)]}),
-        ),
-        (
-            200,
-            json!({"key": ada_key, "kind": "agent", "name": "ada-latch", "agent_uid": ADA,
-                   "permissions": {"call": true}}),
-        ),
-    ];
-    let (dir, state, key) = owner_host();
-    // `--agent`, and the two shows (edit's and the last), each read the account.
-    let (url, server) = fake_plow([account.clone(), account.clone(), account].concat());
-    use_plow(&state, &url);
+fn rules_are_added_edited_listed_and_removed_on_this_machine() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let state = owner_host_on(&plow, dir.path());
+    let run = |args: &[&str]| answered_json(&latch(&state, args, &[]));
 
-    let set = latch(&state, &["rules", "set", "Never send email."], &[]);
-    assert_eq!(set.status.code(), Some(0), "{set:?}");
-    let set: Value = serde_json::from_slice(&set.stdout).unwrap();
-    assert_eq!(set["host"], "studio");
-    assert_eq!(set["scope"], "every agent");
-    assert_eq!(set["applies"], "applies to the next judgment");
-
+    let (code, every) = run(&["rules", "add", "Never send email."]);
+    assert_eq!(code, Some(0), "{every}");
     let rules_file = dir.path().join("bot.txt");
     fs::write(&rules_file, "Only pytest in ~/work.").unwrap();
     let file = rules_file.to_str().unwrap();
-    let agent = latch(
-        &state,
-        &["rules", "set", "--agent", "ada-latch", "--file", file],
-        &[],
-    );
-    assert_eq!(agent.status.code(), Some(0), "{agent:?}");
-    let agent: Value = serde_json::from_slice(&agent.stdout).unwrap();
+    let (code, own) = run(&["rules", "add", "--agents", "Research bot", "--file", file]);
+    assert_eq!(code, Some(0), "{own}");
+    let id = own["change"]["id"].as_str().unwrap().to_string();
+    assert_eq!(own["change"]["kind"], "add");
+    assert_eq!(own["change"]["rule"]["agents"], json!([{"uid": AGENT_UID}]));
+    // This machine, the only copy: current before and after.
     assert_eq!(
-        (agent["agent_uid"].as_str(), agent["agent_name"].as_str()),
-        (Some(ADA), Some("Ada"))
-    );
-    assert_eq!(
-        saved_rule(&state, json!([ADA])).unwrap(),
-        "Only pytest in ~/work."
-    );
-    assert_eq!(
-        fs::read_to_string(state.join(format!("rules/{ADA}.peer"))).unwrap(),
-        ada_key
+        own["hosts"],
+        json!([{"key": own["hosts"][0]["key"], "name": "host", "self": true, "online": null,
+                "observed": "current", "delivery": "current", "reason": null,
+                "budget": {"limit_bytes": 8192, "max_bytes": 39, "over_budget": false,
+                           "agents_over": []}}])
     );
 
-    // `edit` in $EDITOR: the editor appends a line.
-    let editor = dir.path().join("editor.sh");
-    fs::write(
-        &editor,
-        "#!/bin/sh\nprintf '\\nNever buy anything.' >> \"$1\"\n",
-    )
-    .unwrap();
-    fs::set_permissions(&editor, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-    // A person's command: at a terminal, it ends in a line, not JSON.
-    let env = [("EDITOR", editor.as_path())];
-    let (code, shown, _) = latch_at_a_terminal(&state, &["rules", "edit"], "", true, &env);
-    assert_eq!(code, Some(0), "{shown}");
-    assert_eq!(shown.trim(), "Saved the rules for every agent on studio.");
+    let edited = "Only pytest in ~/work. Never push.";
+    let (code, change) = run(&["rules", "edit", &id, edited]);
+    assert_eq!(code, Some(0), "{change}");
     assert_eq!(
-        saved_rule(&state, json!("all")).unwrap(),
-        "Never send email.\nNever buy anything."
+        (&change["change"]["kind"], &change["change"]["changed"]),
+        (&json!("edit"), &json!(true))
     );
-
-    // The host last ran refusing exec to Ada alone.
-    fs::write(
-        state.join("serve-args.json"),
-        format!(r#"["--deny-exec={ADA}"]"#),
-    )
-    .unwrap();
-    let show = latch(&state, &["rules", "show"], &[]);
-    assert_eq!(show.status.code(), Some(0), "{show:?}");
-    let show: Value = serde_json::from_slice(&show.stdout).unwrap();
-    assert_eq!(
-        show["deny_exec"],
-        json!({"every_agent": false, "agent_uids": [ADA]})
-    );
-    assert_eq!(
-        show["every_agent"]["text"],
-        "Never send email.\nNever buy anything."
-    );
-    assert_eq!(show["agents"][0]["text"], "Only pytest in ~/work.");
-    assert_eq!(
-        show["warning"],
-        "Freeform rules are judged, not guaranteed. --deny-exec is enforced in code."
-    );
-    server.join().unwrap();
-
-    // `--revision`: a save or clear over rules that changed since they were
-    // read is refused with the revision they are at now, and changes nothing.
-    let now = show["every_agent"]["revision"].as_str().unwrap();
-    // The rules for every agent as first set, before `edit` changed them.
-    let stale = audit_records(&state)[0]["args"]["after"]
-        .as_str()
+    let (_, again) = run(&["rules", "edit", &id, edited]);
+    assert_eq!(again["change"]["changed"], false, "saved like this already");
+    let (code, listed) = run(&["rules", "list", "--agent", "Research bot"]);
+    assert_eq!(code, Some(0), "{listed}");
+    let texts: Vec<&Value> = listed["rules"]
+        .as_array()
         .unwrap()
-        .to_string();
-    for args in [
-        &["rules", "set", "--revision", &stale, "Anything goes."][..],
-        &["rules", "set", "--revision", "none", "Anything goes."],
-        &["rules", "clear", "--revision", &stale],
-    ] {
-        let refused = latch(&state, args, &[]);
-        assert_eq!(refused.status.code(), Some(4), "{args:?} {refused:?}");
-        let refused: Value = serde_json::from_slice(&refused.stderr).unwrap();
-        assert_eq!(refused["error"]["code"], "stale_revision");
-        assert_eq!(refused["error"]["revision"], now);
-    }
-    assert_eq!(
-        saved_rule(&state, json!("all")).unwrap(),
-        "Never send email.\nNever buy anything."
-    );
-    let saved = latch(
-        &state,
-        &["rules", "set", "--revision", now, "Anything goes."],
-        &[],
-    );
-    assert_eq!(saved.status.code(), Some(0), "{saved:?}");
-    let saved: Value = serde_json::from_slice(&saved.stdout).unwrap();
-    let saved = saved["revision"].as_str().unwrap();
-    let cleared = latch(&state, &["rules", "clear", "--revision", saved], &[]);
-    assert_eq!(cleared.status.code(), Some(0), "{cleared:?}");
-    assert_eq!(saved_rule(&state, json!("all")), None);
+        .iter()
+        .map(|rule| &rule["text"])
+        .collect();
+    assert_eq!(texts, [&json!("Never send email."), &json!(edited)]);
 
-    // Every command is in the host's audit log, by this machine's key, with
-    // revisions and never the text.
+    // Refused, and nothing changes.
+    for (args, exit, code) in [
+        (vec!["rules", "edit", &id, " "], 2, "empty_rules"),
+        (
+            vec!["rules", "edit", "nothing-by-this-id", "x"],
+            2,
+            "no_such_rule",
+        ),
+        (
+            vec!["rules", "add", "x", "--agents", "Mapel"],
+            2,
+            "no_such_agent",
+        ),
+        (
+            vec!["rules", "add", "x", "--hosts", "clod"],
+            2,
+            "unknown_host",
+        ),
+        (vec!["rules", "edit", &id], 2, "bad_arguments"),
+    ] {
+        let (got, error) = run(&args);
+        assert_eq!(got, Some(exit), "{args:?}: {error}");
+        assert_eq!(error["error"]["code"], code, "{args:?}: {error}");
+    }
+    let (_, unknown) = run(&["rules", "add", "x", "--hosts", "clod"]);
+    assert_eq!(
+        unknown["error"]["message"],
+        "Your change wasn't saved because no host in your account is called \"clod\"."
+    );
+
+    // Removed: gone from the list, can't be edited back, and removing
+    // again changes nothing.
+    let (code, removed) = run(&["rules", "remove", &id]);
+    assert_eq!(code, Some(0), "{removed}");
+    assert_eq!(
+        (&removed["change"]["changed"], &removed["change"]["rule"]),
+        (&json!(true), &Value::Null)
+    );
+    assert_eq!(removed["rules"].as_array().unwrap().len(), 1);
+    let (code, refused) = run(&["rules", "edit", &id, "Back again."]);
+    assert_eq!(code, Some(2), "{refused}");
+    assert_eq!(refused["error"]["code"], "no_such_rule");
+    assert_eq!(refused["error"]["removed"], true);
+    assert_eq!(
+        refused["error"]["message"],
+        "This rule was deleted, so your change wasn't saved."
+    );
+    let (_, again) = run(&["rules", "remove", &id]);
+    assert_eq!(again["change"]["changed"], false);
+
+    // Every read and change is in this machine's audit log, by this
+    // machine, by version, never by text.
     let records = audit_records(&state);
-    let log = Value::from(records.clone()).to_string();
+    assert!(
+        records
+            .iter()
+            .all(|r| r["op"] == "rules" && r["caller_name"] == "host")
+    );
     let commands: Vec<&str> = records
         .iter()
         .map(|r| r["args"]["command"].as_str().unwrap())
         .collect();
-    assert_eq!(
-        commands,
-        [
-            "set",
-            "set",
-            "show",
-            "edit",
-            "show",
-            "edit",
-            "edit",
-            "clear_at_revision",
-            "edit",
-            "clear_at_revision"
-        ]
-    );
-    assert!(
-        records
-            .iter()
-            .all(|r| r["op"] == "rules" && r["caller"] == key.as_str())
-    );
-    assert_eq!(records[3]["args"]["before"], records[0]["args"]["after"]);
+    assert!(commands.contains(&"add") && commands.contains(&"edit"));
+    assert!(commands.contains(&"remove") && commands.contains(&"list"));
+    let log = Value::from(records).to_string();
     assert!(!log.contains("email") && !log.contains("pytest"), "{log}");
-}
-
-#[test]
-fn a_failed_remote_rules_call_writes_no_local_file() {
-    let (_dir, state, key) = owner_host();
-    let relay = json!("https://relay.example/");
-    let (url, server) = fake_plow(vec![(
-        200,
-        json!({"data": [peer(json!(key), "studio", "device", relay)]}),
-    )]);
-    use_plow(&state, &url);
-    let output = latch(
-        &state,
-        &["rules", "set", "--host", "pi", "Anything goes."],
-        &[],
-    );
-    assert_eq!(output.status.code(), Some(2), "{output:?}");
-    let error: Value = serde_json::from_slice(&output.stderr).unwrap();
-    assert_eq!(error["error"]["code"], "unknown_host");
-    assert!(!state.join("rules").exists());
-    server.join().unwrap();
 }
 
 #[test]
@@ -2211,9 +2110,9 @@ fn an_agent_gets_owner_only_for_rules_on_its_own_state() {
     server.join().unwrap();
     let state = dir.path().join("state");
     for args in [
-        &["rules", "show"][..],
-        &["rules", "set", "Anything goes."],
-        &["rules", "clear"],
+        &["rules", "list"][..],
+        &["rules", "add", "Anything goes."],
+        &["rules", "remove", "3f9a"],
     ] {
         let output = latch(&state, args, &[("PLOW_TOKEN_FILE", token.as_path())]);
         assert_eq!(output.status.code(), Some(4), "{args:?}: {output:?}");
@@ -2333,9 +2232,9 @@ fn an_older_plaintext_audit_is_left_alone_and_a_sealed_one_starts_beside_it() {
     let old = "{\"op\":\"exec\",\"caller\":\"older-latch\"}\n";
     fs::write(state.join("audit.ndjson"), old).unwrap();
 
-    let set = latch(&state, &["rules", "set", "Never send email."], &[]);
-    assert_eq!(set.status.code(), Some(0), "{set:?}");
-    assert!(set.stderr.is_empty(), "{set:?}");
+    let listed = latch(&state, &["vault", "list"], &[]);
+    assert_eq!(listed.status.code(), Some(0), "{listed:?}");
+    assert!(listed.stderr.is_empty(), "{listed:?}");
     // `status --local` names it, so its owner can delete it.
     let local = latch(&state, &["status", "--local"], &[]);
     let local: Value = serde_json::from_slice(&local.stdout).unwrap();
@@ -2346,16 +2245,18 @@ fn an_older_plaintext_audit_is_left_alone_and_a_sealed_one_starts_beside_it() {
     assert_eq!(fs::read_to_string(state.join("audit.ndjson")).unwrap(), old);
     let records = audit_records(&state);
     assert_eq!(records.len(), 1);
-    assert_eq!(records[0]["op"], "rules");
+    assert_eq!(records[0]["op"], "vault");
     let sealed = fs::read_to_string(state.join("audit.sealed.ndjson")).unwrap();
-    assert!(!sealed.contains("Never send email") && !sealed.contains("rules"));
+    assert!(!sealed.contains("vault"));
 }
 
 #[test]
 fn a_local_rules_command_on_a_broken_audit_log_changes_nothing() {
-    let (_dir, state, _key) = owner_host();
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let state = owner_host_on(&plow, dir.path());
     fs::write(state.join("audit.sealed.ndjson"), "not a record\n").unwrap();
-    let output = latch(&state, &["rules", "set", "Never send email."], &[]);
+    let output = latch(&state, &["rules", "add", "Never send email."], &[]);
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let error: Value = serde_json::from_slice(&output.stderr).unwrap();
     assert_eq!(error["error"]["code"], "audit_broken");
@@ -2364,12 +2265,14 @@ fn a_local_rules_command_on_a_broken_audit_log_changes_nothing() {
 
 #[test]
 fn a_local_rules_command_on_an_audit_log_it_cannot_write_changes_nothing() {
-    let (_dir, state, _key) = owner_host();
-    let show = latch(&state, &["rules", "show"], &[]);
-    assert_eq!(show.status.code(), Some(0), "{show:?}");
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let state = owner_host_on(&plow, dir.path());
+    let listed = latch(&state, &["rules", "list"], &[]);
+    assert_eq!(listed.status.code(), Some(0), "{listed:?}");
     let log = state.join("audit.sealed.ndjson");
     fs::set_permissions(&log, std::os::unix::fs::PermissionsExt::from_mode(0o400)).unwrap();
-    let output = latch(&state, &["rules", "set", "Never send email."], &[]);
+    let output = latch(&state, &["rules", "add", "Never send email."], &[]);
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let error: Value = serde_json::from_slice(&output.stderr).unwrap();
     assert_eq!(error["error"]["code"], "audit_io");
@@ -3650,8 +3553,8 @@ fn a_first_install_prunes_nothing_and_its_first_login_takes_the_folder() {
 #[test]
 fn the_audit_verifies_without_its_key_reads_with_it_and_survives_a_rotation() {
     let (_dir, state, _key) = owner_host();
-    let set = latch(&state, &["rules", "set", "Never send email."], &[]);
-    assert_eq!(set.status.code(), Some(0), "{set:?}");
+    let listed = latch(&state, &["vault", "list"], &[]);
+    assert_eq!(listed.status.code(), Some(0), "{listed:?}");
     let run = |args: &[&str]| -> (Option<i32>, Value) {
         let output = latch(&state, args, &[]);
         let printed = if output.status.success() {
@@ -3668,14 +3571,14 @@ fn the_audit_verifies_without_its_key_reads_with_it_and_survives_a_rotation() {
     let (code, rotated) = run(&["audit", "rotate-key"]);
     assert_eq!(code, Some(0), "{rotated}");
     assert_eq!(rotated["keys"], json!(["k1", "k2"]));
-    let show = latch(&state, &["rules", "show"], &[]);
-    assert_eq!(show.status.code(), Some(0), "{show:?}");
+    let listed = latch(&state, &["vault", "list"], &[]);
+    assert_eq!(listed.status.code(), Some(0), "{listed:?}");
     let records = audit_records(&state);
     let commands: Vec<&str> = records
         .iter()
         .map(|record| record["args"]["command"].as_str().unwrap())
         .collect();
-    assert_eq!(commands, ["set", "show"]);
+    assert_eq!(commands, ["list", "list"]);
 
     // Without the key the chain still checks; the records do not open.
     fs::remove_file(state.join("audit.keys")).unwrap();
@@ -3801,7 +3704,7 @@ fn a_host_runs_exec_and_files_under_home() {
     );
     assert_eq!(refused_exec.status.code(), Some(0), "{refused_exec:?}");
     // What needs no folder still works: here, the owner's rules.
-    let shown = latch(&owner, &["rules", "show", "--host", "host"], &[]);
+    let shown = latch(&owner, &["rules", "list"], &[]);
     assert_eq!(shown.status.code(), Some(0), "{shown:?}");
     drop(serve);
     let asked_judge = plow
@@ -4389,7 +4292,7 @@ fn agents_are_listed_for_the_owner_with_their_standing_on_a_host() {
                "last_seen_at": "2026-10-22T09:00:00Z", "standing": null}]})
     );
 
-    // The host last ran refusing this agent exec; no rules of its own.
+    // The host last ran refusing this agent exec.
     fs::write(
         host.join("serve-args.json"),
         format!(r#"["--deny-exec={AGENT_UID}"]"#),
@@ -4400,10 +4303,7 @@ fn agents_are_listed_for_the_owner_with_their_standing_on_a_host() {
     assert_eq!(here.status.code(), Some(0), "{here:?}");
     let here: Value = serde_json::from_slice(&here.stdout).unwrap();
     assert_eq!(here["host"], json!({"name": "host", "online": false}));
-    assert_eq!(
-        here["agents"][0]["standing"],
-        json!({"own_rules": false, "exec_blocked": true})
-    );
+    assert_eq!(here["agents"][0]["standing"], json!({"exec_blocked": true}));
     assert_eq!(audit_records(&host).len(), before, "a list is not audited");
 
     // An agent's login gets owner_only before anything is asked of Plow.
@@ -4659,124 +4559,82 @@ fn the_owners_rules_commands_reach_a_host_and_an_agents_never_do() {
     let serve = serving(&host, &relay);
 
     let run = |state: &Path, args: &[&str], env: &[(&str, &Path)]| {
-        // `rules edit` opens the person's editor: at a terminal, where a
-        // saved edit says so in a line, and a failure is its JSON.
-        if args[1] == "edit" {
-            let (code, shown, _) = latch_at_a_terminal(state, args, "", true, env);
-            let json = serde_json::from_str::<Value>(shown.trim()).unwrap_or(json!(shown.trim()));
-            return (code, json);
-        }
-        let output = latch(state, args, env);
-        let printed = if output.status.success() {
-            &output.stdout
-        } else {
-            &output.stderr
-        };
-        let json = serde_json::from_slice::<Value>(printed).unwrap_or(Value::Null);
-        (output.status.code(), json)
+        answered_json(&latch(state, args, env))
     };
     let rules_file = dir.path().join("bot.txt");
     fs::write(&rules_file, "Run tests in the shared folder.").unwrap();
-    let editor = dir.path().join("editor.sh");
-    fs::write(&editor, "#!/bin/sh\nprintf ' Nothing else.' >> \"$1\"\n").unwrap();
-    fs::set_permissions(&editor, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     let file = rules_file.to_str().unwrap();
-    let owner_runs = [
-        run(
-            &owner,
-            &["rules", "set", "--host", "host", "Never send email."],
-            &[],
-        ),
-        run(
-            &owner,
-            &[
-                "rules",
-                "set",
-                "--host",
-                "host",
-                "--agent",
-                "Research bot",
-                "--file",
-                file,
-            ],
-            &[],
-        ),
-        run(
-            &owner,
-            &["rules", "edit", "--host", "host", "--agent", "Research bot"],
-            &[("EDITOR", editor.as_path())],
-        ),
-        run(&owner, &["rules", "show", "--host", "host"], &[]),
-    ];
-    // The agent has rules of its own there; the host refuses no one exec.
-    let listed = run(&owner, &["agents", "--host", "host"], &[]);
-    let agent_runs: Vec<_> = [
-        &["rules", "show", "--host", "host"][..],
-        &["rules", "set", "--host", "host", "Anything goes."],
-        &["rules", "edit", "--host", "host"],
-        &[
-            "rules",
-            "clear",
-            "--host",
-            "host",
-            "--agent",
-            "Research bot",
-        ],
-    ]
-    .iter()
-    .map(|args| run(&agent, args, &[("EDITOR", editor.as_path()), agent_env[0]]))
-    .collect();
-    let rules_after_agent = saved_rule(&host, json!([AGENT_UID]));
-    let cleared = run(
+    let every = run(&owner, &["rules", "add", "Never send email."], &[]);
+    let own = run(
         &owner,
-        &[
-            "rules",
-            "clear",
-            "--host",
-            "host",
-            "--agent",
-            "Research bot",
-        ],
+        &["rules", "add", "--agents", "Research bot", "--file", file],
         &[],
     );
+    let id = own.1["change"]["id"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    let edited_text = "Run tests in the shared folder. Nothing else.";
+    let edited = run(&owner, &["rules", "edit", &id, edited_text], &[]);
+    let listed_rules = run(&owner, &["rules", "list"], &[]);
+    // The host refuses no one exec.
+    let listed = run(&owner, &["agents", "--host", "host"], &[]);
+    let agent_runs: Vec<_> = [
+        &["rules", "list"][..],
+        &["rules", "add", "Anything goes."],
+        &["rules", "remove", &id],
+    ]
+    .iter()
+    .map(|args| run(&agent, args, &agent_env))
+    .collect();
+    let removed = run(&owner, &["rules", "remove", &id], &[]);
 
     drop(serve);
 
-    for (code, json) in &owner_runs {
+    for (code, json) in [&every, &own, &edited, &listed_rules, &removed] {
         assert_eq!(*code, Some(0), "{json}");
+        let host_copy = json["hosts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|copy| copy["name"] == "host")
+            .unwrap_or_else(|| panic!("{json}"))
+            .clone();
+        assert_eq!(host_copy["delivery"], "current", "{json}");
+        assert_eq!(json["hosts"][0]["name"], "owner-mac", "{json}");
     }
-    let [set, set_agent, edited, shown] = owner_runs.map(|(_, json)| json);
     assert_eq!(
-        (set["host"].as_str(), set["scope"].as_str()),
-        (Some("host"), Some("every agent"))
+        own.1["change"]["rule"]["agents"],
+        json!([{"uid": AGENT_UID}])
     );
-    assert_eq!(set_agent["agent_uid"], AGENT_UID);
-    assert_eq!(set_agent["agent_name"], "Research bot");
-    assert_eq!(edited, "Saved the rules for Research bot on host.");
-    let edited_text = "Run tests in the shared folder. Nothing else.";
-    assert_eq!(shown["every_agent"]["text"], "Never send email.");
-    assert_eq!(shown["agents"][0]["text"], edited_text);
-    assert_eq!(shown["agents"][0]["agent_name"], "Research bot");
+    assert_eq!(edited.1["change"]["kind"], "edit");
+    let texts: Vec<&Value> = listed_rules.1["rules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|rule| &rule["text"])
+        .collect();
+    assert_eq!(texts, [&json!("Never send email."), &json!(edited_text)]);
     assert_eq!(listed.0, Some(0), "{}", listed.1);
     assert_eq!(listed.1["host"], json!({"name": "host", "online": true}));
     assert_eq!(
         listed.1["agents"][0]["standing"],
-        json!({"own_rules": true, "exec_blocked": false})
+        json!({"exec_blocked": false})
     );
     for (code, json) in &agent_runs {
         assert_eq!(*code, Some(4), "{json}");
         assert_eq!(json["error"]["code"], "owner_only", "{json}");
     }
-    assert_eq!(rules_after_agent.unwrap(), edited_text);
-    assert_eq!(cleared.0, Some(0), "{}", cleared.1);
-    assert_eq!(cleared.1["cleared"], true);
-    assert_eq!(saved_rule(&host, json!([AGENT_UID])), None);
-    assert_eq!(
-        saved_rule(&host, json!("all")).unwrap(),
-        "Never send email."
-    );
-    // Nothing was written on the machines the commands came from.
-    assert!(!owner.join("rules").exists() && !agent.join("rules").exists());
+    // The host and the owner's machine hold the same list; the agent's
+    // machine none.
+    for state in [&host, &owner] {
+        assert_eq!(saved_rule(state, json!([AGENT_UID])), None);
+        assert_eq!(
+            saved_rule(state, json!("all")).unwrap(),
+            "Never send email."
+        );
+    }
+    assert!(!agent.join("rules").exists());
 
     // Connections are named as their calls are: the owner's machine at once.
     let connects: Vec<Value> = audit_records(&host)
@@ -4788,60 +4646,24 @@ fn the_owners_rules_commands_reach_a_host_and_an_agents_never_do() {
         !connects.is_empty() && connects.iter().all(|name| name == "owner-mac"),
         "{connects:?}"
     );
-    // The host audited every command by revision, never by text, and
-    // named each caller: a machine by its name, the agent by its name in
-    // Plow once the host has looked it up (never waiting to, so not on its
-    // first call).
+    // The host audited every read and change, by version, never by text,
+    // each by the owner's machine.
     let records: Vec<Value> = audit_records(&host)
         .into_iter()
         .filter(|record| record["op"] == "rules")
         .collect();
-    let names: Vec<&Value> = records
+    assert!(records.iter().all(|r| r["caller_name"] == "owner-mac"));
+    let commands: Vec<&str> = records
         .iter()
-        .map(|record| &record["caller_name"])
-        .collect();
-    assert_eq!(names[0], "owner-mac");
-    let agents: Vec<&Value> = records
-        .iter()
-        .filter(|record| record["decision"] == "deny")
-        .map(|record| &record["caller_name"])
+        .map(|r| r["args"]["command"].as_str().unwrap())
         .collect();
     assert_eq!(
-        agents,
+        commands,
         [
-            &Value::Null,
-            &json!("Research bot"),
-            &json!("Research bot"),
-            &json!("Research bot")
+            "list", "add", "list", "add", "list", "edit", "list", "list", "remove"
         ]
     );
     let log = Value::from(records.clone()).to_string();
-    let decisions: Vec<(&str, &str)> = records
-        .iter()
-        .map(|r| {
-            (
-                r["args"]["command"].as_str().unwrap(),
-                r["decision"].as_str().unwrap(),
-            )
-        })
-        .collect();
-    assert_eq!(
-        decisions,
-        [
-            ("set", "allow"),
-            ("set", "allow"),
-            ("show", "allow"),
-            ("edit", "allow"),
-            ("show", "allow"),
-            // `agents --host`, reading the rules there.
-            ("show", "allow"),
-            ("show", "deny"),
-            ("set", "deny"),
-            ("show", "deny"),
-            ("clear", "deny"),
-            ("clear", "allow"),
-        ]
-    );
     assert!(
         !log.contains("email") && !log.contains("shared folder"),
         "{log}"
@@ -5567,42 +5389,63 @@ fn a_saved_default_host_is_what_host_default_names() {
     assert_eq!(listed["host"], "host");
 }
 
-/// `rules edit --host default` saves to the host it read from, even when
-/// the saved default changes while the editor is open.
+/// A rule saved while a host is stopped reaches it on the next read once it
+/// serves again; a removal reaches it the same way, and its stale copy
+/// never brings the rule back.
 #[test]
-fn a_rules_edit_saves_where_it_read_whatever_the_default_becomes() {
+fn a_host_that_was_stopped_catches_up_on_the_next_read() {
     let owners = Owners::start();
     let _host = owners.serve(&owners.host);
-    let _studio = owners.serve(&owners.studio);
+    // The studio has served, so the account lists it as a host; now it's stopped.
+    drop(owners.serve(&owners.studio));
     let laptop = &owners.laptop;
-    let ok = |args: &[&str]| {
-        let output = latch(laptop, args, &[]);
-        assert_eq!(output.status.code(), Some(0), "{output:?}");
-        serde_json::from_slice::<Value>(&output.stdout).unwrap()
+    let run = |args: &[&str]| {
+        let (code, json) = answered_json(&latch(laptop, args, &[]));
+        assert_eq!(code, Some(0), "{args:?}: {json}");
+        json
     };
-    ok(&["rules", "set", "--host", "host", "Rules on host."]);
-    ok(&["rules", "set", "--host", "studio", "Rules on studio."]);
-    ok(&["hosts", "default", "host"]);
-    // The editor moves the default to the studio, then edits.
-    let editor = owners.dir.path().join("editor.sh");
-    fs::write(
-        &editor,
-        format!(
-            "#!/bin/sh\n'{}' --state-dir '{}' hosts default studio >/dev/null || exit 1\nprintf ' Edited.' >> \"$1\"\n",
-            latch_bin().display(),
-            laptop.display()
+    let copy = |json: &Value, name: &str| {
+        json["hosts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|copy| copy["name"] == name)
+            .unwrap_or_else(|| panic!("{name}: {json}"))
+            .clone()
+    };
+
+    let added = run(&["rules", "add", "Never send email."]);
+    let id = added["change"]["id"].as_str().unwrap().to_string();
+    assert_eq!(copy(&added, "host")["delivery"], "current");
+    assert_eq!(copy(&added, "studio")["delivery"], "unknown");
+    assert!(copy(&added, "studio")["reason"].is_string(), "{added}");
+    assert_eq!(saved_rule(&owners.studio, json!("all")), None);
+
+    let studio = owners.serve(&owners.studio);
+    let listed = run(&["rules", "list"]);
+    assert_eq!(
+        (
+            &copy(&listed, "studio")["observed"],
+            &copy(&listed, "studio")["delivery"]
         ),
-    )
-    .unwrap();
-    fs::set_permissions(&editor, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-    let edit = ["rules", "edit", "--host", "default"];
-    let (code, shown, _) =
-        latch_at_a_terminal(laptop, &edit, "", false, &[("EDITOR", editor.as_path())]);
-    assert_eq!(code, Some(0), "{shown}");
-    assert_eq!(ok(&["hosts", "default"])["default_host"], "studio");
-    let text = |host: &str| ok(&["rules", "show", "--host", host])["every_agent"]["text"].clone();
-    assert_eq!(text("host"), "Rules on host. Edited.");
-    assert_eq!(text("studio"), "Rules on studio.");
+        (&json!("behind"), &json!("current"))
+    );
+    assert_eq!(listed["rules"][0]["behind_hosts"], json!([]));
+    assert_eq!(
+        saved_rule(&owners.studio, json!("all")).unwrap(),
+        "Never send email."
+    );
+
+    // Removed while the studio is stopped: its copy still holds the rule.
+    drop(studio);
+    let removed = run(&["rules", "remove", &id]);
+    assert_eq!(copy(&removed, "studio")["delivery"], "unknown");
+    let _studio = owners.serve(&owners.studio);
+    let listed = run(&["rules", "list"]);
+    assert_eq!(listed["rules"], json!([]), "{listed}");
+    assert_eq!(copy(&listed, "studio")["delivery"], "current");
+    assert_eq!(saved_rule(&owners.studio, json!("all")), None);
+    assert_eq!(saved_rule(&owners.host, json!("all")), None);
 }
 
 /// Each call from a machine whose host serves goes through that host,
@@ -6123,8 +5966,8 @@ fn stream_lines(state: &Path, args: &[&str], ready: usize, more: &dyn Fn()) -> V
 #[test]
 fn every_stream_says_hello_first_and_types_every_line() {
     let (dir, state, _) = owner_host();
-    let set = latch(&state, &["rules", "set", "Never send email."], &[]);
-    assert_eq!(set.status.code(), Some(0), "{set:?}");
+    let listed = latch(&state, &["vault", "list"], &[]);
+    assert_eq!(listed.status.code(), Some(0), "{listed:?}");
     let log = state.join("serve.log");
     fs::write(
         &log,
@@ -6455,7 +6298,7 @@ fn shutdown_exec_cases() {
 }
 
 #[test]
-fn vault_management_and_self_rules_are_local_without_serve() {
+fn vault_management_is_local_without_serve() {
     let plow = LivePlow::start();
     let dir = test_dir();
     let host = owner_host_on(&plow, dir.path());
@@ -6496,11 +6339,6 @@ fn vault_management_and_self_rules_are_local_without_serve() {
         "Updated",
     ]);
     assert_eq!(run(&["vault", "list"])["items"][0]["revision"], 2);
-    run(&["rules", "set", "--host", "host", "Only local tests."]);
-    assert_eq!(
-        run(&["rules", "show", "--host", "host"])["every_agent"]["text"],
-        "Only local tests."
-    );
     run(&["vault", "remove", "v1", "--revision", "2"]);
     assert_eq!(run(&["vault", "list"])["items"], json!([]));
     assert_eq!(plow.seen().len(), before, "local management contacted Plow");
@@ -6514,18 +6352,12 @@ fn vault_management_and_self_rules_are_local_without_serve() {
             .iter()
             .any(|r| r["op"] == "vault" && r["args"]["command"] == "edit")
     );
-    assert!(
-        records
-            .iter()
-            .any(|r| r["op"] == "rules" && r["args"]["command"] == "set")
-    );
     // Each record names its command as the board shows it.
     let commands: Vec<&str> = records
         .iter()
         .filter_map(|r| r["command"].as_str())
         .collect();
     assert!(commands.contains(&"latch vault edit"), "{commands:?}");
-    assert!(commands.contains(&"latch rules set"), "{commands:?}");
     let sealed = fs::read_to_string(host.join("audit.sealed.ndjson")).unwrap();
     assert!(!sealed.contains("\"op\""), "audit records were not sealed");
     println!("local vault edit and rules set share the sealed audit; no legacy file");
@@ -7127,8 +6959,9 @@ fn local_socket_judges_exec_files_google_and_allows_owner_commands() {
         println!("local {}: {value}", args[0]);
         value
     };
+    run(&["rules", "add", "Only read and echo in this test."]);
     let before = plow.seen().len();
-    run(&["rules", "set", "Only read and echo in this test."]);
+    run(&["vault", "list"]);
     assert_eq!(plow.seen().len(), before);
     // From here the client's secret store refuses, as the Keychain does
     // inside a sandbox: its key and Plow login can't be read. Calls over the
@@ -7195,11 +7028,9 @@ fn local_socket_judges_exec_files_google_and_allows_owner_commands() {
     );
     let listed = local_operation(&host, "vault", json!({"command":"list"}));
     assert_eq!(listed["ok"]["items"], json!([]));
-    let rules = local_operation(
-        &host,
-        "rules",
-        json!({"command":"set","text":"Updated through the socket."}),
-    );
+    let rule = json!({"id": "r1", "text": "Updated through the socket.", "agents": "all",
+                      "hosts": "all", "updated": 1});
+    let rules = local_operation(&host, "rules", json!({"command": "add", "rules": [rule]}));
     assert!(rules.get("ok").is_some(), "{rules}");
     assert_eq!(
         plow.state.lock().unwrap().decisions.len(),
@@ -7275,21 +7106,11 @@ fn local_socket_outages_refuse_gated_work_but_config_still_works() {
         assert!(!share.join("must-not-exist").exists());
         let judged = plow.state.lock().unwrap().decisions.len();
         assert_eq!(judged, if plow_down { 0 } else { 3 });
-        for args in [
-            vec!["rules", "set", "Config stays available."],
-            vec!["vault", "list"],
-        ] {
-            let output = latch(&host, &args, &[]);
-            assert!(output.status.success(), "{case}: {output:?}");
-            println!(
-                "{case}, config {}: {}",
-                args[0],
-                String::from_utf8_lossy(&output.stdout)
-            );
-        }
+        let output = latch(&host, &["vault", "list"], &[]);
+        assert!(output.status.success(), "{case}: {output:?}");
         for (op, args) in [
             ("vault", json!({"command":"list"})),
-            ("rules", json!({"command":"show"})),
+            ("rules", json!({"command":"list"})),
         ] {
             let result = local_operation(&host, op, args);
             assert!(result.get("ok").is_some(), "{case}: {result}");
@@ -7701,8 +7522,8 @@ fn logout_stops_the_host_and_deletes_only_the_login_so_a_login_again_is_the_same
         config["peer"]["key"].clone()
     };
     let key = peer_key(&host);
-    let set = latch(&host, &["rules", "set", "Never send email."], &[]);
-    assert_eq!(set.status.code(), Some(0), "{set:?}");
+    let added = latch(&host, &["rules", "add", "Never send email."], &[]);
+    assert_eq!(added.status.code(), Some(0), "{added:?}");
     let mut serve = serving(&host, &relay);
     let listed = local_operation(&host, "vault", json!({"command": "list"}));
     assert!(listed.get("ok").is_some(), "{listed}");
@@ -7738,7 +7559,7 @@ fn logout_stops_the_host_and_deletes_only_the_login_so_a_login_again_is_the_same
     let local = latch(&host, &["status", "--local"], &[]);
     let local: Value = serde_json::from_slice(&local.stdout).unwrap();
     assert_eq!(local["login"], Value::Null, "{local}");
-    let shown = latch(&host, &["rules", "show"], &[]);
+    let shown = latch(&host, &["rules", "list"], &[]);
     assert_eq!(shown.status.code(), Some(2), "{shown:?}");
     let error: Value = serde_json::from_slice(&shown.stderr).unwrap();
     assert_eq!(error["error"]["code"], "not_logged_in", "{error}");
@@ -7767,7 +7588,7 @@ fn logout_stops_the_host_and_deletes_only_the_login_so_a_login_again_is_the_same
         (&peers[0].0["name"], &peers[0].0["key"]),
         (&json!("host"), &key)
     );
-    let shown = latch(&host, &["rules", "show"], &[]);
+    let shown = latch(&host, &["rules", "list"], &[]);
     assert!(
         String::from_utf8_lossy(&shown.stdout).contains("Never send email."),
         "{shown:?}"
@@ -7778,7 +7599,7 @@ fn logout_stops_the_host_and_deletes_only_the_login_so_a_login_again_is_the_same
         .iter()
         .map(|r| r["op"].clone())
         .collect();
-    assert_eq!(&ops[..2], ["rules", "vault"], "{ops:?}");
+    assert_eq!(&ops[..3], ["rules", "rules", "vault"], "{ops:?}");
     // A host serves again, on the audit log it kept.
     let _serve = serving(&host, &relay);
 
@@ -9420,7 +9241,7 @@ fn setup_without_a_terminal_names_the_first_step_setup_status_lists() {
             "latch login --events",
             "latch plugins enable google --events",
             "latch plugins enable google",
-            "latch rules set --preset family --revision none",
+            "latch rules add --preset family --if-empty",
             "latch serve -d"
         ]
     );
@@ -9479,12 +9300,6 @@ fn a_human_command_without_a_terminal_names_its_machine_equivalent() {
             &["dashboard"],
             "no_terminal",
             "latch audit --follow",
-        ),
-        (
-            &owner,
-            &["rules", "edit"],
-            "no_terminal",
-            "latch rules set TEXT",
         ),
     ] {
         let output = latch(state, args, &[]);
@@ -9615,11 +9430,11 @@ fn stop_gives_up_waiting_behind_a_start_that_never_finishes() {
 #[test]
 fn audit_follows_the_log_and_refuses_one_whose_last_record_was_cut_short() {
     let (_dir, state, _) = owner_host();
-    let rules = |text: &str| {
-        let set = latch(&state, &["rules", "set", text], &[]);
-        assert_eq!(set.status.code(), Some(0), "{set:?}");
+    let audited = || {
+        let listed = latch(&state, &["vault", "list"], &[]);
+        assert_eq!(listed.status.code(), Some(0), "{listed:?}");
     };
-    rules("Never send email.");
+    audited();
     let shown = audit_records(&state);
     assert_eq!(shown.len(), 1, "{shown:?}");
 
@@ -9627,7 +9442,7 @@ fn audit_follows_the_log_and_refuses_one_whose_last_record_was_cut_short() {
     let follow = Lines::start(&state, &["audit", "--follow"]);
     let opening = records_in(&follow.opening());
     assert_eq!(opening[0]["id"], shown[0]["id"]);
-    rules("Ask before paying.");
+    audited();
     let second = follow.next_record()["record"].clone();
     assert_eq!(second["op"], shown[0]["op"], "{second}");
     assert_ne!(second["id"], shown[0]["id"]);
@@ -9652,8 +9467,8 @@ fn only_a_follow_ends_with_stdin_even_while_its_opening_is_stuck_in_a_write() {
     let (_dir, state, _) = owner_host();
     // More records than a pipe holds: about 400 bytes a line.
     for _ in 0..250 {
-        let shown = latch(&state, &["rules", "show"], &[]);
-        assert_eq!(shown.status.code(), Some(0), "{shown:?}");
+        let listed = latch(&state, &["vault", "list"], &[]);
+        assert_eq!(listed.status.code(), Some(0), "{listed:?}");
     }
     // A read that ends by itself ignores stdin, closed from the start, and
     // prints every line.
@@ -9704,8 +9519,8 @@ fn audit_says_why_it_cannot_read() {
     assert_eq!(none["code"], "no_host_here", "{none}");
     assert_eq!(none["next"], "latch audit --host NAME", "{none}");
 
-    let set = latch(&state, &["rules", "set", "Never send email."], &[]);
-    assert_eq!(set.status.code(), Some(0), "{set:?}");
+    let listed = latch(&state, &["vault", "list"], &[]);
+    assert_eq!(listed.status.code(), Some(0), "{listed:?}");
     let malformed = refused(&["audit", "--before", "nothex"]);
     assert_eq!(malformed["code"], "usage", "{malformed}");
     assert!(
@@ -9728,8 +9543,8 @@ fn audit_says_why_it_cannot_read() {
 #[test]
 fn audit_follow_sleeps_while_the_log_is_quiet() {
     let (_dir, state, _) = owner_host();
-    let set = latch(&state, &["rules", "set", "Never send email."], &[]);
-    assert_eq!(set.status.code(), Some(0), "{set:?}");
+    let listed = latch(&state, &["vault", "list"], &[]);
+    assert_eq!(listed.status.code(), Some(0), "{listed:?}");
     let mut follow = latch_command(&state, &["audit", "--follow"], &[])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -11828,8 +11643,7 @@ fn rules_try_previews_a_verdict_and_runs_nothing() {
     assert!(ops.is_empty(), "{records:?}");
     assert!(!home.join("out").exists());
     // The draft was never saved.
-    let (_, shown) = answered(&latch(&host, &["rules", "show"], &[]));
-    assert_eq!(shown["every_agent"]["text"], Value::Null, "{shown}");
+    assert_eq!(saved_rule(&host, json!("all")), None);
 }
 
 #[test]

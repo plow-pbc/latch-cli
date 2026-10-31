@@ -200,9 +200,11 @@ pub enum Command {
     Browser(BrowserArgs),
     /// The host's vault: add, list, edit, remove and import items (owner only)
     Vault(VaultArgs),
-    /// Your standing rules for agents on a host (owner only)
+    /// Your standing rules for agents on your hosts (owner only)
     ///
-    /// The host's gatekeeper reads them at every judgment
+    /// Every host keeps the whole list, and its gatekeeper reads the rules
+    /// that apply there at every judgment. Freeform rules are judged, not
+    /// guaranteed. --deny-exec is enforced in code
     Rules(RulesArgs),
     /// Turn this host's connectors on or off
     ///
@@ -840,16 +842,19 @@ pub struct RulesArgs {
     pub command: RulesCommand,
 }
 
-/// Which rules a rules command is about.
+/// Which agents and hosts a rule covers, as `add` and `edit` take them.
 #[derive(Args, Debug)]
-pub struct RulesScope {
-    /// The serving machine the rules are for [default: this machine's own host state]
-    #[arg(long)]
-    pub host: Option<String>,
-    /// Whose rules: an agent's name, the peer name of the latch it calls
-    /// from, or its agent uid, resolved once to the uid [default: every agent's]
-    #[arg(long, value_name = "NAME")]
-    pub agent: Option<String>,
+pub struct RulesCovers {
+    /// The agents it covers: `all` (agents added later included), or names,
+    /// peer names of the latch they call from, or uids, comma-separated. An
+    /// agent named `all`, or with a comma in its name, is given by its uid
+    #[arg(long, value_name = "A,B|all")]
+    pub agents: Option<String>,
+    /// The hosts it applies on: `all` (hosts added later included), or host
+    /// names or keys, comma-separated. A host named `all`, or with a comma in
+    /// its name, is given by its key
+    #[arg(long, value_name = "H1,H2|all")]
+    pub hosts: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -917,41 +922,60 @@ pub enum OnOff {
 
 #[derive(Subcommand, Debug)]
 pub enum RulesCommand {
-    /// Replace the rules with TEXT, with the text of --file F (- reads stdin), or with a preset's
-    Set {
+    /// Your rules for every host, read from each host you can reach
+    ///
+    /// Each host keeps the whole list; this merges their copies, the newest
+    /// change of each rule winning, and brings any host that is behind up to
+    /// date. --agent and --host show only the rules that apply to that agent
+    /// or on that host, `all` rules included
+    List {
+        /// Only rules that apply to this agent: its name, the peer name of
+        /// the latch it calls from, or its uid
+        #[arg(long, value_name = "NAME")]
+        agent: Option<String>,
+        /// Only rules that apply on this host: its name or key
+        #[arg(long = "host", id = "filter_host", value_name = "NAME")]
+        host: Option<String>,
+    },
+    /// Add a rule: TEXT, the text of --file F (- reads stdin), or a preset's
+    ///
+    /// It covers all agents on all hosts unless --agents or --hosts say
+    /// otherwise, and is saved on this machine first, then on every host you
+    /// can reach
+    Add {
         #[arg(conflicts_with_all = ["file", "preset"])]
         text: Option<String>,
         #[arg(long, value_name = "F", conflicts_with = "preset")]
         file: Option<PathBuf>,
-        /// Rules to start from: family (a family assistant: calendar, texts and email, groceries; never documents or passwords) or work (a work assistant: email, calendar, GitHub; not personal texts and chats), as the Mac app offers them
+        /// A rule to start from: family (a family assistant: calendar, texts and email, groceries; never documents or passwords) or work (a work assistant: email, calendar, GitHub; not personal texts and chats), as the Mac app offers them
         #[arg(long, value_name = "NAME")]
         preset: Option<crate::gate::rules::Preset>,
-        /// Save only if the rules are still at revision R, as `rules show`
-        /// gave it (`none`: there were none); otherwise refused, and
-        /// nothing changes
-        #[arg(long, value_name = "R")]
-        revision: Option<String>,
         #[command(flatten)]
-        scope: RulesScope,
+        covers: RulesCovers,
+        /// Add it only if no rule for every agent applies on this machine's
+        /// host yet; otherwise nothing is added, and the result lists the
+        /// rules there are
+        #[arg(long)]
+        if_empty: bool,
     },
-    /// Change the rules in $EDITOR; saved only if they did not change meanwhile
+    /// Change a rule's text, the agents it covers or the hosts it applies on
+    ///
+    /// What isn't given stays as it is; --agents or --hosts replace the
+    /// whole set
     Edit {
+        /// The rule's id, as `rules list` gives it
+        id: String,
+        #[arg(conflicts_with = "file")]
+        text: Option<String>,
+        #[arg(long, value_name = "F")]
+        file: Option<PathBuf>,
         #[command(flatten)]
-        scope: RulesScope,
+        covers: RulesCovers,
     },
-    /// Remove the rules
-    Clear {
-        /// Remove them only if they are still at revision R, as `rules
-        /// show` gave it; otherwise refused, and nothing changes
-        #[arg(long, value_name = "R")]
-        revision: Option<String>,
-        #[command(flatten)]
-        scope: RulesScope,
-    },
-    /// The rules for every agent and each agent's own, with their revisions
-    Show {
-        #[command(flatten)]
-        scope: RulesScope,
+    /// Remove a rule, on this machine first, then on every host you can reach
+    Remove {
+        /// The rule's id, as `rules list` gives it
+        id: String,
     },
     /// Preview the gatekeeper's verdict on a request, without running it
     ///

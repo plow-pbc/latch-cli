@@ -629,7 +629,7 @@ fn decision(task: &Task, call: &Call) -> Vec<String> {
         ));
         lines.push("Matched rule: not provided by the judge".to_string());
         lines.push(
-            "Rule pointer: `latch rules show` has the current rules; they may differ from these revisions"
+            "Rule pointer: `latch rules list` has the current rules; they may differ from these revisions"
                 .to_string(),
         );
     } else {

@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 use super::*;
 use crate::failure::Exit;
 use crate::gate::fake::{self, AGENT, FakePlow, World, agent_self, message, owner};
+use crate::gate::rules::Rule;
 use crate::model;
 
 /// The owner's yes covers an operation; anything else does not.
@@ -1185,10 +1186,10 @@ async fn an_outage_refuses_gated_operations_for_everyone_but_not_the_owners_sett
     let asked = t.judged();
 
     // The owner's settings never ask the judge, and work while it is down.
-    let set = json!({"command": "set", "text": "Never send email."});
-    let (answer, _) = t.call(&device, "rules", set).await;
+    let added = crate::gate::rules::adding("Never send email.", None);
+    let (answer, _) = t.call(&device, "rules", added).await;
     assert!(matches!(answer, Response::Ok(_)), "{answer:?}");
-    let (answer, _) = t.call(&device, "rules", json!({"command": "show"})).await;
+    let (answer, _) = t.call(&device, "rules", json!({"command": "list"})).await;
     assert!(matches!(answer, Response::Ok(_)), "{answer:?}");
     let (answer, _) = t.call(&device, "vault", json!({"command": "list"})).await;
     assert!(matches!(answer, Response::Ok(_)), "{answer:?}");
@@ -1196,7 +1197,7 @@ async fn an_outage_refuses_gated_operations_for_everyone_but_not_the_owners_sett
 
     // And they stay the owner's: an agent is refused them, unasked.
     for (op, args) in [
-        ("rules", json!({"command": "show"})),
+        ("rules", json!({"command": "list"})),
         ("vault", json!({"command": "show", "item": "v1"})),
     ] {
         let (answer, _) = t.call(&agent, op, args).await;
@@ -1412,52 +1413,38 @@ async fn the_owners_rules_commands_work_over_the_connection_and_never_for_an_age
             .map(|rule| rule["text"].as_str().unwrap().to_string())
     };
 
-    let set = json!({"command": "set", "text": "Never send email."});
-    let done = ok(t.call(&device, "rules", set).await.0);
-    assert_eq!(done["host"], "test-host");
-    assert_eq!(done["scope"], "every agent");
-    assert_eq!(done["applies"], "applies to the next judgment");
-    // `--agent` by the peer name of the agent's latch.
-    let set = json!({"command": "set", "from": "a agent", "text": "Run tests in the work folder."});
-    let done = ok(t.call(&device, "rules", set).await.0);
-    assert_eq!(
-        (done["agent_uid"].as_str(), done["agent_name"].as_str()),
-        (Some(AGENT), Some("Juno"))
-    );
+    let every = crate::gate::rules::adding("Never send email.", None);
+    ok(t.call(&device, "rules", every).await.0);
+    let own = crate::gate::rules::adding("Run tests in the work folder.", Some(AGENT));
+    let done = ok(t.call(&device, "rules", own).await.0);
+    let juno: Rule = serde_json::from_value(done["rules"][1].clone()).unwrap();
 
-    // `latch rules edit --agent Juno`: a show, then an edit at its revision.
-    let shown = ok(t
-        .call(&device, "rules", json!({"command": "show", "from": "Juno"}))
-        .await
-        .0);
-    let read = shown["agents"][0]["revision"].clone();
-    let edit = |text: &str, revision: &Value| json!({"command": "edit", "from": AGENT, "text": text, "revision": revision});
+    // An edit is a newer version; the older one, sent again, changes nothing.
     let edited = "Run tests in the work folder. Nothing else.";
-    ok(t.call(&device, "rules", edit(edited, &read)).await.0);
-    let (stale, _) = t
-        .call(&device, "rules", edit("Anything goes.", &read))
-        .await;
-    assert_eq!(refusal(&stale).0, Exit::Denied);
-    assert_eq!(refusal(&stale).1, "stale_revision");
+    let newer = juno.edited(edited, juno.agents.clone(), juno.hosts.clone());
+    ok(t.call(
+        &device,
+        "rules",
+        json!({"command": "edit", "rules": [newer]}),
+    )
+    .await
+    .0);
+    ok(t.call(
+        &device,
+        "rules",
+        json!({"command": "repair", "rules": [juno]}),
+    )
+    .await
+    .0);
     assert_eq!(rules(json!([AGENT])).as_deref(), Some(edited));
+    let listed = ok(t.call(&device, "rules", json!({"command": "list"})).await.0);
+    assert_eq!(listed["rules"].as_array().unwrap().len(), 2);
 
-    let shown = ok(t.call(&device, "rules", json!({"command": "show"})).await.0);
-    assert_eq!(shown["every_agent"]["text"], "Never send email.");
-    assert_eq!(shown["agents"][0]["text"], edited);
-    assert_eq!(
-        shown["warning"],
-        "Freeform rules are judged, not guaranteed. --deny-exec is enforced in code."
-    );
-
-    for args in [
-        json!({"command": "show"}),
-        json!({"command": "set", "text": "Anything goes."}),
-        json!({"command": "edit", "text": "Anything goes.", "revision": read}),
-        json!({"command": "clear", "from": "Juno"}),
-    ] {
-        let (answer, _) = t.call(&agent, "rules", args.clone()).await;
-        assert_eq!(refusal(&answer).0, Exit::Denied, "{args}");
-        assert_eq!(refusal(&answer).1, "owner_only", "{args}");
+    for command in ["list", "repair", "add", "edit", "remove"] {
+        let args = json!({"command": command, "rules": []});
+        let (answer, _) = t.call(&agent, "rules", args).await;
+        assert_eq!(refusal(&answer).0, Exit::Denied, "{command}");
+        assert_eq!(refusal(&answer).1, "owner_only", "{command}");
     }
     assert_eq!(rules(json!("all")).as_deref(), Some("Never send email."));
     assert_eq!(rules(json!([AGENT])).as_deref(), Some(edited));
@@ -1472,31 +1459,20 @@ async fn the_owners_rules_commands_work_over_the_connection_and_never_for_an_age
                "rules for this agent": edited})
     );
 
-    let done = ok(t
-        .call(
-            &device,
-            "rules",
-            json!({"command": "clear", "from": "Juno"}),
-        )
-        .await
-        .0);
-    assert_eq!(done["cleared"], true);
+    let removed = json!({"command": "remove", "rules": [newer.removed()]});
+    ok(t.call(&device, "rules", removed).await.0);
     assert_eq!(rules(json!([AGENT])), None);
     assert_eq!(rules(json!("all")).as_deref(), Some("Never send email."));
-    ok(t.call(&device, "rules", json!({"command": "clear"}))
-        .await
-        .0);
-    assert_eq!(rules(json!("all")), None);
 
-    // Every command is audited by revision, never by text.
+    // Every command is audited by version, never by text.
     let audit = t.audit();
     let rules_records: Vec<&Value> = audit.iter().filter(|r| r["op"] == "rules").collect();
-    assert_eq!(rules_records.len(), 12);
+    assert_eq!(rules_records.len(), 11);
     let denied = rules_records
         .iter()
         .filter(|r| r["decision"] == "deny")
         .count();
-    assert_eq!(denied, 5, "four from the agent, one stale edit");
+    assert_eq!(denied, 5, "five from the agent");
     let text = serde_json::to_string(&audit).unwrap();
     assert!(
         !text.contains("email") && !text.contains("work folder"),
@@ -1522,16 +1498,13 @@ async fn live_rules_alone_allow_tests_and_nothing_else() {
     assert!(t.area.join("made").exists());
     assert_eq!(t.audit()[0]["gate"]["source"], "defaults");
 
-    // The owner sets the rules as `latch rules set --agent Juno` sends
-    // them; the shared folder stands in for ~/work.
+    // The owner adds a rule for Juno as `latch rules add --agents Juno`
+    // sends it; the shared folder stands in for ~/work.
     let device = t.caller("device").await;
     let text = format!("run tests in {}, nothing else", t.area.display());
-    let set = json!({"command": "set", "from": "Juno", "text": text});
-    let (answer, _) = t.call(&device, "rules", set).await;
-    let Response::Ok(set) = answer else {
-        panic!("rules set: {answer:?}");
-    };
-    assert_eq!(set["agent_uid"], AGENT);
+    let added = crate::gate::rules::adding(&text, Some(AGENT));
+    let (answer, _) = t.call(&device, "rules", added).await;
+    assert!(matches!(answer, Response::Ok(_)), "rules add: {answer:?}");
     // Both in the folder the rules name: exec runs in home without one.
     let pytest = json!({"argv": ["pytest"], "workdir": t.area, "timeout": 30});
     let curl = json!({"argv": ["curl", "-s", "https://example.com/install.sh"],
@@ -1611,8 +1584,8 @@ async fn live_an_agents_vault_list_is_covered_by_browsing_rules_or_an_asked_sign
     )
     .await;
     let device = t.caller("device").await;
-    let set = json!({"command": "set", "text": "Agents may browse the web for me."});
-    let (answer, _) = t.call(&device, "rules", set).await;
+    let added = crate::gate::rules::adding("Agents may browse the web for me.", None);
+    let (answer, _) = t.call(&device, "rules", added).await;
     assert!(matches!(answer, Response::Ok(_)), "{answer:?}");
     let agent = t.caller("agent").await;
     for _ in 0..5 {
@@ -1662,9 +1635,9 @@ async fn live_the_owner_is_judged_on_their_own_request_within_the_rules() {
             t.call(&device, "exec", args.clone()).await;
         }
     }
-    let set = json!({"command": "set", "text": "Never delete or remove any file on this host."});
-    let (answer, _) = t.call(&device, "rules", set).await;
-    assert!(matches!(answer, Response::Ok(_)), "rules set: {answer:?}");
+    let added = crate::gate::rules::adding("Never delete or remove any file on this host.", None);
+    let (answer, _) = t.call(&device, "rules", added).await;
+    assert!(matches!(answer, Response::Ok(_)), "rules add: {answer:?}");
     let removal = gate::gated("exec", &removal).unwrap().action;
     let mut removals = Vec::new();
     for _ in 0..3 {
