@@ -804,7 +804,7 @@ mod platform;
 mod platform;
 
 #[cfg(windows)]
-pub(crate) use platform::{final_path, within};
+pub(crate) use platform::{EditLock, final_path, within};
 #[cfg(windows)]
 pub use platform::{sweep, tie_to_host};
 

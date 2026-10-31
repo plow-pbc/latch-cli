@@ -271,13 +271,33 @@ fn grants(policy: &Policy) -> Result<Vec<Grant>, String> {
             });
         }
     }
-    let granted: Vec<PathBuf> = grants.iter().map(|grant| grant.path.clone()).collect();
-    // A hidden path inside a grant stays hidden only if that grant never
-    // reaches it.
+    // No write grant holds a hidden path, the state folder or the folder of
+    // the latch it runs. A sealed folder keeps what is in it out of reach,
+    // not its name: a worker that may delete a folder above it could rename
+    // that folder and make another in its place, which the host would then
+    // read as its own (its rules, say). The judge refuses such paths; this
+    // fails closed should one get here.
     let hidden = policy
         .hidden
         .iter()
         .chain(std::iter::once(&policy.state_dir));
+    let kept: Vec<&Path> = hidden
+        .clone()
+        .map(PathBuf::as_path)
+        .chain(program.parent())
+        .collect();
+    for area in &policy.areas {
+        if let Some(path) = kept.iter().find(|path| within(path, area)) {
+            return Err(format!(
+                "{} would be written, and holds {}, which no worker may move",
+                area.display(),
+                path.display()
+            ));
+        }
+    }
+    // A hidden path inside a folder it reads stays hidden only if that grant
+    // never reaches it.
+    let granted: Vec<PathBuf> = grants.iter().map(|grant| grant.path.clone()).collect();
     for path in hidden {
         if path.exists()
             && granted.iter().any(|open| within(path, open))
@@ -288,18 +308,6 @@ fn grants(policy: &Policy) -> Result<Vec<Grant>, String> {
                 path.display()
             ));
         }
-    }
-    // Nor is the folder of the latch it runs written: the judge refuses
-    // such a path, and this fails closed should one get here.
-    if let Some(folder) = program.parent()
-        && grants
-            .iter()
-            .any(|grant| grant.access == Access::Write && within(folder, &grant.path))
-    {
-        return Err(format!(
-            "{} holds the latch the host runs and would be written",
-            folder.display()
-        ));
     }
     // The folder it runs in, when no grant reaches it: entered, nothing in
     // it listed or read.
@@ -327,16 +335,17 @@ fn grant_all(sid: &Sid, grants: &[Grant]) -> Result<(), String> {
     Ok(())
 }
 
-/// Access-list edits, one at a time across this user's launchers. Each is
+/// Access-list edits, one at a time across this user's launchers, and a
+/// put's replacing a file with that file's list (`files/place.rs`). Each is
 /// a read, a change and a write of the whole list, so two at once write
 /// over each other: a grant lost, or an entry taken back that comes back.
 /// The latch it runs and any area two calls share are edited by both. A
 /// launcher killed while holding it abandons it, which frees it; a
 /// container cannot reach it (its `Local` names are its own).
-struct EditLock(HANDLE);
+pub(crate) struct EditLock(HANDLE);
 
 impl EditLock {
-    fn take() -> std::io::Result<EditLock> {
+    pub(crate) fn take() -> std::io::Result<EditLock> {
         let name = wide(OsStr::new("Local\\latch.sandbox.access-lists"));
         // SAFETY: a NUL-terminated name, no security attributes.
         let mutex = unsafe { CreateMutexW(null(), 0, name.as_ptr()) };
@@ -1241,12 +1250,17 @@ mod tests {
         tempfile::tempdir_in(parent).unwrap()
     }
 
+    /// A folder in home, where a call's reads are granted.
+    fn home_dir() -> tempfile::TempDir {
+        tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap()
+    }
+
     fn policy(root: &Path) -> Policy {
         Policy {
             areas: vec![root.join("area")],
             reads: vec![],
             hidden: crate::sandbox::never_readable(&std::env::home_dir().unwrap()),
-            state_dir: root.join("area/state"),
+            state_dir: root.join("state"),
             exec: true,
             home: None,
             network: false,
@@ -1332,18 +1346,41 @@ mod tests {
     }
 
     #[test]
-    fn a_hidden_folder_inside_a_grant_must_keep_it_out() {
-        let dir = test_dir();
-        for name in ["area/state", "tmp"] {
-            fs::create_dir_all(dir.path().join(name)).unwrap();
+    fn no_write_grant_holds_the_state_even_sealed() {
+        let dir = home_dir();
+        let root = dir.path().canonicalize().unwrap();
+        for name in ["area/parent/state", "tmp"] {
+            fs::create_dir_all(root.join(name)).unwrap();
         }
-        let failure = grants(&policy(dir.path())).err().unwrap();
+        crate::state::owner::folder(&root.join("area/parent/state")).unwrap();
+        let mut held = policy(&root);
+        held.state_dir = root.join("area/parent/state");
+        let failure = grants(&held).err().unwrap();
+        assert!(failure.contains("which no worker may move"), "{failure}");
+        // Read, it must be sealed, which it is.
+        held.areas = vec![];
+        held.reads = vec![root.join("area")];
+        grants(&held).unwrap();
+    }
+
+    #[test]
+    fn a_hidden_folder_inside_a_read_grant_must_keep_it_out() {
+        let dir = home_dir();
+        let root = dir.path().canonicalize().unwrap();
+        for name in ["area/state", "tmp"] {
+            fs::create_dir_all(root.join(name)).unwrap();
+        }
+        let mut read = policy(&root);
+        read.areas = vec![];
+        read.reads = vec![root.join("area")];
+        read.state_dir = root.join("area/state");
+        let failure = grants(&read).err().unwrap();
         assert!(
             failure.contains("is hidden but inside a folder"),
             "{failure}"
         );
-        crate::state::owner::folder(&dir.path().join("area/state")).unwrap();
-        grants(&policy(dir.path())).unwrap();
+        crate::state::owner::folder(&root.join("area/state")).unwrap();
+        grants(&read).unwrap();
     }
 
     #[test]
@@ -1355,10 +1392,7 @@ mod tests {
         held.state_dir = dir.path().join("state");
         held.areas = vec![program.parent().unwrap().to_path_buf()];
         let failure = grants(&held).err().unwrap();
-        assert!(
-            failure.contains("holds the latch the host runs"),
-            "{failure}"
-        );
+        assert!(failure.contains("which no worker may move"), "{failure}");
         // Reading it is another matter.
         held.areas = vec![];
         held.reads = vec![program.parent().unwrap().to_path_buf()];
@@ -1366,10 +1400,12 @@ mod tests {
     }
 
     /// In a real container: an exec worker reads and writes its area, and
-    /// nothing hidden, though latch's state is inside that area: not the
-    /// state, not AppData, and it never writes the latch it runs or its
-    /// folder. Needs a desktop to start a container in (run it from a
-    /// signed-in session).
+    /// nothing hidden: not the state, not AppData, and it never writes the
+    /// latch it runs or its folder. A sealed folder in its area keeps what is
+    /// in it, but the worker can still move it by renaming the folder above
+    /// and put another in its place: why no write grant holds the state.
+    /// Needs a desktop to start a container in (run it from a signed-in
+    /// session).
     #[test]
     fn a_container_reaches_its_grants_and_nothing_hidden() {
         if let Ok(root) = std::env::var("LATCH_CONTAINER_TEST") {
@@ -1384,11 +1420,18 @@ mod tests {
                     fs::write(root.join("area/new"), "new").is_ok(),
                 ),
                 ("tmp write", fs::write(root.join("tmp/new"), "new").is_ok()),
+                ("state read", fs::read(root.join("state/secret")).is_err()),
+                ("state list", fs::read_dir(root.join("state")).is_err()),
                 (
-                    "state read",
-                    fs::read(root.join("area/state/secret")).is_err(),
+                    "sealed folder read",
+                    fs::read(root.join("area/parent/sealed/secret")).is_err(),
                 ),
-                ("state list", fs::read_dir(root.join("area/state")).is_err()),
+                (
+                    "sealed folder moved by its parent",
+                    fs::rename(root.join("area/parent"), root.join("area/moved")).is_ok()
+                        && fs::create_dir_all(root.join("area/parent/sealed")).is_ok()
+                        && fs::write(root.join("area/parent/sealed/secret"), "planted").is_ok(),
+                ),
                 (
                     "outside read",
                     fs::read(root.join("outside/other")).is_err(),
@@ -1414,12 +1457,14 @@ mod tests {
         }
         let dir = test_dir();
         let root = dir.path().canonicalize().unwrap();
-        for name in ["area/state", "tmp", "outside"] {
+        for name in ["area/parent/sealed", "state", "tmp", "outside"] {
             fs::create_dir_all(root.join(name)).unwrap();
         }
         fs::write(root.join("area/inside"), "inside").unwrap();
-        crate::state::owner::folder(&root.join("area/state")).unwrap();
-        fs::write(root.join("area/state/secret"), "secret").unwrap();
+        for sealed in ["state", "area/parent/sealed"] {
+            crate::state::owner::folder(&root.join(sealed)).unwrap();
+            fs::write(root.join(sealed).join("secret"), "secret").unwrap();
+        }
         fs::write(root.join("outside/other"), "other").unwrap();
         // A file of the user's in AppData, which no worker reads.
         let appdata = tempfile::Builder::new()
@@ -1448,7 +1493,11 @@ mod tests {
                 .exists()
         );
         // Every grant was taken back.
-        if let Ok(mut left) = fs::read_dir(ledgers(&root.join("area/state"))) {
+        assert_eq!(
+            fs::read(root.join("area/moved/sealed/secret")).unwrap(),
+            b"secret"
+        );
+        if let Ok(mut left) = fs::read_dir(ledgers(&root.join("state"))) {
             assert!(left.next().is_none(), "a ledger was left");
         }
     }

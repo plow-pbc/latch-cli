@@ -298,6 +298,24 @@ pub(crate) fn check_path(workers: &WorkerSetup, path: &Path, write: bool) -> Res
             ),
         ));
     }
+    // Nor a folder holding latch's state or a hidden path: a worker that may
+    // delete it could rename a folder above them and put another state in
+    // its place.
+    #[cfg(windows)]
+    if write
+        && let Some(kept) = std::iter::once(&workers.state_dir)
+            .chain(&workers.hidden)
+            .find(|kept| crate::sandbox::within(kept, path))
+    {
+        return Err(Failure::new(
+            code::bad_path,
+            format!(
+                "{} holds {}, latch's state or a hidden path: a write path may not hold one",
+                path.display(),
+                kept.display()
+            ),
+        ));
+    }
     Ok(())
 }
 
@@ -1148,5 +1166,24 @@ mod windows_tests {
         check_path(&workers, &root.join("work"), true).unwrap();
         // Read, it is as any other folder.
         check_path(&workers, &root.join("bin"), false).unwrap();
+    }
+
+    #[test]
+    fn no_write_path_holds_the_state() {
+        let home = std::env::home_dir().unwrap().canonicalize().unwrap();
+        let dir = tempfile::tempdir_in(&home).unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join("parent").join("state")).unwrap();
+        let mut workers = workers(&home, std::env::current_exe().unwrap());
+        workers.state_dir = root.join("parent").join("state");
+        for held in [root.clone(), root.join("parent")] {
+            let failure = check_path(&workers, &held, true).unwrap_err();
+            assert!(
+                format!("{failure:?}").contains("a write path may not hold one"),
+                "{}: {failure:?}",
+                held.display()
+            );
+        }
+        check_path(&workers, &root, false).unwrap();
     }
 }

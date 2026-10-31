@@ -239,7 +239,10 @@ pub fn place(staged: &Path, path: &Path, workers: &WorkerSetup) -> Result<(), Fa
     ));
     // Made with the access list of a file it replaces, protection included,
     // and shared with no one until it is in place: an owner-only key in a
-    // folder others read is never theirs to open, not even in between.
+    // folder others read is never theirs to open, not even in between. That
+    // list is read and the file replaced as one access-list edit
+    // (`EditLock`): a get's grant on it meanwhile would be lost.
+    let _one_edit = crate::sandbox::EditLock::take().map_err(failed)?;
     let like = AccessOf::file(path).map_err(failed)?;
     let attributes = SECURITY_ATTRIBUTES {
         nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
