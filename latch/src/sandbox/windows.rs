@@ -1018,22 +1018,30 @@ pub fn grant_listing() -> Vec<String> {
     roots
         .into_iter()
         .filter_map(|root| {
-            if admits(&root, &sid).unwrap_or(false) {
-                return None;
-            }
-            let added = with_dacl(&root, false, |old, _, write| {
-                // SAFETY: `old` is the root's access list, live meanwhile;
-                // `sid` is live.
-                unsafe { add_entry(old, ROOT_ACCESS, GRANT_ACCESS, NO_INHERITANCE, sid.0, write) }
-            });
-            let error = match (added, admits(&root, &sid)) {
-                (Err(err), _) | (_, Err(err)) => err.to_string(),
-                (Ok(()), Ok(true)) => return None,
-                (Ok(()), Ok(false)) => "its entry did not change".into(),
-            };
-            Some(format!("{}: {error}", root.display()))
+            let granted = grant_root(&root, &sid);
+            granted
+                .err()
+                .map(|why| format!("{}: {why}", root.display()))
         })
         .collect()
+}
+
+/// Gives `sid` `ROOT_ACCESS` on `root` unless it has it: an entry of its
+/// own, which nothing below inherits.
+fn grant_root(root: &Path, sid: &Sid) -> Result<(), String> {
+    if admits(root, sid).unwrap_or(false) {
+        return Ok(());
+    }
+    let added = with_dacl(root, false, |old, _, write| {
+        // SAFETY: `old` is the root's access list, live meanwhile; `sid` is
+        // live.
+        unsafe { add_entry(old, ROOT_ACCESS, GRANT_ACCESS, NO_INHERITANCE, sid.0, write) }
+    });
+    match (added, admits(root, sid)) {
+        (Err(err), _) | (_, Err(err)) => Err(err.to_string()),
+        (Ok(()), Ok(true)) => Ok(()),
+        (Ok(()), Ok(false)) => Err("its entry did not change".into()),
+    }
 }
 
 /// Runs this worker's own command line again, in the container `sid` and a
@@ -1895,5 +1903,76 @@ mod tests {
             LocalFree(groups.cast());
             LocalFree(capabilities.cast());
         }
+    }
+
+    /// The listing grant with no administrator and no prompt: on a folder
+    /// this user owns, as `grant_listing` gives it on each volume's root.
+    #[test]
+    fn a_listing_grant_is_one_entry_of_root_access_that_nothing_below_inherits() {
+        let sid = Sid::from_string(VOLUME_ROOT).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!admits(dir.path(), &sid).unwrap());
+        grant_root(dir.path(), &sid).unwrap();
+        assert!(admits(dir.path(), &sid).unwrap());
+        // Granted again, nothing changes.
+        grant_root(dir.path(), &sid).unwrap();
+        assert_eq!(entries_for(dir.path(), &sid), [(0, ROOT_ACCESS)]);
+        let inside = dir.path().join("inside");
+        std::fs::create_dir(&inside).unwrap();
+        std::fs::write(dir.path().join("file"), "").unwrap();
+        assert!(entries_for(&inside, &sid).is_empty());
+        assert!(entries_for(&dir.path().join("file"), &sid).is_empty());
+    }
+
+    /// Each allowing entry `path`'s access list has for `sid`, inherited or
+    /// not: its flags and mask.
+    fn entries_for(path: &Path, sid: &Sid) -> Vec<(u8, u32)> {
+        let name = wide(path.as_os_str());
+        let (mut list, mut descriptor): (*mut ACL, PSECURITY_DESCRIPTOR) = (null_mut(), null_mut());
+        // SAFETY: a NUL-terminated name; the descriptor holding `list` is
+        // freed below.
+        let read = unsafe {
+            GetNamedSecurityInfoW(
+                name.as_ptr(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                null_mut(),
+                null_mut(),
+                &mut list,
+                null_mut(),
+                &mut descriptor,
+            )
+        };
+        assert_eq!(read, ERROR_SUCCESS);
+        let mut size = ACL_SIZE_INFORMATION::default();
+        // SAFETY: `list` is the live list `descriptor` holds.
+        let sized = unsafe {
+            GetAclInformation(
+                list,
+                (&raw mut size).cast(),
+                size_of::<ACL_SIZE_INFORMATION>() as u32,
+                AclSizeInformation,
+            )
+        };
+        assert_ne!(sized, 0);
+        let mut found = Vec::new();
+        for index in 0..size.AceCount {
+            let mut ace = null_mut();
+            // SAFETY: `index` is below the list's count; an allowing entry
+            // goes on with its mask and its SID.
+            unsafe {
+                assert_ne!(GetAce(list, index, &mut ace), 0);
+                let header = *(ace as *const ACE_HEADER);
+                let allowing = ace as *mut ACCESS_ALLOWED_ACE;
+                if header.AceType as u32 == ACCESS_ALLOWED_ACE_TYPE
+                    && EqualSid((&raw mut (*allowing).SidStart).cast(), sid.0) != 0
+                {
+                    found.push((header.AceFlags, (*allowing).Mask));
+                }
+            }
+        }
+        // SAFETY: allocated by GetNamedSecurityInfoW, freed once.
+        unsafe { LocalFree(descriptor) };
+        found
     }
 }
