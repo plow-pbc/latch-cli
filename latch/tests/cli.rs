@@ -3557,9 +3557,14 @@ fn status_asks_every_host_for_its_plugins_at_once_and_in_time() {
 
 /// An owner's host state logged in to `plow` as `host`.
 fn owner_host_on(plow: &LivePlow, dir: &Path) -> PathBuf {
+    owner_host_named(plow, dir, "host")
+}
+
+/// An owner's host state, `dir/name`, logged in to `plow` as `name`.
+fn owner_host_named(plow: &LivePlow, dir: &Path, name: &str) -> PathBuf {
     let owner_token = dir.join("owner.token");
     fs::write(&owner_token, "owner-login\n").unwrap();
-    let host = dir.join("host");
+    let host = dir.join(name);
     let token = owner_token.to_str().unwrap();
     let args = [
         "login",
@@ -3568,7 +3573,7 @@ fn owner_host_on(plow: &LivePlow, dir: &Path) -> PathBuf {
         "--token-file",
         token,
         "--name",
-        "host",
+        name,
     ];
     let login = latch(&host, &args, &[]);
     assert_eq!(login.status.code(), Some(0), "{login:?}");
@@ -6737,6 +6742,123 @@ fn vault_stdin_left_open_is_cut_off_and_saves_nothing() {
     assert!(!error.to_string().contains("made-up-pass-open-1"));
     let (_, listed) = answered(&latch(&host, &["vault", "list"], &[]));
     assert_eq!(listed["items"], json!([]));
+}
+
+/// Two of the owner's Macs keep one vault: an add, an edit and a removal
+/// made on one reach the other, a host that was stopped catches up as it
+/// starts, and each record of a change taken names the host it came from.
+#[test]
+fn the_owners_hosts_sync_adds_edits_and_removals_and_a_stopped_one_catches_up() {
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let (one, two) = (dir.path().join("one"), dir.path().join("two"));
+    for parent in [&one, &two] {
+        fs::create_dir(parent).unwrap();
+    }
+    let mba = owner_host_named(&plow, &one, "mba");
+    let mbp = owner_host_named(&plow, &two, "mbp");
+    let syncing = [("LATCH_TEST_SYNC", Path::new("1"))];
+    let _mba_serve = serving_with_env(&mba, &relay, &syncing).0;
+    let mbp_serve = serving_with_env(&mbp, &relay, &syncing).0;
+    let ok = |host: &Path, args: &[&str]| {
+        let output = latch(host, args, &[]);
+        assert!(output.status.success(), "{args:?}: {output:?}");
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
+    };
+    let items = |host: &Path| ok(host, &["vault", "list"])["items"].clone();
+    let until = |what: &str, done: &dyn Fn() -> bool| assert!(eventually(30, done), "never {what}");
+    let add = |host: &Path, title: &str, password: &str| {
+        let args = [
+            "vault",
+            "add",
+            "--kind",
+            "login",
+            "--title",
+            title,
+            "--site",
+            "shop.example",
+            "--field",
+            "username=ada",
+            "--stdin",
+        ];
+        let mut adding = latch_command(host, &args, &[])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let secret = json!({"password": password}).to_string();
+        adding
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(secret.as_bytes())
+            .unwrap();
+        let added = adding.wait_with_output().unwrap();
+        assert!(added.status.success(), "{added:?}");
+        let added: Value = serde_json::from_slice(&added.stdout).unwrap();
+        added["item"]["item"].as_str().unwrap().to_string()
+    };
+
+    let id = add(&mba, "Shop", "made-up-pass-1");
+    until("added on mbp", &|| {
+        items(&mbp).as_array().unwrap().len() == 1
+    });
+    let on_mbp = items(&mbp)[0].clone();
+    assert_eq!(on_mbp["title"], "Shop");
+
+    ok(
+        &mba,
+        &[
+            "vault",
+            "edit",
+            &id,
+            "--revision",
+            "1",
+            "--title",
+            "Shop (new)",
+        ],
+    );
+    until("edited on mbp", &|| items(&mbp)[0]["title"] == "Shop (new)");
+
+    let mbp_id = on_mbp["item"].as_str().unwrap().to_string();
+    let revision = items(&mbp)[0]["revision"].to_string();
+    ok(&mbp, &["vault", "remove", &mbp_id, "--revision", &revision]);
+    until("removed on mba", &|| {
+        items(&mba).as_array().unwrap().is_empty()
+    });
+
+    // mbp is stopped while mba changes, and catches up as it starts.
+    drop(mbp_serve);
+    add(&mba, "Bank", "made-up-pass-2");
+    assert!(items(&mbp).as_array().unwrap().is_empty());
+    let _mbp_serve = serving_with_env(&mbp, &relay, &syncing).0;
+    until("caught up on mbp", &|| items(&mbp)[0]["title"] == "Bank");
+
+    let taken = |host: &Path| -> Vec<(Value, Value)> {
+        audit_records(host)
+            .into_iter()
+            .filter(|r| r["op"] == "vault" && r["args"]["command"] == "sync")
+            .map(|r| (r["caller_name"].clone(), r["args"].clone()))
+            .collect()
+    };
+    let sync = |added: u32, updated: u32, removed: u32| json!({"command": "sync", "added": added, "updated": updated, "removed": removed});
+    assert_eq!(
+        taken(&mbp),
+        [
+            (json!("mba"), sync(1, 0, 0)),
+            (json!("mba"), sync(0, 1, 0)),
+            (json!("mba"), sync(1, 0, 0)),
+        ]
+    );
+    assert_eq!(taken(&mba), [(json!("mbp"), sync(0, 0, 1))]);
+    // No value is in either log.
+    for host in [&mba, &mbp] {
+        let shown =
+            String::from_utf8_lossy(&latch(host, &["audit", "--all"], &[]).stdout).to_string();
+        assert!(!shown.contains("made-up-pass"), "{shown}");
+    }
 }
 
 #[test]

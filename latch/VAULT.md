@@ -377,3 +377,24 @@ macOS the browser engine runs as the owner outside latch's sandbox, so a
 compromised engine could read `vault.json`, and `vault.key` in a build that
 keeps files: a known limit (see [SECURITY.md](../SECURITY.md)). In a signed latch the custody key is in the
 Keychain, which only a program signed with latch's keychain group can read.
+
+## Sync between the owner's Macs
+
+A Mac whose latch keeps its vault key in the Keychain keeps one vault with
+the owner's other such Macs: an add, edit, removal, import or phone-link
+save on one reaches the others. Its `serve` runs a round on start, within
+seconds of any change to `vault.json`, and every 10 minutes, so a Mac that
+was asleep or stopped catches up as it comes back, and a change made while
+no other Mac was online waits until one is. In a round it asks each of the
+owner's other hosts Plow lists online for its vault state over iroh,
+applies it, then sends its own back. Nothing goes through Plow but the
+connection's relay, and Plow stores no item.
+
+The later change to an item wins, and a removal as late as the edit wins;
+an item each Mac had added on its own, every field equal, becomes one. An
+item new to a Mac gets that Mac's next id. A host whose key is a file (any
+other system, or an unsigned build) neither sends nor takes items: asked,
+it answers `sync_off` before anything is sent. Each change a vault takes
+is audited as `vault` `sync` with counts only, the caller and
+`caller_name` naming the host it came from; a round that changes nothing
+is not audited.
