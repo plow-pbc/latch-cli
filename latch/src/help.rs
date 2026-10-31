@@ -515,7 +515,7 @@ const ENTRIES: &[Entry] = &[
         runs_on: |_| RunsOn::Host,
         output: "The new session's id (shown only now: keep it), its engine, and the elements on screen.",
         effect: Once(
-            "starts a browser session, in a fresh browser of its own, on the host and loads the page",
+            "starts a browser session on the host, in a browser of its own on your profile there, and loads the page",
         ),
         owner_only: false,
         connector: None,
@@ -897,7 +897,9 @@ const ENTRIES: &[Entry] = &[
         id: "browser.close",
         runs_on: |_| RunsOn::Host,
         output: "The session closed.",
-        effect: Repeatable("ends the session and deletes its cookies and logins"),
+        effect: Repeatable(
+            "ends the session and closes its browser; its cookies and logins stay on your profile",
+        ),
         owner_only: false,
         connector: None,
         examples: &[ex(

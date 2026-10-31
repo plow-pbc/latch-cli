@@ -402,6 +402,7 @@ codes! {
     precondition_failed: Failed,
     press_required: Denied,
     profile_failed: Failed,
+    profile_in_use: Failed,
     program_not_found: Failed,
     protocol_mismatch: Failed,
     rate_limited: Failed,

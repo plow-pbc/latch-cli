@@ -84,7 +84,10 @@ are welcome.
   source before it runs: one that reads form fields, listens to input,
   keyboard or form events, or sends page data off the page needs the
   owner's explicit OK. That judgment is a model's, so a script that hides
-  what it does may get through. A new browser session starts clean.
+  what it does may get through. A new browser session no longer starts
+  clean: each agent's sessions on a host share one persistent profile, so
+  what a script stored for a site (a service worker, site storage) is still
+  there in that agent's later sessions. Only its tabs start fresh.
 - **Latch protects a secret until the form is submitted or the fields are
   cleared; what a site shows afterwards is the site's.** Latch never reads a
   filled value back from its field, blanks those fields in screenshots and
