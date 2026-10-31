@@ -19,6 +19,23 @@ use crate::failure::{Failure, code};
 /// other schemes are never paused.
 pub const OFF_THE_WEB: &[&str] = &["file", "filesystem", "chrome", "devtools", "view-source"];
 
+/// Run in each of a page's documents before its own scripts: asking for a
+/// passkey or to make one fails at once, as when the user declines, and the
+/// site offers its password or code instead. A virtual environment with no
+/// authenticator would never answer, so this answers first; other
+/// credential requests go on. A frame of another site in its own process
+/// misses this, and its passkey request waits in that environment, with no
+/// sheet, until the site gives up.
+const NO_PASSKEYS: &str = "for (const name of ['get', 'create']) {
+  const own = CredentialsContainer.prototype[name];
+  CredentialsContainer.prototype[name] = function (options) {
+    if (options && options.publicKey) {
+      return Promise.reject(new DOMException('The operation either timed out or was not allowed.', 'NotAllowedError'));
+    }
+    return own.call(this, options);
+  };
+}";
+
 /// Whether `url` has a query parameter that holds one of `values` as a
 /// fill takes a field to hold it (`keeps`). Line breaks count alike
 /// however they are written: a form sends a field's as CRLF.
@@ -266,23 +283,16 @@ impl Cdp {
             }
             "Target.targetDestroyed" => self.pages.remove(&text("targetId")),
             // Every page, the session's first window and its popups alike,
-            // starts paused (`Cft::listen`), its scripts not yet run. A
-            // passkey request then goes to an authenticator inside the
-            // browser that holds no credentials, never to the OS's passkey
-            // sheet, which no call can reach: it fails at once, and the
-            // site offers its password or code instead. The page goes on
-            // only after.
+            // starts paused (`Cft::listen`), its scripts not yet run, and
+            // goes on only once it can raise no OS passkey sheet, which no
+            // call can reach. Its passkey requests go to Chrome's virtual
+            // WebAuthn environment, which holds no authenticator, and its
+            // documents refuse them first (`NO_PASSKEYS`): an authenticator
+            // would enroll a passkey the site keeps and this browser loses.
             "Target.attachedToTarget" if params["targetInfo"]["type"] == "page" => {
                 let page = params["sessionId"].as_str();
                 let _ = self.send("WebAuthn.enable", json!({}), page);
-                let refuse = "for (const name of ['get', 'create']) {\
-                    const real = CredentialsContainer.prototype[name];\
-                    CredentialsContainer.prototype[name] = function (options) {\
-                      if (options && options.publicKey) return Promise.reject(new DOMException('The operation either timed out or was not allowed.', 'NotAllowedError'));\
-                      return real.call(this, options);\
-                    };\
-                  }";
-                let script = json!({"source": refuse, "runImmediately": true});
+                let script = json!({"source": NO_PASSKEYS, "runImmediately": true});
                 let _ = self.send("Page.addScriptToEvaluateOnNewDocument", script, page);
                 let _ = self.send("Runtime.runIfWaitingForDebugger", json!({}), page);
                 false
