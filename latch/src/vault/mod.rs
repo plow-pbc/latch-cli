@@ -8,6 +8,8 @@
 //! - `dates.rs`: reshaping dates and expiries to a field's format.
 //! - `totp.rs`: authenticator codes from a login's key.
 //! - `store.rs`: the backend interface, and latch's own sealed store.
+//! - `sync.rs`: stable ids, change times and tombstones, and merging two
+//!   hosts' vault states.
 //! - `import.rs`: other password managers' exports, read into items.
 //! - `host.rs`: the host's `vault` operation, for owner devices.
 //! - `link.rs`: phone links, which add an item from the owner's phone.
@@ -23,4 +25,5 @@ pub mod link;
 pub(crate) mod local;
 pub mod sites;
 pub mod store;
+pub mod sync;
 pub mod totp;
