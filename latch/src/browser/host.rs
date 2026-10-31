@@ -156,9 +156,9 @@ pub(super) struct Entry {
     handing: std::sync::atomic::AtomicBool,
     /// The sites the gatekeeper let this session go to.
     judged_sites: std::sync::Mutex<HashSet<String>>,
-    /// The numbers of the cards filled in this session, digits only: what
+    /// The card numbers and identity secrets filled in this session: what
     /// its answers and journals are masked for.
-    pub(super) cards: super::journal::Cards,
+    pub(super) masks: super::journal::Masks,
 }
 
 impl Entry {
@@ -172,9 +172,9 @@ impl Entry {
         audit.insert("engine".into(), self.runtime.ready["engine"].clone());
     }
 
-    /// The numbers of the cards filled in this session.
-    pub(super) fn card_numbers(&self) -> Vec<String> {
-        self.cards.lock().expect("cards lock").clone()
+    /// The card numbers and identity secrets filled in this session.
+    pub(super) fn filled(&self) -> Vec<super::shown::Filled> {
+        self.masks.lock().expect("masks lock").clone()
     }
 
     /// The session's worker for one agent call: refused while the owner has
@@ -395,7 +395,7 @@ impl Browsers {
             confirmations: Default::default(),
             handing: Default::default(),
             judged_sites: Default::default(),
-            cards: Default::default(),
+            masks: Default::default(),
         });
         self.sessions.lock().await.insert(id.clone(), entry.clone());
         Ok((id, entry))
@@ -646,12 +646,10 @@ async fn run_command(
 
 /// A `fill`: its item, named by id or left to the page's site, is found
 /// before it is judged; a suggestion taken by its id becomes the mapping
-/// it stands for; one that releases an identity secret stops for the
-/// agent's confirmation before any value is released.
+/// it stands for.
 pub(super) async fn fill(
     browsers: &Browsers,
     entry: &Entry,
-    session: &str,
     caller: Caller<'_>,
     args: &Value,
     audit: &mut Map<String, Value>,
@@ -664,32 +662,13 @@ pub(super) async fn fill(
         let site = judged::site(browsers, entry).await?;
         judged::judge(
             caller.gate,
-            judged::fill(browsers, &args, site, false),
-            &entry.card_numbers(),
+            judged::fill(browsers, &args, site),
+            &entry.filled(),
             audit,
         )
         .await?;
     }
-    fill_resolved(browsers, entry, session, caller.key, &args, audit).await
-}
-
-async fn fill_resolved(
-    browsers: &Browsers,
-    entry: &Entry,
-    session: &str,
-    caller: &str,
-    args: &Value,
-    audit: &mut Map<String, Value>,
-) -> Result<Value, Failure> {
-    if let Some(title) = super::fill::releases_secret(browsers, args)? {
-        if entry.runtime.filling.load(Ordering::SeqCst) {
-            return Err(paused());
-        }
-        let mut args = args.clone();
-        args["item_title"] = json!(title);
-        return Err(super::steps::stop_fill(browsers, entry, session, caller, &args, audit).await);
-    }
-    super::fill::run(browsers, entry, args, audit).await
+    super::fill::run(browsers, entry, &args, audit).await
 }
 
 /// One command for `caller`, as `answer` runs it, the page in its answer
@@ -787,11 +766,11 @@ async fn answer(
     if caller.gate.is_some()
         && let Some(action) = judged_action(browsers, &entry, command, args).await?
     {
-        judged::judge(caller.gate, action, &entry.card_numbers(), audit).await?;
+        judged::judge(caller.gate, action, &entry.filled(), audit).await?;
     }
     let mut result = match command {
         "close" => browsers.close(name, key).await.map(|closed| (closed, None)),
-        "fill" => fill(browsers, &entry, name, caller, args, audit)
+        "fill" => fill(browsers, &entry, caller, args, audit)
             .await
             .map(|result| (result, None)),
         "do" => super::steps::run(browsers, &entry, name, key, caller.gate, args, audit)
@@ -821,15 +800,16 @@ async fn answer(
     if result.is_ok() {
         last_site(&entry, audit);
     }
-    // A page may show a card number it was given (a confirmation that
-    // repeats it): the agent gets its last four digits only.
-    let cards = entry.card_numbers();
-    if !cards.is_empty() {
+    // A page may show a value it was given (a confirmation that repeats
+    // a card number, a preview of an SSN as it is typed): the agent gets a
+    // card's last four digits only, and none of a secret.
+    let filled = entry.filled();
+    if !filled.is_empty() {
         match &mut result {
-            Ok((answer, _)) => super::shown::mask_cards(answer, &cards),
+            Ok((answer, _)) => super::shown::mask_filled(answer, &filled),
             Err(failure) => {
-                failure.message = super::shown::masked(&failure.message, &cards);
-                super::shown::mask_cards(&mut failure.details, &cards);
+                failure.message = super::shown::masked(&failure.message, &filled);
+                super::shown::mask_filled(&mut failure.details, &filled);
             }
         }
     }
@@ -839,8 +819,7 @@ async fn answer(
 /// What the gatekeeper judges of a session command before it runs, if
 /// anything: a tab opened or a `goto` on a site the session has not been
 /// judged for,
-/// a plan (with an identity fill it confirms first), a confirmed
-/// fill alone, and every `eval`, upload and download. A `fill` is judged
+/// a plan, and every `eval`, upload and download. A `fill` is judged
 /// once its suggestion is resolved (`fill`).
 async fn judged_action(
     browsers: &Browsers,
@@ -866,16 +845,6 @@ async fn judged_action(
             judged::open_site(browsers, url)
         }
         "do" => {
-            let confirmed = match args["confirm"].as_str() {
-                Some(id) => match super::steps::fill_to_confirm(entry, id) {
-                    Some(fill) => {
-                        let site = judged::site(browsers, entry).await?;
-                        Some(judged::fill(browsers, &fill, site, true))
-                    }
-                    None => None,
-                },
-                None => None,
-            };
             // A malformed plan is refused before anything runs: there is
             // nothing to judge.
             let plan = serde_json::from_value::<super::plan::Plan>(args["plan"].clone())
@@ -897,12 +866,9 @@ async fn judged_action(
                     plan.resolve_facts();
                     let page = judged::page(browsers, entry).await?;
                     let names = judged::names(entry, &plan).await;
-                    judged::plan(browsers, &plan, page, &names, confirmed)
+                    judged::plan(browsers, &plan, page, &names)
                 }
-                _ => match confirmed {
-                    Some(fill) => fill,
-                    None => return Ok(None),
-                },
+                _ => return Ok(None),
             }
         }
         "eval" => judged::Action::RunScript {

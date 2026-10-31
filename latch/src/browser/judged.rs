@@ -1,7 +1,6 @@
 //! What the gatekeeper judges of a caller's browser use, and how each is
 //! put to the judge: opening a site the session has not been judged for,
-//! each plan, each vault fill and each confirmation that releases an
-//! identity, and every `eval`, upload and download. Clicks, typing,
+//! each plan, each vault fill, and every `eval`, upload and download. Clicks, typing,
 //! page reads and screenshots are not judged, nor is `act`'s one such
 //! action (a `do` of one step is judged): they pass the browser's own
 //! checks (the risk decision, confirmations, fill and pause checks).
@@ -21,6 +20,7 @@ use serde_json::{Map, Value, json};
 
 use super::host::{Browsers, Entry};
 use super::plan::{CheckKind, Literal, Op, Plan, Step};
+use super::shown::Filled;
 use crate::failure::Failure;
 use crate::gate::Gate;
 use crate::vault::sites;
@@ -44,18 +44,12 @@ pub(super) enum Action {
         /// The vault items the plan may fill.
         #[serde(skip_serializing_if = "Vec::is_empty")]
         may_fill: Vec<ItemShown>,
-        /// An identity fill the plan first carries out, confirmed.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        first_confirms: Option<Box<Action>>,
     },
     /// Vault values put into a page's fields.
     VaultFill {
         site: Option<String>,
         item: ItemShown,
         fields: Vec<String>,
-        /// An identity secret released on the agent's confirmation.
-        #[serde(skip_serializing_if = "std::ops::Not::not")]
-        confirmed: bool,
     },
     /// The agent's own JavaScript, run in the page.
     RunScript {
@@ -115,13 +109,13 @@ pub(super) struct FileShown {
 pub(super) async fn judge(
     gate: Option<Gate<'_>>,
     action: Action,
-    cards: &[String],
+    filled: &[Filled],
     audit: &mut Map<String, Value>,
 ) -> Result<(), Failure> {
     let Some(gate) = gate else {
         return Ok(());
     };
-    let action = shown(&action, cards);
+    let action = shown(&action, filled);
     audit.insert("judged".into(), action.clone());
     let judging = std::time::Instant::now();
     let judgment = gate.judge(&action).await;
@@ -130,12 +124,12 @@ pub(super) async fn judge(
     judgment.verdict
 }
 
-/// `action` as the judge is shown it: the numbers of the cards filled in
-/// the session (`cards`), wherever a page put one, by their last four
-/// digits.
-pub(super) fn shown(action: &Action, cards: &[String]) -> Value {
+/// `action` as the judge is shown it: the card numbers filled in the
+/// session (`filled`), wherever a page put one, by their last four digits,
+/// and its identity secrets not at all.
+pub(super) fn shown(action: &Action, filled: &[Filled]) -> Value {
     let mut shown = serde_json::to_value(action).expect("an action serializes");
-    super::shown::mask_cards(&mut shown, cards);
+    super::shown::mask_filled(&mut shown, filled);
     shown
 }
 
@@ -198,12 +192,7 @@ pub(super) fn item(browsers: &Browsers, id: &str) -> ItemShown {
 }
 
 /// A fill of `args` (its mapping resolved) on `site`.
-pub(super) fn fill(
-    browsers: &Browsers,
-    args: &Value,
-    site: Option<String>,
-    confirmed: bool,
-) -> Action {
+pub(super) fn fill(browsers: &Browsers, args: &Value, site: Option<String>) -> Action {
     let item = item(browsers, args["item"].as_str().unwrap_or_default());
     let fields = args["fields"]
         .as_array()
@@ -211,12 +200,7 @@ pub(super) fn fill(
         .flatten()
         .filter_map(|pair| pair[0].as_str().map(str::to_string))
         .collect();
-    Action::VaultFill {
-        site,
-        item,
-        fields,
-        confirmed,
-    }
+    Action::VaultFill { site, item, fields }
 }
 
 /// A login fill as `rules try --fill-login` previews it: the item's kind
@@ -238,7 +222,6 @@ pub(crate) fn previewed_fill(
         },
         site,
         fields,
-        confirmed: false,
     }
 }
 
@@ -275,19 +258,19 @@ pub(super) async fn names(entry: &Entry, plan: &Plan) -> Names {
     let Ok((answer, _)) = super::steps::call(entry, call, &mut audit).await else {
         return Names::new();
     };
-    named(targets, &answer, &entry.card_numbers())
+    named(targets, &answer, &entry.filled())
 }
 
 /// The worker's `named` answer for `targets`, each name with the session's
-/// card numbers (`cards`) masked whole, before anything cuts it short: a
+/// filled values (`filled`) masked whole, before anything cuts it short: a
 /// name cut first could keep all but the last digits of a number.
-fn named(targets: Vec<(Option<String>, String)>, answer: &Value, cards: &[String]) -> Names {
+fn named(targets: Vec<(Option<String>, String)>, answer: &Value, filled: &[Filled]) -> Names {
     targets
         .into_iter()
         .zip(answer["named"].as_array().cloned().unwrap_or_default())
         .filter_map(|(key, named)| {
             let role = named["role"].as_str()?.to_string();
-            let name = super::shown::masked(named["name"].as_str()?, cards);
+            let name = super::shown::masked(named["name"].as_str()?, filled);
             Some((key, (role, name)))
         })
         .collect()
@@ -328,15 +311,8 @@ pub(super) fn labelled(target: &str, named: Option<&(String, String)>) -> String
 }
 
 /// A plan on `page`, its steps written out as the agent wrote them, each
-/// ref with its role and name from `names`, and a card or identity fill
-/// it carries out first.
-pub(super) fn plan(
-    browsers: &Browsers,
-    plan: &Plan,
-    page: Page,
-    names: &Names,
-    first_confirms: Option<Action>,
-) -> Action {
+/// ref with its role and name from `names`.
+pub(super) fn plan(browsers: &Browsers, plan: &Plan, page: Page, names: &Names) -> Action {
     let mut items: BTreeSet<String> = plan.items.iter().cloned().collect();
     let mut named = BTreeSet::new();
     for step in &plan.steps {
@@ -368,7 +344,6 @@ pub(super) fn plan(
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect(),
-        first_confirms: first_confirms.map(Box::new),
     }
 }
 
@@ -533,7 +508,7 @@ mod tests {
     }
 
     fn plan_action(browsers: &Browsers, plan: &Plan, page: Page) -> Action {
-        super::plan(browsers, plan, page, &Names::new(), None)
+        super::plan(browsers, plan, page, &Names::new())
     }
 
     /// The names the session's reading gave these refs, in its latest
@@ -593,7 +568,7 @@ mod tests {
         let name = format!("{}{number}", "x".repeat(45));
         let answer = json!({"named": [{"role": "button", "name": name}]});
         let key = (None, "e2".to_string());
-        let names = named(vec![key.clone()], &answer, &[number.to_string()]);
+        let names = named(vec![key.clone()], &answer, &[Filled::Card(number.into())]);
         let shown = labelled("e2", names.get(&key));
         assert_eq!(
             shown,
@@ -670,7 +645,7 @@ mod tests {
         let added = browsers.vault.with(|store| store.add(item)).unwrap();
         let args =
             json!({"item": added.item, "fields": [["username", ["e1"]], ["password", ["e2"]]]});
-        let action = fill(&browsers, &args, Some("shop.example".into()), false);
+        let action = fill(&browsers, &args, Some("shop.example".into()));
 
         let world = fake::World {
             decide: Some(|_| Some([0.9, 0.08, 0.02])),

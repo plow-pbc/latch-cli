@@ -115,7 +115,7 @@ impl Harness {
     }
 
     /// The agent's own click on `target`, as a plan of one step.
-    async fn click(&mut self, target: &str) -> Result<Value, Failure> {
+    pub(super) async fn click(&mut self, target: &str) -> Result<Value, Failure> {
         let step = format!("click {target}");
         let request = format!("r-click-{}", self.shown.len());
         self.call(
@@ -557,7 +557,7 @@ async fn a_field_that_clears_itself_says_what_happened_and_what_was_filled(engin
 
 impl Harness {
     /// A screenshot of the page now, as the agent gets it.
-    async fn shot(&mut self) -> Result<Vec<u8>, Failure> {
+    pub(super) async fn shot(&mut self) -> Result<Vec<u8>, Failure> {
         let mut audit = serde_json::Map::new();
         let (_, png) = super::super::host_call(
             &self.browsers,
@@ -575,7 +575,7 @@ impl Harness {
 
 /// How many of `png`'s pixels are pure red (the fixture's card text) and
 /// pure blue (its ZIP).
-fn reds_and_blues(png: &[u8]) -> (usize, usize) {
+pub(super) fn reds_and_blues(png: &[u8]) -> (usize, usize) {
     let pixels = pixels(png);
     let red = pixels
         .iter()

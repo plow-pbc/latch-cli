@@ -536,11 +536,10 @@ pub enum BrowserCommand {
     /// For every kind of item (a login, its authenticator
     /// code as `otp`, a card, an identity, a note): `--field username=e4
     /// --field password=e5 --press e6`, or `--suggested S`, a mapping
-    /// `observe` suggested. A login's or identity's secret needs --press
-    /// eN, the button that submits it, and an identity secret stops for a
-    /// confirmation (`do --confirm C`) before any value is released. A card
-    /// takes neither (--press is refused): it stays in the page's fields,
-    /// blank in screenshots, for you to press Pay yourself
+    /// `observe` suggested. A login's secret needs --press eN, the button
+    /// that submits it. A card or an identity takes none (--press is
+    /// refused): it stays in the page's fields, blank in screenshots, for
+    /// you to press Pay or Submit yourself
     Fill {
         #[arg(long)]
         snapshot: Option<String>,

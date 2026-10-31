@@ -697,7 +697,7 @@ async fn a_refused_command_sends_nothing_to_the_page(engine: &str) {
         .agent(
             "fill",
             &id,
-            json!({"request": "r-fill-card", "item": card.item, "snapshot": checkout["snapshot"],
+            json!({"item": card.item, "snapshot": checkout["snapshot"],
                    "fields": [
                 ["number", [find(&checkout, "textbox", "Card number")]],
                 ["expiry", [find(&checkout, "textbox", "Expiry")]],
