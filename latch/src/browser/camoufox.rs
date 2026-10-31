@@ -8,9 +8,14 @@
 //! The helper's source is built into latch and written into the session's
 //! scratch folder at launch; what it runs on (Node, its packages and
 //! Camoufox) is the pinned plugin, checked before every launch.
+//!
+//! On Windows, as Chrome there (`cft.rs`), the helper and the browser it
+//! starts run in a job the worker holds, not in a worker's AppContainer;
+//! Firefox's own sandbox runs inside it.
 
 use std::fs::{self, File};
 use std::io::{ErrorKind, Read, Write};
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
@@ -34,14 +39,22 @@ const COMMAND: Duration = Duration::from_secs(90);
 /// How long a closing browser has before its process groups are killed.
 const CLOSING: Duration = Duration::from_secs(10);
 
-/// The only variables the helper and the engine get.
-const PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
+/// What holds every process of the helper and the browser, so they can be
+/// ended together: on Unix the process groups they lead, which need
+/// nothing kept; on Windows the job they run in, which also ends them when
+/// the worker ends.
+#[cfg(unix)]
+type Tree = ();
+#[cfg(windows)]
+type Tree = crate::sandbox::Job;
 
 const HELPER: &str = include_str!("../../camoufox/helper.mjs");
 const READER: &str = include_str!("reader.js");
 
 pub struct Camoufox {
     helper: Child,
+    #[cfg_attr(unix, allow(dead_code))]
+    tree: Tree,
     to_helper: ChildStdin,
     from_helper: ChildStdout,
     buffer: Vec<u8>,
@@ -84,21 +97,20 @@ impl Camoufox {
                 ),
             ));
         }
+        let (state_dir, profile, scratch) = (&plain(state_dir), plain(profile), &plain(scratch));
         let engine = CAMOUFOX.verified(state_dir)?;
-        let profile = profile::prepare(profile, &CAMOUFOX.engine)?;
+        let profile = profile::prepare(&profile, &CAMOUFOX.engine)?;
         for folder in ["tmp", "downloads"] {
             fs::create_dir_all(scratch.join(folder)).map_err(io_failure)?;
         }
         let helper_file = scratch.join("helper.mjs");
         fs::write(&helper_file, HELPER).map_err(io_failure)?;
         let log = File::create(scratch.join("engine.log")).map_err(io_failure)?;
-        let mut helper = Command::new(&engine.node)
+        let mut command = Command::new(&engine.node);
+        command
             .arg(&helper_file)
             .arg(&engine.runtime)
             .env_clear()
-            .env("PATH", PATH)
-            .env("HOME", scratch)
-            .env("TMPDIR", scratch.join("tmp"))
             // camoufox-js reads the build from the plugin, and never
             // downloads a build or an add-on itself.
             .env("CAMOUFOX_INSTALL_DIR", &engine.install)
@@ -111,20 +123,37 @@ impl Camoufox {
             })
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(log)
-            .process_group(0)
-            .spawn()
-            .map_err(|err| {
-                Failure::new(
-                    code::engine_failed,
-                    format!("{}: {err}", engine.node.display()),
-                )
-            })?;
-        super::worker::started_group(helper.id());
+            .stderr(log);
+        // The helper gets the browser's environment too.
+        let environment = super::worker::environment(scratch);
+        for (name, value) in &environment {
+            command.env(name, value);
+        }
+        let failed = |err: std::io::Error| {
+            Failure::new(
+                code::engine_failed,
+                format!("{}: {err}", engine.node.display()),
+            )
+        };
+        #[cfg(unix)]
+        let (mut helper, tree) = {
+            let helper = command.process_group(0).spawn().map_err(failed)?;
+            super::worker::started_group(helper.id());
+            (helper, ())
+        };
+        // The helper runs in a job of its own from its first instruction,
+        // with the browser it starts.
+        #[cfg(windows)]
+        let (mut helper, tree) = {
+            let tree =
+                crate::sandbox::Job::new().map_err(|why| Failure::new(code::engine_failed, why))?;
+            (tree.start(&mut command).map_err(failed)?, tree)
+        };
         let to_helper = helper.stdin.take().expect("piped");
         let from_helper = helper.stdout.take().expect("piped");
         let mut browser = Camoufox {
             helper,
+            tree,
             to_helper,
             from_helper,
             buffer: Vec::new(),
@@ -136,12 +165,10 @@ impl Camoufox {
             seen: (false, String::new()),
             scratch: scratch.to_path_buf(),
         };
-        let mut env = json!({
-            "PATH": PATH,
-            "HOME": scratch,
-            "TMPDIR": scratch.join("tmp"),
-            "MOZ_CRASHREPORTER_DISABLE": "1",
-        });
+        let mut env = json!({"MOZ_CRASHREPORTER_DISABLE": "1"});
+        for (name, value) in environment {
+            env[name] = json!(value.to_string_lossy());
+        }
         #[cfg(target_os = "linux")]
         {
             // camoufox-js names the fingerprint "mac", but the pinned
@@ -153,9 +180,14 @@ impl Camoufox {
                     .join(&CAMOUFOX.fingerprint_os)
             );
         }
+        // Windows shows the browser on the owner's screen: no display of its
+        // own (`browser::display`).
+        #[cfg(unix)]
         for (name, value) in display.map(Display::env).into_iter().flatten() {
             env[name] = json!(value);
         }
+        #[cfg(windows)]
+        let _ = display;
         // The fingerprint the profile's first launch on this build made.
         let fingerprint = profile.dir.join("fingerprint.json");
         let identity = fs::read(&fingerprint)
@@ -193,6 +225,7 @@ impl Camoufox {
         });
         match found {
             Ok(pid) => {
+                #[cfg(unix)]
                 super::worker::started_group(pid);
                 browser.browser = pid;
             }
@@ -535,21 +568,29 @@ impl Camoufox {
     /// Kills the helper and the browser, with every process each started,
     /// and waits a while for them to go; whether they did.
     fn kill(&mut self) -> bool {
-        let groups: Vec<libc::pid_t> = [self.helper.id(), self.browser]
-            .into_iter()
-            .filter(|pid| *pid != 0)
-            .map(|pid| pid as libc::pid_t)
-            .collect();
-        for group in &groups {
-            // SAFETY: signals only; the helper and the browser each lead
-            // their own process group.
-            unsafe { libc::killpg(*group, libc::SIGKILL) };
-        }
+        #[cfg(unix)]
+        let left = {
+            let groups: Vec<libc::pid_t> = [self.helper.id(), self.browser]
+                .into_iter()
+                .filter(|pid| *pid != 0)
+                .map(|pid| pid as libc::pid_t)
+                .collect();
+            for group in &groups {
+                // SAFETY: signals only; the helper and the browser each lead
+                // their own process group.
+                unsafe { libc::killpg(*group, libc::SIGKILL) };
+            }
+            // A group with no process left answers ESRCH.
+            // SAFETY: signal 0 only checks whether the group still exists.
+            move || groups.iter().any(|g| unsafe { libc::killpg(*g, 0) } == 0)
+        };
+        #[cfg(windows)]
+        let left = {
+            self.tree.end();
+            || self.tree.processes() > 0
+        };
         let _ = self.helper.wait();
         let gone_by = Instant::now() + CLOSING;
-        // A group with no process left answers ESRCH.
-        // SAFETY: signal 0 only checks whether the group still exists.
-        let left = || groups.iter().any(|g| unsafe { libc::killpg(*g, 0) } == 0);
         while left() && Instant::now() < gone_by {
             std::thread::sleep(Duration::from_millis(50));
         }
@@ -564,6 +605,7 @@ impl Runtime for Camoufox {
 }
 
 /// The running child of `parent` that runs `executable`.
+#[cfg(unix)]
 fn child_running(parent: u32, executable: &Path) -> Option<u32> {
     let out = Command::new("/bin/ps")
         .args(["-axww", "-o", "pid=,ppid=,args="])
@@ -581,8 +623,56 @@ fn child_running(parent: u32, executable: &Path) -> Option<u32> {
         })
 }
 
+/// The running child of `parent` that runs `executable`, by its file name,
+/// from a snapshot of Windows' processes.
+#[cfg(windows)]
+fn child_running(parent: u32, executable: &Path) -> Option<u32> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
+        TH32CS_SNAPPROCESS,
+    };
+
+    let name = executable.file_name()?;
+    // SAFETY: a snapshot of every process, closed below.
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if snapshot == INVALID_HANDLE_VALUE {
+        return None;
+    }
+    let mut entry = PROCESSENTRY32W {
+        dwSize: size_of::<PROCESSENTRY32W>() as u32,
+        ..Default::default()
+    };
+    let mut found = None;
+    // SAFETY: `entry` is sized as the walk requires.
+    let mut more = unsafe { Process32FirstW(snapshot, &mut entry) } != 0;
+    while more && found.is_none() {
+        let length = entry.szExeFile.iter().position(|&unit| unit == 0);
+        let exe = std::ffi::OsString::from_wide(&entry.szExeFile[..length.unwrap_or(0)]);
+        if entry.th32ParentProcessID == parent && exe.eq_ignore_ascii_case(name) {
+            found = Some(entry.th32ProcessID);
+        }
+        // SAFETY: as above.
+        more = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
+    }
+    // SAFETY: the snapshot taken above, closed once.
+    unsafe { CloseHandle(snapshot) };
+    found
+}
+
 fn gone() -> Failure {
     Failure::new(code::browser_gone, "the browser stopped".into())
+}
+
+/// `path` as Firefox takes it: on Windows as a person reads it, without
+/// the verbatim `\\?\` prefix a resolved path has (`exec::shown`); given a
+/// verbatim executable and profile, Camoufox's launch fails there.
+fn plain(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    return PathBuf::from(crate::exec::shown(&path.to_string_lossy()));
+    #[cfg(unix)]
+    path.to_path_buf()
 }
 
 fn io_failure(err: std::io::Error) -> Failure {
@@ -627,15 +717,28 @@ mod tests {
         assert!(!activate(std::process::id()));
     }
 
-    /// A Camoufox whose helper is `script`, run by `sh`.
+    /// A Camoufox whose helper is `script`, run by `sh` (on Windows,
+    /// `cmd`).
     fn with_helper(state: &Path, script: &str) -> Camoufox {
-        let mut helper = Command::new("/bin/sh")
-            .args(["-c", script])
+        #[cfg(unix)]
+        let mut command = Command::new("/bin/sh");
+        #[cfg(unix)]
+        command.args(["-c", script]);
+        #[cfg(windows)]
+        let mut command = Command::new("cmd");
+        // cmd reads its command line itself, unquoted.
+        #[cfg(windows)]
+        std::os::windows::process::CommandExt::raw_arg(command.args(["/d", "/c"]), script);
+        let mut helper = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
             .unwrap();
         Camoufox {
+            #[cfg(unix)]
+            tree: (),
+            #[cfg(windows)]
+            tree: crate::sandbox::Job::new().unwrap(),
             to_helper: helper.stdin.take().unwrap(),
             from_helper: helper.stdout.take().unwrap(),
             helper,
@@ -653,10 +756,20 @@ mod tests {
     #[test]
     fn a_timeout_the_helper_reports_is_a_command_left_unanswered() {
         let state = tempfile::tempdir().unwrap();
-        let mut browser = with_helper(
-            state.path(),
-            r#"read line; echo '{"id": 1, "error": {"code": "timeout", "message": "the browser did not answer in time"}}'; read line; echo '{"id": 2, "error": {"code": "stale_snapshot", "message": "gone"}}'"#,
-        );
+        let answers = [
+            r#"{"id": 1, "error": {"code": "timeout", "message": "the browser did not answer in time"}}"#,
+            r#"{"id": 2, "error": {"code": "stale_snapshot", "message": "gone"}}"#,
+        ];
+        // Each answer after the line it answers.
+        #[cfg(unix)]
+        let script = answers
+            .map(|answer| format!("read line; echo '{answer}'"))
+            .join("; ");
+        #[cfg(windows)]
+        let script = answers
+            .map(|answer| format!("set /p line= & echo {answer}"))
+            .join(" & ");
+        let mut browser = with_helper(state.path(), &script);
         let failure = browser.ask::<Value>("tabs", json!({})).err().unwrap();
         assert_eq!(failure.code, "timeout");
         assert!(browser.unanswered());

@@ -21,6 +21,15 @@
 //! of the state directory it sees only its profile and the engine's plugin
 //! folder, and no areas. Chrome's own sandbox nests inside it.
 //!
+//! On Windows, as on macOS, it is not in latch's sandbox: Chrome's own
+//! sandbox cannot start inside a worker's AppContainer (its crash handler's
+//! pipe is refused there, and its sandboxed processes fail to start), so
+//! Chrome's sandbox stays on for every web-content process instead, with
+//! the same controls as on macOS. Chrome and everything it starts run in a
+//! job the worker holds (`cft.rs`), which ends them when the worker ends;
+//! the host keeps the worker in its own job (`sandbox::tie_to_host`).
+//! Camoufox's helper and Firefox run the same way (`camoufox.rs`).
+//!
 //! It talks to the host over its standard streams, one JSON line each way
 //! per call, every answer a `wire::Response`:
 //! - first, unasked: `{"ok": {"engine", "version", "driver_contract",
@@ -39,12 +48,18 @@
 //! browser end by its limit (`Call::limit`, from `--call-limit`), and a
 //! browser that leaves several calls in a row unanswered is closed as gone.
 
+use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::mem::ManuallyDrop;
+#[cfg(unix)]
 use std::os::fd::FromRawFd;
+#[cfg(windows)]
+use std::os::windows::io::{AsRawHandle, FromRawHandle};
 use std::path::Path;
 use std::process::ExitCode;
+#[cfg(unix)]
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -66,11 +81,48 @@ use crate::wire::Response;
 /// starts a new one.
 const UNANSWERED_IN_A_ROW: usize = 3;
 
+/// The only `PATH` an engine gets.
+#[cfg(unix)]
+const PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
+#[cfg(windows)]
+use crate::worker::PATH;
+
+/// The environment an engine's processes get (Chrome, or Camoufox's
+/// helper and browser), and nothing else: a plain `PATH`, and a home and a
+/// temp folder in the session's `scratch` folder; on Windows first what
+/// Windows needs to start a program, as a worker gets it, with the user's
+/// own folders in `scratch` too.
+pub fn environment(scratch: &Path) -> BTreeMap<&'static str, OsString> {
+    let mut env = BTreeMap::from([("PATH", OsString::from(PATH))]);
+    #[cfg(unix)]
+    env.extend([
+        ("HOME", scratch.into()),
+        ("TMPDIR", scratch.join("tmp").into()),
+    ]);
+    #[cfg(windows)]
+    {
+        for name in crate::worker::WINDOWS_ENV {
+            if let Some(value) = std::env::var_os(name) {
+                env.insert(name, value);
+            }
+        }
+        for name in ["USERPROFILE", "APPDATA", "LOCALAPPDATA"] {
+            env.insert(name, scratch.into());
+        }
+        for name in ["TEMP", "TMP"] {
+            env.insert(name, scratch.join("tmp").into());
+        }
+    }
+    env
+}
+
 /// The process groups the engine's processes lead (the worker starts each
 /// engine in a group of its own), for `die_with_host`.
+#[cfg(unix)]
 static ENGINE_GROUPS: Mutex<Vec<libc::pid_t>> = Mutex::new(Vec::new());
 
 /// Notes the process group `leader` leads, which this worker started.
+#[cfg(unix)]
 pub fn started_group(leader: u32) {
     let mut groups = ENGINE_GROUPS
         .lock()
@@ -79,11 +131,18 @@ pub fn started_group(leader: u32) {
 }
 
 /// The process groups the engine's processes lead.
+#[cfg(unix)]
 fn engine_groups() -> Vec<libc::pid_t> {
     ENGINE_GROUPS
         .lock()
         .unwrap_or_else(|held| held.into_inner())
         .clone()
+}
+
+/// None on Windows, where a job holds the engine's processes.
+#[cfg(windows)]
+fn engine_groups() -> Vec<u32> {
+    Vec::new()
 }
 
 /// Kills the engine's processes and this worker the moment the host that
@@ -151,6 +210,18 @@ pub fn run(
     if let Err(failure) = die_with_host() {
         answer(&mut io::stdout().lock(), Response::error(&failure), None);
         return ExitCode::FAILURE;
+    }
+    // Chrome inherits its pipe and nothing else: not the worker's own
+    // streams, the host's pipes.
+    #[cfg(windows)]
+    for handle in [
+        io::stdin().as_raw_handle(),
+        io::stdout().as_raw_handle(),
+        io::stderr().as_raw_handle(),
+    ] {
+        use windows_sys::Win32::Foundation::{HANDLE_FLAG_INHERIT, SetHandleInformation};
+        // SAFETY: clears a flag on this process's own standard handles.
+        unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) };
     }
     // A headed Linux runtime gets an Xvfb display of its own, up for as
     // long as this worker.
@@ -248,7 +319,12 @@ fn serve<B: Runtime>(
     // Standard input unbuffered by std, so `buffer()` below is the only
     // buffer: a line already in it is not waited for again.
     // SAFETY: fd 0 stays open for the life of the process.
+    #[cfg(unix)]
     let raw = ManuallyDrop::new(unsafe { File::from_raw_fd(0) });
+    // SAFETY: the standard input handle stays open for the life of the
+    // process, and is never closed through this copy.
+    #[cfg(windows)]
+    let raw = ManuallyDrop::new(unsafe { File::from_raw_handle(io::stdin().as_raw_handle()) });
     let mut stdin = BufReader::new(&*raw);
     loop {
         let due = last_call + idle;

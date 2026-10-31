@@ -8,6 +8,8 @@ does (Camoufox with `ditto` (macOS) or `unzip` (Linux) and its version.json, Nod
 runtime from `camoufox/` with `npm ci`, for that build's CPU), then takes
 the tree hash of each part, which latch checks before every launch
 (`browser::engine::tree_hash`). The host's pinned Node runs `npm ci` for both architectures.
+On Windows, as `latch browser setup` there, both archives unpack with its
+tar.exe, and files are hashed with no execute bit (Windows has none).
 """
 
 import importlib.util
@@ -27,7 +29,7 @@ spec = importlib.util.spec_from_file_location("cft_pin", HERE / "cft-pin.py")
 cft_pin = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(cft_pin)
 
-SYSTEM = {"Darwin": ("mac", "darwin"), "Linux": ("linux", "linux")}
+SYSTEM = {"Darwin": ("mac", "darwin"), "Linux": ("linux", "linux"), "Windows": ("win", "win32")}
 RUNTIME_FILES = ["package.json", "package-lock.json", "sqlite"]
 
 
@@ -47,7 +49,8 @@ def fetch(url, sha256, into):
 def main():
     pin = json.loads((LATCH / "src/browser/camoufox.json").read_text())
     prefix, npm_os = SYSTEM[platform.system()]
-    cpu = "arm64" if platform.machine() in ("arm64", "aarch64") else "x64"
+    cpu = "arm64" if platform.machine().lower() in ("arm64", "aarch64") else "x64"
+    windows = prefix == "win"
     host = f"{prefix}_{cpu}"
     builds = {key: build for key, build in pin["builds"].items() if key.startswith(prefix + "_")}
     with tempfile.TemporaryDirectory() as tmp:
@@ -58,14 +61,27 @@ def main():
             fetch(build["camoufox"]["url"], build["camoufox"]["sha256"], tmp / f"{key}.zip")
             if prefix == "mac":
                 unpack = ["ditto", "-x", "-k", str(tmp / f"{key}.zip"), str(root / "camoufox")]
+            elif windows:
+                unpack = ["tar", "-xf", str(tmp / f"{key}.zip"), "-C", str(root / "camoufox")]
             else:
                 unpack = ["unzip", "-q", str(tmp / f"{key}.zip"), "-d", str(root / "camoufox")]
             subprocess.run(unpack, check=True)
             (root / "camoufox/version.json").write_text(version_json(pin["version"]))
-            fetch(build["node"]["url"], build["node"]["sha256"], tmp / f"{key}.tar.gz")
-            subprocess.run(["tar", "-xzf", str(tmp / f"{key}.tar.gz"), "-C", str(tmp)], check=True)
+            node = tmp / f"{key}-node{'.zip' if windows else '.tar.gz'}"
+            fetch(build["node"]["url"], build["node"]["sha256"], node)
+            subprocess.run(["tar", "-xf", str(node), "-C", str(tmp)], check=True)
             os.rename(tmp / build["node"]["folder"], root / "node")
         host_node = tmp / host / "node"
+        if windows:
+            node_bin, npm_cli = host_node / "node.exe", host_node / "node_modules/npm/bin/npm-cli.js"
+            env = {
+                "PATH": f"{host_node};{os.environ['SystemRoot']}\\System32",
+                "SystemRoot": os.environ["SystemRoot"],
+                **{name: str(tmp) for name in ["USERPROFILE", "APPDATA", "LOCALAPPDATA"]},
+            }
+        else:
+            node_bin, npm_cli = host_node / "bin/node", host_node / "lib/node_modules/npm/bin/npm-cli.js"
+            env = {"PATH": f"{host_node / 'bin'}:/usr/bin:/bin"}
         for key, build in builds.items():
             runtime = tmp / key / "runtime"
             runtime.mkdir()
@@ -77,8 +93,8 @@ def main():
                     shutil.copy(source, runtime / name)
             subprocess.run(
                 [
-                    str(host_node / "bin/node"),
-                    str(host_node / "lib/node_modules/npm/bin/npm-cli.js"),
+                    str(node_bin),
+                    str(npm_cli),
                     "ci",
                     "--ignore-scripts",
                     "--omit=dev",
@@ -86,10 +102,13 @@ def main():
                     "--no-fund",
                     f"--os={npm_os}",
                     f"--cpu={key.split('_', 1)[1]}",
+                    # As latch does there: npm's link on Windows is a junction
+                    # to where it was installed, not a relative link.
+                    *(["--install-links"] if windows else []),
                 ],
                 cwd=runtime,
                 env={
-                    "PATH": f"{host_node / 'bin'}:/usr/bin:/bin",
+                    **env,
                     "HOME": str(tmp),
                     "npm_config_cache": str(tmp / f"npm-cache-{key}"),
                     "npm_config_update_notifier": "false",
@@ -98,9 +117,10 @@ def main():
                 stdout=sys.stderr,
                 check=True,
             )
-            build["camoufox"]["tree_sha256"] = cft_pin.tree_hash(tmp / key / "camoufox")
-            build["node"]["tree_sha256"] = cft_pin.tree_hash(tmp / key / "node")
-            build["runtime_tree_sha256"] = cft_pin.tree_hash(runtime)
+            hashed = lambda folder: cft_pin.tree_hash(folder, not windows)
+            build["camoufox"]["tree_sha256"] = hashed(tmp / key / "camoufox")
+            build["node"]["tree_sha256"] = hashed(tmp / key / "node")
+            build["runtime_tree_sha256"] = hashed(runtime)
     print(json.dumps(builds, indent=2))
 
 

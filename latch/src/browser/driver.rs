@@ -206,6 +206,13 @@ pub trait Driver {
     fn close(&mut self) -> Value;
 }
 
+/// What an engine writes to (`Runtime::wakes`): a file descriptor, on
+/// Windows a pipe's handle.
+#[cfg(unix)]
+pub type Wake = std::os::fd::RawFd;
+#[cfg(windows)]
+pub type Wake = std::os::windows::io::RawHandle;
+
 /// A session's browser, as the worker drives it between calls.
 pub trait Runtime: Driver {
     /// Whether the engine left a command unanswered in time since this
@@ -218,8 +225,7 @@ pub trait Runtime: Driver {
     }
     /// What the engine writes to that the worker wakes on between calls,
     /// to tend it then.
-    #[cfg(unix)]
-    fn wakes(&self) -> Option<std::os::fd::RawFd> {
+    fn wakes(&self) -> Option<Wake> {
         None
     }
 }

@@ -84,8 +84,10 @@ use windows_sys::Win32::System::Diagnostics::ToolHelp::{
 use windows_sys::Win32::System::Environment::GetCommandLineW;
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION,
-    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-    JobObjectExtendedLimitInformation, SetInformationJobObject, TerminateJobObject,
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectBasicAccountingInformation,
+    JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
+    TerminateJobObject,
 };
 use windows_sys::Win32::System::StationsAndDesktops::{
     CloseDesktop, CloseWindowStation, CreateDesktopW, CreateWindowStationW,
@@ -1385,11 +1387,13 @@ impl Drop for Attributes {
     }
 }
 
-/// A Job object that ends everything in it when its last handle closes.
-struct Job(HANDLE);
+/// A Job object whose processes all end when its one handle closes: the
+/// host's (`tie_to_host`), a worker's (here), or a browser's
+/// (`browser::cft`, `browser::camoufox`).
+pub(crate) struct Job(HANDLE);
 
 impl Job {
-    fn new() -> Result<Job, String> {
+    pub(crate) fn new() -> Result<Job, String> {
         // SAFETY: an unnamed job with default security.
         let job = unsafe { CreateJobObjectW(null(), null()) };
         if job.is_null() {
@@ -1419,6 +1423,56 @@ impl Job {
             ));
         }
         Ok(job)
+    }
+}
+
+impl Job {
+    /// Starts `command` suspended, puts it in this job, then lets it run,
+    /// so it and everything it starts are in the job from the first.
+    pub(crate) fn start(
+        &self,
+        command: &mut std::process::Command,
+    ) -> std::io::Result<std::process::Child> {
+        use std::os::windows::process::CommandExt;
+        let mut child = command.creation_flags(CREATE_SUSPENDED).spawn()?;
+        // SAFETY: this job and the child's own process handle.
+        let started = match unsafe { AssignProcessToJobObject(self.0, child.as_raw_handle()) } {
+            0 => Err(std::io::Error::last_os_error()),
+            _ => resume(child.id()).map_err(std::io::Error::other),
+        };
+        if let Err(err) = started {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(err);
+        }
+        Ok(child)
+    }
+
+    /// Ends every process in the job.
+    pub(crate) fn end(&self) {
+        // SAFETY: our own job's handle.
+        unsafe { TerminateJobObject(self.0, 1) };
+    }
+
+    /// How many processes are still in the job.
+    pub(crate) fn processes(&self) -> u32 {
+        // SAFETY: zeroed is a valid structure to receive into.
+        let mut info: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = unsafe { std::mem::zeroed() };
+        // SAFETY: `info` is the structure this class answers, for its size.
+        let ok = unsafe {
+            QueryInformationJobObject(
+                self.0,
+                JobObjectBasicAccountingInformation,
+                (&mut info as *mut JOBOBJECT_BASIC_ACCOUNTING_INFORMATION).cast(),
+                size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32,
+                null_mut(),
+            )
+        };
+        if ok == 0 {
+            u32::MAX
+        } else {
+            info.ActiveProcesses
+        }
     }
 }
 
