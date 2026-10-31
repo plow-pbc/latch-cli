@@ -363,6 +363,11 @@ and local management. Both take the same exclusive `vault.lock` for each
 read/write transaction. Each transaction reopens the current store while
 holding the lock, so local edits are visible to fills without a restart.
 The lock is released while an import waits for picks.
+Each item also carries a random `uid`, the same on every host, and when it
+last changed; a removed item leaves a tombstone (its uid and when, no
+title or value), so a removal can reach other hosts. None of it shows in
+`vault list` or `vault show`. A vault from before (version 1) opens as it
+was and is written back in the new layout (version 2) on its next change.
 Items are sealed with AES-256-GCM under a random data key; the
 data key is sealed under the custody key. A signed macOS latch keeps that
 key in the Keychain, with the host's other secrets (its key and Plow token);
