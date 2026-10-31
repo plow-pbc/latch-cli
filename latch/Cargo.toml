@@ -71,7 +71,8 @@ minisign-verify = "0.3.0"
 
 # Windows' own APIs where std has none: a background host's process, the
 # console's modes, waiting for changes, the machine's name, owner-only
-# access lists, the worker sandbox's AppContainer and Job objects, and
+# access lists, the worker sandbox's AppContainer and Job objects (and a
+# window station of a worker's own outside the interactive one), and
 # renaming a put file relative to its open folder. The version tokio
 # already builds.
 [target.'cfg(windows)'.dependencies]
@@ -79,6 +80,7 @@ windows-sys = { version = "0.61.2", features = [
   "Wdk_Foundation",
   "Wdk_Storage_FileSystem",
   "Win32_Foundation",
+  "Win32_Graphics_Gdi",
   "Win32_Security",
   "Win32_Security_Authorization",
   "Win32_Security_Cryptography",
@@ -90,6 +92,7 @@ windows-sys = { version = "0.61.2", features = [
   "Win32_System_IO",
   "Win32_System_JobObjects",
   "Win32_System_Memory",
+  "Win32_System_StationsAndDesktops",
   "Win32_System_SystemInformation",
   "Win32_System_SystemServices",
   "Win32_System_Threading",
