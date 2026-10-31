@@ -27,7 +27,7 @@ final class ChangesClient: LatchClient, @unchecked Sendable {
     func accountStatus() async throws -> AccountStatus { try await synthetic.accountStatus() }
     func hostStatus(_ host: String) async throws -> LocalStatus { try await synthetic.hostStatus(host) }
     func agents(host: String?) async throws -> AgentsList { try await synthetic.agents(host: host) }
-    func rulesShow(host: String?) async throws -> RulesShow { try await synthetic.rulesShow(host: host) }
+    func rulesList() async throws -> RulesList { try await synthetic.rulesList() }
     func vaultList(host: String?) async throws -> VaultList { try await synthetic.vaultList(host: host) }
     func vaultShow(_ item: String, host: String?) async throws -> VaultShow { try await synthetic.vaultShow(item, host: host) }
     func vaultImportPreview(_ file: URL, host: String?) async throws -> ImportPreview { try await synthetic.vaultImportPreview(file, host: host) }
@@ -54,6 +54,10 @@ final class ChangesClient: LatchClient, @unchecked Sendable {
     func vaultImport(_ file: URL, picks: [Int], expect: String, host: String?) async throws -> ImportResult {
         try change("vault import \(file.lastPathComponent) --pick \(picks.map(String.init).joined(separator: ","))", on: host)
         return try await synthetic.vaultImport(file, picks: picks, expect: expect, host: host)
+    }
+    func rulesRemove(_ id: String) async throws -> RulesWrite {
+        try change("rules remove \(id)")
+        return try Fixtures.decode(#"{"rules":[],"hosts":[],"change":{"kind":"remove","id":"\#(id)","saved":true,"changed":true,"reason":null}}"#)
     }
     func removeAgent(_ uid: String) async throws { try change("agents remove \(uid) --yes") }
     func removeDevice(_ name: String) async throws { try change("devices remove \(name) --yes") }
@@ -200,15 +204,19 @@ struct SheetTests {
             await waitUntil { app.loggedInDevices?.isEmpty == false }
             return .removeDevice(try #require(app.loggedInDevices?.first { $0.name == "laptop" }))
         }, "devices remove laptop --yes", { $0.deviceRemoveError }),
+        (.account(.rules), { app in
+            await waitUntil { app.rules != nil }
+            return .deleteRule(try #require(app.rules?.rules.last))
+        }, "rules remove rl_", { $0.ruleDeleteError }),
     ]
 
     enum Answer: CaseIterable { case yes, cancel, refused }
 
-    // Remove…, Stop… and Start Hosting… ask over the window, in an alert
+    // Remove…, Delete…, Stop… and Start Hosting… ask over the window, in an alert
     // that names what it acts on. Its action runs on that, and only that;
     // Cancel (or Escape) asks nothing of latch; latch's refusal of a yes is
     // kept where the question's screen says it. Either way the question goes.
-    @Test(arguments: 0..<5, Answer.allCases) func aQuestionIsAnswered(_ index: Int, answer: Answer) async throws {
+    @Test(arguments: 0..<6, Answer.allCases) func aQuestionIsAnswered(_ index: Int, answer: Answer) async throws {
         let question = Self.questions[index]
         let opened = try await open(question.place, host: question.place == .host(.vault) ? "pi-kitchen" : "studio")
         defer { opened.close() }

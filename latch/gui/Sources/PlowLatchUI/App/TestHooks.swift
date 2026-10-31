@@ -90,7 +90,7 @@ enum TestHooks {
             guard let index = Int(index ?? ""), Onboarding.decks.indices.contains(index) else { return }
             app.onboarding?.choose(Onboarding.decks[index])
         }
-        // Rules › Try a request's Examples menu: the item at this index.
+        // Rules › Try a Request's Examples menu: the item at this index.
         on("try-example") { index in
             guard let index = Int(index ?? ""), Trial.examples.indices.contains(index) else { return }
             app.trial.use(Trial.examples[index])
@@ -130,16 +130,18 @@ enum TestHooks {
                   let host = app.hosts.first(where: { $0.name == parts[0] }) else { return app.activityAgent = nil }
             app.openActivity(host, agent: String(parts[1]))
         }
-        // Try a request: "AS|REQUEST", AS being new or an agent's uid.
+        // Try a Request on the selected host: "AS|REQUEST", AS being new or
+        // an agent's uid.
         on("try") { argument in
             guard let argument, let bar = argument.firstIndex(of: "|"), let host = app.host else { return }
             let who = String(argument[..<bar])
+            app.trial.host = host.name
             app.trial.caller = who == "new" ? .newAgent : .agent(who)
             app.trial.request = String(argument[argument.index(after: bar)...])
-            Task { await app.trial.run(on: host, app: app) }
+            Task { await app.trial.run(app: app) }
         }
-        // Agents' buttons on a host's row, "HOST|UID": Rules, Activity;
-        // and Remove…, confirmed: "UID".
+        // Agents' Activity button on a host's row, "HOST|UID"; and Remove…,
+        // confirmed: "UID".
         func onAgentRow(_ command: String, _ act: @escaping @MainActor (HostEntry, String) -> Void) {
             on(command) { argument in
                 guard let parts = argument?.split(separator: "|"), parts.count == 2,
@@ -147,27 +149,10 @@ enum TestHooks {
                 act(host, String(parts[1]))
             }
         }
-        onAgentRow("agent-rules") { host, uid in app.openRules(host, agent: uid) }
         onAgentRow("agent-activity") { host, uid in app.openActivity(host, agent: uid) }
         on("agent-remove") { uid in
             guard let agent = app.agents?.first(where: { $0.uid == uid }) else { return }
             Task { await app.removeAgent(agent) }
-        }
-        // Saves "UID|TEXT" (UID empty: every agent's) on the selected host
-        // as Save does, over the revision on screen.
-        on("save-rules") { argument in
-            guard let argument, let bar = argument.firstIndex(of: "|"), let host = app.host,
-                  case let .success(show)? = app.summaries[host.name]?.rules else { return }
-            let uid = argument[..<bar].isEmpty ? nil : String(argument[..<bar])
-            let revision = uid.map { show.agent($0)?.revision } ?? show.everyAgent?.revision
-            Task {
-                do {
-                    try await app.saveRules(String(argument[argument.index(after: bar)...]), on: host, agent: uid, revision: revision)
-                    print("save-rules: saved")
-                } catch {
-                    print("save-rules: refused: \(LatchError.from(error).message)")
-                }
-            }
         }
         // Vault, as a person clicks and types: search, select an item, open
         // New Item ("KIND") or an item's Edit, type "LABEL=VALUE" (title,

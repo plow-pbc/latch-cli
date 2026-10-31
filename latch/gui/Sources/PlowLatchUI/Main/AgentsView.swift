@@ -1,8 +1,8 @@
 import SwiftUI
 
 /// The account's agents: a list of them, and the one picked in full, with
-/// Message, a row for each host that opens its rules and its requests
-/// there, and Copy and Remove… in its ⋯ menu. New Agent is here too.
+/// Message, a row for each host that opens its requests there, and Copy
+/// and Remove… in its ⋯ menu. New Agent is here too.
 struct AgentsView: View {
     @Environment(AppModel.self) private var app
 
@@ -192,7 +192,7 @@ struct AgentMenuItems: View {
 }
 
 /// An agent on one host: whether the host is up, the agent's standing
-/// there, and its rules and its requests there.
+/// there, and its requests there.
 private struct AgentHostRow: View {
     var agent: AgentsList.Agent
     var host: HostEntry
@@ -202,19 +202,10 @@ private struct AgentHostRow: View {
         let offline = agent.isOffline(host)
         let state = HostState(host, local: app.status)
         LabeledContent {
-            if offline {
-                Button("Activity") { app.openActivity(host, agent: agent.uid) }
-                    .buttonStyle(.borderless)
-                    .help("\(agent.displayName)'s requests to \(host.name) that were read before it went offline")
-            } else {
-                Menu("Rules & Activity") {
-                    Button("Rules on \(host.name)") { app.openRules(host, agent: agent.uid) }
-                    Button("Activity on \(host.name)") { app.openActivity(host, agent: agent.uid) }
-                }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
-                .help("\(agent.displayName)'s rules and requests on \(host.name)")
-            }
+            Button("Activity") { app.openActivity(host, agent: agent.uid) }
+                .buttonStyle(.borderless)
+                .help(offline ? "\(agent.displayName)'s requests to \(host.name) that were read before it went offline"
+                      : "\(agent.displayName)'s requests on \(host.name)")
         } label: {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 StateDot(state: state).accessibilityLabel(state.title)
@@ -222,8 +213,8 @@ private struct AgentHostRow: View {
                     Text(host.isThisMac ? "\(host.name) (this Mac)" : host.name)
                     if !offline, case let .failure(error)? = app.standings[host.name] {
                         ErrorText(error: error, host: host.spoken).font(.callout).foregroundStyle(.secondary)
-                    } else {
-                        Text(agent.standing(on: host, app.standings[host.name])).font(.callout).foregroundStyle(.secondary)
+                    } else if let standing = agent.standing(on: host, app.standings[host.name]) {
+                        Text(standing).font(.callout).foregroundStyle(.secondary)
                     }
                 }
             }
@@ -300,18 +291,14 @@ extension AgentsList.Agent {
     /// The host is known to be offline, so its standing there can't be read.
     func isOffline(_ host: HostEntry) -> Bool { !host.isThisMac && host.online == false }
 
-    /// Its standing on a host, in words: offline, not read yet, or which
-    /// rules judge it there and whether it may run programs.
-    func standing(on host: HostEntry, _ read: Result<[String: Standing], LatchError>?) -> String {
-        if isOffline(host) { return "Offline, so its rules there can't be checked" }
+    /// Its standing on a host, in words: offline, not read yet, or that it
+    /// can't run programs there; nil when there's nothing to say.
+    func standing(on host: HostEntry, _ read: Result<[String: Standing], LatchError>?) -> String? {
+        if isOffline(host) { return "Offline" }
         switch read {
         case nil: return "Checking…"
         case let .failure(error)?: return ErrorCopy.said(error, host: host.spoken)
-        case let .success(byAgent)?:
-            let standing = byAgent[uid]
-            let blocked = standing?.execBlocked == true
-            let rules = standing?.ownRules == true ? "Shared rules + own rules" : blocked ? "Shared rules" : "Shared rules only"
-            return blocked ? "\(rules) · can't run programs" : rules
+        case let .success(byAgent)?: return byAgent[uid]?.execBlocked == true ? "Can't run programs" : nil
         }
     }
 

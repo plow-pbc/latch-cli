@@ -212,8 +212,6 @@ final class NeverServedClient: LatchClient, @unchecked Sendable {
     func login(name: String?, replace: Bool) -> AsyncThrowingStream<LoginEvent, Error> { AsyncThrowingStream { $0.finish() } }
     func setupStatus() async throws -> SetupStatus { try Fixtures.decode(Fixtures.setup(on: [])) }
     func setupStatusCheckingAccess() async throws -> SetupStatus { try await setupStatus() }
-    func rulesShow(host: String?) async throws -> RulesShow { try Fixtures.decode(#"{"agents":[],"every_agent":null}"#) }
-    func rulesSet(_ text: String) async throws {}
     func vaultList(host: String?) async throws -> VaultList { try Fixtures.decode(#"{"items":[]}"#) }
     func enable(_ plugin: String) async throws -> GoogleEnabled? { nil }
     func statusFollow() -> AsyncThrowingStream<LocalStatus, Error> { AsyncThrowingStream { _ in } }
@@ -272,16 +270,20 @@ struct OwnerReadTests {
     }
 
     @Test func readsAreBackgroundAndActionsAreNot() throws {
-        for (op, args) in [("rules", #"{"command":"show"}"#), ("vault", #"{"command":"list"}"#), ("vault", #"{"command":"show","item":"v1"}"#),
+        // Rules' reads, and latch bringing a host's rules up to date as it
+        // reads them, each visit to Rules.
+        for (op, args) in [("rules", #"{"command":"list"}"#), ("rules", #"{"command":"repair"}"#), ("vault", #"{"command":"list"}"#), ("vault", #"{"command":"show","item":"v1"}"#),
                            ("plugins", #"{"command":"list"}"#), ("status", "{}"), ("audit", "{}")] {
             #expect(try record(op: op, args: args).isBackground, "\(op) \(args)")
         }
-        for (op, args) in [("rules", #"{"command":"set","scope":"every agent"}"#), ("vault", #"{"command":"add"}"#),
+        for (op, args) in [("rules", #"{"command":"add"}"#), ("rules", #"{"command":"edit"}"#), ("rules", #"{"command":"remove"}"#),
+                           ("vault", #"{"command":"add"}"#),
                            ("plugins", #"{"command":"enable","name":"google"}"#), ("exec", #"{"argv":["ls"]}"#)] {
             #expect(try !record(op: op, args: args).isBackground, "\(op) \(args)")
         }
         // An agent asking is never the owner looking.
         #expect(try !record(op: "vault", args: #"{"command":"list"}"#, agent: "a1").isBackground)
+        #expect(try !record(op: "rules", args: #"{"command":"list"}"#, agent: "a1").isBackground)
     }
 
     /// Every `latch status`, an agent's too, asks each host for its plugins:
@@ -400,8 +402,6 @@ final class PagedClient: LatchClient, @unchecked Sendable {
     func login(name: String?, replace: Bool) -> AsyncThrowingStream<LoginEvent, Error> { AsyncThrowingStream { $0.finish() } }
     func setupStatus() async throws -> SetupStatus { try Fixtures.decode(Fixtures.setup(on: [])) }
     func setupStatusCheckingAccess() async throws -> SetupStatus { try await setupStatus() }
-    func rulesShow(host: String?) async throws -> RulesShow { try Fixtures.decode(#"{"agents":[],"every_agent":null}"#) }
-    func rulesSet(_ text: String) async throws {}
     func vaultList(host: String?) async throws -> VaultList { try Fixtures.decode(#"{"items":[]}"#) }
     func enable(_ plugin: String) async throws -> GoogleEnabled? { nil }
     func statusFollow() -> AsyncThrowingStream<LocalStatus, Error> { AsyncThrowingStream { _ in } }

@@ -31,6 +31,14 @@ nonisolated struct LocalStatus: Decodable, Equatable {
         var blocked: LatchFailure?
         /// The keep-awake switch; nil when its saved settings can't be read.
         var keepAwake: KeepAwake?
+        /// Agents the host refuses exec (`serve --deny-exec`), as it runs or
+        /// last ran; nil when its saved flags can't be read.
+        var denyExec: DenyExec?
+    }
+
+    struct DenyExec: Decodable, Equatable {
+        var everyAgent: Bool
+        var agentUids: [String]
     }
 
     /// "Keep this Mac awake while plugged in" (`latch settings set
@@ -159,34 +167,135 @@ nonisolated struct LoginLine: Decodable {
     }
 }
 
-/// `latch rules show`: the rules for every agent on a host, and each
-/// agent's own rules there, each with the revision a save checks against.
-nonisolated struct RulesShow: Decodable, Equatable {
-    struct Text: Decodable, Equatable {
+/// `latch rules list`: the account's rules, as latch merged them from every
+/// host it could ask and this Mac's own copy, and each host's part in that.
+/// Agents and hosts the account no longer has are left out by latch.
+nonisolated struct RulesList: Decodable, Equatable {
+    /// Which agents or hosts a rule covers: all of them, those added later
+    /// too, or these, by agent uid or host key.
+    enum Scope: Equatable, Hashable {
+        case all
+        case only([String])
+
+        func contains(_ id: String) -> Bool {
+            switch self {
+            case .all: true
+            case let .only(ids): ids.contains(id)
+            }
+        }
+    }
+
+    struct Rule: Decodable, Equatable, Identifiable {
+        var id: String
         var text: String
-        var revision: String?
+        var agents: Scope
+        var hosts: Scope
+        /// Hosts the rule applies to that answered without its newest
+        /// version, by key; never one latch couldn't check.
+        var behindHosts: [String]
     }
-    struct Agent: Decodable, Equatable {
-        var agentName: String?
-        var agentUid: String?
-        var text: String?
-        var revision: String?
-    }
-    /// Agents the host refuses exec (`serve --deny-exec`).
-    struct DenyExec: Decodable, Equatable {
-        var everyAgent: Bool?
-        var agentUids: [String]?
-    }
-    var everyAgent: Text?
-    var agents: [Agent]?
-    var denyExec: DenyExec?
 
-    func agent(_ uid: String) -> Agent? { agents?.first { $0.agentUid == uid } }
+    struct Host: Decodable, Equatable, Identifiable {
+        var key: String
+        var name: String
+        /// This Mac.
+        var thisMac: Bool
+        /// After latch's repair: `current`, `behind` or `unknown` (couldn't
+        /// check).
+        var delivery: String
+        /// Why it's behind or unknown, as latch's code; nil when current.
+        var reason: String?
+        var budget: Budget?
 
-    /// Whether the host refuses this agent exec.
-    func execBlocked(_ uid: String) -> Bool {
-        denyExec?.everyAgent == true || denyExec?.agentUids?.contains(uid) == true
+        var id: String { key }
+
+        private enum CodingKeys: String, CodingKey { case key, name, thisMac = "self", delivery, reason, budget }
     }
+
+    /// The merged rules' size on a host, against the gatekeeper's limit.
+    struct Budget: Decodable, Equatable {
+        var overBudget: Bool
+    }
+
+    var rules: [Rule]
+    var hosts: [Host]
+
+    /// This Mac's host, as latch lists it.
+    var thisMac: Host? { hosts.first(where: \.thisMac) }
+}
+
+/// A scope as latch writes it: `"all"`, or a list of `{"uid"}` agents or
+/// `{"key"}` hosts; a behind host, as a key or one of those.
+nonisolated extension RulesList.Scope: Decodable {
+    init(from decoder: any Decoder) throws {
+        let one = try decoder.singleValueContainer()
+        if let word = try? one.decode(String.self), word == "all" {
+            self = .all
+        } else {
+            self = .only(try one.decode([Identity].self).map(\.id))
+        }
+    }
+
+    /// Its words for `--agents` and `--hosts`.
+    var argument: String {
+        switch self {
+        case .all: "all"
+        case let .only(ids): ids.joined(separator: ",")
+        }
+    }
+}
+
+nonisolated extension RulesList.Rule {
+    init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: Keys.self)
+        id = try c.decode(String.self, forKey: .id)
+        text = try c.decode(String.self, forKey: .text)
+        agents = try c.decode(RulesList.Scope.self, forKey: .agents)
+        hosts = try c.decode(RulesList.Scope.self, forKey: .hosts)
+        behindHosts = try c.decodeIfPresent([Identity].self, forKey: .behindHosts)?.map(\.id) ?? []
+    }
+
+    private enum Keys: String, CodingKey { case id, text, agents, hosts, behindHosts }
+}
+
+/// An agent or host in a rule's answer: its uid or key, bare or in an object.
+nonisolated private struct Identity: Decodable {
+    var id: String
+
+    init(from decoder: any Decoder) throws {
+        if let bare = try? decoder.singleValueContainer().decode(String.self) {
+            id = bare
+            return
+        }
+        let c = try decoder.container(keyedBy: Keys.self)
+        id = try c.decodeIfPresent(String.self, forKey: .uid) ?? c.decode(String.self, forKey: .key)
+    }
+
+    private enum Keys: String, CodingKey { case uid, key }
+}
+
+/// `latch rules add`, `edit` or `remove`: the account's rules after the
+/// change, as `rules list` gives them, and what became of it.
+nonisolated struct RulesWrite: Decodable, Equatable {
+    struct Change: Decodable, Equatable {
+        /// `add`, `edit` or `remove`.
+        var kind: String
+        var id: String?
+        /// Kept on this Mac, whichever hosts it reached; false for an add
+        /// skipped because rules already apply here (`reason`).
+        var saved: Bool
+        var reason: String?
+    }
+
+    var list: RulesList
+    var change: Change
+
+    init(from decoder: any Decoder) throws {
+        list = try RulesList(from: decoder)
+        change = try decoder.container(keyedBy: Keys.self).decode(Change.self, forKey: .change)
+    }
+
+    private enum Keys: String, CodingKey { case change }
 }
 
 /// `latch agents [--host NAME]`: the account's agents and, with a host,
@@ -201,8 +310,6 @@ nonisolated struct AgentsList: Decodable, Equatable {
             var cardUrl: String?
         }
         struct Standing: Decodable, Equatable {
-            /// It has rules of its own on that host.
-            var ownRules: Bool?
             /// The host refuses it exec (`serve --deny-exec`).
             var execBlocked: Bool?
         }

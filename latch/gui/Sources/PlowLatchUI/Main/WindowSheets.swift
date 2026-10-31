@@ -3,14 +3,16 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 /// What the main window shows over itself, one at a time: New Agent, a
-/// vault item's New Item or Edit, an export chosen and imported, or a
-/// question before an action. The model keeps it; the window presents it.
+/// vault item's New Item or Edit, an export chosen and imported, a rule's
+/// New Rule or Edit, Try a Request, or a question before an action. The model keeps it; the window presents it.
 enum MainSheet: Equatable {
     case newAgent(NewAgent)
     case vaultItem(VaultEditor)
     /// Import…'s open panel, for an export to import into this host's vault.
     case choosingExport(HostEntry)
     case vaultImport(VaultImport)
+    case rule(RuleEditor)
+    case tryRequest
     case confirm(Confirmation)
 
     /// The same sheet: the same flow, whatever it holds by now.
@@ -20,6 +22,8 @@ enum MainSheet: Equatable {
         case let (.vaultItem(a), .vaultItem(b)): a === b
         case let (.choosingExport(a), .choosingExport(b)): a.name == b.name
         case let (.vaultImport(a), .vaultImport(b)): a === b
+        case let (.rule(a), .rule(b)): a === b
+        case (.tryRequest, .tryRequest): true
         case let (.confirm(a), .confirm(b)): a == b
         default: false
         }
@@ -33,6 +37,7 @@ enum Confirmation: Equatable {
     case removeAgent(AgentsList.Agent)
     case removeVaultItem(VaultList.Item, on: HostEntry)
     case removeDevice(DeviceList.Device)
+    case deleteRule(RulesList.Rule)
 
     var question: String {
         switch self {
@@ -41,6 +46,7 @@ enum Confirmation: Equatable {
         case let .removeAgent(agent): "Remove \(agent.displayName)?"
         case let .removeVaultItem(item, host): "Remove “\(item.title)” from \(host.name)?"
         case let .removeDevice(device): "Remove “\(device.name)” from your account?"
+        case .deleteRule: RuleSheet.deleteQuestion
         }
     }
 
@@ -53,6 +59,7 @@ enum Confirmation: Equatable {
                 + (agent.kind == "cloud" ? "" : " The program you run for it keeps running until you stop it.")
         case .removeVaultItem: "Agents can no longer fill it. This can't be undone."
         case let .removeDevice(device): "\(device.name) is logged out of Plow and can no longer send requests as you."
+        case .deleteRule: RuleSheet.deleteDetail
         }
     }
 
@@ -61,6 +68,7 @@ enum Confirmation: Equatable {
         case .startHosting: "Start Hosting"
         case .stopHost: "Stop"
         case .removeAgent, .removeVaultItem, .removeDevice: "Remove"
+        case .deleteRule: "Delete"
         }
     }
 
@@ -122,6 +130,8 @@ struct AppKitSheets: SheetPresenting {
         case let .sheet(.newAgent(flow)): present(NewAgentSheet(flow: flow), wanted, over: controller)
         case let .sheet(.vaultItem(editor)): present(VaultItemSheet(editor: editor), wanted, over: controller)
         case let .sheet(.vaultImport(importer)): present(ImportSheet(importer: importer), wanted, over: controller)
+        case let .sheet(.rule(editor)): present(RuleSheet(editor: editor), wanted, over: controller)
+        case .sheet(.tryRequest): present(TrySheet(), wanted, over: controller)
         case let .sheet(.choosingExport(host)): chooseExport(on: host, wanted, over: window)
         case let .sheet(.confirm(confirmation)): ask(confirmation, wanted, over: window)
         }
