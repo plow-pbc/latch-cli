@@ -915,8 +915,8 @@ pub enum SettingsCommand {
     /// Save a setting for this machine's host; needs no login, host or restart
     Set {
         /// Keep this machine from idle sleep while its host serves, on AC
-        /// power only (macOS; elsewhere `unsupported`). The display still
-        /// sleeps and locks, and closing the lid still sleeps it
+        /// power only (macOS and Windows; elsewhere `unsupported`). The
+        /// display still sleeps and locks, and closing the lid still sleeps it
         #[arg(long, value_name = "on|off")]
         keep_awake: OnOff,
     },
