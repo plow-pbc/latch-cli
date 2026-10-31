@@ -1351,7 +1351,7 @@ async fn rules_are_read_at_each_judgment() {
 }
 
 #[tokio::test]
-async fn a_hosts_old_rules_move_into_the_list_and_read_the_same() {
+async fn a_hosts_old_rules_are_copied_into_the_list_and_read_the_same() {
     let dir = tempfile::tempdir().unwrap();
     let state = dir.path().join("state");
     let old = state.join(RULES_DIR);
@@ -1377,9 +1377,16 @@ async fn a_hosts_old_rules_move_into_the_list_and_read_the_same() {
         json!({"rules on this host": every})
     );
 
-    // The old files are gone; the list holds one rule each, for this host.
-    assert!(!old.join("host.txt").exists());
-    assert!(!old.join(format!("{AGENT}.txt")).exists());
+    // The old files stay as they were, for a latch from before the list
+    // still serving this folder; the list holds one rule each, for this host.
+    assert_eq!(
+        std::fs::read_to_string(old.join("host.txt")).unwrap(),
+        every
+    );
+    assert_eq!(
+        std::fs::read_to_string(old.join(format!("{AGENT}.txt"))).unwrap(),
+        own
+    );
     assert!(old.join(format!("{AGENT}.peer")).exists());
     let moved = RulesDir::new(&state, HOST_KEY).list().unwrap();
     let scopes: Vec<(&str, &Covers, &Covers)> = moved
@@ -1391,10 +1398,19 @@ async fn a_hosts_old_rules_move_into_the_list_and_read_the_same() {
     assert!(scopes.contains(&(every, &Covers::All, &here)));
     assert!(scopes.contains(&(own, &Covers::Only(vec![AGENT.into()]), &here)));
 
-    // Moving is once: a host started again adds nothing.
+    // A host started again adds nothing, and a moved rule the owner removed
+    // stays removed.
     let written = std::fs::read(old.join("rules.json")).unwrap();
     RuleFiles::new(&state, HOST_KEY, "studio").unwrap();
     assert_eq!(std::fs::read(old.join("rules.json")).unwrap(), written);
+    let store = RulesDir::new(&state, HOST_KEY);
+    let every_rule = moved.iter().find(|rule| rule.text == every).unwrap();
+    store.change(|_| Ok(vec![every_rule.removed()])).unwrap();
+    RuleFiles::new(&state, HOST_KEY, "studio").unwrap();
+    let after = store.list().unwrap();
+    let kept = after.iter().find(|rule| rule.id == every_rule.id).unwrap();
+    assert!(kept.deleted);
+    assert_eq!(after.len(), 2);
 }
 
 #[test]
