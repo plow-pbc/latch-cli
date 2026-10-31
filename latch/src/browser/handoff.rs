@@ -311,11 +311,15 @@ mod tests {
         // A Linux host has none whatever its environment says: its
         // headed runtimes are on private displays.
         assert_eq!(screen(false), cfg!(target_os = "macos"));
-        assert_eq!(
-            super::super::display::for_runtime(false),
-            cfg!(target_os = "linux")
-        );
-        assert!(!super::super::display::for_runtime(true));
+        // A private display is Unix's (`display`); Windows has none.
+        #[cfg(unix)]
+        {
+            assert_eq!(
+                super::super::display::for_runtime(false),
+                cfg!(target_os = "linux")
+            );
+            assert!(!super::super::display::for_runtime(true));
+        }
         let failure = no_screen("captcha");
         assert_eq!(
             (failure.code.as_str(), &failure.details["reason"]),
