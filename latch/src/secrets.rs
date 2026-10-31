@@ -18,8 +18,6 @@
 //! On Windows the files hold their secrets sealed with DPAPI, for this
 //! Windows user and for the item as the Keychain files it (`dpapi.rs`): a
 //! file copied to another folder, or read as another user, does not open.
-//! A secret an older Windows latch left in the clear is sealed in place
-//! when it is read, and a host seals them all when it starts.
 
 use std::fs;
 use std::io::{ErrorKind, Write};
@@ -98,7 +96,7 @@ impl Secrets {
         let Some(store) = &self.keychain else {
             let path = self.dir.join(secret.file());
             return match fs::read(&path) {
-                Ok(bytes) => self.opened(secret, &path, bytes).map(Some),
+                Ok(bytes) => self.opened(secret, bytes).map(Some),
                 Err(err) if err.kind() == ErrorKind::NotFound => Ok(None),
                 Err(err) => Err(io_failure(&path, err)),
             };
@@ -123,7 +121,6 @@ impl Secrets {
         let Some(store) = &self.keychain else {
             let path = self.dir.join(secret.file());
             let sealed = self.sealed(secret, bytes)?;
-            let _lock = self.lock()?;
             return write_private(&path, &sealed).map_err(|err| io_failure(&path, err));
         };
         store
@@ -137,7 +134,6 @@ impl Secrets {
         let Some(store) = &self.keychain else {
             let path = self.dir.join(secret.file());
             let sealed = self.sealed(secret, bytes)?;
-            let _lock = self.lock()?;
             let file = fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
@@ -161,7 +157,6 @@ impl Secrets {
     /// Deletes each of `secrets` this folder has, where this build keeps
     /// them. Returns the files they are named by, of those there were.
     pub fn remove_each(&self, secrets: &[Secret]) -> Result<Vec<&'static str>, Failure> {
-        let _lock = self.lock()?;
         let mut removed = Vec::new();
         for &secret in secrets {
             let was = match &self.keychain {
@@ -186,16 +181,6 @@ impl Secrets {
         self.keychain.is_some()
     }
 
-    /// Seals each secret an older Windows latch left in the clear, so none
-    /// waits in the clear until it is next read. Elsewhere, nothing to do.
-    pub fn seal_clear(&self) -> Result<(), Failure> {
-        #[cfg(windows)]
-        for secret in Secret::ALL {
-            self.read(secret)?;
-        }
-        Ok(())
-    }
-
     /// `bytes` as a secret file keeps them: sealed on Windows, as they are
     /// elsewhere.
     fn sealed(&self, secret: Secret, bytes: &[u8]) -> Result<Vec<u8>, Failure> {
@@ -209,34 +194,15 @@ impl Secrets {
         }
     }
 
-    /// The secret in a file's `bytes`. On Windows a file an older latch left
-    /// in the clear is sealed in place first, under the lock every change
-    /// holds; one that changed since it was read (an audit key rotated, a
-    /// login) is opened as it is now instead, never put back as it was.
-    fn opened(&self, secret: Secret, path: &Path, bytes: Vec<u8>) -> Result<Vec<u8>, Failure> {
+    /// The secret in a file's `bytes`: on Windows, opened for this user and
+    /// this item.
+    fn opened(&self, secret: Secret, bytes: Vec<u8>) -> Result<Vec<u8>, Failure> {
         #[cfg(windows)]
-        return match dpapi::open(bytes, &self.account(secret)) {
-            Ok(dpapi::Opened::Sealed(bytes)) => Ok(bytes),
-            Ok(dpapi::Opened::Clear(bytes)) => {
-                let sealed = self.sealed(secret, &bytes)?;
-                let lock = self.lock()?;
-                match fs::read(path) {
-                    Ok(now) if now == bytes => {
-                        write_private(path, &sealed).map_err(|err| io_failure(path, err))?;
-                        Ok(bytes)
-                    }
-                    Ok(now) => {
-                        drop(lock);
-                        self.opened(secret, path, now)
-                    }
-                    Err(err) => Err(io_failure(path, err)),
-                }
-            }
-            Err(why) => Err(self.unsealable("open", secret, &why)),
-        };
+        return dpapi::open(&bytes, &self.account(secret))
+            .map_err(|why| self.unsealable("open", secret, &why));
         #[cfg(not(windows))]
         {
-            let _ = (secret, path);
+            let _ = secret;
             Ok(bytes)
         }
     }
@@ -254,33 +220,6 @@ impl Secrets {
             self.account(secret)
         );
         Failure::new(code::keychain_failed, message)
-    }
-
-    /// On Windows every change to a secret file, sealing a clear one
-    /// included, holds `secrets.lock`, so a sealing never puts back a
-    /// secret changed since it was read (see `opened`). Elsewhere files are
-    /// written whole and never sealed: there is nothing to hold.
-    #[cfg(windows)]
-    fn lock(&self) -> Result<Option<fs::File>, Failure> {
-        let path = self.dir.join("secrets.lock");
-        let opened = fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .owner_only()
-            .open(&path);
-        let file = match opened {
-            Ok(file) => file,
-            // A folder that is gone has no secret file to change.
-            Err(err) if err.kind() == ErrorKind::NotFound => return Ok(None),
-            Err(err) => return Err(io_failure(&path, err)),
-        };
-        file.lock().map_err(|err| io_failure(&path, err))?;
-        Ok(Some(file))
-    }
-    #[cfg(not(windows))]
-    fn lock(&self) -> Result<Option<fs::File>, Failure> {
-        Ok(None)
     }
 
     #[cfg(windows)]

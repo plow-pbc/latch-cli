@@ -1,8 +1,7 @@
 //! A Windows secret file's bytes: sealed with DPAPI for this Windows user,
 //! and for one item (the state folder's real path and the file's name,
 //! given as `account`), so a file copied to another folder, or read by
-//! another user, does not open. The file holds `MAGIC` and the sealed blob;
-//! one without `MAGIC` is a secret an older Windows latch left in the clear.
+//! another user, does not open. The file holds `MAGIC` and the sealed blob.
 //!
 //! This file needs only std and windows-sys, so its tests can run on their
 //! own on Windows.
@@ -16,15 +15,6 @@ use windows_sys::Win32::Security::Cryptography::{
 
 /// What a sealed file starts with.
 pub const MAGIC: &[u8] = b"latch-dpapi-1\n";
-
-/// What a secret file held.
-#[derive(Debug, PartialEq)]
-pub enum Opened {
-    /// The secret, unsealed.
-    Sealed(Vec<u8>),
-    /// The secret, which the file held in the clear.
-    Clear(Vec<u8>),
-}
 
 /// `bytes`, sealed for this user and `account`, as a file keeps them.
 pub fn seal(bytes: &[u8], account: &str) -> Result<Vec<u8>, String> {
@@ -51,12 +41,12 @@ pub fn seal(bytes: &[u8], account: &str) -> Result<Vec<u8>, String> {
     Ok([MAGIC, &take(sealed)].concat())
 }
 
-/// A secret file's bytes, opened for this user and `account`. A sealed
-/// file that does not open (another user's, another item's, or changed)
-/// is an error, never taken for a clear one.
-pub fn open(bytes: Vec<u8>, account: &str) -> Result<Opened, String> {
+/// A secret file's bytes, opened for this user and `account`. A file that
+/// does not open (another user's, another item's, changed, or never
+/// sealed) is an error.
+pub fn open(bytes: &[u8], account: &str) -> Result<Vec<u8>, String> {
     let Some(sealed) = bytes.strip_prefix(MAGIC) else {
-        return Ok(Opened::Clear(bytes));
+        return Err("it is not sealed".into());
     };
     let mut opened = CRYPT_INTEGER_BLOB {
         cbData: 0,
@@ -77,7 +67,7 @@ pub fn open(bytes: Vec<u8>, account: &str) -> Result<Opened, String> {
     if ok == 0 {
         return Err(std::io::Error::last_os_error().to_string());
     }
-    Ok(Opened::Sealed(take(opened)))
+    Ok(take(opened))
 }
 
 fn blob(bytes: &[u8]) -> CRYPT_INTEGER_BLOB {
@@ -114,26 +104,20 @@ mod tests {
         let sealed = seal(b"plow-login-token", ACCOUNT).unwrap();
         assert!(sealed.starts_with(MAGIC));
         assert!(!sealed.windows(16).any(|w| w == b"plow-login-token"));
-        assert_eq!(
-            open(sealed, ACCOUNT).unwrap(),
-            Opened::Sealed(b"plow-login-token".to_vec())
-        );
+        assert_eq!(open(&sealed, ACCOUNT).unwrap(), b"plow-login-token");
     }
 
     #[test]
-    fn a_file_without_the_mark_is_a_clear_secret() {
-        assert_eq!(
-            open(b"0123abcd".to_vec(), ACCOUNT).unwrap(),
-            Opened::Clear(b"0123abcd".to_vec())
-        );
+    fn a_file_in_the_clear_does_not_open() {
+        assert!(open(b"0123abcd", ACCOUNT).is_err());
     }
 
     #[test]
     fn a_sealed_file_copied_to_another_item_does_not_open() {
         let sealed = seal(b"key-hex", ACCOUNT).unwrap();
         let other = r"\\?\C:\Users\someone\other/plow-token";
-        assert!(open(sealed.clone(), other).is_err());
-        assert!(open(sealed, &ACCOUNT.replace("plow-token", "key")).is_err());
+        assert!(open(&sealed, other).is_err());
+        assert!(open(&sealed, &ACCOUNT.replace("plow-token", "key")).is_err());
     }
 
     #[test]
@@ -141,15 +125,14 @@ mod tests {
         let mut sealed = seal(b"vault-key-hex", ACCOUNT).unwrap();
         let last = sealed.len() - 1;
         sealed[last] ^= 1;
-        assert!(open(sealed.clone(), ACCOUNT).is_err());
-        // Cut short, it is still sealed, never a clear secret.
+        assert!(open(&sealed, ACCOUNT).is_err());
         sealed.truncate(MAGIC.len() + 4);
-        assert!(open(sealed, ACCOUNT).is_err());
+        assert!(open(&sealed, ACCOUNT).is_err());
     }
 
     #[test]
     fn an_empty_secret_seals_and_opens() {
         let sealed = seal(b"", ACCOUNT).unwrap();
-        assert_eq!(open(sealed, ACCOUNT).unwrap(), Opened::Sealed(Vec::new()));
+        assert_eq!(open(&sealed, ACCOUNT).unwrap(), b"");
     }
 }

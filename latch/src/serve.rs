@@ -486,13 +486,6 @@ async fn run_locked(
     // Grants in access lists that launchers killed with a host left.
     #[cfg(windows)]
     crate::sandbox::sweep(&workers.state_dir);
-    // Secrets an older Windows latch left in the clear.
-    if let Err(failure) = state.secrets()?.seal_clear() {
-        log(&format!(
-            "could not seal this folder's secrets: {}",
-            failure.message
-        ));
-    }
     // Holding the folder, no other host runs here to use an older latch's.
     match crate::plugins::prune(&state.path) {
         Ok(removed) => {
