@@ -216,6 +216,7 @@ const MAX_SOCKET_PATH: usize = if cfg!(target_os = "macos") {
 
 /// `local_socket_path`, or a failure that says the state folder's path is
 /// too long for one.
+#[cfg_attr(windows, allow(clippy::absurd_extreme_comparisons))]
 fn socket_path(state: &Path) -> Result<PathBuf, Failure> {
     let path = local_socket_path(state);
     let length = path.as_os_str().len();

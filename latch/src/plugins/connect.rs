@@ -315,8 +315,9 @@ fn stdout_gone() -> bool {
     use windows_sys::Win32::Foundation::{ERROR_BROKEN_PIPE, ERROR_NO_DATA, GetLastError};
     use windows_sys::Win32::Storage::FileSystem::{FILE_TYPE_PIPE, GetFileType, WriteFile};
     use windows_sys::Win32::System::Console::{GetStdHandle, STD_OUTPUT_HANDLE};
-    // SAFETY: GetStdHandle takes a constant; GetFileType only reads the handle.
+    // SAFETY: GetStdHandle takes a constant.
     let out = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) };
+    // SAFETY: GetFileType only reads the handle.
     if unsafe { GetFileType(out) } != FILE_TYPE_PIPE {
         return false;
     }
