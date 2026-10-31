@@ -138,17 +138,29 @@ impl World {
         let made = self.dir.path().join(format!("made-{build}"));
         let folder = made.join(&name);
         std::fs::create_dir_all(&folder).unwrap();
-        let script = format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\necho installing\n\
-             [ -e '{}' ] && {{ echo 'cannot replace latch' >&2; exit 1; }}\nexit 0\n",
-            self.installed().display(),
-            self.failing().display()
-        );
-        std::fs::write(folder.join("install-binary.sh"), script).unwrap();
-        std::fs::write(folder.join("latch"), format!("build {build}\n")).unwrap();
-        let archive = made.join(format!("{name}.tar.gz"));
-        let tar = std::process::Command::new("tar")
-            .arg("-czf")
+        // A stand-in installer: it writes down its arguments, one a line.
+        let script = if cfg!(windows) {
+            format!(
+                "[IO.File]::WriteAllLines('{}', [string[]]$args)\n'installing'\n\
+                 if (Test-Path '{}') {{ [Console]::Error.WriteLine('cannot replace latch'); exit 1 }}\nexit 0\n",
+                self.installed().display(),
+                self.failing().display()
+            )
+        } else {
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\necho installing\n\
+                 [ -e '{}' ] && {{ echo 'cannot replace latch' >&2; exit 1; }}\nexit 0\n",
+                self.installed().display(),
+                self.failing().display()
+            )
+        };
+        std::fs::write(folder.join(INSTALLER), script).unwrap();
+        let latch = if cfg!(windows) { "latch.exe" } else { "latch" };
+        std::fs::write(folder.join(latch), format!("build {build}\n")).unwrap();
+        let archive = made.join(format!("{name}.{ARCHIVE}"));
+        // On Windows, a zip (`-a` picks the format by its name).
+        let tar = std::process::Command::new(tar())
+            .arg(if cfg!(windows) { "-acf" } else { "-czf" })
             .arg(&archive)
             .arg("-C")
             .arg(&made)
@@ -158,12 +170,12 @@ impl World {
         assert!(tar.success());
         let archive = std::fs::read(archive).unwrap();
         let sums = format!(
-            "{}  {name}.tar.gz\n{}  install.sh\n",
+            "{}  {name}.{ARCHIVE}\n{}  install.sh\n",
             to_hex(&Sha256::digest(&archive)),
             "0".repeat(64)
         );
         let folder = format!("releases/{}", release.tag);
-        self.put(&format!("{folder}/{name}.tar.gz"), archive);
+        self.put(&format!("{folder}/{name}.{ARCHIVE}"), archive);
         self.put(
             &format!("{folder}/SHA256SUMS.minisig"),
             self.key.sign(sums.as_bytes()),
@@ -184,8 +196,11 @@ impl World {
         self.dir.path().join("fail-install")
     }
 
+    /// trace.log, its line ends as Unix writes them (PowerShell's are CRLF).
     fn trace_log(&self) -> String {
-        std::fs::read_to_string(self.state.path.join(crate::trace::FILE)).unwrap_or_default()
+        std::fs::read_to_string(self.state.path.join(crate::trace::FILE))
+            .unwrap_or_default()
+            .replace("\r\n", "\n")
     }
 
     fn arguments(&self) -> Option<Vec<String>> {
@@ -229,10 +244,9 @@ async fn a_newer_build_is_installed_by_its_own_installer_where_latch_runs() {
             "--no-browser"
         ]
     );
-    assert!(
-        arguments[6].ends_with(&format!("latch-v0.1.0-1328-{}/latch", target().unwrap())),
-        "{arguments:?}"
-    );
+    let latch = Path::new(&format!("latch-v0.1.0-1328-{}", target().unwrap()))
+        .join(if cfg!(windows) { "latch.exe" } else { "latch" });
+    assert!(Path::new(&arguments[6]).ends_with(&latch), "{arguments:?}");
 }
 
 /// On Linux, latch is installed where this one runs from; on macOS the
@@ -316,7 +330,7 @@ async fn a_corrupted_archive_fails_before_anything_is_replaced() {
     let release = world.release(1328);
     world.latest(&release);
     let name = format!(
-        "releases/v0.1.0-1328/latch-v0.1.0-1328-{}.tar.gz",
+        "releases/v0.1.0-1328/latch-v0.1.0-1328-{}.{ARCHIVE}",
         target().unwrap()
     );
     let mut archive = world.server.files.lock().unwrap()[&name].clone();
@@ -361,7 +375,7 @@ async fn what_tar_and_the_installer_print_goes_to_trace_log() {
 
     // An archive its sums list, but no archive: tar's complaint goes there too.
     let name = format!(
-        "releases/v0.1.0-1329/latch-v0.1.0-1329-{}.tar.gz",
+        "releases/v0.1.0-1329/latch-v0.1.0-1329-{}.{ARCHIVE}",
         target().unwrap()
     );
     let release = world.release(1329);
@@ -513,7 +527,7 @@ async fn a_cut_off_update_is_finished_by_the_next_one() {
         .join("plugins/gog")
         .join(&crate::google::PIN.version);
     std::fs::create_dir_all(&gog).unwrap();
-    std::fs::write(gog.join("gog"), "").unwrap();
+    std::fs::write(gog.join(if cfg!(windows) { "gog.exe" } else { "gog" }), "").unwrap();
     let answer = update(
         &complete.state,
         &complete.source(),

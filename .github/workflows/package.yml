@@ -1,14 +1,15 @@
 name: package
-# latch's Linux archives, built and packaged, and every platform's archives
-# checked (each one's SHA256SUMS, install files and latch --version, on its
-# own runner). A merge to main builds and checks the Linux ones. The release
-# workflow calls it twice: `build` for the Linux archives (it builds and signs
-# the macOS ones itself), and `check` to assemble and verify them all.
+# latch's Linux and Windows archives, built and packaged, and every
+# platform's archives checked (each one's SHA256SUMS, install files and latch
+# --version, on its own runner). A merge to main builds and checks the Linux
+# ones. The release workflow calls it twice: `build` for the Linux and
+# Windows archives (it builds and signs the macOS ones itself), and `check`
+# to assemble and verify them all.
 run-name: "Package check: ${{ github.event.head_commit.message }}"
 on:
   push:
     branches: [main]
-    paths: ['latch/**', 'scripts/**', 'install.sh', '.github/workflows/package.yml', '!**/*.md']
+    paths: ['latch/**', 'scripts/**', 'install.sh', 'install.ps1', '.github/workflows/package.yml', '!**/*.md']
   workflow_call:
     inputs:
       tag:
@@ -94,10 +95,48 @@ jobs:
           name: latch-${{ matrix.target }}
           path: dist/*.tar.gz
           if-no-files-found: error
+  # Windows: latch.exe and install-binary.ps1 in a zip. Only for a release:
+  # a merge to main builds no Windows archive. Unsigned until there is a
+  # code-signing certificate (TODO); latch update checks it against the
+  # signed SHA256SUMS either way.
+  build-windows:
+    needs: version
+    if: inputs.stage == 'build'
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      VERSION: ${{ needs.version.outputs.tag }}
+      LATCH_BUILD_CHANNEL: standalone tag ${{ needs.version.outputs.tag }}
+      LATCH_BUILD_NUMBER: ${{ github.run_number }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install
+        working-directory: latch
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: latch -> target
+          shared-key: windows-x64-release
+      - name: Build
+        shell: bash
+        run: |
+          cd latch
+          cargo build --release --locked
+          target/release/latch.exe --version
+      - name: Package
+        shell: bash
+        run: |
+          sh scripts/package-release.sh "$VERSION" x86_64-pc-windows-msvc latch/target/release/latch.exe
+          powershell.exe -NoProfile -Command "Expand-Archive dist/latch-$VERSION-x86_64-pc-windows-msvc.zip -DestinationPath '$RUNNER_TEMP'"
+          "$RUNNER_TEMP/latch-$VERSION-x86_64-pc-windows-msvc/latch.exe" --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: latch-x86_64-pc-windows-msvc
+          path: dist/*.zip
+          if-no-files-found: error
   assemble:
-    needs: build
+    needs: [build, build-windows]
     # A `check` run assembles the archives its caller already built and signed.
-    if: ${{ !cancelled() && inputs.stage != 'build' && (needs.build.result == 'success' || inputs.stage == 'check') }}
+    if: ${{ !cancelled() && inputs.stage != 'build' && ((needs.build.result == 'success' && needs.build-windows.result != 'failure') || inputs.stage == 'check') }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -109,9 +148,10 @@ jobs:
           merge-multiple: true
           path: dist
       - run: |
-          cp install.sh dist/
+          cp install.sh install.ps1 dist/
           cd dist
-          sha256sum *.tar.gz install.sh > SHA256SUMS
+          shopt -s nullglob
+          sha256sum *.tar.gz *.zip install.sh install.ps1 > SHA256SUMS
       - uses: actions/upload-artifact@v4
         with:
           name: release-downloads
@@ -124,7 +164,7 @@ jobs:
       fail-fast: false
       # The Intel Mac runs the x86_64 archive built on Apple Silicon.
       matrix:
-        include: ${{ fromJSON(github.event_name == 'push' && '[{"runner":"ubuntu-24.04","target":"x86_64-unknown-linux-musl"},{"runner":"ubuntu-24.04-arm","target":"aarch64-unknown-linux-musl"}]' || '[{"runner":"macos-15","target":"aarch64-apple-darwin"},{"runner":"macos-15-intel","target":"x86_64-apple-darwin"},{"runner":"ubuntu-24.04","target":"x86_64-unknown-linux-musl"},{"runner":"ubuntu-24.04-arm","target":"aarch64-unknown-linux-musl"}]') }}
+        include: ${{ fromJSON(github.event_name == 'push' && '[{"runner":"ubuntu-24.04","target":"x86_64-unknown-linux-musl"},{"runner":"ubuntu-24.04-arm","target":"aarch64-unknown-linux-musl"}]' || '[{"runner":"macos-15","target":"aarch64-apple-darwin"},{"runner":"macos-15-intel","target":"x86_64-apple-darwin"},{"runner":"ubuntu-24.04","target":"x86_64-unknown-linux-musl"},{"runner":"ubuntu-24.04-arm","target":"aarch64-unknown-linux-musl"},{"runner":"windows-latest","target":"x86_64-pc-windows-msvc"}]') }}
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -133,6 +173,7 @@ jobs:
           name: release-downloads
           path: downloads
       - name: Run downloaded archive
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           cd downloads
@@ -150,3 +191,16 @@ jobs:
             . "$GITHUB_WORKSPACE/latch/macos/identity.sh"
             codesign --verify --deep --strict --verbose=2 "$folder/$LATCH_APP_NAME.app"
           fi
+      - name: Run downloaded archive (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cd downloads
+          $zip = Get-ChildItem 'latch-*-${{ matrix.target }}.zip' | Select-Object -First 1
+          $listed = (Select-String -Path SHA256SUMS -Pattern "  $($zip.Name)$").Line.Split(' ')[0]
+          if ((Get-FileHash $zip -Algorithm SHA256).Hash.ToLower() -ne $listed) { throw "$($zip.Name) is not the one SHA256SUMS lists" }
+          Expand-Archive $zip -DestinationPath .
+          $folder = $zip.BaseName
+          & "$folder\latch.exe" --version
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          powershell -NoProfile -ExecutionPolicy Bypass -File "$folder\install-binary.ps1" --help
