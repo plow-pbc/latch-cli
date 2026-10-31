@@ -29,6 +29,7 @@ conformance!(
     a_card_pays_after_a_script_on_the_shop,
     a_card_is_protected_until_submit_and_what_the_shop_shows_after_is_its_own,
     a_redrawn_number_field_does_not_show_its_value,
+    a_number_field_the_page_makes_a_button_is_not_named_by_the_number,
     a_card_in_its_fields_shows_blank_in_pictures_until_pay,
     a_card_left_in_its_fields_is_emptied_after_a_while,
     a_page_that_takes_the_blanking_off_gets_no_picture,
@@ -318,6 +319,31 @@ async fn a_card_is_protected_until_submit_and_what_the_shop_shows_after_is_its_o
     assert!(
         page.contains("Paid $10.00 with card 4242 4242 4242 4242"),
         "{page}"
+    );
+    h.call("close", json!({})).await.ok();
+}
+
+/// A field the page turns into a button once it holds the number would
+/// be named by its value: a field latch filled never is.
+async fn a_number_field_the_page_makes_a_button_is_not_named_by_the_number(engine: &str) {
+    let (mut h, card, local, _, _keep) = shop(engine).await;
+    let checkout = h
+        .call(
+            "open",
+            json!({"url": format!("{local}/card-to-button.html")}),
+        )
+        .await
+        .unwrap();
+    let number = find(&checkout, "textbox", "Card number");
+    let (filled, _) = h
+        .gated_fill(json!({"item": card, "fields": [["number", [number]]]}))
+        .await;
+    println!("filled: {filled:?}");
+    let observed = h.call("observe", json!({})).await.unwrap();
+    println!("after the field became a button: {}", observed["elements"]);
+    assert!(
+        !h.saw_the_card(),
+        "the number reached the agent as the button's name"
     );
     h.call("close", json!({})).await.ok();
 }
