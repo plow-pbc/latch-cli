@@ -12,7 +12,7 @@ use std::path::Path;
 
 use serde_json::{Map, Value, json};
 
-use super::rules::{Rule, RulesDir, is_agent_uid};
+use super::rules::{Rule, RulesDir};
 use crate::failure::{Failure, code};
 use crate::plow::{NamedAgent, Peer, Plow};
 use crate::serve::Done;
@@ -102,7 +102,7 @@ pub(crate) fn owner_only(kind: &str, what: &str) -> Result<(), Failure> {
 /// uid, and its current name in Plow.
 pub async fn agent(plow: &Plow, from: &str) -> Result<(String, Option<String>), Failure> {
     let account = Account::read(plow).await?;
-    let uid = account.resolve(from, false)?;
+    let uid = account.resolve(from)?;
     let name = account.name(&uid);
     Ok((uid, name))
 }
@@ -133,10 +133,8 @@ impl Account {
         })
     }
 
-    /// The agent uid `name` stands for. With `any_uid`, a uid no live agent
-    /// has is taken as it is, so rules left by a deleted agent can be
-    /// shown and cleared.
-    pub(crate) fn resolve(&self, name: &str, any_uid: bool) -> Result<String, Failure> {
+    /// The agent uid `name` stands for.
+    pub(crate) fn resolve(&self, name: &str) -> Result<String, Failure> {
         let by_agent = self
             .agents
             .iter()
@@ -164,7 +162,6 @@ impl Account {
                     ),
                 ))
             }
-            [] if any_uid && is_agent_uid(name) => Ok(name.to_string()),
             [] => Err(Failure::new(
                 code::no_such_agent,
                 format!("no agent or agent's latch in this account is called {name:?}"),

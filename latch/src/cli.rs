@@ -203,7 +203,9 @@ pub enum Command {
     /// Your standing rules for agents on your hosts (owner only)
     ///
     /// Every host keeps the whole list, and its gatekeeper reads the rules
-    /// that apply there at every judgment. Freeform rules are judged, not
+    /// that apply there at every judgment. A host running on an agent's login
+    /// is never asked for its rules or sent the list; rules it already holds
+    /// are unchanged. Freeform rules are judged, not
     /// guaranteed. --deny-exec is enforced in code
     Rules(RulesArgs),
     /// Turn this host's connectors on or off
