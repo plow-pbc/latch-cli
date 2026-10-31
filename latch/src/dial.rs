@@ -421,7 +421,7 @@ pub async fn call(
     result.map_err(naming(host))
 }
 
-async fn one_exchange(
+pub(crate) async fn one_exchange(
     connection: &Connection,
     request: &Request,
     answer_within: Duration,

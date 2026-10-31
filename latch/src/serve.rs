@@ -624,6 +624,7 @@ async fn run_host(
     });
     watch_binary(&host, BINARY_CHECK_EVERY);
     sweep_browsers(&host);
+    sync::start(&host);
     crate::relay_link::watch(&endpoint);
     crate::update::watch(&state.path, &host.dashboard);
     let local_socket = crate::transport::LocalSocket::bind(&state.path)?;
@@ -1214,6 +1215,31 @@ async fn serve_request(
             };
             log(&format!("vault preview: {caller}: {outcome}"));
             response
+        }
+        // A sync carries the owner's whole vault, so it is never on the
+        // board, and it is audited only when it changed this vault, as from
+        // the host that sent it.
+        Ok(identity) if op == "vault" && request.args["command"] == "sync" => {
+            match crate::vault::host::sync(&host.vault, &identity.kind, &request.args) {
+                Ok((answer, applied)) if applied.any() => {
+                    match host.synced_from(caller, &identity.name, &applied).await {
+                        Ok(_) => {
+                            log(&format!(
+                                "vault sync: took {} from {:?}",
+                                sync::shown(&applied),
+                                identity.name
+                            ));
+                            Response::Ok(answer)
+                        }
+                        Err(message) => failed(code::audit_failed, message),
+                    }
+                }
+                Ok((answer, _)) => Response::Ok(answer),
+                Err(failure) => {
+                    log(&format!("vault sync: {caller}: {}", failure.code));
+                    Response::error(&failure)
+                }
+            }
         }
         // A preview runs nothing, so it is neither audited nor on the board.
         Ok(identity) if op == "rules_try" => {
@@ -1984,6 +2010,7 @@ mod reads;
 #[cfg(test)]
 mod reads_tests;
 mod rules_try;
+mod sync;
 pub(crate) use rules_try::{not_previewable, preview_here};
 #[cfg(test)]
 mod rules_try_tests;
