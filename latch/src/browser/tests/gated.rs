@@ -207,7 +207,7 @@ impl Provider for Judge {
 struct NoRules;
 
 impl RulesSource for NoRules {
-    fn rules(&self, _: &str) -> Result<Rules, String> {
+    fn rules(&self, _: &str) -> Result<Rules, crate::failure::Failure> {
         Ok(Rules::default())
     }
 }
