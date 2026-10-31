@@ -522,7 +522,7 @@ fn a_host_with_no_rules_is_offered_the_presets_and_enter_takes_family() {
         "  3. None for now",
         "Rules for your agents? [1/2/3] ",
         "→ Add rule: latch rules add --preset family --if-empty",
-        "✓ Added the Family assistant rule; `latch rules list --host mac` shows it.",
+        "✓ Added the Family assistant rule for all agents on all hosts; `latch rules list` shows it.",
     ] {
         assert!(shown.contains(line), "{line}: {shown}");
     }
@@ -757,7 +757,19 @@ fn status_says_rules_are_done_once_a_rule_for_every_agent_applies() {
         fs::create_dir_all(state.join("rules")).unwrap();
         fs::write(state.join("rules").join(file), "Agents may read my mail.").unwrap();
         let steps = status(&state);
-        let expected = if done { "done" } else { "needed" };
-        assert_eq!(steps["rules"]["state"], expected, "{file}");
+        let expected = if done {
+            ("done", "A rule for all agents applies to this machine.")
+        } else {
+            // True even though that agent has a rule of its own.
+            (
+                "needed",
+                "No rule for all agents applies to this machine yet.",
+            )
+        };
+        assert_eq!(
+            (&steps["rules"]["state"], &steps["rules"]["reason"]),
+            (&expected.0.into(), &expected.1.into()),
+            "{file}"
+        );
     }
 }

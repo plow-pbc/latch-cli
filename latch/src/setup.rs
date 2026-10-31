@@ -294,9 +294,8 @@ impl Setup {
             failed(&added.json, &command);
         } else if added.json["change"]["saved"] == true {
             done(&format!(
-                "Added the {} rule; `{}` shows it.",
-                preset.name(),
-                list_here(&added.json)
+                "Added the {} rule for all agents on all hosts; `latch rules list` shows it.",
+                preset.name()
             ));
         } else {
             show_rules(&added.json);
@@ -510,12 +509,16 @@ pub async fn status(state: &StateDir, check_access: bool) -> Result<Status, Fail
             "Rules are set by the owner's own login, not an agent's.".into(),
             None,
         ),
-        Some(_) if any_rules => Step::new("rules", Done, "Rules apply to this machine.".into(), None),
+        Some(_) if any_rules => Step::new(
+            "rules",
+            Done,
+            "A rule for all agents applies to this machine.".into(),
+            None,
+        ),
         Some(_) => Step::new(
             "rules",
             Needed,
-            "No rules apply to this machine, so agents may only do everyday work without asking you."
-                .into(),
+            "No rule for all agents applies to this machine yet.".into(),
             Some(vec!["rules", "add", "--preset", "family", "--if-empty"]),
         ),
     });
