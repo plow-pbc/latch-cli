@@ -33,7 +33,7 @@ struct RulesView: View {
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.top, 6)
-                Text("What may your agents do on this Mac?")
+                Text("What may your agents do?")
                     .font(.system(size: 14, weight: .medium))
                     .padding(.top, 24)
                     .padding(.bottom, 10)
@@ -86,7 +86,7 @@ struct RulesView: View {
             .writingToolsBehavior(.disabled)
             .background(Brand.surface, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(Brand.fieldBorder))
-            .accessibilityLabel("Your rules for agents on this Mac")
+            .accessibilityLabel("Rules for your agents")
     }
 }
 
