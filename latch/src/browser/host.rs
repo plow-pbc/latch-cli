@@ -157,8 +157,8 @@ pub(super) struct Entry {
     /// The sites the gatekeeper let this session go to.
     judged_sites: std::sync::Mutex<HashSet<String>>,
     /// The card numbers and identity secrets filled in this session: what
-    /// its answers and journals are masked for.
-    pub(super) masks: super::journal::Masks,
+    /// the gatekeeper is shown masked.
+    pub(super) masks: std::sync::Mutex<Vec<super::shown::Filled>>,
 }
 
 impl Entry {
@@ -768,7 +768,7 @@ async fn answer(
     {
         judged::judge(caller.gate, action, &entry.filled(), audit).await?;
     }
-    let mut result = match command {
+    let result = match command {
         "close" => browsers.close(name, key).await.map(|closed| (closed, None)),
         "fill" => fill(browsers, &entry, caller, args, audit)
             .await
@@ -799,19 +799,6 @@ async fn answer(
     }
     if result.is_ok() {
         last_site(&entry, audit);
-    }
-    // A page may show a value it was given (a confirmation that repeats
-    // a card number, a preview of an SSN as it is typed): the agent gets a
-    // card's last four digits only, and none of a secret.
-    let filled = entry.filled();
-    if !filled.is_empty() {
-        match &mut result {
-            Ok((answer, _)) => super::shown::mask_filled(answer, &filled),
-            Err(failure) => {
-                failure.message = super::shown::masked(&failure.message, &filled);
-                super::shown::mask_filled(&mut failure.details, &filled);
-            }
-        }
     }
     result
 }

@@ -298,19 +298,17 @@ session that filled is closed. Closing it never lets its pages send what
 they hold: on Chrome for Testing the guard stands until the browser exits;
 on Camoufox the browser is killed. No reading is taken while a fill holds the
 browser, and an element list marks a field holding a filled value as
-`filled`, never showing the value. A page may show a card's number back
-(a confirmation that repeats it, a field it draws again): every answer in
-the session that filled it, and its plans' journals, show that number only
-as its last four digits (`•••• 4242`), whole or in groups set apart by
-single spaces or dashes, as a site prints it; the last four alone
-("ending in 4242") are left as they are. An identity's secret that a
-fill released (an SSN, a passport number) is masked whole the same way:
-the session's text answers and its plans' journals (`do --history`) show
-it as `••••`, written as it was filled or as its digits in groups. A
+`filled`, never showing the value. latch protects a secret until the
+form is submitted or the fields are cleared; what a site shows afterwards
+is the site's. A page that shows a card's number or an SSN back (a
+confirmation that repeats it, a preview as it is typed) shows it to the
+agent as it shows it to a person, in answers and in plans' journals. A
 script (`eval`) is refused
 while a filled value may be in a field, as for a password (below), and
 runs once the page was submitted and its fields are empty: from then on
-it could read a number the page repeats.
+it could read a number the page repeats. The gatekeeper alone is shown a
+filled card's number only as its last four digits and an identity's
+secret not at all, wherever a page put it.
 
 A card fill presses nothing: the card stays in the page's fields, and the
 agent checks the page and presses Pay itself, an ordinary click with its
@@ -326,7 +324,7 @@ too. latch empties fields still holding the card 5 minutes after the fill
 (the fill's answer says so in its `next`), and the values go with the
 browser when the session closes. Only the filled fields are blanked: a page
 that prints the whole number elsewhere shows it in a picture, and a receipt
-the agent downloads (text or PDF) can hold it, though no text answer does.
+the agent downloads (text or PDF) can hold it, as can a text answer.
 While a filled value may be on a page, in whichever of the session's tabs,
 `eval` is refused (`secret_on_page`) until it is gone or its tab is
 closed. The result says

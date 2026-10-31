@@ -33,6 +33,10 @@ Latch lets an agent work on your computer without handing it the keys.
   before it runs, and one that reads form fields, listens to typing or sends
   page data away needs your explicit OK. That judgment is a model's, so a
   script that hides what it does may get through. A new session starts clean.
+- **Latch protects a secret until the form is submitted or the fields are
+  cleared.** What a site shows afterwards, such as a confirmation that
+  repeats your card number, is the site's, and your agent reads it as you
+  would.
 - **Your own login is you.** A host judges it as you, even where an agent
   runs. Give each agent its own login.
 
