@@ -7,10 +7,18 @@
 //! two calls share what they were granted, and gives that container exactly
 //! the policy's paths: its areas and temp folder to read and write, its reads
 //! in home (and the latch it runs) to read. Outside home it reads what any
-//! AppContainer may, the system's own folders. A hidden path inside one gets an
-//! entry that denies the container, which wins over any grant. A container
-//! reaches nothing else of the user's, and no network unless the policy
-//! grants it; loopback is closed to it, so the host's local socket is too.
+//! AppContainer may, the system's own folders. A container reaches nothing
+//! else of the user's, and no network unless the policy grants it; loopback
+//! is closed to it, so the host's local socket is too.
+//!
+//! A deny entry doesn't bind a container: what an entry for it, for one of
+//! its capabilities or for every container allows, it may do, even with an
+//! entry denying its own SID ahead of that one. A path stays out of
+//! a container's reach only while no grant reaches it. So a hidden path
+//! inside a grant must have a protected access list that allows no container
+//! (latch makes its state folders so); one that hasn't fails the call
+//! (`sealed`). The judge keeps every write grant off the folder of the
+//! latch the host runs, and every grant off AppData (`never_readable`).
 //!
 //! Unlike macOS and Linux, an `exec` worker does not read all of home here:
 //! that would mean an entry on every file in the profile. It reads its areas
@@ -20,14 +28,15 @@
 //! handle closes: the launcher holds it, so a launcher that ends, however it
 //! ends, takes the worker and every program it started with it. `kill_after`
 //! is the launcher's: it ends the job then. The host keeps every launcher in a
-//! job of its own (`tie_to_host`), so a host that dies takes them all.
+//! job of its own (`tie_to_host`), so a host that dies takes them all: a
+//! launcher starts suspended, and one that cannot join that job never runs.
 //!
 //! The grants are written into the files' own access lists, so the launcher
-//! takes them back when the worker ends: grants and denials alike. It first
-//! writes what it grants to a ledger in the state folder (not the temp
-//! folder, which for a launcher is the call's own and goes with it); a
-//! launcher that was killed leaves its ledger, and the host takes those
-//! grants back (`sweep`): when it kills a launcher, and when it starts.
+//! takes them back when the worker ends. It first writes what it grants to a
+//! ledger in the state folder (not the temp folder, which for a launcher is
+//! the call's own and goes with it); a launcher that was killed leaves its
+//! ledger, and the host takes those grants back (`sweep`): when it kills a
+//! launcher, and when it starts.
 
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
@@ -38,13 +47,13 @@ use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_SUCCESS, HANDLE, HANDLE_FLAG_INHERIT, LocalFree, SetHandleInformation,
-    WAIT_ABANDONED, WAIT_OBJECT_0, WAIT_TIMEOUT,
+    CloseHandle, ERROR_SUCCESS, HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, LocalFree,
+    SetHandleInformation, WAIT_ABANDONED, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Security::Authorization::{
-    ConvertStringSidToSidW, DENY_ACCESS, EXPLICIT_ACCESS_W, GRANT_ACCESS, GetSecurityInfo,
-    NO_MULTIPLE_TRUSTEE, SE_FILE_OBJECT, SetEntriesInAclW, SetNamedSecurityInfoW, TRUSTEE_IS_SID,
-    TRUSTEE_IS_UNKNOWN, TRUSTEE_W,
+    ConvertStringSidToSidW, EXPLICIT_ACCESS_W, GRANT_ACCESS, GetSecurityInfo, NO_MULTIPLE_TRUSTEE,
+    SE_FILE_OBJECT, SetEntriesInAclW, SetNamedSecurityInfoW, TRUSTEE_IS_SID, TRUSTEE_IS_UNKNOWN,
+    TRUSTEE_W,
 };
 use windows_sys::Win32::Security::Isolation::{
     CreateAppContainerProfile, DeleteAppContainerProfile, DeriveAppContainerSidFromAppContainerName,
@@ -52,19 +61,23 @@ use windows_sys::Win32::Security::Isolation::{
 use windows_sys::Win32::Security::{
     ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, ACL_SIZE_INFORMATION, AclSizeInformation, AddAce,
     DACL_SECURITY_INFORMATION, EqualSid, FreeSid, GetAce, GetAclInformation,
-    GetSecurityDescriptorControl, GetTokenInformation, INHERITED_ACE, InitializeAcl,
-    InitializeSecurityDescriptor, NO_INHERITANCE, PSECURITY_DESCRIPTOR, PSID,
-    SE_DACL_AUTO_INHERITED, SE_DACL_PROTECTED, SECURITY_CAPABILITIES, SECURITY_DESCRIPTOR,
-    SID_AND_ATTRIBUTES, SUB_CONTAINERS_AND_OBJECTS_INHERIT, SetKernelObjectSecurity,
-    SetSecurityDescriptorControl, SetSecurityDescriptorDacl, TOKEN_QUERY, TokenIsAppContainer,
+    GetSecurityDescriptorControl, GetSidIdentifierAuthority, GetTokenInformation, INHERIT_ONLY_ACE,
+    INHERITED_ACE, InitializeAcl, InitializeSecurityDescriptor, NO_INHERITANCE,
+    PSECURITY_DESCRIPTOR, PSID, SE_DACL_AUTO_INHERITED, SE_DACL_PROTECTED, SECURITY_CAPABILITIES,
+    SECURITY_DESCRIPTOR, SID_AND_ATTRIBUTES, SUB_CONTAINERS_AND_OBJECTS_INHERIT,
+    SetKernelObjectSecurity, SetSecurityDescriptorControl, SetSecurityDescriptorDacl, TOKEN_QUERY,
+    TokenIsAppContainer,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    DELETE, FILE_FLAG_BACKUP_SEMANTICS, FILE_GENERIC_EXECUTE, FILE_GENERIC_READ,
+    DELETE, FILE_EXECUTE, FILE_FLAG_BACKUP_SEMANTICS, FILE_GENERIC_EXECUTE, FILE_GENERIC_READ,
     FILE_GENERIC_WRITE, FILE_READ_ATTRIBUTES, FILE_READ_DATA, FILE_SHARE_READ, FILE_SHARE_WRITE,
     FILE_TRAVERSE, GetFinalPathNameByHandleW, READ_CONTROL, SYNCHRONIZE, WRITE_DAC,
 };
 use windows_sys::Win32::System::Console::{
     GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+};
+use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
 };
 use windows_sys::Win32::System::Environment::GetCommandLineW;
 use windows_sys::Win32::System::JobObjects::{
@@ -80,10 +93,10 @@ use windows_sys::Win32::System::Threading::{
     CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateMutexW, CreateProcessW,
     DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetCurrentProcess,
     GetExitCodeProcess, INFINITE, InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST,
-    OpenProcess, OpenProcessToken, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+    OpenProcess, OpenProcessToken, OpenThread, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
     PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, PROCESS_INFORMATION, PROCESS_SYNCHRONIZE,
-    ReleaseMutex, ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOEXW, TerminateProcess,
-    UpdateProcThreadAttribute, WaitForSingleObject,
+    ReleaseMutex, ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOEXW, THREAD_SUSPEND_RESUME,
+    TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
 };
 
 use super::Policy;
@@ -170,8 +183,6 @@ enum Access {
     Read,
     /// Read and write it, and everything below a folder.
     Write,
-    /// Nothing, whatever a grant above it says.
-    Deny,
     /// Enter a folder (the one a program runs in), nothing in it listed or read.
     Enter,
 }
@@ -241,15 +252,18 @@ fn grants(policy: &Policy) -> Result<Vec<Grant>, String> {
         [&home, &real_home]
             .into_iter()
             .flatten()
-            .any(|home| path.starts_with(home))
+            .any(|home| within(path, home))
     };
     let reads = policy
         .reads
         .iter()
         .chain(&policy.program)
         .filter(|read| in_home(read));
-    // The latch it runs, wherever it is.
-    for read in reads.chain(std::iter::once(&program)) {
+    // The latch it runs, wherever it is: unless every container may run it
+    // already (Program Files), whose access list this user may not change.
+    let program_open = every_container_runs(&program);
+    let program_read = std::iter::once(&program).filter(|_| !program_open);
+    for read in reads.chain(program_read) {
         if read.exists() {
             grants.push(Grant {
                 path: read.clone(),
@@ -257,18 +271,35 @@ fn grants(policy: &Policy) -> Result<Vec<Grant>, String> {
             });
         }
     }
+    let granted: Vec<PathBuf> = grants.iter().map(|grant| grant.path.clone()).collect();
+    // A hidden path inside a grant stays hidden only if that grant never
+    // reaches it.
     let hidden = policy
         .hidden
         .iter()
         .chain(std::iter::once(&policy.state_dir));
-    let granted: Vec<PathBuf> = grants.iter().map(|grant| grant.path.clone()).collect();
     for path in hidden {
-        if path.exists() && granted.iter().any(|open| path.starts_with(open)) {
-            grants.push(Grant {
-                path: path.clone(),
-                access: Access::Deny,
-            });
+        if path.exists()
+            && granted.iter().any(|open| within(path, open))
+            && !sealed(path).map_err(|err| format!("{}: {err}", path.display()))?
+        {
+            return Err(format!(
+                "{} is hidden but inside a folder the call is granted, and its access list does not keep that grant out",
+                path.display()
+            ));
         }
+    }
+    // Nor is the folder of the latch it runs written: the judge refuses
+    // such a path, and this fails closed should one get here.
+    if let Some(folder) = program.parent()
+        && grants
+            .iter()
+            .any(|grant| grant.access == Access::Write && within(folder, &grant.path))
+    {
+        return Err(format!(
+            "{} holds the latch the host runs and would be written",
+            folder.display()
+        ));
     }
     // The folder it runs in, when no grant reaches it: entered, nothing in
     // it listed or read.
@@ -335,7 +366,7 @@ impl Drop for EditLock {
     }
 }
 
-/// Takes back every entry for the container: grants and denials alike.
+/// Takes back every entry for the container.
 /// One that is gone, or no longer at its path, keeps an entry for a
 /// container no process can run in again.
 fn take_back(sid: &Sid, grants: &[Grant]) {
@@ -394,6 +425,20 @@ fn same(a: &Path, b: &Path) -> bool {
     plain(a) == plain(b)
 }
 
+/// Whether `path` is `folder` or inside it, as Windows matches names: with
+/// or without a `\\?\` prefix, in any case.
+pub(crate) fn within(path: &Path, folder: &Path) -> bool {
+    let names = |path: &Path| -> Vec<String> {
+        let text = path.to_string_lossy();
+        let plain = Path::new(text.strip_prefix(r"\\?\").unwrap_or(&text)).to_path_buf();
+        plain
+            .components()
+            .map(|name| name.as_os_str().to_string_lossy().to_lowercase())
+            .collect()
+    };
+    names(path).starts_with(&names(folder))
+}
+
 /// Where the open `file` really is, as `canonicalize` names it.
 pub(crate) fn final_path(file: &std::fs::File) -> std::io::Result<PathBuf> {
     use std::os::windows::ffi::OsStringExt;
@@ -413,6 +458,158 @@ pub(crate) fn final_path(file: &std::fs::File) -> std::io::Result<PathBuf> {
     Ok(PathBuf::from(std::ffi::OsString::from_wide(
         &buffer[..length],
     )))
+}
+
+/// What the SIDs of containers, their capabilities and every container
+/// (`S-1-15-…`) are issued by.
+const APP_PACKAGE_AUTHORITY: [u8; 6] = [0, 0, 0, 0, 0, 15];
+
+/// Whether no grant above `path` reaches it: its access list is protected
+/// (it inherits nothing) and allows no container, capability or every
+/// container. The one way Windows keeps a path inside a grant from a
+/// container: a deny entry doesn't bind one.
+fn sealed(path: &Path) -> std::io::Result<bool> {
+    // SAFETY: `read_list` hands over a live descriptor and its list.
+    read_list(path, |descriptor, list| unsafe {
+        sealed_list(descriptor, list)
+    })
+}
+
+/// Whether every container may read and run the file at `path` already.
+fn every_container_runs(path: &Path) -> bool {
+    let needed = FILE_READ_DATA | FILE_EXECUTE;
+    let every = Sid::from_string("S-1-15-2-1");
+    let look = |_, list: *const ACL| -> std::io::Result<bool> {
+        let Ok(every) = &every else { return Ok(false) };
+        // SAFETY: `read_list` hands over a live list.
+        for ace in unsafe { entries(list) }? {
+            // SAFETY: every entry starts with a header.
+            let header = unsafe { *(ace as *const ACE_HEADER) };
+            if header.AceType as u32 != ACCESS_ALLOWED_ACE_TYPE
+                || header.AceFlags as u32 & INHERIT_ONLY_ACE != 0
+            {
+                continue;
+            }
+            let allowed = ace as *mut ACCESS_ALLOWED_ACE;
+            // SAFETY: an allowed entry, its mask then its SID.
+            let (mask, theirs) = unsafe {
+                (
+                    (*allowed).Mask,
+                    EqualSid((&raw mut (*allowed).SidStart).cast(), every.0) != 0,
+                )
+            };
+            if theirs && mask & needed == needed {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    };
+    read_list(path, look).unwrap_or(false)
+}
+
+/// What `look` makes of the access list of `path`, given with the
+/// descriptor that holds it.
+fn read_list<T>(
+    path: &Path,
+    look: impl FnOnce(PSECURITY_DESCRIPTOR, *const ACL) -> std::io::Result<T>,
+) -> std::io::Result<T> {
+    use std::os::windows::fs::OpenOptionsExt;
+    let file = std::fs::OpenOptions::new()
+        .access_mode(READ_CONTROL)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)?;
+    let mut list: *mut ACL = null_mut();
+    let mut descriptor: PSECURITY_DESCRIPTOR = null_mut();
+    // SAFETY: a live handle with READ_CONTROL; the descriptor holding `list`
+    // is freed below with LocalFree.
+    let read = unsafe {
+        GetSecurityInfo(
+            file.as_raw_handle(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            null_mut(),
+            null_mut(),
+            &mut list,
+            null_mut(),
+            &mut descriptor,
+        )
+    };
+    if read != ERROR_SUCCESS {
+        return Err(std::io::Error::from_raw_os_error(read as i32));
+    }
+    // Both stay live until the descriptor is freed, below.
+    let answer = look(descriptor, list);
+    // SAFETY: allocated by GetSecurityInfo, freed once.
+    unsafe { LocalFree(descriptor) };
+    answer
+}
+
+/// The entries of the access list `list`.
+///
+/// # Safety
+/// `list` must be a live access list.
+unsafe fn entries(list: *const ACL) -> std::io::Result<Vec<*mut std::ffi::c_void>> {
+    let mut size = ACL_SIZE_INFORMATION::default();
+    // SAFETY: `size` is writable for its own length.
+    let sized = unsafe {
+        GetAclInformation(
+            list,
+            (&raw mut size).cast(),
+            size_of::<ACL_SIZE_INFORMATION>() as u32,
+            AclSizeInformation,
+        )
+    };
+    if sized == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    (0..size.AceCount)
+        .map(|index| {
+            let mut ace = null_mut();
+            // SAFETY: `index` is below the list's count.
+            match unsafe { GetAce(list, index, &mut ace) } {
+                0 => Err(std::io::Error::last_os_error()),
+                _ => Ok(ace),
+            }
+        })
+        .collect()
+}
+
+/// `sealed`, for a descriptor and its access list.
+///
+/// # Safety
+/// `descriptor` must be live, and `list` null or its live access list.
+unsafe fn sealed_list(descriptor: PSECURITY_DESCRIPTOR, list: *const ACL) -> std::io::Result<bool> {
+    let (mut control, mut revision) = (0u16, 0u32);
+    // SAFETY: as the caller promised.
+    if unsafe { GetSecurityDescriptorControl(descriptor, &mut control, &mut revision) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // A null list allows everyone everything.
+    if control & SE_DACL_PROTECTED == 0 || list.is_null() {
+        return Ok(false);
+    }
+    // SAFETY: as the caller promised.
+    for ace in unsafe { entries(list) }? {
+        // SAFETY: every entry starts with a header.
+        let header = unsafe { *(ace as *const ACE_HEADER) };
+        match header.AceType as u32 {
+            ACCESS_DENIED_ACE_TYPE => {}
+            ACCESS_ALLOWED_ACE_TYPE => {
+                // SAFETY: an allowed entry ends with its SID, which is valid.
+                let authority = unsafe {
+                    *GetSidIdentifierAuthority(
+                        (&raw mut (*(ace as *mut ACCESS_ALLOWED_ACE)).SidStart).cast(),
+                    )
+                };
+                if authority.Value == APP_PACKAGE_AUTHORITY {
+                    return Ok(false);
+                }
+            }
+            // An entry of another kind may allow anyone: no proof.
+            _ => return Ok(false),
+        }
+    }
+    Ok(true)
 }
 
 /// Writes the access list of the object at `path` again, from its current
@@ -490,6 +687,7 @@ unsafe fn write_through(
     new: *mut ACL,
 ) -> std::io::Result<()> {
     let (mut control, mut revision) = (0u16, 0u32);
+    // SAFETY: a plain C struct, valid as zeroes; it is initialized below.
     let mut descriptor: SECURITY_DESCRIPTOR = unsafe { std::mem::zeroed() };
     let built = (&raw mut descriptor).cast();
     let kept = SE_DACL_PROTECTED | SE_DACL_AUTO_INHERITED;
@@ -588,7 +786,6 @@ fn set_entry(grant: &Grant, sid: PSID) -> std::io::Result<()> {
     let (access, mode) = match grant.access {
         Access::Read => (READ, GRANT_ACCESS),
         Access::Write => (WRITE, GRANT_ACCESS),
-        Access::Deny => (WRITE, DENY_ACCESS),
         Access::Enter => (ENTER, GRANT_ACCESS),
     };
     let inherited = grant.access != Access::Enter;
@@ -720,6 +917,7 @@ fn run_inside(sid: &Sid, policy: &Policy) -> Result<u32, String> {
         // SAFETY: ends the suspended worker that could not join the job.
         unsafe { TerminateProcess(process.hProcess, 1) };
         let message = failed("cannot put the worker in its job");
+        // SAFETY: the worker's handles, closed once, here.
         unsafe {
             CloseHandle(process.hThread);
             CloseHandle(process.hProcess);
@@ -895,21 +1093,75 @@ impl Drop for Job {
     }
 }
 
-/// Puts the launcher `process` in the host's own job, so that it, and the
-/// worker it starts, end when the host does, however the host ends.
-pub fn tie_to_host(process: HANDLE) {
-    static HOST_JOB: OnceLock<Option<usize>> = OnceLock::new();
+/// Puts the launcher `process` (`pid`), started suspended, in the host's
+/// own job, so that it, and the worker it starts, end when the host does,
+/// however the host ends; then lets it run. One that cannot join the job is
+/// ended before it runs at all: no worker outlives the host.
+pub fn tie_to_host(process: HANDLE, pid: u32) -> Result<(), String> {
+    static HOST_JOB: OnceLock<Result<usize, String>> = OnceLock::new();
     let job = HOST_JOB.get_or_init(|| {
-        Job::new().ok().map(|job| {
+        Job::new().map(|job| {
             let handle = job.0 as usize;
             // Kept for the host's whole life.
             std::mem::forget(job);
             handle
         })
     });
-    if let Some(job) = job {
+    let joined = job.clone().and_then(|job| {
         // SAFETY: the host's job and a live launcher of its own.
-        unsafe { AssignProcessToJobObject(*job as HANDLE, process) };
+        match unsafe { AssignProcessToJobObject(job as HANDLE, process) } {
+            0 => Err(format!(
+                "cannot put the worker in the host's job: {}",
+                std::io::Error::last_os_error()
+            )),
+            _ => Ok(()),
+        }
+    });
+    let started = joined.and_then(|()| resume(pid));
+    if started.is_err() {
+        // SAFETY: ends a launcher of ours that has not run.
+        unsafe { TerminateProcess(process, 1) };
+    }
+    started
+}
+
+/// Lets the suspended process `pid` run: its thread resumed (a process
+/// started suspended has one).
+fn resume(pid: u32) -> Result<(), String> {
+    let failed = |what: &str| format!("{what}: {}", std::io::Error::last_os_error());
+    // SAFETY: a snapshot of every thread, closed below.
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
+    if snapshot == INVALID_HANDLE_VALUE {
+        return Err(failed("cannot find the worker's thread"));
+    }
+    // SAFETY: zeroed is a valid THREADENTRY32 once its size is set.
+    let mut entry: THREADENTRY32 = unsafe { std::mem::zeroed() };
+    entry.dwSize = size_of::<THREADENTRY32>() as u32;
+    let mut resumed = 0;
+    // SAFETY: `entry` is writable for its size; the snapshot is live.
+    let mut more = unsafe { Thread32First(snapshot, &mut entry) } != 0;
+    while more {
+        if entry.th32OwnerProcessID == pid {
+            // SAFETY: a thread of the worker, closed below.
+            let thread = unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID) };
+            if !thread.is_null() {
+                // SAFETY: a live thread handle, closed once.
+                unsafe {
+                    if ResumeThread(thread) != u32::MAX {
+                        resumed += 1;
+                    }
+                    CloseHandle(thread);
+                }
+            }
+        }
+        // SAFETY: as above.
+        more = unsafe { Thread32Next(snapshot, &mut entry) } != 0;
+    }
+    // SAFETY: the snapshot, closed once.
+    unsafe { CloseHandle(snapshot) };
+    match resumed {
+        0 => Err("cannot start the worker: its thread was not resumed".to_string()),
+        _ => Ok(()),
     }
 }
 
@@ -952,6 +1204,7 @@ fn running(pid: u32) -> bool {
     }
     // SAFETY: a live handle of ours, closed once.
     let alive = unsafe { WaitForSingleObject(process, 0) } != WAIT_OBJECT_0;
+    // SAFETY: closed once, here.
     unsafe { CloseHandle(process) };
     alive
 }
@@ -972,4 +1225,231 @@ unsafe fn copy_wide(text: *const u16) -> Vec<u16> {
     }
     // SAFETY: `length` units then the terminator are readable.
     unsafe { std::slice::from_raw_parts(text, length + 1) }.to_vec()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::process::Command;
+
+    use super::*;
+
+    /// Test state lives under the repo's gitignored `.dev/`, like every dev run.
+    fn test_dir() -> tempfile::TempDir {
+        let parent = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.dev/tests");
+        fs::create_dir_all(&parent).unwrap();
+        tempfile::tempdir_in(parent).unwrap()
+    }
+
+    fn policy(root: &Path) -> Policy {
+        Policy {
+            areas: vec![root.join("area")],
+            reads: vec![],
+            hidden: crate::sandbox::never_readable(&std::env::home_dir().unwrap()),
+            state_dir: root.join("area/state"),
+            exec: true,
+            home: None,
+            network: false,
+            tmpdir: Some(root.join("tmp")),
+            kill_after: None,
+            program: None,
+            workdir: None,
+            break_for_test: false,
+        }
+    }
+
+    #[test]
+    fn a_launcher_runs_only_once_it_is_in_the_hosts_job() {
+        use std::os::windows::process::CommandExt;
+        use windows_sys::Win32::System::Threading::CREATE_SUSPENDED;
+        let start = || {
+            Command::new("cmd")
+                .args(["/c", "exit 7"])
+                .creation_flags(CREATE_SUSPENDED)
+                .spawn()
+                .unwrap()
+        };
+        let mut ran = start();
+        tie_to_host(ran.as_raw_handle(), ran.id()).unwrap();
+        assert_eq!(ran.wait().unwrap().code(), Some(7));
+        // One that cannot be started is ended before it runs at all.
+        let mut held = start();
+        assert!(tie_to_host(held.as_raw_handle(), u32::MAX).is_err());
+        assert_eq!(held.wait().unwrap().code(), Some(1));
+    }
+
+    #[test]
+    fn paths_match_as_windows_names_them() {
+        assert!(within(
+            Path::new(r"\\?\C:\Users\Me\AppData\x"),
+            Path::new(r"c:\users\me\appdata")
+        ));
+        assert!(within(
+            Path::new(r"C:\Users\Me"),
+            Path::new(r"\\?\C:\Users\Me")
+        ));
+        assert!(!within(
+            Path::new(r"C:\Users\Me2"),
+            Path::new(r"C:\Users\Me")
+        ));
+        assert!(!within(Path::new(r"C:\Users"), Path::new(r"C:\Users\Me")));
+    }
+
+    #[test]
+    fn a_program_every_container_runs_needs_no_grant() {
+        let system = std::env::var_os("SystemRoot").unwrap();
+        assert!(every_container_runs(
+            &Path::new(&system).join(r"System32\cmd.exe")
+        ));
+        let dir = test_dir();
+        let own = dir.path().join("own.exe");
+        fs::write(&own, "").unwrap();
+        assert!(!every_container_runs(&own));
+    }
+
+    #[test]
+    fn only_a_protected_list_keeps_a_grant_out() {
+        let dir = test_dir();
+        let root = dir.path().canonicalize().unwrap();
+        let open = root.join("open");
+        fs::create_dir(&open).unwrap();
+        assert!(!sealed(&open).unwrap());
+        let private = root.join("private");
+        fs::create_dir(&private).unwrap();
+        crate::state::owner::folder(&private).unwrap();
+        assert!(sealed(&private).unwrap());
+        // Protected, but open to every container: not hidden.
+        let shared = root.join("shared");
+        fs::create_dir(&shared).unwrap();
+        crate::state::owner::folder(&shared).unwrap();
+        let every = Sid::from_string("S-1-15-2-1").unwrap();
+        let grant = Grant {
+            path: shared.clone(),
+            access: Access::Read,
+        };
+        set_entry(&grant, every.0).unwrap();
+        assert!(!sealed(&shared).unwrap());
+    }
+
+    #[test]
+    fn a_hidden_folder_inside_a_grant_must_keep_it_out() {
+        let dir = test_dir();
+        for name in ["area/state", "tmp"] {
+            fs::create_dir_all(dir.path().join(name)).unwrap();
+        }
+        let failure = grants(&policy(dir.path())).err().unwrap();
+        assert!(
+            failure.contains("is hidden but inside a folder"),
+            "{failure}"
+        );
+        crate::state::owner::folder(&dir.path().join("area/state")).unwrap();
+        grants(&policy(dir.path())).unwrap();
+    }
+
+    #[test]
+    fn no_write_grant_holds_the_latch_it_runs() {
+        let dir = test_dir();
+        fs::create_dir_all(dir.path().join("tmp")).unwrap();
+        let program = std::env::current_exe().unwrap();
+        let mut held = policy(dir.path());
+        held.state_dir = dir.path().join("state");
+        held.areas = vec![program.parent().unwrap().to_path_buf()];
+        let failure = grants(&held).err().unwrap();
+        assert!(
+            failure.contains("holds the latch the host runs"),
+            "{failure}"
+        );
+        // Reading it is another matter.
+        held.areas = vec![];
+        held.reads = vec![program.parent().unwrap().to_path_buf()];
+        grants(&held).unwrap();
+    }
+
+    /// In a real container: an exec worker reads and writes its area, and
+    /// nothing hidden, though latch's state is inside that area: not the
+    /// state, not AppData, and it never writes the latch it runs or its
+    /// folder. Needs a desktop to start a container in (run it from a
+    /// signed-in session).
+    #[test]
+    fn a_container_reaches_its_grants_and_nothing_hidden() {
+        if let Ok(root) = std::env::var("LATCH_CONTAINER_TEST") {
+            let root = PathBuf::from(root);
+            let appdata = PathBuf::from(std::env::var("LATCH_CONTAINER_APPDATA").unwrap());
+            confine(&policy(&root)).unwrap();
+            let program = std::env::current_exe().unwrap();
+            let checks = [
+                ("area read", fs::read(root.join("area/inside")).is_ok()),
+                (
+                    "area write",
+                    fs::write(root.join("area/new"), "new").is_ok(),
+                ),
+                ("tmp write", fs::write(root.join("tmp/new"), "new").is_ok()),
+                (
+                    "state read",
+                    fs::read(root.join("area/state/secret")).is_err(),
+                ),
+                ("state list", fs::read_dir(root.join("area/state")).is_err()),
+                (
+                    "outside read",
+                    fs::read(root.join("outside/other")).is_err(),
+                ),
+                ("AppData read", fs::read(&appdata).is_err()),
+                (
+                    "latch written",
+                    fs::OpenOptions::new().append(true).open(&program).is_err(),
+                ),
+                (
+                    "latch's folder written",
+                    fs::write(program.with_file_name("planted.dll"), "x").is_err(),
+                ),
+            ];
+            let failed: Vec<&str> = checks
+                .iter()
+                .filter(|(_, held)| !held)
+                .map(|(name, _)| *name)
+                .collect();
+            assert!(failed.is_empty(), "failed in the container: {failed:?}");
+            println!("checked in a container");
+            return;
+        }
+        let dir = test_dir();
+        let root = dir.path().canonicalize().unwrap();
+        for name in ["area/state", "tmp", "outside"] {
+            fs::create_dir_all(root.join(name)).unwrap();
+        }
+        fs::write(root.join("area/inside"), "inside").unwrap();
+        crate::state::owner::folder(&root.join("area/state")).unwrap();
+        fs::write(root.join("area/state/secret"), "secret").unwrap();
+        fs::write(root.join("outside/other"), "other").unwrap();
+        // A file of the user's in AppData, which no worker reads.
+        let appdata = tempfile::Builder::new()
+            .prefix("latch-hidden-")
+            .tempfile_in(std::env::var_os("LOCALAPPDATA").unwrap())
+            .unwrap();
+        fs::write(appdata.path(), "private").unwrap();
+        let child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "sandbox::platform::tests::a_container_reaches_its_grants_and_nothing_hidden",
+                "--nocapture",
+            ])
+            .current_dir(root.join("area"))
+            .env("LATCH_CONTAINER_TEST", &root)
+            .env("LATCH_CONTAINER_APPDATA", appdata.path())
+            .output()
+            .unwrap();
+        assert!(child.status.success(), "{child:?}");
+        let said = String::from_utf8_lossy(&child.stdout);
+        assert!(said.contains("checked in a container"), "{said}");
+        assert!(
+            !std::env::current_exe()
+                .unwrap()
+                .with_file_name("planted.dll")
+                .exists()
+        );
+        // Every grant was taken back.
+        if let Ok(mut left) = fs::read_dir(ledgers(&root.join("area/state"))) {
+            assert!(left.next().is_none(), "a ledger was left");
+        }
+    }
 }

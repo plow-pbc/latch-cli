@@ -70,12 +70,15 @@ pub struct Policy {
 }
 
 /// Latch's private state (`~/.latch`, and the folder latch uses without
-/// `--state-dir` wherever it is) and, on macOS, Library. Exec profiles make
-/// a narrow exception for Library/Caches. The host denies its own state separately.
+/// `--state-dir` wherever it is) and, on macOS, Library; on Windows,
+/// AppData, where its programs keep their data as macOS's keep it in
+/// Library. Exec profiles make a narrow exception for Library/Caches. The
+/// host denies its own state separately.
 pub fn never_readable(home: &Path) -> Vec<PathBuf> {
     std::iter::once(home.join(".latch"))
         .chain(crate::cli::default_state_dir())
         .chain(cfg!(target_os = "macos").then(|| home.join("Library")))
+        .chain(cfg!(windows).then(|| home.join("AppData")))
         .collect()
 }
 
@@ -801,7 +804,7 @@ mod platform;
 mod platform;
 
 #[cfg(windows)]
-pub(crate) use platform::final_path;
+pub(crate) use platform::{final_path, within};
 #[cfg(windows)]
 pub use platform::{sweep, tie_to_host};
 

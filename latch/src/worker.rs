@@ -501,14 +501,24 @@ pub fn die_with_host(command: &mut Command) {
 }
 
 /// Starts a worker. On Windows the host's own job takes its launcher, so it
-/// ends with the host however the host ends (`sandbox::tie_to_host`).
+/// ends with the host however the host ends (`sandbox::tie_to_host`): it
+/// starts suspended (in the console group of its own `own_group` gave it),
+/// and runs only once it is in that job.
 fn spawn(command: &mut Command) -> Result<Child, WorkerError> {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, CREATE_SUSPENDED};
+        command.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_SUSPENDED);
+    }
     let child = command
         .spawn()
         .map_err(|err| error("worker_failed", &err.to_string()))?;
     #[cfg(windows)]
-    if let Some(handle) = child.raw_handle() {
-        sandbox::tie_to_host(handle);
+    match (child.raw_handle(), child.id()) {
+        (Some(handle), Some(pid)) => {
+            sandbox::tie_to_host(handle, pid).map_err(|err| error("worker_failed", &err))?
+        }
+        _ => return Err(error("worker_failed", "the worker ended as it started")),
     }
     Ok(child)
 }

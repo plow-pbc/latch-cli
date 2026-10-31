@@ -276,6 +276,28 @@ pub(crate) fn check_path(workers: &WorkerSetup, path: &Path, write: bool) -> Res
         return Err(Failure::new(code::bad_path,
             "the path must be inside the host's home and outside hidden state; home itself cannot be a write target".into()));
     }
+    // A deny entry doesn't bind a Windows container (`sandbox/windows.rs`):
+    // the latch the host runs stays out of a worker's reach only while no
+    // grant reaches it. So no folder holding it is written, nor anything in
+    // its folder, where a program it loads could be put.
+    #[cfg(windows)]
+    if write
+        && let Some(folder) = workers
+            .program
+            .canonicalize()
+            .ok()
+            .as_deref()
+            .and_then(Path::parent)
+        && (crate::sandbox::within(folder, path) || crate::sandbox::within(path, folder))
+    {
+        return Err(Failure::new(
+            code::bad_path,
+            format!(
+                "the latch this host runs is in {}: a write path may not hold that folder or be inside it",
+                folder.display()
+            ),
+        ));
+    }
     Ok(())
 }
 
@@ -497,6 +519,7 @@ fn running(pid: u32) -> bool {
         }
         // SAFETY: a live handle of ours, closed once.
         let alive = unsafe { WaitForSingleObject(process, 0) } == WAIT_TIMEOUT;
+        // SAFETY: closed once, here.
         unsafe { CloseHandle(process) };
         alive
     }
@@ -1068,5 +1091,62 @@ mod tests {
     fn signals_have_their_usual_names() {
         assert_eq!(signal_name(libc::SIGSEGV), "SIGSEGV");
         assert_eq!(signal_name(libc::SIGKILL), "SIGKILL");
+    }
+}
+
+/// What the judge refuses on Windows alone.
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+
+    fn workers(home: &Path, program: PathBuf) -> WorkerSetup {
+        WorkerSetup {
+            home: home.to_path_buf(),
+            areas: vec![],
+            reads: vec![],
+            hidden: crate::sandbox::never_readable(home),
+            state_dir: home.join(".latch"),
+            program,
+        }
+    }
+
+    #[test]
+    fn appdata_is_hidden_as_library_is_on_macos() {
+        let home = std::env::home_dir().unwrap().canonicalize().unwrap();
+        let workers = workers(&home, std::env::current_exe().unwrap());
+        for (path, write) in [(r"~\AppData\Local", true), (r"~\AppData\Roaming", false)] {
+            let path = resolve(&workers.home, Path::new(path)).unwrap();
+            assert!(
+                check_path(&workers, &path, write).is_err(),
+                "{}",
+                path.display()
+            );
+        }
+    }
+
+    #[test]
+    fn no_write_path_holds_the_latch_the_host_runs() {
+        let home = std::env::home_dir().unwrap().canonicalize().unwrap();
+        let dir = tempfile::tempdir_in(&home).unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join("bin")).unwrap();
+        std::fs::create_dir_all(root.join("work")).unwrap();
+        std::fs::write(root.join("bin").join("latch.exe"), "").unwrap();
+        let workers = workers(&home, root.join("bin").join("latch.exe"));
+        for held in [
+            root.clone(),
+            root.join("bin"),
+            root.join("bin").join("version.dll"),
+        ] {
+            let failure = check_path(&workers, &held, true).unwrap_err();
+            assert!(
+                format!("{failure:?}").contains("the latch this host runs"),
+                "{}: {failure:?}",
+                held.display()
+            );
+        }
+        check_path(&workers, &root.join("work"), true).unwrap();
+        // Read, it is as any other folder.
+        check_path(&workers, &root.join("bin"), false).unwrap();
     }
 }
