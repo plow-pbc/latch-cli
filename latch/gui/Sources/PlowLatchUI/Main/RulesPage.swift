@@ -166,8 +166,8 @@ private struct RuleRow: View {
 }
 
 /// Over the list: hosts whose rules are too long, hosts latch couldn't
-/// check, a refresh that failed while the list stays, and a delete that
-/// failed.
+/// check, hosts a delete didn't reach, a refresh that failed while the
+/// list stays, and a delete that failed.
 private struct RulesNotices: View {
     @Environment(AppModel.self) private var app
 
@@ -188,6 +188,14 @@ private struct RulesNotices: View {
                 notice(symbol: "exclamationmark.triangle", tint: .secondary) {
                     Text("Couldn't check \(names(unchecked[detail] ?? []))")
                     Text(detail).foregroundStyle(.secondary)
+                }
+            }
+            let missed = hosts.filter { app.deletesMissed.contains($0.key) }
+            if !missed.isEmpty {
+                notice(symbol: "exclamationmark.triangle", tint: .secondary) {
+                    Text("The deleted rule may still apply on \(names(missed))")
+                    Text(missed.count == 1 ? "Open Rules again when it's online." : "Open Rules again when they're online.")
+                        .foregroundStyle(.secondary)
                 }
             }
             if app.rules != nil, let error = app.rulesError {

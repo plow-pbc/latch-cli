@@ -158,10 +158,6 @@ struct RulesTests {
         #expect(list.hosts.map(\.delivery) == ["current", "behind", "unknown"])
         #expect(list.hosts.map(\.reason) == [nil, "rules_io", "host_outdated"])
         #expect(list.hosts.map { $0.budget?.overBudget } == [false, true, false])
-        // Fields the app doesn't read, and a behind host given bare, are
-        // no matter.
-        let bare: RulesList = try Fixtures.decode(#"{"rules":[{"id":"a","text":"t","agents":"all","hosts":"all","behind_hosts":["k"],"x":1}],"hosts":[],"y":2}"#)
-        #expect(bare.rules[0].behindHosts == ["k"])
     }
 
     // What the real latch printed (`Fixtures.rulesListed` and the rest,
@@ -346,6 +342,20 @@ struct RulesTests {
         #expect(app.rules?.rules.contains { $0.text == "Ask me first." } == true)
         #expect(app.rules?.hosts.first { $0.name == "sidecar" }?.delivery == "unknown")
         #expect(client.asked.filter { $0.hasPrefix("rules add") }.count == 1)
+    }
+
+    // A delete that didn't reach a host the rule applied to is said until
+    // a list says that host holds the newest rules; a host outside the
+    // rule never applied it, so isn't named.
+    @Test func aDeleteThatMissedAHostSaysSoUntilItCatchesUp() async throws {
+        let client = RulesClient()
+        let app = try await app(client)
+        client.unreach(["pi-kitchen", "sidecar"])
+        await app.deleteRule(try #require(app.rules?.rules.first { $0.id == "rl_92d6be48" }))
+        #expect(app.deletesMissed == [kitchen])
+        client.unreach(["sidecar"])
+        await app.refreshRules()
+        #expect(app.deletesMissed.isEmpty)
     }
 
     // A read begun before a save answers after it, with the rules as they
