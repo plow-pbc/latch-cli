@@ -8,6 +8,7 @@
 //! macOS latch, else in `vault.key` beside it, owner-only (0600). The state
 //! directory is one `exec` and file workers can never read.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -16,7 +17,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use super::classify;
 use super::item::{Item, Meta};
-use super::sync::{State, Synced, Tombstone, new_uid, now_ms};
+use super::sync::{State, Synced, Tombstone, adopt, content, merge, new_uid, now_ms};
 use crate::failure::{Failure, code};
 use crate::seal::{Sealed, from_hex, seal};
 use crate::secrets::{Secret, Secrets};
@@ -242,6 +243,86 @@ impl OwnStore {
 
     fn last(&self) -> Meta {
         self.state.items.last().expect("just added").item.meta()
+    }
+
+    /// Everything this vault holds, as the owner's other hosts sync it.
+    pub fn state(&self) -> &State {
+        &self.state
+    }
+
+    /// Merges another host's state into this vault (see `sync.rs`) and
+    /// saves it, if that changed anything. Items keep their local ids, in
+    /// their order; an item new here gets the next id, and a changed one
+    /// its next revision.
+    pub fn apply(&mut self, mut theirs: State) -> Result<Applied, Failure> {
+        let mut ours = self.state.clone();
+        adopt(&mut ours, &mut theirs);
+        let merged = merge(&ours, &theirs);
+        let mut incoming: HashMap<&str, &Synced> =
+            merged.items.iter().map(|s| (s.uid.as_str(), s)).collect();
+        let mut applied = Applied::default();
+        let mut items = Vec::new();
+        for held in ours.items {
+            let Some(won) = incoming.remove(held.uid.as_str()) else {
+                applied.removed += 1;
+                continue;
+            };
+            let mut item = held.item;
+            if content(&won.item) != content(&item) {
+                applied.updated += 1;
+                item = Item {
+                    id: item.id,
+                    revision: item.revision + 1,
+                    ..won.item.clone()
+                };
+            }
+            items.push(Synced {
+                uid: held.uid,
+                modified: won.modified,
+                item,
+            });
+        }
+        for won in merged
+            .items
+            .iter()
+            .filter(|s| incoming.contains_key(s.uid.as_str()))
+        {
+            applied.added += 1;
+            let mut item = won.item.clone();
+            item.id = format!("v{}", self.next_id);
+            item.revision = 1;
+            self.next_id += 1;
+            items.push(Synced {
+                item,
+                ..won.clone()
+            });
+        }
+        let state = State {
+            items,
+            tombstones: merged.tombstones,
+        };
+        if state != self.state {
+            let old = std::mem::replace(&mut self.state, state);
+            if let Err(failure) = self.save() {
+                self.state = old;
+                return Err(failure);
+            }
+        }
+        Ok(applied)
+    }
+}
+
+/// What applying another host's state changed in this vault.
+#[derive(Serialize, Default, Debug, PartialEq)]
+pub struct Applied {
+    pub added: usize,
+    pub updated: usize,
+    pub removed: usize,
+}
+
+impl Applied {
+    pub fn any(&self) -> bool {
+        *self != Applied::default()
     }
 }
 
@@ -555,6 +636,61 @@ mod tests {
         for value in ["made-up-pass", "lovelace", "Example", "example.com"] {
             assert!(!sealed.contains(value), "{value} outlived its item");
         }
+    }
+
+    #[test]
+    fn another_hosts_add_edit_and_removal_apply_under_local_ids_and_a_repeat_changes_nothing() {
+        let (a_dir, b_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let mut a = OwnStore::open(a_dir.path()).unwrap();
+        let mut b = OwnStore::open(b_dir.path()).unwrap();
+        b.add(login("made-up-pass-b")).unwrap();
+        b.remove("v1", 1).unwrap();
+        let applied = |b: &mut OwnStore, a: &OwnStore| b.apply(a.state().clone()).unwrap();
+
+        a.add(login("made-up-pass-1")).unwrap();
+        assert_eq!(
+            applied(&mut b, &a),
+            Applied {
+                added: 1,
+                ..Applied::default()
+            }
+        );
+        // b's own next id, never a's.
+        assert_eq!((b.list()[0].item.as_str(), b.list()[0].revision), ("v2", 1));
+        assert_eq!(b.release("v2", "password").unwrap(), "made-up-pass-1");
+
+        let mut edited = login("made-up-pass-2");
+        edited.id = "v1".into();
+        a.update(edited, 1).unwrap();
+        assert_eq!(
+            applied(&mut b, &a),
+            Applied {
+                updated: 1,
+                ..Applied::default()
+            }
+        );
+        assert_eq!(b.list()[0].revision, 2);
+        assert_eq!(b.release("v2", "password").unwrap(), "made-up-pass-2");
+
+        // Nothing new: nothing applied, and the file is not written again.
+        let written = fs::read(b_dir.path().join(FILE)).unwrap();
+        assert_eq!(applied(&mut b, &a), Applied::default());
+        assert_eq!(fs::read(b_dir.path().join(FILE)).unwrap(), written);
+
+        a.remove("v1", 2).unwrap();
+        assert_eq!(
+            applied(&mut b, &a),
+            Applied {
+                removed: 1,
+                ..Applied::default()
+            }
+        );
+        let reopened = OwnStore::open(b_dir.path()).unwrap();
+        assert!(reopened.list().is_empty());
+        // a learns b's older removal back, and b keeps a's.
+        a.apply(reopened.state().clone()).unwrap();
+        assert_eq!(a.state().tombstones, reopened.state().tombstones);
+        assert_eq!(a.state().tombstones.len(), 2);
     }
 
     #[test]

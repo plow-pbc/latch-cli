@@ -4,7 +4,8 @@
 //!
 //! `merge` combines two hosts' states, uid by uid: the later change to an
 //! item wins, and a removal as late as the edit wins. Items under
-//! different uids stay separate, even with the same values.
+//! different uids stay separate, even with the same values; `adopt`, run
+//! first, gives an item both hosts added on their own one uid.
 
 use std::collections::BTreeMap;
 
@@ -49,20 +50,41 @@ pub fn now_ms() -> u64 {
 }
 
 /// What every host holds of an item: it without this host's id and revision.
-fn content(item: &Item) -> Vec<u8> {
+pub(super) fn content(item: &Item) -> Vec<u8> {
     let mut item = item.clone();
     item.id.clear();
     item.revision = 0;
     serde_json::to_vec(&item).expect("items serialize")
 }
 
+/// Before a merge: an item `ours` and `theirs` each hold under a uid the
+/// other has never seen, with every field equal (the same login added by
+/// hand on two hosts before they synced), takes the smaller of the two
+/// uids on both sides, so the merge keeps one. Equal items are never
+/// removed, only renamed, so nothing is lost whichever host goes first.
+pub fn adopt(ours: &mut State, theirs: &mut State) {
+    fn known(state: &State, uid: &str) -> bool {
+        state.items.iter().any(|s| s.uid == uid) || state.tombstones.iter().any(|t| t.uid == uid)
+    }
+    for at in 0..theirs.items.len() {
+        if known(ours, &theirs.items[at].uid) {
+            continue;
+        }
+        let wanted = content(&theirs.items[at].item);
+        let Some(twin) = (0..ours.items.len()).find(|&twin| {
+            !known(theirs, &ours.items[twin].uid) && content(&ours.items[twin].item) == wanted
+        }) else {
+            continue;
+        };
+        let uid = (&ours.items[twin].uid).min(&theirs.items[at].uid).clone();
+        ours.items[twin].uid.clone_from(&uid);
+        theirs.items[at].uid = uid;
+    }
+}
+
 /// `a` and `b` as one state, the same whichever comes first. Items come
 /// out ordered by uid, each carrying the id and revision of the side it
 /// came from; giving a foreign item a local id is the applying host's job.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "host-to-host sync (the next change) calls it")
-)]
 pub fn merge(a: &State, b: &State) -> State {
     let mut items: BTreeMap<&str, &Synced> = BTreeMap::new();
     for s in a.items.iter().chain(&b.items) {
@@ -253,6 +275,54 @@ mod tests {
                 .collect();
             assert_eq!(got, tombstones, "{name}: tombstones");
         }
+    }
+
+    #[test]
+    fn an_item_both_hosts_added_alike_becomes_one_and_any_difference_keeps_two() {
+        let mut noted = login("b", 5, "example.com", "made-up-pass-1");
+        noted.item.raw.notes = Some("the old one".into());
+        let cases = [
+            (
+                "every field equal: one, under the smaller uid",
+                login("b", 5, "example.com", "made-up-pass-1"),
+                vec!["a"],
+            ),
+            (
+                "another password: both kept",
+                login("b", 5, "example.com", "made-up-pass-2"),
+                vec!["a", "b"],
+            ),
+            ("a note more: both kept", noted, vec!["a", "b"]),
+        ];
+        for (name, theirs, uids) in cases {
+            let ours = state(vec![login("a", 0, "example.com", "made-up-pass-1")], vec![]);
+            let theirs = state(vec![theirs], vec![]);
+            // Each host adopts and merges from its own side; both agree.
+            let sync = |mine: &State, other: &State| {
+                let (mut mine, mut other) = (mine.clone(), other.clone());
+                adopt(&mut mine, &mut other);
+                synced(&merge(&mine, &other))
+            };
+            let here = sync(&ours, &theirs);
+            assert_eq!(here, sync(&theirs, &ours), "{name}");
+            let got: Vec<&str> = here.items.iter().map(|s| s.uid.as_str()).collect();
+            assert_eq!(got, uids, "{name}");
+            assert!(here.tombstones.is_empty(), "{name}");
+        }
+
+        // An item one host removed is never adopted back by its twin.
+        let mut ours = state(vec![], vec![gone("a", 3)]);
+        let mut theirs = state(
+            vec![
+                login("a", 0, "example.com", "made-up-pass-1"),
+                login("b", 0, "example.com", "made-up-pass-1"),
+            ],
+            vec![],
+        );
+        adopt(&mut theirs, &mut ours);
+        let merged = merge(&ours, &theirs);
+        let uids: Vec<&str> = merged.items.iter().map(|s| s.uid.as_str()).collect();
+        assert_eq!(uids, ["b"]);
     }
 
     #[test]
