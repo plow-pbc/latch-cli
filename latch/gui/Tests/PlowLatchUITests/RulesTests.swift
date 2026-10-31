@@ -155,6 +155,39 @@ struct RulesTests {
         #expect(bare.rules[0].behindHosts == ["k"])
     }
 
+    // What the real latch printed (`Fixtures.rulesListed` and the rest,
+    // captured from the debug build): the list, an add's answer with the
+    // list after it, and a guarded add skipped because rules apply here.
+    @Test func latchsOwnAnswersDecode() throws {
+        let key = "a20b57d5f009b01c518532544e3bb40c899ea121d2adec80ae03a153a55821ad"
+        let list: RulesList = try Fixtures.decode(Fixtures.rulesListed)
+        #expect(list.rules.map(\.hosts) == [.all, .only([key])])
+        #expect(list.rules.allSatisfy { $0.agents == .all && $0.behindHosts.isEmpty })
+        #expect(list.thisMac?.key == key && list.thisMac?.delivery == "current" && list.thisMac?.budget?.overBudget == false)
+        let added: RulesWrite = try Fixtures.decode(Fixtures.ruleAdded)
+        #expect(added.change == .init(kind: "add", id: "8840ab210a979e0ce2c104937758adb0", saved: true, reason: nil))
+        #expect(added.list == list)
+        let skipped: RulesWrite = try Fixtures.decode(Fixtures.ruleAddSkipped)
+        #expect(skipped.change == .init(kind: "add", id: nil, saved: false, reason: "rules_exist"))
+        #expect(skipped.list.rules.count == 2)
+    }
+
+    // latch's refusals of a change, as it printed them, each said in the
+    // app's words.
+    @Test func latchsRefusalsAreSaidInTheAppsWords() throws {
+        struct Line: Decodable { var error: LatchFailure }
+        func said(_ name: String) throws -> String? {
+            let line: Line = try Fixtures.decode(try #require(Fixtures.ruleRefusals[name]))
+            return ErrorCopy.sentence(.failed(line.error), host: "studio", place: .rules)
+        }
+        #expect(try said("no_such_rule removed") == "This rule was deleted, so your change wasn't saved.")
+        #expect(try said("no_such_rule") == "This rule could not be found among the copies checked.")
+        #expect(try said("rules_too_long")
+            == "Your change wasn't saved because the rules on rules-mac-contract would be too long. Shorten this rule or delete another.")
+        #expect(try said("no_such_agent") == "That agent isn't in your account any more.")
+        #expect(try Fixtures.ruleRefusals.keys.allSatisfy { try said($0) != nil || $0 == "empty_rules" })
+    }
+
     @Test func eachRuleSaysWhomItCovers() async throws {
         let app = try await app()
         let rules = try #require(app.rules?.rules)
