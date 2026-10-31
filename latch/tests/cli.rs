@@ -5448,6 +5448,39 @@ fn a_host_that_was_stopped_catches_up_on_the_next_read() {
     assert_eq!(saved_rule(&owners.host, json!("all")), None);
 }
 
+/// A rule removed on one host can't be edited back, even when another host
+/// holds a newer version of it that wins the merge.
+#[test]
+fn a_rule_any_reachable_host_holds_removed_cant_be_edited() {
+    let owners = Owners::start();
+    let rule = |updated: u64, deleted: bool| {
+        json!({"id": "r1", "text": if deleted { "" } else { "Never send email." },
+               "agents": "all", "hosts": "all", "updated": updated, "deleted": deleted})
+    };
+    for (state, held) in [
+        (&owners.host, rule(10, true)),
+        (&owners.studio, rule(20, false)),
+    ] {
+        fs::create_dir_all(state.join("rules")).unwrap();
+        let list = json!({"rules": [held]}).to_string();
+        fs::write(state.join("rules/rules.json"), list).unwrap();
+    }
+    let _host = owners.serve(&owners.host);
+    let _studio = owners.serve(&owners.studio);
+    let (code, refused) = answered_json(&latch(
+        &owners.laptop,
+        &["rules", "edit", "r1", "Back again."],
+        &[],
+    ));
+    assert_eq!(code, Some(2), "{refused}");
+    assert_eq!(refused["error"]["code"], "no_such_rule");
+    assert_eq!(refused["error"]["removed"], true);
+    assert_eq!(
+        saved_rule(&owners.studio, json!("all")).unwrap(),
+        "Never send email."
+    );
+}
+
 /// Each call from a machine whose host serves goes through that host,
 /// and answers, exits and is recorded at the other host as it is with no
 /// host serving here, when the command dials directly.
