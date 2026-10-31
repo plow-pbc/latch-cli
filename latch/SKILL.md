@@ -206,7 +206,7 @@ network access; clearing temporary files, caches and build output or moving
 files to the Trash; archiving mail or marking it read; calendar entries
 that invite no one; and drafts.
 
-Other work needs the owner's permission in their rules (`latch rules edit`)
+Other work needs the owner's permission in their rules (`latch rules add`)
 or own Plow messages: filling saved logins, sending or posting, inviting or
 answering people, deleting other files or mail, adding packages, pushing
 code, and changing settings, accounts or shared systems. Buying or paying,

@@ -69,14 +69,14 @@ host. With several hosts and none named, it stops with `host_required`.
 `--host default` is the host `latch hosts default NAME` saved on this
 computer, or for this agent.
 
-`rules`, `vault` and `audit` work on this computer's own host, or on another
-of your hosts with `--host NAME`. Bare `latch status` reports this computer
+`vault` and `audit` work on this computer's own host, or on another of your
+hosts with `--host NAME`; `rules` work on every host of your account at once. Bare `latch status` reports this computer
 and ignores `LATCH_HOST`; `latch status --host NAME` reports another host, for
 you only, never for an agent. `latch browser setup` runs only on the computer
 you're at: with `--host` it stops with `host_not_supported`.
 
 ```sh host
-latch rules show --host my-pi
+latch vault list --host my-pi
 ```
 
 ```sh agent
