@@ -72,9 +72,9 @@ minisign-verify = "0.3.0"
 # Windows' own APIs where std has none: a background host's process, the
 # console's modes, waiting for changes, the machine's name, owner-only
 # access lists, the worker sandbox's AppContainer and Job objects (and a
-# window station of a worker's own outside the interactive one), and
-# renaming a put file relative to its open folder. The version tokio
-# already builds.
+# window station of a worker's own outside the interactive one),
+# renaming a put file relative to its open folder, and setup's
+# administrator prompt. The version tokio already builds.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = [
   "Wdk_Foundation",
@@ -96,6 +96,9 @@ windows-sys = { version = "0.61.2", features = [
   "Win32_System_SystemInformation",
   "Win32_System_SystemServices",
   "Win32_System_Threading",
+  "Win32_System_WindowsProgramming",
+  "Win32_UI_Shell",
+  "Win32_UI_WindowsAndMessaging",
 ] }
 # The local socket's handshake (src/transport.rs): HMAC-SHA256, with the
 # sha2 above.

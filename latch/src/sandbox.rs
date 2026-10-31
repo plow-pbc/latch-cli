@@ -803,10 +803,19 @@ mod platform;
 #[path = "sandbox/windows.rs"]
 mod platform;
 
+#[cfg(all(windows, test))]
+pub(crate) use platform::lists_in;
 #[cfg(windows)]
 pub(crate) use platform::{EditLock, final_path, within};
 #[cfg(windows)]
-pub use platform::{sweep, tie_to_host};
+pub use platform::{grant_listing, list_folders, sweep, tie_to_host};
+
+/// Whether agents may list folders here: only Windows asks
+/// (`latch setup`), so nothing to say elsewhere.
+#[cfg(not(windows))]
+pub fn list_folders() -> Option<&'static str> {
+    None
+}
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 mod platform {

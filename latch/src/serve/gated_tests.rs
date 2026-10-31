@@ -2342,3 +2342,51 @@ async fn an_exec_is_audited_whole_and_shown_with_its_credentials_hidden() {
     assert!(board.contains("--token [redacted]"), "{board}");
     assert!(!board.contains(secret), "{board}");
 }
+
+/// Windows: what an agent's program may list. A write area lists once
+/// `latch setup` let workers read its volume's root, and until
+/// then the answer says why (`hint`) and `for` still lists it; a folder it
+/// only runs in never lists, nor does the volume's root.
+#[cfg(windows)]
+#[tokio::test]
+async fn a_write_area_lists_once_allowed_and_an_entered_folder_or_the_root_never() {
+    let t = start(a_chat(always_covered)).await;
+    let agent = t.caller("agent").await;
+    let entered = t.area.parent().unwrap().join("entered");
+    std::fs::create_dir(&entered).unwrap();
+    std::fs::write(entered.join("inside.txt"), "never listed").unwrap();
+    let allowed = crate::sandbox::lists_in(&t.area);
+    let for_each = ["cmd", "/c", "for", "%f", "in", "(*)", "do", "@echo", "%f"];
+    let cases: [(&[&str], Option<&Path>, &Path); 5] = [
+        (&["cmd", "/c", "dir", "/b"], Some(&t.area), &t.area),
+        (&for_each, Some(&t.area), &t.area),
+        (&["cmd", "/c", "dir", "/b"], None, &entered),
+        (&for_each, None, &entered),
+        (&["cmd", "/c", "dir", "/b", "C:\\"], Some(&t.area), &t.area),
+    ];
+    let mut shown = Vec::new();
+    for (argv, write, workdir) in cases {
+        let args = json!({"argv": argv, "writes": write.into_iter().collect::<Vec<_>>(),
+                          "workdir": workdir, "timeout": 30});
+        let (answer, _) = t.call(&agent, "exec", args).await;
+        let Response::Ok(result) = answer else {
+            panic!("{argv:?}: {answer:?}")
+        };
+        shown.push(result);
+    }
+    let out = |n: usize| shown[n]["stdout"].as_str().unwrap().to_string();
+    // The write area: listed by dir once allowed, by `for` always.
+    assert_eq!(out(0).contains("notes.txt"), allowed, "{}", shown[0]);
+    assert!(out(1).contains("notes.txt"), "{}", shown[1]);
+    // Said why only while not allowed, and only for a call that failed.
+    assert_eq!(shown[0]["hint"].is_string(), !allowed, "{}", shown[0]);
+    assert!(shown[1]["hint"].is_null(), "{}", shown[1]);
+    if !allowed {
+        let hint = shown[0]["hint"].as_str().unwrap();
+        assert!(hint.contains("latch setup"), "{hint}");
+    }
+    // The folder it only runs in, and the volume's root: nothing listed.
+    assert!(!out(2).contains("inside.txt") && !out(3).contains("inside.txt"));
+    assert!(out(4).trim().is_empty(), "{}", shown[4]);
+    assert_ne!(shown[4]["exit_code"], 0, "{}", shown[4]);
+}

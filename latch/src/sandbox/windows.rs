@@ -51,7 +51,7 @@ use windows_sys::Win32::Foundation::{
     SetHandleInformation, WAIT_ABANDONED, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Security::Authorization::{
-    ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
+    ACCESS_MODE, ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
     ConvertStringSidToSidW, EXPLICIT_ACCESS_W, GRANT_ACCESS, GetSecurityInfo, NO_MULTIPLE_TRUSTEE,
     SDDL_REVISION_1, SE_FILE_OBJECT, SetEntriesInAclW, SetNamedSecurityInfoW, TRUSTEE_IS_SID,
     TRUSTEE_IS_UNKNOWN, TRUSTEE_W,
@@ -60,8 +60,8 @@ use windows_sys::Win32::Security::Isolation::{
     CreateAppContainerProfile, DeleteAppContainerProfile, DeriveAppContainerSidFromAppContainerName,
 };
 use windows_sys::Win32::Security::{
-    ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, ACL_SIZE_INFORMATION, AclSizeInformation, AddAce,
-    DACL_SECURITY_INFORMATION, EqualSid, FreeSid, GetAce, GetAclInformation,
+    ACCESS_ALLOWED_ACE, ACE_FLAGS, ACE_HEADER, ACL, ACL_SIZE_INFORMATION, AclSizeInformation,
+    AddAce, DACL_SECURITY_INFORMATION, EqualSid, FreeSid, GetAce, GetAclInformation,
     GetSecurityDescriptorControl, GetSidIdentifierAuthority, GetTokenInformation, INHERIT_ONLY_ACE,
     INHERITED_ACE, InitializeAcl, InitializeSecurityDescriptor, NO_INHERITANCE,
     PSECURITY_DESCRIPTOR, PSID, SE_DACL_AUTO_INHERITED, SE_DACL_PROTECTED, SECURITY_ATTRIBUTES,
@@ -72,7 +72,8 @@ use windows_sys::Win32::Security::{
 use windows_sys::Win32::Storage::FileSystem::{
     DELETE, FILE_EXECUTE, FILE_FLAG_BACKUP_SEMANTICS, FILE_GENERIC_EXECUTE, FILE_GENERIC_READ,
     FILE_GENERIC_WRITE, FILE_READ_ATTRIBUTES, FILE_READ_DATA, FILE_SHARE_READ, FILE_SHARE_WRITE,
-    FILE_TRAVERSE, GetFinalPathNameByHandleW, READ_CONTROL, SYNCHRONIZE, WRITE_DAC,
+    FILE_TRAVERSE, GetDriveTypeW, GetFinalPathNameByHandleW, GetLogicalDriveStringsW, READ_CONTROL,
+    SYNCHRONIZE, WRITE_DAC,
 };
 use windows_sys::Win32::System::Console::{
     GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
@@ -104,6 +105,7 @@ use windows_sys::Win32::System::Threading::{
     ReleaseMutex, ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOEXW, THREAD_SUSPEND_RESUME,
     TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
 };
+use windows_sys::Win32::System::WindowsProgramming::DRIVE_FIXED;
 
 use super::Policy;
 
@@ -119,6 +121,20 @@ const ENTER: u32 = FILE_TRAVERSE | FILE_READ_ATTRIBUTES | SYNCHRONIZE;
 
 /// The capability a container needs for outbound connections.
 const INTERNET_CLIENT: &str = "S-1-15-3-1";
+
+/// latch's own capability, which every worker carries: as
+/// `DeriveCapabilitySidsFromName` derives it from `latchWorkerVolumeRoot`.
+/// Programs open a volume's root for its details (cmd's `dir` and `vol`),
+/// and a root admits no AppContainer, so they fail even in a folder the
+/// worker may list. `latch setup`, through Windows' administrator prompt
+/// once, gives this capability `ROOT_ACCESS` on each fixed volume's root,
+/// and nothing below it. Windows' own `isolatedWin32-volumeRootMinimal`, which roots already
+/// admit, cannot be given to a plain AppContainer: CreateProcess refuses it.
+pub(crate) const VOLUME_ROOT: &str = "S-1-15-3-1024-2072464065-3400578307-2891438376-2029114129-1094856869-133864159-224730807-2445515868";
+
+/// What a root grants it: the root's own attributes, which the volume's
+/// details are read through, and nothing to list or read.
+const ROOT_ACCESS: u32 = FILE_READ_ATTRIBUTES | SYNCHRONIZE;
 
 /// AppContainers are part of Windows since 8; there is nothing to probe
 /// before the probe worker confines itself for real.
@@ -805,44 +821,198 @@ fn set_entry(grant: &Grant, sid: PSID) -> std::io::Result<()> {
     };
     let inherited = grant.access != Access::Enter;
     with_dacl(&grant.path, inherited, |old, folder, write| {
-        let entry = EXPLICIT_ACCESS_W {
-            grfAccessPermissions: access,
-            grfAccessMode: mode,
-            grfInheritance: if inherited && folder {
-                SUB_CONTAINERS_AND_OBJECTS_INHERIT
-            } else {
-                NO_INHERITANCE
-            },
-            Trustee: TRUSTEE_W {
-                pMultipleTrustee: null_mut(),
-                MultipleTrusteeOperation: NO_MULTIPLE_TRUSTEE,
-                TrusteeForm: TRUSTEE_IS_SID,
-                TrusteeType: TRUSTEE_IS_UNKNOWN,
-                ptstrName: sid.cast(),
-            },
+        let inheritance = if inherited && folder {
+            SUB_CONTAINERS_AND_OBJECTS_INHERIT
+        } else {
+            NO_INHERITANCE
         };
-        let mut new: *mut ACL = null_mut();
-        // SAFETY: one entry in, `old` live meanwhile, `new` freed below.
-        let merged = unsafe { SetEntriesInAclW(1, &entry, old, &mut new) };
-        if merged != ERROR_SUCCESS {
-            return Err(std::io::Error::from_raw_os_error(merged as i32));
-        }
-        let written = write(new);
-        // SAFETY: allocated by SetEntriesInAclW, freed once.
-        unsafe { LocalFree(new.cast()) };
-        written
+        // SAFETY: `old` is the object's access list, live meanwhile.
+        unsafe { add_entry(old, access, mode, inheritance, sid, write) }
     })
+}
+
+/// Writes `old` with one more entry for `sid`.
+///
+/// # Safety
+/// `old` must be null or a live access list, `sid` a live SID.
+unsafe fn add_entry(
+    old: *mut ACL,
+    access: u32,
+    mode: ACCESS_MODE,
+    inheritance: ACE_FLAGS,
+    sid: PSID,
+    write: &dyn Fn(*mut ACL) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    let entry = EXPLICIT_ACCESS_W {
+        grfAccessPermissions: access,
+        grfAccessMode: mode,
+        grfInheritance: inheritance,
+        Trustee: TRUSTEE_W {
+            pMultipleTrustee: null_mut(),
+            MultipleTrusteeOperation: NO_MULTIPLE_TRUSTEE,
+            TrusteeForm: TRUSTEE_IS_SID,
+            TrusteeType: TRUSTEE_IS_UNKNOWN,
+            ptstrName: sid.cast(),
+        },
+    };
+    let mut new: *mut ACL = null_mut();
+    // SAFETY: one entry in, `old` live meanwhile, `new` freed below.
+    let merged = unsafe { SetEntriesInAclW(1, &entry, old, &mut new) };
+    if merged != ERROR_SUCCESS {
+        return Err(std::io::Error::from_raw_os_error(merged as i32));
+    }
+    let written = write(new);
+    // SAFETY: allocated by SetEntriesInAclW, freed once.
+    unsafe { LocalFree(new.cast()) };
+    written
+}
+
+/// The fixed volumes' roots (`C:\\` and the like), where a worker's
+/// folders are.
+fn fixed_roots() -> Vec<PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    let mut buffer = vec![0u16; 512];
+    // SAFETY: `buffer` is writable for its length.
+    let length =
+        unsafe { GetLogicalDriveStringsW(buffer.len() as u32, buffer.as_mut_ptr()) } as usize;
+    if length == 0 || length > buffer.len() {
+        return Vec::new();
+    }
+    buffer[..length]
+        .split(|&unit| unit == 0)
+        .filter(|root| !root.is_empty())
+        .map(|root| PathBuf::from(std::ffi::OsString::from_wide(root)))
+        // SAFETY: a NUL-terminated name.
+        .filter(|root| unsafe { GetDriveTypeW(wide(root.as_os_str()).as_ptr()) } == DRIVE_FIXED)
+        .collect()
+}
+
+/// Whether `root` admits the workers' capability as `grant_listing` makes
+/// it: an entry of its own allowing at least `ROOT_ACCESS`. A root with no
+/// access list (FAT) admits every program already. Reading the list needs
+/// no administrator.
+fn admits(root: &Path, sid: &Sid) -> std::io::Result<bool> {
+    read_list(root, |_, list| {
+        // SAFETY: `list` is null or the live list the descriptor holds.
+        Ok(list.is_null() || unsafe { allowed(list, sid.0) }? & ROOT_ACCESS == ROOT_ACCESS)
+    })
+}
+
+/// What `list`'s own (not inherited) allowing entries give `sid`.
+///
+/// # Safety
+/// `list` must be a live access list.
+unsafe fn allowed(list: *const ACL, sid: PSID) -> std::io::Result<u32> {
+    let mut access = 0;
+    // SAFETY: the caller's live list.
+    for ace in unsafe { entries(list) }? {
+        // SAFETY: every entry starts with a header; an allowed entry goes on
+        // with its mask and its SID.
+        unsafe {
+            let header = *(ace as *const ACE_HEADER);
+            let allowing = ace as *mut ACCESS_ALLOWED_ACE;
+            if header.AceType as u32 == ACCESS_ALLOWED_ACE_TYPE
+                && header.AceFlags as u32 & INHERITED_ACE == 0
+                && EqualSid((&raw mut (*allowing).SidStart).cast(), sid) != 0
+            {
+                access |= (*allowing).Mask;
+            }
+        }
+    }
+    Ok(access)
+}
+
+/// Whether agents may list folders here: `granted` when every fixed
+/// volume's root admits the workers' capability, `missing` when none does
+/// (or none can be read), `partial` in between.
+pub fn list_folders() -> Option<&'static str> {
+    let Ok(sid) = Sid::from_string(VOLUME_ROOT) else {
+        return Some("missing");
+    };
+    let roots = fixed_roots();
+    let admitting = roots
+        .iter()
+        .filter(|root| admits(root, &sid).unwrap_or(false))
+        .count();
+    Some(match admitting {
+        0 => "missing",
+        n if n == roots.len() => "granted",
+        _ => "partial",
+    })
+}
+
+/// Whether agents list folders on the volume `path` is on: whether its
+/// root admits the workers' capability.
+#[cfg(test)]
+pub(crate) fn lists_in(path: &Path) -> bool {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::Storage::FileSystem::GetVolumePathNameW;
+    let mut root = vec![0u16; 1024];
+    // SAFETY: a NUL-terminated path; `root` is writable for its length.
+    let found = unsafe {
+        GetVolumePathNameW(
+            wide(path.as_os_str()).as_ptr(),
+            root.as_mut_ptr(),
+            root.len() as u32,
+        )
+    };
+    let length = root.iter().position(|&unit| unit == 0).unwrap_or(0);
+    let root = PathBuf::from(std::ffi::OsString::from_wide(&root[..length]));
+    found != 0
+        && Sid::from_string(VOLUME_ROOT).is_ok_and(|sid| admits(&root, &sid).unwrap_or(false))
+}
+
+/// `latch grant-listing`, which `latch setup` runs as administrator
+/// (writing a root's access list needs one): gives the workers' capability
+/// `ROOT_ACCESS` on each fixed volume's root that lacks it, its own entry
+/// with nothing inherited below. Each root it could not change, and why.
+pub fn grant_listing() -> Vec<String> {
+    let sid = match Sid::from_string(VOLUME_ROOT) {
+        Ok(sid) => sid,
+        Err(message) => return vec![message],
+    };
+    let roots = fixed_roots();
+    if roots.is_empty() {
+        return vec!["no fixed volume found".into()];
+    }
+    roots
+        .into_iter()
+        .filter_map(|root| {
+            let granted = grant_root(&root, &sid);
+            granted
+                .err()
+                .map(|why| format!("{}: {why}", root.display()))
+        })
+        .collect()
+}
+
+/// Gives `sid` `ROOT_ACCESS` on `root` unless it has it: an entry of its
+/// own, which nothing below inherits.
+fn grant_root(root: &Path, sid: &Sid) -> Result<(), String> {
+    if admits(root, sid).unwrap_or(false) {
+        return Ok(());
+    }
+    let added = with_dacl(root, false, |old, _, write| {
+        // SAFETY: `old` is the root's access list, live meanwhile; `sid` is
+        // live.
+        unsafe { add_entry(old, ROOT_ACCESS, GRANT_ACCESS, NO_INHERITANCE, sid.0, write) }
+    });
+    match (added, admits(root, sid)) {
+        (Err(err), _) | (_, Err(err)) => Err(err.to_string()),
+        (Ok(()), Ok(true)) => Ok(()),
+        (Ok(()), Ok(false)) => Err("its entry did not change".into()),
+    }
 }
 
 /// Runs this worker's own command line again, in the container `sid` and a
 /// Job object that dies with this launcher; its exit code.
 fn run_inside(sid: &Sid, policy: &Policy) -> Result<u32, String> {
     let failed = |what: &str| format!("{what}: {}", std::io::Error::last_os_error());
-    let internet = policy
-        .network
-        .then(|| Sid::from_string(INTERNET_CLIENT))
-        .transpose()?;
-    let mut capabilities: Vec<SID_AND_ATTRIBUTES> = internet
+    let mut granted = vec![Sid::from_string(VOLUME_ROOT)?];
+    if policy.network {
+        granted.push(Sid::from_string(INTERNET_CLIENT)?);
+    }
+    let mut capabilities: Vec<SID_AND_ATTRIBUTES> = granted
         .iter()
         .map(|sid| SID_AND_ATTRIBUTES {
             Sid: sid.0,
@@ -851,11 +1021,7 @@ fn run_inside(sid: &Sid, policy: &Policy) -> Result<u32, String> {
         .collect();
     let mut security = SECURITY_CAPABILITIES {
         AppContainerSid: sid.0,
-        Capabilities: if capabilities.is_empty() {
-            null_mut()
-        } else {
-            capabilities.as_mut_ptr()
-        },
+        Capabilities: capabilities.as_mut_ptr(),
         CapabilityCount: capabilities.len() as u32,
         Reserved: 0,
     };
@@ -1405,6 +1571,7 @@ mod tests {
     use std::process::Command;
 
     use super::*;
+    use windows_sys::Win32::Security::DeriveCapabilitySidsFromName;
 
     /// Test state lives under the repo's gitignored `.dev/`, like every dev run.
     fn test_dir() -> tempfile::TempDir {
@@ -1663,5 +1830,81 @@ mod tests {
         if let Ok(mut left) = fs::read_dir(ledgers(&root.join("state"))) {
             assert!(left.next().is_none(), "a ledger was left");
         }
+    }
+
+    #[test]
+    fn the_workers_capability_is_the_one_its_name_derives() {
+        let name = wide(OsStr::new("latchWorkerVolumeRoot"));
+        let (mut groups, mut group_count) = (null_mut(), 0u32);
+        let (mut capabilities, mut capability_count) = (null_mut(), 0u32);
+        // SAFETY: a NUL-terminated name; Windows allocates the lists.
+        let derived = unsafe {
+            DeriveCapabilitySidsFromName(
+                name.as_ptr(),
+                &mut groups,
+                &mut group_count,
+                &mut capabilities,
+                &mut capability_count,
+            )
+        };
+        assert_ne!(derived, 0, "{}", std::io::Error::last_os_error());
+        assert_eq!(capability_count, 1);
+        let ours = Sid::from_string(VOLUME_ROOT).unwrap();
+        // SAFETY: one capability SID at the list's start, live until freed.
+        assert_ne!(unsafe { EqualSid(*capabilities, ours.0) }, 0);
+        // SAFETY: each SID and both lists are Windows' allocations, freed once.
+        unsafe {
+            for at in 0..group_count as usize {
+                LocalFree((*groups.add(at)).cast());
+            }
+            for at in 0..capability_count as usize {
+                LocalFree((*capabilities.add(at)).cast());
+            }
+            LocalFree(groups.cast());
+            LocalFree(capabilities.cast());
+        }
+    }
+
+    /// The listing grant with no administrator and no prompt: on a folder
+    /// this user owns, as `grant_listing` gives it on each volume's root.
+    #[test]
+    fn a_listing_grant_is_one_entry_of_root_access_that_nothing_below_inherits() {
+        let sid = Sid::from_string(VOLUME_ROOT).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!admits(dir.path(), &sid).unwrap());
+        grant_root(dir.path(), &sid).unwrap();
+        assert!(admits(dir.path(), &sid).unwrap());
+        // Granted again, nothing changes.
+        grant_root(dir.path(), &sid).unwrap();
+        assert_eq!(entries_for(dir.path(), &sid), [(0, ROOT_ACCESS)]);
+        let inside = dir.path().join("inside");
+        std::fs::create_dir(&inside).unwrap();
+        std::fs::write(dir.path().join("file"), "").unwrap();
+        assert!(entries_for(&inside, &sid).is_empty());
+        assert!(entries_for(&dir.path().join("file"), &sid).is_empty());
+    }
+
+    /// Each allowing entry `path`'s access list has for `sid`, inherited or
+    /// not: its flags and mask.
+    fn entries_for(path: &Path, sid: &Sid) -> Vec<(u8, u32)> {
+        read_list(path, |_, list| {
+            let mut found = Vec::new();
+            // SAFETY: the descriptor keeps the list and its entries live.
+            for ace in unsafe { entries(list) }? {
+                // SAFETY: every entry starts with a header; an allowing entry
+                // goes on with its mask and its SID.
+                unsafe {
+                    let header = *(ace as *const ACE_HEADER);
+                    let allowing = ace as *mut ACCESS_ALLOWED_ACE;
+                    if header.AceType as u32 == ACCESS_ALLOWED_ACE_TYPE
+                        && EqualSid((&raw mut (*allowing).SidStart).cast(), sid.0) != 0
+                    {
+                        found.push((header.AceFlags, (*allowing).Mask));
+                    }
+                }
+            }
+            Ok(found)
+        })
+        .unwrap()
     }
 }

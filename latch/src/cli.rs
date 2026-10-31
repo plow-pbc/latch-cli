@@ -253,9 +253,10 @@ pub enum Command {
     ///
     /// Log in, connect Google, on a Mac turn on Messages and Contacts, rules
     /// for agents from a preset when there are none, all with no host
-    /// running, then offer to start latch. Each step runs a latch command and
-    /// is skipped once done, so it can be run again any time; `--status` only
-    /// lists the steps
+    /// running, then offer to start latch; on Windows, then let agents list
+    /// folders, which Windows asks an administrator to allow once. Each step
+    /// runs a latch command and is skipped once done, so it can be run again
+    /// any time; `--status` only lists the steps
     Setup(SetupArgs),
     /// Internal: the sandboxed process a host starts for each file read or write, exec, Google call and startup probe
     #[command(hide = true)]
@@ -276,6 +277,13 @@ pub enum Command {
         key: String,
         file: PathBuf,
     },
+    /// Internal: on Windows, `latch setup`'s list-folders step, which it
+    /// runs as administrator (Windows' UAC prompt): latch's workers may read
+    /// each fixed volume's root's own attributes, so cmd's dir and vol work
+    /// in folders an agent may read
+    #[cfg(windows)]
+    #[command(hide = true)]
+    GrantListing,
     /// Internal: the app's "Start when you log in" item, as ServiceManagement
     /// reports it; with --again, registered again from this app, which the
     /// installer does once it moves the app to another folder

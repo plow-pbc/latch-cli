@@ -318,6 +318,7 @@ codes! {
     line_taken: Usage,
     link_expired: Denied,
     link_used: Denied,
+    list_folders_failed: Failed,
     local_build: Failed,
     local_file: Usage,
     local_socket: Failed,

@@ -315,6 +315,10 @@ pub struct ThisMachine {
     pub name: Option<String>,
     pub key: Option<String>,
     pub hosting: Hosting,
+    /// Windows: whether agents may list folders here (`granted`, `missing`
+    /// or `partial`), as `latch setup` lets them. Not said elsewhere.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub list_folders: Option<&'static str>,
 }
 
 #[derive(Serialize)]
@@ -377,6 +381,7 @@ pub fn local(state: &StateDir) -> Result<LocalStatus, Failure> {
             name: config.as_ref().map(|config| config.peer.name.clone()),
             key: config.as_ref().map(|config| config.peer.key.clone()),
             hosting,
+            list_folders: crate::sandbox::list_folders(),
         },
         plugins: plugins["plugins"].take(),
         update: crate::update::status(&dir),
@@ -457,6 +462,8 @@ pub fn follow(
         watch.arm().map_err(watching)?;
         let status = local(&state)?;
         watch.process(status.this_machine.hosting.pid);
+        #[cfg(windows)]
+        let granted = status.this_machine.list_folders;
         let status = serde_json::to_value(status).expect("a status serializes");
         if sent.as_ref() != Some(&status) {
             if !send(&json!({"type": "status", "status": status})) {
@@ -464,9 +471,29 @@ pub fn follow(
             }
             sent = Some(status);
         }
-        match watch.wait().map_err(watching)? {
+        // A volume root's access list (`latch setup`) wakes no
+        // watch, so on Windows the grant is looked at again every few
+        // seconds, and the status read again once it changed.
+        #[cfg(windows)]
+        let woke = loop {
+            match watch
+                .wait_for(Some(LIST_FOLDERS_RECHECK))
+                .map_err(watching)?
+            {
+                Some(woke) => break woke,
+                None if crate::sandbox::list_folders() != granted => break Woke::Changed,
+                None => {}
+            }
+        };
+        #[cfg(not(windows))]
+        let woke = watch.wait().map_err(watching)?;
+        match woke {
             Woke::HungUp => return Ok(()),
             Woke::Changed => {}
         }
     }
 }
+
+/// How often a Windows follower looks at the grant again.
+#[cfg(windows)]
+const LIST_FOLDERS_RECHECK: std::time::Duration = std::time::Duration::from_secs(2);

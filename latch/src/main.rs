@@ -201,6 +201,21 @@ fn main() -> ExitCode {
                 }
             };
         }
+        // Run as administrator by `latch setup`, maybe as another account:
+        // no state folder needed, and no runtime.
+        #[cfg(windows)]
+        Command::GrantListing => {
+            return match setup::grant_listing().and_then(|done| json(cli.pretty, done)) {
+                Ok(Printed(text)) => {
+                    term::print_out(&format!("{text}\n"));
+                    ExitCode::SUCCESS
+                }
+                Err(failure) => {
+                    report(&failure);
+                    failure.exit.into()
+                }
+            };
+        }
         command => command,
     };
     // Only the human commands still say a newer build is out: a regular
@@ -536,6 +551,8 @@ async fn run(
         | Command::VerifySignature { .. } => {
             unreachable!("handled in main")
         }
+        #[cfg(windows)]
+        Command::GrantListing => unreachable!("handled in main"),
     }
 }
 

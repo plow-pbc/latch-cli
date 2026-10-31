@@ -18,6 +18,9 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use serde_json::Value;
 
+#[cfg(windows)]
+use windows_sys::Win32::Foundation::ERROR_CANCELLED;
+
 use crate::failure::{Failure, code};
 use crate::gate::rules::{Preset, RulesDir, Scope};
 use crate::state::StateDir;
@@ -41,6 +44,8 @@ pub fn run(state_dir: Option<PathBuf>) -> ExitCode {
         setup.messages_and_contacts();
         setup.rules();
         setup.start();
+        #[cfg(windows)]
+        setup.list_folders();
     }
     say("Done. Run `latch setup` again any time.");
     ExitCode::SUCCESS
@@ -185,6 +190,39 @@ impl Setup {
             done("Google is connected.");
         } else {
             eprintln!("✗ Google is not on yet.\n  Try again later: latch plugins enable google");
+        }
+    }
+
+    /// Windows: let agents list folders. That takes an administrator, so
+    /// `latch grant-listing` runs as one: Windows asks (its UAC prompt), and
+    /// this waits for it.
+    #[cfg(windows)]
+    fn list_folders(&mut self) {
+        const GRANTED: &str = "Agents can list folders on this PC.";
+        if crate::sandbox::list_folders() == Some("granted") {
+            done(GRANTED);
+            return;
+        }
+        if !self.input().yes(
+            "Let agents list folders on this PC (cmd's dir and vol)? Windows asks an \
+             administrator to allow it. [y/N] ",
+            false,
+        ) {
+            say("Skipped; `latch setup` asks again.");
+            return;
+        }
+        if let Err(err) = as_administrator(&self.latch, "grant-listing") {
+            match err.raw_os_error() == Some(ERROR_CANCELLED as i32) {
+                true => say("Not allowed; `latch setup` asks again."),
+                false => eprintln!("✗ Windows could not run latch as administrator: {err}"),
+            }
+            return;
+        }
+        match crate::sandbox::list_folders() {
+            Some("granted") => done(GRANTED),
+            _ => eprintln!(
+                "✗ Agents can't list folders on every volume yet.\n  Try again: latch setup"
+            ),
         }
     }
 
@@ -375,7 +413,8 @@ pub struct Status {
 
 #[derive(Serialize)]
 pub struct Step {
-    /// `login`, each connector this build has, `rules`, then `host`.
+    /// `login`, each connector this build has, `rules`, `host`, then on
+    /// Windows `list_folders`.
     pub step: &'static str,
     pub state: StepState,
     pub reason: String,
@@ -545,7 +584,95 @@ pub async fn status(state: &StateDir, check_access: bool) -> Result<Status, Fail
             Some(start_args(state)),
         ),
     });
+    // Windows: last, so `no_terminal`'s `next` starts latch first.
+    if let Some(granted) = local.this_machine.list_folders {
+        steps.push(match granted {
+            "granted" => Step::new(
+                "list_folders",
+                Done,
+                "Agents can list folders on this PC.".into(),
+                None,
+            ),
+            _ => Step::new(
+                "list_folders",
+                Needed,
+                LIST_FOLDERS_NEEDED.into(),
+                Some(vec!["setup"]),
+            ),
+        });
+    }
     Ok(Status { steps })
+}
+
+/// Why the `list_folders` step is not done.
+const LIST_FOLDERS_NEEDED: &str = "Agents can't list folders on this PC with cmd's dir and vol \
+until an administrator allows it once: `latch setup` asks Windows for that.";
+
+/// `latch grant-listing`, which the `list_folders` step runs as
+/// administrator: `list_folders` once every fixed volume's root admits
+/// latch's workers, else `list_folders_failed` naming each root it could
+/// not change.
+#[cfg(windows)]
+pub fn grant_listing() -> Result<Value, Failure> {
+    let failed = crate::sandbox::grant_listing();
+    if !failed.is_empty() {
+        return Err(Failure::new(
+            code::list_folders_failed,
+            format!("not every volume's root was changed: {}", failed.join("; ")),
+        ));
+    }
+    Ok(serde_json::json!({"list_folders": crate::sandbox::list_folders()}))
+}
+
+/// Runs `latch ARGS` as administrator and waits for it to end: Windows
+/// asks first (its UAC prompt), and a refusal is `ERROR_CANCELLED`. Its
+/// exit code.
+#[cfg(windows)]
+fn as_administrator(latch: &std::path::Path, args: &str) -> std::io::Result<u32> {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, INFINITE, WaitForSingleObject,
+    };
+    use windows_sys::Win32::UI::Shell::{
+        SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW, ShellExecuteExW,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
+
+    let wide = |text: &OsStr| text.encode_wide().chain([0]).collect::<Vec<u16>>();
+    let (verb, file, parameters) = (
+        wide("runas".as_ref()),
+        wide(latch.as_os_str()),
+        wide(args.as_ref()),
+    );
+    let mut info = SHELLEXECUTEINFOW {
+        cbSize: size_of::<SHELLEXECUTEINFOW>() as u32,
+        fMask: SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC,
+        lpVerb: verb.as_ptr(),
+        lpFile: file.as_ptr(),
+        lpParameters: parameters.as_ptr(),
+        nShow: SW_HIDE,
+        ..Default::default()
+    };
+    // SAFETY: `info` and the strings it points at live through the call.
+    if unsafe { ShellExecuteExW(&mut info) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let mut code = 0;
+    // SAFETY: the process ShellExecuteExW started, waited for, read and
+    // closed once here.
+    let read = unsafe {
+        WaitForSingleObject(info.hProcess, INFINITE);
+        let read = GetExitCodeProcess(info.hProcess, &mut code);
+        CloseHandle(info.hProcess);
+        read
+    };
+    match read {
+        0 => Err(std::io::Error::last_os_error()),
+        _ => Ok(code),
+    }
 }
 
 /// Whether Plow Latch has Full Disk Access, as the host would see it: one
