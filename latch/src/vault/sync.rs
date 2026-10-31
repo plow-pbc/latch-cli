@@ -81,6 +81,10 @@ fn same_item(a: &Item, b: &Item) -> bool {
 /// `a` and `b` as one state, the same whichever comes first. Items come
 /// out ordered by uid, each carrying the id and revision of the side it
 /// came from; giving a foreign item a local id is the applying host's job.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "host-to-host sync (the next change) calls it")
+)]
 pub fn merge(a: &State, b: &State) -> State {
     let mut items: BTreeMap<&str, &Synced> = BTreeMap::new();
     for s in a.items.iter().chain(&b.items) {
@@ -170,19 +174,26 @@ mod tests {
     }
 
     /// What hosts agree on: uid, order and content, not local ids.
-    fn synced(state: &State) -> (Vec<(String, u64, Vec<u8>)>, Vec<Tombstone>) {
-        let items = state
-            .items
-            .iter()
-            .map(|s| (s.uid.clone(), s.modified, content(&s.item)))
-            .collect();
-        (items, state.tombstones.clone())
+    fn synced(state: &State) -> State {
+        let mut state = state.clone();
+        for s in &mut state.items {
+            s.item.id.clear();
+            s.item.revision = 0;
+        }
+        state
     }
 
     #[test]
     fn merging_is_the_same_either_way_the_latest_write_wins_and_removals_stick() {
         let a1 = || login("a1", 0, "example.com", "made-up-pass-1");
-        let cases: Vec<(&str, State, State, Vec<(&str, &str)>, Vec<(&str, u64)>)> = vec![
+        type Case<'a> = (
+            &'a str,
+            State,
+            State,
+            Vec<(&'a str, &'a str)>,
+            Vec<(&'a str, u64)>,
+        );
+        let cases: Vec<Case> = vec![
             (
                 "the later edit wins",
                 state(
