@@ -10914,7 +10914,10 @@ mod lifecycle {
     /// this latch's, enabled nothing, and still said latch was running.
     #[test]
     fn setup_never_takes_a_host_from_another_version_for_its_own() {
-        let (_dir, state, _) = owner_host();
+        // Plow answers for the whole run: setup reads the account's rules.
+        let plow = LivePlow::start();
+        let dir = test_dir();
+        let state = owner_host_on(&plow, dir.path());
         let (old, _socket, said) = old_host(&state);
         let (mut setup, mut terminal, shown) = at_its_own_terminal(&state, &["setup"], &[]);
         let mut all = shows(&shown, "Connect Google? [Y/n]");
