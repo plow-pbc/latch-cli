@@ -63,9 +63,9 @@ pub struct Config {
 /// change an older latch would misread.
 const FORMAT: u32 = 3;
 /// The format a folder is marked up from, as this latch first reads it: its
-/// old rule files move into the list the first time they are read. Marked
-/// anew, an older latch refuses the folder rather than read it as having no
-/// rules.
+/// old rule files are copied into the list the first time they are read.
+/// Marked anew, an older latch refuses the folder rather than read it as
+/// having no rules.
 const UPGRADED_FROM: u32 = 2;
 
 /// `latch.json`: the folder's format, and which latch first marked it.
