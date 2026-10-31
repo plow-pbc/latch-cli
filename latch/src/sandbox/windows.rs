@@ -52,9 +52,9 @@ use windows_sys::Win32::Foundation::{
 };
 use windows_sys::Win32::Security::Authorization::{
     ACCESS_MODE, ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
-    ConvertStringSidToSidW, EXPLICIT_ACCESS_W, GRANT_ACCESS, GetNamedSecurityInfoW,
-    GetSecurityInfo, NO_MULTIPLE_TRUSTEE, SDDL_REVISION_1, SE_FILE_OBJECT, SetEntriesInAclW,
-    SetNamedSecurityInfoW, TRUSTEE_IS_SID, TRUSTEE_IS_UNKNOWN, TRUSTEE_W,
+    ConvertStringSidToSidW, EXPLICIT_ACCESS_W, GRANT_ACCESS, GetSecurityInfo, NO_MULTIPLE_TRUSTEE,
+    SDDL_REVISION_1, SE_FILE_OBJECT, SetEntriesInAclW, SetNamedSecurityInfoW, TRUSTEE_IS_SID,
+    TRUSTEE_IS_UNKNOWN, TRUSTEE_W,
 };
 use windows_sys::Win32::Security::Isolation::{
     CreateAppContainerProfile, DeleteAppContainerProfile, DeriveAppContainerSidFromAppContainerName,
@@ -892,30 +892,10 @@ fn fixed_roots() -> Vec<PathBuf> {
 /// access list (FAT) admits every program already. Reading the list needs
 /// no administrator.
 fn admits(root: &Path, sid: &Sid) -> std::io::Result<bool> {
-    let name = wide(root.as_os_str());
-    let (mut list, mut descriptor): (*mut ACL, PSECURITY_DESCRIPTOR) = (null_mut(), null_mut());
-    // SAFETY: a NUL-terminated name; the descriptor holding `list` is freed
-    // below with LocalFree.
-    let read = unsafe {
-        GetNamedSecurityInfoW(
-            name.as_ptr(),
-            SE_FILE_OBJECT,
-            DACL_SECURITY_INFORMATION,
-            null_mut(),
-            null_mut(),
-            &mut list,
-            null_mut(),
-            &mut descriptor,
-        )
-    };
-    if read != ERROR_SUCCESS {
-        return Err(std::io::Error::from_raw_os_error(read as i32));
-    }
-    // SAFETY: `list` is null or the live list `descriptor` holds.
-    let admits = list.is_null() || unsafe { allowed(list, sid.0) }? & ROOT_ACCESS == ROOT_ACCESS;
-    // SAFETY: allocated by GetNamedSecurityInfoW, freed once.
-    unsafe { LocalFree(descriptor) };
-    Ok(admits)
+    read_list(root, |_, list| {
+        // SAFETY: `list` is null or the live list the descriptor holds.
+        Ok(list.is_null() || unsafe { allowed(list, sid.0) }? & ROOT_ACCESS == ROOT_ACCESS)
+    })
 }
 
 /// What `list`'s own (not inherited) allowing entries give `sid`.
@@ -923,40 +903,20 @@ fn admits(root: &Path, sid: &Sid) -> std::io::Result<bool> {
 /// # Safety
 /// `list` must be a live access list.
 unsafe fn allowed(list: *const ACL, sid: PSID) -> std::io::Result<u32> {
-    let mut size = ACL_SIZE_INFORMATION::default();
-    // SAFETY: `size` is writable for its own length.
-    let sized = unsafe {
-        GetAclInformation(
-            list,
-            (&raw mut size).cast(),
-            size_of::<ACL_SIZE_INFORMATION>() as u32,
-            AclSizeInformation,
-        )
-    };
-    if sized == 0 {
-        return Err(std::io::Error::last_os_error());
-    }
     let mut access = 0;
-    for index in 0..size.AceCount {
-        let mut ace = null_mut();
-        // SAFETY: `index` is below the list's count.
-        if unsafe { GetAce(list, index, &mut ace) } == 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        // SAFETY: every entry starts with a header.
-        let header = unsafe { *(ace as *const ACE_HEADER) };
-        if header.AceType as u32 == ACCESS_ALLOWED_ACE_TYPE
-            && header.AceFlags as u32 & INHERITED_ACE == 0
-            // SAFETY: an allowed entry goes on with its mask and its SID.
-            && unsafe {
-                EqualSid(
-                    (&raw mut (*(ace as *mut ACCESS_ALLOWED_ACE)).SidStart).cast(),
-                    sid,
-                )
-            } != 0
-        {
-            // SAFETY: as above.
-            access |= unsafe { (*(ace as *const ACCESS_ALLOWED_ACE)).Mask };
+    // SAFETY: the caller's live list.
+    for ace in unsafe { entries(list) }? {
+        // SAFETY: every entry starts with a header; an allowed entry goes on
+        // with its mask and its SID.
+        unsafe {
+            let header = *(ace as *const ACE_HEADER);
+            let allowing = ace as *mut ACCESS_ALLOWED_ACE;
+            if header.AceType as u32 == ACCESS_ALLOWED_ACE_TYPE
+                && header.AceFlags as u32 & INHERITED_ACE == 0
+                && EqualSid((&raw mut (*allowing).SidStart).cast(), sid) != 0
+            {
+                access |= (*allowing).Mask;
+            }
         }
     }
     Ok(access)
@@ -1927,52 +1887,24 @@ mod tests {
     /// Each allowing entry `path`'s access list has for `sid`, inherited or
     /// not: its flags and mask.
     fn entries_for(path: &Path, sid: &Sid) -> Vec<(u8, u32)> {
-        let name = wide(path.as_os_str());
-        let (mut list, mut descriptor): (*mut ACL, PSECURITY_DESCRIPTOR) = (null_mut(), null_mut());
-        // SAFETY: a NUL-terminated name; the descriptor holding `list` is
-        // freed below.
-        let read = unsafe {
-            GetNamedSecurityInfoW(
-                name.as_ptr(),
-                SE_FILE_OBJECT,
-                DACL_SECURITY_INFORMATION,
-                null_mut(),
-                null_mut(),
-                &mut list,
-                null_mut(),
-                &mut descriptor,
-            )
-        };
-        assert_eq!(read, ERROR_SUCCESS);
-        let mut size = ACL_SIZE_INFORMATION::default();
-        // SAFETY: `list` is the live list `descriptor` holds.
-        let sized = unsafe {
-            GetAclInformation(
-                list,
-                (&raw mut size).cast(),
-                size_of::<ACL_SIZE_INFORMATION>() as u32,
-                AclSizeInformation,
-            )
-        };
-        assert_ne!(sized, 0);
-        let mut found = Vec::new();
-        for index in 0..size.AceCount {
-            let mut ace = null_mut();
-            // SAFETY: `index` is below the list's count; an allowing entry
-            // goes on with its mask and its SID.
-            unsafe {
-                assert_ne!(GetAce(list, index, &mut ace), 0);
-                let header = *(ace as *const ACE_HEADER);
-                let allowing = ace as *mut ACCESS_ALLOWED_ACE;
-                if header.AceType as u32 == ACCESS_ALLOWED_ACE_TYPE
-                    && EqualSid((&raw mut (*allowing).SidStart).cast(), sid.0) != 0
-                {
-                    found.push((header.AceFlags, (*allowing).Mask));
+        read_list(path, |_, list| {
+            let mut found = Vec::new();
+            // SAFETY: the descriptor keeps the list and its entries live.
+            for ace in unsafe { entries(list) }? {
+                // SAFETY: every entry starts with a header; an allowing entry
+                // goes on with its mask and its SID.
+                unsafe {
+                    let header = *(ace as *const ACE_HEADER);
+                    let allowing = ace as *mut ACCESS_ALLOWED_ACE;
+                    if header.AceType as u32 == ACCESS_ALLOWED_ACE_TYPE
+                        && EqualSid((&raw mut (*allowing).SidStart).cast(), sid.0) != 0
+                    {
+                        found.push((header.AceFlags, (*allowing).Mask));
+                    }
                 }
             }
-        }
-        // SAFETY: allocated by GetNamedSecurityInfoW, freed once.
-        unsafe { LocalFree(descriptor) };
-        found
+            Ok(found)
+        })
+        .unwrap()
     }
 }
