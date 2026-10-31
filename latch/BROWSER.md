@@ -91,9 +91,11 @@ scratch folder), on that Node. The helper speaks the driver operations as
 JSON lines over its stdio and drives Camoufox through Playwright, which
 reaches it over its own pipe (`-juggler-pipe`), never a port. latch's page
 reader runs in Camoufox's isolated world; the agent's `eval` in the page's
-own world (Camoufox's `mw:`). Each session gets a fingerprint of its own,
-made at launch (the pin currently claims macOS on every host): a site sees
-the same device for the whole task, and a new one the next.
+own world (Camoufox's `mw:`). Each agent's Camoufox profile gets a
+fingerprint of its own, made at its first launch and kept with it
+(`fingerprint.json`; the pin currently claims macOS on every host): a site
+sees the same device in every one of that agent's sessions. A new pinned
+Camoufox version makes a new one.
 Camoufox ships with password saving and form autofill off; its uBlock
 add-on is left out.
 
@@ -126,7 +128,7 @@ returns `serve_required`, with instructions to start `latch serve`.
 ## Sessions
 
 Each `open` makes a new **session** in a browser of its own, its
-**runtime**: a fresh profile, the engine `open` names (`--engine chrome`
+**runtime**: its caller's profile (below), the engine `open` names (`--engine chrome`
 or `--engine camoufox`; with neither, Camoufox if the host has it and it
 checks out, else Chrome, and the answer's `engine` says which), and one
 long-lived browser worker
@@ -139,11 +141,9 @@ the owner's `latch browser setup`, or `unsupported_platform`): latch never
 downloads one for a session or runs another in its place. The engine
 can't change during a session; `open` and `sessions` say which it is.
 
-The session's tabs and popups share its profile: its cookies, site
-storage and logins last for the whole task (sign-ins, a handoff, an MFA
-code entered later), and no other session sees any of them, the same
-caller's included. A download belongs to the session whose page started
-it; one that no page of the session started is never listed.
+The session's tabs and popups share its profile. A download belongs to
+the session whose page started it; one that no page of the session
+started is never listed.
 
 A call has 60 seconds, every wait for the browser in it together (typing
 adds 200 ms a character, a wait its own time): a page too busy to answer
@@ -152,26 +152,36 @@ calls in a row unanswered is closed, and its session with it
 (`browser_gone` on the third), and a worker that has not answered 30 seconds
 past a call's time is stopped (`browser_gone`).
 
-A session's profile is `<state-dir>/browser/sessions/<random>/`, its
-name unguessable and never derived from the session's id: `data/` is the
-engine's data folder (Chrome's, created with password saving and autofill
-off, or Firefox's). A session closes on `close`, after 30 minutes without
-a call (counted from the end of its last one), when its browser fails to
-launch, or when the host stops; its browser closes and its profile is
-deleted then. `close` answers at once: the session is gone for every later
-call, and its browser closes behind the answer, once every command still
-under way in it has answered in full (a `wait` or a `do` plan to its end;
-a pending `handoff` ends with the session); a host that stops waits for
-those. A host that did not stop cleanly (it was killed) leaves its
-sessions' profiles, and the next host on the state directory deletes them
-as it starts. Downloads an agent saved with `download get` are its own
-files, and the audit keeps its records as ever. `exec` and file workers
-are denied the whole state directory, profiles included.
+**Each agent has one browser profile per engine on a host, and its
+sessions keep it.** The profile is the agent's by its verified Plow uid
+(all of the owner's own calls share one, `owner`), never by a name it
+gives: `<state-dir>/browser/agents/<uid>/<engine>/`, whose `data/` is the
+engine's data folder (Chrome's with password saving and autofill set off
+at every launch, or Firefox's). Everything a browser keeps on disk stays
+there from one session to the next, through idle expiry and host
+restarts: cookies (HttpOnly ones too), site storage, the cache, site
+settings and service workers, and so the sites the agent signed in to. Its
+tabs don't: each session starts on its first page alone. Another agent's
+sessions never see any of it. Vault items stay in the vault. There is no
+reset yet: removing the folder, with no session open on it, starts the
+agent over.
 
-Earlier versions kept named, persistent profiles in
-`<state-dir>/browser/profiles/`. latch no longer opens them and leaves
-them on disk as they are; the owner removes that folder when they no
-longer want its logins.
+A profile runs one session at a time: an `open` while that agent has a
+session live on the engine is refused `profile_in_use`, and the agent
+opens tabs in the session it has. A session closes on `close`, after 30
+minutes without a call (counted from the end of its last one), when its
+browser fails to launch, or when the host stops; its browser closes then,
+and its profile is free for the next. `close` answers at once: the session
+is gone for every later call, and its browser closes behind the answer,
+once every command still under way in it has answered in full (a `wait`
+or a `do` plan to its end; a pending `handoff` ends with the session); a
+host that stops waits for those. Downloads an agent saved with `download
+get` are its own files, and the audit keeps its records as ever. `exec`
+and file workers are denied the whole state directory, profiles included.
+
+Earlier versions kept each session's own profile in
+`<state-dir>/browser/sessions/`, and before that named ones in
+`<state-dir>/browser/profiles/`: a host removes both as it starts.
 
 ## Commands
 
@@ -244,8 +254,7 @@ screenshots still read for it. The host keeps
 while a session is open; a session ended while the host runs (`close`,
 idle, its browser gone) leaves none. `latch stop` answers how many browser
 sessions it ended (`browser_sessions_ended`), and an install that restarts
-the host says so too. So two tasks under one client key each `open` their own
-session, and neither can reach the other's without its id. `sessions` lists
+the host says so too. `sessions` lists
 the caller's sessions without their ids: task label (`open --task`),
 engine, the site it was last on, its state and how long since its last
 call. The audit records a short hash of an id, never the id, with the
@@ -256,10 +265,6 @@ left out when the call had none (`latch audit --help`). An owner
 device (a `device`-kind client of the host's account) ends any session by
 it: `latch browser close --session <hash>`; for anyone else a hash is no
 id.
-
-Separate profiles keep sessions from sharing cookies by accident. They do
-not separate callers that act as the same trusted owner, nor two sessions
-signed in to the same remote account: the site sees one account.
 
 A vault fill holds its session's browser: the session's calls get
 `session_paused` until the fill's cleanup is confirmed, and while a value
@@ -633,9 +638,11 @@ the code the site emailed or texted, and only then the owner, is SKILL.md's
 
 ## For agents
 
-- **One session per task.** A session starts signed in nowhere and keeps
-  its logins until it closes: sign in with `fill` (or `handoff` what only
-  the owner can do, on a host with a screen) once, and do the whole task in that session.
+- **One session at a time.** A session starts with the sign-ins your
+  earlier sessions on the host left, and keeps them for the next: sign in
+  with `fill` (or `handoff` what only the owner can do, on a host with a
+  screen) only where you are not signed in already, and open tabs in the
+  session you have rather than another.
 - **A hard block is not a challenge.** A challenge has something to click
   or type (a CAPTCHA, "confirm you are human", a code prompt); a hard
   block ("You have been blocked", "Access denied", a check that never
