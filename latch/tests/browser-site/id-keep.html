@@ -1,0 +1,22 @@
+<!doctype html><title>latch identity keep test</title>
+<!-- A form that keeps the SSN it is sent in the site's storage, and shows
+     it again on every later visit, as a careless site might. Nothing is
+     sent anywhere. -->
+<h1>Application</h1>
+<p id="kept"></p>
+<form id="apply">
+  <p><label>Social Security number <input name="ssn"></label></p>
+  <p><button type="submit">Submit application</button></p>
+</form>
+<p id="done"></p>
+<script>
+  const ssn = localStorage.getItem('ssn');
+  if (ssn) kept.textContent = 'Your saved SSN: ' + ssn;
+  const form = document.getElementById('apply');
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    localStorage.setItem('ssn', form.elements.ssn.value);
+    done.textContent = 'Application saved';
+    form.reset();
+  });
+</script>

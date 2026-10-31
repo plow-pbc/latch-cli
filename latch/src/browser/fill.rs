@@ -406,25 +406,7 @@ pub async fn run(
     // session's answers and journals show the card's number by its last
     // four digits from now on, and the secret not at all.
     if audit.get("released") == Some(&json!(true)) {
-        let mut filled = Vec::new();
-        if meta.kind == "card"
-            && let Ok(number) = release(&item, "number")
-        {
-            let digits: String = number.chars().filter(char::is_ascii_digit).collect();
-            if !digits.is_empty() {
-                filled.push(Filled::Card(digits));
-            }
-        }
-        if meta.kind == "identity" {
-            for (label, _) in &plan.fields {
-                if suggest::secret_field(&meta, label)
-                    && let Ok(value) = release(&item, label)
-                    && !value.is_empty()
-                {
-                    filled.push(Filled::Secret(value));
-                }
-            }
-        }
+        let filled = masked_values(&item, plan.fields.iter().map(|(label, _)| label.as_str()));
         let mut masks = entry.masks.lock().expect("masks lock");
         for value in filled {
             if !masks.contains(&value) {
@@ -434,6 +416,62 @@ pub async fn run(
     }
     entry.runtime.filling.store(false, Ordering::SeqCst);
     result
+}
+
+/// What of `item` its fill of fields `labels` puts out of an answer's
+/// sight: a card's number, and an identity's secrets among them.
+fn masked_values<'a>(item: &Item, labels: impl Iterator<Item = &'a str>) -> Vec<Filled> {
+    let meta = item.meta();
+    let mut filled = Vec::new();
+    if meta.kind == "card"
+        && let Ok(number) = release(item, "number")
+    {
+        let digits: String = number.chars().filter(char::is_ascii_digit).collect();
+        if !digits.is_empty() {
+            filled.push(Filled::Card(digits));
+        }
+    }
+    if meta.kind == "identity" {
+        for label in labels {
+            if suggest::secret_field(&meta, label)
+                && let Ok(value) = release(item, label)
+                && !value.is_empty()
+            {
+                filled.push(Filled::Secret(value));
+            }
+        }
+    }
+    filled
+}
+
+/// Every card number and identity secret in the vault: what a session's
+/// answers mask from its first. A page on the agent's profile may show one
+/// back that an earlier session of it filled, and the profile keeps no
+/// record of which.
+pub(super) fn held(browsers: &Browsers) -> Result<Vec<Filled>, Failure> {
+    let metas: Vec<Meta> = browsers
+        .vault
+        .list_if_present()
+        .into_iter()
+        .filter(|meta| matches!(meta.kind, "card" | "identity"))
+        .collect();
+    if metas.is_empty() {
+        return Ok(Vec::new());
+    }
+    browsers.vault.with(|store| {
+        let mut filled = Vec::new();
+        for meta in &metas {
+            if let Some(item) = store.item(&meta.item) {
+                let labels = meta.fields.iter().map(|field| field.label.as_str());
+                for value in masked_values(&item, labels) {
+                    if !filled.contains(&value) {
+                        filled.push(value);
+                    }
+                }
+            }
+        }
+        Ok(filled)
+    })
 }
 
 /// What the agent asked to fill, checked against the item.
