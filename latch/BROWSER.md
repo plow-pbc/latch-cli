@@ -254,8 +254,7 @@ screenshots still read for it. The host keeps
 while a session is open; a session ended while the host runs (`close`,
 idle, its browser gone) leaves none. `latch stop` answers how many browser
 sessions it ended (`browser_sessions_ended`), and an install that restarts
-the host says so too. So two tasks under one client key each `open` their own
-session, and neither can reach the other's without its id. `sessions` lists
+the host says so too. `sessions` lists
 the caller's sessions without their ids: task label (`open --task`),
 engine, the site it was last on, its state and how long since its last
 call. The audit records a short hash of an id, never the id, with the
@@ -266,10 +265,6 @@ left out when the call had none (`latch audit --help`). An owner
 device (a `device`-kind client of the host's account) ends any session by
 it: `latch browser close --session <hash>`; for anyone else a hash is no
 id.
-
-Separate profiles keep sessions from sharing cookies by accident. They do
-not separate callers that act as the same trusted owner, nor two sessions
-signed in to the same remote account: the site sees one account.
 
 A vault fill holds its session's browser: the session's calls get
 `session_paused` until the fill's cleanup is confirmed, and while a value
