@@ -95,10 +95,12 @@ private struct RulesBody: View {
 private struct RuleList: View {
     var list: RulesList
     @Environment(AppModel.self) private var app
+    /// Set by a rule picked in the list: SwiftUI leaves the keyboard focus
+    /// where it was (the sidebar), so Return and the arrow keys went there.
+    @FocusState private var listFocused: Bool
 
     var body: some View {
-        @Bindable var app = app
-        List(selection: $app.selectedRule) {
+        List(selection: selection) {
             Section {
                 ForEach(app.ruleRows(list)) { RuleRow(rule: $0).tag($0.id) }
             }
@@ -122,6 +124,17 @@ private struct RuleList: View {
             }
         } primaryAction: { ids in
             if let rule = rule(ids) { app.sheet = .rule(RuleEditor(editing: rule)) }
+        }
+        .focused($listFocused)
+    }
+
+    /// The list's selection; picked in the list, the list takes the
+    /// keyboard focus.
+    private var selection: Binding<RulesList.Rule.ID?> {
+        Binding { app.selectedRule } set: { id in
+            app.selectedRule = id
+            // A pick, not SwiftUI clearing a row the filters hid.
+            if id != nil { listFocused = true }
         }
     }
 

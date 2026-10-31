@@ -250,7 +250,8 @@ final class AppModel {
 
     /// What a screen reads when it shows, decided here, not by the screen:
     /// only what it uses, and only what isn't held yet, so coming back to
-    /// a screen reads nothing again (`refresh` reads it all again). Run in
+    /// a screen reads nothing again (`refresh` reads it all again); Rules
+    /// alone reads the account's rules on every visit. Run in
     /// a task that's cancelled when the route changes: a cancelled read
     /// keeps what was held, and the reads after it don't start.
     func enter(_ route: Route, refresh: Bool = false) async {
@@ -933,9 +934,9 @@ final class AppModel {
     }
 
     /// A change saved, on this Mac and whichever hosts latch reached: its
-    /// answer is the account's rules after it, held at once over any read
-    /// still under way; the rule added or changed is selected. Then the
-    /// rules are read again, without holding up whoever saved.
+    /// answer is the account's rules after it (as `rules list` gives them,
+    /// read as part of the change), held over any read still under way;
+    /// the rule added or changed is selected.
     private func ruleChange(_ change: () async throws -> RulesWrite) async throws {
         let written = try await change()
         ruleChanges += 1
@@ -946,7 +947,6 @@ final class AppModel {
         } else if let id = written.change.id {
             selectedRule = id
         }
-        Task { await refreshRules() }
     }
 
     /// For snapshots: as `rules list` said.

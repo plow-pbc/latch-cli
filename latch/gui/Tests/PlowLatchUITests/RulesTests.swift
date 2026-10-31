@@ -289,7 +289,7 @@ struct RulesTests {
     }
 
     // A read begun before a save answers after it, with the rules as they
-    // were: the save's rules stay. Then they're read again.
+    // were: the save's rules stay.
     @Test func anOlderReadNeverUndoesASave() async throws {
         let client = RulesClient()
         let app = try await app(client)
@@ -302,16 +302,14 @@ struct RulesTests {
         editor.text = "Ask me first."
         app.sheet = .rule(editor)
         #expect(await editor.save(app: app))
-        await waitUntil { client.asked.filter { $0 == "rules list" }.count == 3 }
         gate.open()
         await reading.value
         #expect(app.rules?.rules.contains { $0.text == "Ask me first." } == true)
-        #expect(client.writes.last?.hasPrefix("rules add") == true && client.asked.last == "rules list")
 
         let removing = RuleEditor(editing: try #require(app.rules?.rules.first { $0.id == "rl_92d6be48" }))
         client.listGate = Gate()
         let stale = Task { await app.refreshRules() }
-        await waitUntil { client.asked.filter { $0 == "rules list" }.count >= 4 }
+        await waitUntil { client.asked.filter { $0 == "rules list" }.count == 3 }
         let held = client.listGate
         client.listGate = nil
         await removing.delete(app: app)
