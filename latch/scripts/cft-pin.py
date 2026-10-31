@@ -6,7 +6,8 @@ Downloads each pinned build of VERSION, takes the zip's sha256 (what
 install.sh checks) and, after extracting it as install.sh does, the tree
 hash latch checks before every launch (`browser::engine::tree_hash`): with
 `ditto` for the macOS builds and `unzip` for Linux's, as install.sh does on
-each. Run it on a Mac, which has both.
+each, and `unzip` for Windows', whose files latch hashes with no execute
+bit (Windows has none). Run it on a Mac, which has both.
 """
 
 import hashlib
@@ -25,6 +26,7 @@ PLATFORMS = {
     "mac_x64": ("mac-x64", ["ditto", "-x", "-k"], MAC_EXECUTABLE),
     "linux_arm64": ("linux-arm64", ["unzip", "-q"], "chrome"),
     "linux_x64": ("linux64", ["unzip", "-q"], "chrome"),
+    "win_x64": ("win64", ["unzip", "-q"], "chrome.exe"),
 }
 URL = "https://storage.googleapis.com/chrome-for-testing-public/{version}/{platform}/chrome-{platform}.zip"
 
@@ -37,16 +39,17 @@ def file_sha256(path):
     return digest.hexdigest()
 
 
-def tree_hash(root):
+def tree_hash(root, execute_bits=True):
     """sha256 over one line per entry below `root`, sorted by relative path
     bytes: `d PATH`, `l PATH\\0TARGET`, or `f PATH\\0x|-\\0SHA256` (x when
-    any execute bit is set), each ending in a newline."""
+    any execute bit is set, and `execute_bits`), each ending in a newline."""
     root = Path(root)
     entries = []
     for dirpath, dirnames, filenames in os.walk(root):
         for name in dirnames + filenames:
             path = Path(dirpath) / name
-            entries.append(os.fsencode(path.relative_to(root)))
+            # With `/` between names on Windows too, as latch hashes them.
+            entries.append(os.fsencode(path.relative_to(root).as_posix()))
     digest = hashlib.sha256()
     for rel in sorted(entries):
         path = root / os.fsdecode(rel)
@@ -56,7 +59,7 @@ def tree_hash(root):
         elif path.is_dir():
             digest.update(b"d " + rel + b"\n")
         elif path.is_file():
-            mode = b"x" if info.st_mode & 0o111 else b"-"
+            mode = b"x" if execute_bits and info.st_mode & 0o111 else b"-"
             digest.update(b"f " + rel + b"\0" + mode + b"\0" + file_sha256(path).encode() + b"\n")
         else:
             raise SystemExit(f"{path}: not a file, folder or link")
@@ -82,7 +85,7 @@ def main():
                 "url": URL.format(version=version, platform=platform),
                 "zip_sha256": file_sha256(zip_path),
                 "folder": folder,
-                "tree_sha256": tree_hash(out / folder),
+                "tree_sha256": tree_hash(out / folder, not key.startswith("win_")),
                 "executable": executable,
             }
             # On Linux arm64 this one crashes the network service at once.

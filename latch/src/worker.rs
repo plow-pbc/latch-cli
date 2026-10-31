@@ -103,13 +103,13 @@ pub fn authenticated_worker_error(stderr: &str, token: &str) -> Option<WorkerErr
 const PATH: &str = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
 /// Windows' own folders.
 #[cfg(windows)]
-const PATH: &str = r"C:\Windows\System32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0";
+pub(crate) const PATH: &str = r"C:\Windows\System32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0";
 
 /// What Windows itself needs from the environment to start a program and
 /// run it: where the system and the user's folders are (an AppContainer's
 /// own folders are made from them). The host's values are passed on.
 #[cfg(windows)]
-const WINDOWS_ENV: &[&str] = &[
+pub(crate) const WINDOWS_ENV: &[&str] = &[
     "SystemRoot",
     "windir",
     "SystemDrive",
@@ -460,7 +460,7 @@ impl WorkerSetup {
 
 /// Passes on the host's values of `WINDOWS_ENV`.
 #[cfg(windows)]
-fn windows_env(command: &mut Command) {
+pub(crate) fn windows_env(command: &mut Command) {
     for name in WINDOWS_ENV {
         if let Some(value) = std::env::var_os(name) {
             command.env(name, value);
@@ -513,8 +513,8 @@ pub fn die_with_host(command: &mut Command) {
 /// Starts a worker. On Windows the host's own job takes its launcher, so it
 /// ends with the host however the host ends (`sandbox::tie_to_host`): it
 /// starts suspended (in the console group of its own `own_group` gave it),
-/// and runs only once it is in that job.
-fn spawn(command: &mut Command) -> Result<Child, WorkerError> {
+/// and runs only once it is in that job. A browser's runtime starts so too.
+pub(crate) fn spawn(command: &mut Command) -> Result<Child, WorkerError> {
     #[cfg(windows)]
     {
         use windows_sys::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, CREATE_SUSPENDED};
