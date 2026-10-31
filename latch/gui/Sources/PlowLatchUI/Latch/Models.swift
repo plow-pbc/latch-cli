@@ -225,7 +225,7 @@ nonisolated struct RulesList: Decodable, Equatable {
 }
 
 /// A scope as latch writes it: `"all"`, or a list of `{"uid"}` agents or
-/// `{"key"}` hosts; a behind host, as a key or one of those.
+/// `{"key"}` hosts.
 nonisolated extension RulesList.Scope: Decodable {
     init(from decoder: any Decoder) throws {
         let one = try decoder.singleValueContainer()
@@ -245,28 +245,11 @@ nonisolated extension RulesList.Scope: Decodable {
     }
 }
 
-nonisolated extension RulesList.Rule {
-    init(from decoder: any Decoder) throws {
-        let c = try decoder.container(keyedBy: Keys.self)
-        id = try c.decode(String.self, forKey: .id)
-        text = try c.decode(String.self, forKey: .text)
-        agents = try c.decode(RulesList.Scope.self, forKey: .agents)
-        hosts = try c.decode(RulesList.Scope.self, forKey: .hosts)
-        behindHosts = try c.decodeIfPresent([Identity].self, forKey: .behindHosts)?.map(\.id) ?? []
-    }
-
-    private enum Keys: String, CodingKey { case id, text, agents, hosts, behindHosts }
-}
-
-/// An agent or host in a rule's answer: its uid or key, bare or in an object.
+/// An agent or host in a scope: `{"uid"}` or `{"key"}`.
 nonisolated private struct Identity: Decodable {
     var id: String
 
     init(from decoder: any Decoder) throws {
-        if let bare = try? decoder.singleValueContainer().decode(String.self) {
-            id = bare
-            return
-        }
         let c = try decoder.container(keyedBy: Keys.self)
         id = try c.decodeIfPresent(String.self, forKey: .uid) ?? c.decode(String.self, forKey: .key)
     }

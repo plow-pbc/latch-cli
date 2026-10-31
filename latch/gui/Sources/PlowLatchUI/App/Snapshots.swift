@@ -338,7 +338,7 @@ nonisolated enum Fixtures {
         let kitchen = "78d8cd12e343e28d70b1da3ac8a0bb8c37593b5f8d535a58b716b776a91f2edc"
         let sidecar = "b58ac41605d91211b1d5c052addea8d6e7b81702d4902f746e6d639e38909364"
         let scout = "ba3c0b3ad1eba7a9a1eb04b67c9db0dd", helper = "3971582e59baad83250141c8dcc95855"
-        let late = behind ? #"[{"key":"\#(kitchen)"}]"# : "[]"
+        let late = behind ? #"["\#(kitchen)"]"# : "[]"
         let rules = [
             #"{"id":"rl_7f3a9c2e","text":"Ask me before sending any email or text on my behalf.","agents":"all","hosts":"all","behind_hosts":\#(late)}"#,
             #"{"id":"rl_1b84d0f6","text":"Agents may read and summarize anything in ~/Projects. Never touch ~/Finance.","agents":"all","hosts":[{"key":"\#(studio)"}],"behind_hosts":[]}"#,

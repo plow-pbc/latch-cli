@@ -158,10 +158,6 @@ struct RulesTests {
         #expect(list.hosts.map(\.delivery) == ["current", "behind", "unknown"])
         #expect(list.hosts.map(\.reason) == [nil, "rules_io", "host_outdated"])
         #expect(list.hosts.map { $0.budget?.overBudget } == [false, true, false])
-        // Fields the app doesn't read, and a behind host given bare, are
-        // no matter.
-        let bare: RulesList = try Fixtures.decode(#"{"rules":[{"id":"a","text":"t","agents":"all","hosts":"all","behind_hosts":["k"],"x":1}],"hosts":[],"y":2}"#)
-        #expect(bare.rules[0].behindHosts == ["k"])
     }
 
     // What the real latch printed (`Fixtures.rulesListed` and the rest,
