@@ -44,10 +44,10 @@ Reopen (after Full Disk Access is granted) drops them; opening it with
 
 The window walks a new owner through setup (log in, rules, Google,
 Contacts & Messages, starting latch), each step a latch command
-(`login --events`, `rules show/set`, `rules try`, `plugins enable`,
-`serve -d`), then shows this Mac's `status --local`. It remembers only which
-screens were passed, in its own preferences; a relaunch resumes at the first
-screen not passed. `swift run Snapshots DIR` in `latch/gui` renders every
+(`login --events`, `rules list`, `rules add --if-empty`, `rules try`,
+`plugins enable`, `serve -d`), then shows this Mac's `status --local`. It
+remembers only which screens were passed, in its own preferences; a
+relaunch resumes at the first screen not passed. `swift run Snapshots DIR` in `latch/gui` renders every
 screen and state, light and dark, on a sample latch; `gui/build.sh
 --test-hooks` builds a window an end-to-end run can drive.
 

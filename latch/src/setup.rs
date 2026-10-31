@@ -260,8 +260,7 @@ impl Setup {
             failed(&listed.json, "latch rules list");
             return;
         }
-        if has_rules(&listed.json) {
-            done("Rules already apply to this machine; `latch rules list` shows them.");
+        if show_rules(&listed.json) {
             return;
         }
         say(
@@ -295,11 +294,12 @@ impl Setup {
             failed(&added.json, &command);
         } else if added.json["change"]["saved"] == true {
             done(&format!(
-                "Added the {} rule; `latch rules list` shows it.",
-                preset.name()
+                "Added the {} rule; `{}` shows it.",
+                preset.name(),
+                list_here(&added.json)
             ));
         } else {
-            done("Rules already apply to this machine; `latch rules list` shows them.");
+            show_rules(&added.json);
         }
     }
 
@@ -510,11 +510,11 @@ pub async fn status(state: &StateDir, check_access: bool) -> Result<Status, Fail
             "Rules are set by the owner's own login, not an agent's.".into(),
             None,
         ),
-        Some(_) if any_rules => Step::new("rules", Done, "Your agents have rules.".into(), None),
+        Some(_) if any_rules => Step::new("rules", Done, "Rules apply to this machine.".into(), None),
         Some(_) => Step::new(
             "rules",
             Needed,
-            "Your agents have no rules, so they may only do everyday work without asking you."
+            "No rules apply to this machine, so agents may only do everyday work without asking you."
                 .into(),
             Some(vec!["rules", "add", "--preset", "family", "--if-empty"]),
         ),
@@ -772,22 +772,51 @@ fn failed(json: &Value, command: &str) {
     eprintln!("✗ {message}\n  Try again later: {command}");
 }
 
-/// Whether `rules list` shows a rule for every agent that applies on this
-/// machine's host.
-fn has_rules(listed: &Value) -> bool {
-    let hosts = listed["hosts"].as_array().into_iter().flatten();
-    let Some(here) = hosts.into_iter().find(|host| host["self"] == true) else {
+/// The rules for every agent that apply on this machine's host, as a
+/// `rules list` (or a change's snapshot) shows them; says so and shows
+/// their texts if there are any.
+fn show_rules(listed: &Value) -> bool {
+    let Some(here) = this_host(listed) else {
         return false;
     };
-    listed["rules"]
+    let texts: Vec<&str> = listed["rules"]
         .as_array()
         .into_iter()
         .flatten()
-        .any(|rule| {
+        .filter(|rule| {
             rule["agents"] == "all"
                 && (rule["hosts"] == "all"
                     || rule["hosts"]
                         .as_array()
                         .is_some_and(|keys| keys.iter().any(|key| key["key"] == here["key"])))
         })
+        .filter_map(|rule| rule["text"].as_str())
+        .collect();
+    if texts.is_empty() {
+        return false;
+    }
+    done(&format!(
+        "Rules already apply to this machine; `{}` shows them.",
+        list_here(listed)
+    ));
+    for text in texts {
+        say(&format!("  {text}"));
+    }
+    true
+}
+
+/// This machine's host, as a `rules` snapshot lists it.
+fn this_host(listed: &Value) -> Option<&Value> {
+    listed["hosts"]
+        .as_array()?
+        .iter()
+        .find(|host| host["self"] == true)
+}
+
+/// The `rules list` that shows the rules applying on this machine.
+fn list_here(listed: &Value) -> String {
+    match this_host(listed).and_then(|host| host["name"].as_str()) {
+        Some(name) => format!("latch rules list --host {name}"),
+        None => "latch rules list".into(),
+    }
 }
