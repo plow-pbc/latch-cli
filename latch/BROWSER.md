@@ -492,7 +492,9 @@ hidden one, such as a payment form's invisible check, is not a stop), a code sta
 or a passkey stage (`needs_fields`, before the model is asked; a code
 stage's stop points to SKILL.md's "Signing in" for the code; a passkey
 stage goes on when a named item that fits holds a password, so the model
-can take the page's password path), `blocked`,
+can take the page's password path, and otherwise says to use a password
+or code the page offers, else stop and tell the owner: latch's browsers
+offer no passkey, to the agent or to the owner in a handoff), `blocked`,
 `unconfirmed`, `stuck` or `already_true`, a budget (8 actions a step, 30 a
 plan, 2 waits a step: `step_budget`, `plan_budget`, `deadline`), a target
 below p 0.5 (`ambiguous_target`, with candidate refs), text that was not
@@ -687,7 +689,7 @@ started with `--headless-browsers`) answers `handoff` with `needs_owner`
 and `"reason": "no_screen"` at once, and its message says what to do
 instead: for a code, ask the owner for it and type it; for anything else,
 stop and tell the owner what the page needs. The stops that name the owner
-as the way on (a CAPTCHA, a code or passkey stage, a fill the page would
+as the way on (a CAPTCHA, a code stage, a fill the page would
 not keep) say the same on such a host, never to hand off. On Linux, each headed session
 runtime's worker starts a private Xvfb display (`-displayfd`)
 for its engine, up for as long as the runtime. It listens on its socket

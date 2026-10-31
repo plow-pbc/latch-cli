@@ -258,11 +258,13 @@ fn serve<B: Runtime>(
         let wait = clear
             .map_or(due, |at| at.min(due))
             .saturating_duration_since(Instant::now());
-        // While the engine holds requests for latch to check, it is tended
-        // every few milliseconds, not left until the next call.
+        // The engine is tended when it writes (`Runtime::wakes`), and while
+        // it holds requests for latch to check, every few milliseconds, not
+        // left until the next call.
         let tending = core.browser().tend();
         let slice = if tending { wait.min(TEND) } else { wait };
-        if stdin.buffer().is_empty() && !cdp::readable(&*raw, slice).unwrap_or(false) {
+        let wakes = core.browser().wakes();
+        if stdin.buffer().is_empty() && !cdp::readable_or(&*raw, wakes, slice).unwrap_or(false) {
             if clear.is_some_and(|at| Instant::now() >= at) {
                 let deadline = Instant::now() + call_limit;
                 core.browser().limit(Some(deadline));

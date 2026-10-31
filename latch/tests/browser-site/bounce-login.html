@@ -1,0 +1,20 @@
+<!doctype html><title>latch bounced login test</title>
+<!-- A login that posts to itself, so its submit comes back to the same
+     form with its password field empty and nothing said, as a site that
+     silently drops a sign-in does; with ?error the page it comes back to
+     shows an alert saying the password was wrong. -->
+<h1>Sign in</h1>
+<p id="problem" role="alert" hidden>Your password is incorrect</p>
+<form method="post">
+  <p><label>Email <input type="email" name="email" autocomplete="username"></label></p>
+  <p><label>Password <input type="password" name="password" autocomplete="current-password"></label></p>
+  <p><button type="submit">Sign in</button></p>
+</form>
+<script>
+  const form = document.querySelector('form');
+  form.action = 'bounce-login.html' + location.search;
+  if (location.search === '?error' && sessionStorage.getItem('sent')) {
+    document.getElementById('problem').hidden = false;
+  }
+  form.addEventListener('submit', () => sessionStorage.setItem('sent', '1'));
+</script>

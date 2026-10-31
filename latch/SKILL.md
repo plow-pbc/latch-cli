@@ -282,8 +282,10 @@ fixes it.
   A challenge you can't do yourself is `handoff`'s; on a host with no
   screen (`no_screen`), stop and tell the owner what the page needs.
 - A sign-in you submitted that doesn't seem to move on (the same page, no
-  error, no code prompt, not signed in; a login fill's answer then has a
-  `next` saying the page kept its fields), or an obvious bot check:
+  error, no code prompt, not signed in; a login fill's `shows` says what
+  the page shows after the submit, such as the password field again,
+  empty, with no error, and its `next` says when the page kept its
+  fields), or an obvious bot check:
   `close` the session and retry it once on the other engine, then tell the
   owner which engine worked. If that fails too, stop and tell the owner.
   More attempts can get the account rate-limited or locked.
