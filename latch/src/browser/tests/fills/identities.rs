@@ -10,8 +10,7 @@ use std::time::Duration;
 use serde_json::json;
 
 use super::cards::reds_and_blues;
-use super::{CALLER, Harness, SSN, find, item, latch, site, test_state};
-use crate::browser::engine::named;
+use super::{Harness, SSN, find, item, latch, site, test_state};
 use crate::browser::host::Browsers;
 use crate::vault::host::Vault;
 use crate::vault::item::IDENTITY;
@@ -20,7 +19,6 @@ use crate::vault::store::Backend;
 conformance!(
     an_identity_secret_fills_like_a_card,
     a_page_that_shows_the_secret_back_shows_the_agent_none_of_it,
-    a_secret_a_site_kept_is_masked_in_the_next_session,
 );
 
 /// A harness on a form site (`https://forms.example`), and the vault's one
@@ -182,54 +180,4 @@ async fn a_page_that_shows_the_secret_back_shows_the_agent_none_of_it(engine: &s
         !everything.contains(SSN) && !everything.contains(&SSN.replace('-', "")),
         "the page's copy of the number reached the agent"
     );
-}
-
-/// A site that keeps the SSN it was sent in its storage shows it again
-/// in the agent's next session on the profile, which filled nothing: that
-/// session's answers mask it too, its open's first among them.
-async fn a_secret_a_site_kept_is_masked_in_the_next_session(engine: &str) {
-    let (mut h, identity, local, _keep) = forms(engine).await;
-    let url = json!({"url": format!("{local}/id-keep.html")});
-    let page = h.call("open", url.clone()).await.unwrap();
-    h.call(
-        "fill",
-        json!({"item": identity, "fields": [
-            ["ssn", [find(&page, "textbox", "Social Security number")]]]}),
-    )
-    .await
-    .unwrap();
-    h.click(&find(&page, "button", "Submit application"))
-        .await
-        .unwrap();
-    h.call("wait", json!({"text": "Application saved", "within": 5}))
-        .await
-        .unwrap();
-    // Past the fill's guard: a browser closed while a value is guarded is
-    // killed, and keeps none of what its pages stored just before.
-    tokio::time::sleep(Duration::from_secs(4)).await;
-    h.browsers.close(&h.id, CALLER).await.unwrap();
-    h.browsers.settled().await;
-
-    let (opened, _) =
-        super::super::run_as(&h.browsers, CALLER.into(), "open", named(&h.engine), url).await;
-    let opened = opened.unwrap();
-    let id = opened["session"].as_str().unwrap().to_string();
-    let (text, _) = super::super::run_as(&h.browsers, CALLER.into(), "text", &id, json!({})).await;
-    let text = text.unwrap();
-    println!("the next session: open {opened}; text {text}");
-    let (kept, _) = super::super::run_as(&h.browsers, CALLER.into(), "close", &id, json!({})).await;
-    kept.unwrap();
-    assert!(
-        text["text"]
-            .as_str()
-            .unwrap()
-            .contains("Your saved SSN: ••••"),
-        "{text}"
-    );
-    for seen in [opened.to_string(), text.to_string()] {
-        assert!(
-            !seen.contains(SSN) && !seen.contains(&SSN.replace('-', "")),
-            "the kept number reached the agent: {seen}"
-        );
-    }
 }

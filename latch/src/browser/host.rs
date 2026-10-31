@@ -428,7 +428,6 @@ impl Browsers {
             set: self.in_use.clone(),
             profile,
         };
-        let held = super::fill::held(self)?;
         let launching = Instant::now();
         let started = self.start(engine, &in_use.profile).await;
         add_time(|phases| &mut phases.launch_ms, launching.elapsed());
@@ -451,7 +450,7 @@ impl Browsers {
             confirmations: Default::default(),
             handing: Default::default(),
             judged_sites: Default::default(),
-            masks: Arc::new(std::sync::Mutex::new(held)),
+            masks: Default::default(),
             profile: std::sync::Mutex::new(Some(in_use)),
         });
         self.sessions.lock().await.insert(id.clone(), entry.clone());
@@ -866,26 +865,20 @@ async fn answer(
     if result.is_ok() {
         last_site(&entry, audit);
     }
-    mask(&entry, &mut result);
-    result
-}
-
-/// A page may show a value it was given (a confirmation that repeats a
-/// card number, a preview of an SSN as it is typed), in this session or an
-/// earlier one on its profile: the agent gets a card's last four digits
-/// only, and none of a secret.
-fn mask(entry: &Entry, result: &mut Result<(Value, Option<Vec<u8>>), Failure>) {
+    // A page may show a value it was given (a confirmation that repeats
+    // a card number, a preview of an SSN as it is typed): the agent gets a
+    // card's last four digits only, and none of a secret.
     let filled = entry.filled();
-    if filled.is_empty() {
-        return;
-    }
-    match result {
-        Ok((answer, _)) => super::shown::mask_filled(answer, &filled),
-        Err(failure) => {
-            failure.message = super::shown::masked(&failure.message, &filled);
-            super::shown::mask_filled(&mut failure.details, &filled);
+    if !filled.is_empty() {
+        match &mut result {
+            Ok((answer, _)) => super::shown::mask_filled(answer, &filled),
+            Err(failure) => {
+                failure.message = super::shown::masked(&failure.message, &filled);
+                super::shown::mask_filled(&mut failure.details, &filled);
+            }
         }
     }
+    result
 }
 
 /// What the gatekeeper judges of a session command before it runs, if
@@ -1029,8 +1022,7 @@ async fn open_judged(
         )
         .await?;
     entry.note(audit);
-    let mut loaded = worker(browsers, &entry, "open", args, None, audit).await;
-    mask(&entry, &mut loaded);
+    let loaded = worker(browsers, &entry, "open", args, None, audit).await;
     match loaded {
         Ok((mut result, bytes)) => {
             last_site(&entry, audit);
