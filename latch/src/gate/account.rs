@@ -154,16 +154,19 @@ pub async fn edit(
     }
     let mut session = Session::open(state).await?;
     session.read().await?;
-    let current = session.live(&session.merged, &id)?;
-    let agents = session.agents(agents.as_deref(), Some(&current.agents))?;
-    let hosts = session.hosts(hosts.as_deref(), Some(&current.hosts))?;
-    let check = session.unchecked();
+    let removed = session.removed();
+    let unchecked = session.unchecked();
+    let current = edited_from(&session.merged, &id, &removed, &unchecked)?;
+    // Only what is given replaces; the rest stays as it is under the lock.
+    let agents = agents
+        .map(|given| session.agents(Some(&given), Some(&current.agents)))
+        .transpose()?;
+    let hosts = hosts
+        .map(|given| session.hosts(Some(&given), Some(&current.hosts)))
+        .transpose()?;
     let change: Change = Box::new(move |now| {
-        let current = live(now, &id, &check)?;
-        let edited = current.edited(text.as_deref().unwrap_or(&current.text), agents, hosts);
-        let same = (&edited.text, &edited.agents, &edited.hosts)
-            == (&current.text, &current.agents, &current.hosts);
-        Ok((!same).then_some(edited))
+        let current = edited_from(now, &id, &removed, &unchecked)?;
+        Ok(edit_of(&current, text.as_deref(), agents, hosts))
     });
     let changed = session.commit("edit", change).await?;
     let mut done = session.snapshot(&Filter::default());
@@ -418,9 +421,20 @@ impl Session {
         Ok(())
     }
 
-    /// The live rule `id` in `rules`.
-    fn live(&self, rules: &[Rule], id: &str) -> Result<Rule, Failure> {
-        live(rules, id, &self.unchecked())
+    /// The ids of rules removed in any copy read: a rule removed anywhere
+    /// it can be seen can't be edited back, even where a newer version
+    /// won the merge.
+    fn removed(&self) -> Vec<String> {
+        let mut removed: Vec<String> = self
+            .copies
+            .iter()
+            .flat_map(|copy| copy.held.iter().flatten())
+            .filter(|rule| rule.deleted)
+            .map(|rule| rule.id.clone())
+            .collect();
+        removed.sort();
+        removed.dedup();
+        removed
     }
 
     /// The hosts whose copies couldn't be read, by name.
@@ -666,14 +680,41 @@ fn same(a: &[Rule], b: &[Rule]) -> bool {
     versions(a) == versions(b)
 }
 
-/// The live rule `id` in `rules`; refused as removed, or as not found
-/// among the copies checked (`unchecked` names those that weren't).
-fn live(rules: &[Rule], id: &str, unchecked: &[String]) -> Result<Rule, Failure> {
+/// The rule `id` in `rules`, to edit; refused as removed when it is, or
+/// when any copy read holds its removal (`removed`), or as not found among
+/// the copies checked (`unchecked` names those that weren't).
+fn edited_from(
+    rules: &[Rule],
+    id: &str,
+    removed: &[String],
+    unchecked: &[String],
+) -> Result<Rule, Failure> {
     match rules.iter().find(|rule| rule.id == id) {
-        Some(rule) if rule.deleted => Err(no_such_rule(id, true, unchecked)),
+        Some(rule) if rule.deleted || removed.iter().any(|gone| gone == id) => {
+            Err(no_such_rule(id, true, unchecked))
+        }
         Some(rule) => Ok(rule.clone()),
         None => Err(no_such_rule(id, false, unchecked)),
     }
+}
+
+/// `current` with what an edit gives: a new text, agents or hosts, each
+/// replacing, the rest kept as `current` has it. `None` when that changes
+/// nothing.
+fn edit_of(
+    current: &Rule,
+    text: Option<&str>,
+    agents: Option<Covers>,
+    hosts: Option<Covers>,
+) -> Option<Rule> {
+    let edited = current.edited(
+        text.unwrap_or(&current.text),
+        agents.unwrap_or_else(|| current.agents.clone()),
+        hosts.unwrap_or_else(|| current.hosts.clone()),
+    );
+    let same = (&edited.text, &edited.agents, &edited.hosts)
+        == (&current.text, &current.agents, &current.hosts);
+    (!same).then_some(edited)
 }
 
 fn no_such_rule(id: &str, removed: bool, unchecked: &[String]) -> Failure {
@@ -755,6 +796,47 @@ mod tests {
         // None left: the rule isn't shown, though its ids are kept.
         let none = Covers::Only(vec!["gone".into()]);
         assert_eq!(shown(&none, "key", known), None);
+    }
+
+    #[test]
+    fn an_edit_keeps_what_it_doesnt_give_as_it_is_now() {
+        let first = Rule::new("one", Covers::All, Covers::All);
+        // Meanwhile, another device narrowed its agents.
+        let narrowed = first.edited("one", Covers::Only(vec!["ada".into()]), Covers::All);
+        let text_only = edit_of(&narrowed, Some("two"), None, None).unwrap();
+        assert_eq!(
+            (text_only.text.as_str(), &text_only.agents),
+            ("two", &Covers::Only(vec!["ada".into()]))
+        );
+        let hosts_only = edit_of(&narrowed, None, None, Some(Covers::Only(vec!["k".into()])));
+        assert_eq!(hosts_only.unwrap().agents, narrowed.agents);
+        assert_eq!(edit_of(&narrowed, Some("one"), None, None), None);
+    }
+
+    #[test]
+    fn a_rule_removed_in_any_copy_read_cant_be_edited_back() {
+        let rule = Rule::new("one", Covers::All, Covers::All);
+        let unchecked = vec!["cloud".to_string()];
+        // A newer version won the merge, but a copy read holds the removal.
+        let revived = rule.edited("two", Covers::All, Covers::All);
+        let refused = edited_from(
+            std::slice::from_ref(&revived),
+            &rule.id,
+            std::slice::from_ref(&rule.id),
+            &unchecked,
+        );
+        let refused = refused.unwrap_err();
+        assert_eq!(
+            (refused.code.as_str(), &refused.details["removed"]),
+            ("no_such_rule", &json!(true))
+        );
+        assert_eq!(
+            edited_from(std::slice::from_ref(&revived), &rule.id, &[], &unchecked).unwrap(),
+            revived
+        );
+        let missing = edited_from(&[], &rule.id, &[], &unchecked).unwrap_err();
+        assert_eq!(missing.details["removed"], false);
+        assert_eq!(missing.details["unchecked_hosts"], json!(["cloud"]));
     }
 
     #[test]
