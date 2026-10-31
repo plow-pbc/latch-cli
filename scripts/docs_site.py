@@ -41,7 +41,7 @@ GROUPS = [
     ("Browser", ["browser"]),
     ("Vault", ["vault"]),
     ("Rules", ["rules"]),
-    ("Connectors", ["plugins", "google", "messages", "contacts"]),
+    ("Connectors", ["plugins", "google", "install-gog", "messages", "contacts"]),
     ("Audit", ["audit"]),
 ]
 

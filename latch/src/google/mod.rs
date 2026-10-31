@@ -3,6 +3,7 @@
 //!
 //! - `client.rs`: the agent's side; sends the request and any files gog reads.
 //! - `host.rs`: the host's side; checks the request, picks accounts, starts workers.
+//! - `install.rs`: installs the pinned gog (`latch install-gog`).
 //! - `process.rs`: inside the sandboxed worker; runs the pinned gog binary.
 //! - `policy.rs`: the grammar that decides which commands and flags are allowed.
 //! - `merge.rs`: combines one read's results from several accounts.
@@ -13,6 +14,7 @@ pub mod client;
 #[cfg(feature = "fake-gog")]
 pub mod fake;
 pub mod host;
+pub mod install;
 pub mod merge;
 #[cfg(test)]
 mod parity;
