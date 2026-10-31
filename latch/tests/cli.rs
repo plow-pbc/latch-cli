@@ -4727,7 +4727,7 @@ fn a_state_folder_from_a_newer_latch_is_refused_before_anything_is_read() {
     let dir = test_dir();
     let state = dir.path().join("state");
     fs::create_dir(&state).unwrap();
-    let marker = r#"{"format": 3, "written_by": "0.3.0"}"#;
+    let marker = r#"{"format": 4, "written_by": "0.3.0"}"#;
     fs::write(state.join("latch.json"), marker).unwrap();
     // Not valid for this latch either way: a newer layout it would misread.
     fs::write(state.join("config.json"), "{\"layout\": \"newer\"}").unwrap();
@@ -7695,7 +7695,7 @@ fn logout_refuses_a_link_to_a_state_folder_or_a_folder_that_is_not_one() {
     fs::create_dir(&other).unwrap();
     fs::write(
         real.join("latch.json"),
-        r#"{"format": 2, "written_by": "test"}"#,
+        r#"{"format": 3, "written_by": "test"}"#,
     )
     .unwrap();
     for (folder, file) in [&real, &other]
