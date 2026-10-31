@@ -3,7 +3,6 @@
 //! for an app (see `local`); with `--follow` too, again each time that
 //! changes (see `follow`).
 
-use std::os::fd::RawFd;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -440,7 +439,7 @@ pub fn hosted(state: &StateDir, until: Option<std::time::Instant>) -> Option<Hos
 /// its own to its owner's `status --host --follow` this way.
 pub fn follow(
     dir: &Path,
-    hangup: Option<RawFd>,
+    hangup: Option<crate::watch::Hangup>,
     mut send: impl FnMut(&Value) -> bool,
 ) -> Result<(), Failure> {
     let watching =

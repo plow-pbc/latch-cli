@@ -19,13 +19,13 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use tokio::io::AsyncReadExt;
-use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::Notify;
 
 use super::{Host, Stopping, answer, failed};
 use crate::failure::code;
 use crate::lifecycle::{self, Phase};
 use crate::log::log;
+use crate::transport::{LocalRead, LocalWrite};
 use crate::wire::{self, Request, Response};
 
 pub const OPS: [&str; 4] = ["host_hello", "host_stop", "host_watch", "host_attach"];
@@ -91,7 +91,7 @@ pub fn await_holder(host: &Arc<Host>) {
     });
 }
 
-pub async fn serve(host: &Host, request: &Request, mut send: OwnedWriteHalf, recv: OwnedReadHalf) {
+pub async fn serve(host: &Host, request: &Request, mut send: LocalWrite, recv: LocalRead) {
     let hello = Response::Ok(hello(host));
     match request.op.as_str() {
         "host_hello" => answer(&mut send, &hello).await,
@@ -152,12 +152,7 @@ fn hello(host: &Host) -> Value {
 /// Answers `hello`, then sends the board as it changes until the watcher
 /// goes away (its side of the socket ends, or it cannot be written to) or
 /// the host is stopping.
-async fn watch(
-    host: &Host,
-    hello: Response,
-    mut send: OwnedWriteHalf,
-    mut recv: OwnedReadHalf,
-) -> Watched {
+async fn watch(host: &Host, hello: Response, mut send: LocalWrite, mut recv: LocalRead) -> Watched {
     let hello = serde_json::to_vec(&hello).expect("a response serializes");
     if wire::write_frame(&mut send, &hello).await.is_err() {
         return Watched::Gone;

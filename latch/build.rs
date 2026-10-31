@@ -15,6 +15,12 @@ fn main() {
     println!("cargo:rustc-env=LATCH_COMMIT={commit}");
     println!("cargo:rustc-env=LATCH_BUILT={built}");
 
+    // Windows gives a program's main thread 1 MiB of stack; macOS and Linux
+    // give 8 MiB, which latch's commands, run on it, are written for.
+    if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+        println!("cargo:rustc-link-arg-bins=/STACK:8388608");
+    }
+
     // Run again when the commit or the source changes, and only then.
     println!("cargo:rerun-if-env-changed=LATCH_BUILD_COMMIT");
     for path in ["build.rs", "Cargo.toml", "Cargo.lock", "src", "tests"] {

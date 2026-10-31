@@ -19,8 +19,6 @@
 use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io;
-use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
@@ -371,16 +369,12 @@ pub fn tree_hash(root: &Path) -> io::Result<String> {
             digest.update(b"l ");
             digest.update(&rel);
             digest.update(b"\0");
-            digest.update(fs::read_link(&path)?.as_os_str().as_bytes());
+            digest.update(fs::read_link(&path)?.as_os_str().as_encoded_bytes());
         } else if file_type.is_dir() {
             digest.update(b"d ");
             digest.update(&rel);
         } else if file_type.is_file() {
-            let mode: &[u8] = if kind.permissions().mode() & 0o111 != 0 {
-                b"x"
-            } else {
-                b"-"
-            };
+            let mode: &[u8] = if runs(&kind) { b"x" } else { b"-" };
             let file_sha256 = crate::google::process::sha256(&mut File::open(&path)?)?;
             digest.update(b"f ");
             digest.update(&rel);
@@ -454,7 +448,6 @@ fn checked(receipt: &Path, parts: &[(PathBuf, &str)]) -> Result<(), String> {
 /// and its metadata last changed. Any write, replacement, rename or chmod
 /// changes it.
 fn metadata_hash(folders: &[&Path]) -> io::Result<String> {
-    use std::os::unix::fs::MetadataExt;
     let mut digest = Sha256::new();
     for folder in folders {
         let mut entries = Vec::new();
@@ -466,22 +459,51 @@ fn metadata_hash(folders: &[&Path]) -> io::Result<String> {
         for (rel, path) in entries {
             let meta = fs::symlink_metadata(&path)?;
             digest.update(&rel);
-            digest.update(
-                format!(
-                    "\0{:o} {} {} {}.{} {}.{}\n",
-                    meta.mode(),
-                    meta.len(),
-                    meta.ino(),
-                    meta.mtime(),
-                    meta.mtime_nsec(),
-                    meta.ctime(),
-                    meta.ctime_nsec()
-                )
-                .as_bytes(),
-            );
+            digest.update(said_of(&meta).as_bytes());
         }
     }
     Ok(to_hex(&digest.finalize()))
+}
+
+/// What the file system says of one entry for `metadata_hash`. On Windows,
+/// which has no mode or inode, its attributes and creation time stand in.
+fn said_of(meta: &fs::Metadata) -> String {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        format!(
+            "\0{:o} {} {} {}.{} {}.{}\n",
+            meta.mode(),
+            meta.len(),
+            meta.ino(),
+            meta.mtime(),
+            meta.mtime_nsec(),
+            meta.ctime(),
+            meta.ctime_nsec()
+        )
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        format!(
+            "\0{:x} {} {} {}\n",
+            meta.file_attributes(),
+            meta.len(),
+            meta.creation_time(),
+            meta.last_write_time()
+        )
+    }
+}
+
+/// Whether a file's mode lets it run. Windows has no such bit.
+fn runs(meta: &fs::Metadata) -> bool {
+    #[cfg(unix)]
+    return std::os::unix::fs::PermissionsExt::mode(&meta.permissions()) & 0o111 != 0;
+    #[cfg(windows)]
+    return {
+        let _ = meta;
+        false
+    };
 }
 
 fn walk(root: &Path, dir: &Path, entries: &mut Vec<(Vec<u8>, PathBuf)>) -> io::Result<()> {
@@ -491,7 +513,7 @@ fn walk(root: &Path, dir: &Path, entries: &mut Vec<(Vec<u8>, PathBuf)>) -> io::R
             .strip_prefix(root)
             .expect("below root")
             .as_os_str()
-            .as_bytes()
+            .as_encoded_bytes()
             .to_vec();
         let is_dir = fs::symlink_metadata(&path)?.is_dir();
         entries.push((rel, path.clone()));
@@ -504,6 +526,8 @@ fn walk(root: &Path, dir: &Path, entries: &mut Vec<(Vec<u8>, PathBuf)>) -> io::R
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
     use super::*;
     use crate::failure::Exit;
 

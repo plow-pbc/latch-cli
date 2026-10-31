@@ -60,8 +60,8 @@ pub fn run(state: &StateDir, follow: bool) -> Result<(), Failure> {
 
 fn start_watch(state: &StateDir, file: &Path) -> Result<Watch, Failure> {
     state.create()?;
-    let stdin = watch::stdin_is_a_pipe().then_some(libc::STDIN_FILENO);
-    Watch::new(&state.path, &[file.to_path_buf()], stdin).map_err(|err| watch_failed(state, err))
+    Watch::new(&state.path, &[file.to_path_buf()], watch::stdin_hangup())
+        .map_err(|err| watch_failed(state, err))
 }
 
 /// Sleeps until the folder changes; false once whoever started us is gone.

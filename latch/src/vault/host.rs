@@ -6,7 +6,6 @@
 
 use std::collections::HashMap;
 use std::fs::OpenOptions;
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -20,6 +19,7 @@ use super::link::{self, Here};
 use super::store::{Backend, OwnStore};
 use crate::failure::{Failure, code};
 use crate::serve::Done;
+use crate::state::OwnerOnly;
 use crate::wire::{self, Response};
 
 /// How long a previewed import waits for the owner's pick; past it, or
@@ -62,7 +62,7 @@ impl Vault {
             .write(true)
             .create(true)
             .truncate(false)
-            .mode(0o600)
+            .owner_only()
             .open(&path)
             .map_err(io)?;
         lock.lock().map_err(io)?;

@@ -18,6 +18,7 @@ use tokio::sync::Mutex;
 use super::core::{self, Call};
 use crate::failure::{Failure, code};
 use crate::wire::Response;
+use crate::worker::OwnGroup;
 
 /// The worker's environment: nothing from the host's but a plain `PATH`.
 const PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
@@ -64,7 +65,7 @@ struct Worker {
     /// browser's, and Camoufox's helper's), which a stopped worker leaves
     /// running. On Linux they are in the worker's bubblewrap, which takes
     /// them with it.
-    groups: Vec<libc::pid_t>,
+    groups: Vec<Group>,
     /// The session's profile folder.
     #[cfg_attr(not(all(test, target_os = "macos")), allow(dead_code))]
     profile: PathBuf,
@@ -126,6 +127,7 @@ impl Runtime {
         if super::egress::local_allowed(state_dir)? {
             command.arg("--allow-local-browsing");
         }
+        #[cfg(unix)]
         if super::display::for_runtime(headless) {
             command.arg("--private-display");
         }
@@ -144,7 +146,7 @@ impl Runtime {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
-            .process_group(0)
+            .own_group()
             .kill_on_drop(true)
             .spawn()
             .map_err(failed)?;
@@ -264,19 +266,31 @@ impl Runtime {
     }
 }
 
+/// A process group an engine leads. Windows has none: there the worker's
+/// job takes its engine with it.
+#[cfg(unix)]
+type Group = libc::pid_t;
+#[cfg(windows)]
+type Group = i32;
+
 impl Worker {
     /// Kills the worker's group and, while the worker still runs, its
     /// engine's groups (once it has ended, it waited for them, and their
     /// ids may be another's). Answers the engine's groups it killed.
-    fn stop(&mut self) -> Vec<libc::pid_t> {
+    fn stop(&mut self) -> Vec<Group> {
         let groups = std::mem::take(&mut self.groups);
         if !matches!(self.child.try_wait(), Ok(None)) {
             return Vec::new();
         }
-        let pid = self.child.id().expect("running") as libc::pid_t;
-        for group in std::iter::once(pid).chain(groups.iter().copied()) {
-            // SAFETY: killpg sends a signal and touches no Rust memory.
-            unsafe { libc::killpg(group, libc::SIGKILL) };
+        #[cfg(windows)]
+        let _ = self.child.start_kill();
+        #[cfg(unix)]
+        {
+            let pid = self.child.id().expect("running") as libc::pid_t;
+            for group in std::iter::once(pid).chain(groups.iter().copied()) {
+                // SAFETY: killpg sends a signal and touches no Rust memory.
+                unsafe { libc::killpg(group, libc::SIGKILL) };
+            }
         }
         groups
     }
@@ -287,8 +301,11 @@ impl Worker {
         let groups = self.stop();
         let _ = self.child.wait().await;
         let stopping = std::time::Instant::now();
+        #[cfg(unix)]
         // SAFETY: signal 0 only asks whether the group has a process left.
-        let left = |group: &libc::pid_t| unsafe { libc::killpg(*group, 0) } == 0;
+        let left = |group: &Group| unsafe { libc::killpg(*group, 0) } == 0;
+        #[cfg(windows)]
+        let left = |_: &Group| false;
         while groups.iter().any(left) {
             if stopping.elapsed() > STOPPING {
                 crate::log::log("browser: an engine process outlived SIGKILL");

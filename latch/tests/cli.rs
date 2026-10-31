@@ -3216,7 +3216,7 @@ fn serving_with_env(host: &Path, relay: &str, env: &[(&str, &Path)]) -> (Serving
     thread::spawn(move || {
         for line in log.lines() {
             let line = line.unwrap();
-            if line.contains("owner_on_host over Unix socket") {
+            if line.contains("owner_on_host over the local socket") {
                 println!("{line}");
             }
         }
@@ -10108,14 +10108,14 @@ mod pinned {
         assert_eq!(
             lines
                 .iter()
-                .filter(|line| line.contains("owner_on_host over Unix socket"))
+                .filter(|line| line.contains("owner_on_host over the local socket"))
                 .count(),
             3,
             "{lines:?}"
         );
         for line in lines
             .iter()
-            .filter(|line| line.contains("owner_on_host over Unix socket"))
+            .filter(|line| line.contains("owner_on_host over the local socket"))
         {
             println!("{line}");
         }

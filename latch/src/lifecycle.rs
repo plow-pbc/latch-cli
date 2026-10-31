@@ -8,7 +8,7 @@
 //! folder's secrets (`LOGGING_OUT`): that is no host, only a busy folder.
 
 use std::fs::{self, File};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{OnceLock, mpsc};
 use std::time::Duration;
 
@@ -139,7 +139,7 @@ fn write(
 pub fn now(state_dir: &Path) -> Host {
     let held = holds_lock(state_dir);
     let configuring = held
-        && fs::read_to_string(state_dir.join("serve.lock")).is_ok_and(|holder| {
+        && fs::read_to_string(holder_path(state_dir)).is_ok_and(|holder| {
             [CONFIGURING, LOGGING_OUT, PRUNING]
                 .iter()
                 .any(|busy| holder.starts_with(busy))
@@ -211,13 +211,20 @@ pub fn other_version(state_dir: &Path) -> Option<u32> {
     host.pid.filter(|_| theirs)
 }
 
-/// Whether something takes connections on the socket at `path`, within
-/// `PROBE_WITHIN`.
+/// Whether something takes connections on the socket at `path` (on Windows,
+/// at the address its endpoint file names), within `PROBE_WITHIN`.
 fn listening(path: &Path) -> bool {
     let path = path.to_path_buf();
     let (said, answer) = mpsc::channel();
     std::thread::spawn(move || {
-        let _ = said.send(std::os::unix::net::UnixStream::connect(path).is_ok());
+        #[cfg(unix)]
+        let connected = std::os::unix::net::UnixStream::connect(path).is_ok();
+        #[cfg(windows)]
+        let connected = std::fs::read_to_string(path).is_ok_and(|endpoint| {
+            let address = endpoint.split(' ').next().unwrap_or_default();
+            std::net::TcpStream::connect(address).is_ok()
+        });
+        let _ = said.send(connected);
     });
     answer.recv_timeout(PROBE_WITHIN).unwrap_or(false)
 }
@@ -234,9 +241,20 @@ pub fn other_version_running(pid: u32) -> Failure {
 
 /// The pid `serve.lock` names (`latch serve (pid N, …)`).
 fn lock_holder(state_dir: &Path) -> Option<u32> {
-    let text = fs::read_to_string(state_dir.join("serve.lock")).ok()?;
+    let text = fs::read_to_string(holder_path(state_dir)).ok()?;
     let after = text.split_once("(pid ")?.1;
     after.split([',', ')']).next()?.trim().parse().ok()
+}
+
+/// The file in which the lock's holder says who it is (`serve::hold_state`):
+/// on Unix the lock file itself. A Windows lock is mandatory, so no other
+/// process could read it there, and it goes in a file beside it.
+pub fn holder_path(state_dir: &Path) -> PathBuf {
+    state_dir.join(if cfg!(windows) {
+        "serve.holder"
+    } else {
+        "serve.lock"
+    })
 }
 
 /// Whether a `latch serve` holds this folder's lock. The probe takes a

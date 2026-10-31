@@ -38,7 +38,6 @@
 
 use std::fs;
 use std::io::{ErrorKind, Write};
-use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use iroh::{PublicKey, SecretKey};
@@ -114,9 +113,15 @@ impl StateDir {
     pub fn create(&self) -> Result<(), Failure> {
         self.check_format()?;
         fs::create_dir_all(&self.path).map_err(|err| self.io_failure(&self.path, err))?;
-        let owner_only = fs::Permissions::from_mode(0o700);
-        fs::set_permissions(&self.path, owner_only)
-            .map_err(|err| self.io_failure(&self.path, err))?;
+        #[cfg(windows)]
+        owner::folder(&self.path).map_err(|err| self.io_failure(&self.path, err))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let owner_only = fs::Permissions::from_mode(0o700);
+            fs::set_permissions(&self.path, owner_only)
+                .map_err(|err| self.io_failure(&self.path, err))?;
+        }
         if !self.path.join("latch.json").exists() {
             self.save_json(
                 "latch.json",
@@ -238,10 +243,10 @@ impl StateDir {
     fn move_aside(&self, found: &[String]) -> Result<(), Failure> {
         let aside = self.aside();
         fs::DirBuilder::new()
-            .mode(0o700)
+            .owner_only()
             .recursive(true)
             .create(self.path.join("leftovers"))
-            .and_then(|()| fs::DirBuilder::new().mode(0o700).create(&aside))
+            .and_then(|()| fs::DirBuilder::new().owner_only().create(&aside))
             .map_err(|err| self.io_failure(&aside, err))?;
         for name in found {
             fs::rename(self.path.join(name), aside.join(name))
@@ -321,13 +326,12 @@ impl StateDir {
     }
 
     fn key_lock(&self) -> Result<fs::File, Failure> {
-        use std::os::unix::fs::OpenOptionsExt;
         fs::OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(false)
-            .mode(0o600)
+            .owner_only()
             .open(self.path.join("key.lock"))
             .map_err(|err| self.key_lock_failure(err))
     }
@@ -487,14 +491,266 @@ pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         .unwrap_or(Path::new("."));
     let mut name = path.file_name().unwrap_or_default().to_owned();
     name.push(".");
-    let mut temp = tempfile::Builder::new()
-        .prefix(&name)
-        .suffix(".tmp")
-        .tempfile_in(dir)?;
-    temp.write_all(bytes)?;
-    temp.as_file().sync_all()?;
-    temp.persist(path).map_err(|err| err.error)?;
-    fs::File::open(dir)?.sync_all()
+    // Windows: the temporary file is made this user's as it is made, and
+    // NTFS logs the rename itself (a folder cannot be opened to sync).
+    #[cfg(windows)]
+    {
+        name.push(format!("{:016x}.tmp", rand::random::<u64>()));
+        let temp = dir.join(name);
+        let written = owner::create_new(&temp)
+            .and_then(|mut file| file.write_all(bytes).and_then(|()| file.sync_all()))
+            .and_then(|()| fs::rename(&temp, path));
+        if written.is_err() {
+            let _ = fs::remove_file(&temp);
+        }
+        written
+    }
+    #[cfg(unix)]
+    {
+        let mut temp = tempfile::Builder::new()
+            .prefix(&name)
+            .suffix(".tmp")
+            .tempfile_in(dir)?;
+        temp.write_all(bytes)?;
+        temp.as_file().sync_all()?;
+        temp.persist(path).map_err(|err| err.error)?;
+        fs::File::open(dir)?.sync_all()
+    }
+}
+
+/// Windows access lists that let in this user alone, and nothing inherited
+/// from above: the Windows side of modes 0700 and 0600.
+#[cfg(windows)]
+pub(crate) mod owner {
+    use std::fs::File;
+    use std::io;
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::FromRawHandle;
+    use std::path::Path;
+    use std::ptr::{null, null_mut};
+
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, ERROR_SUCCESS, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE,
+        LocalFree,
+    };
+    use windows_sys::Win32::Security::Authorization::{
+        EXPLICIT_ACCESS_W, GetNamedSecurityInfoW, NO_MULTIPLE_TRUSTEE, SE_FILE_OBJECT, SET_ACCESS,
+        SetEntriesInAclW, SetNamedSecurityInfoW, TRUSTEE_IS_SID, TRUSTEE_IS_USER, TRUSTEE_W,
+    };
+    use windows_sys::Win32::Security::{
+        ACL, DACL_SECURITY_INFORMATION, EqualSid, GetTokenInformation,
+        InitializeSecurityDescriptor, NO_INHERITANCE, OWNER_SECURITY_INFORMATION,
+        PROTECTED_DACL_SECURITY_INFORMATION, PSID, SE_DACL_PROTECTED, SECURITY_ATTRIBUTES,
+        SECURITY_DESCRIPTOR, SUB_CONTAINERS_AND_OBJECTS_INHERIT, SetSecurityDescriptorControl,
+        SetSecurityDescriptorDacl, TOKEN_INFORMATION_CLASS, TOKEN_OWNER, TOKEN_QUERY, TOKEN_USER,
+        TokenOwner, TokenUser,
+    };
+    use windows_sys::Win32::Storage::FileSystem::{
+        CREATE_NEW, CreateFileW, FILE_ALL_ACCESS, FILE_ATTRIBUTE_NORMAL,
+    };
+    use windows_sys::Win32::System::SystemServices::SECURITY_DESCRIPTOR_REVISION;
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    /// `folder` and everything in it and made in it: this user's alone. A
+    /// folder someone else owns is refused: its owner could open it again.
+    pub fn folder(folder: &Path) -> io::Result<()> {
+        if !mine(folder)? {
+            let message = format!("{} belongs to another user", folder.display());
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied, message));
+        }
+        let name = wide(folder);
+        with_acl(SUB_CONTAINERS_AND_OBJECTS_INHERIT, |acl| {
+            // SAFETY: a NUL-terminated name and a live list; only the DACL changes.
+            unsafe {
+                SetNamedSecurityInfoW(
+                    name.as_ptr(),
+                    SE_FILE_OBJECT,
+                    DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                    null_mut(),
+                    null_mut(),
+                    acl,
+                    null(),
+                )
+            }
+        })
+    }
+
+    /// A new file at `path`, made this user's alone as it is made, so no one
+    /// else can open it first; it fails if anything is there already.
+    pub fn create_new(path: &Path) -> io::Result<File> {
+        let name = wide(path);
+        let mut file = Err(io::Error::other("no file"));
+        with_acl(NO_INHERITANCE, |acl| {
+            // SAFETY: zeroed is a valid descriptor to initialize.
+            let mut descriptor: SECURITY_DESCRIPTOR = unsafe { std::mem::zeroed() };
+            let descriptor_ptr = (&mut descriptor as *mut SECURITY_DESCRIPTOR).cast();
+            // SAFETY: the descriptor lives through CreateFileW; the list is live.
+            let made = unsafe {
+                InitializeSecurityDescriptor(descriptor_ptr, SECURITY_DESCRIPTOR_REVISION) != 0
+                    && SetSecurityDescriptorDacl(descriptor_ptr, 1, acl, 0) != 0
+                    && SetSecurityDescriptorControl(
+                        descriptor_ptr,
+                        SE_DACL_PROTECTED,
+                        SE_DACL_PROTECTED,
+                    ) != 0
+            };
+            if !made {
+                file = Err(io::Error::last_os_error());
+                return ERROR_SUCCESS;
+            }
+            let attributes = SECURITY_ATTRIBUTES {
+                nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+                lpSecurityDescriptor: descriptor_ptr,
+                bInheritHandle: 0,
+            };
+            // SAFETY: a NUL-terminated name and attributes live for the call.
+            let handle = unsafe {
+                CreateFileW(
+                    name.as_ptr(),
+                    GENERIC_READ | GENERIC_WRITE,
+                    0,
+                    &attributes,
+                    CREATE_NEW,
+                    FILE_ATTRIBUTE_NORMAL,
+                    null_mut(),
+                )
+            };
+            file = if handle == INVALID_HANDLE_VALUE {
+                Err(io::Error::last_os_error())
+            } else {
+                // SAFETY: a new handle nothing else owns.
+                Ok(unsafe { File::from_raw_handle(handle) })
+            };
+            ERROR_SUCCESS
+        })?;
+        file
+    }
+
+    /// Whether this user owns `path`: its owner is this user, or the owner
+    /// this process gives what it makes (Administrators, when elevated).
+    fn mine(path: &Path) -> io::Result<bool> {
+        let name = wide(path);
+        let mut owner: PSID = null_mut();
+        let mut descriptor = null_mut();
+        // SAFETY: a NUL-terminated name; `owner` points into `descriptor`,
+        // freed below.
+        let read = unsafe {
+            GetNamedSecurityInfoW(
+                name.as_ptr(),
+                SE_FILE_OBJECT,
+                OWNER_SECURITY_INFORMATION,
+                &mut owner,
+                null_mut(),
+                null_mut(),
+                null_mut(),
+                &mut descriptor,
+            )
+        };
+        if read != ERROR_SUCCESS {
+            return Err(io::Error::from_raw_os_error(read as i32));
+        }
+        let user = token(TokenUser)?;
+        let default = token(TokenOwner)?;
+        // SAFETY: each buffer starts with the structure its class gives.
+        let (user, default) = unsafe {
+            (
+                (*(user.as_ptr() as *const TOKEN_USER)).User.Sid,
+                (*(default.as_ptr() as *const TOKEN_OWNER)).Owner,
+            )
+        };
+        // SAFETY: three valid SIDs, read only.
+        let mine = unsafe { EqualSid(owner, user) != 0 || EqualSid(owner, default) != 0 };
+        // SAFETY: allocated by GetNamedSecurityInfoW, freed once.
+        unsafe { LocalFree(descriptor) };
+        Ok(mine)
+    }
+
+    /// Runs `apply` with an access list that grants this user everything,
+    /// and nothing else anyone.
+    fn with_acl(inheritance: u32, apply: impl FnOnce(*const ACL) -> u32) -> io::Result<()> {
+        let user = token(TokenUser)?;
+        // SAFETY: TOKEN_USER starts the buffer, which `token` filled.
+        let sid = unsafe { (*(user.as_ptr() as *const TOKEN_USER)).User.Sid };
+        let entry = EXPLICIT_ACCESS_W {
+            grfAccessPermissions: FILE_ALL_ACCESS,
+            grfAccessMode: SET_ACCESS,
+            grfInheritance: inheritance,
+            Trustee: TRUSTEE_W {
+                pMultipleTrustee: null_mut(),
+                MultipleTrusteeOperation: NO_MULTIPLE_TRUSTEE,
+                TrusteeForm: TRUSTEE_IS_SID,
+                TrusteeType: TRUSTEE_IS_USER,
+                ptstrName: sid.cast(),
+            },
+        };
+        let mut acl: *mut ACL = null_mut();
+        // SAFETY: one entry, no old list; `acl` is freed below.
+        let made = unsafe { SetEntriesInAclW(1, &entry, null(), &mut acl) };
+        if made != ERROR_SUCCESS {
+            return Err(io::Error::from_raw_os_error(made as i32));
+        }
+        let applied = apply(acl);
+        // SAFETY: allocated by SetEntriesInAclW above, freed once.
+        unsafe { LocalFree(acl.cast()) };
+        match applied {
+            ERROR_SUCCESS => Ok(()),
+            err => Err(io::Error::from_raw_os_error(err as i32)),
+        }
+    }
+
+    /// What this process's token says of `class`, as a buffer that starts
+    /// with its structure.
+    fn token(class: TOKEN_INFORMATION_CLASS) -> io::Result<Vec<u64>> {
+        let mut token: HANDLE = null_mut();
+        // SAFETY: a query-only token of this process, closed below.
+        if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let mut size = 0u32;
+        // SAFETY: the first call only says how much room it needs.
+        unsafe { GetTokenInformation(token, class, null_mut(), 0, &mut size) };
+        // u64s, so the SID's words are aligned.
+        let mut buffer = vec![0u64; (size as usize).div_ceil(8)];
+        // SAFETY: `buffer` holds `size` bytes.
+        let ok = unsafe {
+            GetTokenInformation(token, class, buffer.as_mut_ptr().cast(), size, &mut size)
+        };
+        let error = io::Error::last_os_error();
+        // SAFETY: our token, closed once.
+        unsafe { CloseHandle(token) };
+        if ok == 0 {
+            return Err(error);
+        }
+        Ok(buffer)
+    }
+
+    fn wide(path: &Path) -> Vec<u16> {
+        path.as_os_str().encode_wide().chain([0]).collect()
+    }
+}
+
+/// Files and folders only their owner can use: mode 0600 and 0700 on Unix.
+/// On Windows a new file or folder takes its parent's access list: the state
+/// folder's is this user's alone (`owner::folder`), and a secret written
+/// anywhere else is made so as it is made (`owner::create_new`).
+pub(crate) trait OwnerOnly {
+    fn owner_only(&mut self) -> &mut Self;
+}
+
+impl OwnerOnly for fs::OpenOptions {
+    fn owner_only(&mut self) -> &mut Self {
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(self, 0o600);
+        self
+    }
+}
+
+impl OwnerOnly for fs::DirBuilder {
+    fn owner_only(&mut self) -> &mut Self {
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(self, 0o700);
+        self
+    }
 }
 
 /// Bytes as lowercase hex, two characters per byte.
@@ -504,6 +760,8 @@ pub fn to_hex(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
     use super::*;
 
     /// Test state lives under the repo's gitignored `.dev/`, like every dev run.

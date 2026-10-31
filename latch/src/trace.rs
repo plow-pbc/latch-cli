@@ -9,7 +9,6 @@
 //! (`relay_link.rs`).
 
 use std::fs::{File, OpenOptions};
-use std::os::unix::fs::OpenOptionsExt;
 use std::process::Stdio;
 use std::sync::Mutex;
 
@@ -19,7 +18,7 @@ use tracing_subscriber::fmt::writer::BoxMakeWriter;
 use tracing_subscriber::prelude::*;
 
 use crate::failure::{Failure, code};
-use crate::state::StateDir;
+use crate::state::{OwnerOnly, StateDir};
 
 /// The file in the state folder a command's events are appended to.
 pub const FILE: &str = "trace.log";
@@ -74,7 +73,7 @@ pub fn file(state: &StateDir) -> Result<File, Failure> {
     OpenOptions::new()
         .append(true)
         .create(true)
-        .mode(0o600)
+        .owner_only()
         .open(&path)
         .map_err(|err| Failure::new(code::state_io, format!("{}: {err}", path.display())))
 }

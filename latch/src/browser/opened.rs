@@ -9,9 +9,9 @@
 //! session behind it names a session a restart ended. Each is kept 7 days,
 //! as a request's journal is; then its id is no session at all.
 
+use crate::state::OwnerOnly;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -27,14 +27,14 @@ pub fn record(state_dir: &Path, hash: &str, owner: &str) -> Result<(), Failure> 
     let folder = folder(state_dir);
     let written = fs::DirBuilder::new()
         .recursive(true)
-        .mode(0o700)
+        .owner_only()
         .create(&folder)
         .and_then(|()| {
             OpenOptions::new()
                 .write(true)
                 .create(true)
                 .truncate(true)
-                .mode(0o600)
+                .owner_only()
                 .open(folder.join(hash))
         })
         .and_then(|mut file| file.write_all(owner.as_bytes()));

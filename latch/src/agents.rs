@@ -22,6 +22,8 @@ use crate::failure::{Failure, code};
 use crate::hosts;
 use crate::login;
 use crate::plow::{ListedAgent, Plow};
+#[cfg(unix)]
+use crate::state::OwnerOnly;
 use crate::state::StateDir;
 use crate::term;
 use crate::wire::Request;
@@ -527,15 +529,18 @@ struct TokenFile {
 
 impl TokenFile {
     fn reserve(path: &Path) -> Result<TokenFile, Failure> {
-        use std::os::unix::fs::OpenOptionsExt;
         let path = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
-        let opened = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            // A link there is "already exists", never followed.
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(&path);
+        // A link there is "already exists", never followed. On Windows the
+        // file is made this user's alone as it is made, wherever it is.
+        #[cfg(windows)]
+        let opened = crate::state::owner::create_new(&path);
+        #[cfg(unix)]
+        let opened = {
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true).owner_only();
+            std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, libc::O_NOFOLLOW);
+            options.open(&path)
+        };
         match opened {
             Ok(file) => Ok(TokenFile { path, file }),
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -552,33 +557,39 @@ impl TokenFile {
         }
     }
 
-    /// Plow made no agent: the empty file goes.
+    /// Plow made no agent: the empty file goes, closed first (Windows
+    /// deletes no file its maker still holds open).
     fn abandon(self) {
-        let _ = std::fs::remove_file(&self.path);
+        let TokenFile { path, file } = self;
+        drop(file);
+        let _ = std::fs::remove_file(&path);
     }
 
     /// Writes `token` and returns the file's path. Plow made `agent_uid`,
     /// so a credential that cannot be kept is said plainly, and the agent
     /// left for its owner to remove.
-    fn keep(mut self, token: Option<&str>, agent_uid: &str) -> Result<PathBuf, Failure> {
+    fn keep(self, token: Option<&str>, agent_uid: &str) -> Result<PathBuf, Failure> {
+        let TokenFile { path, mut file } = self;
         let written = match token {
-            Some(token) => self
-                .file
+            Some(token) => file
                 .write_all(format!("{token}\n").as_bytes())
-                .and_then(|()| self.file.sync_all())
+                .and_then(|()| file.sync_all())
                 .map_err(|err| err.to_string()),
             None => Err("Plow sent no credential".to_string()),
         };
+        // Closed before anything removes it: Windows deletes no file its
+        // maker still holds open.
+        drop(file);
         match written {
-            Ok(()) => Ok(self.path),
+            Ok(()) => Ok(path),
             Err(why) => {
-                let file_removed = std::fs::remove_file(&self.path).is_ok();
+                let file_removed = std::fs::remove_file(&path).is_ok();
                 let message = format!(
                     "the agent was created, but its credential could not be saved to {}: {why}",
-                    self.path.display()
+                    path.display()
                 );
                 let mut failure = Failure::new(code::token_not_saved, message);
-                failure.details = json!({"agent_uid": agent_uid, "path": self.path,
+                failure.details = json!({"agent_uid": agent_uid, "path": path,
                     "file_removed": file_removed, "next": format!("latch agents show {agent_uid}")});
                 Err(failure)
             }
