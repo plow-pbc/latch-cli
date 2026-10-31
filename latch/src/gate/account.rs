@@ -96,7 +96,7 @@ pub async fn list(
     let mut session = Session::open(state).await?;
     let filter = Filter {
         agent: agent
-            .map(|name| session.account.resolve(&name, false))
+            .map(|name| session.account.resolve(&name))
             .transpose()?,
         host: host
             .map(|name| session.host_key(&name, false))
@@ -467,7 +467,7 @@ impl Session {
     /// uid already on the rule, even of an agent the account no longer has.
     fn agents(&self, given: Option<&str>, current: Option<&Covers>) -> Result<Covers, Failure> {
         self.covers(given, current, "agents", |name| {
-            self.account.resolve(name, false).map_err(|mut failure| {
+            self.account.resolve(name).map_err(|mut failure| {
                 if failure.code == code::no_such_agent.name {
                     failure.message = format!(
                         "Your change wasn't saved because no agent in your account is called {name:?}."

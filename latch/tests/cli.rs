@@ -1945,18 +1945,6 @@ fn saved_rule(state: &Path, agents: Value) -> Option<String> {
         .map(|rule| rule["text"].as_str().unwrap().to_string())
 }
 
-/// A command's JSON answer, from stdout or, failed, stderr.
-fn answered_json(output: &Output) -> (Option<i32>, Value) {
-    let printed = match output.status.success() {
-        true => &output.stdout,
-        false => &output.stderr,
-    };
-    (
-        output.status.code(),
-        serde_json::from_slice(printed).unwrap_or(Value::Null),
-    )
-}
-
 /// `rules add --preset --if-empty` adds the preset's text, as `setup`
 /// offers it, only while no rule for every agent applies here.
 #[test]
@@ -1964,7 +1952,7 @@ fn rules_add_a_preset_only_where_there_is_no_rule_for_every_agent() {
     let plow = LivePlow::start();
     let dir = test_dir();
     let state = owner_host_on(&plow, dir.path());
-    let run = |args: &[&str]| answered_json(&latch(&state, args, &[]));
+    let run = |args: &[&str]| answered(&latch(&state, args, &[]));
     let (code, added) = run(&["rules", "add", "--preset", "work", "--if-empty"]);
     assert_eq!(code, Some(0), "{added}");
     assert_eq!(added["change"]["saved"], true, "{added}");
@@ -1996,7 +1984,7 @@ fn rules_are_added_edited_listed_and_removed_on_this_machine() {
     let plow = LivePlow::start();
     let dir = test_dir();
     let state = owner_host_on(&plow, dir.path());
-    let run = |args: &[&str]| answered_json(&latch(&state, args, &[]));
+    let run = |args: &[&str]| answered(&latch(&state, args, &[]));
 
     let (code, every) = run(&["rules", "add", "Never send email."]);
     assert_eq!(code, Some(0), "{every}");
@@ -4558,9 +4546,8 @@ fn the_owners_rules_commands_reach_a_host_and_an_agents_never_do() {
     assert_eq!(login.status.code(), Some(0), "{login:?}");
     let serve = serving(&host, &relay);
 
-    let run = |state: &Path, args: &[&str], env: &[(&str, &Path)]| {
-        answered_json(&latch(state, args, env))
-    };
+    let run =
+        |state: &Path, args: &[&str], env: &[(&str, &Path)]| answered(&latch(state, args, env));
     let rules_file = dir.path().join("bot.txt");
     fs::write(&rules_file, "Run tests in the shared folder.").unwrap();
     let file = rules_file.to_str().unwrap();
@@ -5400,7 +5387,7 @@ fn a_host_that_was_stopped_catches_up_on_the_next_read() {
     drop(owners.serve(&owners.studio));
     let laptop = &owners.laptop;
     let run = |args: &[&str]| {
-        let (code, json) = answered_json(&latch(laptop, args, &[]));
+        let (code, json) = answered(&latch(laptop, args, &[]));
         assert_eq!(code, Some(0), "{args:?}: {json}");
         json
     };
@@ -5467,7 +5454,7 @@ fn a_rule_any_reachable_host_holds_removed_cant_be_edited() {
     }
     let _host = owners.serve(&owners.host);
     let _studio = owners.serve(&owners.studio);
-    let (code, refused) = answered_json(&latch(
+    let (code, refused) = answered(&latch(
         &owners.laptop,
         &["rules", "edit", "r1", "Back again."],
         &[],
