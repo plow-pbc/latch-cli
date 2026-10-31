@@ -344,6 +344,20 @@ struct RulesTests {
         #expect(client.asked.filter { $0.hasPrefix("rules add") }.count == 1)
     }
 
+    // A delete that didn't reach a host the rule applied to is said until
+    // a list says that host holds the newest rules; a host outside the
+    // rule never applied it, so isn't named.
+    @Test func aDeleteThatMissedAHostSaysSoUntilItCatchesUp() async throws {
+        let client = RulesClient()
+        let app = try await app(client)
+        client.unreach(["pi-kitchen", "sidecar"])
+        await app.deleteRule(try #require(app.rules?.rules.first { $0.id == "rl_92d6be48" }))
+        #expect(app.deletesMissed == [kitchen])
+        client.unreach(["sidecar"])
+        await app.refreshRules()
+        #expect(app.deletesMissed.isEmpty)
+    }
+
     // A read begun before a save answers after it, with the rules as they
     // were: the save's rules stay.
     @Test func anOlderReadNeverUndoesASave() async throws {

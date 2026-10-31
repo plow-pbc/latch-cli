@@ -869,8 +869,15 @@ final class AppModel {
 
     /// The account's rules as `rules list` last gave them (or a change's
     /// answer, which carries them), and why the last read failed.
-    private(set) var rules: RulesList?
+    private(set) var rules: RulesList? {
+        didSet {
+            deletesMissed.removeAll { key in rules?.hosts.contains { $0.key == key && $0.delivery != "current" } != true }
+        }
+    }
     private(set) var rulesError: LatchError?
+    /// Hosts a deleted rule applied to that the delete didn't reach, by
+    /// key, until a list says they hold the newest rules.
+    private(set) var deletesMissed: [String] = []
     /// Rules' filters, while the window is open: one agent (by uid) and one
     /// host (by key), each nil for any.
     var rulesFilter = RulesFilter()
@@ -922,7 +929,7 @@ final class AppModel {
     }
 
     func removeRule(_ rule: RulesList.Rule) async throws {
-        try await ruleChange { try await self.client.rulesRemove(rule.id) }
+        try await ruleChange(removing: rule) { try await self.client.rulesRemove(rule.id) }
     }
 
     /// The list's Delete, once confirmed; a refusal is kept for Rules to say.
@@ -942,7 +949,7 @@ final class AppModel {
     /// the rules again before saying why, so the list shows what latch
     /// holds (a rule deleted elsewhere goes). Changes run one at a time, in
     /// the order asked, so an earlier one's answer never replaces a later's.
-    private func ruleChange(_ change: @escaping () async throws -> RulesWrite) async throws {
+    private func ruleChange(removing: RulesList.Rule? = nil, _ change: @escaping () async throws -> RulesWrite) async throws {
         let previous = lastRuleChange
         let this = Task {
             await previous?.value
@@ -958,6 +965,8 @@ final class AppModel {
             rulesError = nil
             if written.change.kind == "remove" {
                 if selectedRule == written.change.id { selectedRule = nil }
+                let missed = written.list.hosts.filter { $0.delivery != "current" && removing?.hosts.contains($0.key) == true }
+                deletesMissed += missed.map(\.key).filter { !deletesMissed.contains($0) }
             } else if let id = written.change.id {
                 selectedRule = id
             }
@@ -967,9 +976,10 @@ final class AppModel {
     }
 
     /// For snapshots: as `rules list` said.
-    func stage(rules: RulesList?, error: LatchError? = nil) {
+    func stage(rules: RulesList?, error: LatchError? = nil, deletesMissed: [String] = []) {
         self.rules = rules
         rulesError = error
+        self.deletesMissed = deletesMissed
     }
 
     /// Rules' Try a Request.
