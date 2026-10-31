@@ -2,17 +2,15 @@
 //! on each of them, when it last changed, and what was removed. The local
 //! `vN` ids and revisions stay each host's own; sync keys on the uid.
 //!
-//! `merge` combines two hosts' states: the later change to an item wins,
-//! a removal as late as the edit wins, and on the first sync (items from
-//! before sync, with no order yet) a login both hosts hold with the same
-//! site, username and secrets becomes one.
+//! `merge` combines two hosts' states, uid by uid: the later change to an
+//! item wins, and a removal as late as the edit wins. Items under
+//! different uids stay separate, even with the same values.
 
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::item::{Item, LOGIN};
-use super::totp::same_key;
+use super::item::Item;
 
 /// An item and what sync orders it by.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -58,26 +56,6 @@ fn content(item: &Item) -> Vec<u8> {
     serde_json::to_vec(&item).expect("items serialize")
 }
 
-/// Whether two items from before sync are one: a login by its first site,
-/// username and secrets (password, authenticator key), anything else only
-/// with every field the same.
-fn same_item(a: &Item, b: &Item) -> bool {
-    if a.raw.kind != b.raw.kind {
-        return false;
-    }
-    if a.raw.kind != LOGIN {
-        return a.raw == b.raw && a.sites == b.sites && a.other_top_sites == b.other_top_sites;
-    }
-    let (x, y) = (
-        a.raw.login.clone().unwrap_or_default(),
-        b.raw.login.clone().unwrap_or_default(),
-    );
-    a.sites.first() == b.sites.first()
-        && x.username.unwrap_or_default() == y.username.unwrap_or_default()
-        && x.password.unwrap_or_default() == y.password.unwrap_or_default()
-        && same_key(&x.totp.unwrap_or_default(), &y.totp.unwrap_or_default())
-}
-
 /// `a` and `b` as one state, the same whichever comes first. Items come
 /// out ordered by uid, each carrying the id and revision of the side it
 /// came from; giving a foreign item a local id is the applying host's job.
@@ -101,21 +79,8 @@ pub fn merge(a: &State, b: &State) -> State {
         *held = (*held).max(t.modified);
     }
     items.retain(|uid, s| tombstones.get(uid).is_none_or(|&at| at < s.modified));
-    let mut kept: Vec<Synced> = Vec::new();
-    for (uid, s) in items {
-        let twin = s.modified == 0
-            && kept
-                .iter()
-                .any(|k| k.modified == 0 && same_item(&k.item, &s.item));
-        if twin {
-            // The smaller uid stays; the other is removed everywhere.
-            tombstones.insert(uid, 0);
-        } else {
-            kept.push(s.clone());
-        }
-    }
     State {
-        items: kept,
+        items: items.into_values().cloned().collect(),
         tombstones: tombstones
             .into_iter()
             .map(|(uid, modified)| Tombstone {
@@ -129,7 +94,7 @@ pub fn merge(a: &State, b: &State) -> State {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vault::item::{CARD, Login, Raw};
+    use crate::vault::item::{LOGIN, Login, Raw};
 
     fn login(uid: &str, modified: u64, site: &str, password: &str) -> Synced {
         Synced {
@@ -153,13 +118,6 @@ mod tests {
                 },
             },
         }
-    }
-
-    fn card(uid: &str, number: &str) -> Synced {
-        let mut item = login(uid, 0, "example.com", "");
-        item.item.raw =
-            Raw::from_labels(CARD, "Visa", &[("number".into(), number.into())]).unwrap();
-        item
     }
 
     fn gone(uid: &str, modified: u64) -> Tombstone {
@@ -251,41 +209,8 @@ mod tests {
                 vec![("u", 11)],
             ),
             (
-                "first sync: the same login on both hosts becomes one",
+                "the same values under two uids stay two items",
                 state(vec![a1()], vec![]),
-                state(
-                    vec![login("b1", 0, "example.com", "made-up-pass-1")],
-                    vec![],
-                ),
-                vec![("a1", "made-up-pass-1")],
-                vec![("b1", 0)],
-            ),
-            (
-                "first sync: one login with two passwords stays two",
-                state(vec![a1()], vec![]),
-                state(
-                    vec![login("b1", 0, "example.com", "made-up-pass-2")],
-                    vec![],
-                ),
-                vec![("a1", "made-up-pass-1"), ("b1", "made-up-pass-2")],
-                vec![],
-            ),
-            (
-                "first sync: logins on different sites stay two",
-                state(vec![a1()], vec![]),
-                state(
-                    vec![login("b1", 0, "example.org", "made-up-pass-1")],
-                    vec![],
-                ),
-                vec![("a1", "made-up-pass-1"), ("b1", "made-up-pass-1")],
-                vec![],
-            ),
-            (
-                "after the first sync, the same values are two items",
-                state(
-                    vec![login("a1", 5, "example.com", "made-up-pass-1")],
-                    vec![],
-                ),
                 state(
                     vec![login("b1", 0, "example.com", "made-up-pass-1")],
                     vec![],
@@ -331,16 +256,14 @@ mod tests {
     }
 
     #[test]
-    fn on_the_first_sync_cards_are_one_only_when_every_field_is_the_same() {
-        for (other, merged) in [
-            ("4111111111111111", vec!["a"]),
-            ("4000056655665556", vec!["a", "b"]),
-        ] {
-            let a = state(vec![card("a", "4111111111111111")], vec![]);
-            let b = state(vec![card("b", other)], vec![]);
-            let uids = |s: &State| s.items.iter().map(|s| s.uid.clone()).collect::<Vec<_>>();
-            assert_eq!(uids(&merge(&a, &b)), merged, "{other}");
-            assert_eq!(uids(&merge(&b, &a)), merged, "{other}");
-        }
+    fn a_removal_holds_however_three_hosts_states_are_grouped() {
+        let a = state(vec![login("a", 0, "example.com", "made-up-pass-1")], vec![]);
+        let b = state(vec![login("b", 0, "example.com", "made-up-pass-1")], vec![]);
+        let removed_a = state(vec![], vec![gone("a", 10)]);
+        let left = merge(&merge(&a, &b), &removed_a);
+        let right = merge(&a, &merge(&b, &removed_a));
+        assert_eq!(synced(&left), synced(&right));
+        let uids: Vec<&str> = left.items.iter().map(|s| s.uid.as_str()).collect();
+        assert_eq!(uids, ["b"]);
     }
 }
