@@ -1745,9 +1745,28 @@ async fn a_frames_target_under_a_parent_page_layer_is_refused(engine: &str) {
     session.close().await.unwrap();
 }
 
-/// A page that asks for a passkey is answered inside the browser, never by
-/// the OS's passkey sheet, which no session call can reach: the request
-/// settles at once without a credential, and the site falls back to its
+/// A page's script that asks for a passkey, then to make one as a site
+/// enrolling a passkey does (a resident key), then any credential at all,
+/// one after the other: its promise gives each answer (`credential`, or the
+/// error's name) and how long they took.
+const ASKS_FOR_PASSKEYS: &str = "(() => {\n\
+    const started = performance.now();\n\
+    const answer = (asked) => asked.then((c) => (c ? 'credential' : 'none'), (e) => e.name);\n\
+    const challenge = new Uint8Array(32);\n\
+    const make = (residentKey) => answer(navigator.credentials.create({publicKey: {\n\
+      challenge, timeout: 60000, rp: {name: 'latch test'},\n\
+      user: {id: new Uint8Array(16), name: 'ada', displayName: 'Ada'},\n\
+      pubKeyCredParams: [{type: 'public-key', alg: -7}],\n\
+      authenticatorSelection: {residentKey, userVerification: 'discouraged'}}}));\n\
+    return answer(navigator.credentials.get({publicKey: {challenge, timeout: 60000}}))\n\
+      .then((get) => make('required').then((resident) => make('discouraged')\n\
+        .then((any) => ({get, resident, any, ms: performance.now() - started}))));\n\
+  })()";
+
+/// A page that asks for a passkey, or to make one, is answered inside the
+/// browser, never by the OS's passkey sheet, which no session call can
+/// reach: each request fails at once, so no passkey is made that would be
+/// gone with the session's browser, and the site falls back to its
 /// password or code.
 async fn a_passkey_request_settles_in_the_page_and_raises_no_sheet(engine: &str) {
     let (_dir, state, _area) = test_state(engine);
@@ -1761,43 +1780,36 @@ async fn a_passkey_request_settles_in_the_page_and_raises_no_sheet(engine: &str)
         .call(json!({"op": "open", "url": url}))
         .await
         .unwrap();
-    let script = "const started = performance.now();\n\
-        navigator.credentials.get({publicKey: {challenge: new Uint8Array(32), timeout: 60000}})\n\
-          .then(c => c === null ? 'none' : 'credential', e => e.name)\n\
-          .then(answer => ({answer, ms: performance.now() - started}))";
     let evaluated = session
-        .call(json!({"op": "eval", "script": script}))
+        .call(json!({"op": "eval", "script": ASKS_FOR_PASSKEYS}))
         .await
         .unwrap()
         .result;
-    println!("{engine} passkey request: {}", evaluated["value"]);
-    assert_eq!(
-        evaluated["value"]["answer"], "NotAllowedError",
-        "{}",
-        evaluated["value"]
-    );
-    assert!(
-        evaluated["value"]["ms"].as_f64().unwrap() < 5000.0,
-        "{}",
-        evaluated["value"]
-    );
+    let answers = &evaluated["value"];
+    println!("{engine} passkey requests: {answers}");
+    for asked in ["get", "resident", "any"] {
+        assert_eq!(answers[asked], "NotAllowedError", "{asked}: {answers}");
+    }
+    assert!(answers["ms"].as_f64().unwrap() < 5000.0, "{answers}");
     session.close().await.unwrap();
 }
 
-/// The same in a popup whose page asks for a passkey as it loads, before
-/// latch has adopted it as a tab.
+/// The same in a popup whose page asks as it loads, before latch has
+/// adopted it as a tab.
 async fn a_popup_that_asks_for_a_passkey_as_it_loads_raises_no_sheet(engine: &str) {
     let (_dir, state, _area) = test_state(engine);
-    let popup = b"<!doctype html><title>passkey popup</title><h1>asking</h1><script>\
-        navigator.credentials.get({publicKey: {challenge: new Uint8Array(32), timeout: 60000}})\
-          .then(() => 'credential', e => e.name)\
-          .then(answer => { document.querySelector('h1').textContent = 'answered ' + answer; });\
-        </script>";
+    let popup = format!(
+        "<!doctype html><title>passkey popup</title><h1>asking</h1><script>\
+        {ASKS_FOR_PASSKEYS}.then(({{get, resident, any}}) => {{\
+          document.querySelector('h1').textContent =\
+            `answered get ${{get}}, resident ${{resident}}, any ${{any}}`;\
+        }});</script>"
+    );
     let opener = b"<!doctype html><title>opener</title>\
         <button onclick=\"window.open('popup')\">Sign in</button>";
     let port = serve(vec![
         ("/".into(), opener.to_vec()),
-        ("/popup".into(), popup.to_vec()),
+        ("/popup".into(), popup.into_bytes()),
     ]);
     // A passkey's site is a name, never an IP address.
     let url = format!("http://localhost:{port}/");
@@ -1826,7 +1838,12 @@ async fn a_popup_that_asks_for_a_passkey_as_it_loads_raises_no_sheet(engine: &st
     }
     println!("{engine} passkey popup: {text}");
     h.call(CALLER, "close", &id, json!({})).await.unwrap();
-    assert!(text.contains("answered NotAllowedError"), "{text}");
+    assert!(
+        text.contains(
+            "answered get NotAllowedError, resident NotAllowedError, any NotAllowedError"
+        ),
+        "{text}"
+    );
 }
 
 async fn eval_upload_and_download_move_values_and_files(engine: &str) {

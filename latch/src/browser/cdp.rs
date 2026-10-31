@@ -275,8 +275,15 @@ impl Cdp {
             "Target.attachedToTarget" if params["targetInfo"]["type"] == "page" => {
                 let page = params["sessionId"].as_str();
                 let _ = self.send("WebAuthn.enable", json!({}), page);
-                let authenticator = json!({"options": {"protocol": "ctap2", "transport": "usb"}});
-                let _ = self.send("WebAuthn.addVirtualAuthenticator", authenticator, page);
+                let refuse = "for (const name of ['get', 'create']) {\
+                    const real = CredentialsContainer.prototype[name];\
+                    CredentialsContainer.prototype[name] = function (options) {\
+                      if (options && options.publicKey) return Promise.reject(new DOMException('The operation either timed out or was not allowed.', 'NotAllowedError'));\
+                      return real.call(this, options);\
+                    };\
+                  }";
+                let script = json!({"source": refuse, "runImmediately": true});
+                let _ = self.send("Page.addScriptToEvaluateOnNewDocument", script, page);
                 let _ = self.send("Runtime.runIfWaitingForDebugger", json!({}), page);
                 false
             }
