@@ -27,6 +27,9 @@ final class RulesClient: LatchClient, @unchecked Sendable {
     private let state: Mutex<State>
     /// Holds each write until opened.
     var writeGate: Gate?
+    /// Holds each write's answer, once its change is made, until opened:
+    /// latch reaching the other hosts.
+    var deliveryGate: Gate?
     /// Holds each `rules list` until opened.
     var listGate: Gate?
     /// What each `rules try` answers, by the host asked (nil: this Mac).
@@ -53,6 +56,7 @@ final class RulesClient: LatchClient, @unchecked Sendable {
             let id = change(&state.rules)
             return Self.json(state, change: #"{"kind":"\#(kind)","id":\#(id.map { "\"\($0)\"" } ?? "null"),"saved":true,"changed":true,"reason":null}"#)
         }
+        await deliveryGate?.wait()
         return try Fixtures.decode(json)
     }
 
@@ -145,6 +149,11 @@ struct RulesTests {
         #expect(list.rules[0].agents == .all && list.rules[0].hosts == .all)
         #expect(list.rules[2].agents == .only([scout]) && list.rules[2].hosts == .only([studio]))
         #expect(list.rules[0].behindHosts == [kitchen] && list.rules[2].behindHosts.isEmpty)
+        // A host that answered without a rule is named on that rule only; one
+        // latch couldn't check, on none.
+        #expect(list.rules.filter { !$0.behindHosts.isEmpty }.map(\.id) == ["rl_7f3a9c2e", "rl_92d6be48"])
+        #expect(list.rules.allSatisfy { !$0.behindHosts.contains(list.hosts[2].key) })
+        #expect(list.hosts.filter { $0.delivery == "unknown" }.map(\.name) == ["sidecar"])
         #expect(list.thisMac?.name == "studio")
         #expect(list.hosts.map(\.delivery) == ["current", "behind", "unknown"])
         #expect(list.hosts.map(\.reason) == [nil, "rules_io", "host_outdated"])
@@ -198,15 +207,6 @@ struct RulesTests {
             "helper on pi-kitchen",
             "scout and helper on all hosts",
         ])
-    }
-
-    // A host that answered without a rule is named on that rule only; one
-    // latch couldn't check, on the page only, with what to do about it.
-    @Test func behindIsSaidOnTheRuleAndCouldntCheckOnThePage() throws {
-        let list: RulesList = try Fixtures.decode(Fixtures.rulesList(behind: true, unchecked: "host_offline"))
-        #expect(list.rules.filter { !$0.behindHosts.isEmpty }.map(\.id) == ["rl_7f3a9c2e", "rl_92d6be48"])
-        #expect(list.rules.allSatisfy { !$0.behindHosts.contains { $0 == list.hosts[2].key } })
-        #expect(list.hosts.filter { $0.delivery == "unknown" }.map(\.name) == ["sidecar"])
     }
 
     // MARK: Filters
@@ -375,6 +375,31 @@ struct RulesTests {
         await removing.delete(app: app)
         held?.open()
         await stale.value
+        #expect(app.rules?.rules.contains { $0.id == "rl_92d6be48" } == false)
+    }
+
+    // A save left running behind a closed sheet answers with the rules as
+    // it made them; a delete made meanwhile isn't undone by that answer.
+    @Test func anEarlierSaveNeverUndoesALaterOne() async throws {
+        let client = RulesClient()
+        let app = try await app(client)
+        let gate = Gate()
+        client.deliveryGate = gate
+        let adding = RuleEditor()
+        adding.text = "Ask me first."
+        let saving = Task { await adding.save(app: app) }
+        await waitUntil { client.writes.count == 1 }
+        client.deliveryGate = nil
+        let removing = Task { await app.deleteRule(try #require(app.rules?.rules.first { $0.id == "rl_92d6be48" })) }
+        // Time for the delete to finish first, were it let; the add is held
+        // till then either way.
+        for _ in 0..<200 where client.writes.count < 2 || app.rules?.rules.contains(where: { $0.id == "rl_92d6be48" }) == true {
+            try? await Task.sleep(for: .milliseconds(1))
+        }
+        gate.open()
+        #expect(await saving.value)
+        try await removing.value
+        #expect(app.rules?.rules.contains { $0.text == "Ask me first." } == true)
         #expect(app.rules?.rules.contains { $0.id == "rl_92d6be48" } == false)
     }
 
