@@ -477,7 +477,8 @@ async fn run_locked(
     state_dir: PathBuf,
 ) -> Result<(), Failure> {
     let workers = workers(state_dir)?;
-    let rules = RuleFiles::new(&state.path)?;
+    let config = state.require_config()?;
+    let rules = RuleFiles::new(&state.path, &config.peer.key, &config.peer.name)?;
     workers.probe().await.map_err(|err| {
         let message = format!("latch cannot sandbox host operations here: {}", err.message);
         Failure::new(code::sandbox_unavailable, message)
@@ -1283,6 +1284,7 @@ async fn serve_request(
                         crate::gate::owner::run(
                             &host.workers.state_dir,
                             &host.plow,
+                            &host.endpoint.id().to_string(),
                             &host.name,
                             &identity.kind,
                             &request.args,

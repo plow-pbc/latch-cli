@@ -344,10 +344,7 @@ impl Gatekeeper {
         caller: Caller<'_>,
         draft: Option<String>,
     ) -> Result<Gatekeeper, Failure> {
-        let mut rules = self
-            .rules
-            .rules(caller.key())
-            .map_err(|why| unavailable(&format!("the owner's rules could not be read: {why}")))?;
+        let mut rules = self.rules.rules(caller.key())?;
         rules.host = draft;
         Ok(Gatekeeper {
             plow: self.plow.clone(),
@@ -403,10 +400,7 @@ impl Gatekeeper {
             }
         }
         // The owner's key is no agent uid: only the host's rules apply.
-        let rules = self
-            .rules
-            .rules(caller.key())
-            .map_err(|why| unavailable(&format!("the owner's rules could not be read: {why}")));
+        let rules = self.rules.rules(caller.key());
         let chat = match caller {
             // Boxed, as are the layers' calls below: held all at once,
             // inline they would make every caller's future several times

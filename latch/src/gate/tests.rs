@@ -12,7 +12,9 @@ use jiff::Timestamp;
 use serde_json::{Value, json};
 
 use super::fake::{self, AGENT, LINE, World, agent_self, member, message, owner};
-use super::rules::{RULES_DIR, RuleFiles, Rules, RulesSource};
+use super::rules::{
+    Covers, RULES_DIR, Rule, RuleFiles, Rules, RulesDir, RulesSource, budget, merge,
+};
 use super::*;
 use crate::failure::Exit;
 use crate::model::{Asked, CallFailed, CallMeta, system_one};
@@ -172,8 +174,10 @@ impl Provider for Recorder {
 struct Unreadable;
 
 impl RulesSource for Unreadable {
-    fn rules(&self, _: &str) -> Result<Rules, String> {
-        Err("rules.txt: permission denied".into())
+    fn rules(&self, _: &str) -> Result<Rules, Failure> {
+        Err(unavailable(
+            "the owner's rules could not be read: rules.json: permission denied",
+        ))
     }
 }
 
@@ -1237,6 +1241,17 @@ async fn every_held_out_probe_asks_what_v0_asks() {
     }
 }
 
+/// This test host's key, as its rules name it.
+const HOST_KEY: &str = "studio-key";
+
+/// Writes `rules` as the host's whole list into `state`.
+fn write_rules(state: &std::path::Path, rules: &[Rule]) {
+    let dir = state.join(RULES_DIR);
+    std::fs::create_dir_all(&dir).unwrap();
+    let text = serde_json::to_string(&json!({"rules": rules})).unwrap();
+    std::fs::write(dir.join("rules.json"), text).unwrap();
+}
+
 #[test]
 fn serve_refuses_rules_it_could_not_trust_or_use() {
     let dir = tempfile::tempdir().unwrap();
@@ -1246,7 +1261,7 @@ fn serve_refuses_rules_it_could_not_trust_or_use() {
     std::fs::create_dir(&writable).unwrap();
     let state = rules.parent().unwrap().to_path_buf();
     std::fs::create_dir(&state).unwrap();
-    let refused = || match RuleFiles::new(&state) {
+    let refused = || match RuleFiles::new(&state, HOST_KEY, "studio") {
         Ok(_) => None,
         Err(failure) => {
             assert_eq!(
@@ -1256,41 +1271,31 @@ fn serve_refuses_rules_it_could_not_trust_or_use() {
             Some(failure.message)
         }
     };
-    let write =
-        |name: &str, bytes: usize| std::fs::write(rules.join(name), "r".repeat(bytes)).unwrap();
     assert_eq!(refused(), None, "no rules folder is no rules");
     std::fs::create_dir_all(&rules).unwrap();
-    write("host.txt", 3000);
-    write(&format!("{AGENT}.txt"), 3000);
-    assert_eq!(refused(), None);
-
-    write(&format!("{AGENT}.txt"), 6000);
-    assert!(refused().unwrap().contains("more than 8192"));
-    std::fs::remove_file(rules.join(format!("{AGENT}.txt"))).unwrap();
-    write("host.txt", 9000);
-    assert!(refused().unwrap().contains("more than 8192"));
-    write("host.txt", 10);
-
-    for bad in [
-        "ag_7Hk2.txt",
-        "0123456789ABCDEF0123456789ABCDEF.txt",
-        "juno.txt",
+    for broken in [
+        "not a list",
+        r#"{"rules": [{"id": "r1", "text": "x", "agents": "some", "hosts": "all", "updated": 1}]}"#,
     ] {
-        write(bad, 10);
-        assert!(refused().unwrap().contains("Plow agent uid"), "{bad}");
-        std::fs::remove_file(rules.join(bad)).unwrap();
+        std::fs::write(rules.join("rules.json"), broken).unwrap();
+        assert!(refused().unwrap().contains("rules.json"), "{broken}");
     }
 
-    let inside = writable.join("rules.txt");
-    std::fs::write(&inside, "anything goes").unwrap();
-    let link = rules.join(format!("{AGENT}.txt"));
-    std::os::unix::fs::symlink(&inside, &link).unwrap();
-    assert!(refused().unwrap().contains("protected state"));
-    std::fs::remove_file(&link).unwrap();
+    // A list over the budget still starts, so its owner can trim it.
+    let long = Rule::new(&"r".repeat(9000), Covers::All, Covers::All);
+    write_rules(&state, &[long]);
+    assert_eq!(refused(), None);
 
-    // Files that are not `.txt` are not rules, and are left alone.
-    write(&format!("{AGENT}.peer"), 20_000);
-    write("notes.md", 10);
+    let inside = writable.join("rules.json");
+    std::fs::write(&inside, r#"{"rules": []}"#).unwrap();
+    std::fs::remove_file(rules.join("rules.json")).unwrap();
+    std::os::unix::fs::symlink(&inside, rules.join("rules.json")).unwrap();
+    assert!(refused().unwrap().contains("protected state"));
+    std::fs::remove_file(rules.join("rules.json")).unwrap();
+
+    // Other files are not rules, and are left alone.
+    std::fs::write(rules.join(format!("{AGENT}.peer")), "k".repeat(20_000)).unwrap();
+    std::fs::write(rules.join("notes.md"), "notes").unwrap();
     assert_eq!(refused(), None);
 
     std::fs::rename(&rules, state.join("saved-rules")).unwrap();
@@ -1302,14 +1307,12 @@ fn serve_refuses_rules_it_could_not_trust_or_use() {
 }
 
 #[tokio::test]
-async fn rules_files_are_read_at_each_judgment() {
+async fn rules_are_read_at_each_judgment() {
     let dir = tempfile::tempdir().unwrap();
     let state = dir.path().join("state");
-    let rules = state.join(RULES_DIR);
-    std::fs::create_dir_all(&rules).unwrap();
-    let host = rules.join("host.txt");
-    std::fs::write(&host, "Run tests in ~/work.").unwrap();
-    let files = RuleFiles::new(&state).unwrap();
+    let every = Rule::new("Run tests in ~/work.", Covers::All, Covers::All);
+    write_rules(&state, std::slice::from_ref(&every));
+    let files = RuleFiles::new(&state, HOST_KEY, "studio").unwrap();
     let model = Recorder::answering(0.9, 0.05, 0.05);
     let gatekeeper = gatekeeper(World::default(), &model, files);
     let judgment = gatekeeper.judge(AGENT_CALLER, &order()).await;
@@ -1319,9 +1322,18 @@ async fn rules_files_are_read_at_each_judgment() {
         json!({"rules for every agent on this host": "Run tests in ~/work."})
     );
 
-    // An edit, and a new file for this agent, apply at once.
-    std::fs::write(&host, "Never run anything.").unwrap();
-    std::fs::write(rules.join(format!("{AGENT}.txt")), "Only pytest.").unwrap();
+    // An edit, and a new rule for this agent, apply at once.
+    let edited = Rule {
+        text: "Never run anything.".into(),
+        updated: every.updated + 1,
+        ..every
+    };
+    let own = Rule::new(
+        "Only pytest.",
+        Covers::Only(vec![AGENT.into()]),
+        Covers::Only(vec![HOST_KEY.into()]),
+    );
+    write_rules(&state, &[edited, own]);
     gatekeeper.judge(AGENT_CALLER, &order()).await;
     assert_eq!(
         model.state()["owner_rules"],
@@ -1329,14 +1341,139 @@ async fn rules_files_are_read_at_each_judgment() {
                "rules for this agent": "Only pytest."})
     );
 
-    // A rule redirected outside protected state stops the judgment.
-    std::fs::remove_file(&host).unwrap();
-    let outside = dir.path().join("outside-rules.txt");
-    std::fs::write(&outside, "Anything goes.").unwrap();
-    std::os::unix::fs::symlink(&outside, &host).unwrap();
+    // A list redirected outside protected state stops the judgment.
+    let list = state.join(RULES_DIR).join("rules.json");
+    std::fs::remove_file(&list).unwrap();
+    let outside = dir.path().join("outside.json");
+    std::fs::write(&outside, r#"{"rules": []}"#).unwrap();
+    std::os::unix::fs::symlink(&outside, &list).unwrap();
     let judgment = gatekeeper.judge(AGENT_CALLER, &order()).await;
     assert_eq!(code(&judgment), "gatekeeper_unavailable");
     assert_eq!(model.calls(), 2, "one call each before, none now");
+}
+
+#[tokio::test]
+async fn a_hosts_old_rules_move_into_the_list_and_read_the_same() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    let old = state.join(RULES_DIR);
+    std::fs::create_dir_all(&old).unwrap();
+    let every = "Agents may list and read files in ~/Projects.\nNever delete anything.\n";
+    let own = "Only pytest, and only in ~/work.";
+    std::fs::write(old.join("host.txt"), every).unwrap();
+    std::fs::write(old.join(format!("{AGENT}.txt")), own).unwrap();
+    std::fs::write(old.join(format!("{AGENT}.peer")), "a1a1").unwrap();
+
+    let files = RuleFiles::new(&state, HOST_KEY, "studio").unwrap();
+    let model = Recorder::answering(0.9, 0.05, 0.05);
+    let gatekeeper = gatekeeper(World::default(), &model, files);
+    gatekeeper.judge(AGENT_CALLER, &order()).await;
+    assert_eq!(
+        model.state()["owner_rules"],
+        json!({"rules for every agent on this host": every, "rules for this agent": own}),
+        "the judge reads what it read before, byte for byte"
+    );
+    gatekeeper.judge(Caller::Owner, &order()).await;
+    assert_eq!(
+        model.state()["owner_rules"],
+        json!({"rules on this host": every})
+    );
+
+    // The old files are gone; the list holds one rule each, for this host.
+    assert!(!old.join("host.txt").exists());
+    assert!(!old.join(format!("{AGENT}.txt")).exists());
+    assert!(old.join(format!("{AGENT}.peer")).exists());
+    let moved = RulesDir::new(&state, HOST_KEY).list().unwrap();
+    let scopes: Vec<(&str, &Covers, &Covers)> = moved
+        .iter()
+        .map(|rule| (rule.text.as_str(), &rule.agents, &rule.hosts))
+        .collect();
+    let here = Covers::Only(vec![HOST_KEY.into()]);
+    assert_eq!(moved.len(), 2);
+    assert!(scopes.contains(&(every, &Covers::All, &here)));
+    assert!(scopes.contains(&(own, &Covers::Only(vec![AGENT.into()]), &here)));
+
+    // Moving is once: a host started again adds nothing.
+    let written = std::fs::read(old.join("rules.json")).unwrap();
+    RuleFiles::new(&state, HOST_KEY, "studio").unwrap();
+    assert_eq!(std::fs::read(old.join("rules.json")).unwrap(), written);
+}
+
+#[tokio::test]
+async fn a_host_over_budget_refuses_every_judgment_until_its_owner_trims() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    // Each written apart within the budget; merged, Juno's are over it.
+    let every = vec![Rule::new(&"e".repeat(3000), Covers::All, Covers::All)];
+    let mut juno = vec![Rule::new(
+        &"j".repeat(6000),
+        Covers::Only(vec![AGENT.into()]),
+        Covers::All,
+    )];
+    assert!(!budget(&every, HOST_KEY).over_budget);
+    assert!(!budget(&juno, HOST_KEY).over_budget);
+    merge(&mut juno, &every);
+    let merged = budget(&juno, HOST_KEY);
+    assert_eq!(
+        (merged.over_budget, merged.max_bytes, &merged.agents_over),
+        (true, 9000, &Covers::Only(vec![AGENT.into()]))
+    );
+    write_rules(&state, &juno);
+
+    let model = Recorder::answering(0.9, 0.05, 0.05);
+    let gatekeeper = gatekeeper(
+        World::default(),
+        &model,
+        RuleFiles::new(&state, HOST_KEY, "studio").unwrap(),
+    );
+    // Host-wide: Juno, another agent (by its rules alone, as a preview
+    // asks: the fake Plow has no chat for it), and the owner alike.
+    let other = Caller::RulesLayer {
+        agent: Some("fedcba9876543210fedcba9876543210"),
+    };
+    for caller in [AGENT_CALLER, other, Caller::Owner] {
+        let judgment = gatekeeper.judge(caller, &order()).await;
+        assert_eq!(judgment.gate["verdict"], "rules_too_long");
+        let refused = judgment.verdict.unwrap_err();
+        assert_eq!(
+            (refused.code.as_str(), refused.exit),
+            ("gatekeeper_unavailable", Exit::Unreachable)
+        );
+        assert_eq!(refused.details["reason"], "rules_too_long");
+        assert_eq!(refused.details["max_bytes"], 9000);
+        assert_eq!(
+            refused.message,
+            "The gatekeeper on studio could not judge this request because its rules are too long."
+        );
+    }
+    assert_eq!(model.calls(), 0);
+
+    // The owner's rules commands still work there, and a shorter text for
+    // Juno is accepted: the host judges again.
+    let plow = plow(World::default()).0;
+    let show = json!({"command": "show"});
+    let shown = match owner::run(&state, &plow, HOST_KEY, "studio", "device", &show)
+        .await
+        .response
+    {
+        crate::wire::Response::Ok(shown) => shown,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(shown["agents"][0]["agent_uid"], AGENT);
+    let trimmed = json!({"command": "set", "from": AGENT, "text": "Only pytest."});
+    assert!(matches!(
+        owner::run(&state, &plow, HOST_KEY, "studio", "device", &trimmed)
+            .await
+            .response,
+        crate::wire::Response::Ok(_)
+    ));
+    assert!(
+        gatekeeper
+            .judge(AGENT_CALLER, &order())
+            .await
+            .verdict
+            .is_ok()
+    );
 }
 
 #[tokio::test]
@@ -1346,7 +1483,7 @@ async fn an_owner_command_applies_to_the_next_judgment() {
     let gatekeeper = gatekeeper(
         World::default(),
         &model,
-        RuleFiles::new(dir.path()).unwrap(),
+        RuleFiles::new(dir.path(), "studio-key", "studio").unwrap(),
     );
     gatekeeper.judge(AGENT_CALLER, &order()).await;
     assert_eq!(
@@ -1359,6 +1496,7 @@ async fn an_owner_command_applies_to_the_next_judgment() {
     let done = owner::run(
         dir.path(),
         &plow(World::default()).0,
+        "studio-key",
         "studio",
         "device",
         &set,
