@@ -32,6 +32,13 @@
       "folder": "chrome-linux64",
       "tree_sha256": "6c31c71ca03f3e5990d8e607254fa03b06e039e231b169dbab28b1b79fb27632",
       "executable": "chrome"
+    },
+    "win_x64": {
+      "url": "https://storage.googleapis.com/chrome-for-testing-public/155.0.8059.84/win64/chrome-win64.zip",
+      "zip_sha256": "507f2a031441d10c62b5e3d4e863f09ac1198a571c1419976cbd8387f639afde",
+      "folder": "chrome-win64",
+      "tree_sha256": "2db4a5a28533679309f463c228efd6da092527ed85bef686d9f6a542d62e981c",
+      "executable": "chrome.exe"
     }
   },
   "recipe": [

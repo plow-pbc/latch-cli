@@ -19,7 +19,8 @@
 //!
 //! A host with no screen a person could use (a Linux host, its browsers on
 //! private displays, or a host whose browsers run headless) answers
-//! `needs_owner` with reason `no_screen` at once.
+//! `needs_owner` with reason `no_screen` at once. A Mac or Windows host's
+//! browsers are on its owner's screen.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -48,9 +49,10 @@ pub fn screen(headless: bool) -> bool {
     if headless {
         return false;
     }
-    // A Mac host runs in its owner's login session, on its screen. A Linux
-    // host's browsers are on private Xvfb displays, nobody's screen.
-    cfg!(target_os = "macos")
+    // A Mac or Windows host runs in its owner's login session, on its
+    // screen. A Linux host's browsers are on private Xvfb displays, nobody's
+    // screen.
+    cfg!(any(target_os = "macos", windows))
 }
 
 /// The answer on a host with no screen: only the owner could do this, and
@@ -310,7 +312,7 @@ mod tests {
         assert!(!screen(true));
         // A Linux host has none whatever its environment says: its
         // headed runtimes are on private displays.
-        assert_eq!(screen(false), cfg!(target_os = "macos"));
+        assert_eq!(screen(false), cfg!(any(target_os = "macos", windows)));
         // A private display is Unix's (`display`); Windows has none.
         #[cfg(unix)]
         {

@@ -116,6 +116,28 @@ pub fn prepare(dir: &Path, engine: &str) -> Result<Profile, Failure> {
                 json!({"enabled": false, "profile_enabled": false, "credit_card_enabled": false}),
             );
             fs::write(&file, serde_json::to_vec(&preferences).expect("JSON"))?;
+            // On Windows Chrome asks whether the user's password is blank by
+            // logging on with an empty one, unless its profile already holds
+            // the answer: in each new profile, a failed logon that a lockout
+            // policy counts until it locks the account. The answer is given
+            // ahead: not blank, unchanged since.
+            #[cfg(windows)]
+            {
+                let file = profile.data().join("Local State");
+                let mut state = fs::read(&file)
+                    .ok()
+                    .and_then(|kept| serde_json::from_slice::<Value>(&kept).ok())
+                    .filter(Value::is_object)
+                    .unwrap_or_else(|| json!({}));
+                state["password_manager"] = merged(
+                    &state["password_manager"],
+                    json!({
+                        "os_password_blank": false,
+                        "os_password_last_changed": i64::MAX.to_string(),
+                    }),
+                );
+                fs::write(&file, serde_json::to_vec(&state).expect("JSON"))?;
+            }
         }
         io::Result::Ok(())
     })();
