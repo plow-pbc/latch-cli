@@ -1394,9 +1394,12 @@ Without --follow it ignores stdin and prints the whole page; with
 const SERVE_HELP: &str = "\
 What callers can reach (each exec and file call is judged):
   Read: your home folder and system files (programs, libraries, developer
-  tools and certificates). No shared-folder setup is needed.
-  Hidden: ~/.latch, this host's state directory, and on macOS ~/Library
-  except ~/Library/Caches. Other home content, including credential dotfiles
+  tools and certificates). No shared-folder setup is needed. On Windows,
+  exec reads only its --write folders, named files and system files, with
+  no tool-cache writes; file get reads named home files.
+  Hidden: ~/.latch, this host's state directory, on macOS ~/Library
+  except ~/Library/Caches, and on Windows ~/AppData; there a --write folder
+  may not hold one of them. Other home content, including credential dotfiles
   such as ~/.ssh, is readable: the gatekeeper judges the requested use.
   exec writes only its repeated --write PATH grants, its private temp and
   existing plain tool-cache folders. Missing or symlinked caches are skipped,
@@ -1473,7 +1476,7 @@ pub struct HostArg {
 pub enum FileCommand {
     /// Copy a file from the host to this machine
     Get {
-        /// The file on the host, in its home folder or a system file exec can read too: absolute, `~/…` (quote it so this shell leaves the `~` alone), or relative to home. Never latch's state or, on macOS, ~/Library (its Caches excepted)
+        /// The file on the host, in its home folder or a system file exec can read too: absolute, `~/…` (quote it so this shell leaves the `~` alone), or relative to home. Never latch's state, on macOS ~/Library (its Caches excepted), or on Windows ~/AppData
         remote_path: String,
         /// Where to write it on this machine [default: the remote file's name, in the current directory]
         local_dest: Option<PathBuf>,

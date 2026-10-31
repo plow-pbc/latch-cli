@@ -60,15 +60,20 @@ as `latch status` lists it. Branch on
   tool-cache folders are writable too; missing or aliased caches are skipped.
   IP network is off unless `--network`. Workdir defaults to the first write
   folder, otherwise home; `--workdir` overrides it. Host Unix sockets stay
-  blocked even with network (macOS allows its system DNS resolver).
+  blocked even with network (macOS allows its system DNS resolver). On a
+  Windows host, exec reads only its write folders, files the rules name and
+  system files, and has no tool-cache writes; `file get` reads named home
+  files there.
 - `latch file get --host H '~/Documents/report.pdf' report.pdf` copies a
   readable host path here, the destination a plain argument; `latch file
   put` writes only its judged destination. Exec and file need no
   shared-folder setup.
 - Hidden for both: `~/.latch`, the host's own state directory, the one
-  `LATCH_STATE_DIR` names, and on macOS `~/Library` except `~/Library/Caches`. Other home files, including `.ssh`,
+  `LATCH_STATE_DIR` names, on macOS `~/Library` except `~/Library/Caches`,
+  and on Windows `~/AppData`. Other home files, including `.ssh`,
   are readable; the gatekeeper judges their use. Writes must stay inside
-  home, outside hidden places, and cannot grant home itself.
+  home, outside hidden places, and cannot grant home itself; on Windows they
+  also cannot hold a hidden place or the folder of the latch the host runs.
 - Quote host paths beginning with `~`: latch expands them on the host.
   Program argv after `--` stays literal. The judge is remote: argv,
   workdir, writes and network go to Plow and into the sealed audit. Keep

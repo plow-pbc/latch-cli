@@ -1,4 +1,6 @@
-//! The worker sandbox: Seatbelt on macOS, bubblewrap and seccomp on Linux.
+//! The worker sandbox: Seatbelt on macOS, bubblewrap and seccomp on Linux,
+//! an AppContainer in a Job object on Windows (see `sandbox/windows.rs`, which
+//! also says how Windows' differs).
 //!
 //! A worker process calls `confine` before starting any runtime or threads.
 //! From then on the operating system itself enforces the policy, and it
@@ -58,18 +60,25 @@ pub struct Policy {
     pub kill_after: Option<u64>,
     /// A Google or Messages worker may run only this pinned program.
     pub program: Option<PathBuf>,
+    /// An `exec` worker's folder to run in, which Windows lets it enter
+    /// (only) when no grant reaches it.
+    #[cfg(windows)]
+    pub workdir: Option<PathBuf>,
     /// Test only: make the OS refuse the sandbox, to show that a sandbox
     /// that cannot be applied fails the operation.
     pub break_for_test: bool,
 }
 
 /// Latch's private state (`~/.latch`, and the folder latch uses without
-/// `--state-dir` wherever it is) and, on macOS, Library. Exec profiles make
-/// a narrow exception for Library/Caches. The host denies its own state separately.
+/// `--state-dir` wherever it is) and, on macOS, Library; on Windows,
+/// AppData, where its programs keep their data as macOS's keep it in
+/// Library. Exec profiles make a narrow exception for Library/Caches. The
+/// host denies its own state separately.
 pub fn never_readable(home: &Path) -> Vec<PathBuf> {
     std::iter::once(home.join(".latch"))
         .chain(crate::cli::default_state_dir())
         .chain(cfg!(target_os = "macos").then(|| home.join("Library")))
+        .chain(cfg!(windows).then(|| home.join("AppData")))
         .collect()
 }
 
@@ -236,9 +245,7 @@ pub fn confine_browser(view: &BrowserView) -> Result<(), String> {
 
 /// Checks, without confining anything, that this system can apply the
 /// worker sandbox at all. The host runs it once at startup, so a kernel
-/// without the sandbox is refused there, not by every call later. Windows
-/// has none yet, and its host does without (see `serve::run`).
-#[cfg(unix)]
+/// without the sandbox is refused there, not by every call later.
 pub fn check() -> Result<(), String> {
     platform::check()
 }
@@ -264,10 +271,11 @@ pub fn page_isolation_off() -> bool {
 /// `page_isolation_off`.
 pub const PAGE_ISOLATION_OFF: &str = "page isolation off on this host";
 
-#[cfg(unix)]
 pub fn name() -> &'static str {
     if cfg!(target_os = "linux") {
         "bubblewrap + seccomp"
+    } else if cfg!(windows) {
+        "AppContainer + Job object"
     } else {
         "Seatbelt"
     }
@@ -791,9 +799,22 @@ mod platform {
 #[path = "sandbox/linux.rs"]
 mod platform;
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(windows)]
+#[path = "sandbox/windows.rs"]
+mod platform;
+
+#[cfg(windows)]
+pub(crate) use platform::{EditLock, final_path, within};
+#[cfg(windows)]
+pub use platform::{sweep, tie_to_host};
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 mod platform {
     use super::Policy;
+
+    pub fn check() -> Result<(), String> {
+        Err("no worker sandbox on this operating system yet".to_string())
+    }
 
     pub fn confine(_policy: &Policy) -> Result<(), String> {
         Err("no worker sandbox on this operating system yet".to_string())

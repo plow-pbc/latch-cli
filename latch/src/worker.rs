@@ -99,7 +99,42 @@ pub fn authenticated_worker_error(stderr: &str, token: &str) -> Option<WorkerErr
 /// Nothing else from the host's environment is passed on.
 /// Homebrew's folders first, as in a macOS user's shell; they do not exist
 /// on Linux and cost nothing there.
+#[cfg(unix)]
 const PATH: &str = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+/// Windows' own folders.
+#[cfg(windows)]
+const PATH: &str = r"C:\Windows\System32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0";
+
+/// What Windows itself needs from the environment to start a program and
+/// run it: where the system and the user's folders are (an AppContainer's
+/// own folders are made from them). The host's values are passed on.
+#[cfg(windows)]
+const WINDOWS_ENV: &[&str] = &[
+    "SystemRoot",
+    "windir",
+    "SystemDrive",
+    "ComSpec",
+    "PATHEXT",
+    "TEMP",
+    "TMP",
+    "USERPROFILE",
+    "LOCALAPPDATA",
+    "APPDATA",
+    "ProgramData",
+    "ProgramFiles",
+    "ProgramFiles(x86)",
+    "ProgramW6432",
+    "CommonProgramFiles",
+    "CommonProgramFiles(x86)",
+    "CommonProgramW6432",
+    "PUBLIC",
+    "USERNAME",
+    "USERDOMAIN",
+    "COMPUTERNAME",
+    "NUMBER_OF_PROCESSORS",
+    "PROCESSOR_ARCHITECTURE",
+    "OS",
+];
 
 /// Exec's `PATH`: the host's own, then whatever of `PATH` it lacks. A host
 /// the Mac app or the login item started has only the system's folders, and
@@ -120,12 +155,17 @@ pub struct Running {
 
 impl WorkerSetup {
     /// A worker that reads home, less the hidden paths, and writes only
-    /// `writes`: exec's and a get's.
-    fn home_readable(&self, writes: Vec<PathBuf>) -> WorkerSetup {
+    /// `writes`: exec's and a get's. On Windows it reads only what the call
+    /// names, `reads`, and not home (see `sandbox/windows.rs`).
+    fn home_readable(&self, writes: Vec<PathBuf>, reads: &[PathBuf]) -> WorkerSetup {
+        let reads = match cfg!(windows) {
+            true => reads.to_vec(),
+            false => vec![self.home.clone()],
+        };
         WorkerSetup {
             home: self.home.clone(),
             areas: writes,
-            reads: vec![self.home.clone()],
+            reads,
             hidden: self.hidden.clone(),
             state_dir: self.state_dir.clone(),
             program: self.program.clone(),
@@ -138,7 +178,9 @@ impl WorkerSetup {
         &self,
         path: &Path,
     ) -> Result<(Running, serde_json::Value), WorkerError> {
-        let mut command = self.home_readable(vec![]).command(&self.home)?;
+        let mut command = self
+            .home_readable(vec![], &[path.to_path_buf()])
+            .command(&self.home)?;
         // `--` so a path starting with `-` is never read as a flag.
         command
             .arg("--home")
@@ -205,9 +247,7 @@ impl WorkerSetup {
             .stderr(Stdio::piped())
             .own_group()
             .kill_on_drop(true);
-        let mut child = command
-            .spawn()
-            .map_err(|err| error("worker_failed", &err.to_string()))?;
+        let mut child = spawn(&mut command)?;
         let stdout = BufReader::new(child.stdout.take().expect("piped"));
         let mut running = Running { child, stdout };
         let mut bytes = serde_json::to_vec(job).expect("job serializes");
@@ -265,9 +305,7 @@ impl WorkerSetup {
             .stderr(Stdio::piped())
             .own_group()
             .kill_on_drop(true);
-        command
-            .spawn()
-            .map_err(|err| error("worker_failed", &err.to_string()))
+        spawn(&mut command)
     }
 
     /// Runs a throwaway worker that only confines itself, with the policy a
@@ -357,7 +395,7 @@ impl WorkerSetup {
     ) -> Result<Child, WorkerError> {
         let caches = crate::exec::caches(self);
         let writes = args.writes.iter().cloned().chain(caches).collect();
-        let mut command = self.home_readable(writes).command(&self.home)?;
+        let mut command = self.home_readable(writes, &[]).command(&self.home)?;
         command.arg("--home").arg(&self.home);
         if args.network {
             command.arg("--network");
@@ -379,14 +417,15 @@ impl WorkerSetup {
         command
             .env("PATH", exec_path(std::env::var_os("PATH")))
             .env("TMPDIR", tmpdir)
+            // Where Windows programs look for a temp folder.
+            .env("TEMP", tmpdir)
+            .env("TMP", tmpdir)
             .own_group()
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        command
-            .spawn()
-            .map_err(|err| error("worker_failed", &err.to_string()))
+        spawn(&mut command)
     }
 
     /// `latch worker --area … --read … --hidden … --denied …`, run from the
@@ -409,6 +448,12 @@ impl WorkerSetup {
             .env("PATH", PATH)
             .env("HOME", first_area)
             .current_dir(first_area);
+        #[cfg(windows)]
+        for name in WINDOWS_ENV {
+            if let Some(value) = std::env::var_os(name) {
+                command.env(name, value);
+            }
+        }
         Ok(command)
     }
 }
@@ -422,9 +467,7 @@ async fn first_line(mut command: Command) -> Result<(Running, serde_json::Value)
         .stderr(Stdio::piped())
         .own_group()
         .kill_on_drop(true);
-    let mut child = command
-        .spawn()
-        .map_err(|err| error("worker_failed", &err.to_string()))?;
+    let mut child = spawn(&mut command)?;
     let stdout = BufReader::new(child.stdout.take().expect("stdout is piped"));
     let mut running = Running { child, stdout };
     match running.line().await {
@@ -455,6 +498,29 @@ pub fn die_with_host(command: &mut Command) {
             Ok(())
         });
     }
+}
+
+/// Starts a worker. On Windows the host's own job takes its launcher, so it
+/// ends with the host however the host ends (`sandbox::tie_to_host`): it
+/// starts suspended (in the console group of its own `own_group` gave it),
+/// and runs only once it is in that job.
+fn spawn(command: &mut Command) -> Result<Child, WorkerError> {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, CREATE_SUSPENDED};
+        command.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_SUSPENDED);
+    }
+    let child = command
+        .spawn()
+        .map_err(|err| error("worker_failed", &err.to_string()))?;
+    #[cfg(windows)]
+    match (child.raw_handle(), child.id()) {
+        (Some(handle), Some(pid)) => {
+            sandbox::tie_to_host(handle, pid).map_err(|err| error("worker_failed", &err))?
+        }
+        _ => return Err(error("worker_failed", "the worker ended as it started")),
+    }
+    Ok(child)
 }
 
 /// A worker leads a process group of its own, so the host can stop it with
@@ -566,6 +632,11 @@ pub fn run(args: WorkerArgs) -> ExitCode {
             }
             _ => None,
         },
+        #[cfg(windows)]
+        workdir: match &args.action {
+            WorkerAction::Exec { workdir, .. } => workdir.clone(),
+            _ => None,
+        },
         break_for_test: args.break_sandbox_for_test,
     };
     if policy.exec {
@@ -623,11 +694,18 @@ pub fn run(args: WorkerArgs) -> ExitCode {
                     Err(exit) => return exit,
                 },
             };
+            // On Windows the folder it runs in may be one only entered (the
+            // host judged it; the container reaches no more of it).
+            #[cfg(windows)]
+            let entered = &policy.workdir;
+            #[cfg(unix)]
+            let entered = &None::<PathBuf>;
             return exec(
                 &policy
                     .reads
                     .iter()
                     .chain(&policy.areas)
+                    .chain(entered)
                     .cloned()
                     .collect::<Vec<_>>(),
                 workdir.as_deref(),
@@ -645,7 +723,6 @@ pub fn run(args: WorkerArgs) -> ExitCode {
 /// Moves into `workdir` and replaces this process with the program. Only
 /// returns (with an error) if that fails; otherwise the program's own exit
 /// becomes the worker's.
-#[cfg(unix)]
 fn exec(
     areas: &[PathBuf],
     workdir: Option<&Path>,
@@ -662,6 +739,12 @@ fn exec(
             fail("workdir_outside_areas", &message)
         };
         let inside = |real: &Path| areas.iter().any(|area| real.starts_with(area));
+        // On Windows the host already gave the real path, and the container
+        // reaches only what it was granted, by any name: the path is checked
+        // as given, since a container may not ask Windows for a final path.
+        #[cfg(windows)]
+        let real = dir.to_path_buf();
+        #[cfg(unix)]
         let real = match dir.canonicalize() {
             Ok(real) => real,
             Err(err) => {
@@ -682,6 +765,12 @@ fn exec(
         if !inside(&real) {
             return outside();
         }
+        // `cmd` refuses a `\\?\` folder to run in: a drive's folder by its plain name.
+        #[cfg(windows)]
+        let real = match real.to_str().and_then(|text| text.strip_prefix(r"\\?\")) {
+            Some(plain) => PathBuf::from(plain),
+            None => real,
+        };
         if let Err(err) = std::env::set_current_dir(&real) {
             return fail(io_code(&err), &format!("{}: {err}", dir.display()));
         }
@@ -694,7 +783,15 @@ fn exec(
     let mut command = std::process::Command::new(program);
     command.args(args);
     command.envs(secrets);
+    #[cfg(unix)]
     let err = command.exec();
+    // Windows cannot replace a process: the worker waits for the program,
+    // in the same container and job, and ends as it did.
+    #[cfg(windows)]
+    let err = match command.status() {
+        Ok(status) => std::process::exit(status.code().unwrap_or(1)),
+        Err(err) => err,
+    };
     let code = if err.kind() == io::ErrorKind::NotFound {
         "program_not_found"
     } else {
@@ -704,31 +801,39 @@ fn exec(
 }
 
 /// Sends the file's size, then its bytes, to stdout.
-#[cfg(unix)]
 fn read(path: &Path) -> Result<(), (PathBuf, io::Error)> {
     let failed = |err| (path.to_path_buf(), err);
-    let absolute = std::path::absolute(path).map_err(failed)?;
-    #[cfg(target_os = "macos")]
-    let search = libc::O_SEARCH;
-    #[cfg(target_os = "linux")]
-    let search = libc::O_PATH;
-    let directory = search | libc::O_DIRECTORY | libc::O_NOFOLLOW;
-    let mut file = File::options()
-        .read(true)
-        .custom_flags(directory)
-        .open("/")
-        .map_err(failed)?;
-    // The host resolved this path before judgment. Never follow a link
-    // swapped into any component, and keep the final file open to stream it.
-    let mut components = absolute.components().skip(1).peekable();
-    while let Some(component) = components.next() {
-        let flags = if components.peek().is_some() {
-            directory
-        } else {
-            libc::O_RDONLY | libc::O_NOFOLLOW
-        };
-        file = sandbox::open_at(&file, component.as_os_str(), flags, 0).map_err(failed)?;
-    }
+    // On Windows the container's access list is the boundary: it reaches
+    // only what it was granted, whichever names lead there.
+    #[cfg(windows)]
+    let file = File::open(path).map_err(failed)?;
+    #[cfg(unix)]
+    let file = {
+        let absolute = std::path::absolute(path).map_err(failed)?;
+        #[cfg(target_os = "macos")]
+        let search = libc::O_SEARCH;
+        #[cfg(target_os = "linux")]
+        let search = libc::O_PATH;
+        let directory = search | libc::O_DIRECTORY | libc::O_NOFOLLOW;
+        let mut file = File::options()
+            .read(true)
+            .custom_flags(directory)
+            .open("/")
+            .map_err(failed)?;
+        // The host resolved this path before judgment. Never follow a link
+        // swapped into any component, and keep the final file open to stream it.
+        let mut components = absolute.components().skip(1).peekable();
+        while let Some(component) = components.next() {
+            let flags = if components.peek().is_some() {
+                directory
+            } else {
+                libc::O_RDONLY | libc::O_NOFOLLOW
+            };
+            file = sandbox::open_at(&file, component.as_os_str(), flags, 0).map_err(failed)?;
+        }
+        file
+    };
+    let mut file = file;
     let metadata = file.metadata().map_err(failed)?;
     if metadata.is_dir() {
         return Err(failed(io::Error::new(
@@ -790,14 +895,14 @@ fn fail(code: &str, message: &str) -> ExitCode {
     ExitCode::from(WORKER_FAILED)
 }
 
-#[cfg(unix)]
 fn read_private_exec() -> Result<crate::exec::PrivateExec, ExitCode> {
     // Stdin buffers reads; a plain duplicated file leaves the program's
     // bytes in the pipe when exec replaces this process.
-    let fd = io::stdin()
-        .as_fd()
-        .try_clone_to_owned()
-        .map_err(|_| fail("bad_request", "private exec input is unavailable"))?;
+    #[cfg(unix)]
+    let fd = io::stdin().as_fd().try_clone_to_owned();
+    #[cfg(windows)]
+    let fd = std::os::windows::io::AsHandle::as_handle(&io::stdin()).try_clone_to_owned();
+    let fd = fd.map_err(|_| fail("bad_request", "private exec input is unavailable"))?;
     let job: crate::exec::PrivateExec = crate::wire::read_frame_sync(&mut File::from(fd))
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
@@ -810,27 +915,6 @@ fn read_private_exec() -> Result<crate::exec::PrivateExec, ExitCode> {
         )
     })?;
     Ok(job)
-}
-
-/// Windows has no worker sandbox yet, so a worker never gets this far.
-#[cfg(windows)]
-fn exec(
-    _areas: &[PathBuf],
-    _workdir: Option<&Path>,
-    _argv: &[String],
-    _secrets: &std::collections::BTreeMap<String, String>,
-) -> ExitCode {
-    fail("sandbox_failed", "no worker sandbox on Windows yet")
-}
-
-#[cfg(windows)]
-fn read(path: &Path) -> Result<(), (PathBuf, io::Error)> {
-    Err((path.to_path_buf(), io::ErrorKind::Unsupported.into()))
-}
-
-#[cfg(windows)]
-fn read_private_exec() -> Result<crate::exec::PrivateExec, ExitCode> {
-    Err(fail("sandbox_failed", "no worker sandbox on Windows yet"))
 }
 
 #[cfg(test)]
