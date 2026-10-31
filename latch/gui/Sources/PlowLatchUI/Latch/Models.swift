@@ -201,8 +201,6 @@ nonisolated struct AgentsList: Decodable, Equatable {
             var cardUrl: String?
         }
         struct Standing: Decodable, Equatable {
-            /// It has rules of its own on that host.
-            var ownRules: Bool?
             /// The host refuses it exec (`serve --deny-exec`).
             var execBlocked: Bool?
         }
