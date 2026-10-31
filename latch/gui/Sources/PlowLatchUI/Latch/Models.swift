@@ -100,7 +100,21 @@ nonisolated struct AccountStatus: Decodable, Equatable {
         }
     }
 
+    /// Who the account is to Plow. `phones`, `emails` (the Google accounts
+    /// connected in Plow) and the credit left are read only on the owner's
+    /// login: nil on an agent's.
+    struct Account: Decodable, Equatable {
+        var displayName: String?
+        var phones: [String]?
+        var emails: [String]?
+        /// US dollars, a decimal as Plow writes it; below zero once spent past.
+        var availableBalanceUsd: String?
+    }
+
+    var account: Account?
     var hosts: [Host]?
+    /// The Plow this machine's latch asks.
+    var apiUrl: URL?
 }
 
 /// What to text, from `latch login --events`. The code is a credential:

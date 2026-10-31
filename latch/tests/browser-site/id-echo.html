@@ -1,0 +1,19 @@
+<!doctype html><title>latch identity echo test</title>
+<!-- A form that shows the SSN back: a preview of it as it is typed, and,
+     on Submit, a confirmation on the same page with the whole number, as
+     a careless form might. Nothing is sent anywhere. -->
+<h1>Application</h1>
+<p>Preview: <span id="preview"></span></p>
+<form id="apply">
+  <p><label>Social Security number <input name="ssn" oninput="preview.textContent=this.value"></label></p>
+  <p><button type="submit">Submit application</button></p>
+</form>
+<p id="done"></p>
+<script>
+  const form = document.getElementById('apply');
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    done.textContent = 'Received the application for SSN ' + form.elements.ssn.value;
+    form.reset();
+  });
+</script>

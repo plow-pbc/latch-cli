@@ -570,15 +570,13 @@
     if (!uids.has(el)) uids.set(el, ++nextUid);
     return uids.get(el);
   };
-  const SUBMITS = 'button:not([type]), button[type=submit], input[type=submit], input[type=image]';
   // What Enter in `el` acts on: its form's submit control, else the form;
   // and the element whose surroundings are read for it.
+  const formOf = (form) => ({ role: 'form', name: clean(form.getAttribute('aria-label') || form.getAttribute('name') || '') });
   const enterOn = (el) => {
     const form = el.form || el.closest('form');
-    const submit = form && [...form.querySelectorAll(SUBMITS)].find(rendered);
-    const actsOn = submit ? { role: role(submit), name: name(submit) }
-      : form ? { role: 'form', name: clean(form.getAttribute('aria-label') || form.getAttribute('name') || '') }
-        : null;
+    const submit = form && [...form.querySelectorAll(SUBMIT_BUTTONS)].find(rendered);
+    const actsOn = submit ? { role: role(submit), name: name(submit) } : form ? formOf(form) : null;
     return { actsOn, around: submit || form || el };
   };
   // The part of the page an action is judged in: the dialog, section,
@@ -586,15 +584,18 @@
   const regionOf = (around) => around.closest('dialog, [role=dialog], section, article, main')
     || around.closest('form') || document.body;
   const linesOf = (region) => (region ? region.innerText : '').split('\n').map((line) => clean(line, 160)).filter(Boolean).slice(0, 20);
+  // A click is judged with the element's state (a collapsed section, an
+  // unchecked option) and, on a form's submit control, the form it submits.
   const review = (snap, index, enter) => {
     const el = element(snap, index);
     if (!el) return null;
-    const { role: r, name: n, row } = describe(el);
+    const { role: r, name: n, row, checked, expanded } = describe(el);
     let actsOn = null;
     let around = el;
     if (enter) ({ actsOn, around } = enterOn(el));
+    else if (el.form && el.matches(SUBMIT_BUTTONS)) actsOn = formOf(el.form);
     const lines = linesOf(regionOf(around));
-    return { uid: uid(el), element: { role: r, name: n, row }, acts_on: actsOn, lines };
+    return { uid: uid(el), element: { role: r, name: n, row, checked, expanded }, acts_on: actsOn, lines };
   };
 
   // --- What a plan's decision sees ----------------------------------------
@@ -709,9 +710,15 @@
   const passwordShown = () => [...document.querySelectorAll('input[type=password]')].some(rendered);
 
   // What an instruction step stops at, or offers to sign in on: a CAPTCHA's
-  // frame, and a password field.
+  // frame with a size, as the middle of its viewport (whether the pages
+  // around it let it show is the caller's to check: a payment form loads
+  // invisible ones that never show a challenge), and a password field.
   const CAPTCHA = /\/recaptcha\/|hcaptcha\.com|challenges\.cloudflare\.com/;
-  const wall = () => ({ password: passwordShown(), captcha: CAPTCHA.test(location.href) });
+  const wall = () => ({
+    password: passwordShown(),
+    captcha: CAPTCHA.test(location.href) && innerWidth > 0 && innerHeight > 0
+      ? { x: innerWidth / 2, y: innerHeight / 2 } : null,
+  });
 
   globalThis.__latch = {
     fields,

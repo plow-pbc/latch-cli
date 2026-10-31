@@ -846,7 +846,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "browser.fill",
         runs_on: |_| RunsOn::Host,
-        output: "What was filled (never a value), or a confirmation to carry out with `do --confirm`.",
+        output: "What was filled (never a value).",
         effect: Once("fills the page from a vault item, and presses the button named"),
         owner_only: false,
         connector: None,

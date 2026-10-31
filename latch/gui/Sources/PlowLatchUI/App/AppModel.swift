@@ -94,14 +94,25 @@ final class AppModel {
     /// can fail where `status --local` doesn't.
     private(set) var account: AccountStatus?
     private(set) var accountError: LatchError?
+    /// When `latch status` last answered.
+    private(set) var accountReadAt: Date?
 
     func refreshAccount() async {
         do {
             account = try await client.accountStatus()
             accountError = nil
+            accountReadAt = .now
         } catch {
             accountError = .from(error)
         }
+    }
+
+    /// Settings opening: the account and its agents, each unless read in
+    /// the last minute.
+    func refreshAccountIfStale(now: Date = .now) async {
+        let fresh = { (read: Date?) in read.map { now.timeIntervalSince($0) < 60 } == true }
+        if !fresh(accountReadAt) { await refreshAccount() }
+        if !fresh(agentsReadAt) { await refreshAgentList() }
     }
 
     /// What Home and the sidebar say while `latch status` fails.
@@ -156,6 +167,13 @@ final class AppModel {
 
     /// A sidebar host row's click: that host's workspace, on the screen it
     /// was last on.
+    /// Settings' way into the account: the main window, at `place`.
+    /// Opened first: a window it makes restores the place it last saved.
+    func showInMainWindow(_ place: Place) {
+        openWindow?(Self.mainWindow)
+        self.place = place
+    }
+
     func showHost(_ name: String) {
         chosenHost = name
         place = .host(screen)
@@ -804,6 +822,9 @@ final class AppModel {
     private(set) var agentsError: LatchError?
     private(set) var standings: [String: Result<[String: AgentsList.Agent.Standing], LatchError>] = [:]
 
+    /// When `latch agents` last answered.
+    private var agentsReadAt: Date?
+
     /// Reads the account's agents, without their standing on each host;
     /// false when cancelled.
     @discardableResult
@@ -813,6 +834,7 @@ final class AppModel {
         case let .success(listed)?:
             agents = listed
             agentsError = nil
+            agentsReadAt = .now
         case let .failure(error)?:
             agentsError = error
         }
@@ -1233,5 +1255,6 @@ final class AppModel {
     func stage(account: AccountStatus?, error: LatchError? = nil) {
         self.account = account
         accountError = error
+        accountReadAt = account.map { _ in .now }
     }
 }

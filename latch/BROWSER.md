@@ -487,7 +487,8 @@ the one already chosen marked. A typed check decides completion
 line (`model_assessed`). Before its first action a step whose result is
 already a field's value, the address or the title ends `already_held`;
 page text alone, such as a message an earlier step left, never counts. A
-pass stops, in this order, at a CAPTCHA (`needs_owner`), a code stage
+pass stops, in this order, at a CAPTCHA shown on screen (`needs_owner`; a
+hidden one, such as a payment form's invisible check, is not a stop), a code stage
 or a passkey stage (`needs_fields`, before the model is asked; a code
 stage's stop points to SKILL.md's "Signing in" for the code; a passkey
 stage goes on when a named item that fits holds a password, so the model
@@ -502,8 +503,7 @@ and other controls, for a literal `fill`), the same action on an
 unchanged page, or, in a step without a typed check, a second click or
 submit of the same control (`repeat`), or two actions that change nothing
 (`no_progress`), and a click or Enter that can't be undone
-(`confirm_needed`, as does a chosen fill that releases an identity
-secret). A page a step's click opens in a new tab is followed: the plan
+(`confirm_needed`). A page a step's click opens in a new tab is followed: the plan
 goes on there, nothing comes to the front. Lines written since the step began, even with the
 same words as before (a message an add-to-cart writes again), are marked
 as new for the model. With no decision model, an instruction step stops
@@ -546,8 +546,10 @@ deadline; nothing is replayed or retried. Exit 0 is `reached` or
 would pay, place an order, send, publish or delete something, close or
 cancel an account, order, subscription or ticket, sign out, create
 credentials or otherwise can't be undone (closing a dialog, popup, banner
-or menu is none of these), judged on the exact
-element, its row text, the page title and the lines of the form or section
+or menu is none of these, nor is choosing an option or opening a section
+that submits nothing, such as how to pay), judged on the exact
+element, its state (collapsed; checked, for a checkbox, radio or switch),
+whether it submits its form, its row text, the page title and the lines of the form or section
 around it; an Enter in a field is judged as its form's submit (the form's
 submit control, else the form), and so is `type` text with a line break,
 which the engine types as Enter. The action is then made only if the
@@ -558,12 +560,7 @@ nothing sent. At p ≥ 0.5 the step stops with
 id, the target's ref and snapshot, the reviewed context, and a screenshot
 of the page as a handle (`{"request": R, "shot": "final"}`), which
 `do --history R --shot final --output F` streams to the client with
-matching sha256. A `fill` that
-releases an identity secret field (an identity's numbers) always stops
-so, before any value is released, with the item's
-title, the exact mapping, each destination frame's site and the press
-button, whether it came standalone, as a plan step or as the model's
-choice. The agent confirms
+matching sha256. The agent confirms
 with `do --confirm C [STEP…]`, and only so: a click sent any other way,
 `act click` on the same ref included, is judged again and stops with a new
 confirmation if it still looks consequential. A confirmation is used once, in the same session and document, and
@@ -571,11 +568,8 @@ only while the element and the reviewed lines are unchanged; otherwise
 `confirm_stale` with a fresh page (a total that changes from $10.00 to
 $100.00 is refused, even with the same ref, URL and button name). It needs
 no new risk decision, so it still works while the model is down. A
-confirmed fill checks again at its press: if the button or the lines
-around it changed once the values went in, it does not press, clears the
-values, and answers `confirm_stale`. A card fill presses nothing and needs
-no confirmation: the agent presses Pay itself, a click judged like any
-other ([VAULT.md](VAULT.md)). A step
+vault fill needs no confirmation: a card or identity fill presses
+nothing, and the agent presses the page's button (Pay, Submit) itself, a click judged like any other ([VAULT.md](VAULT.md)). A step
 whose `new text` check already holds stops before the confirmation is
 spent.
 

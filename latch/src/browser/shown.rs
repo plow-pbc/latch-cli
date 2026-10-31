@@ -8,7 +8,8 @@
 //! read full addresses from the page, never from this.
 //!
 //! A card number a session filled is shown in its answers by its last four
-//! digits only (`mask_cards`), wherever the page put it.
+//! digits only, and an identity's secret not at all (`mask_filled`),
+//! wherever the page put it.
 
 use serde_json::{Map, Value, json};
 
@@ -120,21 +121,65 @@ fn short(url: &str) -> String {
     shown
 }
 
-/// Every string in `value` with each card number in `cards` (digits only)
-/// shown by its last four digits.
-pub fn mask_cards(value: &mut Value, cards: &[String]) {
+/// A value a session filled that its answers never show whole.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Filled {
+    /// A card's number, digits only: shown by its last four digits.
+    Card(String),
+    /// An identity's secret (an SSN, a passport number): not shown at all.
+    Secret(String),
+}
+
+impl Filled {
+    /// The digits a page may print this value as, set apart by spaces or
+    /// dashes, and what stands for them: a card's by its last four, a
+    /// secret written with digits, spaces and dashes alone by nothing.
+    fn digits(&self) -> Option<(String, String)> {
+        match self {
+            Filled::Card(number) => Some((
+                number.clone(),
+                format!("•••• {}", &number[number.len().saturating_sub(4)..]),
+            )),
+            Filled::Secret(value) => value
+                .chars()
+                .all(|c| c.is_ascii_digit() || matches!(c, ' ' | '-'))
+                .then(|| {
+                    value
+                        .chars()
+                        .filter(char::is_ascii_digit)
+                        .collect::<String>()
+                })
+                .filter(|digits| !digits.is_empty())
+                .map(|digits| (digits, "••••".to_string())),
+        }
+    }
+}
+
+/// Every string in `value` with each value in `filled` masked (`masked`).
+pub fn mask_filled(value: &mut Value, filled: &[Filled]) {
     match value {
-        Value::String(text) => *text = masked(text, cards),
-        Value::Array(values) => values.iter_mut().for_each(|v| mask_cards(v, cards)),
-        Value::Object(values) => values.values_mut().for_each(|v| mask_cards(v, cards)),
+        Value::String(text) => *text = masked(text, filled),
+        Value::Array(values) => values.iter_mut().for_each(|v| mask_filled(v, filled)),
+        Value::Object(values) => values.values_mut().for_each(|v| mask_filled(v, filled)),
         _ => {}
     }
 }
 
-/// `text` with each card number in `cards` it shows (whole, or in groups
-/// set apart by single spaces or dashes, as a site prints one) put as
-/// `•••• 4242`; the digits around it stay.
-pub fn masked(text: &str, cards: &[String]) -> String {
+/// `text` with each value in `filled` it shows put out of sight: a secret
+/// as `••••` wherever it is written as it was filled; and a card number,
+/// or a secret of digits, wherever its digits are (whole, or in groups set
+/// apart by single spaces or dashes, as a site prints one), a card's as
+/// `•••• 4242`, a secret's as `••••`. The digits around it stay.
+pub fn masked(text: &str, filled: &[Filled]) -> String {
+    let mut text = text.to_string();
+    for value in filled {
+        if let Filled::Secret(secret) = value
+            && !secret.is_empty()
+        {
+            text = text.replace(secret.as_str(), "••••");
+        }
+    }
+    let numbers: Vec<(String, String)> = filled.iter().filter_map(Filled::digits).collect();
     let chars: Vec<char> = text.chars().collect();
     let mut out = String::new();
     let mut at = 0;
@@ -157,16 +202,22 @@ pub fn masked(text: &str, cards: &[String]) -> String {
             }
             end += 1;
         }
-        let found = cards
+        // The value found earliest in the run: the digits before it hold
+        // none, whichever was filled first.
+        let found = numbers
             .iter()
-            .find_map(|card| digits.find(card.as_str()).map(|from| (card, from)));
+            .filter_map(|(number, shown)| {
+                digits
+                    .find(number.as_str())
+                    .map(|from| (number, shown, from))
+            })
+            .min_by_key(|(_, _, from)| *from);
         match found {
-            // Only the card's own digits go; the digits around them stay.
-            Some((card, from)) => {
+            // Only the value's own digits go; the digits around them stay.
+            Some((number, shown, from)) => {
                 out.extend(&chars[at..places[from]]);
-                out.push_str("•••• ");
-                out.push_str(&card[card.len().saturating_sub(4)..]);
-                at = places[from + card.len() - 1] + 1;
+                out.push_str(shown);
+                at = places[from + number.len() - 1] + 1;
             }
             None => {
                 out.extend(&chars[at..end]);
@@ -183,14 +234,14 @@ mod tests {
 
     #[test]
     fn a_card_number_shows_as_its_last_four_as_a_site_prints_it() {
-        let cards = ["4242424242424242".to_string()];
+        let cards = [Filled::Card("4242424242424242".into())];
         let mut answer = json!({
             "lines": ["Paid with 4242 4242 4242 4242.", "Card 4242-4242-4242-4242 or 4242424242424242"],
             "elements": [{"value": "4242424242424242 04/31"}],
             "order": "Order 1234567890123, total $10.00",
             "total": "Total $10.00\n\n4242 4242 4242 4242",
         });
-        mask_cards(&mut answer, &cards);
+        mask_filled(&mut answer, &cards);
         assert_eq!(
             answer,
             json!({
@@ -204,12 +255,15 @@ mod tests {
 
     #[test]
     fn a_number_shorter_than_four_digits_is_masked_whole() {
-        assert_eq!(masked("Order 123", &["123".to_string()]), "Order •••• 123");
+        assert_eq!(
+            masked("Order 123", &[Filled::Card("123".into())]),
+            "Order •••• 123"
+        );
     }
 
     #[test]
     fn a_cards_last_four_alone_stays_readable() {
-        let cards = ["4242424242424242".to_string()];
+        let cards = [Filled::Card("4242424242424242".into())];
         for text in [
             "Visa ending in 4242",
             "Card •••• 4242, expires 04/31",
@@ -217,6 +271,35 @@ mod tests {
         ] {
             assert_eq!(masked(text, &cards), text);
         }
+    }
+
+    #[test]
+    fn an_identity_secret_shows_not_at_all_however_a_site_prints_it() {
+        let filled = [
+            Filled::Secret("078-05-1120".into()),
+            Filled::Secret("X1234567".into()),
+        ];
+        let mut answer = json!({
+            "lines": ["SSN 078-05-1120, or 078 05 1120, or 078051120", "Passport X1234567."],
+            "order": "Order 1234567890123",
+        });
+        mask_filled(&mut answer, &filled);
+        assert_eq!(
+            answer,
+            json!({
+                "lines": ["SSN ••••, or ••••, or ••••", "Passport ••••."],
+                "order": "Order 1234567890123",
+            })
+        );
+        // Two in one run of digits, the later-filled first: both go.
+        let filled = [
+            Filled::Secret("111-22-3333".into()),
+            Filled::Secret("444-55-6666".into()),
+        ];
+        assert_eq!(
+            masked("IDs 444 55 6666 111 22 3333", &filled),
+            "IDs •••• ••••"
+        );
     }
 
     #[test]

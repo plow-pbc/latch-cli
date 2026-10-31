@@ -42,6 +42,13 @@ pub struct Status {
 pub struct Account {
     pub owner_uid: String,
     pub display_name: Option<String>,
+    /// What only the owner's login reads; `null` for an agent's: the
+    /// numbers the owner texts Plow from, the Google accounts connected in
+    /// Plow, and the credit left in US dollars, a decimal string as Plow
+    /// writes it.
+    pub phones: Option<Vec<String>>,
+    pub emails: Option<Vec<String>>,
+    pub available_balance_usd: Option<String>,
 }
 
 /// A host as Plow lists it: whether it is online and when Plow last heard
@@ -109,18 +116,30 @@ pub async fn run(state: &StateDir) -> Result<Status, Failure> {
     let directory = tokio::time::timeout(PLOW_WITHIN, directory(state))
         .await
         .unwrap_or_else(|_| Err(crate::plow::no_answer(&config.api_url, PLOW_WITHIN)));
-    let mut directory = directory.map_err(|mut failure| {
+    let offline = |mut failure: Failure| {
         if failure.code == code::plow_unreachable.name {
             failure.next = Some("latch status --local".into());
         }
         failure
-    })?;
+    };
+    let mut directory = directory.map_err(offline)?;
     let hosts = &mut directory.hosts;
-    ask_plugins(state, &directory.peers, |index, answer| match answer {
+    let plugins = ask_plugins(state, &directory.peers, |index, answer| match answer {
         Ok(plugins) => hosts[index].plugins = Some(plugins),
         Err(reason) => hosts[index].plugins_reason = Some(reason),
-    })
-    .await;
+    });
+    let balance = async {
+        if config.peer.kind != "device" {
+            return Ok(None);
+        }
+        let plow = Plow::new(&config.api_url, &credential::token(state)?)?;
+        let balance = tokio::time::timeout(PLOW_WITHIN, plow.balance())
+            .await
+            .unwrap_or_else(|_| Err(crate::plow::no_answer(&config.api_url, PLOW_WITHIN)));
+        unless_denied(balance)
+    };
+    let ((), balance) = tokio::join!(plugins, balance);
+    directory.account.available_balance_usd = balance.map_err(offline)?;
     Ok(Status {
         account: Some(directory.account),
         local,
@@ -128,6 +147,17 @@ pub async fn run(state: &StateDir) -> Result<Status, Failure> {
         default_host: directory.default_host,
         default_host_reason: directory.default_host_reason,
     })
+}
+
+/// What only an owner's login may read, or `None` where Plow refuses this
+/// login it: a cloud host's credential is a device's, without the owner's
+/// scopes.
+fn unless_denied<T>(answer: Result<T, Failure>) -> Result<Option<T>, Failure> {
+    match answer {
+        Ok(value) => Ok(Some(value)),
+        Err(failure) if failure.code == code::plow_denied.name => Ok(None),
+        Err(failure) => Err(failure),
+    }
 }
 
 /// What Plow says of the account this machine is logged in to.
@@ -148,8 +178,21 @@ pub struct Directory {
 pub async fn directory(state: &StateDir) -> Result<Directory, Failure> {
     let config = state.require_login()?;
     let plow = Plow::new(&config.api_url, &credential::token(state)?)?;
-    let (peers, owner_uid, display_name) =
-        tokio::try_join!(plow.list_peers(), plow.owner_uid(), plow.display_name())?;
+    // An owner's login reads its name with what only it may read; an
+    // agent's, or a device login Plow refuses that (a cloud host's), from
+    // the profile.
+    let who = async {
+        let identity = match config.peer.kind == "device" {
+            true => unless_denied(plow.owner_identity().await)?,
+            false => None,
+        };
+        match identity {
+            Some(identity) => Ok((identity.display_name.clone(), Some(identity))),
+            None => Ok((plow.display_name().await?, None)),
+        }
+    };
+    let (peers, owner_uid, (display_name, identity)) =
+        tokio::try_join!(plow.list_peers(), plow.owner_uid(), who)?;
     let mut listed = hosts::only_hosts(peers, &config.peer.key);
     listed.sort_by_key(|host| !host.this_machine);
     let named = hosts::named(state, std::env::var("LATCH_HOST").ok().as_deref())?;
@@ -169,6 +212,9 @@ pub async fn directory(state: &StateDir) -> Result<Directory, Failure> {
         account: Account {
             owner_uid,
             display_name,
+            phones: identity.as_ref().map(|identity| identity.phones.clone()),
+            emails: identity.map(|identity| identity.emails),
+            available_balance_usd: None,
         },
         hosts: listed
             .iter()

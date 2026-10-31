@@ -28,8 +28,7 @@
 //!    name: `needs_login`;
 //! 9. a fill with no suggestion chosen (`none`, or none complete for an
 //!    item the plan names): `needs_fields`, with the form's refs; a
-//!    chosen one fills (`fill.rs`), or, releasing a card or identity
-//!    secret, stops `confirm_needed` with its mapping;
+//!    chosen one fills (`fill.rs`);
 //! 10. in a step without a typed check, a second click or submit of the
 //!     same control (Enter in a field is its form's submit control, as a
 //!     click on that control is): `repeat` (whether the first did the step
@@ -121,8 +120,6 @@ struct Bundle {
     /// The fill, as `fill.rs` takes it.
     args: Value,
     title: String,
-    /// It releases an identity secret: confirmed first.
-    confirm: bool,
 }
 
 impl Run<'_> {
@@ -630,24 +627,8 @@ impl Run<'_> {
                     object.remove("kind");
                 }
                 self.judge_fill(n, &args).await?;
-                if bundle.confirm {
-                    args["item_title"] = json!(bundle.title);
-                    let failure = confirm_fill(self.browsers, self.entry, &args, self.audit).await;
-                    let mut record = choice_record(&decision, Some(pick));
-                    record["step"] = json!(n);
-                    record["op"] = json!("fill");
-                    record["item"] = args["item"].clone();
-                    record["suggestion"] = json!(bundle.offer.id);
-                    record["confirmation"] = failure.details["confirmation"]["id"].clone();
-                    record["dispatch"] = json!("refused");
-                    if let Some(judgment) = self.judgment.take() {
-                        record["gate"] = judgment;
-                    }
-                    self.records.push(record);
-                    return Err(failure);
-                }
                 self.choice = Some(choice_record(&decision, Some(pick)));
-                let sent = self.fill_now(n, args, None).await;
+                let sent = self.fill_now(n, args).await;
                 self.choice = None;
                 *acted += 1;
                 before = Some(state);
@@ -1412,7 +1393,7 @@ fn bundles(
             continue;
         };
         let press = shown["press"].as_str();
-        if press.is_none() && meta.kind != "card" {
+        if press.is_none() && meta.kind == "login" {
             continue;
         }
         let fields: Vec<(String, Vec<String>)> = shown["fields"]
@@ -1421,9 +1402,6 @@ fn bundles(
             .flatten()
             .map(|(label, refs)| (label.clone(), strings(refs)))
             .collect();
-        let secret = fields
-            .iter()
-            .any(|(label, _)| suggest::secret_field(meta, label));
         let mapped: Vec<String> = fields
             .iter()
             .map(|(label, refs)| {
@@ -1455,7 +1433,6 @@ fn bundles(
                 "suggestion": id,
             }),
             title: meta.title.clone(),
-            confirm: secret && !matches!(meta.kind, "login" | "card"),
         });
     }
     made

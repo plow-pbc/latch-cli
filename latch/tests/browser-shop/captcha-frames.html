@@ -1,0 +1,14 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Pay — Greenleaf Market</title><link rel="stylesheet" href="style.css"></head>
+<!-- A payment page that loads CAPTCHA frames it does not show, as a card
+     processor's invisible checks do: one not displayed, one with no size,
+     one hidden above the page. With ?shown, one shows its challenge over
+     the page. -->
+<body><main><h1>Pay</h1><p>Total $13.74</p><p><button type="button">Pay now</button></p>
+<iframe src="recaptcha/check.html" style="display:none"></iframe>
+<iframe src="recaptcha/check.html" style="width:0;height:0;border:0"></iframe>
+<iframe src="recaptcha/check.html" style="visibility:hidden;position:absolute;top:-10000px"></iframe>
+<script>
+if (location.search.includes('shown')) document.body.insertAdjacentHTML('beforeend',
+  '<iframe src="recaptcha/check.html" style="position:fixed;top:40px;left:40px;width:420px;height:320px;border:0;background:#fff"></iframe>');
+</script>
+</main></body></html>

@@ -26,17 +26,50 @@ struct AppSettingsView: View {
             Section {
                 if let name = app.status?.loggedInAs {
                     HStack {
-                        LabeledContent("Logged in as", value: name)
+                        LabeledContent("Name", value: app.account.map { AccountFacts($0).name } ?? "")
                         Button("Log Out…") { loggingOut = true }
                     }
                     if let logOutError { ErrorText(error: logOutError).foregroundStyle(.red) }
+                    if let facts = app.account.map({ AccountFacts($0) }) {
+                        if let phones = facts.phones { LabeledContent("Phone", value: phones) }
+                        if let google = facts.google { LabeledContent("Google", value: google) }
+                        if let credit = facts.credit {
+                            LabeledContent("Credit") {
+                                Text(credit).foregroundStyle(facts.overdrawn ? .red : .secondary)
+                            }
+                        }
+                    }
+                    LabeledContent("This Mac", value: app.viewerOnly ? "\(name) · viewing only" : name)
+                    if let hosts = app.account?.hosts {
+                        HStack {
+                            LabeledContent("Hosts", value: AccountFacts.counted(hosts.count, "host", online: hosts.count { $0.online == true }))
+                            Button("Show") { app.showInMainWindow(.host(.home)) }
+                                .disabled(hosts.isEmpty)
+                        }
+                    }
+                    if let agents = app.agents {
+                        HStack {
+                            LabeledContent("Agents", value: AccountFacts.counted(agents.count, "agent"))
+                            Button("Show") { app.showInMainWindow(.account(.agents)) }
+                        }
+                    }
+                    if let plow = app.account.flatMap({ AccountFacts($0).plow }) { LabeledContent("Plow", value: plow) }
+                    if let error = app.accountError {
+                        HStack {
+                            Text("Couldn't reach Plow").foregroundStyle(.red).help(error.details ?? "")
+                            Spacer()
+                            Button("Retry") { Task { await app.refreshAccount() } }
+                        }
+                    }
                 } else {
                     LabeledContent("Logged in as", value: "Not logged in")
                 }
             } header: {
                 Text("Account")
             } footer: {
-                Text("Logging out stops Latch on this Mac and takes it out of your Plow account.").foregroundStyle(.secondary)
+                if let read = app.accountReadAt, app.accountError == nil {
+                    Text("Updated \(read.formatted(date: .omitted, time: .shortened))").foregroundStyle(.secondary)
+                }
             }
         }
         .formStyle(.grouped)
@@ -59,6 +92,11 @@ struct AppSettingsView: View {
             Button("OK") { app.acknowledgeLogOutWarning() }
         } message: {
             Text(app.logOutWarning ?? "")
+        }
+        // Plow's account and agents, read again each time Settings opens.
+        .task {
+            guard !app.still, app.status?.loggedInAs != nil else { return }
+            await app.refreshAccountIfStale()
         }
         // Logged out, onboarding takes over: Settings closes with the main window.
         .onChange(of: app.onboarding != nil) { _, onboarding in
@@ -144,5 +182,41 @@ struct UpdatePill: View {
         .disabled(app.installingUpdate)
         .help(app.availableBuild.map { "Install build \($0)" } ?? "Install update")
         .accessibilityLabel(app.installingUpdate ? "Updating Latch" : "Update Latch")
+    }
+}
+
+/// What Settings says of the account, from `latch status`, in words.
+struct AccountFacts: Equatable {
+    var name: String
+    var phones: String?
+    var google: String?
+    var credit: String?
+    /// The credit is spent past zero.
+    var overdrawn = false
+    /// The Plow this Mac asks, as its address reads.
+    var plow: String?
+
+    init(name: String, phones: String? = nil, google: String? = nil, credit: String? = nil, overdrawn: Bool = false, plow: String? = nil) {
+        (self.name, self.phones, self.google, self.credit, self.overdrawn, self.plow) = (name, phones, google, credit, overdrawn, plow)
+    }
+
+    init(_ status: AccountStatus, locale: Locale = .current) {
+        let region = locale.region?.identifier
+        let account = status.account
+        name = account?.displayName ?? "Not set"
+        phones = account?.phones.flatMap { $0.isEmpty ? nil : $0.map { PhoneNumber($0)?.formatted(region: region) ?? $0 }.joined(separator: ", ") }
+        google = account?.emails.flatMap { $0.isEmpty ? nil : $0.joined(separator: ", ") }
+        if let text = account?.availableBalanceUsd, let usd = Decimal(string: text, locale: Locale(identifier: "en_US_POSIX")) {
+            credit = usd.formatted(.currency(code: "USD").locale(locale))
+            overdrawn = usd < 0
+        }
+        plow = status.apiUrl.flatMap { url in url.host().map { host in url.port.map { "\(host):\($0)" } ?? host } }
+    }
+
+    /// "3 hosts · 2 online", "1 agent", "None".
+    static func counted(_ count: Int, _ noun: String, online: Int? = nil) -> String {
+        guard count > 0 else { return "None" }
+        let counted = "\(count) \(noun)\(count == 1 ? "" : "s")"
+        return online.map { "\(counted) · \($0) online" } ?? counted
     }
 }

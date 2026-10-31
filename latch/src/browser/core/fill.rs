@@ -458,21 +458,8 @@ impl<D: Driver> Core<D> {
     }
 
     /// Clicks the submit or `--press` button, as an agent's click would.
-    pub(super) fn fill_submit(
-        &mut self,
-        target: &str,
-        guard: Option<&super::Guard>,
-    ) -> Result<Value, Failure> {
+    pub(super) fn fill_submit(&mut self, target: &str) -> Result<Value, Failure> {
         let prepared = self.fill.snapshot.clone();
-        if let Some(guard) = guard {
-            let now = self.review(prepared.as_deref(), target, guard.enter, &mut Map::new())?;
-            if super::fingerprint(&now) != guard.fingerprint {
-                return Err(Failure::new(
-                    code::context_changed,
-                    "the button, or the lines around it, changed after the fill was confirmed; it was not pressed".into(),
-                ));
-            }
-        }
         let (snapshot, position) = self.bound(prepared.as_deref(), target)?;
         let at = self.locate(&snapshot, position)?;
         self.driver.click(at.x, at.y)?;

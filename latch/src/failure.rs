@@ -138,12 +138,6 @@ impl Failure {
         }
     }
 
-    /// Reports the same failure as `code`, with its exit.
-    pub fn recode(&mut self, code: Code) {
-        self.exit = code.exit;
-        self.code = code.name.to_string();
-    }
-
     /// How long Plow asked us to wait, if it did.
     pub fn retry_after(&self) -> Option<Duration> {
         self.plow.as_ref().and_then(|plow| plow.retry_after)

@@ -4,14 +4,12 @@
 //! (`core/fill.rs`):
 //!
 //! 1. **Gate.** Any session may use any item; where it may go is the
-//!    site rule's question (step 4). A mapping that includes a login's or
-//!    an identity's secret (a password, a code) needs a press button: the
-//!    secret leaves the page before the agent is back. One that releases
-//!    an identity secret is also confirmed by the agent before any value is
-//!    released (`steps.rs`, [`releases_secret`]); this runs once it is. A
-//!    card is filled like any other field, judged as any fill is: the
-//!    agent presses Pay itself, and until the page takes the card, latch
-//!    keeps it out of what the agent can read (below).
+//!    site rule's question (step 4). A mapping that includes a login's
+//!    secret (a password, a code) needs a press button: the secret leaves
+//!    the page before the agent is back. A card or an identity is filled
+//!    like any other field, judged as any fill is, and presses nothing:
+//!    the agent presses the page's button (Pay, Submit) itself, and until the page takes the
+//!    values, latch keeps them out of what the agent can read (below).
 //! 2. **Pause and prepare.** The browser is held: every other call in the
 //!    session gets `session_paused`. The worker
 //!    reports what the page's markup says of each mapped element.
@@ -51,6 +49,7 @@ use serde_json::{Map, Value, json};
 use super::host::{Browsers, Entry, paused, take_audit};
 use super::plan::Op;
 use super::session::Session;
+use super::shown::Filled;
 use super::suggest::{self, Control};
 use crate::failure::{Failure, code};
 use crate::vault::item::{Item, Meta};
@@ -60,23 +59,6 @@ use crate::vault::{classify, dates, sites, totp};
 /// How long a secret filled with no press may stay in the page's fields
 /// before latch empties them.
 pub const FILLED_FOR: std::time::Duration = std::time::Duration::from_secs(5 * 60);
-
-/// Whether a fill releases an identity secret, and so needs the agent's
-/// confirmation first: the item's title if it does. A malformed fill is
-/// refused here, as `run` would refuse it. A login's password and code
-/// need no confirmation: they go only to the login's own site; nor does a
-/// card, judged as any fill is.
-pub fn releases_secret(browsers: &Browsers, args: &Value) -> Result<Option<String>, Failure> {
-    let item = item_of(browsers, args)?;
-    let plan = Plan::of(&item, args)?;
-    let meta = item.meta();
-    let secret = !matches!(meta.kind, "login" | "card")
-        && plan
-            .fields
-            .iter()
-            .any(|(label, _)| suggest::secret_field(&meta, label));
-    Ok(secret.then_some(meta.title))
-}
 
 fn item_of(browsers: &Browsers, args: &Value) -> Result<Item, Failure> {
     let id = args["item"].as_str().ok_or_else(|| {
@@ -379,53 +361,6 @@ async fn worker_with(entry: &Entry, call: Value) -> Result<(Value, Value), Failu
     Ok((reply.result, reply.audit))
 }
 
-/// The mapping as the agent will see it confirmed: for each item field,
-/// each element's ref, its name on the page and its markup's evidence; the
-/// origin of each frame a value would go into, as the site rules read it;
-/// after checking each element takes its field (`bad_target` otherwise).
-pub async fn preview(
-    browsers: &Browsers,
-    entry: &Entry,
-    args: &Value,
-) -> Result<(Vec<Value>, Vec<String>), Failure> {
-    let item = item_of(browsers, args)?;
-    let meta = item.meta();
-    let plan = Plan::of(&item, args)?;
-    let inventory = worker(
-        entry,
-        json!({"op": "fill_inventory", "snapshot": args["snapshot"]}),
-    )
-    .await?;
-    let controls = controls_of(&inventory);
-    let mut shown = Vec::new();
-    let mut frames: Vec<String> = Vec::new();
-    for (label, refs) in &plan.fields {
-        for reference in refs {
-            let Some(control) = controls.iter().find(|c| &c.reference == reference) else {
-                return Err(bad_target(
-                    label,
-                    &format!("{reference} is not on that page"),
-                ));
-            };
-            let mismatch =
-                suggest::check(meta.kind, label, control).map_err(|why| bad_target(label, &why))?;
-            let mut entry = json!({"field": label, "ref": reference, "name": control.name});
-            if let Some(token) = control.hint.field.as_deref() {
-                entry["evidence"] = json!(format!("autocomplete={token}"));
-            }
-            if let Some(token) = mismatch {
-                entry["hint_mismatch"] = json!(token);
-            }
-            shown.push(entry);
-            let origin = browsers.origin_as(&control.origin);
-            if !frames.contains(&origin) {
-                frames.push(origin);
-            }
-        }
-    }
-    Ok((shown, frames))
-}
-
 fn bad_target(label: &str, why: &str) -> Failure {
     let mut failure = Failure::new(
         code::bad_target,
@@ -455,14 +390,6 @@ pub async fn run(
     );
     let plan = Plan::of(&item, args)?;
     audit.insert("mapping".into(), plan.mapping());
-    if let Some(confirmed) = args["confirmed"]["revision"].as_u64()
-        && confirmed != meta.revision
-    {
-        return Err(Failure::new(
-            code::context_changed,
-            "the item changed after the fill was confirmed; nothing was released".into(),
-        ));
-    }
     if entry.runtime.filling.swap(true, Ordering::SeqCst) {
         return Err(paused());
     }
@@ -475,16 +402,34 @@ pub async fn run(
         }
     };
     let result = fill(browsers, &mut session, &item, &plan, args, audit).await;
-    // A card whose values went toward the page: the session's answers and
-    // journals show its number by its last four digits from now on.
-    if meta.kind == "card"
-        && audit.get("released") == Some(&json!(true))
-        && let Ok(number) = release(&item, "number")
-    {
-        let digits: String = number.chars().filter(char::is_ascii_digit).collect();
-        let mut cards = entry.cards.lock().expect("cards lock");
-        if !digits.is_empty() && !cards.contains(&digits) {
-            cards.push(digits);
+    // A card or an identity secret whose values went toward the page: the
+    // session's answers and journals show the card's number by its last
+    // four digits from now on, and the secret not at all.
+    if audit.get("released") == Some(&json!(true)) {
+        let mut filled = Vec::new();
+        if meta.kind == "card"
+            && let Ok(number) = release(&item, "number")
+        {
+            let digits: String = number.chars().filter(char::is_ascii_digit).collect();
+            if !digits.is_empty() {
+                filled.push(Filled::Card(digits));
+            }
+        }
+        if meta.kind == "identity" {
+            for (label, _) in &plan.fields {
+                if suggest::secret_field(&meta, label)
+                    && let Ok(value) = release(&item, label)
+                    && !value.is_empty()
+                {
+                    filled.push(Filled::Secret(value));
+                }
+            }
+        }
+        let mut masks = entry.masks.lock().expect("masks lock");
+        for value in filled {
+            if !masks.contains(&value) {
+                masks.push(value);
+            }
         }
     }
     entry.runtime.filling.store(false, Ordering::SeqCst);
@@ -566,20 +511,26 @@ impl Plan {
             ));
         }
         let press = args["press"].as_str().map(str::to_string);
-        if meta.kind == "card" && press.is_some() {
-            return Err(usage(
-                "a card fill presses nothing: fill it without --press, check the page, then press Pay yourself with `do 'click eN'`",
-            ));
+        if matches!(meta.kind, "card" | "identity") && press.is_some() {
+            let fill = if meta.kind == "card" {
+                "a card fill"
+            } else {
+                "an identity fill"
+            };
+            return Err(usage(&format!(
+                "{fill} presses nothing: fill it without --press, check the page, then press its button (Pay, Submit) yourself with `do 'click eN'`"
+            )));
         }
-        // A card stays on the page for the agent's own press of Pay.
-        let secret = meta.kind != "card"
+        // A card's or an identity's values stay on the page for the
+        // agent's own press of the page's button; a login's go with its.
+        let secret = meta.kind == "login"
             && fields
                 .iter()
                 .any(|(label, _)| suggest::secret_field(&meta, label));
         if secret && press.is_none() {
             return Err(Failure::new(
                 code::press_required,
-                "that fill includes a secret, which must leave the page before you are back: add --press eN, the button that submits it".into(),
+                "that fill includes the login's password or code, which must leave the page before you are back: add --press eN, the button that submits it".into(),
             ));
         }
         Ok(Plan { fields, press })
@@ -641,17 +592,6 @@ async fn fill(
         Ok(outcomes) => outcomes,
         Err(failure) => return Err(resume_after(session, failure, audit).await),
     };
-    if let Some(sites) = args["confirmed"]["frames"].as_array() {
-        let now = frame_sites(browsers, &prepared);
-        if now.iter().any(|site| !sites.contains(&json!(site))) {
-            let failure = Failure::new(
-                code::context_changed,
-                "a field's frame is on another site than the one confirmed; nothing was released"
-                    .into(),
-            );
-            return Err(resume_after(session, failure, audit).await);
-        }
-    }
     if let Err(failure) = release_and_set(browsers, session, item, &prepared, audit).await {
         return Err(stop(session, failure, audit).await);
     }
@@ -664,7 +604,7 @@ async fn fill(
     let mut cleared = false;
     if let Some(press) = &plan.press {
         audit.insert("pressed".into(), json!(press));
-        let pressed = json!({"op": "fill_submit", "target": press, "guard": args["guard"]});
+        let pressed = json!({"op": "fill_submit", "target": press});
         match step(session, pressed, audit).await {
             Ok(pressed) => events.extend(listed(&pressed["events"])),
             Err(failure) => return Err(stop(session, failure, audit).await),
@@ -817,20 +757,6 @@ fn checked(meta: &Meta, prepared: &Value) -> Result<Vec<Value>, Failure> {
         }
     }
     Ok(outcomes)
-}
-
-/// The site of each frame a prepared fill would write into.
-fn frame_sites(browsers: &Browsers, prepared: &Value) -> Vec<String> {
-    let mut sites: Vec<String> = Vec::new();
-    for field in prepared["fields"].as_array().into_iter().flatten() {
-        for target in field["boxes"].as_array().into_iter().flatten() {
-            let origin = browsers.origin_as(target["origin"].as_str().unwrap_or("opaque"));
-            if !sites.contains(&origin) {
-                sites.push(origin);
-            }
-        }
-    }
-    sites
 }
 
 /// How a login's second stage went.
