@@ -88,6 +88,12 @@ are welcome.
   clean: each agent's sessions on a host share one persistent profile, so
   what a script stored for a site (a service worker, site storage) is still
   there in that agent's later sessions. Only its tabs start fresh.
+- **Latch protects a secret until the form is submitted or the fields are
+  cleared; what a site shows afterwards is the site's.** Latch never reads a
+  filled value back from its field, blanks those fields in screenshots and
+  refuses the agent's scripts while one may be there. A page that repeats
+  the value (a confirmation with the whole card number) shows it to the
+  agent as it would to a person.
 - **On macOS, the browser engine runs outside Latch's sandbox**, in its own
   sandbox. A compromised engine could read the host's state folder.
 - **Outside the signed macOS app, secrets are files** that only the OS user

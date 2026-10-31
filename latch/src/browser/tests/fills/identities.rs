@@ -1,8 +1,7 @@
 //! An identity's secret (a Social Security number) filled as a card is:
 //! no confirmation and no press, blank in pictures and out of scripts
 //! while it is in the page's fields, emptied after a while, and sent by
-//! the agent's own press of the page's button; and kept out of every
-//! answer and journal, wherever the page puts it.
+//! the agent's own press of the page's button.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -16,10 +15,7 @@ use crate::vault::host::Vault;
 use crate::vault::item::IDENTITY;
 use crate::vault::store::Backend;
 
-conformance!(
-    an_identity_secret_fills_like_a_card,
-    a_page_that_shows_the_secret_back_shows_the_agent_none_of_it,
-);
+conformance!(an_identity_secret_fills_like_a_card);
 
 /// A harness on a form site (`https://forms.example`), and the vault's one
 /// identity, saved with no sites: its id, the site's address, and what
@@ -126,58 +122,4 @@ async fn an_identity_secret_fills_like_a_card(engine: &str) {
         "the number reached a result or the audit"
     );
     h.call("close", json!({})).await.ok();
-}
-
-/// A page that shows the SSN back as it is typed, and again once the form
-/// is submitted, shows the agent none of it: not in the fill's answer, a
-/// later read, or a plan's journal.
-async fn a_page_that_shows_the_secret_back_shows_the_agent_none_of_it(engine: &str) {
-    let (mut h, identity, local, _keep) = forms(engine).await;
-    let page = h
-        .call("open", json!({"url": format!("{local}/id-echo.html")}))
-        .await
-        .unwrap();
-    // The fill as the host answers an agent's: the page's preview of the
-    // number is in its answer, masked.
-    let filled = h
-        .call(
-            "fill",
-            json!({"item": identity, "fields": [
-                ["ssn", [find(&page, "textbox", "Social Security number")]]]}),
-        )
-        .await
-        .unwrap();
-    println!("filled: {filled}");
-    let lines = filled["lines"].to_string();
-    assert!(
-        lines.contains("Preview") && lines.contains("••••"),
-        "{lines}"
-    );
-
-    let submit = find(&page, "button", "Submit application");
-    let step = format!("click {submit}");
-    h.call(
-        "do",
-        json!({"request": "r-submit", "plan": {"steps": [
-            crate::browser::plan::short_step(&step).unwrap()]}}),
-    )
-    .await
-    .unwrap();
-    let text = h.text().await;
-    println!("the form's confirmation, as the agent reads it: {text:?}");
-    assert!(
-        text.contains("Received the application for SSN ••••"),
-        "{text}"
-    );
-    h.call("close", json!({})).await.unwrap();
-    let history = h
-        .call("do_history", json!({"request": "r-submit"}))
-        .await
-        .unwrap();
-    println!("history: {history}");
-    let everything = h.shown.join("\n");
-    assert!(
-        !everything.contains(SSN) && !everything.contains(&SSN.replace('-', "")),
-        "the page's copy of the number reached the agent"
-    );
 }

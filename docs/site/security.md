@@ -35,6 +35,10 @@ Latch lets an agent work on your computer without handing it the keys.
   script that hides what it does may get through. A new session doesn't
   start clean: an agent's sessions on a host keep one browser profile, so
   what a script left for a site is still there in its later sessions.
+- **Latch protects a secret until the form is submitted or the fields are
+  cleared.** What a site shows afterwards, such as a confirmation that
+  repeats your card number, is the site's, and your agent reads it as you
+  would.
 - **Your own login is you.** A host judges it as you, even where an agent
   runs. Give each agent its own login.
 

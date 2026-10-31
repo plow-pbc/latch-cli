@@ -314,7 +314,7 @@ fixes it.
   reads form fields, listens to typing or form events, or sends page data
   anywhere needs the owner's explicit OK.
 - A value `fill` put in a page stays there: never copy it out, repeat it
-  or write it anywhere.
+  or write it anywhere, nor a copy of it the site shows afterwards.
 - Buying: sign in, choose, `fill` the card ("Paying with a saved card"),
   press Pay (`do --confirm C` if it stops for a confirmation),
   `screenshot` the confirmation page, then `close`. Close every session when
