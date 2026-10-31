@@ -6767,13 +6767,7 @@ fn the_owners_hosts_sync_adds_edits_and_removals_and_a_stopped_one_catches_up() 
         serde_json::from_slice::<Value>(&output.stdout).unwrap()
     };
     let items = |host: &Path| ok(host, &["vault", "list"])["items"].clone();
-    let until = |what: &str, done: &dyn Fn() -> bool| {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        while !done() {
-            assert!(std::time::Instant::now() < deadline, "never {what}");
-            thread::sleep(std::time::Duration::from_millis(100));
-        }
-    };
+    let until = |what: &str, done: &dyn Fn() -> bool| assert!(eventually(30, done), "never {what}");
     let add = |host: &Path, title: &str, password: &str| {
         let args = [
             "vault",

@@ -68,6 +68,7 @@ impl Vault {
             .map_err(io)?;
         lock.lock().map_err(io)?;
         let mut store = OwnStore::open(&self.dir)?;
+        store.keep_uids()?;
         f(&mut store)
     }
 }

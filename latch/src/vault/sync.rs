@@ -60,8 +60,10 @@ pub(super) fn content(item: &Item) -> Vec<u8> {
 /// Before a merge: an item `ours` and `theirs` each hold under a uid the
 /// other has never seen, with every field equal (the same login added by
 /// hand on two hosts before they synced), takes the smaller of the two
-/// uids on both sides, so the merge keeps one. Equal items are never
-/// removed, only renamed, so nothing is lost whichever host goes first.
+/// uids on both sides, so the merge keeps one. The uid given up gets a
+/// tombstone as old as its item, so a third host still holding it drops
+/// it rather than bring it back after a removal; a copy that host changed
+/// since stays, as a separate item.
 pub fn adopt(ours: &mut State, theirs: &mut State) {
     fn known(state: &State, uid: &str) -> bool {
         state.items.iter().any(|s| s.uid == uid) || state.tombstones.iter().any(|t| t.uid == uid)
@@ -76,9 +78,21 @@ pub fn adopt(ours: &mut State, theirs: &mut State) {
         }) else {
             continue;
         };
-        let uid = (&ours.items[twin].uid).min(&theirs.items[at].uid).clone();
+        let (kept, given_up) = if ours.items[twin].uid < theirs.items[at].uid {
+            (&ours.items[twin], &theirs.items[at])
+        } else {
+            (&theirs.items[at], &ours.items[twin])
+        };
+        let (uid, gone) = (
+            kept.uid.clone(),
+            Tombstone {
+                uid: given_up.uid.clone(),
+                modified: given_up.modified,
+            },
+        );
         ours.items[twin].uid.clone_from(&uid);
         theirs.items[at].uid = uid;
+        ours.tombstones.push(gone);
     }
 }
 
@@ -286,15 +300,17 @@ mod tests {
                 "every field equal: one, under the smaller uid",
                 login("b", 5, "example.com", "made-up-pass-1"),
                 vec!["a"],
+                vec![("b", 5)],
             ),
             (
                 "another password: both kept",
                 login("b", 5, "example.com", "made-up-pass-2"),
                 vec!["a", "b"],
+                vec![],
             ),
-            ("a note more: both kept", noted, vec!["a", "b"]),
+            ("a note more: both kept", noted, vec!["a", "b"], vec![]),
         ];
-        for (name, theirs, uids) in cases {
+        for (name, theirs, uids, tombstones) in cases {
             let ours = state(vec![login("a", 0, "example.com", "made-up-pass-1")], vec![]);
             let theirs = state(vec![theirs], vec![]);
             // Each host adopts and merges from its own side; both agree.
@@ -307,7 +323,12 @@ mod tests {
             assert_eq!(here, sync(&theirs, &ours), "{name}");
             let got: Vec<&str> = here.items.iter().map(|s| s.uid.as_str()).collect();
             assert_eq!(got, uids, "{name}");
-            assert!(here.tombstones.is_empty(), "{name}");
+            let got: Vec<(&str, u64)> = here
+                .tombstones
+                .iter()
+                .map(|t| (t.uid.as_str(), t.modified))
+                .collect();
+            assert_eq!(got, tombstones, "{name}");
         }
 
         // An item one host removed is never adopted back by its twin.
@@ -323,6 +344,21 @@ mod tests {
         let merged = merge(&ours, &theirs);
         let uids: Vec<&str> = merged.items.iter().map(|s| s.uid.as_str()).collect();
         assert_eq!(uids, ["b"]);
+
+        // A third host, away while two adopted one uid and then removed the
+        // item, still holds the uid given up: it does not bring it back.
+        let away = state(vec![login("b", 5, "example.com", "made-up-pass-1")], vec![]);
+        let (mut here, mut there) = (
+            away.clone(),
+            state(vec![login("a", 0, "example.com", "made-up-pass-1")], vec![]),
+        );
+        adopt(&mut here, &mut there);
+        let mut adopted = merge(&here, &there);
+        adopted.items.clear();
+        adopted.tombstones.push(gone("a", 9));
+        let (mut back, mut adopted) = (away, adopted);
+        adopt(&mut back, &mut adopted);
+        assert!(merge(&adopted, &back).items.is_empty());
     }
 
     #[test]

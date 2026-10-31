@@ -1220,21 +1220,14 @@ async fn serve_request(
         // board, and it is audited only when it changed this vault, as from
         // the host that sent it.
         Ok(identity) if op == "vault" && request.args["command"] == "sync" => {
-            match crate::vault::host::sync(&host.vault, &identity.kind, &request.args) {
-                Ok((answer, applied)) if applied.any() => {
-                    match host.synced_from(caller, &identity.name, &applied).await {
-                        Ok(_) => {
-                            log(&format!(
-                                "vault sync: took {} from {:?}",
-                                sync::shown(&applied),
-                                identity.name
-                            ));
-                            Response::Ok(answer)
-                        }
-                        Err(message) => failed(code::audit_failed, message),
-                    }
-                }
-                Ok((answer, _)) => Response::Ok(answer),
+            let synced = async {
+                let (answer, applied) =
+                    crate::vault::host::sync(&host.vault, &identity.kind, &request.args)?;
+                host.synced_from(caller, &identity.name, &applied).await?;
+                Ok::<_, Failure>(answer)
+            };
+            match synced.await {
+                Ok(answer) => Response::Ok(answer),
                 Err(failure) => {
                     log(&format!("vault sync: {caller}: {}", failure.code));
                     Response::error(&failure)

@@ -8,7 +8,6 @@
 //! vault does not sync (`vault::host::syncs`) runs no rounds, and refuses
 //! another's.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
@@ -31,8 +30,6 @@ const CHECK_EVERY: Duration = Duration::from_secs(2);
 /// other hosts' changes and to reach a host that was away. Measured on the
 /// wall clock, so a Mac that slept runs one as it wakes.
 const ROUND_EVERY: Duration = Duration::from_secs(10 * 60);
-/// How long a host that said its vault does not sync is left alone.
-const REFUSED_FOR: Duration = Duration::from_secs(6 * 60 * 60);
 const ANSWER_WITHIN: Duration = Duration::from_secs(30);
 
 /// Starts this host's rounds, if its vault syncs. They end as the host
@@ -48,12 +45,11 @@ pub(super) fn start(host: &Arc<Host>) {
         let modified = || std::fs::metadata(&file).and_then(|m| m.modified()).ok();
         let mut stopping = host.stopping.subscribe();
         let mut synced: Option<(Option<SystemTime>, SystemTime)> = None;
-        let mut refused = HashMap::new();
         loop {
             let now = modified();
             let due = |at: SystemTime| at.elapsed().unwrap_or_default() >= ROUND_EVERY;
             if synced.is_none_or(|(seen, at)| seen != now || due(at)) {
-                round(&host, &mut refused).await;
+                round(&host).await;
                 synced = Some((now, SystemTime::now()));
             }
             tokio::select! {
@@ -64,9 +60,10 @@ pub(super) fn start(host: &Arc<Host>) {
     });
 }
 
-/// One round: every other host of the owner's that Plow lists online, but
-/// those that refused within `REFUSED_FOR` (by key, when).
-async fn round(host: &Host, refused: &mut HashMap<String, SystemTime>) {
+/// One round: every other host of the owner's that Plow lists online. A
+/// host whose vault does not sync answers `sync_off`, having been sent
+/// nothing, and is asked again next round.
+async fn round(host: &Host) {
     let peers = match host.plow.list_peers().await {
         Ok(peers) => peers,
         Err(failure) => {
@@ -75,22 +72,17 @@ async fn round(host: &Host, refused: &mut HashMap<String, SystemTime>) {
         }
     };
     let own = host.endpoint.id().to_string();
-    refused.retain(|_, at| at.elapsed().unwrap_or_default() < REFUSED_FOR);
-    let others: Vec<Peer> = crate::hosts::only_hosts(peers, &own)
+    let others = crate::hosts::only_hosts(peers, &own)
         .into_iter()
-        .filter(|peer| !peer.this_machine && peer.kind == "device" && peer.online != Some(false))
-        .filter(|peer| !refused.contains_key(&peer.key))
-        .collect();
+        .filter(|peer| !peer.this_machine && peer.kind == "device" && peer.online != Some(false));
     for peer in others {
-        match with_peer(host, &peer).await {
-            Ok(()) => {}
-            Err(failure) if failure.code == code::sync_off.name => {
-                refused.insert(peer.key.clone(), SystemTime::now());
-            }
-            Err(failure) => log(&format!(
+        if let Err(failure) = with_peer(host, &peer).await
+            && failure.code != code::sync_off.name
+        {
+            log(&format!(
                 "vault sync with {:?}: {}",
                 peer.name, failure.code
-            )),
+            ));
         }
     }
 }
@@ -120,42 +112,35 @@ async fn exchange(host: &Host, peer: &Peer, connection: &Connection) -> Result<(
         let applied = store.apply(theirs)?;
         Ok((applied, store.state().clone()))
     })?;
-    if applied.any() {
-        host.synced_from(&peer.key, &peer.name, &applied)
-            .await
-            .map_err(|message| Failure::new(code::audit_failed, message))?;
-        log(&format!(
-            "vault sync: took {} from {:?}",
-            shown(&applied),
-            peer.name
-        ));
-    }
+    host.synced_from(&peer.key, &peer.name, &applied).await?;
     dial::one_exchange(connection, &ask(Some(&ours)), ANSWER_WITHIN).await?;
     Ok(())
 }
 
 impl Host {
-    /// Audits what this vault took from the owner's host `name` (key
-    /// `key`): counts only, never an item. The record's caller is the host
-    /// the changes came from, whichever of the two asked.
+    /// Audits and logs what this vault took from the owner's host `name`
+    /// (key `key`), if anything: counts only, never an item. The record's
+    /// caller is the host the changes came from, whichever of the two asked.
     pub(super) async fn synced_from(
         &self,
         key: &str,
         name: &str,
         applied: &Applied,
-    ) -> Result<String, String> {
+    ) -> Result<(), Failure> {
+        if !applied.any() {
+            return Ok(());
+        }
         let mut record = audit::record(key, None, "vault", "allow", "ok");
         record.caller_name = Some(name.to_string());
         record.args = json!({"command": "sync", "added": applied.added,
                              "updated": applied.updated, "removed": applied.removed});
-        self.append(record).await
+        self.append(record)
+            .await
+            .map_err(|message| Failure::new(code::audit_failed, message))?;
+        log(&format!(
+            "vault sync: took {} added, {} updated, {} removed from {name:?}",
+            applied.added, applied.updated, applied.removed
+        ));
+        Ok(())
     }
-}
-
-/// `applied` for the host's log: what changed, by count.
-pub(super) fn shown(applied: &Applied) -> String {
-    format!(
-        "{} added, {} updated, {} removed",
-        applied.added, applied.updated, applied.removed
-    )
 }

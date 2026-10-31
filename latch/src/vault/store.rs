@@ -80,6 +80,9 @@ pub struct OwnStore {
     next_id: u64,
     /// While saves are held, whether anything changed since.
     held: Option<bool>,
+    /// Opened from version 1, with uids given on this open and not yet
+    /// written.
+    from_v1: bool,
 }
 
 fn failed(message: String) -> Failure {
@@ -120,6 +123,7 @@ impl OwnStore {
                 state: State::default(),
                 next_id: 1,
                 held: None,
+                from_v1: false,
             };
             store.save()?;
             return Ok(store);
@@ -177,6 +181,7 @@ impl OwnStore {
             state,
             next_id: file.next_id,
             held: None,
+            from_v1: version == 1,
         })
     }
 
@@ -243,6 +248,15 @@ impl OwnStore {
 
     fn last(&self) -> Meta {
         self.state.items.last().expect("just added").item.meta()
+    }
+
+    /// Writes a version-1 vault in this layout, so the uids it was given
+    /// on opening are the ones it keeps: before any leaves this host.
+    pub fn keep_uids(&mut self) -> Result<(), Failure> {
+        if std::mem::take(&mut self.from_v1) {
+            self.save()?;
+        }
+        Ok(())
     }
 
     /// Everything this vault holds, as the owner's other hosts sync it.
@@ -609,6 +623,14 @@ mod tests {
         let reopened = OwnStore::open(dir.path()).unwrap();
         assert_eq!(reopened.state.items[..2], migrated.state.items[..2]);
         assert_eq!(reopened.list(), migrated.list());
+
+        // Before its uids can leave the host (every `Vault::with` keeps
+        // them), they are written: the next open has the same ones.
+        fs::write(&path, &v1).unwrap();
+        let mut kept = OwnStore::open(dir.path()).unwrap();
+        kept.keep_uids().unwrap();
+        assert_eq!(version(), 2);
+        assert_eq!(OwnStore::open(dir.path()).unwrap().state, kept.state);
     }
 
     #[test]
