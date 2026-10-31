@@ -266,7 +266,6 @@ codes! {
     download_failed: Failed,
     download_incomplete: Failed,
     duplicate_request: Usage,
-    editor_failed: Failed,
     empty_rules: Usage,
     engine_error: Failed,
     engine_failed: Failed,
