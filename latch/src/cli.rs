@@ -258,6 +258,10 @@ pub enum Command {
     /// runs a latch command and is skipped once done, so it can be run again
     /// any time; `--status` only lists the steps
     Setup(SetupArgs),
+    /// Install gog, the Google CLI a host runs for `latch google`: the
+    /// release latch pins, in this state folder's plugins folder, unless it
+    /// is there and checks out. install.sh does this on macOS and Linux
+    InstallGog,
     /// Internal: the sandboxed process a host starts for each file read or write, exec, Google call and startup probe
     #[command(hide = true)]
     Worker(WorkerArgs),

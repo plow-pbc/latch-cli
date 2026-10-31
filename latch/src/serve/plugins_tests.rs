@@ -188,7 +188,7 @@ async fn google_setup_refuses_a_missing_or_unverified_gog_and_stays_off() {
 
     // Not the pinned release: the check every Google worker makes refuses it.
     std::fs::create_dir_all(gog_folder(&t)).unwrap();
-    std::fs::write(gog_folder(&t).join("gog"), "a stand-in gog").unwrap();
+    std::fs::write(gog_folder(&t).join(crate::google::GOG), "a stand-in gog").unwrap();
     let answer = plugins(&t, "enable", "google").await;
     assert_eq!(refusal(&answer).1, "gog_unverified");
     assert_eq!(state_of(&t, "google").await["state"], "needs_setup");
