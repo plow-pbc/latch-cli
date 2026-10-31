@@ -1433,6 +1433,20 @@ const ENTRIES: &[Entry] = &[
         ],
     },
     Entry {
+        id: "install-gog",
+        runs_on: |_| RunsOn::Local,
+        output: "`gog` (where it is), `version` (the release latch pins) and `installed` (false when it was there and checked out already). `setup_failed` when the download or unpacking fails (curl's and tar's messages are in trace.log), `gog_unverified` when what came is not the pinned release, `unsupported_platform` where gog has no release.",
+        effect: Repeatable(
+            "downloads and verifies the pinned gog into this machine's state folder",
+        ),
+        owner_only: false,
+        connector: None,
+        examples: &[ex(
+            "Install gog, which a host runs for `latch google`",
+            &["install-gog"],
+        )],
+    },
+    Entry {
         id: "stop",
         runs_on: |_| RunsOn::Local,
         output: "`stopped` (whether a host was running), `state_dir`, `state`, `browser_sessions_ended` (the browser sessions open when the host stopped; they end with it) and, if it failed, `error`.",
