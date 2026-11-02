@@ -6,7 +6,6 @@
 //! as two lists), and what an agent can read of the number afterwards.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use serde_json::{Value, json};
 
@@ -31,9 +30,11 @@ conformance!(
     a_redrawn_number_field_does_not_show_its_value,
     a_number_field_the_page_makes_a_button_is_not_named_by_the_number,
     a_card_in_its_fields_shows_blank_in_pictures_until_pay,
-    a_card_left_in_its_fields_is_emptied_after_a_while,
+    a_card_stays_in_its_fields_until_its_page_goes,
+    a_card_does_not_come_back_with_the_back_button,
+    leaving_a_page_sends_it_no_event,
+    a_slow_or_late_submit_still_sends_the_whole_card,
     a_page_that_takes_the_blanking_off_gets_no_picture,
-    a_card_filled_on_a_new_checkout_gets_its_own_time,
     a_click_says_what_the_page_marks_and_when_it_changed_nothing,
     a_button_is_named_by_the_text_a_person_sees,
 );
@@ -45,14 +46,6 @@ const PAID: &str = "number ok, expiry ok (04 / 31), cvv ok, name Ada Lovelace";
 /// provider beside it (`https://js.processor.example`, its port the
 /// second value), and the vault's one card, saved with no sites.
 async fn shop(engine: &str) -> (Harness, String, String, u16, impl Sized) {
-    shop_for(engine, None).await
-}
-
-/// `shop`, where a card left in the page's fields stays `filled_for`.
-async fn shop_for(
-    engine: &str,
-    filled_for: Option<Duration>,
-) -> (Harness, String, String, u16, impl Sized) {
     let (dir, state, area) = test_state(engine);
     let vault = Vault::new(state.clone());
     let card = vault
@@ -86,7 +79,6 @@ async fn shop_for(
     ));
     // The agent presses Pay itself, a click the decision model judges.
     browsers.provider = Some(Arc::new(super::super::Calm));
-    browsers.filled_for = filled_for;
     let h = Harness::start(browsers, engine).await;
     (h, card.item, local, processor, (dir, area))
 }
@@ -642,7 +634,7 @@ async fn a_card_in_its_fields_shows_blank_in_pictures_until_pay(engine: &str) {
     assert!(
         next.contains("screenshots show them blank")
             && next.contains("press its own button")
-            && next.contains("5 minutes after this fill"),
+            && next.contains("They go when the page does"),
         "{next}"
     );
     let refused = h.call("eval", json!({"script": "1"})).await.unwrap_err();
@@ -679,11 +671,11 @@ async fn a_card_in_its_fields_shows_blank_in_pictures_until_pay(engine: &str) {
     h.call("close", json!({})).await.ok();
 }
 
-/// A card left in a checkout's fields, Pay never pressed, is emptied once
-/// its time is up, a later fill of no secret notwithstanding; the fields
-/// look as they did, are no longer marked filled, and scripts run again.
-async fn a_card_left_in_its_fields_is_emptied_after_a_while(engine: &str) {
-    let (mut h, card, local, _, _keep) = shop_for(engine, Some(Duration::from_secs(2))).await;
+/// A card left in a checkout's fields, Pay never pressed, stays there, out
+/// of sight, for as long as its page does; when the page goes, so does the
+/// guard, so the next page's own requests go on.
+async fn a_card_stays_in_its_fields_until_its_page_goes(engine: &str) {
+    let (mut h, card, local, _, _keep) = shop(engine).await;
     let page = h
         .call("open", json!({"url": format!("{local}/card-hosted.html")}))
         .await
@@ -695,8 +687,8 @@ async fn a_card_left_in_its_fields_is_emptied_after_a_while(engine: &str) {
             ["cardholder name", field("Name on card")]]}))
         .await;
     let next = filled.unwrap()["next"].as_str().unwrap().to_string();
-    assert!(next.contains("2 seconds after this fill"), "{next}");
-    // A later fill of no secret (the expiry) keeps the card's deadline.
+    assert!(next.contains("They go when the page does"), "{next}");
+    // A later fill of no secret (the expiry) says nothing more.
     let (expiry, _) = h
         .gated_fill(json!({"item": card, "fields": [["expiry", field("Expiry")]]}))
         .await;
@@ -705,30 +697,60 @@ async fn a_card_left_in_its_fields_is_emptied_after_a_while(engine: &str) {
     h.shot().await.unwrap();
     let refused = h.call("eval", json!({"script": "1"})).await.unwrap_err();
     assert_eq!(refused.code, "secret_on_page");
-    tokio::time::sleep(Duration::from_secs(4)).await;
-    let left = h
-        .call(
-            "eval",
-            json!({"script": "[...document.querySelectorAll('input:not([type=hidden])')].map(i => [i.value, i.style.cssText])"}),
-        )
+
+    // The next page sends a GET holding the card's first digit, which the
+    // guard stops while a card may be on a page.
+    let digit = &NUMBER[..1];
+    h.call(
+        "open",
+        json!({"url": format!("{local}/checkout-marks.html?probe=x{digit}")}),
+    )
+    .await
+    .unwrap();
+    h.call("wait", json!({"text": "probe:", "within": 5}))
         .await
         .unwrap();
-    assert_eq!(
-        left["value"],
-        json!([["", ""], ["", ""], ["", ""], ["", ""]]),
-        "{left}"
-    );
-    let observed = h.call("observe", json!({})).await.unwrap();
-    assert!(
-        observed["elements"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|e| e["filled"].is_null()),
-        "{}",
-        observed["elements"]
-    );
-    assert!(!h.text().await.contains("payment:"));
+    let text = h.text().await;
+    assert!(text.contains("probe: ok"), "{text}");
+    assert!(!h.saw_the_card(), "the card reached a result or the audit");
+    h.call("close", json!({})).await.ok();
+}
+
+/// Back on a checkout the card was left on, nothing shows the card.
+async fn a_card_does_not_come_back_with_the_back_button(engine: &str) {
+    let (mut h, card, local, _, _keep) = shop(engine).await;
+    let page = h
+        .call("open", json!({"url": format!("{local}/card-hosted.html")}))
+        .await
+        .unwrap();
+    let field = |name: &str| json!([find(&page, "textbox", name)]);
+    h.gated_fill(json!({"item": card, "fields": [
+        ["number", field("Card number")], ["code", field("CVC")],
+        ["cardholder name", field("Name on card")]]}))
+        .await
+        .0
+        .unwrap();
+    h.call("open", json!({"url": format!("{local}/next.html")}))
+        .await
+        .unwrap();
+    h.call(
+        "do",
+        json!({"request": "r-back", "plan": {"steps": [{"literal": {"op": "back"}}]}}),
+    )
+    .await
+    .unwrap();
+    let seen = h.call("observe", json!({})).await.unwrap();
+    println!("back on the checkout: {}", seen["elements"]);
+    let script = json!({"script": "[...document.querySelectorAll('input:not([type=hidden])')].map(i => i.value.length)"});
+    match h.call("eval", script).await {
+        Ok(left) => println!("eval after back: {left}"),
+        Err(refused) => assert_eq!(refused.code, "secret_on_page"),
+    }
+    let script = json!({"script": "[...document.querySelectorAll('input:not([type=hidden])')].map(i => i.value)"});
+    if let Ok(left) = h.call("eval", script).await {
+        let digits = left["value"].to_string().replace([' ', '-'], "");
+        assert!(!digits.contains(NUMBER) && !digits.contains(CVV), "{left}");
+    }
     assert!(!h.saw_the_card(), "the card reached a result or the audit");
     h.call("close", json!({})).await.ok();
 }
@@ -752,53 +774,57 @@ async fn a_page_that_takes_the_blanking_off_gets_no_picture(engine: &str) {
     h.call("close", json!({})).await.ok();
 }
 
-/// A card filled on a checkout after an earlier one's page went keeps its
-/// own time in the fields, not what was left of the earlier card's.
-async fn a_card_filled_on_a_new_checkout_gets_its_own_time(engine: &str) {
-    let window = Duration::from_secs(8);
-    let (mut h, card, local, _, _keep) = shop_for(engine, Some(window)).await;
-    let fill = async |h: &mut Harness| {
-        h.call("open", json!({"url": format!("{local}/card-hosted.html")}))
-            .await
-            .unwrap();
-        let mut args = h.paying(&card, "Pay $10.00").await;
-        args.as_object_mut().unwrap().remove("press");
-        h.gated_fill(args).await.0.unwrap();
-        std::time::Instant::now()
-    };
-    let first = fill(&mut h).await;
-    // The first checkout's page goes; the second is filled before its time
-    // is up.
-    tokio::time::sleep(Duration::from_secs(2).saturating_sub(first.elapsed())).await;
-    let second = fill(&mut h).await;
-    // The second card went in while the first's time still ran.
-    assert!(second < first + window, "too slow to test");
-    // Past the first card's time, before the second's: still in the fields.
-    let check = first + window + Duration::from_millis(500);
-    assert!(
-        check + Duration::from_millis(500) < second + window,
-        "too slow to test"
-    );
-    tokio::time::sleep(check.saturating_duration_since(std::time::Instant::now())).await;
-    let held = h.call("eval", json!({"script": "1"})).await.unwrap_err();
-    assert_eq!(
-        held.code, "secret_on_page",
-        "emptied on the first card's time"
-    );
-    // Its own time up: emptied.
-    tokio::time::sleep(
-        (second + window + Duration::from_secs(2))
-            .saturating_duration_since(std::time::Instant::now()),
-    )
-    .await;
-    let left = h
-        .call(
-            "eval",
-            json!({"script": "[...document.querySelectorAll('input:not([type=hidden])')].map(i => i.value)"}),
+/// Leaving a page with a card in its fields empties them with no event a
+/// page's script could act on: the count the page kept as it left is the
+/// count it ends with.
+async fn leaving_a_page_sends_it_no_event(engine: &str) {
+    let (mut h, card, local, _, _keep) = shop(engine).await;
+    h.call("open", json!({"url": format!("{local}/card-hosted.html")}))
+        .await
+        .unwrap();
+    let mut args = h.paying(&card, "Pay $10.00").await;
+    args.as_object_mut().unwrap().remove("press");
+    h.gated_fill(args).await.0.unwrap();
+    h.call("open", json!({"url": format!("{local}/next.html")}))
+        .await
+        .unwrap();
+    let counts = json!({"script": "[localStorage.changes, localStorage.atLeaving]"});
+    let counts = h.call("eval", counts).await.unwrap();
+    let [changes, at_leaving] = [&counts["value"][0], &counts["value"][1]];
+    assert_ne!(changes, "0", "the fill made no events: {counts}");
+    assert_eq!(changes, at_leaving, "{counts}");
+    h.call("close", json!({})).await.ok();
+}
+
+/// A press whose form goes out late, or whose answer comes late, sends the
+/// whole card: the fields stay until the next page has replaced this one.
+async fn a_slow_or_late_submit_still_sends_the_whole_card(engine: &str) {
+    let (mut h, card, local, _, _keep) = shop(engine).await;
+    for shape in ["slow", "late"] {
+        h.call(
+            "open",
+            json!({"url": format!("{local}/card-hosted.html?{shape}")}),
         )
         .await
         .unwrap();
-    assert_eq!(left["value"], json!(["", "", "", ""]), "{left}");
+        let mut args = h.paying(&card, "Pay $10.00").await;
+        let press = args["press"].as_str().unwrap().to_string();
+        args.as_object_mut().unwrap().remove("press");
+        h.gated_fill(args).await.0.unwrap();
+        h.click(&press).await.unwrap();
+        // Pressed, the form not yet sent: the page and its fields stand.
+        if shape == "late" {
+            let seen = h.call("observe", json!({})).await.unwrap();
+            let held = seen["elements"].as_array().unwrap();
+            assert!(held.iter().any(|e| e["filled"] == true), "{seen}");
+        }
+        h.call("wait", json!({"text": "payment:", "within": 8}))
+            .await
+            .unwrap();
+        let page = h.text().await;
+        assert!(page.contains(PAID), "{shape}: {page}");
+    }
+    assert!(!h.saw_the_card(), "the card reached a result or the audit");
     h.call("close", json!({})).await.ok();
 }
 
@@ -819,7 +845,7 @@ async fn pressed(h: &mut Harness, target: &str, request: &str) -> Value {
 /// it, and that nothing changed; a press that goes through says neither, and
 /// a page that marks nothing is not called complete.
 async fn a_click_says_what_the_page_marks_and_when_it_changed_nothing(engine: &str) {
-    let (mut h, _, local, _, _keep) = shop(engine).await;
+    let (mut h, card, local, _, _keep) = shop(engine).await;
     let url = format!("{local}/checkout-marks.html");
     let page = h.call("open", json!({"url": url})).await.unwrap();
     let pay = find(&page, "button", "Pay");
@@ -828,7 +854,7 @@ async fn a_click_says_what_the_page_marks_and_when_it_changed_nothing(engine: &s
         refused["unchanged"]
             .as_str()
             .unwrap()
-            .contains("look at the page"),
+            .contains("take a screenshot"),
         "{refused}"
     );
     assert_eq!(
@@ -882,6 +908,14 @@ async fn a_click_says_what_the_page_marks_and_when_it_changed_nothing(engine: &s
     let seen = h.call("observe", json!({})).await.unwrap();
     let working = find(&seen, "button", "Processing");
     assert!(!working.is_empty());
+    // The page has disabled its fields: it is working, and a fill waits.
+    let name = find(&seen, "textbox", "Cardholder name");
+    let (refill, _) = h
+        .gated_fill(json!({"item": card, "fields": [["cardholder name", [name]]]}))
+        .await;
+    let refused = refill.unwrap_err();
+    assert_eq!(refused.code, "fill_refused", "{}", refused.message);
+    assert!(refused.message.contains("disabled"), "{}", refused.message);
 
     h.call("close", json!({})).await.ok();
 }

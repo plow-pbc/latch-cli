@@ -39,8 +39,7 @@
 //! A fill with no press leaves its values on the page for the agent to
 //! submit. While they are there, `eval` is refused, screenshots show the
 //! filled fields blank, and a GET request carrying a secret is stopped;
-//! latch empties fields still holding a secret [`FILLED_FOR`] after the
-//! fill, and the values go with the browser when the session closes.
+//! the values go with the page.
 
 use std::sync::atomic::Ordering;
 
@@ -55,10 +54,6 @@ use crate::failure::{Failure, code};
 use crate::vault::item::{Item, Meta};
 use crate::vault::store::Backend;
 use crate::vault::{classify, dates, sites, totp};
-
-/// How long a secret filled with no press may stay in the page's fields
-/// before latch empties them.
-pub const FILLED_FOR: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
 fn item_of(browsers: &Browsers, args: &Value) -> Result<Item, Failure> {
     let id = args["item"].as_str().ok_or_else(|| {
@@ -653,7 +648,6 @@ async fn fill(
     }
     // A secret left on the page for the agent's own press goes from it in
     // a while, pressed or not.
-    let window = browsers.filled_for();
     let left = plan.press.is_none()
         && plan
             .fields
@@ -662,12 +656,7 @@ async fn fill(
     // After a sign-in's submit the answer says what the page shows, for
     // the agent to tell a bounced sign-in from one that moved on.
     let shows = meta.kind == "login" && plan.press.is_some();
-    let resume = if left {
-        json!({"op": "fill_resume", "clear_after_ms": window.as_millis() as u64, "shows": shows})
-    } else {
-        json!({"op": "fill_resume", "shows": shows})
-    };
-    let mut result = step(session, resume, audit).await?;
+    let mut result = step(session, json!({"op": "fill_resume", "shows": shows}), audit).await?;
     if let Some(object) = result.as_object_mut() {
         object.insert("item".into(), json!(item.id));
         object.insert("fields".into(), json!(outcomes));
@@ -678,7 +667,7 @@ async fn fill(
             let engine = session.ready["engine"].as_str().unwrap_or_default();
             object.insert("next".into(), json!(kept(meta.kind, engine)));
         } else if left {
-            object.insert("next".into(), json!(left_on_page(window)));
+            object.insert("next".into(), json!(LEFT_ON_PAGE));
         }
     }
     Ok(result)
@@ -686,17 +675,7 @@ async fn fill(
 
 /// The way on after a fill that left a secret on the page: the agent looks,
 /// then presses the page's own button.
-fn left_on_page(window: std::time::Duration) -> String {
-    let secs = window.as_secs();
-    let after = if secs >= 60 {
-        format!("{} minutes", secs / 60)
-    } else {
-        format!("{secs} seconds")
-    };
-    format!(
-        "the values are in the page's fields, which you can't read: screenshots show them blank, and `eval` waits until they are empty. Check the page, then press its own button (Pay, Submit) yourself. latch empties those fields {after} after this fill if they still hold the values, and when the session closes"
-    )
-}
+const LEFT_ON_PAGE: &str = "the values are in the page's fields, which you can't read: screenshots show them blank, and `eval` waits until they are gone. Check the page, then press its own button (Pay, Submit) yourself. They go when the page does: leaving it, closing its tab or closing the session";
 
 /// The way on after a submit the page kept: it neither left nor emptied the
 /// filled fields, so latch cleared them. That may mean the page refused it,

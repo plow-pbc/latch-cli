@@ -24,8 +24,7 @@
 //! (`__latch.controls`), for the host's suggestions and checks; it pauses
 //! nothing. No step answers with a value. While a filled value may still be
 //! on a page (a fill without a press), in whichever tab, `eval` is refused
-//! and a screenshot shows the filled fields blank; a secret among them is
-//! emptied once the time its fill gave is up (`clear_due`).
+//! and a screenshot shows the filled fields blank, until its page goes.
 
 use std::time::{Duration, Instant};
 
@@ -40,9 +39,6 @@ use crate::failure::{Failure, code};
 const CLEANUP: Duration = Duration::from_secs(15);
 /// How long latch watches fields it emptied before calling them empty.
 const SETTLED: Duration = Duration::from_millis(500);
-/// How long latch waits to empty a filled secret again when its tab is
-/// not the active one, and so can't be read.
-const CLEAR_AGAIN: Duration = Duration::from_secs(30);
 /// How long a login's next stage has to show after its identifier stage.
 const NEXT_STAGE: Duration = Duration::from_secs(15);
 /// How long a changed page must stay unchanged to count as the next stage,
@@ -91,8 +87,6 @@ pub struct State {
     /// Secrets filled into the page, which no GET request may carry while
     /// they may be on it (`Driver::guard`).
     guarded: Vec<String>,
-    /// When the secrets a fill left on the page are emptied.
-    clear_at: Option<Instant>,
 }
 
 /// What a sign-in page at `path` shows after a submit, from each frame's
@@ -140,11 +134,6 @@ impl<D: Driver> Core<D> {
         self.no_dialog()?;
         self.paused = true;
         self.fill.targets.clear();
-        // An earlier fill's deadline stands only while its fields still
-        // hold something: one whose page went has nothing left to empty.
-        if self.holding().ok() == Some(0) {
-            self.fill.clear_at = None;
-        }
         self.page(audit)?;
         let snapshot = match prepare.snapshot.as_deref() {
             Some(id) => self.snapshot(id)?.id.clone(),
@@ -173,6 +162,12 @@ impl<D: Driver> Core<D> {
                     .run(&frame, &format!("__latch.fillTarget({id:?}, {index})"))?;
                 if info["gone"] == true {
                     return Err(stale());
+                }
+                if info["disabled"] == true {
+                    return Err(Failure::new(
+                        code::fill_refused,
+                        "nothing was filled: the page has disabled this field, as a page does while it sends a form or takes a payment; don't fill or press again: look at the page, and the site's orders or account, for how it ended".into(),
+                    ));
                 }
                 let token = info["token"].as_str().unwrap_or_default().to_string();
                 if let Some(object) = info.as_object_mut() {
@@ -536,7 +531,6 @@ impl<D: Driver> Core<D> {
     /// fill, until one's cleanup confirms the page holds none.
     pub(super) fn fill_resume(
         &mut self,
-        clear_after_ms: Option<u64>,
         shows: bool,
         audit: &mut Map<String, Value>,
     ) -> Result<Value, Failure> {
@@ -548,15 +542,6 @@ impl<D: Driver> Core<D> {
         }
         self.fill.targets.clear();
         self.paused = false;
-        if let Some(ms) = clear_after_ms
-            && self.holding().ok() != Some(0)
-            && !self.fill.guarded.is_empty()
-        {
-            // An earlier secret still on the page keeps its deadline: the
-            // earliest goes first.
-            let at = Instant::now() + Duration::from_millis(ms);
-            self.fill.clear_at = Some(self.fill.clear_at.map_or(at, |was| was.min(at)));
-        }
         let before = Map::new();
         let mut result = Map::new();
         let events = self.settle()?;
@@ -643,33 +628,11 @@ impl<D: Driver> Core<D> {
         Ok(())
     }
 
-    /// When the secrets a fill left on the page are due to be emptied; none
-    /// while a fill holds the session, which keeps the deadline for after.
-    pub fn clear_at(&self) -> Option<Instant> {
-        self.fill.clear_at.filter(|_| !self.paused)
-    }
-
-    /// Empties the filled fields of the active tab once their time is up;
-    /// a filled tab that isn't the active one is tried again a little
-    /// later, as only the active tab's frames can be read.
-    pub fn clear_due(&mut self) {
-        if self.clear_at().is_none_or(|at| at > Instant::now()) {
-            return;
-        }
-        let Ok(filled) = self.live_filled() else {
-            self.fill.clear_at = Some(Instant::now() + CLEAR_AGAIN);
-            return;
-        };
-        for (_, frame) in &filled.here {
-            let _ = self.driver.run(frame, "__latch.clearFilled()");
-        }
-        self.fill.clear_at = if filled.elsewhere.is_empty() {
-            // Lifts the GET guard once nothing is held.
+    /// Lifts the GET guard once nothing filled is on a page any more.
+    pub(super) fn lift_guard(&mut self) {
+        if !self.paused && !self.fill.guarded.is_empty() {
             let _ = self.holding();
-            None
-        } else {
-            Some(Instant::now() + CLEAR_AGAIN)
-        };
+        }
     }
 
     /// `take` (a screenshot) with every field of the active tab that holds
@@ -888,13 +851,7 @@ mod tests {
         assert_eq!(cleaned.code, "engine_error");
         // As after a later fill that failed before releasing anything.
         let resumed = core
-            .call(
-                Call::FillResume {
-                    clear_after_ms: None,
-                    shows: false,
-                },
-                None,
-            )
+            .call(Call::FillResume { shows: false }, None)
             .err()
             .unwrap();
         assert_eq!(resumed.code, "session_paused");

@@ -320,9 +320,9 @@ While the card is in the fields, a screenshot shows exactly the fields
 latch filled blank (hidden whole for the capture, and the picture dropped
 if the page undid that) (in every frame of the page, a payment provider's
 included), putting their own look back once it is taken; plans' pictures
-too. latch empties fields still holding the card 5 minutes after the fill
-(the fill's answer says so in its `next`), and the values go with the
-browser when the session closes. Only the filled fields are blanked: a page
+too. The values stay until the page goes (the fill's answer says so in its
+`next`): leaving it, closing its tab or closing the session. A fill into a
+field the page has disabled is refused. Only the filled fields are blanked: a page
 that prints the whole number elsewhere shows it in a picture, and a receipt
 the agent downloads (text or PDF) can hold it, as can a text answer.
 While a filled value may be on a page, in whichever of the session's tabs,

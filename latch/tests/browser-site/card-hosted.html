@@ -3,7 +3,10 @@
      fields in the page's own frame, the number and expiry formatted as
      they are typed (card-format.js). Pay sends the number's digits, the
      expiry as shown, to /pay. With ?unblank the page takes back any
-     style put on the number field. -->
+     style put on the number field. ?slow posts to a /pay that answers
+     late; ?late sends the form a while after the press. Every input or
+     change event is counted in localStorage, and the count as the page
+     leaves is kept beside it. -->
 <script src="card-format.js"></script>
 <h1>Pay $10.00</h1>
 <form method="post" action="pay" id="pay">
@@ -23,8 +26,21 @@
     }).observe(number, { attributes: true, attributeFilter: ['style'] });
   }
   formatAs(expiry, cardFormat.expiry);
-  document.getElementById('pay').addEventListener('submit', () => {
-    const form = document.getElementById('pay');
+  const search = new URLSearchParams(location.search);
+  const form = document.getElementById('pay');
+  if (search.has('slow')) form.action = 'pay?slow';
+  localStorage.changes = 0;
+  for (const kind of ['input', 'change']) {
+    document.addEventListener(kind, () => { localStorage.changes = Number(localStorage.changes) + 1; }, true);
+  }
+  addEventListener('pagehide', () => { localStorage.atLeaving = localStorage.changes; });
+  document.getElementById('pay').addEventListener('submit', (event) => {
+    if (search.has('late') && !form.dataset.waited) {
+      event.preventDefault();
+      form.dataset.waited = 'yes';
+      setTimeout(() => form.requestSubmit(), 2000);
+      return;
+    }
     form.elements['cc-number'].value = number.value.replace(/\D/g, '');
     form.elements['cc-exp'].value = expiry.value;
     form.elements['cc-csc'].value = cvc.value;

@@ -5,7 +5,8 @@
      focuses it, with no words on the page. ?native marks it `required`
      instead and leaves refusing to the browser; ?alert adds the page's own
      error text. With ZIP given, Pay disables the form and shows Processing.
-     The buttons under it hide part of their text one way each. -->
+     The buttons under it hide part of their text one way each. ?probe=xV
+     sends a GET holding V a moment after the page loads. -->
 <style>
   #pay { position: relative; width: 160px; height: 40px; }
   #pay span { position: absolute; inset: 0; display: block; line-height: 40px; }
@@ -31,6 +32,11 @@
     zip.removeAttribute('aria-required');
   }
   more.onclick = () => more.setAttribute('aria-expanded', 'true');
+  if (search.has('probe')) {
+    setTimeout(() => fetch(`checkout-marks.html?v=${search.get('probe').slice(1)}`)
+      .then(() => 'ok', () => 'stopped')
+      .then((result) => document.body.insertAdjacentHTML('beforeend', `<p>probe: ${result}</p>`)), 1500);
+  }
   form.onsubmit = (event) => {
     event.preventDefault();
     if (!zip.value) {
@@ -42,7 +48,7 @@
       }
       return;
     }
-    pay.disabled = name.disabled = zip.disabled = true;
+    pay.disabled = zip.disabled = document.getElementById('name').disabled = true;
     pay.classList.add('working');
     busy.removeAttribute('aria-hidden');
     idle.setAttribute('aria-hidden', 'true');

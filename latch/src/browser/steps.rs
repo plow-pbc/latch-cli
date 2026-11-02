@@ -1356,7 +1356,7 @@ fn condition(check: &Check, snapshot: Option<&str>, besides: Vec<String>) -> Val
 
 /// A click whose page shows nothing new: said, so the agent looks at the
 /// page instead of waiting on it.
-const UNCHANGED: &str = "nothing on the page changed after this: same address, same text, nothing newly disabled. It may not have done anything: look at the page before waiting on it";
+const UNCHANGED: &str = "latch sees no change after this: same address, same text, nothing newly disabled. It may have done nothing, or changed only how the page looks: take a screenshot before waiting on it";
 
 /// What a click or Enter would do, in one line, for the risk question.
 fn action_line(reviewed: &Value, enter: bool, typing: bool) -> String {

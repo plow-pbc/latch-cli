@@ -176,11 +176,7 @@ pub enum Call {
     /// After a login's identifier stage: its next stage, read privately.
     NextStage,
     FillCleanup,
-    /// With `clear_after_ms`, a secret the fill left on the page is emptied
-    /// that long after, if its field still holds it (`Core::clear_due`).
     FillResume {
-        #[serde(default)]
-        clear_after_ms: Option<u64>,
         /// After a login's submit: the answer says what the page shows
         /// (`shows`).
         #[serde(default)]
@@ -446,10 +442,7 @@ impl<D: Driver> Core<D> {
             } => self.set_value(&target, &value, secret, formatted),
             Call::FillSubmit { target } => self.fill_submit(&target),
             Call::FillCleanup => self.fill_cleanup(),
-            Call::FillResume {
-                clear_after_ms,
-                shows,
-            } => self.fill_resume(clear_after_ms, shows, &mut audit),
+            Call::FillResume { shows } => self.fill_resume(shows, &mut audit),
             Call::Open { url } => self.open(url.as_deref(), &mut audit),
             Call::Observe { tab, scope } => {
                 self.observe(tab.as_deref(), scope.as_deref(), &mut audit)
@@ -499,6 +492,7 @@ impl<D: Driver> Core<D> {
             Call::DownloadGet { download } => self.download_get(&download, &mut audit),
             Call::Close => unreachable!("the worker closes the browser"),
         };
+        self.lift_guard();
         if let Some(settled) = self.settled {
             audit.insert("settle_ms".into(), json!(settled.as_millis() as u64));
         }

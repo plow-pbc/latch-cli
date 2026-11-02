@@ -102,6 +102,7 @@
       // the page has made it a button.
       if (['button', 'submit', 'reset'].includes(type) && el.value && !filled.has(el)) return clean(el.value);
       if (type === 'image' && el.alt) return clean(el.alt);
+      if (type === 'submit') return 'Submit';
     }
     if (!['input', 'select', 'textarea'].includes(el.localName)) {
       const text = clean(shownText(el)) || clean(el.innerText || el.textContent);
@@ -587,6 +588,18 @@
     }
     return holding();
   };
+
+  // A page that is left takes nothing filled with it: neither the back
+  // button's copy of it nor the browser's restored form brings a value back.
+  // `pagehide` comes once the next page has replaced this one, so a form
+  // that was sent has gone whole. Values are set bare: no event reaches a
+  // page that is leaving.
+  addEventListener('pagehide', () => {
+    for (const el of filled) {
+      if (el.isContentEditable) el.textContent = '';
+      else if (el.localName !== 'select') el.value = '';
+    }
+  });
 
   // Hides each filled field whole (`on`), for a screenshot, at once, and
   // puts the field's own style back after it.

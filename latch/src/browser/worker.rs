@@ -252,12 +252,7 @@ fn serve<B: Runtime>(
     let mut stdin = BufReader::new(&*raw);
     loop {
         let due = last_call + idle;
-        // A secret a fill left on the page is emptied when its time is up,
-        // between calls.
-        let clear = core.clear_at();
-        let wait = clear
-            .map_or(due, |at| at.min(due))
-            .saturating_duration_since(Instant::now());
+        let wait = due.saturating_duration_since(Instant::now());
         // The engine is tended when it writes (`Runtime::wakes`), and while
         // it holds requests for latch to check, every few milliseconds, not
         // left until the next call.
@@ -265,14 +260,6 @@ fn serve<B: Runtime>(
         let slice = if tending { wait.min(TEND) } else { wait };
         let wakes = core.browser().wakes();
         if stdin.buffer().is_empty() && !cdp::readable_or(&*raw, wakes, slice).unwrap_or(false) {
-            if clear.is_some_and(|at| Instant::now() >= at) {
-                let deadline = Instant::now() + call_limit;
-                core.browser().limit(Some(deadline));
-                core.limit(deadline);
-                core.clear_due();
-                core.browser().limit(None);
-                continue;
-            }
             if Instant::now() < due {
                 continue;
             }

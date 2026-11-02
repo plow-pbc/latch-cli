@@ -162,11 +162,12 @@ number. At the checkout page:
    expiry=eN --field "cardholder name"=eN`. A card is never picked for
    you: name it with `--item`.
 3. The card stays in the page's fields, which you can't read: screenshots
-   show them blank, and `eval` waits until they are empty. Check the page
+   show them blank, and `eval` waits until they are gone. Check the page
    (ZIP, a box to untick, the total), then press its Pay button yourself
    with `do 'click eN'`. Read the page that follows to see whether it paid.
-   latch empties the card's fields 5 minutes after the fill if they still
-   hold it, and when the session closes.
+   The card goes when the page does: leaving it, closing its tab or closing
+   the session. If the page has disabled its fields it is working: don't
+   fill again.
 
 ## Credentials in exec
 
