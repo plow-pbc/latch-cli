@@ -5,7 +5,8 @@
 //! `merge` combines two hosts' states, uid by uid: the later change to an
 //! item wins, and a removal as late as the edit wins. Items under
 //! different uids stay separate, even with the same values; `adopt`, run
-//! first, gives an item both hosts added on their own one uid.
+//! first, gives an item both hosts added on their own one uid. Each
+//! host's sync switch merges the same way, the later one winning.
 
 use std::collections::BTreeMap;
 
@@ -32,10 +33,28 @@ pub struct Tombstone {
     pub modified: u64,
 }
 
+/// The owner's choice whether a host gets the vault, keyed by its peer key.
+/// A host with none syncs only if it is a Mac (`vault::host::syncs`).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Switch {
+    pub key: String,
+    pub on: bool,
+    pub modified: u64,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 pub struct State {
     pub items: Vec<Synced>,
     pub tombstones: Vec<Tombstone>,
+    #[serde(default)]
+    pub hosts: Vec<Switch>,
+}
+
+impl State {
+    /// The host `key`'s switch, if the owner ever set one.
+    pub fn switch(&self, key: &str) -> Option<bool> {
+        self.hosts.iter().find(|s| s.key == key).map(|s| s.on)
+    }
 }
 
 pub fn new_uid() -> String {
@@ -115,6 +134,14 @@ pub fn merge(a: &State, b: &State) -> State {
         *held = (*held).max(t.modified);
     }
     items.retain(|uid, s| tombstones.get(uid).is_none_or(|&at| at < s.modified));
+    let mut hosts: BTreeMap<&str, &Switch> = BTreeMap::new();
+    for s in a.hosts.iter().chain(&b.hosts) {
+        let held = hosts.entry(&s.key).or_insert(s);
+        // At the same time, off: the side that leaks nothing.
+        if (s.modified, !s.on) > (held.modified, !held.on) {
+            *held = s;
+        }
+    }
     State {
         items: items.into_values().cloned().collect(),
         tombstones: tombstones
@@ -124,6 +151,7 @@ pub fn merge(a: &State, b: &State) -> State {
                 modified,
             })
             .collect(),
+        hosts: hosts.into_values().cloned().collect(),
     }
 }
 
@@ -164,7 +192,11 @@ mod tests {
     }
 
     fn state(items: Vec<Synced>, tombstones: Vec<Tombstone>) -> State {
-        State { items, tombstones }
+        State {
+            items,
+            tombstones,
+            ..State::default()
+        }
     }
 
     /// What hosts agree on: uid, order and content, not local ids.
@@ -359,6 +391,56 @@ mod tests {
         let (mut back, mut adopted) = (away, adopted);
         adopt(&mut back, &mut adopted);
         assert!(merge(&adopted, &back).items.is_empty());
+    }
+
+    #[test]
+    fn a_hosts_later_switch_wins_and_at_the_same_time_off_wins() {
+        let switch = |key: &str, on: bool, modified: u64| State {
+            hosts: vec![Switch {
+                key: key.into(),
+                on,
+                modified,
+            }],
+            ..State::default()
+        };
+        let cases = [
+            (
+                "turned on later",
+                switch("h", false, 1),
+                switch("h", true, 2),
+                Some(true),
+            ),
+            (
+                "turned off later",
+                switch("h", true, 1),
+                switch("h", false, 2),
+                Some(false),
+            ),
+            (
+                "at the same time",
+                switch("h", true, 5),
+                switch("h", false, 5),
+                Some(false),
+            ),
+            (
+                "set on one side only",
+                switch("h", true, 5),
+                State::default(),
+                Some(true),
+            ),
+            (
+                "another host's",
+                switch("other", true, 5),
+                State::default(),
+                None,
+            ),
+        ];
+        for (name, a, b, on) in cases {
+            let merged = merge(&a, &b);
+            assert_eq!(merged, merge(&b, &a), "{name}: order");
+            assert_eq!(merge(&merged, &a), merged, "{name}: stale a");
+            assert_eq!(merged.switch("h"), on, "{name}");
+        }
     }
 
     #[test]

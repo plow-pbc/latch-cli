@@ -114,35 +114,59 @@ pub async fn run(
     done(result, audit)
 }
 
-/// Whether the vault in `dir` syncs with the owner's other hosts: only on
-/// a macOS latch that keeps its vault key in the Keychain. A host whose key
-/// is a file (any other system, or an unsigned build) neither sends nor
-/// takes the owner's items. The gate's test build (`fake-gog`, which a
-/// release refuses) lets a test sync hosts that have no Keychain.
-pub fn syncs(dir: &Path) -> bool {
+/// Whether the vault in `dir`, holding `state`, syncs with the owner's
+/// other hosts: on a macOS latch that keeps its vault key in the Keychain,
+/// and on any other host once the owner switched it on (`own` is this
+/// host's key). Until then it neither sends nor takes the owner's items.
+/// The gate's test build (`fake-gog`, which a release refuses) lets a test
+/// sync hosts that have no Keychain.
+pub fn syncs(dir: &Path, state: &State, own: &str) -> bool {
     #[cfg(feature = "fake-gog")]
     if std::env::var_os("LATCH_TEST_SYNC").is_some() {
         return true;
     }
-    crate::secrets::Secrets::open(dir).is_ok_and(|secrets| secrets.in_keychain())
+    state.switch(own) == Some(true)
+        || crate::secrets::Secrets::open(dir).is_ok_and(|secrets| secrets.in_keychain())
 }
 
-/// `sync`, from another of the owner's hosts: answers with this vault's
-/// whole state, and first merges in the caller's, when it sends one. The
-/// caller asks without sending anything first, so a host that does not
-/// sync refuses before any item leaves the caller.
-pub fn sync(vault: &Vault, kind: &str, args: &Value) -> Result<(Value, Applied), Failure> {
-    owner_only(kind)?;
-    if !syncs(&vault.dir) {
-        return Err(Failure::new(
-            code::sync_off,
-            "this host's vault does not sync: only a Mac keeps its vault key in the Keychain"
-                .into(),
-        ));
+impl Vault {
+    /// This vault's state, if it syncs (see `syncs`); never creates a vault.
+    pub fn syncing(&self, own: &str) -> Result<Option<State>, Failure> {
+        let state = match self.dir.join("vault.json").exists() {
+            true => self.with(|store| Ok(store.state().clone()))?,
+            false => State::default(),
+        };
+        Ok(syncs(&self.dir, &state, own).then_some(state))
     }
+}
+
+/// `sync`, from the owner's host `caller` to this one, `own`: answers with
+/// this vault's whole state, and first merges in the caller's, when it
+/// sends one. The caller asks without sending anything first, so a host
+/// that does not sync refuses before any item leaves the caller; the one
+/// state it takes is one that switches it on. A caller the owner switched
+/// off is refused whatever it sends.
+pub fn sync(
+    vault: &Vault,
+    kind: &str,
+    caller: &str,
+    own: &str,
+    args: &Value,
+) -> Result<(Value, Applied), Failure> {
+    owner_only(kind)?;
     let theirs: Option<State> = serde_json::from_value(args["state"].clone())
         .map_err(|_| Failure::new(code::bad_arguments, "the vault state is not valid".into()))?;
+    let off = |message: &str| Err(Failure::new(code::sync_off, message.into()));
     vault.with(|store| {
+        if store.state().switch(caller) == Some(false) {
+            return off("the owner turned vault sync off for the calling host");
+        }
+        let switched_on = theirs.as_ref().and_then(|s| s.switch(own)) == Some(true);
+        if !switched_on && !syncs(&vault.dir, store.state(), own) {
+            return off(
+                "this host's vault does not sync: a Mac that keeps its vault key in the Keychain does, and any other host once the owner runs `latch vault sync HOST --on`",
+            );
+        }
         let applied = match theirs {
             Some(theirs) => store.apply(theirs)?,
             None => Applied::default(),
@@ -163,11 +187,35 @@ pub(super) fn manage(
         "add" => add(vault, args, audit),
         "edit" => edit(vault, args, audit),
         "remove" => remove(vault, args, audit),
+        "switch" => switch(vault, args, audit),
         command => Err(Failure::new(
             code::bad_command,
             format!("unknown vault command {command:?}"),
         )),
     }
+}
+
+/// Whether the owner's host `key` gets this vault, as the owner last set it
+/// (null: never set, so only a Mac does); with `on`, sets it first. The
+/// audit gets the key and the switch.
+fn switch(vault: &Vault, args: &Value, audit: &mut Map<String, Value>) -> Result<Value, Failure> {
+    let Some(key) = args["key"].as_str() else {
+        return Err(Failure::new(
+            code::bad_arguments,
+            "switch needs the host's key".into(),
+        ));
+    };
+    audit.insert("key".into(), json!(key));
+    let on = args["on"].as_bool();
+    if let Some(on) = on {
+        audit.insert("on".into(), json!(on));
+    }
+    vault.with(|store| {
+        if let Some(on) = on {
+            store.switch(key, on)?;
+        }
+        Ok(json!({"key": key, "on": store.state().switch(key)}))
+    })
 }
 
 /// How an agent signs in with a login the owner saved, or pays with a card.

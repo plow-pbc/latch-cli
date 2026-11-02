@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use super::classify;
 use super::item::{Item, Meta};
-use super::sync::{State, Synced, Tombstone, adopt, content, merge, new_uid, now_ms};
+use super::sync::{State, Switch, Synced, Tombstone, adopt, content, merge, new_uid, now_ms};
 use crate::failure::{Failure, code};
 use crate::seal::{Sealed, from_hex, seal};
 use crate::secrets::{Secret, Secrets};
@@ -170,7 +170,7 @@ impl OwnStore {
                         item,
                     })
                     .collect(),
-                tombstones: Vec::new(),
+                ..State::default()
             }
         } else {
             serde_json::from_slice(&open(&data_key, &file.items, STATE_AAD)?).map_err(damaged)?
@@ -314,6 +314,7 @@ impl OwnStore {
         let state = State {
             items,
             tombstones: merged.tombstones,
+            hosts: merged.hosts,
         };
         if state != self.state {
             let old = std::mem::replace(&mut self.state, state);
@@ -323,6 +324,27 @@ impl OwnStore {
             }
         }
         Ok(applied)
+    }
+
+    /// Sets whether the owner's host `key` gets this vault, later than any
+    /// switch it replaces, whatever this host's clock says.
+    pub fn switch(&mut self, key: &str, on: bool) -> Result<(), Failure> {
+        let old = self.state.hosts.clone();
+        let held = old
+            .iter()
+            .find(|s| s.key == key)
+            .map_or(0, |s| s.modified + 1);
+        self.state.hosts.retain(|s| s.key != key);
+        self.state.hosts.push(Switch {
+            key: key.to_string(),
+            on,
+            modified: now_ms().max(held),
+        });
+        if let Err(failure) = self.save() {
+            self.state.hosts = old;
+            return Err(failure);
+        }
+        Ok(())
     }
 }
 

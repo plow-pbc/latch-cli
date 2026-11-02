@@ -1221,8 +1221,13 @@ async fn serve_request(
         // the host that sent it.
         Ok(identity) if op == "vault" && request.args["command"] == "sync" => {
             let synced = async {
-                let (answer, applied) =
-                    crate::vault::host::sync(&host.vault, &identity.kind, &request.args)?;
+                let (answer, applied) = crate::vault::host::sync(
+                    &host.vault,
+                    &identity.kind,
+                    caller,
+                    &host.endpoint.id().to_string(),
+                    &request.args,
+                )?;
                 host.synced_from(caller, &identity.name, &applied).await?;
                 Ok::<_, Failure>(answer)
             };
