@@ -6,6 +6,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 use serde_json::{Value, json};
@@ -6768,38 +6769,7 @@ fn the_owners_hosts_sync_adds_edits_and_removals_and_a_stopped_one_catches_up() 
     };
     let items = |host: &Path| ok(host, &["vault", "list"])["items"].clone();
     let until = |what: &str, done: &dyn Fn() -> bool| assert!(eventually(30, done), "never {what}");
-    let add = |host: &Path, title: &str, password: &str| {
-        let args = [
-            "vault",
-            "add",
-            "--kind",
-            "login",
-            "--title",
-            title,
-            "--site",
-            "shop.example",
-            "--field",
-            "username=ada",
-            "--stdin",
-        ];
-        let mut adding = latch_command(host, &args, &[])
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .unwrap();
-        let secret = json!({"password": password}).to_string();
-        adding
-            .stdin
-            .take()
-            .unwrap()
-            .write_all(secret.as_bytes())
-            .unwrap();
-        let added = adding.wait_with_output().unwrap();
-        assert!(added.status.success(), "{added:?}");
-        let added: Value = serde_json::from_slice(&added.stdout).unwrap();
-        added["item"]["item"].as_str().unwrap().to_string()
-    };
+    let add = add_login;
 
     let id = add(&mba, "Shop", "made-up-pass-1");
     until("added on mbp", &|| {
@@ -6858,6 +6828,156 @@ fn the_owners_hosts_sync_adds_edits_and_removals_and_a_stopped_one_catches_up() 
         let shown =
             String::from_utf8_lossy(&latch(host, &["audit", "--all"], &[]).stdout).to_string();
         assert!(!shown.contains("made-up-pass"), "{shown}");
+    }
+}
+
+/// Adds a login titled `title` to `host`'s vault, its password on stdin;
+/// returns its id.
+fn add_login(host: &Path, title: &str, password: &str) -> String {
+    let args = [
+        "vault",
+        "add",
+        "--kind",
+        "login",
+        "--title",
+        title,
+        "--site",
+        "shop.example",
+        "--field",
+        "username=ada",
+        "--stdin",
+    ];
+    let mut adding = latch_command(host, &args, &[])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let secret = json!({"password": password}).to_string();
+    adding
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(secret.as_bytes())
+        .unwrap();
+    let added = adding.wait_with_output().unwrap();
+    assert!(added.status.success(), "{added:?}");
+    let added: Value = serde_json::from_slice(&added.stdout).unwrap();
+    added["item"]["item"].as_str().unwrap().to_string()
+}
+
+/// A host that is not a Mac gets none of the owner's vault until the owner
+/// turns sync on for it, then every change until it is turned off; its
+/// agents still get no secret, and no log holds one.
+#[test]
+fn a_host_that_is_not_a_mac_syncs_only_while_the_owner_has_it_on() {
+    let plow = LivePlow::start();
+    let (_relay, relay) = local_relay();
+    let dir = test_dir();
+    let [mba, mbp, pi] = ["mba", "mbp", "pi"].map(|name| {
+        let parent = dir.path().join(format!("{name}-home"));
+        fs::create_dir(&parent).unwrap();
+        owner_host_named(&plow, &parent, name)
+    });
+    let syncing = [("LATCH_TEST_SYNC", Path::new("1"))];
+    let logs = [(&mba, &syncing[..]), (&mbp, &syncing[..]), (&pi, &[])].map(|(host, env)| {
+        let mut command = serve_command(host, &relay);
+        command.envs(env.iter().copied());
+        let (serve, mut log, _) = serving_with(command);
+        let shown = Arc::new(Mutex::new(String::new()));
+        let keep = shown.clone();
+        thread::spawn(move || {
+            let mut line = String::new();
+            while log.read_line(&mut line).unwrap_or(0) > 0 {
+                keep.lock().unwrap().push_str(&std::mem::take(&mut line));
+            }
+        });
+        until_serving(host, &serve);
+        (serve, shown)
+    });
+    let ok = |host: &Path, args: &[&str]| {
+        let output = latch(host, args, &[]);
+        assert!(output.status.success(), "{args:?}: {output:?}");
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
+    };
+    let titles = |host: &Path| -> Vec<String> {
+        let items = ok(host, &["vault", "list"])["items"].clone();
+        let items = items.as_array().unwrap().iter();
+        items
+            .map(|i| i["title"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let until = |what: &str, done: &dyn Fn() -> bool| assert!(eventually(30, done), "never {what}");
+    let synced_into = |host: &Path| {
+        audit_records(host)
+            .iter()
+            .filter(|r| r["op"] == "vault" && r["args"]["command"] == "sync")
+            .count()
+    };
+
+    let id = add_login(&mba, "Shop", "made-up-pass-1");
+    until("added on mbp", &|| titles(&mbp) == ["Shop"]);
+    assert!(titles(&pi).is_empty());
+    assert_eq!(synced_into(&pi), 0);
+    assert_eq!(ok(&mba, &["vault", "sync", "pi"])["on"], Value::Null);
+
+    // Turned on, it gets the vault and what changes after.
+    let turned = ok(&mba, &["vault", "sync", "pi", "--on", "--yes"]);
+    assert_eq!(
+        (&turned["host"], &turned["on"]),
+        (&json!("pi"), &json!(true))
+    );
+    until("synced to pi", &|| titles(&pi) == ["Shop"]);
+    let edit = [
+        "vault",
+        "edit",
+        &id,
+        "--revision",
+        "1",
+        "--title",
+        "Shop (new)",
+    ];
+    ok(&mba, &edit);
+    until("edited on pi", &|| titles(&pi) == ["Shop (new)"]);
+    assert!(synced_into(&pi) > 0);
+
+    // Turned off, it keeps what it has and gets nothing new.
+    let turned = ok(&mba, &["vault", "sync", "pi", "--off"]);
+    assert_eq!(turned["on"], false);
+    until("off on mbp", &|| {
+        ok(&mbp, &["vault", "sync", "pi"])["on"] == false
+    });
+    add_login(&mba, "Bank", "made-up-pass-2");
+    until("Bank on mbp", &|| titles(&mbp).len() == 2);
+    thread::sleep(std::time::Duration::from_secs(5));
+    assert_eq!(titles(&pi), ["Shop (new)"]);
+
+    // An agent on pi still reads no secret.
+    let agent_token = dir.path().join("agent.token");
+    fs::write(&agent_token, "agent-credential\n").unwrap();
+    let agent = dir.path().join("agent");
+    let agent_env = [("PLOW_TOKEN_FILE", agent_token.as_path())];
+    let login = latch(&agent, &["login", "--api-url", &plow.url], &agent_env);
+    assert_eq!(login.status.code(), Some(0), "{login:?}");
+    let pi_id = ok(&pi, &["vault", "list"])["items"][0]["item"].clone();
+    let shown = latch(
+        &agent,
+        &["vault", "show", pi_id.as_str().unwrap(), "--host", "pi"],
+        &agent_env,
+    );
+    let (code, refused) = answered(&shown);
+    assert_eq!(
+        (code, &refused["error"]["code"]),
+        (Some(4), &json!("owner_only")),
+        "{refused}"
+    );
+
+    for (host, (_, log)) in [&mba, &mbp, &pi].into_iter().zip(&logs) {
+        let audited =
+            String::from_utf8_lossy(&latch(host, &["audit", "--all"], &[]).stdout).to_string();
+        let log = log.lock().unwrap();
+        assert!(!audited.contains("made-up-pass"), "{audited}");
+        assert!(!log.contains("made-up-pass"), "{log}");
     }
 }
 

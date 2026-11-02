@@ -378,7 +378,7 @@ compromised engine could read `vault.json`, and `vault.key` in a build that
 keeps files: a known limit (see [SECURITY.md](../SECURITY.md)). In a signed latch the custody key is in the
 Keychain, which only a program signed with latch's keychain group can read.
 
-## Sync between the owner's Macs
+## Sync between the owner's hosts
 
 A Mac whose latch keeps its vault key in the Keychain keeps one vault with
 the owner's other such Macs: an add, edit, removal, import or phone-link
@@ -393,8 +393,21 @@ connection's relay, and Plow stores no item.
 The later change to an item wins, and a removal as late as the edit wins;
 an item each Mac had added on its own, every field equal, becomes one. An
 item new to a Mac gets that Mac's next id. A host whose key is a file (any
-other system, or an unsigned build) neither sends nor takes items: asked,
-it answers `sync_off` before anything is sent. Each change a vault takes
+other system, or an unsigned build) neither sends nor takes items until
+the owner turns sync on for it: asked, it answers `sync_off` before
+anything is sent.
+
+`latch vault sync HOST --on` (owner only, against this machine's vault or
+`--host`'s) turns it on: it says that it copies the whole vault, secrets
+included, to HOST, which keeps them, and asks, or takes `--yes`. The
+switch is part of the synced vault, so it reaches every host that syncs;
+the next round sends HOST the vault, and HOST syncs from then on. `--off`
+stops it: every other host skips HOST and refuses its asks, and HOST keeps
+what it already holds (nothing is cleared). Without either flag the
+command shows HOST's switch: null when never set, so only a Mac syncs.
+Turning a Mac off works the same way. The switch is audited with the
+host's key and the setting. Agents on a host that syncs get no more of the
+vault than on any other. Each change a vault takes
 is audited as `vault` `sync` with counts only, the caller and
 `caller_name` naming the host it came from; a round that changes nothing
 is not audited.
