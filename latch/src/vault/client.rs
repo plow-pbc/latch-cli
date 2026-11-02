@@ -764,6 +764,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn turning_sync_on_without_a_terminal_suggests_a_retry_against_the_same_vault() {
+        for (vault, retry) in [
+            (Some("mac"), "latch vault --host mac sync pi --on --yes"),
+            (None, "latch vault sync pi --on --yes"),
+        ] {
+            let failure = confirm_on("pi", vault).unwrap_err();
+            assert_eq!(failure.code, code::confirmation_required.name);
+            assert_eq!(failure.next.as_deref(), Some(retry));
+        }
+    }
+
+    #[test]
     fn the_picker_takes_numbers_ranges_all_or_nothing() {
         assert_eq!(pick("", 4).unwrap(), Vec::<usize>::new());
         assert_eq!(pick("all", 3).unwrap(), [1, 2, 3]);
