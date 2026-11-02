@@ -120,6 +120,7 @@ latch browser open --host my-mac https://example.com
 | `latch vault link` | Host Agent | Add an item from your phone, through a one-time link.<br>An agent asks its owner for a login, then sends them the url: `latch vault --host mac link --kind login --title Shop --site shop.example --field username=owner@example.com` |
 | `latch vault link-state` | Host Agent | Whether a phone link is still pending, saved (with the new item's id) or expired; never a value.<br>Whether the owner has saved the login yet: `latch vault --host mac link-state l3f09a2c1` |
 | `latch vault remove` | Host | Remove an item at its current revision. Owner only.<br>Remove an item: `latch vault --host mac remove v3 --revision 1` |
+| `latch vault sync` | Host | Whether the owner's host HOST gets this vault. Owner only.<br>Copy the vault, secrets included, to a Pi, and keep it in sync: `latch vault sync pi --on` |
 | `latch vault import` | Host | Import another password manager's export. Owner only.<br>Import a 1Password export: `latch vault --host mac import export.1pux` |
 
 ## Rules
