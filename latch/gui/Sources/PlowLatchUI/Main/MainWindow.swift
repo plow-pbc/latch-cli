@@ -147,8 +147,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     // MARK: The window's life
 
     /// This Mac's status, then following it; Plow's hosts, which can be
-    /// slow and don't hold the status back; and a read again of what can
-    /// change while the app is elsewhere, each time it comes back.
+    /// slow and don't hold the status back; this Mac's vault, read again as
+    /// it's written; and a read again of what can change while the app is
+    /// elsewhere, each time it comes back.
     private func begin() {
         tasks.append(Task { [app] in
             await app.refreshStatus()
@@ -156,6 +157,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             await app.followStatus()
         })
         tasks.append(Task { [app] in await app.refreshAccount() })
+        tasks.append(Task { [app] in await app.followVault() })
         // A newer Latch, looked for now and while the window stays open.
         tasks.append(Task { [app] in
             while !Task.isCancelled {
