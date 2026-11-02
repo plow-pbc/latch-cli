@@ -1,6 +1,7 @@
 import Observation
 import os
 import SwiftUI
+import Synchronization
 
 /// The app's state: this Mac's latch as `status --local` last said, and the
 /// onboarding flow while it runs. The only owner of the client.
@@ -353,6 +354,42 @@ final class AppModel {
     func refreshVault(on host: HostEntry) async {
         guard let vault = await Self.result({ try await self.client.vaultList(host: host.isThisMac ? nil : host.name) }) else { return }
         summaries[host.name, default: HostSummary()].vault = vault
+    }
+
+    /// Follows this Mac's vault file until the main window closes: a sync
+    /// from another host, or a change made from the CLI or another Mac,
+    /// writes it while the app is in front, so a vault already read is read
+    /// again.
+    func followVault() async {
+        for await _ in Self.vaultWrites(in: client.stateDir) {
+            guard let host = hosts.first(where: \.isThisMac), Self.held(summaries[host.name]?.vault) else { continue }
+            await refreshVault(on: host)
+        }
+    }
+
+    /// Each time `vault.json` in a state folder is written. latch writes it
+    /// whole and renames it over the old file, so the folder is watched and
+    /// the file's identity and time tell its writes from the folder's other
+    /// changes.
+    nonisolated static func vaultWrites(in stateDir: String) -> AsyncStream<Void> {
+        AsyncStream { continuation in
+            let folder = Darwin.open(stateDir, O_EVTONLY)
+            guard folder >= 0 else { return continuation.finish() }
+            let file = URL(filePath: stateDir).appending(path: "vault.json").path
+            let stamp = {
+                var info = stat()
+                return stat(file, &info) == 0 ? "\(info.st_ino) \(info.st_mtimespec.tv_sec) \(info.st_mtimespec.tv_nsec)" : ""
+            }
+            let last = Mutex(stamp())
+            let source = DispatchSource.makeFileSystemObjectSource(fileDescriptor: folder, eventMask: .write, queue: .global(qos: .utility))
+            source.setEventHandler {
+                let now = stamp()
+                if last.withLock({ held in defer { held = now }; return held != now }) { continuation.yield() }
+            }
+            source.setCancelHandler { Darwin.close(folder) }
+            continuation.onTermination = { _ in source.cancel() }
+            source.resume()
+        }
     }
 
     /// Reads an item's non-secret values; if it changed since the vault was
