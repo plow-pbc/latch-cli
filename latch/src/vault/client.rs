@@ -192,21 +192,15 @@ pub async fn run(state: &StateDir, args: VaultArgs) -> Result<Value, Failure> {
             }
             Ok(json!({"url": url, "link": opened["link"], "expires_in": opened["expires_in"]}))
         }
-        VaultCommand::Sync { name, on, off, yes } => {
+        VaultCommand::Sync { name, on, yes, .. } => {
             let key = host_key(state, &name).await?;
             if on && !yes {
                 confirm_on(&name)?;
             }
-            let switch = (on || off).then_some(on);
             let mut answer = target
-                .call(call(json!({"command": "switch", "key": key, "on": switch})))
+                .call(call(json!({"command": "switch", "key": key, "on": on})))
                 .await?;
             answer["host"] = json!(name);
-            answer["note"] = json!(match answer["on"].as_bool() {
-                Some(true) => "it gets this vault, secrets included, and keeps them",
-                Some(false) => "it gets no more changes, and keeps what it already holds",
-                None => "never set: a Mac that keeps its vault key in the Keychain gets this vault, any other host does not",
-            });
             Ok(answer)
         }
         VaultCommand::LinkState { link } => {
@@ -260,18 +254,7 @@ async fn host_key(state: &StateDir, name: &str) -> Result<String, Failure> {
     let config = state.require_login()?;
     let peers = crate::plow::Plow::from_state(state)?.list_peers().await?;
     let hosts = hosts::only_hosts(peers, &config.peer.key);
-    let named: Vec<&crate::plow::Peer> = hosts.iter().filter(|h| h.name == name).collect();
-    match named[..] {
-        [host] => Ok(host.key.clone()),
-        [] => Err(hosts::pick(Some(name), &hosts).expect_err("no host has that name")),
-        _ => Err(Failure::new(
-            code::unknown_host,
-            format!(
-                "{} hosts are named {name:?}; give one of them another name",
-                named.len()
-            ),
-        )),
-    }
+    Ok(hosts::pick(Some(name), &hosts)?.key)
 }
 
 /// Turning sync on puts the owner's secrets on that host: a person at a

@@ -196,27 +196,19 @@ pub(super) fn manage(
     }
 }
 
-/// Whether the owner's host `key` gets this vault, as the owner last set it
-/// (null: never set, so only a Mac does); with `on`, sets it first. The
-/// audit gets the key and the switch.
+/// Sets whether the owner's host `key` gets this vault. The audit gets the
+/// key and the switch.
 fn switch(vault: &Vault, args: &Value, audit: &mut Map<String, Value>) -> Result<Value, Failure> {
-    let Some(key) = args["key"].as_str() else {
+    let (Some(key), Some(on)) = (args["key"].as_str(), args["on"].as_bool()) else {
         return Err(Failure::new(
             code::bad_arguments,
-            "switch needs the host's key".into(),
+            "switch needs the host's key and on".into(),
         ));
     };
     audit.insert("key".into(), json!(key));
-    let on = args["on"].as_bool();
-    if let Some(on) = on {
-        audit.insert("on".into(), json!(on));
-    }
-    vault.with(|store| {
-        if let Some(on) = on {
-            store.switch(key, on)?;
-        }
-        Ok(json!({"key": key, "on": store.state().switch(key)}))
-    })
+    audit.insert("on".into(), json!(on));
+    vault.with(|store| store.switch(key, on))?;
+    Ok(json!({"key": key, "on": on}))
 }
 
 /// How an agent signs in with a login the owner saved, or pays with a card.

@@ -326,25 +326,15 @@ impl OwnStore {
         Ok(applied)
     }
 
-    /// Sets whether the owner's host `key` gets this vault, later than any
-    /// switch it replaces, whatever this host's clock says.
+    /// Sets whether the owner's host `key` gets this vault.
     pub fn switch(&mut self, key: &str, on: bool) -> Result<(), Failure> {
-        let old = self.state.hosts.clone();
-        let held = old
-            .iter()
-            .find(|s| s.key == key)
-            .map_or(0, |s| s.modified + 1);
         self.state.hosts.retain(|s| s.key != key);
         self.state.hosts.push(Switch {
             key: key.to_string(),
             on,
-            modified: now_ms().max(held),
+            modified: now_ms(),
         });
-        if let Err(failure) = self.save() {
-            self.state.hosts = old;
-            return Err(failure);
-        }
-        Ok(())
+        self.save()
     }
 }
 

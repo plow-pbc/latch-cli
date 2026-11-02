@@ -1116,10 +1116,8 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "vault.sync",
         runs_on: |_| RunsOn::Either,
-        output: "The `host`, its `on` switch (null when never set: only a Mac gets the vault) and a `note` on what that means.",
-        effect: Repeatable(
-            "--on or --off sets whether HOST gets the vault; without either it changes nothing",
-        ),
+        output: "The `host`, its `key` and the `on` switch it now has.",
+        effect: Repeatable("--on or --off sets whether HOST gets the vault"),
         owner_only: true,
         connector: None,
         examples: &[

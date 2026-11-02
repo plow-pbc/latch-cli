@@ -403,9 +403,8 @@ included, to HOST, which keeps them, and asks, or takes `--yes`. The
 switch is part of the synced vault, so it reaches every host that syncs;
 the next round sends HOST the vault, and HOST syncs from then on. `--off`
 stops it: every other host skips HOST and refuses its asks, and HOST keeps
-what it already holds (nothing is cleared). Without either flag the
-command shows HOST's switch: null when never set, so only a Mac syncs.
-Turning a Mac off works the same way. The switch is audited with the
+what it already holds (nothing is cleared). Turning a Mac off works the
+same way. The switch is audited with the
 host's key and the setting. Agents on a host that syncs get no more of the
 vault than on any other. Each change a vault takes
 is audited as `vault` `sync` with counts only, the caller and

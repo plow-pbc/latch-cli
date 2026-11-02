@@ -818,13 +818,13 @@ pub enum VaultCommand {
     /// A Mac that keeps its vault key in the Keychain gets it unless turned
     /// off; any other host only once turned on. --on copies the whole
     /// vault, secrets included, to HOST, which keeps them; --off stops
-    /// HOST getting changes, and it keeps what it already holds. Without
-    /// either, shows HOST's switch
+    /// HOST getting changes, and it keeps what it already holds
+    #[command(group(clap::ArgGroup::new("switch").required(true).args(["on", "off"])))]
     Sync {
         /// The host, by the name `latch status` shows
         #[arg(value_name = "HOST")]
         name: String,
-        #[arg(long, conflicts_with = "off")]
+        #[arg(long)]
         on: bool,
         #[arg(long)]
         off: bool,
