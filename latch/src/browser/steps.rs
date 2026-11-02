@@ -974,6 +974,12 @@ impl Run<'_> {
                 if let Some(events) = result.get("events") {
                     shown["events"] = events.clone();
                 }
+                if let Some(marks) = result.get("marks") {
+                    shown["marks"] = marks.clone();
+                }
+                if result["unchanged"] == true {
+                    shown["unchanged"] = json!(UNCHANGED);
+                }
                 Ok(popup_of(&result))
             }
             Err(failure) => Err(failure),
@@ -1347,6 +1353,10 @@ fn condition(check: &Check, snapshot: Option<&str>, besides: Vec<String>) -> Val
         CheckKind::Sentence => unreachable!("judged by the model"),
     }
 }
+
+/// A click whose page shows nothing new: said, so the agent looks at the
+/// page instead of waiting on it.
+const UNCHANGED: &str = "nothing on the page changed after this: same address, same text, nothing newly disabled. It may not have done anything: look at the page before waiting on it";
 
 /// What a click or Enter would do, in one line, for the risk question.
 fn action_line(reviewed: &Value, enter: bool, typing: bool) -> String {

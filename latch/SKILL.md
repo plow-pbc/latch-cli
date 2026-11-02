@@ -292,7 +292,11 @@ fixes it.
 - A checkout that stays put after Pay may still have paid: a payment can
   be slow. Never press Pay again, on either engine, unless the page shows
   it refused the card (a field marked wrong, a decline): check the page
-  and the site's orders for whether it succeeded, and ask the owner.
+  and the site's orders for whether it succeeded, and ask the owner. A
+  step's `unchanged` says the page shows nothing new, so look at it rather
+  than wait; its `marks` are what the page itself marks (`required_empty`,
+  `invalid`, `errors`). No `marks` means latch knows nothing, not that the
+  form is complete.
 - Never fake a click or key with `eval`: the site sees it isn't real.
   `covered_target` means something is on top: click the banner's or
   dialog's own button.

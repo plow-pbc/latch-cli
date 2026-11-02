@@ -1,0 +1,50 @@
+<!doctype html><meta charset="utf-8"><title>Marked checkout</title>
+<!-- A hosted checkout's form as a real one marks it. Pay carries its idle
+     "Processing" label, drawn at opacity 0 and hidden from readers. A press
+     with ZIP empty sends nothing: the page marks the field aria-invalid and
+     focuses it, with no words on the page. ?native marks it `required`
+     instead and leaves refusing to the browser; ?alert adds the page's own
+     error text. With ZIP given, Pay disables the form and shows Processing.
+     The buttons under it hide part of their text one way each. -->
+<style>
+  #pay { position: relative; width: 160px; height: 40px; }
+  #pay span { position: absolute; inset: 0; display: block; line-height: 40px; }
+  #busy { opacity: 0; }
+  #pay.working #idle { opacity: 0; }
+  #pay.working #busy { opacity: 1; }
+</style>
+<h1>Pay $10.00</h1>
+<form id="form">
+  <p><label>Cardholder name <input id="name" aria-required="true" aria-invalid="false"></label></p>
+  <p><label>ZIP <input id="zip" aria-required="true" aria-invalid="false" aria-describedby="zip-error"></label></p>
+  <p id="zip-error"></p>
+  <p><button id="pay" type="submit"><span id="idle">Pay</span><span id="busy" aria-hidden="true">Processing</span></button></p>
+</form>
+<p><button type="button">Save<span aria-hidden="true"> Saving</span></button></p>
+<p><button type="button">Send<span style="opacity: 0"> Sending</span></button></p>
+<p><button type="button">Pl<b>a</b>ce<span style="opacity: 0"> Placing</span></button></p>
+<p><button type="button" aria-expanded="false" id="more">More</button></p>
+<script>
+  const search = new URLSearchParams(location.search);
+  if (search.has('native')) {
+    zip.required = true;
+    zip.removeAttribute('aria-required');
+  }
+  more.onclick = () => more.setAttribute('aria-expanded', 'true');
+  form.onsubmit = (event) => {
+    event.preventDefault();
+    if (!zip.value) {
+      zip.setAttribute('aria-invalid', 'true');
+      zip.focus();
+      if (search.has('alert')) {
+        document.getElementById('zip-error').setAttribute('role', 'alert');
+        document.getElementById('zip-error').textContent = 'Your ZIP is incomplete.';
+      }
+      return;
+    }
+    pay.disabled = name.disabled = zip.disabled = true;
+    pay.classList.add('working');
+    busy.removeAttribute('aria-hidden');
+    idle.setAttribute('aria-hidden', 'true');
+  };
+</script>

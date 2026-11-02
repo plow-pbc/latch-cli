@@ -749,6 +749,7 @@ impl<D: Driver> Core<D> {
             "page".into(),
             json!({"url": before["url"], "title": before["title"]}),
         );
+        let mut clicked = None;
         match (action, target) {
             (Action::Back, _) => {
                 if !self.driver.back()? {
@@ -790,6 +791,11 @@ impl<D: Driver> Core<D> {
                         ));
                     }
                 }
+                if matches!(action, Action::Click | Action::Press) {
+                    let (frame, _) = self.reference(&snapshot, position)?;
+                    let shown = self.driver.run(&frame, "__latch.seen()").ok();
+                    clicked = shown.map(|shown| (frame, shown));
+                }
                 self.dispatch(action, &snapshot, position, text)?;
             }
             _ => {
@@ -802,8 +808,49 @@ impl<D: Driver> Core<D> {
         result.insert("dispatched".into(), json!(true));
         let events = self.settle()?;
         self.no_secret_sent()?;
+        if let Some((frame, shown)) = &clicked {
+            let page = self.page(&mut Map::new())?;
+            let same = ["tab", "url", "title"]
+                .iter()
+                .all(|key| page.get(*key) == before.get(*key));
+            if same && self.driver.run(frame, "__latch.seen()").ok().as_ref() == Some(shown) {
+                result.insert("unchanged".into(), json!(true));
+                audit.insert("unchanged".into(), json!(true));
+            }
+        }
+        if clicked.is_some()
+            && let Some(marks) = self.marks()
+        {
+            result.insert("marks".into(), marks.clone());
+            audit.insert("marks".into(), marks);
+        }
         self.after(&before, events, &mut result)?;
         Ok(Value::Object(result))
+    }
+
+    /// What the page itself marks after a click, across its frames: none
+    /// when no frame that could be read marks anything, which says nothing
+    /// about the page's forms.
+    fn marks(&mut self) -> Option<Value> {
+        let mut marks: Map<String, Value> = Map::new();
+        for frame in self.driver.frames().ok()? {
+            if self.read_until.is_some_and(|end| Instant::now() >= end) {
+                break;
+            }
+            let Ok(found) = self.driver.run(&frame, "__latch.marks()") else {
+                continue;
+            };
+            for key in ["required_empty", "invalid", "errors"] {
+                for mark in found[key].as_array().into_iter().flatten() {
+                    let list = marks.entry(key).or_insert_with(|| json!([]));
+                    let list = list.as_array_mut().expect("a list");
+                    if !list.contains(mark) {
+                        list.push(mark.clone());
+                    }
+                }
+            }
+        }
+        (!marks.is_empty()).then_some(Value::Object(marks))
     }
 
     /// What changed, the page's first lines, events, and a fresh element
