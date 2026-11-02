@@ -326,13 +326,17 @@ impl OwnStore {
         Ok(applied)
     }
 
-    /// Sets whether the owner's host `key` gets this vault.
+    /// Sets whether the owner's host `key` gets this vault, later than the
+    /// switch it replaces even on a host whose clock is behind, so a merge
+    /// keeps it.
     pub fn switch(&mut self, key: &str, on: bool) -> Result<(), Failure> {
+        let held = self.state.hosts.iter().find(|s| s.key == key);
+        let after = held.map_or(0, |s| s.modified + 1);
         self.state.hosts.retain(|s| s.key != key);
         self.state.hosts.push(Switch {
             key: key.to_string(),
             on,
-            modified: now_ms(),
+            modified: now_ms().max(after),
         });
         self.save()
     }
@@ -670,6 +674,24 @@ mod tests {
         for value in ["made-up-pass", "lovelace", "Example", "example.com"] {
             assert!(!sealed.contains(value), "{value} outlived its item");
         }
+    }
+
+    #[test]
+    fn a_switch_set_on_a_host_whose_clock_is_behind_still_wins_the_merge() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = OwnStore::open(dir.path()).unwrap();
+        // On, as set by a host whose clock runs a day ahead.
+        let ahead = State {
+            hosts: vec![Switch {
+                key: "pi".into(),
+                on: true,
+                modified: now_ms() + 86_400_000,
+            }],
+            ..State::default()
+        };
+        store.apply(ahead.clone()).unwrap();
+        store.switch("pi", false).unwrap();
+        assert_eq!(merge(&ahead, store.state()).switch("pi"), Some(false));
     }
 
     #[test]
