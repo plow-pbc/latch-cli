@@ -86,7 +86,7 @@ async fn round(host: &Host, ours: &State) {
         .filter(|peer| !peer.this_machine && peer.kind == "device" && peer.online != Some(false))
         .filter(|peer| ours.switch(&peer.key) != Some(false));
     for peer in others {
-        if let Err(failure) = with_peer(host, &peer, ours).await
+        if let Err(failure) = with_peer(host, &peer).await
             && failure.code != code::sync_off.name
         {
             log(&format!(
@@ -97,30 +97,30 @@ async fn round(host: &Host, ours: &State) {
     }
 }
 
-async fn with_peer(host: &Host, peer: &Peer, ours: &State) -> Result<(), Failure> {
+async fn with_peer(host: &Host, peer: &Peer) -> Result<(), Failure> {
     let connection = dial::connect_on(&host.endpoint, peer, dial::CONNECT_TIMEOUT).await?;
     let connection = Connection::Remote(connection);
-    let exchanged = exchange(host, peer, ours, &connection).await;
+    let exchanged = exchange(host, peer, &connection).await;
     connection.close(0u32.into(), b"done");
     exchanged
 }
 
-async fn exchange(
-    host: &Host,
-    peer: &Peer,
-    ours: &State,
-    connection: &Connection,
-) -> Result<(), Failure> {
+/// Sends this vault's state only as it is when sent, so a host the owner
+/// switched off during a round is never sent what changed after.
+async fn exchange(host: &Host, peer: &Peer, connection: &Connection) -> Result<(), Failure> {
     let ask = |state: Option<&State>| Request {
         op: "vault".into(),
         args: json!({"command": "sync", "state": state}),
         chat: None,
     };
+    let off = || Failure::new(code::sync_off, "the owner switched this host off".into());
     let mut answer = match dial::one_exchange(connection, &ask(None), ANSWER_WITHIN).await {
-        Err(failure)
-            if failure.code == code::sync_off.name && ours.switch(&peer.key) == Some(true) =>
-        {
-            dial::one_exchange(connection, &ask(Some(ours)), ANSWER_WITHIN).await?
+        Err(failure) if failure.code == code::sync_off.name => {
+            let ours = host.vault.with(|store| Ok(store.state().clone()))?;
+            if ours.switch(&peer.key) != Some(true) {
+                return Err(failure);
+            }
+            dial::one_exchange(connection, &ask(Some(&ours)), ANSWER_WITHIN).await?
         }
         answered => answered?,
     };
@@ -135,6 +135,9 @@ async fn exchange(
         Ok((applied, store.state().clone()))
     })?;
     host.synced_from(&peer.key, &peer.name, &applied).await?;
+    if ours.switch(&peer.key) == Some(false) {
+        return Err(off());
+    }
     dial::one_exchange(connection, &ask(Some(&ours)), ANSWER_WITHIN).await?;
     Ok(())
 }
