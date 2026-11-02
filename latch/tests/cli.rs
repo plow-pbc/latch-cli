@@ -6921,6 +6921,16 @@ fn a_host_that_is_not_a_mac_syncs_only_while_the_owner_has_it_on() {
     assert_eq!(synced_into(&pi), 0);
     assert_eq!(ok(&mba, &["vault", "sync", "pi"])["on"], Value::Null);
 
+    // Turning it on asks first; a program without --yes changes nothing.
+    let asked = latch(&mba, &["vault", "sync", "pi", "--on"], &[]);
+    let (code, refused) = answered(&asked);
+    assert_eq!(
+        (code, &refused["error"]["code"]),
+        (Some(2), &json!("confirmation_required")),
+        "{refused}"
+    );
+    assert_eq!(ok(&mba, &["vault", "sync", "pi"])["on"], Value::Null);
+
     // Turned on, it gets the vault and what changes after.
     let turned = ok(&mba, &["vault", "sync", "pi", "--on", "--yes"]);
     assert_eq!(

@@ -115,18 +115,19 @@ pub async fn run(
 }
 
 /// Whether the vault in `dir`, holding `state`, syncs with the owner's
-/// other hosts: on a macOS latch that keeps its vault key in the Keychain,
-/// and on any other host once the owner switched it on (`own` is this
-/// host's key). Until then it neither sends nor takes the owner's items.
+/// other hosts: as the owner switched this host (`own` is its key), and
+/// otherwise only on a macOS latch that keeps its vault key in the
+/// Keychain. A host that does not neither sends nor takes the owner's items.
 /// The gate's test build (`fake-gog`, which a release refuses) lets a test
-/// sync hosts that have no Keychain.
+/// treat a host that has no Keychain as such a Mac.
 pub fn syncs(dir: &Path, state: &State, own: &str) -> bool {
-    #[cfg(feature = "fake-gog")]
-    if std::env::var_os("LATCH_TEST_SYNC").is_some() {
-        return true;
-    }
-    state.switch(own) == Some(true)
-        || crate::secrets::Secrets::open(dir).is_ok_and(|secrets| secrets.in_keychain())
+    state.switch(own).unwrap_or_else(|| {
+        #[cfg(feature = "fake-gog")]
+        if std::env::var_os("LATCH_TEST_SYNC").is_some() {
+            return true;
+        }
+        crate::secrets::Secrets::open(dir).is_ok_and(|secrets| secrets.in_keychain())
+    })
 }
 
 impl Vault {
