@@ -23,6 +23,7 @@ use crate::term;
 use crate::wire::{self, Request};
 
 pub async fn run(state: &StateDir, args: VaultArgs) -> Result<Value, Failure> {
+    let asked = args.host.clone();
     let host = if hosts::local_target(state, args.host.as_deref())? {
         None
     } else {
@@ -195,7 +196,7 @@ pub async fn run(state: &StateDir, args: VaultArgs) -> Result<Value, Failure> {
         VaultCommand::Sync { name, on, yes, .. } => {
             let key = host_key(state, &name).await?;
             if on && !yes {
-                confirm_on(&name)?;
+                confirm_on(&name, asked.as_deref())?;
             }
             let mut answer = target
                 .call(call(json!({"command": "switch", "key": key, "on": on})))
@@ -258,20 +259,19 @@ async fn host_key(state: &StateDir, name: &str) -> Result<String, Failure> {
 }
 
 /// Turning sync on puts the owner's secrets on that host: a person at a
-/// terminal says yes, and a program passes `--yes`.
-fn confirm_on(name: &str) -> Result<(), Failure> {
+/// terminal says yes, and a program passes `--yes`, against the same vault
+/// (`--host`).
+fn confirm_on(name: &str, vault_host: Option<&str>) -> Result<(), Failure> {
     let warning = format!(
         "This copies your whole vault, secrets included, to {name}, which keeps them; turning it off later stops changes, and does not remove them."
     );
     if !term::interactive() {
         let mut failure = Failure::new(code::confirmation_required, warning);
-        failure.next = Some(
-            format!(
-                "latch vault sync {} --on --yes",
-                crate::login::shell_quoted(name)
-            )
-            .into(),
-        );
+        let host = vault_host.map_or(String::new(), |host| {
+            format!("--host {} ", crate::login::shell_quoted(host))
+        });
+        let name = crate::login::shell_quoted(name);
+        failure.next = Some(format!("latch vault {host}sync {name} --on --yes").into());
         return Err(failure);
     }
     eprintln!("{warning}");
