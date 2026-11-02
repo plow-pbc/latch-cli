@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::os::unix::fs::OpenOptionsExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -17,7 +17,8 @@ use serde_json::{Map, Value, json};
 use super::import;
 use super::item::{Item, Raw, kind_code};
 use super::link::{self, Here};
-use super::store::{Backend, OwnStore};
+use super::store::{Applied, Backend, OwnStore};
+use super::sync::State;
 use crate::failure::{Failure, code};
 use crate::serve::Done;
 use crate::wire::{self, Response};
@@ -67,6 +68,7 @@ impl Vault {
             .map_err(io)?;
         lock.lock().map_err(io)?;
         let mut store = OwnStore::open(&self.dir)?;
+        store.keep_uids()?;
         f(&mut store)
     }
 }
@@ -110,6 +112,43 @@ pub async fn run(
         _ => manage(vault, &args, &mut audit),
     };
     done(result, audit)
+}
+
+/// Whether the vault in `dir` syncs with the owner's other hosts: only on
+/// a macOS latch that keeps its vault key in the Keychain. A host whose key
+/// is a file (any other system, or an unsigned build) neither sends nor
+/// takes the owner's items. The gate's test build (`fake-gog`, which a
+/// release refuses) lets a test sync hosts that have no Keychain.
+pub fn syncs(dir: &Path) -> bool {
+    #[cfg(feature = "fake-gog")]
+    if std::env::var_os("LATCH_TEST_SYNC").is_some() {
+        return true;
+    }
+    crate::secrets::Secrets::open(dir).is_ok_and(|secrets| secrets.in_keychain())
+}
+
+/// `sync`, from another of the owner's hosts: answers with this vault's
+/// whole state, and first merges in the caller's, when it sends one. The
+/// caller asks without sending anything first, so a host that does not
+/// sync refuses before any item leaves the caller.
+pub fn sync(vault: &Vault, kind: &str, args: &Value) -> Result<(Value, Applied), Failure> {
+    owner_only(kind)?;
+    if !syncs(&vault.dir) {
+        return Err(Failure::new(
+            code::sync_off,
+            "this host's vault does not sync: only a Mac keeps its vault key in the Keychain"
+                .into(),
+        ));
+    }
+    let theirs: Option<State> = serde_json::from_value(args["state"].clone())
+        .map_err(|_| Failure::new(code::bad_arguments, "the vault state is not valid".into()))?;
+    vault.with(|store| {
+        let applied = match theirs {
+            Some(theirs) => store.apply(theirs)?,
+            None => Applied::default(),
+        };
+        Ok((json!({"state": store.state()}), applied))
+    })
 }
 
 /// Non-streaming management, after the caller has passed the owner check.

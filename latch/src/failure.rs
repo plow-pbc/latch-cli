@@ -452,6 +452,7 @@ codes! {
     store_failed: Failed,
     store_rejected: Failed,
     stuck: Failed,
+    sync_off: Denied,
     timed_out: Failed,
     timeout: Failed,
     tmpdir_failed: Failed,
