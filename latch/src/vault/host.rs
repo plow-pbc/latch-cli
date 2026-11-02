@@ -18,7 +18,7 @@ use super::import;
 use super::item::{Item, Raw, kind_code};
 use super::link::{self, Here};
 use super::store::{Applied, Backend, OwnStore};
-use super::sync::State;
+use super::sync::{State, Switch};
 use crate::failure::{Failure, code};
 use crate::serve::Done;
 use crate::wire::{self, Response};
@@ -131,22 +131,48 @@ pub fn syncs(dir: &Path, state: &State, own: &str) -> bool {
 }
 
 impl Vault {
-    /// This vault's state, if it syncs (see `syncs`); never creates a vault.
-    pub fn syncing(&self, own: &str) -> Result<Option<State>, Failure> {
-        let state = match self.dir.join("vault.json").exists() {
-            true => self.with(|store| Ok(store.state().clone()))?,
-            false => State::default(),
-        };
-        Ok(syncs(&self.dir, &state, own).then_some(state))
+    /// Whether this vault syncs now (see `syncs`); never creates a vault.
+    pub fn syncing(&self, own: &str) -> Result<bool, Failure> {
+        if !self.dir.join("vault.json").exists() {
+            return Ok(syncs(&self.dir, &State::default(), own));
+        }
+        self.with(|store| Ok(syncs(&self.dir, store.state(), own)))
+    }
+
+    /// Before any item moves between this host (`own`) and the owner's host
+    /// `peer`, whichever asked: takes in the owner's switches `peer` holds
+    /// (`hosts`, never an item), then refuses if the owner switched `peer`
+    /// off or this host does not sync. So the latest switch decides, on both
+    /// sides, before a state is taken or sent.
+    pub fn admit(
+        &self,
+        store: &mut OwnStore,
+        peer: &str,
+        own: &str,
+        hosts: Vec<Switch>,
+    ) -> Result<(), Failure> {
+        store.apply(State {
+            hosts,
+            ..State::default()
+        })?;
+        let off = |message: &str| Err(Failure::new(code::sync_off, message.into()));
+        if store.state().switch(peer) == Some(false) {
+            return off("the owner turned vault sync off for that host");
+        }
+        if !syncs(&self.dir, store.state(), own) {
+            return off(
+                "this host's vault does not sync: a Mac that keeps its vault key in the Keychain does, and any other host once the owner runs `latch vault sync HOST --on`",
+            );
+        }
+        Ok(())
     }
 }
 
 /// `sync`, from the owner's host `caller` to this one, `own`: answers with
 /// this vault's whole state, and first merges in the caller's, when it
-/// sends one. The caller asks without sending anything first, so a host
-/// that does not sync refuses before any item leaves the caller; the one
-/// state it takes is one that switches it on. A caller the owner switched
-/// off is refused whatever it sends.
+/// sends one. The caller's first ask carries only the owner's switches, so
+/// a host that does not sync, or that the owner switched off, refuses
+/// before any item leaves either side (see `Vault::admit`).
 pub fn sync(
     vault: &Vault,
     kind: &str,
@@ -155,19 +181,14 @@ pub fn sync(
     args: &Value,
 ) -> Result<(Value, Applied), Failure> {
     owner_only(kind)?;
-    let theirs: Option<State> = serde_json::from_value(args["state"].clone())
-        .map_err(|_| Failure::new(code::bad_arguments, "the vault state is not valid".into()))?;
-    let off = |message: &str| Err(Failure::new(code::sync_off, message.into()));
+    let bad = |_| Failure::new(code::bad_arguments, "the vault state is not valid".into());
+    let theirs: Option<State> = serde_json::from_value(args["state"].clone()).map_err(bad)?;
+    let hosts: Vec<Switch> = match &theirs {
+        Some(theirs) => theirs.hosts.clone(),
+        None => serde_json::from_value(args["hosts"].clone()).map_err(bad)?,
+    };
     vault.with(|store| {
-        if store.state().switch(caller) == Some(false) {
-            return off("the owner turned vault sync off for the calling host");
-        }
-        let switched_on = theirs.as_ref().and_then(|s| s.switch(own)) == Some(true);
-        if !switched_on && !syncs(&vault.dir, store.state(), own) {
-            return off(
-                "this host's vault does not sync: a Mac that keeps its vault key in the Keychain does, and any other host once the owner runs `latch vault sync HOST --on`",
-            );
-        }
+        vault.admit(store, caller, own, hosts)?;
         let applied = match theirs {
             Some(theirs) => store.apply(theirs)?,
             None => Applied::default(),
@@ -621,6 +642,40 @@ mod tests {
         assert_eq!(login["changed"], json!(["other_top_sites"]));
         assert!(login["item"].get("other_top_sites").is_none());
         assert_eq!(login["item"]["sites"], json!(["shop.example"]));
+    }
+
+    #[test]
+    fn the_latest_switch_decides_before_any_item_moves() {
+        // This host, "pi", is no Mac and holds an off; "mac" is the peer,
+        // whose switches say pi is on, older or newer, and maybe mac is off.
+        let cases = [
+            ("an older on from a stale peer", false, false, false),
+            ("a newer on", true, false, true),
+            ("a newer on, the peer switched off", true, true, false),
+        ];
+        for (name, newer, peer_off, admitted) in cases {
+            let dir = tempfile::tempdir().unwrap();
+            let vault = Vault::new(dir.path().to_path_buf());
+            vault.with(|store| store.switch("pi", false)).unwrap();
+            let off = vault
+                .with(|store| Ok(store.state().hosts[0].modified))
+                .unwrap();
+            let at = if newer { off + 1 } else { off - 1 };
+            let mut hosts = vec![Switch {
+                key: "pi".into(),
+                on: true,
+                modified: at,
+            }];
+            if peer_off {
+                hosts.push(Switch {
+                    key: "mac".into(),
+                    on: false,
+                    modified: at,
+                });
+            }
+            let admit = vault.with(|store| vault.admit(store, "mac", "pi", hosts));
+            assert_eq!(admit.is_ok(), admitted, "{name}: {admit:?}");
+        }
     }
 
     #[test]
