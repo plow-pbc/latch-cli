@@ -813,6 +813,25 @@ pub enum VaultCommand {
         #[arg(long)]
         revision: u64,
     },
+    /// Whether the owner's host HOST gets this vault
+    ///
+    /// A Mac that keeps its vault key in the Keychain gets it unless turned
+    /// off; any other host only once turned on. --on copies the whole
+    /// vault, secrets included, to HOST, which keeps them; --off stops
+    /// HOST getting changes, and it keeps what it already holds. Without
+    /// either, shows HOST's switch
+    Sync {
+        /// The host, by the name `latch status` shows
+        #[arg(value_name = "HOST")]
+        name: String,
+        #[arg(long, conflicts_with = "off")]
+        on: bool,
+        #[arg(long)]
+        off: bool,
+        /// Turn it on without asking (required when no one is at a terminal)
+        #[arg(long, requires = "on")]
+        yes: bool,
+    },
     /// Import another password manager's export
     ///
     /// 1PUX, CSV or JSON: it shows what the export holds, and imports only
