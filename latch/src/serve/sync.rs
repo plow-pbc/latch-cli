@@ -6,7 +6,9 @@
 //! so a host that was asleep or offline catches up, and a change made
 //! while no other host was online waits here until one is. A host whose
 //! vault does not sync (`vault::host::syncs`) runs no rounds, and refuses
-//! another's.
+//! another's. Every ask first carries the owner's switches, so a host the
+//! owner switched on learns it from the ask itself, and one switched off is
+//! refused before any item moves (`vault::host::Vault::admit`).
 
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -32,24 +34,31 @@ const CHECK_EVERY: Duration = Duration::from_secs(2);
 const ROUND_EVERY: Duration = Duration::from_secs(10 * 60);
 const ANSWER_WITHIN: Duration = Duration::from_secs(30);
 
-/// Starts this host's rounds, if its vault syncs. They end as the host
-/// stops.
+/// Starts this host's rounds, which run while its vault syncs. They end as
+/// the host stops.
 pub(super) fn start(host: &Arc<Host>) {
-    if !crate::vault::host::syncs(&host.workers.state_dir) {
-        return;
-    }
-    log("vault: syncs with the owner's other Macs");
     let host = host.clone();
     tokio::spawn(async move {
         let file = host.workers.state_dir.join("vault.json");
         let modified = || std::fs::metadata(&file).and_then(|m| m.modified()).ok();
+        let own = host.endpoint.id().to_string();
         let mut stopping = host.stopping.subscribe();
         let mut synced: Option<(Option<SystemTime>, SystemTime)> = None;
+        let mut said = false;
         loop {
             let now = modified();
             let due = |at: SystemTime| at.elapsed().unwrap_or_default() >= ROUND_EVERY;
             if synced.is_none_or(|(seen, at)| seen != now || due(at)) {
-                round(&host).await;
+                match host.vault.syncing(&own) {
+                    Ok(true) => {
+                        if !std::mem::replace(&mut said, true) {
+                            log("vault: syncs with the owner's other hosts");
+                        }
+                        round(&host).await;
+                    }
+                    Ok(false) => {}
+                    Err(failure) => log(&format!("vault sync: {}", failure.code)),
+                }
                 synced = Some((now, SystemTime::now()));
             }
             tokio::select! {
@@ -61,8 +70,8 @@ pub(super) fn start(host: &Arc<Host>) {
 }
 
 /// One round: every other host of the owner's that Plow lists online. A
-/// host whose vault does not sync answers `sync_off`, having been sent
-/// nothing, and is asked again next round.
+/// host that does not sync, or that the owner switched off, answers or is
+/// answered `sync_off` with no item sent, and is asked again next round.
 async fn round(host: &Host) {
     let peers = match host.plow.list_peers().await {
         Ok(peers) => peers,
@@ -95,25 +104,34 @@ async fn with_peer(host: &Host, peer: &Peer) -> Result<(), Failure> {
     exchanged
 }
 
+/// Asks with the owner's switches alone; applies the answer and sends this
+/// vault's state back only once `Vault::admit` has taken in the peer's
+/// switches and still lets the two exchange items.
 async fn exchange(host: &Host, peer: &Peer, connection: &Connection) -> Result<(), Failure> {
-    let ask = |state: Option<&State>| Request {
+    let ask = |args: serde_json::Value| Request {
         op: "vault".into(),
-        args: json!({"command": "sync", "state": state}),
+        args,
         chat: None,
     };
-    let mut answer = dial::one_exchange(connection, &ask(None), ANSWER_WITHIN).await?;
+    let hosts = host.vault.with(|store| Ok(store.state().hosts.clone()))?;
+    let first = ask(json!({"command": "sync", "state": null, "hosts": hosts}));
+    let mut answer = dial::one_exchange(connection, &first, ANSWER_WITHIN).await?;
     let theirs: State = serde_json::from_value(answer["state"].take()).map_err(|_| {
         Failure::new(
             code::bad_response,
             "the host's vault state is not valid".into(),
         )
     })?;
+    let own = host.endpoint.id().to_string();
     let (applied, ours) = host.vault.with(|store| {
+        host.vault
+            .admit(store, &peer.key, &own, theirs.hosts.clone())?;
         let applied = store.apply(theirs)?;
         Ok((applied, store.state().clone()))
     })?;
     host.synced_from(&peer.key, &peer.name, &applied).await?;
-    dial::one_exchange(connection, &ask(Some(&ours)), ANSWER_WITHIN).await?;
+    let back = ask(json!({"command": "sync", "state": ours}));
+    dial::one_exchange(connection, &back, ANSWER_WITHIN).await?;
     Ok(())
 }
 

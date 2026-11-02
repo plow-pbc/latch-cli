@@ -1114,6 +1114,24 @@ const ENTRIES: &[Entry] = &[
         )],
     },
     Entry {
+        id: "vault.sync",
+        runs_on: |_| RunsOn::Either,
+        output: "The `host`, its `key` and the `on` switch it now has.",
+        effect: Repeatable("--on or --off sets whether HOST gets the vault"),
+        owner_only: true,
+        connector: None,
+        examples: &[
+            ex(
+                "Copy the vault, secrets included, to a Pi, and keep it in sync",
+                &["vault", "sync", "pi", "--on"],
+            ),
+            ex(
+                "Stop sending it changes; it keeps what it holds",
+                &["vault", "sync", "pi", "--off"],
+            ),
+        ],
+    },
+    Entry {
         id: "vault.import",
         runs_on: |_| RunsOn::Either,
         output: "How many rows were `saved`, `updated` (a changed password or authenticator key), left as `duplicates`, and which `failed` and why, with the `source` and the rows `picked`. With --preview, only `preview`: its `source`, its `expect` token for --pick --expect, and `items`, each row's `pick` number, kind, title, username and site, whether it holds a password or authenticator key, whether the vault already holds it or it would update one, and the rows set aside; never a secret.",

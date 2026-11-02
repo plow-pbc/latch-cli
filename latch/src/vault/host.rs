@@ -18,7 +18,7 @@ use super::import;
 use super::item::{Item, Raw, kind_code};
 use super::link::{self, Here};
 use super::store::{Applied, Backend, OwnStore};
-use super::sync::State;
+use super::sync::{State, Switch};
 use crate::failure::{Failure, code};
 use crate::serve::Done;
 use crate::wire::{self, Response};
@@ -114,35 +114,81 @@ pub async fn run(
     done(result, audit)
 }
 
-/// Whether the vault in `dir` syncs with the owner's other hosts: only on
-/// a macOS latch that keeps its vault key in the Keychain. A host whose key
-/// is a file (any other system, or an unsigned build) neither sends nor
-/// takes the owner's items. The gate's test build (`fake-gog`, which a
-/// release refuses) lets a test sync hosts that have no Keychain.
-pub fn syncs(dir: &Path) -> bool {
-    #[cfg(feature = "fake-gog")]
-    if std::env::var_os("LATCH_TEST_SYNC").is_some() {
-        return true;
-    }
-    crate::secrets::Secrets::open(dir).is_ok_and(|secrets| secrets.in_keychain())
+/// Whether the vault in `dir`, holding `state`, syncs with the owner's
+/// other hosts: as the owner switched this host (`own` is its key), and
+/// otherwise only on a macOS latch that keeps its vault key in the
+/// Keychain. A host that does not neither sends nor takes the owner's items.
+/// The gate's test build (`fake-gog`, which a release refuses) lets a test
+/// treat a host that has no Keychain as such a Mac.
+pub fn syncs(dir: &Path, state: &State, own: &str) -> bool {
+    state.switch(own).unwrap_or_else(|| {
+        #[cfg(feature = "fake-gog")]
+        if std::env::var_os("LATCH_TEST_SYNC").is_some() {
+            return true;
+        }
+        crate::secrets::Secrets::open(dir).is_ok_and(|secrets| secrets.in_keychain())
+    })
 }
 
-/// `sync`, from another of the owner's hosts: answers with this vault's
-/// whole state, and first merges in the caller's, when it sends one. The
-/// caller asks without sending anything first, so a host that does not
-/// sync refuses before any item leaves the caller.
-pub fn sync(vault: &Vault, kind: &str, args: &Value) -> Result<(Value, Applied), Failure> {
-    owner_only(kind)?;
-    if !syncs(&vault.dir) {
-        return Err(Failure::new(
-            code::sync_off,
-            "this host's vault does not sync: only a Mac keeps its vault key in the Keychain"
-                .into(),
-        ));
+impl Vault {
+    /// Whether this vault syncs now (see `syncs`); never creates a vault.
+    pub fn syncing(&self, own: &str) -> Result<bool, Failure> {
+        if !self.dir.join("vault.json").exists() {
+            return Ok(syncs(&self.dir, &State::default(), own));
+        }
+        self.with(|store| Ok(syncs(&self.dir, store.state(), own)))
     }
-    let theirs: Option<State> = serde_json::from_value(args["state"].clone())
-        .map_err(|_| Failure::new(code::bad_arguments, "the vault state is not valid".into()))?;
+
+    /// Before any item moves between this host (`own`) and the owner's host
+    /// `peer`, whichever asked: takes in the owner's switches `peer` holds
+    /// (`hosts`, never an item), then refuses if the owner switched `peer`
+    /// off or this host does not sync. So the latest switch decides, on both
+    /// sides, before a state is taken or sent.
+    pub fn admit(
+        &self,
+        store: &mut OwnStore,
+        peer: &str,
+        own: &str,
+        hosts: Vec<Switch>,
+    ) -> Result<(), Failure> {
+        store.apply(State {
+            hosts,
+            ..State::default()
+        })?;
+        let off = |message: &str| Err(Failure::new(code::sync_off, message.into()));
+        if store.state().switch(peer) == Some(false) {
+            return off("the owner turned vault sync off for that host");
+        }
+        if !syncs(&self.dir, store.state(), own) {
+            return off(
+                "this host's vault does not sync: a Mac that keeps its vault key in the Keychain does, and any other host once the owner runs `latch vault sync HOST --on`",
+            );
+        }
+        Ok(())
+    }
+}
+
+/// `sync`, from the owner's host `caller` to this one, `own`: answers with
+/// this vault's whole state, and first merges in the caller's, when it
+/// sends one. The caller's first ask carries only the owner's switches, so
+/// a host that does not sync, or that the owner switched off, refuses
+/// before any item leaves either side (see `Vault::admit`).
+pub fn sync(
+    vault: &Vault,
+    kind: &str,
+    caller: &str,
+    own: &str,
+    args: &Value,
+) -> Result<(Value, Applied), Failure> {
+    owner_only(kind)?;
+    let bad = |_| Failure::new(code::bad_arguments, "the vault state is not valid".into());
+    let theirs: Option<State> = serde_json::from_value(args["state"].clone()).map_err(bad)?;
+    let hosts: Vec<Switch> = match &theirs {
+        Some(theirs) => theirs.hosts.clone(),
+        None => serde_json::from_value(args["hosts"].clone()).map_err(bad)?,
+    };
     vault.with(|store| {
+        vault.admit(store, caller, own, hosts)?;
         let applied = match theirs {
             Some(theirs) => store.apply(theirs)?,
             None => Applied::default(),
@@ -163,11 +209,27 @@ pub(super) fn manage(
         "add" => add(vault, args, audit),
         "edit" => edit(vault, args, audit),
         "remove" => remove(vault, args, audit),
+        "switch" => switch(vault, args, audit),
         command => Err(Failure::new(
             code::bad_command,
             format!("unknown vault command {command:?}"),
         )),
     }
+}
+
+/// Sets whether the owner's host `key` gets this vault. The audit gets the
+/// key and the switch.
+fn switch(vault: &Vault, args: &Value, audit: &mut Map<String, Value>) -> Result<Value, Failure> {
+    let (Some(key), Some(on)) = (args["key"].as_str(), args["on"].as_bool()) else {
+        return Err(Failure::new(
+            code::bad_arguments,
+            "switch needs the host's key and on".into(),
+        ));
+    };
+    audit.insert("key".into(), json!(key));
+    audit.insert("on".into(), json!(on));
+    vault.with(|store| store.switch(key, on))?;
+    Ok(json!({"key": key, "on": on}))
 }
 
 /// How an agent signs in with a login the owner saved, or pays with a card.
@@ -580,6 +642,40 @@ mod tests {
         assert_eq!(login["changed"], json!(["other_top_sites"]));
         assert!(login["item"].get("other_top_sites").is_none());
         assert_eq!(login["item"]["sites"], json!(["shop.example"]));
+    }
+
+    #[test]
+    fn the_latest_switch_decides_before_any_item_moves() {
+        // This host, "pi", is no Mac and holds an off; "mac" is the peer,
+        // whose switches say pi is on, older or newer, and maybe mac is off.
+        let cases = [
+            ("an older on from a stale peer", false, false, false),
+            ("a newer on", true, false, true),
+            ("a newer on, the peer switched off", true, true, false),
+        ];
+        for (name, newer, peer_off, admitted) in cases {
+            let dir = tempfile::tempdir().unwrap();
+            let vault = Vault::new(dir.path().to_path_buf());
+            vault.with(|store| store.switch("pi", false)).unwrap();
+            let off = vault
+                .with(|store| Ok(store.state().hosts[0].modified))
+                .unwrap();
+            let at = if newer { off + 1 } else { off - 1 };
+            let mut hosts = vec![Switch {
+                key: "pi".into(),
+                on: true,
+                modified: at,
+            }];
+            if peer_off {
+                hosts.push(Switch {
+                    key: "mac".into(),
+                    on: false,
+                    modified: at,
+                });
+            }
+            let admit = vault.with(|store| vault.admit(store, "mac", "pi", hosts));
+            assert_eq!(admit.is_ok(), admitted, "{name}: {admit:?}");
+        }
     }
 
     #[test]
