@@ -651,7 +651,7 @@ struct Inspector: View {
                     }
             } else {
                 ContentUnavailableView("No Selection", systemImage: "lock.rectangle",
-                                       description: Text("Select an item to see what it holds. Secret values are never shown."))
+                                       description: Text("Select an item to see its details."))
             }
         default:
             ContentUnavailableView("No Selection", systemImage: "sidebar.trailing")
