@@ -75,7 +75,11 @@ private struct RulesBody: View {
                     Button("Clear Filters") { app.rulesFilter = .init() }
                 }
             } else {
-                RuleList(list: list)
+                VStack(spacing: 0) {
+                    RuleList(list: list)
+                    Divider()
+                    BuiltInDefaults()
+                }
             }
         } else if let error = app.rulesError {
             ContentUnavailableView {
@@ -91,7 +95,26 @@ private struct RulesBody: View {
     }
 }
 
-/// The rules the filters match, then what every agent may do anyway.
+/// What every agent may do anyway: built in, so not a rule to pick.
+private struct BuiltInDefaults: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Built-in defaults").fontWeight(.semibold)
+            Text("Your rules take priority over these defaults when a request is judged.")
+            Text("Agents can look things up on the web or in your mail, edit files, run project builds and tests, and install packages a project already lists.")
+            Text("Sending, account changes and other riskier work need your OK. Buying or sharing private data must be named in your rules or your own Plow messages.")
+            Text("A permission adds to the defaults. “Do not”, “never” and “only” set limits; “unless I ask in chat” lets you approve it yourself. An agent quoting you cannot give chat permission.")
+            Text("A task you give on a site includes signing in with its saved login there. Buying, sending or changing things after sign-in needs its own permission.")
+        }
+        .font(.callout)
+        .foregroundStyle(.secondary)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 12)
+    }
+}
+
+/// The rules the filters match.
 private struct RuleList: View {
     var list: RulesList
     @Environment(AppModel.self) private var app
@@ -101,17 +124,7 @@ private struct RuleList: View {
 
     var body: some View {
         List(selection: selection) {
-            Section {
-                ForEach(app.ruleRows(list)) { RuleRow(rule: $0).tag($0.id) }
-            }
-            // Untagged: these can't be selected.
-            Section("Defaults and your rules") {
-                Text("Agents can look things up on the web or in your mail, edit files, run project builds and tests, and install packages a project already lists.")
-                Text("Sending, account changes and other riskier work need your OK. Buying or sharing private data must be named in your rules or your own Plow messages.")
-                Text("A permission adds to the defaults. “Do not”, “never” and “only” set limits; “unless I ask in chat” lets you approve it yourself. An agent quoting you cannot give chat permission.")
-                Text("A task you give on a site includes signing in with its saved login there. Buying, sending or changing things after sign-in needs its own permission.")
-            }
-            .foregroundStyle(.secondary)
+            ForEach(app.ruleRows(list)) { RuleRow(rule: $0).tag($0.id) }
         }
         // Delete, and Edit › Delete: the selected rule, confirmed.
         .onDeleteCommand {

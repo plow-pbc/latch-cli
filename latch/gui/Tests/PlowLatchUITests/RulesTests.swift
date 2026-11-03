@@ -188,6 +188,20 @@ struct RulesTests {
 
     // MARK: What the page shows
 
+    // The defaults read as more rules when they were rows: the list holds
+    // rules alone, and the built-in defaults sit under it.
+    @Test func theListHoldsOnlyRules() async throws {
+        let app = try await app()
+        let window = Offscreen(contentRect: CGRect(x: -4000, y: -4000, width: 900, height: 700), styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentViewController = NSHostingController(rootView: RulesPage().environment(app))
+        window.layoutIfNeeded()
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let content = try #require(window.contentView)
+        let table = try #require(tables(in: content).first)
+        #expect(table.numberOfRows == app.rules?.rules.count)
+    }
+
     // `rules list` in the agreed shape: a scope is "all" or uids or keys;
     // this Mac, each host's delivery and reason, and whether its rules are
     // too long.
@@ -618,6 +632,12 @@ struct RulesTests {
         let refused: RulesTry = try Fixtures.decode(Fixtures.tries["host-refused"]!)
         #expect(refused.refused?.code == "exec_denied")
     }
+}
+
+/// The tables in a window's views: a SwiftUI `List` is one.
+@MainActor
+private func tables(in view: NSView) -> [NSTableView] {
+    (view as? NSTableView).map { [$0] } ?? view.subviews.flatMap(tables)
 }
 
 /// The editable text fields in a window's views, in view order.
