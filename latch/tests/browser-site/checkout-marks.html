@@ -1,0 +1,63 @@
+<!doctype html><meta charset="utf-8"><title>Marked checkout</title>
+<!-- A hosted checkout's form as a real one marks it. Pay carries its idle
+     "Processing" label, drawn at opacity 0 and hidden from readers. A press
+     with ZIP empty sends nothing: the page marks the field aria-invalid and
+     focuses it, with no words on the page. ?native marks it `required`
+     instead and leaves refusing to the browser; ?alert adds the page's own
+     error text. With ZIP given, Pay disables the form and shows Processing;
+     with ?fieldset it disables the fieldset around the fields instead.
+     Its plan is a required radio group with one choice checked. The
+     buttons under it hide part of their text one way each, and the last
+     hides all of it and is named by its title. ?probe=xV
+     sends a GET holding V a moment after the page loads. -->
+<style>
+  #pay { position: relative; width: 160px; height: 40px; }
+  #pay span { position: absolute; inset: 0; display: block; line-height: 40px; }
+  #busy { opacity: 0; }
+  #pay.working #idle { opacity: 0; }
+  #pay.working #busy { opacity: 1; }
+</style>
+<h1>Pay $10.00</h1>
+<form id="form"><fieldset id="fields">
+  <p><label>Cardholder name <input id="name" aria-required="true" aria-invalid="false"></label></p>
+  <p><label>ZIP <input id="zip" aria-required="true" aria-invalid="false" aria-describedby="zip-error"></label></p>
+  <p id="zip-error"></p>
+  <p><label><input type="radio" name="plan" value="month" required checked> Monthly</label>
+     <label><input type="radio" name="plan" value="year" required> Yearly</label></p>
+  <p><button id="pay" type="submit"><span id="idle">Pay</span><span id="busy" aria-hidden="true">Processing</span></button></p>
+</fieldset></form>
+<p><button type="button">Save<span aria-hidden="true"> Saving</span></button></p>
+<p><button type="button">Send<span style="opacity: 0"> Sending</span></button></p>
+<p><button type="button">Pl<b>a</b>ce<span style="opacity: 0"> Placing</span></button></p>
+<p><button type="button" aria-expanded="false" id="more">More</button></p>
+<p><button type="button" title="Close"><span aria-hidden="true">×</span></button></p>
+<script>
+  const search = new URLSearchParams(location.search);
+  if (search.has('native')) {
+    zip.required = true;
+    zip.removeAttribute('aria-required');
+  }
+  more.onclick = () => more.setAttribute('aria-expanded', 'true');
+  if (search.has('probe')) {
+    setTimeout(() => fetch(`checkout-marks.html?v=${search.get('probe').slice(1)}`)
+      .then(() => 'ok', () => 'stopped')
+      .then((result) => document.body.insertAdjacentHTML('beforeend', `<p>probe: ${result}</p>`)), 1500);
+  }
+  form.onsubmit = (event) => {
+    event.preventDefault();
+    if (!zip.value) {
+      zip.setAttribute('aria-invalid', 'true');
+      zip.focus();
+      if (search.has('alert')) {
+        document.getElementById('zip-error').setAttribute('role', 'alert');
+        document.getElementById('zip-error').textContent = 'Your ZIP is incomplete.';
+      }
+      return;
+    }
+    if (search.has('fieldset')) fields.disabled = true;
+    else pay.disabled = zip.disabled = document.getElementById('name').disabled = true;
+    pay.classList.add('working');
+    busy.removeAttribute('aria-hidden');
+    idle.setAttribute('aria-hidden', 'true');
+  };
+</script>

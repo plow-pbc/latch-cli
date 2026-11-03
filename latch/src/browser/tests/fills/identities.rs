@@ -4,7 +4,6 @@
 //! the agent's own press of the page's button.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use serde_json::json;
 
@@ -41,7 +40,6 @@ async fn forms(engine: &str) -> (Harness, String, String, impl Sized) {
     ));
     // The agent presses Submit itself, a click the decision model judges.
     browsers.provider = Some(Arc::new(super::super::Calm));
-    browsers.filled_for = Some(Duration::from_secs(3));
     let h = Harness::start(browsers, engine).await;
     (h, identity.item, local, (dir, area))
 }
@@ -87,7 +85,7 @@ async fn an_identity_secret_fills_like_a_card(engine: &str) {
     assert_eq!(filled["submitted"], false);
     let next = filled["next"].as_str().unwrap();
     assert!(
-        next.contains("screenshots show them blank") && next.contains("3 seconds after this fill"),
+        next.contains("screenshots show them blank") && next.contains("They go when the page does"),
         "{next}"
     );
     let refused = h.call("eval", json!({"script": "1"})).await.unwrap_err();
@@ -96,20 +94,7 @@ async fn an_identity_secret_fills_like_a_card(engine: &str) {
     assert_eq!(red, 0, "a screenshot shows the number's field");
     assert!(blue > 50, "a screenshot lost the typed name: {blue} pixels");
 
-    // Left there, the number's field is emptied once the time is up; the
-    // agent's own text stays.
-    tokio::time::sleep(Duration::from_secs(5)).await;
-    let left = h
-        .call(
-            "eval",
-            json!({"script": "[...document.querySelectorAll('input')].map(i => i.value)"}),
-        )
-        .await
-        .unwrap();
-    assert_eq!(left["value"], json!(["Ada", ""]), "{left}");
-
-    // Filled again, the agent's own press sends it.
-    fill(&mut h).await;
+    // The agent's own press sends it.
     h.click(&submit).await.unwrap();
     h.call("wait", json!({"text": "application:", "within": 5}))
         .await

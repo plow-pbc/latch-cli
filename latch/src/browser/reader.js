@@ -71,6 +71,22 @@
     .map((el) => el.innerText || el.textContent)
     .join(' ');
 
+  // What a person sees of an element: its text less what is hidden in it,
+  // such as a button's idle "Processing" label, drawn at opacity 0 and kept
+  // from the page's readers until it is wanted.
+  const unseen = (el) => el.getAttribute('aria-hidden') === 'true' || getComputedStyle(el).opacity === '0';
+  const shownText = (el) => {
+    if (![...el.querySelectorAll('*')].some(unseen)) return el.innerText || el.textContent;
+    let text = '';
+    for (const node of el.childNodes) {
+      if (node.nodeType === Node.TEXT_NODE) text += node.textContent;
+      if (node.nodeType !== Node.ELEMENT_NODE || unseen(node) || !rendered(node)) continue;
+      const inline = getComputedStyle(node).display.startsWith('inline');
+      text += inline ? shownText(node) : ` ${shownText(node)} `;
+    }
+    return text;
+  };
+
   const name = (el) => {
     const labelledby = el.getAttribute('aria-labelledby');
     if (labelledby) { const text = clean(byIds(labelledby)); if (text) return text; }
@@ -86,9 +102,10 @@
       // the page has made it a button.
       if (['button', 'submit', 'reset'].includes(type) && el.value && !filled.has(el)) return clean(el.value);
       if (type === 'image' && el.alt) return clean(el.alt);
+      if (type === 'submit') return 'Submit';
     }
     if (!['input', 'select', 'textarea'].includes(el.localName)) {
-      const text = clean(el.innerText || el.textContent);
+      const text = clean(shownText(el));
       if (text) return text;
       const img = el.querySelector('img[alt]');
       if (img && img.alt.trim()) return clean(img.alt);
@@ -122,6 +139,10 @@
   const rendered = (el) => (el.checkVisibility ? el.checkVisibility({ visibilityProperty: true }) : el.getClientRects().length > 0);
 
   const fileInput = (el) => el.localName === 'input' && el.type === 'file';
+
+  // Disabled as the page has it: itself, by a disabled fieldset around it,
+  // or marked so for its readers.
+  const isDisabled = (el) => el.matches(':disabled') || el.getAttribute('aria-disabled') === 'true';
 
   // Hidden from the page's readers: `aria-hidden` or inert, itself or by an
   // ancestor (checkouts carry such copies of their fields).
@@ -166,7 +187,7 @@
     if (el.localName === 'input' && ['checkbox', 'radio'].includes(el.type)) item.checked = el.checked;
     else if (el.getAttribute('aria-checked')) item.checked = el.getAttribute('aria-checked') === 'true';
     if (el.getAttribute('aria-expanded')) item.expanded = el.getAttribute('aria-expanded') === 'true';
-    if (el.disabled || el.getAttribute('aria-disabled') === 'true') item.disabled = true;
+    if (isDisabled(el)) item.disabled = true;
     if (offscreen(rect)) item.offscreen = true;
     if (!rendered(el)) item.hidden = true;
     const row = el.parentElement && el.parentElement.closest(ROWS);
@@ -242,7 +263,7 @@
       x, y, width: rect.width, height: rect.height,
       covered: !reaches,
       cover: !reaches && top ? coverOf(top) : undefined,
-      disabled: !!(el.disabled || el.getAttribute('aria-disabled') === 'true'),
+      disabled: isDisabled(el),
       kind: el.localName === 'select' ? 'select'
         : (el.localName === 'input' && el.type === 'file') ? 'file'
         : (role(el) === 'textbox' || role(el) === 'searchbox' || role(el) === 'spinbutton') ? 'text' : 'other',
@@ -320,7 +341,7 @@
       role: r,
       name: name(el),
       hidden: !rendered(el) || unread(el),
-      disabled: !!(el.disabled || el.getAttribute('aria-disabled') === 'true'),
+      disabled: isDisabled(el),
       readonly: !!el.readOnly,
       covered: over !== null,
       cover: over ?? undefined,
@@ -352,10 +373,7 @@
   // outcome by: its password and username fields (empty or not, never
   // their values) and the errors it shows (alerts, and the error messages
   // of fields it marks invalid).
-  const signInShown = () => {
-    const shownField = (selector) => [...document.querySelectorAll(selector)]
-      .find((el) => rendered(el) && !unread(el));
-    const state = (el) => (el ? (el.value ? 'filled' : 'empty') : null);
+  const shownErrors = () => {
     const errors = [];
     const add = (el) => {
       const text = el && rendered(el) && !unread(el) ? clean(el.innerText, 160) : '';
@@ -366,11 +384,48 @@
       const ids = field.getAttribute('aria-errormessage') || field.getAttribute('aria-describedby') || '';
       ids.split(/\s+/).filter(Boolean).forEach((id) => add(document.getElementById(id)));
     });
+    return errors.slice(0, 3);
+  };
+  const signInShown = () => {
+    const shownField = (selector) => [...document.querySelectorAll(selector)]
+      .find((el) => rendered(el) && !unread(el));
+    const state = (el) => (el ? (el.value ? 'filled' : 'empty') : null);
     return {
       password: state(shownField('input[type=password]')),
       username: state(shownField('input[autocomplete~=username], input[autocomplete~=email], input[type=email]')),
-      errors: errors.slice(0, 3),
+      errors: shownErrors(),
     };
+  };
+
+  // What this frame's page itself marks, by field name and never a value:
+  // its required fields left empty, its invalid fields and its own error
+  // text. A page that marks nothing says nothing about its form.
+  const marks = () => {
+    const fields = [...document.querySelectorAll('input, select, textarea, [role=textbox], [role=combobox], [role=searchbox]')]
+      .filter((el) => el.type !== 'hidden' && !isDisabled(el) && rendered(el) && !unread(el));
+    // A native required field is missing what the browser says it is (a
+    // radio group with one checked is not); one required only for its
+    // readers, when it is empty.
+    const empty = (el) => (['checkbox', 'radio'].includes(el.type) ? !el.checked : !current(el));
+    const missing = (el) => (el.required ? !!el.validity?.valueMissing
+      : el.getAttribute('aria-required') === 'true' && empty(el));
+    const named = (list) => [...new Set(list.map(name).filter(Boolean))].slice(0, 8);
+    return {
+      required_empty: named(fields.filter(missing)),
+      invalid: named(fields.filter((el) => el.getAttribute('aria-invalid') === 'true' || (el.validity && !el.validity.valid))),
+      errors: shownErrors(),
+    };
+  };
+
+  // What a click shows it did, to compare with what the page showed before
+  // it. It leaves the frame only as a comparison: never the text itself.
+  const seen = () => {
+    const states = [...document.querySelectorAll('[aria-expanded], [aria-selected], [aria-pressed], [aria-checked], input[type=checkbox], input[type=radio]')]
+      .map((el) => [el.checked, ...['expanded', 'selected', 'pressed', 'checked'].map((state) => el.getAttribute(`aria-${state}`))]);
+    const text = document.body ? document.body.innerText : '';
+    let hash = 0;
+    for (let at = 0; at < text.length; at += 1) hash = (hash * 31 + text.charCodeAt(at)) | 0;
+    return JSON.stringify([text.length, hash, document.querySelectorAll(':disabled').length, states]);
   };
 
   // Fields whose markup marks them secret, which a note never fills.
@@ -542,6 +597,18 @@
     }
     return holding();
   };
+
+  // A page that is left takes nothing filled with it: neither the back
+  // button's copy of it nor the browser's restored form brings a value back.
+  // `pagehide` comes once the next page has replaced this one, so a form
+  // that was sent has gone whole. Values are set bare: no event reaches a
+  // page that is leaving.
+  addEventListener('pagehide', () => {
+    for (const el of filled) {
+      if (el.isContentEditable) el.textContent = '';
+      else if (el.localName !== 'select') el.value = '';
+    }
+  });
 
   // Hides each filled field whole (`on`), for a screenshot, at once, and
   // puts the field's own style back after it.
@@ -789,6 +856,8 @@
     controls,
     stageMark,
     signInShown,
+    marks,
+    seen,
     fillTarget,
     fill,
     typeStart,

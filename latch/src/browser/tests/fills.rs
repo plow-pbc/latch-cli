@@ -307,6 +307,9 @@ fn site() -> u16 {
                         ))
                     }
                     "/pay" => {
+                        if line.contains("slow") {
+                            std::thread::sleep(Duration::from_secs(3));
+                        }
                         let check = |ok: bool| if ok { "ok" } else { "wrong" };
                         Some(answer(
                             "latch paid",

@@ -162,11 +162,12 @@ number. At the checkout page:
    expiry=eN --field "cardholder name"=eN`. A card is never picked for
    you: name it with `--item`.
 3. The card stays in the page's fields, which you can't read: screenshots
-   show them blank, and `eval` waits until they are empty. Check the page
+   show them blank, and `eval` waits until they are gone. Check the page
    (ZIP, a box to untick, the total), then press its Pay button yourself
    with `do 'click eN'`. Read the page that follows to see whether it paid.
-   latch empties the card's fields 5 minutes after the fill if they still
-   hold it, and when the session closes.
+   The card goes when the page does: leaving it, closing its tab or closing
+   the session. If the page has disabled its fields it is working: don't
+   fill again.
 
 ## Credentials in exec
 
@@ -292,7 +293,11 @@ fixes it.
 - A checkout that stays put after Pay may still have paid: a payment can
   be slow. Never press Pay again, on either engine, unless the page shows
   it refused the card (a field marked wrong, a decline): check the page
-  and the site's orders for whether it succeeded, and ask the owner.
+  and the site's orders for whether it succeeded, and ask the owner. A
+  step's `unchanged` says the page shows nothing new, so look at it rather
+  than wait; its `marks` are what the page itself marks (`required_empty`,
+  `invalid`, `errors`). No `marks` means latch knows nothing, not that the
+  form is complete.
 - Never fake a click or key with `eval`: the site sees it isn't real.
   `covered_target` means something is on top: click the banner's or
   dialog's own button.

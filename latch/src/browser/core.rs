@@ -176,11 +176,7 @@ pub enum Call {
     /// After a login's identifier stage: its next stage, read privately.
     NextStage,
     FillCleanup,
-    /// With `clear_after_ms`, a secret the fill left on the page is emptied
-    /// that long after, if its field still holds it (`Core::clear_due`).
     FillResume {
-        #[serde(default)]
-        clear_after_ms: Option<u64>,
         /// After a login's submit: the answer says what the page shows
         /// (`shows`).
         #[serde(default)]
@@ -446,10 +442,7 @@ impl<D: Driver> Core<D> {
             } => self.set_value(&target, &value, secret, formatted),
             Call::FillSubmit { target } => self.fill_submit(&target),
             Call::FillCleanup => self.fill_cleanup(),
-            Call::FillResume {
-                clear_after_ms,
-                shows,
-            } => self.fill_resume(clear_after_ms, shows, &mut audit),
+            Call::FillResume { shows } => self.fill_resume(shows, &mut audit),
             Call::Open { url } => self.open(url.as_deref(), &mut audit),
             Call::Observe { tab, scope } => {
                 self.observe(tab.as_deref(), scope.as_deref(), &mut audit)
@@ -499,6 +492,7 @@ impl<D: Driver> Core<D> {
             Call::DownloadGet { download } => self.download_get(&download, &mut audit),
             Call::Close => unreachable!("the worker closes the browser"),
         };
+        self.lift_guard();
         if let Some(settled) = self.settled {
             audit.insert("settle_ms".into(), json!(settled.as_millis() as u64));
         }
@@ -749,6 +743,7 @@ impl<D: Driver> Core<D> {
             "page".into(),
             json!({"url": before["url"], "title": before["title"]}),
         );
+        let mut clicked = None;
         match (action, target) {
             (Action::Back, _) => {
                 if !self.driver.back()? {
@@ -790,6 +785,11 @@ impl<D: Driver> Core<D> {
                         ));
                     }
                 }
+                if matches!(action, Action::Click | Action::Press) {
+                    let (frame, _) = self.reference(&snapshot, position)?;
+                    let shown = self.driver.run(&frame, "__latch.seen()").ok();
+                    clicked = shown.map(|shown| (frame, shown));
+                }
                 self.dispatch(action, &snapshot, position, text)?;
             }
             _ => {
@@ -802,8 +802,54 @@ impl<D: Driver> Core<D> {
         result.insert("dispatched".into(), json!(true));
         let events = self.settle()?;
         self.no_secret_sent()?;
+        // A dialog the click opened blocks the page's scripts: it is the
+        // answer, and nothing can be compared or read until it is gone.
+        if self.driver.dialog_open() {
+            clicked = None;
+        }
+        if let Some((frame, shown)) = &clicked {
+            let page = self.page(&mut Map::new())?;
+            let same = ["tab", "url", "title"]
+                .iter()
+                .all(|key| page.get(*key) == before.get(*key));
+            if same && self.driver.run(frame, "__latch.seen()").ok().as_ref() == Some(shown) {
+                result.insert("unchanged".into(), json!(true));
+                audit.insert("unchanged".into(), json!(true));
+            }
+        }
+        if clicked.is_some()
+            && let Some(marks) = self.marks()
+        {
+            result.insert("marks".into(), marks.clone());
+            audit.insert("marks".into(), marks);
+        }
         self.after(&before, events, &mut result)?;
         Ok(Value::Object(result))
+    }
+
+    /// What the page itself marks after a click, across its frames: none
+    /// when no frame that could be read marks anything, which says nothing
+    /// about the page's forms.
+    fn marks(&mut self) -> Option<Value> {
+        let mut marks: Map<String, Value> = Map::new();
+        for frame in self.driver.frames().ok()? {
+            if self.read_until.is_some_and(|end| Instant::now() >= end) {
+                break;
+            }
+            let Ok(found) = self.driver.run(&frame, "__latch.marks()") else {
+                continue;
+            };
+            for key in ["required_empty", "invalid", "errors"] {
+                for mark in found[key].as_array().into_iter().flatten() {
+                    let list = marks.entry(key).or_insert_with(|| json!([]));
+                    let list = list.as_array_mut().expect("a list");
+                    if !list.contains(mark) {
+                        list.push(mark.clone());
+                    }
+                }
+            }
+        }
+        (!marks.is_empty()).then_some(Value::Object(marks))
     }
 
     /// What changed, the page's first lines, events, and a fresh element

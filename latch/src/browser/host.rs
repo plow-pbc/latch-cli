@@ -106,10 +106,6 @@ pub struct Browsers {
     /// Tests only: the decision model's provider, in place of the host's.
     #[cfg(test)]
     pub(super) provider: Option<Arc<dyn crate::model::Provider>>,
-    /// Tests only: how long a secret filled with no press stays, in place
-    /// of `fill::FILLED_FOR`.
-    #[cfg(test)]
-    pub(super) filled_for: Option<Duration>,
 }
 
 /// Who a command comes from: the client key the gate verified, whether
@@ -263,18 +259,7 @@ impl Browsers {
             test: None,
             #[cfg(test)]
             provider: None,
-            #[cfg(test)]
-            filled_for: None,
         }
-    }
-
-    /// How long a secret filled with no press stays in its field.
-    pub(super) fn filled_for(&self) -> Duration {
-        #[cfg(test)]
-        if let Some(window) = self.filled_for {
-            return window;
-        }
-        super::fill::FILLED_FOR
     }
 
     pub(super) fn state_dir(&self) -> PathBuf {

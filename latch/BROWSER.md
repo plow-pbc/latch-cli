@@ -521,7 +521,9 @@ fact is refused before anything runs (`vague_condition`, exit 2).
 `model_assessed` or `already_held`; `dispatched`: every step ran but one had no check;
 `stopped`, with `stop: {step, code, message, …}`), `review: true` when the
 last step rests on the model alone, `steps` (per step: `outcome`, its
-evidence, its action count), `trail` (per action: page URL and title,
+evidence, its action count), `trail` (per action: page URL and title, `unchanged` and `marks` after a
+click or key (what the page itself marks, by field name, never a value;
+no `marks` says nothing about the form),
 operation, target with role, name and row text, `chosen` (`ref`, or
 `model` with the operation's and target's p), the risk `p`,
 the confirmation used, `result` `dispatched`/`refused`/`unknown`, what
