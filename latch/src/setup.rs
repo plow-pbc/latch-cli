@@ -4,7 +4,8 @@
 //! offers to start one. It is thin: every step runs an existing latch command (and says
 //! which), so a person can do any step by hand later. Each step first looks
 //! whether it is done already and then skips it, so setup can be run again
-//! at any time. Skipping or failing a step never stops the next one.
+//! at any time. Skipping or failing a step never stops the next one, and
+//! Ctrl-C during a Google sign-in stops only that step.
 
 use std::io::BufRead;
 use std::path::PathBuf;
@@ -161,31 +162,58 @@ impl Setup {
             .map(String::from)
     }
 
-    /// Step 2: Google, through Plow.
+    /// Step 2: Google, through Plow, then as many more accounts as the
+    /// owner chooses to add.
     fn google(&mut self) {
-        if self.plugin_state("google").as_deref() == Some("enabled") {
-            done("Google is connected.");
-            return;
+        if self.plugin_state("google").as_deref() != Some("enabled") {
+            if !self.input().yes("Connect Google? [Y/n] ", true) {
+                say("Skipped; later: `latch plugins enable google`.");
+                return;
+            }
+            step("Connect Google", "latch plugins enable google");
+            if !self.google_at_this_terminal(&["plugins", "enable", "google"]) {
+                eprintln!(
+                    "✗ Google is not on yet.\n  Try again later: latch plugins enable google"
+                );
+                return;
+            }
         }
-        if !self.input().yes("Connect Google? [Y/n] ", true) {
-            say("Skipped; later: `latch plugins enable google`.");
-            return;
+        done("Google is connected.");
+        let add = "latch plugins enable google --add-account";
+        while self
+            .input()
+            .yes("Add another Google account? [y/N] ", false)
+        {
+            step("Add a Google account", add);
+            let args = ["plugins", "enable", "google", "--add-account"];
+            if !self.google_at_this_terminal(&args) {
+                eprintln!("✗ No Google account was added.\n  Try again later: {add}");
+                return;
+            }
+            done("Another Google account is connected.");
         }
-        step("Connect Google", "latch plugins enable google");
-        // At this terminal, so a Google sign-in shows its link and waits for
-        // the account; a failure says why there itself. Its exit decides.
-        let enabled = self
-            .command(&["plugins", "enable", "google"])
+    }
+
+    /// `latch ARGS…` for Google at this terminal: a sign-in shows its link
+    /// there and waits for the account, and a failure says why there
+    /// itself. Ctrl-C stops that command, not setup: setup's handler does
+    /// nothing meanwhile, and exec gives the command Ctrl-C's default back.
+    /// True once the command printed its result: Google is on.
+    fn google_at_this_terminal(&self, args: &[&str]) -> bool {
+        extern "C" fn heard(_: libc::c_int) {}
+        let heard: extern "C" fn(libc::c_int) = heard;
+        // SAFETY: a handler that does nothing is safe whenever it runs, and
+        // what it replaces is put back below.
+        let before = unsafe { libc::signal(libc::SIGINT, heard as libc::sighandler_t) };
+        let output = self
+            .command(args)
             .stdin(Stdio::inherit())
             .stderr(Stdio::inherit())
             .stdout(Stdio::piped())
             .output();
-        // Google is on only once the enable printed its result.
-        if enabled.is_ok_and(|output| output.status.success() && !output.stdout.is_empty()) {
-            done("Google is connected.");
-        } else {
-            eprintln!("✗ Google is not on yet.\n  Try again later: latch plugins enable google");
-        }
+        // SAFETY: puts back the disposition `signal` returned.
+        unsafe { libc::signal(libc::SIGINT, before) };
+        output.is_ok_and(|output| output.status.success() && !output.stdout.is_empty())
     }
 
     /// Step 3: Messages and Contacts: Full Disk Access for the app the host

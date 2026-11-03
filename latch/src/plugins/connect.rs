@@ -3,9 +3,11 @@
 //! another (`--add-account`), this command, never the host, asks Plow for
 //! a single-use sign-in link and offers it. A person at a terminal gets the
 //! link and a QR code; an app (`--events`) gets it as a `link` line. Either
-//! way the command waits, up to five minutes, for an account Plow did not
-//! have before, renewing the link when it expires unopened, then runs the
-//! enable again. Anything else gets the link in its answer and no wait.
+//! way the command waits, up to five minutes, for the sign-in (an account
+//! Plow did not have before, or, when Google wants the owner to sign in
+//! again, any account working), renewing the link when it expires
+//! unopened, then runs the enable again. Anything else gets the link in
+//! its answer and no wait.
 //!
 //! The link is a credential until it is used or expires. It appears only in
 //! the caller's own output (`sign_in_url`, a `link` line, the terminal's
@@ -37,7 +39,7 @@ const ENABLE: &str = "latch plugins enable google";
 /// `google_needs_sign_in` naming the accounts to sign in with again;
 /// `enabled` is the result of one that succeeded before `--add-account`
 /// adds an account. `enable` runs the enable again once a new account is
-/// there, or every named one works again.
+/// there, or, after `google_needs_sign_in`, once any account works.
 pub(super) async fn google<F, Fut>(
     state: &StateDir,
     refused: Option<Failure>,
@@ -67,7 +69,7 @@ where
         let connectors = plow.connectors().await?;
         page = Some(connectors.connections_page());
         let wanted = match &again {
-            Some(accounts) => Goal::Working(accounts.clone()),
+            Some(_) => Goal::Working,
             None => Goal::New(accounts(&connectors)),
         };
         let mut link = plow.google_connect_link().await?;
@@ -168,25 +170,24 @@ enum Connecting {
 enum Goal {
     /// An account Plow did not have: these are the ones it had.
     New(Vec<String>),
-    /// Each of these accounts working again, Google having asked to sign
-    /// in with them again.
-    Working(Vec<String>),
+    /// Any account working, none having worked since Google asked to sign
+    /// in again: one of those signed in again, or another one connected.
+    /// The enable then succeeds, naming any still to sign in with again.
+    Working,
 }
 
-/// Whether Plow says the sign-in waited for has happened. Accounts to sign
-/// in with again are known to work only by getting their credentials.
+/// Whether Plow says the sign-in waited for has happened. An account is
+/// known to work only by getting its credentials.
 async fn reached(plow: &Plow, goal: &Goal) -> Result<bool, Failure> {
     match goal {
         Goal::New(had) => Ok(accounts(&plow.connectors().await?)
             .iter()
             .any(|account| !had.contains(account))),
-        Goal::Working(wanted) => match plow.google_tokens().await {
-            Ok(tokens) => Ok(wanted.iter().all(|wanted| {
-                tokens
-                    .accounts
-                    .iter()
-                    .any(|account| account.account == *wanted && account.access_token.is_some())
-            })),
+        Goal::Working => match plow.google_tokens().await {
+            Ok(tokens) => Ok(tokens
+                .accounts
+                .iter()
+                .any(|account| account.access_token.is_some())),
             Err(failure) if failure.code == code::google_needs_sign_in.name => Ok(false),
             Err(failure) => Err(failure),
         },

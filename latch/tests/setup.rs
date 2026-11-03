@@ -204,14 +204,16 @@ impl Stub {
 #[test]
 fn a_fresh_run_sets_everything_up_then_starts_latch() {
     let stub = Stub::new();
-    // Enter takes each default: Google yes, Messages no, start yes.
-    let (code, shown) = stub.setup("\n\n\n");
+    // Enter takes each default: Google yes, another Google account no,
+    // Messages no, start yes.
+    let (code, shown) = stub.setup("\n\n\n\n");
     assert_eq!(code, Some(0), "{shown}");
     for line in [
         "→ Log in: latch login",
         "Connect Google? [Y/n]",
         "→ Connect Google: latch plugins enable google",
         "✓ Google is connected.",
+        "Add another Google account? [y/N]",
         "Start latch now? [Y/n]",
         "→ Start latch: latch serve -d",
         "✓ latch is running.",
@@ -238,8 +240,8 @@ fn login_gets_the_answers_to_its_own_questions() {
     let stub = Stub::new();
     stub.file("taken", "");
     // Login's: keep the other machine, call this one "studio". Then
-    // setup's: Google yes, Messages no, start no.
-    let (code, shown) = stub.setup("n\nstudio\n\nn\nn\n");
+    // setup's: Google yes, another Google account no, Messages no, start no.
+    let (code, shown) = stub.setup("n\nstudio\n\nn\nn\nn\n");
     assert_eq!(code, Some(0), "{shown}");
     assert_eq!(stub.read("login-answers"), "n\nstudio\n", "{shown}");
     assert!(shown.contains("✓ Google is connected."), "{shown}");
@@ -257,12 +259,16 @@ fn a_rerun_skips_every_step_already_done() {
     ] {
         stub.file(done, "");
     }
-    let (code, shown) = stub.setup("");
+    // Enter: no other Google account.
+    let (code, shown) = stub.setup("\n");
     assert_eq!(code, Some(0), "{shown}");
     assert!(shown.contains("✓ Logged in as mac."), "{shown}");
     assert!(shown.contains("✓ Google is connected."), "{shown}");
     assert!(shown.contains("✓ latch is running."), "{shown}");
-    assert!(!shown.contains('?'), "nothing asked: {shown}");
+    assert!(
+        shown.contains("Add another Google account? [y/N]") && shown.matches('?').count() == 1,
+        "only whether to add another Google account asked: {shown}"
+    );
     let calls = stub.read("calls");
     for changed in ["login", "serve", "plugins enable"] {
         assert!(!calls.contains(changed), "{changed}: {calls}");
@@ -322,6 +328,39 @@ fn a_failed_step_says_why_and_the_next_one_still_runs() {
     assert!(shown.contains("Start latch now? [Y/n]"), "{shown}");
 }
 
+/// With Google on, setup offers another account until the owner moves on;
+/// one that isn't added says how to add it later, and setup goes on.
+#[test]
+fn google_on_offers_another_account_until_the_owner_moves_on() {
+    let stub = Stub::new();
+    stub.file("peer", "");
+    // The enable, then an account added, then one that isn't.
+    stub.file("enable-google", "ok\nok\nfail\n");
+    // Google yes; another account yes, and yes again; on macOS Messages
+    // no; start no.
+    let (code, shown) = stub.setup("\ny\ny\nn\nn\n");
+    assert_eq!(code, Some(0), "{shown}");
+    for line in [
+        "✓ Google is connected.",
+        "→ Add a Google account: latch plugins enable google --add-account",
+        "✓ Another Google account is connected.",
+        "✗ No Google account was added.",
+        "  Try again later: latch plugins enable google --add-account",
+        "Start latch now? [Y/n]",
+    ] {
+        assert!(shown.contains(line), "{line}: {shown}");
+    }
+    assert_eq!(shown.matches("Add another Google account?").count(), 2);
+    let calls = stub.read("calls");
+    assert_eq!(
+        calls
+            .matches("plugins enable google --add-account\n")
+            .count(),
+        2,
+        "{calls}"
+    );
+}
+
 /// A login that fails: what it said stays on the terminal, and setup,
 /// going by its exit status, says the other steps wait.
 #[test]
@@ -363,14 +402,15 @@ fn a_login_that_asks_no_one_is_read_not_shown() {
 fn messages_and_contacts_are_confirmed_once_granted() {
     let stub = Stub::new();
     stub.file("peer", "");
-    // Google was turned on before, and latch runs, so setup asks nothing
-    // after this step (a line typed during the wait is not an answer).
+    // Google was turned on before (Enter: no other account), and latch
+    // runs, so setup asks nothing after this step (a line typed during the
+    // wait is not an answer).
     stub.enable("google");
     stub.file("ready", "");
     // Not granted at first; granted on the host's next check.
     stub.file("enable-messages", "not_granted\nok\n");
     stub.file("enable-contacts", "not_granted\nok\n");
-    let (code, shown) = stub.setup("y\n");
+    let (code, shown) = stub.setup("\ny\n");
     assert_eq!(code, Some(0), "{shown}");
     assert!(
         shown.contains("Turn on Full Disk Access for /Applications/Plow Latch.app"),
@@ -405,7 +445,7 @@ fn s_skips_the_full_disk_access_wait_and_leaves_it_for_later() {
     stub.enable("google");
     stub.file("enable-messages", "not_granted\n");
     stub.file("enable-contacts", "not_granted\n");
-    let (code, shown) = stub.setup("y\ns\n");
+    let (code, shown) = stub.setup("\ny\ns\n");
     assert_eq!(code, Some(0), "{shown}");
     assert!(
         shown.contains("Skipped; finish later with `latch plugins enable messages`"),
@@ -450,7 +490,7 @@ fn a_connector_failing_for_another_reason_is_reported_not_waited_for() {
     stub.enable("google");
     stub.file("enable-messages", "not_granted\nok\n");
     stub.file("enable-contacts", "unavailable\n");
-    let (code, shown) = stub.setup("y\n");
+    let (code, shown) = stub.setup("\ny\n");
     assert_eq!(code, Some(0), "{shown}");
     for line in [
         "✗ contacts is unavailable on this host",
@@ -479,7 +519,7 @@ fn a_failure_on_a_later_check_is_reported_not_waited_out() {
     stub.enable("google");
     stub.file("enable-messages", "not_granted\nunavailable\n");
     stub.file("enable-contacts", "not_granted\nok\n");
-    let (code, shown) = stub.setup("y\n");
+    let (code, shown) = stub.setup("\ny\n");
     assert_eq!(code, Some(0), "{shown}");
     for line in [
         "✗ messages is unavailable on this host",
