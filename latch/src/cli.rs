@@ -949,10 +949,11 @@ pub enum OnOff {
 pub enum RulesCommand {
     /// Your rules for every host, read from each host you can reach
     ///
-    /// Each host keeps the whole list; this merges their copies, the newest
-    /// change of each rule winning, and brings any host that is behind up to
-    /// date. --agent and --host show only the rules that apply to that agent
-    /// or on that host, `all` rules included. Each host's `delivery` is
+    /// Each host keeps the whole list; this merges their copies (a removal of
+    /// a rule wins over any live version of it, otherwise the newest change)
+    /// and brings any host that is behind up to date. --agent and --host show
+    /// only the rules that apply to that agent or on that host, `all` rules
+    /// included. Each host's `delivery` is
     /// current (it holds the newest list), behind (it answered and lacks it;
     /// `reason` says why) or unknown (it couldn't be checked: offline, or
     /// `host_outdated`: update latch there). A host whose rules for every agent

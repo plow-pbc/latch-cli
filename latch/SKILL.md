@@ -270,10 +270,11 @@ own devices can read or change them: from your own agent login every
 device or on the host itself as its owner, you can manage them when the
 owner asks you to.
 
-- `latch rules list` reads every host it can reach and merges their copies,
-  the newest change of each rule winning. Each rule has an `id`, its
-  `text`, `agents` and `hosts`: `"all"` (those added later included) or
-  the ones named. Edit and remove a rule by that id:
+- `latch rules list` reads every host it can reach and merges their copies:
+  a removal of a rule wins over any live version of it, otherwise the
+  newest change wins. Each rule has an `id`, its `text`, `agents` and
+  `hosts`: `"all"` (those added later included) or the ones named. Edit and
+  remove a rule by that id:
   `latch rules edit ID TEXT`, `latch rules remove ID`.
 - **Scope, filter, route.** On `add` and `edit`, `--agents a,b|all` and
   `--hosts h1,h2|all` say which agents and hosts a rule covers; on `edit`,
