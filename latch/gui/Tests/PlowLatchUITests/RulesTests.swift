@@ -202,6 +202,22 @@ struct RulesTests {
         #expect(table.numberOfRows == app.rules?.rules.count)
     }
 
+    // A short window scrolls the defaults rather than cutting their words:
+    // the list's scroller, and one more for the panel only there.
+    @Test func theDefaultsScrollOnlyWhenTheyDontFit() async throws {
+        let app = try await app()
+        func scrollers(height: CGFloat) throws -> Int {
+            let window = Offscreen(contentRect: CGRect(x: -4000, y: -4000, width: 785, height: height), styleMask: [.titled], backing: .buffered, defer: false)
+            window.contentViewController = NSHostingController(rootView: RulesPage().environment(app).frame(width: 785, height: height))
+            window.layoutIfNeeded()
+            window.isReleasedWhenClosed = false
+            defer { window.close() }
+            return scrollViews(in: try #require(window.contentView)).count
+        }
+        #expect(try scrollers(height: 700) == 1)
+        #expect(try scrollers(height: 330) == 2)
+    }
+
     // `rules list` in the agreed shape: a scope is "all" or uids or keys;
     // this Mac, each host's delivery and reason, and whether its rules are
     // too long.
@@ -632,6 +648,12 @@ struct RulesTests {
         let refused: RulesTry = try Fixtures.decode(Fixtures.tries["host-refused"]!)
         #expect(refused.refused?.code == "exec_denied")
     }
+}
+
+/// The scroll views in a window's views, not those inside another.
+@MainActor
+private func scrollViews(in view: NSView) -> [NSScrollView] {
+    (view as? NSScrollView).map { [$0] } ?? view.subviews.flatMap(scrollViews)
 }
 
 /// The tables in a window's views: a SwiftUI `List` is one.
