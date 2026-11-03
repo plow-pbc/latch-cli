@@ -201,10 +201,13 @@ impl Rule {
     }
 
     /// Whether this version wins over `other`, another version of the same
-    /// rule: the newest change, and of two changed at the same moment the
-    /// one with the larger fingerprint, so every host picks the same one.
+    /// rule: a removal over any version still live, so an edit made where
+    /// the removal wasn't seen can't bring the rule back; otherwise the
+    /// newest change, and of two changed at the same moment the one with
+    /// the larger fingerprint, so every host picks the same one.
     fn newer_than(&self, other: &Rule) -> bool {
-        (self.updated, self.fingerprint()) > (other.updated, other.fingerprint())
+        (self.deleted, self.updated, self.fingerprint())
+            > (other.deleted, other.updated, other.fingerprint())
     }
 
     /// This version's identity: its record's sha256, as hex.
@@ -777,6 +780,29 @@ mod tests {
         merge(&mut a, &[rival]);
         merge(&mut b, &[edited]);
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn a_removal_wins_over_a_later_edit_made_where_it_wasnt_seen() {
+        let rule = Rule {
+            updated: 10,
+            ..Rule::new("one", Covers::All, Covers::All)
+        };
+        let removed = Rule {
+            updated: 20,
+            ..rule.removed()
+        };
+        // Edited afterwards on a machine that still held the rule.
+        let edited = Rule {
+            text: "two".into(),
+            updated: 30,
+            ..rule.clone()
+        };
+        let (mut a, mut b) = (vec![removed.clone()], vec![edited.clone()]);
+        assert!(merge(&mut a, std::slice::from_ref(&edited)).is_empty());
+        merge(&mut b, std::slice::from_ref(&removed));
+        assert_eq!((a.clone(), b), (vec![removed.clone()], vec![removed]));
+        assert_eq!(render(&a, STUDIO, ADA), Rules::default());
     }
 
     #[test]

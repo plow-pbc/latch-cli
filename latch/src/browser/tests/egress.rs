@@ -303,10 +303,13 @@ mod mac {
         let state = state.canonicalize().unwrap();
         let scratch_path = scratch.path().canonicalize().unwrap();
         let proxy = crate::browser::egress::Proxy::start(true).unwrap().url();
-        let profile = crate::browser::profile::make(&state).unwrap();
+        let profile = crate::browser::profile::make(
+            crate::browser::profile::of(&state, "test", "cft").unwrap(),
+        )
+        .unwrap();
         let mut browser = Cft::launch(
             &state,
-            profile.path(),
+            &profile,
             &scratch_path,
             super::super::HEADLESS,
             None,

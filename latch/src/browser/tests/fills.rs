@@ -398,7 +398,7 @@ struct Harness {
 impl Harness {
     async fn start(browsers: Browsers, engine: &str) -> Harness {
         let browsers = Arc::new(browsers);
-        let (id, entry) = browsers.open(engine, CALLER, None).await.unwrap();
+        let (id, entry) = browsers.open(engine, CALLER, CALLER, None).await.unwrap();
         Harness {
             browsers,
             engine: engine.to_string(),
@@ -408,17 +408,18 @@ impl Harness {
         }
     }
 
-    /// A new session, in place of the harness's one, which closes.
+    /// A new session, in place of the harness's one, which closes first:
+    /// the caller's profile runs one at a time.
     async fn new_session(&mut self) {
+        self.browsers.close(&self.id, CALLER).await.unwrap();
+        self.browsers.settled().await;
         let (id, entry) = self
             .browsers
-            .open(&self.engine, CALLER, None)
+            .open(&self.engine, CALLER, CALLER, None)
             .await
             .unwrap();
-        let before = std::mem::replace(&mut self.id, id);
+        self.id = id;
         self.entry = entry;
-        self.browsers.close(&before, CALLER).await.unwrap();
-        self.browsers.settled().await;
     }
 
     /// A call as the host makes it for an agent (pause and eval flags

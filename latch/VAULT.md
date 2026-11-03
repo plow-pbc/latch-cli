@@ -298,19 +298,17 @@ session that filled is closed. Closing it never lets its pages send what
 they hold: on Chrome for Testing the guard stands until the browser exits;
 on Camoufox the browser is killed. No reading is taken while a fill holds the
 browser, and an element list marks a field holding a filled value as
-`filled`, never showing the value. A page may show a card's number back
-(a confirmation that repeats it, a field it draws again): every answer in
-the session that filled it, and its plans' journals, show that number only
-as its last four digits (`•••• 4242`), whole or in groups set apart by
-single spaces or dashes, as a site prints it; the last four alone
-("ending in 4242") are left as they are. An identity's secret that a
-fill released (an SSN, a passport number) is masked whole the same way:
-the session's text answers and its plans' journals (`do --history`) show
-it as `••••`, written as it was filled or as its digits in groups. A
+`filled`, never showing the value. latch protects a secret until the
+form is submitted or the fields are cleared; what a site shows afterwards
+is the site's. A page that shows a card's number or an SSN back (a
+confirmation that repeats it, a preview as it is typed) shows it to the
+agent as it shows it to a person, in answers and in plans' journals. A
 script (`eval`) is refused
 while a filled value may be in a field, as for a password (below), and
 runs once the page was submitted and its fields are empty: from then on
-it could read a number the page repeats.
+it could read a number the page repeats. The gatekeeper alone is shown a
+filled card's number only as its last four digits and an identity's
+secret not at all, wherever a page put it.
 
 A card fill presses nothing: the card stays in the page's fields, and the
 agent checks the page and presses Pay itself, an ordinary click with its
@@ -326,7 +324,7 @@ too. latch empties fields still holding the card 5 minutes after the fill
 (the fill's answer says so in its `next`), and the values go with the
 browser when the session closes. Only the filled fields are blanked: a page
 that prints the whole number elsewhere shows it in a picture, and a receipt
-the agent downloads (text or PDF) can hold it, though no text answer does.
+the agent downloads (text or PDF) can hold it, as can a text answer.
 While a filled value may be on a page, in whichever of the session's tabs,
 `eval` is refused (`secret_on_page`) until it is gone or its tab is
 closed. The result says
@@ -365,6 +363,11 @@ and local management. Both take the same exclusive `vault.lock` for each
 read/write transaction. Each transaction reopens the current store while
 holding the lock, so local edits are visible to fills without a restart.
 The lock is released while an import waits for picks.
+Each item also carries a random `uid`, the same on every host, and when it
+last changed; a removed item leaves a tombstone (its uid and when, no
+title or value), so a removal can reach other hosts. None of it shows in
+`vault list` or `vault show`. A vault from before (version 1) opens as it
+was and is written back in the new layout (version 2) on its next change.
 Items are sealed with AES-256-GCM under a random data key; the
 data key is sealed under the custody key. A signed macOS latch keeps that
 key in the Keychain, with the host's other secrets (its key and Plow token);
@@ -374,3 +377,36 @@ macOS the browser engine runs as the owner outside latch's sandbox, so a
 compromised engine could read `vault.json`, and `vault.key` in a build that
 keeps files: a known limit (see [SECURITY.md](../SECURITY.md)). In a signed latch the custody key is in the
 Keychain, which only a program signed with latch's keychain group can read.
+
+## Sync between the owner's hosts
+
+A Mac whose latch keeps its vault key in the Keychain keeps one vault with
+the owner's other such Macs: an add, edit, removal, import or phone-link
+save on one reaches the others. Its `serve` runs a round on start, within
+seconds of any change to `vault.json`, and every 10 minutes, so a Mac that
+was asleep or stopped catches up as it comes back, and a change made while
+no other Mac was online waits until one is. In a round it asks each of the
+owner's other hosts Plow lists online for its vault state over iroh,
+applies it, then sends its own back. Nothing goes through Plow but the
+connection's relay, and Plow stores no item.
+
+The later change to an item wins, and a removal as late as the edit wins;
+an item each Mac had added on its own, every field equal, becomes one. An
+item new to a Mac gets that Mac's next id. A host whose key is a file (any
+other system, or an unsigned build) neither sends nor takes items until
+the owner turns sync on for it: asked, it answers `sync_off` before
+anything is sent.
+
+`latch vault sync HOST --on` (owner only, against this machine's vault or
+`--host`'s) turns it on: it says that it copies the whole vault, secrets
+included, to HOST, which keeps them, and asks, or takes `--yes`. The
+switch is part of the synced vault, so it reaches every host that syncs;
+the next round sends HOST the vault, and HOST syncs from then on. `--off`
+stops it: every other host skips HOST and refuses its asks, and HOST keeps
+what it already holds (nothing is cleared). Turning a Mac off works the
+same way. The switch is audited with the
+host's key and the setting. Agents on a host that syncs get no more of the
+vault than on any other. Each change a vault takes
+is audited as `vault` `sync` with counts only, the caller and
+`caller_name` naming the host it came from; a round that changes nothing
+is not audited.
