@@ -862,7 +862,7 @@ fn signal_name(signal: i32) -> String {
 }
 
 // Their workers are sh scripts: Unix only.
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1055,10 +1055,12 @@ mod tests {
             let done = run(&workers, &args, std::future::pending()).await;
             assert!(matches!(done.response, Response::Ok(_)));
             assert!(dir.path().join("worker-started").exists());
-            assert_eq!(done.audit_args["workdir"], json!(workers.home));
+            assert_eq!(done.audit_args["workdir"], json!(shown_path(&workers.home)));
         }
     }
 
+    // A Windows exec reads no home, where cargo and its toolchain are, until #6.
+    #[cfg(unix)]
     #[tokio::test]
     async fn declared_projects_support_cargo_build_and_npm_install() {
         let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/tests");
@@ -1142,10 +1144,19 @@ mod tests {
     async fn secret_values_are_not_in_the_workers_process_arguments() {
         let (dir, mut workers) = worker_setup();
         let binary = std::env::current_exe().unwrap();
-        workers.program = binary.parent().unwrap().parent().unwrap().join("latch");
+        workers.program = binary
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join(format!("latch{}", std::env::consts::EXE_SUFFIX));
         std::fs::create_dir(&workers.state_dir).unwrap();
+        // By their real paths, as a host gives them: a grant refuses any other.
+        workers.state_dir = workers.state_dir.canonicalize().unwrap();
+        workers.home = workers.home.canonicalize().unwrap();
         let tmp = dir.path().join("tmp");
         std::fs::create_dir(&tmp).unwrap();
+        let tmp = tmp.canonicalize().unwrap();
         let marker = "worker-argv-private-marker-4a7d";
         let value = normalize(
             &workers,
@@ -1204,7 +1215,8 @@ mod tests {
         let mut input = child.stdin.take().unwrap();
         crate::wire::write_frame(&mut input, &header).await.unwrap();
         drop(input);
-        assert!(child.wait().await.unwrap().success());
+        let ended = child.wait_with_output().await.unwrap();
+        assert!(ended.status.success(), "{ended:?}");
     }
 
     #[tokio::test]
