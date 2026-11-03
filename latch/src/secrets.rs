@@ -14,6 +14,10 @@
 //!
 //! An item is filed under the state folder's real path, so another folder
 //! on the same Mac, or a copy of this one, never shares its identity.
+//!
+//! On Windows the files hold their secrets sealed with DPAPI, for this
+//! Windows user and for the item as the Keychain files it (`dpapi.rs`): a
+//! file copied to another folder, or read as another user, does not open.
 
 use std::fs;
 use std::io::{ErrorKind, Write};
@@ -21,6 +25,9 @@ use std::path::{Path, PathBuf};
 
 use crate::failure::{Failure, code};
 use crate::state::{OwnerOnly, write_private};
+
+#[cfg(windows)]
+mod dpapi;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Secret {
@@ -89,7 +96,7 @@ impl Secrets {
         let Some(store) = &self.keychain else {
             let path = self.dir.join(secret.file());
             return match fs::read(&path) {
-                Ok(bytes) => Ok(Some(bytes)),
+                Ok(bytes) => self.opened(secret, bytes).map(Some),
                 Err(err) if err.kind() == ErrorKind::NotFound => Ok(None),
                 Err(err) => Err(io_failure(&path, err)),
             };
@@ -113,7 +120,8 @@ impl Secrets {
     pub fn write(&self, secret: Secret, bytes: &[u8]) -> Result<(), Failure> {
         let Some(store) = &self.keychain else {
             let path = self.dir.join(secret.file());
-            return write_private(&path, bytes).map_err(|err| io_failure(&path, err));
+            let sealed = self.sealed(secret, bytes)?;
+            return write_private(&path, &sealed).map_err(|err| io_failure(&path, err));
         };
         store
             .set(&self.account(secret), bytes)
@@ -125,6 +133,7 @@ impl Secrets {
     pub fn create(&self, secret: Secret, bytes: &[u8]) -> Result<bool, Failure> {
         let Some(store) = &self.keychain else {
             let path = self.dir.join(secret.file());
+            let sealed = self.sealed(secret, bytes)?;
             let file = fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
@@ -132,7 +141,7 @@ impl Secrets {
                 .open(&path);
             return match file {
                 Ok(mut file) => file
-                    .write_all(bytes)
+                    .write_all(&sealed)
                     .and_then(|()| file.sync_all())
                     .map(|()| true)
                     .map_err(|err| io_failure(&path, err)),
@@ -172,6 +181,32 @@ impl Secrets {
         self.keychain.is_some()
     }
 
+    /// `bytes` as a secret file keeps them: sealed on Windows, as they are
+    /// elsewhere.
+    fn sealed(&self, secret: Secret, bytes: &[u8]) -> Result<Vec<u8>, Failure> {
+        #[cfg(windows)]
+        return dpapi::seal(bytes, &self.account(secret))
+            .map_err(|why| self.unsealable("seal", secret, &why));
+        #[cfg(not(windows))]
+        {
+            let _ = secret;
+            Ok(bytes.to_vec())
+        }
+    }
+
+    /// The secret in a file's `bytes`: on Windows, opened for this user and
+    /// this item.
+    fn opened(&self, secret: Secret, bytes: Vec<u8>) -> Result<Vec<u8>, Failure> {
+        #[cfg(windows)]
+        return dpapi::open(&bytes, &self.account(secret))
+            .map_err(|why| self.unsealable("open", secret, &why));
+        #[cfg(not(windows))]
+        {
+            let _ = secret;
+            Ok(bytes)
+        }
+    }
+
     /// The item's account: the state folder's real path and the file name.
     fn account(&self, secret: Secret) -> String {
         format!("{}/{}", real_path(&self.dir).display(), secret.file())
@@ -182,6 +217,17 @@ impl Secrets {
             "the Keychain refused to {what} {} ({why}). This signed latch keeps its \
              secrets only in the Keychain, so no file was written; it needs to run as \
              the logged-in user, in their session",
+            self.account(secret)
+        );
+        Failure::new(code::keychain_failed, message)
+    }
+
+    #[cfg(windows)]
+    fn unsealable(&self, what: &str, secret: Secret, why: &str) -> Failure {
+        let message = format!(
+            "Windows could not {what} {} ({why}). latch seals its secrets for this Windows \
+             user and this state folder, so a file copied from another folder, or another \
+             user's, does not open; nothing was written",
             self.account(secret)
         );
         Failure::new(code::keychain_failed, message)
