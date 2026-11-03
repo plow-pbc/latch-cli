@@ -16,6 +16,8 @@ nonisolated enum ErrorCopy {
         case tryRequest(connector: String? = nil)
         /// Removing one of the account's listed devices.
         case devices
+        /// Reading or changing the account's rules.
+        case rules
     }
 
     /// The app's sentence for `error`, naming `host` (its name as the
@@ -33,6 +35,7 @@ nonisolated enum ErrorCopy {
             return said
         }
         if place == .devices, failure.code == "not_found" { return "That device isn't in your account any more." }
+        if place == .rules, failure.code == "owner_only" { return "Use a device logged in as you to view or change rules." }
         return switch failure.code {
         case "host_unreachable": "Latch couldn't reach \(name), so nothing changed. Try again."
         case "host_offline": "\(Name) is offline, so nothing changed. Start Latch there, then try again."
@@ -50,7 +53,9 @@ nonisolated enum ErrorCopy {
         case "messages_not_installed": "Latch's Messages reader is unavailable. Install Latch again, then try again."
         // Rules.
         case "rules_too_long":
-            "These rules are too long to save. The rules for every agent and any one agent's own rules must fit within 8 KB together. Shorten them, then save again."
+            "Your change wasn't saved because the rules on \(failure.hosts?.first?.name ?? name) would be too long. Shorten this rule or delete another."
+        case "no_such_rule" where failure.removed == true: "This rule was deleted, so your change wasn't saved."
+        case "no_such_rule": "This rule could not be found among the copies checked."
         case "bad_rules": "Latch can't read the rules saved on \(name). Check Details."
         case "not_previewable": "Only exec, file, google, messages and contacts requests can be tried here."
         // Vault.
@@ -90,6 +95,8 @@ nonisolated enum ErrorCopy {
         let which = connector.map { "The \(PluginCopy.title($0)) connector" } ?? "This connector"
         return switch failure.code {
         case "usage", "bad_request": "Latch can't try this request as typed. Details says what to change."
+        case "host_offline": "\(host == thisMac ? "This Mac" : name) is offline. Start Latch there, then try again."
+        case "gatekeeper_unavailable" where failure.reason == "rules_too_long": "The rules on \(name) are too long. Shorten or delete some."
         case "exec_denied": "This agent can't run programs on \(name)."
         case "not_enabled" where host == thisMac: "\(which) is off on this Mac. Turn it on in Host Settings."
         case "not_enabled": "\(which) is off on \(name). Turn it on there."

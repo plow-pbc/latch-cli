@@ -110,22 +110,23 @@ private struct HostSection: View {
 }
 
 /// Whether the host refuses agents exec (`serve --deny-exec`), as its
-/// rules say.
+/// status says.
 private struct ExecSection: View {
     var host: HostEntry
     @Environment(AppModel.self) private var app
 
     var body: some View {
-        if case let .success(rules)? = app.summaries[host.name]?.rules, let deny = rules.denyExec {
+        let status: LocalStatus? = if host.isThisMac { app.status } else if case let .success(status)? = app.summaries[host.name]?.status { status } else { nil }
+        if let deny = status?.thisMachine.hosting.denyExec {
             Section("Running programs") {
                 LabeledContent("Agents may run programs", value: text(deny))
             }
         }
     }
 
-    private func text(_ deny: RulesShow.DenyExec) -> String {
-        if deny.everyAgent == true { return "No" }
-        let uids = deny.agentUids ?? []
+    private func text(_ deny: LocalStatus.DenyExec) -> String {
+        if deny.everyAgent { return "No" }
+        let uids = deny.agentUids
         guard !uids.isEmpty else { return "Yes, judged by your rules" }
         let names = uids.map { uid in app.agents?.first { $0.uid == uid }?.name ?? "Agent \(uid.prefix(8))" }
         return "Yes, except \(names.joined(separator: ", "))"

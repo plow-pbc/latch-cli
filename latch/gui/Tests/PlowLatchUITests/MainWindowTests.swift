@@ -45,11 +45,29 @@ struct MainWindowTests {
         defer { controller.close() }
         let fixed: [NSToolbarItem.Identifier] = [.toggleSidebar, .sidebarTrackingSeparator, .flexibleSpace, .update,
                                                  .inspectorTrackingSeparator, .flexibleSpace, .toggleInspector]
-        for place in [Place.host(.home), .host(.activity), .account(.agents), .host(.vault), .account(.connections), .host(.settings)] {
+        for place in [Place.host(.home), .host(.activity), .account(.agents), .host(.vault), .account(.connections), .host(.settings),
+                      .account(.rules)] {
             app.place = place
             try await Task.sleep(for: .milliseconds(20))
             #expect(controller.window?.toolbar?.items.map(\.itemIdentifier) == fixed, "\(place)")
         }
+    }
+
+    // Rules is the account's: its title, "Your account" under it, and no
+    // host's bar, whichever host was picked.
+    @Test func rulesIsAnAccountPage() async throws {
+        let app = try app(LiveClient())
+        app.showHost("pi-kitchen")
+        let controller = open(app)
+        defer { controller.close() }
+        let window = try #require(controller.window)
+        let split = try #require(window.contentViewController as? NSSplitViewController)
+        let bar = try #require(split.splitViewItems.flatMap(\.topAlignedAccessoryViewControllers).first)
+        await waitUntil { !bar.isHidden }
+        app.place = .account(.rules)
+        await waitUntil { window.title == "Rules" }
+        #expect(window.subtitle == "Your account")
+        #expect(bar.isHidden)
     }
 
     // The update pill shows on every place while a newer build waits, and
@@ -80,8 +98,8 @@ struct MainWindowTests {
         let controller = open(app)
         defer { controller.close() }
         let toolbar = try #require(controller.window?.toolbar)
-        for (place, enabled) in [(Place.host(.activity), true), (.host(.home), false), (.host(.vault), true), (.host(.rules), false),
-                                 (.host(.settings), false), (.account(.agents), false), (.account(.connections), false)] {
+        for (place, enabled) in [(Place.host(.activity), true), (.host(.home), false), (.host(.vault), true), (.host(.settings), false),
+                                 (.account(.agents), false), (.account(.connections), false), (.account(.rules), false)] {
             app.place = place
             try await Task.sleep(for: .milliseconds(20))
             toolbar.validateVisibleItems()
@@ -132,18 +150,17 @@ struct MainWindowTests {
     @Test func aChangeOfPlaceCancelsTheLastPlacesReads() async throws {
         let client = CountingClient()
         let gate = Gate()
-        for command in ["rules show", "vault list", "status --host"] { client.held[command] = gate }
+        for command in ["vault list", "status --host"] { client.held[command] = gate }
         let app = try app(client)
         app.showHost("pi-kitchen")
         let controller = open(app)
         defer { controller.close() }
-        // Home on pi-kitchen reads its rules, vault and status (all held).
-        await waitUntil { ["rules show", "vault list", "status --host"].allSatisfy(client.calls.contains) }
+        // Home on pi-kitchen reads its vault and status (both held).
+        await waitUntil { ["vault list", "status --host"].allSatisfy(client.calls.contains) }
         app.place = .account(.connections)
         await waitUntil { client.calls.contains("devices") }
         gate.open()
         try await Task.sleep(for: .milliseconds(100))
-        #expect(app.summaries["pi-kitchen"]?.rules == nil)
         #expect(app.summaries["pi-kitchen"]?.vault == nil)
         #expect(app.summaries["pi-kitchen"]?.status == nil)
     }
@@ -154,9 +171,9 @@ struct MainWindowTests {
         app.showHost("pi-kitchen")
         let controller = open(app)
         defer { controller.close() }
-        await waitUntil { AppModel.held(app.summaries["pi-kitchen"]?.vault) && AppModel.held(app.summaries["pi-kitchen"]?.rules) }
+        await waitUntil { AppModel.held(app.summaries["pi-kitchen"]?.vault) && AppModel.held(app.summaries["pi-kitchen"]?.status) }
         #expect(AppModel.held(app.summaries["pi-kitchen"]?.vault))
-        #expect(AppModel.held(app.summaries["pi-kitchen"]?.rules))
+        #expect(AppModel.held(app.summaries["pi-kitchen"]?.status))
     }
 
     @Test func theWindowFollowsStatusAndActivityLive() async throws {
@@ -335,7 +352,7 @@ struct MainWindowTests {
 /// responder chain, and are enabled where it can run them.
 extension MainWindowTests {
     private func enabled(_ controller: MainWindowController) -> Set<String> {
-        let actions = [MenuBridge.newItem, MenuBridge.importItems, MenuBridge.save, MenuBridge.find, MenuBridge.toggleInspector]
+        let actions = [MenuBridge.newItem, MenuBridge.importItems, MenuBridge.find, MenuBridge.toggleInspector]
         return Set(actions.filter { MenuBridge.state($0, in: controller.window).enabled }.map(NSStringFromSelector))
     }
 
@@ -347,11 +364,11 @@ extension MainWindowTests {
         let expected: [(Place, Set<String>)] = [
             (.host(.home), []),
             (.host(.activity), ["findInScreen:", "toggleInspector:"]),
-            (.host(.rules), []),
             (.host(.vault), ["newDocument:", "importItems:", "findInScreen:", "toggleInspector:"]),
             (.host(.settings), []),
             (.account(.agents), []),
             (.account(.connections), []),
+            (.account(.rules), ["newDocument:"]),
         ]
         for (place, actions) in expected {
             app.place = place
@@ -400,49 +417,20 @@ extension MainWindowTests {
         app.sheet = nil
     }
 
-    // ⌘S saves the focused editor's draft only, and only while an edited
-    // editor has the focus.
-    @Test func saveIsTheFocusedRulesEditors() async throws {
-        let client = RulesClient()
-        let app = try app(client)
-        app.place = .host(.rules)
+    // ⌘N on Rules opens New Rule for every agent on every host, whatever
+    // the filters show and whatever has the focus.
+    @Test func newItemOnRulesIsNewRule() async throws {
+        let app = try app(LiveClient())
+        app.place = .account(.rules)
+        app.rulesFilter = .init(agent: "ba3c0b3ad1eba7a9a1eb04b67c9db0dd", host: nil)
         let controller = open(app)
         defer { controller.close() }
-        let window = try #require(controller.window)
-        let every = AppModel.RulesKey(host: "studio", agent: nil)
-        let scout = AppModel.RulesKey(host: "studio", agent: "ba3c0b3ad1eba7a9a1eb04b67c9db0dd")
-        await waitUntil { textViews(in: window.contentView!).count >= 2 && app.savedRules(scout) != nil }
-        app.typeRules("Agents may read ~/Projects.", at: every, from: app.savedRules(every))
-        app.typeRules("scout may run make test.", at: scout, from: app.savedRules(scout))
-        #expect(!MenuBridge.state(MenuBridge.save, in: window).enabled)
-        await waitUntil { textViews(in: window.contentView!).contains { $0.string == "scout may run make test." } }
-        let scoutEditor = try #require(textViews(in: window.contentView!).first { $0.string == "scout may run make test." })
-        window.makeFirstResponder(scoutEditor)
-        await waitUntil { MenuBridge.state(MenuBridge.save, in: window).enabled }
-        MenuBridge.send(MenuBridge.save, in: window)
-        await waitUntil { !client.sets.isEmpty }
-        #expect(client.sets.map(\.agent) == [scout.agent])
-        #expect(app.rulesDrafts[every] != nil)
-        // The focus elsewhere: nothing to save.
-        window.makeFirstResponder(nil)
-        await waitUntil { !MenuBridge.state(MenuBridge.save, in: window).enabled }
-    }
-
-    // Agents › Rules lands in that agent's editor, with the keyboard focus.
-    @Test func anAgentsRulesTakeTheFocus() async throws {
-        let app = try app(RulesClient())
-        app.place = .account(.agents)
-        let controller = open(app)
-        defer { controller.close() }
-        let window = try #require(controller.window)
-        let studio = try #require(app.host)
-        await waitUntil { app.agents != nil }
-        let scout = AppModel.RulesKey(host: "studio", agent: "ba3c0b3ad1eba7a9a1eb04b67c9db0dd")
-        app.openRules(studio, agent: try #require(scout.agent))
-        await waitUntil { app.rulesFocus == nil && window.firstResponder is NSTextView }
-        let editor = try #require(window.firstResponder as? NSTextView)
-        let saved = try #require(app.savedRules(scout))
-        #expect(editor.string == saved.text)
+        controller.window?.makeFirstResponder(nil)
+        await waitUntil { MenuBridge.state(MenuBridge.newItem, in: controller.window).enabled }
+        MenuBridge.send(MenuBridge.newItem, in: controller.window)
+        guard case let .rule(editor)? = app.sheet else { Issue.record("no New Rule: \(String(describing: app.sheet))"); return }
+        #expect(editor.isNew && editor.agents == .all && editor.hosts == .all)
+        app.sheet = nil
     }
 
     // Tab from nothing focused goes into the window: to the sidebar or the
@@ -520,7 +508,7 @@ extension MainWindowTests {
         await waitUntil { field.placeholderString == "Search items" }
         #expect(field.stringValue == "")
         type("card")
-        app.place = .host(.rules)
+        app.place = .host(.settings)
         await waitUntil { field.isHidden }
         app.place = .host(.activity)
         await waitUntil { field.placeholderString == "Search requests" }

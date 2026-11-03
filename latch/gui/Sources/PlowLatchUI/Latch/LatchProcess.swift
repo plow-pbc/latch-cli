@@ -51,6 +51,19 @@ nonisolated struct LatchFailure: Decodable, Hashable {
     /// last saw it.
     var existingName: String?
     var lastSeenAt: Date?
+    /// `gatekeeper_unavailable`: why, such as `rules_too_long`.
+    var reason: String?
+    /// `no_such_rule`: the rule was deleted, not only missing from the
+    /// copies checked.
+    var removed: Bool?
+    /// `rules_too_long`: the hosts the change would put over the limit, and
+    /// on each the agent whose rules would be (nil: every agent's).
+    var hosts: [OverLimit]?
+
+    struct OverLimit: Decodable, Hashable {
+        var name: String?
+        var agent: String?
+    }
 }
 
 /// One run of latch: argv only (never a shell), stdout for answers, stderr

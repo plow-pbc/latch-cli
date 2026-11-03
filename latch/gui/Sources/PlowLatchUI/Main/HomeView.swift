@@ -2,7 +2,7 @@ import SwiftUI
 
 /// Home for the selected host: what needs the person (this Mac's own host
 /// only), today's activity and the latest requests, live while on screen,
-/// and the host's rules, vault and connectors.
+/// and the host's vault and connectors.
 struct HomeView: View {
     @Environment(AppModel.self) private var app
 
@@ -263,7 +263,7 @@ private struct GoRow<Label: View>: View {
     }
 }
 
-/// A host's rules, vault and plugins at a glance, each opening its screen,
+/// A host's vault and plugins at a glance, each opening its screen,
 /// and the account's Google accounts when Google is on there; this Mac's
 /// also offers setting up again.
 private struct OnHostSection: View {
@@ -274,7 +274,6 @@ private struct OnHostSection: View {
         let summary = app.summaries[host.name]
         let plugins = app.plugins(of: host)
         Section("On \(host.name)") {
-            SummaryRow(host: host.spoken, title: "Rules", value: summary?.rules?.map(Self.rules), opens: "Rules") { app.place = .host(.rules) }
             SummaryRow(host: host.spoken, title: "Vault", value: summary?.vault?.map(Self.vault), opens: "Vault") { app.place = .host(.vault) }
             SummaryRow(host: host.spoken, title: "Plugins", value: plugins?.map(Self.plugins), opens: "Host Settings") {
                 app.place = .host(.settings)
@@ -287,15 +286,6 @@ private struct OnHostSection: View {
             if host.isThisMac {
                 Button("Set up again…") { app.setUpAgain() }
             }
-        }
-    }
-
-    private static func rules(_ rules: RulesShow) -> String {
-        let every = rules.everyAgent == nil ? "None for every agent" : "Set for every agent"
-        return switch rules.agents?.count ?? 0 {
-        case 0: every
-        case 1: "\(every) · 1 agent with its own rules"
-        case let n: "\(every) · \(n) agents with their own rules"
         }
     }
 

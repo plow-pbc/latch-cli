@@ -28,8 +28,6 @@ final class VaultClient: LatchClient, @unchecked Sendable {
     func login(name: String?, replace: Bool) -> AsyncThrowingStream<LoginEvent, Error> { AsyncThrowingStream { $0.finish() } }
     func setupStatus() async throws -> SetupStatus { try Fixtures.decode(Fixtures.setup(on: [])) }
     func setupStatusCheckingAccess() async throws -> SetupStatus { try await setupStatus() }
-    func rulesShow(host: String?) async throws -> RulesShow { try Fixtures.decode(Fixtures.rulesStudio) }
-    func rulesSet(_ text: String) async throws {}
     func vaultList(host: String?) async throws -> VaultList {
         await listGate?.wait()
         lists += 1

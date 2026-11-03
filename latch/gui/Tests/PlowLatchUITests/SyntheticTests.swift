@@ -57,7 +57,7 @@ struct SyntheticTests {
         #expect(try await client.vaultShow("v998", host: nil).item.title == "Note 998 (synthetic)")
         let agents = try await client.agents(host: "mini").agents
         #expect(agents.count == 5 && agents.allSatisfy { $0.standing != nil })
-        #expect(try await client.rulesShow(host: "mini").agents?.count == 3)
+        #expect(try await client.rulesList().rules.count == 6)
         #expect(app.plugins(of: app.hosts[0])?.map(\.count) == .success(3))
         #expect(try await client.hostStatus("mini").plugins?.count == 3)
     }

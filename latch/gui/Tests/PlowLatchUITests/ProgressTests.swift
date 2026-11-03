@@ -128,7 +128,7 @@ struct DecodingTests {
 struct GatekeeperTests {
     @Test func examplesAreJudgedOnTheDraftAsANewAgent() async {
         let client = ScriptedClient { _ in nil }
-        client.verdict = { draft, request in draft.contains("Never let it share") && request.words?.first == "exec" ? "owner_said_no" : "allow" }
+        client.verdict = { draft, request in draft?.contains("Never let it share") == true && request.words?.first == "exec" ? "owner_said_no" : "allow" }
         let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
         let flow = app.stage(.rules)
         flow.choose(Onboarding.decks[0])
@@ -142,8 +142,9 @@ struct GatekeeperTests {
     }
 
     /// The box on arrival: the first default's on a first run, else the
-    /// saved rules; the deck is the default whose text that is, else the
-    /// last one shown.
+    /// rules for every agent that apply here; the deck is the default whose
+    /// text that is, else the last one shown. Rules that apply are judged
+    /// as saved, not as a draft.
     @Test(arguments: [(nil, 0, 0), (Onboarding.decks[1].rules, 0, 1), ("Allow everything.", 1, 1)] as [(String?, Int, Int)])
     func theBoxArrivesFilled(saved: String?, lastShown: Int, expected: Int) async {
         let client = ScriptedClient { _ in nil }
@@ -157,13 +158,12 @@ struct GatekeeperTests {
         // A first run's box isn't saved yet; saved rules already are.
         #expect(flow.primaryTitle == (saved == nil ? "Save rules" : "Continue"))
         await waitUntil { !flow.reviewing }
-        #expect(client.tries.allSatisfy { $0.draft == saved ?? Onboarding.decks[0].rules })
+        #expect(client.tries.allSatisfy { $0.draft == (saved == nil ? Onboarding.decks[0].rules : nil) })
     }
 
-    /// An emptied box saves nothing and moves on; the saved rules stay.
+    /// With no rules here, an emptied box saves nothing and moves on.
     @Test func anEmptiedBoxSavesNothing() async {
         let client = ScriptedClient { _ in nil }
-        client.savedText = "Allow everything."
         let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
         let flow = app.stage(.rules)
         await flow.loadRules()
@@ -172,34 +172,53 @@ struct GatekeeperTests {
         flow.primary()
         await waitUntil { flow.step != .rules }
         #expect(client.saved.isEmpty)
-        #expect(flow.savedRules == "Allow everything.")
+        #expect(flow.savedRules == "")
     }
 
-    /// Rules already on this Mac stay unless the person changes them: the
-    /// box says they're the current ones; Continue and Skip write nothing;
-    /// a default replaces the text only when clicked, and only Save rules
-    /// then writes it, saying so first.
-    @Test func rulesAlreadyHereAreKeptUnlessChanged() async {
+    /// Rules for every agent already here are shown, to read only, and
+    /// kept: the box says they apply, and Continue and Skip write nothing.
+    @Test func rulesAlreadyHereAreShownAndKept() async {
         let client = ScriptedClient { _ in nil }
         client.savedText = "Agents may read ~/Projects."
         let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
         let flow = app.stage(.rules)
         await flow.loadRules()
         #expect(flow.draftRules == "Agents may read ~/Projects.")
-        #expect(flow.rulesNote == "These are your current rules on this Mac.")
-        flow.skip()
-        #expect(flow.step != .rules)
+        #expect(flow.rulesApply && flow.stepDone)
+        #expect(flow.rulesNote == "These rules already apply to this Mac. Change them later in Rules.")
+        #expect(flow.primaryTitle == "Continue")
+        flow.primary()
+        await waitUntil { flow.step != .rules }
         #expect(client.saved.isEmpty)
 
         let again = app.stage(.rules)
         await again.loadRules()
-        again.choose(Onboarding.decks[0])
-        #expect(again.draftRules == Onboarding.decks[0].rules)
-        #expect(again.rulesNote == "Save rules replaces your current rules on this Mac.")
+        again.skip()
+        #expect(again.step != .rules)
         #expect(client.saved.isEmpty)
-        again.primary()
-        await waitUntil { again.step != .rules }
+    }
+
+    /// Save rules adds the box as one rule only while none applies here:
+    /// one that arrived meanwhile is kept and shown instead, and the screen
+    /// stays for the person to read it.
+    @Test func saveRulesNeverReplacesRulesThatArrived() async {
+        let client = ScriptedClient { _ in nil }
+        client.arrived = "Agents may read ~/Projects."
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
+        let flow = app.stage(.rules)
+        await flow.loadRules()
+        #expect(flow.primaryTitle == "Save rules")
+        await flow.saveRules()
+        #expect(client.saved.isEmpty)
+        #expect(flow.step == .rules)
+        #expect(flow.draftRules == "Agents may read ~/Projects." && flow.rulesApply)
+
+        client.arrived = nil
+        let first = app.stage(.rules)
+        await first.loadRules()
+        await first.saveRules()
         #expect(client.saved == [Onboarding.decks[0].rules])
+        #expect(first.step != .rules)
     }
 
     /// Rules that couldn't be read can't be saved over: a default may be
@@ -235,18 +254,17 @@ struct GatekeeperTests {
         #expect(client.saved.isEmpty)
     }
 
-    @Test func anEmptyBoxPreviewsTheSavedRulesItKeeps() async {
+    @Test func rulesThatApplyArePreviewedAsSaved() async {
         let client = ScriptedClient { _ in nil }
         let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
         let flow = app.stage(.rules)
         flow.reviewDelay = .zero
         flow.savedRules = "Allow everything."
-        flow.draftRules = "  "
+        flow.draftRules = "Allow everything."
         flow.draftChanged()
         await waitUntil { !flow.reviewing && !client.tries.isEmpty }
-        // Continue keeps the saved rules, so they are what the examples show.
         #expect(flow.primaryTitle == "Continue")
-        #expect(!client.tries.isEmpty && client.tries.allSatisfy { $0.draft == "Allow everything." })
+        #expect(!client.tries.isEmpty && client.tries.allSatisfy { $0.draft == nil })
     }
 
     @Test func typingWaitsAPauseAndDropsOlderAnswers() async throws {
@@ -494,29 +512,43 @@ final class ScriptedClient: LatchClient, @unchecked Sendable {
     func setupStatusCheckingAccess() async throws -> SetupStatus {
         try Fixtures.decode(Fixtures.setup(on: connectorsOn, google: google, access: access))
     }
-    /// The shared rules `rules show` gives, if any.
+    /// The rule for every agent `rules list` gives, if any.
     var savedText: String?
-    /// `rules show` fails with this.
+    /// `rules list` fails with this.
     var showFailure: LatchFailure?
-    func rulesShow(host: String?) async throws -> RulesShow {
+    func rulesList() async throws -> RulesList {
         if let showFailure { throw LatchError.failed(showFailure) }
-        let every = try savedText.map { String(decoding: try JSONEncoder().encode(["text": $0, "revision": "r1"]), as: UTF8.self) } ?? "null"
-        return try Fixtures.decode(#"{"agents":[],"every_agent":\#(every)}"#)
+        return try Self.list(savedText)
     }
-    func rulesSet(_ text: String) async throws {
-        saved.append(text)
+    /// What the guarded add finds already there, when it skips.
+    var arrived: String?
+    func rulesAddIfEmpty(_ text: String) async throws -> RulesWrite {
         await held("save")
+        guard arrived == nil else {
+            return try Fixtures.decode(Self.write(arrived, saved: false))
+        }
+        saved.append(text)
+        return try Fixtures.decode(Self.write(text, saved: true))
     }
     private(set) var saved: [String] = []
-    /// What `rules try` answers for a draft and request, and what it was asked.
-    var verdict: @Sendable (String, TryRequest) -> String = { _, _ in "allow" }
+
+    /// `rules list` on studio, with one rule for every agent on every host.
+    private static func list(_ text: String?) throws -> RulesList { try Fixtures.decode(write(text, saved: true)) }
+
+    private static func write(_ text: String?, saved: Bool) -> String {
+        let rule = text.map { #"{"id":"rl_1","text":\#(String(decoding: try! JSONEncoder().encode($0), as: UTF8.self)),"agents":"all","hosts":"all","behind_hosts":[]}"# }
+        return #"{"rules":[\#(rule ?? "")],"hosts":[{"key":"6b55a78f","name":"studio","self":true,"delivery":"current","reason":null}],"#
+            + #""change":{"kind":"add","id":\#(saved ? #""rl_1""# : "null"),"saved":\#(saved),"changed":\#(saved),"reason":\#(saved ? "null" : #""rules_exist""#)}}"#
+    }
+    /// What `rules try` answers for a draft (nil: the saved rules) and
+    /// request, and what it was asked.
+    var verdict: @Sendable (String?, TryRequest) -> String = { _, _ in "allow" }
     /// `rules try` runs several at once.
-    private let asked = Mutex<[(draft: String, request: TryRequest)]>([])
-    var tries: [(draft: String, request: TryRequest)] { asked.withLock { $0 } }
+    private let asked = Mutex<[(draft: String?, request: TryRequest)]>([])
+    var tries: [(draft: String?, request: TryRequest)] { asked.withLock { $0 } }
     func rulesTry(_ request: TryRequest, host: String?, agent: String?, newAgent: Bool, draft: String?) async throws -> RulesTry {
-        let draft = draft ?? ""
         asked.withLock { $0.append((draft, request)) }
-        await held("try \(draft)")
+        await held("try \(draft ?? "")")
         return try Fixtures.decode(#"{"verdict":"\#(verdict(draft, request))","host":"studio","as":"new agent","gate":null}"#)
     }
     /// How a setup step (`serve -d`) fails, if it does.

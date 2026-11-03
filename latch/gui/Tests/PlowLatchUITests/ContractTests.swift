@@ -75,6 +75,28 @@ final class ContractTests {
         }
     }
 
+    /// Every rules command the app runs is one latch takes, as the app
+    /// words it: on a state folder never logged in, each is refused for
+    /// that, not as a command it doesn't know.
+    @Test func theAppsRulesCommandsAreLatchs() async throws {
+        let calls: [(String, () async throws -> Void)] = [
+            ("list", { _ = try await self.client.rulesList() }),
+            ("add", { _ = try await self.client.rulesAdd("Ask me first.", agents: .all, hosts: .only(["k1", "k2"])) }),
+            ("add --if-empty", { _ = try await self.client.rulesAddIfEmpty("Ask me first.") }),
+            ("edit", { _ = try await self.client.rulesEdit("r1", text: "Ask me first.", agents: .only(["u1"]), hosts: .all) }),
+            ("edit scope only", { _ = try await self.client.rulesEdit("r1", text: nil, agents: nil, hosts: .all) }),
+            ("remove", { _ = try await self.client.rulesRemove("r1") }),
+        ]
+        for (name, call) in calls {
+            do {
+                try await call()
+                Issue.record("\(name): latch answered on a state folder never logged in")
+            } catch let failure as LatchError {
+                #expect(failure.code == "not_logged_in", "\(name): \(failure)")
+            }
+        }
+    }
+
     @Test func setupStatusOfAFreshStateFolder() async throws {
         let setup = try await client.setupStatus()
         #expect(setup.step("login")?.state == "needed")

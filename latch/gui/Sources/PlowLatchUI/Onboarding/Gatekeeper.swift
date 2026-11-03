@@ -33,12 +33,12 @@ struct RulesView: View {
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.top, 6)
-                Text("What may your agents do on this Mac?")
+                Text("What may your agents do?")
                     .font(.system(size: 14, weight: .medium))
                     .padding(.top, 24)
                     .padding(.bottom, 10)
                 field
-                    .disabled(flow.rulesUnreadable)
+                    .disabled(flow.rulesUnreadable || flow.rulesApply)
                 HStack(alignment: .firstTextBaseline, spacing: 9) {
                     Text("Start with:").foregroundStyle(Brand.muted)
                     ForEach(Onboarding.decks) { deck in
@@ -50,7 +50,7 @@ struct RulesView: View {
                 }
                 .font(.system(size: 12.5))
                 .padding(.top, 10)
-                .disabled(flow.rulesUnreadable)
+                .disabled(flow.rulesUnreadable || flow.rulesApply)
                 if let note = flow.rulesNote {
                     Text(note).font(.system(size: 12.5)).foregroundStyle(Brand.muted).padding(.top, 6)
                 }
@@ -59,7 +59,7 @@ struct RulesView: View {
                 }
                 if flow.rulesUnreadable {
                     HStack(spacing: 10) {
-                        Text("Your current rules couldn't be read, so none can be saved over them.").foregroundStyle(Brand.muted)
+                        Text("Couldn't read this Mac's rules.").foregroundStyle(Brand.muted)
                         Button("Try Again") { Task { await flow.loadRules() } }
                     }
                     .font(.callout)
@@ -86,7 +86,7 @@ struct RulesView: View {
             .writingToolsBehavior(.disabled)
             .background(Brand.surface, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(Brand.fieldBorder))
-            .accessibilityLabel("Your rules for agents on this Mac")
+            .accessibilityLabel("Rules for your agents")
     }
 }
 

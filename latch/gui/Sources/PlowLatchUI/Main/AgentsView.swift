@@ -1,8 +1,8 @@
 import SwiftUI
 
 /// The account's agents: a list of them, and the one picked in full, with
-/// Message, a row for each host that opens its rules and its requests
-/// there, and Copy and Remove… in its ⋯ menu. New Agent is here too.
+/// Message, a row for each host that opens its requests there, and Copy
+/// and Remove… in its ⋯ menu. New Agent is here too.
 struct AgentsView: View {
     @Environment(AppModel.self) private var app
 
@@ -192,7 +192,7 @@ struct AgentMenuItems: View {
 }
 
 /// An agent on one host: whether the host is up, the agent's standing
-/// there, and its rules and its requests there.
+/// there, and its requests there.
 private struct AgentHostRow: View {
     var agent: AgentsList.Agent
     var host: HostEntry
@@ -202,19 +202,10 @@ private struct AgentHostRow: View {
         let offline = agent.isOffline(host)
         let state = HostState(host, local: app.status)
         LabeledContent {
-            if offline {
-                Button("Activity") { app.openActivity(host, agent: agent.uid) }
-                    .buttonStyle(.borderless)
-                    .help("\(agent.displayName)'s requests to \(host.name) that were read before it went offline")
-            } else {
-                Menu("Rules & Activity") {
-                    Button("Rules on \(host.name)") { app.openRules(host, agent: agent.uid) }
-                    Button("Activity on \(host.name)") { app.openActivity(host, agent: agent.uid) }
-                }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
-                .help("\(agent.displayName)'s rules and requests on \(host.name)")
-            }
+            Button("Activity") { app.openActivity(host, agent: agent.uid) }
+                .buttonStyle(.borderless)
+                .help(offline ? "\(agent.displayName)'s requests to \(host.name) that were read before it went offline"
+                      : "\(agent.displayName)'s requests on \(host.name)")
         } label: {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 StateDot(state: state).accessibilityLabel(state.title)

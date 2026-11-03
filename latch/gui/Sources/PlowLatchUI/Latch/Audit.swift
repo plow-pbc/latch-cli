@@ -149,11 +149,13 @@ nonisolated struct AuditRecord: Decodable, Equatable, Identifiable {
         }
     }
 
-    /// A connection, an owner's read, or any caller's list of plugins that
-    /// was answered (every `latch status` asks each host for it): shown in
-    /// Activity only on request. A refused one stays in view.
+    /// A connection, an owner's read, latch bringing a host's rules up to
+    /// date as it read them (`rules repair`), or any caller's list of
+    /// plugins that was answered (every `latch status` asks each host for
+    /// it): shown in Activity only on request. A refused one stays in view.
     var isBackground: Bool {
         (op == "connect" && decision == "allow") || isOwnerRead
+            || (op == "rules" && agent == nil && args?.command == "repair")
             || (op == "plugins" && args?.command == "list" && outcome == "ok")
     }
 }

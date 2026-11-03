@@ -126,6 +126,8 @@ final class Onboarding {
     /// "Use another name": what the person typed.
     var loginName = ""
     // Set your rules.
+    /// The rules for every agent that already apply on this Mac, as latch
+    /// lists them; empty when none do, nil until read.
     var savedRules: String?
     var draftRules = ""
     var rulesError: LatchError?
@@ -340,7 +342,7 @@ final class Onboarding {
     var stepDone: Bool {
         switch step {
         // Rules that couldn't be read again leave Skip for now the way on.
-        case .rules: !(savedRules ?? "").isEmpty && !rulesChanged && !rulesUnreadable
+        case .rules: rulesApply && !rulesUnreadable
         case .access: accessDone && google == .connected
         default: false
         }
@@ -362,26 +364,21 @@ final class Onboarding {
         [messages, contacts].contains { if case .failed = $0 { true } else { false } }
     }
 
-    /// Whether Continue on the rules screen saves: the box holds rules
-    /// other than the saved ones.
-    /// The rules Continue leaves in place: the box's, or, while it's empty,
-    /// the saved ones it keeps.
-    var previewedRules: String {
-        let draft = draftRules.trimmingCharacters(in: .whitespacesAndNewlines)
-        return draft.isEmpty ? savedRules?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "" : draft
-    }
+    /// Rules for every agent already apply on this Mac: the box shows
+    /// them, to read only, and Continue saves nothing.
+    var rulesApply: Bool { !(savedRules ?? "").isEmpty }
 
-    /// Whose rules the box holds, when this Mac already has some: those, or
-    /// a change Save rules would put in their place.
+    /// The rules the examples are judged on: the box's.
+    var previewedRules: String { draftRules.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    /// The box holds rules already applying here.
     var rulesNote: String? {
-        guard let saved = savedRules?.trimmingCharacters(in: .whitespacesAndNewlines), !saved.isEmpty else { return nil }
-        return rulesChanged ? "Save rules replaces your current rules on this Mac." : "These are your current rules on this Mac."
+        rulesApply ? "These rules already apply to this Mac. Change them later in Rules." : nil
     }
 
-    var rulesChanged: Bool {
-        let draft = draftRules.trimmingCharacters(in: .whitespacesAndNewlines)
-        return !draft.isEmpty && draft != savedRules?.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
+    /// Whether Continue on the rules screen saves: no rules apply here yet,
+    /// and the box holds some.
+    var rulesChanged: Bool { !rulesApply && !previewedRules.isEmpty }
 
     // MARK: Log in to Plow
 
@@ -443,14 +440,15 @@ final class Onboarding {
 
     // MARK: Set your rules
 
-    /// Reads the saved shared rules into the box, or on a first run the
-    /// first default's, so it is never empty on arrival; then reviews the
-    /// examples, the default's whose text the box holds, else the last shown.
+    /// Reads the account's rules (latch asks every host it can reach) and
+    /// puts those for every agent that apply on this Mac into the box, or,
+    /// when none do, the first default's, so it is never empty on arrival;
+    /// then reviews the examples, the default's whose text the box holds,
+    /// else the last shown.
     func loadRules() async {
         do {
-            let saved = try await client.rulesShow().everyAgent?.text
-            savedRules = saved
-            if draftRules.isEmpty { draftRules = (saved ?? "").isEmpty ? Self.decks[0].rules : saved ?? "" }
+            hold(applying: try await client.rulesList())
+            if draftRules.isEmpty { draftRules = Self.decks[0].rules }
             let draft = draftRules.trimmingCharacters(in: .whitespacesAndNewlines)
             if let match = Self.decks.first(where: { $0.rules == draft }) { deck = match }
             rulesError = nil
@@ -486,6 +484,8 @@ final class Onboarding {
     /// A newer review drops older answers.
     private func startReview(after delay: Duration = .zero) {
         let draft = previewedRules
+        // Rules that apply here are judged as saved, not as a draft.
+        let unsaved = rulesApply ? nil : draft
         reviewed = draft
         review += 1
         let current = review
@@ -501,7 +501,7 @@ final class Onboarding {
             await withTaskGroup(of: (String, Preview).self) { group in
                 for example in examples {
                     group.addTask { [client] in
-                        (example.id, await Self.judge(example, draft: draft, client: client, within: deadline))
+                        (example.id, await Self.judge(example, draft: unsaved, client: client, within: deadline))
                     }
                 }
                 for await (id, preview) in group where current == review && !Task.isCancelled {
@@ -524,7 +524,7 @@ final class Onboarding {
     /// One example's verdict, or `.noAnswer` once `deadline` passes first.
     /// The row never waits on a latch past it: that latch is stopped, and
     /// whatever it says after is dropped.
-    private nonisolated static func judge(_ example: Example, draft: String, client: any LatchClient, within deadline: Duration) async -> Preview {
+    private nonisolated static func judge(_ example: Example, draft: String?, client: any LatchClient, within deadline: Duration) async -> Preview {
         let first = FirstAnswer()
         let asking = Task {
             do {
@@ -547,22 +547,32 @@ final class Onboarding {
         return preview
     }
 
-    /// Continue: saves the rules only if the person changed them. An empty
-    /// box never clears rules that are saved.
+    /// Continue: the box's text becomes one rule for every agent on every
+    /// host, only while none for every agent applies on this Mac; latch
+    /// checks that again as it adds. Rules already there are never changed:
+    /// if some arrived meanwhile, the box shows them instead.
     func saveRules() async {
         guard !rulesUnreadable else { return }
         guard rulesChanged else { return next() }
-        let draft = draftRules.trimmingCharacters(in: .whitespacesAndNewlines)
         savingRules = true
         defer { savingRules = false }
         do {
-            try await client.rulesSet(draft)
-            savedRules = draft
+            let written = try await client.rulesAddIfEmpty(previewedRules)
             rulesError = nil
-            next()
+            hold(applying: written.list)
+            if written.change.saved { next() }
         } catch {
             rulesError = .from(error)
         }
+    }
+
+    /// The rules for every agent that apply on this Mac, in the box's text
+    /// when there are some.
+    private func hold(applying list: RulesList) {
+        let here = list.thisMac?.key
+        savedRules = list.rules.filter { rule in rule.agents == .all && (here.map(rule.hosts.contains) ?? (rule.hosts == .all)) }
+            .map(\.text).joined(separator: "\n\n")
+        if rulesApply { draftRules = savedRules ?? "" }
     }
 
     // MARK: Connect Google

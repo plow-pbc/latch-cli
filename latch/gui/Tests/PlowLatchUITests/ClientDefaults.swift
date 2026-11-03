@@ -4,7 +4,14 @@ import Foundation
 /// What a test's latch double doesn't script: never called by its test.
 extension LatchClient {
     func hostStatus(_ host: String) async throws -> LocalStatus { throw LatchError.unreachable("not scripted") }
-    func rulesSet(_ text: String, host: String?, agent: String?, revision: String?) async throws { throw LatchError.unreachable("not scripted") }
+    func rulesAdd(_ text: String, agents: RulesList.Scope, hosts: RulesList.Scope) async throws -> RulesWrite {
+        throw LatchError.unreachable("not scripted")
+    }
+    func rulesAddIfEmpty(_ text: String) async throws -> RulesWrite { throw LatchError.unreachable("not scripted") }
+    func rulesEdit(_ id: String, text: String?, agents: RulesList.Scope?, hosts: RulesList.Scope?) async throws -> RulesWrite {
+        throw LatchError.unreachable("not scripted")
+    }
+    func rulesRemove(_ id: String) async throws -> RulesWrite { throw LatchError.unreachable("not scripted") }
     func agents(host: String?) async throws -> AgentsList { throw LatchError.unreachable("not scripted") }
     func rulesTry(_ request: TryRequest, host: String?, agent: String?, newAgent: Bool, draft: String?) async throws -> RulesTry {
         throw LatchError.unreachable("not scripted")
@@ -39,8 +46,7 @@ extension LatchClient {
     nonisolated func login(name: String?, replace: Bool) -> AsyncThrowingStream<LoginEvent, Error> { AsyncThrowingStream { $0.finish() } }
     func setupStatus() async throws -> SetupStatus { try Fixtures.decode(Fixtures.setup(on: [])) }
     func setupStatusCheckingAccess() async throws -> SetupStatus { try await setupStatus() }
-    func rulesShow(host: String?) async throws -> RulesShow { try Fixtures.decode(#"{"agents":[],"every_agent":null}"#) }
-    func rulesSet(_ text: String) async throws {}
+    func rulesList() async throws -> RulesList { try Fixtures.decode(Fixtures.rulesList(empty: true)) }
     func vaultList(host: String?) async throws -> VaultList { try Fixtures.decode(#"{"items":[]}"#) }
     func enable(_ plugin: String) async throws -> GoogleEnabled? { nil }
     nonisolated func statusFollow() -> AsyncThrowingStream<LocalStatus, Error> { AsyncThrowingStream { _ in } }
