@@ -215,7 +215,7 @@ struct VaultItemInspector: View {
                 ForEach(shownFields, id: \.label) { field in
                     LabeledContent(VaultKind.title(of: field.label)) {
                         if field.hidden {
-                            Text("Saved, never shown").foregroundStyle(.secondary)
+                            Text("Hidden").foregroundStyle(.secondary)
                         } else {
                             Text(value(field.label))
                                 .multilineTextAlignment(.trailing)
@@ -250,7 +250,7 @@ struct VaultItemInspector: View {
                     Button("Edit…", action: edit)
                 }
             } footer: {
-                Text("Kept on \(hostName). Latch never shows its secret values.")
+                Text("Kept on \(hostName).")
                     .foregroundStyle(.secondary)
             }
         }
@@ -515,7 +515,7 @@ struct VaultItemSheet: View {
                     Label { ErrorText(error: error, host: host.spoken) } icon: { Image(systemName: "exclamationmark.triangle") }
                         .font(.callout).foregroundStyle(.red)
                 } else {
-                    Text("Secrets go straight to \(host.name)'s vault and are never shown again.")
+                    Text("Saves to \(host.name)'s vault.")
                         .font(.callout).foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -700,7 +700,7 @@ struct ImportSheet: View {
                         }
                     }
                 } footer: {
-                    Text("Only the rows you pick are saved. Their secrets go straight to \(host.name) and are never shown.")
+                    Text("Only the rows you pick are imported.")
                         .foregroundStyle(.secondary)
                 }
                 if let skipped = preview.skipped, !skipped.isEmpty {
