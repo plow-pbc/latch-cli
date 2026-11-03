@@ -1,0 +1,3 @@
+# Text files are LF in every checkout, Windows' too: latch embeds some
+# (SKILL.md and others, by include_str!) and reads them as written.
+* text=auto eol=lf
