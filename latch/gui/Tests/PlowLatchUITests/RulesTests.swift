@@ -567,6 +567,22 @@ struct RulesTests {
         #expect(ErrorCopy.sentence(error, host: "pi-kitchen", place: .tryRequest()) == "pi-kitchen is offline. Start Latch there, then try again.")
     }
 
+    // A request longer than the field reads from its first word: the
+    // field was as wide as what was left of its label, and kept the end.
+    @Test func aLongRequestShowsWhole() async throws {
+        let app = try await app()
+        app.trial.request = "exec cat ~/Documents/Finance/taxes.csv and then some more words so it runs on"
+        let window = Offscreen(contentRect: CGRect(x: -4000, y: -4000, width: 520, height: 580), styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentViewController = NSHostingController(rootView: TrySheet().environment(app))
+        window.layoutIfNeeded()
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let content = try #require(window.contentView)
+        let field = try #require(textFields(in: content).first { $0.stringValue == app.trial.request })
+        let line = field.attributedStringValue.size()
+        #expect(line.height * (line.width / field.bounds.width).rounded(.up) <= field.bounds.height)
+    }
+
     @Test func requestsSplitAsAShellWould() {
         #expect(ShellWords.split(#"exec --write ~/site -- npm run build"#) == ["exec", "--write", "~/site", "--", "npm", "run", "build"])
         #expect(ShellWords.split(#"exec -- cat "My Notes/a b.txt" 'it''s'"#) == ["exec", "--", "cat", "My Notes/a b.txt", "its"])
@@ -602,4 +618,10 @@ struct RulesTests {
         let refused: RulesTry = try Fixtures.decode(Fixtures.tries["host-refused"]!)
         #expect(refused.refused?.code == "exec_denied")
     }
+}
+
+/// The editable text fields in a window's views, in view order.
+@MainActor
+private func textFields(in view: NSView) -> [NSTextField] {
+    ((view as? NSTextField).flatMap { $0.isEditable ? [$0] : nil } ?? []) + view.subviews.flatMap(textFields)
 }
