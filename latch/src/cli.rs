@@ -362,9 +362,10 @@ pub struct BrowserArgs {
 pub enum BrowserCommand {
     /// Start a new browser session and load URL
     ///
-    /// The session runs in a fresh browser of its own. It lists the elements
-    /// on screen and answers the session's id, which every later command
-    /// needs. Its cookies and logins last until it closes
+    /// The session runs in a browser of its own, on your browser profile on
+    /// the host: the cookies and logins your earlier sessions left are there.
+    /// It lists the elements on screen and answers the session's id, which
+    /// every later command needs. One session at a time; use its tabs
     Open {
         /// The browser engine the session runs on [default: camoufox if the
         /// host has it, else chrome]
@@ -582,7 +583,7 @@ pub enum BrowserCommand {
     },
     /// Your open sessions, without their ids
     Sessions,
-    /// End the session, deleting its cookies and logins
+    /// End the session and close its browser; its cookies and logins stay
     ///
     /// One of the owner's own machines may name any session by the hash the
     /// host's dashboard shows
@@ -818,6 +819,25 @@ pub enum VaultCommand {
         item: String,
         #[arg(long)]
         revision: u64,
+    },
+    /// Whether the owner's host HOST gets this vault
+    ///
+    /// A Mac that keeps its vault key in the Keychain gets it unless turned
+    /// off; any other host only once turned on. --on copies the whole
+    /// vault, secrets included, to HOST, which keeps them; --off stops
+    /// HOST getting changes, and it keeps what it already holds
+    #[command(group(clap::ArgGroup::new("switch").required(true).args(["on", "off"])))]
+    Sync {
+        /// The host, by the name `latch status` shows
+        #[arg(value_name = "HOST")]
+        name: String,
+        #[arg(long)]
+        on: bool,
+        #[arg(long)]
+        off: bool,
+        /// Turn it on without asking (required when no one is at a terminal)
+        #[arg(long, requires = "on")]
+        yes: bool,
     },
     /// Import another password manager's export
     ///

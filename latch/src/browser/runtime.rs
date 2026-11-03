@@ -1,9 +1,9 @@
 //! A session runtime as the host keeps it: the browser worker (`worker.rs`)
-//! one session runs on, started on a profile of its own (`profile.rs`) when
+//! one session runs on, started on its caller's profile (`profile.rs`) when
 //! the session opens, and what the host knows of it: the fill pause. The
-//! profile is removed when the runtime ends.
+//! profile outlives the runtime.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU32};
 use std::time::Duration;
@@ -28,6 +28,9 @@ pub const IDLE: Duration = Duration::from_secs(30 * 60);
 /// How long past its own limit (`Call::limit`) a call's answer may take:
 /// the worker ends its waits by the limit, and answers soon after.
 const ANSWER_GRACE: Duration = Duration::from_secs(30);
+
+/// How long a stopped engine's processes may take to be gone.
+const STOPPING: Duration = Duration::from_secs(10);
 
 /// How long the whole of `call` may take: its limit, and the grace.
 fn within(call: &Value) -> Duration {
@@ -57,9 +60,14 @@ struct Worker {
     /// runtime ends, by its `Drop`.
     #[cfg_attr(not(all(test, target_os = "macos")), allow(dead_code))]
     scratch: TempDir,
-    /// The session's profile, removed after the worker is stopped.
+    /// On macOS, the process groups the engine's processes lead (the
+    /// browser's, and Camoufox's helper's), which a stopped worker leaves
+    /// running. On Linux they are in the worker's bubblewrap, which takes
+    /// them with it.
+    groups: Vec<libc::pid_t>,
+    /// The session's profile folder.
     #[cfg_attr(not(all(test, target_os = "macos")), allow(dead_code))]
-    profile: TempDir,
+    profile: PathBuf,
 }
 
 /// A call's answer: the agent's result, the audit's record of it, and a
@@ -71,13 +79,18 @@ pub struct Reply {
 }
 
 impl Runtime {
-    /// Starts the runtime on `engine` (`cft` or `camoufox`), on a new
-    /// profile, and waits until its browser is up; with `headless`, its
-    /// engine has no window.
-    pub async fn start(state_dir: &Path, engine: &str, headless: bool) -> Result<Self, Failure> {
+    /// Starts the runtime on `engine` (`cft` or `camoufox`), on the
+    /// profile in folder `profile`, and waits until its browser is up; with
+    /// `headless`, its engine has no window.
+    pub async fn start(
+        state_dir: &Path,
+        engine: &str,
+        profile: &Path,
+        headless: bool,
+    ) -> Result<Self, Failure> {
         let latch = std::env::current_exe()
             .map_err(|err| Failure::new(code::engine_failed, err.to_string()))?;
-        Self::start_with(&latch, state_dir, engine, IDLE, headless).await
+        Self::start_with(&latch, state_dir, engine, profile, IDLE, headless).await
     }
 
     /// `start`, with `latch` as the latch binary to run the worker.
@@ -85,6 +98,7 @@ impl Runtime {
         latch: &Path,
         state_dir: &Path,
         engine: &str,
+        profile: &Path,
         idle: Duration,
         headless: bool,
     ) -> Result<Self, Failure> {
@@ -93,7 +107,6 @@ impl Runtime {
             .prefix("latch-browser-")
             .tempdir()
             .map_err(failed)?;
-        let profile = super::profile::make(state_dir).map_err(failed)?;
         let mut command = Command::new(latch);
         command
             .arg("--state-dir")
@@ -102,7 +115,7 @@ impl Runtime {
             .arg("--engine")
             .arg(engine)
             .arg("--profile")
-            .arg(profile.path())
+            .arg(profile)
             .arg("--scratch")
             .arg(scratch.path())
             .arg("--idle-timeout")
@@ -142,9 +155,13 @@ impl Runtime {
             stdin,
             stdout,
             scratch,
-            profile,
+            groups: Vec::new(),
+            profile: profile.to_path_buf(),
         };
         let ready = worker.answer().await?;
+        if cfg!(target_os = "macos") {
+            worker.groups = serde_json::from_value(ready["groups"].clone()).unwrap_or_default();
+        }
         Ok(Runtime {
             worker: Mutex::new(worker),
             ready,
@@ -170,8 +187,7 @@ impl Runtime {
             .try_lock()
             .expect("no call under way")
             .profile
-            .path()
-            .to_path_buf()
+            .clone()
     }
 
     /// Whether the worker is still running: one whose session sat idle has
@@ -218,8 +234,7 @@ impl Runtime {
         match tokio::time::timeout(within, exchange).await {
             Ok(reply) => reply,
             Err(_) => {
-                worker.stop();
-                let _ = worker.child.wait().await;
+                worker.stop_and_wait().await;
                 Err(Failure::new(
                     code::browser_gone,
                     format!(
@@ -237,17 +252,49 @@ impl Runtime {
         worker.send(serde_json::json!({"op": "close"})).await?;
         let closed = worker.answer().await?;
         let _ = worker.child.wait().await;
+        // It waited for every process it started to end.
+        worker.groups.clear();
         Ok(closed["result"].clone())
+    }
+
+    /// Stops the worker and every process of its engine, and waits until
+    /// they are gone: nothing of the browser is left on its profile.
+    pub async fn stop(&self) {
+        self.worker.lock().await.stop_and_wait().await;
     }
 }
 
 impl Worker {
-    fn stop(&mut self) {
-        if let Some(pid) = self.child.id() {
-            // The worker leads its own group; the browser, in a group of its
-            // own, exits when the worker's end of its pipe closes.
+    /// Kills the worker's group and, while the worker still runs, its
+    /// engine's groups (once it has ended, it waited for them, and their
+    /// ids may be another's). Answers the engine's groups it killed.
+    fn stop(&mut self) -> Vec<libc::pid_t> {
+        let groups = std::mem::take(&mut self.groups);
+        if !matches!(self.child.try_wait(), Ok(None)) {
+            return Vec::new();
+        }
+        let pid = self.child.id().expect("running") as libc::pid_t;
+        for group in std::iter::once(pid).chain(groups.iter().copied()) {
             // SAFETY: killpg sends a signal and touches no Rust memory.
-            unsafe { libc::killpg(pid as libc::pid_t, libc::SIGKILL) };
+            unsafe { libc::killpg(group, libc::SIGKILL) };
+        }
+        groups
+    }
+
+    /// `stop`, and waits until the worker and the engine's processes are
+    /// gone.
+    async fn stop_and_wait(&mut self) {
+        let groups = self.stop();
+        let _ = self.child.wait().await;
+        let stopping = std::time::Instant::now();
+        // SAFETY: signal 0 only asks whether the group has a process left.
+        let left = |group: &libc::pid_t| unsafe { libc::killpg(*group, 0) } == 0;
+        while groups.iter().any(left) {
+            if stopping.elapsed() > STOPPING {
+                crate::log::log("browser: an engine process outlived SIGKILL");
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
 
@@ -296,7 +343,7 @@ mod tests {
         let ready = r#"echo '{"ok": {"pid": 1}}'"#;
         std::fs::write(&worker, format!("#!/bin/sh\n{ready}\n{script}\n")).unwrap();
         std::fs::set_permissions(&worker, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let mut runtime = Runtime::start_with(&worker, dir.path(), "cft", IDLE, true)
+        let mut runtime = Runtime::start_with(&worker, dir.path(), "cft", dir.path(), IDLE, true)
             .await
             .unwrap();
         runtime.within = |_| Duration::from_millis(300);

@@ -403,8 +403,8 @@ pub async fn run(
     };
     let result = fill(browsers, &mut session, &item, &plan, args, audit).await;
     // A card or an identity secret whose values went toward the page: the
-    // session's answers and journals show the card's number by its last
-    // four digits from now on, and the secret not at all.
+    // gatekeeper is shown the card's number by its last four digits from
+    // now on, and the secret not at all.
     if audit.get("released") == Some(&json!(true)) {
         let mut filled = Vec::new();
         if meta.kind == "card"

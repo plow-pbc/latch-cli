@@ -679,7 +679,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().canonicalize().unwrap();
         let state = root.join("state");
-        let profile = state.join("browser/profiles/p");
+        let profile = state.join("browser/agents/a/cft");
         let plugin = state.join("plugins/cft/1");
         let scratch = root.join("scratch");
         for folder in [&profile, &plugin, &scratch] {

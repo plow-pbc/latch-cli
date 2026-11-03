@@ -517,7 +517,7 @@ const ENTRIES: &[Entry] = &[
         runs_on: |_| RunsOn::Host,
         output: "The new session's id (shown only now: keep it), its engine, and the elements on screen.",
         effect: Once(
-            "starts a browser session, in a fresh browser of its own, on the host and loads the page",
+            "starts a browser session on the host, in a browser of its own on your profile there, and loads the page",
         ),
         owner_only: false,
         connector: None,
@@ -899,7 +899,9 @@ const ENTRIES: &[Entry] = &[
         id: "browser.close",
         runs_on: |_| RunsOn::Host,
         output: "The session closed.",
-        effect: Repeatable("ends the session and deletes its cookies and logins"),
+        effect: Repeatable(
+            "ends the session and closes its browser; its cookies and logins stay on your profile",
+        ),
         owner_only: false,
         connector: None,
         examples: &[ex(
@@ -1112,6 +1114,24 @@ const ENTRIES: &[Entry] = &[
             "Remove an item",
             &["vault", "--host", "mac", "remove", "v3", "--revision", "1"],
         )],
+    },
+    Entry {
+        id: "vault.sync",
+        runs_on: |_| RunsOn::Either,
+        output: "The `host`, its `key` and the `on` switch it now has.",
+        effect: Repeatable("--on or --off sets whether HOST gets the vault"),
+        owner_only: true,
+        connector: None,
+        examples: &[
+            ex(
+                "Copy the vault, secrets included, to a Pi, and keep it in sync",
+                &["vault", "sync", "pi", "--on"],
+            ),
+            ex(
+                "Stop sending it changes; it keeps what it holds",
+                &["vault", "sync", "pi", "--off"],
+            ),
+        ],
     },
     Entry {
         id: "vault.import",

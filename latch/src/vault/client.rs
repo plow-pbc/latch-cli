@@ -23,6 +23,7 @@ use crate::term;
 use crate::wire::{self, Request};
 
 pub async fn run(state: &StateDir, args: VaultArgs) -> Result<Value, Failure> {
+    let asked = args.host.clone();
     let host = if hosts::local_target(state, args.host.as_deref())? {
         None
     } else {
@@ -192,6 +193,17 @@ pub async fn run(state: &StateDir, args: VaultArgs) -> Result<Value, Failure> {
             }
             Ok(json!({"url": url, "link": opened["link"], "expires_in": opened["expires_in"]}))
         }
+        VaultCommand::Sync { name, on, yes, .. } => {
+            let key = host_key(state, &name).await?;
+            if on && !yes {
+                confirm_on(&name, asked.as_deref())?;
+            }
+            let mut answer = target
+                .call(call(json!({"command": "switch", "key": key, "on": on})))
+                .await?;
+            answer["host"] = json!(name);
+            Ok(answer)
+        }
         VaultCommand::LinkState { link } => {
             let request = call(json!({"command": "link_state", "link": link}));
             target.call(request).await
@@ -236,6 +248,38 @@ pub async fn run(state: &StateDir, args: VaultArgs) -> Result<Value, Failure> {
             result.map_err(dial::naming(host))
         }
     }
+}
+
+/// The peer key of the owner's host `name`, as `latch status` lists it.
+async fn host_key(state: &StateDir, name: &str) -> Result<String, Failure> {
+    let config = state.require_login()?;
+    let peers = crate::plow::Plow::from_state(state)?.list_peers().await?;
+    let hosts = hosts::only_hosts(peers, &config.peer.key);
+    Ok(hosts::pick(Some(name), &hosts)?.key)
+}
+
+/// Turning sync on puts the owner's secrets on that host: a person at a
+/// terminal says yes, and a program passes `--yes`, against the same vault
+/// (`--host`).
+fn confirm_on(name: &str, vault_host: Option<&str>) -> Result<(), Failure> {
+    let warning = format!(
+        "This copies your whole vault, secrets included, to {name}, which keeps them; turning it off later stops changes, and does not remove them."
+    );
+    if !term::interactive() {
+        let mut failure = Failure::new(code::confirmation_required, warning);
+        let host = vault_host.map_or(String::new(), |host| {
+            format!("--host {} ", crate::login::shell_quoted(host))
+        });
+        let name = crate::login::shell_quoted(name);
+        failure.next = Some(format!("latch vault {host}sync {name} --on --yes").into());
+        return Err(failure);
+    }
+    eprintln!("{warning}");
+    if !term::confirm(&format!("Turn on vault sync for {name}?")) {
+        let message = format!("vault sync for {name:?} is unchanged");
+        return Err(Failure::new(code::confirmation_required, message));
+    }
+    Ok(())
 }
 
 /// What `vault list` keeps of the host's list: the items that match every
@@ -718,6 +762,18 @@ pub fn pick(answer: &str, rows: usize) -> Result<Vec<usize>, Failure> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn turning_sync_on_without_a_terminal_suggests_a_retry_against_the_same_vault() {
+        for (vault, retry) in [
+            (Some("mac"), "latch vault --host mac sync pi --on --yes"),
+            (None, "latch vault sync pi --on --yes"),
+        ] {
+            let failure = confirm_on("pi", vault).unwrap_err();
+            assert_eq!(failure.code, code::confirmation_required.name);
+            assert_eq!(failure.next.as_deref(), Some(retry));
+        }
+    }
 
     #[test]
     fn the_picker_takes_numbers_ranges_all_or_nothing() {
