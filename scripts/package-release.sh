@@ -11,6 +11,19 @@ if grep -aqF latch-fake-gog-test-only "$binary"; then
 fi
 cd "$(dirname "$0")/.."
 out="dist/latch-$version-$target"
+case "$target" in
+  # Windows: latch.exe, its installer (install-binary.ps1, which also
+  # serves a first install by hand) and the license files, in a zip.
+  *-pc-windows-msvc)
+    mkdir -p "$out"
+    cp "$binary" "$out/latch.exe"
+    cp latch/install-binary.ps1 "$out/"
+    cp LICENSE latch/NOTICE latch/LICENSE-* "$out/"
+    (cd dist && powershell.exe -NoProfile -NonInteractive -Command \
+      "Compress-Archive -Force -Path 'latch-$version-$target' -DestinationPath 'latch-$version-$target.zip'")
+    exit 0
+    ;;
+esac
 mkdir -p "$out/src/google"
 case "$target" in
   # macOS ships Plow Latch.app, ad-hoc signed until the release signs it;
