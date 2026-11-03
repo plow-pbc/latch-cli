@@ -74,8 +74,8 @@ minisign-verify = "0.3.0"
 # access lists, secrets sealed with DPAPI, the worker sandbox's
 # AppContainer and Job objects (and a window station of a worker's own
 # outside the interactive one, and the browser's Job), the browser's pipe,
-# renaming a put file relative to its open folder, and setup's
-# administrator prompt. The version tokio already builds.
+# keeping the PC awake, renaming a put file relative to its open folder, and
+# setup's administrator prompt. The version tokio already builds.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = [
   "Wdk_Foundation",
@@ -94,6 +94,7 @@ windows-sys = { version = "0.61.2", features = [
   "Win32_System_JobObjects",
   "Win32_System_Memory",
   "Win32_System_Pipes",
+  "Win32_System_Power",
   "Win32_System_StationsAndDesktops",
   "Win32_System_SystemInformation",
   "Win32_System_SystemServices",

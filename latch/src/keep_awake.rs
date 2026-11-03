@@ -7,7 +7,10 @@
 //! charger that flickers does not put a long-idle Mac to sleep at once;
 //! plugging back in holds again at once; power it cannot read never holds.
 //! A refused assertion is a state, not a failure: the host serves on and
-//! the setting stays on. Elsewhere it is `unsupported`.
+//! the setting stays on. On Windows the host's thread requires the system
+//! (`SetThreadExecutionState`) as it would hold the assertion, by the same
+//! rules: the display still sleeps and locks, and on battery it lets go.
+//! Elsewhere it is `unsupported`.
 //!
 //! The host writes what it holds to `keep-awake.json`, under its run, so
 //! `status --local` reads it without asking the host; another run's is
@@ -92,7 +95,7 @@ fn observed(dir: &Path, host: &Host) -> Option<Observed> {
 
 /// Holding and letting go as the setting and the power call for; the OS's
 /// assertion is given to it, so tests give it a fake.
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", windows, test))]
 mod keeper {
     use std::time::{Duration, Instant};
 
@@ -179,129 +182,40 @@ mod keeper {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 const SUPPORTED: bool = true;
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", windows)))]
 const SUPPORTED: bool = false;
 
-#[cfg(target_os = "macos")]
-pub use macos::start;
+#[cfg(any(target_os = "macos", windows))]
+pub use holding::start;
 
 /// Nothing to hold here: `status` says `unsupported`.
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", windows)))]
 pub struct Holding;
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", windows)))]
 pub fn start(_dir: &Path) -> Holding {
     Holding
 }
 
-#[cfg(target_os = "macos")]
-mod macos {
-    use std::ffi::{CStr, c_char, c_int, c_void};
+/// The serving host's hold, alike on macOS and Windows: one thread looks
+/// again each time the folder (its settings) or the power changes, and
+/// never polls. Only how each OS is asked differs (`platform`).
+#[cfg(any(target_os = "macos", windows))]
+mod holding {
     use std::path::{Path, PathBuf};
     use std::sync::mpsc::{self, RecvTimeoutError, Sender};
     use std::thread::JoinHandle;
     use std::time::Instant;
 
-    use core_foundation::base::{CFRelease, CFTypeRef, TCFType};
-    use core_foundation::string::{CFString, CFStringRef};
-
-    use super::keeper::{Assertion, Keeper, Look, Power};
+    use super::keeper::{Assertion, Keeper, Look};
+    use super::platform::{Idle, on_power_change, power};
     use super::{FILE, Observed, Reason};
     use crate::log::log;
     use crate::watch::Watch;
 
-    #[link(name = "IOKit", kind = "framework")]
-    unsafe extern "C" {
-        fn IOPSCopyPowerSourcesInfo() -> CFTypeRef;
-        fn IOPSGetProvidingPowerSourceType(snapshot: CFTypeRef) -> CFStringRef;
-        fn IOPMAssertionCreateWithName(
-            kind: CFStringRef,
-            level: u32,
-            name: CFStringRef,
-            id: *mut u32,
-        ) -> i32;
-        fn IOPMAssertionRelease(id: u32) -> i32;
-    }
-
-    unsafe extern "C" {
-        fn notify_register_file_descriptor(
-            name: *const c_char,
-            fd: *mut c_int,
-            flags: c_int,
-            token: *mut c_int,
-        ) -> u32;
-    }
-
-    /// Posted when what powers the Mac changes (`IOPowerSources.h`).
-    const POWER_CHANGED: &CStr = c"com.apple.system.powersources.source";
-    /// `kIOPMAssertionLevelOn`.
-    const LEVEL_ON: u32 = 255;
-    /// The name `pmset -g assertions` and Activity Monitor show.
-    const NAME: &str = "Plow Latch: keeping this Mac reachable for your agents";
-
-    /// What powers the Mac now. A Mac with no battery says AC.
-    fn power() -> Power {
-        // SAFETY: IOKit has no Rust API. The snapshot is ours (create
-        // rule) and released below; the type string belongs to it (get
-        // rule) and is copied out before then.
-        unsafe {
-            let snapshot = IOPSCopyPowerSourcesInfo();
-            if snapshot.is_null() {
-                return Power::Unknown;
-            }
-            let kind = IOPSGetProvidingPowerSourceType(snapshot);
-            let kind = (!kind.is_null()).then(|| CFString::wrap_under_get_rule(kind).to_string());
-            CFRelease(snapshot);
-            match kind.as_deref() {
-                Some("AC Power") => Power::Ac,
-                Some("Battery Power" | "UPS Power") => Power::Battery,
-                _ => Power::Unknown,
-            }
-        }
-    }
-
-    /// An IOPM assertion; it also ends with this process.
-    #[derive(Default)]
-    struct Idle {
-        id: Option<u32>,
-    }
-
-    impl Assertion for Idle {
-        fn take(&mut self) -> bool {
-            let kind = CFString::from_static_string("PreventUserIdleSystemSleep");
-            let name = CFString::new(NAME);
-            let mut id = 0;
-            // SAFETY: live CFStrings for the type and name; `id` is
-            // written only on success, which is checked.
-            let result = unsafe {
-                IOPMAssertionCreateWithName(
-                    kind.as_concrete_TypeRef(),
-                    LEVEL_ON,
-                    name.as_concrete_TypeRef(),
-                    &mut id,
-                )
-            };
-            if result != 0 {
-                log(&format!(
-                    "keep awake: macOS refused the assertion ({result:#x})"
-                ));
-                return false;
-            }
-            self.id = Some(id);
-            true
-        }
-
-        fn release(&mut self) {
-            if let Some(id) = self.id.take() {
-                // SAFETY: an id this process was given and has not released.
-                unsafe { IOPMAssertionRelease(id) };
-            }
-        }
-    }
-
-    enum Event {
+    pub enum Event {
         Look,
         Stop,
     }
@@ -322,7 +236,9 @@ mod macos {
     }
 
     /// Starts holding for the host serving `dir`, and looks again each time
-    /// the folder (its settings) or the power changes. It never polls.
+    /// the folder (its settings) or the power changes. It never polls. The
+    /// hold is taken and let go on this one thread (Windows' is the
+    /// thread's own).
     pub fn start(dir: &Path) -> Holding {
         let (events, woke) = mpsc::channel();
         let dir = dir.to_path_buf();
@@ -376,8 +292,135 @@ mod macos {
         }
     }
 
+    /// A `Look` each time something in `dir` changes, the settings among it.
+    /// The watch is made on its own thread (Windows' holds a handle that
+    /// stays there).
+    fn on_folder_change(dir: &Path, events: Sender<Event>) {
+        let dir = dir.to_path_buf();
+        std::thread::spawn(move || {
+            let settings: PathBuf = dir.join(crate::settings::FILE);
+            let mut watch = match Watch::new(&dir, &[settings], None) {
+                Ok(watch) => watch,
+                Err(err) => {
+                    log(&format!("keep awake: cannot follow the settings: {err}"));
+                    return;
+                }
+            };
+            loop {
+                if watch.arm().is_err() || events.send(Event::Look).is_err() {
+                    return;
+                }
+                if watch.wait().is_err() {
+                    return;
+                }
+            }
+        });
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod platform {
+    use std::ffi::{CStr, c_char, c_int, c_void};
+    use std::sync::mpsc::Sender;
+
+    use core_foundation::base::{CFRelease, CFTypeRef, TCFType};
+    use core_foundation::string::{CFString, CFStringRef};
+
+    use super::holding::Event;
+    use super::keeper::{Assertion, Power};
+    use crate::log::log;
+
+    #[link(name = "IOKit", kind = "framework")]
+    unsafe extern "C" {
+        fn IOPSCopyPowerSourcesInfo() -> CFTypeRef;
+        fn IOPSGetProvidingPowerSourceType(snapshot: CFTypeRef) -> CFStringRef;
+        fn IOPMAssertionCreateWithName(
+            kind: CFStringRef,
+            level: u32,
+            name: CFStringRef,
+            id: *mut u32,
+        ) -> i32;
+        fn IOPMAssertionRelease(id: u32) -> i32;
+    }
+
+    unsafe extern "C" {
+        fn notify_register_file_descriptor(
+            name: *const c_char,
+            fd: *mut c_int,
+            flags: c_int,
+            token: *mut c_int,
+        ) -> u32;
+    }
+
+    /// Posted when what powers the Mac changes (`IOPowerSources.h`).
+    const POWER_CHANGED: &CStr = c"com.apple.system.powersources.source";
+    /// `kIOPMAssertionLevelOn`.
+    const LEVEL_ON: u32 = 255;
+    /// The name `pmset -g assertions` and Activity Monitor show.
+    const NAME: &str = "Plow Latch: keeping this Mac reachable for your agents";
+
+    /// What powers the Mac now. A Mac with no battery says AC.
+    pub fn power() -> Power {
+        // SAFETY: IOKit has no Rust API. The snapshot is ours (create
+        // rule) and released below; the type string belongs to it (get
+        // rule) and is copied out before then.
+        unsafe {
+            let snapshot = IOPSCopyPowerSourcesInfo();
+            if snapshot.is_null() {
+                return Power::Unknown;
+            }
+            let kind = IOPSGetProvidingPowerSourceType(snapshot);
+            let kind = (!kind.is_null()).then(|| CFString::wrap_under_get_rule(kind).to_string());
+            CFRelease(snapshot);
+            match kind.as_deref() {
+                Some("AC Power") => Power::Ac,
+                Some("Battery Power" | "UPS Power") => Power::Battery,
+                _ => Power::Unknown,
+            }
+        }
+    }
+
+    /// An IOPM assertion; it also ends with this process.
+    #[derive(Default)]
+    pub struct Idle {
+        id: Option<u32>,
+    }
+
+    impl Assertion for Idle {
+        fn take(&mut self) -> bool {
+            let kind = CFString::from_static_string("PreventUserIdleSystemSleep");
+            let name = CFString::new(NAME);
+            let mut id = 0;
+            // SAFETY: live CFStrings for the type and name; `id` is
+            // written only on success, which is checked.
+            let result = unsafe {
+                IOPMAssertionCreateWithName(
+                    kind.as_concrete_TypeRef(),
+                    LEVEL_ON,
+                    name.as_concrete_TypeRef(),
+                    &mut id,
+                )
+            };
+            if result != 0 {
+                log(&format!(
+                    "keep awake: macOS refused the assertion ({result:#x})"
+                ));
+                return false;
+            }
+            self.id = Some(id);
+            true
+        }
+
+        fn release(&mut self) {
+            if let Some(id) = self.id.take() {
+                // SAFETY: an id this process was given and has not released.
+                unsafe { IOPMAssertionRelease(id) };
+            }
+        }
+    }
+
     /// A `Look` each time macOS says the power source changed.
-    fn on_power_change(events: Sender<Event>) {
+    pub fn on_power_change(events: Sender<Event>) {
         let (mut fd, mut token) = (-1, 0);
         // SAFETY: a live NUL-terminated name and two writable ints; the
         // fd is used only when registration succeeded.
@@ -407,27 +450,108 @@ mod macos {
             }
         });
     }
+}
 
-    /// A `Look` each time something in `dir` changes, the settings among it.
-    fn on_folder_change(dir: &Path, events: Sender<Event>) {
-        let settings: PathBuf = dir.join(crate::settings::FILE);
-        let mut watch = match Watch::new(dir, &[settings], None) {
-            Ok(watch) => watch,
-            Err(err) => {
-                log(&format!("keep awake: cannot follow the settings: {err}"));
-                return;
+#[cfg(windows)]
+mod platform {
+    use std::ffi::c_void;
+    use std::sync::mpsc::Sender;
+
+    use windows_sys::Win32::System::Power::{
+        DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS, ES_CONTINUOUS, ES_SYSTEM_REQUIRED,
+        GetSystemPowerStatus, PowerSettingRegisterNotification, SYSTEM_POWER_STATUS,
+        SetThreadExecutionState,
+    };
+    use windows_sys::Win32::System::SystemServices::GUID_ACDC_POWER_SOURCE;
+    use windows_sys::Win32::UI::WindowsAndMessaging::DEVICE_NOTIFY_CALLBACK;
+
+    use super::holding::Event;
+    use super::keeper::{Assertion, Power};
+    use crate::log::log;
+
+    /// `SYSTEM_POWER_STATUS.BatteryFlag`: the PC has no system battery, and
+    /// the flag Windows could not read, which has that bit set too.
+    const NO_BATTERY: u8 = 128;
+    const UNREAD: u8 = 255;
+
+    /// What powers the PC now. A PC with no battery says AC.
+    pub fn power() -> Power {
+        // SAFETY: zeroed is valid for this plain structure to receive into.
+        let mut status: SYSTEM_POWER_STATUS = unsafe { std::mem::zeroed() };
+        // SAFETY: `status` is writable for its size.
+        if unsafe { GetSystemPowerStatus(&mut status) } == 0 {
+            return Power::Unknown;
+        }
+        // Power Windows cannot read never holds, as on macOS.
+        match status.ACLineStatus {
+            1 => Power::Ac,
+            0 => Power::Battery,
+            _ if status.BatteryFlag != UNREAD && status.BatteryFlag & NO_BATTERY != 0 => Power::Ac,
+            _ => Power::Unknown,
+        }
+    }
+
+    /// The hold thread's execution state: Windows does not sleep for idle
+    /// while it requires the system, and lets go when it is cleared or the
+    /// thread ends. The display still sleeps and locks as Windows decides.
+    #[derive(Default)]
+    pub struct Idle {
+        held: bool,
+    }
+
+    impl Assertion for Idle {
+        fn take(&mut self) -> bool {
+            // SAFETY: flags only, for this thread.
+            if unsafe { SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED) } == 0 {
+                log("keep awake: Windows refused to keep the system required");
+                return false;
             }
+            self.held = true;
+            true
+        }
+
+        fn release(&mut self) {
+            if std::mem::take(&mut self.held) {
+                // SAFETY: flags only, on the thread that took it.
+                unsafe { SetThreadExecutionState(ES_CONTINUOUS) };
+            }
+        }
+    }
+
+    /// Called by Windows when what powers the PC changes.
+    unsafe extern "system" fn changed(context: *const c_void, _: u32, _: *const c_void) -> u32 {
+        // SAFETY: the Sender `on_power_change` left for the life of the host.
+        let events = unsafe { &*context.cast::<Sender<Event>>() };
+        let _ = events.send(Event::Look);
+        0
+    }
+
+    /// A `Look` each time Windows says the power source changed. The
+    /// registration, like macOS's, lasts as long as the host.
+    pub fn on_power_change(events: Sender<Event>) {
+        let context = Box::into_raw(Box::new(events));
+        let mut subscribe = DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS {
+            Callback: Some(changed),
+            Context: context.cast(),
         };
-        std::thread::spawn(move || {
-            loop {
-                if watch.arm().is_err() || events.send(Event::Look).is_err() {
-                    return;
-                }
-                if watch.wait().is_err() {
-                    return;
-                }
-            }
-        });
+        let mut registration = std::ptr::null_mut();
+        // SAFETY: a static GUID, our callback and its context (kept), and a
+        // writable handle.
+        let status = unsafe {
+            PowerSettingRegisterNotification(
+                &GUID_ACDC_POWER_SOURCE,
+                DEVICE_NOTIFY_CALLBACK,
+                (&mut subscribe as *mut DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS).cast(),
+                &mut registration,
+            )
+        };
+        if status != 0 {
+            log(&format!(
+                "keep awake: cannot follow power changes (status {status})"
+            ));
+            // SAFETY: never registered, so nothing else holds it.
+            drop(unsafe { Box::from_raw(context) });
+        }
     }
 }
 

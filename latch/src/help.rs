@@ -1311,7 +1311,7 @@ const ENTRIES: &[Entry] = &[
         connector: None,
         examples: &[
             ex(
-                "Keep this Mac awake while plugged in, for its host",
+                "Keep this machine awake while plugged in, for its host",
                 &["settings", "set", "--keep-awake", "on"],
             ),
             ex(
