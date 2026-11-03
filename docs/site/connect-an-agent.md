@@ -82,7 +82,8 @@ For example:
 - “Agents may email the people in my contacts.”
 - “Never buy anything unless I ask in chat.”
 
-Each host keeps its own rules: see
+A rule can cover every agent or only the ones you name, on every host or
+only some: see
 [How Latch works](how-latch-works.md#the-gatekeeper-and-rules).
 
 ## Built for agents

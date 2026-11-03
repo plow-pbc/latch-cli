@@ -40,14 +40,15 @@ and walks you through it.
 2. **Optional: connect Google.**
 3. **Optional, Mac only: turn on Messages and Contacts.** Grant Full Disk
    Access to Plow Latch.
-4. **Pick rules for your agents:** a family assistant's, a work assistant's,
-   or none for now.
+4. **Pick a rule for your agents:** a family assistant's, a work
+   assistant's, or none for now. If rules apply already, setup shows them.
 5. **Start the host.**
 
 Then make the rules your own: what your agents may and may not do.
 
 ```sh host
-latch rules edit
+latch rules list
+latch rules add "Never buy anything unless I ask in chat."
 ```
 
 The Mac app runs on the `latch` command: anything it does, `latch` can do.

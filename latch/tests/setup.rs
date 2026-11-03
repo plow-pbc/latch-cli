@@ -61,7 +61,7 @@ case "$*" in
     else echo "{\"rules\":[{\"id\":\"r\",\"text\":\"Agents may read my mail.\",\"agents\":\"all\",\"hosts\":[{\"key\":\"k\"}],\"behind_hosts\":[]}],\"hosts\":$hosts}"; fi ;;
   "rules add --preset "*" --if-empty")
     if [ -f "$STUB/rules" ] || [ ! -f "$STUB/no-rules" ]; then echo '{"change":{"saved":false,"reason":"rules_exist"}}'; exit 0; fi
-    echo "$4" > "$STUB/rules"; echo '{"change":{"saved":true}}' ;;
+    echo "$4" > "$STUB/rules"; echo '{"change":{"saved":true},"hosts":[{"key":"k","name":"mac","self":true}]}' ;;
   "plugins enable "*)
     name=$3
     answer=$(head -n 1 "$STUB/enable-$name" 2>/dev/null || echo ok)
@@ -522,7 +522,7 @@ fn a_host_with_no_rules_is_offered_the_presets_and_enter_takes_family() {
         "  3. None for now",
         "Rules for your agents? [1/2/3] ",
         "→ Add rule: latch rules add --preset family --if-empty",
-        "✓ Added the Family assistant rule",
+        "✓ Added the Family assistant rule for all agents on all hosts; `latch rules list` shows it.",
     ] {
         assert!(shown.contains(line), "{line}: {shown}");
     }
@@ -570,10 +570,13 @@ fn rules_already_set_skip_the_step() {
     stub.file("peer", "");
     let (code, shown) = stub.setup(&format!("{}n\n", no_to_the_connectors()));
     assert_eq!(code, Some(0), "{shown}");
-    assert!(
-        shown.contains("✓ Rules already apply to this machine"),
-        "{shown}"
-    );
+    // Says which rules, and how to list them here.
+    for line in [
+        "✓ Rules already apply to this machine; `latch rules list --host mac` shows them.",
+        "  Agents may read my mail.",
+    ] {
+        assert!(shown.contains(line), "{line}: {shown}");
+    }
     assert!(!shown.contains("Rules for your agents?"), "{shown}");
     assert!(!stub.read("calls").contains("rules add"));
 }
@@ -754,7 +757,19 @@ fn status_says_rules_are_done_once_a_rule_for_every_agent_applies() {
         fs::create_dir_all(state.join("rules")).unwrap();
         fs::write(state.join("rules").join(file), "Agents may read my mail.").unwrap();
         let steps = status(&state);
-        let expected = if done { "done" } else { "needed" };
-        assert_eq!(steps["rules"]["state"], expected, "{file}");
+        let expected = if done {
+            ("done", "A rule for all agents applies to this machine.")
+        } else {
+            // True even though that agent has a rule of its own.
+            (
+                "needed",
+                "No rule for all agents applies to this machine yet.",
+            )
+        };
+        assert_eq!(
+            (&steps["rules"]["state"], &steps["rules"]["reason"]),
+            (&expected.0.into(), &expected.1.into()),
+            "{file}"
+        );
     }
 }

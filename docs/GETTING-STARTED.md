@@ -112,10 +112,12 @@ each is skipped once done, so you can run setup again at any time:
    has no Google account yet, it shows a link and a QR code to sign in.
 3. **On a Mac, turn on Messages and Contacts.** These need Full Disk Access
    for the Plow Latch app.
-4. **Set rules for your agents**, when there are none yet: a family
-   assistant's, a work assistant's (the same two the Mac app offers), or none
-   for now (`latch rules set --preset family`, or `work`). Enter takes the
-   family assistant's.
+4. **Add a rule for your agents**, when no rule for every agent applies on
+   this machine yet: a family assistant's, a work assistant's (the same two
+   the Mac app offers), or none for now. The rule covers all your agents on
+   all your hosts (`latch rules add --preset family --if-empty`, or `work`).
+   Enter takes the family assistant's. If rules apply already, setup shows
+   them and adds nothing.
 5. **Start the host** (`latch serve -d`), if you say yes.
 
 `latch setup --status` lists the same steps as JSON and changes nothing.
@@ -221,9 +223,9 @@ elements as `e1`, `e2` and so on. See [BROWSER.md](../latch/BROWSER.md).
 `rules` and `vault` work there even when the host is stopped.
 
 **Your own calls are judged too.** The gatekeeper checks `exec`, `file`,
-`google`, `messages`, `contacts` and the browser's risky steps against your
-rules on that host. Your settings commands (`rules`, `vault`) are never
-judged.
+`google`, `messages`, `contacts` and the browser's risky steps against the
+rules that apply on that host. Your settings commands (`rules`, `vault`) are
+never judged.
 
 ## 4. Give an agent its own login
 
@@ -283,19 +285,21 @@ permission, in your rules or in your Plow chat with the agent. These include
 sending, buying, deleting, changing calendars or shared systems, giving a
 program internet access, using secrets, and sending data elsewhere.
 
-**Rules** are plain text in your own words. There is one text for every
-agent, and one for each agent. Only you can read or change them:
+**Rules** are one list for your whole account, kept on every host. Each
+rule is a short text in your own words, with the agents it covers and the
+hosts it applies on: all of them unless you name some. Only you can read or
+change them, from any of your machines:
 
 ```sh
-latch rules edit                     # on the host itself
-latch rules edit --host my-mac       # from another of your machines
-latch rules edit --agent my-agent    # rules for one agent only
-latch rules show
+latch rules list                                         # every rule, and which hosts have them
+latch rules add "Never send email after 9 PM."           # all agents, all hosts
+latch rules add "Only run tests." --agents my-agent --hosts my-mac
+latch rules edit 3f9a… "Never send email after 10 PM."   # the id from rules list
+latch rules remove 3f9a…
 ```
 
-`latch rules set TEXT` sets them without an editor, and
-`latch rules set --preset family` (or `work`) to the rules setup and the Mac
-app offer. Your rules stay in force
+`latch rules add --preset family` (or `work`) adds the rule setup and the
+Mac app offer. Your rules stay in force
 when you ask in chat, and they can restrict everyday work too, for example
 "Do not read or search this Mac's Messages."
 
