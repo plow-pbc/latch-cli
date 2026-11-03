@@ -27,6 +27,25 @@ function Entries($sddl) { @([regex]::Matches($sddl, '\([^)]*\)') | ForEach-Objec
 $before = NulList
 "nul before: $before"
 Check 'nul admits no worker before' ($before -notmatch $capability)
+# A task that can't work: Windows runs another program in PowerShell's place, so
+# the task runs and adds nothing. Setup must say so, keep no such task, and leave
+# nul as it was.
+$instead = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\powershell.exe'
+New-Item $instead -Force | Out-Null
+try {
+  Set-ItemProperty $instead Debugger "$env:SystemRoot\System32\whoami.exe"
+  $ErrorActionPreference = 'Continue'
+  $failing = & $latch grant-listing 2>&1 | Out-String -Width 4096
+  $code = $LASTEXITCODE
+} finally {
+  $ErrorActionPreference = 'Stop'
+  Remove-Item $instead -Recurse -Force
+}
+"a task that cannot work: exit $code, $failing"
+Check 'setup says a task that cannot work failed' ($code -ne 0 -and $failing -match 'its startup task')
+Check 'and keeps no such task' ($null -eq (Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue))
+Check 'and leaves nul as it was' ((NulList) -ceq $before)
+
 & $latch grant-listing | Out-Host
 Check 'grant-listing succeeded' ($LASTEXITCODE -eq 0)
 
