@@ -241,7 +241,11 @@ impl WorkerSetup {
             .arg("--")
             .arg(program)
             .env_clear()
-            .env("GOG_ACCESS_TOKEN", token)
+            .env("GOG_ACCESS_TOKEN", token);
+        // What Windows needs to start the worker and gog (SystemRoot above all).
+        #[cfg(windows)]
+        windows_env(&mut command);
+        command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -449,12 +453,18 @@ impl WorkerSetup {
             .env("HOME", first_area)
             .current_dir(first_area);
         #[cfg(windows)]
-        for name in WINDOWS_ENV {
-            if let Some(value) = std::env::var_os(name) {
-                command.env(name, value);
-            }
-        }
+        windows_env(&mut command);
         Ok(command)
+    }
+}
+
+/// Passes on the host's values of `WINDOWS_ENV`.
+#[cfg(windows)]
+fn windows_env(command: &mut Command) {
+    for name in WINDOWS_ENV {
+        if let Some(value) = std::env::var_os(name) {
+            command.env(name, value);
+        }
     }
 }
 

@@ -8906,8 +8906,12 @@ fn install_fake_gog(host: &Path) {
         .join("plugins/gog")
         .join(pin["version"].as_str().unwrap());
     fs::create_dir_all(&folder).unwrap();
-    fs::copy(env!("CARGO_BIN_EXE_latch"), folder.join("gog")).unwrap();
+    fs::copy(env!("CARGO_BIN_EXE_latch"), folder.join(GOG)).unwrap();
 }
+
+/// gog's file name in its plugin folder (`google::GOG`).
+#[cfg(feature = "fake-gog")]
+const GOG: &str = if cfg!(windows) { "gog.exe" } else { "gog" };
 
 /// In `state`, a folder for each helper version this latch runs and for an
 /// older one beside it, each holding a file. Returns both sets.
@@ -10415,7 +10419,7 @@ mod scenario {
         let pin: Value = serde_json::from_str(include_str!("../src/google/pin.json")).unwrap();
         let gog = plugins.join("gog").join(pin["version"].as_str().unwrap());
         fs::create_dir_all(&gog).unwrap();
-        fs::copy(env!("CARGO_BIN_EXE_latch"), gog.join("gog")).unwrap();
+        fs::copy(env!("CARGO_BIN_EXE_latch"), gog.join(GOG)).unwrap();
         fs::write(
             host.join("plugins.json"),
             r#"{"google": {"state": "enabled"}}"#,
