@@ -1178,12 +1178,24 @@ async fn the_core_reads_frames_and_acts_by_ref_with_trusted_input(engine_name: &
     )
     .await
     .unwrap();
+    // It is the click's answer, at once: nothing waits on a page the dialog
+    // blocks.
+    let clicking = std::time::Instant::now();
     let alerted = call(
         json!({"op": "act", "action": "click", "target": find(&dialogs, "button", "Show alert")}),
     )
     .await
     .unwrap();
-    println!("alert: {}", alerted["events"]);
+    println!("alert: {} in {:?}", alerted["events"], clicking.elapsed());
+    assert!(
+        clicking.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        clicking.elapsed()
+    );
+    assert!(
+        alerted["unchanged"].is_null() && alerted["marks"].is_null(),
+        "{alerted}"
+    );
     assert_eq!(alerted["events"][0]["event"], "dialog");
     assert_eq!(alerted["events"][0]["message"], "Saved for order 1001");
     assert_eq!(alerted["blocked_by_dialog"], true);

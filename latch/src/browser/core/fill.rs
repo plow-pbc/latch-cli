@@ -561,7 +561,8 @@ impl<D: Driver> Core<D> {
     }
 
     /// Filled frames whose document may still be the one filled: in the
-    /// active tab, those whose document is unchanged; in another tab, every
+    /// active tab, those whose document is unchanged or could not be read
+    /// just now (unknown is still held); in another tab, every
     /// one while that tab is open, since only the active tab's frames can
     /// be read.
     fn live_filled(&mut self) -> Result<Filled, Failure> {
@@ -570,9 +571,11 @@ impl<D: Driver> Core<D> {
         let frames = self.driver.frames()?;
         self.fill.filled.retain(|(tab, f)| {
             if *tab == active {
-                frames
-                    .iter()
-                    .any(|now| now.id == f.id && now.document == f.document)
+                // A frame whose document could not be read just now (the
+                // engine lists it as "") may still be the filled one.
+                frames.iter().any(|now| {
+                    now.id == f.id && (now.document == f.document || now.document.is_empty())
+                })
             } else {
                 tabs.iter().any(|open| open.tab == *tab)
             }
@@ -809,6 +812,149 @@ mod tests {
         fn close(&mut self) -> Value {
             unreachable!()
         }
+    }
+
+    /// A browser whose one frame holds a filled value; while `unreadable`,
+    /// reading its document times out, as a busy frame's can.
+    struct Flaky {
+        unreadable: bool,
+        guarded: Vec<String>,
+    }
+
+    impl Driver for Flaky {
+        fn limit(&mut self, _: Option<std::time::Instant>) {}
+        fn front(&mut self) -> Result<(), Failure> {
+            unreachable!()
+        }
+        fn tabs(&mut self) -> Result<Vec<Tab>, Failure> {
+            Broken.tabs()
+        }
+        fn frames(&mut self) -> Result<Vec<Frame>, Failure> {
+            let document = if self.unreadable { "" } else { "d1" };
+            Ok(vec![Frame {
+                id: "f1".into(),
+                parent: None,
+                document: document.into(),
+            }])
+        }
+        fn settle(&mut self) -> Result<Vec<Event>, Failure> {
+            Ok(Vec::new())
+        }
+        fn dialog_open(&self) -> bool {
+            false
+        }
+        fn active_tab(&self) -> String {
+            "t1".into()
+        }
+        fn capabilities(&self) -> Vec<String> {
+            Vec::new()
+        }
+        fn new_tab(&mut self, _: Option<&str>) -> Result<String, Failure> {
+            unreachable!()
+        }
+        fn switch_tab(&mut self, _: &str) -> Result<(), Failure> {
+            unreachable!()
+        }
+        fn close_tab(&mut self, _: &str) -> Result<(), Failure> {
+            unreachable!()
+        }
+        fn navigate(&mut self, _: &str) -> Result<(), Failure> {
+            unreachable!()
+        }
+        fn back(&mut self) -> Result<bool, Failure> {
+            unreachable!()
+        }
+        fn run(&mut self, _: &Frame, expression: &str) -> Result<Value, Failure> {
+            if self.unreadable {
+                return Err(Failure::new(
+                    code::timeout,
+                    "the frame did not answer".into(),
+                ));
+            }
+            assert_eq!(expression, "__latch.holding()");
+            Ok(json!(1))
+        }
+        fn call(&mut self, _: &Frame, _: &str, _: Vec<Value>) -> Result<Value, Failure> {
+            unreachable!()
+        }
+        fn holds_focus(&mut self, _: &Frame) -> Result<bool, Failure> {
+            unreachable!()
+        }
+        fn reaches(&mut self, _: &Frame, _: f64, _: f64) -> Result<bool, Failure> {
+            unreachable!()
+        }
+        fn frame_offset(&mut self, _: &Frame) -> Result<(f64, f64), Failure> {
+            unreachable!()
+        }
+        fn click(&mut self, _: f64, _: f64) -> Result<(), Failure> {
+            unreachable!()
+        }
+        fn type_text(&mut self, _: &str) -> Result<(), Failure> {
+            unreachable!()
+        }
+        fn select_all(&mut self) -> Result<(), Failure> {
+            unreachable!()
+        }
+        fn press(&mut self, _: &str) -> Result<(), Failure> {
+            unreachable!()
+        }
+        fn wheel(&mut self, _: f64, _: f64, _: f64) -> Result<(), Failure> {
+            unreachable!()
+        }
+        fn answer_dialog(&mut self, _: bool, _: Option<&str>) -> Result<(), Failure> {
+            unreachable!()
+        }
+        fn eval(&mut self, _: &str) -> Result<Value, Failure> {
+            unreachable!()
+        }
+        fn set_files(&mut self, _: &Frame, _: &str, _: &[PathBuf]) -> Result<(), Failure> {
+            unreachable!()
+        }
+        fn upload_folder(&self) -> PathBuf {
+            unreachable!()
+        }
+        fn downloads(&mut self) -> Result<Vec<Download>, Failure> {
+            unreachable!()
+        }
+        fn download_file(&mut self, _: &str) -> Result<(Download, PathBuf), Failure> {
+            unreachable!()
+        }
+        fn screenshot(&mut self) -> Result<(Value, Vec<u8>), Failure> {
+            unreachable!()
+        }
+        fn guard(&mut self, values: &[String]) -> Result<(), Failure> {
+            self.guarded = values.to_vec();
+            Ok(())
+        }
+        fn close(&mut self) -> Value {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    fn a_filled_frame_that_cannot_be_read_for_a_moment_is_still_held() {
+        let mut core = Core::new(Flaky {
+            unreadable: false,
+            guarded: vec!["4242424242424242".into()],
+        });
+        let frame = Frame {
+            id: "f1".into(),
+            parent: None,
+            document: "d1".into(),
+        };
+        core.fill.filled.push(("t1".into(), frame));
+        core.fill.guarded = vec!["4242424242424242".into()];
+        // The frame's document can't be read: unknown is still held, and
+        // the GET guard stays.
+        core.driver.unreadable = true;
+        core.lift_guard();
+        assert_eq!(core.fill.filled.len(), 1);
+        assert!(!core.driver.guarded.is_empty());
+        // Readable again, it still holds its value, and is still guarded.
+        core.driver.unreadable = false;
+        core.lift_guard();
+        assert_eq!(core.fill.filled.len(), 1);
+        assert_eq!(core.driver.guarded, ["4242424242424242"]);
     }
 
     #[test]

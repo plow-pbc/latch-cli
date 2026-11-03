@@ -802,6 +802,11 @@ impl<D: Driver> Core<D> {
         result.insert("dispatched".into(), json!(true));
         let events = self.settle()?;
         self.no_secret_sent()?;
+        // A dialog the click opened blocks the page's scripts: it is the
+        // answer, and nothing can be compared or read until it is gone.
+        if self.driver.dialog_open() {
+            clicked = None;
+        }
         if let Some((frame, shown)) = &clicked {
             let page = self.page(&mut Map::new())?;
             let same = ["tab", "url", "title"]
