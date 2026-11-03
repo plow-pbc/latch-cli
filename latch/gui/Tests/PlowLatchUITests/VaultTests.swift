@@ -4,7 +4,7 @@ import Testing
 
 /// A host's vault as a test scripts it: edits may be refused as stale.
 final class VaultClient: LatchClient, @unchecked Sendable {
-    let stateDir = "/s"
+    var stateDir = "/s"
     var staleEdits = false
     private(set) var lists = 0
     /// The host each edit was sent to (nil: this Mac's).
@@ -224,6 +224,26 @@ struct VaultTests {
         let item = try #require(app.inspectedVaultItem(on: studio))
         #expect(client.lists == 2)
         #expect(app.vaultShow(of: item, on: studio) != nil)
+    }
+
+    // A sync, the CLI or another Mac writes this Mac's vault while the app
+    // is in front: the vault already read is read again.
+    @Test func aVaultWrittenWhileTheAppIsInFrontIsReadAgain() async throws {
+        let folder = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let client = VaultClient()
+        client.stateDir = folder.path
+        let (app, studio) = try app(client)
+        #expect(studio.isThisMac)
+        await app.refreshVault(on: studio)
+        let following = Task { await app.followVault() }
+        defer { following.cancel() }
+        // Written as latch writes it, until one lands after the watch starts.
+        await waitUntil {
+            try? Data("{}".utf8).write(to: folder.appending(path: "vault.json"), options: .atomic)
+            return client.lists > 1
+        }
     }
 
     /// The bundle's latch is given every value on stdin, never in argv.

@@ -267,8 +267,9 @@ pub enum Caller<'a> {
 }
 
 impl Caller<'_> {
-    /// Whose rules these are: the agent's uid, or the owner's.
-    fn key(&self) -> &str {
+    /// Whose rules these are, and whose browser profile: the agent's uid,
+    /// or the owner's.
+    pub(crate) fn key(&self) -> &str {
         match self {
             Caller::Owner | Caller::OwnerOnHost => "owner",
             Caller::Agent { uid, .. } | Caller::RulesLayer { agent: Some(uid) } => uid,
