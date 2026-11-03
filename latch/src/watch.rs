@@ -445,8 +445,10 @@ mod windows {
     use std::os::windows::io::{AsRawHandle, BorrowedHandle, FromRawHandle, OwnedHandle};
     use std::ptr::null;
 
+    use std::time::Duration;
+
     use windows_sys::Win32::Foundation::{
-        HANDLE, INVALID_HANDLE_VALUE, WAIT_FAILED, WAIT_OBJECT_0,
+        HANDLE, INVALID_HANDLE_VALUE, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
     };
     use windows_sys::Win32::Storage::FileSystem::{
         FILE_NOTIFY_CHANGE_DIR_NAME, FILE_NOTIFY_CHANGE_FILE_NAME, FILE_NOTIFY_CHANGE_LAST_WRITE,
@@ -543,8 +545,13 @@ mod windows {
         }
 
         pub fn wait(&mut self) -> io::Result<Woke> {
+            Ok(self.wait_for(None)?.expect("waited with no time limit"))
+        }
+
+        /// `wait`, for at most `at_most`: `None` once it has passed.
+        pub fn wait_for(&mut self, at_most: Option<Duration>) -> io::Result<Option<Woke>> {
             if std::mem::take(&mut self.pending) {
-                return Ok(Woke::Changed);
+                return Ok(Some(Woke::Changed));
             }
             let hung_up = self.hung_up.as_ref().map(|event| event.as_raw_handle());
             let process = self.handle.as_ref().map(|handle| handle.as_raw_handle());
@@ -553,16 +560,21 @@ mod windows {
                 .into_iter()
                 .flatten()
                 .collect();
+            let limit = at_most.map_or(INFINITE, |at_most| {
+                at_most.as_millis().min(u128::from(INFINITE - 1)) as u32
+            });
             // SAFETY: `handles` holds at most three live handles of the watch's.
-            let woke = unsafe {
-                WaitForMultipleObjects(handles.len() as u32, handles.as_ptr(), 0, INFINITE)
-            };
+            let woke =
+                unsafe { WaitForMultipleObjects(handles.len() as u32, handles.as_ptr(), 0, limit) };
             if woke == WAIT_FAILED {
                 return Err(io::Error::last_os_error());
             }
+            if woke == WAIT_TIMEOUT {
+                return Ok(None);
+            }
             let which = handles[(woke - WAIT_OBJECT_0) as usize];
             if Some(which) == hung_up {
-                return Ok(Woke::HungUp);
+                return Ok(Some(Woke::HungUp));
             }
             if which == self.change {
                 // SAFETY: `change` is the watch's live notification handle.
@@ -573,7 +585,7 @@ mod windows {
                 // The host exited.
                 self.process(None);
             }
-            Ok(Woke::Changed)
+            Ok(Some(Woke::Changed))
         }
     }
 
