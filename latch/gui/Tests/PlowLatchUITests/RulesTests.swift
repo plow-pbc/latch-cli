@@ -120,7 +120,20 @@ final class RulesClient: LatchClient, @unchecked Sendable {
         return try await tryAnswer(host)
     }
 
-    func agents(host: String?) async throws -> AgentsList { try Fixtures.decode(host == nil ? Fixtures.agents : Fixtures.agentsStudio) }
+    /// What `latch agents` and `latch status` answer: each changes away
+    /// from the app.
+    var agentsAnswer = Fixtures.agents
+    var hostsAnswer = Fixtures.studioHosts
+    /// Holds each `latch status` until opened.
+    var hostsGate: Gate?
+
+    func agents(host: String?) async throws -> AgentsList { try Fixtures.decode(host == nil ? agentsAnswer : Fixtures.agentsStudio) }
+
+    func accountStatus() async throws -> AccountStatus {
+        await hostsGate?.wait()
+        try Task.checkCancellation()
+        return try Fixtures.decode(hostsAnswer)
+    }
 }
 
 @MainActor
@@ -138,7 +151,56 @@ struct RulesTests {
         return app
     }
 
+    // An agent removed and added again has a new uid: coming back to the
+    // page names it, however long the app has held the old list.
+    @Test func comingBackNamesAnAgentAddedMeanwhile() async throws {
+        let client = RulesClient()
+        let app = try await app(client)
+        let added = "e75e031600000000000000000000000a"
+        client.agentsAnswer = Fixtures.agents.replacingOccurrences(of: scout, with: added)
+        #expect(app.ruleAgentName(added) == "Agent e75e0316")
+        await app.enter(app.route)
+        #expect(app.ruleAgentName(added) != "Agent e75e0316")
+    }
+
+    // A host stopped says "Couldn't check" on this page: the sidebar beside
+    // it reads Plow's word in the same visit.
+    @Test func comingBackReadsThatAHostStopped() async throws {
+        let client = RulesClient()
+        let app = try await app(client)
+        client.hostsAnswer = Fixtures.studioHosts.replacingOccurrences(of: #""online":true"#, with: #""online":false"#)
+        await app.enter(app.route)
+        #expect(app.hosts.filter { !$0.isThisMac }.allSatisfy { $0.online == false })
+    }
+
+    // Leaving the page cancels its reads: that isn't Plow failing.
+    @Test func leavingDuringAReadOfTheHostsIsNoFailure() async throws {
+        let client = RulesClient()
+        let app = try await app(client)
+        let gate = Gate()
+        client.hostsGate = gate
+        let visit = Task { await app.enter(app.route) }
+        visit.cancel()
+        gate.open()
+        await visit.value
+        #expect(app.accountError == nil)
+    }
+
     // MARK: What the page shows
+
+    // The defaults read as more rules when they were rows: the list holds
+    // rules alone, and the built-in defaults sit under it.
+    @Test func theListHoldsOnlyRules() async throws {
+        let app = try await app()
+        let window = Offscreen(contentRect: CGRect(x: -4000, y: -4000, width: 900, height: 700), styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentViewController = NSHostingController(rootView: RulesPage().environment(app))
+        window.layoutIfNeeded()
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let content = try #require(window.contentView)
+        let table = try #require(tables(in: content).first)
+        #expect(table.numberOfRows == app.rules?.rules.count)
+    }
 
     // `rules list` in the agreed shape: a scope is "all" or uids or keys;
     // this Mac, each host's delivery and reason, and whether its rules are
@@ -519,6 +581,22 @@ struct RulesTests {
         #expect(ErrorCopy.sentence(error, host: "pi-kitchen", place: .tryRequest()) == "pi-kitchen is offline. Start Latch there, then try again.")
     }
 
+    // A request longer than the field reads from its first word: the
+    // field was as wide as what was left of its label, and kept the end.
+    @Test func aLongRequestShowsWhole() async throws {
+        let app = try await app()
+        app.trial.request = "exec cat ~/Documents/Finance/taxes.csv and then some more words so it runs on"
+        let window = Offscreen(contentRect: CGRect(x: -4000, y: -4000, width: 520, height: 580), styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentViewController = NSHostingController(rootView: TrySheet().environment(app))
+        window.layoutIfNeeded()
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let content = try #require(window.contentView)
+        let field = try #require(textFields(in: content).first { $0.stringValue == app.trial.request })
+        let line = field.attributedStringValue.size()
+        #expect(line.height * (line.width / field.bounds.width).rounded(.up) <= field.bounds.height)
+    }
+
     @Test func requestsSplitAsAShellWould() {
         #expect(ShellWords.split(#"exec --write ~/site -- npm run build"#) == ["exec", "--write", "~/site", "--", "npm", "run", "build"])
         #expect(ShellWords.split(#"exec -- cat "My Notes/a b.txt" 'it''s'"#) == ["exec", "--", "cat", "My Notes/a b.txt", "its"])
@@ -554,4 +632,16 @@ struct RulesTests {
         let refused: RulesTry = try Fixtures.decode(Fixtures.tries["host-refused"]!)
         #expect(refused.refused?.code == "exec_denied")
     }
+}
+
+/// The tables in a window's views: a SwiftUI `List` is one.
+@MainActor
+private func tables(in view: NSView) -> [NSTableView] {
+    (view as? NSTableView).map { [$0] } ?? view.subviews.flatMap(tables)
+}
+
+/// The editable text fields in a window's views, in view order.
+@MainActor
+private func textFields(in view: NSView) -> [NSTextField] {
+    ((view as? NSTextField).flatMap { $0.isEditable ? [$0] : nil } ?? []) + view.subviews.flatMap(textFields)
 }

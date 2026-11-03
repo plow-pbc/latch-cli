@@ -98,12 +98,14 @@ final class AppModel {
     private(set) var accountReadAt: Date?
 
     func refreshAccount() async {
-        do {
-            account = try await client.accountStatus()
+        switch await Self.result({ try await self.client.accountStatus() }) {
+        case nil: break
+        case let .success(status)?:
+            account = status
             accountError = nil
             accountReadAt = .now
-        } catch {
-            accountError = .from(error)
+        case let .failure(error)?:
+            accountError = error
         }
     }
 
@@ -251,7 +253,7 @@ final class AppModel {
     /// What a screen reads when it shows, decided here, not by the screen:
     /// only what it uses, and only what isn't held yet, so coming back to
     /// a screen reads nothing again (`refresh` reads it all again); Rules
-    /// alone reads the account's rules on every visit. Run in
+    /// alone reads again on every visit. Run in
     /// a task that's cancelled when the route changes: a cancelled read
     /// keeps what was held, and the reads after it don't start.
     func enter(_ route: Route, refresh: Bool = false) async {
@@ -268,11 +270,12 @@ final class AppModel {
             await readHostStatus(of: host, refresh: refresh)
         case .account(.rules):
             // Read on every visit: latch brings each host it reaches up to
-            // date as it reads. Its rows name the agents.
-            let names = refresh || agents == nil
+            // date as it reads, and says which it couldn't. The agents its
+            // rows name and the hosts beside it change away from the app.
             async let list: Void = refreshRules()
-            async let agentList = names ? refreshAgentList() : true
-            _ = await (list, agentList)
+            async let names = refreshAgentList()
+            async let hosts: Void = refresh ? () : refreshAccount()
+            _ = await (list, names, hosts)
         case let .host(.vault, host):
             guard let host, host.isThisMac || host.online != false else { return }
             if refresh || !Self.held(summaries[host.name]?.vault) { await refreshVault(on: host) }

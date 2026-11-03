@@ -36,6 +36,10 @@ final class CountingClient: LatchClient, @unchecked Sendable {
         if let listFailure { throw LatchError.failed(listFailure) }
         return try Fixtures.decode(Fixtures.rulesList())
     }
+    func accountStatus() async throws -> AccountStatus {
+        await ran("status")
+        return try Fixtures.decode(Fixtures.studioHosts)
+    }
     func agents(host: String?) async throws -> AgentsList {
         await ran(host == nil ? "agents" : "agents --host", host: host)
         return try Fixtures.decode(Fixtures.agents)
@@ -310,21 +314,23 @@ struct ActivationTests {
         #expect(reachable.allSatisfy { AppModel.held(app.standings[$0.name]) })
     }
 
-    // Rules reads the account's rules on every visit (latch brings each
-    // host up to date as it reads) and on coming to the front; the agents
-    // it names only when they aren't held; never each host's standing.
-    @Test func rulesReadsOnEveryVisitAndTheAgentsOnce() async throws {
+    // Rules reads on every visit and on coming to the front: the account's
+    // rules (latch brings each host up to date as it reads), the agents
+    // they name and the hosts beside them, any of which can change away
+    // from the app; never each host's standing.
+    @Test func rulesReadsTheRulesAgentsAndHostsOnEveryVisit() async throws {
         let client = CountingClient()
         let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
         app.stage(status: try Fixtures.decode(Fixtures.serving))
         app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
         app.place = .account(.rules)
         await app.enter(app.route)
-        #expect(client.calls.sorted() == ["agents", "rules list"])
+        #expect(client.calls.sorted() == ["agents", "rules list", "status"])
         await app.enter(app.route)
-        #expect(client.calls.dropFirst(2) == ["rules list"])
+        #expect(client.calls.dropFirst(3).sorted() == ["agents", "rules list", "status"])
         await app.activated()
-        #expect(client.calls.dropFirst(3).filter { $0.hasPrefix("rules") || $0.hasPrefix("agents") }.sorted() == ["agents", "rules list"])
+        #expect(client.calls.dropFirst(6).filter { $0.hasPrefix("rules") || $0.hasPrefix("agents") || $0 == "status" }.sorted()
+            == ["agents", "rules list", "status"])
         #expect(!client.calls.contains("agents --host"))
     }
 

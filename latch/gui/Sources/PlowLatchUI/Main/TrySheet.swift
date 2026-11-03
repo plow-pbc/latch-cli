@@ -26,22 +26,33 @@ struct TrySheet: View {
                         ForEach(app.agents ?? []) { Text($0.displayName).tag(Caller.agent($0.uid)) }
                         Text("A new agent").tag(Caller.newAgent)
                     }
-                    HStack {
-                        TextField("Request", text: $trial.request, prompt: Text("exec -- ls ~/Projects"))
+                    VStack(alignment: .leading) {
+                        HStack {
+                            Text("Request")
+                            Spacer()
+                            Menu("Examples") {
+                                ForEach(Trial.examples) { example in
+                                    Button {
+                                        trial.use(example)
+                                        editingRequest = true
+                                    } label: {
+                                        Label(example.title, systemImage: example.symbol)
+                                    }
+                                }
+                            }
+                            .fixedSize()
+                        }
+                        // Its own row, the sheet's width and growing: beside
+                        // its label a form's field is short and right-aligned,
+                        // and a long request loses its start.
+                        TextField("Request", text: $trial.request, prompt: Text("exec -- ls ~/Projects"), axis: .vertical)
+                            .labelsHidden()
+                            .textFieldStyle(.roundedBorder)
+                            .multilineTextAlignment(.leading)
+                            .lineLimit(1...4)
                             .font(.body.monospaced())
                             .focused($editingRequest)
                             .onSubmit { Task { await trial.run(app: app) } }
-                        Menu("Examples") {
-                            ForEach(Trial.examples) { example in
-                                Button {
-                                    trial.use(example)
-                                    editingRequest = true
-                                } label: {
-                                    Label(example.title, systemImage: example.symbol)
-                                }
-                            }
-                        }
-                        .fixedSize()
                     }
                     HStack {
                         Text("Judged on the defaults and your rules, without chat. About $0.0001 a try.")
