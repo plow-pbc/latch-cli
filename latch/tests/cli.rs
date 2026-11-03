@@ -13,6 +13,10 @@ use std::thread;
 
 use serde_json::{Value, json};
 
+#[cfg(windows)]
+#[allow(dead_code)]
+#[path = "../src/secrets/dpapi.rs"]
+mod dpapi;
 mod portable;
 #[cfg(any(target_os = "macos", feature = "linux-browser-tests"))]
 #[path = "support/shop_server.rs"]
@@ -3360,7 +3364,7 @@ fn a_host_logs_its_relay_link_taken_over_or_lost_and_back() {
 
     // Another endpoint with the host's key, as a command dialing with it
     // from beside the host would be.
-    let key: iroh::SecretKey = String::from_utf8(portable::secret_file(&host, "key"))
+    let key: iroh::SecretKey = String::from_utf8(secret_file(&host, "key"))
         .unwrap()
         .trim()
         .parse()
@@ -7468,6 +7472,19 @@ fn a_local_socket_call_the_judge_forbids_does_not_run() {
 
 /// The state files a latch keeps its secrets in when it has no Keychain.
 const SECRET_FILES: [&str; 4] = ["key", "plow-token", "vault.key", "audit.keys"];
+
+/// A secret file of the state folder `state`, opened: as it is on disk, or
+/// on Windows sealed for this user and that file (latch's secrets/dpapi.rs).
+fn secret_file(state: &Path, file: &str) -> Vec<u8> {
+    let bytes = fs::read(state.join(file)).unwrap();
+    #[cfg(not(windows))]
+    return bytes;
+    #[cfg(windows)]
+    {
+        let account = format!("{}/{file}", state.canonicalize().unwrap().display());
+        dpapi::open(&bytes, &account).unwrap()
+    }
+}
 
 fn secret_files_in(state: &Path) -> Vec<&'static str> {
     SECRET_FILES

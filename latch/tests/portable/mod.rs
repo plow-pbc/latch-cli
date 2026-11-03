@@ -134,52 +134,6 @@ pub fn lock_holder(state: &Path) -> PathBuf {
     })
 }
 
-/// A secret file of the state folder `state`, opened: as it is on disk, or
-/// on Windows sealed for this user and that file (latch's secrets/dpapi.rs).
-pub fn secret_file(state: &Path, file: &str) -> Vec<u8> {
-    let bytes = std::fs::read(state.join(file)).unwrap();
-    #[cfg(not(windows))]
-    return bytes;
-    #[cfg(windows)]
-    {
-        use std::ptr::{null, null_mut};
-        use windows_sys::Win32::Foundation::LocalFree;
-        use windows_sys::Win32::Security::Cryptography::{
-            CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptUnprotectData,
-        };
-        let sealed = bytes.strip_prefix(b"latch-dpapi-1\n".as_slice()).unwrap();
-        let account = format!("{}/{file}", state.canonicalize().unwrap().display());
-        let blob = |bytes: &[u8]| CRYPT_INTEGER_BLOB {
-            cbData: bytes.len() as u32,
-            pbData: bytes.as_ptr().cast_mut(),
-        };
-        let mut opened = CRYPT_INTEGER_BLOB {
-            cbData: 0,
-            pbData: null_mut(),
-        };
-        // SAFETY: both blobs point at live slices for the call; DPAPI
-        // allocates `opened`, freed below once copied.
-        let ok = unsafe {
-            CryptUnprotectData(
-                &blob(sealed),
-                null_mut(),
-                &blob(account.as_bytes()),
-                null(),
-                null(),
-                CRYPTPROTECT_UI_FORBIDDEN,
-                &mut opened,
-            )
-        };
-        assert_ne!(ok, 0, "{}", std::io::Error::last_os_error());
-        // SAFETY: what DPAPI allocated, read once and freed once.
-        unsafe {
-            let plain = std::slice::from_raw_parts(opened.pbData, opened.cbData as usize).to_vec();
-            LocalFree(opened.pbData.cast());
-            plain
-        }
-    }
-}
-
 /// An argv that runs `script` in the tests' shell.
 pub fn script(script: &str) -> Vec<String> {
     vec![sh().display().to_string(), "-c".into(), script.into()]
