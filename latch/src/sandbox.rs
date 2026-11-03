@@ -863,7 +863,7 @@ mod platform {
     }
 }
 
-#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+#[cfg(test)]
 mod google_tests {
     use super::*;
     use std::{fs, process::Command};
@@ -886,6 +886,8 @@ mod google_tests {
                 program: Some(PathBuf::from(
                     std::env::var_os("LATCH_PRIVATE_PROGRAM").unwrap(),
                 )),
+                #[cfg(windows)]
+                workdir: None,
                 break_for_test: false,
             });
             if inside_state {
@@ -954,7 +956,10 @@ mod google_tests {
         if let Ok(root) = std::env::var("LATCH_PLUGIN_TEST") {
             let root = PathBuf::from(root);
             let mode = std::env::var("LATCH_PLUGIN_MODE").unwrap();
-            let gog = root.join("state/plugins/gog/0.1/gog");
+            let gog = root.join(format!(
+                "state/plugins/gog/0.1/gog{}",
+                std::env::consts::EXE_SUFFIX
+            ));
             confine(&Policy {
                 areas: vec![root.join("private/call")],
                 reads: vec![],
@@ -966,6 +971,8 @@ mod google_tests {
                 tmpdir: (mode == "exec").then(|| root.join("private/call")),
                 kill_after: None,
                 program: (mode == "google").then(|| gog.clone()),
+                #[cfg(windows)]
+                workdir: None,
                 break_for_test: false,
             })
             .unwrap();
@@ -976,11 +983,16 @@ mod google_tests {
             );
             // Only the Google worker may run it: exec and file workers may
             // not even start a program from the state folder.
-            let ran = Command::new(&gog).arg("--list").output();
+            // (A pipe for stdin: `output` opens the null device for it, closed
+            // to a Windows worker until `latch setup` opens it.)
+            let ran = Command::new(&gog)
+                .arg("--list")
+                .stdin(std::process::Stdio::piped())
+                .output();
             assert_eq!(
-                ran.is_ok_and(|out| out.status.success()),
+                ran.as_ref().is_ok_and(|out| out.status.success()),
                 mode == "google",
-                "{mode} running gog"
+                "{mode} running gog: {ran:?}"
             );
             for other in ["state/secret", "state/plugins/other/1/tool"] {
                 assert!(
@@ -1006,7 +1018,10 @@ mod google_tests {
         fs::write(dir.path().join("state/plugins/other/1/tool"), "other").unwrap();
         fs::copy(
             std::env::current_exe().unwrap(),
-            dir.path().join("state/plugins/gog/0.1/gog"),
+            dir.path().join(format!(
+                "state/plugins/gog/0.1/gog{}",
+                std::env::consts::EXE_SUFFIX
+            )),
         )
         .unwrap();
         for mode in ["google", "exec", "file"] {

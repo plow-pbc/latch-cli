@@ -2216,15 +2216,14 @@ mod tests {
         assert!(now.contains(&pid), "{now}");
     }
 
-    #[cfg(unix)]
     #[test]
     fn linked_state_keeps_its_target_hidden_once_the_link_is_gone() {
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path().canonicalize().unwrap();
         std::fs::create_dir_all(home.join("private")).unwrap();
-        std::os::unix::fs::symlink(home.join("private"), home.join(".latch")).unwrap();
+        crate::portable::link_folder(&home.join("private"), &home.join(".latch"));
         let hidden = with_targets(crate::sandbox::never_readable(&home));
-        std::fs::remove_file(home.join(".latch")).unwrap();
+        crate::portable::unlink_folder(&home.join(".latch"));
         assert!(hidden.contains(&home.join(".latch")));
         assert!(hidden.contains(&home.join("private")));
     }

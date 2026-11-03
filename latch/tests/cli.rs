@@ -1318,9 +1318,10 @@ fn a_login_by_text_at_a_terminal_shows_a_clickable_qr_code_and_one_line() {
     );
     // Then what to do, that it is waiting, and one line when it is done:
     // a human login, so no JSON.
+    // (A Windows console may draw a blank row of its own above them.)
     let said: Vec<&str> = rows
         .iter()
-        .filter(|row| !row.contains(link))
+        .filter(|row| !row.contains(link) && (cfg!(unix) || !row.trim().is_empty()))
         .map(|row| row.trim_end())
         .collect();
     assert_eq!(
