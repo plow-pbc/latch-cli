@@ -1,0 +1,7 @@
+# What CodeQL scans. Test code is out: the test sites under latch/tests are
+# pages built to exercise the browser (redirects, frames, injected scripts),
+# and alerts on them describe the fixture, not latch. paths-ignore reaches only
+# the interpreted languages; Rust's test code is left out by the workflow's
+# `-test` cfg override instead, since its tests sit beside the code they test.
+paths-ignore:
+  - latch/tests/**

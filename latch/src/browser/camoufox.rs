@@ -26,8 +26,8 @@ use super::engine::CAMOUFOX;
 use super::profile;
 use crate::failure::{Failure, code};
 
-/// How long the helper has to start the browser (a launch also makes the
-/// session's fingerprint), and to answer one operation: its
+/// How long the helper has to start the browser (a profile's first launch
+/// also makes its fingerprint), and to answer one operation: its
 /// own deadlines are shorter, so this one only catches a helper that hangs.
 const STARTUP: Duration = Duration::from_secs(90);
 const COMMAND: Duration = Duration::from_secs(90);
@@ -156,9 +156,18 @@ impl Camoufox {
         for (name, value) in display.map(Display::env).into_iter().flatten() {
             env[name] = json!(value);
         }
+        // The fingerprint the profile's first launch on this build made.
+        let fingerprint = profile.dir.join("fingerprint.json");
+        let identity = fs::read(&fingerprint)
+            .ok()
+            .and_then(|kept| serde_json::from_slice::<Value>(&kept).ok())
+            .filter(|kept| kept["version"] == json!(CAMOUFOX.version))
+            .map(|kept| kept["identity"].clone());
+        let made = identity.is_none();
         let launched = browser.request::<Value>(
             "launch",
             json!({
+                "identity": identity,
                 "data": profile.data(),
                 "downloads": scratch.join("downloads"),
                 "executable": engine.executable,
@@ -170,6 +179,14 @@ impl Camoufox {
             }),
             STARTUP,
         );
+        let launched = launched.and_then(|answer| {
+            if made {
+                let kept = json!({"version": CAMOUFOX.version, "identity": answer["identity"]});
+                fs::write(&fingerprint, serde_json::to_vec(&kept).expect("JSON"))
+                    .map_err(io_failure)?;
+            }
+            Ok(answer)
+        });
         let found = launched.and_then(|_| {
             child_running(browser.helper.id(), &engine.executable)
                 .ok_or_else(|| Failure::new(code::engine_failed, "Camoufox did not start".into()))
