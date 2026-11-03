@@ -120,7 +120,20 @@ final class RulesClient: LatchClient, @unchecked Sendable {
         return try await tryAnswer(host)
     }
 
-    func agents(host: String?) async throws -> AgentsList { try Fixtures.decode(host == nil ? Fixtures.agents : Fixtures.agentsStudio) }
+    /// What `latch agents` and `latch status` answer: each changes away
+    /// from the app.
+    var agentsAnswer = Fixtures.agents
+    var hostsAnswer = Fixtures.studioHosts
+    /// Holds each `latch status` until opened.
+    var hostsGate: Gate?
+
+    func agents(host: String?) async throws -> AgentsList { try Fixtures.decode(host == nil ? agentsAnswer : Fixtures.agentsStudio) }
+
+    func accountStatus() async throws -> AccountStatus {
+        await hostsGate?.wait()
+        try Task.checkCancellation()
+        return try Fixtures.decode(hostsAnswer)
+    }
 }
 
 @MainActor
@@ -136,6 +149,41 @@ struct RulesTests {
         app.place = .account(.rules)
         await app.enter(app.route)
         return app
+    }
+
+    // An agent removed and added again has a new uid: coming back to the
+    // page names it, however long the app has held the old list.
+    @Test func comingBackNamesAnAgentAddedMeanwhile() async throws {
+        let client = RulesClient()
+        let app = try await app(client)
+        let added = "e75e031600000000000000000000000a"
+        client.agentsAnswer = Fixtures.agents.replacingOccurrences(of: scout, with: added)
+        #expect(app.ruleAgentName(added) == "Agent e75e0316")
+        await app.enter(app.route)
+        #expect(app.ruleAgentName(added) != "Agent e75e0316")
+    }
+
+    // A host stopped says "Couldn't check" on this page: the sidebar beside
+    // it reads Plow's word in the same visit.
+    @Test func comingBackReadsThatAHostStopped() async throws {
+        let client = RulesClient()
+        let app = try await app(client)
+        client.hostsAnswer = Fixtures.studioHosts.replacingOccurrences(of: #""online":true"#, with: #""online":false"#)
+        await app.enter(app.route)
+        #expect(app.hosts.filter { !$0.isThisMac }.allSatisfy { $0.online == false })
+    }
+
+    // Leaving the page cancels its reads: that isn't Plow failing.
+    @Test func leavingDuringAReadOfTheHostsIsNoFailure() async throws {
+        let client = RulesClient()
+        let app = try await app(client)
+        let gate = Gate()
+        client.hostsGate = gate
+        let visit = Task { await app.enter(app.route) }
+        visit.cancel()
+        gate.open()
+        await visit.value
+        #expect(app.accountError == nil)
     }
 
     // MARK: What the page shows
