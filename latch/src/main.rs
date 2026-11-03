@@ -363,14 +363,6 @@ async fn run(
         Command::Google(args) => json(pretty, google::client::run(&state, args).await?),
         Command::Browser(args) => json(pretty, browser::client::run(&state, args).await?),
         Command::Vault(args) => json(pretty, vault::client::run(&state, args).await?),
-        // A person edited the rules in their editor: a line says it is saved.
-        Command::Rules(args) if matches!(args.command, cli::RulesCommand::Edit { .. }) => {
-            let saved = gate::client::run(&state, args).await?;
-            let whose = saved["agent_name"].as_str().unwrap_or("every agent");
-            let host = saved["host"].as_str().unwrap_or("this host");
-            eprintln!("Saved the rules for {whose} on {host}.");
-            Ok(Printed(String::new()))
-        }
         Command::Rules(args) => json(pretty, gate::client::run(&state, args).await?),
         Command::Plugins(args)
             if matches!(

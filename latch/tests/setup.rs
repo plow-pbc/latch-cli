@@ -17,8 +17,9 @@ use std::thread;
 /// `fail`, the last one repeating. With `taken`, login finds this machine's
 /// name taken and asks, as the real one does, whether to replace it and
 /// else for a new name; it keeps the answers in `login-answers`. With
-/// `agent`, the login is an agent's. Rules are set unless `no-rules`; a
-/// `rules set --preset NAME` keeps NAME in `rules`.
+/// `agent`, the login is an agent's. A rule for every agent applies here
+/// unless `no-rules`; a `rules add --preset NAME --if-empty` keeps NAME in
+/// `rules`.
 const STUB: &str = r#"#!/bin/sh
 [ "$1" = --state-dir ] && shift 2
 echo "${LATCH_HOST:+LATCH_HOST=$LATCH_HOST }$*" >> "$STUB/calls"
@@ -54,12 +55,13 @@ case "$*" in
     else echo "Logged in as mac." >&2; fi
     touch "$STUB/peer" ;;
   "serve -d"|"serve -d --again") touch "$STUB/ready"; echo '{"pid":4242}' ;;
-  "rules show")
-    if [ -f "$STUB/no-rules" ] && [ ! -f "$STUB/rules" ]; then echo '{"every_agent":null,"agents":[]}'
-    else echo '{"every_agent":{"text":"Agents may read my mail.","revision":"r"},"agents":[]}'; fi ;;
-  "rules set --preset "*" --revision none")
-    if [ -f "$STUB/rules" ] || [ ! -f "$STUB/no-rules" ]; then echo '{"error":{"code":"stale_revision","message":"the rules changed"}}' >&2; exit 1; fi
-    echo "$4" > "$STUB/rules"; echo '{"saved":true}' ;;
+  "rules list")
+    hosts='[{"key":"k","name":"mac","self":true}]'
+    if [ -f "$STUB/no-rules" ] && [ ! -f "$STUB/rules" ]; then echo "{\"rules\":[],\"hosts\":$hosts}"
+    else echo "{\"rules\":[{\"id\":\"r\",\"text\":\"Agents may read my mail.\",\"agents\":\"all\",\"hosts\":[{\"key\":\"k\"}],\"behind_hosts\":[]}],\"hosts\":$hosts}"; fi ;;
+  "rules add --preset "*" --if-empty")
+    if [ -f "$STUB/rules" ] || [ ! -f "$STUB/no-rules" ]; then echo '{"change":{"saved":false,"reason":"rules_exist"}}'; exit 0; fi
+    echo "$4" > "$STUB/rules"; echo '{"change":{"saved":true}}' ;;
   "plugins enable "*)
     name=$3
     answer=$(head -n 1 "$STUB/enable-$name" 2>/dev/null || echo ok)
@@ -505,7 +507,7 @@ fn no_to_the_connectors() -> &'static str {
 }
 
 /// With no rules yet, setup shows the two presets and Enter takes the
-/// first, saved by `rules set` only while there are still none.
+/// first, added only while there are still none.
 #[test]
 fn a_host_with_no_rules_is_offered_the_presets_and_enter_takes_family() {
     let stub = Stub::new();
@@ -519,8 +521,8 @@ fn a_host_with_no_rules_is_offered_the_presets_and_enter_takes_family() {
         "  2. Work assistant: Allow my work assistant to read and send my email",
         "  3. None for now",
         "Rules for your agents? [1/2/3] ",
-        "→ Set rules: latch rules set --preset family --revision none",
-        "✓ Your agents have the Family assistant rules",
+        "→ Add rule: latch rules add --preset family --if-empty",
+        "✓ Added the Family assistant rule",
     ] {
         assert!(shown.contains(line), "{line}: {shown}");
     }
@@ -528,7 +530,7 @@ fn a_host_with_no_rules_is_offered_the_presets_and_enter_takes_family() {
     // Before the host starts, so it starts with them.
     let calls = stub.read("calls");
     assert!(
-        calls.find("rules set").unwrap() < calls.find("serve").unwrap(),
+        calls.find("rules add").unwrap() < calls.find("serve").unwrap(),
         "{calls}"
     );
 }
@@ -549,9 +551,11 @@ fn work_or_none_is_saved_as_chosen() {
         match saved {
             Some(saved) => assert_eq!(stub.read("rules"), saved, "{typed}: {shown}"),
             None => {
-                assert!(!stub.read("calls").contains("rules set"), "{typed}");
+                assert!(!stub.read("calls").contains("rules add"), "{typed}");
                 assert!(
-                    shown.contains("No rules; later: `latch rules set --preset family` (or work)"),
+                    shown.contains(
+                        "Skipped; finish later with `latch rules add --preset family --if-empty` (or work)."
+                    ),
                     "{typed}: {shown}"
                 );
             }
@@ -566,9 +570,12 @@ fn rules_already_set_skip_the_step() {
     stub.file("peer", "");
     let (code, shown) = stub.setup(&format!("{}n\n", no_to_the_connectors()));
     assert_eq!(code, Some(0), "{shown}");
-    assert!(shown.contains("✓ Your agents have rules"), "{shown}");
+    assert!(
+        shown.contains("✓ Rules already apply to this machine"),
+        "{shown}"
+    );
     assert!(!shown.contains("Rules for your agents?"), "{shown}");
-    assert!(!stub.read("calls").contains("rules set"));
+    assert!(!stub.read("calls").contains("rules add"));
 }
 
 /// Rules are the owner's: an agent's login is not asked for them.
@@ -699,7 +706,7 @@ fn status_reads_the_saved_connectors_and_serve_flags_and_changes_nothing() {
     assert_eq!(steps["rules"]["state"], "needed");
     assert_eq!(
         steps["rules"]["args"],
-        serde_json::json!(["rules", "set", "--preset", "family", "--revision", "none"])
+        serde_json::json!(["rules", "add", "--preset", "family", "--if-empty"])
     );
     if cfg!(target_os = "macos") {
         let messages = &steps["messages"];
@@ -734,15 +741,20 @@ fn status_on_an_agent_login_leaves_the_connectors_to_the_owner() {
     assert_eq!(steps["host"]["args"], serde_json::json!(["serve", "-d"]));
 }
 
+/// Done once a rule for every agent applies here: one an older latch kept
+/// for every agent counts; one agent's own does not.
 #[test]
-fn status_says_rules_are_done_once_any_are_set() {
-    for file in ["host.txt", "0123456789abcdef0123456789abcdef.txt"] {
+fn status_says_rules_are_done_once_a_rule_for_every_agent_applies() {
+    for (file, done) in [
+        ("host.txt", true),
+        ("0123456789abcdef0123456789abcdef.txt", false),
+    ] {
         let stub = Stub::new();
         let state = logged_in(&stub, "device", &[]);
         fs::create_dir_all(state.join("rules")).unwrap();
         fs::write(state.join("rules").join(file), "Agents may read my mail.").unwrap();
         let steps = status(&state);
-        assert_eq!(steps["rules"]["state"], "done", "{file}");
-        assert_eq!(steps["rules"]["args"], serde_json::Value::Null, "{file}");
+        let expected = if done { "done" } else { "needed" };
+        assert_eq!(steps["rules"]["state"], expected, "{file}");
     }
 }

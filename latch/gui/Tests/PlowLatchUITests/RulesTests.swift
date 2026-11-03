@@ -69,7 +69,7 @@ struct RulesTests {
         #expect(!studio.execBlocked(helper.uid))
     }
 
-    @Test func standingsMarkOwnRulesAndExecRefusedPerHost() async throws {
+    @Test func standingsMarkExecRefusedPerHost() async throws {
         let (app, _) = try app(RulesClient())
         app.stage(agents: try Fixtures.decode(Fixtures.agents), standings: [
             "studio": .success(try Fixtures.decode(Fixtures.agentsStudio)),
@@ -81,9 +81,9 @@ struct RulesTests {
         guard case let .success(studio)? = app.standings["studio"], case let .success(kitchen)? = app.standings["pi-kitchen"] else {
             Issue.record("standings missing"); return
         }
-        #expect(studio[scout.uid]?.ownRules == true)
+        #expect(studio[scout.uid]?.execBlocked == false)
         #expect(kitchen[helper.uid]?.execBlocked == true)
-        #expect(kitchen[scout.uid]?.ownRules == false)
+        #expect(kitchen[scout.uid]?.execBlocked == false)
     }
 
     @Test func savingAnAgentsRulesLeavesEveryAgentsAlone() async throws {

@@ -1,30 +1,24 @@
-//! `latch rules …`: the owner's commands on a host's rules for agents.
-//! With another `--host` they go over latch's connection, as the
-//! `rules` operation; a failed call never falls back to a local file.
-//! Without it, or naming this peer, they act locally, audited in its
-//! log as the host would.
+//! `latch rules …`: the owner's commands on the account's rules
+//! (`account.rs`), and `rules try`, a preview of one host's judgment.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use clap::parser::ValueSource;
 use clap::{CommandFactory, FromArgMatches};
 use serde_json::{Value, json};
 
-use super::owner;
-use crate::audit::{self, AuditLog};
+use super::account;
 use crate::cli::{Cli, Command as Latch, FileCommand, HostArg, RulesArgs, RulesCommand};
 use crate::dial::{self, ANSWER_WITHIN};
 use crate::failure::{Failure, code};
 use crate::hosts;
-use crate::plow::Plow;
 use crate::state::StateDir;
 use crate::wire::Request;
 use crate::{google, transfer};
 
 pub async fn run(state: &StateDir, args: RulesArgs) -> Result<Value, Failure> {
-    let scope = match args.command {
+    match args.command {
         RulesCommand::Try {
             host,
             agent,
@@ -46,28 +40,15 @@ pub async fn run(state: &StateDir, args: RulesArgs) -> Result<Value, Failure> {
                 args["draft"] = json!(draft.map(|file| read_file(&file)).transpose()?);
                 return previewed(state, host, args).await;
             }
-            return preview(state, host, args, draft, request).await;
+            preview(state, host, args, draft, request).await
         }
-        RulesCommand::Set { ref scope, .. }
-        | RulesCommand::Edit { ref scope }
-        | RulesCommand::Clear { ref scope, .. }
-        | RulesCommand::Show { ref scope } => scope,
-    };
-    // `--host default` read once: an edit's save goes where its show went.
-    let target = Target {
-        state,
-        host: hosts::pinned(state, scope.host.clone())?,
-    };
-    // The operation still calls the agent `from`, as hosts of every
-    // version read it.
-    let from = scope.agent.clone();
-    match args.command {
-        RulesCommand::Set {
+        RulesCommand::List { agent, host } => account::list(state, agent, host).await,
+        RulesCommand::Add {
             text,
             file,
             preset,
-            revision,
-            ..
+            covers,
+            if_empty,
         } => {
             let text = match (text, file, preset) {
                 (Some(text), None, None) => text,
@@ -75,59 +56,26 @@ pub async fn run(state: &StateDir, args: RulesArgs) -> Result<Value, Failure> {
                 (None, None, Some(preset)) => preset.text().to_string(),
                 _ => {
                     let message =
-                        "give the rules as TEXT, --file F (- reads stdin) or --preset NAME";
+                        "give the rule as TEXT, --file F (- reads stdin) or --preset NAME";
                     return Err(Failure::new(code::bad_arguments, message.into()));
                 }
             };
-            // A save at a revision is the edit hosts of every version
-            // check.
-            let args = match revision {
-                None => json!({"command": "set", "from": from, "text": text}),
-                Some(revision) => json!({"command": "edit", "from": from, "text": text,
-                                         "revision": expected(&revision)}),
-            };
-            target.call(args).await
+            account::add(state, text, covers.agents, covers.hosts, if_empty).await
         }
-        RulesCommand::Edit { .. } => {
-            // It opens the person's editor: a program sets the rules instead.
-            if !crate::term::interactive() {
-                let message = "`latch rules edit` opens your editor, so it needs a terminal";
-                let mut failure = Failure::new(code::no_terminal, message.into());
-                failure.next = Some("latch rules set TEXT".into());
-                return Err(failure);
-            }
-            let shown = target
-                .call(json!({"command": "show", "from": from}))
-                .await?;
-            // The text being edited, and who it is for, as the host resolved it.
-            let (current, from) = match from {
-                None => (&shown["every_agent"], None),
-                Some(_) => (
-                    &shown["agents"][0],
-                    shown["agents"][0]["agent_uid"].as_str(),
-                ),
+        RulesCommand::Edit {
+            id,
+            text,
+            file,
+            covers,
+        } => {
+            let text = match (text, file) {
+                (Some(text), _) => Some(text),
+                (None, Some(file)) => Some(read_file(&file)?),
+                (None, None) => None,
             };
-            // From the editor on, what goes wrong is the person's to read.
-            let text =
-                edited(current["text"].as_str().unwrap_or_default()).map_err(Failure::told)?;
-            target
-                .call(json!({"command": "edit", "from": from, "text": text,
-                             "revision": current["revision"]}))
-                .await
-                .map_err(Failure::told)
+            account::edit(state, id, text, covers.agents, covers.hosts).await
         }
-        RulesCommand::Clear { revision, .. } => {
-            // A host older than the revision check refuses the command it
-            // does not know, rather than clearing.
-            let args = match revision {
-                None => json!({"command": "clear", "from": from}),
-                Some(revision) => json!({"command": "clear_at_revision", "from": from,
-                                         "revision": expected(&revision)}),
-            };
-            target.call(args).await
-        }
-        RulesCommand::Show { .. } => target.call(json!({"command": "show", "from": from})).await,
-        RulesCommand::Try { .. } => unreachable!("previewed above"),
+        RulesCommand::Remove { id } => account::remove(state, id).await,
     }
 }
 
@@ -231,54 +179,6 @@ async fn previewed(state: &StateDir, host: Option<String>, args: Value) -> Resul
     dial::call(state, &peer, &request, ANSWER_WITHIN).await
 }
 
-/// Where the commands go: the host named by `--host`, or this machine's
-/// own host state.
-struct Target<'a> {
-    state: &'a StateDir,
-    host: Option<String>,
-}
-
-impl Target<'_> {
-    async fn call(&self, args: Value) -> Result<Value, Failure> {
-        if !hosts::local_target(self.state, self.host.as_deref())? {
-            let host = hosts::resolve(self.state, self.host.clone()).await?;
-            let request = Request {
-                op: "rules".to_string(),
-                args,
-                chat: None,
-            };
-            return dial::call(self.state, &host, &request, ANSWER_WITHIN).await;
-        }
-        let config = self.state.require_login()?;
-        let plow = Plow::from_state(self.state)?;
-        // A log that can't be written to stops the command before it changes anything.
-        let mut log = AuditLog::open(self.state.path.join(crate::audit::FILE))?;
-        let done = owner::run(
-            &self.state.path,
-            &plow,
-            &config.peer.key,
-            &config.peer.name,
-            &config.peer.kind,
-            &args,
-        )
-        .await;
-        let decision = crate::serve::decision(&done.response);
-        let mut record = audit::record(&config.peer.key, None, "rules", decision, &done.outcome);
-        record.caller_name = Some(config.peer.name.clone());
-        record.args = done.audit_args;
-        let audit_id = log.append(record)?;
-        crate::serve::with_audit_id(done.response, audit_id).into_result()
-    }
-}
-
-/// `--revision R` as the host compares it: `none` is no rules.
-fn expected(revision: &str) -> Value {
-    match revision {
-        "none" => Value::Null,
-        revision => json!(revision),
-    }
-}
-
 /// The rules in `file`, or on stdin for `-`.
 fn read_file(file: &Path) -> Result<String, Failure> {
     let local =
@@ -289,32 +189,4 @@ fn read_file(file: &Path) -> Result<String, Failure> {
         return Ok(text);
     }
     std::fs::read_to_string(file).map_err(local)
-}
-
-/// `text` as the owner left it in `$EDITOR` (vi without one).
-fn edited(text: &str) -> Result<String, Failure> {
-    let failed = |message: String| Failure::new(code::editor_failed, message);
-    let file = tempfile::Builder::new()
-        .prefix("latch-rules-")
-        .suffix(".txt")
-        .tempfile()
-        .map_err(|err| failed(format!("cannot make a file to edit: {err}")))?;
-    std::fs::write(file.path(), text)
-        .map_err(|err| failed(format!("cannot make a file to edit: {err}")))?;
-    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
-    // Through the shell, so an EDITOR with arguments (`code -w`) works.
-    let status = Command::new("/bin/sh")
-        .arg("-c")
-        .arg(format!("{editor} \"$1\""))
-        .arg("latch")
-        .arg(file.path())
-        .status()
-        .map_err(|err| failed(format!("cannot start {editor}: {err}")))?;
-    if !status.success() {
-        return Err(failed(format!(
-            "{editor} ended with {status}; nothing was saved"
-        )));
-    }
-    std::fs::read_to_string(file.path())
-        .map_err(|err| failed(format!("cannot read the edited rules: {err}")))
 }

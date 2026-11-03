@@ -272,7 +272,7 @@ struct OwnerReadTests {
     }
 
     @Test func readsAreBackgroundAndActionsAreNot() throws {
-        for (op, args) in [("rules", #"{"command":"show"}"#), ("vault", #"{"command":"list"}"#), ("vault", #"{"command":"show","item":"v1"}"#),
+        for (op, args) in [("rules", #"{"command":"list"}"#), ("vault", #"{"command":"list"}"#), ("vault", #"{"command":"show","item":"v1"}"#),
                            ("plugins", #"{"command":"list"}"#), ("status", "{}"), ("audit", "{}")] {
             #expect(try record(op: op, args: args).isBackground, "\(op) \(args)")
         }

@@ -98,21 +98,19 @@ struct AgentsHubTests {
     }
 
     // Each host's row says what's known of the agent there: offline (this
-    // Mac never is), not read yet, unreadable, or its rules and exec.
+    // Mac never is), not read yet, unreadable, or that it can't run
+    // programs; nothing else.
     @Test func eachHostRowSaysTheAgentsStandingThere() throws {
         let agent: AgentsList.Agent = try Fixtures.decode(#"{"uid":"u1","name":"scout","kind":"own"}"#)
         let pi = HostEntry(name: "pi", isThisMac: false, online: true), mac = HostEntry(name: "mac", isThisMac: true, online: false)
-        func standing(own: Bool, blocked: Bool) -> Result<[String: AgentsList.Agent.Standing], LatchError> {
-            .success(["u1": .init(ownRules: own, execBlocked: blocked)])
+        func standing(blocked: Bool) -> Result<[String: AgentsList.Agent.Standing], LatchError> {
+            .success(["u1": .init(execBlocked: blocked)])
         }
-        #expect(agent.standing(on: HostEntry(name: "pi", isThisMac: false, online: false), standing(own: true, blocked: false))
-            == "Offline, so its rules there can't be checked")
+        #expect(agent.standing(on: HostEntry(name: "pi", isThisMac: false, online: false), standing(blocked: false)) == "Offline")
         #expect(agent.standing(on: pi, nil) == "Checking…")
-        #expect(agent.standing(on: mac, standing(own: false, blocked: false)) == "Shared rules only")
-        #expect(agent.standing(on: pi, standing(own: true, blocked: false)) == "Shared rules + own rules")
-        #expect(agent.standing(on: pi, standing(own: false, blocked: true)) == "Shared rules · can't run programs")
-        #expect(agent.standing(on: pi, standing(own: true, blocked: true)) == "Shared rules + own rules · can't run programs")
-        #expect(agent.standing(on: pi, .success([:])) == "Shared rules only")
+        #expect(agent.standing(on: mac, standing(blocked: false)) == nil)
+        #expect(agent.standing(on: pi, standing(blocked: true)) == "Can't run programs")
+        #expect(agent.standing(on: pi, .success([:])) == nil)
         #expect(agent.standing(on: pi, .failure(.unreachable("no answer"))) == ErrorCopy.said(.unreachable("no answer"), host: "pi"))
     }
 

@@ -250,7 +250,7 @@ async fn a_followed_stream_sends_each_new_record_and_ends_once_the_caller_leaves
     let mut audit = Stream::open(&t, &device, "audit", json!({"follow": true})).await;
     while audit.line().await["type"] != "caught_up" {}
 
-    ok(t.local_call("rules", json!({"command": "show"})).await);
+    ok(t.local_call("rules", json!({"command": "list"})).await);
     let line = loop {
         let line = audit.line().await;
         if line["record"]["op"] == "rules" {

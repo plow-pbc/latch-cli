@@ -155,7 +155,7 @@ nonisolated struct SyntheticLatchClient: LatchClient {
 
     func agents(host: String?) async throws -> AgentsList {
         let agents = Spec.agentNames.prefix(spec.agents).enumerated().map { index, name in
-            let standing = host == nil ? "null" : #"{"exec_blocked":\#(index % 3 == 2),"own_rules":\#(index % 2 == 0)}"#
+            let standing = host == nil ? "null" : #"{"exec_blocked":\#(index % 3 == 2)}"#
             return #"{"cloud_kind":null,"created_at":"2026-10-23T05:37:45","failure_code":null,"kind":"own","last_seen_at":"2026-10-23T05:37:45","line":{"name":null,"number":"+1555000\#(String(format: "%04d", index + 2))"},"name":"\#(name)","standing":\#(standing),"status":null,"uid":"\#(agentUid(index))"}"#
         }
         return try await read(#"{"agents":[\#(agents.joined(separator: ","))]}"#)

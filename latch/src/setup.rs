@@ -19,7 +19,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::failure::{Failure, code};
-use crate::gate::rules::{Preset, RulesDir, Scope};
+use crate::gate::rules::{Preset, RulesDir, render};
 use crate::state::StateDir;
 
 /// How often, and how long, the Full Disk Access step checks again.
@@ -255,13 +255,13 @@ impl Setup {
         if self.local()["login"]["kind"] != "device" {
             return;
         }
-        let shown = self.latch(&["rules", "show"]);
-        if !shown.ok {
-            failed(&shown.json, "latch rules show");
+        let listed = self.latch(&["rules", "list"]);
+        if !listed.ok {
+            failed(&listed.json, "latch rules list");
             return;
         }
-        if has_rules(&shown.json) {
-            done("Your agents have rules: `latch rules show` shows them.");
+        if has_rules(&listed.json) {
+            done("Rules already apply to this machine; `latch rules list` shows them.");
             return;
         }
         say(
@@ -282,29 +282,24 @@ impl Setup {
             "2" | "w" | "work" => Preset::Work,
             _ => {
                 say(
-                    "No rules; later: `latch rules set --preset family` (or work), or `latch rules edit`.",
+                    "Skipped; finish later with `latch rules add --preset family --if-empty` (or work).",
                 );
                 return;
             }
         };
-        let args = [
-            "rules",
-            "set",
-            "--preset",
-            preset.word(),
-            "--revision",
-            "none",
-        ];
+        let args = ["rules", "add", "--preset", preset.word(), "--if-empty"];
         let command = format!("latch {}", args.join(" "));
-        step("Set rules", &command);
-        let set = self.latch(&args);
-        if set.ok {
+        step("Add rule", &command);
+        let added = self.latch(&args);
+        if !added.ok {
+            failed(&added.json, &command);
+        } else if added.json["change"]["saved"] == true {
             done(&format!(
-                "Your agents have the {} rules; change them with `latch rules edit`.",
+                "Added the {} rule; `latch rules list` shows it.",
                 preset.name()
             ));
         } else {
-            failed(&set.json, &command);
+            done("Rules already apply to this machine; `latch rules list` shows them.");
         }
     }
 
@@ -502,8 +497,8 @@ pub async fn status(state: &StateDir, check_access: bool) -> Result<Status, Fail
     // Only a login has a key, which says which rules apply here.
     let any_rules = match (&local.login, &local.this_machine.key) {
         (Some(_), Some(key)) => {
-            let rules = RulesDir::new(&state.path, key);
-            rules.text(&Scope::Host)?.is_some() || !rules.agents()?.is_empty()
+            let rules = RulesDir::new(&state.path, key).list()?;
+            render(&rules, key, "").host.is_some()
         }
         _ => false,
     };
@@ -521,14 +516,7 @@ pub async fn status(state: &StateDir, check_access: bool) -> Result<Status, Fail
             Needed,
             "Your agents have no rules, so they may only do everyday work without asking you."
                 .into(),
-            Some(vec![
-                "rules",
-                "set",
-                "--preset",
-                "family",
-                "--revision",
-                "none",
-            ]),
+            Some(vec!["rules", "add", "--preset", "family", "--if-empty"]),
         ),
     });
     steps.push(match (&local.login, &local.this_machine.hosting) {
@@ -784,10 +772,22 @@ fn failed(json: &Value, command: &str) {
     eprintln!("✗ {message}\n  Try again later: {command}");
 }
 
-/// Whether `rules show` lists rules: every agent's, or an agent's own.
-fn has_rules(shown: &Value) -> bool {
-    !shown["every_agent"].is_null()
-        || shown["agents"]
-            .as_array()
-            .is_some_and(|agents| agents.iter().any(|agent| !agent["text"].is_null()))
+/// Whether `rules list` shows a rule for every agent that applies on this
+/// machine's host.
+fn has_rules(listed: &Value) -> bool {
+    let hosts = listed["hosts"].as_array().into_iter().flatten();
+    let Some(here) = hosts.into_iter().find(|host| host["self"] == true) else {
+        return false;
+    };
+    listed["rules"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|rule| {
+            rule["agents"] == "all"
+                && (rule["hosts"] == "all"
+                    || rule["hosts"]
+                        .as_array()
+                        .is_some_and(|keys| keys.iter().any(|key| key["key"] == here["key"])))
+        })
 }

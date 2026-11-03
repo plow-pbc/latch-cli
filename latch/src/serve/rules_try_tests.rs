@@ -112,11 +112,11 @@ async fn an_agent_cannot_preview() {
 async fn from_judges_as_that_agent_by_its_rules_alone() {
     let t = start(chat_with(covered_after_a_yes)).await;
     let device = t.caller("device").await;
-    for set in [
-        json!({"command": "set", "text": "Never send email."}),
-        json!({"command": "set", "from": "Juno", "text": "Builds are fine."}),
+    for added in [
+        crate::gate::rules::adding("Never send email.", None),
+        crate::gate::rules::adding("Builds are fine.", Some(AGENT)),
     ] {
-        answer(t.call(&device, "rules", set).await.0);
+        answer(t.call(&device, "rules", added).await.0);
     }
     let exec = json!({"argv": ["npm", "run", "build"]});
     let (response, _) = t
@@ -524,7 +524,7 @@ fn as_new_agent(op: &str, args: Value, draft: Option<&str>) -> Value {
 async fn a_draft_is_judged_in_place_of_the_saved_rules_and_never_saved() {
     let t = start(chat_with(by_the_rules)).await;
     let device = t.caller("device").await;
-    let saved = json!({"command": "set", "text": "Builds are fine."});
+    let saved = crate::gate::rules::adding("Builds are fine.", None);
     answer(t.call(&device, "rules", saved).await.0);
     let build = || json!({"argv": ["npm", "run", "build"]});
 
@@ -579,8 +579,9 @@ async fn a_draft_is_judged_in_place_of_the_saved_rules_and_never_saved() {
     assert_eq!(tried["as"], "owner");
 
     // Nothing was saved, and only the one rules command left a trace.
-    let shown = answer(t.call(&device, "rules", json!({"command": "show"})).await.0);
-    assert_eq!(shown["every_agent"]["text"], "Builds are fine.");
+    let listed = answer(t.call(&device, "rules", json!({"command": "list"})).await.0);
+    assert_eq!(listed["rules"].as_array().unwrap().len(), 1);
+    assert_eq!(listed["rules"][0]["text"], "Builds are fine.");
     let rules = vec!["rules".to_string(); 2];
     assert_eq!(traces(&t), (rules.clone(), rules));
 }
@@ -719,8 +720,8 @@ async fn a_login_fill_is_judged_as_the_browser_judges_it_and_nothing_is_opened()
 async fn a_fill_preview_judges_as_the_agent_by_its_rules_alone() {
     let t = start(chat_with(by_the_rules)).await;
     let device = t.caller("device").await;
-    let set = json!({"command": "set", "from": "Juno", "text": "Builds are fine."});
-    answer(t.call(&device, "rules", set).await.0);
+    let added = crate::gate::rules::adding("Builds are fine.", Some(AGENT));
+    answer(t.call(&device, "rules", added).await.0);
     let mut fill = fill_args(
         "https://shop.example/login",
         "login",

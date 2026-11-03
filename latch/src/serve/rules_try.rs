@@ -126,7 +126,7 @@ async fn preview(
         }
     };
 
-    // A blank draft is no rules for every agent, as `rules clear` leaves.
+    // A blank draft is no rules for every agent.
     let draft = args["draft"]
         .as_str()
         .map(|text| Some(text.to_string()).filter(|text| !text.trim().is_empty()));
