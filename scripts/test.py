@@ -289,7 +289,7 @@ def steps(where, suites, gate, shard, archive=None, ci=False, only=None):
         source = (["--archive-file", str(archive[1]), "--workspace-remap", str(LATCH), "--extract-to",
                    str(LATCH), "--extract-overwrite"] if built else ["--locked", "--features", features])
         # CI's profile (latch/.config/nextest.toml) for latch's run only.
-        profile = ["--profile", "ci"] if ci else []
+        profile = ["--profile", "ci-mac" if where == "macos" else "ci"] if ci else []
         out.append(("rust", rust, ["cargo", "nextest", "run", *source, *profile, "--no-fail-fast",
                                    *partition, "-E", union], LATCH))
     if "messages" in suites and first_shard:

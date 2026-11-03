@@ -238,6 +238,9 @@ class Plans(unittest.TestCase):
             ci = runner.steps("linux", ["core"], False, None, None, ci=True)
             ci_rust = next(command for name, _, command, _ in ci if name == "rust")
             self.assertEqual(ci_rust[ci_rust.index("--profile") + 1], "ci")
+            mac = runner.steps("macos", ["core"], False, None, None, ci=True)
+            mac_rust = next(command for name, _, command, _ in mac if name == "rust")
+            self.assertEqual(mac_rust[mac_rust.index("--profile") + 1], "ci-mac")
             self.assertNotIn("--features", rust)
             # The build job has no bubblewrap or systemd session, and needs neither.
             def which(tool):
