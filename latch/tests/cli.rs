@@ -6383,6 +6383,30 @@ fn a_host_run_from_an_installed_latch_keeps_an_execs_write() {
 /// A script may throw away what it doesn't want: the null device opens
 /// inside the sandbox. Not on Windows, whose null device admits no container:
 /// there the program is told so.
+/// A state folder's name need not be text on Linux. A purge of one must never
+/// delete the folder whose name merely reads the same, whatever else it does:
+/// latch's JSON can't name such a folder, so the purge doesn't get far.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_purge_never_deletes_a_folder_whose_name_only_reads_the_same() {
+    use std::os::unix::ffi::OsStrExt;
+    let dir = test_dir();
+    let named = dir.path().join(std::ffi::OsStr::from_bytes(b"state-\xff"));
+    let reads_the_same = dir.path().join("state-\u{fffd}");
+    for state in [&named, &reads_the_same] {
+        let made = latch(state, &["settings", "set", "--keep-awake", "on"], &[]);
+        assert_eq!(made.status.code(), Some(0), "{made:?}");
+        assert!(state.join("latch.json").is_file(), "{made:?}");
+    }
+    latch_command(&named, &["logout", "--purge", "--yes"], &[])
+        .output()
+        .unwrap();
+    assert!(
+        reads_the_same.join("latch.json").is_file(),
+        "another folder was deleted"
+    );
+}
+
 #[test]
 fn a_program_can_use_the_null_device_or_is_told_why_not() {
     let bench = Bench::new();

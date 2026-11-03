@@ -219,9 +219,14 @@ pub fn normalize(workers: &WorkerSetup, value: &Value) -> Result<PreparedExec, F
 /// (`\\?\C:\x`); shown, it is `C:\x`, and `\\?\UNC\server\share` is
 /// `\\server\share`, unless the plain form would name something else (a
 /// part ending in a dot or a space, or a device such as `NUL`), which is shown
-/// as it is. latch itself goes on using the resolved path.
+/// as it is, as is a path that isn't text: what logout deletes comes through
+/// here, and how such a name reads could be another folder's. latch itself goes
+/// on using the resolved path.
 pub(crate) fn shown_path(path: &Path) -> PathBuf {
-    PathBuf::from(shown(&path.to_string_lossy()))
+    match path.to_str() {
+        Some(text) => PathBuf::from(shown(text)),
+        None => path.to_path_buf(),
+    }
 }
 
 /// `shown_path`, of a path as text.
@@ -865,6 +870,15 @@ fn signal_name(signal: i32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn a_path_that_is_not_text_is_shown_as_it_is() {
+        use std::os::windows::ffi::OsStringExt;
+        let name = std::ffi::OsString::from_wide(&[b'x'.into(), 0xd800]);
+        let path = Path::new(r"\\?\C:\").join(name);
+        assert_eq!(shown_path(&path), path);
+    }
 
     #[cfg(windows)]
     #[test]
