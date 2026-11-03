@@ -62,6 +62,16 @@ jobs:
         with:
           path: .dev/cft-state/plugins/camoufox
           key: camoufox-${{ runner.arch }}-${{ hashFiles('latch/src/browser/camoufox.json', 'latch/camoufox/package.json', 'latch/camoufox/package-lock.json') }}
+      # One Camoufox start before the tests, so their first launches find
+      # it already read from disk and checked by macOS.
+      - name: Warm up Camoufox
+        working-directory: .
+        run: |
+          app=$(find .dev/cft-state/plugins/camoufox -path '*Camoufox.app/Contents/MacOS/camoufox' -type f 2>/dev/null | head -1)
+          if [ -z "$app" ]; then echo "no Camoufox in the cache yet"; exit 0; fi
+          start=$(date +%s)
+          "$app" --headless --profile "$RUNNER_TEMP/warm-profile" --screenshot "$RUNNER_TEMP/warm.png" about:blank > /dev/null 2>&1 || true
+          echo "Camoufox warm-up took $(( $(date +%s) - start ))s"
       - uses: taiki-e/install-action@v2
         with:
           tool: just,cargo-nextest@0.9.148

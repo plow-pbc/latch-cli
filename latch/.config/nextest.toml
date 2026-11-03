@@ -5,6 +5,9 @@
 
 [test-groups]
 engines = { max-threads = 6 }
+# A GitHub macOS runner has 3 CPUs: six engine tests there launch up to nine
+# browsers at once, and a launch can pass its 60 s deadline.
+engines-mac-ci = { max-threads = 3 }
 
 [[profile.default.overrides]]
 filter = 'test(/::frames_that_come_and_go_while_a_page_loads_break_no_call$/) | test(/::a_login_goes_on_to_its_password_stage_in_one_pause$/)'
@@ -18,3 +21,12 @@ test-group = 'engines'
 # many CLI tests wait on a host or a timer rather than the CPU.
 [profile.ci]
 test-threads = 8
+
+# CI on macOS (`just test --ci` there): CI's threads, and fewer engine tests
+# at once.
+[profile.ci-mac]
+test-threads = 8
+
+[[profile.ci-mac.overrides]]
+filter = 'test(/^browser::tests::/)'
+test-group = 'engines-mac-ci'
