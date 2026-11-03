@@ -765,11 +765,19 @@ async fn run_program(
         "truncated": stdout_cut || stderr_cut,
     });
     // Windows: a listing that failed may be for want of the volume root's
-    // entry (`latch setup`), so the agent is told how it is got.
-    if (exit_code != Some(0) || !stderr.is_empty())
-        && crate::sandbox::list_folders().is_some_and(|granted| granted != "granted")
-    {
-        result["hint"] = json!(LIST_FOLDERS_HINT);
+    // entry, a program that failed for want of the null device's (both
+    // `latch setup`), so the agent is told how they are got.
+    if exit_code != Some(0) || !stderr.is_empty() {
+        let mut hints = Vec::new();
+        if crate::sandbox::list_folders().is_some_and(|granted| granted != "granted") {
+            hints.push(LIST_FOLDERS_HINT);
+        }
+        if crate::sandbox::null_device_closed() {
+            hints.push(NULL_DEVICE_HINT);
+        }
+        if !hints.is_empty() {
+            result["hint"] = json!(hints.join(" "));
+        }
     }
     Done {
         response: Response::Ok(result),
@@ -784,6 +792,14 @@ agents list folders yet, so cmd's dir and vol are denied even in a folder you ma
 owner allows it by running `latch setup`, which asks Windows for an administrator's \
 permission once. Meanwhile `cmd /c for %f in (*) do @echo %f` lists one, and so does PowerShell's \
 Get-ChildItem given the folder's full path (-LiteralPath).";
+
+/// What a failed exec says where the null device is closed to workers
+/// (Windows).
+const NULL_DEVICE_HINT: &str = "If it failed opening nul (\"Access is denied\", and the command \
+did not run): this Windows PC doesn't let agents use its null device yet, so `> nul`, `< nul` and \
+`type nul` are denied. Programs and batch shims open nul themselves, so they fail too. Its owner \
+allows it by running `latch setup`. Meanwhile, in a command you control, send what you don't want \
+to a file in %TEMP%, or use PowerShell's `> $null`.";
 
 fn argv_is_usable(argv: &[String]) -> bool {
     !argv.is_empty() && !argv[0].is_empty()

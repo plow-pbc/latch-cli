@@ -280,10 +280,15 @@ pub enum Command {
     /// Internal: on Windows, `latch setup`'s list-folders step, which it
     /// runs as administrator (Windows' UAC prompt): latch's workers may read
     /// each fixed volume's root's own attributes, so cmd's dir and vol work
-    /// in folders an agent may read
+    /// in folders an agent may read, and may use the null device, which a
+    /// startup task keeps open; with --undo, as `latch logout --purge` runs
+    /// it, all of that is taken back
     #[cfg(windows)]
     #[command(hide = true)]
-    GrantListing,
+    GrantListing {
+        #[arg(long)]
+        undo: bool,
+    },
     /// Internal: the app's "Start when you log in" item, as ServiceManagement
     /// reports it; with --again, registered again from this app, which the
     /// installer does once it moves the app to another folder

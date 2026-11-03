@@ -46,6 +46,14 @@ use std::ptr::{null, null_mut};
 use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
+use windows::Win32::System::Com::{
+    CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
+};
+use windows::Win32::System::TaskScheduler::{
+    ITaskFolder, ITaskService, TASK_CREATE_OR_UPDATE, TASK_LOGON_SERVICE_ACCOUNT, TaskScheduler,
+};
+use windows::Win32::System::Variant::VARIANT;
+use windows::core::BSTR;
 use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_SUCCESS, HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, LocalFree,
     SetHandleInformation, WAIT_ABANDONED, WAIT_OBJECT_0, WAIT_TIMEOUT,
@@ -53,8 +61,8 @@ use windows_sys::Win32::Foundation::{
 use windows_sys::Win32::Security::Authorization::{
     ACCESS_MODE, ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
     ConvertStringSidToSidW, EXPLICIT_ACCESS_W, GRANT_ACCESS, GetSecurityInfo, NO_MULTIPLE_TRUSTEE,
-    SDDL_REVISION_1, SE_FILE_OBJECT, SetEntriesInAclW, SetNamedSecurityInfoW, TRUSTEE_IS_SID,
-    TRUSTEE_IS_UNKNOWN, TRUSTEE_W,
+    REVOKE_ACCESS, SDDL_REVISION_1, SE_FILE_OBJECT, SE_KERNEL_OBJECT, SetEntriesInAclW,
+    SetNamedSecurityInfoW, SetSecurityInfo, TRUSTEE_IS_SID, TRUSTEE_IS_UNKNOWN, TRUSTEE_W,
 };
 use windows_sys::Win32::Security::Isolation::{
     CreateAppContainerProfile, DeleteAppContainerProfile, DeriveAppContainerSidFromAppContainerName,
@@ -92,6 +100,7 @@ use windows_sys::Win32::System::StationsAndDesktops::{
     GetProcessWindowStation, GetUserObjectInformationW, HDESK, HWINSTA, SetProcessWindowStation,
     UOI_FLAGS, USEROBJECTFLAGS,
 };
+use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
 use windows_sys::Win32::System::SystemServices::{
     ACCESS_ALLOWED_ACE_TYPE, ACCESS_DENIED_ACE_TYPE, MAXDWORD, SE_GROUP_ENABLED,
     SECURITY_DESCRIPTOR_REVISION,
@@ -130,6 +139,7 @@ const INTERNET_CLIENT: &str = "S-1-15-3-1";
 /// once, gives this capability `ROOT_ACCESS` on each fixed volume's root,
 /// and nothing below it. Windows' own `isolatedWin32-volumeRootMinimal`, which roots already
 /// admit, cannot be given to a plain AppContainer: CreateProcess refuses it.
+/// The same step gives it what Everyone has on the null device (`NULL_ACCESS`).
 pub(crate) const VOLUME_ROOT: &str = "S-1-15-3-1024-2072464065-3400578307-2891438376-2029114129-1094856869-133864159-224730807-2445515868";
 
 /// What a root grants it: the root's own attributes, which the volume's
@@ -887,14 +897,22 @@ fn fixed_roots() -> Vec<PathBuf> {
         .collect()
 }
 
-/// Whether `root` admits the workers' capability as `grant_listing` makes
-/// it: an entry of its own allowing at least `ROOT_ACCESS`. A root with no
+/// Whether `path` admits the workers' capability as `grant_listing` makes
+/// it: an entry of its own allowing at least `access`. A root with no
 /// access list (FAT) admits every program already. Reading the list needs
 /// no administrator.
-fn admits(root: &Path, sid: &Sid) -> std::io::Result<bool> {
-    read_list(root, |_, list| {
+fn admits(path: &Path, sid: &Sid, access: u32) -> std::io::Result<bool> {
+    read_list(path, |_, list| {
         // SAFETY: `list` is null or the live list the descriptor holds.
-        Ok(list.is_null() || unsafe { allowed(list, sid.0) }? & ROOT_ACCESS == ROOT_ACCESS)
+        Ok(list.is_null() || unsafe { allowed(list, sid.0) }? & access == access)
+    })
+}
+
+/// Whether `path`'s list has any entry of the workers' capability's own.
+fn holds_entry(path: &Path, sid: &Sid) -> std::io::Result<bool> {
+    read_list(path, |_, list| {
+        // SAFETY: `list` is null or the live list the descriptor holds.
+        Ok(!list.is_null() && unsafe { allowed(list, sid.0) }? != 0)
     })
 }
 
@@ -932,7 +950,7 @@ pub fn list_folders() -> Option<&'static str> {
     let roots = fixed_roots();
     let admitting = roots
         .iter()
-        .filter(|root| admits(root, &sid).unwrap_or(false))
+        .filter(|root| admits(root, &sid, ROOT_ACCESS).unwrap_or(false))
         .count();
     Some(match admitting {
         0 => "missing",
@@ -959,37 +977,104 @@ pub(crate) fn lists_in(path: &Path) -> bool {
     let length = root.iter().position(|&unit| unit == 0).unwrap_or(0);
     let root = PathBuf::from(std::ffi::OsString::from_wide(&root[..length]));
     found != 0
-        && Sid::from_string(VOLUME_ROOT).is_ok_and(|sid| admits(&root, &sid).unwrap_or(false))
+        && Sid::from_string(VOLUME_ROOT)
+            .is_ok_and(|sid| admits(&root, &sid, ROOT_ACCESS).unwrap_or(false))
 }
 
 /// `latch grant-listing`, which `latch setup` runs as administrator
-/// (writing a root's access list needs one): gives the workers' capability
-/// `ROOT_ACCESS` on each fixed volume's root that lacks it, its own entry
-/// with nothing inherited below. Each root it could not change, and why.
+/// (writing a root's or a device's access list needs one): gives the
+/// workers' capability `ROOT_ACCESS` on each fixed volume's root that lacks
+/// it, its own entry with nothing inherited below, and opens the null
+/// device to it (`open_null_device`). Each thing it could not change, and
+/// why.
 pub fn grant_listing() -> Vec<String> {
     let sid = match Sid::from_string(VOLUME_ROOT) {
         Ok(sid) => sid,
         Err(message) => return vec![message],
     };
     let roots = fixed_roots();
-    if roots.is_empty() {
-        return vec!["no fixed volume found".into()];
-    }
-    roots
-        .into_iter()
+    let mut failed: Vec<String> = roots
+        .iter()
         .filter_map(|root| {
-            let granted = grant_root(&root, &sid);
+            let granted = grant_root(root, &sid);
             granted
                 .err()
                 .map(|why| format!("{}: {why}", root.display()))
         })
-        .collect()
+        .collect();
+    if roots.is_empty() {
+        failed.push("no fixed volume found".into());
+    }
+    if let Err(why) = open_null_device(&sid) {
+        failed.push(format!("{NULL_DEVICE}: {why}"));
+    }
+    failed
+}
+
+/// `latch grant-listing --undo`, which `latch logout --purge` runs as
+/// administrator: the startup task first, so nothing puts its entry back,
+/// then the workers' capability's own entries, on the null device and on
+/// each fixed volume's root. No other entry changes. Each thing it could not
+/// remove, and why.
+pub fn revoke_listing() -> Vec<String> {
+    let sid = match Sid::from_string(VOLUME_ROOT) {
+        Ok(sid) => sid,
+        Err(message) => return vec![message],
+    };
+    let mut failed = Vec::new();
+    if null_task_exists()
+        && let Err(why) = delete_null_task()
+    {
+        failed.push(format!("{NULL_TASK}: {why}"));
+    }
+    if holds_entry(Path::new(NULL_DEVICE), &sid).unwrap_or(true)
+        && let Err(why) = revoke_null_entry(&sid)
+    {
+        failed.push(format!("{NULL_DEVICE}: {why}"));
+    }
+    for root in fixed_roots() {
+        if holds_entry(&root, &sid).unwrap_or(true)
+            && let Err(why) = revoke_entry(&root, &sid)
+        {
+            failed.push(format!("{}: {why}", root.display()));
+        }
+    }
+    failed
+}
+
+/// What `latch grant-listing` has left on this PC, as `latch logout --purge`
+/// says it. Reading it needs no administrator.
+pub fn machine_grants() -> Vec<&'static str> {
+    let Ok(sid) = Sid::from_string(VOLUME_ROOT) else {
+        return Vec::new();
+    };
+    let holds = |path: &Path| holds_entry(path, &sid).unwrap_or(false);
+    let mut left = Vec::new();
+    if null_task_exists() {
+        left.push("its startup task");
+    }
+    if holds(Path::new(NULL_DEVICE)) {
+        left.push("its entry on nul");
+    }
+    if fixed_roots().iter().any(|root| holds(root)) {
+        left.push("its entries on volume roots");
+    }
+    left
+}
+
+/// Takes the workers' capability's entry off `path`; no other changes.
+fn revoke_entry(path: &Path, sid: &Sid) -> std::io::Result<()> {
+    with_dacl(path, false, |old, _, write| {
+        // SAFETY: `old` is the path's access list, live meanwhile; `sid` is
+        // live.
+        unsafe { add_entry(old, 0, REVOKE_ACCESS, NO_INHERITANCE, sid.0, write) }
+    })
 }
 
 /// Gives `sid` `ROOT_ACCESS` on `root` unless it has it: an entry of its
 /// own, which nothing below inherits.
 fn grant_root(root: &Path, sid: &Sid) -> Result<(), String> {
-    if admits(root, sid).unwrap_or(false) {
+    if admits(root, sid, ROOT_ACCESS).unwrap_or(false) {
         return Ok(());
     }
     let added = with_dacl(root, false, |old, _, write| {
@@ -997,11 +1082,250 @@ fn grant_root(root: &Path, sid: &Sid) -> Result<(), String> {
         // live.
         unsafe { add_entry(old, ROOT_ACCESS, GRANT_ACCESS, NO_INHERITANCE, sid.0, write) }
     });
-    match (added, admits(root, sid)) {
+    match (added, admits(root, sid, ROOT_ACCESS)) {
         (Err(err), _) | (_, Err(err)) => Err(err.to_string()),
         (Ok(()), Ok(true)) => Ok(()),
         (Ok(()), Ok(false)) => Err("its entry did not change".into()),
     }
+}
+
+/// Windows' null device: what `> nul`, `< nul` and a program's null I/O open.
+/// Its access list admits Everyone, which does not count for a container, and
+/// no container: without an entry, a worker's every use of it is denied.
+const NULL_DEVICE: &str = r"\\.\NUL";
+
+/// What it gives the workers' capability: what it gives Everyone.
+const NULL_ACCESS: u32 = 0x1201bf;
+
+/// The task that gives it that at each start: Windows makes the device's
+/// access list anew at each boot.
+const NULL_TASK: &str = "latch null device";
+
+/// Who may do what to the task: SYSTEM and Administrators everything, signed-in
+/// users read it (`setup --status`). Nothing for the user who registered it,
+/// whose unelevated token would otherwise keep what it was given.
+const NULL_TASK_ACCESS: &str = "D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FR;;;AU)";
+
+/// How long `latch setup` waits for the task's first run.
+const NULL_TASK_FIRST_RUN: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// The task's arguments: PowerShell adds the entry through .NET's own file
+/// API, with nothing compiled, loaded or read from a user's folder. `cacls`
+/// and `icacls`, in System32, refuse a device.
+fn null_task_arguments() -> String {
+    format!(
+        "-NoProfile -NonInteractive -Command \"$p='{NULL_DEVICE}';\
+         $s=[IO.File]::GetAccessControl($p);\
+         $s.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(\
+         [Security.Principal.SecurityIdentifier]::new('{VOLUME_ROOT}'),\
+         [Security.AccessControl.FileSystemRights]{NULL_ACCESS:#x},'Allow'));\
+         [IO.File]::SetAccessControl($p,$s)\""
+    )
+}
+
+/// The task: at each boot, as SYSTEM and on battery too, one fixed action.
+fn null_task_definition(system: &Path) -> String {
+    let powershell = system.join(r"WindowsPowerShell\v1.0\powershell.exe");
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Author>latch</Author>
+    <Description>Lets the programs latch runs in its sandbox use Windows' null device (nul), by adding one entry for latch's worker capability to the device's access list, which Windows resets at each start. Added by latch setup; latch logout --purge removes it.</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <BootTrigger><Enabled>true</Enabled></BootTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="System">
+      <UserId>S-1-5-18</UserId>
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <ExecutionTimeLimit>PT5M</ExecutionTimeLimit>
+  </Settings>
+  <Actions Context="System">
+    <Exec>
+      <Command>{}</Command>
+      <Arguments>{}</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+"#,
+        powershell.display(),
+        null_task_arguments(),
+    )
+}
+
+/// System32, from Windows rather than from an environment a user sets.
+fn system_folder() -> std::io::Result<PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    let mut buffer = vec![0u16; 512];
+    // SAFETY: `buffer` is writable for its length.
+    let length = unsafe { GetSystemDirectoryW(buffer.as_mut_ptr(), buffer.len() as u32) } as usize;
+    if length == 0 || length > buffer.len() {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(PathBuf::from(std::ffi::OsString::from_wide(
+        &buffer[..length],
+    )))
+}
+
+/// Calls `with` on Task Scheduler's root folder.
+fn with_tasks<T>(
+    with: impl FnOnce(&ITaskFolder) -> windows::core::Result<T>,
+) -> windows::core::Result<T> {
+    // SAFETY: COM is opened on this thread and closed below if this opened
+    // it, once every interface here is gone; the arguments live through each
+    // call.
+    unsafe {
+        let opened = CoInitializeEx(None, COINIT_MULTITHREADED).is_ok();
+        let answer = (|| {
+            let service: ITaskService =
+                CoCreateInstance(&TaskScheduler, None, CLSCTX_INPROC_SERVER)?;
+            let none = VARIANT::default();
+            service.Connect(&none, &none, &none, &none)?;
+            with(&service.GetFolder(&BSTR::from("\\"))?)
+        })();
+        if opened {
+            CoUninitialize();
+        }
+        answer
+    }
+}
+
+/// Whether the startup task is registered. Reading it needs no administrator
+/// (`NULL_TASK_ACCESS`).
+fn null_task_exists() -> bool {
+    // SAFETY: a name, live through the call, in COM `with_tasks` opened; the
+    // task's interface goes before that closes.
+    with_tasks(|tasks| unsafe { tasks.GetTask(&BSTR::from(NULL_TASK)) }.map(drop)).is_ok()
+}
+
+fn delete_null_task() -> windows::core::Result<()> {
+    // SAFETY: a name, live through the call, in COM `with_tasks` opened.
+    with_tasks(|tasks| unsafe { tasks.DeleteTask(&BSTR::from(NULL_TASK), 0) })
+}
+
+/// Registers the startup task, in place of any before it, and starts it once.
+fn start_null_task() -> Result<(), String> {
+    let definition = null_task_definition(&system_folder().map_err(|err| err.to_string())?);
+    with_tasks(|tasks| {
+        // SAFETY: the arguments live through the calls, in COM `with_tasks`
+        // opened.
+        unsafe {
+            let task = tasks.RegisterTask(
+                &BSTR::from(NULL_TASK),
+                &BSTR::from(definition.as_str()),
+                TASK_CREATE_OR_UPDATE.0,
+                &VARIANT::from("S-1-5-18"),
+                &VARIANT::default(),
+                TASK_LOGON_SERVICE_ACCOUNT,
+                &VARIANT::from(NULL_TASK_ACCESS),
+            )?;
+            task.Run(&VARIANT::default())?;
+        }
+        Ok(())
+    })
+    .map_err(|err| err.to_string())
+}
+
+/// Opens the null device to the workers' capability: registers the startup
+/// task and has it run now, so setup learns at once whether it works. If it
+/// does not, the task goes, so nothing calls it done, and setup says why.
+fn open_null_device(sid: &Sid) -> Result<(), String> {
+    let admitted = || admits(Path::new(NULL_DEVICE), sid, NULL_ACCESS).unwrap_or(false);
+    let ran = start_null_task().and_then(|()| {
+        let deadline = std::time::Instant::now() + NULL_TASK_FIRST_RUN;
+        while !admitted() {
+            if std::time::Instant::now() > deadline {
+                return Err("it did not add its entry".to_string());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+        Ok(())
+    });
+    let Err(why) = ran else {
+        return Ok(());
+    };
+    if null_task_exists()
+        && let Err(err) = delete_null_task()
+    {
+        return Err(format!(
+            "its startup task: {why}, and it could not be removed: {err}"
+        ));
+    }
+    Err(format!("its startup task: {why}"))
+}
+
+/// Takes `sid`'s entry off the device's list, keeping every other. As a kernel
+/// object, the list alone: nothing here inherits, and the auto-inherited mark
+/// the task's file API leaves on it goes with this.
+fn revoke_null_entry(sid: &Sid) -> std::io::Result<()> {
+    use std::os::windows::fs::OpenOptionsExt;
+    let _one_at_a_time = EditLock::take()?;
+    let device = std::fs::OpenOptions::new()
+        .access_mode(READ_CONTROL | WRITE_DAC)
+        .open(NULL_DEVICE)?;
+    read_list(Path::new(NULL_DEVICE), |_, list| {
+        let write = |new: *mut ACL| {
+            // SAFETY: a live handle with WRITE_DAC; `new` is live; no owner,
+            // group or SACL change.
+            match unsafe {
+                SetSecurityInfo(
+                    device.as_raw_handle(),
+                    SE_KERNEL_OBJECT,
+                    DACL_SECURITY_INFORMATION,
+                    null_mut(),
+                    null_mut(),
+                    new,
+                    null(),
+                )
+            } {
+                ERROR_SUCCESS => Ok(()),
+                err => Err(std::io::Error::from_raw_os_error(err as i32)),
+            }
+        };
+        // SAFETY: `list` is the device's access list, live meanwhile; `sid`
+        // is live.
+        unsafe {
+            add_entry(
+                list.cast_mut(),
+                0,
+                REVOKE_ACCESS,
+                NO_INHERITANCE,
+                sid.0,
+                &write,
+            )
+        }
+    })
+}
+
+/// Whether workers may use the null device: `open` when its live access list,
+/// which is what Windows checks, admits the workers' capability and the
+/// startup task will again after a restart; `until_restart` when the list
+/// does and no task is there; `closed` when the list does not, whatever the
+/// task. Reading both needs no administrator.
+pub fn null_device() -> Option<&'static str> {
+    if null_device_closed() {
+        return Some("closed");
+    }
+    Some(if null_task_exists() {
+        "open"
+    } else {
+        "until_restart"
+    })
+}
+
+/// Whether the null device's live access list keeps workers out.
+pub fn null_device_closed() -> bool {
+    !Sid::from_string(VOLUME_ROOT)
+        .is_ok_and(|sid| admits(Path::new(NULL_DEVICE), &sid, NULL_ACCESS).unwrap_or(false))
 }
 
 /// Runs this worker's own command line again, in the container `sid` and a
@@ -1870,18 +2194,90 @@ mod tests {
     #[test]
     fn a_listing_grant_is_one_entry_of_root_access_that_nothing_below_inherits() {
         let sid = Sid::from_string(VOLUME_ROOT).unwrap();
-        let dir = tempfile::tempdir().unwrap();
-        assert!(!admits(dir.path(), &sid).unwrap());
-        grant_root(dir.path(), &sid).unwrap();
-        assert!(admits(dir.path(), &sid).unwrap());
+        // By its real path: a runner's temp folder has a short name in it, which
+        // a grant refuses as not what was judged.
+        let dir = test_dir();
+        let root = dir.path().canonicalize().unwrap();
+        assert!(!admits(&root, &sid, ROOT_ACCESS).unwrap());
+        grant_root(&root, &sid).unwrap();
+        assert!(admits(&root, &sid, ROOT_ACCESS).unwrap());
         // Granted again, nothing changes.
-        grant_root(dir.path(), &sid).unwrap();
-        assert_eq!(entries_for(dir.path(), &sid), [(0, ROOT_ACCESS)]);
-        let inside = dir.path().join("inside");
+        grant_root(&root, &sid).unwrap();
+        assert_eq!(entries_for(&root, &sid), [(0, ROOT_ACCESS)]);
+        let inside = root.join("inside");
         std::fs::create_dir(&inside).unwrap();
-        std::fs::write(dir.path().join("file"), "").unwrap();
+        std::fs::write(root.join("file"), "").unwrap();
         assert!(entries_for(&inside, &sid).is_empty());
-        assert!(entries_for(&dir.path().join("file"), &sid).is_empty());
+        assert!(entries_for(&root.join("file"), &sid).is_empty());
+    }
+
+    /// `--undo`, on a folder this user owns: its entry goes, another stays.
+    #[test]
+    fn taking_a_listing_grant_back_removes_its_entry_and_no_other() {
+        let sid = Sid::from_string(VOLUME_ROOT).unwrap();
+        let other = Sid::from_string(INTERNET_CLIENT).unwrap();
+        // By its real path: a runner's temp folder has a short name in it, which
+        // a grant refuses as not what was judged.
+        let dir = test_dir();
+        let root = dir.path().canonicalize().unwrap();
+        grant_root(&root, &other).unwrap();
+        grant_root(&root, &sid).unwrap();
+        assert!(holds_entry(&root, &sid).unwrap());
+        revoke_entry(&root, &sid).unwrap();
+        assert!(entries_for(&root, &sid).is_empty());
+        assert!(!holds_entry(&root, &sid).unwrap());
+        assert_eq!(entries_for(&root, &other), [(0, ROOT_ACCESS)]);
+    }
+
+    /// The startup task's definition: one fixed action, nothing a user can
+    /// write, as SYSTEM at boot and on battery, and it says what it is.
+    #[test]
+    fn the_null_device_task_is_one_fixed_action_as_system_at_boot_on_battery() {
+        let definition = null_task_definition(Path::new(r"C:\Windows\System32"));
+        assert_eq!(definition.matches("<Exec>").count(), 1);
+        assert!(definition.contains(
+            r"<Command>C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe</Command>"
+        ));
+        assert!(definition.contains("<Arguments>-NoProfile -NonInteractive -Command "));
+        assert!(definition.contains("<BootTrigger>"));
+        assert!(definition.contains("<UserId>S-1-5-18</UserId>"));
+        assert!(definition.contains("<DisallowStartIfOnBatteries>false<"));
+        assert!(definition.contains("<StopIfGoingOnBatteries>false<"));
+        assert!(definition.contains("<Description>Lets the programs latch runs"));
+        let arguments = null_task_arguments();
+        assert!(arguments.contains(VOLUME_ROOT));
+        for absent in [
+            "Add-Type",
+            "Import-Module",
+            "New-Object",
+            "-File",
+            "%",
+            "$env",
+            "Users",
+            ";;;AC",
+        ] {
+            assert!(!arguments.contains(absent), "{absent} in {arguments}");
+        }
+        // Only SYSTEM and Administrators may change it, and no entry names
+        // whoever registered it.
+        let writers: Vec<&str> = NULL_TASK_ACCESS
+            .split('(')
+            .skip(1)
+            .filter(|entry| !entry.contains("FR;"))
+            .collect();
+        assert_eq!(writers, ["A;;FA;;;SY)", "A;;FA;;;BA)"]);
+    }
+
+    /// Its list reads with no administrator, and what the workers' capability
+    /// is given is exactly what Everyone already has there.
+    #[test]
+    fn the_null_device_gives_the_workers_what_it_gives_everyone() {
+        let everyone = Sid::from_string("S-1-1-0").unwrap();
+        let given = read_list(Path::new(NULL_DEVICE), |_, list| {
+            // SAFETY: the live list the descriptor holds.
+            unsafe { allowed(list, everyone.0) }
+        });
+        assert_eq!(given.unwrap(), NULL_ACCESS);
     }
 
     /// Each allowing entry `path`'s access list has for `sid`, inherited or

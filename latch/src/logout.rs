@@ -21,6 +21,10 @@
 //! missing folder still takes the machine out of Plow, if its token is
 //! there, and deletes them.
 //!
+//! On Windows, `--purge` of the default state folder also removes what
+//! `latch setup` added to the PC as administrator (`Summary::this_pc`):
+//! Windows' prompt once, and the output says if any of it stays.
+//!
 //! The folder is resolved once, and must be a latch state folder, not a
 //! link to one. From the stop on, logout holds `serve.lock` as a host
 //! would, so no host starts until it is done.
@@ -92,6 +96,10 @@ pub async fn run(state: &StateDir, args: &LogoutArgs) -> Result<Value, Failure> 
         Some(path) => log_out(path, args.purge).await?,
         None => forget_missing(state, args.purge).await?,
     };
+    #[cfg(windows)]
+    if !summary.this_pc.is_empty() {
+        output["this_pc"] = crate::setup::undo_on_this_pc();
+    }
     output["summary"] = json!(summary);
     Ok(output)
 }
@@ -171,6 +179,10 @@ pub struct Summary {
     /// The audit log's records; null with no audit log.
     audit_records: Option<usize>,
     browsers: Browsers,
+    /// Windows: what `latch setup` added to this PC as administrator, which
+    /// `--purge` of the default state folder removes, Windows asking first.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    this_pc: Vec<&'static str>,
 }
 
 /// The browsers on this folder: each engine installed, a folder per
@@ -252,9 +264,10 @@ impl Summary {
             .ok()
             .map(|log| log.lines().count());
         let default = StateDir::new(None)?.path;
+        let default_state_dir = default.canonicalize().unwrap_or(default) == path;
         Ok(Summary {
             state_dir: path.to_path_buf(),
-            default_state_dir: default.canonicalize().unwrap_or(default) == path,
+            default_state_dir,
             login: config.map(|config| Login {
                 name: config.peer.name,
                 kind: config.peer.kind,
@@ -267,6 +280,11 @@ impl Summary {
             vault,
             audit_records,
             browsers: browsers(path),
+            this_pc: if purge && default_state_dir {
+                crate::sandbox::machine_grants()
+            } else {
+                Vec::new()
+            },
         })
     }
 
@@ -313,6 +331,14 @@ impl Summary {
             for file in &self.files {
                 let _ = writeln!(text, "      {}", file.display());
             }
+        }
+        if !self.this_pc.is_empty() {
+            let _ = writeln!(
+                text,
+                "  - remove what `latch setup` added to this PC, once Windows' administrator \
+                 prompt allows it: {}",
+                self.this_pc.join(", ")
+            );
         }
         let contents = self.contents();
         if self.deletes_folder {

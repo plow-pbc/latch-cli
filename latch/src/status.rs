@@ -319,6 +319,11 @@ pub struct ThisMachine {
     /// or `partial`), as `latch setup` lets them. Not said elsewhere.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub list_folders: Option<&'static str>,
+    /// Windows: whether programs in a worker may open nul (`open`,
+    /// `until_restart` or `closed`), as `latch setup` lets them. Not said
+    /// elsewhere.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub null_device: Option<&'static str>,
 }
 
 #[derive(Serialize)]
@@ -382,6 +387,7 @@ pub fn local(state: &StateDir) -> Result<LocalStatus, Failure> {
             key: config.as_ref().map(|config| config.peer.key.clone()),
             hosting,
             list_folders: crate::sandbox::list_folders(),
+            null_device: crate::sandbox::null_device(),
         },
         plugins: plugins["plugins"].take(),
         update: crate::update::status(&dir),
@@ -463,7 +469,10 @@ pub fn follow(
         let status = local(&state)?;
         watch.process(status.this_machine.hosting.pid);
         #[cfg(windows)]
-        let granted = status.this_machine.list_folders;
+        let granted = (
+            status.this_machine.list_folders,
+            status.this_machine.null_device,
+        );
         let status = serde_json::to_value(status).expect("a status serializes");
         if sent.as_ref() != Some(&status) {
             if !send(&json!({"type": "status", "status": status})) {
@@ -471,9 +480,9 @@ pub fn follow(
             }
             sent = Some(status);
         }
-        // A volume root's access list (`latch setup`) wakes no
-        // watch, so on Windows the grant is looked at again every few
-        // seconds, and the status read again once it changed.
+        // A volume root's or a device's access list (`latch setup`) wakes no
+        // watch, so on Windows the grants are looked at again every few
+        // seconds, and the status read again once they changed.
         #[cfg(windows)]
         let woke = loop {
             match watch
@@ -481,7 +490,13 @@ pub fn follow(
                 .map_err(watching)?
             {
                 Some(woke) => break woke,
-                None if crate::sandbox::list_folders() != granted => break Woke::Changed,
+                None if (
+                    crate::sandbox::list_folders(),
+                    crate::sandbox::null_device(),
+                ) != granted =>
+                {
+                    break Woke::Changed;
+                }
                 None => {}
             }
         };

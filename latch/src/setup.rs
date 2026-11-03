@@ -193,19 +193,24 @@ impl Setup {
         }
     }
 
-    /// Windows: let agents list folders. That takes an administrator, so
-    /// `latch grant-listing` runs as one: Windows asks (its UAC prompt), and
-    /// this waits for it.
+    /// Windows: let agents list folders and use the null device. That takes
+    /// an administrator, so `latch grant-listing` runs as one: Windows asks
+    /// (its UAC prompt) once for both, and this waits for it.
     #[cfg(windows)]
     fn list_folders(&mut self) {
-        const GRANTED: &str = "Agents can list folders on this PC.";
-        if crate::sandbox::list_folders() == Some("granted") {
+        const GRANTED: &str = "Agents can list folders and use nul on this PC.";
+        let granted = || {
+            crate::sandbox::list_folders() == Some("granted")
+                && crate::sandbox::null_device() == Some("open")
+        };
+        if granted() {
             done(GRANTED);
             return;
         }
         if !self.input().yes(
-            "Let agents list folders on this PC (cmd's dir and vol)? Windows asks an \
-             administrator to allow it. [y/N] ",
+            "Let agents list folders and use nul on this PC (cmd's dir and vol, `> nul`)? Windows \
+             asks an administrator to allow it, and it adds a startup task that runs as SYSTEM \
+             to keep nul open after each restart. [y/N] ",
             false,
         ) {
             say("Skipped; `latch setup` asks again.");
@@ -218,11 +223,14 @@ impl Setup {
             }
             return;
         }
-        match crate::sandbox::list_folders() {
-            Some("granted") => done(GRANTED),
-            _ => eprintln!(
-                "✗ Agents can't list folders on every volume yet.\n  Try again: latch setup"
-            ),
+        if granted() {
+            done(GRANTED);
+        } else if crate::sandbox::list_folders() != Some("granted") {
+            eprintln!("✗ Agents can't list folders on every volume yet.\n  Try again: latch setup");
+        } else if crate::sandbox::null_device() == Some("until_restart") {
+            eprintln!("✗ {NULL_DEVICE_UNTIL_RESTART}");
+        } else {
+            eprintln!("✗ {NULL_DEVICE_NEEDED}");
         }
     }
 
@@ -414,7 +422,7 @@ pub struct Status {
 #[derive(Serialize)]
 pub struct Step {
     /// `login`, each connector this build has, `rules`, `host`, then on
-    /// Windows `list_folders`.
+    /// Windows `list_folders` and `null_device`.
     pub step: &'static str,
     pub state: StepState,
     pub reason: String,
@@ -601,6 +609,28 @@ pub async fn status(state: &StateDir, check_access: bool) -> Result<Status, Fail
             ),
         });
     }
+    if let Some(open) = local.this_machine.null_device {
+        steps.push(match open {
+            "open" => Step::new(
+                "null_device",
+                Done,
+                "Agents can use nul on this PC.".into(),
+                None,
+            ),
+            "until_restart" => Step::new(
+                "null_device",
+                Needed,
+                NULL_DEVICE_UNTIL_RESTART.into(),
+                Some(vec!["setup"]),
+            ),
+            _ => Step::new(
+                "null_device",
+                Needed,
+                NULL_DEVICE_NEEDED.into(),
+                Some(vec!["setup"]),
+            ),
+        });
+    }
     Ok(Status { steps })
 }
 
@@ -608,20 +638,64 @@ pub async fn status(state: &StateDir, check_access: bool) -> Result<Status, Fail
 const LIST_FOLDERS_NEEDED: &str = "Agents can't list folders on this PC with cmd's dir and vol \
 until an administrator allows it once: `latch setup` asks Windows for that.";
 
+/// Why the `null_device` step is not done: nul's live access list keeps
+/// workers out, whether or not its startup task is there.
+const NULL_DEVICE_NEEDED: &str = "Programs agents run can't open nul on this PC (`> nul` is denied) \
+until an administrator allows it once: `latch setup` asks Windows for that.";
+
+/// Why the `null_device` step is not done: nul admits workers now, but
+/// nothing will put that back at the next start.
+const NULL_DEVICE_UNTIL_RESTART: &str = "Programs agents run can open nul on this PC until it \
+restarts, because latch's startup task isn't there: `latch setup` adds it.";
+
 /// `latch grant-listing`, which the `list_folders` step runs as
-/// administrator: `list_folders` once every fixed volume's root admits
-/// latch's workers, else `list_folders_failed` naming each root it could
-/// not change.
+/// administrator: `list_folders` and `null_device` once every fixed volume's
+/// root and nul admit latch's workers, else `list_folders_failed` naming each
+/// thing it could not change. With `undo`, all of that taken back, as
+/// `latch logout --purge` asks.
 #[cfg(windows)]
-pub fn grant_listing() -> Result<Value, Failure> {
-    let failed = crate::sandbox::grant_listing();
+pub fn grant_listing(undo: bool) -> Result<Value, Failure> {
+    let failed = if undo {
+        crate::sandbox::revoke_listing()
+    } else {
+        crate::sandbox::grant_listing()
+    };
     if !failed.is_empty() {
         return Err(Failure::new(
             code::list_folders_failed,
-            format!("not every volume's root was changed: {}", failed.join("; ")),
+            format!("not everything was changed: {}", failed.join("; ")),
         ));
     }
-    Ok(serde_json::json!({"list_folders": crate::sandbox::list_folders()}))
+    Ok(serde_json::json!({
+        "list_folders": crate::sandbox::list_folders(),
+        "null_device": crate::sandbox::null_device(),
+    }))
+}
+
+/// The last of `latch logout --purge` on Windows: `latch grant-listing --undo`
+/// as administrator, Windows' one prompt, and then what is left on this PC as
+/// read back. If anything is, it says so, with why.
+#[cfg(windows)]
+pub fn undo_on_this_pc() -> Value {
+    let ran =
+        std::env::current_exe().and_then(|latch| as_administrator(&latch, "grant-listing --undo"));
+    let left = crate::sandbox::machine_grants();
+    if left.is_empty() {
+        return serde_json::json!({"removed": true});
+    }
+    let why = match ran {
+        Err(err) if err.raw_os_error() == Some(ERROR_CANCELLED as i32) => {
+            "Windows' administrator prompt was declined".to_string()
+        }
+        Err(err) => format!("Windows could not run latch as administrator: {err}"),
+        Ok(_) => "latch could not remove it as administrator".to_string(),
+    };
+    let next = "latch logout --purge";
+    eprintln!(
+        "✗ Still on this PC: {}. {why}.\n  Try again: {next}",
+        left.join(", ")
+    );
+    serde_json::json!({"removed": false, "left": left, "error": why, "next": next})
 }
 
 /// Runs `latch ARGS` as administrator and waits for it to end: Windows

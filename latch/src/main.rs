@@ -204,8 +204,8 @@ fn main() -> ExitCode {
         // Run as administrator by `latch setup`, maybe as another account:
         // no state folder needed, and no runtime.
         #[cfg(windows)]
-        Command::GrantListing => {
-            return match setup::grant_listing().and_then(|done| json(cli.pretty, done)) {
+        Command::GrantListing { undo } => {
+            return match setup::grant_listing(undo).and_then(|done| json(cli.pretty, done)) {
                 Ok(Printed(text)) => {
                     term::print_out(&format!("{text}\n"));
                     ExitCode::SUCCESS
@@ -552,7 +552,7 @@ async fn run(
             unreachable!("handled in main")
         }
         #[cfg(windows)]
-        Command::GrantListing => unreachable!("handled in main"),
+        Command::GrantListing { .. } => unreachable!("handled in main"),
     }
 }
 

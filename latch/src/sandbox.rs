@@ -808,13 +808,36 @@ pub(crate) use platform::lists_in;
 #[cfg(windows)]
 pub(crate) use platform::{EditLock, final_path, within};
 #[cfg(windows)]
-pub use platform::{grant_listing, list_folders, sweep, tie_to_host};
+pub use platform::{
+    grant_listing, list_folders, machine_grants, null_device, null_device_closed, revoke_listing,
+    sweep, tie_to_host,
+};
 
 /// Whether agents may list folders here: only Windows asks
 /// (`latch setup`), so nothing to say elsewhere.
 #[cfg(not(windows))]
 pub fn list_folders() -> Option<&'static str> {
     None
+}
+
+/// Whether workers may use the null device: only Windows closes it to them,
+/// so nothing to say elsewhere.
+#[cfg(not(windows))]
+pub fn null_device() -> Option<&'static str> {
+    None
+}
+
+/// Whether the null device keeps workers out: only Windows' does.
+#[cfg(not(windows))]
+pub fn null_device_closed() -> bool {
+    false
+}
+
+/// What `latch setup` left on this machine for `latch logout --purge` to
+/// remove: only Windows has any.
+#[cfg(not(windows))]
+pub fn machine_grants() -> Vec<&'static str> {
+    Vec::new()
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
