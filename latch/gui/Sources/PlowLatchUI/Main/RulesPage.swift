@@ -78,7 +78,11 @@ private struct RulesBody: View {
                 VStack(spacing: 0) {
                     RuleList(list: list)
                     Divider()
-                    BuiltInDefaults()
+                    // Every word, however short the window.
+                    ViewThatFits(in: .vertical) {
+                        BuiltInDefaults()
+                        ScrollView { BuiltInDefaults() }
+                    }
                 }
             }
         } else if let error = app.rulesError {
