@@ -45,10 +45,11 @@ pub struct Pin {
 
 #[derive(Deserialize)]
 pub struct Build {
-    /// Checked by browser-engines.sh, which downloads the zip.
-    #[allow(dead_code)]
+    /// Checked by browser-engines.sh, which downloads the zip (on Windows,
+    /// `latch browser setup` itself).
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub url: String,
-    #[allow(dead_code)]
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub zip_sha256: String,
     /// The folder the zip unpacks to, inside the version folder.
     pub folder: String,
@@ -96,15 +97,20 @@ pub struct CamoufoxBuild {
     pub runtime_tree_sha256: String,
 }
 
-/// One downloaded part: install.sh checks the archive's sha256, latch the
-/// unpacked folder's tree hash before every launch.
+/// One downloaded part: install.sh checks the archive's sha256 (on
+/// Windows, `latch browser setup` itself), latch the unpacked folder's tree
+/// hash before every launch.
 #[derive(Deserialize)]
 pub struct Download {
-    #[allow(dead_code)]
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub url: String,
-    #[allow(dead_code)]
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub sha256: String,
     pub tree_sha256: String,
+    /// Node's: the folder its archive unpacks to.
+    #[serde(default)]
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub folder: String,
 }
 
 /// An installed, checked Camoufox, ready to launch.
@@ -140,7 +146,7 @@ impl CamoufoxPin {
         };
         let root = self.folder(state_dir);
         let engine = CamoufoxEngine {
-            node: root.join("node/bin/node"),
+            node: root.join("node").join(NODE),
             runtime: root.join("runtime"),
             install: root.join("camoufox"),
             executable: root.join("camoufox").join(&build.executable),
@@ -187,6 +193,7 @@ pub fn platform() -> Option<&'static str> {
         ("macos", "x86_64") => Some("mac_x64"),
         ("linux", "aarch64") => Some("linux_arm64"),
         ("linux", "x86_64") => Some("linux_x64"),
+        ("windows", "x86_64") => Some("win_x64"),
         _ => None,
     }
 }
@@ -395,6 +402,12 @@ pub fn tree_hash(root: &Path) -> io::Result<String> {
 
 /// The receipt's file, beside the folders it vouches for.
 const RECEIPT: &str = "receipt.json";
+/// Node in its folder of the Camoufox plugin, as its archive has it.
+const NODE: &str = if cfg!(windows) {
+    "node.exe"
+} else {
+    "bin/node"
+};
 
 /// A full hash that matched: the tree hashes, and a hash of the metadata of
 /// every entry in those folders then (`metadata_hash`).
@@ -515,6 +528,12 @@ fn walk(root: &Path, dir: &Path, entries: &mut Vec<(Vec<u8>, PathBuf)>) -> io::R
             .as_os_str()
             .as_encoded_bytes()
             .to_vec();
+        // Windows' separator as `/`, as the pin script's hash has it.
+        #[cfg(windows)]
+        let rel: Vec<u8> = rel
+            .into_iter()
+            .map(|byte| if byte == b'\\' { b'/' } else { byte })
+            .collect();
         let is_dir = fs::symlink_metadata(&path)?.is_dir();
         entries.push((rel, path.clone()));
         if is_dir {
@@ -538,7 +557,13 @@ mod tests {
         assert!(forbidden("--remote-debugging-port=9222"));
         assert!(forbidden("--headless=new"));
         assert!(forbidden("--no-sandbox"));
-        for key in ["mac_arm64", "mac_x64", "linux_arm64", "linux_x64"] {
+        for key in [
+            "mac_arm64",
+            "mac_x64",
+            "linux_arm64",
+            "linux_x64",
+            "win_x64",
+        ] {
             assert!(CFT.builds.contains_key(key), "{key}");
             assert!(!CFT.builds[key].args.iter().any(|arg| forbidden(arg)));
         }

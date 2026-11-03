@@ -1,12 +1,16 @@
 //! The Chrome DevTools Protocol over `--remote-debugging-pipe`: Chrome
-//! reads commands on its fd 3 and writes replies and events on its fd 4,
+//! reads commands on its fd 3 and writes replies and events on its fd 4
+//! (on Windows, the two pipe handles `--remote-debugging-io-pipes` names),
 //! each message JSON ending in a NUL byte. The pipes are private to the
 //! worker and Chrome; nothing listens on a port.
 
 use std::collections::{HashSet, VecDeque};
 use std::fs::File;
 use std::io::{self, Read, Write};
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
+#[cfg(windows)]
+use std::os::windows::io::AsRawHandle;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
@@ -95,23 +99,30 @@ pub struct Cdp {
 }
 
 /// The two pipes for one Chrome: the ends Chrome gets (to become its fd 3
-/// and fd 4) and the ends the driver keeps. Every end is close-on-exec, so
-/// no other program the worker starts inherits one.
+/// and fd 4) and the ends the driver keeps. Every end is close-on-exec (on
+/// Windows, not inheritable), so no other program the worker starts
+/// inherits one.
 pub struct Pipes {
-    pub chrome_reads: OwnedFd,
-    pub chrome_writes: OwnedFd,
+    pub chrome_reads: End,
+    pub chrome_writes: End,
     pub cdp: Cdp,
 }
 
+/// One end of a pipe: a descriptor, or on Windows a handle.
+#[cfg(unix)]
+pub type End = std::os::fd::OwnedFd;
+#[cfg(windows)]
+pub type End = std::os::windows::io::OwnedHandle;
+
 pub fn pipes() -> io::Result<Pipes> {
-    let (chrome_reads, to_chrome) = pipe()?;
-    let (from_chrome, chrome_writes) = pipe()?;
+    let (chrome_reads, to_chrome) = io::pipe()?;
+    let (from_chrome, chrome_writes) = io::pipe()?;
     Ok(Pipes {
-        chrome_reads,
-        chrome_writes,
+        chrome_reads: chrome_reads.into(),
+        chrome_writes: chrome_writes.into(),
         cdp: Cdp {
-            to_chrome: File::from(to_chrome),
-            from_chrome: File::from(from_chrome),
+            to_chrome: File::from(End::from(to_chrome)),
+            from_chrome: File::from(End::from(from_chrome)),
             buffer: Vec::new(),
             next_id: 0,
             events: VecDeque::new(),
@@ -123,24 +134,6 @@ pub fn pipes() -> io::Result<Pipes> {
             stopped: false,
         },
     })
-}
-
-/// A pipe as (read end, write end), both close-on-exec.
-fn pipe() -> io::Result<(OwnedFd, OwnedFd)> {
-    let mut fds = [0; 2];
-    // SAFETY: `pipe` writes two descriptors into the array we own.
-    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: both descriptors were just created and are owned by nobody else.
-    let ends = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
-    for fd in [&ends.0, &ends.1] {
-        // SAFETY: fcntl on a descriptor we own.
-        if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } != 0 {
-            return Err(io::Error::last_os_error());
-        }
-    }
-    Ok(ends)
 }
 
 impl Cdp {
@@ -239,8 +232,11 @@ impl Cdp {
 
     /// What Chrome writes its replies and events to, while it is open: a
     /// closed pipe reads as ready for ever.
-    pub fn events(&self) -> Option<std::os::fd::RawFd> {
-        (!self.closed).then(|| self.from_chrome.as_raw_fd())
+    pub fn events(&self) -> Option<super::driver::Wake> {
+        #[cfg(unix)]
+        return (!self.closed).then(|| self.from_chrome.as_raw_fd());
+        #[cfg(windows)]
+        return (!self.closed).then(|| self.from_chrome.as_raw_handle());
     }
 
     /// Whether a reply did not come in time since this was last asked.
@@ -424,12 +420,14 @@ impl Cdp {
 }
 
 /// Whether `file` has bytes (or its end) to read within `wait`.
+#[cfg(unix)]
 pub fn readable(file: &impl AsRawFd, wait: Duration) -> Result<bool, Failure> {
     readable_or(file, None, wait)
 }
 
 /// Whether `file` has bytes (or its end) to read within `wait`, which ends
 /// early too when `also` has.
+#[cfg(unix)]
 pub fn readable_or(
     file: &impl AsRawFd,
     also: Option<std::os::fd::RawFd>,
@@ -452,6 +450,61 @@ pub fn readable_or(
         if io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
             return Err(Failure::new(code::engine_error, "poll failed".into()));
         }
+    }
+}
+
+/// Whether `file`, a pipe, has bytes (or its end) to read within `wait`.
+#[cfg(windows)]
+pub fn readable(file: &impl AsRawHandle, wait: Duration) -> Result<bool, Failure> {
+    readable_or(file, None, wait)
+}
+
+/// Whether `file`, a pipe, has bytes (or its end) to read within `wait`,
+/// which ends early too when the pipe `also` has. Windows cannot wait on an
+/// anonymous pipe: they are looked at every millisecond while an answer is
+/// likely (the first 50 ms), then every 10.
+#[cfg(windows)]
+pub fn readable_or(
+    file: &impl AsRawHandle,
+    also: Option<std::os::windows::io::RawHandle>,
+    wait: Duration,
+) -> Result<bool, Failure> {
+    use windows_sys::Win32::System::Pipes::PeekNamedPipe;
+    let has = |pipe: std::os::windows::io::RawHandle| {
+        let mut available = 0u32;
+        // SAFETY: a pipe handle held open meanwhile; only the count is
+        // written.
+        let ok = unsafe {
+            PeekNamedPipe(
+                pipe,
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+                &mut available,
+                std::ptr::null_mut(),
+            )
+        };
+        // A pipe whose writer is gone (or that failed) reads its end at once.
+        ok == 0 || available > 0
+    };
+    let start = Instant::now();
+    loop {
+        if has(file.as_raw_handle()) {
+            return Ok(true);
+        }
+        if also.is_some_and(has) {
+            return Ok(false);
+        }
+        let waited = start.elapsed();
+        if waited >= wait {
+            return Ok(false);
+        }
+        let pause = if waited < Duration::from_millis(50) {
+            1
+        } else {
+            10
+        };
+        std::thread::sleep(Duration::from_millis(pause));
     }
 }
 

@@ -806,7 +806,7 @@ mod platform;
 #[cfg(all(windows, test))]
 pub(crate) use platform::lists_in;
 #[cfg(windows)]
-pub(crate) use platform::{EditLock, final_path, within};
+pub(crate) use platform::{EditLock, Job, final_path, within};
 #[cfg(windows)]
 pub use platform::{
     grant_listing, list_folders, machine_grants, null_device, null_device_closed, revoke_listing,
