@@ -116,6 +116,24 @@ const IDENTITY_TOKENS: [(&str, &str); 17] = [
     ("bday", "date of birth"),
 ];
 
+/// Which of a card's `CARD_NEEDS` the page's own hints ask for. A page with
+/// no hints asks for nothing it can be held to.
+pub fn card_asks(controls: &[Control]) -> Vec<&'static str> {
+    let mut asked = Vec::new();
+    for control in controls.iter().filter(|c| c.eligible()) {
+        let labels: &[&'static str] = match control.token() {
+            Some("cc-number") => &["number"],
+            Some("cc-csc") => &["code"],
+            Some("cc-exp") => &["expiry month", "expiry year"],
+            Some("cc-exp-month") => &["expiry month"],
+            Some("cc-exp-year") => &["expiry year"],
+            _ => &[],
+        };
+        asked.extend_from_slice(labels);
+    }
+    asked
+}
+
 /// Input types a value never goes into.
 const NOT_FIELDS: [&str; 9] = [
     "checkbox", "radio", "button", "submit", "reset", "image", "file", "hidden", "range",

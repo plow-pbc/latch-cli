@@ -1284,6 +1284,7 @@ fn refused(failure: &Failure) -> bool {
                 | "origin_mismatch"
                 | "no_such_item"
                 | "context_changed"
+                | "card_incomplete"
         )
 }
 

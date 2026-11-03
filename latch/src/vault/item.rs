@@ -164,9 +164,8 @@ const LABELS: &[(u8, &str, &str)] = &[
     (IDENTITY, "date of birth", "birthDate"),
 ];
 
-/// What a card can't pay without. A cardholder name is asked for on a phone
-/// link but stays optional: some cards carry none, and many checkouts ask
-/// for none.
+/// What a fill refuses a card for lacking, where the page asks for it. A
+/// cardholder name isn't among them, so a card saved without one still fills.
 pub const CARD_NEEDS: [&str; 4] = ["number", "code", "expiry month", "expiry year"];
 
 /// The labels an owner can give values for, per kind, and whether each is
@@ -294,7 +293,7 @@ impl Item {
         }
     }
 
-    /// Which of the fields it can't pay without a card lacks.
+    /// Which of `CARD_NEEDS` a card lacks.
     pub fn card_missing(&self) -> Vec<&'static str> {
         CARD_NEEDS
             .into_iter()

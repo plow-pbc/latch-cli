@@ -1,7 +1,9 @@
 // One phone link, in WebKit as an iPhone: open it, check the form will not
 // send with its required fields (secrets, a note's text) empty, type
 // `values` into the host's form by field name, save, and open the link
-// again, which must answer that it was used.
+// again, which must answer that it was used. With $REFUSED_FIRST, a save the
+// host refuses (a site it won't take) comes first: what was typed must still
+// be there to retry with, and a save that works must clear the secrets.
 // With PREVIOUS.json, the tab first shows that earlier link, and the new
 // one arrives as only a new `#` part, as when a second link opens in the
 // same tab. Screenshots go to OUT-*.png.
@@ -39,12 +41,27 @@ try {
     await form.locator(`[name="${label}"]`).fill(value);
   }
   await page.screenshot({ path: `${out}-1-form.png` });
+  if (process.env.REFUSED_FIRST) {
+    const site = await form.locator("#sites").inputValue();
+    await form.locator("#sites").fill("http://shop.example");
+    await form.locator("button").click();
+    await form.locator("#result").waitFor({ state: "visible", timeout: 30000 });
+    console.log("refused:", await form.locator("#result").textContent());
+    for (const [label, value] of Object.entries(values)) {
+      if ((await form.locator(`[name="${label}"]`).inputValue()) !== value) throw new Error(`${label} lost on a refused save`);
+    }
+    await form.locator("#sites").fill(site);
+    await form.locator("#result").evaluate((el) => { el.hidden = true; });
+  }
   await form.locator("button").click();
   await form.locator("#result").waitFor({ state: "visible", timeout: 30000 });
   const result = await form.locator("#result").textContent();
   console.log("result:", result);
   await page.screenshot({ path: `${out}-2-result.png` });
   if (!result.startsWith("Saved on ")) throw new Error(`not saved: ${result}`);
+  for (const input of await form.locator("input[type=password]").all()) {
+    if (await input.inputValue()) throw new Error("a secret stayed in the form after saving");
+  }
 
   const again = await context.newPage();
   await again.goto(url);

@@ -135,8 +135,9 @@
     const message = event.data;
     if (message.type === "request") show(message.request);
     if (message.type === "result") {
-      for (const input of form.querySelectorAll("input[type=password]")) input.value = "";
       if (message.ok) {
+        // A refused save keeps what was typed, for the owner to fix and retry.
+        for (const input of form.querySelectorAll("input[type=password]")) input.value = "";
         form.hidden = true;
         result("Saved on " + message.host + ".", false);
       } else {

@@ -6,7 +6,8 @@
 #    open a link with the owner's latch and save made-up values from WebKit
 #    as an iPhone (phone.mjs); the form must not send with a required field
 #    (a secret, a note's text) empty, each link must refuse a second use,
-#    and a link opened in a tab that shows another must load.
+#    a link opened in a tab that shows another must load, and a refused
+#    save must keep what was typed, optional secrets included.
 # 2. The host lists the items without a value.
 # 3. A browser session on the host signs in to a practice site with the
 #    saved login (`latch browser fill`, as an agent calls it), and the
@@ -72,7 +73,9 @@ printf '{"password": "%s"}' "$password" > "$out/login-values.json"
 check login "$out/login-values.json" "" --site toscrape.com --field username=phone-e2e
 printf '{"ssn": "%s", "passport number": "%s"}' "$ssn" "$passport" > "$out/identity-values.json"
 # The identity's link opens in the tab that shows the login's used one.
-check identity "$out/identity-values.json" login --field "first name=Ada" --ask ssn --ask "passport number"
+export REFUSED_FIRST=1
+check identity "$out/identity-values.json" login --field "first name=Ada" --ask ssn
+unset REFUSED_FIRST
 printf '{"notes": "%s"}' "$note" > "$out/note-values.json"
 check note "$out/note-values.json" ""
 printf '{"number": "4242424242424242", "code": "%s", "expiry month": "4", "expiry year": "2031", "cardholder name": "Ada", "brand": "Visa"}' "$code" > "$out/card-values.json"

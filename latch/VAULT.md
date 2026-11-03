@@ -137,7 +137,7 @@ latch vault link --host my-mac --kind login --title Shop --site shop.example \
   typed on the phone; the owner's non-secret `--field`s come filled in. A
   login's username and password, a card's number, code, expiry month,
   expiry year and cardholder name and a note's text are always asked for,
-  and a card can't be saved without its number, code and expiry. The kind's
+  and a card can't be saved without any of these. The kind's
   other fields are offered under "Optional fields". `--ask LABEL` moves one
   up and, if it is secret, requires it
   (`--kind identity --ask ssn --ask "passport number"`). Custom fields and

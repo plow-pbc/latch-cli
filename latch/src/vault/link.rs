@@ -234,11 +234,11 @@ fn fields(kind: &str, given: &Value, ask: &Value) -> Result<Vec<Field>, Failure>
 
 /// Whether a field must be filled before the item is saved, whether the
 /// owner gave it or the phone types it: every secret asked for, a note's
-/// text, which is all a note is, and what a card can't pay without.
+/// text, which is all a note is, and all that a checkout takes from a card.
 fn required(kind: &str, label: &str, secret: bool) -> bool {
     secret
         || (kind == "note" && label == "notes")
-        || (kind == "card" && CARD_NEEDS.contains(&label))
+        || (kind == "card" && (CARD_NEEDS.contains(&label) || label == "cardholder name"))
 }
 
 /// The relay as a browser must dial it. iroh names relays as fully
@@ -679,7 +679,7 @@ mod tests {
                 {"label": "code", "secret": true, "required": true},
                 {"label": "expiry month", "secret": false, "required": true},
                 {"label": "expiry year", "secret": false, "required": true},
-                {"label": "cardholder name", "secret": false, "required": false},
+                {"label": "cardholder name", "secret": false, "required": true},
                 {"label": "brand", "secret": false, "required": false, "more": true},
                 {"label": "notes", "secret": false, "required": false, "more": true},
             ])
@@ -694,7 +694,8 @@ mod tests {
         assert!(refused.message.contains("expiry month"));
         assert!(vault.list_if_present().is_empty());
         let values = json!({"number": "4242 4242 4242 4242", "code": "731",
-                            "expiry month": "4", "expiry year": "2031"});
+                            "expiry month": "4", "expiry year": "2031",
+                            "cardholder name": "Ada Lovelace"});
         submitted(&vault, code, values).unwrap();
         assert_eq!(vault.list_if_present().len(), 1);
     }
