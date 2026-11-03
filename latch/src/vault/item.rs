@@ -164,6 +164,11 @@ const LABELS: &[(u8, &str, &str)] = &[
     (IDENTITY, "date of birth", "birthDate"),
 ];
 
+/// What a card can't pay without. A cardholder name is asked for on a phone
+/// link but stays optional: some cards carry none, and many checkouts ask
+/// for none.
+pub const CARD_NEEDS: [&str; 4] = ["number", "code", "expiry month", "expiry year"];
+
 /// The labels an owner can give values for, per kind, and whether each is
 /// secret, as the classifier says (so it is prompted for without echo).
 pub fn entry_labels(kind: u8) -> Vec<(&'static str, bool)> {
@@ -287,6 +292,14 @@ impl Item {
                 .and_then(|l| l.totp.as_deref())
                 .is_some_and(|t| !t.is_empty()),
         }
+    }
+
+    /// Which of the fields it can't pay without a card lacks.
+    pub fn card_missing(&self) -> Vec<&'static str> {
+        CARD_NEEDS
+            .into_iter()
+            .filter(|label| self.raw.kind == CARD && self.raw.get(label).is_none())
+            .collect()
     }
 
     /// Checks an item before it is stored: one of latch's four kinds, a

@@ -135,9 +135,13 @@ latch vault link --host my-mac --kind login --title Shop --site shop.example \
   An owner's link lets it in with its code; Plow is not asked who the phone
   is. An agent's link carries no code (see below). Secret fields are
   typed on the phone; the owner's non-secret `--field`s come filled in. A
-  login's username and password, a card's number and code and a note's
-  text are always asked for; `--ask LABEL` asks for any other field the
-  kind has (`--kind identity --ask ssn --ask "passport number"`). The
+  login's username and password, a card's number, code, expiry month,
+  expiry year and cardholder name and a note's text are always asked for,
+  and a card can't be saved without its number, code and expiry. The kind's
+  other fields are offered under "Optional fields". `--ask LABEL` moves one
+  up and, if it is secret, requires it
+  (`--kind identity --ask ssn --ask "passport number"`). Custom fields and
+  ssh keys can't be added from a phone: `vault add` doesn't make them either. The
   website, title and username come filled in too, and the owner can change
   them before saving; the vault's own rules apply to what is saved, and a
   site named with a scheme other than `https://` is refused. The audit's

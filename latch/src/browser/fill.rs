@@ -455,6 +455,20 @@ impl Plan {
 
     fn of(item: &Item, args: &Value) -> Result<Plan, Failure> {
         let meta = item.meta();
+        let missing = item.card_missing();
+        if !missing.is_empty() {
+            let mut failure = Failure::new(
+                code::card_incomplete,
+                format!(
+                    "nothing was filled: the card {:?} has no {}. Ask the owner to add what's missing with `latch vault edit {}`",
+                    meta.title,
+                    missing.join(", "),
+                    meta.item,
+                ),
+            );
+            failure.details = json!({"missing": missing});
+            return Err(failure);
+        }
         let usage = |message: &str| Failure::new(code::bad_arguments, message.to_string());
         let mut fields: Vec<(String, Vec<String>)> = Vec::new();
         for pair in args["fields"].as_array().into_iter().flatten() {

@@ -1,7 +1,8 @@
 #!/bin/sh
 # The phone link, end to end, against a running host:
 #
-# 1. For a login, an identity with secrets typed on the phone and a note,
+# 1. For a login, an identity with secrets typed on the phone, a note and a
+#    card with an optional field,
 #    open a link with the owner's latch and save made-up values from WebKit
 #    as an iPhone (phone.mjs); the form must not send with a required field
 #    (a secret, a note's text) empty, each link must refuse a second use,
@@ -47,6 +48,7 @@ password="Qz-made-up-$run"
 ssn="Kw-ssn-$run"
 passport="Jx-passport-$run"
 note="Vy-note-$run"
+code="Zk-code-$run"
 
 # Every client call's output goes to a file in $out, which step 4 searches.
 client() { # NAME ARGS…
@@ -73,6 +75,8 @@ printf '{"ssn": "%s", "passport number": "%s"}' "$ssn" "$passport" > "$out/ident
 check identity "$out/identity-values.json" login --field "first name=Ada" --ask ssn --ask "passport number"
 printf '{"notes": "%s"}' "$note" > "$out/note-values.json"
 check note "$out/note-values.json" ""
+printf '{"number": "4242424242424242", "code": "%s", "expiry month": "4", "expiry year": "2031", "cardholder name": "Ada", "brand": "Visa"}' "$code" > "$out/card-values.json"
+check card "$out/card-values.json" ""
 rm "$out"/*-values.json
 
 # 2. The host lists them, without values.
@@ -81,7 +85,7 @@ python3 - "$out/list.json" "$title" > "$out/saved.txt" <<'PY'
 import json, sys
 items = [i for i in json.load(open(sys.argv[1]))["items"] if i["title"] == sys.argv[2]]
 kinds = sorted(i["kind"] for i in items)
-assert kinds == ["identity", "login", "note"], kinds
+assert kinds == ["card", "identity", "login", "note"], kinds
 for item in sorted(items, key=lambda i: i["kind"] != "login"):
     print(item["item"], item["revision"], item["kind"], [f["label"] for f in item["fields"]])
 PY
@@ -114,7 +118,7 @@ while read -r item revision _; do
     client "remove-$item" vault remove --host "$host" "$item" --revision "$revision"
 done < "$out/saved.txt"
 found=0
-for value in "$password" "$ssn" "$passport" "$note"; do
+for value in "$password" "$ssn" "$passport" "$note" "$code"; do
     for place in "$HOST_LOG" "$HOST_STATE" "$CLIENT_STATE" "$out"; do
         if grep -rl --exclude='*.png' -e "$value" "$place"; then
             echo "a made-up value reached $place" >&2

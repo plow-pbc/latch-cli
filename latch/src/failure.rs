@@ -248,6 +248,7 @@ codes! {
     calendar_conflict: Denied,
     caller_denied: Denied,
     caller_gone: Unknown,
+    card_incomplete: Failed,
     check_not_met: Failed,
     checksum_mismatch: Failed,
     code_expired: Failed,

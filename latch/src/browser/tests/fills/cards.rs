@@ -22,6 +22,7 @@ conformance!(
     a_card_fills_a_providers_hosted_fields,
     a_card_fills_split_boxes_and_expiry_lists,
     a_card_saved_with_spaces_fills_by_its_digits,
+    a_card_with_no_expiry_fills_nothing_and_says_what_it_lacks,
     a_hosted_checkout_takes_a_number_however_it_was_saved,
     a_two_digit_year_field_gets_two_digits,
     an_amex_number_in_four_boxes_of_four_says_it_does_not_split,
@@ -387,6 +388,48 @@ async fn a_card_saved_with_spaces_fills_by_its_digits(engine: &str) {
     let page = h.text().await;
     assert!(page.contains(PAID), "{page}");
     assert!(!h.saw_the_card(), "the card reached a result or the audit");
+    h.call("close", json!({})).await.ok();
+}
+
+async fn a_card_with_no_expiry_fills_nothing_and_says_what_it_lacks(engine: &str) {
+    let (mut h, _, local, _, _keep) = shop(engine).await;
+    let half = h
+        .browsers
+        .vault
+        .with(|s| {
+            s.add(item(
+                CARD,
+                "Half card",
+                &[],
+                &[("number", NUMBER), ("code", CVV)],
+            ))
+        })
+        .unwrap()
+        .item;
+    h.call("open", json!({"url": format!("{local}/checkout.html")}))
+        .await
+        .unwrap();
+    let page = h.call("observe", json!({})).await.unwrap();
+    let number = find(&page, "textbox", "Card number");
+    let cvv = find(&page, "textbox", "CVV");
+    let args = json!({"item": half, "fields": [["number", [number]], ["code", [cvv]]]});
+    let (filled, _) = h.gated_fill(args).await;
+    let failure = filled.unwrap_err();
+    assert_eq!(failure.code, "card_incomplete");
+    assert_eq!(
+        failure.details["missing"],
+        json!(["expiry month", "expiry year"])
+    );
+    assert!(failure.message.contains("nothing was filled"));
+    let after = h.call("observe", json!({})).await.unwrap();
+    assert!(
+        after["elements"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|element| element["filled"].is_null()),
+        "{after}"
+    );
     h.call("close", json!({})).await.ok();
 }
 

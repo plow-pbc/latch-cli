@@ -33,6 +33,7 @@
     border: 0; border-radius: 12px; background: var(--accent); color: var(--accent-fg);
   }
   button:disabled { opacity: .5; }
+  summary { margin-top: 22px; font-size: 15px; color: var(--muted); }
   .machine { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--line); font-size: 14px; color: var(--muted); }
   .machine pre { font-size: 11px; line-height: 1.15; margin: 8px 0 0; color: var(--fg); }
   .note { font-size: 14px; color: var(--muted); margin-top: 14px; }
@@ -70,14 +71,22 @@
     $("title").required = true;
     for (const el of document.querySelectorAll(".host")) el.textContent = request.host;
     $("art").textContent = (request.art || []).join("\n");
+    // Fields the link didn't ask for wait behind one line, open when the
+    // link asked for nothing.
+    const more = document.createElement("details");
+    more.append(document.createElement("summary"));
+    more.firstChild.textContent = "Optional fields";
+    more.open = request.fields.every((field) => field.more);
     for (const field of request.fields) {
       const label = document.createElement("label");
-      label.textContent = field.label;
+      label.textContent = field.required || field.more ? field.label : field.label + " (optional)";
       // A note's text gets a box of lines; any other field is one line,
       // masked when it is secret.
       const input = document.createElement(field.label === "notes" ? "textarea" : "input");
       input.name = field.label;
       if (field.label !== "notes") input.type = field.secret ? "password" : "text";
+      // The vault keeps a date of birth as YYYY-MM-DD, which a date input sends.
+      if (field.label === "date of birth") input.type = "date";
       input.autocapitalize = "off";
       input.spellcheck = false;
       if (field.label === "username") input.autocomplete = "username";
@@ -86,8 +95,9 @@
       // The host refuses a save without these; say so before sending.
       input.required = field.required;
       label.append(input);
-      form.append(label);
+      (field.more ? more : form).append(label);
     }
+    if (more.children.length > 1) form.append(more);
     const button = document.createElement("button");
     button.textContent = "Save to " + request.host;
     form.append(button);

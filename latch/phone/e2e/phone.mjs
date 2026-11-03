@@ -33,6 +33,8 @@ try {
   if (await form.locator("#result").isVisible()) throw new Error("sent with a required field empty");
   console.log("header:", await page.textContent("#status"));
   console.log("site:", await form.locator("#sites").inputValue());
+  // Optional fields wait behind one line: open it to reach them.
+  if (await form.locator("details:not([open])").count()) await form.locator("summary").click();
   for (const [label, value] of Object.entries(values)) {
     await form.locator(`[name="${label}"]`).fill(value);
   }
