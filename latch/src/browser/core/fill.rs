@@ -561,8 +561,9 @@ impl<D: Driver> Core<D> {
     }
 
     /// Filled frames whose document may still be the one filled: in the
-    /// active tab, those whose document is unchanged or could not be read
-    /// just now (unknown is still held); in another tab, every
+    /// active tab, every one not listed now with another document (one the
+    /// engine could not read, or left out of its list, is still held until
+    /// it says the frame is gone: see `holding`); in another tab, every
     /// one while that tab is open, since only the active tab's frames can
     /// be read.
     fn live_filled(&mut self) -> Result<Filled, Failure> {
@@ -571,10 +572,8 @@ impl<D: Driver> Core<D> {
         let frames = self.driver.frames()?;
         self.fill.filled.retain(|(tab, f)| {
             if *tab == active {
-                // A frame whose document could not be read just now (the
-                // engine lists it as "") may still be the filled one.
-                frames.iter().any(|now| {
-                    now.id == f.id && (now.document == f.document || now.document.is_empty())
+                !frames.iter().any(|now| {
+                    now.id == f.id && !now.document.is_empty() && now.document != f.document
                 })
             } else {
                 tabs.iter().any(|open| open.tab == *tab)
@@ -600,10 +599,19 @@ impl<D: Driver> Core<D> {
             ));
         }
         let mut total = 0;
-        for (_, frame) in filled.here {
+        for (tab, frame) in filled.here {
             // A frame whose document is still the filled one but cannot be
-            // read is not known to be empty.
-            let count = self.driver.run(&frame, "__latch.holding()")?;
+            // read is not known to be empty; one the engine says is gone (or
+            // holds another document) is let go.
+            let count = match self.driver.run(&frame, "__latch.holding()") {
+                Err(failure) if failure.code == "stale_snapshot" => {
+                    self.fill.filled.retain(|(t, f)| {
+                        !(*t == tab && f.id == frame.id && f.document == frame.document)
+                    });
+                    continue;
+                }
+                counted => counted?,
+            };
             total += count.as_u64().ok_or_else(|| {
                 Failure::new(
                     code::engine_error,
@@ -652,6 +660,8 @@ impl<D: Driver> Core<D> {
         for (_, frame) in &here {
             match self.driver.run(frame, "__latch.blankFilled(true)") {
                 Ok(_) => done.push(frame.clone()),
+                // Gone, or holding another document: nothing filled to show.
+                Err(failure) if failure.code == "stale_snapshot" => {}
                 Err(_) => {
                     failed = true;
                     break;
@@ -707,11 +717,29 @@ mod tests {
     use super::super::Call;
     use super::*;
 
-    /// A browser that can no longer list its frames, with a dialog up: a
-    /// cleanup on it fails at once.
-    struct Broken;
+    /// How the one filled frame of `Fake` answers now.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Shown {
+        /// Listed, and it holds its value.
+        Held,
+        /// Listed with no document: reading it timed out.
+        Unknown,
+        /// Left out of the list: the session it lives in did not answer.
+        Omitted,
+        /// Gone: the engine says so when it is asked to read it.
+        Gone,
+        /// The browser can no longer list its frames, with a dialog up: a
+        /// cleanup on it fails at once.
+        Broken,
+    }
 
-    impl Driver for Broken {
+    /// A browser whose one filled frame is shown as `shown`.
+    struct Fake {
+        shown: Shown,
+        guarded: Vec<String>,
+    }
+
+    impl Driver for Fake {
         fn limit(&mut self, _: Option<std::time::Instant>) {}
         fn front(&mut self) -> Result<(), Failure> {
             unreachable!()
@@ -726,122 +754,34 @@ mod tests {
             }])
         }
         fn frames(&mut self) -> Result<Vec<Frame>, Failure> {
-            Err(Failure::new(
-                code::engine_error,
-                "the frames are gone".into(),
-            ))
-        }
-        fn settle(&mut self) -> Result<Vec<Event>, Failure> {
-            Ok(Vec::new())
-        }
-        fn dialog_open(&self) -> bool {
-            true
-        }
-        fn active_tab(&self) -> String {
-            "t1".into()
-        }
-        fn capabilities(&self) -> Vec<String> {
-            Vec::new()
-        }
-        fn new_tab(&mut self, _: Option<&str>) -> Result<String, Failure> {
-            unreachable!()
-        }
-        fn switch_tab(&mut self, _: &str) -> Result<(), Failure> {
-            unreachable!()
-        }
-        fn close_tab(&mut self, _: &str) -> Result<(), Failure> {
-            unreachable!()
-        }
-        fn navigate(&mut self, _: &str) -> Result<(), Failure> {
-            unreachable!()
-        }
-        fn back(&mut self) -> Result<bool, Failure> {
-            unreachable!()
-        }
-        fn run(&mut self, _: &Frame, _: &str) -> Result<Value, Failure> {
-            unreachable!()
-        }
-        fn call(&mut self, _: &Frame, _: &str, _: Vec<Value>) -> Result<Value, Failure> {
-            unreachable!()
-        }
-        fn holds_focus(&mut self, _: &Frame) -> Result<bool, Failure> {
-            unreachable!()
-        }
-        fn reaches(&mut self, _: &Frame, _: f64, _: f64) -> Result<bool, Failure> {
-            unreachable!()
-        }
-        fn frame_offset(&mut self, _: &Frame) -> Result<(f64, f64), Failure> {
-            unreachable!()
-        }
-        fn click(&mut self, _: f64, _: f64) -> Result<(), Failure> {
-            unreachable!()
-        }
-        fn type_text(&mut self, _: &str) -> Result<(), Failure> {
-            unreachable!()
-        }
-        fn select_all(&mut self) -> Result<(), Failure> {
-            unreachable!()
-        }
-        fn press(&mut self, _: &str) -> Result<(), Failure> {
-            unreachable!()
-        }
-        fn wheel(&mut self, _: f64, _: f64, _: f64) -> Result<(), Failure> {
-            unreachable!()
-        }
-        fn answer_dialog(&mut self, _: bool, _: Option<&str>) -> Result<(), Failure> {
-            unreachable!()
-        }
-        fn eval(&mut self, _: &str) -> Result<Value, Failure> {
-            unreachable!()
-        }
-        fn set_files(&mut self, _: &Frame, _: &str, _: &[PathBuf]) -> Result<(), Failure> {
-            unreachable!()
-        }
-        fn upload_folder(&self) -> PathBuf {
-            unreachable!()
-        }
-        fn downloads(&mut self) -> Result<Vec<Download>, Failure> {
-            unreachable!()
-        }
-        fn download_file(&mut self, _: &str) -> Result<(Download, PathBuf), Failure> {
-            unreachable!()
-        }
-        fn screenshot(&mut self) -> Result<(Value, Vec<u8>), Failure> {
-            unreachable!()
-        }
-        fn close(&mut self) -> Value {
-            unreachable!()
-        }
-    }
-
-    /// A browser whose one frame holds a filled value; while `unreadable`,
-    /// reading its document times out, as a busy frame's can.
-    struct Flaky {
-        unreadable: bool,
-        guarded: Vec<String>,
-    }
-
-    impl Driver for Flaky {
-        fn limit(&mut self, _: Option<std::time::Instant>) {}
-        fn front(&mut self) -> Result<(), Failure> {
-            unreachable!()
-        }
-        fn tabs(&mut self) -> Result<Vec<Tab>, Failure> {
-            Broken.tabs()
-        }
-        fn frames(&mut self) -> Result<Vec<Frame>, Failure> {
-            let document = if self.unreadable { "" } else { "d1" };
-            Ok(vec![Frame {
-                id: "f1".into(),
+            let main = Frame {
+                id: "f0".into(),
                 parent: None,
+                document: "d0".into(),
+            };
+            let document = match self.shown {
+                Shown::Broken => {
+                    return Err(Failure::new(
+                        code::engine_error,
+                        "the frames are gone".into(),
+                    ));
+                }
+                Shown::Held => "d1",
+                Shown::Unknown => "",
+                Shown::Omitted | Shown::Gone => return Ok(vec![main]),
+            };
+            let filled = Frame {
+                id: "f1".into(),
+                parent: Some("f0".into()),
                 document: document.into(),
-            }])
+            };
+            Ok(vec![main, filled])
         }
         fn settle(&mut self) -> Result<Vec<Event>, Failure> {
             Ok(Vec::new())
         }
         fn dialog_open(&self) -> bool {
-            false
+            self.shown == Shown::Broken
         }
         fn active_tab(&self) -> String {
             "t1".into()
@@ -864,15 +804,17 @@ mod tests {
         fn back(&mut self) -> Result<bool, Failure> {
             unreachable!()
         }
-        fn run(&mut self, _: &Frame, expression: &str) -> Result<Value, Failure> {
-            if self.unreadable {
-                return Err(Failure::new(
+        fn run(&mut self, frame: &Frame, expression: &str) -> Result<Value, Failure> {
+            assert_eq!((frame.id.as_str(), expression), ("f1", "__latch.holding()"));
+            match self.shown {
+                Shown::Held => Ok(json!(1)),
+                Shown::Unknown | Shown::Omitted => Err(Failure::new(
                     code::timeout,
                     "the frame did not answer".into(),
-                ));
+                )),
+                Shown::Gone => Err(Failure::new(code::stale_snapshot, "gone".into())),
+                Shown::Broken => unreachable!(),
             }
-            assert_eq!(expression, "__latch.holding()");
-            Ok(json!(1))
         }
         fn call(&mut self, _: &Frame, _: &str, _: Vec<Value>) -> Result<Value, Failure> {
             unreachable!()
@@ -932,29 +874,33 @@ mod tests {
     }
 
     #[test]
-    fn a_filled_frame_that_cannot_be_read_for_a_moment_is_still_held() {
-        let mut core = Core::new(Flaky {
-            unreadable: false,
+    fn a_filled_frame_is_held_until_the_engine_says_it_is_gone() {
+        let mut core = Core::new(Fake {
+            shown: Shown::Held,
             guarded: vec!["4242424242424242".into()],
         });
         let frame = Frame {
             id: "f1".into(),
-            parent: None,
+            parent: Some("f0".into()),
             document: "d1".into(),
         };
         core.fill.filled.push(("t1".into(), frame));
         core.fill.guarded = vec!["4242424242424242".into()];
-        // The frame's document can't be read: unknown is still held, and
-        // the GET guard stays.
-        core.driver.unreadable = true;
+        // Its document can't be read for a moment, or the frames of its
+        // process are missing from the list: unknown and absent are still
+        // held, and the GET guard stays.
+        for shown in [Shown::Unknown, Shown::Omitted, Shown::Held] {
+            core.driver.shown = shown;
+            core.lift_guard();
+            assert_eq!(core.fill.filled.len(), 1);
+            assert_eq!(core.driver.guarded, ["4242424242424242"]);
+        }
+        // Once the engine answers that the frame is gone, it is let go,
+        // and nothing is left to guard.
+        core.driver.shown = Shown::Gone;
         core.lift_guard();
-        assert_eq!(core.fill.filled.len(), 1);
-        assert!(!core.driver.guarded.is_empty());
-        // Readable again, it still holds its value, and is still guarded.
-        core.driver.unreadable = false;
-        core.lift_guard();
-        assert_eq!(core.fill.filled.len(), 1);
-        assert_eq!(core.driver.guarded, ["4242424242424242"]);
+        assert!(core.fill.filled.is_empty());
+        assert!(core.driver.guarded.is_empty());
     }
 
     #[test]
@@ -983,7 +929,10 @@ mod tests {
 
     #[test]
     fn a_cleanup_that_fails_keeps_every_later_resume_out() {
-        let mut core = Core::new(Broken);
+        let mut core = Core::new(Fake {
+            shown: Shown::Broken,
+            guarded: Vec::new(),
+        });
         core.paused = true;
         core.fill.filled.push((
             "t1".into(),

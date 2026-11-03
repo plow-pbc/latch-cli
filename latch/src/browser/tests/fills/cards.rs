@@ -741,16 +741,11 @@ async fn a_card_does_not_come_back_with_the_back_button(engine: &str) {
     .unwrap();
     let seen = h.call("observe", json!({})).await.unwrap();
     println!("back on the checkout: {}", seen["elements"]);
-    let script = json!({"script": "[...document.querySelectorAll('input:not([type=hidden])')].map(i => i.value.length)"});
-    match h.call("eval", script).await {
-        Ok(left) => println!("eval after back: {left}"),
-        Err(refused) => assert_eq!(refused.code, "secret_on_page"),
-    }
+    // The page came back empty, so nothing is held and eval reads it.
     let script = json!({"script": "[...document.querySelectorAll('input:not([type=hidden])')].map(i => i.value)"});
-    if let Ok(left) = h.call("eval", script).await {
-        let digits = left["value"].to_string().replace([' ', '-'], "");
-        assert!(!digits.contains(NUMBER) && !digits.contains(CVV), "{left}");
-    }
+    let left = h.call("eval", script).await.unwrap();
+    let digits = left["value"].to_string().replace([' ', '-'], "");
+    assert!(!digits.contains(NUMBER) && !digits.contains(CVV), "{left}");
     assert!(!h.saw_the_card(), "the card reached a result or the audit");
     h.call("close", json!({})).await.ok();
 }
