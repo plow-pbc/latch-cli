@@ -3,14 +3,14 @@
 //! machine, whether or not it serves. A host running on an agent's login is
 //! no copy: an agent can neither read nor write the owner's rules, so it is
 //! never asked for its list or sent one. A command reads this machine's copy
-//! and every host's it can reach at once, merges them by id (the newest
-//! change of each rule winning, removals included), and brings any copy that
-//! is behind up to date. A change is saved in this machine's copy first,
-//! then on every host it can reach; a host that can't be reached is reported,
-//! never a reason to undo it. Each host says how its copy stood before
-//! (`observed`) and after (`delivery`): current, behind (it answered, and
-//! lacks the newest list) or unknown (it couldn't be asked, or its answer
-//! was lost).
+//! and every host's it can reach at once, merges them by id (a removal of a
+//! rule winning over any live version of it, otherwise the newest change),
+//! and brings any copy that is behind up to date. A change is saved in this
+//! machine's copy first, then on every host it can reach; a host that can't
+//! be reached is reported, never a reason to undo it. Each host says how its
+//! copy stood before (`observed`) and after (`delivery`): current, behind
+//! (it answered, and lacks the newest list) or unknown (it couldn't be
+//! asked, or its answer was lost).
 //!
 //! Agents and hosts are named by stable id. Those the account no longer has,
 //! and hosts on an agent's login, are left out of what a rule shows, and a
