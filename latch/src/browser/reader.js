@@ -82,7 +82,9 @@
     }
     if (el.localName === 'input') {
       const type = (el.getAttribute('type') || '').toLowerCase();
-      if (['button', 'submit', 'reset'].includes(type) && el.value) return clean(el.value);
+      // A field latch filled is never named by what it holds, even once
+      // the page has made it a button.
+      if (['button', 'submit', 'reset'].includes(type) && el.value && !filled.has(el)) return clean(el.value);
       if (type === 'image' && el.alt) return clean(el.alt);
     }
     if (!['input', 'select', 'textarea'].includes(el.localName)) {

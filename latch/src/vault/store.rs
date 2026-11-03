@@ -8,6 +8,7 @@
 //! macOS latch, else in `vault.key` beside it, owner-only (0600). The state
 //! directory is one `exec` and file workers can never read.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -16,6 +17,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use super::classify;
 use super::item::{Item, Meta};
+use super::sync::{State, Switch, Synced, Tombstone, adopt, content, merge, new_uid, now_ms};
 use crate::failure::{Failure, code};
 use crate::seal::{Sealed, from_hex, seal};
 use crate::secrets::{Secret, Secrets};
@@ -50,17 +52,21 @@ pub trait Backend: Send {
 }
 
 const FILE: &str = "vault.json";
-/// The `vault.json` layout this latch reads and writes; a vault of another
-/// version is refused, never misread or rewritten without what it holds.
-const VERSION: u32 = 1;
+/// The `vault.json` layout this latch writes. Version 1 (items alone,
+/// before sync) is read and written back as this one on the next save; a
+/// vault of any other version is refused, never misread or rewritten
+/// without what it holds.
+const VERSION: u32 = 2;
 /// Binds every sealed blob to what it is.
 const DATA_KEY_AAD: &[u8] = b"latch vault data key v1";
-const ITEMS_AAD: &[u8] = b"latch vault items v1";
+const ITEMS_AAD_V1: &[u8] = b"latch vault items v1";
+const STATE_AAD: &[u8] = b"latch vault state v2";
 
 #[derive(Serialize, Deserialize)]
 struct File {
     version: u32,
     data_key: Sealed,
+    /// Version 1: the items; version 2: the sync `State`.
     items: Sealed,
     /// The number the next item's id gets, so a removed id is never given
     /// again.
@@ -70,10 +76,13 @@ struct File {
 pub struct OwnStore {
     dir: PathBuf,
     data_key: [u8; 32],
-    items: Vec<Item>,
+    state: State,
     next_id: u64,
     /// While saves are held, whether anything changed since.
     held: Option<bool>,
+    /// Opened from version 1, with uids given on this open and not yet
+    /// written.
+    from_v1: bool,
 }
 
 fn failed(message: String) -> Failure {
@@ -111,9 +120,10 @@ impl OwnStore {
             let mut store = OwnStore {
                 dir: dir.to_path_buf(),
                 data_key: rand::random(),
-                items: Vec::new(),
+                state: State::default(),
                 next_id: 1,
                 held: None,
+                from_v1: false,
             };
             store.save()?;
             return Ok(store);
@@ -127,7 +137,7 @@ impl OwnStore {
         }
         let Versioned { version } = serde_json::from_slice(&bytes)
             .map_err(|_| failed("the vault file is damaged".into()))?;
-        if version != VERSION {
+        if version != 1 && version != VERSION {
             let fix = if version > VERSION {
                 "update this latch"
             } else {
@@ -145,14 +155,33 @@ impl OwnStore {
         let data_key: [u8; 32] = open(&custody, &file.data_key, DATA_KEY_AAD)?
             .try_into()
             .map_err(|_| failed("the vault's data key is damaged".into()))?;
-        let items: Vec<Item> = serde_json::from_slice(&open(&data_key, &file.items, ITEMS_AAD)?)
-            .map_err(|_| failed("the vault's items are damaged".into()))?;
+        let damaged = |_| failed("the vault's items are damaged".into());
+        let state = if version == 1 {
+            // From before sync: each item gets its uid, and no order yet.
+            let items: Vec<Item> =
+                serde_json::from_slice(&open(&data_key, &file.items, ITEMS_AAD_V1)?)
+                    .map_err(damaged)?;
+            State {
+                items: items
+                    .into_iter()
+                    .map(|item| Synced {
+                        uid: new_uid(),
+                        modified: 0,
+                        item,
+                    })
+                    .collect(),
+                ..State::default()
+            }
+        } else {
+            serde_json::from_slice(&open(&data_key, &file.items, STATE_AAD)?).map_err(damaged)?
+        };
         Ok(OwnStore {
             dir: dir.to_path_buf(),
             data_key,
-            items,
+            state,
             next_id: file.next_id,
             held: None,
+            from_v1: version == 1,
         })
     }
 
@@ -162,11 +191,11 @@ impl OwnStore {
             return Ok(());
         }
         let custody = custody(&self.dir)?;
-        let items = serde_json::to_vec(&self.items).expect("items serialize");
+        let state = serde_json::to_vec(&self.state).expect("the state serializes");
         let file = File {
             version: VERSION,
             data_key: seal(&custody, &self.data_key, DATA_KEY_AAD),
-            items: seal(&self.data_key, &items, ITEMS_AAD),
+            items: seal(&self.data_key, &state, STATE_AAD),
             next_id: self.next_id,
         };
         let path = self.dir.join(FILE);
@@ -175,19 +204,21 @@ impl OwnStore {
     }
 
     fn find(&self, id: &str) -> Result<usize, Failure> {
-        self.items
+        self.state
+            .items
             .iter()
-            .position(|item| item.id == id)
+            .position(|s| s.item.id == id)
             .ok_or_else(|| Failure::new(code::no_such_item, format!("there is no item {id}")))
     }
 
     fn at_revision(&self, at: usize, revision: u64) -> Result<(), Failure> {
-        if self.items[at].revision != revision {
+        let item = &self.state.items[at].item;
+        if item.revision != revision {
             return Err(Failure::new(
                 code::stale_revision,
                 format!(
                     "item {} is at revision {}, not {revision}; list it again",
-                    self.items[at].id, self.items[at].revision
+                    item.id, item.revision
                 ),
             ));
         }
@@ -197,32 +228,147 @@ impl OwnStore {
     /// An item as an older latch may have stored it, unchecked: what a
     /// vault already holds, for tests.
     #[cfg(test)]
-    pub fn add_as_stored(&mut self, mut item: Item) -> Result<Meta, Failure> {
+    pub fn add_as_stored(&mut self, item: Item) -> Result<Meta, Failure> {
+        self.push(item);
+        self.save()?;
+        Ok(self.last())
+    }
+
+    /// `item` as a new one: the next local id, a new uid, changed now.
+    fn push(&mut self, mut item: Item) {
         item.id = format!("v{}", self.next_id);
         item.revision = 1;
         self.next_id += 1;
-        self.items.push(item);
-        self.save()?;
-        Ok(self.items.last().expect("just added").meta())
+        self.state.items.push(Synced {
+            uid: new_uid(),
+            modified: now_ms(),
+            item,
+        });
+    }
+
+    fn last(&self) -> Meta {
+        self.state.items.last().expect("just added").item.meta()
+    }
+
+    /// Writes a version-1 vault in this layout, so the uids it was given
+    /// on opening are the ones it keeps: before any leaves this host.
+    pub fn keep_uids(&mut self) -> Result<(), Failure> {
+        if std::mem::take(&mut self.from_v1) {
+            self.save()?;
+        }
+        Ok(())
+    }
+
+    /// Everything this vault holds, as the owner's other hosts sync it.
+    pub fn state(&self) -> &State {
+        &self.state
+    }
+
+    /// Merges another host's state into this vault (see `sync.rs`) and
+    /// saves it, if that changed anything. Items keep their local ids, in
+    /// their order; an item new here gets the next id, and a changed one
+    /// its next revision.
+    pub fn apply(&mut self, mut theirs: State) -> Result<Applied, Failure> {
+        let mut ours = self.state.clone();
+        adopt(&mut ours, &mut theirs);
+        let merged = merge(&ours, &theirs);
+        let mut incoming: HashMap<&str, &Synced> =
+            merged.items.iter().map(|s| (s.uid.as_str(), s)).collect();
+        let mut applied = Applied::default();
+        let mut items = Vec::new();
+        for held in ours.items {
+            let Some(won) = incoming.remove(held.uid.as_str()) else {
+                applied.removed += 1;
+                continue;
+            };
+            let mut item = held.item;
+            if content(&won.item) != content(&item) {
+                applied.updated += 1;
+                item = Item {
+                    id: item.id,
+                    revision: item.revision + 1,
+                    ..won.item.clone()
+                };
+            }
+            items.push(Synced {
+                uid: held.uid,
+                modified: won.modified,
+                item,
+            });
+        }
+        for won in merged
+            .items
+            .iter()
+            .filter(|s| incoming.contains_key(s.uid.as_str()))
+        {
+            applied.added += 1;
+            let mut item = won.item.clone();
+            item.id = format!("v{}", self.next_id);
+            item.revision = 1;
+            self.next_id += 1;
+            items.push(Synced {
+                item,
+                ..won.clone()
+            });
+        }
+        let state = State {
+            items,
+            tombstones: merged.tombstones,
+            hosts: merged.hosts,
+        };
+        if state != self.state {
+            let old = std::mem::replace(&mut self.state, state);
+            if let Err(failure) = self.save() {
+                self.state = old;
+                return Err(failure);
+            }
+        }
+        Ok(applied)
+    }
+
+    /// Sets whether the owner's host `key` gets this vault, later than the
+    /// switch it replaces even on a host whose clock is behind, so a merge
+    /// keeps it.
+    pub fn switch(&mut self, key: &str, on: bool) -> Result<(), Failure> {
+        let held = self.state.hosts.iter().find(|s| s.key == key);
+        let after = held.map_or(0, |s| s.modified + 1);
+        self.state.hosts.retain(|s| s.key != key);
+        self.state.hosts.push(Switch {
+            key: key.to_string(),
+            on,
+            modified: now_ms().max(after),
+        });
+        self.save()
+    }
+}
+
+/// What applying another host's state changed in this vault.
+#[derive(Serialize, Default, Debug, PartialEq)]
+pub struct Applied {
+    pub added: usize,
+    pub updated: usize,
+    pub removed: usize,
+}
+
+impl Applied {
+    pub fn any(&self) -> bool {
+        *self != Applied::default()
     }
 }
 
 impl Backend for OwnStore {
     fn list(&self) -> Vec<Meta> {
-        self.items.iter().map(Item::meta).collect()
+        self.state.items.iter().map(|s| s.item.meta()).collect()
     }
 
     fn add(&mut self, mut item: Item) -> Result<Meta, Failure> {
         item.validate()?;
-        item.id = format!("v{}", self.next_id);
-        item.revision = 1;
-        self.next_id += 1;
-        self.items.push(item);
+        self.push(item);
         if let Err(failure) = self.save() {
-            self.items.pop();
+            self.state.items.pop();
             return Err(failure);
         }
-        Ok(self.items.last().expect("just added").meta())
+        Ok(self.last())
     }
 
     fn update(&mut self, mut item: Item, revision: u64) -> Result<Meta, Failure> {
@@ -230,32 +376,49 @@ impl Backend for OwnStore {
         self.at_revision(at, revision)?;
         item.validate()?;
         item.revision = revision + 1;
-        let old = std::mem::replace(&mut self.items[at], item);
+        let held = &self.state.items[at];
+        // Later than what it replaces, whatever this host's clock says.
+        let edited = Synced {
+            uid: held.uid.clone(),
+            modified: now_ms().max(held.modified + 1),
+            item,
+        };
+        let old = std::mem::replace(&mut self.state.items[at], edited);
         if let Err(failure) = self.save() {
-            self.items[at] = old;
+            self.state.items[at] = old;
             return Err(failure);
         }
-        Ok(self.items[at].meta())
+        Ok(self.state.items[at].item.meta())
     }
 
     fn remove(&mut self, id: &str, revision: u64) -> Result<(), Failure> {
         let at = self.find(id)?;
         self.at_revision(at, revision)?;
-        let old = self.items.remove(at);
+        let old = self.state.items.remove(at);
+        // As late as the item, so the removal wins over it everywhere.
+        self.state.tombstones.push(Tombstone {
+            uid: old.uid.clone(),
+            modified: now_ms().max(old.modified),
+        });
         if let Err(failure) = self.save() {
-            self.items.insert(at, old);
+            self.state.tombstones.pop();
+            self.state.items.insert(at, old);
             return Err(failure);
         }
         Ok(())
     }
 
     fn item(&self, id: &str) -> Option<Item> {
-        self.items.iter().find(|item| item.id == id).cloned()
+        self.state
+            .items
+            .iter()
+            .find(|s| s.item.id == id)
+            .map(|s| s.item.clone())
     }
 
     #[cfg(test)]
     fn release(&self, id: &str, label: &str) -> Result<String, Failure> {
-        let item = &self.items[self.find(id)?];
+        let item = &self.state.items[self.find(id)?].item;
         // An authenticator key is no form field: the vault computes codes
         // from it, so it is released only to the vault itself.
         let value = if label == classify::TOTP {
@@ -276,7 +439,7 @@ impl Backend for OwnStore {
     }
 
     fn differs(&self, id: &str, password: &str, totp: &str) -> Result<(bool, bool), Failure> {
-        let item = &self.items[self.find(id)?];
+        let item = &self.state.items[self.find(id)?].item;
         let login = item.raw.login.clone().unwrap_or_default();
         let password_differs = login.password.unwrap_or_default() != password;
         let stored = login.totp.unwrap_or_default();
@@ -302,7 +465,7 @@ impl Backend for OwnStore {
 mod tests {
     use super::*;
     use crate::failure::Exit;
-    use crate::vault::item::{LOGIN, Login, Raw};
+    use crate::vault::item::{CARD, LOGIN, Login, Raw};
 
     fn login(password: &str) -> Item {
         Item {
@@ -399,7 +562,7 @@ mod tests {
         let mut file: serde_json::Value =
             serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         // A newer layout: another version, its items no longer where they were.
-        file["version"] = 2.into();
+        file["version"] = 3.into();
         file["sealed_items"] = file["items"].take();
         file.as_object_mut().unwrap().remove("items");
         let newer = serde_json::to_vec(&file).unwrap();
@@ -407,7 +570,7 @@ mod tests {
 
         let refused = OwnStore::open(dir.path()).err().unwrap();
         assert_eq!(refused.code, "vault_version");
-        assert!(refused.message.contains("version 2"), "{}", refused.message);
+        assert!(refused.message.contains("version 3"), "{}", refused.message);
         assert!(
             refused.message.contains("update this latch"),
             "{}",
@@ -417,26 +580,173 @@ mod tests {
     }
 
     #[test]
-    fn items_saved_with_bound_profiles_still_open() {
+    fn a_version_1_vault_opens_whole_and_is_written_back_as_version_2() {
         let dir = tempfile::tempdir().unwrap();
         let mut store = OwnStore::open(dir.path()).unwrap();
-        store.add(login("made-up-pass-4417")).unwrap();
-        // Items once named the browser profiles that could use them.
-        let mut items = serde_json::to_value(&store.items).unwrap();
+        store.add(login("made-up-pass-1")).unwrap();
+        store.add(login("made-up-pass-2")).unwrap();
+        store.remove("v2", 1).unwrap();
+        let mut card = login("");
+        card.raw = Raw::from_labels(
+            CARD,
+            "Visa",
+            &[("number".into(), "4111111111111111".into())],
+        )
+        .unwrap();
+        store.add(card).unwrap();
+        let before: Vec<Item> = store.state.items.iter().map(|s| s.item.clone()).collect();
+        // As a version 1 latch wrote it: the items alone, under their own
+        // binding. Items once named the browser profiles that could use them.
+        let mut items = serde_json::to_value(&before).unwrap();
         items[0]["profiles"] = serde_json::json!(["default"]);
         let path = dir.path().join(FILE);
         let mut file: File = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        file.version = 1;
         file.items = seal(
             &store.data_key,
             &serde_json::to_vec(&items).unwrap(),
-            ITEMS_AAD,
+            ITEMS_AAD_V1,
         );
-        fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
-        let reopened = OwnStore::open(dir.path()).unwrap();
+        let v1 = serde_json::to_vec(&file).unwrap();
+        fs::write(&path, &v1).unwrap();
+        let version = || -> u64 {
+            serde_json::from_slice::<serde_json::Value>(&fs::read(&path).unwrap()).unwrap()
+                ["version"]
+                .as_u64()
+                .unwrap()
+        };
+
+        let mut migrated = OwnStore::open(dir.path()).unwrap();
+        assert_eq!(migrated.list(), store.list());
         assert_eq!(
-            reopened.release("v1", "password").unwrap(),
-            "made-up-pass-4417"
+            migrated.release("v1", "password").unwrap(),
+            "made-up-pass-1"
         );
+        let migrated_items: Vec<Item> = migrated
+            .state
+            .items
+            .iter()
+            .map(|s| s.item.clone())
+            .collect();
+        assert_eq!(migrated_items, before);
+        assert!(migrated.state.items.iter().all(|s| s.modified == 0));
+        let uids: Vec<String> = migrated.state.items.iter().map(|s| s.uid.clone()).collect();
+        assert!(uids.iter().all(|u| u.len() == 32) && uids[0] != uids[1]);
+        // Opening alone writes nothing; the next save writes version 2.
+        assert_eq!(fs::read(&path).unwrap(), v1);
+        assert_eq!(migrated.add(login("made-up-pass-4")).unwrap().item, "v4");
+        assert_eq!(version(), 2);
+        let reopened = OwnStore::open(dir.path()).unwrap();
+        assert_eq!(reopened.state.items[..2], migrated.state.items[..2]);
+        assert_eq!(reopened.list(), migrated.list());
+
+        // Before its uids can leave the host (every `Vault::with` keeps
+        // them), they are written: the next open has the same ones.
+        fs::write(&path, &v1).unwrap();
+        let mut kept = OwnStore::open(dir.path()).unwrap();
+        kept.keep_uids().unwrap();
+        assert_eq!(version(), 2);
+        assert_eq!(OwnStore::open(dir.path()).unwrap().state, kept.state);
+    }
+
+    #[test]
+    fn a_change_is_ordered_and_a_removal_leaves_a_tombstone_without_values() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = OwnStore::open(dir.path()).unwrap();
+        store.add(login("made-up-pass-1")).unwrap();
+        let added = store.state.items[0].clone();
+        assert!(added.modified > 0);
+        let mut edited = login("made-up-pass-2");
+        edited.id = "v1".into();
+        store.update(edited, 1).unwrap();
+        let after = store.state.items[0].clone();
+        assert_eq!(after.uid, added.uid);
+        assert!(after.modified > added.modified);
+
+        store.remove("v1", 2).unwrap();
+        let reopened = OwnStore::open(dir.path()).unwrap();
+        assert!(reopened.list().is_empty());
+        assert_eq!(reopened.state.tombstones.len(), 1);
+        let tombstone = &reopened.state.tombstones[0];
+        assert_eq!(tombstone.uid, after.uid);
+        assert!(tombstone.modified >= after.modified);
+        let sealed = serde_json::to_string(&reopened.state).unwrap();
+        for value in ["made-up-pass", "lovelace", "Example", "example.com"] {
+            assert!(!sealed.contains(value), "{value} outlived its item");
+        }
+    }
+
+    #[test]
+    fn a_switch_set_on_a_host_whose_clock_is_behind_still_wins_the_merge() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = OwnStore::open(dir.path()).unwrap();
+        // On, as set by a host whose clock runs a day ahead.
+        let ahead = State {
+            hosts: vec![Switch {
+                key: "pi".into(),
+                on: true,
+                modified: now_ms() + 86_400_000,
+            }],
+            ..State::default()
+        };
+        store.apply(ahead.clone()).unwrap();
+        store.switch("pi", false).unwrap();
+        assert_eq!(merge(&ahead, store.state()).switch("pi"), Some(false));
+    }
+
+    #[test]
+    fn another_hosts_add_edit_and_removal_apply_under_local_ids_and_a_repeat_changes_nothing() {
+        let (a_dir, b_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let mut a = OwnStore::open(a_dir.path()).unwrap();
+        let mut b = OwnStore::open(b_dir.path()).unwrap();
+        b.add(login("made-up-pass-b")).unwrap();
+        b.remove("v1", 1).unwrap();
+        let applied = |b: &mut OwnStore, a: &OwnStore| b.apply(a.state().clone()).unwrap();
+
+        a.add(login("made-up-pass-1")).unwrap();
+        assert_eq!(
+            applied(&mut b, &a),
+            Applied {
+                added: 1,
+                ..Applied::default()
+            }
+        );
+        // b's own next id, never a's.
+        assert_eq!((b.list()[0].item.as_str(), b.list()[0].revision), ("v2", 1));
+        assert_eq!(b.release("v2", "password").unwrap(), "made-up-pass-1");
+
+        let mut edited = login("made-up-pass-2");
+        edited.id = "v1".into();
+        a.update(edited, 1).unwrap();
+        assert_eq!(
+            applied(&mut b, &a),
+            Applied {
+                updated: 1,
+                ..Applied::default()
+            }
+        );
+        assert_eq!(b.list()[0].revision, 2);
+        assert_eq!(b.release("v2", "password").unwrap(), "made-up-pass-2");
+
+        // Nothing new: nothing applied, and the file is not written again.
+        let written = fs::read(b_dir.path().join(FILE)).unwrap();
+        assert_eq!(applied(&mut b, &a), Applied::default());
+        assert_eq!(fs::read(b_dir.path().join(FILE)).unwrap(), written);
+
+        a.remove("v1", 2).unwrap();
+        assert_eq!(
+            applied(&mut b, &a),
+            Applied {
+                removed: 1,
+                ..Applied::default()
+            }
+        );
+        let reopened = OwnStore::open(b_dir.path()).unwrap();
+        assert!(reopened.list().is_empty());
+        // a learns b's older removal back, and b keeps a's.
+        a.apply(reopened.state().clone()).unwrap();
+        assert_eq!(a.state().tombstones, reopened.state().tombstones);
+        assert_eq!(a.state().tombstones.len(), 2);
     }
 
     #[test]

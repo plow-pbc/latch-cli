@@ -355,6 +355,27 @@ final class AppModel {
         summaries[host.name, default: HostSummary()].vault = vault
     }
 
+    /// Reads this Mac's vault again, once it's been read, each time latch
+    /// replaces vault.json (a sync, the CLI or another Mac, while the app is
+    /// in front). The file is renamed over, so its folder is watched.
+    func followVault() async {
+        let folder = Darwin.open(client.stateDir, O_EVTONLY)
+        guard folder >= 0 else { return }
+        let file = URL(filePath: client.stateDir).appending(path: "vault.json").path
+        let modified = { (try? FileManager.default.attributesOfItem(atPath: file))?[.modificationDate] as? Date }
+        let source = DispatchSource.makeFileSystemObjectSource(fileDescriptor: folder, eventMask: .write, queue: .main)
+        let writes = AsyncStream<Void> { continuation in source.setEventHandler { continuation.yield() } }
+        source.setCancelHandler { Darwin.close(folder) }
+        source.resume()
+        defer { source.cancel() }
+        var last = modified()
+        for await _ in writes where modified() != last {
+            last = modified()
+            guard let host = hosts.first(where: \.isThisMac), Self.held(summaries[host.name]?.vault) else { continue }
+            await refreshVault(on: host)
+        }
+    }
+
     /// Reads an item's non-secret values; if it changed since the vault was
     /// listed, the vault is read again, so the item listed is the one shown.
     func showVaultItem(_ item: String, on host: HostEntry) async {

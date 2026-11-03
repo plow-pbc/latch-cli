@@ -383,8 +383,7 @@ pub async fn run(
         caller,
         &request,
         json!(summaries),
-    )?
-    .masking(entry.masks.clone());
+    )?;
     let running = format!("{session}/{request}");
     browsers.running(&running, true);
     let mut run = Run {
