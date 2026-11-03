@@ -1,6 +1,9 @@
 //! Runs the real `latch` binary against a tiny fake Plow, to check what an
 //! agent actually sees: stdout, stderr, exit codes and the saved state.
 
+// Unix only: these drive latch through ptys, signals and file modes; on
+// Windows the unit tests and the Windows VM checks (latch/windows) cover it.
+
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
@@ -10,6 +13,7 @@ use std::thread;
 
 use serde_json::{Value, json};
 
+mod portable;
 #[cfg(any(target_os = "macos", feature = "linux-browser-tests"))]
 #[path = "support/shop_server.rs"]
 mod shop_server;
@@ -85,9 +89,26 @@ fn latch_bin() -> PathBuf {
 /// local network: its iroh endpoint binds 127.0.0.1 only and never probes
 /// the router, so no test makes macOS ask to let latch find local devices.
 fn latch_process() -> Command {
+    portable::share_console();
     let mut command = Command::new(latch_bin());
     command.env("LATCH_TEST_LOOPBACK", "1");
+    portable::own_group(&mut command);
+    portable::find_tools(&mut command);
     command
+}
+
+/// `env` on `command`, where `HOME` names a home on every system.
+fn set_env(command: &mut Command, env: &[(&str, &Path)]) {
+    for (name, value) in env {
+        match *name {
+            "HOME" => portable::set_home(command, value),
+            "TMPDIR" => command
+                .env(name, value)
+                .env("TMP", value)
+                .env("TEMP", value),
+            _ => command.env(name, value),
+        };
+    }
 }
 
 /// An iroh endpoint for a test's own end of a connection, kept off the
@@ -107,7 +128,7 @@ fn loopback_endpoint() -> iroh::endpoint::Builder {
 fn test_dir() -> tempfile::TempDir {
     let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/tests");
     fs::create_dir_all(&parent).unwrap();
-    tempfile::tempdir_in(parent.canonicalize().unwrap()).unwrap()
+    tempfile::tempdir_in(portable::real_path(&parent)).unwrap()
 }
 
 /// `latch --state-dir STATE ARGS...`, with none of the caller's latch or
@@ -139,8 +160,7 @@ fn latch(state: &Path, args: &[&str], env: &[(&str, &Path)]) -> Output {
 
 fn latch_command(state: &Path, args: &[&str], env: &[(&str, &Path)]) -> Command {
     let mut command = latch_process();
-    command
-        .env("HOME", state.parent().unwrap())
+    portable::set_home(&mut command, state.parent().unwrap())
         .env_remove("PLOW_API_URL")
         .env_remove("PLOW_TOKEN_FILE")
         .env_remove("PLOW_API_BASE")
@@ -152,9 +172,7 @@ fn latch_command(state: &Path, args: &[&str], env: &[(&str, &Path)]) -> Command 
         .arg("--state-dir")
         .arg(state)
         .args(args);
-    for (name, value) in env {
-        command.env(name, value);
-    }
+    set_env(&mut command, env);
     command
 }
 
@@ -245,45 +263,19 @@ fn latch_at_a_terminal(
     stdout_at_the_terminal: bool,
     env: &[(&str, &Path)],
 ) -> (Option<i32>, String, String) {
-    use std::os::fd::FromRawFd;
-    let (mut main, mut side) = (0, 0);
-    let (name, settings, size) = (
-        std::ptr::null_mut(),
-        std::ptr::null_mut(),
-        std::ptr::null_mut(),
-    );
-    // SAFETY: openpty fills in two new descriptors, which we then own.
-    let opened = unsafe { libc::openpty(&mut main, &mut side, name, settings, size) };
-    assert_eq!(opened, 0);
-    let (mut main, side) = unsafe { (fs::File::from_raw_fd(main), fs::File::from_raw_fd(side)) };
     let mut command = latch_command(state, args, env);
-    command
-        .stdin(side.try_clone().unwrap())
-        .stderr(side.try_clone().unwrap())
-        .stdout(if stdout_at_the_terminal {
-            side.try_clone().unwrap().into()
-        } else {
-            std::process::Stdio::piped()
-        });
-    let mut child = command.spawn().unwrap();
-    let mut piped = child.stdout.take();
+    let (mut child, mut typing, shown) =
+        portable::terminal(&mut command, None, !stdout_at_the_terminal);
     drop(command);
-    drop(side);
-    main.write_all(typed.as_bytes()).unwrap();
-    let mut reading = main.try_clone().unwrap();
-    let shown = thread::spawn(move || {
-        let mut shown = Vec::new();
-        // Ends with an error once the last holder of the other side exits.
-        let _ = reading.read_to_end(&mut shown);
-        String::from_utf8_lossy(&shown).to_string()
-    });
+    typing.write_all(typed.as_bytes()).unwrap();
     let mut stdout = String::new();
-    if let Some(piped) = &mut piped {
+    if let Some(piped) = &mut child.stdout {
         piped.read_to_string(&mut stdout).unwrap();
     }
     let code = child.wait().unwrap().code();
-    drop(main);
-    (code, shown.join().unwrap(), stdout)
+    // The terminal hung up once the program is gone: what it showed ends.
+    drop(typing);
+    (code, shown.iter().collect(), stdout)
 }
 
 /// What a failed command put on stderr (or a terminal showed), which must
@@ -465,8 +457,7 @@ fn latch_state_dir_names_the_state_folder_a_home_does_not() {
     let state = dir.path().join("state");
     let status = |state_dir: Option<&Path>, flag: Option<&Path>| {
         let mut command = latch_process();
-        command
-            .env("HOME", "/")
+        portable::set_home(&mut command, "/")
             .env("PLOW_TOKEN_FILE", &token_file)
             .env_remove("LATCH_STATE_DIR");
         if let Some(dir) = state_dir {
@@ -481,7 +472,7 @@ fn latch_state_dir_names_the_state_folder_a_home_does_not() {
     };
     let found = status(Some(&state), None);
     assert_eq!(found["login"]["kind"], "agent", "{found}");
-    assert_eq!(found["state_dir"], json!(state.canonicalize().unwrap()));
+    assert_eq!(found["state_dir"], json!(portable::real_path(&state)));
     let elsewhere = dir.path().join("elsewhere");
     let flagged = status(Some(&state), Some(&elsewhere));
     assert_eq!(flagged["login"], Value::Null, "{flagged}");
@@ -575,8 +566,10 @@ fn a_cloud_agent_behind_plows_proxy_sends_no_credential() {
             // `browser setup` runs here too: with no tools on its PATH it
             // fails at once, never having logged in to be refused.
             let mut setup = latch_command(&state, &["browser", "setup"], &env);
+            // (Windows' own curl gets no further than a proxy no one answers.)
             let setup = setup
                 .env("PATH", dir.path().join("no-tools"))
+                .env("HTTPS_PROXY", "http://127.0.0.1:9")
                 .output()
                 .unwrap();
             let error: Value = serde_json::from_slice(&setup.stderr).unwrap();
@@ -725,7 +718,10 @@ fn an_agent_given_a_name_stops_on_a_clash() {
 
 #[test]
 fn a_machine_is_named_after_its_hostname_and_stops_on_a_clash() {
-    let uname = Command::new("uname").arg("-n").output().unwrap();
+    let uname = Command::new(portable::tool("uname"))
+        .arg("-n")
+        .output()
+        .unwrap();
     let hostname = String::from_utf8(uname.stdout).unwrap();
     let hostname = hostname.trim().split('.').next().unwrap().to_string();
     let holder = peer(json!("c".repeat(64)), &hostname, "device", Value::Null);
@@ -986,7 +982,7 @@ fn pretty_json_holds_the_same_content() {
         // At a terminal, the same JSON and nothing else (stderr shows there too).
         let (code, shown, _) = latch_at_a_terminal(&state, args, "", true, &[]);
         assert_eq!(code, Some(0), "{args:?}: {shown}");
-        let mut at_terminal: Value = serde_json::from_str(shown.trim_end())
+        let mut at_terminal: Value = serde_json::from_str(portable::unbroken(&shown).trim_end())
             .unwrap_or_else(|_| panic!("{args:?}: not its JSON alone: {shown}"));
         at_terminal.as_object_mut().unwrap().remove("audit_id");
         assert_eq!(at_terminal, compact, "{args:?}");
@@ -1142,17 +1138,15 @@ fn a_failed_rules_edit_says_why_in_a_plain_line() {
     // An editor during whose edit the rules change: the save is refused,
     // with the revision it found in the failure's details.
     let editor = dir.path().join("editor");
-    fs::write(
+    let editor = portable::program(
         &editor,
-        format!(
-            "#!/bin/sh\n'{}' --state-dir '{}' rules set 'Changed meanwhile.' >/dev/null\n\
+        &format!(
+            "'{}' --state-dir '{}' rules set 'Changed meanwhile.' >/dev/null\n\
              echo 'Mine.' > \"$1\"\n",
             latch_bin().display(),
             state.display()
         ),
-    )
-    .unwrap();
-    fs::set_permissions(&editor, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    );
     let env = [("EDITOR", editor.as_path())];
     let (code, shown, _) = latch_at_a_terminal(&state, &["rules", "edit"], "", false, &env);
     assert_eq!(code, Some(4), "{shown}");
@@ -1304,22 +1298,29 @@ fn a_login_by_text_at_a_terminal_shows_a_clickable_qr_code_and_one_line() {
     let link = "sms:+14155550100?&body=TRY12";
     let opens = format!("\x1b]8;;{link}\x1b\\");
     let rows: Vec<&str> = shown.lines().collect();
-    let drawn = rows
-        .iter()
-        .filter(|row| row.contains("\x1b[30;107m"))
-        .count();
-    assert!(drawn > 10, "{shown}");
-    let clickable = rows.iter().filter(|row| row.starts_with(&opens)).count();
-    assert_eq!(clickable, drawn + 1, "{shown}");
+    if cfg!(windows) {
+        // A console draws it its own way: colored once, each link opened
+        // before the line break that ends the row above.
+        assert!(shown.contains("\x1b[30m\x1b[107m"), "{shown}");
+        assert!(shown.matches(&opens).count() > 10, "{shown}");
+    } else {
+        let drawn = rows
+            .iter()
+            .filter(|row| row.contains("\x1b[30;107m"))
+            .count();
+        assert!(drawn > 10, "{shown}");
+        let clickable = rows.iter().filter(|row| row.starts_with(&opens)).count();
+        assert_eq!(clickable, drawn + 1, "{shown}");
+    }
     assert!(
-        shown.contains(&format!("{opens}{link}\x1b]8;;\x1b\\")),
+        portable::unbroken(&shown).contains(&format!("{opens}{link}\x1b]8;;\x1b\\")),
         "{shown}"
     );
     // Then what to do, that it is waiting, and one line when it is done:
     // a human login, so no JSON.
     let said: Vec<&str> = rows
         .iter()
-        .filter(|row| !row.contains(&opens))
+        .filter(|row| !row.contains(link))
         .map(|row| row.trim_end())
         .collect();
     assert_eq!(
@@ -1788,6 +1789,9 @@ fn bare_latch_draws_what_it_knows_at_once_and_plow_as_it_answers() {
     println!("Plow silent: prompt back after {took:?}");
 }
 
+// launchctl and systemctl, stood in for: a Windows host has no service
+// manager to ask.
+#[cfg(unix)]
 #[test]
 fn bare_latch_waits_on_a_stalled_service_manager_only_until_its_deadline() {
     use std::os::unix::fs::PermissionsExt;
@@ -1848,8 +1852,13 @@ fn bare_latch_narrow_puts_the_mark_above_and_no_color_keeps_it_still() {
     assert!(!shown[mark..header].contains("Account"), "{shown}");
     // Too long for the line, the command goes on one of its own, whole.
     assert!(shown.contains("isn't logged in to Plow. Run:"), "{shown}");
-    let command = format!("latch --state-dir {} setup", state.display());
-    assert!(shown.contains(&command), "{shown}");
+    let folder = state.display();
+    let command = match cfg!(windows) {
+        // Backslashes, so quoted for the shell it is pasted into.
+        true => format!("latch --state-dir '{folder}' setup"),
+        false => format!("latch --state-dir {folder} setup"),
+    };
+    assert!(portable::unbroken(&shown).contains(&command), "{shown}");
     assert!(!state.exists(), "the overview made the state folder");
 }
 
@@ -2062,12 +2071,7 @@ fn rules_on_this_machines_own_host_state_are_set_edited_shown_and_audited() {
 
     // `edit` in $EDITOR: the editor appends a line.
     let editor = dir.path().join("editor.sh");
-    fs::write(
-        &editor,
-        "#!/bin/sh\nprintf '\\nNever buy anything.' >> \"$1\"\n",
-    )
-    .unwrap();
-    fs::set_permissions(&editor, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let editor = portable::program(&editor, "printf '\\nNever buy anything.' >> \"$1\"\n");
     // A person's command: at a terminal, it ends in a line, not JSON.
     let env = [("EDITOR", editor.as_path())];
     let (code, shown, _) = latch_at_a_terminal(&state, &["rules", "edit"], "", true, &env);
@@ -2241,8 +2245,7 @@ fn an_agent_updates_only_its_own_client_only_computer() {
     fs::copy(latch_bin(), &installed).unwrap();
     let update = |args: &[&str]| {
         let mut command = Command::new(&installed);
-        command
-            .env("HOME", dir.path())
+        portable::set_home(&mut command, dir.path())
             .env("LATCH_APPLICATIONS", dir.path().join("Applications"))
             .env("PLOW_TOKEN_FILE", &token)
             .env_remove("PLOW_API_URL")
@@ -2353,7 +2356,7 @@ fn a_local_rules_command_on_an_audit_log_it_cannot_write_changes_nothing() {
     let show = latch(&state, &["rules", "show"], &[]);
     assert_eq!(show.status.code(), Some(0), "{show:?}");
     let log = state.join("audit.sealed.ndjson");
-    fs::set_permissions(&log, std::os::unix::fs::PermissionsExt::from_mode(0o400)).unwrap();
+    portable::make_read_only(&log);
     let output = latch(&state, &["rules", "set", "Never send email."], &[]);
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let error: Value = serde_json::from_slice(&output.stderr).unwrap();
@@ -3180,8 +3183,7 @@ struct Serving(std::process::Child);
 
 impl Drop for Serving {
     fn drop(&mut self) {
-        // SAFETY: signals our own child.
-        unsafe { libc::kill(self.0.id() as i32, libc::SIGTERM) };
+        portable::terminate(self.0.id());
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(40);
         while matches!(self.0.try_wait(), Ok(None)) {
             if std::time::Instant::now() > deadline {
@@ -3211,7 +3213,7 @@ fn serving(host: &Path, relay: &str) -> Serving {
 /// `serving` with `env` added. Also returns the startup log lines.
 fn serving_with_env(host: &Path, relay: &str, env: &[(&str, &Path)]) -> (Serving, Vec<String>) {
     let mut command = serve_command(host, relay);
-    command.envs(env.iter().copied());
+    set_env(&mut command, env);
     let (serve, log, lines) = serving_with(command);
     thread::spawn(move || {
         for line in log.lines() {
@@ -3246,10 +3248,13 @@ fn serve_command(host: &Path, relay: &str) -> Command {
     configure_serve_command(latch_process(), host, relay)
 }
 
-/// `command`, a latch, set up as `serve_command` sets up the build's.
+/// `command`, a latch, set up as `serve_command` sets up the build's: in a
+/// process group of its own, as `Serving` stops it by its group.
 fn configure_serve_command(mut command: Command, host: &Path, relay: &str) -> Command {
-    command
-        .env("HOME", host.parent().unwrap())
+    portable::share_console();
+    portable::own_group(&mut command);
+    portable::find_tools(&mut command);
+    portable::set_home(&mut command, host.parent().unwrap())
         .args([
             "--state-dir",
             host.to_str().unwrap(),
@@ -3354,7 +3359,7 @@ fn a_host_logs_its_relay_link_taken_over_or_lost_and_back() {
 
     // Another endpoint with the host's key, as a command dialing with it
     // from beside the host would be.
-    let key: iroh::SecretKey = fs::read_to_string(host.join("key"))
+    let key: iroh::SecretKey = String::from_utf8(portable::secret_file(&host, "key"))
         .unwrap()
         .trim()
         .parse()
@@ -3394,8 +3399,7 @@ fn a_plain_serve_stopped_cleanly_prints_nothing_on_stdout() {
     thread::spawn(move || std::io::copy(&mut log, &mut std::io::sink()));
     until_serving(&host, &serve);
     let mut stdout = serve.0.stdout.take().unwrap();
-    // SAFETY: signals our own child.
-    unsafe { libc::kill(serve.0.id() as i32, libc::SIGTERM) };
+    portable::terminate(serve.0.id());
     let mut printed = String::new();
     stdout.read_to_string(&mut printed).unwrap();
     let status = serve.0.wait().unwrap();
@@ -3720,10 +3724,8 @@ fn a_host_runs_exec_and_files_under_home() {
     // PATH a host started by the Mac app or the login item has.
     let home = dir.path().join("home");
     fs::create_dir(&home).unwrap();
-    let env = [
-        ("HOME", home.as_path()),
-        ("PATH", Path::new("/usr/bin:/bin")),
-    ];
+    let bare_path = portable::bare_path();
+    let env = [("HOME", home.as_path()), ("PATH", Path::new(&bare_path))];
     let (serve, _) = serving_with_env(&host, &relay, &env);
     let local = latch(&host, &["status", "--local"], &[]);
     let local: Value = serde_json::from_slice(&local.stdout).unwrap();
@@ -3744,40 +3746,58 @@ fn a_host_runs_exec_and_files_under_home() {
     let result: Value = serde_json::from_slice(&executed.stdout).unwrap();
     assert_eq!(result["exit_code"], 0);
     // Exec still finds Homebrew's tools, after the host's own PATH.
-    let script = [
-        "exec",
-        "--host",
-        "host",
-        "--",
-        "/bin/sh",
-        "-c",
-        "echo $PATH",
-    ];
-    let executed = latch(&owner, &script, &[]);
-    let result: Value = serde_json::from_slice(&executed.stdout).unwrap();
-    assert_eq!(
-        result["stdout"], "/usr/bin:/bin:/opt/homebrew/bin:/usr/local/bin:/usr/sbin:/sbin\n",
-        "{executed:?}"
-    );
+    if cfg!(unix) {
+        let script = [
+            "exec",
+            "--host",
+            "host",
+            "--",
+            "/bin/sh",
+            "-c",
+            "echo $PATH",
+        ];
+        let executed = latch(&owner, &script, &[]);
+        let result: Value = serde_json::from_slice(&executed.stdout).unwrap();
+        assert_eq!(
+            result["stdout"], "/usr/bin:/bin:/opt/homebrew/bin:/usr/local/bin:/usr/sbin:/sbin\n",
+            "{executed:?}"
+        );
+    }
     // A get reads what exec can (home and the system's files), and a put
     // goes under home.
+    let system_file = portable::system_file();
     let system = latch(
         &owner,
-        &["file", "get", "--host", "host", "/etc/hosts", into],
+        &[
+            "file",
+            "get",
+            "--host",
+            "host",
+            system_file.to_str().unwrap(),
+            into,
+        ],
         &[],
     );
     assert_eq!(system.status.code(), Some(0), "{system:?}");
-    assert_eq!(fs::read(into).unwrap(), fs::read("/etc/hosts").unwrap());
+    assert_eq!(fs::read(into).unwrap(), fs::read(&system_file).unwrap());
     let local_file = dir.path().join("note.txt");
     fs::write(&local_file, "hi").unwrap();
     let local_file = local_file.to_str().unwrap();
+    fs::create_dir(home.join("box")).unwrap();
     let put = latch(
         &owner,
-        &["file", "put", "--host", "host", local_file, "~/note.txt"],
+        &[
+            "file",
+            "put",
+            "--host",
+            "host",
+            local_file,
+            "~/box/note.txt",
+        ],
         &[],
     );
     assert_eq!(put.status.code(), Some(0), "{put:?}");
-    assert_eq!(fs::read_to_string(home.join("note.txt")).unwrap(), "hi");
+    assert_eq!(fs::read_to_string(home.join("box/note.txt")).unwrap(), "hi");
     // Agent exec still needs the gatekeeper.
     let refused_exec = latch(
         &agent,
@@ -4411,7 +4431,6 @@ fn agents_are_listed_for_the_owner_with_their_standing_on_a_host() {
 /// told to; latch never resends a create whose answer was lost.
 #[test]
 fn agents_are_shown_created_and_removed_by_their_owner() {
-    use std::os::unix::fs::PermissionsExt;
     let plow = LivePlow::start();
     let dir = test_dir();
     let host = owner_host_on(&plow, dir.path());
@@ -4519,10 +4538,7 @@ fn agents_are_shown_created_and_removed_by_their_owner() {
         fs::read_to_string(&token_file).unwrap(),
         "made-up-agent-credential\n"
     );
-    assert_eq!(
-        fs::metadata(&token_file).unwrap().permissions().mode() & 0o777,
-        0o600
-    );
+    assert!(portable::private(&token_file));
     assert!(!String::from_utf8_lossy(&output.stdout).contains("made-up-agent-credential"));
     assert!(!String::from_utf8_lossy(&output.stderr).contains("made-up-agent-credential"));
 
@@ -4663,8 +4679,7 @@ fn the_owners_rules_commands_reach_a_host_and_an_agents_never_do() {
     let rules_file = dir.path().join("bot.txt");
     fs::write(&rules_file, "Run tests in the shared folder.").unwrap();
     let editor = dir.path().join("editor.sh");
-    fs::write(&editor, "#!/bin/sh\nprintf ' Nothing else.' >> \"$1\"\n").unwrap();
-    fs::set_permissions(&editor, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let editor = portable::program(&editor, "printf ' Nothing else.' >> \"$1\"\n");
     let file = rules_file.to_str().unwrap();
     let owner_runs = [
         run(
@@ -4856,7 +4871,9 @@ fn leftovers_in_the_home_state_folder_are_moved_aside_and_elsewhere_refused() {
         serde_json::from_slice::<Value>(&moved.stdout).unwrap(),
         json!({"removed": []})
     );
-    let aside = state.join(format!("leftovers/{}", jiff::Zoned::now().date()));
+    let aside = state
+        .join("leftovers")
+        .join(jiff::Zoned::now().date().to_string());
     let said = String::from_utf8_lossy(&moved.stderr);
     assert_eq!(
         said.trim_end(),
@@ -4881,7 +4898,12 @@ fn leftovers_in_the_home_state_folder_are_moved_aside_and_elsewhere_refused() {
         "{error}"
     );
     let next = error["error"]["next"].as_str().unwrap();
-    assert!(next.starts_with("mkdir -p -m 700 "), "{next}");
+    let starts = if cfg!(windows) {
+        "New-Item "
+    } else {
+        "mkdir -p -m 700 "
+    };
+    assert!(next.starts_with(starts), "{next}");
     assert!(other.join("dev.json").exists(), "nothing moved");
 }
 
@@ -5000,7 +5022,7 @@ fn keep_awake_is_saved_without_a_host_and_a_serving_host_follows_it_without_a_re
         let status: Value = serde_json::from_slice(&output.stdout).unwrap();
         status["this_machine"]["hosting"]["keep_awake"].clone()
     };
-    let stopped = if cfg!(target_os = "macos") {
+    let stopped = if cfg!(any(target_os = "macos", windows)) {
         "not_serving"
     } else {
         "unsupported"
@@ -5031,12 +5053,15 @@ fn keep_awake_is_saved_without_a_host_and_a_serving_host_follows_it_without_a_re
             return hosting["keep_awake"].clone();
         }
     };
-    if cfg!(target_os = "macos") {
-        // On AC it holds; on battery it says so.
+    if cfg!(any(target_os = "macos", windows)) {
+        // On AC it holds; on battery it says so, as it does for power Windows
+        // cannot read (a VM's).
         let held = next_keep_awake(&|keep_awake| keep_awake["held"] != Value::Null);
         assert!(
             held == json!({"enabled": true, "held": true, "reason": null})
-                || held == json!({"enabled": true, "held": false, "reason": "on_battery"}),
+                || held == json!({"enabled": true, "held": false, "reason": "on_battery"})
+                || (cfg!(windows)
+                    && held == json!({"enabled": true, "held": false, "reason": "unknown"})),
             "{held}"
         );
     } else {
@@ -5357,10 +5382,16 @@ fn caller_in(record: &Value) -> Value {
            "op": record["op"], "decision": record["decision"]})
 }
 
-/// Signals `child`, then waits up to `limit` seconds for it to end.
-fn signalled(child: &mut std::process::Child, signal: i32, limit: u64) -> std::process::ExitStatus {
-    // SAFETY: signals our own child.
-    unsafe { libc::kill(child.id() as i32, signal) };
+/// Asks `child` to stop (`portable::terminate`), then waits up to `limit`
+/// seconds for it to end.
+fn terminated(child: &mut std::process::Child, limit: u64) -> Ended {
+    portable::terminate(child.id());
+    exits_within(child, limit)
+}
+
+/// Kills `child` outright, then waits up to `limit` seconds for it to end.
+fn killed(child: &mut std::process::Child, limit: u64) -> Ended {
+    portable::kill(child.id());
     exits_within(child, limit)
 }
 
@@ -5409,15 +5440,16 @@ fn every_answer_from_a_host_names_the_host() {
         owners.dir.path().join("got"),
     );
     fs::write(&note, "hi").unwrap();
+    fs::create_dir(owners.dir.path().join("box")).unwrap();
     let (note, got) = (note.to_str().unwrap(), got.to_str().unwrap());
     let put = run(
         &owners.laptop,
-        &["file", "put", "--host", "studio", note, "~/note.txt"],
+        &["file", "put", "--host", "studio", note, "~/box/note.txt"],
     );
     assert_eq!(put["host"], "studio");
     let fetched = run(
         &owners.laptop,
-        &["file", "get", "--host", "studio", "~/note.txt", got],
+        &["file", "get", "--host", "studio", "~/box/note.txt", got],
     );
     assert_eq!(fetched["host"], "studio");
 
@@ -5570,16 +5602,14 @@ fn a_rules_edit_saves_where_it_read_whatever_the_default_becomes() {
     ok(&["hosts", "default", "host"]);
     // The editor moves the default to the studio, then edits.
     let editor = owners.dir.path().join("editor.sh");
-    fs::write(
+    let editor = portable::program(
         &editor,
-        format!(
-            "#!/bin/sh\n'{}' --state-dir '{}' hosts default studio >/dev/null || exit 1\nprintf ' Edited.' >> \"$1\"\n",
+        &format!(
+            "'{}' --state-dir '{}' hosts default studio >/dev/null || exit 1\nprintf ' Edited.' >> \"$1\"\n",
             latch_bin().display(),
             laptop.display()
         ),
-    )
-    .unwrap();
-    fs::set_permissions(&editor, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    );
     let edit = ["rules", "edit", "--host", "default"];
     let (code, shown, _) =
         latch_at_a_terminal(laptop, &edit, "", false, &[("EDITOR", editor.as_path())]);
@@ -5666,7 +5696,7 @@ fn a_call_through_this_machines_host_answers_and_is_recorded_as_a_direct_one() {
     };
 
     // No host serves on studio: its commands dial directly.
-    assert!(!owners.studio.join(format!("serve-v{}.sock", 4)).exists());
+    assert!(!portable::local_socket_path(&owners.studio).exists());
     let direct = run_all(&owners.studio);
     let direct_follow = followed(&owners.studio, "one");
     // A follow's record is written as the host sees it end, after the
@@ -5765,10 +5795,10 @@ fn a_call_through_this_machines_host_that_ends_early_ends_only_itself() {
     assert!(closed.close().success());
     sees_echo(&kept, &owners.laptop, "after-close");
 
-    // SIGTERM on an idle follow.
-    let mut terminated = Lines::start(&owners.studio, &follow);
-    terminated.opening();
-    assert!(signalled(&mut terminated.child, libc::SIGTERM, 5).success());
+    // SIGTERM (Ctrl-Break on Windows) on an idle follow.
+    let mut stopping = Lines::start(&owners.studio, &follow);
+    stopping.opening();
+    assert!(terminated(&mut stopping.child, 5).success());
     sees_echo(&kept, &owners.laptop, "after-term");
 
     // A follow whose output nobody reads, stopped while its opening is
@@ -5826,7 +5856,7 @@ fn a_call_through_this_machines_host_that_ends_early_ends_only_itself() {
             matches!(moving.try_wait(), Ok(None)),
             "{args:?} ended before it was killed"
         );
-        signalled(&mut moving, libc::SIGKILL, 5);
+        killed(&mut moving, 5);
         sees_echo(&kept, &owners.laptop, args[1]);
     }
     assert!(!dir.join("uploaded").exists());
@@ -5841,8 +5871,10 @@ fn exec_true_with(from: &Path, args: &[&str]) {
 }
 
 /// A copy of a latch beside it, removed when dropped.
+#[cfg(any(target_os = "macos", feature = "systemd-tests"))]
 struct OwnLatch(PathBuf);
 
+#[cfg(any(target_os = "macos", feature = "systemd-tests"))]
 impl OwnLatch {
     fn beside(latch: &Path) -> OwnLatch {
         let copy = latch.with_file_name(format!("latch-own-{}", std::process::id()));
@@ -5851,6 +5883,7 @@ impl OwnLatch {
     }
 }
 
+#[cfg(any(target_os = "macos", feature = "systemd-tests"))]
 impl Drop for OwnLatch {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.0);
@@ -6029,11 +6062,9 @@ fn a_command_never_dials_around_a_host_that_holds_the_key() {
     let key = lock("key.lock");
     assert!(refused("starting") < std::time::Duration::from_secs(3));
     // One not answering on its socket.
-    let socket =
-        std::os::unix::net::UnixListener::bind(owners.studio.join("serve-v4.sock")).unwrap();
+    let socket = portable::deaf_socket(&owners.studio, "serve-v4");
     refused("wedged");
     drop(socket);
-    fs::remove_file(owners.studio.join("serve-v4.sock")).unwrap();
     drop(key);
     // A host of an older latch, which holds `serve.lock` alone.
     let mut serve_lock = lock("serve.lock");
@@ -6050,8 +6081,7 @@ fn a_command_never_dials_around_a_host_that_holds_the_key() {
     // until the drain cuts it off.
     let (mut studio, log) = owners.serve_logged(&owners.studio);
     let carried = Held::start(&owners.studio, owners.dir.path(), "carried");
-    // SAFETY: signals our own child.
-    unsafe { libc::kill(studio.0.id() as i32, libc::SIGTERM) };
+    portable::terminate(studio.0.id());
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while log.count("stopping: signal received") == 0 {
         assert!(
@@ -6123,7 +6153,9 @@ fn every_stream_says_hello_first_and_types_every_line() {
         file.flush().unwrap();
         thread::sleep(std::time::Duration::from_millis(300));
         file.write_all(b"ping: asked\n").unwrap();
-        thread::sleep(std::time::Duration::from_millis(500));
+        // (On Windows the follower looks each second.)
+        let seen = if cfg!(windows) { 1500 } else { 500 };
+        thread::sleep(std::time::Duration::from_millis(seen));
     };
     let nothing = || {};
     let mut texted = 0;
@@ -6343,6 +6375,82 @@ fn a_host_run_from_an_installed_latch_keeps_an_execs_write() {
 /// A host stopped (SIGTERM) while an exec runs: one that finishes within
 /// the host's wait is answered as usual; one that outlasts it is killed,
 /// with every process it started, and answered and audited `interrupted`.
+/// A script may throw away what it doesn't want: the null device opens
+/// inside the sandbox. Not on Windows, whose null device admits no container:
+/// there the program is told so.
+#[test]
+fn a_program_can_use_the_null_device_or_is_told_why_not() {
+    let bench = Bench::new();
+    let _serve = bench.serve();
+    if cfg!(windows) {
+        let args = [
+            "exec",
+            "--host",
+            "host",
+            "--",
+            "cmd",
+            "/d",
+            "/c",
+            "echo gone> nul & echo kept",
+        ];
+        let done = latch(&bench.owner, &args, &[]);
+        let result: Value = serde_json::from_slice(&done.stdout).unwrap();
+        assert_eq!(
+            result["stdout"].as_str().unwrap().trim_end(),
+            "kept",
+            "{result}"
+        );
+        // Closed until an administrator allows it (`latch setup`), and CI's
+        // step for that runs this test again with this set.
+        if std::env::var_os("LATCH_TEST_NULL_DEVICE_OPEN").is_some() {
+            assert_eq!(result["stderr"], "", "{result}");
+            assert!(result.get("hint").is_none(), "{result}");
+            let args = [
+                "exec",
+                "--host",
+                "host",
+                "--",
+                "cmd",
+                "/d",
+                "/c",
+                "type nul & sort < nul & echo kept",
+            ];
+            let done = latch(&bench.owner, &args, &[]);
+            let result: Value = serde_json::from_slice(&done.stdout).unwrap();
+            assert_eq!(
+                result["stdout"].as_str().unwrap().trim_end(),
+                "kept",
+                "{result}"
+            );
+            assert_eq!(result["stderr"], "", "{result}");
+            return;
+        }
+        assert_eq!(
+            result["stderr"].as_str().unwrap().trim_end(),
+            "Access is denied.",
+            "{result}"
+        );
+        let hint = result["hint"].as_str().unwrap();
+        for said in [
+            "`> nul`, `< nul` and `type nul` are denied",
+            "Programs and batch shims open nul themselves",
+            "a file in %TEMP%",
+            "PowerShell's `> $null`",
+            "`latch setup`",
+        ] {
+            assert!(hint.contains(said), "{said}: {hint}");
+        }
+        return;
+    }
+    let script = "echo gone >/dev/null; cat </dev/null; echo kept";
+    let done = bench.exec(&bench.owner, "10", script);
+    let done = done.wait_with_output().unwrap();
+    assert_eq!(done.status.code(), Some(0), "{done:?}");
+    let result: Value = serde_json::from_slice(&done.stdout).unwrap();
+    assert_eq!(result["stdout"], "kept\n", "{result}");
+    assert_eq!(result["stderr"], "", "{result}");
+}
+
 #[test]
 fn shutdown_exec_cases() {
     // (what, script, the client's exit, the audited outcome)
@@ -6355,7 +6463,13 @@ fn shutdown_exec_cases() {
         ),
         (
             "outlasts the host",
-            "sleep 600 & echo $! > child; touch started; wait",
+            // (Windows' sh gives what it starts in the background its null
+            // device, which no sandboxed program may open.)
+            if cfg!(windows) {
+                "echo $$ > child; touch started; sleep 600"
+            } else {
+                "sleep 600 & echo $! > child; touch started; wait"
+            },
             5,
             "interrupted",
         ),
@@ -6402,8 +6516,7 @@ fn shutdown_exec_cases() {
             );
             thread::sleep(std::time::Duration::from_millis(20));
         }
-        // SAFETY: signals our own child.
-        unsafe { libc::kill(serve.0.id() as i32, libc::SIGTERM) };
+        portable::terminate(serve.0.id());
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(40);
         while serve.0.try_wait().unwrap().is_none() {
             assert!(
@@ -6423,13 +6536,8 @@ fn shutdown_exec_cases() {
             assert_eq!(error["error"]["code"], outcome, "{what}: {error}");
         }
         if let Ok(child) = fs::read_to_string(share.join("child")) {
-            let child: i32 = child.trim().parse().unwrap();
-            // SAFETY: signal 0 only asks whether the process exists.
-            assert_ne!(
-                unsafe { libc::kill(child, 0) },
-                0,
-                "{what}: its child lives on"
-            );
+            let child: u32 = child.trim().parse().unwrap();
+            assert!(!portable::alive(child), "{what}: its child lives on");
         }
         let exec = audit_records(&host)
             .into_iter()
@@ -6749,7 +6857,7 @@ fn local_vault_edits_are_visible_to_serve_and_phone_links_stay_live() {
     fs::create_dir(&share).unwrap();
     let _serve = serving(&host, &relay);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while !host.join("serve-v4.sock").exists() {
+    while !portable::local_socket_path(&host).exists() {
         assert!(
             std::time::Instant::now() < deadline,
             "no local link receiver"
@@ -7069,7 +7177,7 @@ fn a_local_agent_cannot_manage_a_vault() {
 
 /// The Mac app can send the same operation frames without a second CLI path.
 fn local_operation(host: &Path, op: &str, args: Value) -> Value {
-    let mut socket = std::os::unix::net::UnixStream::connect(host.join("serve-v4.sock")).unwrap();
+    let mut socket = portable::local_socket(host);
     socket
         .set_read_timeout(Some(std::time::Duration::from_secs(10)))
         .unwrap();
@@ -7087,7 +7195,6 @@ fn local_operation(host: &Path, op: &str, args: Value) -> Value {
 
 #[test]
 fn local_socket_judges_exec_files_google_and_allows_owner_commands() {
-    use std::os::unix::fs::PermissionsExt;
     let plow = LivePlow::start();
     let (_runtime, relay) = local_relay();
     let dir = test_dir();
@@ -7097,14 +7204,7 @@ fn local_socket_judges_exec_files_google_and_allows_owner_commands() {
     google_enabled(&host);
     plow.state.lock().unwrap().google = Some("google-token".into());
     let _serve = serving(&host, &relay);
-    assert_eq!(
-        fs::metadata(host.join("serve-v4.sock"))
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o777,
-        0o600
-    );
+    assert!(portable::private(&portable::local_socket_path(&host)));
     let run = |args: &[&str]| {
         let output = latch(&host, args, &[]);
         assert!(output.status.success(), "{output:?}");
@@ -7118,12 +7218,15 @@ fn local_socket_judges_exec_files_google_and_allows_owner_commands() {
     // From here the client's secret store refuses, as the Keychain does
     // inside a sandbox: its key and Plow login can't be read. Calls over the
     // socket need neither; the running host has them.
-    let locked = |mode| {
+    let locked = |locked: bool| {
         for secret in ["key", "plow-token"] {
-            fs::set_permissions(host.join(secret), fs::Permissions::from_mode(mode)).unwrap();
+            match locked {
+                true => portable::make_unreadable(&host.join(secret)),
+                false => portable::make_private(&host.join(secret)),
+            }
         }
     };
-    locked(0o000);
+    locked(true);
     let exec = run(&["exec", "--", "echo", "local socket"]);
     assert_eq!(exec["stdout"], "local socket\n");
     assert_eq!(
@@ -7192,7 +7295,7 @@ fn local_socket_judges_exec_files_google_and_allows_owner_commands() {
         "owner config was judged"
     );
     run(&["exec", "--host", "host", "--", "true"]);
-    locked(0o600);
+    locked(false);
     assert!(
         plow.state
             .lock()
@@ -7540,7 +7643,7 @@ fn logout_says_what_it_deletes_and_keeps_and_asks_first() {
     fs::write(host.join("browser/journal/s/r.jsonl"), vec![b'x'; 500]).unwrap();
     // What each secret file held, by SECRET_FILES' order; never printed.
     let before = SECRET_FILES.map(|file| fs::read(host.join(file)).unwrap());
-    let state_dir = host.canonicalize().unwrap();
+    let state_dir = portable::real_path(&host);
     let secret_values = [
         "made-up-shop-pw",
         "made-up-bank-pw",
@@ -7584,7 +7687,7 @@ fn logout_says_what_it_deletes_and_keeps_and_asks_first() {
             "vault": {"card": 1, "login": 2, "note": 1},
             "audit_records": summary["audit_records"],
             "browsers": {
-                "engines": [{"engine": "camoufox", "version": "152.0", "path": state_dir.join("plugins/camoufox/152.0"), "bytes": 3000}],
+                "engines": [{"engine": "camoufox", "version": "152.0", "path": state_dir.join("plugins").join("camoufox").join("152.0"), "bytes": 3000}],
                 "session_data": {"path": state_dir.join("browser"), "bytes": 500},
             },
         })
@@ -7620,7 +7723,11 @@ fn logout_says_what_it_deletes_and_keeps_and_asks_first() {
         "  - the vault: 1 card, 2 logins, 1 note".to_string(),
         format!(
             "  - the Camoufox 152.0 browser: 2.9 KB at {}",
-            state_dir.join("plugins/camoufox/152.0").display()
+            state_dir
+                .join("plugins")
+                .join("camoufox")
+                .join("152.0")
+                .display()
         ),
         format!(
             "  - browser session journals and screenshots: 500 B at {}",
@@ -7835,7 +7942,7 @@ fn logout_refuses_a_link_to_a_state_folder_or_a_folder_that_is_not_one() {
     {
         fs::write(folder.join(file), "synthetic").unwrap();
     }
-    std::os::unix::fs::symlink(&real, &link).unwrap();
+    portable::link_folder(&real, &link);
     for state in [&link, &other] {
         for args in [vec!["logout"], vec!["logout", "--purge"]] {
             let output = latch(state, &args, &[]);
@@ -8040,15 +8147,13 @@ fn a_host_killed_mid_exec_takes_its_program_along_and_its_next_start_sweeps_the_
 fn a_program_stops_soon_after_its_time_limit_even_while_its_host_is_frozen() {
     let bench = Bench::new();
     let serve = bench.serve();
-    let pid = serve.0.id() as libc::pid_t;
+    let pid = serve.0.id();
     let client = bench.exec(&bench.owner, "2", TICKING);
     bench.started();
-    // SAFETY: signals our own child.
-    unsafe { libc::kill(pid, libc::SIGSTOP) };
+    portable::pause(pid);
     thread::sleep(std::time::Duration::from_secs(8));
     let stopped = bench.stopped_ticking();
-    // SAFETY: as above.
-    unsafe { libc::kill(pid, libc::SIGCONT) };
+    portable::resume(pid);
     let output = client.wait_with_output().unwrap();
     drop(serve);
     assert!(stopped, "the program ran on past its time limit");
@@ -8240,14 +8345,22 @@ fn setup_sets_up_every_connector_with_no_host_running() {
     let env = [("LATCH_TEST_ACCESS", Path::new("granted"))];
     let (mut setup, mut typing, shown) = at_its_own_terminal(&host, &["setup"], &env);
     // Google: yes; on macOS, Messages and Contacts: yes; rules: none;
-    // start latch: no.
-    let typed: &[u8] = if cfg!(target_os = "macos") {
-        b"y\ny\n3\nn\n"
-    } else {
-        b"y\n3\nn\n"
-    };
-    typing.write_all(typed).unwrap();
-    let all = shows(&shown, "Done. Run `latch setup` again any time.");
+    // start latch: no; on Windows, listing folders: no.
+    let mut answers = vec![("Connect Google? [Y/n]", "y\n")];
+    if cfg!(target_os = "macos") {
+        answers.push(("Enable Messages and Contacts on this Mac? [y/N]", "y\n"));
+    }
+    answers.push(("Rules for your agents? [1/2/3]", "3\n"));
+    answers.push(("Start latch now? [Y/n]", "n\n"));
+    if cfg!(windows) {
+        answers.push(("to keep nul open after each restart. [y/N]", "n\n"));
+    }
+    let mut all = String::new();
+    for (asked, answer) in answers {
+        all.push_str(&shows(&shown, asked));
+        typing.write_all(answer.as_bytes()).unwrap();
+    }
+    all.push_str(&shows(&shown, "Done. Run `latch setup` again any time."));
     assert!(setup.wait().unwrap().success(), "{all}");
     let mut done = vec![
         "✓ Google is connected.",
@@ -9009,7 +9122,7 @@ fn plugins_with_a_host_this_latch_cannot_reach_say_so() {
         .unwrap();
     lock.try_lock().unwrap();
     fs::write(
-        host.join("serve.lock"),
+        portable::lock_holder(&host),
         "latch serve (pid 4242, /old/latch)\n",
     )
     .unwrap();
@@ -9062,7 +9175,7 @@ fn offline_plugin_commands_on_one_state_folder_take_turns() {
         .unwrap();
     lock.try_lock().unwrap();
     fs::write(
-        host.join("serve.lock"),
+        portable::lock_holder(&host),
         "latch plugins enable messages (pid 4242, /latch)\n",
     )
     .unwrap();
@@ -9093,7 +9206,7 @@ fn offline_plugin_commands_on_one_state_folder_take_turns() {
     assert!(done.status.success(), "{done:?}");
     assert!(!saved().contains("google"), "{}", saved());
     // What a real one writes while it holds the folder.
-    let holder = fs::read_to_string(host.join("serve.lock")).unwrap();
+    let holder = fs::read_to_string(portable::lock_holder(&host)).unwrap();
     assert!(
         holder.starts_with("latch plugins disable google (pid "),
         "{holder}"
@@ -9204,102 +9317,39 @@ fn serve_again_with_nothing_served_before_says_so_and_starts_nothing() {
 
 /// `latch ARGS` on a terminal of its own, as its controlling terminal, the
 /// way a shell starts it: Ctrl-C typed there interrupts it, and closing
-/// the terminal hangs it up. Returns the process and the terminal's side
-/// we type into and read.
+/// the terminal hangs it up.
 fn at_its_own_terminal(
     state: &Path,
     args: &[&str],
     env: &[(&str, &Path)],
 ) -> (
-    std::process::Child,
-    fs::File,
+    portable::Child,
+    portable::Typing,
     std::sync::mpsc::Receiver<String>,
 ) {
     at_a_terminal(state, args, env, (120, 30), false)
 }
 
 /// As `at_its_own_terminal`, on a terminal `columns` wide and `rows` high,
-/// and with stdout a pipe when `pipe_stdout` (the child's `stdout` is the
+/// and with stdout a pipe when `pipe_stdout` (the terminal's `stdout` is the
 /// test's to read): a person at the terminal whose command's output goes
 /// elsewhere.
 fn at_a_terminal(
     state: &Path,
     args: &[&str],
     env: &[(&str, &Path)],
-    (columns, rows): (u16, u16),
+    size: (u16, u16),
     pipe_stdout: bool,
 ) -> (
-    std::process::Child,
-    fs::File,
+    portable::Child,
+    portable::Typing,
     std::sync::mpsc::Receiver<String>,
 ) {
-    use std::os::fd::FromRawFd;
-    use std::os::unix::process::CommandExt;
-    let (mut main, mut side) = (0, 0);
-    let size = libc::winsize {
-        ws_row: rows,
-        ws_col: columns,
-        ws_xpixel: 0,
-        ws_ypixel: 0,
-    };
-    // SAFETY: openpty fills in two new descriptors, which we then own.
-    let opened = unsafe {
-        libc::openpty(
-            &mut main,
-            &mut side,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            &size as *const _ as _,
-        )
-    };
-    assert_eq!(opened, 0);
-    // Neither end may leak into another child: one holding the terminal
-    // open would keep it from ever going away.
-    for fd in [main, side] {
-        // SAFETY: sets close-on-exec on descriptors we own.
-        assert_eq!(
-            unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) },
-            0
-        );
-    }
-    let (main, side) = unsafe { (fs::File::from_raw_fd(main), fs::File::from_raw_fd(side)) };
-    let mut command = latch_command(state, args, env);
-    command
-        .stdin(side.try_clone().unwrap())
-        .stderr(side.try_clone().unwrap());
-    if pipe_stdout {
-        command.stdout(std::process::Stdio::piped());
-    } else {
-        command.stdout(side.try_clone().unwrap());
-    }
-    // SAFETY: setsid and the ioctl only change this child's session and
-    // terminal, between fork and exec.
-    unsafe {
-        command.pre_exec(|| {
-            if libc::setsid() < 0 || libc::ioctl(0, libc::TIOCSCTTY as _, 0) < 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
-    let child = command.spawn().unwrap();
-    drop(command);
-    drop(side);
-    let mut reading = main.try_clone().unwrap();
-    let (send, shown) = std::sync::mpsc::channel();
-    thread::spawn(move || {
-        let mut buffer = [0; 4096];
-        while let Ok(read) = reading.read(&mut buffer) {
-            if read == 0
-                || send
-                    .send(String::from_utf8_lossy(&buffer[..read]).to_string())
-                    .is_err()
-            {
-                break;
-            }
-        }
-    });
-    (child, main, shown)
+    portable::terminal(
+        &mut latch_command(state, args, env),
+        Some(size),
+        pipe_stdout,
+    )
 }
 
 /// Reads what the terminal shows until it has shown `text`, within a
@@ -9323,16 +9373,48 @@ fn shows(shown: &std::sync::mpsc::Receiver<String>, text: &str) -> String {
     all
 }
 
-fn exits_within(child: &mut std::process::Child, limit: u64) -> std::process::ExitStatus {
-    let mut status = None;
+fn exits_within(child: &mut impl Ends, limit: u64) -> Ended {
+    let mut code = None;
     assert!(
         eventually(limit, || {
-            status = child.try_wait().unwrap();
-            status.is_some()
+            code = child.ended();
+            code.is_some()
         }),
         "still running after {limit} s"
     );
-    status.unwrap()
+    Ended(code.unwrap())
+}
+
+/// A process a test waits on, at a terminal or not.
+trait Ends {
+    /// Its exit code once it ended (none for a signal's end), else None.
+    fn ended(&mut self) -> Option<Option<i32>>;
+}
+
+impl Ends for std::process::Child {
+    fn ended(&mut self) -> Option<Option<i32>> {
+        self.try_wait().unwrap().map(|status| status.code())
+    }
+}
+
+impl Ends for portable::Child {
+    fn ended(&mut self) -> Option<Option<i32>> {
+        self.try_wait().unwrap().map(|status| status.code())
+    }
+}
+
+/// How a process ended: its exit code, none for a signal's end.
+#[derive(Debug)]
+struct Ended(Option<i32>);
+
+impl Ended {
+    fn code(&self) -> Option<i32> {
+        self.0
+    }
+
+    fn success(&self) -> bool {
+        self.0 == Some(0)
+    }
 }
 
 /// Setup with no terminal names, as `next`, the first step `setup
@@ -9507,13 +9589,8 @@ fn stop_gives_up_on_a_host_that_never_answers() {
     let mut lock = fs::File::create(state.join("serve.lock")).unwrap();
     write!(lock, "latch serve (pid {}, latch)", std::process::id()).unwrap();
     lock.lock().unwrap();
-    let listener = std::os::unix::net::UnixListener::bind(state.join("serve-v4.sock")).unwrap();
-    thread::spawn(move || {
-        let mut held = Vec::new();
-        for connection in listener.incoming() {
-            held.push(connection);
-        }
-    });
+    // It takes connections and never answers one.
+    let _socket = portable::deaf_socket(&state, "serve-v4");
     let started = std::time::Instant::now();
     let stop = latch(&state, &["stop"], &[]);
     assert_eq!(stop.status.code(), Some(1), "{stop:?}");
@@ -9555,34 +9632,34 @@ fn stop_reaches_a_foreground_host_that_is_still_starting() {
 /// A host an earlier latch started on `state`: it holds the state folder
 /// and says it serves, on the unversioned socket that latch used. Returns
 /// it, its socket, and what latch says of it.
-#[cfg(any(target_os = "macos", feature = "systemd-tests"))]
-fn old_host(state: &Path) -> (Serving, std::os::unix::net::UnixListener, String) {
+fn old_host(state: &Path) -> (Serving, impl Sized, String) {
     let lock = fs::File::create(state.join("serve.lock")).unwrap();
     lock.lock().unwrap();
     // The lock is the old host's: it holds it from here on, as stdin.
     let old = Serving(
-        Command::new("sleep")
-            .arg("600")
+        portable::own_group(Command::new(portable::tool("sleep")).arg("600"))
             .stdin(lock.try_clone().unwrap())
             .spawn()
             .unwrap(),
     );
-    drop(lock);
+    // On Windows a lock ends with the last handle the process that took it
+    // has, whoever else holds one: here, it stays with the socket.
+    let lock = cfg!(windows).then_some(lock);
     let pid = old.0.id();
     fs::write(
-        state.join("serve.lock"),
+        portable::lock_holder(state),
         format!("latch serve (pid {pid}, /old/latch)\n"),
     )
     .unwrap();
     let written = json!({"state": "serving", "pid": pid, "run": format!("{pid}-1"),
                          "since": "2026-10-22T04:51:40Z", "error": null});
     fs::write(state.join("serve.json"), written.to_string()).unwrap();
-    let socket = std::os::unix::net::UnixListener::bind(state.join("serve.sock")).unwrap();
+    let socket = portable::deaf_socket(state, "serve");
     let said = format!(
         "a host from another latch version is running (pid {pid}); stop it \
          (Ctrl-C in its terminal, or kill {pid}), then retry"
     );
-    (old, socket, said)
+    (old, (socket, lock), said)
 }
 
 #[test]
@@ -10246,7 +10323,7 @@ mod pinned {
             .unwrap()
             .to_string();
         // SAFETY: signals our own child.
-        unsafe { libc::kill(second_host.0.id() as i32, libc::SIGKILL) };
+        portable::kill(second_host.0.id());
         second_host.0.wait().unwrap();
         let since = jiff::Timestamp::now();
         let _third_host = serve();

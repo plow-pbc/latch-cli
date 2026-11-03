@@ -1,6 +1,8 @@
 //! Runs the real `latch worker` against a throwaway area and state
 //! directory, to check what the sandbox lets it touch.
 
+// Most of these still run only on macOS and Linux, each `cfg` on the test.
+
 use std::fs;
 use std::io::Write;
 #[cfg(target_os = "linux")]
@@ -9,6 +11,8 @@ use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
 use serde_json::Value;
+
+mod portable;
 
 /// An area holding `inside.txt` and a symlink into the state directory, a
 /// state directory holding `secret`, and a file outside both.
@@ -23,6 +27,9 @@ fn setup() -> tempfile::TempDir {
     fs::write(dir.path().join("area/inside.txt"), "inside").unwrap();
     fs::write(dir.path().join("state/secret"), "secret").unwrap();
     fs::write(dir.path().join("outside/other.txt"), "other").unwrap();
+    // A link into the state (a file symlink, which a Windows standard user
+    // may not make; the Unix sandboxes' tests use it).
+    #[cfg(unix)]
     std::os::unix::fs::symlink(
         dir.path().join("state/secret"),
         dir.path().join("area/link"),
@@ -34,13 +41,21 @@ fn setup() -> tempfile::TempDir {
 /// `latch worker --area area --denied state [extra] ACTION… -- PATH`, run
 /// from inside the area with an empty environment, as a host runs it.
 fn worker(dir: &Path, extra: &[&str], action: &[&str], path: &str, stdin: &[u8]) -> Output {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_latch"))
-        .args(["worker", "--area", "../area", "--denied", "../state"])
+    let mut command = Command::new(env!("CARGO_BIN_EXE_latch"));
+    // No Windows process starts in a container with nothing in its environment.
+    if cfg!(unix) {
+        command.env_clear();
+    }
+    let mut child = command
+        .arg("worker")
+        .arg("--area")
+        .arg(folder(dir, "area"))
+        .arg("--denied")
+        .arg(folder(dir, "state"))
         .args(extra)
         .args(action)
         .args(["--", path])
         .current_dir(dir.join("area"))
-        .env_clear()
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -51,7 +66,18 @@ fn worker(dir: &Path, extra: &[&str], action: &[&str], path: &str, stdin: &[u8])
     child.wait_with_output().unwrap()
 }
 
+/// A folder of the test's as a worker is told it: from the area, or on
+/// Windows by its real path, which is what its grants hold it to.
+fn folder(dir: &Path, name: &str) -> String {
+    if cfg!(windows) {
+        portable::real_path(&dir.join(name)).display().to_string()
+    } else {
+        format!("../{name}")
+    }
+}
+
 /// Every exec starts with a private frame, even when it has no secrets.
+#[cfg(unix)]
 fn exec_worker(command: &mut Command) -> Output {
     let mut child = command
         .stdin(Stdio::piped())
@@ -71,6 +97,7 @@ fn exec_worker(command: &mut Command) -> Output {
 
 /// The code a worker reports for a path the sandbox keeps from it: Linux
 /// leaves it out of the worker's view, macOS refuses it.
+#[cfg(unix)]
 fn hidden_code() -> &'static str {
     if cfg!(target_os = "linux") {
         "not_found"
@@ -97,7 +124,7 @@ fn an_exec_requires_a_complete_private_header() {
     for input in [b"".as_slice(), b"\0\0", b"\0\0\0\x01x"] {
         let output = worker(
             dir.path(),
-            &["--tmpdir", "../tmp"],
+            &["--tmpdir", &folder(dir.path(), "tmp")],
             &["exec"],
             "/bin/echo",
             input,
@@ -431,7 +458,7 @@ fn a_sandbox_that_cannot_be_applied_stops_the_worker() {
     assert_eq!(code(&output), "sandbox_failed");
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 #[test]
 fn without_a_sandbox_for_this_system_no_worker_runs() {
     let dir = setup();
@@ -768,7 +795,16 @@ fn a_read_refuses_a_symlink_swapped_in_after_resolution_before_sending_bytes() {
         fs::create_dir_all(file.parent().unwrap()).unwrap();
         fs::write(file, "unjudged bytes").unwrap();
         fs::rename(target, target.with_file_name("saved")).unwrap();
+        // The file itself, by a file symlink, which a Windows standard user
+        // may not make; a folder by a folder link anywhere.
+        #[cfg(unix)]
         std::os::unix::fs::symlink(&replacement, target).unwrap();
+        #[cfg(windows)]
+        if component == 0 {
+            continue;
+        } else {
+            portable::link_folder(&replacement, target);
+        }
 
         let read = worker(dir.path(), &[], &["read"], resolved.to_str().unwrap(), b"");
         assert!(!read.status.success(), "component {component}: {read:?}");
@@ -777,10 +813,12 @@ fn a_read_refuses_a_symlink_swapped_in_after_resolution_before_sending_bytes() {
 }
 
 /// The `PATH` a host gives exec's programs.
+#[cfg(unix)]
 const HOST_PATH: &str = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
 
 /// `latch worker … exec -- /bin/sh -c SCRIPT`, as a host runs it: from the
 /// area, with HOME there too, and `extra` worker flags.
+#[cfg(unix)]
 fn exec_script(dir: &Path, extra: &[&str], script: &str) -> Output {
     let real = dir.canonicalize().unwrap();
     exec_worker(
@@ -1030,6 +1068,7 @@ fn exec_can_make_temp_files_when_an_opt_in_covers_tmp() {
 }
 
 /// A home-readable exec with explicit writable roots, using real sandbox code.
+#[cfg(unix)]
 fn declared_exec(dir: &Path, network: bool, script: &str) -> Output {
     let home = dir.join("area").canonicalize().unwrap();
     // Resolve macOS's Python shim before confinement; xcrun's own cache is
@@ -1081,6 +1120,7 @@ fn declared_exec(dir: &Path, network: bool, script: &str) -> Output {
     )
 }
 
+#[cfg(unix)]
 fn declared_setup() -> tempfile::TempDir {
     let dir = setup();
     for name in ["project", ".ssh", ".latch", "Library/Caches"] {
@@ -1092,6 +1132,9 @@ fn declared_setup() -> tempfile::TempDir {
     dir
 }
 
+// Exec reads home on macOS and Linux; a Windows exec reads only its grants
+// (src/sandbox/windows.rs's tests).
+#[cfg(unix)]
 #[test]
 fn declared_exec_reads_home_and_confines_writes_and_hidden_data() {
     let dir = declared_setup();
@@ -1151,6 +1194,9 @@ fn exec_runs_without_a_library_cache_and_does_not_follow_a_cache_alias() {
     assert_eq!(output.stdout, b"readable-dotfile");
 }
 
+// A host Unix socket, and python3 and node from the system, which a Windows
+// container reaches only in Program Files.
+#[cfg(unix)]
 #[test]
 fn declared_exec_needs_network_and_cannot_use_a_host_unix_socket() {
     use std::io::Read;
@@ -1205,6 +1251,8 @@ fn declared_exec_cannot_read_its_hosts_process_arguments() {
     }
 }
 
+// python3 from the system (see above).
+#[cfg(unix)]
 #[test]
 fn a_networked_exec_resolves_a_hostname() {
     let dir = declared_setup();
@@ -1217,6 +1265,8 @@ fn a_networked_exec_resolves_a_hostname() {
     assert_eq!(output.stdout, b"hostname resolved\n");
 }
 
+// python3 and node from the system (see above).
+#[cfg(unix)]
 #[test]
 fn an_offline_exec_supports_unnamed_unix_sockets_and_asyncio() {
     let dir = declared_setup();
@@ -1239,6 +1289,8 @@ print("offline IPC works")
     assert_eq!(output.stdout, b"offline IPC works\n");
 }
 
+// python3 from the system, and Unix sockets (see above).
+#[cfg(unix)]
 #[test]
 fn a_networked_exec_can_use_unix_sockets_in_its_own_temp() {
     let dir = declared_setup();

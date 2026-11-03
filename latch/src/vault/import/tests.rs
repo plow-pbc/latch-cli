@@ -668,16 +668,15 @@ fn a_renewed_card_or_a_note_with_another_custom_field_is_new() {
 
 #[test]
 fn an_import_writes_the_vault_once_and_a_failed_write_saves_no_row() {
-    use std::os::unix::fs::PermissionsExt;
     let (dir, mut vault) = store();
     let rows: Vec<Value> = (0..20)
         .map(|i| json!({"type": 2, "name": format!("Note {i}"), "notes": "made up"}))
         .collect();
     // The vault's folder can't be written: the one write at the end fails,
     // and so does every row, with nothing on disk.
-    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o500)).unwrap();
+    crate::portable::make_read_only(dir.path());
     let (_, outcome) = run(&mut vault, &cards_and_notes(json!(rows)));
-    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    crate::portable::make_private(dir.path());
     assert_eq!((outcome.saved, outcome.failed.len()), (0, 20));
     assert!(OwnStore::open(dir.path()).unwrap().list().is_empty());
 

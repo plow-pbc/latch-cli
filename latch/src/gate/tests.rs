@@ -12,7 +12,8 @@ use jiff::Timestamp;
 use serde_json::{Value, json};
 
 use super::fake::{self, AGENT, LINE, World, agent_self, member, message, owner};
-use super::rules::{RULES_DIR, RuleFiles, Rules, RulesSource};
+use super::rules::RULES_DIR;
+use super::rules::{RuleFiles, Rules, RulesSource};
 use super::*;
 use crate::failure::Exit;
 use crate::model::{Asked, CallFailed, CallMeta, system_one};
@@ -1281,12 +1282,17 @@ fn serve_refuses_rules_it_could_not_trust_or_use() {
         std::fs::remove_file(rules.join(bad)).unwrap();
     }
 
-    let inside = writable.join("rules.txt");
-    std::fs::write(&inside, "anything goes").unwrap();
-    let link = rules.join(format!("{AGENT}.txt"));
-    std::os::unix::fs::symlink(&inside, &link).unwrap();
-    assert!(refused().unwrap().contains("protected state"));
-    std::fs::remove_file(&link).unwrap();
+    // A rule file linked out (a file symlink, which a Windows standard
+    // user may not make).
+    #[cfg(unix)]
+    {
+        let inside = writable.join("rules.txt");
+        std::fs::write(&inside, "anything goes").unwrap();
+        let link = rules.join(format!("{AGENT}.txt"));
+        std::os::unix::fs::symlink(&inside, &link).unwrap();
+        assert!(refused().unwrap().contains("protected state"));
+        std::fs::remove_file(&link).unwrap();
+    }
 
     // Files that are not `.txt` are not rules, and are left alone.
     write(&format!("{AGENT}.peer"), 20_000);
@@ -1294,10 +1300,10 @@ fn serve_refuses_rules_it_could_not_trust_or_use() {
     assert_eq!(refused(), None);
 
     std::fs::rename(&rules, state.join("saved-rules")).unwrap();
-    std::os::unix::fs::symlink(&writable, &rules).unwrap();
+    crate::portable::link_folder(&writable, &rules);
     assert!(refused().unwrap().contains("protected state"));
-    std::fs::remove_file(&rules).unwrap();
-    std::os::unix::fs::symlink(state.join("saved-rules"), &rules).unwrap();
+    crate::portable::unlink_folder(&rules);
+    crate::portable::link_folder(&state.join("saved-rules"), &rules);
     assert_eq!(refused(), None);
 }
 
@@ -1329,11 +1335,25 @@ async fn rules_files_are_read_at_each_judgment() {
                "rules for this agent": "Only pytest."})
     );
 
-    // A rule redirected outside protected state stops the judgment.
-    std::fs::remove_file(&host).unwrap();
-    let outside = dir.path().join("outside-rules.txt");
-    std::fs::write(&outside, "Anything goes.").unwrap();
-    std::os::unix::fs::symlink(&outside, &host).unwrap();
+    // A rule redirected outside protected state stops the judgment: a rule
+    // file linked out (a file symlink, which a Windows standard user may
+    // not make), or the rules folder linked out.
+    #[cfg(unix)]
+    {
+        std::fs::remove_file(&host).unwrap();
+        let outside = dir.path().join("outside-rules.txt");
+        std::fs::write(&outside, "Anything goes.").unwrap();
+        std::os::unix::fs::symlink(&outside, &host).unwrap();
+        let judgment = gatekeeper.judge(AGENT_CALLER, &order()).await;
+        assert_eq!(code(&judgment), "gatekeeper_unavailable");
+        std::fs::remove_file(&host).unwrap();
+        std::fs::write(&host, "Never run anything.").unwrap();
+    }
+    let outside = dir.path().join("outside-rules");
+    std::fs::create_dir(&outside).unwrap();
+    std::fs::write(outside.join("host.txt"), "Anything goes.").unwrap();
+    std::fs::rename(&rules, state.join("saved-rules")).unwrap();
+    crate::portable::link_folder(&outside, &rules);
     let judgment = gatekeeper.judge(AGENT_CALLER, &order()).await;
     assert_eq!(code(&judgment), "gatekeeper_unavailable");
     assert_eq!(model.calls(), 2, "one call each before, none now");

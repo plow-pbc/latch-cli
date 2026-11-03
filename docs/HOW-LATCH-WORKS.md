@@ -56,22 +56,33 @@ guides cover the [browser](../latch/BROWSER.md), [vault](../latch/VAULT.md),
   runs.** The host would take the agent for you, and judge its calls only
   against your rules.
 
-## 3. Hosts: Mac and Linux
+## 3. Hosts: Mac, Linux and Windows
 
-| | Mac | Linux, including a Raspberry Pi |
-|---|---|---|
-| Supported | macOS 13 or later, Apple silicon and Intel | x86_64 and arm64 |
-| Sandbox for exec, files, Google and Messages | Seatbelt | bubblewrap and seccomp; needs user namespaces |
-| `latch serve` runs as | a launchd job, using the `latch` inside `Plow Latch.app` | a systemd user service |
-| Key, Plow login, vault and audit keys | the Keychain, in the signed release app | files only you can read (mode 600) |
-| Messages and Contacts | Yes, once turned on and given Full Disk Access (granted to Plow Latch.app) | No (`unsupported_platform`) |
-| Google | macOS 15 or later | Yes |
-| Chrome for Testing, Camoufox | Yes | Yes |
-| The browser's sandbox | the engine's own; the engine runs outside latch's Seatbelt | latch's bubblewrap, with the engine's own sandbox inside it |
-| Browser windows | on your screen; `browser handoff` works | a private virtual display, or none with `--headless-browsers`; no `browser handoff` (`needs_owner`, `no_screen`) |
+| | Mac | Linux, including a Raspberry Pi | Windows |
+|---|---|---|---|
+| Supported | macOS 13 or later, Apple silicon and Intel | x86_64 and arm64 | Windows 11, x86_64; the command line only |
+| Sandbox for exec, files, Google and Messages | Seatbelt | bubblewrap and seccomp; needs user namespaces | an AppContainer and a Job object for each call; its grants are written into the files' own access lists, and taken back |
+| `latch serve` runs as | a launchd job, using the `latch` inside `Plow Latch.app` | a systemd user service | a background process of your own (`serve -d`) |
+| Key, Plow login, vault and audit keys | the Keychain, in the signed release app | files only you can read (mode 600) | files sealed with DPAPI for your Windows user and this state folder |
+| Messages and Contacts | Yes, once turned on and given Full Disk Access (granted to Plow Latch.app) | No (`unsupported_platform`) | No (`unsupported_platform`) |
+| Google | macOS 15 or later | Yes | Yes |
+| Chrome for Testing, Camoufox | Yes | Yes | Yes |
+| The browser's sandbox | the engine's own; the engine runs outside latch's Seatbelt | latch's bubblewrap, with the engine's own sandbox inside it | the engine's own; the engine runs outside latch's AppContainer, in a job of its worker's |
+| Browser windows | on your screen; `browser handoff` works | a private virtual display, or none with `--headless-browsers`; no `browser handoff` (`needs_owner`, `no_screen`) | on your screen; `browser handoff` works |
 
 - A host that can't set up its sandbox refuses to start. There is no
   unsandboxed mode.
+- On Windows, an exec reads its write folders, the files the rules name and
+  Windows' own folders, not all of home; `AppData` is hidden there as
+  `~/Library` is on a Mac. A write path may not hold latch's state, a
+  hidden folder, or the folder of the latch the host runs. Its programs
+  reach no `localhost`, even with network on.
+- On Windows, listing a drive's root (cmd's `dir`, say) and opening `nul`
+  (`> nul`, or a program's null I/O) need `latch setup`'s one-time step,
+  which asks an administrator once. For `nul` it also adds a startup task,
+  `latch null device`, that runs as SYSTEM, because Windows resets the
+  device's access list at each start. `latch logout --purge` of the default
+  state folder takes the task and the entries back, asking once.
 - On some Ubuntu hosts, AppArmor restricts user namespaces. There Chrome
   runs without its own sandbox, inside latch's, and `latch status --local`
   says `page isolation off on this host`.
@@ -384,11 +395,11 @@ For how to report a vulnerability, see [SECURITY.md](../SECURITY.md).
 
 | What | Status |
 |---|---|
-| Windows; a host with no sandbox | Not supported |
+| A host with no sandbox | Not supported |
 | Sending texts or iMessages, changing contacts, reading the Messages database directly | Left out on purpose |
 | Scripting other apps (AppleScript, System Events) | Left out on purpose |
 | Google beyond Gmail and Calendar | Not supported |
-| Messages and Contacts on a Linux host | Not supported (`unsupported_platform`) |
+| Messages and Contacts on a Linux or Windows host | Not supported (`unsupported_platform`) |
 | Browser handoff on a Linux host or with `--headless-browsers` | Not supported |
 | An agent's login running a host | Not supported: it saves no Plow token, so `latch serve` stops with `not_logged_in` |
 | Turning connectors on or off from another machine | Not supported |

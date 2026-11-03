@@ -379,6 +379,68 @@ jobs:
           tar -xzf latch-v0.0.0-smoke-${{ matrix.target }}.tar.gz
           sh scripts/macos-smoke.sh latch-v0.0.0-smoke-${{ matrix.target }}
 
+  # Windows: latch's native build, rustfmt, clippy and every test target,
+  # the tests run as a standard user would, with no secrets. Not in
+  # ci-required yet.
+  windows:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: latch
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source-ref || github.sha }}
+      # Before anything is built: the tests below run as a standard user,
+      # who can't use what an administrator's token makes unless this holds.
+      - name: The checkout is this user's, as a user's own install is
+        shell: pwsh
+        run: |
+          icacls .. /setowner $env:USERNAME /T /C /Q | Out-Null
+          icacls .. /grant "${env:USERNAME}:(OI)(CI)F" /T /C /Q | Out-Null
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: latch -> target
+          shared-key: windows-x64
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9.148
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --all-targets --features fake-gog -- -D warnings
+      # The tests' POSIX shell (tests/portable): busybox-w32, at a pinned
+      # hash, in a folder latch's sandbox may read, as Program Files is.
+      - name: The tests' shell
+        shell: pwsh
+        run: |
+          $tools = New-Item -ItemType Directory -Force ../.dev/tools
+          $sh = Join-Path $tools sh.exe
+          Invoke-WebRequest -UseBasicParsing -OutFile $sh https://frippery.org/files/busybox/busybox-w64-FRP-6354-g5f09fb446.exe
+          if ((Get-FileHash $sh).Hash -ne '95343C871869CC0AB57ECEC26B2F9AF0370EB9C954F7E5DDD017163E4E0D09A0') { throw 'busybox-w32 is not the pinned build' }
+          icacls $tools /grant '*S-1-15-2-1:(OI)(CI)(RX)' /Q
+      # The runner signs in as an administrator; the tests run as a standard
+      # user would (Administrators deny-only, medium integrity), on files
+      # this user owns, as a user's own install is.
+      - name: Tests, as a standard user
+        shell: pwsh
+        run: |
+          ../scripts/as-standard-user.ps1 cargo build --locked
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          ../scripts/as-standard-user.ps1 cargo nextest run --locked --no-fail-fast --profile ci --features fake-gog
+      - name: The installer's release checks, against install.ps1
+        shell: pwsh
+        env:
+          LATCH_RELEASE_LATCH: ${{ github.workspace }}\latch\target\debug\latch.exe
+        run: ../scripts/as-standard-user.ps1 python ../scripts/test-install-release.py
+      # The one step here that runs as this runner's administrator, as
+      # `latch setup` has Windows ask for one. It takes back all it adds.
+      - name: Setup's administrator step, on a real Windows
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File ../scripts/check-null-device.ps1
+
   ci-required:
     name: ${{ inputs.source-ref != '' && 'ci-benchmark' || 'ci-required' }}
     if: always() && (github.ref != 'refs/heads/ci-speed' || (github.event_name == 'workflow_dispatch' && inputs.mode != 'probe'))

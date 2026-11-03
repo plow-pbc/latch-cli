@@ -103,10 +103,10 @@ reads one; Activity's “Gatekeeper requests” opens the calls together.
 
 ## Where things run
 
-| | Mac | Linux |
-|---|---|---|
-| Sandbox | Seatbelt | bubblewrap |
-| The host runs as | a launchd job | a systemd user service |
-| Secrets | the Keychain, in the release app | files only you can read |
-| Messages and Contacts | Yes | No |
-| Browser windows | on your screen | a private virtual display |
+| | Mac | Linux | Windows |
+|---|---|---|---|
+| Sandbox | Seatbelt | bubblewrap | an AppContainer and a Job object |
+| The host runs as | a launchd job | a systemd user service | a background process |
+| Secrets | the Keychain, in the release app | files only you can read | files sealed with DPAPI |
+| Messages and Contacts | Yes | No | No |
+| Browser windows | on your screen | a private virtual display | on your screen |
