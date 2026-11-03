@@ -430,8 +430,10 @@ jobs:
           ../scripts/as-standard-user.ps1 cargo build --locked
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           ../scripts/as-standard-user.ps1 cargo nextest run --locked --no-fail-fast --profile ci --features fake-gog
+      # In Windows PowerShell, as install.ps1 runs: pwsh hands a child its own
+      # module path, where Windows PowerShell finds no Get-FileHash.
       - name: The installer's release checks, against install.ps1
-        shell: pwsh
+        shell: powershell
         env:
           LATCH_RELEASE_LATCH: ${{ github.workspace }}\latch\target\debug\latch.exe
         run: ../scripts/as-standard-user.ps1 python ../scripts/test-install-release.py

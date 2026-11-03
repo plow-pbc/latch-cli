@@ -69,10 +69,10 @@ Check 'its file still lists no user' ($list -notmatch 'WD\)' -and $list -notmatc
 
 Push-Location "$here\..\latch"
 $env:LATCH_TEST_NULL_DEVICE_OPEN = '1'
-$code = AsStandard cargo nextest run --locked --features fake-gog --test cli a_program_can_use_the_null_device_or_is_told_why_not
+$code = AsStandard cargo nextest run --locked --features fake-gog --test cli --test worker a_program_can_use_the_null_device_or_is_told_why_not everyday_tools_work_reading_only_the_area_and_the_system
 Remove-Item Env:LATCH_TEST_NULL_DEVICE_OPEN
 Pop-Location
-Check 'a worker gets through, as a standard user' ($code -eq 0 -and $said -match '1 test run: 1 passed')
+Check 'a worker gets through, and git and the others run, as a standard user' ($code -eq 0 -and $said -match '2 tests run: 2 passed')
 
 $home2 = Join-Path $env:TEMP ("latch-null-" + [guid]::NewGuid())
 New-Item -ItemType Directory $home2 | Out-Null

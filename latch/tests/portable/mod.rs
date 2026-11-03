@@ -927,13 +927,22 @@ fn unix_terminal(
     let (send, shown) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let mut buffer = [0; 4096];
+        // A character a read cut in two waits for the rest of it.
+        let mut unread = Vec::new();
         // Ends with an error once the last holder of the other side exits.
         while let Ok(read) = reading.read(&mut buffer) {
-            if read == 0
-                || send
-                    .send(String::from_utf8_lossy(&buffer[..read]).to_string())
-                    .is_err()
-            {
+            if read == 0 {
+                break;
+            }
+            unread.extend_from_slice(&buffer[..read]);
+            let whole = match std::str::from_utf8(&unread) {
+                Ok(_) => unread.len(),
+                Err(err) if err.error_len().is_none() => err.valid_up_to(),
+                Err(_) => unread.len(),
+            };
+            let text = String::from_utf8_lossy(&unread[..whole]).to_string();
+            unread.drain(..whole);
+            if send.send(text).is_err() {
                 break;
             }
         }

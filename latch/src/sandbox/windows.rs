@@ -328,6 +328,24 @@ fn grants(policy: &Policy) -> Result<Vec<Grant>, String> {
             ));
         }
     }
+    // Nor is anything inside one asked for: an entry on what a hidden folder
+    // holds opens it, however sealed that folder is, since a container needs
+    // no rights on the folders above what it was granted. (Its temp folder and
+    // the helper the host checked may sit there: the host made and chose those.)
+    for path in policy
+        .areas
+        .iter()
+        .chain(&policy.reads)
+        .chain(&policy.workdir)
+    {
+        if let Some(around) = hidden.clone().find(|around| within(path, around)) {
+            return Err(format!(
+                "{} is inside {}, which is hidden from every worker",
+                path.display(),
+                around.display()
+            ));
+        }
+    }
     // A hidden path inside a folder it reads stays hidden only if that grant
     // never reaches it.
     let granted: Vec<PathBuf> = grants.iter().map(|grant| grant.path.clone()).collect();
