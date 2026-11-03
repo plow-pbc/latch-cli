@@ -829,16 +829,8 @@ async fn a_slow_or_late_submit_still_sends_the_whole_card(engine: &str) {
 }
 
 /// One click through a plan, as the agent presses a button: its trail step.
-async fn pressed(h: &mut Harness, target: &str, request: &str) -> Value {
-    let step = format!("click {target}");
-    let done = h
-        .call(
-            "do",
-            json!({"request": request, "plan": {"steps": [crate::browser::plan::short_step(&step).unwrap()]}}),
-        )
-        .await
-        .unwrap();
-    done["trail"][0].clone()
+async fn pressed(h: &mut Harness, target: &str) -> Value {
+    h.click(target).await.unwrap()["trail"][0].clone()
 }
 
 /// A press the page refuses says so by what the page marks, however it marks
@@ -849,7 +841,7 @@ async fn a_click_says_what_the_page_marks_and_when_it_changed_nothing(engine: &s
     let url = format!("{local}/checkout-marks.html");
     let page = h.call("open", json!({"url": url})).await.unwrap();
     let pay = find(&page, "button", "Pay");
-    let refused = pressed(&mut h, &pay, "r-marks").await;
+    let refused = pressed(&mut h, &pay).await;
     assert!(
         refused["unchanged"]
             .as_str()
@@ -865,14 +857,14 @@ async fn a_click_says_what_the_page_marks_and_when_it_changed_nothing(engine: &s
 
     // A click that changed only a state the page shows is no "nothing".
     let more = find(&page, "button", "More");
-    let opened = pressed(&mut h, &more, "r-more").await;
+    let opened = pressed(&mut h, &more).await;
     assert!(opened["unchanged"].is_null(), "{opened}");
 
     let page = h
         .call("open", json!({"url": format!("{url}?alert")}))
         .await
         .unwrap();
-    let said = pressed(&mut h, &find(&page, "button", "Pay"), "r-alert").await;
+    let said = pressed(&mut h, &find(&page, "button", "Pay")).await;
     assert_eq!(
         said["marks"]["errors"],
         json!(["Your ZIP is incomplete."]),
@@ -883,7 +875,7 @@ async fn a_click_says_what_the_page_marks_and_when_it_changed_nothing(engine: &s
         .call("open", json!({"url": format!("{url}?native")}))
         .await
         .unwrap();
-    let native = pressed(&mut h, &find(&page, "button", "Pay"), "r-native").await;
+    let native = pressed(&mut h, &find(&page, "button", "Pay")).await;
     assert_eq!(
         native["marks"]["required_empty"],
         json!(["Cardholder name", "ZIP"]),
@@ -892,30 +884,36 @@ async fn a_click_says_what_the_page_marks_and_when_it_changed_nothing(engine: &s
     assert_eq!(native["marks"]["invalid"], json!(["ZIP"]), "{native}");
 
     // With both fields given the press goes through, and nothing is marked.
-    let page = h.call("open", json!({"url": url})).await.unwrap();
-    for (field, text) in [("Cardholder name", "Ada"), ("ZIP", "94110")] {
-        let step = format!("type {} \"{text}\"", find(&page, "textbox", field));
-        h.call(
-            "do",
-            json!({"request": format!("r-{text}"), "plan": {"steps": [crate::browser::plan::short_step(&step).unwrap()]}}),
-        )
-        .await
-        .unwrap();
+    // The page then disables its fields, one by one or by the fieldset
+    // around them: it is working, and a fill waits.
+    for (shape, tag) in [("", "fields"), ("?fieldset", "fieldset")] {
+        let page = h
+            .call("open", json!({"url": format!("{url}{shape}")}))
+            .await
+            .unwrap();
+        for (field, text) in [("Cardholder name", "Ada"), ("ZIP", "94110")] {
+            let step = format!("type {} \"{text}\"", find(&page, "textbox", field));
+            h.call(
+                "do",
+                json!({"request": format!("r-{text}-{tag}"), "plan": {"steps": [crate::browser::plan::short_step(&step).unwrap()]}}),
+            )
+            .await
+            .unwrap();
+        }
+        let paid = pressed(&mut h, &find(&page, "button", "Pay")).await;
+        assert!(paid["unchanged"].is_null(), "{shape}: {paid}");
+        assert!(paid["marks"].is_null(), "{shape}: {paid}");
+        let seen = h.call("observe", json!({})).await.unwrap();
+        let working = find(&seen, "button", "Processing");
+        assert!(!working.is_empty());
+        let name = find(&seen, "textbox", "Cardholder name");
+        let (refill, _) = h
+            .gated_fill(json!({"item": card, "fields": [["cardholder name", [name]]]}))
+            .await;
+        let refused = refill.unwrap_err();
+        assert_eq!(refused.code, "fill_refused", "{shape}: {}", refused.message);
+        assert!(refused.message.contains("disabled"), "{}", refused.message);
     }
-    let paid = pressed(&mut h, &find(&page, "button", "Pay"), "r-paid").await;
-    assert!(paid["unchanged"].is_null(), "{paid}");
-    assert!(paid["marks"].is_null(), "{paid}");
-    let seen = h.call("observe", json!({})).await.unwrap();
-    let working = find(&seen, "button", "Processing");
-    assert!(!working.is_empty());
-    // The page has disabled its fields: it is working, and a fill waits.
-    let name = find(&seen, "textbox", "Cardholder name");
-    let (refill, _) = h
-        .gated_fill(json!({"item": card, "fields": [["cardholder name", [name]]]}))
-        .await;
-    let refused = refill.unwrap_err();
-    assert_eq!(refused.code, "fill_refused", "{}", refused.message);
-    assert!(refused.message.contains("disabled"), "{}", refused.message);
 
     h.call("close", json!({})).await.ok();
 }
@@ -938,6 +936,10 @@ async fn a_button_is_named_by_the_text_a_person_sees(engine: &str) {
         .filter(|element| element["role"] == "button")
         .map(|element| element["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names, ["Pay", "Save", "Send", "Place", "More"], "{page}");
+    assert_eq!(
+        names,
+        ["Pay", "Save", "Send", "Place", "More", "Close"],
+        "{page}"
+    );
     h.call("close", json!({})).await.ok();
 }

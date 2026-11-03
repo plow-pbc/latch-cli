@@ -105,7 +105,7 @@
       if (type === 'submit') return 'Submit';
     }
     if (!['input', 'select', 'textarea'].includes(el.localName)) {
-      const text = clean(shownText(el)) || clean(el.innerText || el.textContent);
+      const text = clean(shownText(el));
       if (text) return text;
       const img = el.querySelector('img[alt]');
       if (img && img.alt.trim()) return clean(img.alt);
@@ -139,6 +139,10 @@
   const rendered = (el) => (el.checkVisibility ? el.checkVisibility({ visibilityProperty: true }) : el.getClientRects().length > 0);
 
   const fileInput = (el) => el.localName === 'input' && el.type === 'file';
+
+  // Disabled as the page has it: itself, by a disabled fieldset around it,
+  // or marked so for its readers.
+  const isDisabled = (el) => el.matches(':disabled') || el.getAttribute('aria-disabled') === 'true';
 
   // Hidden from the page's readers: `aria-hidden` or inert, itself or by an
   // ancestor (checkouts carry such copies of their fields).
@@ -183,7 +187,7 @@
     if (el.localName === 'input' && ['checkbox', 'radio'].includes(el.type)) item.checked = el.checked;
     else if (el.getAttribute('aria-checked')) item.checked = el.getAttribute('aria-checked') === 'true';
     if (el.getAttribute('aria-expanded')) item.expanded = el.getAttribute('aria-expanded') === 'true';
-    if (el.disabled || el.getAttribute('aria-disabled') === 'true') item.disabled = true;
+    if (isDisabled(el)) item.disabled = true;
     if (offscreen(rect)) item.offscreen = true;
     if (!rendered(el)) item.hidden = true;
     const row = el.parentElement && el.parentElement.closest(ROWS);
@@ -259,7 +263,7 @@
       x, y, width: rect.width, height: rect.height,
       covered: !reaches,
       cover: !reaches && top ? coverOf(top) : undefined,
-      disabled: !!(el.disabled || el.getAttribute('aria-disabled') === 'true'),
+      disabled: isDisabled(el),
       kind: el.localName === 'select' ? 'select'
         : (el.localName === 'input' && el.type === 'file') ? 'file'
         : (role(el) === 'textbox' || role(el) === 'searchbox' || role(el) === 'spinbutton') ? 'text' : 'other',
@@ -337,7 +341,7 @@
       role: r,
       name: name(el),
       hidden: !rendered(el) || unread(el),
-      disabled: !!(el.disabled || el.getAttribute('aria-disabled') === 'true'),
+      disabled: isDisabled(el),
       readonly: !!el.readOnly,
       covered: over !== null,
       cover: over ?? undefined,
@@ -398,11 +402,16 @@
   // text. A page that marks nothing says nothing about its form.
   const marks = () => {
     const fields = [...document.querySelectorAll('input, select, textarea, [role=textbox], [role=combobox], [role=searchbox]')]
-      .filter((el) => el.type !== 'hidden' && !el.disabled && rendered(el) && !unread(el));
+      .filter((el) => el.type !== 'hidden' && !isDisabled(el) && rendered(el) && !unread(el));
+    // A native required field is missing what the browser says it is (a
+    // radio group with one checked is not); one required only for its
+    // readers, when it is empty.
     const empty = (el) => (['checkbox', 'radio'].includes(el.type) ? !el.checked : !current(el));
+    const missing = (el) => (el.required ? !!el.validity?.valueMissing
+      : el.getAttribute('aria-required') === 'true' && empty(el));
     const named = (list) => [...new Set(list.map(name).filter(Boolean))].slice(0, 8);
     return {
-      required_empty: named(fields.filter((el) => (el.required || el.getAttribute('aria-required') === 'true') && empty(el))),
+      required_empty: named(fields.filter(missing)),
       invalid: named(fields.filter((el) => el.getAttribute('aria-invalid') === 'true' || (el.validity && !el.validity.valid))),
       errors: shownErrors(),
     };
