@@ -373,7 +373,7 @@ pub fn local(state: &StateDir) -> Result<LocalStatus, Failure> {
             }
         }
     }
-    let dir = state.path.canonicalize().unwrap_or(state.path.clone());
+    let dir = crate::exec::shown_path(&state.path.canonicalize().unwrap_or(state.path.clone()));
     let Hosted {
         hosting,
         last_error,

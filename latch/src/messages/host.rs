@@ -222,7 +222,8 @@ pub fn request(op: &str, args: &Value) -> Result<(String, Vec<String>), Failure>
 /// named for this latch's version, which installed it.
 pub fn reader(state_dir: &Path) -> PathBuf {
     state_dir
-        .join("plugins/messages")
+        .join("plugins")
+        .join("messages")
         .join(env!("CARGO_PKG_VERSION"))
         .join("latch-messages")
 }

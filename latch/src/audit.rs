@@ -1241,7 +1241,7 @@ mod tests {
         let (hangup, closed) = std::io::pipe().unwrap();
         drop(closed);
         let mut resumed = Vec::new();
-        let fd = std::os::fd::AsRawFd::as_raw_fd(&hangup);
+        let fd = crate::watch::hangup_of(&hangup);
         read(dir.path(), "studio's", &after(&all[0]), Some(fd), |line| {
             resumed.push(line.clone());
             true
@@ -1254,7 +1254,7 @@ mod tests {
         let (hangup, closed) = std::io::pipe().unwrap();
         drop(closed);
         let mut none = Vec::new();
-        let fd = std::os::fd::AsRawFd::as_raw_fd(&hangup);
+        let fd = crate::watch::hangup_of(&hangup);
         read(dir.path(), "studio's", &after(&all[2]), Some(fd), |line| {
             none.push(line.clone());
             true
@@ -1303,7 +1303,7 @@ mod tests {
         let follower = {
             let dir = dir.path().to_path_buf();
             std::thread::spawn(move || {
-                let fd = std::os::fd::AsRawFd::as_raw_fd(&hangup);
+                let fd = crate::watch::hangup_of(&hangup);
                 let range = Range {
                     follow: true,
                     ..Range::default()

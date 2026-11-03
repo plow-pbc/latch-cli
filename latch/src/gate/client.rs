@@ -300,13 +300,27 @@ fn edited(text: &str) -> Result<String, Failure> {
         .map_err(|err| failed(format!("cannot make a file to edit: {err}")))?;
     std::fs::write(file.path(), text)
         .map_err(|err| failed(format!("cannot make a file to edit: {err}")))?;
-    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
-    // Through the shell, so an EDITOR with arguments (`code -w`) works.
-    let status = Command::new("/bin/sh")
+    let default = if cfg!(windows) { "notepad" } else { "vi" };
+    let editor = std::env::var("EDITOR").unwrap_or_else(|_| default.to_string());
+    // Through the shell, so an EDITOR with arguments (`code -w`) works:
+    // Windows' own, cmd, there.
+    #[cfg(unix)]
+    let mut command = Command::new("/bin/sh");
+    #[cfg(unix)]
+    command
         .arg("-c")
         .arg(format!("{editor} \"$1\""))
         .arg("latch")
-        .arg(file.path())
+        .arg(file.path());
+    #[cfg(windows)]
+    let mut command = Command::new("cmd");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // cmd takes the quotes off the line's ends and runs what is left.
+        command.raw_arg(format!("/d /c \"{editor} \"{}\"\"", file.path().display()));
+    }
+    let status = command
         .status()
         .map_err(|err| failed(format!("cannot start {editor}: {err}")))?;
     if !status.success() {

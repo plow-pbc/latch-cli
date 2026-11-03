@@ -166,7 +166,16 @@ impl StateDir {
                     .iter()
                     .map(|name| shell_word(&self.path.join(name)))
                     .collect();
-                let command = format!("mkdir -p -m 700 {aside} && mv {} {aside}/", moved.join(" "));
+                // In the shell a person there has: PowerShell on Windows. The
+                // folder inherits the state folder's own-user-only list there.
+                let command = if cfg!(windows) {
+                    format!(
+                        "New-Item -ItemType Directory -Force {aside} | Out-Null; Move-Item {} {aside}",
+                        moved.join(", ")
+                    )
+                } else {
+                    format!("mkdir -p -m 700 {aside} && mv {} {aside}/", moved.join(" "))
+                };
                 let mut failure = Failure::new(
                     code::state_format,
                     format!(
@@ -248,6 +257,10 @@ impl StateDir {
             .create(self.path.join("leftovers"))
             .and_then(|()| fs::DirBuilder::new().owner_only().create(&aside))
             .map_err(|err| self.io_failure(&aside, err))?;
+        // Windows makes a folder with its parent's access list, which the
+        // state folder's leftovers need not have made private: this one is.
+        #[cfg(windows)]
+        owner::folder(&aside).map_err(|err| self.io_failure(&aside, err))?;
         for name in found {
             fs::rename(self.path.join(name), aside.join(name))
                 .map_err(|err| self.io_failure(&self.path.join(name), err))?;
@@ -471,7 +484,12 @@ impl StateDir {
 
 /// A path as one word for the shell.
 fn shell_word(path: &Path) -> String {
-    crate::login::shell_quoted(&path.to_string_lossy())
+    let text = path.to_string_lossy();
+    // PowerShell's literal string: single quotes, one doubled.
+    if cfg!(windows) {
+        return format!("'{}'", text.replace('\'', "''"));
+    }
+    crate::login::shell_quoted(&text)
 }
 
 /// Writes a file only its owner can read, atomically and durably: into a
@@ -499,7 +517,7 @@ pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         let temp = dir.join(name);
         let written = owner::create_new(&temp)
             .and_then(|mut file| file.write_all(bytes).and_then(|()| file.sync_all()))
-            .and_then(|()| fs::rename(&temp, path));
+            .and_then(|()| rename_retrying(&temp, path));
         if written.is_err() {
             let _ = fs::remove_file(&temp);
         }
@@ -515,6 +533,26 @@ pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         temp.as_file().sync_all()?;
         temp.persist(path).map_err(|err| err.error)?;
         fs::File::open(dir)?.sync_all()
+    }
+}
+
+/// `fs::rename`, tried again for a moment while Windows refuses it: a file
+/// being deleted stays in the way, as access denied, until the last handle
+/// on it closes (a reader's, or another writer's).
+#[cfg(windows)]
+fn rename_retrying(from: &Path, to: &Path) -> std::io::Result<()> {
+    let mut wait = std::time::Duration::from_millis(1);
+    loop {
+        match fs::rename(from, to) {
+            Err(err)
+                if err.kind() == std::io::ErrorKind::PermissionDenied
+                    && wait < std::time::Duration::from_millis(200) =>
+            {
+                std::thread::sleep(wait);
+                wait *= 2;
+            }
+            result => return result,
+        }
     }
 }
 
@@ -760,8 +798,6 @@ pub fn to_hex(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::fs::PermissionsExt;
-
     use super::*;
 
     /// Test state lives under the repo's gitignored `.dev/`, like every dev run.
@@ -904,10 +940,17 @@ mod tests {
         assert!(refused.message.contains(command), "{}", refused.message);
         assert!(state.path.join("dev.json").exists(), "nothing moved");
         // The command it gives moves them, and the folder is a fresh one.
-        let ran = std::process::Command::new("sh")
-            .args(["-c", command])
-            .status()
-            .unwrap();
+        let ran = if cfg!(windows) {
+            std::process::Command::new("powershell")
+                .args(["-NoProfile", "-NonInteractive", "-Command", command])
+                .status()
+                .unwrap()
+        } else {
+            std::process::Command::new("sh")
+                .args(["-c", command])
+                .status()
+                .unwrap()
+        };
         assert!(ran.success(), "{command}");
         state.check_format_moving(false).unwrap();
         fs::remove_dir_all(&state.path).unwrap();
@@ -935,8 +978,7 @@ mod tests {
             fs::read_to_string(aside.join("dev.json")).unwrap(),
             "{\"mcpServers\": {}}"
         );
-        let mode = fs::metadata(&aside).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o700);
+        assert!(crate::portable::private(&aside));
         assert!(state.path.join("plugins/gog").is_dir());
         assert!(state.path.join(".DS_Store").is_file());
         state.create().unwrap();
@@ -1002,12 +1044,7 @@ mod tests {
         assert!(!created_again);
         assert_eq!(first, again);
 
-        let mode = fs::metadata(state.path.join("key"))
-            .unwrap()
-            .permissions()
-            .mode();
-        assert_eq!(mode & 0o777, 0o600);
-        let dir_mode = fs::metadata(&state.path).unwrap().permissions().mode();
-        assert_eq!(dir_mode & 0o777, 0o700);
+        assert!(crate::portable::private(&state.path.join("key")));
+        assert!(crate::portable::private(&state.path));
     }
 }

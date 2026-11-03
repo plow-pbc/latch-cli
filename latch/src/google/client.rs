@@ -250,15 +250,13 @@ mod tests {
 
     #[tokio::test]
     async fn a_file_over_a_private_one_leaves_it_private() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let local = dir.path().join("got");
         std::fs::write(&local, "the old file").unwrap();
-        std::fs::set_permissions(&local, std::fs::Permissions::from_mode(0o600)).unwrap();
+        crate::portable::make_private(&local);
         let sha256 = crate::state::to_hex(&<sha2::Sha256 as sha2::Digest>::digest(b"hello"));
         attachment_from(5, b"hello", &sha256, &local).await.unwrap();
         assert_eq!(std::fs::read(&local).unwrap(), b"hello");
-        let mode = std::fs::metadata(&local).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, 0o600, "{mode:o}");
+        assert!(crate::portable::private(&local));
     }
 }

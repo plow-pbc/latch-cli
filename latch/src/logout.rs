@@ -72,6 +72,7 @@ pub async fn run(state: &StateDir, args: &LogoutArgs) -> Result<Value, Failure> 
                 .path
                 .canonicalize()
                 .map_err(|err| io_failure(&state.path, err))?;
+            let path = crate::exec::shown_path(&path);
             if !path.join("latch.json").is_file() {
                 return Err(refused(
                     "has no latch.json, so it is not a latch state folder",
@@ -264,7 +265,8 @@ impl Summary {
             .ok()
             .map(|log| log.lines().count());
         let default = StateDir::new(None)?.path;
-        let default_state_dir = default.canonicalize().unwrap_or(default) == path;
+        let default_state_dir =
+            crate::exec::shown_path(&default.canonicalize().unwrap_or(default)) == path;
         Ok(Summary {
             state_dir: path.to_path_buf(),
             default_state_dir,

@@ -191,28 +191,19 @@ fn unlink(dir: &File, name: &str) -> io::Result<()> {
     Ok(())
 }
 
-/// Windows: the same steps without `*at` calls. The folder is opened once,
-/// not through a link at it, and must still be the folder that was judged;
-/// the new file is made in it and checked by its handle to be there; and it
-/// is renamed over the destination relative to that open folder, so a folder
-/// swapped meanwhile cannot redirect it. A file it replaces keeps its
-/// access list: the new one is made with it.
+/// Windows: the same steps. The judged folder is held as that folder, not
+/// a link at it nor one reached through a folder swapped for one
+/// (`pin_folder`); the new file is made in it by its name alone
+/// (`create_in`); and it is renamed over the destination relative to that
+/// open folder, so a folder swapped meanwhile cannot redirect either. A
+/// file it replaces keeps its access list: the new one is made with it.
 #[cfg(windows)]
 pub fn place(staged: &Path, path: &Path, workers: &WorkerSetup) -> Result<(), Failure> {
-    use std::fs::{File, OpenOptions};
+    use std::fs::File;
     use std::io;
-    use std::os::windows::ffi::OsStrExt;
-    use std::os::windows::fs::OpenOptionsExt;
-    use std::os::windows::io::FromRawHandle;
+    use windows_sys::Wdk::Storage::FileSystem::FILE_NON_DIRECTORY_FILE;
     use windows_sys::Win32::Foundation::GENERIC_WRITE;
-    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
-    use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
-    use windows_sys::Win32::Storage::FileSystem::{
-        CREATE_NEW, CreateFileW, DELETE, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_BACKUP_SEMANTICS,
-        FILE_FLAG_OPEN_REPARSE_POINT,
-    };
-
-    use crate::sandbox::final_path;
+    use windows_sys::Win32::Storage::FileSystem::{DELETE, FILE_ADD_FILE};
 
     let (Some(folder), Some(name)) = (path.parent(), path.file_name()) else {
         let message = format!("{} names no file", path.display());
@@ -220,23 +211,16 @@ pub fn place(staged: &Path, path: &Path, workers: &WorkerSetup) -> Result<(), Fa
     };
     let failed =
         |err: io::Error| Failure::new(code::io_error, format!("{}: {err}", path.display()));
-    // The folder that was judged, or nothing: not a link, nor reached
-    // through a folder swapped for one. It must pass again.
-    let dir = OpenOptions::new()
-        .read(true)
-        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
-        .open(folder)
-        .ok()
-        .filter(|dir| final_path(dir).is_ok_and(|real| real == folder))
-        .ok_or_else(|| changed(folder))?;
+    // The folder that was judged, or nothing. It must pass again.
+    let dir = crate::sandbox::pin_folder(folder, FILE_ADD_FILE).map_err(|_| changed(folder))?;
     check_path(workers, path, true)?;
 
-    let temp = folder.join(format!(
+    let temp = format!(
         ".{}.latch-{}-{:08x}.part",
         name.to_string_lossy(),
         std::process::id(),
         rand::random::<u32>()
-    ));
+    );
     // Made with the access list of a file it replaces, protection included,
     // and shared with no one until it is in place: an owner-only key in a
     // folder others read is never theirs to open, not even in between. That
@@ -244,49 +228,24 @@ pub fn place(staged: &Path, path: &Path, workers: &WorkerSetup) -> Result<(), Fa
     // (`EditLock`): a get's grant on it meanwhile would be lost.
     let _one_edit = crate::sandbox::EditLock::take().map_err(failed)?;
     let like = AccessOf::file(path).map_err(failed)?;
-    let attributes = SECURITY_ATTRIBUTES {
-        nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
-        lpSecurityDescriptor: like
-            .as_ref()
-            .map_or(std::ptr::null_mut(), AccessOf::descriptor),
-        bInheritHandle: 0,
-    };
-    let wide: Vec<u16> = temp.as_os_str().encode_wide().chain([0]).collect();
-    // Never an existing name (CREATE_NEW), nor a link at it; DELETE, so it
-    // can be renamed; no sharing.
-    // SAFETY: `wide` is NUL-terminated; `attributes` and the descriptor it
-    // points at (in `like`) outlive the call.
-    let handle = unsafe {
-        CreateFileW(
-            wide.as_ptr(),
-            GENERIC_WRITE | DELETE,
-            0,
-            &attributes,
-            CREATE_NEW,
-            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
-            std::ptr::null_mut(),
-        )
-    };
+    let made = crate::sandbox::create_in(
+        &dir,
+        temp.as_ref(),
+        GENERIC_WRITE | DELETE,
+        FILE_NON_DIRECTORY_FILE,
+        like.as_ref().map_or(std::ptr::null(), |like| {
+            like.descriptor().cast_const().cast()
+        }),
+    );
     drop(like);
-    if handle == INVALID_HANDLE_VALUE {
-        return Err(failed(io::Error::last_os_error()));
-    }
-    // SAFETY: a new handle, owned by the File from here on.
-    let mut file = unsafe { File::from_raw_handle(handle) };
-    let written = final_path(&file)
-        .and_then(|real| match real.parent() == Some(folder) {
-            true => Ok(()),
-            false => Err(io::Error::other(
-                "the folder changed while the file was made",
-            )),
-        })
-        .and_then(|()| File::open(staged))
+    let mut file = made.map_err(failed)?;
+    let written = File::open(staged)
         .and_then(|mut staged| io::copy(&mut staged, &mut file))
         .and_then(|_| file.sync_all())
         .and_then(|()| rename_into(&file, &dir, name));
     drop((file, dir));
     if let Err(err) = written {
-        let _ = std::fs::remove_file(&temp);
+        let _ = std::fs::remove_file(folder.join(&temp));
         return Err(failed(err));
     }
     Ok(())
@@ -450,16 +409,23 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path().canonicalize().unwrap();
         fs::create_dir(home.join(".latch")).unwrap();
-        fs::write(home.join("latch"), "the latch this host runs").unwrap();
+        fs::create_dir(home.join("bin")).unwrap();
+        fs::write(home.join("bin").join("latch"), "the latch this host runs").unwrap();
         let workers = WorkerSetup {
             hidden: crate::sandbox::never_readable(&home),
             state_dir: home.join(".latch"),
-            program: home.join("latch"),
+            program: home.join("bin").join("latch"),
             home,
             areas: vec![],
             reads: vec![],
         };
         (dir, workers)
+    }
+
+    /// `rel`, a path with `/` between its names, under `folder`.
+    fn under(folder: &Path, rel: &str) -> PathBuf {
+        rel.split('/')
+            .fold(folder.to_path_buf(), |path, name| path.join(name))
     }
 
     fn staged(dir: &Path, bytes: &[u8]) -> PathBuf {
@@ -473,18 +439,22 @@ mod tests {
         let (_dir, workers) = home();
         let home = &workers.home;
         fs::create_dir_all(home.join("docs")).unwrap();
-        std::os::unix::fs::symlink(home.join("docs"), home.join("linked")).unwrap();
+        crate::portable::link_folder(&home.join("docs"), &home.join("linked"));
         let resolve = |remote: &str| destination(remote, Some("report.pdf"), &workers);
-        assert_eq!(resolve("~/docs/a.txt").unwrap(), home.join("docs/a.txt"));
-        assert_eq!(resolve("docs/a.txt").unwrap(), home.join("docs/a.txt"));
-        // A folder takes the file's name; a symlinked folder is resolved.
-        assert_eq!(resolve("~/docs").unwrap(), home.join("docs/report.pdf"));
-        assert_eq!(resolve("~/linked/a.txt").unwrap(), home.join("docs/a.txt"));
+        assert_eq!(resolve("~/docs/a.txt").unwrap(), under(home, "docs/a.txt"));
+        assert_eq!(resolve("docs/a.txt").unwrap(), under(home, "docs/a.txt"));
+        // A folder takes the file's name; a linked folder is resolved.
+        assert_eq!(resolve("~/docs").unwrap(), under(home, "docs/report.pdf"));
+        assert_eq!(
+            resolve("~/linked/a.txt").unwrap(),
+            under(home, "docs/a.txt")
+        );
         let refused = |remote: &str| {
             let failure = resolve(remote).unwrap_err();
             (failure.exit, failure.code)
         };
-        for hidden in ["~/.latch/key", "~/linked/../.latch/key", "/etc/hosts"] {
+        let system = crate::portable::system_file().display().to_string();
+        for hidden in ["~/.latch/key", "~/linked/../.latch/key", &system] {
             assert_eq!(
                 refused(hidden),
                 (Exit::Denied, "bad_path".into()),
@@ -492,20 +462,25 @@ mod tests {
             );
         }
         assert_eq!(refused("~/missing/a.txt").1, "not_found");
-        // A link at the file's name inside a folder is followed and checked.
-        fs::write(home.join(".latch/key"), "made-up key").unwrap();
-        std::os::unix::fs::symlink(home.join(".latch/key"), home.join("docs/report.pdf")).unwrap();
-        assert_eq!(refused("~/docs"), (Exit::Denied, "bad_path".into()));
+        // A link at the file's name inside a folder is followed and checked
+        // (a file symlink, which a Windows standard user may not make).
+        fs::write(under(home, ".latch/key"), "made-up key").unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(home.join(".latch/key"), home.join("docs/report.pdf"))
+                .unwrap();
+            assert_eq!(refused("~/docs"), (Exit::Denied, "bad_path".into()));
+        }
         // The latch this host runs is never written over.
-        assert_eq!(refused("~/latch"), (Exit::Denied, "bad_path".into()));
+        assert_eq!(refused("~/bin/latch"), (Exit::Denied, "bad_path".into()));
         // A folder with no plain name for the file is not guessed at.
         let sneaky = destination("~/docs", Some("../x"), &workers).unwrap_err();
         assert_eq!(sneaky.code, "is_a_directory");
         // A get resolves the same way, and refuses the same places.
-        fs::write(home.join("docs/a.txt"), "a").unwrap();
+        fs::write(under(home, "docs/a.txt"), "a").unwrap();
         assert_eq!(
             source("~/linked/a.txt", &workers).unwrap(),
-            home.join("docs/a.txt")
+            under(home, "docs/a.txt")
         );
         assert_eq!(
             source("~/.latch/key", &workers).unwrap_err().code,
@@ -513,8 +488,8 @@ mod tests {
         );
         // Outside home, a system file is a get's too, as exec can read it.
         assert_eq!(
-            source("/etc/hosts", &workers).unwrap(),
-            PathBuf::from("/etc/hosts").canonicalize().unwrap()
+            source(&system, &workers).unwrap(),
+            crate::portable::system_file().canonicalize().unwrap()
         );
     }
 
@@ -526,20 +501,20 @@ mod tests {
         let path = destination("~/docs/key", None, &workers).unwrap();
         // After judging: the folder becomes a link into the state folder.
         fs::rename(home.join("docs"), home.join("docs-moved")).unwrap();
-        std::os::unix::fs::symlink(home.join(".latch"), home.join("docs")).unwrap();
+        crate::portable::link_folder(&home.join(".latch"), &home.join("docs"));
         let staged = staged(dir.path(), b"not a key");
         let refused = place(&staged, &path, &workers).unwrap_err();
         assert_eq!(refused.code, "destination_changed", "{refused:?}");
         assert_eq!(fs::read_dir(home.join(".latch")).unwrap().count(), 0);
         // A folder above it swapped is caught by the handle's own path.
-        fs::create_dir_all(home.join("a/b")).unwrap();
+        fs::create_dir_all(under(home, "a/b")).unwrap();
         let path = destination("~/a/b/key", None, &workers).unwrap();
-        fs::create_dir(home.join(".latch/b")).unwrap();
+        fs::create_dir(under(home, ".latch/b")).unwrap();
         fs::rename(home.join("a"), home.join("a-moved")).unwrap();
-        std::os::unix::fs::symlink(home.join(".latch"), home.join("a")).unwrap();
+        crate::portable::link_folder(&home.join(".latch"), &home.join("a"));
         let refused = place(&staged, &path, &workers).unwrap_err();
         assert_eq!(refused.code, "destination_changed", "{refused:?}");
-        assert_eq!(fs::read_dir(home.join(".latch/b")).unwrap().count(), 0);
+        assert_eq!(fs::read_dir(under(home, ".latch/b")).unwrap().count(), 0);
     }
 
     #[test]
@@ -547,14 +522,13 @@ mod tests {
         let (dir, workers) = home();
         let home = &workers.home;
         fs::create_dir(home.join("docs")).unwrap();
-        fs::write(home.join("docs/a.txt"), "old").unwrap();
+        fs::write(under(home, "docs/a.txt"), "old").unwrap();
         let path = destination("~/docs/a.txt", None, &workers).unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        crate::portable::make_private(&path);
         place(&staged(dir.path(), b"new"), &path, &workers).unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), "new");
         // It keeps the file's permissions.
-        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o7777;
-        assert_eq!(mode, 0o600);
+        assert!(crate::portable::private(&path));
         let names: Vec<_> = fs::read_dir(home.join("docs")).unwrap().flatten().collect();
         assert_eq!(names.len(), 1, "{names:?}");
         // A staged file that is gone fails, and the old file stays.

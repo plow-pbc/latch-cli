@@ -159,8 +159,6 @@ fn merged(kept: &Value, set: Value) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::fs::PermissionsExt;
-
     use super::*;
 
     #[test]
@@ -173,8 +171,7 @@ mod tests {
         );
         assert_ne!(a, of(state.path(), "agent_b", "cft").unwrap());
         assert_ne!(a, of(state.path(), "agent_a", "camoufox").unwrap());
-        let mode = fs::metadata(&a).unwrap().permissions().mode();
-        assert_eq!(mode & 0o077, 0, "private to this user");
+        assert!(crate::portable::private(&a), "private to this user");
         for odd in ["", "..", "a/b"] {
             assert_eq!(
                 of(state.path(), odd, "cft").unwrap_err().code,

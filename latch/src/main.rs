@@ -46,6 +46,10 @@ mod overview;
 mod paint;
 mod plow;
 mod plugins;
+// The tests' operating-system helpers, shared with tests/.
+#[cfg(test)]
+#[path = "../tests/portable/mod.rs"]
+mod portable;
 mod proxy;
 mod redact;
 mod relay_link;

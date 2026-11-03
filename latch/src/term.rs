@@ -202,17 +202,6 @@ pub fn one_line(text: &str) -> String {
         .collect()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn control_characters_never_reach_the_screen() {
-        assert_eq!(one_line("a\nb\r\nc"), "a⏎b⏎⏎c");
-        assert_eq!(one_line("tab\there \x1b[2J"), "tab here  [2J");
-    }
-}
-
 /// A Windows console's mode, changed until dropped.
 #[cfg(windows)]
 pub(crate) struct Console {
@@ -268,5 +257,16 @@ impl Drop for Console {
         use windows_sys::Win32::System::Console::SetConsoleMode;
         // SAFETY: restoring the mode read from this same handle.
         unsafe { SetConsoleMode(self.handle, self.saved) };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn control_characters_never_reach_the_screen() {
+        assert_eq!(one_line("a\nb\r\nc"), "a⏎b⏎⏎c");
+        assert_eq!(one_line("tab\there \x1b[2J"), "tab here  [2J");
     }
 }

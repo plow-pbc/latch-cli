@@ -331,7 +331,8 @@ fn pinned_helpers(state_dir: &Path) -> [PathBuf; 4] {
         crate::browser::engine::CFT.folder(state_dir),
         crate::browser::engine::CAMOUFOX.folder(state_dir),
         state_dir
-            .join("plugins/gog")
+            .join("plugins")
+            .join("gog")
             .join(&crate::google::PIN.version),
         reader
             .parent()

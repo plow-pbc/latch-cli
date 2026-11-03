@@ -782,8 +782,9 @@ struct Binary {
 /// What tells one file at a path from another, or from itself rewritten.
 #[derive(PartialEq)]
 struct OnDisk {
-    /// The file itself: its device and inode on Unix; on Windows, where a
-    /// file put in its place is a new file, its creation time.
+    /// The file itself: its device and inode on Unix, its volume and file
+    /// index on Windows. Not its creation time: NTFS gives a file put in
+    /// another's place within 15 seconds the old one's.
     file: (u64, u64),
     size: u64,
     modified: std::time::SystemTime,
@@ -800,8 +801,19 @@ impl OnDisk {
         };
         #[cfg(windows)]
         let file = {
-            use std::os::windows::fs::MetadataExt;
-            (meta.creation_time(), 0)
+            use std::os::windows::io::AsRawHandle;
+            use windows_sys::Win32::Storage::FileSystem::{
+                BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+            };
+            let opened = std::fs::File::open(path).ok()?;
+            // SAFETY: a plain C struct, valid as zeroes; the call fills it.
+            let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+            // SAFETY: a live handle of ours, and the struct to fill.
+            if unsafe { GetFileInformationByHandle(opened.as_raw_handle(), &mut info) } == 0 {
+                return None;
+            }
+            let index = u64::from(info.nFileIndexHigh) << 32 | u64::from(info.nFileIndexLow);
+            (u64::from(info.dwVolumeSerialNumber), index)
         };
         Some(OnDisk {
             file,
@@ -2199,10 +2211,12 @@ mod tests {
         let stale = "latch serve (pid 999999, /old/latch)\n";
         std::fs::write(crashed.path().join("serve.lock"), stale).unwrap();
         let _held = lock_state(crashed.path()).unwrap();
-        let now = std::fs::read_to_string(crashed.path().join("serve.lock")).unwrap();
+        // The holder names itself in the lock file, or beside it on Windows.
+        let now = std::fs::read_to_string(crate::lifecycle::holder_path(crashed.path())).unwrap();
         assert!(now.contains(&pid), "{now}");
     }
 
+    #[cfg(unix)]
     #[test]
     fn linked_state_keeps_its_target_hidden_once_the_link_is_gone() {
         let dir = tempfile::tempdir().unwrap();
