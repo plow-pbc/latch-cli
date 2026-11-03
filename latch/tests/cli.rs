@@ -5871,19 +5871,23 @@ fn exec_true_with(from: &Path, args: &[&str]) {
 }
 
 /// A copy of a latch beside it, removed when dropped.
-#[cfg(any(target_os = "macos", feature = "systemd-tests"))]
+#[cfg(any(target_os = "macos", windows, feature = "systemd-tests"))]
 struct OwnLatch(PathBuf);
 
-#[cfg(any(target_os = "macos", feature = "systemd-tests"))]
+#[cfg(any(target_os = "macos", windows, feature = "systemd-tests"))]
 impl OwnLatch {
     fn beside(latch: &Path) -> OwnLatch {
-        let copy = latch.with_file_name(format!("latch-own-{}", std::process::id()));
+        let copy = latch.with_file_name(format!(
+            "latch-own-{}{}",
+            std::process::id(),
+            std::env::consts::EXE_SUFFIX
+        ));
         fs::copy(latch, &copy).unwrap();
         OwnLatch(copy)
     }
 }
 
-#[cfg(any(target_os = "macos", feature = "systemd-tests"))]
+#[cfg(any(target_os = "macos", windows, feature = "systemd-tests"))]
 impl Drop for OwnLatch {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.0);
@@ -8337,7 +8341,7 @@ fn setup_sets_up_every_connector_with_no_host_running() {
     let dir = test_dir();
     let host = owner_host_on(&plow, dir.path());
     // Whatever setup does, no host it starts outlives the test.
-    #[cfg(any(target_os = "macos", feature = "systemd-tests"))]
+    #[cfg(any(target_os = "macos", windows, feature = "systemd-tests"))]
     let _managed = Managed(host.clone());
     plow.state.lock().unwrap().google = Some("google-token".into());
     install_fake_gog(&host);
@@ -8470,7 +8474,7 @@ fn setup_status_says_whether_google_is_connected_in_plow() {
 /// closed stdin pipe stops the wait, and no link is kept anywhere.
 #[cfg(all(
     feature = "fake-gog",
-    any(target_os = "macos", feature = "systemd-tests")
+    any(target_os = "macos", windows, feature = "systemd-tests")
 ))]
 #[test]
 fn enabling_google_offers_a_sign_in_link_and_waits_for_the_account() {
@@ -8691,7 +8695,7 @@ fn enabling_google_offers_a_sign_in_link_and_waits_for_the_account() {
 /// shown.
 #[cfg(all(
     feature = "fake-gog",
-    any(target_os = "macos", feature = "systemd-tests")
+    any(target_os = "macos", windows, feature = "systemd-tests")
 ))]
 #[test]
 fn a_slow_sign_in_link_neither_outlasts_the_wait_nor_a_stop() {
@@ -8762,7 +8766,7 @@ fn a_slow_sign_in_link_neither_outlasts_the_wait_nor_a_stop() {
 /// working it enables and names the rest. `setup --status` says the same.
 #[cfg(all(
     feature = "fake-gog",
-    any(target_os = "macos", feature = "systemd-tests")
+    any(target_os = "macos", windows, feature = "systemd-tests")
 ))]
 #[test]
 fn signing_in_again_is_offered_and_waited_for() {
@@ -8849,7 +8853,7 @@ fn signing_in_again_is_offered_and_waited_for() {
 /// and at a terminal whose output was piped, before any enable runs.
 #[cfg(all(
     feature = "fake-gog",
-    any(target_os = "macos", feature = "systemd-tests")
+    any(target_os = "macos", windows, feature = "systemd-tests")
 ))]
 #[test]
 fn a_reader_that_leaves_cancels_the_sign_in_wait() {
@@ -8913,7 +8917,7 @@ fn a_reader_that_leaves_cancels_the_sign_in_wait() {
 /// (`outcome_unknown`, exit 5).
 #[cfg(all(
     feature = "fake-gog",
-    any(target_os = "macos", feature = "systemd-tests")
+    any(target_os = "macos", windows, feature = "systemd-tests")
 ))]
 #[test]
 fn a_last_second_sign_in_counts_and_a_stop_during_the_enable_is_unknown() {
@@ -9229,10 +9233,10 @@ fn access_job_registered(state: &Path) -> bool {
 
 /// A managed host's state folder: `latch stop` when the test ends, passing
 /// or not, so no host and no service outlives it.
-#[cfg(any(target_os = "macos", feature = "systemd-tests"))]
+#[cfg(any(target_os = "macos", windows, feature = "systemd-tests"))]
 struct Managed(PathBuf);
 
-#[cfg(any(target_os = "macos", feature = "systemd-tests"))]
+#[cfg(any(target_os = "macos", windows, feature = "systemd-tests"))]
 impl Drop for Managed {
     fn drop(&mut self) {
         let _ = latch(&self.0, &["stop"], &[]);
@@ -9241,14 +9245,23 @@ impl Drop for Managed {
 
 /// Whether the service manager still has the host's service: the label
 /// `latch` names after the state folder's real path.
-#[cfg(any(target_os = "macos", feature = "systemd-tests"))]
+#[cfg(any(target_os = "macos", windows, feature = "systemd-tests"))]
 fn registered(state: &Path) -> bool {
+    // Windows has no service manager for it: the host's pid file, while that
+    // process runs.
+    if cfg!(windows) {
+        return fs::read_to_string(state.join("serve.pid"))
+            .ok()
+            .and_then(|said| said.split_whitespace().next()?.parse().ok())
+            .is_some_and(portable::alive);
+    }
     use sha2::Digest;
     let real = state.canonicalize().unwrap();
     let hash = sha2::Sha256::digest(real.as_os_str().as_encoded_bytes());
     let hex: String = hash.iter().map(|byte| format!("{byte:02x}")).collect();
     let label = format!("co.plow.latch.serve.{}", &hex[..16]);
-    if cfg!(target_os = "macos") {
+    #[cfg(target_os = "macos")]
+    {
         // SAFETY: getuid cannot fail.
         let target = format!("gui/{}/{label}", unsafe { libc::getuid() });
         Command::new("launchctl")
@@ -9257,7 +9270,9 @@ fn registered(state: &Path) -> bool {
             .unwrap()
             .status
             .success()
-    } else {
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
         let output = Command::new("systemctl")
             .args(["--user", "show", "--property=LoadState", "--value"])
             .arg(format!("{label}.service"))
@@ -10697,7 +10712,7 @@ mod scenario {
 
 /// A host the service manager runs (launchd, or systemd with
 /// `systemd-tests`): the `lifecycle` suite.
-#[cfg(any(target_os = "macos", feature = "systemd-tests"))]
+#[cfg(any(target_os = "macos", windows, feature = "systemd-tests"))]
 mod lifecycle {
     use super::*;
 
@@ -10902,7 +10917,8 @@ mod lifecycle {
         let read = local_operation(
             &host,
             "exec",
-            json!({"argv": ["cat", "note.txt"], "workdir": share, "timeout": 10}),
+            // (On Windows a folder it only runs in isn't read: it gets it as a write.)
+            json!({"argv": ["cat", "note.txt"], "workdir": share, "writes": [share], "timeout": 10}),
         );
         assert_eq!(read["ok"]["stdout"], "hi", "{read}");
 
@@ -10948,7 +10964,8 @@ mod lifecycle {
         let read = local_operation(
             &host,
             "exec",
-            json!({"argv": ["cat", "note.txt"], "workdir": share, "timeout": 10}),
+            // (On Windows a folder it only runs in isn't read: it gets it as a write.)
+            json!({"argv": ["cat", "note.txt"], "workdir": share, "writes": [share], "timeout": 10}),
         );
         assert_eq!(read["ok"]["stdout"], "hi", "{read}");
         let stopped: Value = serde_json::from_slice(&latch(&host, &["stop"], &[]).stdout).unwrap();
@@ -11062,6 +11079,8 @@ mod lifecycle {
         let replacement = serving(&host, &relay);
         drop(launching);
         let status = exits_within(&mut serve, 45);
+        // (A Windows terminal's output ends only once it is closed.)
+        drop(terminal);
         output.extend(shown.iter());
         assert!(
             status.success(),
@@ -11115,9 +11134,16 @@ mod lifecycle {
     fn a_stale_socket_of_this_version_is_never_taken_for_its_host() {
         let (_dir, state, _) = owner_host();
         let (_old, _socket, said) = old_host(&state);
-        let current = state.join("serve-v4.sock");
+        let current = portable::local_socket_path(&state);
         // A socket no one listens on any more, then a plain file.
+        #[cfg(unix)]
         drop(std::os::unix::net::UnixListener::bind(&current).unwrap());
+        #[cfg(windows)]
+        {
+            let gone = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = gone.local_addr().unwrap();
+            fs::write(&current, format!("{address} {}\n", "00".repeat(32))).unwrap();
+        }
         let serve = local_serve(&state);
         assert_eq!(serve["ready"], false, "{serve}");
         assert_eq!(serve["blocked"]["message"], said.as_str(), "{serve}");
@@ -11149,6 +11175,10 @@ mod lifecycle {
         terminal.write_all(b"3\n").unwrap();
         all.push_str(&shows(&shown, "Start latch now? [Y/n]"));
         terminal.write_all(b"y\n").unwrap();
+        if cfg!(windows) {
+            all.push_str(&shows(&shown, "to keep nul open after each restart. [y/N]"));
+            terminal.write_all(b"n\n").unwrap();
+        }
         all.push_str(&shows(&shown, "Run `latch setup` again any time."));
         assert!(exits_within(&mut setup, 10).success());
         assert_eq!(all.matches(said.as_str()).count(), 2, "{all}");
@@ -11177,7 +11207,8 @@ mod lifecycle {
         let read = local_operation(
             &host,
             "exec",
-            json!({"argv": ["cat", "note.txt"], "workdir": share, "timeout": 10}),
+            // (On Windows a folder it only runs in isn't read: it gets it as a write.)
+            json!({"argv": ["cat", "note.txt"], "workdir": share, "writes": [share], "timeout": 10}),
         );
         assert_eq!(read["ok"]["stdout"], "hi", "{read}");
         // Its command wraps where the screen is narrow; its file's name is one

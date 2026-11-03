@@ -1084,14 +1084,14 @@ fn credentials_stay_hidden_inside_an_opt_in_and_inside_the_area() {
         if !area_held && !path.starts_with("../") {
             continue;
         }
-        let read = worker(dir.path(), &flags, &["read"], path, b"");
+        let read = worker(dir.path(), flags, &["read"], path, b"");
         let stdout = String::from_utf8_lossy(&read.stdout);
         assert!(
             !stdout.contains("PRIVATE") && !stdout.contains("hunter2"),
             "{path}: {read:?}"
         );
     }
-    let opted_in = worker(dir.path(), &flags, &["read"], "../outside/other.txt", b"");
+    let opted_in = worker(dir.path(), flags, &["read"], "../outside/other.txt", b"");
     assert_eq!(opted_in.stdout, b"{\"size\":5}\nother");
 
     let script = if area_held {
