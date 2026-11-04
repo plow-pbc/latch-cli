@@ -458,6 +458,8 @@ pub(crate) fn workers(state_dir: PathBuf) -> Result<WorkerSetup, Failure> {
                 "the host's home folder cannot be resolved".into(),
             )
         })?;
+    // Asked now, while the host starts, not on its first exec.
+    crate::worker::login_path();
     Ok(WorkerSetup {
         home,
         areas: vec![],
