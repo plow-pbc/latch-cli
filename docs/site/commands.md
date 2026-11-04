@@ -143,6 +143,7 @@ latch browser open --host my-mac https://example.com
 | `latch messages search` | Agent | Search messages for PHRASE, newest first.<br>Find a sign-in code texted in the last ten minutes: `latch messages search --host mac --since 10m code` |
 | `latch messages thread` | Agent | One conversation, oldest first, ending with its newest message.<br>The direct conversation with one handle: `latch messages thread --host mac --with +15550000001` |
 | `latch messages chats` | Agent | Conversations, most recently active first, with who is in them.<br>Recent group chats: `latch messages chats --host mac --kind group` |
+| `latch messages attachment` | Agent | Save one message's attached files (photos, PDFs) here.<br>The photo in a message, into ./invoice: `latch messages attachment --host mac --message-id 103 --out invoice` |
 | `latch messages unreplied` | Agent | Direct conversations whose newest message is inbound: candidates, not proof a reply is owed.<br>Unanswered in the last day: `latch messages unreplied --host mac --within 24h` |
 | `latch contacts search` | Agent | Find people by name, nickname or organization.<br>Find a person's handles: `latch contacts search --host mac Ada` |
 | `latch contacts lookup` | Agent | The names on cards with each handle (more than one: ambiguous).<br>Who is this number? `latch contacts lookup --host mac +15550000001` |

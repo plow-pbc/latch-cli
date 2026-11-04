@@ -8450,7 +8450,14 @@ fn messages_home(home: &Path) {
             .unwrap();
         assert!(status.success());
     }
+    let note = home.join("Library/Messages/Attachments/ab/01/at-1/note.txt");
+    fs::create_dir_all(note.parent().unwrap()).unwrap();
+    fs::write(note, ATTACHED).unwrap();
 }
+
+/// The file `messages_home` attaches to message 102.
+#[cfg(target_os = "macos")]
+const ATTACHED: &[u8] = b"a throwaway attachment";
 
 /// `latch setup` itself, with no host running: Google (this test build as
 /// gog) and, on macOS, Messages and Contacts (Full Disk Access checked by
@@ -11496,6 +11503,43 @@ mod messages {
         );
         let (_, unreplied) = run(&["messages", "unreplied", "--host", "host"]);
         assert_eq!(unreplied["messages"][0]["id"], 103, "{unreplied}");
+
+        // A message's files are written here; ~/Library stays hidden from
+        // `file get`, and one only in iCloud says so.
+        let out = dir.path().join("attached");
+        fs::create_dir(&out).unwrap();
+        let (code, attached) = run(&[
+            "messages",
+            "attachment",
+            "--message-id",
+            "102",
+            "--out",
+            out.to_str().unwrap(),
+            "--host",
+            "host",
+        ]);
+        assert_eq!(code, Some(0), "{attached}");
+        let files = &attached["attachments"];
+        assert_eq!(files[0]["name"], "note.txt");
+        assert_eq!(files[0]["data"], Value::Null, "{attached}");
+        assert_eq!(fs::read(out.join("102-0-note.txt")).unwrap(), ATTACHED);
+        assert_eq!(
+            files[0]["path"],
+            json!(out.join("102-0-note.txt").to_str().unwrap())
+        );
+        assert_eq!(files[1]["error"], "not_downloaded");
+        let (code, error) = run(&[
+            "messages",
+            "attachment",
+            "--message-id",
+            "999",
+            "--host",
+            "host",
+        ]);
+        assert_eq!(
+            (code, &error["error"]["code"]),
+            (Some(2), &json!("no_such_message"))
+        );
 
         let (_, people) = run(&["contacts", "search", "ann", "--host", "host"]);
         assert_eq!(

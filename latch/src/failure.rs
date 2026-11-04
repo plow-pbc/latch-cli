@@ -361,6 +361,7 @@ codes! {
     no_such_item: Usage,
     no_such_line: Usage,
     no_such_link: Denied,
+    no_such_message: Usage,
     no_such_record: Usage,
     no_such_release: Failed,
     no_such_request: Usage,
