@@ -154,12 +154,13 @@ Plow chat instead, and type it as in step 3.
 The owner's cards are in the vault (`latch vault list --kind card`). A
 card saved with no sites fills on any shop; never ask the owner for its
 number in chat. A card that is missing or incomplete is added from the
-owner's phone: on one of the owner's own devices (`latch status` shows
-`login.kind` `device`), `latch vault --host H link --kind card --title
-TITLE` makes a link that asks for the number, code, expiry month and
-year, and cardholder name; send its `url` and check `link-state` as for
-a login. An agent's own key can link only a login, so ask the owner to
-make the card link. At the checkout page:
+owner's phone with a card link, `latch vault --host H link --kind card
+--title TITLE`, which asks for the number, code, expiry month and year,
+and cardholder name. When `latch status` shows `login.kind` `device`
+(you run on one of the owner's own devices), make it yourself, send its
+`url` and check `link-state` as for a login. With an agent's key, which
+can link only a login, ask the owner to run that command on one of their
+devices. At the checkout page:
 
 1. `observe`: `fill.items` lists the cards (`kind` `card`), and
    `fill.suggestions` how one fills the page's card fields.
