@@ -160,7 +160,9 @@ number. At the checkout page:
 2. `latch browser --session ID fill --item vN --suggested S`, or map it
    yourself: `fill --item vN --field number=eN --field code=eN --field
    expiry=eN --field "cardholder name"=eN`. A card is never picked for
-   you: name it with `--item`.
+   you: name it with `--item`. A card that lacks a number, code or expiry
+   the page asks for is not filled (`card_incomplete`, its `missing` fields
+   in `details`): ask the owner to add them.
 3. The card stays in the page's fields, which you can't read: screenshots
    show them blank, and `eval` waits until they are gone. Check the page
    (ZIP, a box to untick, the total), then press its Pay button yourself

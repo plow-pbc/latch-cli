@@ -365,6 +365,29 @@ fn bad_target(label: &str, why: &str) -> Failure {
     failure
 }
 
+/// Refuses a card that `lacks` something the page `asked` for.
+fn incomplete(meta: &Meta, lacks: &[&str], asked: &[&str]) -> Result<(), Failure> {
+    let missing: Vec<&str> = lacks
+        .iter()
+        .copied()
+        .filter(|label| asked.contains(label))
+        .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    let mut failure = Failure::new(
+        code::card_incomplete,
+        format!(
+            "nothing was filled: this page asks for the {}, and the card {:?} has none. Ask the owner to add what's missing with `latch vault edit {}`",
+            missing.join(", "),
+            meta.title,
+            meta.item,
+        ),
+    );
+    failure.details = json!({"missing": missing});
+    Err(failure)
+}
+
 pub async fn run(
     browsers: &Browsers,
     entry: &Entry,
@@ -385,6 +408,16 @@ pub async fn run(
     );
     let plan = Plan::of(&item, args)?;
     audit.insert("mapping".into(), plan.mapping());
+    let lacks = item.card_missing();
+    if !lacks.is_empty() {
+        let inventory = worker(
+            entry,
+            json!({"op": "fill_inventory", "snapshot": args["snapshot"]}),
+        )
+        .await?;
+        let asked = suggest::card_asks(&controls_of(&inventory));
+        incomplete(&meta, &lacks, &asked)?;
+    }
     if entry.runtime.filling.swap(true, Ordering::SeqCst) {
         return Err(paused());
     }
