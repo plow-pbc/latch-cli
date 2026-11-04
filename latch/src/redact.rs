@@ -196,12 +196,22 @@ fn existing_path(arg: &str, start: usize, end: usize) -> bool {
             Some(home) => std::path::Path::new(&home).join(rest),
             None => return false,
         }
-    } else if path.starts_with('/') {
+    } else if path.starts_with('/') || drive_path(path) {
         std::path::PathBuf::from(path)
     } else {
         return false;
     };
     path.exists()
+}
+
+/// A Windows path from a drive's root: `C:\…` or `C:/…`.
+fn drive_path(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    cfg!(windows)
+        && bytes.len() > 2
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && matches!(bytes[2], b'\\' | b'/')
 }
 
 #[cfg(test)]

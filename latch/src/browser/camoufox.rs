@@ -670,7 +670,7 @@ fn gone() -> Failure {
 /// verbatim executable and profile, Camoufox's launch fails there.
 fn plain(path: &Path) -> PathBuf {
     #[cfg(windows)]
-    return PathBuf::from(crate::exec::shown(&path.to_string_lossy()));
+    return crate::exec::shown_path(path);
     #[cfg(unix)]
     path.to_path_buf()
 }

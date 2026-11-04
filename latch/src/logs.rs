@@ -1,6 +1,7 @@
 //! `latch logs`: the host's diagnostics (`serve.log`), a `log` line per
-//! record, and with `--follow` each one added. It never polls: it sleeps until the
-//! kernel says the folder changed (`watch.rs`).
+//! record, and with `--follow` each one added. It sleeps until the kernel says the
+//! folder changed (`watch.rs`), and on Windows, which says nothing of writes to a
+//! file held open (a host holds its log for its whole run), looks again each second.
 
 use std::io::{ErrorKind, Write};
 use std::path::Path;
@@ -66,7 +67,14 @@ fn start_watch(state: &StateDir, file: &Path) -> Result<Watch, Failure> {
 
 /// Sleeps until the folder changes; false once whoever started us is gone.
 fn sleep(watch: &mut Watch, state: &StateDir) -> Result<bool, Failure> {
-    match watch.wait().map_err(|err| watch_failed(state, err))? {
+    #[cfg(windows)]
+    let woke = watch
+        .wait_for(Some(std::time::Duration::from_secs(1)))
+        .map_err(|err| watch_failed(state, err))?
+        .unwrap_or(Woke::Changed);
+    #[cfg(not(windows))]
+    let woke = watch.wait().map_err(|err| watch_failed(state, err))?;
+    match woke {
         Woke::HungUp => Ok(false),
         Woke::Changed => Ok(true),
     }

@@ -83,7 +83,12 @@ pub(super) async fn start_with(
 ) -> TestHost {
     let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/tests");
     std::fs::create_dir_all(&parent).unwrap();
-    let dir = tempfile::tempdir_in(parent).unwrap();
+    // On Windows a worker reads only in this user's home, the real one.
+    let dir = if cfg!(windows) {
+        tempfile::tempdir_in(std::env::home_dir().unwrap()).unwrap()
+    } else {
+        tempfile::tempdir_in(parent).unwrap()
+    };
     let root = dir.path().canonicalize().unwrap();
     let home = root.join("home");
     let (area, state) = (home.join("area"), root.join("state"));
@@ -94,7 +99,8 @@ pub(super) async fn start_with(
     .create()
     .unwrap();
     std::fs::write(area.join("notes.txt"), "the notes' own words").unwrap();
-    let binary = root.join("latch");
+    // A batch file on Windows, so a test can make it a program that runs.
+    let binary = root.join(if cfg!(windows) { "latch.cmd" } else { "latch" });
     std::fs::write(&binary, "the latch this host started from").unwrap();
     // Its owner has turned its connectors on.
     let enabled = if cfg!(target_os = "macos") {
@@ -229,12 +235,9 @@ impl TestHost {
     }
 
     async fn local_request(&self, request: Request) -> Response {
-        let (mine, hosts) = tokio::net::UnixStream::pair().unwrap();
-        tokio::spawn(serve_local(
-            self.host.clone(),
-            hosts,
-            crate::transport::Admission {},
-        ));
+        let (mut mine, hosts, admission) = crate::transport::test_pair();
+        tokio::spawn(serve_local(self.host.clone(), hosts, admission));
+        crate::transport::test_admit(&mut mine).await;
         let (mut recv, mut send) = mine.into_split();
         wire::write_frame(&mut send, &serde_json::to_vec(&request).unwrap())
             .await
@@ -323,7 +326,7 @@ pub(super) fn chat_layer(state: &Value) -> bool {
 }
 
 fn exec(script: &str) -> Value {
-    json!({"argv": ["/bin/sh", "-c", script], "writes": ["area"], "timeout": 10})
+    json!({"argv": [crate::portable::sh(), "-c", script], "writes": ["area"], "timeout": 10})
 }
 
 pub(super) fn refusal(response: &Response) -> (Exit, &str, &Value) {
@@ -553,7 +556,7 @@ fn replace_the_judged_write_folder(state: &Value) -> Option<[f64; 3]> {
     }
     std::fs::rename(path, path.with_file_name("approved-before-swap")).unwrap();
     let home = path.parent().unwrap().parent().unwrap();
-    std::os::unix::fs::symlink(home.join("outside-write"), path).unwrap();
+    crate::portable::link_folder(&home.join("outside-write"), path);
     always_covered(state)
 }
 
@@ -566,8 +569,7 @@ async fn a_write_path_retargeted_after_judgment_is_refused() {
     std::fs::create_dir(&outside).unwrap();
     std::fs::write(outside.join("victim.txt"), "unchanged").unwrap();
     let agent = t.caller("agent").await;
-    let args =
-        json!({"argv": ["/bin/sh", "-c", "printf overwritten > victim.txt"], "writes": [approved]});
+    let args = json!({"argv": [crate::portable::sh(), "-c", "printf overwritten > victim.txt"], "writes": [approved]});
     let (answer, _) = t.call(&agent, "exec", args).await;
     assert_eq!(
         std::fs::read(outside.join("victim.txt")).unwrap(),
@@ -583,14 +585,14 @@ async fn unusual_and_missing_caches_do_not_fail_exec_or_grant_aliases() {
     std::fs::write(home.join(".cache"), "plain file").unwrap();
     let target = home.join("outside-write");
     std::fs::create_dir(&target).unwrap();
-    std::os::unix::fs::symlink(&target, home.join(".npm")).unwrap();
+    crate::portable::link_folder(&target, &home.join(".npm"));
     let agent = t.caller("agent").await;
     let (answer, _) = t
         .call(
             &agent,
             "exec",
             json!({
-                "argv": ["/bin/sh", "-c", "echo bad > outside-write/victim"]
+                "argv": crate::portable::script("echo bad > outside-write/victim")
             }),
         )
         .await;
@@ -677,13 +679,29 @@ async fn a_get_reads_any_readable_path_in_home_and_never_a_hidden_one() {
     assert!(matches!(answer, Response::Ok(_)), "{answer:?}");
     assert!(bytes.starts_with(b"Host example"), "{bytes:?}");
     let asked = t.judgments();
-    let shown = home.join(".ssh/config").display().to_string();
-    assert!(asked[0].to_string().contains(&shown), "{}", asked[0]);
-    // The host's state, and a link into it, are refused before judging.
+    // As a person reads it, and as JSON spells it (Windows' `\` doubled).
+    let shown = crate::exec::shown(&home.join(".ssh").join("config").display().to_string());
+    let shown = json!(shown).to_string();
+    assert!(
+        asked[0].to_string().contains(shown.trim_matches('"')),
+        "{}",
+        asked[0]
+    );
+    // The host's state, and a link into it, are refused before judging (a
+    // file symlink, which a Windows standard user may not make: a folder
+    // link there).
     std::fs::write(t.state.join("key"), "made-up key").unwrap();
+    #[cfg(unix)]
     std::os::unix::fs::symlink(t.state.join("key"), home.join("key-link")).unwrap();
+    #[cfg(windows)]
+    crate::portable::link_folder(&t.state, &home.join("state-link"));
     let key = t.state.join("key");
-    for hidden in [key.to_str().unwrap(), "~/key-link"] {
+    let link = if cfg!(windows) {
+        "~/state-link/key"
+    } else {
+        "~/key-link"
+    };
+    for hidden in [key.to_str().unwrap(), link] {
         let (answer, _) = t
             .call(&agent, "file_get", json!({"remote_path": hidden}))
             .await;
@@ -714,7 +732,7 @@ async fn an_exec_the_host_denies_is_refused_without_asking_the_judge() {
 
 /// An exec of `/bin/sh` reading its script from `stdin`.
 fn exec_stdin(stdin: &[u8]) -> Value {
-    json!({"argv": ["/bin/sh"], "writes": ["area"], "timeout": 10, "stdin": stdin})
+    json!({"argv": [crate::portable::sh()], "writes": ["area"], "timeout": 10, "stdin": stdin})
 }
 
 #[tokio::test]
@@ -722,7 +740,7 @@ async fn exec_paths_are_validated_before_judgment_and_created_only_after_allow()
     let t = start(a_chat(covered_after_a_yes)).await;
     let agent = t.caller("agent").await;
     for path in ["~", "~/..", "/", "~/.latch/new", t.state.to_str().unwrap()] {
-        let args = json!({"argv": ["true"], "writes": [path]});
+        let args = json!({"argv": crate::portable::script("true"), "writes": [path]});
         let (answer, _) = t.call(&agent, "exec", args).await;
         assert_eq!(refusal(&answer).1, "bad_path", "{path}");
         assert_eq!(refusal(&answer).2["writes"], json!([path]));
@@ -730,7 +748,7 @@ async fn exec_paths_are_validated_before_judgment_and_created_only_after_allow()
     }
     assert_eq!(t.judged(), 0);
     let path = t.host.workers.home.join("new-project");
-    let args = json!({"argv": ["/bin/sh", "-c", "printf built > result"],
+    let args = json!({"argv": [crate::portable::sh(), "-c", "printf built > result"],
                       "writes": ["~/new-project"], "network": true});
     let (refused, _) = t.call(&agent, "exec", args.clone()).await;
     assert_eq!(refusal(&refused).1, "gatekeeper_denied");
@@ -743,6 +761,8 @@ async fn exec_paths_are_validated_before_judgment_and_created_only_after_allow()
     assert_eq!(result["exit_code"], 0, "{result}");
     assert_eq!(std::fs::read(path.join("result")).unwrap(), b"built");
     let asked = t.plow.world.lock().unwrap().asked.clone();
+    // As a person reads it (on Windows, with no `\\?\`).
+    let path = crate::exec::shown(&path.display().to_string());
     for state in asked {
         assert_eq!(state["proposed_action"]["writes"], json!([path]));
         assert_eq!(state["proposed_action"]["working_folder"], json!(path));
@@ -783,46 +803,46 @@ async fn exec_reads_home_but_writes_only_declarations_and_caches() {
         std::fs::create_dir_all(home.join(cache)).unwrap();
     }
     let agent = t.caller("agent").await;
-    let script = r#"
+    // Windows reads only an exec's write folders and the files the rules
+    // name, not all of home, and grants no tool caches (Plucas's item 6, a
+    // design note away): there a cache written is the failure.
+    let caches = if cfg!(windows) {
+        r#"echo cache > "$p/probe" 2>/dev/null && exit 9"#
+    } else {
+        r#"echo cache > "$p/probe" || exit 9"#
+    };
+    let script = format!(
+        r#"
         cat .ssh/config
         cat .latch/private 2>/dev/null
         cat area/peer/private 2>/dev/null
         echo bad > undeclared 2>/dev/null
         for p in .cache .npm .cargo/registry .cargo/git go/pkg/mod; do
-            echo cache > "$p/probe" || exit 9
+            {caches}
         done
         echo scratch > "$TMPDIR/probe"
-    "#;
+    "#
+    );
     let (answer, _) = t
-        .call(&agent, "exec", json!({"argv": ["/bin/sh", "-c", script]}))
+        .call(
+            &agent,
+            "exec",
+            json!({"argv": [crate::portable::sh(), "-c", script]}),
+        )
         .await;
     let Response::Ok(result) = answer else {
         panic!("{answer:?}")
     };
     assert_eq!(result["exit_code"], 0, "{result}");
-    assert!(
-        result["stdout"]
-            .as_str()
-            .unwrap()
-            .contains("readable-dotfile")
-    );
-    assert!(
-        !result["stdout"]
-            .as_str()
-            .unwrap()
-            .contains("hidden-private-value")
-    );
-    assert!(
-        result["stdout"]
-            .as_str()
-            .unwrap()
-            .contains("hidden-peer-value")
-    );
+    let stdout = result["stdout"].as_str().unwrap();
+    assert_eq!(stdout.contains("readable-dotfile"), cfg!(unix), "{stdout}");
+    assert!(!stdout.contains("hidden-private-value"), "{stdout}");
+    assert_eq!(stdout.contains("hidden-peer-value"), cfg!(unix), "{stdout}");
     assert!(!home.join("undeclared").exists());
     assert_eq!(result["writes"], json!([]));
     assert_eq!(result["network"], false);
     let file = home.join("area/notes.txt");
-    let args = json!({"argv": ["/bin/sh", "-c", "printf changed > area/notes.txt; echo bad > area/sibling"],
+    let args = json!({"argv": [crate::portable::sh(), "-c", "printf changed > area/notes.txt; echo bad > area/sibling"],
                       "writes": [file]});
     let (answer, _) = t.call(&agent, "exec", args).await;
     assert!(matches!(answer, Response::Ok(_)), "{answer:?}");
@@ -860,7 +880,7 @@ async fn secret_env_reaches_only_the_program_and_preserves_argv_and_stdin() {
     let agent = t.caller("agent").await;
     let marker = "private-env-marker-71e9";
     let secret = format!("{marker} quotes\" ' =\n$(touch injected) `touch injected2`");
-    let args = json!({"argv": ["/bin/sh", "-c", "printf '%s' \"$TOKEN\""],
+    let args = json!({"argv": [crate::portable::sh(), "-c", "printf '%s' \"$TOKEN\""],
                       "writes": ["area"], "secret_env": {"TOKEN": secret}});
     let (answer, _) = t.call(&agent, "exec", args.clone()).await;
     let Response::Ok(result) = answer else {
@@ -875,7 +895,7 @@ async fn secret_env_reaches_only_the_program_and_preserves_argv_and_stdin() {
         .call(
             &agent,
             "exec",
-            json!({"argv": ["/bin/cat"], "stdin": input.as_bytes(),
+            json!({"argv": [crate::portable::tool("cat")], "stdin": input.as_bytes(),
         "secret_env": {"TOKEN": secret}}),
         )
         .await;
@@ -887,7 +907,7 @@ async fn secret_env_reaches_only_the_program_and_preserves_argv_and_stdin() {
         .call(
             &agent,
             "exec",
-            json!({"argv": ["printf", "%s", "${TOKEN}"],
+            json!({"argv": [crate::portable::tool("printf"), "%s", "${TOKEN}"],
         "secret_env": {"TOKEN": secret}}),
         )
         .await;
@@ -934,7 +954,7 @@ async fn secret_names_that_control_execution_are_allowed_and_explained_to_the_ju
             &agent,
             "exec",
             json!({
-                "argv": ["true"], "secret_env": secrets
+                "argv": crate::portable::script("true"), "secret_env": secrets
             }),
         )
         .await;
@@ -986,7 +1006,7 @@ async fn invalid_or_reserved_secret_names_never_reach_the_judge() {
         "LD_LIBRARY_PATH",
         "DYLD_INSERT_LIBRARIES",
     ] {
-        let args = json!({"argv": ["true"], "secret_env": {(name): marker}});
+        let args = json!({"argv": crate::portable::script("true"), "secret_env": {(name): marker}});
         let (answer, _) = t.call(&agent, "exec", args).await;
         assert_eq!(refusal(&answer).1, "bad_secret_env", "{name}");
         assert!(!serde_json::to_string(&answer).unwrap().contains(marker));
@@ -1004,7 +1024,10 @@ async fn an_agents_exec_stdin_is_judged_with_its_argv_and_never_kept() {
     assert!(matches!(answer, Response::Ok(_)), "{answer:?}");
     assert!(t.area.join("made").exists());
     let asked = t.plow.world.lock().unwrap().asked.clone();
-    assert_eq!(asked[0]["proposed_action"]["argv"], json!(["/bin/sh"]));
+    assert_eq!(
+        asked[0]["proposed_action"]["argv"],
+        json!([crate::portable::sh()])
+    );
     assert_eq!(asked[0]["proposed_action"]["stdin"], script);
     assert_eq!(t.audit()[0]["args"]["stdin"]["size"], script.len());
     assert!(!kept(&t, "stdin-judged-7f3a"));
@@ -1044,7 +1067,7 @@ async fn an_exec_the_host_denies_keeps_no_trace_of_its_stdin() {
     let (answer, _) = t.call(&agent, "exec", exec_stdin(secret)).await;
     assert_eq!(refusal(&answer).1, "exec_denied");
     let record = &t.audit()[0];
-    assert_eq!(record["args"]["argv"], json!(["/bin/sh"]));
+    assert_eq!(record["args"]["argv"], json!([crate::portable::sh()]));
     assert_eq!(record["args"]["stdin"]["size"], secret.len());
     // The bytes as the request carried them, and as text.
     let as_numbers = serde_json::to_string(&secret.to_vec()).unwrap();
@@ -1771,7 +1794,6 @@ async fn a_host_whose_binary_was_replaced_runs_nothing_for_callers_or_phone_link
 
 #[tokio::test]
 async fn a_host_whose_binary_was_replaced_says_which_build_is_there_on_its_dashboard() {
-    use std::os::unix::fs::PermissionsExt;
     let host = start(a_chat(covered_after_a_yes)).await;
     let mut board = host.host.dashboard.watch();
     watch_binary(&host.host, Duration::from_millis(50));
@@ -1780,11 +1802,15 @@ async fn a_host_whose_binary_was_replaced_says_which_build_is_there_on_its_dashb
 
     // An upgrade renames the new latch over the old one.
     let new = host.binary.with_extension("tmp");
-    let says = r#"#!/bin/sh
-echo '{"version":"0.1.0 (133): commit 1a2b3c"}'
-"#;
-    std::fs::write(&new, says).unwrap();
-    std::fs::set_permissions(&new, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let version = r#"{"version":"0.1.0 (133): commit 1a2b3c"}"#;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::write(&new, format!("#!/bin/sh\necho '{version}'\n")).unwrap();
+        std::fs::set_permissions(&new, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    #[cfg(windows)]
+    std::fs::write(&new, format!("@echo {version}\r\n")).unwrap();
     std::fs::rename(&new, &host.binary).unwrap();
     let said = tokio::time::timeout(
         Duration::from_secs(10),
@@ -2305,7 +2331,7 @@ async fn an_exec_is_audited_whole_and_shown_with_its_credentials_hidden() {
     // Longer than the 4 KiB the audit once kept: it is kept whole now.
     let long = "x".repeat(6000);
     let argv = json!([
-        "/bin/sh",
+        crate::portable::sh(),
         "-c",
         "printf %s \"$2\"",
         "sh",

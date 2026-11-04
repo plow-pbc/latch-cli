@@ -545,6 +545,7 @@ fn walk(root: &Path, dir: &Path, entries: &mut Vec<(Vec<u8>, PathBuf)>) -> io::R
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
     use super::*;
@@ -575,7 +576,10 @@ mod tests {
     }
 
     /// The same tree through `scripts/cft-pin.py`'s `tree_hash` gives this
-    /// value, so the pin the script prints is the one latch checks.
+    /// value, so the pin the script prints is the one latch checks. The hash
+    /// covers execute bits and links, as the script reads them on macOS and
+    /// Linux, where the pins are made: a Unix tree.
+    #[cfg(unix)]
     #[test]
     fn tree_hash_matches_the_pin_script() {
         let dir = tempfile::tempdir().unwrap();
@@ -635,6 +639,14 @@ mod tests {
         checked(&receipt, &[(build.clone(), &other)]).unwrap();
         // Once anything in the build is touched, it is hashed whole again.
         fs::write(build.join("lib/one"), b"librarx").unwrap();
+        // The same size, and maybe the same clock tick as the receipt, which
+        // `metadata_hash` would not see (#400): its time moves by hand.
+        fs::File::options()
+            .write(true)
+            .open(build.join("lib/one"))
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(2))
+            .unwrap();
         let changed = checked(&receipt, &[(build.clone(), &other)]).unwrap_err();
         assert!(changed.contains("is not the pinned"), "{changed}");
         // And a receipt for other pins is never taken for this one's.

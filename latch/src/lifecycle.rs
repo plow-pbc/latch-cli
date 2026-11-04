@@ -271,8 +271,6 @@ pub fn holds_lock(state_dir: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Write;
-
     use super::*;
 
     #[test]
@@ -291,8 +289,9 @@ mod tests {
         assert_eq!(now(dir.path()), stopped);
         assert_eq!(now(&dir.path().join("missing")), stopped);
 
-        let mut lock = File::create(dir.path().join("serve.lock")).unwrap();
-        write!(lock, "latch serve (pid {}, /bin/latch)", std::process::id()).unwrap();
+        let lock = File::create(dir.path().join("serve.lock")).unwrap();
+        let holder = format!("latch serve (pid {}, /bin/latch)", std::process::id());
+        fs::write(holder_path(dir.path()), holder).unwrap();
         lock.lock().unwrap();
         assert_eq!(now(dir.path()).state, Phase::Starting);
         record(dir.path(), Phase::Serving, true, None).unwrap();

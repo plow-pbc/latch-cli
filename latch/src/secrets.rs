@@ -533,7 +533,6 @@ mod platform {
 mod tests {
     use super::*;
     use std::collections::HashMap;
-    use std::os::unix::fs::PermissionsExt;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
@@ -597,11 +596,7 @@ mod tests {
         assert_eq!(secrets.read(Secret::Key).unwrap().unwrap(), b"first");
         assert_eq!(secrets.read(Secret::VaultKey).unwrap(), None);
         for file in ["key", "plow-token"] {
-            let mode = fs::metadata(dir.path().join(file))
-                .unwrap()
-                .permissions()
-                .mode();
-            assert_eq!(mode & 0o777, 0o600, "{file}");
+            assert!(crate::portable::private(&dir.path().join(file)), "{file}");
         }
     }
 
@@ -666,7 +661,7 @@ mod tests {
         let parent = tempfile::tempdir().unwrap();
         let link = parent.path().join("link");
         fs::create_dir(parent.path().join("real")).unwrap();
-        std::os::unix::fs::symlink("real", &link).unwrap();
+        crate::portable::link_folder(&parent.path().join("real"), &link);
         let dir = link.join("state");
         fs::create_dir(&dir).unwrap();
         let memory = Memory::default();

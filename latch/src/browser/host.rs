@@ -572,7 +572,7 @@ impl Browsers {
     }
 
     /// Tests only: until every browser closing now has closed.
-    #[cfg(test)]
+    #[cfg(all(test, any(target_os = "macos", feature = "linux-browser-tests")))]
     pub(super) async fn settled(&self) {
         let closing = std::mem::take(&mut *self.closing.lock().expect("closing lock"));
         closing.join_all().await;

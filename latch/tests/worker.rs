@@ -1,6 +1,8 @@
 //! Runs the real `latch worker` against a throwaway area and state
 //! directory, to check what the sandbox lets it touch.
 
+// Most of these still run only on macOS and Linux, each `cfg` on the test.
+
 use std::fs;
 use std::io::Write;
 #[cfg(target_os = "linux")]
@@ -9,6 +11,8 @@ use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
 use serde_json::Value;
+
+mod portable;
 
 /// An area holding `inside.txt` and a symlink into the state directory, a
 /// state directory holding `secret`, and a file outside both.
@@ -23,6 +27,9 @@ fn setup() -> tempfile::TempDir {
     fs::write(dir.path().join("area/inside.txt"), "inside").unwrap();
     fs::write(dir.path().join("state/secret"), "secret").unwrap();
     fs::write(dir.path().join("outside/other.txt"), "other").unwrap();
+    // A link into the state (a file symlink, which a Windows standard user
+    // may not make; the Unix sandboxes' tests use it).
+    #[cfg(unix)]
     std::os::unix::fs::symlink(
         dir.path().join("state/secret"),
         dir.path().join("area/link"),
@@ -34,13 +41,17 @@ fn setup() -> tempfile::TempDir {
 /// `latch worker --area area --denied state [extra] ACTION… -- PATH`, run
 /// from inside the area with an empty environment, as a host runs it.
 fn worker(dir: &Path, extra: &[&str], action: &[&str], path: &str, stdin: &[u8]) -> Output {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_latch"))
-        .args(["worker", "--area", "../area", "--denied", "../state"])
-        .args(extra)
+    let mut child = latch_worker()
+        .env("USERPROFILE", portable::real_path(dir))
+        .arg("worker")
+        .arg("--area")
+        .arg(folder(dir, "area"))
+        .arg("--denied")
+        .arg(folder(dir, "state"))
+        .args(flags(dir, extra))
         .args(action)
-        .args(["--", path])
+        .args(["--", &at(dir, path)])
         .current_dir(dir.join("area"))
-        .env_clear()
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -49,6 +60,55 @@ fn worker(dir: &Path, extra: &[&str], action: &[&str], path: &str, stdin: &[u8])
     // A worker that refuses exits without reading its stdin; that is fine.
     let _ = child.stdin.take().unwrap().write_all(stdin);
     child.wait_with_output().unwrap()
+}
+
+/// A folder of the test's as a worker is told it: from the area, or on
+/// Windows by its real path, which is what its grants hold it to.
+fn folder(dir: &Path, name: &str) -> String {
+    at(dir, &format!("../{name}"))
+}
+
+/// `path`, written from the area, as a worker is told it (`folder`). An
+/// absolute one stays.
+fn at(dir: &Path, path: &str) -> String {
+    if cfg!(unix) || Path::new(path).is_absolute() {
+        return path.to_string();
+    }
+    let real = portable::real_path(dir);
+    let found = match path.strip_prefix("../") {
+        _ if path == ".." => real,
+        Some(rest) => real.join(rest),
+        None => real.join("area").join(path),
+    };
+    found.display().to_string().replace('/', "\\")
+}
+
+/// A worker's flags with each path in them as it is told one (`at`).
+fn flags(dir: &Path, extra: &[&str]) -> Vec<String> {
+    let mut told: Vec<String> = Vec::new();
+    for flag in extra {
+        let path = ["--area", "--read", "--hidden", "--denied"]
+            .contains(&told.last().map_or("", String::as_str));
+        told.push(if path {
+            at(dir, flag)
+        } else {
+            flag.to_string()
+        });
+    }
+    told
+}
+
+/// The latch under test as a host starts a worker: with an empty environment,
+/// which no Windows process can start in a container with. There `worker`
+/// and `exec_script` make the test's folder home, the one place a Windows
+/// worker is ever given reads.
+fn latch_worker() -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_latch"));
+    if cfg!(unix) {
+        command.env_clear();
+    }
+    portable::find_tools(&mut command);
+    command
 }
 
 /// Every exec starts with a private frame, even when it has no secrets.
@@ -70,7 +130,7 @@ fn exec_worker(command: &mut Command) -> Output {
 }
 
 /// The code a worker reports for a path the sandbox keeps from it: Linux
-/// leaves it out of the worker's view, macOS refuses it.
+/// leaves it out of the worker's view, macOS and Windows refuse it.
 fn hidden_code() -> &'static str {
     if cfg!(target_os = "linux") {
         "not_found"
@@ -97,7 +157,7 @@ fn an_exec_requires_a_complete_private_header() {
     for input in [b"".as_slice(), b"\0\0", b"\0\0\0\x01x"] {
         let output = worker(
             dir.path(),
-            &["--tmpdir", "../tmp"],
+            &["--tmpdir", &folder(dir.path(), "tmp")],
             &["exec"],
             "/bin/echo",
             input,
@@ -108,7 +168,6 @@ fn an_exec_requires_a_complete_private_header() {
     }
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn the_sandbox_reads_the_area_and_opt_ins_and_writes_only_the_area() {
     let dir = setup();
@@ -144,7 +203,11 @@ fn the_sandbox_reads_the_area_and_opt_ins_and_writes_only_the_area() {
     assert_eq!(opted_in.stdout, b"{\"size\":5}\nother");
 
     // An unresolved link is refused; direct state access stays hidden.
+    // (Only Unix has the link: `setup`.)
     for (path, expected) in [("link", "io_error"), ("../state/secret", hidden_code())] {
+        if cfg!(windows) && path == "link" {
+            continue;
+        }
         let refused = worker(dir.path(), &[], &["read"], path, b"");
         assert_eq!(code(&refused), expected, "reading {path}");
         assert!(refused.stdout.is_empty(), "{refused:?}");
@@ -162,13 +225,17 @@ fn the_sandbox_reads_the_area_and_opt_ins_and_writes_only_the_area() {
     assert!(!dir.path().join("outside/new.txt").exists());
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn missing_files_and_hidden_paths_report_the_operating_system_error() {
     let dir = setup();
-    let root = dir.path().canonicalize().unwrap();
-    std::os::unix::fs::symlink(root.join("outside/missing"), root.join("area/dangling")).unwrap();
-    std::os::unix::fs::symlink(root.join("area/missing"), root.join("area/inside-link")).unwrap();
+    #[cfg(unix)]
+    {
+        let root = dir.path().canonicalize().unwrap();
+        std::os::unix::fs::symlink(root.join("outside/missing"), root.join("area/dangling"))
+            .unwrap();
+        std::os::unix::fs::symlink(root.join("area/missing"), root.join("area/inside-link"))
+            .unwrap();
+    }
     // A symlink still in the worker's resolved path is refused before its
     // target is looked up, whether that target is hidden or missing.
     for (path, expected) in [
@@ -179,17 +246,20 @@ fn missing_files_and_hidden_paths_report_the_operating_system_error() {
         ("dangling", "io_error"),
         ("../state/missing", "not_found"),
     ] {
+        // A Windows standard user may not make a file symlink.
+        if cfg!(windows) && path.contains("link") | path.contains("dangling") {
+            continue;
+        }
         let output = worker(dir.path(), &[], &["read"], path, b"");
         assert_eq!(code(&output), expected, "{path}");
         assert!(output.stdout.is_empty(), "{output:?}");
     }
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn a_write_worker_stages_a_new_file_in_its_temp_folder() {
     let dir = setup();
-    let tmp = dir.path().join("tmp").canonicalize().unwrap();
+    let tmp = portable::real_path(&dir.path().join("tmp"));
     let tmpdir = tmp.to_str().unwrap();
     let upload = tmp.join("upload");
     let staged = |size: &str, bytes: &[u8]| {
@@ -215,38 +285,43 @@ fn a_write_worker_stages_a_new_file_in_its_temp_folder() {
     assert_eq!(fs::read(&upload).unwrap(), b"new contents");
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn an_exec_worker_runs_programs_inside_the_sandbox() {
     let dir = setup();
     let exec = |argv: &[&str]| {
         exec_worker(
-            Command::new(env!("CARGO_BIN_EXE_latch"))
-                .args([
-                    "worker", "--area", "../area", "--denied", "../state", "--tmpdir", "../tmp",
-                    "exec", "--",
-                ])
+            latch_worker()
+                .args(["worker", "--area"])
+                .arg(folder(dir.path(), "area"))
+                .arg("--denied")
+                .arg(folder(dir.path(), "state"))
+                .arg("--tmpdir")
+                .arg(folder(dir.path(), "tmp"))
+                .args(["exec", "--"])
+                .arg(portable::sh())
                 .args(argv)
-                .current_dir(dir.path().join("area"))
-                .env_clear(),
+                .current_dir(dir.path().join("area")),
         )
     };
-    let pipe = exec(&["/bin/sh", "-c", "echo hello | tr a-z A-Z"]);
+    let pipe = exec(&["-c", "echo hello | tr a-z A-Z"]);
     assert!(pipe.status.success(), "{pipe:?}");
     assert_eq!(pipe.stdout, b"HELLO\n");
 
-    let state = exec(&["/bin/sh", "-c", "cat ../state/secret"]);
+    let state = exec(&["-c", "cat ../state/secret"]);
     assert_eq!(state.status.code(), Some(1));
     assert!(
         String::from_utf8_lossy(&state.stderr).contains(if cfg!(target_os = "macos") {
             "Operation not permitted"
+        } else if cfg!(windows) {
+            "Permission denied"
         } else {
             "No such file or directory"
-        })
+        }),
+        "{state:?}"
     );
     assert!(state.stdout.is_empty());
 
-    let outside = exec(&["/bin/sh", "-c", "echo x > ../outside/new.txt"]);
+    let outside = exec(&["-c", "echo x > ../outside/new.txt"]);
     assert!(!outside.status.success());
     assert!(!dir.path().join("outside/new.txt").exists());
 }
@@ -323,22 +398,38 @@ fn an_exec_cannot_kill_its_supervisor() {
     assert_eq!(output.stdout, b"protected\n", "{output:?}");
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn an_agent_can_neither_read_nor_change_the_owners_rules() {
     let dir = setup();
     let rules = dir.path().join("state/rules");
     fs::create_dir(&rules).unwrap();
     fs::write(rules.join("host.txt"), "Never send email.").unwrap();
+    // As latch makes a state folder, which on Windows is what keeps a grant
+    // on the folder around it out.
+    portable::make_private(&dir.path().join("state"));
+    // On Windows no write area may hold the state, so it never gets this far.
+    let around = worker(dir.path(), &["--area", ".."], &["read"], "inside.txt", b"");
+    if cfg!(windows) {
+        assert_eq!(code(&around), "sandbox_failed", "{around:?}");
+    }
+    let area = if cfg!(windows) {
+        folder(dir.path(), "area")
+    } else {
+        at(dir.path(), "..")
+    };
     let exec = |script: &str| {
         exec_worker(
-            Command::new(env!("CARGO_BIN_EXE_latch"))
-                .args([
-                    "worker", "--area", "..", "--denied", "../state", "--tmpdir", "../tmp", "exec",
-                    "--", "/bin/sh", "-c", script,
-                ])
-                .current_dir(dir.path().join("area"))
-                .env_clear(),
+            latch_worker()
+                .args(["worker", "--area"])
+                .arg(&area)
+                .arg("--denied")
+                .arg(folder(dir.path(), "state"))
+                .arg("--tmpdir")
+                .arg(folder(dir.path(), "tmp"))
+                .args(["exec", "--"])
+                .arg(portable::sh())
+                .args(["-c", script])
+                .current_dir(dir.path().join("area")),
         )
     };
     for script in [
@@ -351,6 +442,11 @@ fn an_agent_can_neither_read_nor_change_the_owners_rules() {
         let output = exec(script);
         assert!(!output.status.success(), "{script}: {output:?}");
         assert!(output.stdout.is_empty(), "{script}");
+        // The program ran and was refused: not a worker that never started.
+        assert!(
+            !String::from_utf8_lossy(&output.stderr).contains("worker_error"),
+            "{script}: {output:?}"
+        );
     }
     let read = worker(
         dir.path(),
@@ -360,7 +456,7 @@ fn an_agent_can_neither_read_nor_change_the_owners_rules() {
         b"",
     );
     assert!(
-        ["not_found", "sandbox_denied"].contains(&code(&read).as_str()),
+        ["not_found", "sandbox_denied", "sandbox_failed"].contains(&code(&read).as_str()),
         "{read:?}"
     );
     assert!(read.stdout.is_empty());
@@ -383,15 +479,14 @@ fn an_agent_can_neither_read_nor_change_the_owners_rules() {
     );
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn a_workdir_outside_the_areas_is_refused() {
     let dir = setup();
-    let real = dir.path().canonicalize().unwrap();
+    let real = portable::real_path(dir.path());
     let area = real.join("area");
     for workdir in [real.join("outside"), real.join("state")] {
         let output = exec_worker(
-            Command::new(env!("CARGO_BIN_EXE_latch"))
+            latch_worker()
                 .args(["worker", "--area"])
                 .arg(&area)
                 .arg("--denied")
@@ -400,11 +495,30 @@ fn a_workdir_outside_the_areas_is_refused() {
                 .arg(real.join("tmp"))
                 .args(["exec", "--workdir"])
                 .arg(&workdir)
-                .args(["--", "/bin/pwd"])
-                .current_dir(&area)
-                .env_clear(),
+                .arg("--")
+                .arg(portable::sh())
+                .args(["-c", "pwd; ls"])
+                .current_dir(&area),
         );
-        assert!(output.stdout.is_empty());
+        // On Windows an exec reads no home, so a folder the host judged may be
+        // run in, entered with nothing in it listed; the state still may not.
+        if cfg!(windows) && workdir.ends_with("outside") {
+            assert_eq!(output.status.code(), Some(1), "{output:?}");
+            assert!(
+                String::from_utf8_lossy(&output.stderr).contains("can't open '.'"),
+                "{output:?}"
+            );
+            assert!(
+                String::from_utf8_lossy(&output.stdout).ends_with("outside\n"),
+                "{output:?}"
+            );
+            continue;
+        }
+        if cfg!(windows) {
+            assert_eq!(code(&output), "sandbox_failed", "{output:?}");
+            continue;
+        }
+        assert!(output.stdout.is_empty(), "{output:?}");
         // An exec worker sees the whole filesystem, so latch's own check
         // refuses a workdir outside the areas, on Linux as on macOS.
         assert_eq!(
@@ -431,7 +545,7 @@ fn a_sandbox_that_cannot_be_applied_stops_the_worker() {
     assert_eq!(code(&output), "sandbox_failed");
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 #[test]
 fn without_a_sandbox_for_this_system_no_worker_runs() {
     let dir = setup();
@@ -597,36 +711,38 @@ fn exec_preserves_signals_and_does_not_confuse_them_with_exit_codes() {
     }
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn an_exec_worker_writes_only_its_own_temp_folder_outside_the_areas() {
     let dir = setup();
-    let real = dir.path().canonicalize().unwrap();
+    let real = portable::real_path(dir.path());
     // Two per-call folders in the OS temp folder, as a host makes them.
     let mine = tempfile::tempdir().unwrap();
     let other = tempfile::tempdir().unwrap();
     // The refused write is in a subshell: how a shell exits when a
     // redirection fails differs (bash 1, dash 2).
-    let script = r#"echo x > "$TMPDIR/t" && cat "$TMPDIR/t"; (echo y > "$0/stolen") 2>/dev/null && echo stolen; exit 0"#;
+    let script =
+        r#"echo x > "$TMPDIR/t" && cat "$TMPDIR/t"; (echo y > "$0/stolen") && echo stolen; exit 0"#;
     let output = exec_worker(
-        Command::new(env!("CARGO_BIN_EXE_latch"))
+        latch_worker()
             .arg("worker")
             .arg("--area")
             .arg(real.join("area"))
             .arg("--denied")
             .arg(real.join("state"))
             .arg("--tmpdir")
-            .arg(mine.path().canonicalize().unwrap())
-            .args(["exec", "--", "/bin/sh", "-c", script])
-            .arg(other.path().canonicalize().unwrap())
+            .arg(portable::real_path(mine.path()))
+            .args(["exec", "--"])
+            .arg(portable::sh())
+            .args(["-c", script])
+            .arg(portable::real_path(other.path()))
             .current_dir(real.join("area"))
-            .env_clear()
-            .env("TMPDIR", mine.path().canonicalize().unwrap()),
+            .env("TMPDIR", portable::real_path(mine.path())),
     );
     assert!(output.status.success(), "{output:?}");
     assert_eq!(output.stdout, b"x\n", "{output:?}");
-    if cfg!(target_os = "macos") {
-        // macOS: the program's TMPDIR is the folder it was given, and nothing else of the OS temp folder.
+    if !cfg!(target_os = "linux") {
+        // macOS and Windows: the program's TMPDIR is the folder it was given,
+        // and nothing else of the OS temp folder.
         assert!(mine.path().join("t").exists());
         assert!(!other.path().join("stolen").exists());
     } else {
@@ -636,18 +752,18 @@ fn an_exec_worker_writes_only_its_own_temp_folder_outside_the_areas() {
     }
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn exec_reads_and_writes_only_areas_never_state_or_latch() {
     // The latch running the worker and the state folder both sit inside the
     // area, as when a shared folder holds them.
     let dir = setup();
-    let real = dir.path().canonicalize().unwrap();
+    let real = portable::real_path(dir.path());
     let area = real.join("area");
     fs::create_dir_all(area.join("bin")).unwrap();
     fs::create_dir_all(area.join("keep/.state")).unwrap();
     fs::write(area.join("keep/.state/secret"), "secret").unwrap();
-    let latch = area.join("bin/latch");
+    portable::make_private(&area.join("keep/.state"));
+    let latch = area.join(format!("bin/latch{}", std::env::consts::EXE_SUFFIX));
     fs::copy(env!("CARGO_BIN_EXE_latch"), &latch).unwrap();
     let before = fs::read(&latch).unwrap();
     let script = r#"
@@ -657,30 +773,40 @@ fn exec_reads_and_writes_only_areas_never_state_or_latch() {
         cat keep/.state/secret; echo x > keep/.state/new && echo "WROTE-STATE"
         echo x > bin/latch && echo "WROTE-LATCH"
         rm -f bin/latch && echo "REMOVED-LATCH"
-        ln bin/latch hard 2>/dev/null && echo x >> hard && echo "WROTE-HARDLINK"
-        mv bin bin2 2>/dev/null && echo "MOVED-LATCH"
-        mkdir -p bin && echo planted > bin/latch 2>/dev/null && echo "PLANTED-LATCH"
-        mv keep keep2 2>/dev/null && echo "MOVED-STATE" && cat keep2/.state/secret
-        mkdir -p keep/.state && echo planted > keep/.state/config.json 2>/dev/null && echo "PLANTED-STATE"
-        cat */.state/secret 2>/dev/null
+        ln bin/latch hard && echo x >> hard && echo "WROTE-HARDLINK"
+        mv bin bin2 && echo "MOVED-LATCH"
+        mkdir -p bin && echo planted > bin/latch && echo "PLANTED-LATCH"
+        mv keep keep2 && echo "MOVED-STATE" && cat keep2/.state/secret
+        mkdir -p keep/.state && echo planted > keep/.state/config.json && echo "PLANTED-STATE"
+        cat */.state/secret
         true
     "#;
+    let mut own = Command::new(&latch);
+    if cfg!(unix) {
+        own.env_clear();
+    }
+    portable::find_tools(&mut own);
     let output = exec_worker(
-        Command::new(&latch)
-            .arg("worker")
+        own.arg("worker")
             .arg("--area")
             .arg(&area)
             .arg("--denied")
             .arg(area.join("keep/.state"))
             .arg("--tmpdir")
             .arg(real.join("tmp"))
-            .args(["exec", "--", "/bin/sh", "-c", script])
-            .current_dir(&area)
-            .env_clear(),
+            .args(["exec", "--"])
+            .arg(portable::sh())
+            .args(["-c", script])
+            .current_dir(&area),
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(output.status.success(), "{output:?}");
-    assert!(stdout.contains("inside read-inside-ok"), "{stdout}");
+    // On Windows no write area may hold the state or the latch it runs.
+    if cfg!(windows) {
+        assert_eq!(code(&output), "sandbox_failed", "{output:?}");
+    } else {
+        assert!(output.status.success(), "{output:?}");
+        assert!(stdout.contains("inside read-inside-ok"), "{stdout}");
+    }
     for escape in [
         "READ-", "WROTE-", "REMOVED-", "MOVED-", "PLANTED-", "secret",
     ] {
@@ -699,11 +825,10 @@ fn exec_reads_and_writes_only_areas_never_state_or_latch() {
 
 /// A get's worker, as a host starts it: home readable, less latch's state
 /// and (macOS) ~/Library apart from its Caches, and nothing writable.
-#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn a_read_worker_reads_home_but_not_what_is_hidden() {
     let dir = setup();
-    let home = dir.path().join("area").canonicalize().unwrap();
+    let home = portable::real_path(&dir.path().join("area"));
     for (path, text) in [
         (".ssh/config", "Host example"),
         (".latch/key", "made-up key"),
@@ -713,12 +838,20 @@ fn a_read_worker_reads_home_but_not_what_is_hidden() {
         fs::create_dir_all(home.join(path).parent().unwrap()).unwrap();
         fs::write(home.join(path), text).unwrap();
     }
+    if cfg!(windows) {
+        portable::make_private(&home.join(".latch"));
+    }
+    let denied = folder(dir.path(), "state");
     let read = |path: &str| {
         let home = home.to_str().unwrap();
         let mut args = vec![
-            "worker", "--home", home, "--read", home, "--denied", "../state",
+            "worker", "--home", home, "--read", home, "--denied", &denied,
         ];
-        let hidden = [home.to_string() + "/.latch", home.to_string() + "/Library"];
+        let separator = std::path::MAIN_SEPARATOR;
+        let hidden = [
+            format!("{home}{separator}.latch"),
+            format!("{home}{separator}Library"),
+        ];
         let hidden: Vec<&str> = hidden.iter().map(String::as_str).collect();
         let shown = if cfg!(target_os = "macos") {
             &hidden[..]
@@ -728,11 +861,17 @@ fn a_read_worker_reads_home_but_not_what_is_hidden() {
         for path in shown {
             args.extend(["--hidden", path]);
         }
-        Command::new(env!("CARGO_BIN_EXE_latch"))
+        let path = format!("{home}/{path}");
+        let path = if cfg!(windows) {
+            path.replace('/', "\\")
+        } else {
+            path
+        };
+        latch_worker()
+            .env("USERPROFILE", home)
             .args(&args)
-            .args(["read", "--", &format!("{home}/{path}")])
+            .args(["read", "--", &path])
             .current_dir(dir.path().join("area"))
-            .env_clear()
             .output()
             .unwrap()
     };
@@ -768,7 +907,16 @@ fn a_read_refuses_a_symlink_swapped_in_after_resolution_before_sending_bytes() {
         fs::create_dir_all(file.parent().unwrap()).unwrap();
         fs::write(file, "unjudged bytes").unwrap();
         fs::rename(target, target.with_file_name("saved")).unwrap();
+        // The file itself, by a file symlink, which a Windows standard user
+        // may not make; a folder by a folder link anywhere.
+        #[cfg(unix)]
         std::os::unix::fs::symlink(&replacement, target).unwrap();
+        #[cfg(windows)]
+        if component == 0 {
+            continue;
+        } else {
+            portable::link_folder(&replacement, target);
+        }
 
         let read = worker(dir.path(), &[], &["read"], resolved.to_str().unwrap(), b"");
         assert!(!read.status.success(), "component {component}: {read:?}");
@@ -776,42 +924,70 @@ fn a_read_refuses_a_symlink_swapped_in_after_resolution_before_sending_bytes() {
     }
 }
 
-/// The `PATH` a host gives exec's programs.
+/// The `PATH` a host gives exec's programs (Unix; `latch_worker` on Windows).
 const HOST_PATH: &str = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
 
 /// `latch worker … exec -- /bin/sh -c SCRIPT`, as a host runs it: from the
 /// area, with HOME there too, and `extra` worker flags.
 fn exec_script(dir: &Path, extra: &[&str], script: &str) -> Output {
-    let real = dir.canonicalize().unwrap();
+    let real = portable::real_path(dir);
+    let mut command = latch_worker();
+    if cfg!(unix) {
+        command.env("PATH", HOST_PATH);
+    }
     exec_worker(
-        Command::new(env!("CARGO_BIN_EXE_latch"))
-            .args(["worker", "--area", "../area", "--denied", "../state"])
-            .args(extra)
-            .args(["--tmpdir", "../tmp", "exec", "--", "/bin/sh", "-c", script])
+        command
+            .args(["worker", "--area"])
+            .arg(folder(dir, "area"))
+            .arg("--denied")
+            .arg(folder(dir, "state"))
+            .args(flags(dir, extra))
+            .arg("--tmpdir")
+            .arg(folder(dir, "tmp"))
+            .args(["exec", "--"])
+            .arg(portable::sh())
+            .args(["-c", script])
             .current_dir(real.join("area"))
-            .env_clear()
-            .env("PATH", HOST_PATH)
+            .env("USERPROFILE", &real)
             .env("HOME", real.join("area"))
             .env("TMPDIR", real.join("tmp")),
     )
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn everyday_tools_work_reading_only_the_area_and_the_system() {
     let dir = setup();
     let installed = |tool: &str| {
+        if cfg!(windows) {
+            // What `sh` runs by itself, and what is on the runner's PATH.
+            let path = std::env::var_os("PATH").unwrap_or_default();
+            return tool == "ls"
+                || std::env::split_paths(&path)
+                    .any(|folder| folder.join(format!("{tool}.exe")).is_file());
+        }
         HOST_PATH
             .split(':')
             .any(|folder| Path::new(folder).join(tool).is_file())
     };
     let battery = [
-        ("ls", "ls -la && grep -rn inside . && pwd"),
+        // (Windows: `-a` looks at `..` too, which a container may not see.)
+        (
+            "ls",
+            if cfg!(windows) {
+                "ls -l && grep -rn inside . && pwd"
+            } else {
+                "ls -la && grep -rn inside . && pwd"
+            },
+        ),
         (
             "git",
-            "git init -q repo && cd repo && echo hi > a && git add a \
-             && git -c user.name=t -c user.email=t@example.com commit -qm one \
-             && git status --short && git log --oneline && git diff HEAD",
+            if cfg!(windows) {
+                "git --version"
+            } else {
+                "git init -q repo && cd repo && echo hi > a && git add a \
+                 && git -c user.name=t -c user.email=t@example.com commit -qm one \
+                 && git status --short && git log --oneline && git diff HEAD"
+            },
         ),
         (
             "python3",
@@ -819,7 +995,15 @@ fn everyday_tools_work_reading_only_the_area_and_the_system() {
         ),
         ("node", "node -e 'console.log(require(\"os\").platform())'"),
     ];
+    // Git opens the null device for itself, so on Windows it starts once an
+    // administrator has opened it: CI's step for that runs this test again
+    // with this set. Past `--version` it needs more than that, and node and
+    // python are only as open to a container as their installs make them.
+    let nul_closed = cfg!(windows) && std::env::var_os("LATCH_TEST_NULL_DEVICE_OPEN").is_none();
     for (tool, script) in battery {
+        if cfg!(windows) && (tool == "python3" || tool == "node" || (nul_closed && tool == "git")) {
+            continue;
+        }
         // A tool this machine lacks cannot be tried here.
         if !installed(tool) {
             eprintln!("{tool} is not installed here: not tried");
@@ -830,7 +1014,6 @@ fn everyday_tools_work_reading_only_the_area_and_the_system() {
     }
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn exec_reads_outside_the_area_only_what_the_owner_opted_in_to() {
     let dir = setup();
@@ -858,15 +1041,19 @@ fn exec_reads_outside_the_area_only_what_the_owner_opted_in_to() {
     assert!(!dir.path().join("outside/new.txt").exists());
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn credentials_stay_hidden_inside_an_opt_in_and_inside_the_area() {
     let dir = setup();
-    let real = dir.path().canonicalize().unwrap();
+    let real = portable::real_path(dir.path());
     for home in ["outside", "area"] {
         fs::create_dir(real.join(home).join(".ssh")).unwrap();
         fs::write(real.join(home).join(".ssh/id_ed25519"), "PRIVATE KEY").unwrap();
         fs::write(real.join(home).join(".netrc"), "password hunter2").unwrap();
+        // As hidden paths are on Windows, or a grant around them fails: `sealed`.
+        if cfg!(windows) {
+            portable::make_private(&real.join(home).join(".ssh"));
+            portable::make_private(&real.join(home).join(".netrc"));
+        }
     }
     let flags = [
         "--read",
@@ -880,30 +1067,51 @@ fn credentials_stay_hidden_inside_an_opt_in_and_inside_the_area() {
         "--hidden",
         ".netrc",
     ];
+    // On Windows no write area may hold a hidden path, so those stay out.
+    let (flags, area_held) = if cfg!(windows) {
+        let refused = worker(dir.path(), &flags, &["read"], "inside.txt", b"");
+        assert_eq!(code(&refused), "sandbox_failed", "{refused:?}");
+        (&flags[..6], false)
+    } else {
+        (&flags[..], true)
+    };
     for path in [
         "../outside/.ssh/id_ed25519",
         "../outside/.netrc",
         ".ssh/id_ed25519",
         ".netrc",
     ] {
-        let read = worker(dir.path(), &flags, &["read"], path, b"");
+        if !area_held && !path.starts_with("../") {
+            continue;
+        }
+        let read = worker(dir.path(), flags, &["read"], path, b"");
         let stdout = String::from_utf8_lossy(&read.stdout);
         assert!(
             !stdout.contains("PRIVATE") && !stdout.contains("hunter2"),
             "{path}: {read:?}"
         );
     }
-    let opted_in = worker(dir.path(), &flags, &["read"], "../outside/other.txt", b"");
+    let opted_in = worker(dir.path(), flags, &["read"], "../outside/other.txt", b"");
     assert_eq!(opted_in.stdout, b"{\"size\":5}\nother");
 
-    let script = r#"
+    let script = if area_held {
+        r#"
         cat ../outside/.ssh/id_ed25519 ../outside/.netrc .ssh/id_ed25519 .netrc
         echo key >> .ssh/authorized_keys && echo "WROTE-SSH"
-        mv .ssh moved 2>/dev/null && echo "MOVED-SSH" && cat moved/id_ed25519
+        mv .ssh moved && echo "MOVED-SSH" && cat moved/id_ed25519
         cat inside.txt
         true
-    "#;
-    let output = exec_script(dir.path(), &flags, script);
+    "#
+    } else {
+        r#"
+        cat ../outside/.ssh/id_ed25519 ../outside/.netrc
+        echo key >> ../outside/.ssh/authorized_keys && echo "WROTE-SSH"
+        mv ../outside/.ssh ../outside/moved && echo "MOVED-SSH"
+        cat inside.txt
+        true
+    "#
+    };
+    let output = exec_script(dir.path(), flags, script);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success(), "{output:?}");
     assert_eq!(stdout, "inside", "{output:?}");
@@ -914,28 +1122,36 @@ fn credentials_stay_hidden_inside_an_opt_in_and_inside_the_area() {
     );
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn a_hidden_path_can_be_neither_hard_linked_nor_moved_out_of_reach() {
     let dir = setup();
-    let real = dir.path().canonicalize().unwrap();
+    let real = portable::real_path(dir.path());
     // A hidden folder and a hidden file, each below a folder of the area.
     fs::create_dir_all(real.join("area/nest/peer")).unwrap();
     fs::write(real.join("area/nest/peer/key"), "PRIVATE KEY").unwrap();
     fs::create_dir_all(real.join("area/conf")).unwrap();
     fs::write(real.join("area/conf/.netrc"), "password hunter2").unwrap();
+    if cfg!(windows) {
+        portable::make_private(&real.join("area/nest/peer"));
+        portable::make_private(&real.join("area/conf/.netrc"));
+    }
     let flags = ["--hidden", "nest/peer", "--hidden", "conf/.netrc"];
     let script = r#"
-        ln nest/peer/key stolen-key 2>/dev/null && echo "LINKED-KEY"
-        ln conf/.netrc stolen-netrc 2>/dev/null && echo "LINKED-NETRC"
-        cat stolen-key stolen-netrc 2>/dev/null
-        mv nest moved 2>/dev/null && echo "MOVED-NEST"
-        mv conf moved-conf 2>/dev/null && echo "MOVED-CONF"
+        ln nest/peer/key stolen-key && echo "LINKED-KEY"
+        ln conf/.netrc stolen-netrc && echo "LINKED-NETRC"
+        cat stolen-key stolen-netrc
+        mv nest moved && echo "MOVED-NEST"
+        mv conf moved-conf && echo "MOVED-CONF"
         true
     "#;
     let output = exec_script(dir.path(), &flags, script);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(output.status.success(), "{output:?}");
+    // On Windows no write area may hold a hidden path.
+    if cfg!(windows) {
+        assert_eq!(code(&output), "sandbox_failed", "{output:?}");
+    } else {
+        assert!(output.status.success(), "{output:?}");
+    }
     assert_eq!(stdout, "", "{output:?}");
     for (path, data) in [
         ("area/nest/peer/key", "PRIVATE KEY"),
@@ -948,13 +1164,15 @@ fn a_hidden_path_can_be_neither_hard_linked_nor_moved_out_of_reach() {
     }
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn a_share_inside_a_hidden_path_stays_hidden() {
     let dir = setup();
-    let real = dir.path().canonicalize().unwrap();
+    let real = portable::real_path(dir.path());
     fs::create_dir_all(real.join("outside/.aws/cli/cache")).unwrap();
     fs::write(real.join("outside/.aws/cli/cache/token"), "SECRET TOKEN").unwrap();
+    if cfg!(windows) {
+        portable::make_private(&real.join("outside/.aws"));
+    }
     let flags = [
         "--area",
         "../outside/.aws/cli/cache",
@@ -975,19 +1193,23 @@ fn a_share_inside_a_hidden_path_stays_hidden() {
     assert!(!read.status.success(), "{read:?}");
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn an_opt_in_in_the_system_temp_folder_is_readable_by_exec() {
     let dir = setup();
     let reference = tempfile::tempdir().unwrap();
-    let reference = reference.path().canonicalize().unwrap();
+    let reference = portable::real_path(reference.path());
     fs::write(reference.join("notes.txt"), "reference notes").unwrap();
     let output = exec_script(
         dir.path(),
         &["--read", reference.to_str().unwrap()],
-        &format!("cat {}/notes.txt", reference.display()),
+        &format!("cat '{}/notes.txt'", reference.display()),
     );
-    assert_eq!(output.stdout, b"reference notes", "{output:?}");
+    let expected: &[u8] = if cfg!(windows) {
+        b""
+    } else {
+        b"reference notes"
+    };
+    assert_eq!(output.stdout, expected, "{output:?}");
 }
 
 #[cfg(target_os = "macos")]
@@ -1030,6 +1252,7 @@ fn exec_can_make_temp_files_when_an_opt_in_covers_tmp() {
 }
 
 /// A home-readable exec with explicit writable roots, using real sandbox code.
+#[cfg(unix)]
 fn declared_exec(dir: &Path, network: bool, script: &str) -> Output {
     let home = dir.join("area").canonicalize().unwrap();
     // Resolve macOS's Python shim before confinement; xcrun's own cache is
@@ -1081,6 +1304,7 @@ fn declared_exec(dir: &Path, network: bool, script: &str) -> Output {
     )
 }
 
+#[cfg(unix)]
 fn declared_setup() -> tempfile::TempDir {
     let dir = setup();
     for name in ["project", ".ssh", ".latch", "Library/Caches"] {
@@ -1092,6 +1316,9 @@ fn declared_setup() -> tempfile::TempDir {
     dir
 }
 
+// Exec reads home on macOS and Linux; a Windows exec reads only its grants
+// (src/sandbox/windows.rs's tests).
+#[cfg(unix)]
 #[test]
 fn declared_exec_reads_home_and_confines_writes_and_hidden_data() {
     let dir = declared_setup();
@@ -1151,6 +1378,9 @@ fn exec_runs_without_a_library_cache_and_does_not_follow_a_cache_alias() {
     assert_eq!(output.stdout, b"readable-dotfile");
 }
 
+// A host Unix socket, and python3 and node from the system, which a Windows
+// container reaches only in Program Files.
+#[cfg(unix)]
 #[test]
 fn declared_exec_needs_network_and_cannot_use_a_host_unix_socket() {
     use std::io::Read;
@@ -1205,6 +1435,8 @@ fn declared_exec_cannot_read_its_hosts_process_arguments() {
     }
 }
 
+// python3 from the system (see above).
+#[cfg(unix)]
 #[test]
 fn a_networked_exec_resolves_a_hostname() {
     let dir = declared_setup();
@@ -1217,6 +1449,8 @@ fn a_networked_exec_resolves_a_hostname() {
     assert_eq!(output.stdout, b"hostname resolved\n");
 }
 
+// python3 and node from the system (see above).
+#[cfg(unix)]
 #[test]
 fn an_offline_exec_supports_unnamed_unix_sockets_and_asyncio() {
     let dir = declared_setup();
@@ -1239,6 +1473,8 @@ print("offline IPC works")
     assert_eq!(output.stdout, b"offline IPC works\n");
 }
 
+// python3 from the system, and Unix sockets (see above).
+#[cfg(unix)]
 #[test]
 fn a_networked_exec_can_use_unix_sockets_in_its_own_temp() {
     let dir = declared_setup();

@@ -616,16 +616,12 @@ mod tests {
         std::fs::write(rules.join("host.txt.interrupted.tmp"), "Anyth").unwrap();
         assert_eq!(host.judged(ADA).host.as_deref(), Some("Never send email."));
         // A write that fails partway changes nothing.
-        let mode = |mode| {
-            std::fs::set_permissions(&rules, std::os::unix::fs::PermissionsExt::from_mode(mode))
-                .unwrap()
-        };
-        mode(0o500);
+        crate::portable::make_read_only(&rules);
         assert_eq!(
             refusal(host.owner(set(None, "Anything goes.")).await),
             (Exit::Failed, "rules_io".into())
         );
-        mode(0o700);
+        crate::portable::make_private(&rules);
         assert_eq!(host.judged(ADA).host.as_deref(), Some("Never send email."));
         host.owner(set(None, "Anything goes.")).await.unwrap();
         assert_eq!(host.judged(ADA).host.as_deref(), Some("Anything goes."));

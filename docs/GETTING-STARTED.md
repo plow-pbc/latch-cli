@@ -30,14 +30,21 @@ When it fails, it prints one `{"error": …}` line on stderr instead.
 curl -fsSLO https://releases.plow.co/latch-cli/install.sh && sh install.sh
 ```
 
+On Windows, in PowerShell:
+
+```powershell
+irm https://releases.plow.co/latch-cli/install.ps1 -OutFile install.ps1; powershell -ExecutionPolicy Bypass -File install.ps1
+```
+
 The installer downloads the newest release for your machine, checks that
 it is signed with Latch's release key, as `latch update` does, and on a Mac
 that Plow signed the app, then installs it. You need `curl`, `tar` and a
-SHA-256 tool, which most systems have, and on Linux OpenSSL 3.
+SHA-256 tool, which most systems have, and on Linux OpenSSL 3. Windows
+needs nothing more: `install.ps1` checks the signature itself.
 
 | What | Where |
 |---|---|
-| The `latch` command | `~/.local/bin/latch` |
+| The `latch` command | `~/.local/bin/latch`; on Windows `%LOCALAPPDATA%\Programs\latch\latch.exe` |
 | The Plow Latch app (Mac only) | `/Applications/Plow Latch.app`, or `~/Applications` if you can't write to `/Applications`. On a Mac, `~/.local/bin/latch` is a link into the app. |
 | Latch's state folder: its key, Plow login, settings, vault and audit log | `~/.latch` |
 | Camoufox, the browser a host drives for agents (about 1 GB on a Mac, 1.5 GB on Linux) | `~/.latch/plugins/camoufox/` |

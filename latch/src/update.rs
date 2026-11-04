@@ -440,7 +440,7 @@ fn image(process: windows_sys::Win32::Foundation::HANDLE) -> Option<PathBuf> {
 
 /// A process's command line, as it was started.
 #[cfg(windows)]
-fn command_line(process: windows_sys::Win32::Foundation::HANDLE) -> Option<String> {
+pub(crate) fn command_line(process: windows_sys::Win32::Foundation::HANDLE) -> Option<String> {
     use windows_sys::Wdk::System::Threading::{
         NtQueryInformationProcess, ProcessCommandLineInformation,
     };

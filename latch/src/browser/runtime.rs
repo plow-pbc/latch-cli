@@ -352,7 +352,6 @@ fn lost() -> Failure {
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::fs::PermissionsExt;
     use std::time::Instant;
 
     use serde_json::json;
@@ -363,10 +362,9 @@ mod tests {
     /// answered its first line; each call may take 300 ms.
     async fn stuck(script: &str) -> (TempDir, Runtime) {
         let dir = tempfile::tempdir().unwrap();
-        let worker = dir.path().join("worker");
         let ready = r#"echo '{"ok": {"pid": 1}}'"#;
-        std::fs::write(&worker, format!("#!/bin/sh\n{ready}\n{script}\n")).unwrap();
-        std::fs::set_permissions(&worker, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let worker =
+            crate::portable::program(&dir.path().join("worker"), &format!("{ready}\n{script}\n"));
         let mut runtime = Runtime::start_with(&worker, dir.path(), "cft", dir.path(), IDLE, true)
             .await
             .unwrap();
@@ -390,7 +388,7 @@ mod tests {
     #[tokio::test]
     async fn a_worker_that_takes_no_upload_is_stopped_by_the_calls_limit() {
         // It never reads: the upload fills the pipe and the write waits.
-        let (_dir, runtime) = stuck("sleep 600").await;
+        let (_dir, runtime) = stuck("sleep 30").await;
         stopped_in_time(&runtime, Some(&vec![0; 4 << 20])).await;
     }
 
@@ -398,13 +396,13 @@ mod tests {
     async fn a_worker_that_never_sends_its_bytes_is_stopped_by_the_calls_limit() {
         // It answers with bytes to come, and sends none.
         let (_dir, runtime) =
-            stuck(r#"echo '{"ok": {"result": {}, "audit": {}, "bytes": 100}}'; sleep 600"#).await;
+            stuck(r#"echo '{"ok": {"result": {}, "audit": {}, "bytes": 100}}'; sleep 30"#).await;
         stopped_in_time(&runtime, None).await;
     }
 
     #[tokio::test]
     async fn a_worker_that_never_answers_is_stopped_by_the_calls_limit() {
-        let (_dir, runtime) = stuck("sleep 600").await;
+        let (_dir, runtime) = stuck("sleep 30").await;
         stopped_in_time(&runtime, None).await;
     }
 }

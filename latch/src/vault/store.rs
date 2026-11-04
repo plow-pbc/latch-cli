@@ -388,13 +388,8 @@ mod tests {
                 "{value} is in the file in the clear"
             );
         }
-        use std::os::unix::fs::PermissionsExt;
         for file in [FILE, Secret::VaultKey.file()] {
-            let mode = fs::metadata(dir.path().join(file))
-                .unwrap()
-                .permissions()
-                .mode();
-            assert_eq!(mode & 0o777, 0o600, "{file}");
+            assert!(crate::portable::private(&dir.path().join(file)), "{file}");
         }
         let reopened = OwnStore::open(dir.path()).unwrap();
         assert_eq!(
@@ -403,7 +398,10 @@ mod tests {
         );
         assert_eq!(reopened.list(), store.list());
         // Another custody key opens nothing.
-        fs::write(dir.path().join(Secret::VaultKey.file()), to_hex(&[7u8; 32])).unwrap();
+        Secrets::open(dir.path())
+            .unwrap()
+            .write(Secret::VaultKey, to_hex(&[7u8; 32]).as_bytes())
+            .unwrap();
         assert_eq!(
             OwnStore::open(dir.path()).err().unwrap().code,
             "vault_failed"

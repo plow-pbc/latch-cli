@@ -419,7 +419,8 @@ async fn the_owner_reads_back_each_gatekeeper_call_as_sent_and_an_agent_cannot()
     let bearer = "synthetic-bearer-9f2c";
     let header = format!("Authorization: Bearer {bearer}");
     // A credential in an argument of its own, after its flag, too.
-    let argv = json!(["true", "-H", header, "--password", "short-secret"]);
+    let program = crate::portable::tool("true");
+    let argv = json!([program, "-H", header, "--password", "short-secret"]);
     let exec = json!({"argv": argv, "secret_env": {"TOKEN": secret}});
     for caller in [&device, &agent] {
         assert!(matches!(
@@ -448,7 +449,7 @@ async fn the_owner_reads_back_each_gatekeeper_call_as_sent_and_an_agent_cannot()
         assert_eq!(
             shown_argv,
             &json!([
-                "true",
+                program,
                 "-H",
                 "Authorization: [redacted]",
                 "--password",
@@ -495,15 +496,13 @@ async fn the_owner_reads_back_each_gatekeeper_call_as_sent_and_an_agent_cannot()
             .any(|s| s["conversation"][0]["text"] == "run what you need")
     );
     // Private to the host's user.
-    use std::os::unix::fs::PermissionsExt;
-    let folder = t.state.join("gatekeeper/requests");
-    let mode = |path: &std::path::Path| std::fs::metadata(path).unwrap().permissions().mode();
-    assert_eq!(mode(&folder) & 0o777, 0o700);
+    let folder = t.state.join("gatekeeper").join("requests");
+    assert!(crate::portable::private(&folder));
     // Sealed with the audit key: neither the credential nor the chat is
     // on disk in the clear.
     for file in std::fs::read_dir(&folder).unwrap() {
         let file = file.unwrap().path();
-        assert_eq!(mode(&file) & 0o777, 0o600);
+        assert!(crate::portable::private(&file));
         let text = std::fs::read_to_string(&file).unwrap();
         for clear in [bearer, "run what you need", "Authorization"] {
             assert!(!text.contains(clear), "{text}");
@@ -543,14 +542,15 @@ async fn the_owners_request_is_shown_as_its_hidden_action() {
     };
     let t = start(world).await;
     let device = t.caller("device").await;
-    let exec = json!({"argv": ["true", "--password", "short-secret"]});
+    let program = crate::portable::tool("true");
+    let exec = json!({"argv": [program, "--password", "short-secret"]});
     let (answer, _) = t.call(&device, "exec", exec).await;
     assert!(matches!(answer, Response::Ok(_)), "{answer:?}");
     let shown = judge(&t, &device, &execs(&t)[0]["gate"]["kept_request"], false).await;
     assert!(!shown.to_string().contains("short-secret"), "{shown}");
     let state = &shown["request"]["state"];
     let argv = &state["proposed_action"]["argv"];
-    assert_eq!(argv, &json!(["true", "--password", "[redacted]"]));
+    assert_eq!(argv, &json!([program, "--password", "[redacted]"]));
     let text = format!("Do this now: {}", state["proposed_action"]);
     assert_eq!(state["conversation"][0]["text"], text);
 }
@@ -559,7 +559,13 @@ async fn the_owners_request_is_shown_as_its_hidden_action() {
 async fn a_call_plow_never_answered_is_kept_for_7_days() {
     let t = start(World::default()).await;
     let (device, agent) = (t.caller("device").await, t.caller("agent").await);
-    let (answer, _) = t.call(&agent, "exec", json!({"argv": ["true"]})).await;
+    let (answer, _) = t
+        .call(
+            &agent,
+            "exec",
+            json!({"argv": crate::portable::script("true")}),
+        )
+        .await;
     assert_eq!(refusal(&answer).1, "gatekeeper_unavailable");
     let id = &execs(&t)[0]["gate"]["layers"]["rules"]["kept_request"];
     let kept = judge(&t, &device, id, true).await;
@@ -590,7 +596,13 @@ async fn a_call_that_cannot_be_kept_is_still_judged() {
     std::fs::create_dir_all(t.state.join("gatekeeper")).unwrap();
     std::fs::write(t.state.join("gatekeeper/requests"), "not a folder").unwrap();
     let agent = t.caller("agent").await;
-    let (answer, _) = t.call(&agent, "exec", json!({"argv": ["true"]})).await;
+    let (answer, _) = t
+        .call(
+            &agent,
+            "exec",
+            json!({"argv": crate::portable::script("true")}),
+        )
+        .await;
     assert!(matches!(answer, Response::Ok(_)), "{answer:?}");
     let call = &execs(&t)[0]["gate"]["layers"]["rules"];
     assert!(call.get("kept_request").is_none(), "{call}");
@@ -606,7 +618,13 @@ async fn a_rules_layer_asked_before_the_chat_failed_is_kept_and_named() {
     world.broken = Some("/v1/chats".into());
     let t = start(world).await;
     let (device, agent) = (t.caller("device").await, t.caller("agent").await);
-    let (answer, _) = t.call(&agent, "exec", json!({"argv": ["true"]})).await;
+    let (answer, _) = t
+        .call(
+            &agent,
+            "exec",
+            json!({"argv": crate::portable::script("true")}),
+        )
+        .await;
     assert_eq!(refusal(&answer).1, "gatekeeper_unavailable");
     let gate = &execs(&t)[0]["gate"];
     let id = &gate["layers"]["rules"]["kept_request"];

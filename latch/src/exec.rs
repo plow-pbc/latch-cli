@@ -219,7 +219,17 @@ pub fn normalize(workers: &WorkerSetup, value: &Value) -> Result<PreparedExec, F
 /// (`\\?\C:\x`); shown, it is `C:\x`, and `\\?\UNC\server\share` is
 /// `\\server\share`, unless the plain form would name something else (a
 /// part ending in a dot or a space, or a device such as `NUL`), which is shown
-/// as it is. latch itself goes on using the resolved path.
+/// as it is, as is a path that isn't text: what logout deletes comes through
+/// here, and how such a name reads could be another folder's. latch itself goes
+/// on using the resolved path.
+pub(crate) fn shown_path(path: &Path) -> PathBuf {
+    match path.to_str() {
+        Some(text) => PathBuf::from(shown(text)),
+        None => path.to_path_buf(),
+    }
+}
+
+/// `shown_path`, of a path as text.
 pub(crate) fn shown(path: &str) -> String {
     #[cfg(windows)]
     {
@@ -446,91 +456,25 @@ pub async fn run(
     done
 }
 
-/// Windows' `mkdirat`: the judged parent opened as itself (a link at it
-/// refused) and checked to be the folder that was judged, held open with no
-/// delete sharing, and the new folder made in it by its name alone
-/// (`NtCreateFile` relative to that handle). A folder swapped for a junction
-/// after judging, by a worker an area lets delete it, can't redirect the
-/// host's make into another place, latch's state among them.
+/// Windows' `mkdirat`: made in the judged parent, held as that folder
+/// (`pin_folder`), by its name alone (`create_in`). A folder swapped for a
+/// junction after judging, by a worker an area lets delete it, can't
+/// redirect the host's make into another place, latch's state among them.
 #[cfg(windows)]
 fn create_write_dir(path: &Path) -> std::io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-    use std::os::windows::fs::OpenOptionsExt;
-    use std::os::windows::io::AsRawHandle;
-    use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
-    use windows_sys::Wdk::Storage::FileSystem::{
-        FILE_CREATE, FILE_DIRECTORY_FILE, FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT,
-        NtCreateFile,
-    };
-    use windows_sys::Win32::Foundation::{CloseHandle, RtlNtStatusToDosError, UNICODE_STRING};
-    use windows_sys::Win32::Storage::FileSystem::{
-        FILE_ADD_SUBDIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_BACKUP_SEMANTICS,
-        FILE_FLAG_OPEN_REPARSE_POINT, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_READ,
-        FILE_SHARE_WRITE, SYNCHRONIZE,
-    };
-    use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
-
+    use windows_sys::Wdk::Storage::FileSystem::FILE_DIRECTORY_FILE;
+    use windows_sys::Win32::Storage::FileSystem::{FILE_ADD_SUBDIRECTORY, FILE_LIST_DIRECTORY};
     let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
         return Err(std::io::Error::other("no parent folder"));
     };
-    let folder = std::fs::OpenOptions::new()
-        .access_mode(
-            FILE_LIST_DIRECTORY | FILE_ADD_SUBDIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
-        )
-        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
-        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
-        .open(parent)?;
-    let real = crate::sandbox::final_path(&folder)?;
-    let same = crate::sandbox::within(&real, parent) && crate::sandbox::within(parent, &real);
-    if folder.metadata()?.file_type().is_symlink() || !same {
-        return Err(std::io::Error::other(format!(
-            "{} changed after it was checked",
-            parent.display()
-        )));
-    }
-    let mut wide: Vec<u16> = name.encode_wide().collect();
-    let bytes = (wide.len() * 2) as u16;
-    let name = UNICODE_STRING {
-        Length: bytes,
-        MaximumLength: bytes,
-        Buffer: wide.as_mut_ptr(),
-    };
-    let attributes = OBJECT_ATTRIBUTES {
-        Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
-        RootDirectory: folder.as_raw_handle(),
-        ObjectName: &name,
-        // OBJ_CASE_INSENSITIVE, as Win32 names are.
-        Attributes: 0x40,
-        SecurityDescriptor: std::ptr::null(),
-        SecurityQualityOfService: std::ptr::null(),
-    };
-    let mut status = IO_STATUS_BLOCK::default();
-    let mut made = std::ptr::null_mut();
-    // SAFETY: a live folder handle and name, `made` and `status` writable;
-    // the new folder's handle is closed below.
-    let result = unsafe {
-        NtCreateFile(
-            &mut made,
-            FILE_LIST_DIRECTORY | SYNCHRONIZE,
-            &attributes,
-            &mut status,
-            std::ptr::null(),
-            FILE_ATTRIBUTE_NORMAL,
-            FILE_SHARE_READ | FILE_SHARE_WRITE,
-            FILE_CREATE,
-            FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_REPARSE_POINT,
-            std::ptr::null(),
-            0,
-        )
-    };
-    if result < 0 {
-        // SAFETY: converts a status code.
-        return Err(std::io::Error::from_raw_os_error(
-            unsafe { RtlNtStatusToDosError(result) } as i32,
-        ));
-    }
-    // SAFETY: the new folder's handle, closed once.
-    unsafe { CloseHandle(made) };
+    let folder = crate::sandbox::pin_folder(parent, FILE_ADD_SUBDIRECTORY)?;
+    crate::sandbox::create_in(
+        &folder,
+        name,
+        FILE_LIST_DIRECTORY,
+        FILE_DIRECTORY_FILE,
+        std::ptr::null(),
+    )?;
     Ok(())
 }
 
@@ -754,8 +698,9 @@ async fn run_program(
         };
         return Done::failed(outcome, format!("{message} after {duration_ms} ms"), audit);
     }
+    let writes: Vec<PathBuf> = args.writes.iter().map(|path| shown_path(path)).collect();
     let mut result = json!({
-        "writes": args.writes,
+        "writes": writes,
         "network": args.network,
         "exit_code": exit_code,
         "signal": signal,
@@ -811,11 +756,16 @@ async fn wait_or_kill(
     child: &mut Child,
     limits: Limits<impl Future<Output = Code>>,
 ) -> (ExitStatus, End) {
+    let limit = Duration::from_secs(limits.timeout);
+    let started = Instant::now();
     let end = tokio::select! {
         biased;
-        () = tokio::time::sleep(Duration::from_secs(limits.timeout)) => End::TimedOut,
+        () = tokio::time::sleep(limit) => End::TimedOut,
         status = child.wait() => match status {
-            Ok(status) => return (status, End::Exited),
+            Ok(status) if started.elapsed() < limit => return (status, End::Exited),
+            // A host frozen past the limit can hear of the worker's own kill
+            // before its timer fires, and that is no exit of the program's.
+            Ok(status) => return (status, End::TimedOut),
             Err(_) => End::TimedOut,
         },
         outcome = limits.cut_off => End::Cut(outcome),
@@ -921,9 +871,19 @@ fn signal_name(signal: i32) -> String {
     name.to_string()
 }
 
+// Their workers are sh scripts: Unix only.
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn a_path_that_is_not_text_is_shown_as_it_is() {
+        use std::os::windows::ffi::OsStringExt;
+        let name = std::ffi::OsString::from_wide(&[b'x'.into(), 0xd800]);
+        let path = Path::new(r"\\?\C:\").join(name);
+        assert_eq!(shown_path(&path), path);
+    }
 
     #[cfg(windows)]
     #[test]
@@ -949,7 +909,6 @@ mod tests {
         }
     }
     use crate::failure::Exit;
-    use std::os::unix::fs::PermissionsExt;
     use tokio::io::AsyncWriteExt;
 
     async fn run(workers: &WorkerSetup, args: &Value, cut_off: impl Future<Output = Code>) -> Done {
@@ -968,7 +927,7 @@ mod tests {
         let mut children = Vec::new();
         let mut inputs = Vec::new();
         for _ in 0..32 {
-            let mut child = tokio::process::Command::new("/bin/sh")
+            let mut child = tokio::process::Command::new(crate::portable::sh())
                 .args(["-c", "read line"])
                 .stdin(std::process::Stdio::piped())
                 .kill_on_drop(true)
@@ -1015,8 +974,7 @@ mod tests {
         std::fs::create_dir_all(&parent).unwrap();
         let dir = tempfile::tempdir_in(parent).unwrap();
         let program = dir.path().join("worker");
-        std::fs::write(&program, "#!/bin/sh\necho started > worker-started\n").unwrap();
-        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let program = crate::portable::program(&program, "echo started > worker-started\n");
         let workers = WorkerSetup {
             home: dir.path().canonicalize().unwrap(),
             areas: vec![dir.path().to_path_buf()],
@@ -1116,10 +1074,12 @@ mod tests {
             let done = run(&workers, &args, std::future::pending()).await;
             assert!(matches!(done.response, Response::Ok(_)));
             assert!(dir.path().join("worker-started").exists());
-            assert_eq!(done.audit_args["workdir"], json!(workers.home));
+            assert_eq!(done.audit_args["workdir"], json!(shown_path(&workers.home)));
         }
     }
 
+    // A Windows exec reads no home, where cargo and its toolchain are, until #6.
+    #[cfg(unix)]
     #[tokio::test]
     async fn declared_projects_support_cargo_build_and_npm_install() {
         let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/tests");
@@ -1203,14 +1163,23 @@ mod tests {
     async fn secret_values_are_not_in_the_workers_process_arguments() {
         let (dir, mut workers) = worker_setup();
         let binary = std::env::current_exe().unwrap();
-        workers.program = binary.parent().unwrap().parent().unwrap().join("latch");
+        workers.program = binary
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join(format!("latch{}", std::env::consts::EXE_SUFFIX));
         std::fs::create_dir(&workers.state_dir).unwrap();
+        // By their real paths, as a host gives them: a grant refuses any other.
+        workers.state_dir = workers.state_dir.canonicalize().unwrap();
+        workers.home = workers.home.canonicalize().unwrap();
         let tmp = dir.path().join("tmp");
         std::fs::create_dir(&tmp).unwrap();
+        let tmp = tmp.canonicalize().unwrap();
         let marker = "worker-argv-private-marker-4a7d";
         let value = normalize(
             &workers,
-            &json!({"argv": ["true"], "secret_env": {"TOKEN": marker}}),
+            &json!({"argv": crate::portable::script("true"), "secret_env": {"TOKEN": marker}}),
         )
         .unwrap();
         let args = value.0;
@@ -1229,6 +1198,19 @@ mod tests {
                     .unwrap();
                 assert!(output.status.success());
                 output.stdout
+            };
+            #[cfg(windows)]
+            let arguments = {
+                use windows_sys::Win32::Foundation::CloseHandle;
+                use windows_sys::Win32::System::Threading::{
+                    OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+                };
+                // SAFETY: plain values; the handle is closed below.
+                let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+                let line = crate::update::command_line(process).unwrap_or_default();
+                // SAFETY: ours, closed once.
+                unsafe { CloseHandle(process) };
+                line.into_bytes()
             };
             String::from_utf8_lossy(&arguments).into_owned()
         };
@@ -1252,7 +1234,8 @@ mod tests {
         let mut input = child.stdin.take().unwrap();
         crate::wire::write_frame(&mut input, &header).await.unwrap();
         drop(input);
-        assert!(child.wait().await.unwrap().success());
+        let ended = child.wait_with_output().await.unwrap();
+        assert!(ended.status.success(), "{ended:?}");
     }
 
     #[tokio::test]
@@ -1278,6 +1261,8 @@ mod tests {
         drop(writer);
     }
 
+    // Signals are Unix's: a Windows program ends with an exit code.
+    #[cfg(unix)]
     #[test]
     fn signals_have_their_usual_names() {
         assert_eq!(signal_name(libc::SIGSEGV), "SIGSEGV");

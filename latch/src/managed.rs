@@ -453,7 +453,11 @@ async fn stop_dir(dir: &Path, only: Option<u32>) -> Result<Value, Failure> {
         {
             return Err(lifecycle::other_version_running(pid));
         }
-        if !asked && !removed {
+        // On Windows removing the service ends the process, so a host that
+        // stopped answering because it is stopping (its `latch serve` went away,
+        // say) is first given the time to finish, or it reads as crashed.
+        let patient = cfg!(windows) && started.elapsed() < STOP_WITHIN / 2;
+        if !asked && !removed && !patient {
             service.remove()?;
             removed = true;
         }

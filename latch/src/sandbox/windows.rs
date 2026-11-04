@@ -79,9 +79,10 @@ use windows_sys::Win32::Security::{
 };
 use windows_sys::Win32::Storage::FileSystem::{
     DELETE, FILE_EXECUTE, FILE_FLAG_BACKUP_SEMANTICS, FILE_GENERIC_EXECUTE, FILE_GENERIC_READ,
-    FILE_GENERIC_WRITE, FILE_READ_ATTRIBUTES, FILE_READ_DATA, FILE_SHARE_READ, FILE_SHARE_WRITE,
-    FILE_TRAVERSE, GetDriveTypeW, GetFinalPathNameByHandleW, GetLogicalDriveStringsW, READ_CONTROL,
-    SYNCHRONIZE, WRITE_DAC,
+    FILE_GENERIC_WRITE, FILE_NAME_NORMALIZED, FILE_NAME_OPENED, FILE_READ_ATTRIBUTES,
+    FILE_READ_DATA, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TRAVERSE, GetDriveTypeW,
+    GetFinalPathNameByHandleW, GetLogicalDriveStringsW, READ_CONTROL, SYNCHRONIZE,
+    VOLUME_NAME_NONE, WRITE_DAC,
 };
 use windows_sys::Win32::System::Console::{
     GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
@@ -327,6 +328,24 @@ fn grants(policy: &Policy) -> Result<Vec<Grant>, String> {
             ));
         }
     }
+    // Nor is anything inside one asked for: an entry on what a hidden folder
+    // holds opens it, however sealed that folder is, since a container needs
+    // no rights on the folders above what it was granted. (Its temp folder and
+    // the helper the host checked may sit there: the host made and chose those.)
+    for path in policy
+        .areas
+        .iter()
+        .chain(&policy.reads)
+        .chain(&policy.workdir)
+    {
+        if let Some(around) = hidden.clone().find(|around| within(path, around)) {
+            return Err(format!(
+                "{} is inside {}, which is hidden from every worker",
+                path.display(),
+                around.display()
+            ));
+        }
+    }
     // A hidden path inside a folder it reads stays hidden only if that grant
     // never reaches it.
     let granted: Vec<PathBuf> = grants.iter().map(|grant| grant.path.clone()).collect();
@@ -466,6 +485,30 @@ fn same(a: &Path, b: &Path) -> bool {
     plain(a) == plain(b)
 }
 
+/// Refuses `file` unless it is what `path` named: a link swapped into the path
+/// after it was resolved gives the file another name. For a worker to call:
+/// a container is denied any name that says the volume (`\\?\C:\…`, measured,
+/// as `QueryDosDeviceW` is), so this compares the name inside the volume. A file
+/// of the same name on another volume passes, and a container reads only what
+/// it was granted anyway. It is the name as opened, which `path`, once resolved,
+/// already is.
+pub(crate) fn check_at(file: &std::fs::File, path: &Path) -> std::io::Result<()> {
+    let inside: PathBuf = std::path::absolute(path)?
+        .components()
+        .skip_while(|part| matches!(part, std::path::Component::Prefix(_)))
+        .collect();
+    if same(
+        &path_of(file, VOLUME_NAME_NONE | FILE_NAME_OPENED)?,
+        &inside,
+    ) {
+        return Ok(());
+    }
+    Err(std::io::Error::other(format!(
+        "{} changed after it was checked",
+        path.display()
+    )))
+}
+
 /// Whether `path` is `folder` or inside it, as Windows matches names: with
 /// or without a `\\?\` prefix, in any case.
 pub(crate) fn within(path: &Path, folder: &Path) -> bool {
@@ -482,6 +525,10 @@ pub(crate) fn within(path: &Path, folder: &Path) -> bool {
 
 /// Where the open `file` really is, as `canonicalize` names it.
 pub(crate) fn final_path(file: &std::fs::File) -> std::io::Result<PathBuf> {
+    path_of(file, FILE_NAME_NORMALIZED)
+}
+
+fn path_of(file: &std::fs::File, name: u32) -> std::io::Result<PathBuf> {
     use std::os::windows::ffi::OsStringExt;
     let mut buffer = vec![0u16; 1024];
     // SAFETY: `buffer` is writable for its length; the handle is live.
@@ -490,7 +537,7 @@ pub(crate) fn final_path(file: &std::fs::File) -> std::io::Result<PathBuf> {
             file.as_raw_handle(),
             buffer.as_mut_ptr(),
             buffer.len() as u32,
-            0,
+            name,
         )
     } as usize;
     if length == 0 || length > buffer.len() {
@@ -499,6 +546,99 @@ pub(crate) fn final_path(file: &std::fs::File) -> std::io::Result<PathBuf> {
     Ok(PathBuf::from(std::ffi::OsString::from_wide(
         &buffer[..length],
     )))
+}
+
+/// The folder at `path` that was judged, held: opened as itself (a link
+/// there is refused) and still the folder `path` names, not one reached
+/// through a folder swapped for a link. Shared with no delete, it can't be
+/// renamed or removed while it is held. `access`: what is made in it.
+pub(crate) fn pin_folder(path: &Path, access: u32) -> std::io::Result<std::fs::File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Foundation::GENERIC_READ;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+    let folder = std::fs::OpenOptions::new()
+        .access_mode(GENERIC_READ | access)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)?;
+    let real = final_path(&folder)?;
+    if folder.metadata()?.file_type().is_symlink() || !(within(&real, path) && within(path, &real))
+    {
+        return Err(std::io::Error::other(format!(
+            "{} changed after it was checked",
+            path.display()
+        )));
+    }
+    Ok(folder)
+}
+
+/// A new file or folder `name` made in `folder` (`pin_folder`) by that
+/// name alone, as Unix's `openat` and `mkdirat` make one: `NtCreateFile`
+/// relative to its handle, never over an existing name, and no link above
+/// it can move it. `options`: `FILE_DIRECTORY_FILE` or
+/// `FILE_NON_DIRECTORY_FILE`; `descriptor`: its access list, or null for
+/// the folder's to inherit. Shared with no one.
+pub(crate) fn create_in(
+    folder: &std::fs::File,
+    name: &OsStr,
+    access: u32,
+    options: u32,
+    descriptor: *const windows_sys::Win32::Security::SECURITY_DESCRIPTOR,
+) -> std::io::Result<std::fs::File> {
+    use std::os::windows::io::FromRawHandle;
+    use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
+    use windows_sys::Wdk::Storage::FileSystem::{
+        FILE_CREATE, FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT, NtCreateFile,
+    };
+    use windows_sys::Win32::Foundation::{RtlNtStatusToDosError, UNICODE_STRING};
+    use windows_sys::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_NORMAL, SYNCHRONIZE};
+    use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
+
+    let mut wide: Vec<u16> = name.encode_wide().collect();
+    let bytes = (wide.len() * 2) as u16;
+    let name = UNICODE_STRING {
+        Length: bytes,
+        MaximumLength: bytes,
+        Buffer: wide.as_mut_ptr(),
+    };
+    let attributes = OBJECT_ATTRIBUTES {
+        Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
+        RootDirectory: folder.as_raw_handle(),
+        ObjectName: &name,
+        // OBJ_CASE_INSENSITIVE, as Win32 names are.
+        Attributes: 0x40,
+        SecurityDescriptor: descriptor,
+        SecurityQualityOfService: null(),
+    };
+    let mut status = IO_STATUS_BLOCK::default();
+    let mut made = null_mut();
+    // SAFETY: a live folder handle, name and descriptor; `made` and
+    // `status` writable. The new handle is owned by the File returned.
+    let result = unsafe {
+        NtCreateFile(
+            &mut made,
+            access | SYNCHRONIZE,
+            &attributes,
+            &mut status,
+            null(),
+            FILE_ATTRIBUTE_NORMAL,
+            0,
+            FILE_CREATE,
+            options | FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_REPARSE_POINT,
+            null(),
+            0,
+        )
+    };
+    if result < 0 {
+        // SAFETY: converts a status code.
+        return Err(std::io::Error::from_raw_os_error(
+            unsafe { RtlNtStatusToDosError(result) } as i32,
+        ));
+    }
+    // SAFETY: a new handle, owned by the File from here on.
+    Ok(unsafe { std::fs::File::from_raw_handle(made) })
 }
 
 /// What the SIDs of containers, their capabilities and every container
@@ -1998,6 +2138,66 @@ mod tests {
         assert_eq!(held.wait().unwrap().code(), Some(1));
     }
 
+    /// A launcher that ends takes all its worker started with it: the
+    /// worker's job, whose one handle the launcher holds, ends then. The
+    /// worker here starts a grandchild that says it runs, then writes a file
+    /// a second and a half later; the launcher is killed first, and the file
+    /// never comes. Needs a desktop, as any container.
+    #[test]
+    fn a_launchers_end_takes_all_its_worker_started() {
+        const NAME: &str = "sandbox::platform::tests::a_launchers_end_takes_all_its_worker_started";
+        if let Ok(area) = std::env::var("LATCH_GRANDCHILD") {
+            let area = PathBuf::from(area);
+            fs::write(area.join("alive"), "").unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(1500));
+            fs::write(area.join("survived"), "").unwrap();
+            return;
+        }
+        if let Ok(root) = std::env::var("LATCH_JOB_TEST") {
+            let root = PathBuf::from(root);
+            confine(&policy(&root)).unwrap();
+            Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", NAME, "--nocapture"])
+                .env_remove("LATCH_JOB_TEST")
+                .env("LATCH_GRANDCHILD", root.join("area"))
+                .spawn()
+                .unwrap()
+                .wait()
+                .unwrap();
+            // Only if the test did not end this launcher first.
+            std::thread::sleep(std::time::Duration::from_secs(30));
+            return;
+        }
+        let dir = test_dir();
+        let root = dir.path().canonicalize().unwrap();
+        for name in ["area", "state", "tmp"] {
+            fs::create_dir_all(root.join(name)).unwrap();
+        }
+        crate::state::owner::folder(&root.join("state")).unwrap();
+        let mut launcher = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", NAME, "--nocapture"])
+            .current_dir(root.join("area"))
+            .env("LATCH_JOB_TEST", &root)
+            .spawn()
+            .unwrap();
+        let alive = root.join("area").join("alive");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while !alive.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the grandchild never ran"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        launcher.kill().unwrap();
+        launcher.wait().unwrap();
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        assert!(
+            !root.join("area").join("survived").exists(),
+            "it outlived its launcher"
+        );
+    }
+
     #[test]
     fn paths_match_as_windows_names_them() {
         assert!(within(
@@ -2013,6 +2213,48 @@ mod tests {
             Path::new(r"C:\Users\Me")
         ));
         assert!(!within(Path::new(r"C:\Users"), Path::new(r"C:\Users\Me")));
+    }
+
+    /// A folder held by `pin_folder` can't be swapped for a link while it is
+    /// held, and takes what `create_in` makes in it; a link, or a folder
+    /// reached through one, is never pinned.
+    #[test]
+    fn a_pinned_folder_stays_the_folder_judged() {
+        use windows_sys::Wdk::Storage::FileSystem::FILE_NON_DIRECTORY_FILE;
+        use windows_sys::Win32::Foundation::GENERIC_WRITE;
+        use windows_sys::Win32::Storage::FileSystem::FILE_ADD_FILE;
+        let dir = test_dir();
+        let root = dir.path().canonicalize().unwrap();
+        let (work, state) = (root.join("work"), root.join("state"));
+        fs::create_dir_all(work.join("sub")).unwrap();
+        fs::create_dir(&state).unwrap();
+
+        let pinned = pin_folder(&work, FILE_ADD_FILE).unwrap();
+        assert!(fs::rename(&work, root.join("moved")).is_err());
+        let made = create_in(
+            &pinned,
+            OsStr::new("made"),
+            GENERIC_WRITE,
+            FILE_NON_DIRECTORY_FILE,
+            null(),
+        );
+        drop(made.unwrap());
+        assert!(work.join("made").is_file());
+        // Never over a name that is there.
+        assert!(create_in(&pinned, OsStr::new("made"), GENERIC_WRITE, 0, null()).is_err());
+        drop(pinned);
+
+        let link = root.join("link");
+        let plain = |path: &Path| path.display().to_string().replace(r"\\?\", "");
+        let linked = Command::new("cmd")
+            .args(["/c", "mklink", "/J", &plain(&link), &plain(&state)])
+            .output()
+            .unwrap();
+        assert!(linked.status.success(), "{linked:?}");
+        assert!(pin_folder(&link, FILE_ADD_FILE).is_err());
+        fs::create_dir(state.join("rules")).unwrap();
+        assert!(pin_folder(&link.join("rules"), FILE_ADD_FILE).is_err());
+        assert!(pin_folder(&state.join("rules"), FILE_ADD_FILE).is_ok());
     }
 
     #[test]

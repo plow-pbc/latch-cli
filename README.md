@@ -7,8 +7,9 @@ wherever they run. The host's **gatekeeper** checks each call against your
 rules and what you told the agent in Plow. The host keeps a sealed audit log
 of every call.
 
-Latch runs on macOS 13 or later and on 64-bit Linux (x86_64 or arm64). You
-need a [Plow](https://plow.co) account.
+Latch runs on macOS 13 or later, on 64-bit Linux (x86_64 or arm64), and,
+as the command line, on Windows 11 (x86_64). You need a
+[Plow](https://plow.co) account.
 
 ## Install
 
@@ -21,6 +22,15 @@ curl -fsSLO https://releases.plow.co/latch-cli/install.sh && sh install.sh
 - `latch` goes in `~/.local/bin`. If that folder isn't on your `PATH`, the
   installer adds it in your shell's login profile and prints the line for
   the terminal you are in.
+
+On Windows, in PowerShell:
+
+```powershell
+irm https://releases.plow.co/latch-cli/install.ps1 -OutFile install.ps1; powershell -ExecutionPolicy Bypass -File install.ps1
+```
+
+It installs `latch.exe` in `%LOCALAPPDATA%\Programs\latch` and adds that
+folder to your `PATH`.
 
 Check it worked:
 

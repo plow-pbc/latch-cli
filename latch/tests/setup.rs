@@ -4,12 +4,11 @@
 //! answer without a Plow, a host or System Settings.
 
 use std::fs;
-use std::io::{Read, Write};
-use std::os::unix::fs::PermissionsExt;
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::thread;
+
+mod portable;
 
 /// The stand-in. Its state folder (`$STUB`) holds `peer` (logged in),
 /// `ready` (the host answers), `enabled-NAME`, and `enable-NAME`: one answer
@@ -19,8 +18,7 @@ use std::thread;
 /// else for a new name; it keeps the answers in `login-answers`. With
 /// `agent`, the login is an agent's. Rules are set unless `no-rules`; a
 /// `rules set --preset NAME` keeps NAME in `rules`.
-const STUB: &str = r#"#!/bin/sh
-[ "$1" = --state-dir ] && shift 2
+const STUB: &str = r#"[ "$1" = --state-dir ] && shift 2
 echo "${LATCH_HOST:+LATCH_HOST=$LATCH_HOST }$*" >> "$STUB/calls"
 state() { if [ -f "$STUB/$1" ]; then echo true; else echo false; fi; }
 case "$*" in
@@ -82,6 +80,8 @@ esac
 struct Stub {
     _dir: tempfile::TempDir,
     root: PathBuf,
+    /// The stand-in, as a program (`portable::program`).
+    latch: PathBuf,
 }
 
 impl Stub {
@@ -89,18 +89,20 @@ impl Stub {
         let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/tests");
         fs::create_dir_all(&parent).unwrap();
         let dir = tempfile::tempdir_in(parent).unwrap();
-        let root = dir.path().canonicalize().unwrap();
+        let root = portable::real_path(dir.path());
         fs::create_dir_all(root.join("stub")).unwrap();
         fs::create_dir_all(root.join("bin")).unwrap();
-        for (name, body) in [
-            ("latch-stub", STUB),
-            // `open` only records what it was asked to open.
-            ("bin/open", "#!/bin/sh\necho \"$*\" >> \"$STUB/opened\"\n"),
-        ] {
-            fs::write(root.join(name), body).unwrap();
-            fs::set_permissions(root.join(name), fs::Permissions::from_mode(0o755)).unwrap();
+        let latch = portable::program(&root.join("latch-stub"), STUB);
+        // `open` only records what it was asked to open.
+        portable::program(
+            &root.join("bin").join("open"),
+            "echo \"$*\" >> \"$STUB/opened\"\n",
+        );
+        Stub {
+            _dir: dir,
+            root,
+            latch,
         }
-        Stub { _dir: dir, root }
     }
 
     fn file(&self, name: &str, body: &str) {
@@ -124,80 +126,67 @@ impl Stub {
     /// `latch setup` at a terminal with `typed` already typed: its exit
     /// code and everything the terminal showed.
     fn setup(&self, typed: &str) -> (Option<i32>, String) {
-        use std::os::fd::FromRawFd;
-        let (mut main, mut side) = (0, 0);
-        // SAFETY: openpty fills in two new descriptors, which we then own.
-        let opened = unsafe {
-            libc::openpty(
-                &mut main,
-                &mut side,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-            )
-        };
-        assert_eq!(opened, 0);
-        let (mut main, side) =
-            unsafe { (fs::File::from_raw_fd(main), fs::File::from_raw_fd(side)) };
-        let path = format!(
-            "{}:{}",
-            self.root.join("bin").display(),
-            std::env::var("PATH").unwrap()
-        );
+        let path = std::env::join_paths(
+            std::iter::once(self.root.join("bin"))
+                .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+        )
+        .unwrap();
         let mut command = Command::new(env!("CARGO_BIN_EXE_latch"));
-        command
+        portable::set_home(&mut command, &self.root)
             .args(["--state-dir"])
             .arg(self.root.join("state"))
             .arg("setup")
-            .env("LATCH_SETUP_LATCH", self.root.join("latch-stub"))
+            .env("LATCH_SETUP_LATCH", &self.latch)
             .env("STUB", self.root.join("stub"))
-            .env("HOME", &self.root)
             // As if the owner's shell named another host for other commands.
             .env("LATCH_HOST", "elsewhere")
-            .env("PATH", path)
-            .stdin(side.try_clone().unwrap())
-            .stdout(side.try_clone().unwrap())
-            .stderr(side.try_clone().unwrap());
-        // The pty is its controlling terminal, as a person's is: when the
-        // test ends and closes it, the kernel hangs setup up.
-        // SAFETY: setsid and ioctl only, between fork and exec.
-        unsafe {
-            command.pre_exec(|| {
-                if libc::setsid() < 0 || libc::ioctl(0, libc::TIOCSCTTY as _, 0) < 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
-        let mut child = command.spawn().unwrap();
-        // Every copy of the terminal's side must close, the command's too,
-        // or reading the other side never ends once setup does.
+            .env("PATH", path);
+        // The terminal is its controlling one, as a person's is: when the
+        // test ends and closes it, setup is hung up.
+        let (mut child, mut typing, shown) = portable::terminal(&mut command, None, false);
         drop(command);
-        drop(side);
-        main.write_all(typed.as_bytes()).unwrap();
-        let mut reading = main.try_clone().unwrap();
-        let shown = thread::spawn(move || {
-            let mut shown = Vec::new();
-            let _ = reading.read_to_end(&mut shown);
-            String::from_utf8_lossy(&shown).to_string()
-        });
+        // Typed ahead, or on Windows each line once it is asked for, as a
+        // console echoes what is typed ahead in among what setup says; and
+        // Windows' last question, on top of the test's, is answered no.
+        let typed = if cfg!(windows) {
+            typed
+        } else {
+            typing.write_all(typed.as_bytes()).unwrap();
+            ""
+        };
+        let mut answers = typed.split_inclusive('\n');
+        let mut said = String::new();
+        let mut asked = 0;
         // A question nobody answers would wait for ever: stop it instead.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
         let code = loop {
+            said.extend(shown.try_iter());
+            if said.len() > asked && (said.ends_with("] ") || said.ends_with(": ")) {
+                asked = said.len();
+                let answer = if said.contains("to keep nul open after each restart. [y/N] ") {
+                    Some("\n")
+                } else {
+                    answers.next()
+                };
+                if let Some(answer) = answer {
+                    typing.write_all(answer.as_bytes()).unwrap();
+                }
+            }
             if let Some(status) = child.try_wait().unwrap() {
                 break status.code();
             }
             if std::time::Instant::now() > deadline {
                 child.kill().unwrap();
                 child.wait().unwrap();
-                drop(main);
-                let shown = shown.join().unwrap();
-                panic!("setup still waiting after 60 s; it showed: {shown}");
+                drop(typing);
+                said.extend(shown.iter());
+                panic!("setup still waiting after 60 s; it showed: {said}");
             }
             thread::sleep(std::time::Duration::from_millis(50));
         };
-        drop(main);
-        (code, shown.join().unwrap())
+        drop(typing);
+        said.extend(shown.iter());
+        (code, said)
     }
 }
 
@@ -262,7 +251,12 @@ fn a_rerun_skips_every_step_already_done() {
     assert!(shown.contains("✓ Logged in as mac."), "{shown}");
     assert!(shown.contains("✓ Google is connected."), "{shown}");
     assert!(shown.contains("✓ latch is running."), "{shown}");
-    assert!(!shown.contains('?'), "nothing asked: {shown}");
+    // (But Windows' listing folders, which needs no stand-in's step.)
+    let asked = shown.replace(
+        "Let agents list folders and use nul on this PC (cmd's dir and vol, `> nul`)?",
+        "",
+    );
+    assert!(!asked.contains('?'), "nothing asked: {shown}");
     let calls = stub.read("calls");
     for changed in ["login", "serve", "plugins enable"] {
         assert!(!calls.contains(changed), "{changed}: {calls}");
@@ -330,7 +324,7 @@ fn a_failed_login_leaves_its_line_and_the_other_steps_wait() {
     stub.file("login-fails", "");
     let (code, shown) = stub.setup("");
     assert_eq!(code, Some(0), "{shown}");
-    assert!(shown.contains("Waiting for your text…"), "{shown}");
+    assert!(shown.contains("Waiting for your text"), "{shown}");
     assert!(
         shown.contains("the code expired before it was texted"),
         "{shown}"
@@ -587,8 +581,8 @@ fn an_agent_login_is_not_asked_for_rules() {
 /// `latch setup --status` on `state`, without a terminal: its JSON steps,
 /// by name.
 fn status(state: &Path) -> serde_json::Map<String, serde_json::Value> {
-    let output = Command::new(env!("CARGO_BIN_EXE_latch"))
-        .env("HOME", state.parent().unwrap())
+    let mut command = Command::new(env!("CARGO_BIN_EXE_latch"));
+    let output = portable::set_home(&mut command, state.parent().unwrap())
         .arg("--state-dir")
         .arg(state)
         .args(["setup", "--status"])

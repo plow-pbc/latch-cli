@@ -814,9 +814,14 @@ fn exec(
 fn read(path: &Path) -> Result<(), (PathBuf, io::Error)> {
     let failed = |err| (path.to_path_buf(), err);
     // On Windows the container's access list is the boundary: it reaches
-    // only what it was granted, whichever names lead there.
+    // only what it was granted, whichever names lead there. What it opened
+    // is still to be what was judged, whatever was swapped in on the way.
     #[cfg(windows)]
-    let file = File::open(path).map_err(failed)?;
+    let file = {
+        let file = File::open(path).map_err(failed)?;
+        sandbox::check_at(&file, path).map_err(failed)?;
+        file
+    };
     #[cfg(unix)]
     let file = {
         let absolute = std::path::absolute(path).map_err(failed)?;
@@ -927,7 +932,9 @@ fn read_private_exec() -> Result<crate::exec::PrivateExec, ExitCode> {
     Ok(job)
 }
 
-#[cfg(test)]
+// A process group: on Windows a worker's descendants end with its
+// launcher's job instead (`sandbox::windows`'s tests).
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     #[tokio::test]

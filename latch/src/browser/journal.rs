@@ -434,11 +434,8 @@ mod tests {
                 .code,
             "no_such_shot"
         );
-        let mode = fs::metadata(folder(dir.path(), "default").join("r1.jsonl"))
-            .unwrap()
-            .permissions();
-        use std::os::unix::fs::PermissionsExt;
-        assert_eq!(mode.mode() & 0o777, 0o600);
+        let file = folder(dir.path(), "default").join("r1.jsonl");
+        assert!(crate::portable::private(&file), "{}", file.display());
     }
 
     #[test]

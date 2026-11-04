@@ -266,7 +266,13 @@ pub async fn connect_local(state: &Path) -> Result<LocalStream, Failure> {
         {
             Ok(Ok(true)) => Ok(stream),
             Ok(Err(err)) => Err(failed(err)),
-            _ => Err(Failure::new(
+            // A host too busy to answer, as a Unix socket's would be, not a
+            // stranger: nothing was sent either way.
+            Err(_) => Err(Failure::new(
+                code::serve_required,
+                "this machine's host is not answering; nothing was sent to it".into(),
+            )),
+            Ok(Ok(false)) => Err(Failure::new(
                 code::local_socket,
                 "what listens at this state folder's endpoint did not prove it is its host; \
                  nothing was sent to it"
@@ -426,17 +432,56 @@ impl Admission {
         matches!(tokio::time::timeout(within, proved).await, Ok(Ok(true)))
     }
 }
+/// Two ends of one local connection, for tests: the caller's and the host's,
+/// with the admission the host checks (`test_admit` passes it).
+#[cfg(test)]
+pub(crate) fn test_pair() -> (LocalStream, LocalStream, Admission) {
+    #[cfg(unix)]
+    {
+        let (caller, host) = tokio::net::UnixStream::pair().unwrap();
+        (caller, host, Admission {})
+    }
+    #[cfg(windows)]
+    {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let caller = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (host, _) = listener.accept().unwrap();
+        let tokio = |stream: std::net::TcpStream| {
+            stream.set_nonblocking(true).unwrap();
+            LocalStream::from_std(stream).unwrap()
+        };
+        let secret = std::sync::Arc::from(TEST_SECRET);
+        (tokio(caller), tokio(host), Admission { secret })
+    }
+}
+
+/// What a caller does before its first request, as `connect_local` does:
+/// on Windows, proves it knows the endpoint's secret.
+#[cfg(test)]
+pub(crate) async fn test_admit(caller: &mut LocalStream) {
+    #[cfg(windows)]
+    assert!(
+        handshake::caller(caller, TEST_SECRET.as_bytes())
+            .await
+            .unwrap()
+    );
+    #[cfg(unix)]
+    let _ = caller;
+}
+
+#[cfg(all(test, windows))]
+const TEST_SECRET: &str = "test";
+
 impl Drop for LocalSocket {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.path);
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn a_new_client_refuses_an_unversioned_local_receiver() {
         let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/tests");
@@ -452,7 +497,6 @@ mod tests {
         let _accepted = current.accept().await.unwrap();
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn a_state_folder_too_deep_for_a_socket_says_so_and_names_the_limit() {
         let state = Path::new("/state").join("deep".repeat(MAX_SOCKET_PATH / 4));
