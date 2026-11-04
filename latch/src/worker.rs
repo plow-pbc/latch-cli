@@ -145,6 +145,7 @@ fn ask_login_shell() -> Result<OsString, String> {
     while child.try_wait().map_err(|err| err.to_string())?.is_none() {
         if std::time::Instant::now() > deadline {
             let _ = child.kill();
+            let _ = child.wait();
             return Err(format!("{} took over 10 s", shell.display()));
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
