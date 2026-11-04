@@ -120,11 +120,13 @@ pub fn messages_request(command: &MessagesCommand) -> Value {
     json!({"action": action, "args": args})
 }
 
-/// Writes each file of an `attachment` answer into `out` as
-/// `<message id>-<index>-<name>`, and gives the answer back with each
+/// Writes each file of an `attachment` answer into `out` (made if need be)
+/// as `<message id>-<index>-<name>`, and gives the answer back with each
 /// file's `path` where its `data` was. The name is the sender's: only its
 /// last part is used.
-pub fn save(mut answer: Value, out: &Path) -> Result<Value, Failure> {
+pub async fn save(mut answer: Value, out: &Path) -> Result<Value, Failure> {
+    std::fs::create_dir_all(out)
+        .map_err(|err| Failure::new(code::local_file, format!("{}: {err}", out.display())))?;
     let message = answer["message_id"].clone();
     for file in answer["attachments"].as_array_mut().into_iter().flatten() {
         let Some(data) = file.as_object_mut().and_then(|file| file.remove("data")) else {
@@ -142,8 +144,7 @@ pub fn save(mut answer: Value, out: &Path) -> Result<Value, Failure> {
             .and_then(|name| name.to_str())
             .unwrap_or("attachment");
         let path = out.join(format!("{message}-{}-{name}", file["index"]));
-        std::fs::write(&path, bytes)
-            .map_err(|err| Failure::new(code::local_file, format!("{}: {err}", path.display())))?;
+        crate::transfer::save(&path, &bytes).await?;
         file["path"] = json!(path);
     }
     Ok(answer)
@@ -182,22 +183,23 @@ pub fn contacts_request(command: &ContactsCommand) -> Value {
 mod tests {
     use super::*;
 
-    #[test]
-    fn an_attachment_is_written_under_its_last_name_only() {
+    #[tokio::test]
+    async fn an_attachment_is_written_under_its_last_name_only() {
         let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("made");
         let answer = json!({"message_id": 7, "attachments": [
             {"index": 0, "name": "../../.ssh/authorized_keys", "data": "aGk="},
             {"index": 1, "name": null, "data": "aGk="},
             {"index": 2, "name": "IMG.jpeg", "error": "not_downloaded"},
         ]});
-        let saved = save(answer, dir.path()).unwrap();
+        let saved = save(answer, &out).await.unwrap();
         let files = &saved["attachments"];
         for (index, name) in [(0, "7-0-authorized_keys"), (1, "7-1-attachment")] {
-            assert_eq!(std::fs::read(dir.path().join(name)).unwrap(), b"hi");
-            assert_eq!(files[index]["path"], json!(dir.path().join(name)));
+            assert_eq!(std::fs::read(out.join(name)).unwrap(), b"hi");
+            assert_eq!(files[index]["path"], json!(out.join(name)));
             assert!(files[index].get("data").is_none());
         }
         assert_eq!(files[2]["path"], Value::Null);
-        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
+        assert_eq!(std::fs::read_dir(&out).unwrap().count(), 2);
     }
 }

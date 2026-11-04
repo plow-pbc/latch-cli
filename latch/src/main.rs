@@ -452,7 +452,7 @@ async fn run(
             )
             .await?;
             match out {
-                Some(out) => json(pretty, messages::save(answer, &out)?),
+                Some(out) => json(pretty, messages::save(answer, &out).await?),
                 None => json(pretty, answer),
             }
         }
