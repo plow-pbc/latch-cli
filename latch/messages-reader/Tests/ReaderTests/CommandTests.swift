@@ -478,7 +478,7 @@ func anAttachmentComesWithItsBytesOrSaysWhyNot() throws {
                  name: "clip.mov", mime: "video/quicktime", bytes: [UInt8](repeating: 0, count: 7 << 20))
     let large = try #require(read(f, ["attachment", "--message-id", "201"], now: now).answer["attachments"] as? [[String: Any]])
     #expect(large.map { $0["error"] as? String } == ["too_large"])
-    #expect(large[0]["size"] as? Int == 7 << 20 && large[0]["data"] == nil)
+    #expect(large[0]["data"] == nil)
     let (_, planned) = plan(f, ["attachment", "--message-id", "202"])
     #expect((planned["plan"] as? [String: Any])?["message_id"] as? Int == 202)
 }

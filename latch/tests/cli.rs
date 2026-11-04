@@ -8456,6 +8456,7 @@ fn messages_home(home: &Path) {
 }
 
 /// The file `messages_home` attaches to message 102.
+#[cfg(target_os = "macos")]
 const ATTACHED: &[u8] = b"a throwaway attachment";
 
 /// `latch setup` itself, with no host running: Google (this test build as

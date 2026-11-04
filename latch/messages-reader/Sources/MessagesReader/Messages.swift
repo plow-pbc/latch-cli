@@ -90,6 +90,28 @@ func messages(_ call: Call, now: Date, limits: Limits, deadline: ContinuousClock
     return answer
 }
 
+/// Why an attachment comes without its bytes.
+enum AttachmentError: String, Error {
+    case notDownloaded = "not_downloaded"
+    case unreadable
+    case tooLarge = "too_large"
+}
+
+/// The bytes of the file Messages recorded at `path`, if they fit in
+/// `room` as base64. Only the Attachments `folder` is read, whatever a row
+/// records; a file Messages has no copy of is not downloaded.
+func attachmentFile(_ path: String?, in folder: String, room: Int) -> Result<Data, AttachmentError> {
+    guard let path = path.map({ ($0 as NSString).standardizingPath }) else { return .failure(.notDownloaded) }
+    guard path.hasPrefix(folder + "/") else { return .failure(.unreadable) }
+    guard let size = (try? FileManager.default.attributesOfItem(atPath: path))?[.size] as? Int else {
+        return .failure(.notDownloaded)
+    }
+    // Base64 is 4 bytes for every 3.
+    guard size / 3 * 4 <= room else { return .failure(.tooLarge) }
+    guard let data = FileManager.default.contents(atPath: path) else { return .failure(.unreadable) }
+    return .success(data)
+}
+
 struct Context {
     let call: Call
     let store: Store
@@ -176,31 +198,17 @@ struct Context {
         answer.extra["message_id"] = id
         for (index, file) in files.enumerated() {
             var row: [String: Any] = ["index": index, "name": file.name ?? NSNull(), "mime": file.mime ?? NSNull()]
-            let path = file.path.map { ($0 as NSString).standardizingPath }
-            guard let path, FileManager.default.fileExists(atPath: path) else {
-                row["error"] = "not_downloaded"
-                _ = answer.add(row)
-                continue
+            switch attachmentFile(file.path, in: folder, room: answerBudget - answer.size) {
+            case .success(let data):
+                row["size"] = data.count
+                var full = row
+                full["data"] = data.base64EncodedString()
+                if answer.add(full) { continue }
+                row["error"] = AttachmentError.tooLarge.rawValue
+            case .failure(let error):
+                row["error"] = error.rawValue
             }
-            let size = (try? FileManager.default.attributesOfItem(atPath: path)[.size] as? Int) ?? nil
-            row["size"] = size ?? NSNull()
-            // Base64 is 4 bytes for every 3.
-            if let size, size / 3 * 4 > answerBudget - answer.size {
-                row["error"] = "too_large"
-                _ = answer.add(row)
-                continue
-            }
-            guard path.hasPrefix(folder + "/"), let data = FileManager.default.contents(atPath: path) else {
-                row["error"] = "unreadable"
-                _ = answer.add(row)
-                continue
-            }
-            var full = row
-            full["data"] = data.base64EncodedString()
-            if !answer.add(full) {
-                row["error"] = "too_large"
-                _ = answer.add(row)
-            }
+            _ = answer.add(row)
         }
         return answer
     }
