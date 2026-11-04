@@ -153,7 +153,13 @@ Plow chat instead, and type it as in step 3.
 
 The owner's cards are in the vault (`latch vault list --kind card`). A
 card saved with no sites fills on any shop; never ask the owner for its
-number. At the checkout page:
+number in chat. A card that is missing or incomplete is added from the
+owner's phone: on one of the owner's own devices (`latch status` shows
+`login.kind` `device`), `latch vault --host H link --kind card --title
+TITLE` makes a link that asks for the number, code, expiry month and
+year, and cardholder name; send its `url` and check `link-state` as for
+a login. An agent's own key can link only a login, so ask the owner to
+make the card link. At the checkout page:
 
 1. `observe`: `fill.items` lists the cards (`kind` `card`), and
    `fill.suggestions` how one fills the page's card fields.
@@ -162,7 +168,7 @@ number. At the checkout page:
    expiry=eN --field "cardholder name"=eN`. A card is never picked for
    you: name it with `--item`. A card that lacks a number, code or expiry
    the page asks for is not filled (`card_incomplete`, its `missing` fields
-   in `details`): ask the owner to add them.
+   in `details`): have the owner add it again with a card link, as above.
 3. The card stays in the page's fields, which you can't read: screenshots
    show them blank, and `eval` waits until they are gone. Check the page
    (ZIP, a box to untick, the total), then press its Pay button yourself
