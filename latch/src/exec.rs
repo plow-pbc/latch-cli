@@ -756,11 +756,16 @@ async fn wait_or_kill(
     child: &mut Child,
     limits: Limits<impl Future<Output = Code>>,
 ) -> (ExitStatus, End) {
+    let limit = Duration::from_secs(limits.timeout);
+    let started = Instant::now();
     let end = tokio::select! {
         biased;
-        () = tokio::time::sleep(Duration::from_secs(limits.timeout)) => End::TimedOut,
+        () = tokio::time::sleep(limit) => End::TimedOut,
         status = child.wait() => match status {
-            Ok(status) => return (status, End::Exited),
+            Ok(status) if started.elapsed() < limit => return (status, End::Exited),
+            // A host frozen past the limit can hear of the worker's own kill
+            // before its timer fires, and that is no exit of the program's.
+            Ok(status) => return (status, End::TimedOut),
             Err(_) => End::TimedOut,
         },
         outcome = limits.cut_off => End::Cut(outcome),
