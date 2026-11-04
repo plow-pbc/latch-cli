@@ -1600,6 +1600,21 @@ pub enum MessagesCommand {
         #[command(flatten)]
         host: HostArg,
     },
+    /// Save one message's attached files (photos, PDFs) here
+    ///
+    /// Each file's bytes are written to --out under its own name; the answer
+    /// lists each with its `path`, or an `error`: `not_downloaded` (only in
+    /// iCloud or on a phone, not on the host), `unreadable`, or `too_large`
+    Attachment {
+        /// The message's id, from `latch messages search` or `thread`
+        #[arg(long, value_name = "N")]
+        message_id: i64,
+        /// The folder on this machine to write the files in [default: the current directory]
+        #[arg(long, value_name = "DIR")]
+        out: Option<PathBuf>,
+        #[command(flatten)]
+        host: HostArg,
+    },
     /// Direct conversations whose newest message is inbound: candidates, not proof a reply is owed
     Unreplied {
         /// How far back [default: 36h, at most 7d]
@@ -1622,6 +1637,7 @@ impl MessagesCommand {
             MessagesCommand::Search { host, .. }
             | MessagesCommand::Thread { host, .. }
             | MessagesCommand::Chats { host, .. }
+            | MessagesCommand::Attachment { host, .. }
             | MessagesCommand::Unreplied { host, .. } => host,
         }
     }

@@ -428,6 +428,27 @@ const ENTRIES: &[Entry] = &[
         )],
     },
     Entry {
+        id: "messages.attachment",
+        runs_on: |_| RunsOn::Host,
+        output: "`attachments`: each with `index`, `name`, `mime`, `size` and the `path` it was written to, or an `error`.",
+        effect: Repeatable("writes the files on this machine"),
+        owner_only: false,
+        connector: Some("messages"),
+        examples: &[ex(
+            "The photo in a message, into ./invoice",
+            &[
+                "messages",
+                "attachment",
+                "--host",
+                "mac",
+                "--message-id",
+                "103",
+                "--out",
+                "invoice",
+            ],
+        )],
+    },
+    Entry {
         id: "messages.unreplied",
         runs_on: |_| RunsOn::Host,
         output: "`messages`: the newest inbound message of each direct chat with no later reply.",

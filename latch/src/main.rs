@@ -81,6 +81,7 @@ use serde_json::{Value, json};
 
 use cli::{
     BrowserCommand, Cli, Command, DevicesAction, FileCommand, HandoffAction, HostArg, HostsCommand,
+    MessagesCommand,
 };
 use failure::{Exit, Failure};
 use state::StateDir;
@@ -436,17 +437,24 @@ async fn run(
         }
         Command::Messages(command) => {
             let request = messages::messages_request(&command);
-            json(
-                pretty,
-                call_host(
-                    &state,
-                    command.host(),
-                    "messages",
-                    request,
-                    dial::ANSWER_WITHIN,
-                )
-                .await?,
+            let out = match &command {
+                MessagesCommand::Attachment { out, .. } => {
+                    Some(out.clone().unwrap_or_else(|| PathBuf::from(".")))
+                }
+                _ => None,
+            };
+            let answer = call_host(
+                &state,
+                command.host(),
+                "messages",
+                request,
+                dial::ANSWER_WITHIN,
             )
+            .await?;
+            match out {
+                Some(out) => json(pretty, messages::save(answer, &out)?),
+                None => json(pretty, answer),
+            }
         }
         Command::Contacts(command) => {
             let request = messages::contacts_request(&command);
