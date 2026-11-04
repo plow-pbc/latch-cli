@@ -899,6 +899,16 @@ final class AppModel {
         if case let .failure(error) = removed { agentRemoveError = error } else { agentRemoveError = nil }
     }
 
+    func agentLines() async throws -> AgentLines { try await client.agentLines() }
+
+    /// Moves an agent by its uid to `line` (a line's uid), once the person
+    /// has picked it; Agents then shows the agent as latch answered, on its
+    /// new line.
+    func moveAgent(_ agent: AgentsList.Agent, to line: String) async throws {
+        let moved = try await client.moveAgent(agent.uid, line: line)
+        agents = agents?.map { $0.uid == moved.uid ? moved : $0 }
+    }
+
     /// The agent whose rules the Rules screen brings into view and focuses,
     /// on the one host it was asked for, until its editor takes it or that
     /// host's Rules goes.

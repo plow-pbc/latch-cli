@@ -335,5 +335,25 @@ nonisolated struct SyntheticLatchClient: LatchClient {
     func agentCard(_ uid: String) async throws -> Data { throw LatchError.unreachable("no card on the synthetic latch") }
     func agentStartByText() async throws -> AgentStartByText { try await read(Fixtures.startByText) }
     func removeAgent(_ uid: String) async throws {}
+
+    /// Each agent's own line, held, then two free ones.
+    func agentLines() async throws -> AgentLines {
+        let held = (0..<spec.agents).map { index in
+            #"{"agent_uid":"\#(agentUid(index))","available":false,"name":null,"number":"+1555000\#(String(format: "%04d", index + 2))","uid":"ln_\#(index)"}"#
+        }
+        let free = [#"{"agent_uid":null,"available":true,"name":"Cedar","number":"+15550000090","uid":"ln_cedar"}"#,
+                    #"{"agent_uid":null,"available":true,"name":null,"number":"+15550000091","uid":"ln_0091"}"#]
+        return try await read(#"{"lines":[\#((held + free).joined(separator: ","))]}"#)
+    }
+
+    /// The agent, on the line asked for.
+    func moveAgent(_ uid: String, line: String) async throws -> AgentsList.Agent {
+        guard var agent = try await agents(host: nil).agents.first(where: { $0.uid == uid }),
+              let to = try await agentLines().lines.first(where: { $0.uid == line }) else {
+            throw LatchError.failed(LatchFailure(code: "no_such_line", message: "Plow has no phone line \"\(line)\""))
+        }
+        agent.line = .init(number: to.number, name: to.name)
+        return agent
+    }
 }
 #endif

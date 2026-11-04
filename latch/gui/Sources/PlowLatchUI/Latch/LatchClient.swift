@@ -100,6 +100,11 @@ nonisolated protocol LatchClient: Sendable {
     /// `latch agents remove UID --yes`: its credential stops working and
     /// its line is freed. Always by uid: names need not be unique.
     func removeAgent(_ uid: String) async throws
+    /// `latch agents lines`.
+    func agentLines() async throws -> AgentLines
+    /// `latch agents move UID --line LINE --yes`, the line by its uid: the
+    /// same agent, credential and all, as it answers on that line now.
+    func moveAgent(_ uid: String, line: String) async throws -> AgentsList.Agent
 }
 
 extension LatchClient {
@@ -362,6 +367,14 @@ nonisolated struct LiveLatchClient: LatchClient {
         _ = try await run(["agents", "remove", uid, "--yes"])
     }
 
+    func agentLines() async throws -> AgentLines {
+        try decode(AgentLines.self, try await run(["agents", "lines"]))
+    }
+
+    func moveAgent(_ uid: String, line: String) async throws -> AgentsList.Agent {
+        try decode(AgentMoved.self, try await run(["agents", "move", uid, "--line", line, "--yes"])).agent
+    }
+
     private func run(_ arguments: [String], input: Data? = nil) async throws -> Data {
         try await LatchProcess(executable: executable, arguments: withState(arguments), input: input, environment: Self.environment).output()
     }
@@ -388,6 +401,8 @@ nonisolated struct LiveLatchClient: LatchClient {
 /// `vault add`'s and `vault edit`'s answer: the item as saved.
 nonisolated private struct VaultItemAnswer: Decodable { var item: VaultList.Item }
 nonisolated private struct ImportPreviewAnswer: Decodable { var preview: ImportPreview }
+/// `agents move`'s answer: the agent on its new line.
+nonisolated private struct AgentMoved: Decodable { var agent: AgentsList.Agent }
 
 nonisolated private func decode<T: Decodable>(_ type: T.Type, _ data: Data) throws -> T {
     do {

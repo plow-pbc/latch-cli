@@ -74,6 +74,16 @@ struct AgentsHubTests {
         #expect(app.shownAgent?.uid == "00000000000000000000000000000001")
     }
 
+    // Change Line says what a move does before it's made: the old number
+    // stops answering, and a cloud agent restarts on the new line.
+    @Test(arguments: [("own", "The program you run for it keeps running."), ("cloud", "Plow restarts it on the new line.")])
+    func changeLineSaysWhatAMoveDoes(_ kind: String, _ after: String) throws {
+        let agent: AgentsList.Agent = try Fixtures.decode(#"{"uid":"u1","name":"scout","kind":"\#(kind)","line":{"number":"+16505550136"}}"#)
+        let old = try #require(PhoneNumber("+16505550136")?.formatted())
+        #expect(ChangeLine(agent).effects
+            == "It keeps its credential and settings, and takes the new line's name and email. \(old) stops answering. \(after)")
+    }
+
     // A line's name in Plow, else the handle, else the number (nil: as
     // this Mac's region writes it).
     @Test(arguments: [

@@ -2,7 +2,8 @@ import SwiftUI
 
 /// The account's agents: a list of them, and the one picked in full, with
 /// Message, a row for each host that opens its rules and its requests
-/// there, and Copy and Remove… in its ⋯ menu. New Agent is here too.
+/// there, and Copy, Change Line… and Remove… in its ⋯ menu. New Agent is
+/// here too.
 struct AgentsView: View {
     @Environment(AppModel.self) private var app
 
@@ -187,6 +188,7 @@ struct AgentMenuItems: View {
         }
         Button("Copy Handle") { app.copy(agent.name) }
         Divider()
+        Button("Change Line…") { app.sheet = .changeLine(ChangeLine(agent)) }
         Button("Remove \(agent.displayName)…", role: .destructive) { app.ask(.removeAgent(agent)) }
     }
 }

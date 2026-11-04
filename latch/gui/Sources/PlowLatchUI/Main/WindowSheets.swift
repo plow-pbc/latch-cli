@@ -2,11 +2,13 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// What the main window shows over itself, one at a time: New Agent, a
-/// vault item's New Item or Edit, an export chosen and imported, or a
-/// question before an action. The model keeps it; the window presents it.
+/// What the main window shows over itself, one at a time: New Agent, an
+/// agent's Change Line, a vault item's New Item or Edit, an export chosen
+/// and imported, or a question before an action. The model keeps it; the
+/// window presents it.
 enum MainSheet: Equatable {
     case newAgent(NewAgent)
+    case changeLine(ChangeLine)
     case vaultItem(VaultEditor)
     /// Import…'s open panel, for an export to import into this host's vault.
     case choosingExport(HostEntry)
@@ -17,6 +19,7 @@ enum MainSheet: Equatable {
     static func == (a: MainSheet, b: MainSheet) -> Bool {
         switch (a, b) {
         case let (.newAgent(a), .newAgent(b)): a === b
+        case let (.changeLine(a), .changeLine(b)): a === b
         case let (.vaultItem(a), .vaultItem(b)): a === b
         case let (.choosingExport(a), .choosingExport(b)): a.name == b.name
         case let (.vaultImport(a), .vaultImport(b)): a === b
@@ -120,6 +123,7 @@ struct AppKitSheets: SheetPresenting {
         switch wanted {
         case .googleSignIn: present(GoogleSignInSheet(), wanted, over: controller)
         case let .sheet(.newAgent(flow)): present(NewAgentSheet(flow: flow), wanted, over: controller)
+        case let .sheet(.changeLine(flow)): present(ChangeLineSheet(flow: flow), wanted, over: controller)
         case let .sheet(.vaultItem(editor)): present(VaultItemSheet(editor: editor), wanted, over: controller)
         case let .sheet(.vaultImport(importer)): present(ImportSheet(importer: importer), wanted, over: controller)
         case let .sheet(.choosingExport(host)): chooseExport(on: host, wanted, over: window)

@@ -87,6 +87,8 @@ nonisolated struct FakeLatchClient: LatchClient {
     func agentCard(_ uid: String) async throws -> Data { throw LatchError.unreachable("a still") }
     func agentStartByText() async throws -> AgentStartByText { try Fixtures.decode(Fixtures.startByText) }
     func removeAgent(_ uid: String) async throws {}
+    func agentLines() async throws -> AgentLines { try Fixtures.decode(Fixtures.trioLines) }
+    func moveAgent(_ uid: String, line: String) async throws -> AgentsList.Agent { throw LatchError.unreachable("a still") }
 }
 
 extension Fixtures {
@@ -312,6 +314,9 @@ nonisolated enum Fixtures {
     // (which refuses Aspen exec); numbers from the fictional 555-01xx range.
     static let trio = #"{"agents":[{"cloud_kind":"exe:hermes","created_at":"2026-10-21T17:02:11.204518","failure_code":null,"kind":"cloud","last_seen_at":null,"line":{"card_url":"https://plow.co/aspen.vcf","name":"Aspen","number":"+16505550136"},"name":"openclaw-test2","standing":null,"status":"running","uid":"a5be0c1d2e3f40516273849506a7b8c9"},{"cloud_kind":null,"created_at":"2026-10-22T09:41:57.880113","failure_code":null,"kind":"own","last_seen_at":null,"line":{"name":null,"number":"+16505550104"},"name":"grok-bot","standing":null,"status":null,"uid":"e1f0d2c3b4a5968778695a4b3c2d1e0f"},{"cloud_kind":"exe:meals-planner","created_at":"2026-10-24T12:15:03.551920","failure_code":null,"kind":"cloud","last_seen_at":null,"line":{"card_url":"https://plow.co/willow.vcf","name":"Willow","number":"+16505550171"},"name":"willow-meals","standing":null,"status":"running","uid":"77a1b2c3d4e5f60718293a4b5c6d7e8f"}],"host":null}"#
     static let trioStudio = #"{"agents":[{"cloud_kind":"exe:hermes","created_at":"2026-10-21T17:02:11.204518","failure_code":null,"kind":"cloud","last_seen_at":null,"line":{"card_url":"https://plow.co/aspen.vcf","name":"Aspen","number":"+16505550136"},"name":"openclaw-test2","standing":{"exec_blocked":false,"own_rules":false},"status":"running","uid":"a5be0c1d2e3f40516273849506a7b8c9"},{"cloud_kind":null,"created_at":"2026-10-22T09:41:57.880113","failure_code":null,"kind":"own","last_seen_at":null,"line":{"name":null,"number":"+16505550104"},"name":"grok-bot","standing":{"exec_blocked":false,"own_rules":true},"status":null,"uid":"e1f0d2c3b4a5968778695a4b3c2d1e0f"},{"cloud_kind":"exe:meals-planner","created_at":"2026-10-24T12:15:03.551920","failure_code":null,"kind":"cloud","last_seen_at":null,"line":{"card_url":"https://plow.co/willow.vcf","name":"Willow","number":"+16505550171"},"name":"willow-meals","standing":{"exec_blocked":false,"own_rules":false},"status":"running","uid":"77a1b2c3d4e5f60718293a4b5c6d7e8f"}],"host":{"name":"studio","online":true}}"#
+    // `latch agents lines` for the trio: their three lines, held, and
+    // three free ones.
+    static let trioLines = #"{"lines":[{"agent_uid":"a5be0c1d2e3f40516273849506a7b8c9","available":false,"name":"Aspen","number":"+16505550136","uid":"ln_aspen"},{"agent_uid":"e1f0d2c3b4a5968778695a4b3c2d1e0f","available":false,"name":null,"number":"+16505550104","uid":"ln_0104"},{"agent_uid":"77a1b2c3d4e5f60718293a4b5c6d7e8f","available":false,"name":"Willow","number":"+16505550171","uid":"ln_willow"},{"agent_uid":null,"available":true,"name":"Cedar","number":"+16505550142","uid":"ln_cedar"},{"agent_uid":null,"available":true,"name":"Juniper","number":"+16505550188","uid":"ln_juniper"},{"agent_uid":null,"available":true,"name":null,"number":"+16505550119","uid":"ln_0119"}]}"#
     static let trioKitchen = #"{"agents":[{"cloud_kind":"exe:hermes","created_at":"2026-10-21T17:02:11.204518","failure_code":null,"kind":"cloud","last_seen_at":null,"line":{"card_url":"https://plow.co/aspen.vcf","name":"Aspen","number":"+16505550136"},"name":"openclaw-test2","standing":{"exec_blocked":true,"own_rules":false},"status":"running","uid":"a5be0c1d2e3f40516273849506a7b8c9"},{"cloud_kind":null,"created_at":"2026-10-22T09:41:57.880113","failure_code":null,"kind":"own","last_seen_at":null,"line":{"name":null,"number":"+16505550104"},"name":"grok-bot","standing":{"exec_blocked":false,"own_rules":false},"status":null,"uid":"e1f0d2c3b4a5968778695a4b3c2d1e0f"},{"cloud_kind":"exe:meals-planner","created_at":"2026-10-24T12:15:03.551920","failure_code":null,"kind":"cloud","last_seen_at":null,"line":{"card_url":"https://plow.co/willow.vcf","name":"Willow","number":"+16505550171"},"name":"willow-meals","standing":{"exec_blocked":false,"own_rules":false},"status":"running","uid":"77a1b2c3d4e5f60718293a4b5c6d7e8f"}],"host":{"name":"pi-kitchen","online":true}}"#
     static let agentsKitchenOffline = #"{"error":{"code":"host_offline","message":"host \"pi-kitchen\" is offline; nothing was sent. Start `latch serve` there"}}"#
     static let rulesStudio = #"{"agents":[{"agent_name":"scout","agent_uid":"ba3c0b3ad1eba7a9a1eb04b67c9db0dd","revision":"a33189e9c51bcecdd839cfc226d392a7ce6c00eb700b08ce25fa325e2c29f780","text":"scout may run builds and tests in ~/Projects/latch-demo."}],"audit_id":"94b02a5438b53063f41edeb8a2babaaefb3ffaefee225dbfe5e94a2ddff078bf","deny_exec":{"agent_uids":[],"every_agent":false},"every_agent":{"revision":"ea4ac6c6bd9184d7479f8312f4ebca18db1804f21bba03212ac8f0dc80f35c7c","text":"Agents may list and read files in ~/Projects. Never delete anything, and never touch ~/Finance.\n"},"host":"studio","warning":"Freeform rules are judged, not guaranteed. --deny-exec is enforced in code."}"#
@@ -825,6 +830,20 @@ package enum SnapshotRunner {
                 try await render(AgentDetail(agent: aspen)
                     .overlay(alignment: .topTrailing) { MenuStill { AgentMenuItems(agent: aspen) }.padding(.top, 62).padding(.trailing, 14) }
                     .environment(app), size: CGSize(width: 640, height: 500), dark: dark, file: menu)
+            }
+            // Change Line…: your own agent with a free line picked, and a
+            // cloud agent's move to a line Plow refused.
+            let trio = try await app(Fixtures.trio)
+            let lines: AgentLines = try Fixtures.decode(Fixtures.trioLines)
+            guard let agents = trio.agents, agents.count == 3 else { throw LatchError.unreachable("no agents to draw") }
+            let picking = ChangeLine(agents[1])
+            picking.stage(lines, picked: "ln_cedar")
+            let refused = ChangeLine(agents[2])
+            refused.stage(lines, picked: "ln_juniper", error: .failed(LatchFailure(code: "no_chat_on_line",
+                message: "you have no one-to-one chat on +16505550188: Plow moves an agent only to a line where you already have one")))
+            for (name, flow) in [("15-agents-change-line", picking), ("15-agents-change-line-no-chat", refused)] {
+                try await render(ChangeLineSheet(flow: flow).environment(trio), size: CGSize(width: 480, height: 440), dark: dark,
+                                 file: output.appending(path: "\(name)-\(mode).png"))
             }
         }
         // Rules: real agents and standings (sidecar offline), a host's

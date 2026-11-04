@@ -277,6 +277,22 @@ nonisolated struct AgentStartByText: Decodable, Equatable {
     var kinds: [Kind]
 }
 
+/// `latch agents lines`: Plow's phone lines, each free or held by one of
+/// the account's agents.
+nonisolated struct AgentLines: Decodable, Equatable {
+    struct Line: Decodable, Equatable, Identifiable {
+        var uid: String
+        var number: String
+        /// Its persona's name, which an agent on it takes; nil for none.
+        var name: String?
+        /// None of the account's agents holds it.
+        var available: Bool
+
+        var id: String { uid }
+    }
+    var lines: [Line]
+}
+
 /// `latch devices`: every machine logged in to the account.
 nonisolated struct DeviceList: Decodable, Equatable {
     struct Device: Decodable, Equatable, Identifiable {

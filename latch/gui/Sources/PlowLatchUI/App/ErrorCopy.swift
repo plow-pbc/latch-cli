@@ -16,6 +16,8 @@ nonisolated enum ErrorCopy {
         case tryRequest(connector: String? = nil)
         /// Removing one of the account's listed devices.
         case devices
+        /// Moving an agent to another phone line.
+        case changeLine
     }
 
     /// The app's sentence for `error`, naming `host` (its name as the
@@ -33,6 +35,9 @@ nonisolated enum ErrorCopy {
             return said
         }
         if place == .devices, failure.code == "not_found" { return "That device isn't in your account any more." }
+        if place == .changeLine, failure.code == "outcome_unknown" {
+            return "Plow's answer was lost, so the agent may or may not be on the new line. Changing the line again is safe."
+        }
         return switch failure.code {
         case "host_unreachable": "Latch couldn't reach \(name), so nothing changed. Try again."
         case "host_offline": "\(Name) is offline, so nothing changed. Start Latch there, then try again."
@@ -68,6 +73,8 @@ nonisolated enum ErrorCopy {
         case "bad_name": "Give the agent a name without control characters, such as tabs or line breaks."
         case "line_taken": "That phone line already has an agent. Choose a free line."
         case "no_such_line": "That phone line couldn't be found. Choose another line."
+        case "no_chat_on_line": "You have no chat on that line yet, so Plow can't move an agent there. Choose another line."
+        case "agent_not_running": "Plow can't move this agent while it's being set up or removed, or after it failed to start."
         case "unknown_cloud_kind": "That cloud agent isn't available. Choose another cloud agent."
         case "token_file_exists":
             "A file with that name is already there, and Latch saves a key only to a new file, so no agent was made. Choose a new name."

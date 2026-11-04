@@ -56,6 +56,11 @@ final class ChangesClient: LatchClient, @unchecked Sendable {
         return try await synthetic.vaultImport(file, picks: picks, expect: expect, host: host)
     }
     func removeAgent(_ uid: String) async throws { try change("agents remove \(uid) --yes") }
+    func agentLines() async throws -> AgentLines { try await synthetic.agentLines() }
+    func moveAgent(_ uid: String, line: String) async throws -> AgentsList.Agent {
+        try change("agents move \(uid) --line \(line) --yes")
+        return try await synthetic.moveAgent(uid, line: line)
+    }
     func removeDevice(_ name: String) async throws { try change("devices remove \(name) --yes") }
     func stop() async throws { try change("stop") }
     func perform(_ args: [String]) async throws { try change(args.joined(separator: " ")) }
@@ -382,6 +387,50 @@ struct SheetTests {
         opened.app.sheet = nil
         await waitUntil { opened.sheets.sheet == nil }
         #expect(opened.client.asked.isEmpty)
+    }
+
+    // An agent's Change Line… offers the free lines and moves that agent,
+    // by uid, to the one picked. Cancel moves nothing; a line never used or
+    // taken meanwhile is refused, said in the sheet, which stays; moved, the
+    // sheet goes and Agents shows the agent on its new line.
+    @Test func changeLineMovesTheAgentItWasOpenedFor() async throws {
+        let opened = try await open(.account(.agents))
+        defer { opened.close() }
+        await waitUntil { opened.app.agents?.count == 2 }
+        let helper = try #require(opened.app.agents?.last)
+        func changeLine() async -> ChangeLine {
+            let flow = ChangeLine(helper)
+            opened.app.sheet = .changeLine(flow)
+            await waitUntil { opened.sheets.sheetName?.contains("ChangeLineSheet") == true }
+            await flow.load(app: opened.app)
+            flow.picked = "ln_cedar"
+            return flow
+        }
+        // Cancel.
+        var flow = await changeLine()
+        #expect(flow.choices.map(\.uid) == ["ln_cedar", "ln_0091"])
+        opened.app.sheet = nil
+        await waitUntil { opened.sheets.sheet == nil }
+        #expect(opened.client.asked.isEmpty)
+        // Refused: said, kept open, the agent where it was.
+        flow = await changeLine()
+        for (code, said) in [("no_chat_on_line", "You have no chat on that line yet, so Plow can't move an agent there. Choose another line."),
+                             ("line_taken", "That phone line already has an agent. Choose a free line.")] {
+            opened.client.refuse(.failed(LatchFailure(code: code, message: "refused")))
+            #expect(await !flow.move(app: opened.app))
+            #expect(flow.error.map { ErrorCopy.said($0, place: .changeLine) } == said)
+            #expect(opened.app.sheet == .changeLine(flow) && opened.sheets.sheet != nil)
+            #expect(opened.app.agents?.last?.line?.number == helper.line?.number)
+        }
+        // Moved.
+        opened.client.refuse(nil)
+        #expect(await flow.move(app: opened.app))
+        await waitUntil { opened.sheets.sheet == nil }
+        #expect(opened.client.asked.last == "agents move \(helper.uid) --line ln_cedar --yes")
+        #expect(opened.client.asked.count == 3)
+        #expect(opened.app.agents?.last?.uid == helper.uid)
+        #expect(opened.app.agents?.last?.displayName == "Cedar")
+        #expect(opened.app.agents?.last?.line?.number == "+15550000090")
     }
 
     // New Agent shows what to text Plow, and changes nothing itself: no
