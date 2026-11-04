@@ -1,5 +1,5 @@
-// The four Messages commands: search, thread, chats, unreplied. The queries
-// are plow-messages'; bodies are decoded by TypedStream; names come from
+// The Messages commands: search, thread, chats, unreplied and attachment.
+// The list queries are plow-messages'; bodies are decoded by TypedStream; names come from
 // the address book.
 
 import Foundation
@@ -60,7 +60,7 @@ func text(_ row: Row, _ limits: Limits) -> (String?, BodyError?) {
     }
 }
 
-/// Runs search, thread, chats or unreplied.
+/// Runs search, thread, chats, unreplied or attachment.
 func messages(_ call: Call, now: Date, limits: Limits, deadline: ContinuousClock.Instant) throws -> Answer {
     let opening = ContinuousClock.now
     let store = try Store(path: call.store, deadline: deadline)
@@ -74,6 +74,7 @@ func messages(_ call: Call, now: Date, limits: Limits, deadline: ContinuousClock
     case "search": answer = try context.search()
     case "thread": answer = try context.thread()
     case "chats": answer = try context.chats()
+    case "attachment": answer = try context.attachments()
     default: answer = try context.unreplied(now: now)
     }
     // How long each part took, for the host's audit; the host takes it out
@@ -137,6 +138,71 @@ struct Context {
         ]
         if let error { object["text_error"] = error.rawValue }
         return (object, error != nil)
+    }
+
+    /// One message's attachments, each with its bytes as base64 `data`, or
+    /// an `error` saying why it has none: `not_downloaded` (the file is not
+    /// on this Mac, only in iCloud or on a phone), `unreadable`, or
+    /// `too_large` for the rest of the answer's budget. Only files in the
+    /// Messages folder's Attachments are read.
+    func attachments() throws -> Answer {
+        let id = filters.messageId!
+        var found = false
+        try store.query("select 1 from message where ROWID = ?", [.int(id)]) { _ in
+            found = true
+            return false
+        }
+        guard found else { throw ReaderError.usage("there is no message \(id)", code: "no_such_message") }
+        let folder = ((call.store as NSString).deletingLastPathComponent as NSString)
+            .appendingPathComponent("Attachments")
+        let recorded = "~/Library/Messages/Attachments/"
+        var files: [(name: String?, mime: String?, path: String?)] = []
+        try store.query(
+            """
+            select a.filename, a.transfer_name, a.mime_type
+              from attachment a join message_attachment_join j on j.attachment_id = a.ROWID
+             where j.message_id = ? order by a.ROWID
+            """, [.int(id)]
+        ) { row in
+            // Messages records the file under the owner's home, which the
+            // store's own folder stands for.
+            let path = row.string(0).map { name in
+                name.hasPrefix(recorded) ? (folder as NSString).appendingPathComponent(String(name.dropFirst(recorded.count))) : name
+            }
+            files.append((row.string(1) ?? path.map { ($0 as NSString).lastPathComponent }, row.string(2), path))
+            return true
+        }
+        var answer = Answer("attachments")
+        answer.extra["message_id"] = id
+        for (index, file) in files.enumerated() {
+            var row: [String: Any] = ["index": index, "name": file.name ?? NSNull(), "mime": file.mime ?? NSNull()]
+            let path = file.path.map { ($0 as NSString).standardizingPath }
+            guard let path, FileManager.default.fileExists(atPath: path) else {
+                row["error"] = "not_downloaded"
+                _ = answer.add(row)
+                continue
+            }
+            let size = (try? FileManager.default.attributesOfItem(atPath: path)[.size] as? Int) ?? nil
+            row["size"] = size ?? NSNull()
+            // Base64 is 4 bytes for every 3.
+            if let size, size / 3 * 4 > answerBudget - answer.size {
+                row["error"] = "too_large"
+                _ = answer.add(row)
+                continue
+            }
+            guard path.hasPrefix(folder + "/"), let data = FileManager.default.contents(atPath: path) else {
+                row["error"] = "unreadable"
+                _ = answer.add(row)
+                continue
+            }
+            var full = row
+            full["data"] = data.base64EncodedString()
+            if !answer.add(full) {
+                row["error"] = "too_large"
+                _ = answer.add(row)
+            }
+        }
+        return answer
     }
 
     func cursor(_ key: Int64, _ id: Int64) -> Cursor {

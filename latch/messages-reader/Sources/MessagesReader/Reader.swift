@@ -37,6 +37,7 @@ public let usage = """
       thread (--chat-id N | --with HANDLE) [--limit N] [--cursor C]
       chats [--kind direct|group] [--limit N] [--cursor C]
       unreplied [--within DURATION] [--limit N] [--cursor C]
+      attachment --message-id N
 
     CONTACTS
       contacts search TEXT [--limit N] [--cursor C]
@@ -76,6 +77,7 @@ struct Filters: Codable, Equatable {
     var within: Double?
     var text: String?
     var handles: [String] = []
+    var messageId: Int64?
 }
 
 /// Runs one call, writing its answer with `write` and an error with `fail`.
@@ -142,7 +144,7 @@ func parse(_ arguments: [String], now: Date) throws -> (Call, Bool)? {
         planOnly = true
     }
     guard var command = args.popFirst() else {
-        throw ReaderError.usage("a command is needed: search, thread, chats, unreplied or contacts (try --help)")
+        throw ReaderError.usage("a command is needed: search, thread, chats, unreplied, attachment or contacts (try --help)")
     }
     if command == "--help" || command == "-h" { return nil }
     if command == "contacts" {
@@ -151,8 +153,8 @@ func parse(_ arguments: [String], now: Date) throws -> (Call, Bool)? {
         }
         command += " " + sub
     }
-    guard ["search", "thread", "chats", "unreplied", "contacts search", "contacts lookup"].contains(command) else {
-        throw ReaderError.usage("unknown command \(command): search, thread, chats, unreplied or contacts")
+    guard ["search", "thread", "chats", "unreplied", "attachment", "contacts search", "contacts lookup"].contains(command) else {
+        throw ReaderError.usage("unknown command \(command): search, thread, chats, unreplied, attachment or contacts")
     }
     call.command = command
     var filters = Filters()
@@ -199,6 +201,9 @@ func parse(_ arguments: [String], now: Date) throws -> (Call, Bool)? {
             let seconds = try duration(try value(), arg)
             guard seconds <= 7 * 86400 else { throw ReaderError.usage("--within is at most 7d") }
             filters.within = seconds
+        case "--message-id":
+            try allowed("attachment")
+            filters.messageId = try number(try value(), arg)
         case "--limit":
             try allowed("search", "thread", "chats", "unreplied", "contacts search")
             let n = try number(try value(), arg)
@@ -280,6 +285,7 @@ func validate(_ call: inout Call) throws {
     if command != "unreplied" { try none(f.within != nil, "--within") }
     if command != "contacts search" { try none(f.text != nil, "TEXT") }
     if command != "contacts lookup" { try none(!f.handles.isEmpty, "handles") }
+    if command != "attachment" { try none(f.messageId != nil, "--message-id") }
     switch command {
     case "search":
         guard f.phrase.map({ !$0.isEmpty }) ?? true else { throw ReaderError.usage("an empty phrase") }
@@ -305,6 +311,11 @@ func validate(_ call: inout Call) throws {
             throw ReaderError.usage("contacts lookup takes 1 to 100 handles")
         }
         f.handles = f.handles.map(phones.handle)
+    case "attachment":
+        guard f.messageId != nil else {
+            throw ReaderError.usage("attachment needs --message-id N, a message's id from search or thread")
+        }
+        try none(call.cursor != nil, "--cursor")
     default:
         throw ReaderError.usage("unknown command \(command)")
     }
@@ -336,6 +347,7 @@ struct Plan: Codable {
     var withinSeconds: Double?
     var text: String?
     var handles: [String]?
+    var messageId: Int64?
     var after: Position?
 
     init(_ call: Call) {
@@ -353,6 +365,7 @@ struct Plan: Codable {
         withinSeconds = f.within
         text = f.text
         handles = f.handles.isEmpty ? nil : f.handles
+        messageId = f.messageId
         after = call.cursor.map { Position(key: $0.key, id: $0.id) }
     }
 
@@ -393,6 +406,7 @@ struct Plan: Codable {
         f.within = withinSeconds
         f.text = text
         f.handles = handles ?? []
+        f.messageId = messageId
         call.filters = f
         call.cursor = after.map { Cursor(command: command, filters: f, key: $0.key, id: $0.id) }
     }
