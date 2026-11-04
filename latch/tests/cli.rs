@@ -2476,6 +2476,9 @@ struct LiveState {
     /// The owner's login is a cloud host's credential: a device's, with
     /// none of the owner's own scopes.
     host_login: bool,
+    /// Plow's answer to a line move, for a refusal that turns on what this
+    /// fake doesn't keep: the owner's chats on the line, the agent's phase.
+    move_refused: Option<(u16, Value)>,
 }
 
 impl LivePlow {
@@ -2503,6 +2506,7 @@ impl LivePlow {
                 tokens_slow: std::time::Duration::ZERO,
                 judge: None,
                 host_login: false,
+                move_refused: None,
             })),
         };
         let serving = plow.clone();
@@ -2733,7 +2737,8 @@ impl LivePlow {
                 json!([{"id": "exe:hermes", "name": "Hermes", "image": "img", "settings": {}},
                        {"id": "self_hosted", "name": "Self-hosted", "image": null, "settings": {}}]),
             ),
-            // Plow's lines: one free, one held, one whose create is lost, and a mailbox.
+            // Plow's lines: one free, one held, one whose create is lost, the
+            // research agent's own, and a mailbox.
             ("GET", "/v1/lines") if kind == "device" => {
                 let line = |uid: &str, kind: &str, key: &str, available: bool| {
                     json!({"uid": uid, "object": "line", "provider_type": kind, "provider_key": key,
@@ -2745,6 +2750,7 @@ impl LivePlow {
                         line("ln_free", "imessage", "+15550000002", true),
                         line("ln_taken", "imessage", "+15550000003", false),
                         line("ln_lost", "imessage", "+15550000004", true),
+                        line("line_agent", "imessage", "+14155550123", false),
                         line("ln_mail", "email", "agent@example.com", true)]}),
                 )
             }
@@ -2776,6 +2782,33 @@ impl LivePlow {
                        "created_at": "2026-10-20T10:00:00Z", "status": null,
                        "failure_code": null, "credential": null}),
             ),
+            // A line move, as Plow answers it: the agent on the line asked;
+            // a line another of the account's agents holds is refused, and
+            // one move's answer is lost.
+            ("PUT", path) if kind == "device" && path == format!("/v1/agents/{AGENT_UID}/line") => {
+                if let Some(refused) = state.move_refused.clone() {
+                    return refused;
+                }
+                let sent: Value = serde_json::from_slice(&request.body).unwrap();
+                let number = match sent["line_uid"].as_str().unwrap() {
+                    "ln_free" => "+15550000002",
+                    "line_agent" => "+14155550123",
+                    "ln_taken" => {
+                        return (409, json!({"detail": {"code": "CHAT_SET_CONFLICT",
+                            "message": "A messaging line is already served by another assistant."}}));
+                    }
+                    "ln_lost" => return (500, json!({})),
+                    _ => return (404, json!({"detail": "Line not found"})),
+                };
+                (
+                    200,
+                    json!({"uid": AGENT_UID, "name": "Research bot", "provider": "self_hosted",
+                           "line": {"uid": sent["line_uid"], "object": "line", "provider_type": "imessage",
+                                    "provider_key": number, "display_name": null},
+                           "created_at": "2026-10-20T10:00:00Z", "status": null,
+                           "failure_code": null, "credential": null}),
+                )
+            }
             // As Plow lists them: one agent its owner runs.
             ("GET", "/v1/agents") if kind == "device" => (
                 200,
@@ -4468,7 +4501,12 @@ fn agents_are_shown_created_and_removed_by_their_owner() {
         .collect();
     assert_eq!(
         numbers,
-        ["+15550000002", "+15550000003", "+15550000004"],
+        [
+            "+15550000002",
+            "+15550000003",
+            "+15550000004",
+            "+14155550123"
+        ],
         "no mailbox"
     );
     assert_eq!(lines["lines"][1]["available"], false);
@@ -4632,6 +4670,122 @@ fn agents_are_shown_created_and_removed_by_their_owner() {
     assert_eq!(code, Some(0), "{removed}");
     assert_eq!(removed["removed"]["uid"], AGENT_UID);
     assert_eq!(deletes(), 1);
+}
+
+/// The owner moves an agent to another line once they say so, and gets the
+/// same agent on its new line; what Plow refuses is said as latch's own
+/// codes, and a lost answer is reported, never resent.
+#[test]
+fn an_agent_is_moved_to_another_line_by_its_owner() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let run = |args: &[&str]| {
+        let output = latch(&host, args, &[]);
+        let printed = if output.status.success() {
+            &output.stdout
+        } else {
+            &output.stderr
+        };
+        let json: Value = serde_json::from_slice(printed).unwrap_or(Value::Null);
+        (output.status.code(), json)
+    };
+    let moves = || {
+        let put = format!("PUT /v1/agents/{AGENT_UID}/line ");
+        plow.seen()
+            .iter()
+            .filter(|(line, _)| line.starts_with(&put))
+            .count()
+    };
+    let to_free = ["agents", "move", "Research bot", "--line", "+15550000002"];
+
+    // Asked first; with no one to ask, --yes. No keeps it where it is.
+    let (code, error) = run(&to_free);
+    assert_eq!(
+        (code, &error["error"]["code"]),
+        (Some(2), &json!("confirmation_required")),
+        "{error}"
+    );
+    assert_eq!(
+        error["error"]["next"],
+        "latch agents move 'Research bot' --line +15550000002 --yes"
+    );
+    let (code, shown, _) = latch_at_a_terminal(&host, &to_free, "n\n", false, &[]);
+    assert_eq!(code, Some(2), "{shown}");
+    let asked = "Move Research bot from +14155550123 to +15550000002? It keeps its credential";
+    assert!(shown.contains(asked), "{shown}");
+    assert_eq!(last_error_line(&shown)["error"]["code"], "not_moved");
+    assert_eq!(moves(), 0);
+
+    // The same agent, on the line its number names, and the line it left.
+    let (code, moved) = run(&[&to_free[..], &["--yes"]].concat());
+    assert_eq!(code, Some(0), "{moved}");
+    assert_eq!(moved["agent"]["uid"], AGENT_UID);
+    assert_eq!(moved["agent"]["line"]["number"], "+15550000002");
+    assert_eq!(
+        moved["from"],
+        json!({"number": "+14155550123", "name": "Research line",
+               "card_url": format!("{}/cards/research.vcf", plow.url)})
+    );
+    assert_eq!(moves(), 1);
+    // To the line it is on, nothing is asked: Plow restarts it there.
+    let (code, again) = run(&["agents", "move", AGENT_UID, "--line", "+14155550123"]);
+    assert_eq!(code, Some(0), "{again}");
+    assert_eq!(moves(), 2);
+
+    // An unknown agent or line, or a mailbox, is refused before Plow is asked.
+    for (agent, line, refused) in [
+        ("Nobody", "+15550000002", "no_such_agent"),
+        ("Research bot", "+1999", "no_such_line"),
+        ("Research bot", "ln_mail", "no_such_line"),
+    ] {
+        let (code, error) = run(&["agents", "move", agent, "--line", line, "--yes"]);
+        assert_eq!(
+            (code, &error["error"]["code"]),
+            (Some(2), &json!(refused)),
+            "{error}"
+        );
+    }
+    assert_eq!(moves(), 2);
+
+    // A line another of the account's agents holds; a lost answer, sent
+    // once and never resent, with the same move as what finishes it.
+    let move_to = |line: &str| run(&["agents", "move", "Research bot", "--line", line, "--yes"]);
+    let (code, error) = move_to("ln_taken");
+    assert_eq!(
+        (code, &error["error"]["code"]),
+        (Some(2), &json!("line_taken")),
+        "{error}"
+    );
+    let (code, error) = move_to("ln_lost");
+    assert_eq!(
+        (code, &error["error"]["code"]),
+        (Some(5), &json!("outcome_unknown")),
+        "{error}"
+    );
+    assert_eq!(
+        error["error"]["next"],
+        format!("latch agents move {AGENT_UID} --line ln_lost --yes")
+    );
+    assert_eq!(moves(), 4);
+
+    // A line where the owner has no one-to-one chat (Plow's 404 when they
+    // have no chat there at all), and an agent still being set up.
+    let in_flight = json!({"code": "PROVISION_IN_FLIGHT"});
+    for (status, detail, exit, refused) in [
+        (404, json!("Line not found"), 2, "no_chat_on_line"),
+        (409, json!({"code": "NO_HOME_CHAT"}), 2, "no_chat_on_line"),
+        (409, in_flight, 1, "agent_not_running"),
+    ] {
+        plow.state.lock().unwrap().move_refused = Some((status, json!({"detail": detail})));
+        let (code, error) = move_to("ln_free");
+        assert_eq!(
+            (code, &error["error"]["code"]),
+            (Some(exit), &json!(refused)),
+            "{error}"
+        );
+    }
+    assert_eq!(moves(), 7);
 }
 
 #[test]

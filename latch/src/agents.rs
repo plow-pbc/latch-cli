@@ -5,10 +5,10 @@
 //! `rules show`, on this machine's state or from the host named, never from
 //! anywhere else.
 //!
-//! `show`, `catalog`, `lines`, `new` and `remove` read and change the account
-//! through Plow, which runs and assigns everything: latch never waits for a
-//! cloud agent to start, never picks a line itself and never resends a change
-//! whose answer was lost.
+//! `show`, `catalog`, `lines`, `new`, `move` and `remove` read and change
+//! the account through Plow, which runs and assigns everything: latch never
+//! waits for a cloud agent to start, never picks a line itself and never
+//! resends a change whose answer was lost.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -21,7 +21,7 @@ use crate::dial::{self, ANSWER_WITHIN};
 use crate::failure::{Failure, code};
 use crate::hosts;
 use crate::login;
-use crate::plow::{ListedAgent, Plow};
+use crate::plow::{ListedAgent, Plow, PlowLine};
 use crate::state::StateDir;
 use crate::term;
 use crate::wire::Request;
@@ -114,6 +114,7 @@ async fn managed(
             ..
         }) => new(plow, api_url, cloud, token_file, &name, &line).await?,
         Some(AgentsAction::Card { agent, output }) => card(plow, api_url, &agent, &output).await?,
+        Some(AgentsAction::Move { agent, line, yes }) => move_to(plow, &agent, &line, yes).await?,
         Some(AgentsAction::Remove { agent, yes }) => remove(plow, &agent, yes).await?,
     })
 }
@@ -400,7 +401,7 @@ async fn new(
         }
         None => OWN,
     };
-    let line_uid = line_named(plow, line).await?;
+    let line_uid = line_named(plow, line).await?.uid;
     let reserved = match &token_file {
         Some(path) => Some(TokenFile::reserve(path)?),
         None => None,
@@ -427,16 +428,16 @@ async fn new(
     }))
 }
 
-/// The uid of the line `named` names: its uid, or its number.
-async fn line_named(plow: &Plow, named: &str) -> Result<String, Failure> {
+/// The phone line `named` names, as `lines` lists it: by its uid, or its
+/// number.
+async fn line_named(plow: &Plow, named: &str) -> Result<PlowLine, Failure> {
     let lines = plow.lines().await?;
-    match lines
-        .into_iter()
-        .find(|line| line.uid == named || line.provider_key == named)
-    {
-        Some(line) => Ok(line.uid),
+    match lines.into_iter().find(|line| {
+        line.provider_type == "imessage" && (line.uid == named || line.provider_key == named)
+    }) {
+        Some(line) => Ok(line),
         None => {
-            let message = format!("Plow has no line {named:?}");
+            let message = format!("Plow has no phone line {named:?}");
             let mut failure = Failure::new(code::no_such_line, message);
             failure.next = Some("latch agents lines".into());
             Err(failure)
@@ -469,6 +470,95 @@ fn not_created(failure: Failure, line: &str) -> Failure {
 /// A failure after the request may have reached Plow: it may have done it.
 fn lost(code: &str) -> bool {
     matches!(code, "plow_unreachable" | "plow_error")
+}
+
+/// Moves `named` to the phone line `line` names, once its owner says so.
+/// Moving it to the line it is on asks nothing, since no line changes: Plow
+/// answers that with a restart, which is how a move whose restart failed is
+/// finished.
+async fn move_to(plow: &Plow, named: &str, line: &str, yes: bool) -> Result<Value, Failure> {
+    let agent = resolve(plow, named).await?;
+    let to = line_named(plow, line).await?;
+    let (name, from) = (agent.name.clone(), agent.line.provider_key.clone());
+    if !yes && to.provider_key != from {
+        if !term::interactive() {
+            let message = format!(
+                "moving {name} ({from}) to {} changes the number it answers on",
+                to.provider_key
+            );
+            let mut failure = Failure::new(code::confirmation_required, message);
+            let (named, line) = (login::shell_quoted(named), login::shell_quoted(line));
+            failure.next = Some(format!("latch agents move {named} --line {line} --yes").into());
+            return Err(failure);
+        }
+        let restart = if agent.provider == OWN {
+            "The program you run for it isn't restarted, and its credential reaches only the new line's chats."
+        } else {
+            "Plow restarts it on the new line."
+        };
+        let question = format!(
+            "Move {name} from {from} to {to}? It keeps its credential and settings, and answers on \
+             {to} only: its chats on {from} stay, with no agent answering them. {restart}",
+            to = to.provider_key
+        );
+        if !term::confirm(&question) {
+            let message = format!("kept {name} on {from}");
+            return Err(Failure::new(code::not_moved, message));
+        }
+    }
+    let left = LineShown {
+        number: from,
+        name: agent.line.display_name,
+        card_url: agent.line.card_url,
+    };
+    match plow.move_agent(&agent.uid, &to.uid).await {
+        Ok(moved) => Ok(json!({"agent": agent_shown(moved, None), "from": left})),
+        Err(failure) => Err(not_moved(failure, &name, &agent.uid, &to)),
+    }
+}
+
+/// Why Plow didn't move the agent, or that it may have.
+fn not_moved(failure: Failure, name: &str, uid: &str, to: &PlowLine) -> Failure {
+    let number = &to.provider_key;
+    match (
+        failure.code.as_str(),
+        failure.plow.as_ref().and_then(|plow| plow.code.as_deref()),
+    ) {
+        ("conflict", Some("CHAT_SET_CONFLICT")) => {
+            let message = format!("line {number} already has an agent of yours; pick a free one");
+            let mut failure = Failure::new(code::line_taken, message);
+            failure.next = Some("latch agents lines".into());
+            failure
+        }
+        // Plow's 404 doesn't say whether the agent or the line's chat was
+        // missing, and the agent was in the account a moment ago.
+        ("not_found", _) | ("conflict", Some("NO_HOME_CHAT")) => {
+            let message = format!(
+                "you have no one-to-one chat on {number}: Plow moves an agent only to a line \
+                 where you already have one, such as a line an agent of yours was moved off. \
+                 `latch agents new` puts a new agent there, with a credential of its own"
+            );
+            Failure::new(code::no_chat_on_line, message)
+        }
+        ("conflict", Some("PROVISION_IN_FLIGHT" | "AGENT_FAILED" | "PENDING_TEARDOWN")) => {
+            let message = format!(
+                "Plow won't move {name} now: it is still being set up, failed to start, or is being removed"
+            );
+            let mut failure = Failure::new(code::agent_not_running, message);
+            failure.next = Some(format!("latch agents show {uid}").into());
+            failure
+        }
+        (code, _) if lost(code) => {
+            let message = format!(
+                "Plow may have moved {name} to {number} without restarting it, or not moved it: \
+                 its answer was lost. Moving it again is safe: Plow does whichever part is left"
+            );
+            let mut failure = Failure::new(code::outcome_unknown, message);
+            failure.next = Some(format!("latch agents move {uid} --line {} --yes", to.uid).into());
+            failure
+        }
+        _ => failure,
+    }
 }
 
 /// Removes `named`, once its owner says so.

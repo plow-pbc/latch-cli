@@ -178,7 +178,7 @@ pub enum Command {
     /// List your agents, with their lines and Plow status
     ///
     /// With --host, each one's standing on that host. Its subcommands show,
-    /// create and remove agents (owner only)
+    /// create, move and remove agents (owner only)
     Agents(AgentsArgs),
     /// Print this machine, its login and account, and the account's hosts
     Status(StatusArgs),
@@ -1194,6 +1194,27 @@ pub enum AgentsAction {
         /// Where to save it
         #[arg(long, short, value_name = "FILE")]
         output: PathBuf,
+    },
+    /// Move an agent to another phone line, by its uid or its exact name
+    ///
+    /// The same agent, with the same credential and settings, answering on
+    /// the new line only. Its chats on the old line, email included, stay
+    /// there with no agent answering them. Plow restarts a cloud agent on
+    /// its new line.
+    ///
+    /// Plow moves an agent only to a free line where you already have a
+    /// one-to-one chat, such as a line an agent of yours was moved off.
+    /// Moving an agent to the line it is on asks nothing: Plow restarts a
+    /// cloud agent there, which finishes a move whose restart failed
+    Move {
+        agent: String,
+        /// The phone line it answers on from now: a line's uid or number,
+        /// from `latch agents lines`
+        #[arg(long)]
+        line: String,
+        /// Move without asking (required when no one is at a terminal)
+        #[arg(long)]
+        yes: bool,
     },
     /// Remove an agent, by its uid or its exact name
     ///

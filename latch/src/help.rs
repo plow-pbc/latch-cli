@@ -242,6 +242,20 @@ const ENTRIES: &[Entry] = &[
         )],
     },
     Entry {
+        id: "agents.move",
+        runs_on: |_| RunsOn::Local,
+        output: "`agent`: the agent on its new line, as `agents show` gives it, and `from`: the line it left (`number`, `name`, `card_url`).",
+        effect: Repeatable(
+            "moves the agent to the phone line given, with the same credential: its chats on the old line stay, with no agent answering them, and Plow restarts a cloud agent",
+        ),
+        owner_only: true,
+        connector: None,
+        examples: &[ex(
+            "Move an agent to another line without asking",
+            &["agents", "move", "Scout", "--line", "+15550000002", "--yes"],
+        )],
+    },
+    Entry {
         id: "agents.remove",
         runs_on: |_| RunsOn::Local,
         output: "`removed`: the agent as it was.",

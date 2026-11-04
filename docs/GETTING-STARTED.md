@@ -276,6 +276,14 @@ To revoke the agent, run `latch agents remove my-agent`. It asks you to
 confirm (`--yes` skips the question). The agent's credential stops working at
 once and its line is freed.
 
+To move the agent to another phone line, run
+`latch agents move my-agent --line LINE`. It asks you to confirm too. The
+agent keeps its credential and settings and answers on the new line only;
+its chats on the old line stay, with no agent answering them. Plow moves an
+agent only to a free line where you already have a one-to-one chat, such as
+a line an agent of yours was moved off. For any other line, remove the agent
+and create a new one there.
+
 **What an agent may do.** Your agents can look things up in your calendar,
 email, messages and files, and create or edit ordinary files, without asking
 first. What they read goes back to the agent. Riskier actions need your
