@@ -98,67 +98,30 @@ pub fn authenticated_worker_error(stderr: &str, token: &str) -> Option<WorkerErr
 /// on Linux and cost nothing there.
 const PATH: &str = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
 
-/// The owner's `PATH` as their own shell sets it in a terminal, asked once
-/// at the host's start (`login_path`): what a program they run by name there
-/// finds, `~/.local/bin` from `.zshrc` included.
-static LOGIN_PATH: std::sync::OnceLock<Option<OsString>> = std::sync::OnceLock::new();
+/// The owner's `PATH` as their own shell sets it in a terminal: what a
+/// program they run by name there finds, `~/.local/bin` from `.zshrc`
+/// included. The host learns it once, as it starts (`exec::learn_login_path`).
+pub static LOGIN_PATH: std::sync::OnceLock<OsString> = std::sync::OnceLock::new();
 
-/// Asks the owner's login shell, as an interactive one, for its `PATH`.
-/// The host's own `PATH` is only whatever started it last (the login item,
-/// an SSH session running `latch update`), so it can't stand in for it.
-/// Without an answer within 10 s, exec has the host's own.
-pub fn login_path() -> Option<OsString> {
-    LOGIN_PATH
-        .get_or_init(|| {
-            let asked = ask_login_shell();
-            if let Err(why) = &asked {
-                crate::log::log(&format!(
-                    "exec PATH: the login shell gave none ({why}); using the host's"
-                ));
-            }
-            asked.ok()
-        })
-        .clone()
+fn login_path() -> Option<OsString> {
+    LOGIN_PATH.get().cloned()
 }
 
-fn ask_login_shell() -> Result<OsString, String> {
-    use std::os::unix::ffi::OsStrExt;
-    // SAFETY: getpwuid returns this user's static entry or null; its fields
-    // are read before anything else calls it.
-    let shell = unsafe {
+/// The owner's login shell, from the user database: their environment, a
+/// managed host's included, may name another or none.
+pub fn login_shell() -> Option<String> {
+    // SAFETY: getpwuid returns this user's static entry or null; its shell
+    // is copied before anything else calls it.
+    unsafe {
         let entry = libc::getpwuid(libc::getuid());
         if entry.is_null() || (*entry).pw_shell.is_null() {
-            return Err("no shell in the user database".into());
+            return None;
         }
-        OsString::from(std::ffi::OsStr::from_bytes(
-            std::ffi::CStr::from_ptr((*entry).pw_shell).to_bytes(),
-        ))
-    };
-    let mut child = std::process::Command::new(&shell)
-        .args(["-lic", "printf '\\n%s' \"$PATH\""])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|err| format!("{}: {err}", shell.display()))?;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while child.try_wait().map_err(|err| err.to_string())?.is_none() {
-        if std::time::Instant::now() > deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(format!("{} took over 10 s", shell.display()));
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::ffi::CStr::from_ptr((*entry).pw_shell)
+            .to_str()
+            .ok()
+            .map(str::to_string)
     }
-    let mut out = Vec::new();
-    io::Read::read_to_end(&mut child.stdout.take().expect("piped"), &mut out)
-        .map_err(|err| err.to_string())?;
-    // Whatever the shell's startup files print comes before the last line.
-    let path = out.rsplit(|byte| *byte == b'\n').next().unwrap_or_default();
-    if path.is_empty() {
-        return Err(format!("{} printed no PATH", shell.display()));
-    }
-    Ok(std::ffi::OsStr::from_bytes(path).to_os_string())
 }
 
 /// Exec's `PATH`: the owner's login `PATH`, then whatever of the host's own
