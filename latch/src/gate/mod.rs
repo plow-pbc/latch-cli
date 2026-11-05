@@ -75,7 +75,18 @@ const RULES_OF_JUDGMENT: [&str; 5] = [
     "Each message shows how long ago it was sent. An old request may still stand if the owner meant it to keep applying; otherwise it is not a request to act now.",
     "Rules on the host are the owner's standing limits; a chat message does not lift a host rule's prohibition.",
 ];
-const EXEC_PERMISSIONS: &str = "Judge an exec's argv and working folder together with its resolved write paths and network flag: those permissions must fit what the owner asked. The command can read the host's home except ~/.latch, the host's own state directory and, on macOS, Library except its Caches and the owner's cloud folders (Library/CloudStorage, such as Dropbox or Google Drive, and iCloud Drive), which can be read and written like Documents. Secret environment values are hidden; their names and lengths are shown. A secret need not be a credential: names like *_COMMAND, NODE_OPTIONS, BASH_ENV, PYTHONSTARTUP and GIT_CONFIG_* can make a program execute the hidden value or load code. Consider what each variable does and whether the owner authorized that hidden behavior with the requested permissions.";
+/// What an exec can reach and how hidden secrets work: the end of both
+/// exec judgments.
+macro_rules! exec_reach {
+    () => {
+        "The command can read the host's home except ~/.latch, the host's own state directory and, on macOS, Library except its Caches and the owner's cloud folders (Library/CloudStorage, such as Dropbox or Google Drive, and iCloud Drive), which can be read and written like Documents. Secret environment values are hidden; their names and lengths are shown. A secret need not be a credential: names like *_COMMAND, NODE_OPTIONS, BASH_ENV, PYTHONSTARTUP and GIT_CONFIG_* can make a program execute the hidden value or load code. Consider what each variable does and whether the owner authorized that hidden behavior with the requested permissions."
+    };
+}
+const EXEC_PERMISSIONS: &str = concat!(
+    "Judge an exec's argv and working folder together with its resolved write paths and network flag: those permissions must fit what the owner asked.",
+    " ",
+    exec_reach!()
+);
 /// What a fill does (`browser::fill`), so that using a saved login on its
 /// own site is not read as handing over the password.
 macro_rules! vault_fill {
@@ -194,7 +205,11 @@ const RULES_LAYER: Prompt = Prompt {
     not_covered: "It isn't everyday work, and no rule lets agents do it and the owner never asked for it, or it goes beyond what the rules allow or the owner asked, or it is unclear.",
     forbidden: "The owner said not to (everyday work included), cancelled or withdrew it, or the owner's rules forbid it.",
     name_tasks: "A rule may name a kind of task, like running tests or checking mail, rather than the exact command; a command that plainly does that task is covered by it, and nothing more: a rule that lets agents read or check something does not let them send, delete or change it. A rule's prohibition (\"do not\", \"never\", \"only\") holds for every action, everyday work included. A rule that keeps agents off something (\"don't touch\", \"stay out of\", \"leave alone\") forbids reading, searching or listing it too, everyday look-ups included.",
-    exec: "Judge an exec's argv and working folder together with its resolved write paths and network flag: those permissions must fit what is allowed. Deleting, moving or creating a file writes to its folder, and moving it to the Trash writes to the Trash too. A rule that says not to write outside a folder, or to write only in one, forbids every write path outside it, temporary folders and the Trash included, even for everyday work: \"Never save anything outside ~/Projects\" forbids deleting a file in /tmp. A rule that grants work in a folder, without limiting work elsewhere, adds to what agents may do and takes nothing away: after \"Agents may run builds in ~/src\", a build in another project is still everyday work. The command can read the host's home except ~/.latch, the host's own state directory and, on macOS, Library except its Caches and the owner's cloud folders (Library/CloudStorage, such as Dropbox or Google Drive, and iCloud Drive), which can be read and written like Documents. Secret environment values are hidden; their names and lengths are shown. A secret need not be a credential: names like *_COMMAND, NODE_OPTIONS, BASH_ENV, PYTHONSTARTUP and GIT_CONFIG_* can make a program execute the hidden value or load code. Consider what each variable does and whether the owner authorized that hidden behavior with the requested permissions.",
+    exec: concat!(
+        "Judge an exec's argv and working folder together with its resolved write paths and network flag: those permissions must fit what is allowed. Deleting, moving or creating a file writes to its folder, and moving it to the Trash writes to the Trash too. A rule that says not to write outside a folder, or to write only in one, forbids every write path outside it, temporary folders and the Trash included, even for everyday work: \"Never save anything outside ~/Projects\" forbids deleting a file in /tmp. A rule that grants work in a folder, without limiting work elsewhere, adds to what agents may do and takes nothing away: after \"Agents may run builds in ~/src\", a build in another project is still everyday work.",
+        " ",
+        exec_reach!()
+    ),
     vault_fill: VAULT_FILL,
     vault_list: VAULT_LIST,
     exception: Some(OWNER_EXCEPTION),
