@@ -1417,8 +1417,10 @@ What callers can reach (each exec and file call is judged):
   Read: your home folder and system files (programs, libraries, developer
   tools and certificates). No shared-folder setup is needed.
   Hidden: ~/.latch, this host's state directory, and on macOS ~/Library
-  except ~/Library/Caches. Other home content, including credential dotfiles
-  such as ~/.ssh, is readable: the gatekeeper judges the requested use.
+  except ~/Library/Caches, ~/Library/CloudStorage and iCloud Drive
+  (~/Library/Mobile Documents/com~apple~CloudDocs). Other home content,
+  including credential dotfiles such as ~/.ssh, is readable: the
+  gatekeeper judges the requested use.
   exec writes only its repeated --write PATH grants, its private temp and
   existing plain tool-cache folders. Missing or symlinked caches are skipped,
   never created. HOME is your home; workdir defaults to the first --write
@@ -1494,7 +1496,7 @@ pub struct HostArg {
 pub enum FileCommand {
     /// Copy a file from the host to this machine
     Get {
-        /// The file on the host, in its home folder or a system file exec can read too: absolute, `~/…` (quote it so this shell leaves the `~` alone), or relative to home. Never latch's state or, on macOS, ~/Library (its Caches excepted)
+        /// The file on the host, in its home folder or a system file exec can read too: absolute, `~/…` (quote it so this shell leaves the `~` alone), or relative to home. Never latch's state or, on macOS, ~/Library (its Caches, CloudStorage and iCloud Drive excepted)
         remote_path: String,
         /// Where to write it on this machine [default: the remote file's name, in the current directory]
         local_dest: Option<PathBuf>,

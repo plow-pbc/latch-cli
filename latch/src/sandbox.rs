@@ -8,8 +8,8 @@
 //! its write paths and IP access are granted per call. Host Unix sockets
 //! remain inaccessible. File reads use the same home view; file writes
 //! use private staging. Google workers read only their call folder and runtime files.
-//! Hidden paths stay out of reach, with Library/Caches an exception for
-//! workers that read home (exec, file get).
+//! Hidden paths stay out of reach, with Library's `VISIBLE_IN_LIBRARY`
+//! folders an exception for workers that read home (exec, file get).
 //! File and Messages workers get no network; Google workers may reach out.
 //! Google and Messages workers execute only their pinned binary. None can send
 //! Apple Events. The Messages worker reads its private database folders only. The
@@ -63,9 +63,19 @@ pub struct Policy {
     pub break_for_test: bool,
 }
 
+/// The folders of macOS's ~/Library that are not hidden with the rest of
+/// it: caches, and the owner's cloud files as Finder shows them (Dropbox,
+/// Google Drive and the like in CloudStorage, and iCloud Drive). Other
+/// apps' iCloud containers beside iCloud Drive stay hidden.
+pub const VISIBLE_IN_LIBRARY: &[&str] = &[
+    "Caches",
+    "CloudStorage",
+    "Mobile Documents/com~apple~CloudDocs",
+];
+
 /// Latch's private state (`~/.latch`, and the folder latch uses without
-/// `--state-dir` wherever it is) and, on macOS, Library. Exec profiles make
-/// a narrow exception for Library/Caches. The host denies its own state separately.
+/// `--state-dir` wherever it is) and, on macOS, Library, less its
+/// `VISIBLE_IN_LIBRARY` folders. The host denies its own state separately.
 pub fn never_readable(home: &Path) -> Vec<PathBuf> {
     std::iter::once(home.join(".latch"))
         .chain(crate::cli::default_state_dir())
@@ -709,11 +719,14 @@ mod platform {
                 .as_ref()
                 .is_some_and(|home| path == home.join("Library"))
             {
-                format!(
-                    "(require-all (subpath {}) (require-not (subpath {})))",
-                    quoted(&path)?,
-                    quoted_literal(&path.join("Caches"))?
-                )
+                let mut visible = String::new();
+                for name in VISIBLE_IN_LIBRARY {
+                    visible += &format!(
+                        " (require-not (subpath {}))",
+                        quoted_literal(&path.join(name))?
+                    );
+                }
+                format!("(require-all (subpath {}){visible})", quoted(&path)?)
             } else {
                 format!("(subpath {})", quoted(&path)?)
             };

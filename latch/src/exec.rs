@@ -247,10 +247,13 @@ pub(crate) fn is_hidden(workers: &WorkerSetup, path: &Path) -> bool {
     path.starts_with(&workers.state_dir)
         || workers.hidden.iter().any(|hidden| {
             let hidden = hidden.canonicalize().unwrap_or_else(|_| hidden.clone());
-            let cache = cfg!(target_os = "macos")
-                && hidden == workers.home.join("Library")
-                && path.starts_with(workers.home.join("Library/Caches"));
-            path.starts_with(hidden) && !cache
+            let library = workers.home.join("Library");
+            let visible = cfg!(target_os = "macos")
+                && hidden == library
+                && crate::sandbox::VISIBLE_IN_LIBRARY
+                    .iter()
+                    .any(|name| path.starts_with(library.join(name)));
+            path.starts_with(hidden) && !visible
         })
 }
 

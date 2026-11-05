@@ -66,7 +66,7 @@ as `latch status` lists it. Branch on
   put` writes only its judged destination. Exec and file need no
   shared-folder setup.
 - Hidden for both: `~/.latch`, the host's own state directory, the one
-  `LATCH_STATE_DIR` names, and on macOS `~/Library` except `~/Library/Caches`. Other home files, including `.ssh`,
+  `LATCH_STATE_DIR` names, and on macOS `~/Library` except `~/Library/Caches`, `~/Library/CloudStorage` and iCloud Drive (`~/Library/Mobile Documents/com~apple~CloudDocs`). Other home files, including `.ssh`,
   are readable; the gatekeeper judges their use. Writes must stay inside
   home, outside hidden places, and cannot grant home itself.
 - Quote host paths beginning with `~`: latch expands them on the host.
