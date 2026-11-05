@@ -106,7 +106,7 @@ The same as `status --local`, plus what Plow says of the account:
 
 Starting `latch serve` needs no folder configuration for exec or file.
 They read home and system files, except `~/.latch`, this host's state directory,
-and on macOS `~/Library` except `~/Library/Caches`. Other home content, including
+and on macOS `~/Library` except `~/Library/Caches`, `~/Library/CloudStorage` and iCloud Drive (`~/Library/Mobile Documents/com~apple~CloudDocs`). Other home content, including
 credential dotfiles, is readable; each use is judged.
 
 Exec declares repeated `--write PATH` grants and opts into IP networking with

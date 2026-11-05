@@ -698,7 +698,8 @@ fn exec_reads_and_writes_only_areas_never_state_or_latch() {
 }
 
 /// A get's worker, as a host starts it: home readable, less latch's state
-/// and (macOS) ~/Library apart from its Caches, and nothing writable.
+/// and (macOS) ~/Library apart from its Caches and cloud folders, and
+/// nothing writable.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn a_read_worker_reads_home_but_not_what_is_hidden() {
@@ -709,6 +710,18 @@ fn a_read_worker_reads_home_but_not_what_is_hidden() {
         (".latch/key", "made-up key"),
         ("Library/Messages/chat.db", "made-up chat"),
         ("Library/Caches/tool/cache", "made-up cache"),
+        (
+            "Library/CloudStorage/Dropbox/note.txt",
+            "made-up cloud file",
+        ),
+        (
+            "Library/Mobile Documents/com~apple~CloudDocs/note.txt",
+            "made-up iCloud file",
+        ),
+        (
+            "Library/Mobile Documents/com~example~App/secret",
+            "another app's",
+        ),
     ] {
         fs::create_dir_all(home.join(path).parent().unwrap()).unwrap();
         fs::write(home.join(path), text).unwrap();
@@ -742,8 +755,18 @@ fn a_read_worker_reads_home_but_not_what_is_hidden() {
     assert_eq!(code(&read(".latch/key")), hidden_code());
     if cfg!(target_os = "macos") {
         assert_eq!(code(&read("Library/Messages/chat.db")), hidden_code());
-        let cache = read("Library/Caches/tool/cache");
-        assert!(cache.status.success(), "{cache:?}");
+        for open in [
+            "Library/Caches/tool/cache",
+            "Library/CloudStorage/Dropbox/note.txt",
+            "Library/Mobile Documents/com~apple~CloudDocs/note.txt",
+        ] {
+            let read = read(open);
+            assert!(read.status.success(), "{open}: {read:?}");
+        }
+        assert_eq!(
+            code(&read("Library/Mobile Documents/com~example~App/secret")),
+            hidden_code()
+        );
     }
     // Nothing outside home, either.
     assert!(!read("../outside/other.txt").status.success());

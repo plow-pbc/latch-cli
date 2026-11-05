@@ -307,13 +307,31 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn on_macos_library_is_hidden_but_its_caches_are_not() {
+    fn on_macos_library_is_hidden_but_its_caches_and_cloud_folders_are_not() {
         let (_dir, workers) = home();
         let home = &workers.home;
-        fs::create_dir_all(home.join("Library/Caches")).unwrap();
-        fs::create_dir_all(home.join("Library/Messages")).unwrap();
+        for folder in [
+            "Caches",
+            "Messages",
+            "CloudStorage/Dropbox",
+            "Mobile Documents/com~apple~CloudDocs",
+            "Mobile Documents/com~example~App",
+        ] {
+            fs::create_dir_all(home.join("Library").join(folder)).unwrap();
+        }
         let put = |remote: &str| destination(remote, None, &workers).map_err(|f| f.code);
         assert_eq!(put("~/Library/Messages/chat.db").unwrap_err(), "bad_path");
-        assert!(put("~/Library/Caches/x").is_ok());
+        // Another app's iCloud container beside iCloud Drive stays hidden.
+        assert_eq!(
+            put("~/Library/Mobile Documents/com~example~App/x").unwrap_err(),
+            "bad_path"
+        );
+        for open in [
+            "Caches/x",
+            "CloudStorage/Dropbox/x",
+            "Mobile Documents/com~apple~CloudDocs/x",
+        ] {
+            assert!(put(&format!("~/Library/{open}")).is_ok(), "{open}");
+        }
     }
 }

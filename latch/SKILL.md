@@ -66,9 +66,12 @@ as `latch status` lists it. Branch on
   put` writes only its judged destination. Exec and file need no
   shared-folder setup.
 - Hidden for both: `~/.latch`, the host's own state directory, the one
-  `LATCH_STATE_DIR` names, and on macOS `~/Library` except `~/Library/Caches`. Other home files, including `.ssh`,
+  `LATCH_STATE_DIR` names, and on macOS `~/Library` except `~/Library/Caches`, `~/Library/CloudStorage` and iCloud Drive (`~/Library/Mobile Documents/com~apple~CloudDocs`). Other home files, including `.ssh`,
   are readable; the gatekeeper judges their use. Writes must stay inside
-  home, outside hidden places, and cannot grant home itself.
+  home, outside hidden places, and cannot grant home itself. In the cloud
+  folders, reading a file that is only in the cloud downloads it to the
+  Mac, and a write syncs to the cloud and to everyone the folder is
+  shared with.
 - Quote host paths beginning with `~`: latch expands them on the host.
   Program argv after `--` stays literal. The judge is remote: argv,
   workdir, writes and network go to Plow and into the sealed audit. Keep

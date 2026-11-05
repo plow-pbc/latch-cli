@@ -49,7 +49,7 @@ first write folder, otherwise home. Writes must stay inside home, outside the
 hidden places, and cannot grant home itself.
 
 Hidden paths are `~/.latch` and this host's state directory (macOS also hides
-`~/Library` except `~/Library/Caches`). Empty read-only mounts cover them even
+`~/Library` except `~/Library/Caches`, `~/Library/CloudStorage` and iCloud Drive (`~/Library/Mobile Documents/com~apple~CloudDocs`)). Empty read-only mounts cover them even
 inside a workspace. Other home files, including credential dotfiles and other
 state folders, are readable; their use is judged. The running latch is mounted
 read-only; folders above protected mounts cannot be renamed. Google workers
