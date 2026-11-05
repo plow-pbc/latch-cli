@@ -110,7 +110,7 @@ pub(super) async fn start_with(
         .await
         .unwrap();
     let vault = crate::vault::host::Vault::new(state.clone());
-    let rules = RuleFiles::new(&state).unwrap();
+    let rules = RuleFiles::new(&state, &endpoint.id().to_string(), "test-host").unwrap();
     let host = Arc::new(Host {
         plow: plow.client(),
         audit: Arc::new(Mutex::new(
@@ -1149,7 +1149,8 @@ async fn the_owners_own_devices_are_judged_as_the_owner() {
     // for an agent as every agent's.
     let rules = t.state.join(crate::gate::rules::RULES_DIR);
     std::fs::create_dir_all(&rules).unwrap();
-    std::fs::write(rules.join("host.txt"), "Never send email.").unwrap();
+    let every = r#"{"rules": [{"id": "r1", "text": "Never send email.", "agents": "all", "hosts": "all", "updated": 1}]}"#;
+    std::fs::write(rules.join("rules.json"), every).unwrap();
     t.call(&device, "exec", exec("true")).await;
     t.call(&agent, "exec", exec("true")).await;
     let asked = t.judgments();
@@ -1399,7 +1400,17 @@ async fn the_owners_rules_commands_work_over_the_connection_and_never_for_an_age
         Response::Ok(result) => result,
         refused => panic!("refused: {refused:?}"),
     };
-    let rules = |name: &str| std::fs::read_to_string(t.state.join("rules").join(name)).ok();
+    // The text of the host's live rule for `agents`, as it keeps it.
+    let rules = |agents: Value| {
+        let list = std::fs::read_to_string(t.state.join("rules/rules.json")).unwrap();
+        let list: Value = serde_json::from_str(&list).unwrap();
+        list["rules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|rule| rule["agents"] == agents && rule["deleted"] != true)
+            .map(|rule| rule["text"].as_str().unwrap().to_string())
+    };
 
     let set = json!({"command": "set", "text": "Never send email."});
     let done = ok(t.call(&device, "rules", set).await.0);
@@ -1428,7 +1439,7 @@ async fn the_owners_rules_commands_work_over_the_connection_and_never_for_an_age
         .await;
     assert_eq!(refusal(&stale).0, Exit::Denied);
     assert_eq!(refusal(&stale).1, "stale_revision");
-    assert_eq!(rules(&format!("{AGENT}.txt")).as_deref(), Some(edited));
+    assert_eq!(rules(json!([AGENT])).as_deref(), Some(edited));
 
     let shown = ok(t.call(&device, "rules", json!({"command": "show"})).await.0);
     assert_eq!(shown["every_agent"]["text"], "Never send email.");
@@ -1448,8 +1459,8 @@ async fn the_owners_rules_commands_work_over_the_connection_and_never_for_an_age
         assert_eq!(refusal(&answer).0, Exit::Denied, "{args}");
         assert_eq!(refusal(&answer).1, "owner_only", "{args}");
     }
-    assert_eq!(rules("host.txt").as_deref(), Some("Never send email."));
-    assert_eq!(rules(&format!("{AGENT}.txt")).as_deref(), Some(edited));
+    assert_eq!(rules(json!("all")).as_deref(), Some("Never send email."));
+    assert_eq!(rules(json!([AGENT])).as_deref(), Some(edited));
 
     // The agent's next operation is judged on both texts, with no restart.
     let (answer, _) = t.call(&agent, "exec", exec("true")).await;
@@ -1470,12 +1481,12 @@ async fn the_owners_rules_commands_work_over_the_connection_and_never_for_an_age
         .await
         .0);
     assert_eq!(done["cleared"], true);
-    assert_eq!(rules(&format!("{AGENT}.txt")), None);
-    assert_eq!(rules("host.txt").as_deref(), Some("Never send email."));
+    assert_eq!(rules(json!([AGENT])), None);
+    assert_eq!(rules(json!("all")).as_deref(), Some("Never send email."));
     ok(t.call(&device, "rules", json!({"command": "clear"}))
         .await
         .0);
-    assert_eq!(rules("host.txt"), None);
+    assert_eq!(rules(json!("all")), None);
 
     // Every command is audited by revision, never by text.
     let audit = t.audit();

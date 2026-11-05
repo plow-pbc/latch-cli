@@ -499,8 +499,14 @@ pub async fn status(state: &StateDir, check_access: bool) -> Result<Status, Fail
         }
         steps.push(step);
     }
-    let rules = RulesDir::new(&state.path);
-    let any_rules = rules.text(&Scope::Host)?.is_some() || !rules.agents()?.is_empty();
+    // Only a login has a key, which says which rules apply here.
+    let any_rules = match (&local.login, &local.this_machine.key) {
+        (Some(_), Some(key)) => {
+            let rules = RulesDir::new(&state.path, key);
+            rules.text(&Scope::Host)?.is_some() || !rules.agents()?.is_empty()
+        }
+        _ => false,
+    };
     steps.push(match &local.login {
         None => Step::new("rules", Blocked, "Rules need a login first.".into(), None),
         Some(login) if login.kind != "device" => Step::new(
