@@ -181,7 +181,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "agents.lines",
         runs_on: |_| RunsOn::Local,
-        output: "`lines`: each phone line's `uid`, `number`, `name`, whether it is `available` for a new agent and the `agent_uid` that holds it.",
+        output: "`lines`: each phone line's `uid`, `number`, `name`, whether it is `available` for a new agent and the `agent_uid` that holds it. A move also needs a line where you have no open chat, by text or email; this list doesn't show that. Plow checks when you move.",
         effect: ReadOnly,
         owner_only: true,
         connector: None,
@@ -244,15 +244,15 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "agents.move",
         runs_on: |_| RunsOn::Local,
-        output: "`agent`: the agent on its new line, as `agents show` gives it, and `from`: the line it left (`number`, `name`, `card_url`).",
+        output: "`agent`: the agent after the request, as `agents show` gives it; `previous_line`: its line before the request (`number`, `name`, `card_url`); when the line changed, `next`: text the new number first, since the agent can't text you until you do. A same-line request has no `next`.",
         effect: Repeatable(
-            "moves the agent to the phone line given, with the same credential: its chats on the old line stay, with no agent answering them, and Plow restarts a cloud agent",
+            "moves the agent to the given phone line, keeping its credential, settings and rules; when the line changes, Plow closes your chats on the old line, email included, and the agent can't text you on the new one until you text it; Plow restarts a cloud agent, even when its line doesn't change, and a repeat can interrupt its work",
         ),
         owner_only: true,
         connector: None,
         examples: &[ex(
-            "Move an agent to another line without asking",
-            &["agents", "move", "Scout", "--line", "+15550000002", "--yes"],
+            "Move an agent to another phone line",
+            &["agents", "move", "Scout", "--line", "+15550000002"],
         )],
     },
     Entry {

@@ -114,7 +114,7 @@ async fn managed(
             ..
         }) => new(plow, api_url, cloud, token_file, &name, &line).await?,
         Some(AgentsAction::Card { agent, output }) => card(plow, api_url, &agent, &output).await?,
-        Some(AgentsAction::Move { agent, line, yes }) => move_to(plow, &agent, &line, yes).await?,
+        Some(AgentsAction::Move { agent, line }) => move_to(plow, &agent, &line).await?,
         Some(AgentsAction::Remove { agent, yes }) => remove(plow, &agent, yes).await?,
     })
 }
@@ -472,93 +472,92 @@ fn lost(code: &str) -> bool {
     matches!(code, "plow_unreachable" | "plow_error")
 }
 
-/// Moves `named` to the phone line `line` names, once its owner says so.
-/// Moving it to the line it is on asks nothing, since no line changes: Plow
-/// answers that with a restart, which is how a move whose restart failed is
-/// finished.
-async fn move_to(plow: &Plow, named: &str, line: &str, yes: bool) -> Result<Value, Failure> {
+/// Moves `named` to the phone line `line` names. Moving it to the line it is
+/// on changes no line: Plow restarts a cloud agent there, which is how a move
+/// whose restart failed is finished.
+async fn move_to(plow: &Plow, named: &str, line: &str) -> Result<Value, Failure> {
     let agent = resolve(plow, named).await?;
     let to = line_named(plow, line).await?;
-    let (name, from) = (agent.name.clone(), agent.line.provider_key.clone());
-    if !yes && to.provider_key != from {
-        if !term::interactive() {
-            let message = format!(
-                "moving {name} ({from}) to {} changes the number it answers on",
-                to.provider_key
-            );
-            let mut failure = Failure::new(code::confirmation_required, message);
-            let (named, line) = (login::shell_quoted(named), login::shell_quoted(line));
-            failure.next = Some(format!("latch agents move {named} --line {line} --yes").into());
-            return Err(failure);
-        }
-        let restart = if agent.provider == OWN {
-            "The program you run for it isn't restarted, and its credential reaches only the new line's chats."
-        } else {
-            "Plow restarts it on the new line."
-        };
-        let question = format!(
-            "Move {name} from {from} to {to}? It keeps its credential and settings, and answers on \
-             {to} only: its chats on {from} stay, with no agent answering them. {restart}",
-            to = to.provider_key
-        );
-        if !term::confirm(&question) {
-            let message = format!("kept {name} on {from}");
-            return Err(Failure::new(code::not_moved, message));
-        }
-    }
-    let left = LineShown {
-        number: from,
+    let name = agent.name.clone();
+    let previous_line = LineShown {
+        number: agent.line.provider_key,
         name: agent.line.display_name,
         card_url: agent.line.card_url,
     };
-    match plow.move_agent(&agent.uid, &to.uid).await {
-        Ok(moved) => Ok(json!({"agent": agent_shown(moved, None), "from": left})),
-        Err(failure) => Err(not_moved(failure, &name, &agent.uid, &to)),
+    let changed = to.provider_key != previous_line.number;
+    let moved = plow
+        .move_agent(&agent.uid, &to.uid)
+        .await
+        .map_err(|failure| move_refused(failure, &name, &agent.uid, &to))?;
+    let mut shown = json!({"agent": agent_shown(moved, None), "previous_line": previous_line});
+    // On a new line the agent has no chat yet, and Plow lets it start none:
+    // the owner's first text there opens it.
+    if changed {
+        shown["next"] = json!(format!(
+            "Text {} to start your chat with {name}; it can't text you until you do",
+            to.provider_key
+        ));
     }
+    Ok(shown)
 }
 
 /// Why Plow didn't move the agent, or that it may have.
-fn not_moved(failure: Failure, name: &str, uid: &str, to: &PlowLine) -> Failure {
+fn move_refused(failure: Failure, name: &str, uid: &str, to: &PlowLine) -> Failure {
     let number = &to.provider_key;
-    match (
+    let lines = || Some("latch agents lines".to_string());
+    let show = || Some(format!("latch agents show {uid}"));
+    let (refused, message, next) = match (
         failure.code.as_str(),
         failure.plow.as_ref().and_then(|plow| plow.code.as_deref()),
     ) {
-        ("conflict", Some("CHAT_SET_CONFLICT")) => {
-            let message = format!("line {number} already has an agent of yours; pick a free one");
-            let mut failure = Failure::new(code::line_taken, message);
-            failure.next = Some("latch agents lines".into());
-            failure
-        }
-        // Plow's 404 doesn't say whether the agent or the line's chat was
-        // missing, and the agent was in the account a moment ago.
-        ("not_found", _) | ("conflict", Some("NO_HOME_CHAT")) => {
-            let message = format!(
-                "you have no one-to-one chat on {number}: Plow moves an agent only to a line \
-                 where you already have one, such as a line an agent of yours was moved off. \
-                 `latch agents new` puts a new agent there, with a credential of its own"
-            );
-            Failure::new(code::no_chat_on_line, message)
-        }
-        ("conflict", Some("PROVISION_IN_FLIGHT" | "AGENT_FAILED" | "PENDING_TEARDOWN")) => {
-            let message = format!(
-                "Plow won't move {name} now: it is still being set up, failed to start, or is being removed"
-            );
-            let mut failure = Failure::new(code::agent_not_running, message);
-            failure.next = Some(format!("latch agents show {uid}").into());
-            failure
-        }
-        (code, _) if lost(code) => {
-            let message = format!(
-                "Plow may have moved {name} to {number} without restarting it, or not moved it: \
-                 its answer was lost. Moving it again is safe: Plow does whichever part is left"
-            );
-            let mut failure = Failure::new(code::outcome_unknown, message);
-            failure.next = Some(format!("latch agents move {uid} --line {} --yes", to.uid).into());
-            failure
-        }
-        _ => failure,
-    }
+        ("conflict", Some("CHAT_SET_CONFLICT")) => (
+            code::line_taken,
+            format!("line {number} already has one of your agents; choose another line"),
+            lines(),
+        ),
+        ("conflict", Some("LINE_HAS_CHAT")) => (
+            code::line_has_chat,
+            format!(
+                "you already have an open chat on {number} or its email address; choose another line"
+            ),
+            lines(),
+        ),
+        // Plow's 404 doesn't say which of the two it couldn't find, and
+        // `CHAT_DELETED` is the line going while Plow moved the agent.
+        ("not_found", _) | ("conflict", Some("CHAT_DELETED")) => (
+            code::not_found,
+            format!("Plow could not find {name} or the destination phone line {number}"),
+            show(),
+        ),
+        ("conflict", Some("PROVISION_IN_FLIGHT")) => (
+            code::agent_not_running,
+            format!("Plow can't move {name} while it is still being set up"),
+            show(),
+        ),
+        ("conflict", Some("AGENT_FAILED")) => (
+            code::agent_not_running,
+            format!("Plow can't move {name}: it failed to start"),
+            show(),
+        ),
+        ("conflict", Some("PENDING_TEARDOWN")) => (
+            code::agent_not_running,
+            format!("Plow can't move {name}: its removal hasn't finished"),
+            show(),
+        ),
+        (code, _) if lost(code) => (
+            code::outcome_unknown,
+            format!(
+                "Latch couldn't confirm whether the move to {number} completed. Retrying can \
+                 restart a cloud agent again and interrupt its work. If it moved, text {number} \
+                 to start your chat with it"
+            ),
+            Some(format!("latch agents move {uid} --line {}", to.uid)),
+        ),
+        _ => return failure,
+    };
+    let mut failure = Failure::new(refused, message);
+    failure.next = next.map(Into::into);
+    failure
 }
 
 /// Removes `named`, once its owner says so.

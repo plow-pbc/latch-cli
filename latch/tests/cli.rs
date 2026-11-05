@@ -4616,6 +4616,7 @@ fn agents_are_shown_created_and_removed_by_their_owner() {
         ("exe:hermes", "ln_lost", 5, "outcome_unknown", 1),
         ("self_hosted", "ln_free", 2, "unknown_cloud_kind", 0),
         ("exe:hermes", "+1999", 2, "no_such_line", 0),
+        ("exe:hermes", "ln_mail", 2, "no_such_line", 0),
     ] {
         let before = posts();
         let new_cloud = [
@@ -4672,9 +4673,10 @@ fn agents_are_shown_created_and_removed_by_their_owner() {
     assert_eq!(deletes(), 1);
 }
 
-/// The owner moves an agent to another line once they say so, and gets the
-/// same agent on its new line; what Plow refuses is said as latch's own
-/// codes, and a lost answer is reported, never resent.
+/// The owner moves an agent to another line without being asked, and gets
+/// the same agent on its new line, and the text that starts its chat there;
+/// what Plow refuses is said as latch's own codes, each sent once, and a
+/// lost answer is reported, never resent.
 #[test]
 fn an_agent_is_moved_to_another_line_by_its_owner() {
     let plow = LivePlow::start();
@@ -4697,40 +4699,30 @@ fn an_agent_is_moved_to_another_line_by_its_owner() {
             .filter(|(line, _)| line.starts_with(&put))
             .count()
     };
-    let to_free = ["agents", "move", "Research bot", "--line", "+15550000002"];
+    let move_to = |line: &str| run(&["agents", "move", "Research bot", "--line", line]);
 
-    // Asked first; with no one to ask, --yes. No keeps it where it is.
-    let (code, error) = run(&to_free);
-    assert_eq!(
-        (code, &error["error"]["code"]),
-        (Some(2), &json!("confirmation_required")),
-        "{error}"
-    );
-    assert_eq!(
-        error["error"]["next"],
-        "latch agents move 'Research bot' --line +15550000002 --yes"
-    );
-    let (code, shown, _) = latch_at_a_terminal(&host, &to_free, "n\n", false, &[]);
-    assert_eq!(code, Some(2), "{shown}");
-    let asked = "Move Research bot from +14155550123 to +15550000002? It keeps its credential";
-    assert!(shown.contains(asked), "{shown}");
-    assert_eq!(last_error_line(&shown)["error"]["code"], "not_moved");
-    assert_eq!(moves(), 0);
-
-    // The same agent, on the line its number names, and the line it left.
-    let (code, moved) = run(&[&to_free[..], &["--yes"]].concat());
+    // Not asked: the same agent, on the line its number names, the line it
+    // left, and the text that starts its chat there.
+    let (code, moved) = move_to("+15550000002");
     assert_eq!(code, Some(0), "{moved}");
     assert_eq!(moved["agent"]["uid"], AGENT_UID);
     assert_eq!(moved["agent"]["line"]["number"], "+15550000002");
     assert_eq!(
-        moved["from"],
+        moved["previous_line"],
         json!({"number": "+14155550123", "name": "Research line",
                "card_url": format!("{}/cards/research.vcf", plow.url)})
     );
+    assert_eq!(
+        moved["next"],
+        "Text +15550000002 to start your chat with Research bot; it can't text you until you do"
+    );
     assert_eq!(moves(), 1);
-    // To the line it is on, nothing is asked: Plow restarts it there.
+    // To the line it is on, Plow only restarts it: no line changed, and its
+    // chat there is the one it has.
     let (code, again) = run(&["agents", "move", AGENT_UID, "--line", "+14155550123"]);
     assert_eq!(code, Some(0), "{again}");
+    assert_eq!(again["previous_line"]["number"], "+14155550123");
+    assert_eq!(again.get("next"), None, "{again}");
     assert_eq!(moves(), 2);
 
     // An unknown agent or line, or a mailbox, is refused before Plow is asked.
@@ -4739,7 +4731,7 @@ fn an_agent_is_moved_to_another_line_by_its_owner() {
         ("Research bot", "+1999", "no_such_line"),
         ("Research bot", "ln_mail", "no_such_line"),
     ] {
-        let (code, error) = run(&["agents", "move", agent, "--line", line, "--yes"]);
+        let (code, error) = run(&["agents", "move", agent, "--line", line]);
         assert_eq!(
             (code, &error["error"]["code"]),
             (Some(2), &json!(refused)),
@@ -4750,11 +4742,10 @@ fn an_agent_is_moved_to_another_line_by_its_owner() {
 
     // A line another of the account's agents holds; a lost answer, sent
     // once and never resent, with the same move as what finishes it.
-    let move_to = |line: &str| run(&["agents", "move", "Research bot", "--line", line, "--yes"]);
     let (code, error) = move_to("ln_taken");
     assert_eq!(
-        (code, &error["error"]["code"]),
-        (Some(2), &json!("line_taken")),
+        (code, &error["error"]["code"], &error["error"]["next"]),
+        (Some(2), &json!("line_taken"), &json!("latch agents lines")),
         "{error}"
     );
     let (code, error) = move_to("ln_lost");
@@ -4765,27 +4756,61 @@ fn an_agent_is_moved_to_another_line_by_its_owner() {
     );
     assert_eq!(
         error["error"]["next"],
-        format!("latch agents move {AGENT_UID} --line ln_lost --yes")
+        format!("latch agents move {AGENT_UID} --line ln_lost")
     );
     assert_eq!(moves(), 4);
 
-    // A line where the owner has no one-to-one chat (Plow's 404 when they
-    // have no chat there at all), and an agent still being set up.
-    let in_flight = json!({"code": "PROVISION_IN_FLIGHT"});
-    for (status, detail, exit, refused) in [
-        (404, json!("Line not found"), 2, "no_chat_on_line"),
-        (409, json!({"code": "NO_HOME_CHAT"}), 2, "no_chat_on_line"),
-        (409, in_flight, 1, "agent_not_running"),
+    // A line where the owner has a live chat; the agent or the line gone
+    // (Plow's 404, or the line deleted mid-move); an agent still being set
+    // up. Each is asked once.
+    let refusal = |code: &str| json!({"code": code, "message": "Plow's own words"});
+    for (status, detail, exit, refused, next) in [
+        (
+            409,
+            refusal("LINE_HAS_CHAT"),
+            2,
+            "line_has_chat",
+            "latch agents lines".to_string(),
+        ),
+        (
+            404,
+            json!("Line not found"),
+            1,
+            "not_found",
+            format!("latch agents show {AGENT_UID}"),
+        ),
+        (
+            409,
+            refusal("CHAT_DELETED"),
+            1,
+            "not_found",
+            format!("latch agents show {AGENT_UID}"),
+        ),
+        (
+            409,
+            refusal("PROVISION_IN_FLIGHT"),
+            1,
+            "agent_not_running",
+            format!("latch agents show {AGENT_UID}"),
+        ),
     ] {
         plow.state.lock().unwrap().move_refused = Some((status, json!({"detail": detail})));
+        let before = moves();
         let (code, error) = move_to("ln_free");
         assert_eq!(
-            (code, &error["error"]["code"]),
-            (Some(exit), &json!(refused)),
+            (code, &error["error"]["code"], &error["error"]["next"]),
+            (Some(exit), &json!(refused), &json!(next)),
             "{error}"
         );
+        assert!(
+            !error["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("Plow's own words"),
+            "{error}"
+        );
+        assert_eq!(moves(), before + 1, "{refused}");
     }
-    assert_eq!(moves(), 7);
 }
 
 #[test]

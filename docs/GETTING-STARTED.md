@@ -277,12 +277,24 @@ confirm (`--yes` skips the question). The agent's credential stops working at
 once and its line is freed.
 
 To move the agent to another phone line, run
-`latch agents move my-agent --line LINE`. It asks you to confirm too. The
-agent keeps its credential and settings and answers on the new line only;
-its chats on the old line stay, with no agent answering them. Plow moves an
-agent only to a free line where you already have a one-to-one chat, such as
-a line an agent of yours was moved off. For any other line, remove the agent
-and create a new one there.
+`latch agents move my-agent --line LINE`. Choose a free phone line where you
+have no open chat, by text or email. It doesn't ask first. The agent keeps
+its credential, settings and rules, so `my-agent.token` keeps working.
+
+Plow closes your chats on the line the agent leaves, email included. While no
+agent of yours uses the old number, one-to-one texts from your number get at
+most one generic reply, then no reply. Email to its old address is dropped
+unless another account on the thread has an agent on that line. If you later
+move the agent back, your first text starts a fresh chat there.
+
+Text the new number first to start a fresh chat: the agent can't text you
+until you do, and until then it can't ask your permission in a Plow chat.
+
+Plow restarts a cloud agent; it doesn't restart a program you run yourself.
+The command doesn't wait for the agent to be ready.
+
+People who text the agent need its new number:
+`latch agents card my-agent --output my-agent.vcf` saves its new contact card.
 
 **What an agent may do.** Your agents can look things up in your calendar,
 email, messages and files, and create or edit ordinary files, without asking
