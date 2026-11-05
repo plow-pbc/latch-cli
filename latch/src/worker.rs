@@ -98,13 +98,46 @@ pub fn authenticated_worker_error(stderr: &str, token: &str) -> Option<WorkerErr
 /// on Linux and cost nothing there.
 const PATH: &str = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
 
-/// Exec's `PATH`: the host's own, then whatever of `PATH` it lacks. A host
-/// the Mac app or the login item started has only the system's folders, and
-/// its programs would not find Homebrew's tools.
-fn exec_path(host: Option<OsString>) -> OsString {
-    let host: Vec<PathBuf> = host.iter().flat_map(std::env::split_paths).collect();
-    let missing = std::env::split_paths(PATH).filter(|folder| !host.contains(folder));
-    let folders: Vec<PathBuf> = host.iter().cloned().chain(missing).collect();
+/// The owner's `PATH` as their own shell sets it in a terminal: what a
+/// program they run by name there finds, `~/.local/bin` from `.zshrc`
+/// included. The host learns it once, as it starts (`exec::learn_login_path`).
+pub static LOGIN_PATH: std::sync::OnceLock<OsString> = std::sync::OnceLock::new();
+
+fn login_path() -> Option<OsString> {
+    LOGIN_PATH.get().cloned()
+}
+
+/// The owner's login shell, from the user database: their environment, a
+/// managed host's included, may name another or none.
+pub fn login_shell() -> Option<String> {
+    // SAFETY: getpwuid returns this user's static entry or null; its shell
+    // is copied before anything else calls it.
+    unsafe {
+        let entry = libc::getpwuid(libc::getuid());
+        if entry.is_null() || (*entry).pw_shell.is_null() {
+            return None;
+        }
+        std::ffi::CStr::from_ptr((*entry).pw_shell)
+            .to_str()
+            .ok()
+            .map(str::to_string)
+    }
+}
+
+/// Exec's `PATH`: the owner's login `PATH`, then whatever of the host's own
+/// and of `PATH` those lack. A host the Mac app or the login item started has
+/// only the system's folders, and its programs would not find Homebrew's tools.
+fn exec_path(login: Option<OsString>, host: Option<OsString>) -> OsString {
+    let mut folders: Vec<PathBuf> = Vec::new();
+    for folder in [login, host, Some(PATH.into())]
+        .iter()
+        .flatten()
+        .flat_map(std::env::split_paths)
+    {
+        if !folders.contains(&folder) {
+            folders.push(folder);
+        }
+    }
     std::env::join_paths(folders).expect("split folders hold no separator")
 }
 
@@ -374,7 +407,7 @@ impl WorkerSetup {
         }
         command.arg("--").args(&args.argv);
         command
-            .env("PATH", exec_path(std::env::var_os("PATH")))
+            .env("PATH", exec_path(login_path(), std::env::var_os("PATH")))
             .env("TMPDIR", tmpdir)
             .process_group(0)
             .stdin(Stdio::piped())
@@ -779,6 +812,19 @@ fn read_private_exec() -> Result<crate::exec::PrivateExec, ExitCode> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exec_path_puts_the_login_path_first_and_each_folder_once() {
+        let path = exec_path(
+            Some("/home/u/.local/bin:/usr/bin".into()),
+            Some("/usr/bin:/bin:/host/only".into()),
+        );
+        assert_eq!(
+            path,
+            "/home/u/.local/bin:/usr/bin:/bin:/host/only:/opt/homebrew/bin:/usr/local/bin:/usr/sbin:/sbin"
+        );
+        assert_eq!(exec_path(None, None), PATH);
+    }
     #[tokio::test]
     async fn dropping_a_google_worker_stops_its_descendants() {
         let dir = tempfile::tempdir().unwrap();

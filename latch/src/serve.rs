@@ -484,6 +484,7 @@ async fn run_locked(
     })?;
     log(&format!("worker sandbox: {}", crate::sandbox::name()));
     exec::sweep_tmpdirs();
+    exec::learn_login_path(&workers).await;
     // Holding the folder, no other host runs here to use an older latch's.
     match crate::plugins::prune(&state.path) {
         Ok(removed) => {

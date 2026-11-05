@@ -3722,9 +3722,13 @@ fn a_host_runs_exec_and_files_under_home() {
     assert_eq!(login.status.code(), Some(0), "{login:?}");
 
     // The host uses the test's own home, where its files go, and the bare
-    // PATH a host started by the Mac app or the login item has.
+    // PATH a host started by the Mac app or the login item has. The owner's
+    // shell, started in a terminal, adds a folder of their own.
     let home = dir.path().join("home");
     fs::create_dir(&home).unwrap();
+    for rc in [".zshrc", ".bash_profile"] {
+        fs::write(home.join(rc), "export PATH=\"$HOME/rc-bin:$PATH\"\n").unwrap();
+    }
     let env = [
         ("HOME", home.as_path()),
         ("PATH", Path::new("/usr/bin:/bin")),
@@ -3748,7 +3752,8 @@ fn a_host_runs_exec_and_files_under_home() {
     assert_eq!(executed.status.code(), Some(0), "{executed:?}");
     let result: Value = serde_json::from_slice(&executed.stdout).unwrap();
     assert_eq!(result["exit_code"], 0);
-    // Exec still finds Homebrew's tools, after the host's own PATH.
+    // Exec finds what the owner's terminal does, first, then the host's own
+    // PATH and Homebrew's tools.
     let script = [
         "exec",
         "--host",
@@ -3760,10 +3765,23 @@ fn a_host_runs_exec_and_files_under_home() {
     ];
     let executed = latch(&owner, &script, &[]);
     let result: Value = serde_json::from_slice(&executed.stdout).unwrap();
-    assert_eq!(
-        result["stdout"], "/usr/bin:/bin:/opt/homebrew/bin:/usr/local/bin:/usr/sbin:/sbin\n",
-        "{executed:?}"
-    );
+    let path = result["stdout"].as_str().unwrap().trim_end();
+    let folders: Vec<&str> = path.split(':').collect();
+    assert_eq!(folders[0], home.join("rc-bin").to_str().unwrap(), "{path}");
+    for folder in [
+        "/usr/bin",
+        "/bin",
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "/usr/sbin",
+        "/sbin",
+    ] {
+        assert_eq!(
+            folders.iter().filter(|f| **f == folder).count(),
+            1,
+            "{folder}: {path}"
+        );
+    }
     // A get reads what exec can (home and the system's files), and a put
     // goes under home.
     let system = latch(
