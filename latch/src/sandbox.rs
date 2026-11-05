@@ -720,7 +720,7 @@ mod platform {
                 .is_some_and(|home| path == home.join("Library"))
             {
                 let mut visible = String::new();
-                for name in VISIBLE_IN_LIBRARY {
+                for name in super::VISIBLE_IN_LIBRARY {
                     visible += &format!(
                         " (require-not (subpath {}))",
                         quoted_literal(&path.join(name))?
