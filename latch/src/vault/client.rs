@@ -11,7 +11,6 @@ use std::path::Path;
 use std::time::Duration;
 
 use serde_json::{Map, Value, json};
-use tokio::fs::File;
 
 use super::item::{entry_labels, kind_code};
 use crate::cli::{VaultArgs, VaultCommand};
@@ -610,10 +609,8 @@ async fn import(
     pick: Option<&str>,
     expect: Option<&str>,
 ) -> Result<Value, Failure> {
-    let local =
-        |err: std::io::Error| Failure::new(code::local_file, format!("{}: {err}", path.display()));
-    let mut file = File::open(path).await.map_err(local)?;
-    let size = file.metadata().await.map_err(local)?.len();
+    let export = super::import::read(path)?;
+    let size = export.len() as u64;
     let request = Request {
         op: "vault".to_string(),
         args: json!({"command": if preview { "preview" } else { "import" }, "size": size}),
@@ -623,7 +620,7 @@ async fn import(
     // outcome. The host drops the export if the stream ends before picks.
     let (mut send, mut recv) = dial::start(connection, &request).await?;
     dial::answer(connection, &mut recv, ANSWER_WITHIN).await?;
-    wire::copy(&mut file, &mut send, size)
+    wire::copy(&mut export.as_slice(), &mut send, size)
         .await
         .map_err(|_| dial::lost(connection, true))?;
     if preview {
