@@ -359,8 +359,8 @@ For how to report a vulnerability, see [SECURITY.md](../SECURITY.md).
   - It checks the release's `SHA256SUMS` against Latch's release signing
     key, and on a Mac that Plow signed the app.
   - The state folder stays as it is, and the browser engines are brought up
-    to date. If an earlier update stopped before a helper was installed, it
-    installs it again.
+    to date. If an earlier update stopped part way, `latch update <tag>`
+    with the current build's tag installs it again.
   - A host started with `latch serve -d` restarts on the new version with
     the same flags. A host running in a terminal stops, and you're told to
     start it again.
