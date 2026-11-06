@@ -298,7 +298,7 @@ pub enum Command {
 
 #[derive(Args, Debug)]
 pub struct UpdateArgs {
-    /// A release's tag, e.g. v0.1.0-1327: installs that build, even an older one
+    /// A release's tag, e.g. v0.1.0-1327: installs that build, even an older one or this one again
     #[arg(value_name = "TAG", conflicts_with = "check")]
     pub tag: Option<String>,
     /// Only say whether a newer build is available; changes nothing
