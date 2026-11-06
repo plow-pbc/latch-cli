@@ -1150,8 +1150,8 @@ fn eval_audit(script: &str, audit: &mut Map<String, Value>) {
 /// audit keeps the file's name, size and sha256.
 async fn receive(
     args: &Value,
-    send: &mut SendStream,
-    recv: &mut RecvStream,
+    send: &mut (impl tokio::io::AsyncWrite + Unpin),
+    recv: &mut (impl tokio::io::AsyncRead + Unpin),
     audit: &mut Map<String, Value>,
 ) -> Result<Vec<u8>, Failure> {
     let (Some(size), Some(name)) = (args["size"].as_u64(), args["name"].as_str()) else {
@@ -1250,6 +1250,27 @@ fn no_such_session() -> Failure {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An upload past what fits in memory twice over is taken, its sha256
+    /// that of every byte.
+    #[tokio::test]
+    async fn an_upload_past_a_hundred_megabytes_is_taken_whole() {
+        use tokio::io::AsyncReadExt;
+        let mib = 101;
+        let size = mib << 20;
+        let args = json!({"name": "big.bin", "size": size});
+        let mut zeros = tokio::io::repeat(0).take(size);
+        let mut audit = Map::new();
+        receive(&args, &mut tokio::io::sink(), &mut zeros, &mut audit)
+            .await
+            .unwrap();
+        let mut hasher = Sha256::new();
+        for _ in 0..mib {
+            hasher.update([0u8; 1 << 20]);
+        }
+        assert_eq!(audit["file_size"], size);
+        assert_eq!(audit["file_sha256"], to_hex(&hasher.finalize()));
+    }
 
     #[test]
     fn a_worker_call_carries_only_its_commands_arguments() {
