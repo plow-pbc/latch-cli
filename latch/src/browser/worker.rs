@@ -226,6 +226,23 @@ pub fn run(
     })
 }
 
+/// An upload's `size` bytes from `stdin`, in a file in `folder` that is
+/// gone unless the upload keeps it. A file that can't be written leaves
+/// the rest of the bytes to be read past, so the next line is a call's and
+/// the upload says why it failed. None when the bytes end early.
+fn spool(
+    stdin: &mut impl Read,
+    size: u64,
+    folder: &Path,
+) -> Option<io::Result<tempfile::NamedTempFile>> {
+    let mut left = stdin.take(size);
+    let spooled = fs::create_dir_all(folder)
+        .and_then(|()| tempfile::NamedTempFile::new_in(folder))
+        .and_then(|mut file| io::copy(&mut left, &mut file).map(|_| file));
+    let drained = io::copy(&mut left, &mut io::sink()).is_ok() && left.limit() == 0;
+    drained.then_some(spooled)
+}
+
 /// How often the engine is tended between calls while it needs it.
 const TEND: Duration = Duration::from_millis(20);
 
@@ -277,18 +294,14 @@ fn serve<B: Runtime>(
                 continue;
             }
         };
-        // An upload's bytes follow its line, even when the call is refused:
-        // into a file in the upload folder, gone unless the upload keeps it.
+        // An upload's bytes follow its line, even when the call is refused.
         let input = match &call {
             Call::Upload { size, .. } => {
-                let folder = core.browser().upload_folder();
-                let spooled = fs::create_dir_all(&folder)
-                    .and_then(|()| tempfile::NamedTempFile::new_in(&folder));
-                let Ok(mut file) = spooled else { break };
-                if io::copy(&mut (&mut stdin).take(*size), &mut file).ok() != Some(*size) {
+                let Some(spooled) = spool(&mut stdin, *size, &core.browser().upload_folder())
+                else {
                     break;
-                }
-                Some(file)
+                };
+                Some(spooled)
             }
             _ => None,
         };
@@ -386,6 +399,27 @@ fn answer(stdout: &mut impl Write, response: Response, bytes: Option<&[u8]>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_upload_is_read_whole_whether_or_not_its_file_can_be_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut stdin: &[u8] = b"0123456789next";
+        let kept = spool(&mut stdin, 10, dir.path()).unwrap().unwrap();
+        assert_eq!(fs::read(kept.path()).unwrap(), b"0123456789");
+        assert_eq!(stdin, b"next");
+        // A folder under a file can't be made: the bytes are still read.
+        let blocked = dir.path().join("file");
+        fs::write(&blocked, b"").unwrap();
+        let mut stdin: &[u8] = b"0123456789next";
+        assert!(
+            spool(&mut stdin, 10, &blocked.join("uploads"))
+                .unwrap()
+                .is_err()
+        );
+        assert_eq!(stdin, b"next");
+        let mut short: &[u8] = b"0123";
+        assert!(spool(&mut short, 10, dir.path()).is_none());
+    }
 
     #[test]
     fn a_browser_is_gone_after_unanswered_calls_in_a_row_only() {
