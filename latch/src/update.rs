@@ -665,8 +665,6 @@ struct Checked {
     checked_at: Option<Timestamp>,
     /// The newest release the last look that worked found.
     latest: Option<Release>,
-    /// When a terminal was last told of a newer build.
-    noticed_at: Option<Timestamp>,
 }
 
 impl Checked {
@@ -716,7 +714,7 @@ fn status_of(checked: &Checked, current: Option<u64>) -> Status {
     }
 }
 
-/// `LATCH_NO_UPDATE_CHECK=1` turns off every look and every notice.
+/// `LATCH_NO_UPDATE_CHECK=1` turns off every look.
 fn checks_off() -> bool {
     std::env::var_os("LATCH_NO_UPDATE_CHECK").is_some_and(|value| value == "1")
 }
@@ -775,40 +773,4 @@ fn available_line(checked: &Checked, current: u64) -> Option<String> {
     let latest = checked.latest.as_ref()?;
     (latest.build > current)
         .then(|| format!("Build {} is available. Run `latch update`.", latest.build))
-}
-
-/// At a terminal (stdout and stderr both, and not CI), one line on stderr
-/// once a day while a newer build is known. Anywhere else, nothing.
-pub fn notice(state: &Path) {
-    let terminal = crate::term::stdout_is_terminal() && crate::term::stderr_is_terminal();
-    if !terminal || checks_off() || std::env::var_os("CI").is_some() {
-        return;
-    }
-    let Some(current) = current() else {
-        return;
-    };
-    let mut checked = Checked::load(state);
-    let now = Timestamp::now();
-    if let Some(line) = notice_line(&checked, current, now) {
-        eprintln!("{line}");
-        checked.noticed_at = Some(now);
-        let _ = checked.save(state);
-    }
-}
-
-fn notice_line(checked: &Checked, current: u64, now: Timestamp) -> Option<String> {
-    let day = SignedDuration::try_from(CHECK_EVERY).expect("a day fits");
-    if checked
-        .noticed_at
-        .is_some_and(|at| now.duration_since(at) < day)
-    {
-        return None;
-    }
-    let latest = checked.latest.as_ref()?;
-    (latest.build > current).then(|| {
-        format!(
-            "latch: build {} is available; run `latch update` to install it",
-            latest.build
-        )
-    })
 }

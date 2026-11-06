@@ -666,24 +666,6 @@ async fn a_failed_look_keeps_what_was_found_and_the_next_is_a_day_later() {
     assert!(status_of(&checked, Some(1327)).available);
 }
 
-#[test]
-fn a_terminal_hears_of_a_newer_build_once_a_day() {
-    let now = Timestamp::now();
-    let mut checked = Checked {
-        latest: Some(Release::named("v0.1.0-1328").unwrap()),
-        ..Checked::default()
-    };
-    assert_eq!(
-        notice_line(&checked, 1327, now).as_deref(),
-        Some("latch: build 1328 is available; run `latch update` to install it")
-    );
-    assert_eq!(notice_line(&checked, 1328, now), None);
-    checked.noticed_at = Some(now - SignedDuration::from_hours(23));
-    assert_eq!(notice_line(&checked, 1327, now), None);
-    checked.noticed_at = Some(now - SignedDuration::from_hours(25));
-    assert!(notice_line(&checked, 1327, now).is_some());
-}
-
 /// A bundle signed by anyone but Plow is refused before it is installed:
 /// here, signed ad hoc, as a re-signed or rebuilt app would be.
 #[cfg(target_os = "macos")]

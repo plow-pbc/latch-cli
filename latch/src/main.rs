@@ -197,20 +197,7 @@ fn main() -> ExitCode {
         }
         command => command,
     };
-    // Only the human commands still say a newer build is out: a regular
-    // command's stderr is its error line alone, and `status --local` carries
-    // the same fact.
-    let notice = match &command {
-        Command::Dashboard => true,
-        Command::Serve(args) => !args.detach && !args.foreground,
-        _ => false,
-    };
-    let state_dir = cli.state_dir.clone();
-    let exit = run_async(cli.state_dir, command, cli.pretty);
-    if notice && let Ok(state) = StateDir::new(state_dir) {
-        update::notice(&state.path);
-    }
-    exit
+    run_async(cli.state_dir, command, cli.pretty)
 }
 
 #[tokio::main]

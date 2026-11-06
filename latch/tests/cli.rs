@@ -4917,12 +4917,6 @@ fn a_state_folder_from_a_newer_latch_is_refused_before_anything_is_read() {
     fs::write(state.join("latch.json"), marker).unwrap();
     // Not valid for this latch either way: a newer layout it would misread.
     fs::write(state.join("config.json"), "{\"layout\": \"newer\"}").unwrap();
-    // A newer build is known: a build with a number would have said so
-    // after any command at a terminal, a second line.
-    let checked = json!({"checked_at": "2026-10-22T08:00:00Z",
-        "latest": {"tag": "v0.1.0-99999999", "build": 99_999_999}, "failures": 0,
-        "failed_at": null, "noticed_at": null});
-    fs::write(state.join("update.json"), checked.to_string()).unwrap();
 
     let status = latch(&state, &["status"], &[]);
 
