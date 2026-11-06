@@ -589,30 +589,23 @@ impl Signer {
             );
             Failure::new(code::bad_app_signature, message)
         };
-        let shown = tool("codesign", &["-dvv".as_ref(), app.as_os_str()]).await?;
-        let field = |name: &str| {
-            shown
-                .lines()
-                .find_map(|line| line.strip_prefix(name)?.strip_prefix('='))
-                .unwrap_or("none")
-                .to_string()
-        };
-        let (team, identifier) = (field("TeamIdentifier"), field("Identifier"));
-        if team != self.team || identifier != self.identifier {
-            return Err(refused(format!(
-                "is {identifier} signed by team {team}, not {} by team {}",
-                self.identifier, self.team
-            )));
-        }
-        let strict = ["--verify", "--deep", "--strict"];
+        // The installer's requirement: `=` makes it text, not a file.
+        let requirement = format!(
+            r#"-R=anchor apple generic and identifier "{}" and certificate leaf[subject.OU] = "{}""#,
+            self.identifier, self.team
+        );
+        let strict = ["--verify", "--deep", "--strict", &requirement];
         let args: Vec<&std::ffi::OsStr> = strict
             .iter()
             .map(|arg| arg.as_ref())
             .chain([app.as_os_str()])
             .collect();
-        tool("codesign", &args)
-            .await
-            .map_err(|_| refused("is not intact as signed".into()))?;
+        tool("codesign", &args).await.map_err(|_| {
+            refused(format!(
+                "is not {} signed by team {}, intact",
+                self.identifier, self.team
+            ))
+        })?;
         tool(
             "spctl",
             &[
@@ -628,9 +621,8 @@ impl Signer {
     }
 }
 
-/// Runs a system tool; what it printed on stderr, where codesign prints
-/// what it shows, if it succeeded.
-async fn tool(program: &str, args: &[&std::ffi::OsStr]) -> Result<String, Failure> {
+/// Runs a system tool, failing with what it printed on stderr.
+async fn tool(program: &str, args: &[&std::ffi::OsStr]) -> Result<(), Failure> {
     let output = tokio::process::Command::new(program)
         .args(args)
         .output()
@@ -643,7 +635,7 @@ async fn tool(program: &str, args: &[&std::ffi::OsStr]) -> Result<String, Failur
         );
         return Err(Failure::new(code::tool_failed, message));
     }
-    Ok(String::from_utf8_lossy(&output.stderr).to_string())
+    Ok(())
 }
 
 fn io_failure(what: &str, err: std::io::Error) -> Failure {
