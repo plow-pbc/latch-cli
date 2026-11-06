@@ -6667,6 +6667,16 @@ fn vault_takes_secrets_as_json_on_stdin_and_shows_only_what_is_not_secret() {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/import/chrome.csv"
     );
+    // A 1PUX is mostly attachments, which are never read: one far past any
+    // cap on the whole file previews its items.
+    let big = dir.path().join("big.1pux");
+    big_1pux(&big);
+    let (code, previewed) = run(&["vault", "import", big.to_str().unwrap(), "--preview"], "");
+    assert_eq!(code, Some(0), "{previewed}");
+    assert_eq!(
+        previewed["preview"]["items"].as_array().map(Vec::len),
+        Some(500)
+    );
     let (code, previewed) = run(&["vault", "import", export, "--preview"], "");
     assert_eq!(code, Some(0), "{previewed}");
     let rows = previewed["preview"]["items"].as_array().unwrap();
@@ -7113,6 +7123,23 @@ fn local_vault_edits_are_visible_to_serve_and_phone_links_stay_live() {
     let export = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/import/chrome.csv"
+    );
+    // A 1PUX is mostly attachments: one far past any cap on the whole file
+    // previews its items from another machine too.
+    let big = dir.path().join("big.1pux");
+    big_1pux(&big);
+    let big = remote(&[
+        "vault",
+        "import",
+        "--host",
+        "host",
+        big.to_str().unwrap(),
+        "--preview",
+    ]);
+    assert_eq!(
+        big["preview"]["items"].as_array().map(Vec::len),
+        Some(500),
+        "{big}"
     );
     let previewed = remote(&["vault", "import", "--host", "host", export, "--preview"]);
     assert_eq!(previewed["preview"]["items"][0]["pick"], 1, "{previewed}");
@@ -12200,4 +12227,36 @@ fn rules_try_says_what_is_missing_before_reaching_a_host() {
     assert!(help.contains("`gate.p` shows how sure it was"), "{help}");
     assert!(help.contains("Judge the request as this agent"), "{help}");
     assert!(help.contains("The host to preview on"), "{help}");
+}
+
+/// A 1PUX of 500 logins beside 310 MB of attachments, written as it goes.
+fn big_1pux(path: &Path) {
+    let items: Vec<Value> = (0..500)
+        .map(|i| {
+            json!({
+                "uuid": format!("i{i}"), "categoryUuid": "001", "state": "active",
+                "overview": {"title": format!("Site {i}"), "url": format!("https://site{i}.example")},
+                "details": {"loginFields": [
+                    {"designation": "username", "value": format!("user{i}")},
+                    {"designation": "password", "value": format!("made-up-pass-{i}")}
+                ]},
+            })
+        })
+        .collect();
+    let data = json!({"accounts": [{"vaults": [{"attrs": {"uuid": "v1", "name": "Personal"}, "items": items}]}]});
+    let mut zip = zip::ZipWriter::new(fs::File::create(path).unwrap());
+    let stored = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Stored)
+        .large_file(true);
+    zip.start_file("export.data", stored).unwrap();
+    zip.write_all(data.to_string().as_bytes()).unwrap();
+    let chunk = vec![7u8; 1024 * 1024];
+    for n in 0..31 {
+        zip.start_file(format!("files/scan{n}.pdf"), stored)
+            .unwrap();
+        for _ in 0..10 {
+            zip.write_all(&chunk).unwrap();
+        }
+    }
+    zip.finish().unwrap();
 }
