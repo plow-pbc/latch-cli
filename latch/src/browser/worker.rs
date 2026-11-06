@@ -39,7 +39,7 @@
 //! browser end by its limit (`Call::limit`, from `--call-limit`), and a
 //! browser that leaves several calls in a row unanswered is closed as gone.
 
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::mem::ManuallyDrop;
 use std::os::fd::FromRawFd;
@@ -277,14 +277,23 @@ fn serve<B: Runtime>(
                 continue;
             }
         };
-        // An upload's bytes follow its line, even when the call is refused.
+        // An upload's bytes follow its line, even when the call is refused:
+        // into a file in the upload folder, gone unless the upload keeps it.
         let input = match &call {
             Call::Upload { size, .. } => {
-                let mut bytes = vec![0; *size as usize];
-                if stdin.read_exact(&mut bytes).is_err() {
-                    break;
+                let folder = core.browser().upload_folder();
+                let spooled = fs::create_dir_all(&folder)
+                    .and_then(|()| tempfile::NamedTempFile::new_in(&folder))
+                    .and_then(|mut file| {
+                        let copied = io::copy(&mut (&mut stdin).take(*size), &mut file)?;
+                        (copied == *size)
+                            .then_some(file)
+                            .ok_or_else(|| io::ErrorKind::UnexpectedEof.into())
+                    });
+                match spooled {
+                    Ok(file) => Some(file),
+                    Err(_) => break,
                 }
-                Some(bytes)
             }
             _ => None,
         };

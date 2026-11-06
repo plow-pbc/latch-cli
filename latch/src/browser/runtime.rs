@@ -204,7 +204,7 @@ impl Runtime {
     /// a download) come back as `bytes`.
     /// A worker that has not finished the call well past its limit is
     /// stuck, and is stopped.
-    pub async fn call(&self, call: Value, input: Option<&[u8]>) -> Result<Reply, Failure> {
+    pub async fn call(&self, call: Value, input: Option<&std::fs::File>) -> Result<Reply, Failure> {
         let within = (self.within)(&call);
         let mut worker = self.worker.lock().await;
         // The whole exchange: a worker that stops reading its upload or
@@ -212,7 +212,10 @@ impl Runtime {
         let exchange = async {
             worker.send(call).await?;
             if let Some(input) = input {
-                worker.stdin.write_all(input).await.map_err(|_| lost())?;
+                let mut input = tokio::fs::File::from_std(input.try_clone().map_err(|_| lost())?);
+                tokio::io::copy(&mut input, &mut worker.stdin)
+                    .await
+                    .map_err(|_| lost())?;
             }
             let answer = worker.answer().await?;
             let mut reply = Reply {
@@ -326,6 +329,16 @@ fn lost() -> Failure {
     Failure::new(code::browser_gone, "the browser worker stopped".into())
 }
 
+/// An upload's bytes in a file, as the host hands them to `call`.
+#[cfg(test)]
+pub(super) fn upload_file(bytes: &[u8]) -> std::fs::File {
+    use std::io::{Seek, Write};
+    let mut file = tempfile::tempfile().unwrap();
+    file.write_all(bytes).unwrap();
+    file.rewind().unwrap();
+    file
+}
+
 #[cfg(test)]
 mod tests {
     use std::os::unix::fs::PermissionsExt;
@@ -350,7 +363,7 @@ mod tests {
         (dir, runtime)
     }
 
-    async fn stopped_in_time(runtime: &Runtime, input: Option<&[u8]>) {
+    async fn stopped_in_time(runtime: &Runtime, input: Option<&std::fs::File>) {
         let started = Instant::now();
         let call = runtime.call(json!({"op": "upload"}), input);
         let failure = tokio::time::timeout(Duration::from_secs(5), call)
@@ -367,7 +380,7 @@ mod tests {
     async fn a_worker_that_takes_no_upload_is_stopped_by_the_calls_limit() {
         // It never reads: the upload fills the pipe and the write waits.
         let (_dir, runtime) = stuck("sleep 600").await;
-        stopped_in_time(&runtime, Some(&vec![0; 4 << 20])).await;
+        stopped_in_time(&runtime, Some(&upload_file(&vec![0; 4 << 20]))).await;
     }
 
     #[tokio::test]
