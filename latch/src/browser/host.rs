@@ -1181,9 +1181,7 @@ async fn receive(
         .await
         .map_err(|_| lost())?;
     audit.insert("file_sha256".into(), json!(sha256));
-    let mut file = spool.into_std().await;
-    std::io::Seek::rewind(&mut file).map_err(|_| lost())?;
-    Ok(file)
+    Ok(spool.into_std().await)
 }
 
 /// The worker's audit record of a failed call rides in the failure's

@@ -11,7 +11,7 @@ use std::time::Duration;
 use serde::Deserialize;
 use serde_json::Value;
 use tempfile::TempDir;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
 
@@ -213,6 +213,7 @@ impl Runtime {
             worker.send(call).await?;
             if let Some(input) = input {
                 let mut input = tokio::fs::File::from_std(input.try_clone().map_err(|_| lost())?);
+                input.rewind().await.map_err(|_| lost())?;
                 tokio::io::copy(&mut input, &mut worker.stdin)
                     .await
                     .map_err(|_| lost())?;
@@ -334,7 +335,6 @@ fn lost() -> Failure {
 pub(super) fn upload_file(bytes: &[u8]) -> std::fs::File {
     let mut file = tempfile::tempfile().unwrap();
     std::io::Write::write_all(&mut file, bytes).unwrap();
-    std::io::Seek::rewind(&mut file).unwrap();
     file
 }
 
