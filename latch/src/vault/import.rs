@@ -12,7 +12,9 @@
 //! default. A rule that holds everywhere here: no preview, warning, skip
 //! reason or error ever contains a field's value.
 
-use std::io::{Cursor, Read};
+use std::fs::File;
+use std::io::{Cursor, Read, Seek, Write};
+use std::path::Path;
 
 use serde::Serialize;
 use serde_json::{Map, Value, json};
@@ -506,29 +508,37 @@ fn category_name(category: &str) -> &'static str {
     }
 }
 
-/// 1PUX: a zip holding `export.data`, items nested in vaults in accounts.
-/// `export.data` is bounded before it is read: its declared and its
-/// compressed size must both be under 64 MiB (a declared size of zero is
-/// no bound at all), and the read stops at the bound whatever the header
-/// says, so neither a lying header nor a zip bomb runs away with memory.
-pub fn parse_1pux(bytes: &[u8]) -> Result<Parsed, Failure> {
-    let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|_| usage(NOT_1PUX))?;
-    let mut entry = zip.by_name("export.data").map_err(|_| usage(NOT_1PUX))?;
-    if entry.size() == 0 {
-        return Err(usage(NOT_1PUX));
+/// An export on disk, as `parse` reads it. A 1PUX is mostly attachments,
+/// which are never read: only its export.data is taken, into a zip of its
+/// own, so a large export is neither held in memory nor sent whole.
+pub fn read(path: &Path) -> Result<Vec<u8>, Failure> {
+    let io =
+        |err: std::io::Error| Failure::new(code::local_file, format!("{}: {err}", path.display()));
+    let mut file = File::open(path).map_err(io)?;
+    let mut lead = Vec::new();
+    (&mut file).take(4).read_to_end(&mut lead).map_err(io)?;
+    file.rewind().map_err(io)?;
+    if lead != b"PK\x03\x04" {
+        // One byte past the cap is enough for `parse` to refuse it.
+        let mut bytes = Vec::new();
+        file.take(MAX_IMPORT_BYTES as u64 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(io)?;
+        return Ok(bytes);
     }
-    if entry.size() > MAX_INFLATED_BYTES || entry.compressed_size() > MAX_INFLATED_BYTES {
-        return Err(usage("that export is too large to read"));
-    }
-    let declared = entry.size();
-    let mut data = Vec::new();
-    (&mut entry)
-        .take(declared + 1)
-        .read_to_end(&mut data)
+    let data = export_data(file)?;
+    let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    let stored =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    zip.start_file("export.data", stored)
+        .and_then(|()| Ok(zip.write_all(&data)?))
         .map_err(|_| usage(NOT_1PUX))?;
-    if data.len() as u64 != declared {
-        return Err(usage(NOT_1PUX));
-    }
+    Ok(zip.finish().map_err(|_| usage(NOT_1PUX))?.into_inner())
+}
+
+/// 1PUX: a zip holding `export.data`, items nested in vaults in accounts.
+pub fn parse_1pux(bytes: &[u8]) -> Result<Parsed, Failure> {
+    let data = export_data(Cursor::new(bytes))?;
     let root: Value = serde_json::from_slice(&data).map_err(|_| usage(NOT_1PUX))?;
     let Some(accounts) = root["accounts"].as_array() else {
         return Err(usage(NOT_1PUX));
@@ -557,6 +567,32 @@ pub fn parse_1pux(bytes: &[u8]) -> Result<Parsed, Failure> {
         }
     }
     Ok(parsed)
+}
+
+/// A 1PUX's export.data, its one entry that holds items; nothing else in
+/// the zip is read. It is bounded before it is read: its declared and its
+/// compressed size must both be under 64 MiB (a declared size of zero is
+/// no bound at all), and the read stops at the bound whatever the header
+/// says, so neither a lying header nor a zip bomb runs away with memory.
+fn export_data(reader: impl Read + Seek) -> Result<Vec<u8>, Failure> {
+    let mut zip = zip::ZipArchive::new(reader).map_err(|_| usage(NOT_1PUX))?;
+    let mut entry = zip.by_name("export.data").map_err(|_| usage(NOT_1PUX))?;
+    if entry.size() == 0 {
+        return Err(usage(NOT_1PUX));
+    }
+    if entry.size() > MAX_INFLATED_BYTES || entry.compressed_size() > MAX_INFLATED_BYTES {
+        return Err(usage("that export is too large to read"));
+    }
+    let declared = entry.size();
+    let mut data = Vec::new();
+    (&mut entry)
+        .take(declared + 1)
+        .read_to_end(&mut data)
+        .map_err(|_| usage(NOT_1PUX))?;
+    if data.len() as u64 != declared {
+        return Err(usage(NOT_1PUX));
+    }
+    Ok(data)
 }
 
 fn onepux_item(parsed: &mut Parsed, item: &Value, from: &Source) {
