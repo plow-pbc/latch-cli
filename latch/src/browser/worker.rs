@@ -283,17 +283,12 @@ fn serve<B: Runtime>(
             Call::Upload { size, .. } => {
                 let folder = core.browser().upload_folder();
                 let spooled = fs::create_dir_all(&folder)
-                    .and_then(|()| tempfile::NamedTempFile::new_in(&folder))
-                    .and_then(|mut file| {
-                        let copied = io::copy(&mut (&mut stdin).take(*size), &mut file)?;
-                        (copied == *size)
-                            .then_some(file)
-                            .ok_or_else(|| io::ErrorKind::UnexpectedEof.into())
-                    });
-                match spooled {
-                    Ok(file) => Some(file),
-                    Err(_) => break,
+                    .and_then(|()| tempfile::NamedTempFile::new_in(&folder));
+                let Ok(mut file) = spooled else { break };
+                if io::copy(&mut (&mut stdin).take(*size), &mut file).ok() != Some(*size) {
+                    break;
                 }
+                Some(file)
             }
             _ => None,
         };

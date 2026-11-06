@@ -1,6 +1,7 @@
 //! The host's handle on one session: its runtime's worker (`runtime.rs`).
 //! Its calls go to the worker one at a time.
 
+use std::fs::File;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -29,11 +30,7 @@ impl Session {
     /// `bytes`. Its time goes to the request's phases: what the worker says
     /// it spent waiting for pages to settle (its audit's `settle_ms`, taken
     /// out), and the rest as the browser's action.
-    pub async fn call_with(
-        &mut self,
-        call: Value,
-        input: Option<&std::fs::File>,
-    ) -> Result<Reply, Failure> {
+    pub async fn call_with(&mut self, call: Value, input: Option<&File>) -> Result<Reply, Failure> {
         let calling = Instant::now();
         let mut reply = self.runtime.call(call, input).await;
         let audit = match &mut reply {

@@ -1267,13 +1267,12 @@ mod tests {
         let size = mib << 20;
         let args = json!({"name": "big.bin", "size": size});
         let mut zeros = tokio::io::repeat(0).take(size);
-        let mut audit = Map::new();
-        let dir = tempfile::tempdir().unwrap();
+        let (mut audit, mut sink, dir) = (Map::new(), tokio::io::sink(), tempfile::tempdir());
         let file = receive(
             &args,
-            &mut tokio::io::sink(),
+            &mut sink,
             &mut zeros,
-            dir.path(),
+            dir.unwrap().path(),
             &mut audit,
         )
         .await

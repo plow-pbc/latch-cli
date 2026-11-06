@@ -332,10 +332,9 @@ fn lost() -> Failure {
 /// An upload's bytes in a file, as the host hands them to `call`.
 #[cfg(test)]
 pub(super) fn upload_file(bytes: &[u8]) -> std::fs::File {
-    use std::io::{Seek, Write};
     let mut file = tempfile::tempfile().unwrap();
-    file.write_all(bytes).unwrap();
-    file.rewind().unwrap();
+    std::io::Write::write_all(&mut file, bytes).unwrap();
+    std::io::Seek::rewind(&mut file).unwrap();
     file
 }
 
