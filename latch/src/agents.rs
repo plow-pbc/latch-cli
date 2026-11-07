@@ -21,7 +21,7 @@ use crate::dial::{self, ANSWER_WITHIN};
 use crate::failure::{Failure, code};
 use crate::hosts;
 use crate::login;
-use crate::plow::{ListedAgent, Plow};
+use crate::plow::{ListedAgent, Plow, PlowLine};
 use crate::state::StateDir;
 use crate::term;
 use crate::wire::Request;
@@ -132,7 +132,14 @@ async fn managed(
             .await?
         }
         Some(AgentsAction::Card { agent, output }) => card(plow, api_url, &agent, &output).await?,
-        Some(AgentsAction::Remove { agent, yes }) => remove(plow, &agent, yes).await?,
+        Some(AgentsAction::Remove { agent, line, yes }) => {
+            let agent = match (agent, line) {
+                (Some(named), _) => resolve(plow, &named).await?,
+                (None, Some(line)) => on_line(plow, &line).await?,
+                (None, None) => unreachable!("clap requires an agent or --line"),
+            };
+            remove(plow, agent, yes).await?
+        }
     })
 }
 
@@ -321,6 +328,40 @@ async fn resolve(plow: &Plow, named: &str) -> Result<ListedAgent, Failure> {
     }
 }
 
+/// The account's agent on the line `named` names, whatever its status: Plow
+/// keeps at most one undeleted agent per owner and line, so more is
+/// refused rather than chosen between.
+async fn on_line(plow: &Plow, named: &str) -> Result<ListedAgent, Failure> {
+    let line = line_named(plow, named).await?;
+    let agents: Vec<ListedAgent> = plow.agent_list().await?;
+    let mut found: Vec<ListedAgent> = agents
+        .into_iter()
+        .filter(|agent| agent.line.uid == line.uid)
+        .collect();
+    let number = line.provider_key;
+    match found.len() {
+        1 => Ok(found.remove(0)),
+        0 => {
+            let message = format!("no agent in this account is on line {number}");
+            let mut failure = Failure::new(code::no_such_agent, message);
+            failure.next = Some("latch agents".into());
+            Err(failure)
+        }
+        n => {
+            let message =
+                format!("{n} agents in this account are on line {number}: name one by its uid");
+            let mut failure = Failure::new(code::ambiguous_agent, message);
+            failure.next = Some("latch agents".into());
+            let agents: Vec<Value> = found
+                .iter()
+                .map(|agent| json!({"uid": agent.uid, "name": agent.name}))
+                .collect();
+            failure.details = json!({"agents": agents});
+            Err(failure)
+        }
+    }
+}
+
 /// The kinds of cloud agent Plow offers.
 async fn catalog(plow: &Plow) -> Result<Value, Failure> {
     let kinds: Vec<Value> = plow
@@ -437,7 +478,7 @@ async fn new(
         Target::Image(image) => format!("exe:{image}"),
         Target::Own => OWN.to_string(),
     };
-    let line_uid = line_named(plow, line).await?;
+    let line_uid = line_named(plow, line).await?.uid;
     let reserved = match &credential_file {
         Some(path) => Some(CredentialFile::reserve(path)?),
         None => None,
@@ -468,16 +509,16 @@ async fn new(
     }))
 }
 
-/// The uid of the line `named` names: its uid, or its number.
-async fn line_named(plow: &Plow, named: &str) -> Result<String, Failure> {
+/// The line `named` names: by its uid, or its number.
+async fn line_named(plow: &Plow, named: &str) -> Result<PlowLine, Failure> {
     let lines = plow.lines().await?;
     match lines
         .into_iter()
         .find(|line| line.uid == named || line.provider_key == named)
     {
-        Some(line) => Ok(line.uid),
+        Some(line) => Ok(line),
         None => {
-            let message = format!("Plow has no line {named:?}");
+            let message = format!("Plow has no phone line {named:?}");
             let mut failure = Failure::new(code::no_such_line, message);
             failure.next = Some("latch agents lines".into());
             Err(failure)
@@ -520,22 +561,16 @@ fn lost(code: &str) -> bool {
     matches!(code, "plow_unreachable" | "plow_error")
 }
 
-/// Removes `named`, once its owner says so.
-async fn remove(plow: &Plow, named: &str, yes: bool) -> Result<Value, Failure> {
-    let agent = resolve(plow, named).await?;
+/// Removes `agent`, once its owner says so.
+async fn remove(plow: &Plow, agent: ListedAgent, yes: bool) -> Result<Value, Failure> {
     let own = agent.provider == OWN;
     let what = format!("{} ({})", agent.name, agent.line.provider_key);
     if !yes {
         if !term::interactive() {
             let message = format!("removing {what} signs it out of Plow");
             let mut failure = Failure::new(code::confirmation_required, message);
-            failure.next = Some(
-                format!(
-                    "latch agents remove {} --yes",
-                    crate::login::shell_quoted(named)
-                )
-                .into(),
-            );
+            // By uid, the one agent asked about, whichever way it was named.
+            failure.next = Some(format!("latch agents remove {} --yes", agent.uid).into());
             return Err(failure);
         }
         let program = if own {

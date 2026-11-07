@@ -2476,6 +2476,9 @@ struct LiveState {
     /// The owner's login is a cloud host's credential: a device's, with
     /// none of the owner's own scopes.
     host_login: bool,
+    /// Agents Plow lists after the research bot, as `GET /v1/agents` gives
+    /// them; one named "Lost" has its removal's answer lost.
+    more_agents: Vec<Value>,
 }
 
 impl LivePlow {
@@ -2503,6 +2506,7 @@ impl LivePlow {
                 tokens_slow: std::time::Duration::ZERO,
                 judge: None,
                 host_login: false,
+                more_agents: Vec::new(),
             })),
         };
         let serving = plow.clone();
@@ -2745,6 +2749,9 @@ impl LivePlow {
                         line("ln_free", "imessage", "+15550000002", true),
                         line("ln_taken", "imessage", "+15550000003", false),
                         line("ln_lost", "imessage", "+15550000004", true),
+                        line("line_agent", "imessage", "+14155550123", false),
+                        // An agent whose start failed doesn't hold its line.
+                        line("ln_failed", "imessage", "+15550000005", true),
                         line("ln_mail", "email", "agent@example.com", true)]}),
                 )
             }
@@ -2785,10 +2792,18 @@ impl LivePlow {
                        "created_at": "2026-10-20T10:00:00Z", "status": null,
                        "failure_code": null, "credential": null}),
             ),
-            // As Plow lists them: one agent its owner runs.
+            ("DELETE", path) if kind == "device" && path.starts_with("/v1/agents/") => {
+                let uid = &path["/v1/agents/".len()..];
+                match state.more_agents.iter().find(|agent| agent["uid"] == uid) {
+                    Some(agent) if agent["name"] == "Lost" => (500, json!({})),
+                    Some(agent) => (200, agent.clone()),
+                    None => (404, json!({"detail": "Agent not found"})),
+                }
+            }
+            // As Plow lists them: one agent its owner runs, then any more.
             ("GET", "/v1/agents") if kind == "device" => (
                 200,
-                json!([{"uid": AGENT_UID, "name": "Research bot", "provider": "self_hosted",
+                Value::Array([vec![json!({"uid": AGENT_UID, "name": "Research bot", "provider": "self_hosted",
                         "line": {"uid": "line_agent", "object": "line", "provider_type": "imessage",
                                  "provider_key": "+14155550123", "display_name": "Research line",
                                  "card_url": format!("{}/cards/research.vcf", self.url)},
@@ -2796,7 +2811,8 @@ impl LivePlow {
                         "image": null, "status": null, "failure_code": null, "settings": {},
                         "credential": {"id": 7, "name": null, "scopes": [], "connected": false,
                                        "created_at": "2026-10-20T10:00:00Z",
-                                       "last_seen_at": "2026-10-22T09:00:00Z"}}]),
+                                       "last_seen_at": "2026-10-22T09:00:00Z"}})],
+                       state.more_agents.clone()].concat()),
             ),
             ("GET", "/v1/auth/owner-uid") => (200, json!({"owner_uid": "usr_synthetic"})),
             // Super-scope and `account:usage`: an owner's login only.
@@ -4495,7 +4511,13 @@ fn agents_are_shown_created_and_removed_by_their_owner() {
         .collect();
     assert_eq!(
         numbers,
-        ["+15550000002", "+15550000003", "+15550000004"],
+        [
+            "+15550000002",
+            "+15550000003",
+            "+15550000004",
+            "+14155550123",
+            "+15550000005"
+        ],
         "no mailbox"
     );
     assert_eq!(lines["lines"][1]["available"], false);
@@ -4827,13 +4849,148 @@ fn agents_are_shown_created_and_removed_by_their_owner() {
     );
     assert_eq!(
         error["error"]["next"],
-        "latch agents remove 'Research bot' --yes"
+        format!("latch agents remove {AGENT_UID} --yes")
     );
     assert_eq!(deletes(), 0);
     let (code, removed, _) = run(&["agents", "remove", "Research bot", "--yes"]);
     assert_eq!(code, Some(0), "{removed}");
     assert_eq!(removed["removed"]["uid"], AGENT_UID);
     assert_eq!(deletes(), 1);
+}
+
+/// `agents remove --line` removes the account's agent on a phone line,
+/// named by its number or uid, a failed one included: one DELETE, asked
+/// first, retried only by the agent's uid.
+#[test]
+fn an_agent_is_removed_by_its_phone_line() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let run = |args: &[&str]| {
+        let output = latch(&host, args, &[]);
+        let printed = if output.status.success() {
+            &output.stdout
+        } else {
+            &output.stderr
+        };
+        let json: Value = serde_json::from_slice(printed).unwrap_or(Value::Null);
+        (output.status.code(), json)
+    };
+    let deletes = || {
+        plow.seen()
+            .iter()
+            .filter(|(line, _)| line.starts_with("DELETE "))
+            .map(|(line, _)| line.split(' ').nth(1).unwrap().to_string())
+            .collect::<Vec<_>>()
+    };
+    let on_line = |uid: &str, name: &str, line: &str, number: &str| {
+        json!({"uid": uid, "name": name, "provider": "exe:hermes",
+               "line": {"uid": line, "object": "line", "provider_type": "imessage",
+                        "provider_key": number, "display_name": null},
+               "created_at": "2026-10-21T10:00:00Z", "status": "failed",
+               "failure_code": "start_failed", "credential": null})
+    };
+    const FAILED: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    plow.state.lock().unwrap().more_agents =
+        vec![on_line(FAILED, "Broken", "ln_failed", "+15550000005")];
+
+    // No one to ask and no --yes: the retry names the agent by uid.
+    let (code, error) = run(&["agents", "remove", "--line", "+14155550123"]);
+    assert_eq!(
+        (code, &error["error"]["code"]),
+        (Some(2), &json!("confirmation_required")),
+        "{error}"
+    );
+    assert_eq!(
+        error["error"]["next"],
+        format!("latch agents remove {AGENT_UID} --yes")
+    );
+    assert!(deletes().is_empty());
+
+    // By the line's number, then a failed agent by the line's uid.
+    let (code, removed) = run(&["agents", "remove", "--line", "+14155550123", "--yes"]);
+    assert_eq!(code, Some(0), "{removed}");
+    assert_eq!(removed["removed"]["uid"], AGENT_UID);
+    let (code, removed) = run(&["agents", "remove", "--line", "ln_failed", "--yes"]);
+    assert_eq!(code, Some(0), "{removed}");
+    assert_eq!(
+        (&removed["removed"]["uid"], &removed["removed"]["status"]),
+        (&json!(FAILED), &json!("failed"))
+    );
+    assert_eq!(
+        deletes(),
+        [
+            format!("/v1/agents/{AGENT_UID}"),
+            format!("/v1/agents/{FAILED}")
+        ]
+    );
+
+    // Refused before anything is removed: a line Plow doesn't have, a line
+    // with no agent of the account's, and more than one on a line.
+    plow.state.lock().unwrap().more_agents = vec![
+        on_line(FAILED, "Broken", "ln_failed", "+15550000005"),
+        on_line(
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "Again",
+            "ln_failed",
+            "+15550000005",
+        ),
+    ];
+    for (line, code, next) in [
+        ("+1999", "no_such_line", "latch agents lines"),
+        ("ln_free", "no_such_agent", "latch agents"),
+        ("+15550000005", "ambiguous_agent", "latch agents"),
+    ] {
+        let (exit, error) = run(&["agents", "remove", "--line", line, "--yes"]);
+        assert_eq!(
+            (exit, &error["error"]["code"], &error["error"]["next"]),
+            (Some(2), &json!(code), &json!(next)),
+            "{error}"
+        );
+    }
+    let (_, error) = run(&["agents", "remove", "--line", "+15550000005", "--yes"]);
+    assert_eq!(
+        error["error"]["agents"],
+        json!([{"uid": FAILED, "name": "Broken"},
+               {"uid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "name": "Again"}])
+    );
+    assert_eq!(deletes().len(), 2);
+
+    // A lost answer: sent once, never retried, and the way on is to look.
+    const LOST: &str = "cccccccccccccccccccccccccccccccc";
+    plow.state.lock().unwrap().more_agents =
+        vec![on_line(LOST, "Lost", "ln_failed", "+15550000005")];
+    let (code, error) = run(&["agents", "remove", "--line", "ln_failed", "--yes"]);
+    assert_eq!(
+        (code, &error["error"]["code"], &error["error"]["next"]),
+        (
+            Some(5),
+            &json!("outcome_unknown"),
+            &json!(format!("latch agents show {LOST}"))
+        ),
+        "{error}"
+    );
+    assert_eq!(deletes().len(), 3);
+
+    // Exactly one of an agent and --line.
+    for args in [
+        &["agents", "remove", "--yes"][..],
+        &[
+            "agents",
+            "remove",
+            "Research bot",
+            "--line",
+            "ln_failed",
+            "--yes",
+        ],
+    ] {
+        let (code, error) = run(args);
+        assert_eq!(
+            (code, &error["error"]["code"]),
+            (Some(2), &json!("usage")),
+            "{args:?}"
+        );
+    }
 }
 
 #[test]
