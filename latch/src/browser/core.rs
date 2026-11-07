@@ -372,8 +372,13 @@ impl<D: Driver> Core<D> {
     /// Runs one call. Close is the worker's to do, not the core's.
     /// The audit record goes with an error too, as its details' `audit`,
     /// which the host takes out before the agent sees the error.
-    /// `input` is an upload's bytes.
-    pub fn call(&mut self, call: Call, input: Option<Vec<u8>>) -> Result<Answer, Failure> {
+    /// `input` is an upload's bytes, in a file in the upload folder, or why
+    /// they couldn't be written there.
+    pub fn call(
+        &mut self,
+        call: Call,
+        input: Option<std::io::Result<tempfile::NamedTempFile>>,
+    ) -> Result<Answer, Failure> {
         let mut audit = Map::new();
         self.settled = None;
         let fill_step = matches!(
@@ -480,12 +485,13 @@ impl<D: Driver> Core<D> {
                 snapshot,
                 target,
                 name,
-                size: _,
+                size,
             } => self.upload(
                 snapshot.as_deref(),
                 &target,
                 &name,
-                input.unwrap_or_default(),
+                input.expect("an upload's bytes come with it"),
+                size,
                 &mut audit,
             ),
             Call::Downloads => self.downloads(&mut audit),
@@ -629,7 +635,8 @@ impl<D: Driver> Core<D> {
         snapshot: Option<&str>,
         target: &str,
         name: &str,
-        bytes: Vec<u8>,
+        file: std::io::Result<tempfile::NamedTempFile>,
+        size: u64,
         audit: &mut Map<String, Value>,
     ) -> Result<Value, Failure> {
         audit.insert("target".into(), json!(target));
@@ -662,7 +669,7 @@ impl<D: Driver> Core<D> {
         self.uploads += 1;
         let folder = self.driver.upload_folder().join(self.uploads.to_string());
         fs::create_dir_all(&folder)
-            .and_then(|()| fs::write(folder.join(&name), &bytes))
+            .and_then(|()| file?.persist(folder.join(&name)).map_err(|err| err.error))
             .map_err(|err| Failure::new(code::upload_failed, err.to_string()))?;
         self.driver.set_files(
             &frame,
@@ -673,7 +680,7 @@ impl<D: Driver> Core<D> {
         let mut result = Map::new();
         result.insert("action".into(), json!("upload"));
         result.insert("target".into(), json!({"ref": target}));
-        result.insert("file".into(), json!({"name": name, "size": bytes.len()}));
+        result.insert("file".into(), json!({"name": name, "size": size}));
         result.insert("dispatched".into(), json!(true));
         self.after(&before, events, &mut result)?;
         Ok(Value::Object(result))

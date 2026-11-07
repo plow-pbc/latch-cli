@@ -164,6 +164,10 @@ const LABELS: &[(u8, &str, &str)] = &[
     (IDENTITY, "date of birth", "birthDate"),
 ];
 
+/// What a fill refuses a card for lacking, where the page asks for it. A
+/// cardholder name isn't among them, so a card saved without one still fills.
+pub const CARD_NEEDS: [&str; 4] = ["number", "code", "expiry month", "expiry year"];
+
 /// The labels an owner can give values for, per kind, and whether each is
 /// secret, as the classifier says (so it is prompted for without echo).
 pub fn entry_labels(kind: u8) -> Vec<(&'static str, bool)> {
@@ -287,6 +291,14 @@ impl Item {
                 .and_then(|l| l.totp.as_deref())
                 .is_some_and(|t| !t.is_empty()),
         }
+    }
+
+    /// Which of `CARD_NEEDS` a card lacks.
+    pub fn card_missing(&self) -> Vec<&'static str> {
+        CARD_NEEDS
+            .into_iter()
+            .filter(|label| self.raw.kind == CARD && self.raw.get(label).is_none())
+            .collect()
     }
 
     /// Checks an item before it is stored: one of latch's four kinds, a

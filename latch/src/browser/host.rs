@@ -50,8 +50,9 @@ use crate::wire::{self, Response};
 
 /// The most of an `eval` script the audit keeps, as with `exec` argv.
 const MAX_SCRIPT_AUDIT: usize = 4096;
-/// The largest file `upload` takes.
-const MAX_UPLOAD: u64 = 100 * 1024 * 1024;
+/// The largest file `upload` takes. An upload streams through files, never
+/// memory, so this guards the host's and the session's disk.
+const MAX_UPLOAD: u64 = 2 << 30;
 /// How long a closing runtime may take before its worker is killed.
 const CLOSING: Duration = Duration::from_secs(15);
 
@@ -647,8 +648,8 @@ async fn run_command(
     }
     let mut input = None;
     if command == "upload" {
-        match receive(&args, send, recv, &mut audit).await {
-            Ok(bytes) => input = Some(bytes),
+        match receive(&args, send, recv, &browsers.state_dir, &mut audit).await {
+            Ok(file) => input = Some(file),
             Err(failure) => {
                 return Done {
                     response: Response::error(&failure),
@@ -669,7 +670,7 @@ async fn run_command(
         &command,
         &name,
         &args,
-        input.as_deref(),
+        input.as_ref(),
         &mut audit,
     )
     .await;
@@ -730,7 +731,7 @@ pub(super) async fn call(
     command: &str,
     name: &str,
     args: &Value,
-    input: Option<&[u8]>,
+    input: Option<&std::fs::File>,
     audit: &mut Map<String, Value>,
 ) -> Result<(Value, Option<Vec<u8>>), Failure> {
     let mut answered = answer(browsers, caller, command, name, args, input, audit).await;
@@ -752,7 +753,7 @@ async fn answer(
     command: &str,
     name: &str,
     args: &Value,
-    input: Option<&[u8]>,
+    input: Option<&std::fs::File>,
     audit: &mut Map<String, Value>,
 ) -> Result<(Value, Option<Vec<u8>>), Failure> {
     let key = caller.key;
@@ -1033,7 +1034,7 @@ async fn worker(
     entry: &Entry,
     command: &str,
     args: &Value,
-    input: Option<&[u8]>,
+    input: Option<&std::fs::File>,
     audit: &mut Map<String, Value>,
 ) -> Result<(Value, Option<Vec<u8>>), Failure> {
     let call = worker_call(command, args)?;
@@ -1146,14 +1147,16 @@ fn eval_audit(script: &str, audit: &mut Map<String, Value>) {
     );
 }
 
-/// An upload's bytes from the client, after telling it to go ahead. The
-/// audit keeps the file's name, size and sha256.
+/// An upload's bytes from the client, after telling it to go ahead, in a
+/// file under `dir` that is gone once dropped. The audit keeps the file's
+/// name, size and sha256.
 async fn receive(
     args: &Value,
-    send: &mut SendStream,
-    recv: &mut RecvStream,
+    send: &mut (impl tokio::io::AsyncWrite + Unpin),
+    recv: &mut (impl tokio::io::AsyncRead + Unpin),
+    dir: &std::path::Path,
     audit: &mut Map<String, Value>,
-) -> Result<Vec<u8>, Failure> {
+) -> Result<std::fs::File, Failure> {
     let (Some(size), Some(name)) = (args["size"].as_u64(), args["name"].as_str()) else {
         return Err(Failure::new(
             code::bad_arguments,
@@ -1171,12 +1174,14 @@ async fn receive(
     let go = serde_json::to_vec(&Response::Ok(json!({}))).expect("serializes");
     let lost = || Failure::new(code::connection_lost, "the upload broke off".into());
     wire::write_frame(send, &go).await.map_err(|_| lost())?;
-    let mut bytes = Vec::with_capacity(size as usize);
-    let sha256 = wire::copy(recv, &mut bytes, size)
+    let spool = tempfile::tempfile_in(dir)
+        .map_err(|err| Failure::new(code::upload_failed, err.to_string()))?;
+    let mut spool = tokio::fs::File::from_std(spool);
+    let sha256 = wire::copy(recv, &mut spool, size)
         .await
         .map_err(|_| lost())?;
     audit.insert("file_sha256".into(), json!(sha256));
-    Ok(bytes)
+    Ok(spool.into_std().await)
 }
 
 /// The worker's audit record of a failed call rides in the failure's
@@ -1250,6 +1255,34 @@ fn no_such_session() -> Failure {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An upload past what fits in memory twice over is taken, its sha256
+    /// that of every byte.
+    #[tokio::test]
+    async fn an_upload_past_a_hundred_megabytes_is_taken_whole() {
+        use tokio::io::AsyncReadExt;
+        let mib = 101;
+        let size = mib << 20;
+        let args = json!({"name": "big.bin", "size": size});
+        let mut zeros = tokio::io::repeat(0).take(size);
+        let (mut audit, mut sink, dir) = (Map::new(), tokio::io::sink(), tempfile::tempdir());
+        let file = receive(
+            &args,
+            &mut sink,
+            &mut zeros,
+            dir.unwrap().path(),
+            &mut audit,
+        )
+        .await
+        .unwrap();
+        assert_eq!(file.metadata().unwrap().len(), size);
+        let mut hasher = Sha256::new();
+        for _ in 0..mib {
+            hasher.update([0u8; 1 << 20]);
+        }
+        assert_eq!(audit["file_size"], size);
+        assert_eq!(audit["file_sha256"], to_hex(&hasher.finalize()));
+    }
 
     #[test]
     fn a_worker_call_carries_only_its_commands_arguments() {

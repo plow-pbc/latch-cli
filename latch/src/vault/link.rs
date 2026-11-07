@@ -33,7 +33,7 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
 use super::host::{Vault, add, item_from};
-use super::item::{entry_labels, kind_code};
+use super::item::{CARD_NEEDS, entry_labels, kind_code};
 use crate::failure::{Code, Failure, code};
 use crate::state::to_hex;
 
@@ -75,6 +75,9 @@ pub struct Field {
     secret: bool,
     /// Must be filled before the item is saved (see `required`).
     required: bool,
+    /// One the link did not ask for, offered among the optional fields.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    more: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     value: Option<String>,
 }
@@ -149,8 +152,9 @@ pub fn open(
 
 /// The fields the phone shows: the owner's non-secret ones, filled in;
 /// what each kind always asks for (a login's username and password, a
-/// card's number and code, a note's text); and any more the owner names
-/// with `--ask` (an identity's ssn, say), typed on the phone.
+/// card's number, code, expiry and cardholder name, a note's text); any
+/// more the owner names with `--ask` (an identity's ssn, say), typed on the
+/// phone; and the rest of the kind's fields, for the owner to fill or skip.
 fn fields(kind: &str, given: &Value, ask: &Value) -> Result<Vec<Field>, Failure> {
     let labels = kind_code(kind).map(entry_labels).unwrap_or_default();
     // A secret is typed on the phone only, never given with the request.
@@ -174,13 +178,20 @@ fn fields(kind: &str, given: &Value, ask: &Value) -> Result<Vec<Field>, Failure>
                 label: label.clone(),
                 secret: false,
                 required: required(kind, label, false),
+                more: false,
                 value: Some(value.as_str()?.to_string()),
             })
         })
         .collect();
     let always: &[&str] = match kind {
         "login" => &["username", "password"],
-        "card" => &["number", "code"],
+        "card" => &[
+            "number",
+            "code",
+            "expiry month",
+            "expiry year",
+            "cardholder name",
+        ],
         "note" => &["notes"],
         _ => &[],
     };
@@ -203,17 +214,31 @@ fn fields(kind: &str, given: &Value, ask: &Value) -> Result<Vec<Field>, Failure>
             label: label.to_string(),
             secret: *secret,
             required: required(kind, label, *secret),
+            more: false,
             value: None,
         });
+    }
+    for (label, secret) in labels {
+        if !fields.iter().any(|f| f.label == label) {
+            fields.push(Field {
+                label: label.to_string(),
+                secret,
+                required: false,
+                more: true,
+                value: None,
+            });
+        }
     }
     Ok(fields)
 }
 
 /// Whether a field must be filled before the item is saved, whether the
-/// owner gave it or the phone types it: every secret, and a note's text,
-/// which is all a note is.
+/// owner gave it or the phone types it: every secret asked for, a note's
+/// text, which is all a note is, and all that a checkout takes from a card.
 fn required(kind: &str, label: &str, secret: bool) -> bool {
-    secret || (kind == "note" && label == "notes")
+    secret
+        || (kind == "note" && label == "notes")
+        || (kind == "card" && (CARD_NEEDS.contains(&label) || label == "cardholder name"))
 }
 
 /// The relay as a browser must dial it. iroh names relays as fully
@@ -539,7 +564,7 @@ mod tests {
 
         let refused = submitted(&vault, &"0".repeat(32), json!({"password": "x"})).unwrap_err();
         assert_eq!(refused.code, "no_such_link");
-        let refused = submitted(&vault, &code, json!({"totp": "JBSWY3DPEHPK3PXP"})).unwrap_err();
+        let refused = submitted(&vault, &code, json!({"nickname": "x"})).unwrap_err();
         assert_eq!(refused.code, "bad_item");
         // A refused submit leaves the link open.
         assert!(submitted(&vault, &code, json!({"password": "made-up"})).is_ok());
@@ -564,12 +589,14 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            shown["request"]["fields"],
+            shown["request"]["fields"].as_array().unwrap()[..3],
             json!([
                 {"label": "first name", "secret": false, "required": false, "value": "Ada"},
                 {"label": "ssn", "secret": true, "required": true},
                 {"label": "passport number", "secret": true, "required": true},
             ])
+            .as_array()
+            .unwrap()[..]
         );
         let values = json!({"ssn": "078-05-1120", "passport number": "X1234567"});
         submitted(&vault, code, values).unwrap();
@@ -588,6 +615,89 @@ mod tests {
         assert_eq!(release(0, "ssn"), "078-05-1120");
         assert_eq!(release(0, "passport number"), "X1234567");
         assert_eq!(release(1, "notes"), "made-up text");
+    }
+
+    #[test]
+    fn a_link_shows_every_field_its_kind_has_and_needs_only_what_it_asked_for() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = Vault::new(dir.path().into());
+        for (kind, code) in [("login", 1), ("note", 2), ("card", 3), ("identity", 4)] {
+            let mut args = json!({"kind": kind, "title": "Item"});
+            if kind == "login" {
+                args["sites"] = json!(["shop.example"]);
+            }
+            let link = open(&vault, &here(), &args, false, &mut Map::new()).unwrap();
+            let args = json!({"code": link["code"]});
+            let shown = page(&vault, &here(), &args, None, &mut Map::new()).unwrap();
+            let mut labels: Vec<&str> = shown["request"]["fields"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|field| field["label"].as_str().unwrap())
+                .collect();
+            labels.sort();
+            let mut every: Vec<&str> = entry_labels(code).iter().map(|(l, _)| *l).collect();
+            every.sort();
+            assert_eq!(labels, every, "{kind}");
+        }
+        // An identity's secrets the link did not ask for can be left empty.
+        let args = json!({"kind": "identity", "title": "Me"});
+        let link = open(&vault, &here(), &args, false, &mut Map::new()).unwrap();
+        let code = link["code"].as_str().unwrap();
+        submitted(
+            &vault,
+            code,
+            json!({"first name": "Ada", "ssn": "078-05-1120"}),
+        )
+        .unwrap();
+        let item = vault.with(|store| Ok(store.list())).unwrap()[0]
+            .item
+            .clone();
+        let ssn = vault.with(|store| store.release(&item, "ssn")).unwrap();
+        assert_eq!(ssn, "078-05-1120");
+    }
+
+    #[test]
+    fn a_card_link_asks_what_a_checkout_needs_and_saves_nothing_without_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = Vault::new(dir.path().into());
+        let args = json!({"kind": "card", "title": "Visa"});
+        let link = open(&vault, &here(), &args, false, &mut Map::new()).unwrap();
+        let code = link["code"].as_str().unwrap();
+        let shown = page(
+            &vault,
+            &here(),
+            &json!({"code": code}),
+            None,
+            &mut Map::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            shown["request"]["fields"],
+            json!([
+                {"label": "number", "secret": true, "required": true},
+                {"label": "code", "secret": true, "required": true},
+                {"label": "expiry month", "secret": false, "required": true},
+                {"label": "expiry year", "secret": false, "required": true},
+                {"label": "cardholder name", "secret": false, "required": true},
+                {"label": "brand", "secret": false, "required": false, "more": true},
+                {"label": "notes", "secret": false, "required": false, "more": true},
+            ])
+        );
+        let refused = submitted(
+            &vault,
+            code,
+            json!({"number": "4242424242424242", "code": "731"}),
+        )
+        .unwrap_err();
+        assert_eq!(refused.code, "missing_field");
+        assert!(refused.message.contains("expiry month"));
+        assert!(vault.list_if_present().is_empty());
+        let values = json!({"number": "4242 4242 4242 4242", "code": "731",
+                            "expiry month": "4", "expiry year": "2031",
+                            "cardholder name": "Ada Lovelace"});
+        submitted(&vault, code, values).unwrap();
+        assert_eq!(vault.list_if_present().len(), 1);
     }
 
     #[test]

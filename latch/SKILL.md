@@ -82,6 +82,11 @@ as `latch status` lists it. Branch on
   address book on a Mac host: search, a thread, chats; a person's handles.
   `--from` takes a handle, never a name: `latch contacts search --host M
   Ada` gives Ada's, for `latch messages search --host M --from HANDLE`.
+  A message with `attachments` above 0 has files: `latch messages
+  attachment --host M --message-id ID --out DIR` writes them here. One
+  that is `not_downloaded` is not on the Mac (only in iCloud or on a
+  phone): ask the owner to open it in Messages on the Mac, or to send
+  it; Full Disk Access would not help.
   Any latch can ask, on Linux too; a host that isn't a Mac answers
   `unsupported_platform`.
 
@@ -153,14 +158,23 @@ Plow chat instead, and type it as in step 3.
 
 The owner's cards are in the vault (`latch vault list --kind card`). A
 card saved with no sites fills on any shop; never ask the owner for its
-number. At the checkout page:
+number in chat. A card that is missing or incomplete is added from the
+owner's phone with a card link, `latch vault --host H link --kind card
+--title TITLE`, which asks for the number, code, expiry month and year,
+and cardholder name. When `latch status` shows `login.kind` `device`
+(you run on one of the owner's own devices), make it yourself, send its
+`url` and check `link-state` as for a login. With an agent's key, which
+can link only a login, ask the owner to run that command on one of their
+devices. At the checkout page:
 
 1. `observe`: `fill.items` lists the cards (`kind` `card`), and
    `fill.suggestions` how one fills the page's card fields.
 2. `latch browser --session ID fill --item vN --suggested S`, or map it
    yourself: `fill --item vN --field number=eN --field code=eN --field
    expiry=eN --field "cardholder name"=eN`. A card is never picked for
-   you: name it with `--item`.
+   you: name it with `--item`. A card that lacks a number, code or expiry
+   the page asks for is not filled (`card_incomplete`, its `missing` fields
+   in `details`): have the owner add it again with a card link, as above.
 3. The card stays in the page's fields, which you can't read: screenshots
    show them blank, and `eval` waits until they are gone. Check the page
    (ZIP, a box to untick, the total), then press its Pay button yourself

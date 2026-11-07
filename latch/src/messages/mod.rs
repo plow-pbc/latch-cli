@@ -12,9 +12,12 @@
 pub mod access;
 pub mod host;
 
+use std::path::Path;
+
 use serde_json::{Value, json};
 
 use crate::cli::{ContactsCommand, MessagesCommand};
+use crate::failure::{Failure, code};
 
 /// What the agent guide says first, and every answer's `warning` repeats.
 pub const HELP: &str = "\
@@ -98,6 +101,10 @@ pub fn messages_request(command: &MessagesCommand) -> Value {
             flag("--cursor", cursor.clone());
             "chats"
         }
+        MessagesCommand::Attachment { message_id, .. } => {
+            flag("--message-id", Some(message_id.to_string()));
+            "attachment"
+        }
         MessagesCommand::Unreplied {
             within,
             limit,
@@ -111,6 +118,36 @@ pub fn messages_request(command: &MessagesCommand) -> Value {
         }
     };
     json!({"action": action, "args": args})
+}
+
+/// Writes each file of an `attachment` answer into `out` (made if need be)
+/// as `<message id>-<index>-<name>`, and gives the answer back with each
+/// file's `path` where its `data` was. The name is the sender's: only its
+/// last part is used.
+pub async fn save(mut answer: Value, out: &Path) -> Result<Value, Failure> {
+    std::fs::create_dir_all(out)
+        .map_err(|err| Failure::new(code::local_file, format!("{}: {err}", out.display())))?;
+    let message = answer["message_id"].clone();
+    for file in answer["attachments"].as_array_mut().into_iter().flatten() {
+        let Some(data) = file.as_object_mut().and_then(|file| file.remove("data")) else {
+            continue;
+        };
+        let bytes = data
+            .as_str()
+            .and_then(crate::browser::cdp::base64_decode)
+            .ok_or_else(|| {
+                Failure::new(code::bad_response, "an attachment is not base64".into())
+            })?;
+        let name = file["name"]
+            .as_str()
+            .and_then(|name| Path::new(name).file_name())
+            .and_then(|name| name.to_str())
+            .unwrap_or("attachment");
+        let path = out.join(format!("{message}-{}-{name}", file["index"]));
+        crate::transfer::save(&path, &bytes).await?;
+        file["path"] = json!(path);
+    }
+    Ok(answer)
 }
 
 /// The request for one `latch contacts` call.
@@ -139,5 +176,30 @@ pub fn contacts_request(command: &ContactsCommand) -> Value {
             args.extend(handles.iter().cloned());
             json!({"action": "lookup", "args": args})
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn an_attachment_is_written_under_its_last_name_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("made");
+        let answer = json!({"message_id": 7, "attachments": [
+            {"index": 0, "name": "../../.ssh/authorized_keys", "data": "aGk="},
+            {"index": 1, "name": null, "data": "aGk="},
+            {"index": 2, "name": "IMG.jpeg", "error": "not_downloaded"},
+        ]});
+        let saved = save(answer, &out).await.unwrap();
+        let files = &saved["attachments"];
+        for (index, name) in [(0, "7-0-authorized_keys"), (1, "7-1-attachment")] {
+            assert_eq!(std::fs::read(out.join(name)).unwrap(), b"hi");
+            assert_eq!(files[index]["path"], json!(out.join(name)));
+            assert!(files[index].get("data").is_none());
+        }
+        assert_eq!(files[2]["path"], Value::Null);
+        assert_eq!(std::fs::read_dir(&out).unwrap().count(), 2);
     }
 }

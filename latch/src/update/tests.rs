@@ -716,7 +716,7 @@ async fn an_app_not_signed_by_plow_is_refused() {
     assert!(
         failure
             .message
-            .contains("not co.plow.latch.cli by team 3559PD337Z"),
+            .contains("is not co.plow.latch.cli signed by team 3559PD337Z, intact"),
         "{}",
         failure.message
     );

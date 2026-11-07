@@ -791,9 +791,11 @@ pub enum VaultCommand {
         /// A non-secret field, filled in on the phone: LABEL=VALUE
         #[arg(long)]
         field: Vec<String>,
-        /// Also ask the phone for this field (an identity's ssn, say); a
-        /// login's username and password, a card's number and code and a
-        /// note's text are always asked for
+        /// Also ask the phone for this field, and require it if it is
+        /// secret (an identity's ssn, say); a login's username and password,
+        /// a card's number, code, expiry and cardholder name and a note's
+        /// text are always asked for, and the kind's other fields are
+        /// offered as optional
         #[arg(long)]
         ask: Vec<String>,
         /// The phone page's address (see `phone/`), for the owner only; the
@@ -1160,22 +1162,54 @@ pub enum AgentsAction {
     Lines,
     /// Create an agent on a free phone line
     ///
-    /// A cloud agent Plow runs, or your own, whose credential is written to a
-    /// new private file. It returns at once; `agents show` follows a cloud
-    /// agent's start
+    /// Choose one: a cloud agent from Plow's catalog (--cloud), a cloud agent
+    /// from a public image (--image), or an agent you run yourself (--own). It
+    /// returns at once; `agents show` follows a cloud agent's start.
+    ///
+    /// For --own, --credential-file names a new file, in a folder that already
+    /// exists, for the agent's environment: `PLOW_API_BASE`,
+    /// `PLOW_AGENT_TOKEN`, and the agent's uid in a comment. Load it into the
+    /// agent's environment, with Docker Compose's `env_file` or
+    /// `set -a; . FILE; set +a` in a shell, and `latch login` there logs the
+    /// agent in. Treat the file like a password.
+    ///
+    /// `PLOW_API_BASE` is the Plow you're logged in to, unless --agent-api-url
+    /// gives another address. Latch still creates the agent through your own
+    /// login.
+    ///
+    /// Latch doesn't build or publish images: --image takes one already on a
+    /// public registry, named by its digest.
+    #[command(group(clap::ArgGroup::new("target").required(true).args(["cloud", "image", "own"])))]
     New {
         /// A cloud agent of this kind, from `latch agents catalog`
-        #[arg(long, value_name = "KIND", required_unless_present = "own")]
+        #[arg(long, value_name = "KIND")]
         cloud: Option<String>,
-        /// An agent you run yourself, with --token-file
-        #[arg(long, conflicts_with = "cloud", requires = "token_file")]
+        /// A public image for Plow to run, in the form
+        /// REGISTRY/PATH@sha256:DIGEST, with 64 lowercase hex characters in
+        /// DIGEST. Plow pulls it without signing in
+        #[arg(long, value_name = "REF")]
+        image: Option<String>,
+        /// An agent you run yourself, with --credential-file
+        #[arg(long, requires = "credential_file")]
         own: bool,
-        /// Where to write your own agent's credential: a new file, made
-        /// private (mode 600) before the agent is created, never
-        /// overwritten. Its program logs in with
-        /// `PLOW_TOKEN_FILE=FILE latch login`
-        #[arg(long, value_name = "FILE", requires = "own")]
-        token_file: Option<PathBuf>,
+        /// Where to write your own agent's credential, as an environment file:
+        /// a new file in a folder that already exists, made private (mode 600)
+        /// before the agent is created, never overwritten
+        // clap drops a requirement on an argument that conflicts with one
+        // given, so `requires = "own"` would let a cloud target through: each
+        // own option conflicts with the cloud targets itself.
+        #[arg(long, value_name = "FILE", conflicts_with_all = ["cloud", "image"])]
+        credential_file: Option<PathBuf>,
+        /// The Plow address written to the file as PLOW_API_BASE. By default,
+        /// the one you're logged in to. Use an address the agent can reach,
+        /// without /v1; Latch still creates the agent through your own login
+        #[arg(
+            long,
+            value_name = "URL",
+            requires = "credential_file",
+            conflicts_with_all = ["cloud", "image"]
+        )]
+        agent_api_url: Option<String>,
         /// The agent's name; names need not be unique
         #[arg(long)]
         name: String,
@@ -1598,6 +1632,21 @@ pub enum MessagesCommand {
         #[command(flatten)]
         host: HostArg,
     },
+    /// Save one message's attached files (photos, PDFs) here
+    ///
+    /// Each file's bytes are written to --out under its own name; the answer
+    /// lists each with its `path`, or an `error`: `not_downloaded` (only in
+    /// iCloud or on a phone, not on the host), `unreadable`, or `too_large`
+    Attachment {
+        /// The message's id, from `latch messages search` or `thread`
+        #[arg(long, value_name = "N")]
+        message_id: i64,
+        /// The folder on this machine to write the files in [default: the current directory]
+        #[arg(long, value_name = "DIR")]
+        out: Option<PathBuf>,
+        #[command(flatten)]
+        host: HostArg,
+    },
     /// Direct conversations whose newest message is inbound: candidates, not proof a reply is owed
     Unreplied {
         /// How far back [default: 36h, at most 7d]
@@ -1620,6 +1669,7 @@ impl MessagesCommand {
             MessagesCommand::Search { host, .. }
             | MessagesCommand::Thread { host, .. }
             | MessagesCommand::Chats { host, .. }
+            | MessagesCommand::Attachment { host, .. }
             | MessagesCommand::Unreplied { host, .. } => host,
         }
     }
