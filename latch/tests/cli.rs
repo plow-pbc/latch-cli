@@ -4625,6 +4625,17 @@ fn agents_are_shown_created_and_removed_by_their_owner() {
             2,
             "usage",
         ),
+        (
+            with(&[
+                "--own",
+                "--credential-file",
+                "x.env",
+                "--agent-api-url",
+                "http://a/~root",
+            ]),
+            2,
+            "usage",
+        ),
         (with(&["--own", "--token-file", "scout.token"]), 2, "usage"),
         (with(&["--own"]), 2, "usage"),
         (

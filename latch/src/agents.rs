@@ -407,9 +407,10 @@ async fn new(
         Some(url)
             if !url
                 .chars()
-                .all(|c| c.is_ascii_alphanumeric() || ":/.-_~%[]".contains(c)) =>
+                .all(|c| c.is_ascii_alphanumeric() || ":/.-_%[]".contains(c)) =>
         {
-            let message = "--agent-api-url may use only letters, digits and : / . - _ ~ % [ ]";
+            let message =
+                "--agent-api-url allows only ASCII letters and digits, plus : / . - _ % [ ]";
             return Err(Failure::new(code::usage, message.into()));
         }
         Some(url) => url.strip_suffix('/').unwrap_or(&url).to_string(),
