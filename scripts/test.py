@@ -220,12 +220,6 @@ def plan(args):
             suites.remove("installer")
         if not suites:
             raise SystemExit("test.py: --only picks Rust tests, and installer has none")
-    if where == "macos" and "installer" in suites and not building:
-        unusable = screen_unusable()
-        if unusable:
-            raise SystemExit("test.py: installer: the Mac app's Swift tests need the screen unlocked "
-                             "and the display on so AppKit animations can finish; "
-                             f"this Mac's {unusable}: wake and unlock it, then run again")
     args.archive = None
     if args.build_archive or args.from_archive:
         if args.build_archive and args.from_archive:
@@ -248,6 +242,14 @@ def plan(args):
         if not 1 <= shard <= count:
             raise SystemExit("test.py: --shard N/COUNT with 1 <= N <= COUNT")
         args.shard = (shard, count)
+    # Only an unsharded run or the first shard runs the installer suite.
+    first_shard = not args.shard or args.shard[0] == 1
+    if where == "macos" and "installer" in suites and first_shard and not building:
+        unusable = screen_unusable()
+        if unusable:
+            raise SystemExit("test.py: installer: the Mac app's Swift tests need the screen unlocked "
+                             "and the display on so AppKit animations can finish; "
+                             f"this Mac's {unusable}: wake and unlock it, then run again")
     return where, suites, gate, not_here
 
 

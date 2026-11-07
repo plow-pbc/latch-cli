@@ -201,6 +201,12 @@ class Plans(unittest.TestCase):
                 self.assertIn("installer: ", str(refused.exception))
                 self.assertIn("this Mac's display is off: wake and unlock it", str(refused.exception))
             self.assertEqual(plan("core", "browser")[1], ["core", "browser"])
+            # The second shard runs no installer step, so it still runs.
+            args = runner.argparse.Namespace(suites=[], linux=False, shard="2/2", ci=True, dry_run=True,
+                                             build_archive=None, from_archive=None, only=None)
+            with mock.patch.object(runner, "where_we_are", return_value="macos"), \
+                    mock.patch.object(runner.shutil, "which", return_value="/usr/bin/tool"):
+                self.assertIn("installer", runner.plan(args)[1])
             self.assertIn("installer", plan("installer", where="linux")[1])
 
     def test_a_missing_tool_exits_127_with_how_to_install_it(self):
