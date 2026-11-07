@@ -2763,7 +2763,12 @@ impl LivePlow {
                             "created_at": "2026-10-23T10:00:00Z",
                             "status": if own { Value::Null } else { json!("provisioning") },
                             "failure_code": null, "credential": null});
-                        let token = if own { json!("made-up-agent-credential") } else { Value::Null };
+                        // "Tokenless" stands in for a create whose credential never came.
+                        let token = if own && sent["name"] != "Tokenless" {
+                            json!("made-up-agent-credential")
+                        } else {
+                            Value::Null
+                        };
                         (201, json!({"agent": agent, "token": token}))
                     }
                 }
@@ -4518,66 +4523,224 @@ fn agents_are_shown_created_and_removed_by_their_owner() {
         (Some(2), &json!("no_such_agent"))
     );
 
-    // An own agent: its credential only in the new file, mode 600.
-    let token_file = dir.path().join("scout.token");
-    let path = token_file.to_str().unwrap();
-    let new_own = [
-        "agents",
-        "new",
-        "--own",
-        "--token-file",
-        path,
-        "--name",
-        " Scout ",
-        "--line",
-        "+15550000002",
-    ];
-    let (code, made, output) = run(&new_own);
-    assert_eq!(code, Some(0), "{made}");
-    assert_eq!(made["agent"]["name"], "Scout");
-    assert_eq!(made["agent"]["kind"], "own");
-    assert_eq!(made["token_file"], path);
-    assert_eq!(made["api_url"], plow.url.as_str());
-    assert_eq!(
-        fs::read_to_string(&token_file).unwrap(),
-        "made-up-agent-credential\n"
-    );
-    assert_eq!(
-        fs::metadata(&token_file).unwrap().permissions().mode() & 0o777,
-        0o600
-    );
-    assert!(!String::from_utf8_lossy(&output.stdout).contains("made-up-agent-credential"));
-    assert!(!String::from_utf8_lossy(&output.stderr).contains("made-up-agent-credential"));
+    // An own agent: its credential only in the new environment file, mode 600.
+    const MADE: &str = "fedcba9876543210fedcba9876543210";
+    let new_own = |file: &str, extra: &[&str]| {
+        let mut args = vec!["agents", "new", "--own", "--credential-file", file];
+        args.extend_from_slice(extra);
+        args.extend_from_slice(&["--name", " Scout ", "--line", "+15550000002"]);
+        run(&args)
+    };
+    // The default address, then another for the agent, its trailing slash
+    // trimmed: only in the file, the create still going to the login's Plow.
+    for (file, extra, api) in [
+        ("plow-credentials", &[][..], plow.url.as_str()),
+        (
+            "docker-credentials",
+            &["--agent-api-url", "http://host.docker.internal:18934/"],
+            "http://host.docker.internal:18934",
+        ),
+    ] {
+        let file = dir.path().join(file);
+        let path = file.to_str().unwrap();
+        let before = posts();
+        let (code, made, output) = new_own(path, extra);
+        assert_eq!(code, Some(0), "{made}");
+        assert_eq!(posts(), before + 1);
+        assert_eq!(made["agent"]["name"], "Scout");
+        assert_eq!(made["agent"]["kind"], "own");
+        assert_eq!(made["credential_file"], path);
+        assert_eq!(made["api_url"], api);
+        assert!(made.get("token_file").is_none(), "{made}");
+        assert_eq!(
+            fs::read_to_string(&file).unwrap(),
+            format!(
+                "PLOW_API_BASE={api}\nPLOW_AGENT_TOKEN=made-up-agent-credential\n# plow-agent-uid: {MADE}\n"
+            )
+        );
+        assert_eq!(
+            fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        for printed in [&output.stdout, &output.stderr] {
+            assert!(!String::from_utf8_lossy(printed).contains("made-up-agent-credential"));
+        }
+    }
 
-    // The same file again: refused before Plow is asked, the file untouched.
+    // Refused before Plow is asked: the same file again (left untouched), a
+    // missing folder, `-`, an address with a space, and the flags that
+    // don't go together.
+    let credential_file = dir.path().join("plow-credentials");
+    let path = credential_file.to_str().unwrap();
+    let written = fs::read(&credential_file).unwrap();
+    let missing = dir.path().join("no-such-folder/plow-credentials");
+    let free = ["--name", "S", "--line", "ln_free"];
+    let with = |args: &[&'static str]| [&["agents", "new"], args, &free[..]].concat();
     let before = posts();
-    let (code, error, _) = run(&new_own);
+    for (args, exit, code) in [
+        (
+            [
+                &["agents", "new", "--own", "--credential-file", path],
+                &free[..],
+            ]
+            .concat(),
+            2,
+            "credential_file_exists",
+        ),
+        (
+            [
+                &[
+                    "agents",
+                    "new",
+                    "--own",
+                    "--credential-file",
+                    missing.to_str().unwrap(),
+                ],
+                &free[..],
+            ]
+            .concat(),
+            2,
+            "credential_file_unwritable",
+        ),
+        (with(&["--own", "--credential-file", "-"]), 2, "usage"),
+        (
+            with(&[
+                "--own",
+                "--credential-file",
+                "x.env",
+                "--agent-api-url",
+                "http://a b",
+            ]),
+            2,
+            "usage",
+        ),
+        (
+            with(&[
+                "--own",
+                "--credential-file",
+                "x.env",
+                "--agent-api-url",
+                "http://a/$(id)",
+            ]),
+            2,
+            "usage",
+        ),
+        (
+            with(&[
+                "--own",
+                "--credential-file",
+                "x.env",
+                "--agent-api-url",
+                "http://a/~root",
+            ]),
+            2,
+            "usage",
+        ),
+        (with(&["--own", "--token-file", "scout.token"]), 2, "usage"),
+        (with(&["--own"]), 2, "usage"),
+        (
+            with(&["--cloud", "exe:hermes", "--credential-file", "x.env"]),
+            2,
+            "usage",
+        ),
+        (
+            with(&["--cloud", "exe:hermes", "--agent-api-url", "http://a"]),
+            2,
+            "usage",
+        ),
+    ] {
+        let (exit_code, error, _) = run(&args);
+        assert_eq!(
+            (exit_code, &error["error"]["code"]),
+            (Some(exit), &json!(code)),
+            "{args:?}: {error}"
+        );
+    }
+    assert_eq!(posts(), before);
+    assert_eq!(fs::read(&credential_file).unwrap(), written);
+    // A relative file lands where latch runs: the crate's folder.
+    assert!(!Path::new(env!("CARGO_MANIFEST_DIR")).join("x.env").exists());
+
+    // The address the owner logged in with is checked too: one a shell
+    // would run something in still reaches Plow, its `$(id)/..` normalized
+    // away, but never goes into the file.
+    let odd = dir.path().join("odd");
+    let odd_url = format!("{}/$(id)/..", plow.url);
+    let owner_token = dir.path().join("owner.token");
+    let login = latch(
+        &odd,
+        &[
+            "login",
+            "--api-url",
+            &odd_url,
+            "--token-file",
+            owner_token.to_str().unwrap(),
+            "--name",
+            "odd",
+        ],
+        &[],
+    );
+    assert_eq!(login.status.code(), Some(0), "{login:?}");
+    let odd_file = dir.path().join("odd-credentials");
+    let before = posts();
+    let refused = latch(
+        &odd,
+        &[
+            "agents",
+            "new",
+            "--own",
+            "--credential-file",
+            odd_file.to_str().unwrap(),
+            "--name",
+            "S",
+            "--line",
+            "ln_free",
+        ],
+        &[],
+    );
+    let error: Value = serde_json::from_slice(&refused.stderr).unwrap();
     assert_eq!(
-        (code, &error["error"]["code"]),
-        (Some(2), &json!("token_file_exists"))
+        (refused.status.code(), &error["error"]["code"]),
+        (Some(2), &json!("usage")),
+        "{error}"
     );
     assert_eq!(posts(), before);
+    assert!(!odd_file.exists());
+
+    // Created, but its credential never came: the agent is named, and its
+    // removal is the way on; nothing is deleted for its owner.
+    let lost = dir.path().join("lost-credentials");
     let (code, error, _) = run(&[
         "agents",
         "new",
         "--own",
-        "--token-file",
-        "-",
+        "--credential-file",
+        lost.to_str().unwrap(),
         "--name",
-        "S",
+        "Tokenless",
         "--line",
         "ln_free",
     ]);
-    assert_eq!((code, &error["error"]["code"]), (Some(2), &json!("usage")));
+    assert_eq!(
+        (code, &error["error"]["code"]),
+        (Some(1), &json!("credential_not_saved")),
+        "{error}"
+    );
+    assert_eq!(error["error"]["agent_uid"], MADE);
+    assert_eq!(
+        error["error"]["next"],
+        format!("latch agents remove {MADE}")
+    );
+    assert!(!lost.exists());
 
     // A held line, then a lost answer: the reserved file goes, and the lost
     // create is reported, never resent.
-    let taken = dir.path().join("taken.token");
+    let taken = dir.path().join("taken.env");
     let (code, error, _) = run(&[
         "agents",
         "new",
         "--own",
-        "--token-file",
+        "--credential-file",
         taken.to_str().unwrap(),
         "--name",
         "Two",
@@ -4623,7 +4786,7 @@ fn agents_are_shown_created_and_removed_by_their_owner() {
     assert_eq!(
         (
             &cloud["agent"]["status"],
-            &cloud["token_file"],
+            &cloud["credential_file"],
             &cloud["api_url"]
         ),
         (&json!("provisioning"), &Value::Null, &Value::Null)

@@ -255,22 +255,27 @@ one of your own machines:
 
 ```sh
 latch agents lines
-latch agents new --own --name my-agent --line LINE --token-file my-agent.token
+latch agents new --own --name my-agent --line LINE --credential-file my-agent.env
 ```
 
 - `LINE` is a line's number or uid from `latch agents lines`.
-- `my-agent.token` is a new file. Latch makes it private (mode 600) and
-  never overwrites a file.
+- `my-agent.env` is a new file, in a folder that already exists. Latch makes
+  it private (mode 600) and never overwrites a file.
 
-Treat the file like a password. Give it to the agent. Its program logs in
-with it, in a state folder of its own:
+Treat the file like a password. Give it to the agent. It sets
+`PLOW_API_BASE` and `PLOW_AGENT_TOKEN`; its program loads them and logs in,
+in a state folder of its own. On the agent's computer, after copying the
+file to its home folder:
 
 ```sh
-export PLOW_TOKEN_FILE=~/my-agent.token
+set -a
+. ~/my-agent.env
+set +a
 latch --state-dir ~/latch-agent login
 ```
 
-Keep `PLOW_TOKEN_FILE` set for every command the agent runs.
+Keep both variables set for every command the agent runs. Latch never copies
+the credential into its state folder.
 
 To revoke the agent, run `latch agents remove my-agent`. It asks you to
 confirm (`--yes` skips the question). The agent's credential stops working at

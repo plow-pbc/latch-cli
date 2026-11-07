@@ -1162,22 +1162,45 @@ pub enum AgentsAction {
     Lines,
     /// Create an agent on a free phone line
     ///
-    /// A cloud agent Plow runs, or your own, whose credential is written to a
-    /// new private file. It returns at once; `agents show` follows a cloud
-    /// agent's start
+    /// Choose one: a cloud agent from Plow's catalog (--cloud) or an agent you
+    /// run yourself (--own). It returns at once; `agents show` follows a cloud
+    /// agent's start.
+    ///
+    /// For --own, --credential-file names a new file, in a folder that already
+    /// exists, for the agent's environment: `PLOW_API_BASE`,
+    /// `PLOW_AGENT_TOKEN`, and the agent's uid in a comment. Load it into the
+    /// agent's environment, with Docker Compose's `env_file` or
+    /// `set -a; . FILE; set +a` in a shell, and `latch login` there logs the
+    /// agent in. Treat the file like a password.
+    ///
+    /// `PLOW_API_BASE` is the Plow you're logged in to, unless --agent-api-url
+    /// gives another address. Latch still creates the agent through your own
+    /// login.
     New {
         /// A cloud agent of this kind, from `latch agents catalog`
         #[arg(long, value_name = "KIND", required_unless_present = "own")]
         cloud: Option<String>,
-        /// An agent you run yourself, with --token-file
-        #[arg(long, conflicts_with = "cloud", requires = "token_file")]
+        /// An agent you run yourself, with --credential-file
+        #[arg(long, conflicts_with = "cloud", requires = "credential_file")]
         own: bool,
-        /// Where to write your own agent's credential: a new file, made
-        /// private (mode 600) before the agent is created, never
-        /// overwritten. Its program logs in with
-        /// `PLOW_TOKEN_FILE=FILE latch login`
-        #[arg(long, value_name = "FILE", requires = "own")]
-        token_file: Option<PathBuf>,
+        /// Where to write your own agent's credential, as an environment file:
+        /// a new file in a folder that already exists, made private (mode 600)
+        /// before the agent is created, never overwritten
+        // clap drops a requirement on an argument that conflicts with one
+        // given, so `requires = "own"` would let `--cloud` through: each own
+        // option conflicts with `--cloud` itself.
+        #[arg(long, value_name = "FILE", conflicts_with = "cloud")]
+        credential_file: Option<PathBuf>,
+        /// The Plow address written to the file as PLOW_API_BASE. By default,
+        /// the one you're logged in to. Use an address the agent can reach,
+        /// without /v1; Latch still creates the agent through your own login
+        #[arg(
+            long,
+            value_name = "URL",
+            requires = "credential_file",
+            conflicts_with = "cloud"
+        )]
+        agent_api_url: Option<String>,
         /// The agent's name; names need not be unique
         #[arg(long)]
         name: String,
