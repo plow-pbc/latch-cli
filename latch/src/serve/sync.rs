@@ -10,6 +10,7 @@
 //! owner switched on learns it from the ask itself, and one switched off is
 //! refused before any item moves (`vault::host::Vault::admit`).
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
@@ -45,6 +46,7 @@ pub(super) fn start(host: &Arc<Host>) {
         let mut stopping = host.stopping.subscribe();
         let mut synced: Option<(Option<SystemTime>, SystemTime)> = None;
         let mut said = false;
+        let mut predate = HashSet::new();
         loop {
             let now = modified();
             let due = |at: SystemTime| at.elapsed().unwrap_or_default() >= ROUND_EVERY;
@@ -54,7 +56,7 @@ pub(super) fn start(host: &Arc<Host>) {
                         if !std::mem::replace(&mut said, true) {
                             log("vault: syncs with the owner's other hosts");
                         }
-                        round(&host).await;
+                        round(&host, &mut predate).await;
                     }
                     Ok(false) => {}
                     Err(failure) => log(&format!("vault sync: {}", failure.code)),
@@ -72,7 +74,9 @@ pub(super) fn start(host: &Arc<Host>) {
 /// One round: every other host of the owner's that Plow lists online. A
 /// host that does not sync, or that the owner switched off, answers or is
 /// answered `sync_off` with no item sent, and is asked again next round.
-async fn round(host: &Host) {
+/// `predate` holds the hosts already said to have a latch older than vault
+/// sync.
+async fn round(host: &Host, predate: &mut HashSet<String>) {
     let peers = match host.plow.list_peers().await {
         Ok(peers) => peers,
         Err(failure) => {
@@ -86,13 +90,30 @@ async fn round(host: &Host) {
         .filter(|peer| !peer.this_machine && peer.kind == "device" && peer.online != Some(false));
     for peer in others {
         if let Err(failure) = with_peer(host, &peer).await
-            && failure.code != code::sync_off.name
+            && let Some(line) = failed(&peer, &failure, predate)
         {
-            log(&format!(
-                "vault sync with {:?}: {}",
-                peer.name, failure.code
-            ));
+            log(&line);
         }
+    }
+}
+
+/// What to log when a round with `peer` fails, if anything. `sync_off` is
+/// the owner's choice, never said. A host whose latch predates vault sync
+/// answers its ask `bad_command`; that is said once per host while this one
+/// runs, with what to do about it.
+fn failed(peer: &Peer, failure: &Failure, predate: &mut HashSet<String>) -> Option<String> {
+    let code = failure.code.as_str();
+    if code == code::sync_off.name {
+        None
+    } else if code == code::bad_command.name {
+        predate.insert(peer.key.clone()).then(|| {
+            let name = &peer.name;
+            format!(
+                "vault sync with {name:?}: its latch is too old for vault sync; run `latch update` on {name:?}"
+            )
+        })
+    } else {
+        Some(format!("vault sync with {:?}: {code}", peer.name))
     }
 }
 
@@ -160,5 +181,44 @@ impl Host {
             applied.added, applied.updated, applied.removed
         ));
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn peer(key: &str, name: &str) -> Peer {
+        Peer {
+            key: key.into(),
+            kind: "device".into(),
+            name: name.into(),
+            relay_url: None,
+            last_seen_at: None,
+            online: Some(true),
+            this_machine: false,
+        }
+    }
+
+    #[test]
+    fn a_host_older_than_vault_sync_is_said_once_and_other_failures_each_time() {
+        let mut predate = HashSet::new();
+        let (studio, attic) = (peer("k1", "studio"), peer("k2", "attic"));
+        let old = Failure::new(code::bad_command, "unknown vault command \"sync\"".into());
+        let said = failed(&studio, &old, &mut predate).unwrap();
+        assert!(said.starts_with("vault sync with \"studio\": "), "{said}");
+        assert!(said.ends_with("run `latch update` on \"studio\""), "{said}");
+        assert_eq!(failed(&studio, &old, &mut predate), None);
+        assert!(failed(&attic, &old, &mut predate).is_some());
+
+        let lost = Failure::new(code::host_unreachable, "gone".into());
+        for _ in 0..2 {
+            assert_eq!(
+                failed(&studio, &lost, &mut predate).as_deref(),
+                Some("vault sync with \"studio\": host_unreachable")
+            );
+        }
+        let off = Failure::new(code::sync_off, "off".into());
+        assert_eq!(failed(&studio, &off, &mut predate), None);
     }
 }
