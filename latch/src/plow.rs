@@ -174,6 +174,7 @@ pub struct ListedAgent {
 /// The line an agent serves, as people read it.
 #[derive(Deserialize, Debug, Clone)]
 pub struct ListedLine {
+    pub uid: String,
     /// The phone number or address.
     pub provider_key: String,
     pub display_name: Option<String>,

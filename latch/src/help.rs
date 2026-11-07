@@ -279,10 +279,16 @@ const ENTRIES: &[Entry] = &[
         ),
         owner_only: true,
         connector: None,
-        examples: &[ex(
-            "Remove an agent without asking",
-            &["agents", "remove", "Scout", "--yes"],
-        )],
+        examples: &[
+            ex(
+                "Remove an agent without asking",
+                &["agents", "remove", "Scout", "--yes"],
+            ),
+            ex(
+                "Remove an agent by its phone line without asking",
+                &["agents", "remove", "--line", "+15550000002", "--yes"],
+            ),
+        ],
     },
     Entry {
         id: "devices",

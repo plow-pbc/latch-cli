@@ -1227,11 +1227,18 @@ pub enum AgentsAction {
         #[arg(long, short, value_name = "FILE")]
         output: PathBuf,
     },
-    /// Remove an agent, by its uid or its exact name
+    /// Remove an agent, by its uid, exact name or phone line
     ///
-    /// Its credential stops working and its line is freed
+    /// Its credential stops working, its line is freed and its chats are
+    /// closed. With --line, it is your agent on that phone line, a failed one
+    /// included. Removing an agent doesn't delete a local credential file
+    #[command(group(clap::ArgGroup::new("which").required(true).args(["agent", "line"])))]
     Remove {
-        agent: String,
+        agent: Option<String>,
+        /// Remove your agent on this phone line instead: a line's uid or
+        /// number, from `latch agents lines`
+        #[arg(long, value_name = "LINE")]
+        line: Option<String>,
         /// Remove without asking (required when no one is at a terminal)
         #[arg(long)]
         yes: bool,
