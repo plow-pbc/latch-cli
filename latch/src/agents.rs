@@ -108,16 +108,22 @@ async fn managed(
         Some(AgentsAction::Lines) => lines(plow).await?,
         Some(AgentsAction::New {
             cloud,
+            image,
             credential_file,
             agent_api_url,
             name,
             line,
             ..
         }) => {
+            let target = match (cloud, image) {
+                (Some(kind), _) => Target::Cloud(kind),
+                (None, Some(image)) => Target::Image(image),
+                (None, None) => Target::Own,
+            };
             new(
                 plow,
                 api_url,
-                cloud,
+                target,
                 credential_file,
                 agent_api_url,
                 &name,
@@ -378,15 +384,23 @@ async fn lines(plow: &Plow) -> Result<Value, Failure> {
     Ok(json!({"lines": lines}))
 }
 
-/// Creates an agent on `line`: run by Plow (`cloud`, a catalog kind) or by
-/// its owner, whose credential goes to `credential_file`, a new private
-/// environment file reserved before Plow is asked, so a credential is never
-/// left with nowhere to go. The file's `PLOW_API_BASE` is `agent_api_url`,
-/// else the login's own. Returns at once.
+/// What `agents new` makes: a cloud agent of a catalog kind, a cloud agent
+/// from a public image, or an agent its owner runs.
+enum Target {
+    Cloud(String),
+    Image(String),
+    Own,
+}
+
+/// Creates an agent on `line`: run by Plow (a catalog kind, or a public
+/// image Plow checks) or by its owner, whose credential goes to
+/// `credential_file`, a new private environment file reserved before Plow
+/// is asked, so a credential is never left with nowhere to go. The file's
+/// `PLOW_API_BASE` is `agent_api_url`, else the login's own. Returns at once.
 async fn new(
     plow: &Plow,
     api_url: &str,
-    cloud: Option<String>,
+    target: Target,
     credential_file: Option<PathBuf>,
     agent_api_url: Option<String>,
     name: &str,
@@ -409,8 +423,8 @@ async fn new(
         Some(url) => url.strip_suffix('/').unwrap_or(&url).to_string(),
         None => api_url.to_string(),
     };
-    let provider = match &cloud {
-        Some(kind) => {
+    let provider = match &target {
+        Target::Cloud(kind) => {
             let kinds = plow.agent_kinds().await?;
             if kind == OWN || !kinds.iter().any(|known| &known.id == kind) {
                 let message = format!("Plow offers no cloud agent {kind:?}");
@@ -418,22 +432,27 @@ async fn new(
                 failure.next = Some("latch agents catalog".into());
                 return Err(failure);
             }
-            kind.as_str()
+            kind.clone()
         }
-        None => OWN,
+        Target::Image(image) => format!("exe:{image}"),
+        Target::Own => OWN.to_string(),
     };
     let line_uid = line_named(plow, line).await?;
     let reserved = match &credential_file {
         Some(path) => Some(CredentialFile::reserve(path)?),
         None => None,
     };
-    let created = match plow.create_agent(&line_uid, name, provider).await {
+    let created = match plow.create_agent(&line_uid, name, &provider).await {
         Ok(created) => created,
         Err(failure) => {
             if let Some(reserved) = reserved {
                 reserved.abandon();
             }
-            return Err(not_created(failure, line));
+            return Err(not_created(
+                failure,
+                line,
+                matches!(target, Target::Image(_)),
+            ));
         }
     };
     let uid = created.agent.uid.clone();
@@ -467,11 +486,19 @@ async fn line_named(plow: &Plow, named: &str) -> Result<String, Failure> {
 }
 
 /// Why Plow made no agent, or that it may have made one.
-fn not_created(failure: Failure, line: &str) -> Failure {
+fn not_created(failure: Failure, line: &str, image: bool) -> Failure {
     match (
         failure.code.as_str(),
         failure.plow.as_ref().and_then(|plow| plow.code.as_deref()),
     ) {
+        // On a create, Plow's only answer of this kind is its 400 for a
+        // provider it can't use.
+        ("plow_rejected", _) if image => {
+            let message = "Plow couldn't use that image. Give --image a public image in the form REGISTRY/PATH@sha256:DIGEST, with 64 lowercase hex characters in DIGEST";
+            let mut failure = Failure::new(code::bad_image, message.into());
+            failure.next = Some("latch help agents new --examples".into());
+            failure
+        }
         ("conflict", Some("AGENT_EXISTS")) => {
             let message = format!("line {line} already has an agent; pick a free one");
             let mut failure = Failure::new(code::line_taken, message);

@@ -2754,6 +2754,10 @@ impl LivePlow {
                     "ln_taken" => (409, json!({"detail": {"code": "AGENT_EXISTS",
                         "agent_uid": AGENT_UID, "message": "Delete the existing agent before creating another."}})),
                     "ln_lost" => (500, json!({})),
+                    // Plow's check of an image provider: a digest, or its 400.
+                    _ if sent["provider"].as_str().is_some_and(|p| {
+                        p.starts_with("exe:") && p != "exe:hermes" && !p.contains("@sha256:")
+                    }) => (400, json!({"detail": "Unknown provider"})),
                     line => {
                         let own = sent["provider"] == "self_hosted";
                         let agent = json!({"uid": "fedcba9876543210fedcba9876543210",
@@ -4730,6 +4734,84 @@ fn agents_are_shown_created_and_removed_by_their_owner() {
         ),
         (&json!("provisioning"), &Value::Null, &Value::Null)
     );
+
+    // A public image by digest: sent once as `exe:REF`, answered as any
+    // cloud agent is.
+    const IMAGE: &str = "ghcr.io/example/scout@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let new_image = |image: &str, line: &str| {
+        run(&[
+            "agents", "new", "--image", image, "--name", "Scout", "--line", line,
+        ])
+    };
+    let before = posts();
+    let (code, made, _) = new_image(IMAGE, "ln_free");
+    assert_eq!(code, Some(0), "{made}");
+    assert_eq!(posts(), before + 1);
+    // The fake Plow answers with the provider it was sent.
+    assert_eq!(
+        (
+            &made["agent"]["kind"],
+            &made["agent"]["cloud_kind"],
+            &made["agent"]["status"],
+            &made["credential_file"],
+            &made["api_url"]
+        ),
+        (
+            &json!("cloud"),
+            &json!(format!("exe:{IMAGE}")),
+            &json!("provisioning"),
+            &Value::Null,
+            &Value::Null
+        )
+    );
+    // Plow's 400 is a bad image, sent once; a held line and a lost answer
+    // keep their own codes.
+    for (image, line, exit, code) in [
+        ("ghcr.io/example/scout:latest", "ln_free", 2, "bad_image"),
+        (IMAGE, "ln_taken", 2, "line_taken"),
+        (IMAGE, "ln_lost", 5, "outcome_unknown"),
+    ] {
+        let before = posts();
+        let (exit_code, error, _) = new_image(image, line);
+        assert_eq!(
+            (exit_code, &error["error"]["code"]),
+            (Some(exit), &json!(code)),
+            "{error}"
+        );
+        assert_eq!(posts(), before + 1, "{code}");
+        if code == "bad_image" {
+            assert_eq!(error["error"]["next"], "latch help agents new --examples");
+        }
+    }
+    // Exactly one of --cloud, --image and --own, refused before Plow is asked.
+    let before = posts();
+    for target in [
+        &["--image", IMAGE, "--cloud", "exe:hermes"][..],
+        &["--image", IMAGE, "--own", "--credential-file", "x.env"],
+        &["--image", IMAGE, "--credential-file", "x.env"],
+        &[
+            "--cloud",
+            "exe:hermes",
+            "--own",
+            "--credential-file",
+            "x.env",
+        ],
+        &[],
+    ] {
+        let args = [
+            &["agents", "new"],
+            target,
+            &["--name", "S", "--line", "ln_free"],
+        ]
+        .concat();
+        let (exit_code, error, _) = run(&args);
+        assert_eq!(
+            (exit_code, &error["error"]["code"]),
+            (Some(2), &json!("usage")),
+            "{args:?}: {error}"
+        );
+    }
+    assert_eq!(posts(), before);
 
     // Removing asks first; with no one to ask, --yes.
     let deletes = || {

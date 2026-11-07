@@ -1162,9 +1162,9 @@ pub enum AgentsAction {
     Lines,
     /// Create an agent on a free phone line
     ///
-    /// Choose one: a cloud agent from Plow's catalog (--cloud) or an agent you
-    /// run yourself (--own). It returns at once; `agents show` follows a cloud
-    /// agent's start.
+    /// Choose one: a cloud agent from Plow's catalog (--cloud), a cloud agent
+    /// from a public image (--image), or an agent you run yourself (--own). It
+    /// returns at once; `agents show` follows a cloud agent's start.
     ///
     /// For --own, --credential-file names a new file, in a folder that already
     /// exists, for the agent's environment: `PLOW_API_BASE`,
@@ -1176,20 +1176,29 @@ pub enum AgentsAction {
     /// `PLOW_API_BASE` is the Plow you're logged in to, unless --agent-api-url
     /// gives another address. Latch still creates the agent through your own
     /// login.
+    ///
+    /// Latch doesn't build or publish images: --image takes one already on a
+    /// public registry, named by its digest.
+    #[command(group(clap::ArgGroup::new("target").required(true).args(["cloud", "image", "own"])))]
     New {
         /// A cloud agent of this kind, from `latch agents catalog`
-        #[arg(long, value_name = "KIND", required_unless_present = "own")]
+        #[arg(long, value_name = "KIND")]
         cloud: Option<String>,
+        /// A public image for Plow to run, in the form
+        /// REGISTRY/PATH@sha256:DIGEST, with 64 lowercase hex characters in
+        /// DIGEST. Plow pulls it without signing in
+        #[arg(long, value_name = "REF")]
+        image: Option<String>,
         /// An agent you run yourself, with --credential-file
-        #[arg(long, conflicts_with = "cloud", requires = "credential_file")]
+        #[arg(long, requires = "credential_file")]
         own: bool,
         /// Where to write your own agent's credential, as an environment file:
         /// a new file in a folder that already exists, made private (mode 600)
         /// before the agent is created, never overwritten
         // clap drops a requirement on an argument that conflicts with one
-        // given, so `requires = "own"` would let `--cloud` through: each own
-        // option conflicts with `--cloud` itself.
-        #[arg(long, value_name = "FILE", conflicts_with = "cloud")]
+        // given, so `requires = "own"` would let a cloud target through: each
+        // own option conflicts with the cloud targets itself.
+        #[arg(long, value_name = "FILE", conflicts_with_all = ["cloud", "image"])]
         credential_file: Option<PathBuf>,
         /// The Plow address written to the file as PLOW_API_BASE. By default,
         /// the one you're logged in to. Use an address the agent can reach,
@@ -1198,7 +1207,7 @@ pub enum AgentsAction {
             long,
             value_name = "URL",
             requires = "credential_file",
-            conflicts_with = "cloud"
+            conflicts_with_all = ["cloud", "image"]
         )]
         agent_api_url: Option<String>,
         /// The agent's name; names need not be unique

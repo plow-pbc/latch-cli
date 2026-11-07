@@ -224,6 +224,7 @@ codes! {
     bad_home: Failed,
     bad_host_answer: Failed,
     bad_host_settings: Failed,
+    bad_image: Usage,
     bad_import: Usage,
     bad_item: Usage,
     bad_key: Usage,
