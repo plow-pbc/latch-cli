@@ -9,6 +9,7 @@ a skip. `just test-list` lists the suites; `just test-plan ...` prints a
 plan without running it.
 """
 import argparse
+import ctypes
 import json
 import os
 from pathlib import Path
@@ -140,6 +141,24 @@ def filterset(suite, where):
     raise ValueError(suite)
 
 
+def screen_unusable():
+    """Why this Mac's screen can't run an AppKit animation to its end, if
+    it can't: its session locked, or its display asleep."""
+    root = subprocess.run(["ioreg", "-n", "Root", "-d1"], capture_output=True, text=True).stdout
+    locked = '"CGSSessionScreenIsLocked"=Yes' in root
+    graphics = ctypes.CDLL("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
+    graphics.CGMainDisplayID.restype = ctypes.c_uint32
+    graphics.CGDisplayIsAsleep.argtypes = [ctypes.c_uint32]
+    asleep = bool(graphics.CGDisplayIsAsleep(graphics.CGMainDisplayID()))
+    if locked and asleep:
+        return "screen is locked and display is off"
+    if locked:
+        return "screen is locked"
+    if asleep:
+        return "display is off"
+    return None
+
+
 def plan(args):
     where = where_we_are(args)
     asked = args.suites or ["gate"]
@@ -223,6 +242,14 @@ def plan(args):
         if not 1 <= shard <= count:
             raise SystemExit("test.py: --shard N/COUNT with 1 <= N <= COUNT")
         args.shard = (shard, count)
+    # Only an unsharded run or the first shard runs the installer suite.
+    first_shard = not args.shard or args.shard[0] == 1
+    if where == "macos" and "installer" in suites and first_shard and not building:
+        unusable = screen_unusable()
+        if unusable:
+            raise SystemExit("test.py: installer: the Mac app's Swift tests need the screen unlocked "
+                             "and the display on so AppKit animations can finish; "
+                             f"this Mac's {unusable}: wake and unlock it, then run again")
     return where, suites, gate, not_here
 
 
