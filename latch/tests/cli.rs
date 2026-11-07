@@ -4642,6 +4642,33 @@ fn agents_are_shown_created_and_removed_by_their_owner() {
         ),
         (with(&["--own", "--token-file", "scout.token"]), 2, "usage"),
         (with(&["--own"]), 2, "usage"),
+        (with(&[]), 2, "usage"),
+        (
+            with(&["--image", IMAGE, "--cloud", "exe:hermes"]),
+            2,
+            "usage",
+        ),
+        (
+            with(&["--image", IMAGE, "--own", "--credential-file", "x.env"]),
+            2,
+            "usage",
+        ),
+        (
+            with(&["--image", IMAGE, "--credential-file", "x.env"]),
+            2,
+            "usage",
+        ),
+        (
+            with(&[
+                "--cloud",
+                "exe:hermes",
+                "--own",
+                "--credential-file",
+                "x.env",
+            ]),
+            2,
+            "usage",
+        ),
         (
             with(&["--cloud", "exe:hermes", "--credential-file", "x.env"]),
             2,
@@ -4844,36 +4871,6 @@ fn agents_are_shown_created_and_removed_by_their_owner() {
             assert_eq!(error["error"]["next"], "latch help agents new --examples");
         }
     }
-    // Exactly one of --cloud, --image and --own, refused before Plow is asked.
-    let before = posts();
-    for target in [
-        &["--image", IMAGE, "--cloud", "exe:hermes"][..],
-        &["--image", IMAGE, "--own", "--credential-file", "x.env"],
-        &["--image", IMAGE, "--credential-file", "x.env"],
-        &[
-            "--cloud",
-            "exe:hermes",
-            "--own",
-            "--credential-file",
-            "x.env",
-        ],
-        &[],
-    ] {
-        let args = [
-            &["agents", "new"],
-            target,
-            &["--name", "S", "--line", "ln_free"],
-        ]
-        .concat();
-        let (exit_code, error, _) = run(&args);
-        assert_eq!(
-            (exit_code, &error["error"]["code"]),
-            (Some(2), &json!("usage")),
-            "{args:?}: {error}"
-        );
-    }
-    assert_eq!(posts(), before);
-
     // Removing asks first; with no one to ask, --yes.
     let deletes = || {
         plow.seen()
