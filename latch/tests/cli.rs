@@ -4531,54 +4531,47 @@ fn agents_are_shown_created_and_removed_by_their_owner() {
         args.extend_from_slice(&["--name", " Scout ", "--line", "+15550000002"]);
         run(&args)
     };
-    let credential_file = dir.path().join("plow-credentials");
-    let path = credential_file.to_str().unwrap();
-    let (code, made, output) = new_own(path, &[]);
-    assert_eq!(code, Some(0), "{made}");
-    assert_eq!(made["agent"]["name"], "Scout");
-    assert_eq!(made["agent"]["kind"], "own");
-    assert_eq!(made["credential_file"], path);
-    assert_eq!(made["api_url"], plow.url.as_str());
-    assert!(made.get("token_file").is_none(), "{made}");
-    assert_eq!(
-        fs::read_to_string(&credential_file).unwrap(),
-        format!(
-            "PLOW_API_BASE={}\nPLOW_AGENT_TOKEN=made-up-agent-credential\n# plow-agent-uid: {MADE}\n",
-            plow.url
-        )
-    );
-    assert_eq!(
-        fs::metadata(&credential_file).unwrap().permissions().mode() & 0o777,
-        0o600
-    );
-    assert!(!String::from_utf8_lossy(&output.stdout).contains("made-up-agent-credential"));
-    assert!(!String::from_utf8_lossy(&output.stderr).contains("made-up-agent-credential"));
-
-    // Another address for the agent goes only into the file, its trailing
-    // slash trimmed; the create still goes to the login's Plow.
-    let docker_file = dir.path().join("docker-credentials");
-    let before = posts();
-    let (code, made, _) = new_own(
-        docker_file.to_str().unwrap(),
-        &["--agent-api-url", "http://host.docker.internal:18934/"],
-    );
-    assert_eq!(code, Some(0), "{made}");
-    assert_eq!(posts(), before + 1);
-    assert_eq!(made["api_url"], "http://host.docker.internal:18934");
-    assert_eq!(
-        fs::read_to_string(&docker_file).unwrap(),
-        format!(
-            "PLOW_API_BASE=http://host.docker.internal:18934\nPLOW_AGENT_TOKEN=made-up-agent-credential\n# plow-agent-uid: {MADE}\n"
-        )
-    );
-    assert_eq!(
-        fs::metadata(&docker_file).unwrap().permissions().mode() & 0o777,
-        0o600
-    );
+    // The default address, then another for the agent, its trailing slash
+    // trimmed: only in the file, the create still going to the login's Plow.
+    for (file, extra, api) in [
+        ("plow-credentials", &[][..], plow.url.as_str()),
+        (
+            "docker-credentials",
+            &["--agent-api-url", "http://host.docker.internal:18934/"],
+            "http://host.docker.internal:18934",
+        ),
+    ] {
+        let file = dir.path().join(file);
+        let path = file.to_str().unwrap();
+        let before = posts();
+        let (code, made, output) = new_own(path, extra);
+        assert_eq!(code, Some(0), "{made}");
+        assert_eq!(posts(), before + 1);
+        assert_eq!(made["agent"]["name"], "Scout");
+        assert_eq!(made["agent"]["kind"], "own");
+        assert_eq!(made["credential_file"], path);
+        assert_eq!(made["api_url"], api);
+        assert!(made.get("token_file").is_none(), "{made}");
+        assert_eq!(
+            fs::read_to_string(&file).unwrap(),
+            format!(
+                "PLOW_API_BASE={api}\nPLOW_AGENT_TOKEN=made-up-agent-credential\n# plow-agent-uid: {MADE}\n"
+            )
+        );
+        assert_eq!(
+            fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        for printed in [&output.stdout, &output.stderr] {
+            assert!(!String::from_utf8_lossy(printed).contains("made-up-agent-credential"));
+        }
+    }
 
     // Refused before Plow is asked: the same file again (left untouched), a
     // missing folder, `-`, an address with a space, and the flags that
     // don't go together.
+    let credential_file = dir.path().join("plow-credentials");
+    let path = credential_file.to_str().unwrap();
     let written = fs::read(&credential_file).unwrap();
     let missing = dir.path().join("no-such-folder/plow-credentials");
     let free = ["--name", "S", "--line", "ln_free"];
@@ -4617,6 +4610,17 @@ fn agents_are_shown_created_and_removed_by_their_owner() {
                 "x.env",
                 "--agent-api-url",
                 "http://a b",
+            ]),
+            2,
+            "usage",
+        ),
+        (
+            with(&[
+                "--own",
+                "--credential-file",
+                "x.env",
+                "--agent-api-url",
+                "http://a/$(id)",
             ]),
             2,
             "usage",

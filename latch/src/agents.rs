@@ -402,8 +402,14 @@ async fn new(
         return Err(Failure::new(code::usage, message.into()));
     }
     let agent_api_url = match agent_api_url {
-        Some(url) if url.chars().any(|c| c.is_whitespace() || c.is_control()) => {
-            let message = "--agent-api-url must have no whitespace or control characters";
+        // Written unquoted and read by `. FILE` in a shell, so only
+        // characters a shell takes literally.
+        Some(url)
+            if !url
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || ":/.-_~%[]".contains(c)) =>
+        {
+            let message = "--agent-api-url may use only letters, digits and : / . - _ ~ % [ ]";
             return Err(Failure::new(code::usage, message.into()));
         }
         Some(url) => url.strip_suffix('/').unwrap_or(&url).to_string(),
