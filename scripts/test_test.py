@@ -17,13 +17,16 @@ spec.loader.exec_module(runner)
 
 
 def plan(*argv, where="macos"):
-    """The plan for `argv` on `where`, with every tool installed unless the
-    test says otherwise: a macOS runner has no Docker."""
+    """The plan for `argv` on `where`, with every tool installed and the
+    screen awake unless the test says otherwise: a macOS runner has no
+    Docker."""
     args = runner.argparse.Namespace(suites=list(argv), linux=False, shard=None, ci=False, dry_run=True,
                                      build_archive=None, from_archive=None, only=None)
     tools = (contextlib.nullcontext() if isinstance(runner.shutil.which, mock.Mock)
              else mock.patch.object(runner.shutil, "which", return_value="/usr/bin/tool"))
-    with mock.patch.object(runner, "where_we_are", return_value=where), tools:
+    screen = (contextlib.nullcontext() if isinstance(runner.screen_unusable, mock.Mock)
+              else mock.patch.object(runner, "screen_unusable", return_value=None))
+    with mock.patch.object(runner, "where_we_are", return_value=where), tools, screen:
         return runner.plan(args)
 
 
@@ -189,6 +192,16 @@ class Plans(unittest.TestCase):
                         self.assertRaises(SystemExit) as refused:
                     runner.plan(args)
                 self.assertIn("systemd user session", str(refused.exception))
+
+    def test_a_locked_or_sleeping_mac_refuses_the_app_tests_and_runs_the_rest(self):
+        with mock.patch.object(runner, "screen_unusable", return_value="display is off"):
+            for argv in ([], ["installer"]):
+                with self.assertRaises(SystemExit) as refused:
+                    plan(*argv)
+                self.assertIn("installer: ", str(refused.exception))
+                self.assertIn("This Mac's display is off.", str(refused.exception))
+            self.assertEqual(plan("core", "browser")[1], ["core", "browser"])
+            self.assertIn("installer", plan("installer", where="linux")[1])
 
     def test_a_missing_tool_exits_127_with_how_to_install_it(self):
         for missing, argv, where in (("cargo", [], "macos"), ("cargo-nextest", ["core"], "macos"),

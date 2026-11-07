@@ -9,6 +9,7 @@ a skip. `just test-list` lists the suites; `just test-plan ...` prints a
 plan without running it.
 """
 import argparse
+import ctypes
 import json
 import os
 from pathlib import Path
@@ -140,6 +141,24 @@ def filterset(suite, where):
     raise ValueError(suite)
 
 
+def screen_unusable():
+    """Why this Mac's screen can't run an AppKit animation to its end, if
+    it can't: its session locked, or its display asleep."""
+    root = subprocess.run(["ioreg", "-n", "Root", "-d1"], capture_output=True, text=True).stdout
+    locked = '"CGSSessionScreenIsLocked"=Yes' in root
+    graphics = ctypes.CDLL("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
+    graphics.CGMainDisplayID.restype = ctypes.c_uint32
+    graphics.CGDisplayIsAsleep.argtypes = [ctypes.c_uint32]
+    asleep = bool(graphics.CGDisplayIsAsleep(graphics.CGMainDisplayID()))
+    if locked and asleep:
+        return "screen is locked and display is off"
+    if locked:
+        return "screen is locked"
+    if asleep:
+        return "display is off"
+    return None
+
+
 def plan(args):
     where = where_we_are(args)
     asked = args.suites or ["gate"]
@@ -201,6 +220,13 @@ def plan(args):
             suites.remove("installer")
         if not suites:
             raise SystemExit("test.py: --only picks Rust tests, and installer has none")
+    if where == "macos" and "installer" in suites and not building:
+        unusable = screen_unusable()
+        if unusable:
+            raise SystemExit("test.py: installer: the Mac app's Swift tests need the screen unlocked "
+                             "and the display on so AppKit animations can finish. "
+                             f"This Mac's {unusable}. Unlock the screen and turn the display on, "
+                             "then run again.")
     args.archive = None
     if args.build_archive or args.from_archive:
         if args.build_archive and args.from_archive:
