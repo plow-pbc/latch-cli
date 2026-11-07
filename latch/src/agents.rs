@@ -415,14 +415,26 @@ async fn new(
         let message = "an agent's credential is never printed: give --credential-file a file";
         return Err(Failure::new(code::usage, message.into()));
     }
+    let from_flag = agent_api_url.is_some();
     let agent_api_url = match agent_api_url {
-        Some(url) if url.chars().any(|c| c.is_whitespace() || c.is_control()) => {
-            let message = "--agent-api-url must have no whitespace or control characters";
-            return Err(Failure::new(code::usage, message.into()));
-        }
         Some(url) => url.strip_suffix('/').unwrap_or(&url).to_string(),
         None => api_url.to_string(),
     };
+    // Written unquoted and read by `. FILE` in a shell, so only characters
+    // a shell takes literally.
+    let literal = |c: char| c.is_ascii_alphanumeric() || ":/.-_%[]".contains(c);
+    if credential_file.is_some() && !agent_api_url.chars().all(literal) {
+        let message = if from_flag {
+            "--agent-api-url allows only ASCII letters and digits, plus : / . - _ % [ ]".to_string()
+        } else {
+            format!(
+                "the Plow address you're logged in to ({agent_api_url}) has characters the \
+                 credential file can't use: give --agent-api-url an address with only ASCII \
+                 letters and digits, plus : / . - _ % [ ]"
+            )
+        };
+        return Err(Failure::new(code::usage, message));
+    }
     let provider = match &target {
         Target::Cloud(kind) => {
             let kinds = plow.agent_kinds().await?;
