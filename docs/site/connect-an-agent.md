@@ -55,13 +55,63 @@ latch login
 ```
 
 Keep both variables set for every command the agent runs. Latch never copies
-the credential into its state folder. Keep `LATCH_STATE_DIR` set too: the install marks that folder
-as the agent's own computer, which `latch update` checks.
+the credential into its state folder. Keep `LATCH_STATE_DIR` set too: the
+install marks that folder as the agent's own computer, which `latch update`
+checks.
 
 Use a state folder of its own. A folder that already holds your own login
 uses yours, whatever the agent's credential says.
 
 To revoke the agent, run `latch agents remove my-agent`.
+
+## Moving from plow-agents
+
+Use Latch to create, list and remove agents. Keep using `plow-agents`, with
+its own login, for profiles and image publishing. Latch's agent commands
+print JSON, and every new agent needs a `--name`. Removing an agent asks
+first; `--yes` skips the question.
+
+`LINE` is a phone line's uid or number from `latch agents lines`. `REF` is
+your public image's full `REGISTRY/PATH@sha256:DIGEST` reference, with 64
+lowercase hex characters in `DIGEST`.
+
+| plow-agents | Latch |
+|---|---|
+| `login` | `latch login`, or `latch login --events` without a terminal |
+| `--api-base URL` | `latch login --api-url URL` |
+| `--token-file FILE`, for another account | `latch --state-dir DIR login`, then use `--state-dir DIR` on each command |
+| `lines` | `latch agents lines` |
+| `agents` | `latch agents`; for one agent, `latch agents show NAME` |
+| `mint LINE` | `latch agents new --own --name NAME --line LINE --credential-file ./plow-credentials` |
+| `mint LINE --agent-api-base URL` | Add `--agent-api-url URL` to that command. |
+| `deploy exe:SLUG --line LINE` | `latch agents new --cloud exe:SLUG --name NAME --line LINE` |
+| `deploy REF --line LINE` | `latch agents new --image REF --name NAME --line LINE` |
+| `deploy --local --line LINE` | The two steps below. |
+| `revoke LINE` | `latch agents remove --line LINE` |
+| `revoke` using the file's uid | `latch agents remove UID`, using the creation result or the file's `# plow-agent-uid:` comment. |
+| `rotate` | No replacement. |
+| `profile`, `image build/push/show/set/promote` | Keep using `plow-agents` with its publishing login. |
+
+### Running with Docker Compose
+
+Use an existing Compose project whose service reads
+`env_file: ./plow-credentials`. List `plow-credentials` in `.gitignore` and
+`.dockerignore` before building. Latch doesn't check either file. The
+destination folder must already exist.
+
+```sh host
+latch agents new --own --name my-agent --line LINE --credential-file ./plow-credentials
+docker compose up --build -d
+```
+
+If Compose fails, fix that failure and run Compose again: the agent already
+exists. If the container reaches Plow at another address, add
+`--agent-api-url URL` to the first command, such as
+`--agent-api-url http://host.docker.internal:18934` for a local stack.
+
+Removing the agent revokes its credential but doesn't delete the local file.
+After successful removal, delete the file explicitly when you no longer need
+it.
 
 ## What an agent may do
 
