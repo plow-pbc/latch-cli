@@ -259,27 +259,33 @@ fn offer(
         return writeln!(out, "{line}").and_then(|()| out.flush()).is_ok();
     }
     if at_terminal {
-        if renewed {
-            eprintln!("That link expired. If you haven't opened a link yet, use this new one.");
-        } else if let Some(accounts) = again {
-            eprintln!(
-                "Google needs you to sign in again with {}.",
-                accounts.join(", ")
-            );
-        } else if adding {
-            eprintln!("Sign in with another Google account to add it to Plow.");
-        } else {
-            eprintln!("Sign in with Google to connect it to Plow.");
-        }
-        for line in term::qr(&link.url).lines() {
-            eprintln!("{}", term::link(&link.url, line));
-        }
-        eprintln!("{}", term::link(&link.url, &link.url));
+        show_link(&link.url, renewed, adding, again);
         if !renewed {
             eprintln!("Waiting for the account, up to 5 minutes… (Ctrl-C stops waiting)");
         }
     }
     true
+}
+
+/// A sign-in link at a terminal: what to do with it, its QR code, then the
+/// link. `latch setup` shows its sign-ins' links so too.
+pub(crate) fn show_link(url: &str, renewed: bool, adding: bool, again: Option<&[String]>) {
+    if renewed {
+        eprintln!("That link expired. If you haven't opened a link yet, use this new one.");
+    } else if let Some(accounts) = again {
+        eprintln!(
+            "Google needs you to sign in again with {}.",
+            accounts.join(", ")
+        );
+    } else if adding {
+        eprintln!("Sign in with another Google account to add it to Plow.");
+    } else {
+        eprintln!("Sign in with Google to connect it to Plow.");
+    }
+    for line in term::qr(url).lines() {
+        eprintln!("{}", term::link(url, line));
+    }
+    eprintln!("{}", term::link(url, url));
 }
 
 /// Whether `link` can no longer start a sign-in. A link whose expiry Plow

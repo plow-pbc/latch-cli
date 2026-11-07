@@ -8815,53 +8815,196 @@ fn setup_sets_up_every_connector_with_no_host_running() {
     );
 }
 
-/// Ctrl-C at Google's sign-in wait in `latch setup` stops the wait, as the
-/// screen says, and setup goes on to the next step. A setup killed during
-/// that wait runs again from Google.
+/// The last line of setup's own words at a Google sign-in's wait.
+#[cfg(feature = "fake-gog")]
+const SETUP_WAITS: &str = "Press Ctrl-C to stop setup.";
+
+/// What setup says once Ctrl-C stopped it.
+#[cfg(feature = "fake-gog")]
+const SETUP_STOPPED: &str = "Setup stopped. Run `latch setup` again to pick up where you left off.";
+
+/// The answers after Google's step: on macOS Messages and Contacts no;
+/// rules none; start latch no.
+#[cfg(feature = "fake-gog")]
+fn after_google() -> &'static [u8] {
+    if cfg!(target_os = "macos") {
+        b"n\n3\nn\n"
+    } else {
+        b"3\nn\n"
+    }
+}
+
+/// What else the terminal shows within a moment, once nothing more will.
+#[cfg(feature = "fake-gog")]
+fn shown_after(shown: &std::sync::mpsc::Receiver<String>) -> String {
+    let mut all = String::new();
+    while let Ok(more) = shown.recv_timeout(std::time::Duration::from_secs(2)) {
+        all.push_str(&more);
+    }
+    all
+}
+
+/// Ctrl-C stops `latch setup` at any step: at Google's sign-in wait, with
+/// the command it waits on, and at a question. Setup says it stopped and
+/// how to pick up again, exits 130, and runs again from that step.
 #[cfg(feature = "fake-gog")]
 #[test]
-fn ctrl_c_at_setups_google_sign_in_skips_google_and_setup_goes_on() {
+fn ctrl_c_stops_setup_at_googles_sign_in_and_at_a_question() {
     let plow = LivePlow::start();
     let dir = test_dir();
     let host = owner_host_on(&plow, dir.path());
     install_fake_gog(&host);
-    let waiting = "Waiting for the account, up to 5 minutes… (Ctrl-C stops waiting)";
 
-    // Killed during the wait, with all it started.
     let (mut setup, mut typing, shown) = at_its_own_terminal(&host, &["setup"], &[]);
     typing.write_all(b"y\n").unwrap();
-    shows(&shown, waiting);
-    // SAFETY: signals setup's own process group, which setsid made.
-    assert_eq!(
-        unsafe { libc::kill(-(setup.id() as i32), libc::SIGKILL) },
-        0
-    );
-    setup.wait().unwrap();
-
-    // Run again: Google is asked for again, and Ctrl-C ends only its wait.
-    let (mut setup, mut typing, shown) = at_its_own_terminal(&host, &["setup"], &[]);
-    let mut all = shows(&shown, "Connect Google? [Y/n]");
-    typing.write_all(b"y\n").unwrap();
-    all += &shows(&shown, waiting);
-    typing.write_all(b"\x03").unwrap();
-    all += &shows(&shown, "✗ Google is not on yet.");
-    // On macOS Messages and Contacts: no; rules: none; start latch: no.
-    let rest: &[u8] = if cfg!(target_os = "macos") {
-        b"n\n3\nn\n"
-    } else {
-        b"3\nn\n"
-    };
-    typing.write_all(rest).unwrap();
-    all += &shows(&shown, "Done. Run `latch setup` again any time.");
-    assert!(setup.wait().unwrap().success(), "{all}");
+    let mut all = shows(&shown, SETUP_WAITS);
     for line in [
-        "Try again later: latch plugins enable google",
-        "Rules for your agents? [1/2/3]",
-        "Not started; later: `latch serve`",
+        "Sign in with Google to connect it to Plow.",
+        "Waiting for Google sign-in, up to 5 minutes.",
+        "Type s and press Enter to skip Google and continue setup.",
     ] {
         assert!(all.contains(line), "{line}: {all}");
     }
-    assert!(!all.contains("✓ Google is connected."), "{all}");
+    assert!(!all.contains("Ctrl-C stops waiting"), "{all}");
+    typing.write_all(b"\x03").unwrap();
+    all += &shows(&shown, SETUP_STOPPED);
+    assert_eq!(exits_within(&mut setup, 10).code(), Some(130), "{all}");
+    all += &shown_after(&shown);
+    for left_out in [
+        "Done.",
+        "Rules for your agents?",
+        "google_connect_cancelled",
+    ] {
+        assert!(!all.contains(left_out), "{left_out}: {all}");
+    }
+    // The sign-in it waited on stopped with it: nothing is left in setup's
+    // process group, which setsid made.
+    let group = setup.id() as i32;
+    assert!(
+        // SAFETY: signal 0 only asks whether the group has a process left.
+        eventually(10, || unsafe { libc::kill(-group, 0) } != 0),
+        "a command outlived setup"
+    );
+
+    // Run again: Google is asked for again, and Ctrl-C there stops setup.
+    let (mut setup, mut typing, shown) = at_its_own_terminal(&host, &["setup"], &[]);
+    let mut all = shows(&shown, "Connect Google? [Y/n]");
+    typing.write_all(b"\x03").unwrap();
+    all += &shows(&shown, SETUP_STOPPED);
+    assert_eq!(exits_within(&mut setup, 10).code(), Some(130), "{all}");
+    all += &shown_after(&shown);
+    assert!(!all.contains("Done."), "{all}");
+}
+
+/// `s` then Enter at Google's sign-in wait in `latch setup` stops the wait,
+/// and setup says so plainly and goes on to the next step.
+#[cfg(feature = "fake-gog")]
+#[test]
+fn s_at_setups_google_sign_in_skips_google_and_setup_goes_on() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    install_fake_gog(&host);
+
+    let (mut setup, mut typing, shown) = at_its_own_terminal(&host, &["setup"], &[]);
+    typing.write_all(b"y\n").unwrap();
+    let mut all = shows(&shown, SETUP_WAITS);
+    typing.write_all(b"s\n").unwrap();
+    all += &shows(&shown, "Connect later: latch plugins enable google");
+    assert!(
+        all.contains("Stopped waiting for Google. Continuing setup."),
+        "{all}"
+    );
+    typing.write_all(after_google()).unwrap();
+    all += &shows(&shown, "Done. Run `latch setup` again any time.");
+    assert!(exits_within(&mut setup, 10).success(), "{all}");
+    assert!(all.contains("Rules for your agents? [1/2/3]"), "{all}");
+    for left_out in ["✓ Google is connected.", "✗", "{\"error\""] {
+        assert!(!all.contains(left_out), "{left_out}: {all}");
+    }
+}
+
+/// `s` then Enter at the wait for another Google account in `latch setup`
+/// stops that wait only: Google stays on, as setup says, and setup goes on.
+#[cfg(feature = "fake-gog")]
+#[test]
+fn s_at_setups_wait_for_another_google_account_skips_it_and_google_stays_on() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    plow.state.lock().unwrap().google = Some("google-token".into());
+    install_fake_gog(&host);
+
+    let (mut setup, mut typing, shown) = at_its_own_terminal(&host, &["setup"], &[]);
+    typing.write_all(b"y\n").unwrap();
+    let mut all = shows(&shown, "Add another Google account? [y/N]");
+    typing.write_all(b"y\n").unwrap();
+    all += &shows(&shown, SETUP_WAITS);
+    for line in [
+        "Sign in with another Google account to add it to Plow.",
+        "Type s and press Enter to skip adding an account and continue setup.",
+    ] {
+        assert!(all.contains(line), "{line}: {all}");
+    }
+    typing.write_all(b"s\n").unwrap();
+    all += &shows(
+        &shown,
+        "Add one later: latch plugins enable google --add-account",
+    );
+    assert!(
+        all.contains("Stopped waiting for another Google account. Google stays on."),
+        "{all}"
+    );
+    typing.write_all(after_google()).unwrap();
+    all += &shows(&shown, "Done. Run `latch setup` again any time.");
+    assert!(exits_within(&mut setup, 10).success(), "{all}");
+    for left_out in ["No Google account was added", "✗", "{\"error\""] {
+        assert!(!all.contains(left_out), "{left_out}: {all}");
+    }
+    let listed: Value =
+        serde_json::from_slice(&latch(&host, &["status", "--local"], &[]).stdout).unwrap();
+    let google = listed["plugins"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|plugin| plugin["name"] == "google")
+        .unwrap()
+        .clone();
+    assert_eq!(google["state"], "enabled", "{listed}");
+}
+
+/// What is typed during Google's sign-in wait in `latch setup` is the
+/// wait's: neither a whole line nor one half typed answers the question
+/// after it.
+#[cfg(feature = "fake-gog")]
+#[test]
+fn lines_typed_during_setups_google_wait_answer_no_later_question() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    install_fake_gog(&host);
+
+    let (mut setup, mut typing, shown) = at_its_own_terminal(&host, &["setup"], &[]);
+    typing.write_all(b"y\n").unwrap();
+    let mut all = shows(&shown, SETUP_WAITS);
+    // Yes to the question after the wait, typed early: a whole line, then
+    // half of one. Then the account is connected, which ends the wait.
+    typing.write_all(b"y\ny").unwrap();
+    plow.state.lock().unwrap().google = Some("google-token".into());
+    all += &shows(&shown, "Add another Google account? [y/N]");
+    typing.write_all(b"\n").unwrap();
+    // Enter alone answered it: no other account, and on to the next step.
+    let next = if cfg!(target_os = "macos") {
+        "Enable Messages and Contacts on this Mac? [y/N]"
+    } else {
+        "Rules for your agents? [1/2/3]"
+    };
+    all += &shows(&shown, next);
+    assert!(all.contains("✓ Google is connected."), "{all}");
+    assert!(!all.contains("→ Add a Google account"), "{all}");
+    typing.write_all(after_google()).unwrap();
+    all += &shows(&shown, "Done. Run `latch setup` again any time.");
+    assert!(exits_within(&mut setup, 10).success(), "{all}");
 }
 
 /// `setup --status` asks Plow, read only, whether Google is connected

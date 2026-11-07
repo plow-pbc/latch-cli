@@ -4,17 +4,16 @@
 //! offers to start one. It is thin: every step runs an existing latch command (and says
 //! which), so a person can do any step by hand later. Each step first looks
 //! whether it is done already and then skips it, so setup can be run again
-//! at any time. Skipping or failing a step never stops the next one, and
-//! Ctrl-C during a Google sign-in stops only that step.
+//! at any time. Skipping or failing a step never stops the next one;
+//! Ctrl-C stops setup, at any step.
 
 use std::io::BufRead;
 use std::path::PathBuf;
 use std::process::{Command, ExitCode, Stdio};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::time::Duration;
 #[cfg(target_os = "macos")]
-use std::sync::mpsc::RecvTimeoutError;
-use std::sync::mpsc::{self, Receiver};
-#[cfg(target_os = "macos")]
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use serde::Serialize;
 use serde_json::Value;
@@ -29,12 +28,16 @@ const RECHECK_EVERY: Duration = Duration::from_secs(2);
 #[cfg(target_os = "macos")]
 const RECHECK_FOR: Duration = Duration::from_secs(180);
 
+/// How often a Google sign-in's wait looks at what was typed.
+const TYPED_EVERY: Duration = Duration::from_millis(100);
+
 pub fn run(state_dir: Option<PathBuf>) -> ExitCode {
     let mut setup = Setup {
         latch: latch_program(),
         state_dir,
         input: None,
     };
+    stop_on_ctrl_c();
     say("Setting up latch. Each step runs a latch command; you can run it yourself later.");
     if setup.log_in() {
         setup.google();
@@ -70,6 +73,16 @@ struct Setup {
 struct Ran {
     ok: bool,
     json: Value,
+}
+
+/// How a Google sign-in at this terminal ended.
+enum SignIn {
+    /// The enable printed its result: Google is on.
+    On,
+    /// The wait was stopped (`s`) before the enable was sent.
+    Skipped,
+    /// Anything else: the `error` line, if the command printed one.
+    Failed(Value),
 }
 
 impl Setup {
@@ -170,12 +183,20 @@ impl Setup {
                 say("Skipped; later: `latch plugins enable google`.");
                 return;
             }
-            step("Connect Google", "latch plugins enable google");
-            if !self.google_at_this_terminal(&["plugins", "enable", "google"]) {
-                eprintln!(
-                    "✗ Google is not on yet.\n  Try again later: latch plugins enable google"
-                );
-                return;
+            let enable = "latch plugins enable google";
+            step("Connect Google", enable);
+            match self.sign_in(false) {
+                SignIn::On => {}
+                SignIn::Skipped => {
+                    say(&format!(
+                        "Stopped waiting for Google. Continuing setup.\nConnect later: {enable}"
+                    ));
+                    return;
+                }
+                SignIn::Failed(error) => {
+                    failed(&error, enable);
+                    return;
+                }
             }
         }
         done("Google is connected.");
@@ -185,35 +206,111 @@ impl Setup {
             .yes("Add another Google account? [y/N] ", false)
         {
             step("Add a Google account", add);
-            let args = ["plugins", "enable", "google", "--add-account"];
-            if !self.google_at_this_terminal(&args) {
-                eprintln!("✗ No Google account was added.\n  Try again later: {add}");
-                return;
+            match self.sign_in(true) {
+                SignIn::On => done("Another Google account is connected."),
+                // A sign-in started in a browser may still add one.
+                SignIn::Skipped => {
+                    say(&format!(
+                        "Stopped waiting for another Google account. Google stays on. Continuing \
+                         setup.\nAdd one later: {add}"
+                    ));
+                    return;
+                }
+                SignIn::Failed(error) => {
+                    failed(&error, add);
+                    return;
+                }
             }
-            done("Another Google account is connected.");
         }
     }
 
-    /// `latch ARGS…` for Google at this terminal: a sign-in shows its link
-    /// there and waits for the account, and a failure says why there
-    /// itself. Ctrl-C stops that command, not setup: setup's handler does
-    /// nothing meanwhile, and exec gives the command Ctrl-C's default back.
-    /// True once the command printed its result: Google is on.
-    fn google_at_this_terminal(&self, args: &[&str]) -> bool {
-        extern "C" fn heard(_: libc::c_int) {}
-        let heard: extern "C" fn(libc::c_int) = heard;
-        // SAFETY: a handler that does nothing is safe whenever it runs, and
-        // what it replaces is put back below.
-        let before = unsafe { libc::signal(libc::SIGINT, heard as libc::sighandler_t) };
-        let output = self
-            .command(args)
-            .stdin(Stdio::inherit())
-            .stderr(Stdio::inherit())
+    /// `latch plugins enable google`, with `--add-account` when `adding`,
+    /// read as its `--events`: setup shows the sign-in link itself and owns
+    /// what is typed while the command waits for the account. `s` then
+    /// Enter stops the wait (closing the command's stdin does), any other
+    /// line is dropped, and once the wait is over nothing typed during it,
+    /// not even half a line, is left to answer a later question. Ctrl-C
+    /// stops the command and setup alike.
+    fn sign_in(&mut self, adding: bool) -> SignIn {
+        let mut args = vec!["plugins", "enable", "google"];
+        if adding {
+            args.push("--add-account");
+        }
+        args.push("--events");
+        let spawned = self
+            .command(&args)
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .output();
-        // SAFETY: puts back the disposition `signal` returned.
-        unsafe { libc::signal(libc::SIGINT, before) };
-        output.is_ok_and(|output| output.status.success() && !output.stdout.is_empty())
+            // Its failure is an `error` line too.
+            .stderr(Stdio::null())
+            .spawn();
+        let mut child = match spawned {
+            Ok(child) => child,
+            Err(err) => {
+                return SignIn::Failed(serde_json::json!({"error": {"message": err.to_string()}}));
+            }
+        };
+        let mut stdin = child.stdin.take();
+        let stdout = child.stdout.take().expect("stdout is piped");
+        let (lines, events) = mpsc::channel();
+        std::thread::spawn(move || {
+            for line in std::io::BufReader::new(stdout)
+                .lines()
+                .map_while(Result::ok)
+            {
+                let event: Value = serde_json::from_str(&line).unwrap_or(Value::Null);
+                if lines.send(event).is_err() {
+                    break;
+                }
+            }
+        });
+        let input = self.input();
+        let mut waiting = false;
+        let mut ended = Value::Null;
+        loop {
+            match events.recv_timeout(TYPED_EVERY) {
+                Ok(event) if event["type"] == "link" => {
+                    let url = event["url"].as_str().unwrap_or_default();
+                    crate::plugins::connect::show_link(url, waiting, adding, None);
+                    if !waiting {
+                        let skip = if adding {
+                            "skip adding an account"
+                        } else {
+                            "skip Google"
+                        };
+                        say(&format!(
+                            "Waiting for Google sign-in, up to 5 minutes.\nType s and press \
+                             Enter to {skip} and continue setup.\nPress Ctrl-C to stop setup."
+                        ));
+                    }
+                    waiting = true;
+                }
+                Ok(event) if event["type"] == "result" || event["type"] == "error" => {
+                    ended = event;
+                }
+                Ok(_) | Err(RecvTimeoutError::Timeout) => {}
+                // The command has ended.
+                Err(RecvTimeoutError::Disconnected) => break,
+            }
+            if waiting {
+                while let Ok(line) = input.0.try_recv() {
+                    if line == "s" {
+                        drop(stdin.take());
+                    }
+                }
+            }
+        }
+        let _ = child.wait();
+        if waiting {
+            input.forget_typed();
+        }
+        match ended["type"].as_str() {
+            Some("result") => SignIn::On,
+            Some(_) if ended["error"]["code"] == "google_connect_cancelled" => SignIn::Skipped,
+            // Any other failure, or a stop after the enable was sent
+            // (`outcome_unknown`), says what it says.
+            _ => SignIn::Failed(ended),
+        }
     }
 
     /// Step 3: Messages and Contacts: Full Disk Access for the app the host
@@ -786,6 +883,36 @@ impl Input {
             }
         }
     }
+
+    /// Forgets what was typed until now: lines no question has read, and a
+    /// line half typed at the terminal.
+    fn forget_typed(&self) {
+        // SAFETY: tcflush only discards the input the terminal holds for
+        // stdin; on a stdin that is no terminal it fails, changing nothing.
+        unsafe { libc::tcflush(libc::STDIN_FILENO, libc::TCIFLUSH) };
+        while self.0.try_recv().is_ok() {}
+    }
+}
+
+/// Ctrl-C stops setup at any step, and the command a step runs with it
+/// (the terminal signals both), saying how to pick up again: a step done
+/// stays done, so the next setup goes on from there. 130 is a shell's
+/// status for a stop by Ctrl-C.
+fn stop_on_ctrl_c() {
+    extern "C" fn stopped(_: libc::c_int) {
+        const STOPPED: &[u8] =
+            b"\nSetup stopped. Run `latch setup` again to pick up where you left off.\n";
+        // SAFETY: write and _exit are async-signal-safe, and STOPPED is a
+        // static buffer of the length given.
+        unsafe {
+            libc::write(libc::STDERR_FILENO, STOPPED.as_ptr().cast(), STOPPED.len());
+            libc::_exit(130);
+        }
+    }
+    let stopped: extern "C" fn(libc::c_int) = stopped;
+    // SAFETY: the handler only writes a line and exits, both safe in a
+    // signal handler, whichever thread it runs on.
+    unsafe { libc::signal(libc::SIGINT, stopped as libc::sighandler_t) };
 }
 
 fn say(text: &str) {
