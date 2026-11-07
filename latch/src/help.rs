@@ -136,7 +136,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "agents",
         runs_on: |_| RunsOn::Either,
-        output: "`host` (with --host: its `name` and whether it is `online`; else null) and `agents`, in Plow's order: each one's `uid`, `name`, `kind` (cloud or own), `cloud_kind`, `line` (`number`, `name`, `card_url`: its persona's contact card, null for an unnamed line), `created_at`, `status` (a cloud agent's phase in Plow; null for own agents), `failure_code`, `last_seen_at` (its credential's last use, not proof it runs) and `standing` on the host (`own_rules`, `exec_blocked`; null without --host).",
+        output: "`host` (with --host: its `name` and whether it is `online`; else null) and `agents`, in Plow's order: each one's `uid`, `name`, `kind` (cloud or own), `cloud_kind` (its catalog kind, or `exe:` followed by its image reference for an agent made with --image; null for an own agent), `line` (`number`, `name`, `card_url`: its persona's contact card, null for an unnamed line), `created_at`, `status` (a cloud agent's phase in Plow; null for own agents), `failure_code`, `last_seen_at` (its credential's last use, not proof it runs) and `standing` on the host (`own_rules`, `exec_blocked`; null without --host).",
         effect: ReadOnly,
         owner_only: true,
         connector: None,
@@ -231,7 +231,7 @@ const ENTRIES: &[Entry] = &[
                 ],
             ),
             ex(
-                "A cloud agent Plow runs",
+                "A cloud agent from Plow's catalog",
                 &[
                     "agents",
                     "new",
@@ -241,6 +241,19 @@ const ENTRIES: &[Entry] = &[
                     "Hermes",
                     "--line",
                     "+15550000003",
+                ],
+            ),
+            ex(
+                "A cloud agent from a public image",
+                &[
+                    "agents",
+                    "new",
+                    "--image",
+                    "ghcr.io/example/scout@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "--name",
+                    "Scout",
+                    "--line",
+                    "+15550000004",
                 ],
             ),
         ],
