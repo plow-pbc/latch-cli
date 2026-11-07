@@ -224,9 +224,8 @@ def plan(args):
         unusable = screen_unusable()
         if unusable:
             raise SystemExit("test.py: installer: the Mac app's Swift tests need the screen unlocked "
-                             "and the display on so AppKit animations can finish. "
-                             f"This Mac's {unusable}. Unlock the screen and turn the display on, "
-                             "then run again.")
+                             "and the display on so AppKit animations can finish; "
+                             f"this Mac's {unusable}: wake and unlock it, then run again")
     args.archive = None
     if args.build_archive or args.from_archive:
         if args.build_archive and args.from_archive:

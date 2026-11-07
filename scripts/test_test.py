@@ -199,7 +199,7 @@ class Plans(unittest.TestCase):
                 with self.assertRaises(SystemExit) as refused:
                     plan(*argv)
                 self.assertIn("installer: ", str(refused.exception))
-                self.assertIn("This Mac's display is off.", str(refused.exception))
+                self.assertIn("this Mac's display is off: wake and unlock it", str(refused.exception))
             self.assertEqual(plan("core", "browser")[1], ["core", "browser"])
             self.assertIn("installer", plan("installer", where="linux")[1])
 
