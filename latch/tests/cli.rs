@@ -2479,6 +2479,9 @@ struct LiveState {
     /// Agents Plow lists after the research bot, as `GET /v1/agents` gives
     /// them; one named "Lost" has its removal's answer lost.
     more_agents: Vec<Value>,
+    /// Plow's answer to a line move, for a refusal that turns on what this
+    /// fake doesn't keep: the owner's chats on the line, the agent's phase.
+    move_refused: Option<(u16, Value)>,
 }
 
 impl LivePlow {
@@ -2507,6 +2510,7 @@ impl LivePlow {
                 judge: None,
                 host_login: false,
                 more_agents: Vec::new(),
+                move_refused: None,
             })),
         };
         let serving = plow.clone();
@@ -2799,6 +2803,33 @@ impl LivePlow {
                     Some(agent) => (200, agent.clone()),
                     None => (404, json!({"detail": "Agent not found"})),
                 }
+            }
+            // A line move, as Plow answers it: the agent on the line asked;
+            // a line another of the account's agents holds is refused, and
+            // one move's answer is lost.
+            ("PUT", path) if kind == "device" && path == format!("/v1/agents/{AGENT_UID}/line") => {
+                if let Some(refused) = state.move_refused.clone() {
+                    return refused;
+                }
+                let sent: Value = serde_json::from_slice(&request.body).unwrap();
+                let number = match sent["line_uid"].as_str().unwrap() {
+                    "ln_free" => "+15550000002",
+                    "line_agent" => "+14155550123",
+                    "ln_taken" => {
+                        return (409, json!({"detail": {"code": "CHAT_SET_CONFLICT",
+                            "message": "A messaging line is already served by another assistant."}}));
+                    }
+                    "ln_lost" => return (500, json!({})),
+                    _ => return (404, json!({"detail": "Line not found"})),
+                };
+                (
+                    200,
+                    json!({"uid": AGENT_UID, "name": "Research bot", "provider": "self_hosted",
+                           "line": {"uid": sent["line_uid"], "object": "line", "provider_type": "imessage",
+                                    "provider_key": number, "display_name": null},
+                           "created_at": "2026-10-20T10:00:00Z", "status": null,
+                           "failure_code": null, "credential": null}),
+                )
             }
             // As Plow lists them: one agent its owner runs, then any more.
             ("GET", "/v1/agents") if kind == "device" => (
@@ -4812,6 +4843,7 @@ fn agents_are_shown_created_and_removed_by_their_owner() {
         ("exe:hermes", "ln_lost", 5, "outcome_unknown", 1),
         ("self_hosted", "ln_free", 2, "unknown_cloud_kind", 0),
         ("exe:hermes", "+1999", 2, "no_such_line", 0),
+        ("exe:hermes", "ln_mail", 2, "no_such_line", 0),
     ] {
         let before = posts();
         let new_cloud = [
@@ -5048,6 +5080,146 @@ fn an_agent_is_removed_by_its_phone_line() {
             (Some(2), &json!("usage")),
             "{args:?}"
         );
+    }
+}
+
+/// The owner moves an agent to another line without being asked, and gets
+/// the same agent on its new line, and the text that starts its chat there;
+/// what Plow refuses is said as latch's own codes, each sent once, and a
+/// lost answer is reported, never resent.
+#[test]
+fn an_agent_is_moved_to_another_line_by_its_owner() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let run = |args: &[&str]| {
+        let output = latch(&host, args, &[]);
+        let printed = if output.status.success() {
+            &output.stdout
+        } else {
+            &output.stderr
+        };
+        let json: Value = serde_json::from_slice(printed).unwrap_or(Value::Null);
+        (output.status.code(), json)
+    };
+    let moves = || {
+        let put = format!("PUT /v1/agents/{AGENT_UID}/line ");
+        plow.seen()
+            .iter()
+            .filter(|(line, _)| line.starts_with(&put))
+            .count()
+    };
+    let move_to = |line: &str| run(&["agents", "move", "Research bot", "--line", line]);
+
+    // Not asked: the same agent, on the line its number names, the line it
+    // left, and the text that starts its chat there.
+    let (code, moved) = move_to("+15550000002");
+    assert_eq!(code, Some(0), "{moved}");
+    assert_eq!(moved["agent"]["uid"], AGENT_UID);
+    assert_eq!(moved["agent"]["line"]["number"], "+15550000002");
+    assert_eq!(
+        moved["previous_line"],
+        json!({"number": "+14155550123", "name": "Research line",
+               "card_url": format!("{}/cards/research.vcf", plow.url)})
+    );
+    assert_eq!(
+        moved["next"],
+        "Text +15550000002 to start your chat with Research bot; it can't text you until you do"
+    );
+    assert_eq!(moves(), 1);
+    // To the line it is on, Plow only restarts it: no line changed, and its
+    // chat there is the one it has.
+    let (code, again) = run(&["agents", "move", AGENT_UID, "--line", "+14155550123"]);
+    assert_eq!(code, Some(0), "{again}");
+    assert_eq!(again["previous_line"]["number"], "+14155550123");
+    assert_eq!(again.get("next"), None, "{again}");
+    assert_eq!(moves(), 2);
+
+    // An unknown agent or line, or a mailbox, is refused before Plow is asked.
+    for (agent, line, refused) in [
+        ("Nobody", "+15550000002", "no_such_agent"),
+        ("Research bot", "+1999", "no_such_line"),
+        ("Research bot", "ln_mail", "no_such_line"),
+    ] {
+        let (code, error) = run(&["agents", "move", agent, "--line", line]);
+        assert_eq!(
+            (code, &error["error"]["code"]),
+            (Some(2), &json!(refused)),
+            "{error}"
+        );
+    }
+    assert_eq!(moves(), 2);
+
+    // A line another of the account's agents holds; a lost answer, sent
+    // once and never resent, with the same move as what finishes it.
+    let (code, error) = move_to("ln_taken");
+    assert_eq!(
+        (code, &error["error"]["code"], &error["error"]["next"]),
+        (Some(2), &json!("line_taken"), &json!("latch agents lines")),
+        "{error}"
+    );
+    let (code, error) = move_to("ln_lost");
+    assert_eq!(
+        (code, &error["error"]["code"]),
+        (Some(5), &json!("outcome_unknown")),
+        "{error}"
+    );
+    assert_eq!(
+        error["error"]["next"],
+        format!("latch agents move {AGENT_UID} --line ln_lost")
+    );
+    assert_eq!(moves(), 4);
+
+    // A line where the owner has a live chat; the agent or the line gone
+    // (Plow's 404, or the line deleted mid-move); an agent still being set
+    // up. Each is asked once.
+    let refusal = |code: &str| json!({"code": code, "message": "Plow's own words"});
+    for (status, detail, exit, refused, next) in [
+        (
+            409,
+            refusal("LINE_HAS_CHAT"),
+            2,
+            "line_has_chat",
+            "latch agents lines".to_string(),
+        ),
+        (
+            404,
+            json!("Line not found"),
+            1,
+            "not_found",
+            format!("latch agents show {AGENT_UID}"),
+        ),
+        (
+            409,
+            refusal("CHAT_DELETED"),
+            1,
+            "not_found",
+            format!("latch agents show {AGENT_UID}"),
+        ),
+        (
+            409,
+            refusal("PROVISION_IN_FLIGHT"),
+            1,
+            "agent_not_running",
+            format!("latch agents show {AGENT_UID}"),
+        ),
+    ] {
+        plow.state.lock().unwrap().move_refused = Some((status, json!({"detail": detail})));
+        let before = moves();
+        let (code, error) = move_to("ln_free");
+        assert_eq!(
+            (code, &error["error"]["code"], &error["error"]["next"]),
+            (Some(exit), &json!(refused), &json!(next)),
+            "{error}"
+        );
+        assert!(
+            !error["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("Plow's own words"),
+            "{error}"
+        );
+        assert_eq!(moves(), before + 1, "{refused}");
     }
 }
 

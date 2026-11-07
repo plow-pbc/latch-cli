@@ -72,6 +72,7 @@ latch browser open --host my-mac https://example.com
 | `latch agents lines` | Host | Plow's phone lines, and which are free for a new agent. Owner only. |
 | `latch agents new` | Host | Create an agent on a free phone line. Owner only.<br>An agent you run yourself: `latch agents new --own --credential-file plow-credentials --name Scout --line +15550000002` |
 | `latch agents card` | Host | Save the contact card of an agent's line, by the agent's uid or exact name. Owner only.<br>Save an agent's contact card: `latch agents card Willow --output willow.vcf` |
+| `latch agents move` | Host | Move an agent to another phone line, by its uid or its exact name. Owner only.<br>Move an agent to another phone line: `latch agents move Scout --line +15550000002` |
 | `latch agents remove` | Host | Remove an agent, by its uid, exact name or phone line. Owner only.<br>Remove an agent without asking: `latch agents remove Scout --yes` |
 
 ## Programs and files

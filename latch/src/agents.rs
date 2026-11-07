@@ -5,10 +5,10 @@
 //! `rules show`, on this machine's state or from the host named, never from
 //! anywhere else.
 //!
-//! `show`, `catalog`, `lines`, `new` and `remove` read and change the account
-//! through Plow, which runs and assigns everything: latch never waits for a
-//! cloud agent to start, never picks a line itself and never resends a change
-//! whose answer was lost.
+//! `show`, `catalog`, `lines`, `new`, `move` and `remove` read and change
+//! the account through Plow, which runs and assigns everything: latch never
+//! waits for a cloud agent to start, never picks a line itself and never
+//! resends a change whose answer was lost.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -132,6 +132,7 @@ async fn managed(
             .await?
         }
         Some(AgentsAction::Card { agent, output }) => card(plow, api_url, &agent, &output).await?,
+        Some(AgentsAction::Move { agent, line }) => move_to(plow, &agent, &line).await?,
         Some(AgentsAction::Remove { agent, line, yes }) => {
             let agent = match (agent, line) {
                 (Some(named), _) => resolve(plow, &named).await?,
@@ -521,13 +522,13 @@ async fn new(
     }))
 }
 
-/// The line `named` names: by its uid, or its number.
+/// The phone line `named` names, as `lines` lists it: by its uid, or its
+/// number.
 async fn line_named(plow: &Plow, named: &str) -> Result<PlowLine, Failure> {
     let lines = plow.lines().await?;
-    match lines
-        .into_iter()
-        .find(|line| line.uid == named || line.provider_key == named)
-    {
+    match lines.into_iter().find(|line| {
+        line.provider_type == "imessage" && (line.uid == named || line.provider_key == named)
+    }) {
         Some(line) => Ok(line),
         None => {
             let message = format!("Plow has no phone line {named:?}");
@@ -571,6 +572,94 @@ fn not_created(failure: Failure, line: &str, image: bool) -> Failure {
 /// A failure after the request may have reached Plow: it may have done it.
 fn lost(code: &str) -> bool {
     matches!(code, "plow_unreachable" | "plow_error")
+}
+
+/// Moves `named` to the phone line `line` names. Moving it to the line it is
+/// on changes no line: Plow restarts a cloud agent there, which is how a move
+/// whose restart failed is finished.
+async fn move_to(plow: &Plow, named: &str, line: &str) -> Result<Value, Failure> {
+    let agent = resolve(plow, named).await?;
+    let to = line_named(plow, line).await?;
+    let name = agent.name.clone();
+    let previous_line = LineShown {
+        number: agent.line.provider_key,
+        name: agent.line.display_name,
+        card_url: agent.line.card_url,
+    };
+    let changed = to.provider_key != previous_line.number;
+    let moved = plow
+        .move_agent(&agent.uid, &to.uid)
+        .await
+        .map_err(|failure| move_refused(failure, &name, &agent.uid, &to))?;
+    let mut shown = json!({"agent": agent_shown(moved, None), "previous_line": previous_line});
+    // On a new line the agent has no chat yet, and Plow lets it start none:
+    // the owner's first text there opens it.
+    if changed {
+        shown["next"] = json!(format!(
+            "Text {} to start your chat with {name}; it can't text you until you do",
+            to.provider_key
+        ));
+    }
+    Ok(shown)
+}
+
+/// Why Plow didn't move the agent, or that it may have.
+fn move_refused(failure: Failure, name: &str, uid: &str, to: &PlowLine) -> Failure {
+    let number = &to.provider_key;
+    let lines = || Some("latch agents lines".to_string());
+    let show = || Some(format!("latch agents show {uid}"));
+    let (refused, message, next) = match (
+        failure.code.as_str(),
+        failure.plow.as_ref().and_then(|plow| plow.code.as_deref()),
+    ) {
+        ("conflict", Some("CHAT_SET_CONFLICT")) => (
+            code::line_taken,
+            format!("line {number} already has one of your agents; choose another line"),
+            lines(),
+        ),
+        ("conflict", Some("LINE_HAS_CHAT")) => (
+            code::line_has_chat,
+            format!(
+                "you already have an open chat on {number} or its email address; choose another line"
+            ),
+            lines(),
+        ),
+        // Plow's 404 doesn't say which of the two it couldn't find, and
+        // `CHAT_DELETED` is the line going while Plow moved the agent.
+        ("not_found", _) | ("conflict", Some("CHAT_DELETED")) => (
+            code::not_found,
+            format!("Plow could not find {name} or the destination phone line {number}"),
+            show(),
+        ),
+        ("conflict", Some("PROVISION_IN_FLIGHT")) => (
+            code::agent_not_running,
+            format!("Plow can't move {name} while it is still being set up"),
+            show(),
+        ),
+        ("conflict", Some("AGENT_FAILED")) => (
+            code::agent_not_running,
+            format!("Plow can't move {name}: it failed to start"),
+            show(),
+        ),
+        ("conflict", Some("PENDING_TEARDOWN")) => (
+            code::agent_not_running,
+            format!("Plow can't move {name}: its removal hasn't finished"),
+            show(),
+        ),
+        (code, _) if lost(code) => (
+            code::outcome_unknown,
+            format!(
+                "Latch couldn't confirm whether the move to {number} completed. Retrying can \
+                 restart a cloud agent again and interrupt its work. If it moved, text {number} \
+                 to start your chat with it"
+            ),
+            Some(format!("latch agents move {uid} --line {}", to.uid)),
+        ),
+        _ => return failure,
+    };
+    let mut failure = Failure::new(refused, message);
+    failure.next = next.map(Into::into);
+    failure
 }
 
 /// Removes `agent`, once its owner says so.

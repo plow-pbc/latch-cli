@@ -178,7 +178,7 @@ pub enum Command {
     /// List your agents, with their lines and Plow status
     ///
     /// With --host, each one's standing on that host. Its subcommands show,
-    /// create and remove agents (owner only)
+    /// create, move and remove agents (owner only)
     Agents(AgentsArgs),
     /// Print this machine, its login and account, and the account's hosts
     Status(StatusArgs),
@@ -1159,6 +1159,9 @@ pub enum AgentsAction {
     /// own and texts back its contact card
     StartByText,
     /// Plow's phone lines, and which are free for a new agent
+    ///
+    /// A move also needs a line where you have no open chat, by text or
+    /// email. This list doesn't show that; Plow checks when you move
     Lines,
     /// Create an agent on a free phone line
     ///
@@ -1226,6 +1229,36 @@ pub enum AgentsAction {
         /// Where to save it
         #[arg(long, short, value_name = "FILE")]
         output: PathBuf,
+    },
+    /// Move an agent to another phone line, by its uid or its exact name
+    ///
+    /// The agent keeps its credential, settings and rules. To move it, choose
+    /// a free phone line where you have no open chat, by text or email.
+    /// `latch agents lines` doesn't show which lines those are; Plow checks
+    /// when you move. Closed chats don't prevent a move.
+    ///
+    /// Plow closes your chats on the line the agent leaves, email included.
+    /// While no agent of yours uses the old number, one-to-one texts from
+    /// your number get at most one generic reply, then no reply. Email to its
+    /// old address is dropped unless another account on the thread has an
+    /// agent on that line. If you later move the agent back, your first text
+    /// starts a fresh chat there.
+    ///
+    /// Text the new number first to start a fresh chat; the agent can't text
+    /// you until you do, and until then your hosts have no chat with you to
+    /// judge its requests by.
+    ///
+    /// Plow restarts a cloud agent; it doesn't restart a program you run
+    /// yourself. Moving it to the line it is on restarts a cloud agent there
+    /// too, without closing or starting any chat, which finishes a move whose
+    /// restart failed. A repeat can interrupt the agent's work. The command
+    /// doesn't wait for the agent to be ready
+    Move {
+        agent: String,
+        /// The phone line to move it to: a line's uid or number, from
+        /// `latch agents lines`
+        #[arg(long)]
+        line: String,
     },
     /// Remove an agent, by its uid, exact name or phone line
     ///

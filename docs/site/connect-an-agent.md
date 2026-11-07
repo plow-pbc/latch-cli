@@ -64,6 +64,18 @@ uses yours, whatever the agent's credential says.
 
 To revoke the agent, run `latch agents remove my-agent`.
 
+To move your agent to another phone line, run
+`latch agents move my-agent --line LINE`. Choose a free phone line where you
+have no open chat, by text or email. It keeps its credential, settings and
+rules, so `my-agent.env` keeps working. Its program keeps running; Plow
+doesn't restart it.
+
+Plow closes your chats on the line the agent leaves, email included, so its
+program can't read them any more. Text the new number first to start a fresh
+chat; the agent can't text you until you do, so a first message from its
+program is refused. If you later move it back, your first text starts a fresh
+chat there too.
+
 ## Moving from plow-agents
 
 Use Latch to create, list and remove agents. Keep using `plow-agents`, with
