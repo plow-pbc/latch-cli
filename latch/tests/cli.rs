@@ -9424,22 +9424,30 @@ fn signing_in_again_is_offered_and_waited_for() {
         "owner@example.com wasn't signed in again before the wait ended."
     );
 
-    // `--events` waits until the account works again, then enables.
-    let mut child = latch_command(&host, &["plugins", "enable", "google", "--events"], &[])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .unwrap();
-    let mut out = std::io::BufReader::new(child.stdout.take().unwrap()).lines();
-    let mut next = || -> Value { serde_json::from_str(&out.next().unwrap().unwrap()).unwrap() };
-    assert_eq!(next()["type"], "hello");
-    assert_eq!(next()["type"], "link");
-    plow.state.lock().unwrap().google_reauth.clear();
-    let result = next();
-    assert_eq!(result["type"], "result", "{result}");
-    assert_eq!(result["result"]["accounts"], json!(["owner@example.com"]));
-    assert!(child.wait().unwrap().success());
+    // `--events` waits until an account works, which `works` makes so
+    // once the link is offered, then enables: its result.
+    let waited = |works: &dyn Fn()| -> Value {
+        let within = [("LATCH_TEST_CONNECT_WITHIN", Path::new("30"))];
+        let mut child = latch_command(&host, &["plugins", "enable", "google", "--events"], &within)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut out = std::io::BufReader::new(child.stdout.take().unwrap()).lines();
+        let mut next = || -> Value { serde_json::from_str(&out.next().unwrap().unwrap()).unwrap() };
+        assert_eq!(next()["type"], "hello");
+        assert_eq!(next()["type"], "link");
+        works();
+        let result = next();
+        assert_eq!(result["type"], "result", "{result}");
+        assert!(child.wait().unwrap().success());
+        result["result"].clone()
+    };
+
+    // The account signed in again.
+    let enabled = waited(&|| plow.state.lock().unwrap().google_reauth.clear());
+    assert_eq!(enabled["accounts"], json!(["owner@example.com"]));
 
     // One works, one doesn't: enabled, the other named.
     {
@@ -9461,30 +9469,15 @@ fn signing_in_again_is_offered_and_waited_for() {
     // still named.
     plow.state.lock().unwrap().google_reauth =
         vec!["owner@example.com".into(), "second@example.com".into()];
-    let within = [("LATCH_TEST_CONNECT_WITHIN", Path::new("30"))];
-    let mut child = latch_command(&host, &["plugins", "enable", "google", "--events"], &within)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .unwrap();
-    let mut out = std::io::BufReader::new(child.stdout.take().unwrap()).lines();
-    let mut next = || -> Value { serde_json::from_str(&out.next().unwrap().unwrap()).unwrap() };
-    assert_eq!(next()["type"], "hello");
-    assert_eq!(next()["type"], "link");
-    plow.state
-        .lock()
-        .unwrap()
-        .added_google
-        .push("third@example.com".into());
-    let result = next();
-    assert_eq!(result["type"], "result", "{result}");
-    assert_eq!(result["result"]["accounts"], json!(["third@example.com"]));
+    let enabled = waited(&|| {
+        let mut state = plow.state.lock().unwrap();
+        state.added_google.push("third@example.com".into());
+    });
+    assert_eq!(enabled["accounts"], json!(["third@example.com"]));
     assert_eq!(
-        result["result"]["needs_sign_in"],
+        enabled["needs_sign_in"],
         json!(["owner@example.com", "second@example.com"])
     );
-    assert!(child.wait().unwrap().success());
 }
 
 /// A caller whose stdout reader leaves cancels a Google sign-in wait at
