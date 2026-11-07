@@ -13,8 +13,9 @@ use std::thread;
 
 /// The stand-in. Its state folder (`$STUB`) holds `peer` (logged in),
 /// `ready` (the host answers), `enabled-NAME`, and `enable-NAME`: one answer
-/// per call to `plugins enable NAME`, `ok`, `not_granted`, `unavailable` or
-/// `fail`, the last one repeating. With `taken`, login finds this machine's
+/// per call to `plugins enable NAME`, `ok`, `not_granted`, `unavailable`,
+/// `stopped` (no answer) or `fail`, the last one repeating, as JSON lines
+/// with `--events`. With `taken`, login finds this machine's
 /// name taken and asks, as the real one does, whether to replace it and
 /// else for a new name; it keeps the answers in `login-answers`. With
 /// `agent`, the login is an agent's. Rules are set unless `no-rules`; a
@@ -66,14 +67,19 @@ case "$*" in
     if [ "$(wc -l < "$STUB/enable-$name" 2>/dev/null || echo 0)" -gt 1 ]; then
       tail -n +2 "$STUB/enable-$name" > "$STUB/next" && mv "$STUB/next" "$STUB/enable-$name"
     fi
+    # With --events, as JSON lines: hello, then the result or the error.
+    events=; case "$*" in *--events) events=1; echo '{"type":"hello","schema":1}' ;; esac
+    fail() {
+      [ -n "$events" ] && echo "{\"type\":\"error\",\"error\":$1}"
+      echo "{\"error\":$1}" >&2; exit 1
+    }
     case $answer in
-      ok) touch "$STUB/enabled-$name"; echo "{\"plugin\":\"$name\",\"state\":\"enabled\"}" ;;
-      not_granted)
-        echo "{\"error\":{\"code\":\"needs_setup\",\"message\":\"no Full Disk Access\",\"access\":\"not_granted\",\"grant\":\"/Applications/Plow Latch.app\",\"settings\":\"x-apple.systempreferences:test\"}}" >&2
-        exit 1 ;;
+      ok) touch "$STUB/enabled-$name"; result="{\"plugin\":\"$name\",\"state\":\"enabled\"}"
+        if [ -n "$events" ]; then echo "{\"type\":\"result\",\"result\":$result}"; else echo "$result"; fi ;;
+      not_granted) fail '{"code":"needs_setup","message":"no Full Disk Access","access":"not_granted","grant":"/Applications/Plow Latch.app","settings":"x-apple.systempreferences:test"}' ;;
       stopped) exit 0 ;;
-      unavailable) echo "{\"error\":{\"code\":\"unavailable\",\"message\":\"$name is unavailable on this host\"}}" >&2; exit 1 ;;
-      *) echo "{\"error\":{\"code\":\"google_not_connected\",\"message\":\"Plow has no Google account\"}}" >&2; exit 1 ;;
+      unavailable) fail "{\"code\":\"unavailable\",\"message\":\"$name is unavailable on this host\"}" ;;
+      *) fail '{"code":"google_not_connected","message":"Plow has no Google account"}' ;;
     esac ;;
   *) echo "{\"error\":{\"code\":\"usage\",\"message\":\"stub: $*\"}}" >&2; exit 2 ;;
 esac
@@ -204,14 +210,16 @@ impl Stub {
 #[test]
 fn a_fresh_run_sets_everything_up_then_starts_latch() {
     let stub = Stub::new();
-    // Enter takes each default: Google yes, Messages no, start yes.
-    let (code, shown) = stub.setup("\n\n\n");
+    // Enter takes each default: Google yes, another Google account no,
+    // Messages no, start yes.
+    let (code, shown) = stub.setup("\n\n\n\n");
     assert_eq!(code, Some(0), "{shown}");
     for line in [
         "→ Log in: latch login",
         "Connect Google? [Y/n]",
         "→ Connect Google: latch plugins enable google",
         "✓ Google is connected.",
+        "Add another Google account? [y/N]",
         "Start latch now? [Y/n]",
         "→ Start latch: latch serve -d",
         "✓ latch is running.",
@@ -238,8 +246,8 @@ fn login_gets_the_answers_to_its_own_questions() {
     let stub = Stub::new();
     stub.file("taken", "");
     // Login's: keep the other machine, call this one "studio". Then
-    // setup's: Google yes, Messages no, start no.
-    let (code, shown) = stub.setup("n\nstudio\n\nn\nn\n");
+    // setup's: Google yes, another Google account no, Messages no, start no.
+    let (code, shown) = stub.setup("n\nstudio\n\nn\nn\nn\n");
     assert_eq!(code, Some(0), "{shown}");
     assert_eq!(stub.read("login-answers"), "n\nstudio\n", "{shown}");
     assert!(shown.contains("✓ Google is connected."), "{shown}");
@@ -257,12 +265,16 @@ fn a_rerun_skips_every_step_already_done() {
     ] {
         stub.file(done, "");
     }
-    let (code, shown) = stub.setup("");
+    // Enter: no other Google account.
+    let (code, shown) = stub.setup("\n");
     assert_eq!(code, Some(0), "{shown}");
     assert!(shown.contains("✓ Logged in as mac."), "{shown}");
     assert!(shown.contains("✓ Google is connected."), "{shown}");
     assert!(shown.contains("✓ latch is running."), "{shown}");
-    assert!(!shown.contains('?'), "nothing asked: {shown}");
+    assert!(
+        shown.contains("Add another Google account? [y/N]") && shown.matches('?').count() == 1,
+        "only whether to add another Google account asked: {shown}"
+    );
     let calls = stub.read("calls");
     for changed in ["login", "serve", "plugins enable"] {
         assert!(!calls.contains(changed), "{changed}: {calls}");
@@ -292,17 +304,20 @@ fn every_no_leaves_its_step_for_later() {
     );
 }
 
-/// A Google sign-in whose wait was stopped exits 0 with nothing on stdout:
-/// that is not Google turned on.
+/// A Google enable that ends with no result (exit 0, nothing after
+/// `hello`): that is not Google turned on.
 #[test]
-fn a_stopped_google_sign_in_is_not_called_connected() {
+fn a_google_enable_with_no_result_is_not_called_connected() {
     let stub = Stub::new();
     stub.file("peer", "");
     stub.file("enable-google", "stopped\n");
     let (code, shown) = stub.setup("y\nn\nn\n");
     assert_eq!(code, Some(0), "{shown}");
     assert!(!shown.contains("✓ Google is connected."), "{shown}");
-    assert!(shown.contains("✗ Google is not on yet."), "{shown}");
+    assert!(
+        shown.contains("  Try again later: latch plugins enable google"),
+        "{shown}"
+    );
 }
 
 #[test]
@@ -312,14 +327,48 @@ fn a_failed_step_says_why_and_the_next_one_still_runs() {
     stub.file("enable-google", "fail\n");
     let (code, shown) = stub.setup("y\nn\nn\n");
     assert_eq!(code, Some(0), "{shown}");
-    // The enable says why itself, at the same terminal.
-    assert!(shown.contains("Plow has no Google account"), "{shown}");
-    assert!(shown.contains("✗ Google is not on yet."), "{shown}");
+    // Setup says why, from the enable's error, in a plain line.
+    assert!(shown.contains("✗ Plow has no Google account"), "{shown}");
+    assert!(!shown.contains("{\"error\""), "{shown}");
     assert!(
         shown.contains("Try again later: latch plugins enable google"),
         "{shown}"
     );
     assert!(shown.contains("Start latch now? [Y/n]"), "{shown}");
+}
+
+/// With Google on, setup offers another account until the owner moves on;
+/// one that isn't added says how to add it later, and setup goes on.
+#[test]
+fn google_on_offers_another_account_until_the_owner_moves_on() {
+    let stub = Stub::new();
+    stub.file("peer", "");
+    // The enable, then an account added, then one that isn't.
+    stub.file("enable-google", "ok\nok\nfail\n");
+    // Google yes; another account yes, and yes again; on macOS Messages
+    // no; start no.
+    let (code, shown) = stub.setup("\ny\ny\nn\nn\n");
+    assert_eq!(code, Some(0), "{shown}");
+    for line in [
+        "✓ Google is connected.",
+        "→ Add a Google account: latch plugins enable google --add-account",
+        "✓ Another Google account is connected.",
+        "✗ Plow has no Google account",
+        "  Try again later: latch plugins enable google --add-account",
+        "Start latch now? [Y/n]",
+    ] {
+        assert!(shown.contains(line), "{line}: {shown}");
+    }
+    assert!(!shown.contains("No Google account was added"), "{shown}");
+    assert_eq!(shown.matches("Add another Google account?").count(), 2);
+    let calls = stub.read("calls");
+    assert_eq!(
+        calls
+            .matches("plugins enable google --add-account --events\n")
+            .count(),
+        2,
+        "{calls}"
+    );
 }
 
 /// A login that fails: what it said stays on the terminal, and setup,
@@ -363,14 +412,15 @@ fn a_login_that_asks_no_one_is_read_not_shown() {
 fn messages_and_contacts_are_confirmed_once_granted() {
     let stub = Stub::new();
     stub.file("peer", "");
-    // Google was turned on before, and latch runs, so setup asks nothing
-    // after this step (a line typed during the wait is not an answer).
+    // Google was turned on before (Enter: no other account), and latch
+    // runs, so setup asks nothing after this step (a line typed during the
+    // wait is not an answer).
     stub.enable("google");
     stub.file("ready", "");
     // Not granted at first; granted on the host's next check.
     stub.file("enable-messages", "not_granted\nok\n");
     stub.file("enable-contacts", "not_granted\nok\n");
-    let (code, shown) = stub.setup("y\n");
+    let (code, shown) = stub.setup("\ny\n");
     assert_eq!(code, Some(0), "{shown}");
     assert!(
         shown.contains("Turn on Full Disk Access for /Applications/Plow Latch.app"),
@@ -405,7 +455,7 @@ fn s_skips_the_full_disk_access_wait_and_leaves_it_for_later() {
     stub.enable("google");
     stub.file("enable-messages", "not_granted\n");
     stub.file("enable-contacts", "not_granted\n");
-    let (code, shown) = stub.setup("y\ns\n");
+    let (code, shown) = stub.setup("\ny\ns\n");
     assert_eq!(code, Some(0), "{shown}");
     assert!(
         shown.contains("Skipped; finish later with `latch plugins enable messages`"),
@@ -450,7 +500,7 @@ fn a_connector_failing_for_another_reason_is_reported_not_waited_for() {
     stub.enable("google");
     stub.file("enable-messages", "not_granted\nok\n");
     stub.file("enable-contacts", "unavailable\n");
-    let (code, shown) = stub.setup("y\n");
+    let (code, shown) = stub.setup("\ny\n");
     assert_eq!(code, Some(0), "{shown}");
     for line in [
         "✗ contacts is unavailable on this host",
@@ -479,7 +529,7 @@ fn a_failure_on_a_later_check_is_reported_not_waited_out() {
     stub.enable("google");
     stub.file("enable-messages", "not_granted\nunavailable\n");
     stub.file("enable-contacts", "not_granted\nok\n");
-    let (code, shown) = stub.setup("y\n");
+    let (code, shown) = stub.setup("\ny\n");
     assert_eq!(code, Some(0), "{shown}");
     for line in [
         "✗ messages is unavailable on this host",
