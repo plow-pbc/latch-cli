@@ -290,7 +290,7 @@ once and its line is freed.
 To move the agent to another phone line, run
 `latch agents move my-agent --line LINE`. Choose a free phone line where you
 have no open chat, by text or email. It doesn't ask first. The agent keeps
-its credential, settings and rules, so `my-agent.token` keeps working.
+its credential, settings and rules, so `my-agent.env` keeps working.
 
 Plow closes your chats on the line the agent leaves, email included. While no
 agent of yours uses the old number, one-to-one texts from your number get at

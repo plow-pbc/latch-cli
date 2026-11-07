@@ -67,7 +67,7 @@ To revoke the agent, run `latch agents remove my-agent`.
 To move your agent to another phone line, run
 `latch agents move my-agent --line LINE`. Choose a free phone line where you
 have no open chat, by text or email. It keeps its credential, settings and
-rules, so `my-agent.token` keeps working. Its program keeps running; Plow
+rules, so `my-agent.env` keeps working. Its program keeps running; Plow
 doesn't restart it.
 
 Plow closes your chats on the line the agent leaves, email included, so its
