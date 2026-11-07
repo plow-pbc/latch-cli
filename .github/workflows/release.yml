@@ -4,11 +4,11 @@ name: release
 # package workflow), builds, signs and notarizes the macOS ones, checks them
 # all (the package workflow again), signs SHA256SUMS with latch's release
 # key, uploads the release to releases.plow.co/latch-cli/releases/<tag>/ and
-# leaves a draft release for a person to publish. Publishing it runs the
-# promote workflow, which makes it the release install.sh installs and
-# latest.json names. The full macOS test suite runs beside the build (its
-# debug, fake-gog test build shares nothing with the release build), and
-# nothing is uploaded unless it passes too. The run number is the build
+# adds the same files to a draft release it made at the start, for a person
+# to publish. Publishing it runs the promote workflow, which makes it the
+# release install.sh installs and latest.json names. The full macOS test
+# suite runs beside the build (its debug, fake-gog test build shares nothing
+# with the release build), and nothing is uploaded unless it passes too. The run number is the build
 # number latch --version shows.
 run-name: Release (build ${{ github.run_number }})
 on:
@@ -22,9 +22,10 @@ concurrency:
 jobs:
   version:
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
     outputs:
       tag: ${{ steps.mint.outputs.tag }}
-      title: ${{ steps.mint.outputs.title }}
     steps:
       - name: Require main for release dispatch
         shell: bash
@@ -49,6 +50,22 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "title=latch $package (${{ github.run_number }})" >> "$GITHUB_OUTPUT"
           echo "Version: $tag"
+      # The draft, with no files yet, is made first, while the built commit is
+      # still main's newest. GitHub refuses this job's token a new release on
+      # a commit whose workflow files no branch or tag tip has, as when main
+      # moves on with a workflow change during the build; adding files to a
+      # draft that already exists is not refused. It has no tag yet: the tag
+      # is made when a person publishes the draft after checking the signed
+      # builds, which also starts the promote workflow.
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.mint.outputs.tag }}
+          TITLE: ${{ steps.mint.outputs.title }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          gh release create "$VERSION" --draft --target "$GITHUB_SHA" --title "$TITLE" \
+            --notes "Built from \`$REF_NAME\` @ \`$GITHUB_SHA\`."
   build:
     needs: version
     uses: ./.github/workflows/package.yml
@@ -234,8 +251,6 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       VERSION: ${{ needs.version.outputs.tag }}
-      TITLE: ${{ needs.version.outputs.title }}
-      REF_NAME: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -268,11 +283,5 @@ jobs:
         run: |
           aws s3 cp dist "s3://releases.plow.co/latch-cli/releases/$VERSION/" --recursive \
             --cache-control 'public, max-age=31536000, immutable'
-      # A draft on the built commit, with no tag yet: this job's token may not
-      # push one (GitHub refuses it when workflows changed). The tag is made
-      # when a person publishes the draft after checking the signed builds,
-      # which also starts the promote workflow.
-      - name: Create draft release
-        run: |
-          gh release create "$VERSION" dist/* --draft --target "$GITHUB_SHA" --title "$TITLE" \
-            --notes "Built from \`$REF_NAME\` @ \`$GITHUB_SHA\`."
+      - name: Add the files to the draft
+        run: gh release upload "$VERSION" dist/*
