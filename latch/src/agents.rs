@@ -297,7 +297,7 @@ fn agent_shown(agent: ListedAgent, standing: Option<Standing>) -> AgentShown {
 async fn resolve(plow: &Plow, named: &str) -> Result<ListedAgent, Failure> {
     let agents: Vec<ListedAgent> = plow.agent_list().await?;
     let is_uid = named.len() == 32 && named.bytes().all(|b| b.is_ascii_hexdigit());
-    let mut found: Vec<ListedAgent> = agents
+    let found = agents
         .into_iter()
         .filter(|agent| {
             if is_uid {
@@ -307,25 +307,12 @@ async fn resolve(plow: &Plow, named: &str) -> Result<ListedAgent, Failure> {
             }
         })
         .collect();
-    match found.len() {
-        1 => Ok(found.remove(0)),
-        0 => {
-            let message = format!("no agent in this account is called {named:?}");
-            let mut failure = Failure::new(code::no_such_agent, message);
-            failure.next = Some("latch agents".into());
-            Err(failure)
-        }
-        n => {
-            let message = format!("{n} agents are called {named:?}: name one by its uid");
-            let mut failure = Failure::new(code::ambiguous_agent, message);
-            let agents: Vec<Value> = found
-                .iter()
-                .map(|agent| json!({"uid": agent.uid, "name": agent.name}))
-                .collect();
-            failure.details = json!({"agents": agents});
-            Err(failure)
-        }
-    }
+    the_one(
+        found,
+        format!("no agent in this account is called {named:?}"),
+        |n| format!("{n} agents are called {named:?}: name one by its uid"),
+        None,
+    )
 }
 
 /// The account's agent on the line `named` names, whatever its status: Plow
@@ -334,24 +321,37 @@ async fn resolve(plow: &Plow, named: &str) -> Result<ListedAgent, Failure> {
 async fn on_line(plow: &Plow, named: &str) -> Result<ListedAgent, Failure> {
     let line = line_named(plow, named).await?;
     let agents: Vec<ListedAgent> = plow.agent_list().await?;
-    let mut found: Vec<ListedAgent> = agents
+    let found = agents
         .into_iter()
         .filter(|agent| agent.line.uid == line.uid)
         .collect();
     let number = line.provider_key;
+    the_one(
+        found,
+        format!("no agent in this account is on line {number}"),
+        |n| format!("{n} agents in this account are on line {number}: name one by its uid"),
+        Some("latch agents"),
+    )
+}
+
+/// The one agent `found`, else `none` or `many` (with `many_next`) as the
+/// failure, naming the candidates.
+fn the_one(
+    mut found: Vec<ListedAgent>,
+    none: String,
+    many: impl FnOnce(usize) -> String,
+    many_next: Option<&str>,
+) -> Result<ListedAgent, Failure> {
     match found.len() {
         1 => Ok(found.remove(0)),
         0 => {
-            let message = format!("no agent in this account is on line {number}");
-            let mut failure = Failure::new(code::no_such_agent, message);
+            let mut failure = Failure::new(code::no_such_agent, none);
             failure.next = Some("latch agents".into());
             Err(failure)
         }
         n => {
-            let message =
-                format!("{n} agents in this account are on line {number}: name one by its uid");
-            let mut failure = Failure::new(code::ambiguous_agent, message);
-            failure.next = Some("latch agents".into());
+            let mut failure = Failure::new(code::ambiguous_agent, many(n));
+            failure.next = many_next.map(Into::into);
             let agents: Vec<Value> = found
                 .iter()
                 .map(|agent| json!({"uid": agent.uid, "name": agent.name}))
@@ -456,14 +456,26 @@ async fn new(
         let message = "an agent's credential is never printed: give --credential-file a file";
         return Err(Failure::new(code::usage, message.into()));
     }
+    let from_flag = agent_api_url.is_some();
     let agent_api_url = match agent_api_url {
-        Some(url) if url.chars().any(|c| c.is_whitespace() || c.is_control()) => {
-            let message = "--agent-api-url must have no whitespace or control characters";
-            return Err(Failure::new(code::usage, message.into()));
-        }
         Some(url) => url.strip_suffix('/').unwrap_or(&url).to_string(),
         None => api_url.to_string(),
     };
+    // Written unquoted and read by `. FILE` in a shell, so only characters
+    // a shell takes literally.
+    let literal = |c: char| c.is_ascii_alphanumeric() || ":/.-_%[]".contains(c);
+    if credential_file.is_some() && !agent_api_url.chars().all(literal) {
+        let message = if from_flag {
+            "--agent-api-url allows only ASCII letters and digits, plus : / . - _ % [ ]".to_string()
+        } else {
+            format!(
+                "the Plow address you're logged in to ({agent_api_url}) has characters the \
+                 credential file can't use: give --agent-api-url an address with only ASCII \
+                 letters and digits, plus : / . - _ % [ ]"
+            )
+        };
+        return Err(Failure::new(code::usage, message));
+    }
     let provider = match &target {
         Target::Cloud(kind) => {
             let kinds = plow.agent_kinds().await?;
