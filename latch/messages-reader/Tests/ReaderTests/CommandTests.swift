@@ -176,6 +176,8 @@ func limitsAndBadArgumentsAreUsageErrors() {
         ["search", "--limit", "501"], ["search", "--limit", "0"], ["search", "--kind", "group"],
         ["search", "--store", "/elsewhere"], ["search", "a", "b"], ["chats", "phrase"], ["send"],
         ["search", "--since", "yesterday"], ["contacts"], ["contacts", "search"],
+        ["attachment"], ["attachment", "--message-id", "x"], ["search", "--message-id", "103"],
+        ["attachment", "--message-id", "103", "--limit", "1"],
     ] {
         let ran = read(f, bad, now: now)
         #expect(ran.exit == 2, "\(bad)")
@@ -437,9 +439,46 @@ func aForgedCursorOrPlanIsCheckedLikeTypedFilters() throws {
     #expect(read(f, ["thread", "--cursor", mixed], now: now).exit == 2)
     // A plan is checked as well.
     for bad in [#"{"command":"thread","limit":50}"#, #"{"command":"search","limit":900}"#,
-                #"{"command":"chats","limit":5,"phrase":"x"}"#, "not json"] {
+                #"{"command":"chats","limit":5,"phrase":"x"}"#, #"{"command":"attachment","limit":50}"#,
+                #"{"command":"search","limit":50,"message_id":103}"#, "not json"] {
         var errors: [String] = []
         let exit = run(["--store", f.path, "--addressbook", f.addressBook, "--plan", bad], write: { _ in }, fail: { errors.append($0) })
         #expect(exit == 2, "\(bad)")
     }
+}
+
+@Test
+func anAttachmentComesWithItsBytesOrSaysWhyNot() throws {
+    let f = everyday()
+    let jpeg: [UInt8] = [0xFF, 0xD8, 0xFF, 0xE0, 1, 2, 3]
+    f.attachment(7, message: 202, filename: "~/Library/Messages/Attachments/ab/07/G7/IMG_1.jpeg",
+                 name: "IMG_1.jpeg", mime: "image/jpeg", bytes: jpeg)
+    // In iCloud only: Messages has no file for it.
+    f.attachment(8, message: 202, filename: nil, name: "IMG_2.jpeg", mime: "image/jpeg")
+    // A recorded path that leaves the Attachments folder is not followed.
+    f.execute("insert into attachment values (9, '~/Library/Messages/Attachments/../chat.db', 'x', NULL)")
+    f.execute("insert into message_attachment_join values (202, 9)")
+    let ran = read(f, ["attachment", "--message-id", "202"], now: now)
+    #expect(ran.exit == 0)
+    #expect(ran.answer["message_id"] as? Int == 202)
+    #expect(ran.answer["count"] as? Int == 3)
+    let rows = try #require(ran.answer["attachments"] as? [[String: Any]])
+    #expect(rows.map { $0["name"] as? String } == ["IMG_1.jpeg", "IMG_2.jpeg", "x"])
+    #expect(rows[0]["mime"] as? String == "image/jpeg")
+    #expect(rows[0]["size"] as? Int == jpeg.count)
+    #expect((rows[0]["data"] as? String).flatMap { Data(base64Encoded: $0) } == Data(jpeg))
+    #expect(rows[0]["error"] == nil)
+    #expect(rows[1]["error"] as? String == "not_downloaded" && rows[1]["data"] == nil)
+    #expect(rows[2]["error"] as? String == "unreadable" && rows[2]["data"] == nil)
+    // A message with none has an empty list; one that isn't there is an error.
+    #expect(read(f, ["attachment", "--message-id", "101"], now: now).answer["count"] as? Int == 0)
+    #expect(read(f, ["attachment", "--message-id", "999"], now: now).error?["code"] as? String == "no_such_message")
+    // A file past the answer's budget is named, not sent.
+    f.attachment(10, message: 201, filename: "~/Library/Messages/Attachments/cd/10/G10/clip.mov",
+                 name: "clip.mov", mime: "video/quicktime", bytes: [UInt8](repeating: 0, count: 7 << 20))
+    let large = try #require(read(f, ["attachment", "--message-id", "201"], now: now).answer["attachments"] as? [[String: Any]])
+    #expect(large.map { $0["error"] as? String } == ["too_large"])
+    #expect(large[0]["data"] == nil)
+    let (_, planned) = plan(f, ["attachment", "--message-id", "202"])
+    #expect((planned["plan"] as? [String: Any])?["message_id"] as? Int == 202)
 }

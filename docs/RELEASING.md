@@ -7,9 +7,12 @@ written for the people who use Latch.
 
 1. Run the release workflow on `main`:
    `gh workflow run release.yml -R plow-pbc/latch-cli --ref main`. It names
-   the release `v<version>-<run number>`, builds, signs and checks every
-   archive, runs the macOS tests, uploads the release to releases.plow.co and
-   leaves a draft release on GitHub.
+   the release `v<version>-<run number>` and makes an empty draft release on
+   GitHub, then builds, signs and checks every archive, runs the macOS tests,
+   uploads the release to releases.plow.co and adds its files to the draft.
+   A run that fails leaves an unfinished draft: delete it
+   (`gh release delete <tag> -R plow-pbc/latch-cli`); the next run makes its
+   own.
 2. When the run is green, write the notes (below) and publish the draft:
    `gh release edit <tag> --notes-file NOTES.md --draft=false --latest`.
    Publishing approves the release: it runs the promote workflow, which makes

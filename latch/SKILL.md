@@ -82,6 +82,11 @@ as `latch status` lists it. Branch on
   address book on a Mac host: search, a thread, chats; a person's handles.
   `--from` takes a handle, never a name: `latch contacts search --host M
   Ada` gives Ada's, for `latch messages search --host M --from HANDLE`.
+  A message with `attachments` above 0 has files: `latch messages
+  attachment --host M --message-id ID --out DIR` writes them here. One
+  that is `not_downloaded` is not on the Mac (only in iCloud or on a
+  phone): ask the owner to open it in Messages on the Mac, or to send
+  it; Full Disk Access would not help.
   Any latch can ask, on Linux too; a host that isn't a Mac answers
   `unsupported_platform`.
 

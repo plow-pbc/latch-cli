@@ -69,9 +69,10 @@ nonisolated enum ErrorCopy {
         case "line_taken": "That phone line already has an agent. Choose a free line."
         case "no_such_line": "That phone line couldn't be found. Choose another line."
         case "unknown_cloud_kind": "That cloud agent isn't available. Choose another cloud agent."
-        case "token_file_exists":
-            "A file with that name is already there, and Latch saves a key only to a new file, so no agent was made. Choose a new name."
-        case "token_file_unwritable": "Latch couldn't create the key file there, so no agent was made. Choose another folder."
+        case "credential_file_exists":
+            "A file with that name is already there, so no agent was created. Choose a new file name."
+        case "credential_file_unwritable":
+            "Latch couldn't create the credential file there, so no agent was created. Choose another folder."
         case "invalid_request": "Plow didn't accept these details. Check them, then try again."
         case "no_such_agent": "That agent isn't in your account any more."
         case "unknown_host": "\(Name) isn't one of your hosts any more."

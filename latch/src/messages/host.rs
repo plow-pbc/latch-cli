@@ -18,7 +18,7 @@ use crate::worker::WorkerSetup;
 /// Each connector's actions, as the reader names them after `contacts`.
 pub fn actions(op: &str) -> &'static [&'static str] {
     match op {
-        "messages" => &["search", "thread", "chats", "unreplied"],
+        "messages" => &["search", "thread", "chats", "unreplied", "attachment"],
         "contacts" => &["search", "lookup"],
         _ => &[],
     }

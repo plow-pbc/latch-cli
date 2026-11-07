@@ -1,14 +1,12 @@
 //! Owner management on this state folder; only phone links need a live serve.
 
-use std::fs;
-use std::io::Read;
 use std::path::Path;
 
 use serde_json::{Map, Value, json};
 
 use super::{client, host, import};
 use crate::audit::{self, AuditLog};
-use crate::failure::{Failure, code};
+use crate::failure::Failure;
 use crate::state::StateDir;
 
 fn audited(
@@ -46,21 +44,7 @@ pub(super) fn call(state: &StateDir, args: Value) -> Result<Value, Failure> {
 
 /// An export in `path`, parsed and marked against the vault.
 fn read_export(vault: &host::Vault, path: &Path) -> Result<import::Parsed, Failure> {
-    let io = |err| Failure::new(code::local_file, format!("{}: {err}", path.display()));
-    let mut bytes = Vec::new();
-    fs::File::open(path)
-        .map_err(io)?
-        .take(300 * 1024 * 1024 + 1)
-        .read_to_end(&mut bytes)
-        .map_err(io)?;
-    if bytes.len() > 300 * 1024 * 1024 {
-        return Err(Failure::new(
-            code::file_too_large,
-            "that export is too large".into(),
-        ));
-    }
-    let mut parsed = import::parse(&bytes)?;
-    drop(bytes);
+    let mut parsed = import::parse(&import::read(path)?)?;
     vault.with(|store| import::mark_against(store, &mut parsed))?;
     Ok(parsed)
 }

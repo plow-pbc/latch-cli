@@ -124,6 +124,7 @@ final class Fixture {
             create table chat_message_join (chat_id integer, message_id integer, message_date integer);
             create table chat_handle_join (chat_id integer, handle_id integer);
             create table message_attachment_join (message_id integer, attachment_id integer);
+            create table attachment (ROWID integer primary key, filename text, transfer_name text, mime_type text);
             """)
     }
 
@@ -177,6 +178,20 @@ final class Fixture {
             values (\(id), '\(service);-;\(identifier)', '\(identifier)', \(name), \(group ? 43 : 45), '\(service)')
             """)
         for member in members { execute("insert into chat_handle_join values (\(id), \(member))") }
+    }
+
+    /// An attachment of `message` recorded at `filename`, as Messages
+    /// records it (`~/Library/Messages/Attachments/…`, which stands for this
+    /// store's folder); `bytes` are written there, if given.
+    func attachment(_ id: Int64, message: Int64, filename: String?, name: String?, mime: String?, bytes: [UInt8]? = nil) {
+        let quoted = { (text: String?) in text.map { "'\($0)'" } ?? "NULL" }
+        execute("insert into attachment values (\(id), \(quoted(filename)), \(quoted(name)), \(quoted(mime)))")
+        execute("insert into message_attachment_join values (\(message), \(id))")
+        if let bytes, let filename {
+            let file = directory.appendingPathComponent(String(filename.dropFirst("~/Library/Messages/".count)))
+            try! FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try! Data(bytes).write(to: file)
+        }
     }
 
     func handle(_ id: Int64, _ address: String) {

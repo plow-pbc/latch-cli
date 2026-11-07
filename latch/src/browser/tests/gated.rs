@@ -322,7 +322,7 @@ impl Host {
         command: &str,
         name: &str,
         args: Value,
-        input: Option<&[u8]>,
+        input: Option<&std::fs::File>,
     ) -> (Result<Value, Failure>, Map<String, Value>) {
         let caller = Caller {
             key: CALLER,
@@ -346,7 +346,7 @@ impl Host {
         command: &str,
         name: &str,
         args: Value,
-        input: Option<&[u8]>,
+        input: Option<&std::fs::File>,
     ) -> (Result<Value, Failure>, Map<String, Value>) {
         let mut audit = Map::new();
         let result = super::host_call(
@@ -503,7 +503,7 @@ async fn a_refused_command_sends_nothing_to_the_page(engine: &str) {
             "upload",
             &id,
             json!({"target": attach, "name": "notes.txt", "size": bytes.len()}),
-            Some(&bytes),
+            Some(&super::super::runtime::upload_file(&bytes)),
         )
         .await;
     refused(&upload, "not_covered", &chat);

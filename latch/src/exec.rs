@@ -374,6 +374,42 @@ pub fn stdin_audit(bytes: &[u8]) -> Value {
     json!({ "size": bytes.len(), "sha256": to_hex(&Sha256::digest(bytes)) })
 }
 
+/// Asks the owner's login shell, started as a terminal starts it, for its
+/// `PATH`, for every later exec (`worker::LOGIN_PATH`). The host's own
+/// `PATH` is only whatever started it last: the login item, or an SSH
+/// session that ran `latch update`. The shell runs the owner's startup
+/// files, which an agent may have written, so it runs as an exec does,
+/// confined, with no write grant, no network and 10 s. Without an answer,
+/// exec keeps the host's own `PATH`, and the log says why.
+pub async fn learn_login_path(workers: &WorkerSetup) {
+    let learned = async {
+        let shell = crate::worker::login_shell().ok_or("no login shell in the user database")?;
+        let argv = json!({"argv": [shell, "-lic", "printf '\\n%s' \"$PATH\""], "timeout": 10});
+        let prepared = normalize(workers, &argv).map_err(|failure| failure.message)?;
+        let done = run(workers, prepared, std::future::pending()).await;
+        let Response::Ok(result) = done.response else {
+            return Err(format!("the shell did not run: {}", done.outcome));
+        };
+        // Whatever the startup files print comes before the last line.
+        let printed = result["stdout"].as_str().unwrap_or_default();
+        match printed.rsplit('\n').next() {
+            Some(path) if result["exit_code"] == 0 && !path.is_empty() => Ok(path.to_string()),
+            _ => Err(format!(
+                "the shell printed no PATH (exit {})",
+                result["exit_code"]
+            )),
+        }
+    };
+    match learned.await {
+        Ok(path) => {
+            let _ = crate::worker::LOGIN_PATH.set(path.into());
+        }
+        Err(why) => log(&format!(
+            "exec PATH: the login shell gave none ({why}); using the host's"
+        )),
+    }
+}
+
 /// A new, empty folder `latch-exec-<host pid>-<random>` in the OS temp
 /// folder, for this user only. Its real path, since the sandbox matches
 /// real paths (macOS's temp folder is behind the `/var` link).

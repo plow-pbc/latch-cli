@@ -136,7 +136,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "agents",
         runs_on: |_| RunsOn::Either,
-        output: "`host` (with --host: its `name` and whether it is `online`; else null) and `agents`, in Plow's order: each one's `uid`, `name`, `kind` (cloud or own), `cloud_kind`, `line` (`number`, `name`, `card_url`: its persona's contact card, null for an unnamed line), `created_at`, `status` (a cloud agent's phase in Plow; null for own agents), `failure_code`, `last_seen_at` (its credential's last use, not proof it runs) and `standing` on the host (`own_rules`, `exec_blocked`; null without --host).",
+        output: "`host` (with --host: its `name` and whether it is `online`; else null) and `agents`, in Plow's order: each one's `uid`, `name`, `kind` (cloud or own), `cloud_kind` (its catalog kind, or `exe:` followed by its image reference for an agent made with --image; null for an own agent), `line` (`number`, `name`, `card_url`: its persona's contact card, null for an unnamed line), `created_at`, `status` (a cloud agent's phase in Plow; null for own agents), `failure_code`, `last_seen_at` (its credential's last use, not proof it runs) and `standing` on the host (`own_rules`, `exec_blocked`; null without --host).",
         effect: ReadOnly,
         owner_only: true,
         connector: None,
@@ -193,9 +193,9 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "agents.new",
         runs_on: |_| RunsOn::Local,
-        output: "`agent` (as `agents show` gives it; a cloud agent's `status` starts as provisioning), `token_file` (an own agent's credential file, by its absolute path; never the credential) and `api_url` (the Plow an own agent logs in to; null for a cloud agent).",
+        output: "`agent` (as `agents show` gives it; a cloud agent's `status` starts as provisioning), `credential_file` (the absolute path of an own agent's environment file; never its contents; null for a cloud agent) and `api_url` (the Plow address written to that file: --agent-api-url, or the one you're logged in to; null for a cloud agent).",
         effect: Once(
-            "creates an agent in the account on the phone line given; an own agent's credential is written to a new private file",
+            "creates an agent in the account on the phone line given; for an agent you run yourself, writes its API address, credential and uid to a new private environment file",
         ),
         owner_only: true,
         connector: None,
@@ -206,8 +206,8 @@ const ENTRIES: &[Entry] = &[
                     "agents",
                     "new",
                     "--own",
-                    "--token-file",
-                    "scout.token",
+                    "--credential-file",
+                    "plow-credentials",
                     "--name",
                     "Scout",
                     "--line",
@@ -215,7 +215,23 @@ const ENTRIES: &[Entry] = &[
                 ],
             ),
             ex(
-                "A cloud agent Plow runs",
+                "An address a container can reach",
+                &[
+                    "agents",
+                    "new",
+                    "--own",
+                    "--credential-file",
+                    "plow-credentials",
+                    "--agent-api-url",
+                    "http://host.docker.internal:18934",
+                    "--name",
+                    "Scout",
+                    "--line",
+                    "+15550000002",
+                ],
+            ),
+            ex(
+                "A cloud agent from Plow's catalog",
                 &[
                     "agents",
                     "new",
@@ -225,6 +241,19 @@ const ENTRIES: &[Entry] = &[
                     "Hermes",
                     "--line",
                     "+15550000003",
+                ],
+            ),
+            ex(
+                "A cloud agent from a public image",
+                &[
+                    "agents",
+                    "new",
+                    "--image",
+                    "ghcr.io/example/scout@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "--name",
+                    "Scout",
+                    "--line",
+                    "+15550000004",
                 ],
             ),
         ],
@@ -264,10 +293,16 @@ const ENTRIES: &[Entry] = &[
         ),
         owner_only: true,
         connector: None,
-        examples: &[ex(
-            "Remove an agent without asking",
-            &["agents", "remove", "Scout", "--yes"],
-        )],
+        examples: &[
+            ex(
+                "Remove an agent without asking",
+                &["agents", "remove", "Scout", "--yes"],
+            ),
+            ex(
+                "Remove an agent by its phone line without asking",
+                &["agents", "remove", "--line", "+15550000002", "--yes"],
+            ),
+        ],
     },
     Entry {
         id: "devices",
@@ -439,6 +474,27 @@ const ENTRIES: &[Entry] = &[
         examples: &[ex(
             "Recent group chats",
             &["messages", "chats", "--host", "mac", "--kind", "group"],
+        )],
+    },
+    Entry {
+        id: "messages.attachment",
+        runs_on: |_| RunsOn::Host,
+        output: "`attachments`: each with `index`, `name`, `mime`, `size` and the `path` it was written to, or an `error`.",
+        effect: Repeatable("writes the files on this machine"),
+        owner_only: false,
+        connector: Some("messages"),
+        examples: &[ex(
+            "The photo in a message, into ./invoice",
+            &[
+                "messages",
+                "attachment",
+                "--host",
+                "mac",
+                "--message-id",
+                "103",
+                "--out",
+                "invoice",
+            ],
         )],
     },
     Entry {
@@ -1302,7 +1358,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "plugins.enable",
         runs_on: |_| RunsOn::Local,
-        output: "The connector's `state`, enabled, and what its setup found. A setup that fails leaves it needs_setup and says what to do. When some connected accounts need signing in again, `enable google` still succeeds and names them in `needs_sign_in`. When none works (google_needs_sign_in, with their `accounts`), it offers a sign-in link as below and waits until they all work again. When no Google account is connected in Plow, `enable google` gets a single-use sign-in link from Plow, `sign_in_url` with its `expires_at` (a credential until used: latch never logs or audits it; `connect_url` is Plow's public Connections page). At a terminal it shows the link and a QR code and waits up to 5 minutes for an account Plow did not have, renewing the link if it expires unopened, then enables Google; otherwise it fails with google_not_connected carrying the link: sign in, then run it again. --add-account does the same with Google already connected: it enables Google, then offers a link to add another account; without a terminal or --events the answer is the enable result plus `sign_in_url`, which confirms the enable and the link, not that another account was added. --events (any connector): JSON lines `hello`, a `link` (`url`, `expires_at`) for each link, then one `result` or `error`, with the same wait. sign_in_timeout (exit 1): no new account was seen in time (or, for a sign-in again, the accounts named still don't work), counting one last look at the deadline; the person may still be signing in or chose an account Plow already had. With --add-account, Google was enabled before the wait. Closing stdin (a pipe), Ctrl-C, SIGTERM or a gone stdout reader stops the wait: before the final enable is sent that is google_connect_cancelled (exit 1; with --add-account, Google was enabled before the wait), after it outcome_unknown (exit 5). Only a `result` confirms the enable. The enable after the wait is a fresh one, so a `plugins disable google` made during the wait does not hold.",
+        output: "The connector's `state`, enabled, and what its setup found. A setup that fails leaves it needs_setup and says what to do. When some connected accounts need signing in again, `enable google` still succeeds and names them in `needs_sign_in`. When none works (google_needs_sign_in, with their `accounts`), it offers a sign-in link as below and waits until an account works: one of them signed in again, or another one connected. When no Google account is connected in Plow, `enable google` gets a single-use sign-in link from Plow, `sign_in_url` with its `expires_at` (a credential until used: latch never logs or audits it; `connect_url` is Plow's public Connections page). At a terminal it shows the link and a QR code and waits up to 5 minutes for an account Plow did not have, renewing the link if it expires unopened, then enables Google; otherwise it fails with google_not_connected carrying the link: sign in, then run it again. --add-account does the same with Google already connected: it enables Google, then offers a link to add another account; without a terminal or --events the answer is the enable result plus `sign_in_url`, which confirms the enable and the link, not that another account was added. --events (any connector): JSON lines `hello`, a `link` (`url`, `expires_at`) for each link, then one `result` or `error`, with the same wait. sign_in_timeout (exit 1): no new account was seen in time (or, for a sign-in again, still no account works), counting one last look at the deadline; the person may still be signing in or chose an account Plow already had. With --add-account, Google was enabled before the wait. Closing stdin (a pipe), Ctrl-C, SIGTERM or a gone stdout reader stops the wait: before the final enable is sent that is google_connect_cancelled (exit 1; with --add-account, Google was enabled before the wait), after it outcome_unknown (exit 5). Only a `result` confirms the enable. The enable after the wait is a fresh one, so a `plugins disable google` made during the wait does not hold.",
         effect: Repeatable(
             "runs the connector's setup and, if it succeeds, turns it on for this host",
         ),
@@ -1519,9 +1575,9 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "setup",
         runs_on: |_| RunsOn::Local,
-        output: "At a terminal, each step and the latch command it ran; skipped steps say so. Without one, `no_terminal`, whose `next` is the first step not done. With --status, at a terminal or not, `steps`: each step's `step` (login, each connector, rules, host), `state` (done, needed or blocked), `reason`, `args` (the words after `latch` that do it, null once done, or while something else must happen first) and, for a connector, `enabled` and `ready` (enabled and served by a running host). For the owner, the Google step asks Plow (read only) whether Google is connected there: it adds `accounts`, and `connect_url` (where to connect one) while none is; it is blocked when Plow cannot be asked. With an account connected it also asks Plow for their credentials, for up to 5 s, to add `needs_sign_in`: the accounts Google wants the owner to sign in with again (the step is needed when none works); said only when there are some. With --check-access, on a Mac, the Messages and Contacts steps add `access` (granted, not_granted or unknown): whether Plow Latch has Full Disk Access, checked once as the host would and saving nothing.",
+        output: "At a terminal, each step and the latch command it ran; skipped steps say so. With Google on, it asks whether to add another Google account (`plugins enable google --add-account`), again after each one added. While waiting for Google sign-in, type s and press Enter to stop waiting and continue setup. Nothing typed during the wait answers a later question. Ctrl-C stops setup at any step (exit 130). Run `latch setup` again to pick up where you left off. Without a terminal, `no_terminal`, whose `next` is the first step not done. With --status, at a terminal or not, `steps`: each step's `step` (login, each connector, rules, host), `state` (done, needed or blocked), `reason`, `args` (the words after `latch` that do it, null once done, or while something else must happen first) and, for a connector, `enabled` and `ready` (enabled and served by a running host). For the owner, the Google step asks Plow (read only) whether Google is connected there: it adds `accounts`, and `connect_url` (where to connect one) while none is; it is blocked when Plow cannot be asked. With an account connected it also asks Plow for their credentials, for up to 5 s, to add `needs_sign_in`: the accounts Google wants the owner to sign in with again (the step is needed when none works); said only when there are some. With --check-access, on a Mac, the Messages and Contacts steps add `access` (granted, not_granted or unknown): whether Plow Latch has Full Disk Access, checked once as the host would and saving nothing.",
         effect: Repeatable(
-            "logs in, enables connectors and, when there are none, sets rules for agents from the preset the owner picks, with no host running, then starts the host if the owner says so; done steps are skipped. --status changes nothing",
+            "logs in, enables connectors (and adds the Google accounts the owner chooses to) and, when there are none, sets rules for agents from the preset the owner picks, with no host running, then starts the host if the owner says so; done steps are skipped. --status changes nothing",
         ),
         owner_only: false,
         connector: None,

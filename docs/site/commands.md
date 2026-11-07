@@ -70,10 +70,10 @@ latch browser open --host my-mac https://example.com
 | `latch agents catalog` | Host | The kinds of cloud agent Plow can run, for `agents new --cloud`. Owner only. |
 | `latch agents start-by-text` | Host | Show how to start a cloud agent by texting Plow. Owner only. |
 | `latch agents lines` | Host | Plow's phone lines, and which are free for a new agent. Owner only. |
-| `latch agents new` | Host | Create an agent on a free phone line. Owner only.<br>An agent you run yourself: `latch agents new --own --token-file scout.token --name Scout --line +15550000002` |
+| `latch agents new` | Host | Create an agent on a free phone line. Owner only.<br>An agent you run yourself: `latch agents new --own --credential-file plow-credentials --name Scout --line +15550000002` |
 | `latch agents card` | Host | Save the contact card of an agent's line, by the agent's uid or exact name. Owner only.<br>Save an agent's contact card: `latch agents card Willow --output willow.vcf` |
 | `latch agents move` | Host | Move an agent to another phone line, by its uid or its exact name. Owner only.<br>Move an agent to another phone line: `latch agents move Scout --line +15550000002` |
-| `latch agents remove` | Host | Remove an agent, by its uid or its exact name. Owner only.<br>Remove an agent without asking: `latch agents remove Scout --yes` |
+| `latch agents remove` | Host | Remove an agent, by its uid, exact name or phone line. Owner only.<br>Remove an agent without asking: `latch agents remove Scout --yes` |
 
 ## Programs and files
 
@@ -144,6 +144,7 @@ latch browser open --host my-mac https://example.com
 | `latch messages search` | Agent | Search messages for PHRASE, newest first.<br>Find a sign-in code texted in the last ten minutes: `latch messages search --host mac --since 10m code` |
 | `latch messages thread` | Agent | One conversation, oldest first, ending with its newest message.<br>The direct conversation with one handle: `latch messages thread --host mac --with +15550000001` |
 | `latch messages chats` | Agent | Conversations, most recently active first, with who is in them.<br>Recent group chats: `latch messages chats --host mac --kind group` |
+| `latch messages attachment` | Agent | Save one message's attached files (photos, PDFs) here.<br>The photo in a message, into ./invoice: `latch messages attachment --host mac --message-id 103 --out invoice` |
 | `latch messages unreplied` | Agent | Direct conversations whose newest message is inbound: candidates, not proof a reply is owed.<br>Unanswered in the last day: `latch messages unreplied --host mac --within 24h` |
 | `latch contacts search` | Agent | Find people by name, nickname or organization.<br>Find a person's handles: `latch contacts search --host mac Ada` |
 | `latch contacts lookup` | Agent | The names on cards with each handle (more than one: ambiguous).<br>Who is this number? `latch contacts lookup --host mac +15550000001` |

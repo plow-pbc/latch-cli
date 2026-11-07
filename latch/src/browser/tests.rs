@@ -1895,7 +1895,7 @@ async fn eval_upload_and_download_move_values_and_files(engine: &str) {
     let uploaded = session
         .call_with(
             json!({"op": "upload", "target": attach, "name": "notes.txt", "size": bytes.len()}),
-            Some(&bytes),
+            Some(&super::runtime::upload_file(&bytes)),
         )
         .await
         .unwrap()
@@ -2081,7 +2081,7 @@ pub(super) async fn host_call(
     command: &str,
     name: &str,
     args: &serde_json::Value,
-    input: Option<&[u8]>,
+    input: Option<&std::fs::File>,
     audit: &mut serde_json::Map<String, serde_json::Value>,
 ) -> Result<(serde_json::Value, Option<Vec<u8>>), Failure> {
     let result = host::call(browsers, caller, command, name, args, input, audit).await;
