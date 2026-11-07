@@ -274,7 +274,7 @@ impl Setup {
                     crate::plugins::connect::show_link(url, waiting, adding, None);
                     if !waiting {
                         let skip = if adding {
-                            "skip adding an account"
+                            "stop waiting for another Google account"
                         } else {
                             "skip Google"
                         };

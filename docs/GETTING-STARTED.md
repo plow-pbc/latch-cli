@@ -110,8 +110,8 @@ each is skipped once done, so you can run setup again at any time:
 1. **Log in** to Plow (`latch login`).
 2. **Connect Google** (`latch plugins enable google`). If your Plow account
    has no Google account yet, it shows a link and a QR code to sign in.
-   To skip the sign-in, type `s` and press Enter: setup goes on to the next
-   step. With Google on, setup asks whether to add another account
+   To stop waiting for sign-in, type `s` and press Enter. Setup goes on to
+   the next step. With Google on, setup asks whether to add another account
    (`latch plugins enable google --add-account`); Enter moves on.
 3. **On a Mac, turn on Messages and Contacts.** These need Full Disk Access
    for the Plow Latch app.

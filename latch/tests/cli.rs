@@ -8942,7 +8942,7 @@ fn s_at_setups_wait_for_another_google_account_skips_it_and_google_stays_on() {
     all += &shows(&shown, SETUP_WAITS);
     for line in [
         "Sign in with another Google account to add it to Plow.",
-        "Type s and press Enter to skip adding an account and continue setup.",
+        "Type s and press Enter to stop waiting for another Google account and continue setup.",
     ] {
         assert!(all.contains(line), "{line}: {all}");
     }
@@ -9413,7 +9413,7 @@ fn signing_in_again_is_offered_and_waited_for() {
         json!(["plugins", "enable", "google", "--events"])
     );
 
-    // A wait that ends first says the account wasn't signed in again.
+    // A wait that ends first says no account worked, and how one can.
     let within = [("LATCH_TEST_CONNECT_WITHIN", Path::new("1"))];
     let output = latch(&host, &["plugins", "enable", "google", "--events"], &within);
     assert_eq!(output.status.code(), Some(1), "{output:?}");
@@ -9421,7 +9421,8 @@ fn signing_in_again_is_offered_and_waited_for() {
     assert_eq!(error["error"]["code"], "sign_in_timeout", "{error}");
     assert_eq!(
         error["error"]["message"],
-        "owner@example.com wasn't signed in again before the wait ended."
+        "No Google account worked before the wait ended. Sign in again with owner@example.com, \
+         or connect another."
     );
 
     // `--events` waits until an account works, which `works` makes so

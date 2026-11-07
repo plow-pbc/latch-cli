@@ -199,7 +199,8 @@ async fn reached(plow: &Plow, goal: &Goal) -> Result<bool, Failure> {
 fn timed_out(again: Option<&[String]>) -> Failure {
     let message = match again {
         Some(accounts) => format!(
-            "{} wasn't signed in again before the wait ended.",
+            "No Google account worked before the wait ended. Sign in again with {}, or connect \
+             another.",
             accounts.join(", ")
         ),
         None => "No new Google account was observed before the wait ended.".into(),
