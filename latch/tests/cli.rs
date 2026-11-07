@@ -4661,6 +4661,52 @@ fn agents_are_shown_created_and_removed_by_their_owner() {
     // A relative file lands where latch runs: the crate's folder.
     assert!(!Path::new(env!("CARGO_MANIFEST_DIR")).join("x.env").exists());
 
+    // The address the owner logged in with is checked too: one a shell
+    // would run something in still reaches Plow, its `$(id)/..` normalized
+    // away, but never goes into the file.
+    let odd = dir.path().join("odd");
+    let odd_url = format!("{}/$(id)/..", plow.url);
+    let owner_token = dir.path().join("owner.token");
+    let login = latch(
+        &odd,
+        &[
+            "login",
+            "--api-url",
+            &odd_url,
+            "--token-file",
+            owner_token.to_str().unwrap(),
+            "--name",
+            "odd",
+        ],
+        &[],
+    );
+    assert_eq!(login.status.code(), Some(0), "{login:?}");
+    let odd_file = dir.path().join("odd-credentials");
+    let before = posts();
+    let refused = latch(
+        &odd,
+        &[
+            "agents",
+            "new",
+            "--own",
+            "--credential-file",
+            odd_file.to_str().unwrap(),
+            "--name",
+            "S",
+            "--line",
+            "ln_free",
+        ],
+        &[],
+    );
+    let error: Value = serde_json::from_slice(&refused.stderr).unwrap();
+    assert_eq!(
+        (refused.status.code(), &error["error"]["code"]),
+        (Some(2), &json!("usage")),
+        "{error}"
+    );
+    assert_eq!(posts(), before);
+    assert!(!odd_file.exists());
+
     // Created, but its credential never came: the agent is named, and its
     // removal is the way on; nothing is deleted for its owner.
     let lost = dir.path().join("lost-credentials");
