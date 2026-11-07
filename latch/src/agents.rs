@@ -414,9 +414,9 @@ async fn new(
             "--agent-api-url allows only ASCII letters and digits, plus : / . - _ % [ ]".to_string()
         } else {
             format!(
-                "the Plow address you're logged in to ({agent_api_url}) has characters a shell \
-                 wouldn't read literally: give --agent-api-url an address with only ASCII letters \
-                 and digits, plus : / . - _ % [ ]"
+                "the Plow address you're logged in to ({agent_api_url}) has characters the \
+                 credential file can't use: give --agent-api-url an address with only ASCII \
+                 letters and digits, plus : / . - _ % [ ]"
             )
         };
         return Err(Failure::new(code::usage, message));
