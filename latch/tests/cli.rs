@@ -8896,81 +8896,73 @@ fn ctrl_c_stops_setup_at_googles_sign_in_and_at_a_question() {
     assert!(!all.contains("Done."), "{all}");
 }
 
-/// `s` then Enter at Google's sign-in wait in `latch setup` stops the wait,
-/// and setup says so plainly and goes on to the next step.
+/// `s` then Enter at a Google sign-in's wait in `latch setup` stops that
+/// wait, and setup says so plainly and goes on: for the first account
+/// Google stays off; for another one, Google stays on.
 #[cfg(feature = "fake-gog")]
 #[test]
-fn s_at_setups_google_sign_in_skips_google_and_setup_goes_on() {
-    let plow = LivePlow::start();
-    let dir = test_dir();
-    let host = owner_host_on(&plow, dir.path());
-    install_fake_gog(&host);
+fn s_at_setups_google_sign_in_stops_waiting_and_setup_goes_on() {
+    // Whether Google is connected in Plow already (so setup offers another
+    // account), then what the wait shows, and what setup says after `s`.
+    let cases: [(bool, [&str; 2], [&str; 2]); 2] = [
+        (
+            false,
+            [
+                "Sign in with Google to connect it to Plow.",
+                "Type s and press Enter to skip Google and continue setup.",
+            ],
+            [
+                "Stopped waiting for Google. Continuing setup.",
+                "Connect later: latch plugins enable google",
+            ],
+        ),
+        (
+            true,
+            [
+                "Sign in with another Google account to add it to Plow.",
+                "Type s and press Enter to stop waiting for another Google account and continue setup.",
+            ],
+            [
+                "Stopped waiting for another Google account. Google stays on. Continuing setup.",
+                "Add one later: latch plugins enable google --add-account",
+            ],
+        ),
+    ];
+    for (connected, waiting, stopped) in cases {
+        let plow = LivePlow::start();
+        let dir = test_dir();
+        let host = owner_host_on(&plow, dir.path());
+        if connected {
+            plow.state.lock().unwrap().google = Some("google-token".into());
+        }
+        install_fake_gog(&host);
 
-    let (mut setup, mut typing, shown) = at_its_own_terminal(&host, &["setup"], &[]);
-    typing.write_all(b"y\n").unwrap();
-    let mut all = shows(&shown, SETUP_WAITS);
-    typing.write_all(b"s\n").unwrap();
-    all += &shows(&shown, "Connect later: latch plugins enable google");
-    assert!(
-        all.contains("Stopped waiting for Google. Continuing setup."),
-        "{all}"
-    );
-    typing.write_all(after_google()).unwrap();
-    all += &shows(&shown, "Done. Run `latch setup` again any time.");
-    assert!(exits_within(&mut setup, 10).success(), "{all}");
-    assert!(all.contains("Rules for your agents? [1/2/3]"), "{all}");
-    for left_out in ["✓ Google is connected.", "✗", "{\"error\""] {
-        assert!(!all.contains(left_out), "{left_out}: {all}");
+        let (mut setup, mut typing, shown) = at_its_own_terminal(&host, &["setup"], &[]);
+        typing.write_all(b"y\n").unwrap();
+        let mut all = String::new();
+        if connected {
+            // On with no sign-in; then yes to another account.
+            all += &shows(&shown, "Add another Google account? [y/N]");
+            typing.write_all(b"y\n").unwrap();
+        }
+        all += &shows(&shown, SETUP_WAITS);
+        typing.write_all(b"s\n").unwrap();
+        all += &shows(&shown, stopped[1]);
+        typing.write_all(after_google()).unwrap();
+        all += &shows(&shown, "Done. Run `latch setup` again any time.");
+        assert!(exits_within(&mut setup, 10).success(), "{all}");
+        for line in waiting.iter().chain(&stopped) {
+            assert!(all.contains(line), "{line}: {all}");
+        }
+        for left_out in ["✗", "{\"error\"", "No Google account was added"] {
+            assert!(!all.contains(left_out), "{left_out}: {all}");
+        }
+        let listed: Value =
+            serde_json::from_slice(&latch(&host, &["status", "--local"], &[]).stdout).unwrap();
+        let google = &listed["plugins"].as_array().unwrap()[0];
+        assert_eq!(google["name"], "google", "{listed}");
+        assert_eq!(google["state"] == "enabled", connected, "{listed}");
     }
-}
-
-/// `s` then Enter at the wait for another Google account in `latch setup`
-/// stops that wait only: Google stays on, as setup says, and setup goes on.
-#[cfg(feature = "fake-gog")]
-#[test]
-fn s_at_setups_wait_for_another_google_account_skips_it_and_google_stays_on() {
-    let plow = LivePlow::start();
-    let dir = test_dir();
-    let host = owner_host_on(&plow, dir.path());
-    plow.state.lock().unwrap().google = Some("google-token".into());
-    install_fake_gog(&host);
-
-    let (mut setup, mut typing, shown) = at_its_own_terminal(&host, &["setup"], &[]);
-    typing.write_all(b"y\n").unwrap();
-    let mut all = shows(&shown, "Add another Google account? [y/N]");
-    typing.write_all(b"y\n").unwrap();
-    all += &shows(&shown, SETUP_WAITS);
-    for line in [
-        "Sign in with another Google account to add it to Plow.",
-        "Type s and press Enter to stop waiting for another Google account and continue setup.",
-    ] {
-        assert!(all.contains(line), "{line}: {all}");
-    }
-    typing.write_all(b"s\n").unwrap();
-    all += &shows(
-        &shown,
-        "Add one later: latch plugins enable google --add-account",
-    );
-    assert!(
-        all.contains("Stopped waiting for another Google account. Google stays on."),
-        "{all}"
-    );
-    typing.write_all(after_google()).unwrap();
-    all += &shows(&shown, "Done. Run `latch setup` again any time.");
-    assert!(exits_within(&mut setup, 10).success(), "{all}");
-    for left_out in ["No Google account was added", "✗", "{\"error\""] {
-        assert!(!all.contains(left_out), "{left_out}: {all}");
-    }
-    let listed: Value =
-        serde_json::from_slice(&latch(&host, &["status", "--local"], &[]).stdout).unwrap();
-    let google = listed["plugins"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|plugin| plugin["name"] == "google")
-        .unwrap()
-        .clone();
-    assert_eq!(google["state"], "enabled", "{listed}");
 }
 
 /// What is typed during Google's sign-in wait in `latch setup` is the
