@@ -4647,8 +4647,8 @@ fn agents_are_shown_created_and_removed_by_their_owner() {
     }
     assert_eq!(posts(), before);
     assert_eq!(fs::read(&credential_file).unwrap(), written);
-    assert!(!dir.path().join("x.env").exists());
-    assert!(!host.join("x.env").exists());
+    // A relative file lands where latch runs: the crate's folder.
+    assert!(!Path::new(env!("CARGO_MANIFEST_DIR")).join("x.env").exists());
 
     // Created, but its credential never came: the agent is named, and its
     // removal is the way on; nothing is deleted for its owner.
