@@ -399,11 +399,11 @@ impl Issuer {
         Ok((sd_jwt, jti))
     }
 
-    /// The status list (an IETF Token Status List JWT, one bit per mandate),
-    /// signed fresh: verifiers refuse one older than [`STATUS_MAX_AGE`].
-    pub fn status_list(&self, revoked: &[u64], now: i64) -> String {
-        let len = revoked.iter().max().map_or(0, |i| i / 8 + 1) as usize;
-        let mut bits = vec![0u8; len.max(16)];
+    /// The status list (an IETF Token Status List JWT, one bit per mandate)
+    /// for the first `issued` indexes, signed fresh: verifiers refuse one
+    /// older than [`STATUS_MAX_AGE`].
+    pub fn status_list(&self, issued: u64, revoked: &[u64], now: i64) -> String {
+        let mut bits = vec![0u8; issued.div_ceil(8) as usize];
         for &i in revoked {
             bits[(i / 8) as usize] |= 1 << (i % 8);
         }
@@ -611,6 +611,13 @@ impl<F: Fetch> Verifier<F> {
         if claims.vct != VCT || claims.trust != TRUST {
             return Err(Refused::Malformed("unknown vct or trust".into()));
         }
+        if claims.grant_hash
+            != sha256_b64(jcs(&Value::Array(claims.constraints.clone())).as_bytes())
+        {
+            return Err(Refused::Malformed(
+                "grant_hash is not the constraints'".into(),
+            ));
+        }
 
         // 3. The key-binding JWT: the agent's key, now, us, this message.
         let kb_jwt = parse_jwt(kb)?;
@@ -626,7 +633,7 @@ impl<F: Fetch> Verifier<F> {
         }
         let kb_claims: KbClaims = serde_json::from_value(kb_jwt.payload)
             .map_err(|e| Refused::Malformed(e.to_string()))?;
-        if (kb_claims.iat - now).abs() > KB_WINDOW {
+        if kb_claims.iat.abs_diff(now) > KB_WINDOW as u64 {
             return Err(Refused::KeyBindingTime);
         }
         if kb_claims.aud != self.card_url {
@@ -643,7 +650,9 @@ impl<F: Fetch> Verifier<F> {
         // Recorded only once every check has passed, so a refusal for a
         // passing reason (a status fetch that failed) doesn't spend it.
         self.seen.retain(|_, exp| *exp > now);
-        let once = (claims.jti.clone(), sha256_b64(kb.as_bytes()));
+        // Keyed by the signed input, not the token: an ECDSA signature has a
+        // second valid form (s → n−s), so the token's bytes aren't unique.
+        let once = (claims.jti.clone(), sha256_b64(kb_jwt.input.as_bytes()));
         if self.seen.contains_key(&once) {
             return Err(Refused::Replay);
         }
@@ -743,7 +752,7 @@ impl<F: Fetch> Verifier<F> {
         let iat = jwt.payload["iat"]
             .as_i64()
             .ok_or_else(|| status("no iat"))?;
-        if now - iat > STATUS_MAX_AGE || iat - now > KB_WINDOW {
+        if now.saturating_sub(iat) > STATUS_MAX_AGE || iat.saturating_sub(now) > KB_WINDOW {
             return Err(status("stale"));
         }
         let list = &jwt.payload["status_list"];

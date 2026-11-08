@@ -7,7 +7,9 @@ const SERVER: &str = "acme.swarm.plow.co";
 const CARD: &str = "https://beta.swarm.plow.co/a2a/sales/card.json";
 const ALICE: &str = "@alice=40acme.com:acme.swarm.plow.co";
 const AGENT: &str = "@alice-agent:acme.swarm.plow.co";
-const INDEX: u64 = 7;
+/// Past the first 128, which a list sized by its revocations alone left out.
+const INDEX: u64 = 500;
+const ISSUED: u64 = 1000;
 
 /// The web as the verifier sees it: documents by URL, and every URL asked for.
 #[derive(Clone, Default)]
@@ -54,7 +56,7 @@ fn world() -> World {
         &jwks_url(SERVER),
         serde_json::to_vec(&issuer.jwks()).unwrap(),
     );
-    web.put(&status_url(SERVER), issuer.status_list(&[], NOW));
+    web.put(&status_url(SERVER), issuer.status_list(ISSUED, &[], NOW));
     World {
         issuer,
         holder: Holder::new(&generate_key()).unwrap(),
@@ -212,6 +214,22 @@ async fn a_mandate_is_refused_for_each_failed_check() {
             Refused::KeyBindingTime,
         ),
         (
+            "key binding from the far past",
+            message(&w.holder, &w.mandate(), i64::MIN),
+            NOW,
+            Refused::KeyBindingTime,
+        ),
+        (
+            "grant_hash not the constraints'",
+            message(
+                &w.holder,
+                &w.reissue(|p| p["grant_hash"] = sha256_b64(b"[]").into()),
+                NOW,
+            ),
+            NOW,
+            Refused::Malformed("grant_hash is not the constraints'".into()),
+        ),
+        (
             "tampered text",
             tampered(|m| m["parts"][0]["text"] = "Wire $40,000 today.".into()),
             NOW,
@@ -238,6 +256,7 @@ async fn a_mandate_is_refused_for_each_failed_check() {
                         .as_array_mut()
                         .unwrap()
                         .push(json!({"type": "co.plow.spend.anything"}));
+                    p["grant_hash"] = sha256_b64(jcs(&p["constraints"]).as_bytes()).into();
                 }),
                 NOW,
             ),
@@ -316,12 +335,12 @@ async fn a_revoked_or_unconfirmed_mandate_is_refused() {
     let lists: Vec<(&str, Option<String>, Refused)> = vec![
         (
             "revoked",
-            Some(w.issuer.status_list(&[3, INDEX], NOW)),
+            Some(w.issuer.status_list(ISSUED, &[3, INDEX], NOW)),
             Refused::Revoked,
         ),
         (
             "stale",
-            Some(w.issuer.status_list(&[], NOW - STATUS_MAX_AGE - 1)),
+            Some(w.issuer.status_list(ISSUED, &[], NOW - STATUS_MAX_AGE - 1)),
             Refused::Status("stale".into()),
         ),
         (
@@ -340,7 +359,7 @@ async fn a_revoked_or_unconfirmed_mandate_is_refused() {
 
     // A cached list is used for five minutes, then must be fetched again.
     w.web
-        .put(&status_url(SERVER), w.issuer.status_list(&[], NOW));
+        .put(&status_url(SERVER), w.issuer.status_list(ISSUED, &[], NOW));
     let mut verifier = Verifier::new(CARD, w.web.clone());
     verifier.verify(&first, NOW).await.unwrap();
     w.web.docs.lock().unwrap().remove(&status_url(SERVER));
@@ -359,11 +378,37 @@ async fn a_key_binding_jwt_is_accepted_once() {
     let mut verifier = Verifier::new(CARD, w.web.clone());
     verifier.verify(&first, NOW).await.unwrap();
     assert_eq!(verifier.verify(&first, NOW + 1).await, Err(Refused::Replay));
+    // Nor in its signature's other valid form, s → n−s.
+    let mut twin = first.clone();
+    let sd = twin["metadata"][METADATA_KEY]["sd_jwt"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (rest, signature) = sd.rsplit_once('.').unwrap();
+    let mut signature = B64.decode(signature).unwrap();
+    negate_s(&mut signature[32..]);
+    twin["metadata"][METADATA_KEY]["sd_jwt"] = format!("{rest}.{}", B64.encode(signature)).into();
+    assert_eq!(verifier.verify(&twin, NOW + 1).await, Err(Refused::Replay));
     // The same mandate closed again for the next message is fine.
     verifier
         .verify(&message(&w.holder, &sd_jwt, NOW + 2), NOW + 2)
         .await
         .unwrap();
+}
+
+/// s → n − s, big-endian, for P-256's group order n.
+fn negate_s(s: &mut [u8]) {
+    const N: [u8; 32] = [
+        0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0xff, 0xbc, 0xe6, 0xfa, 0xad, 0xa7, 0x17, 0x9e, 0x84, 0xf3, 0xb9, 0xca, 0xc2, 0xfc, 0x63,
+        0x25, 0x51,
+    ];
+    let mut borrow = 0i16;
+    for i in (0..32).rev() {
+        let d = N[i] as i16 - s[i] as i16 - borrow;
+        borrow = (d < 0) as i16;
+        s[i] = d.rem_euclid(256) as u8;
+    }
 }
 
 #[test]
