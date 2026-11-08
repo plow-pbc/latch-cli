@@ -411,6 +411,54 @@ fn negate_s(s: &mut [u8]) {
     }
 }
 
+#[tokio::test]
+async fn a_server_name_outside_matrix_grammar_is_refused_before_any_fetch() {
+    let w = world();
+    let attacker = key_pair(&generate_key()).unwrap();
+    for forged in [
+        "acme.swarm.plow.co@evil.example",
+        "evil.example/x",
+        "evil.example?x",
+        "evil.example#x",
+    ] {
+        let header = json!({"alg": "ES256", "typ": "dc+sd-jwt"});
+        let sd_jwt = w.forge(&attacker, header, |p| {
+            p["iss"] = format!("https://{forged}").into();
+            p["act"]["sub"] = format!("@bot:{forged}").into();
+        });
+        let refused = verify(&w.web, &message(&w.holder, &sd_jwt, NOW), NOW).await;
+        assert_eq!(
+            refused,
+            Err(Refused::Malformed("act.sub is not a user id".into())),
+            "{forged}"
+        );
+        assert!(
+            !w.web
+                .asked
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|url| url.contains(forged)),
+            "{forged}"
+        );
+        assert!(
+            matches!(
+                Issuer::new(&generate_key(), b"s", forged),
+                Err(Refused::Issuer)
+            ),
+            "{forged}"
+        );
+    }
+    for server in [
+        "acme.swarm.plow.co",
+        "localhost:8448",
+        "10.0.0.1",
+        "[::1]:8448",
+    ] {
+        assert!(is_server_name(server), "{server}");
+    }
+}
+
 #[test]
 fn the_issuer_mints_only_for_a_person_and_its_own_server() {
     let w = world();

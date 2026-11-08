@@ -160,7 +160,38 @@ fn server_of(user: &str) -> Option<&str> {
     user.strip_prefix('@')?
         .split_once(':')
         .map(|(_, server)| server)
-        .filter(|s| !s.is_empty())
+        .filter(|s| is_server_name(s))
+}
+
+/// Matrix `server_name` grammar: a DNS name, an IPv4 address or a bracketed
+/// IPv6 one, then an optional `:port`. Nothing else may reach a URL's host.
+fn is_server_name(name: &str) -> bool {
+    let (host, port) = match name.strip_prefix('[') {
+        Some(rest) => match rest.split_once(']') {
+            Some((ip6, port))
+                if !ip6.is_empty()
+                    && ip6
+                        .chars()
+                        .all(|c| c.is_ascii_hexdigit() || c == ':' || c == '.') =>
+            {
+                (ip6, port)
+            }
+            _ => return false,
+        },
+        None => {
+            let (host, port) = name.split_at(name.find(':').unwrap_or(name.len()));
+            let dns = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '.';
+            if host.is_empty() || host.len() > 255 || !host.chars().all(dns) {
+                return false;
+            }
+            (host, port)
+        }
+    };
+    !host.is_empty()
+        && (port.is_empty()
+            || port.strip_prefix(':').is_some_and(|p| {
+                (1..=5).contains(&p.len()) && p.chars().all(|c| c.is_ascii_digit())
+            }))
 }
 
 /// A person's id is their email, `@` escaped as `=40`.
@@ -320,6 +351,9 @@ impl Issuer {
     /// pairwise `sub`. `server` is the Matrix server name, which is also
     /// `iss`'s host.
     pub fn new(key: &[u8], pseudonym_secret: &[u8], server: &str) -> Result<Issuer, Refused> {
+        if !is_server_name(server) {
+            return Err(Refused::Issuer);
+        }
         let key = key_pair(key)?;
         let kid = sha256_b64(key.public_key().as_ref())[..16].to_string();
         Ok(Issuer {
