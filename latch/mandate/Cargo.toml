@@ -1,0 +1,21 @@
+[package]
+name = "mandate"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+description = "Plow Mandate: whom an agent acts for and what it may commit them to, as an SD-JWT VC with key binding"
+
+[dependencies]
+# ES256 signatures, SHA-256, HMAC and random bytes: the crypto library
+# reqwest's rustls already builds into latch and swarm.
+aws-lc-rs = { version = "1.18.2", default-features = false, features = ["aws-lc-sys", "alloc"] }
+# base64url, the encoding of every JWT part and disclosure.
+base64 = "0.22.1"
+# zlib, the status list's compression.
+flate2 = "1.1.10"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+
+[dev-dependencies]
+tokio = { version = "1.53.3", features = ["macros", "rt"] }

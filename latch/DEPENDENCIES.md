@@ -55,6 +55,19 @@ screenshot's pixels for the tests that check what it shows; it brings
 `fdeflate`, `miniz_oxide` and `adler2` (its own decompressors, MIT or
 Apache-2.0 among their licenses) into test builds only.
 
+## `mandate`
+
+The mandate library (`mandate/`), which Swarm also builds. Its direct crates
+beyond `serde` and `serde_json` (rows above), pulled 2026-11-08:
+
+| Crate | Used for | Downloads (all / 90 d) | Stars | Owner | Version (released) | License |
+|---|---|---|---|---|---|---|
+| `aws-lc-rs` | ES256 signatures, SHA-256, HMAC and random bytes; the backend rustls already builds in, so still one crypto library | 302M / 117M | 674 | aws org | 1.18.2 (2026-10-12) | ISC AND (Apache-2.0 OR ISC) |
+| `base64` | base64url, the encoding of every JWT part and disclosure | 1,917M / 498M | 740 | marshallpierce | 0.22.1 (2024-04-30) | MIT/Apache-2.0 |
+| `flate2` | zlib, the status list's compression | 830M / 221M | 1.1k | rust-lang org | 1.1.10 (2026-08-28) | MIT/Apache-2.0 |
+
+Tests only: `tokio` (row above) runs its async tests.
+
 Not used, although the audit lists them: `anyhow` and `thiserror`. A failure
 is one plain struct (`src/failure.rs`) with an exit kind, a code and a
 message, which is all the error contract needs.
