@@ -286,7 +286,8 @@ fn write_jcs(value: &Value, out: &mut String) {
             }
             out.push(']');
         }
-        Value::Number(n) if n.is_f64() => out.push_str(&ecmascript_number(n.as_f64().unwrap())),
+        // Every number as the IEEE 754 double ECMAScript reads it as.
+        Value::Number(n) => out.push_str(&ecmascript_number(n.as_f64().unwrap())),
         other => out.push_str(&other.to_string()),
     }
 }
@@ -584,8 +585,6 @@ struct KbClaims {
 pub struct Verifier<F> {
     card_url: String,
     fetch: F,
-    /// Fetched documents by URL, with when they were fetched.
-    cache: HashMap<String, (i64, Vec<u8>)>,
     /// `(jti, key-binding JWT hash)` → the mandate's `exp`.
     seen: HashMap<(String, String), i64>,
 }
@@ -595,7 +594,6 @@ impl<F: Fetch> Verifier<F> {
         Verifier {
             card_url: card_url.into(),
             fetch,
-            cache: HashMap::new(),
             seen: HashMap::new(),
         }
     }
@@ -623,7 +621,7 @@ impl<F: Fetch> Verifier<F> {
         if claims.iss != format!("https://{server}") {
             return Err(Refused::Issuer);
         }
-        let keys = self.keys(server, now).await?;
+        let keys = self.keys(server).await?;
 
         // 2. Signature, disclosures, expiry, audience.
         if jwt.header["alg"] != "ES256" || jwt.header["typ"] != "dc+sd-jwt" {
@@ -736,23 +734,10 @@ impl<F: Fetch> Verifier<F> {
         })
     }
 
-    /// The document at `url`, fetched again once the cached copy is older
-    /// than [`STATUS_MAX_AGE`]. A failed fetch is an error, never the stale copy.
-    async fn fetched(&mut self, url: &str, now: i64) -> Result<Vec<u8>, String> {
-        if let Some((at, body)) = self.cache.get(url)
-            && now - at < STATUS_MAX_AGE
-        {
-            return Ok(body.clone());
-        }
-        self.cache.remove(url);
-        let body = self.fetch.get(url).await?;
-        self.cache.insert(url.into(), (now, body.clone()));
-        Ok(body)
-    }
-
-    async fn keys(&mut self, server: &str, now: i64) -> Result<Vec<Jwk>, Refused> {
+    async fn keys(&self, server: &str) -> Result<Vec<Jwk>, Refused> {
         let body = self
-            .fetched(&jwks_url(server), now)
+            .fetch
+            .get(&jwks_url(server))
             .await
             .map_err(Refused::Keys)?;
         let jwks: Jwks = serde_json::from_slice(&body).map_err(|e| Refused::Keys(e.to_string()))?;
@@ -768,7 +753,8 @@ impl<F: Fetch> Verifier<F> {
     ) -> Result<bool, Refused> {
         let status = |why: &str| Refused::Status(why.into());
         let body = self
-            .fetched(&status_url(server), now)
+            .fetch
+            .get(&status_url(server))
             .await
             .map_err(Refused::Status)?;
         let token = std::str::from_utf8(&body).map_err(|_| status("not text"))?;

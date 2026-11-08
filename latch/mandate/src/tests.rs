@@ -357,17 +357,25 @@ async fn a_revoked_or_unconfirmed_mandate_is_refused() {
         assert_eq!(verify(&w.web, &first, NOW).await, Err(want), "{name}");
     }
 
-    // A cached list is used for five minutes, then must be fetched again.
+    // One verifier keeps up with a list that grew since it last looked.
     w.web
         .put(&status_url(SERVER), w.issuer.status_list(ISSUED, &[], NOW));
     let mut verifier = Verifier::new(CARD, w.web.clone());
     verifier.verify(&first, NOW).await.unwrap();
-    w.web.docs.lock().unwrap().remove(&status_url(SERVER));
-    let later = message(&w.holder, &w.mandate(), NOW + STATUS_MAX_AGE);
-    assert!(matches!(
-        verifier.verify(&later, NOW + STATUS_MAX_AGE).await,
-        Err(Refused::Status(_))
-    ));
+    w.web.put(
+        &status_url(SERVER),
+        w.issuer.status_list(2 * ISSUED, &[], NOW),
+    );
+    let (constraints, cnf) = (default_grant(), w.holder.jwk());
+    let newer = Grant {
+        status_index: ISSUED + 1,
+        ..w.grant(&constraints, &cnf, CARD)
+    };
+    let sd_jwt = w.issuer.mint(&newer, NOW).unwrap().0;
+    verifier
+        .verify(&message(&w.holder, &sd_jwt, NOW), NOW)
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -507,11 +515,12 @@ fn jcs_matches_rfc_8785() {
         "{\"\\r\":\"Carriage Return\",\"1\":\"One\",\"\u{80}\":\"Control\",\"ö\":\"Latin Small Letter O With Diaeresis\",\
          \"€\":\"Euro Sign\",\"😀\":\"Emoji: Grinning Face\",\"\u{fb33}\":\"Hebrew Letter Dalet With Dagesh\"}",
     );
-    let numbers: Value =
-        serde_json::from_str("[1.0, -0.0, 1e21, 1e-7, 0.000001, 123.456, 9007199254740991]")
-            .unwrap();
+    let numbers: Value = serde_json::from_str(
+        "[1.0, -0.0, 1e21, 1e-7, 0.000001, 123.456, 9007199254740991, 1000000000000000128]",
+    )
+    .unwrap();
     assert_eq!(
         jcs(&numbers),
-        "[1,0,1e+21,1e-7,0.000001,123.456,9007199254740991]"
+        "[1,0,1e+21,1e-7,0.000001,123.456,9007199254740991,1000000000000000100]"
     );
 }
