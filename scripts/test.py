@@ -286,14 +286,14 @@ def steps(where, suites, gate, shard, archive=None, ci=False, only=None):
     building, built = (archive or (None, None))[0] == "out", (archive or (None, None))[0] == "in"
     if gate and first_shard and not built:
         out.append(("fmt", ["gate"], ["cargo", "fmt", "--check"], LATCH))
-        out.append(("clippy", ["gate"], ["cargo", "clippy", "--locked", "--all-targets", "--features",
+        out.append(("clippy", ["gate"], ["cargo", "clippy", "--workspace", "--locked", "--all-targets", "--features",
                                          features, "--", "-D", "warnings"], LATCH))
     if building:
-        out.append(("build", rust, ["cargo", "nextest", "archive", "--locked", "--features", features,
+        out.append(("build", rust, ["cargo", "nextest", "archive", "--workspace", "--locked", "--features", features,
                                     "--archive-file", str(archive[1])], LATCH))
         return out
     if rust and not built:
-        out.append(("build", rust, ["cargo", "nextest", "list", "--locked", "--features", features,
+        out.append(("build", rust, ["cargo", "nextest", "list", "--workspace", "--locked", "--features", features,
                                     "--message-format", "oneline"], LATCH))
     if {"browser", "scenario"} & set(suites):
         state = engines_state(where)
@@ -314,7 +314,7 @@ def steps(where, suites, gate, shard, archive=None, ci=False, only=None):
         # The archive's build, unpacked where it was made: the tests use
         # paths compiled into them (CARGO_BIN_EXE_latch, CARGO_MANIFEST_DIR).
         source = (["--archive-file", str(archive[1]), "--workspace-remap", str(LATCH), "--extract-to",
-                   str(LATCH), "--extract-overwrite"] if built else ["--locked", "--features", features])
+                   str(LATCH), "--extract-overwrite"] if built else ["--workspace", "--locked", "--features", features])
         # CI's profile (latch/.config/nextest.toml) for latch's run only.
         profile = ["--profile", "ci-mac" if where == "macos" else "ci"] if ci else []
         out.append(("rust", rust, ["cargo", "nextest", "run", *source, *profile, "--no-fail-fast",
@@ -388,7 +388,7 @@ def count(where, suites, env, only=None):
     features = FEATURES["macos" if where == "macos" else "linux"]
     counts = {}
     for suite in suites:
-        listed = subprocess.run(["cargo", "nextest", "list", "--locked", "--features", features,
+        listed = subprocess.run(["cargo", "nextest", "list", "--workspace", "--locked", "--features", features,
                                  "--message-format", "json", "-E", selection(suite, where, only)],
                                 cwd=LATCH, env=env, capture_output=True, text=True, check=True)
         counts[suite] = sum(1 for binary in json.loads(listed.stdout)["rust-suites"].values()
