@@ -71,7 +71,7 @@ cat > "$bundle/Contents/Info.plist" <<PLIST
 	<key>LSMinimumSystemVersion</key>
 	<string>13.0</string>
 	<key>NSFileProviderDomainUsageDescription</key>
-	<string>Latch reads and writes files in your cloud folders, such as Dropbox, Google Drive and iCloud Drive, when your agents ask and your rules allow it. Reading a file that is only in the cloud downloads it to this Mac.</string>
+	<string>Latch reads and writes files in your cloud folders, such as Dropbox, Google Drive and iCloud Drive, when your agents ask and your rules allow it. Reading a file that is only in the cloud downloads it to this Mac. Changes Latch makes may sync to your other devices and to anyone the folder is shared with.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Latch uses your local network so your agents can connect to this Mac directly and, when your rules let them, reach devices on your network. The connection between your agents and this Mac is encrypted end to end.</string>
 </dict>

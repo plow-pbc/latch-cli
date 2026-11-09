@@ -79,7 +79,7 @@ const RULES_OF_JUDGMENT: [&str; 5] = [
 /// exec judgments.
 macro_rules! exec_reach {
     () => {
-        "The command can read the host's home except ~/.latch, the host's own state directory and, on macOS, Library except its Caches and the owner's cloud folders (Library/CloudStorage, such as Dropbox or Google Drive, and iCloud Drive), which can be read and written like Documents: reading a file that is only in the cloud downloads it to the Mac, and a write there syncs to the cloud and to everyone the folder is shared with. Secret environment values are hidden; their names and lengths are shown. A secret need not be a credential: names like *_COMMAND, NODE_OPTIONS, BASH_ENV, PYTHONSTARTUP and GIT_CONFIG_* can make a program execute the hidden value or load code. Consider what each variable does and whether the owner authorized that hidden behavior with the requested permissions."
+        "The command can read the host's home except ~/.latch, the host's own state directory and, on macOS, Library except its Caches and the owner's cloud folders (Library/CloudStorage, such as Dropbox or Google Drive, and iCloud Drive), which can be read and written like Documents: reading a file that is only in the cloud downloads it to the Mac, and a write there may sync to the owner's other devices and to anyone the folder is shared with. Secret environment values are hidden; their names and lengths are shown. A secret need not be a credential: names like *_COMMAND, NODE_OPTIONS, BASH_ENV, PYTHONSTARTUP and GIT_CONFIG_* can make a program execute the hidden value or load code. Consider what each variable does and whether the owner authorized that hidden behavior with the requested permissions."
     };
 }
 const EXEC_PERMISSIONS: &str = concat!(
