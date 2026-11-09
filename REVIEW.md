@@ -77,7 +77,8 @@ a review slot. Flag a diff that *widens* one, not the limit itself:
   key in the Keychain under latch's keychain group, out of the engine's reach.
 - **File reads and `exec` can read home and the system's runtime files**
   (programs, libraries, developer tools, certificates), except `~/.latch`,
-  the host's state folder and, on macOS, `~/Library` (its `Caches` excepted).
+  the host's state folder and, on macOS, `~/Library` (its `Caches`,
+  `CloudStorage` and iCloud Drive excepted).
   Exec writes only to its per-call `--write` paths, private temp folder and
   permitted existing tool caches. `file put` uses private staging; the host
   places the result at its judged destination inside home, outside hidden

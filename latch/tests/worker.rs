@@ -698,7 +698,8 @@ fn exec_reads_and_writes_only_areas_never_state_or_latch() {
 }
 
 /// A get's worker, as a host starts it: home readable, less latch's state
-/// and (macOS) ~/Library apart from its Caches, and nothing writable.
+/// and (macOS) ~/Library apart from its Caches and cloud folders, and
+/// nothing writable.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn a_read_worker_reads_home_but_not_what_is_hidden() {
@@ -709,6 +710,18 @@ fn a_read_worker_reads_home_but_not_what_is_hidden() {
         (".latch/key", "made-up key"),
         ("Library/Messages/chat.db", "made-up chat"),
         ("Library/Caches/tool/cache", "made-up cache"),
+        (
+            "Library/CloudStorage/Dropbox/note.txt",
+            "made-up cloud file",
+        ),
+        (
+            "Library/Mobile Documents/com~apple~CloudDocs/note.txt",
+            "made-up iCloud file",
+        ),
+        (
+            "Library/Mobile Documents/com~example~App/secret",
+            "another app's",
+        ),
     ] {
         fs::create_dir_all(home.join(path).parent().unwrap()).unwrap();
         fs::write(home.join(path), text).unwrap();
@@ -742,11 +755,70 @@ fn a_read_worker_reads_home_but_not_what_is_hidden() {
     assert_eq!(code(&read(".latch/key")), hidden_code());
     if cfg!(target_os = "macos") {
         assert_eq!(code(&read("Library/Messages/chat.db")), hidden_code());
-        let cache = read("Library/Caches/tool/cache");
-        assert!(cache.status.success(), "{cache:?}");
+        for open in [
+            "Library/Caches/tool/cache",
+            "Library/CloudStorage/Dropbox/note.txt",
+            "Library/Mobile Documents/com~apple~CloudDocs/note.txt",
+        ] {
+            let read = read(open);
+            assert!(read.status.success(), "{open}: {read:?}");
+        }
+        assert_eq!(
+            code(&read("Library/Mobile Documents/com~example~App/secret")),
+            hidden_code()
+        );
     }
     // Nothing outside home, either.
     assert!(!read("../outside/other.txt").status.success());
+}
+
+/// A home-reading worker lets its program download online-only cloud
+/// files, even when its parent does not (macOS's default, and a launchd
+/// host's): otherwise such a read fails, or reads as empty.
+#[cfg(target_os = "macos")]
+#[test]
+fn an_exec_reading_home_downloads_online_only_files() {
+    use std::os::unix::process::CommandExt;
+    let dir = setup();
+    let real = dir.path().canonicalize().unwrap();
+    let home = real.join("area");
+    let script = "import ctypes; print(ctypes.CDLL(None).getiopolicy_np(3, 0))";
+    let mut command = Command::new(env!("CARGO_BIN_EXE_latch"));
+    command
+        .arg("worker")
+        .arg("--home")
+        .arg(&home)
+        .arg("--read")
+        .arg(&home)
+        .args(["--denied", "../state", "--tmpdir", "../tmp"])
+        .args(["exec", "--", "/usr/bin/python3", "-c", script])
+        .current_dir(&home)
+        .env_clear()
+        .env("PATH", HOST_PATH)
+        .env("HOME", &home)
+        .env("TMPDIR", real.join("tmp"));
+    // SAFETY: one async-signal-safe call with integer arguments, between
+    // fork and exec. 3/0/1: dataless-file materialization, process, off.
+    unsafe {
+        command.pre_exec(|| {
+            unsafe extern "C" {
+                fn setiopolicy_np(iotype: i32, scope: i32, policy: i32) -> i32;
+            }
+            if setiopolicy_np(3, 0, 1) == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error())
+            }
+        });
+    }
+    let output = exec_worker(&mut command);
+    assert!(output.status.success(), "{output:?}");
+    // 2: IOPOL_MATERIALIZE_DATALESS_FILES_ON.
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        "2",
+        "{output:?}"
+    );
 }
 
 #[test]

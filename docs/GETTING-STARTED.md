@@ -202,8 +202,10 @@ latch file put --host my-mac notes.txt '~/Documents'
 ```
 
 The first saves `./hello.txt`. The second writes `~/Documents/notes.txt` on
-the host. Neither reaches Latch's state folder or, on a Mac, `~/Library`:
-those are refused with `bad_path`.
+the host. Neither reaches Latch's state folder or, on a Mac, `~/Library`: a path
+there is refused with `bad_path`. The exceptions are `~/Library/Caches` and
+your cloud folders (`~/Library/CloudStorage`, such as Dropbox, and iCloud
+Drive), which work like `~/Documents`.
 
 **Drive a browser on the host.** `browser open` answers with a session id,
 which later commands read from `LATCH_BROWSER_SESSION`:
