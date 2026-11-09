@@ -36,7 +36,10 @@
 # user's copy is there; otherwise to ~/Applications, this user's own. It
 # replaces an older one at the same path, so it keeps its identity and its
 # Full Disk Access, and ~/.local/bin/latch becomes a link to the latch
-# inside it. This user's copy in the other folder, from an earlier install,
+# inside it. Another app by the same name (another bundle id, such as the
+# older Plow Latch app) is never quit, moved or removed: the app goes in the
+# other folder, and with no other folder the install stops before anything
+# changes. This user's copy in the other folder, from an earlier install,
 # is removed once the new one is in place, so only one app has latch's
 # bundle id; "Start when you log in", if it was on for that copy, is turned
 # on again for the new one, and a window open from it is quit first and the
@@ -112,6 +115,9 @@ quit_windows() {
   done
   return 1
 }
+
+# The bundle id of the app at $1, or nothing if it has none.
+bundle_id() { plutil -extract CFBundleIdentifier raw -o - "$1/Contents/Info.plist" 2>/dev/null || true; }
 
 usage="usage: sh install-binary.sh [--bin-dir DIR] [--state-dir DIR] [--browser chrome|camoufox]... [--no-browser] [--client-only] [--no-login] [--non-interactive] [--no-modify-path] [path/to/latch]"
 # HOME=/ (a container's root) gives /.local/bin, not //.local/bin.
@@ -229,8 +235,12 @@ if [ -n "$app" ]; then
   name=$(basename "$app")
   shared=${LATCH_APPLICATIONS:-/Applications}
   own="${HOME%/}/Applications"
+  ours=$(bundle_id "$app")
   if [ -e "$shared/$name" ] && [ ! -O "$shared/$name" ]; then
     say "$shared/$name is another user's; installing to $own, for this user only"
+    apps=$own
+  elif [ -e "$shared/$name" ] && [ "$(bundle_id "$shared/$name")" != "$ours" ]; then
+    say "$shared/$name is a different app; leaving it in place and installing to $own, for this user only"
     apps=$own
   elif [ -d "$shared" ] && [ -w "$shared" ]; then
     apps=$shared
@@ -238,10 +248,14 @@ if [ -n "$app" ]; then
     apps=$own
   fi
   installed="$apps/$name"
-  # This user's copy in the other folder, never another user's (and none
-  # when both folders are one, as for a user whose HOME is /).
+  if [ -e "$installed" ] && [ "$(bundle_id "$installed")" != "$ours" ]; then
+    die "$installed is a different app, so nothing was installed; move it out of $apps, then install again"
+  fi
+  # This user's copy in the other folder, never another user's or another
+  # app's (and none when both folders are one, as for a user whose HOME is /).
   if [ "$apps" = "$shared" ]; then other="$own/$name"; else other="$shared/$name"; fi
-  if [ "$other" = "$installed" ] || { [ -e "$other" ] && [ ! -O "$other" ]; }; then
+  if [ "$other" = "$installed" ] || { [ -e "$other" ] && { [ ! -O "$other" ] ||
+    [ "$(bundle_id "$other")" != "$ours" ]; }; }; then
     other=""
   fi
   old="$installed/Contents/MacOS/$(basename "$inner")"
