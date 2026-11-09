@@ -23,6 +23,7 @@ extension LatchClient {
     func removeDevice(_ name: String) async throws { throw LatchError.unreachable("not scripted") }
     func updateCheck() async throws -> UpdateCheck { throw LatchError.unreachable("not scripted") }
     func update() async throws -> UpdateResult { throw LatchError.unreachable("not scripted") }
+    func unseenUpdateFailure() async -> LatchError? { nil }
     func logout() async throws -> LogoutResult { throw LatchError.unreachable("not scripted") }
     func agentCatalog() async throws -> AgentCatalog { throw LatchError.unreachable("not scripted") }
     func agentStartByText() async throws -> AgentStartByText { throw LatchError.unreachable("not scripted") }

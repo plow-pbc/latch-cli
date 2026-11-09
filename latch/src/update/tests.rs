@@ -721,3 +721,15 @@ async fn an_app_not_signed_by_plow_is_refused() {
         failure.message
     );
 }
+
+/// A signature check that never answers ends the update instead of holding
+/// it, and the app waiting on it, forever.
+#[tokio::test]
+async fn a_check_that_never_answers_times_out() {
+    let started = std::time::Instant::now();
+    let failure = tool("sleep", &["30".as_ref()], Duration::from_millis(200))
+        .await
+        .unwrap_err();
+    assert_eq!(failure.code, "timed_out", "{}", failure.message);
+    assert!(started.elapsed() < Duration::from_secs(10));
+}

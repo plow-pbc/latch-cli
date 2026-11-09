@@ -187,9 +187,14 @@ nonisolated final class LatchProcess: @unchecked Sendable {
     /// none of the app's other descriptors, and not among the processes
     /// `terminateAll` stops. For `latch update`, whose installer quits the
     /// app partway through: the update goes on without it. Returns stdout,
-    /// or throws latch's error, if the app is still here when it ends.
+    /// or throws latch's error, if the app is still here when it ends; both
+    /// files are then removed, so what's left in them is a run the app
+    /// didn't see end. One still running after `within` is given up on, and
+    /// left running, until the next run: its pid is kept in `record`, and
+    /// the next run stops it, and every process it started, first.
     nonisolated static func detached(executable: URL, arguments: [String], environment: [String: String],
-                                     out: URL, err: URL) async throws -> Data {
+                                     out: URL, err: URL, record: URL, within: Duration) async throws -> Data {
+        stopRecorded(record)
         var actions: posix_spawn_file_actions_t?
         posix_spawn_file_actions_init(&actions)
         defer { posix_spawn_file_actions_destroy(&actions) }
@@ -199,7 +204,13 @@ nonisolated final class LatchProcess: @unchecked Sendable {
         var attributes: posix_spawnattr_t?
         posix_spawnattr_init(&attributes)
         defer { posix_spawnattr_destroy(&attributes) }
-        posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETSID | POSIX_SPAWN_CLOEXEC_DEFAULT))
+        // Blocking no signal: the calling thread, Swift's or Dispatch's,
+        // blocks most, and latch would inherit that. With SIGCHLD blocked it
+        // never hears its installer end, and waits for it forever.
+        var none = sigset_t()
+        sigemptyset(&none)
+        posix_spawnattr_setsigmask(&attributes, &none)
+        posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETSID | POSIX_SPAWN_CLOEXEC_DEFAULT | POSIX_SPAWN_SETSIGMASK))
 
         let argv = ([executable.path] + arguments).map { strdup($0) } + [nil]
         let envp = environment.map { strdup("\($0.key)=\($0.value)") } + [nil]
@@ -209,28 +220,76 @@ nonisolated final class LatchProcess: @unchecked Sendable {
         guard spawned == 0 else {
             throw LatchError.unreachable("Latch couldn't start.", detail: String(cString: strerror(spawned)))
         }
-        // Waited for off Swift's threads; a cancelled caller leaves it running.
+        if let started = startTime(pid) { try? "\(pid) \(started)".write(to: record, atomically: true, encoding: .utf8) }
+        // Waited for off Swift's threads; a cancelled caller leaves it
+        // running. Whichever comes first, the exit or `within`, answers.
+        let answer = Mutex<CheckedContinuation<Int32?, Never>?>(nil)
         let status = await withCheckedContinuation { continuation in
+            answer.withLock { $0 = continuation }
             DispatchQueue.global().async {
                 var status: Int32 = 0
                 while waitpid(pid, &status, 0) == -1 && errno == EINTR {}
-                continuation.resume(returning: status)
+                answer.withLock { $0.take() }?.resume(returning: status)
+            }
+            Task {
+                try? await Task.sleep(for: within)
+                answer.withLock { $0.take() }?.resume(returning: nil)
             }
         }
+        guard let status else {
+            let minutes = Int(within.components.seconds / 60)
+            throw LatchError.unreachable("Latch's update didn't finish.",
+                                         detail: "latch update was still running after \(minutes) minutes. Retry stops it and starts again.")
+        }
+        try? FileManager.default.removeItem(at: record)
+        let printed = (try? Data(contentsOf: out)) ?? Data()
+        let said = (try? Data(contentsOf: err)) ?? Data()
+        try? FileManager.default.removeItem(at: out)
+        try? FileManager.default.removeItem(at: err)
         // An exit's code, or a signal's number as `Process` gives it.
         let code = status & 0x7f == 0 ? (status >> 8) & 0xff : status & 0x7f
-        guard code == 0 else { throw failure(status: code, stderr: (try? Data(contentsOf: err)) ?? Data()) }
-        return (try? Data(contentsOf: out)) ?? Data()
+        guard code == 0 else { throw failure(status: code, stderr: said) }
+        return printed
+    }
+
+    /// latch's error, if `err` holds one from a detached run the app didn't
+    /// see end; the run's files are removed once it's read.
+    nonisolated static func leftFailure(out: URL, err: URL) -> LatchError? {
+        guard let said = try? Data(contentsOf: err), let failure = latchFailure(said) else { return nil }
+        try? FileManager.default.removeItem(at: out)
+        try? FileManager.default.removeItem(at: err)
+        return .failed(failure)
+    }
+
+    /// Stops the run `record` names, with every process in its group, if
+    /// it's still the process that was started (not another given its pid).
+    private nonisolated static func stopRecorded(_ record: URL) {
+        defer { try? FileManager.default.removeItem(at: record) }
+        guard let text = try? String(contentsOf: record, encoding: .utf8) else { return }
+        let words = text.split(separator: " ")
+        guard words.count == 2, let pid = pid_t(words[0]), pid > 1, startTime(pid) == String(words[1]) else { return }
+        kill(-pid, SIGKILL)
+    }
+
+    /// When the process `pid` started, to tell it from a later one given
+    /// the same pid; nil once it has ended.
+    private nonisolated static func startTime(_ pid: pid_t) -> String? {
+        var info = proc_bsdinfo()
+        let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+        guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else { return nil }
+        return "\(info.pbi_start_tvsec).\(info.pbi_start_tvusec)"
     }
 
     private struct ErrorLine: Decodable { var error: LatchFailure }
 
-    private nonisolated static func failure(status: Int32, stderr: Data) -> LatchError {
-        // latch prints its error as the last line of stderr.
+    /// latch prints its error as the last line of stderr.
+    private nonisolated static func latchFailure(_ stderr: Data) -> LatchFailure? {
         let last = stderr.split(separator: UInt8(ascii: "\n")).last.map { Data($0) } ?? Data()
-        if let line = try? LatchJSON.decoder.decode(ErrorLine.self, from: last) {
-            return .failed(line.error)
-        }
+        return (try? LatchJSON.decoder.decode(ErrorLine.self, from: last))?.error
+    }
+
+    private nonisolated static func failure(status: Int32, stderr: Data) -> LatchError {
+        if let failure = latchFailure(stderr) { return .failed(failure) }
         // Not latch's error JSON: the exit status and the end of what it
         // printed go along as detail.
         let text = String(decoding: stderr.suffix(300), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
