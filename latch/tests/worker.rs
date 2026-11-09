@@ -772,6 +772,55 @@ fn a_read_worker_reads_home_but_not_what_is_hidden() {
     assert!(!read("../outside/other.txt").status.success());
 }
 
+/// A home-reading worker lets its program download online-only cloud
+/// files, even when its parent does not (macOS's default, and a launchd
+/// host's): otherwise such a read fails, or reads as empty.
+#[cfg(target_os = "macos")]
+#[test]
+fn an_exec_reading_home_downloads_online_only_files() {
+    use std::os::unix::process::CommandExt;
+    let dir = setup();
+    let real = dir.path().canonicalize().unwrap();
+    let home = real.join("area");
+    let script = "import ctypes; print(ctypes.CDLL(None).getiopolicy_np(3, 0))";
+    let mut command = Command::new(env!("CARGO_BIN_EXE_latch"));
+    command
+        .arg("worker")
+        .arg("--home")
+        .arg(&home)
+        .arg("--read")
+        .arg(&home)
+        .args(["--denied", "../state", "--tmpdir", "../tmp"])
+        .args(["exec", "--", "/usr/bin/python3", "-c", script])
+        .current_dir(&home)
+        .env_clear()
+        .env("PATH", HOST_PATH)
+        .env("HOME", &home)
+        .env("TMPDIR", real.join("tmp"));
+    // SAFETY: one async-signal-safe call with integer arguments, between
+    // fork and exec. 3/0/1: dataless-file materialization, process, off.
+    unsafe {
+        command.pre_exec(|| {
+            unsafe extern "C" {
+                fn setiopolicy_np(iotype: i32, scope: i32, policy: i32) -> i32;
+            }
+            if setiopolicy_np(3, 0, 1) == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error())
+            }
+        });
+    }
+    let output = exec_worker(&mut command);
+    assert!(output.status.success(), "{output:?}");
+    // 2: IOPOL_MATERIALIZE_DATALESS_FILES_ON.
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        "2",
+        "{output:?}"
+    );
+}
+
 #[test]
 fn a_read_refuses_a_symlink_swapped_in_after_resolution_before_sending_bytes() {
     for component in 0..3 {

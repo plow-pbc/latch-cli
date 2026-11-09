@@ -314,7 +314,13 @@ mod platform {
     unsafe extern "C" {
         fn sandbox_init(profile: *const c_char, flags: u64, errorbuf: *mut *mut c_char) -> c_int;
         fn sandbox_free_error(errorbuf: *mut c_char);
+        fn setiopolicy_np(iotype: c_int, scope: c_int, policy: c_int) -> c_int;
     }
+
+    // <sys/resource.h>; the libc crate does not have them.
+    const IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES: c_int = 3;
+    const IOPOL_SCOPE_PROCESS: c_int = 0;
+    const IOPOL_MATERIALIZE_DATALESS_FILES_ON: c_int = 2;
 
     /// Seatbelt is part of every macOS, so there is nothing to probe.
     pub fn check() -> Result<(), String> {
@@ -449,6 +455,9 @@ mod platform {
 
     pub fn confine(policy: &Policy) -> Result<(), String> {
         let profile = profile(policy)?;
+        if policy.home.is_some() {
+            download_online_only_files()?;
+        }
         if policy.break_for_test {
             // macOS never applies a second, different profile to a process
             // that already has one, so a valid one first makes the real one
@@ -457,6 +466,30 @@ mod platform {
             apply("(version 1) (allow default)")?;
         }
         apply(&profile)
+    }
+
+    /// A worker that reads home (exec's, a get's) downloads a cloud file
+    /// that is only online when it reads it, as Finder does. A process
+    /// inherits this from its parent, and macOS's default is off: a host
+    /// that launchd started would have its reads fail with EDEADLK, which
+    /// some programs (`shasum`) take for an empty file. Exec's program
+    /// inherits it from the worker.
+    fn download_online_only_files() -> Result<(), String> {
+        // SAFETY: std has no wrapper; three integer arguments, no Rust memory.
+        let status = unsafe {
+            setiopolicy_np(
+                IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES,
+                IOPOL_SCOPE_PROCESS,
+                IOPOL_MATERIALIZE_DATALESS_FILES_ON,
+            )
+        };
+        if status == 0 {
+            return Ok(());
+        }
+        Err(format!(
+            "cannot let reads download online-only files: {}",
+            std::io::Error::last_os_error()
+        ))
     }
 
     fn apply(profile: &str) -> Result<(), String> {
