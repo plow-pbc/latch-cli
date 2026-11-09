@@ -231,8 +231,8 @@ nonisolated final class LatchProcess: @unchecked Sendable {
                 while waitpid(pid, &status, 0) == -1 && errno == EINTR {}
                 answer.withLock { $0.take() }?.resume(returning: status)
             }
-            Task {
-                try? await Task.sleep(for: within)
+            let (seconds, attoseconds) = within.components
+            DispatchQueue.global().asyncAfter(deadline: .now() + Double(seconds) + Double(attoseconds) / 1e18) {
                 answer.withLock { $0.take() }?.resume(returning: nil)
             }
         }
