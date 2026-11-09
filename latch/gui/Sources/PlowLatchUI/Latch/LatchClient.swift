@@ -89,6 +89,9 @@ nonisolated protocol LatchClient: Sendable {
     /// restarts this Mac's host, and quits this window and opens it again
     /// on the new version.
     func update() async throws -> UpdateResult
+    /// How an update this app started and didn't see end failed, once: a
+    /// window the installer quit, or one quit while it ran.
+    func unseenUpdateFailure() async -> LatchError?
     /// `latch logout`: this Mac leaves the account; its vault stays.
     func logout() async throws -> LogoutResult
     /// `latch agents catalog`.
@@ -132,6 +135,9 @@ nonisolated enum TryRequest: Equatable, Sendable {
 nonisolated struct LiveLatchClient: LatchClient {
     let executable: URL
     let stateDir: String
+    /// How long `update` waits for latch to install a build: a download
+    /// may take minutes, and an install that hasn't ended by then won't.
+    var updateWithin: Duration = .seconds(20 * 60)
 
     func localStatus() async throws -> LocalStatus {
         try decode(LocalStatus.self, try await run(["status", "--local"]))
@@ -329,14 +335,22 @@ nonisolated struct LiveLatchClient: LatchClient {
     }
 
     /// Detached, its output in the state folder's `app-update/`: the
-    /// installer quits this app, and the update must outlive it.
+    /// installer quits this app, and the update must outlive it. One that
+    /// hasn't ended in `updateWithin` fails, and the next stops it.
     func update() async throws -> UpdateResult {
-        let folder = URL(filePath: stateDir).appending(path: "app-update")
+        let folder = updateFolder
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let out = try await LatchProcess.detached(executable: executable, arguments: withState(["update"]), environment: Self.environment,
-                                                  out: folder.appending(path: "out.json"), err: folder.appending(path: "err.log"))
+                                                  out: folder.appending(path: "out.json"), err: folder.appending(path: "err.log"),
+                                                  record: folder.appending(path: "pid"), within: updateWithin)
         return try decode(UpdateResult.self, out)
     }
+
+    func unseenUpdateFailure() async -> LatchError? {
+        LatchProcess.leftFailure(out: updateFolder.appending(path: "out.json"), err: updateFolder.appending(path: "err.log"))
+    }
+
+    private var updateFolder: URL { URL(filePath: stateDir).appending(path: "app-update") }
 
     func logout() async throws -> LogoutResult {
         try decode(LogoutResult.self, try await run(["logout", "--yes"]))

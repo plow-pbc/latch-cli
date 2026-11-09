@@ -160,6 +160,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         tasks.append(Task { [app] in await app.followVault() })
         // A newer Latch, looked for now and while the window stays open.
         tasks.append(Task { [app] in
+            await app.noticeUnseenUpdate()
             while !Task.isCancelled {
                 await app.checkForUpdateIfDue()
                 try? await Task.sleep(for: .seconds(60 * 60))

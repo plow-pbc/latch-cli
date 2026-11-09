@@ -82,6 +82,7 @@ nonisolated struct FakeLatchClient: LatchClient {
     func removeDevice(_ name: String) async throws {}
     func updateCheck() async throws -> UpdateCheck { try Fixtures.decode(Fixtures.updateCheck) }
     func update() async throws -> UpdateResult { UpdateResult(updated: false) }
+    func unseenUpdateFailure() async -> LatchError? { nil }
     func logout() async throws -> LogoutResult { LogoutResult(device: nil) }
     func agentCatalog() async throws -> AgentCatalog { try Fixtures.decode(Fixtures.catalog) }
     func agentCard(_ uid: String) async throws -> Data { throw LatchError.unreachable("a still") }

@@ -88,6 +88,16 @@ use state::StateDir;
 use wire::Request;
 
 fn main() -> ExitCode {
+    // Every signal unblocked, before any thread starts and inherits the
+    // mask: a starter may leave some blocked (a Swift or Dispatch thread of
+    // the Mac app blocks most), and with SIGCHLD blocked latch never sees a
+    // program it runs end, with SIGTERM blocked nothing but SIGKILL stops it.
+    // SAFETY: an empty set, made and passed by pointer on this thread.
+    unsafe {
+        let mut none: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut none);
+        libc::pthread_sigmask(libc::SIG_SETMASK, &none, std::ptr::null_mut());
+    }
     #[cfg(feature = "fake-gog")]
     if let Some(exit) = google::fake::run_if_gog() {
         return exit;
