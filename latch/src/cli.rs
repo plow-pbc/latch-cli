@@ -178,7 +178,7 @@ pub enum Command {
     /// List your agents, with their lines and Plow status
     ///
     /// With --host, each one's standing on that host. Its subcommands show,
-    /// create and remove agents (owner only)
+    /// create, move and remove agents (owner only)
     Agents(AgentsArgs),
     /// Print this machine, its login and account, and the account's hosts
     Status(StatusArgs),
@@ -1159,25 +1159,60 @@ pub enum AgentsAction {
     /// own and texts back its contact card
     StartByText,
     /// Plow's phone lines, and which are free for a new agent
+    ///
+    /// A move also needs a line where you have no open chat, by text or
+    /// email. This list doesn't show that; Plow checks when you move
     Lines,
     /// Create an agent on a free phone line
     ///
-    /// A cloud agent Plow runs, or your own, whose credential is written to a
-    /// new private file. It returns at once; `agents show` follows a cloud
-    /// agent's start
+    /// Choose one: a cloud agent from Plow's catalog (--cloud), a cloud agent
+    /// from a public image (--image), or an agent you run yourself (--own). It
+    /// returns at once; `agents show` follows a cloud agent's start.
+    ///
+    /// For --own, --credential-file names a new file, in a folder that already
+    /// exists, for the agent's environment: `PLOW_API_BASE`,
+    /// `PLOW_AGENT_TOKEN`, and the agent's uid in a comment. Load it into the
+    /// agent's environment, with Docker Compose's `env_file` or
+    /// `set -a; . FILE; set +a` in a shell, and `latch login` there logs the
+    /// agent in. Treat the file like a password.
+    ///
+    /// `PLOW_API_BASE` is the Plow you're logged in to, unless --agent-api-url
+    /// gives another address. Latch still creates the agent through your own
+    /// login.
+    ///
+    /// Latch doesn't build or publish images: --image takes one already on a
+    /// public registry, named by its digest.
+    #[command(group(clap::ArgGroup::new("target").required(true).args(["cloud", "image", "own"])))]
     New {
         /// A cloud agent of this kind, from `latch agents catalog`
-        #[arg(long, value_name = "KIND", required_unless_present = "own")]
+        #[arg(long, value_name = "KIND")]
         cloud: Option<String>,
-        /// An agent you run yourself, with --token-file
-        #[arg(long, conflicts_with = "cloud", requires = "token_file")]
+        /// A public image for Plow to run, in the form
+        /// REGISTRY/PATH@sha256:DIGEST, with 64 lowercase hex characters in
+        /// DIGEST. Plow pulls it without signing in
+        #[arg(long, value_name = "REF")]
+        image: Option<String>,
+        /// An agent you run yourself, with --credential-file
+        #[arg(long, requires = "credential_file")]
         own: bool,
-        /// Where to write your own agent's credential: a new file, made
-        /// private (mode 600) before the agent is created, never
-        /// overwritten. Its program logs in with
-        /// `PLOW_TOKEN_FILE=FILE latch login`
-        #[arg(long, value_name = "FILE", requires = "own")]
-        token_file: Option<PathBuf>,
+        /// Where to write your own agent's credential, as an environment file:
+        /// a new file in a folder that already exists, made private (mode 600)
+        /// before the agent is created, never overwritten
+        // clap drops a requirement on an argument that conflicts with one
+        // given, so `requires = "own"` would let a cloud target through: each
+        // own option conflicts with the cloud targets itself.
+        #[arg(long, value_name = "FILE", conflicts_with_all = ["cloud", "image"])]
+        credential_file: Option<PathBuf>,
+        /// The Plow address written to the file as PLOW_API_BASE. By default,
+        /// the one you're logged in to. Use an address the agent can reach,
+        /// without /v1; Latch still creates the agent through your own login
+        #[arg(
+            long,
+            value_name = "URL",
+            requires = "credential_file",
+            conflicts_with_all = ["cloud", "image"]
+        )]
+        agent_api_url: Option<String>,
         /// The agent's name; names need not be unique
         #[arg(long)]
         name: String,
@@ -1195,11 +1230,48 @@ pub enum AgentsAction {
         #[arg(long, short, value_name = "FILE")]
         output: PathBuf,
     },
-    /// Remove an agent, by its uid or its exact name
+    /// Move an agent to another phone line, by its uid or its exact name
     ///
-    /// Its credential stops working and its line is freed
-    Remove {
+    /// The agent keeps its credential, settings and rules. To move it, choose
+    /// a free phone line where you have no open chat, by text or email.
+    /// `latch agents lines` doesn't show which lines those are; Plow checks
+    /// when you move. Closed chats don't prevent a move.
+    ///
+    /// Plow closes your chats on the line the agent leaves, email included.
+    /// While no agent of yours uses the old number, one-to-one texts from
+    /// your number get at most one generic reply, then no reply. Email to its
+    /// old address is dropped unless another account on the thread has an
+    /// agent on that line. If you later move the agent back, your first text
+    /// starts a fresh chat there.
+    ///
+    /// Text the new number first to start a fresh chat; the agent can't text
+    /// you until you do, and until then your hosts have no chat with you to
+    /// judge its requests by.
+    ///
+    /// Plow restarts a cloud agent; it doesn't restart a program you run
+    /// yourself. Moving it to the line it is on restarts a cloud agent there
+    /// too, without closing or starting any chat, which finishes a move whose
+    /// restart failed. A repeat can interrupt the agent's work. The command
+    /// doesn't wait for the agent to be ready
+    Move {
         agent: String,
+        /// The phone line to move it to: a line's uid or number, from
+        /// `latch agents lines`
+        #[arg(long)]
+        line: String,
+    },
+    /// Remove an agent, by its uid, exact name or phone line
+    ///
+    /// Its credential stops working, its line is freed and its chats are
+    /// closed. With --line, it is your agent on that phone line, a failed one
+    /// included. Removing an agent doesn't delete a local credential file
+    #[command(group(clap::ArgGroup::new("which").required(true).args(["agent", "line"])))]
+    Remove {
+        agent: Option<String>,
+        /// Remove your agent on this phone line instead: a line's uid or
+        /// number, from `latch agents lines`
+        #[arg(long, value_name = "LINE")]
+        line: Option<String>,
         /// Remove without asking (required when no one is at a terminal)
         #[arg(long)]
         yes: bool,

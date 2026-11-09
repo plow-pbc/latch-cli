@@ -110,6 +110,9 @@ each is skipped once done, so you can run setup again at any time:
 1. **Log in** to Plow (`latch login`).
 2. **Connect Google** (`latch plugins enable google`). If your Plow account
    has no Google account yet, it shows a link and a QR code to sign in.
+   To stop waiting for sign-in, type `s` and press Enter. Setup goes on to
+   the next step. With Google on, setup asks whether to add another account
+   (`latch plugins enable google --add-account`); Enter moves on.
 3. **On a Mac, turn on Messages and Contacts.** These need Full Disk Access
    for the Plow Latch app.
 4. **Set rules for your agents**, when there are none yet: a family
@@ -117,6 +120,9 @@ each is skipped once done, so you can run setup again at any time:
    for now (`latch rules set --preset family`, or `work`). Enter takes the
    family assistant's.
 5. **Start the host** (`latch serve -d`), if you say yes.
+
+Ctrl-C stops setup at any step. Run `latch setup` again to pick up where
+you left off.
 
 `latch setup --status` lists the same steps as JSON and changes nothing.
 
@@ -256,26 +262,51 @@ one of your own machines:
 
 ```sh
 latch agents lines
-latch agents new --own --name my-agent --line LINE --token-file my-agent.token
+latch agents new --own --name my-agent --line LINE --credential-file my-agent.env
 ```
 
 - `LINE` is a line's number or uid from `latch agents lines`.
-- `my-agent.token` is a new file. Latch makes it private (mode 600) and
-  never overwrites a file.
+- `my-agent.env` is a new file, in a folder that already exists. Latch makes
+  it private (mode 600) and never overwrites a file.
 
-Treat the file like a password. Give it to the agent. Its program logs in
-with it, in a state folder of its own:
+Treat the file like a password. Give it to the agent. It sets
+`PLOW_API_BASE` and `PLOW_AGENT_TOKEN`; its program loads them and logs in,
+in a state folder of its own. On the agent's computer, after copying the
+file to its home folder:
 
 ```sh
-export PLOW_TOKEN_FILE=~/my-agent.token
+set -a
+. ~/my-agent.env
+set +a
 latch --state-dir ~/latch-agent login
 ```
 
-Keep `PLOW_TOKEN_FILE` set for every command the agent runs.
+Keep both variables set for every command the agent runs. Latch never copies
+the credential into its state folder.
 
 To revoke the agent, run `latch agents remove my-agent`. It asks you to
 confirm (`--yes` skips the question). The agent's credential stops working at
 once and its line is freed.
+
+To move the agent to another phone line, run
+`latch agents move my-agent --line LINE`. Choose a free phone line where you
+have no open chat, by text or email. It doesn't ask first. The agent keeps
+its credential, settings and rules, so `my-agent.env` keeps working.
+
+Plow closes your chats on the line the agent leaves, email included. While no
+agent of yours uses the old number, one-to-one texts from your number get at
+most one generic reply, then no reply. Email to its old address is dropped
+unless another account on the thread has an agent on that line. If you later
+move the agent back, your first text starts a fresh chat there.
+
+Text the new number first to start a fresh chat: the agent can't text you
+until you do, and until then it can't ask your permission in a Plow chat.
+
+Plow restarts a cloud agent; it doesn't restart a program you run yourself.
+The command doesn't wait for the agent to be ready.
+
+People who text the agent need its new number:
+`latch agents card my-agent --output my-agent.vcf` saves its new contact card.
 
 **What an agent may do.** Your agents can look things up in your calendar,
 email, messages and files, and create or edit ordinary files, without asking

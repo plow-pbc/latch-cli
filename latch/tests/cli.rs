@@ -2476,6 +2476,12 @@ struct LiveState {
     /// The owner's login is a cloud host's credential: a device's, with
     /// none of the owner's own scopes.
     host_login: bool,
+    /// Agents Plow lists after the research bot, as `GET /v1/agents` gives
+    /// them; one named "Lost" has its removal's answer lost.
+    more_agents: Vec<Value>,
+    /// Plow's answer to a line move, for a refusal that turns on what this
+    /// fake doesn't keep: the owner's chats on the line, the agent's phase.
+    move_refused: Option<(u16, Value)>,
 }
 
 impl LivePlow {
@@ -2503,6 +2509,8 @@ impl LivePlow {
                 tokens_slow: std::time::Duration::ZERO,
                 judge: None,
                 host_login: false,
+                more_agents: Vec::new(),
+                move_refused: None,
             })),
         };
         let serving = plow.clone();
@@ -2745,6 +2753,9 @@ impl LivePlow {
                         line("ln_free", "imessage", "+15550000002", true),
                         line("ln_taken", "imessage", "+15550000003", false),
                         line("ln_lost", "imessage", "+15550000004", true),
+                        line("line_agent", "imessage", "+14155550123", false),
+                        // An agent whose start failed doesn't hold its line.
+                        line("ln_failed", "imessage", "+15550000005", true),
                         line("ln_mail", "email", "agent@example.com", true)]}),
                 )
             }
@@ -2754,6 +2765,10 @@ impl LivePlow {
                     "ln_taken" => (409, json!({"detail": {"code": "AGENT_EXISTS",
                         "agent_uid": AGENT_UID, "message": "Delete the existing agent before creating another."}})),
                     "ln_lost" => (500, json!({})),
+                    // Plow's check of an image provider: a digest, or its 400.
+                    _ if sent["provider"].as_str().is_some_and(|p| {
+                        p.starts_with("exe:") && p != "exe:hermes" && !p.contains("@sha256:")
+                    }) => (400, json!({"detail": "Unknown provider"})),
                     line => {
                         let own = sent["provider"] == "self_hosted";
                         let agent = json!({"uid": "fedcba9876543210fedcba9876543210",
@@ -2763,7 +2778,12 @@ impl LivePlow {
                             "created_at": "2026-10-23T10:00:00Z",
                             "status": if own { Value::Null } else { json!("provisioning") },
                             "failure_code": null, "credential": null});
-                        let token = if own { json!("made-up-agent-credential") } else { Value::Null };
+                        // "Tokenless" stands in for a create whose credential never came.
+                        let token = if own && sent["name"] != "Tokenless" {
+                            json!("made-up-agent-credential")
+                        } else {
+                            Value::Null
+                        };
                         (201, json!({"agent": agent, "token": token}))
                     }
                 }
@@ -2776,10 +2796,45 @@ impl LivePlow {
                        "created_at": "2026-10-20T10:00:00Z", "status": null,
                        "failure_code": null, "credential": null}),
             ),
-            // As Plow lists them: one agent its owner runs.
+            ("DELETE", path) if kind == "device" && path.starts_with("/v1/agents/") => {
+                let uid = &path["/v1/agents/".len()..];
+                match state.more_agents.iter().find(|agent| agent["uid"] == uid) {
+                    Some(agent) if agent["name"] == "Lost" => (500, json!({})),
+                    Some(agent) => (200, agent.clone()),
+                    None => (404, json!({"detail": "Agent not found"})),
+                }
+            }
+            // A line move, as Plow answers it: the agent on the line asked;
+            // a line another of the account's agents holds is refused, and
+            // one move's answer is lost.
+            ("PUT", path) if kind == "device" && path == format!("/v1/agents/{AGENT_UID}/line") => {
+                if let Some(refused) = state.move_refused.clone() {
+                    return refused;
+                }
+                let sent: Value = serde_json::from_slice(&request.body).unwrap();
+                let number = match sent["line_uid"].as_str().unwrap() {
+                    "ln_free" => "+15550000002",
+                    "line_agent" => "+14155550123",
+                    "ln_taken" => {
+                        return (409, json!({"detail": {"code": "CHAT_SET_CONFLICT",
+                            "message": "A messaging line is already served by another assistant."}}));
+                    }
+                    "ln_lost" => return (500, json!({})),
+                    _ => return (404, json!({"detail": "Line not found"})),
+                };
+                (
+                    200,
+                    json!({"uid": AGENT_UID, "name": "Research bot", "provider": "self_hosted",
+                           "line": {"uid": sent["line_uid"], "object": "line", "provider_type": "imessage",
+                                    "provider_key": number, "display_name": null},
+                           "created_at": "2026-10-20T10:00:00Z", "status": null,
+                           "failure_code": null, "credential": null}),
+                )
+            }
+            // As Plow lists them: one agent its owner runs, then any more.
             ("GET", "/v1/agents") if kind == "device" => (
                 200,
-                json!([{"uid": AGENT_UID, "name": "Research bot", "provider": "self_hosted",
+                Value::Array([vec![json!({"uid": AGENT_UID, "name": "Research bot", "provider": "self_hosted",
                         "line": {"uid": "line_agent", "object": "line", "provider_type": "imessage",
                                  "provider_key": "+14155550123", "display_name": "Research line",
                                  "card_url": format!("{}/cards/research.vcf", self.url)},
@@ -2787,7 +2842,8 @@ impl LivePlow {
                         "image": null, "status": null, "failure_code": null, "settings": {},
                         "credential": {"id": 7, "name": null, "scopes": [], "connected": false,
                                        "created_at": "2026-10-20T10:00:00Z",
-                                       "last_seen_at": "2026-10-22T09:00:00Z"}}]),
+                                       "last_seen_at": "2026-10-22T09:00:00Z"}})],
+                       state.more_agents.clone()].concat()),
             ),
             ("GET", "/v1/auth/owner-uid") => (200, json!({"owner_uid": "usr_synthetic"})),
             // Super-scope and `account:usage`: an owner's login only.
@@ -4486,7 +4542,13 @@ fn agents_are_shown_created_and_removed_by_their_owner() {
         .collect();
     assert_eq!(
         numbers,
-        ["+15550000002", "+15550000003", "+15550000004"],
+        [
+            "+15550000002",
+            "+15550000003",
+            "+15550000004",
+            "+14155550123",
+            "+15550000005"
+        ],
         "no mailbox"
     );
     assert_eq!(lines["lines"][1]["available"], false);
@@ -4518,66 +4580,251 @@ fn agents_are_shown_created_and_removed_by_their_owner() {
         (Some(2), &json!("no_such_agent"))
     );
 
-    // An own agent: its credential only in the new file, mode 600.
-    let token_file = dir.path().join("scout.token");
-    let path = token_file.to_str().unwrap();
-    let new_own = [
-        "agents",
-        "new",
-        "--own",
-        "--token-file",
-        path,
-        "--name",
-        " Scout ",
-        "--line",
-        "+15550000002",
-    ];
-    let (code, made, output) = run(&new_own);
-    assert_eq!(code, Some(0), "{made}");
-    assert_eq!(made["agent"]["name"], "Scout");
-    assert_eq!(made["agent"]["kind"], "own");
-    assert_eq!(made["token_file"], path);
-    assert_eq!(made["api_url"], plow.url.as_str());
-    assert_eq!(
-        fs::read_to_string(&token_file).unwrap(),
-        "made-up-agent-credential\n"
-    );
-    assert_eq!(
-        fs::metadata(&token_file).unwrap().permissions().mode() & 0o777,
-        0o600
-    );
-    assert!(!String::from_utf8_lossy(&output.stdout).contains("made-up-agent-credential"));
-    assert!(!String::from_utf8_lossy(&output.stderr).contains("made-up-agent-credential"));
+    // An own agent: its credential only in the new environment file, mode 600.
+    const MADE: &str = "fedcba9876543210fedcba9876543210";
+    let new_own = |file: &str, extra: &[&str]| {
+        let mut args = vec!["agents", "new", "--own", "--credential-file", file];
+        args.extend_from_slice(extra);
+        args.extend_from_slice(&["--name", " Scout ", "--line", "+15550000002"]);
+        run(&args)
+    };
+    // The default address, then another for the agent, its trailing slash
+    // trimmed: only in the file, the create still going to the login's Plow.
+    for (file, extra, api) in [
+        ("plow-credentials", &[][..], plow.url.as_str()),
+        (
+            "docker-credentials",
+            &["--agent-api-url", "http://host.docker.internal:18934/"],
+            "http://host.docker.internal:18934",
+        ),
+    ] {
+        let file = dir.path().join(file);
+        let path = file.to_str().unwrap();
+        let before = posts();
+        let (code, made, output) = new_own(path, extra);
+        assert_eq!(code, Some(0), "{made}");
+        assert_eq!(posts(), before + 1);
+        assert_eq!(made["agent"]["name"], "Scout");
+        assert_eq!(made["agent"]["kind"], "own");
+        assert_eq!(made["credential_file"], path);
+        assert_eq!(made["api_url"], api);
+        assert!(made.get("token_file").is_none(), "{made}");
+        assert_eq!(
+            fs::read_to_string(&file).unwrap(),
+            format!(
+                "PLOW_API_BASE={api}\nPLOW_AGENT_TOKEN=made-up-agent-credential\n# plow-agent-uid: {MADE}\n"
+            )
+        );
+        assert_eq!(
+            fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        for printed in [&output.stdout, &output.stderr] {
+            assert!(!String::from_utf8_lossy(printed).contains("made-up-agent-credential"));
+        }
+    }
 
-    // The same file again: refused before Plow is asked, the file untouched.
+    // Refused before Plow is asked: the same file again (left untouched), a
+    // missing folder, `-`, an address with a space, and the flags that
+    // don't go together.
+    let credential_file = dir.path().join("plow-credentials");
+    let path = credential_file.to_str().unwrap();
+    let written = fs::read(&credential_file).unwrap();
+    let missing = dir.path().join("no-such-folder/plow-credentials");
+    let free = ["--name", "S", "--line", "ln_free"];
+    let with = |args: &[&'static str]| [&["agents", "new"], args, &free[..]].concat();
     let before = posts();
-    let (code, error, _) = run(&new_own);
+    for (args, exit, code) in [
+        (
+            [
+                &["agents", "new", "--own", "--credential-file", path],
+                &free[..],
+            ]
+            .concat(),
+            2,
+            "credential_file_exists",
+        ),
+        (
+            [
+                &[
+                    "agents",
+                    "new",
+                    "--own",
+                    "--credential-file",
+                    missing.to_str().unwrap(),
+                ],
+                &free[..],
+            ]
+            .concat(),
+            2,
+            "credential_file_unwritable",
+        ),
+        (with(&["--own", "--credential-file", "-"]), 2, "usage"),
+        (
+            with(&[
+                "--own",
+                "--credential-file",
+                "x.env",
+                "--agent-api-url",
+                "http://a b",
+            ]),
+            2,
+            "usage",
+        ),
+        (
+            with(&[
+                "--own",
+                "--credential-file",
+                "x.env",
+                "--agent-api-url",
+                "http://a/$(id)",
+            ]),
+            2,
+            "usage",
+        ),
+        (
+            with(&[
+                "--own",
+                "--credential-file",
+                "x.env",
+                "--agent-api-url",
+                "http://a/~root",
+            ]),
+            2,
+            "usage",
+        ),
+        (with(&["--own", "--token-file", "scout.token"]), 2, "usage"),
+        (with(&["--own"]), 2, "usage"),
+        (with(&[]), 2, "usage"),
+        (
+            with(&["--image", IMAGE, "--cloud", "exe:hermes"]),
+            2,
+            "usage",
+        ),
+        (
+            with(&["--image", IMAGE, "--own", "--credential-file", "x.env"]),
+            2,
+            "usage",
+        ),
+        (
+            with(&["--image", IMAGE, "--credential-file", "x.env"]),
+            2,
+            "usage",
+        ),
+        (
+            with(&[
+                "--cloud",
+                "exe:hermes",
+                "--own",
+                "--credential-file",
+                "x.env",
+            ]),
+            2,
+            "usage",
+        ),
+        (
+            with(&["--cloud", "exe:hermes", "--credential-file", "x.env"]),
+            2,
+            "usage",
+        ),
+        (
+            with(&["--cloud", "exe:hermes", "--agent-api-url", "http://a"]),
+            2,
+            "usage",
+        ),
+    ] {
+        let (exit_code, error, _) = run(&args);
+        assert_eq!(
+            (exit_code, &error["error"]["code"]),
+            (Some(exit), &json!(code)),
+            "{args:?}: {error}"
+        );
+    }
+    assert_eq!(posts(), before);
+    assert_eq!(fs::read(&credential_file).unwrap(), written);
+    // A relative file lands where latch runs: the crate's folder.
+    assert!(!Path::new(env!("CARGO_MANIFEST_DIR")).join("x.env").exists());
+
+    // The address the owner logged in with is checked too: one a shell
+    // would run something in still reaches Plow, its `$(id)/..` normalized
+    // away, but never goes into the file.
+    let odd = dir.path().join("odd");
+    let odd_url = format!("{}/$(id)/..", plow.url);
+    let owner_token = dir.path().join("owner.token");
+    let login = latch(
+        &odd,
+        &[
+            "login",
+            "--api-url",
+            &odd_url,
+            "--token-file",
+            owner_token.to_str().unwrap(),
+            "--name",
+            "odd",
+        ],
+        &[],
+    );
+    assert_eq!(login.status.code(), Some(0), "{login:?}");
+    let odd_file = dir.path().join("odd-credentials");
+    let before = posts();
+    let refused = latch(
+        &odd,
+        &[
+            "agents",
+            "new",
+            "--own",
+            "--credential-file",
+            odd_file.to_str().unwrap(),
+            "--name",
+            "S",
+            "--line",
+            "ln_free",
+        ],
+        &[],
+    );
+    let error: Value = serde_json::from_slice(&refused.stderr).unwrap();
     assert_eq!(
-        (code, &error["error"]["code"]),
-        (Some(2), &json!("token_file_exists"))
+        (refused.status.code(), &error["error"]["code"]),
+        (Some(2), &json!("usage")),
+        "{error}"
     );
     assert_eq!(posts(), before);
+    assert!(!odd_file.exists());
+
+    // Created, but its credential never came: the agent is named, and its
+    // removal is the way on; nothing is deleted for its owner.
+    let lost = dir.path().join("lost-credentials");
     let (code, error, _) = run(&[
         "agents",
         "new",
         "--own",
-        "--token-file",
-        "-",
+        "--credential-file",
+        lost.to_str().unwrap(),
         "--name",
-        "S",
+        "Tokenless",
         "--line",
         "ln_free",
     ]);
-    assert_eq!((code, &error["error"]["code"]), (Some(2), &json!("usage")));
+    assert_eq!(
+        (code, &error["error"]["code"]),
+        (Some(1), &json!("credential_not_saved")),
+        "{error}"
+    );
+    assert_eq!(error["error"]["agent_uid"], MADE);
+    assert_eq!(
+        error["error"]["next"],
+        format!("latch agents remove {MADE}")
+    );
+    assert!(!lost.exists());
 
     // A held line, then a lost answer: the reserved file goes, and the lost
     // create is reported, never resent.
-    let taken = dir.path().join("taken.token");
+    let taken = dir.path().join("taken.env");
     let (code, error, _) = run(&[
         "agents",
         "new",
         "--own",
-        "--token-file",
+        "--credential-file",
         taken.to_str().unwrap(),
         "--name",
         "Two",
@@ -4596,6 +4843,7 @@ fn agents_are_shown_created_and_removed_by_their_owner() {
         ("exe:hermes", "ln_lost", 5, "outcome_unknown", 1),
         ("self_hosted", "ln_free", 2, "unknown_cloud_kind", 0),
         ("exe:hermes", "+1999", 2, "no_such_line", 0),
+        ("exe:hermes", "ln_mail", 2, "no_such_line", 0),
     ] {
         let before = posts();
         let new_cloud = [
@@ -4623,12 +4871,60 @@ fn agents_are_shown_created_and_removed_by_their_owner() {
     assert_eq!(
         (
             &cloud["agent"]["status"],
-            &cloud["token_file"],
+            &cloud["credential_file"],
             &cloud["api_url"]
         ),
         (&json!("provisioning"), &Value::Null, &Value::Null)
     );
 
+    // A public image by digest: sent once as `exe:REF`, answered as any
+    // cloud agent is.
+    const IMAGE: &str = "ghcr.io/example/scout@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let new_image = |image: &str, line: &str| {
+        run(&[
+            "agents", "new", "--image", image, "--name", "Scout", "--line", line,
+        ])
+    };
+    let before = posts();
+    let (code, made, _) = new_image(IMAGE, "ln_free");
+    assert_eq!(code, Some(0), "{made}");
+    assert_eq!(posts(), before + 1);
+    // The fake Plow answers with the provider it was sent.
+    assert_eq!(
+        (
+            &made["agent"]["kind"],
+            &made["agent"]["cloud_kind"],
+            &made["agent"]["status"],
+            &made["credential_file"],
+            &made["api_url"]
+        ),
+        (
+            &json!("cloud"),
+            &json!(format!("exe:{IMAGE}")),
+            &json!("provisioning"),
+            &Value::Null,
+            &Value::Null
+        )
+    );
+    // Plow's 400 is a bad image, sent once; a held line and a lost answer
+    // keep their own codes.
+    for (image, line, exit, code) in [
+        ("ghcr.io/example/scout:latest", "ln_free", 2, "bad_image"),
+        (IMAGE, "ln_taken", 2, "line_taken"),
+        (IMAGE, "ln_lost", 5, "outcome_unknown"),
+    ] {
+        let before = posts();
+        let (exit_code, error, _) = new_image(image, line);
+        assert_eq!(
+            (exit_code, &error["error"]["code"]),
+            (Some(exit), &json!(code)),
+            "{error}"
+        );
+        assert_eq!(posts(), before + 1, "{code}");
+        if code == "bad_image" {
+            assert_eq!(error["error"]["next"], "latch help agents new --examples");
+        }
+    }
     // Removing asks first; with no one to ask, --yes.
     let deletes = || {
         plow.seen()
@@ -4643,13 +4939,288 @@ fn agents_are_shown_created_and_removed_by_their_owner() {
     );
     assert_eq!(
         error["error"]["next"],
-        "latch agents remove 'Research bot' --yes"
+        format!("latch agents remove {AGENT_UID} --yes")
     );
     assert_eq!(deletes(), 0);
     let (code, removed, _) = run(&["agents", "remove", "Research bot", "--yes"]);
     assert_eq!(code, Some(0), "{removed}");
     assert_eq!(removed["removed"]["uid"], AGENT_UID);
     assert_eq!(deletes(), 1);
+}
+
+/// `agents remove --line` removes the account's agent on a phone line,
+/// named by its number or uid, a failed one included: one DELETE, asked
+/// first, retried only by the agent's uid.
+#[test]
+fn an_agent_is_removed_by_its_phone_line() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let run = |args: &[&str]| {
+        let output = latch(&host, args, &[]);
+        let printed = if output.status.success() {
+            &output.stdout
+        } else {
+            &output.stderr
+        };
+        let json: Value = serde_json::from_slice(printed).unwrap_or(Value::Null);
+        (output.status.code(), json)
+    };
+    let deletes = || {
+        plow.seen()
+            .iter()
+            .filter(|(line, _)| line.starts_with("DELETE "))
+            .map(|(line, _)| line.split(' ').nth(1).unwrap().to_string())
+            .collect::<Vec<_>>()
+    };
+    let on_line = |uid: &str, name: &str, line: &str, number: &str| {
+        json!({"uid": uid, "name": name, "provider": "exe:hermes",
+               "line": {"uid": line, "object": "line", "provider_type": "imessage",
+                        "provider_key": number, "display_name": null},
+               "created_at": "2026-10-21T10:00:00Z", "status": "failed",
+               "failure_code": "start_failed", "credential": null})
+    };
+    const FAILED: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    plow.state.lock().unwrap().more_agents =
+        vec![on_line(FAILED, "Broken", "ln_failed", "+15550000005")];
+
+    // No one to ask and no --yes: the retry names the agent by uid.
+    let (code, error) = run(&["agents", "remove", "--line", "+14155550123"]);
+    assert_eq!(
+        (code, &error["error"]["code"]),
+        (Some(2), &json!("confirmation_required")),
+        "{error}"
+    );
+    assert_eq!(
+        error["error"]["next"],
+        format!("latch agents remove {AGENT_UID} --yes")
+    );
+    assert!(deletes().is_empty());
+
+    // By the line's number, then a failed agent by the line's uid.
+    let (code, removed) = run(&["agents", "remove", "--line", "+14155550123", "--yes"]);
+    assert_eq!(code, Some(0), "{removed}");
+    assert_eq!(removed["removed"]["uid"], AGENT_UID);
+    let (code, removed) = run(&["agents", "remove", "--line", "ln_failed", "--yes"]);
+    assert_eq!(code, Some(0), "{removed}");
+    assert_eq!(
+        (&removed["removed"]["uid"], &removed["removed"]["status"]),
+        (&json!(FAILED), &json!("failed"))
+    );
+    assert_eq!(
+        deletes(),
+        [
+            format!("/v1/agents/{AGENT_UID}"),
+            format!("/v1/agents/{FAILED}")
+        ]
+    );
+
+    // Refused before anything is removed: a line Plow doesn't have, a line
+    // with no agent of the account's, and more than one on a line.
+    plow.state.lock().unwrap().more_agents = vec![
+        on_line(FAILED, "Broken", "ln_failed", "+15550000005"),
+        on_line(
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "Again",
+            "ln_failed",
+            "+15550000005",
+        ),
+    ];
+    for (line, code, next) in [
+        ("+1999", "no_such_line", "latch agents lines"),
+        ("ln_free", "no_such_agent", "latch agents"),
+        ("+15550000005", "ambiguous_agent", "latch agents"),
+    ] {
+        let (exit, error) = run(&["agents", "remove", "--line", line, "--yes"]);
+        assert_eq!(
+            (exit, &error["error"]["code"], &error["error"]["next"]),
+            (Some(2), &json!(code), &json!(next)),
+            "{error}"
+        );
+    }
+    let (_, error) = run(&["agents", "remove", "--line", "+15550000005", "--yes"]);
+    assert_eq!(
+        error["error"]["agents"],
+        json!([{"uid": FAILED, "name": "Broken"},
+               {"uid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "name": "Again"}])
+    );
+    assert_eq!(deletes().len(), 2);
+
+    // A lost answer: sent once, never retried, and the way on is to look.
+    const LOST: &str = "cccccccccccccccccccccccccccccccc";
+    plow.state.lock().unwrap().more_agents =
+        vec![on_line(LOST, "Lost", "ln_failed", "+15550000005")];
+    let (code, error) = run(&["agents", "remove", "--line", "ln_failed", "--yes"]);
+    assert_eq!(
+        (code, &error["error"]["code"], &error["error"]["next"]),
+        (
+            Some(5),
+            &json!("outcome_unknown"),
+            &json!(format!("latch agents show {LOST}"))
+        ),
+        "{error}"
+    );
+    assert_eq!(deletes().len(), 3);
+
+    // Exactly one of an agent and --line.
+    for args in [
+        &["agents", "remove", "--yes"][..],
+        &[
+            "agents",
+            "remove",
+            "Research bot",
+            "--line",
+            "ln_failed",
+            "--yes",
+        ],
+    ] {
+        let (code, error) = run(args);
+        assert_eq!(
+            (code, &error["error"]["code"]),
+            (Some(2), &json!("usage")),
+            "{args:?}"
+        );
+    }
+}
+
+/// The owner moves an agent to another line without being asked, and gets
+/// the same agent on its new line, and the text that starts its chat there;
+/// what Plow refuses is said as latch's own codes, each sent once, and a
+/// lost answer is reported, never resent.
+#[test]
+fn an_agent_is_moved_to_another_line_by_its_owner() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let run = |args: &[&str]| {
+        let output = latch(&host, args, &[]);
+        let printed = if output.status.success() {
+            &output.stdout
+        } else {
+            &output.stderr
+        };
+        let json: Value = serde_json::from_slice(printed).unwrap_or(Value::Null);
+        (output.status.code(), json)
+    };
+    let moves = || {
+        let put = format!("PUT /v1/agents/{AGENT_UID}/line ");
+        plow.seen()
+            .iter()
+            .filter(|(line, _)| line.starts_with(&put))
+            .count()
+    };
+    let move_to = |line: &str| run(&["agents", "move", "Research bot", "--line", line]);
+
+    // Not asked: the same agent, on the line its number names, the line it
+    // left, and the text that starts its chat there.
+    let (code, moved) = move_to("+15550000002");
+    assert_eq!(code, Some(0), "{moved}");
+    assert_eq!(moved["agent"]["uid"], AGENT_UID);
+    assert_eq!(moved["agent"]["line"]["number"], "+15550000002");
+    assert_eq!(
+        moved["previous_line"],
+        json!({"number": "+14155550123", "name": "Research line",
+               "card_url": format!("{}/cards/research.vcf", plow.url)})
+    );
+    assert_eq!(
+        moved["next"],
+        "Text +15550000002 to start your chat with Research bot; it can't text you until you do"
+    );
+    assert_eq!(moves(), 1);
+    // To the line it is on, Plow only restarts it: no line changed, and its
+    // chat there is the one it has.
+    let (code, again) = run(&["agents", "move", AGENT_UID, "--line", "+14155550123"]);
+    assert_eq!(code, Some(0), "{again}");
+    assert_eq!(again["previous_line"]["number"], "+14155550123");
+    assert_eq!(again.get("next"), None, "{again}");
+    assert_eq!(moves(), 2);
+
+    // An unknown agent or line, or a mailbox, is refused before Plow is asked.
+    for (agent, line, refused) in [
+        ("Nobody", "+15550000002", "no_such_agent"),
+        ("Research bot", "+1999", "no_such_line"),
+        ("Research bot", "ln_mail", "no_such_line"),
+    ] {
+        let (code, error) = run(&["agents", "move", agent, "--line", line]);
+        assert_eq!(
+            (code, &error["error"]["code"]),
+            (Some(2), &json!(refused)),
+            "{error}"
+        );
+    }
+    assert_eq!(moves(), 2);
+
+    // A line another of the account's agents holds; a lost answer, sent
+    // once and never resent, with the same move as what finishes it.
+    let (code, error) = move_to("ln_taken");
+    assert_eq!(
+        (code, &error["error"]["code"], &error["error"]["next"]),
+        (Some(2), &json!("line_taken"), &json!("latch agents lines")),
+        "{error}"
+    );
+    let (code, error) = move_to("ln_lost");
+    assert_eq!(
+        (code, &error["error"]["code"]),
+        (Some(5), &json!("outcome_unknown")),
+        "{error}"
+    );
+    assert_eq!(
+        error["error"]["next"],
+        format!("latch agents move {AGENT_UID} --line ln_lost")
+    );
+    assert_eq!(moves(), 4);
+
+    // A line where the owner has a live chat; the agent or the line gone
+    // (Plow's 404, or the line deleted mid-move); an agent still being set
+    // up. Each is asked once.
+    let refusal = |code: &str| json!({"code": code, "message": "Plow's own words"});
+    for (status, detail, exit, refused, next) in [
+        (
+            409,
+            refusal("LINE_HAS_CHAT"),
+            2,
+            "line_has_chat",
+            "latch agents lines".to_string(),
+        ),
+        (
+            404,
+            json!("Line not found"),
+            1,
+            "not_found",
+            format!("latch agents show {AGENT_UID}"),
+        ),
+        (
+            409,
+            refusal("CHAT_DELETED"),
+            1,
+            "not_found",
+            format!("latch agents show {AGENT_UID}"),
+        ),
+        (
+            409,
+            refusal("PROVISION_IN_FLIGHT"),
+            1,
+            "agent_not_running",
+            format!("latch agents show {AGENT_UID}"),
+        ),
+    ] {
+        plow.state.lock().unwrap().move_refused = Some((status, json!({"detail": detail})));
+        let before = moves();
+        let (code, error) = move_to("ln_free");
+        assert_eq!(
+            (code, &error["error"]["code"], &error["error"]["next"]),
+            (Some(exit), &json!(refused), &json!(next)),
+            "{error}"
+        );
+        assert!(
+            !error["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("Plow's own words"),
+            "{error}"
+        );
+        assert_eq!(moves(), before + 1, "{refused}");
+    }
 }
 
 #[test]
@@ -6667,6 +7238,16 @@ fn vault_takes_secrets_as_json_on_stdin_and_shows_only_what_is_not_secret() {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/import/chrome.csv"
     );
+    // A 1PUX is mostly attachments, which are never read: one far past any
+    // cap on the whole file previews its items.
+    let big = dir.path().join("big.1pux");
+    big_1pux(&big);
+    let (code, previewed) = run(&["vault", "import", big.to_str().unwrap(), "--preview"], "");
+    assert_eq!(code, Some(0), "{previewed}");
+    assert_eq!(
+        previewed["preview"]["items"].as_array().map(Vec::len),
+        Some(500)
+    );
     let (code, previewed) = run(&["vault", "import", export, "--preview"], "");
     assert_eq!(code, Some(0), "{previewed}");
     let rows = previewed["preview"]["items"].as_array().unwrap();
@@ -7113,6 +7694,23 @@ fn local_vault_edits_are_visible_to_serve_and_phone_links_stay_live() {
     let export = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/import/chrome.csv"
+    );
+    // A 1PUX is mostly attachments: one far past any cap on the whole file
+    // previews its items from another machine too.
+    let big = dir.path().join("big.1pux");
+    big_1pux(&big);
+    let big = remote(&[
+        "vault",
+        "import",
+        "--host",
+        "host",
+        big.to_str().unwrap(),
+        "--preview",
+    ]);
+    assert_eq!(
+        big["preview"]["items"].as_array().map(Vec::len),
+        Some(500),
+        "{big}"
     );
     let previewed = remote(&["vault", "import", "--host", "host", export, "--preview"]);
     assert_eq!(previewed["preview"]["items"][0]["pick"], 1, "{previewed}");
@@ -8497,18 +9095,19 @@ fn setup_sets_up_every_connector_with_no_host_running() {
 
     let env = [("LATCH_TEST_ACCESS", Path::new("granted"))];
     let (mut setup, mut typing, shown) = at_its_own_terminal(&host, &["setup"], &env);
-    // Google: yes; on macOS, Messages and Contacts: yes; rules: none;
-    // start latch: no.
+    // Google: yes, and Enter at the offer of another account; on macOS,
+    // Messages and Contacts: yes; rules: none; start latch: no.
     let typed: &[u8] = if cfg!(target_os = "macos") {
-        b"y\ny\n3\nn\n"
+        b"y\n\ny\n3\nn\n"
     } else {
-        b"y\n3\nn\n"
+        b"y\n\n3\nn\n"
     };
     typing.write_all(typed).unwrap();
     let all = shows(&shown, "Done. Run `latch setup` again any time.");
     assert!(setup.wait().unwrap().success(), "{all}");
     let mut done = vec![
         "✓ Google is connected.",
+        "Add another Google account? [y/N]",
         "Not started; later: `latch serve`",
     ];
     if cfg!(target_os = "macos") {
@@ -8518,6 +9117,12 @@ fn setup_sets_up_every_connector_with_no_host_running() {
         assert!(all.contains(line), "{line}: {all}");
     }
     assert!(!all.contains('✗'), "{all}");
+    // Connected in Plow already: turned on with no sign-in link.
+    let asked: Vec<String> = plow.seen().into_iter().map(|(line, _)| line).collect();
+    assert!(
+        !asked.iter().any(|line| line.contains("connect-code")),
+        "{asked:?}"
+    );
     assert_eq!(local_serve(&host)["running"], false, "never started");
     #[cfg(target_os = "macos")]
     assert!(!access_job_registered(&host), "the check's job outlived it");
@@ -8537,6 +9142,190 @@ fn setup_sets_up_every_connector_with_no_host_running() {
         enabled(&latch(&host, &["status", "--local"], &[])),
         "the host's"
     );
+}
+
+/// The last line of setup's own words at a Google sign-in's wait.
+#[cfg(feature = "fake-gog")]
+const SETUP_WAITS: &str = "Press Ctrl-C to stop setup.";
+
+/// What setup says once Ctrl-C stopped it.
+#[cfg(feature = "fake-gog")]
+const SETUP_STOPPED: &str = "Setup stopped. Run `latch setup` again to pick up where you left off.";
+
+/// The answers after Google's step: on macOS Messages and Contacts no;
+/// rules none; start latch no.
+#[cfg(feature = "fake-gog")]
+fn after_google() -> &'static [u8] {
+    if cfg!(target_os = "macos") {
+        b"n\n3\nn\n"
+    } else {
+        b"3\nn\n"
+    }
+}
+
+/// What else the terminal shows within a moment, once nothing more will.
+#[cfg(feature = "fake-gog")]
+fn shown_after(shown: &std::sync::mpsc::Receiver<String>) -> String {
+    let mut all = String::new();
+    while let Ok(more) = shown.recv_timeout(std::time::Duration::from_secs(2)) {
+        all.push_str(&more);
+    }
+    all
+}
+
+/// Ctrl-C stops `latch setup` at any step: at Google's sign-in wait, with
+/// the command it waits on, and at a question. Setup says it stopped and
+/// how to pick up again, exits 130, and runs again from that step.
+#[cfg(feature = "fake-gog")]
+#[test]
+fn ctrl_c_stops_setup_at_googles_sign_in_and_at_a_question() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    install_fake_gog(&host);
+
+    let (mut setup, mut typing, shown) = at_its_own_terminal(&host, &["setup"], &[]);
+    typing.write_all(b"y\n").unwrap();
+    let mut all = shows(&shown, SETUP_WAITS);
+    for line in [
+        "Sign in with Google to connect it to Plow.",
+        "Waiting for Google sign-in, up to 5 minutes.",
+        "Type s and press Enter to skip Google and continue setup.",
+    ] {
+        assert!(all.contains(line), "{line}: {all}");
+    }
+    assert!(!all.contains("Ctrl-C stops waiting"), "{all}");
+    typing.write_all(b"\x03").unwrap();
+    all += &shows(&shown, SETUP_STOPPED);
+    assert_eq!(exits_within(&mut setup, 10).code(), Some(130), "{all}");
+    all += &shown_after(&shown);
+    for left_out in [
+        "Done.",
+        "Rules for your agents?",
+        "google_connect_cancelled",
+    ] {
+        assert!(!all.contains(left_out), "{left_out}: {all}");
+    }
+    // The sign-in it waited on stopped with it: nothing is left in setup's
+    // process group, which setsid made.
+    let group = setup.id() as i32;
+    assert!(
+        // SAFETY: signal 0 only asks whether the group has a process left.
+        eventually(10, || unsafe { libc::kill(-group, 0) } != 0),
+        "a command outlived setup"
+    );
+
+    // Run again: Google is asked for again, and Ctrl-C there stops setup.
+    let (mut setup, mut typing, shown) = at_its_own_terminal(&host, &["setup"], &[]);
+    let mut all = shows(&shown, "Connect Google? [Y/n]");
+    typing.write_all(b"\x03").unwrap();
+    all += &shows(&shown, SETUP_STOPPED);
+    assert_eq!(exits_within(&mut setup, 10).code(), Some(130), "{all}");
+    all += &shown_after(&shown);
+    assert!(!all.contains("Done."), "{all}");
+}
+
+/// `s` then Enter at a Google sign-in's wait in `latch setup` stops that
+/// wait, and setup says so plainly and goes on: for the first account
+/// Google stays off; for another one, Google stays on.
+#[cfg(feature = "fake-gog")]
+#[test]
+fn s_at_setups_google_sign_in_stops_waiting_and_setup_goes_on() {
+    // Whether Google is connected in Plow already (so setup offers another
+    // account), then what the wait shows, and what setup says after `s`.
+    let cases: [(bool, [&str; 2], [&str; 2]); 2] = [
+        (
+            false,
+            [
+                "Sign in with Google to connect it to Plow.",
+                "Type s and press Enter to skip Google and continue setup.",
+            ],
+            [
+                "Stopped waiting for Google. Continuing setup.",
+                "Connect later: latch plugins enable google",
+            ],
+        ),
+        (
+            true,
+            [
+                "Sign in with another Google account to add it to Plow.",
+                "Type s and press Enter to stop waiting for another Google account and continue setup.",
+            ],
+            [
+                "Stopped waiting for another Google account. Google stays on. Continuing setup.",
+                "Add one later: latch plugins enable google --add-account",
+            ],
+        ),
+    ];
+    for (connected, waiting, stopped) in cases {
+        let plow = LivePlow::start();
+        let dir = test_dir();
+        let host = owner_host_on(&plow, dir.path());
+        if connected {
+            plow.state.lock().unwrap().google = Some("google-token".into());
+        }
+        install_fake_gog(&host);
+
+        let (mut setup, mut typing, shown) = at_its_own_terminal(&host, &["setup"], &[]);
+        typing.write_all(b"y\n").unwrap();
+        let mut all = String::new();
+        if connected {
+            // On with no sign-in; then yes to another account.
+            all += &shows(&shown, "Add another Google account? [y/N]");
+            typing.write_all(b"y\n").unwrap();
+        }
+        all += &shows(&shown, SETUP_WAITS);
+        typing.write_all(b"s\n").unwrap();
+        all += &shows(&shown, stopped[1]);
+        typing.write_all(after_google()).unwrap();
+        all += &shows(&shown, "Done. Run `latch setup` again any time.");
+        assert!(exits_within(&mut setup, 10).success(), "{all}");
+        for line in waiting.iter().chain(&stopped) {
+            assert!(all.contains(line), "{line}: {all}");
+        }
+        for left_out in ["✗", "{\"error\"", "No Google account was added"] {
+            assert!(!all.contains(left_out), "{left_out}: {all}");
+        }
+        let listed: Value =
+            serde_json::from_slice(&latch(&host, &["status", "--local"], &[]).stdout).unwrap();
+        let google = &listed["plugins"].as_array().unwrap()[0];
+        assert_eq!(google["name"], "google", "{listed}");
+        assert_eq!(google["state"] == "enabled", connected, "{listed}");
+    }
+}
+
+/// What is typed during Google's sign-in wait in `latch setup` is the
+/// wait's: neither a whole line nor one half typed answers the question
+/// after it.
+#[cfg(feature = "fake-gog")]
+#[test]
+fn lines_typed_during_setups_google_wait_answer_no_later_question() {
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    install_fake_gog(&host);
+
+    let (mut setup, mut typing, shown) = at_its_own_terminal(&host, &["setup"], &[]);
+    typing.write_all(b"y\n").unwrap();
+    let mut all = shows(&shown, SETUP_WAITS);
+    // Yes to the question after the wait, typed early: a whole line, then
+    // half of one. Then the account is connected, which ends the wait.
+    typing.write_all(b"y\ny").unwrap();
+    plow.state.lock().unwrap().google = Some("google-token".into());
+    all += &shows(&shown, "Add another Google account? [y/N]");
+    typing.write_all(b"\n").unwrap();
+    // Enter alone answered it: no other account, and on to the next step.
+    let next = if cfg!(target_os = "macos") {
+        "Enable Messages and Contacts on this Mac? [y/N]"
+    } else {
+        "Rules for your agents? [1/2/3]"
+    };
+    all += &shows(&shown, next);
+    assert!(all.contains("✓ Google is connected."), "{all}");
+    assert!(!all.contains("→ Add a Google account"), "{all}");
+    typing.write_all(after_google()).unwrap();
+    all += &shows(&shown, "Done. Run `latch setup` again any time.");
+    assert!(exits_within(&mut setup, 10).success(), "{all}");
 }
 
 /// `setup --status` asks Plow, read only, whether Google is connected
@@ -8903,8 +9692,9 @@ fn a_slow_sign_in_link_neither_outlasts_the_wait_nor_a_stop() {
 
 /// Google wanting the owner to sign in again: with no account working,
 /// `plugins enable google` says `google_needs_sign_in` with the accounts and
-/// a sign-in link, and waits (`--events`) until they work again; with some
-/// working it enables and names the rest. `setup --status` says the same.
+/// a sign-in link, and waits (`--events`) until an account works, one of
+/// them signed in again or another connected; with some working it enables
+/// and names the rest. `setup --status` says the same.
 #[cfg(all(
     feature = "fake-gog",
     any(target_os = "macos", feature = "systemd-tests")
@@ -8944,7 +9734,7 @@ fn signing_in_again_is_offered_and_waited_for() {
         json!(["plugins", "enable", "google", "--events"])
     );
 
-    // A wait that ends first says the account wasn't signed in again.
+    // A wait that ends first says no account worked, and how one can.
     let within = [("LATCH_TEST_CONNECT_WITHIN", Path::new("1"))];
     let output = latch(&host, &["plugins", "enable", "google", "--events"], &within);
     assert_eq!(output.status.code(), Some(1), "{output:?}");
@@ -8952,25 +9742,34 @@ fn signing_in_again_is_offered_and_waited_for() {
     assert_eq!(error["error"]["code"], "sign_in_timeout", "{error}");
     assert_eq!(
         error["error"]["message"],
-        "owner@example.com wasn't signed in again before the wait ended."
+        "No Google account worked before the wait ended. Sign in again with owner@example.com, \
+         or connect another."
     );
 
-    // `--events` waits until the account works again, then enables.
-    let mut child = latch_command(&host, &["plugins", "enable", "google", "--events"], &[])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .unwrap();
-    let mut out = std::io::BufReader::new(child.stdout.take().unwrap()).lines();
-    let mut next = || -> Value { serde_json::from_str(&out.next().unwrap().unwrap()).unwrap() };
-    assert_eq!(next()["type"], "hello");
-    assert_eq!(next()["type"], "link");
-    plow.state.lock().unwrap().google_reauth.clear();
-    let result = next();
-    assert_eq!(result["type"], "result", "{result}");
-    assert_eq!(result["result"]["accounts"], json!(["owner@example.com"]));
-    assert!(child.wait().unwrap().success());
+    // `--events` waits until an account works, which `works` makes so
+    // once the link is offered, then enables: its result.
+    let waited = |works: &dyn Fn()| -> Value {
+        let within = [("LATCH_TEST_CONNECT_WITHIN", Path::new("30"))];
+        let mut child = latch_command(&host, &["plugins", "enable", "google", "--events"], &within)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut out = std::io::BufReader::new(child.stdout.take().unwrap()).lines();
+        let mut next = || -> Value { serde_json::from_str(&out.next().unwrap().unwrap()).unwrap() };
+        assert_eq!(next()["type"], "hello");
+        assert_eq!(next()["type"], "link");
+        works();
+        let result = next();
+        assert_eq!(result["type"], "result", "{result}");
+        assert!(child.wait().unwrap().success());
+        result["result"].clone()
+    };
+
+    // The account signed in again.
+    let enabled = waited(&|| plow.state.lock().unwrap().google_reauth.clear());
+    assert_eq!(enabled["accounts"], json!(["owner@example.com"]));
 
     // One works, one doesn't: enabled, the other named.
     {
@@ -8986,6 +9785,21 @@ fn signing_in_again_is_offered_and_waited_for() {
     let step = google_step();
     assert_eq!(step["state"], "done", "{step}");
     assert_eq!(step["needs_sign_in"], json!(["second@example.com"]));
+
+    // None works, and another account is connected instead of signing in
+    // again: that one works, so the wait ends and Google is on, the others
+    // still named.
+    plow.state.lock().unwrap().google_reauth =
+        vec!["owner@example.com".into(), "second@example.com".into()];
+    let enabled = waited(&|| {
+        let mut state = plow.state.lock().unwrap();
+        state.added_google.push("third@example.com".into());
+    });
+    assert_eq!(enabled["accounts"], json!(["third@example.com"]));
+    assert_eq!(
+        enabled["needs_sign_in"],
+        json!(["owner@example.com", "second@example.com"])
+    );
 }
 
 /// A caller whose stdout reader leaves cancels a Google sign-in wait at
@@ -9575,6 +10389,46 @@ fn shows(shown: &std::sync::mpsc::Receiver<String>, text: &str) -> String {
         }
     }
     all
+}
+
+/// latch unblocks every signal as it starts, whatever its starter left
+/// blocked (a thread of the Mac app's, as Install Update ran it): with
+/// SIGCHLD blocked it would never see a program it runs end, and with
+/// SIGTERM blocked nothing short of SIGKILL would stop it.
+#[test]
+fn latch_hears_signals_its_starter_blocked() {
+    use std::os::unix::process::{CommandExt, ExitStatusExt};
+    let dir = test_dir();
+    let mut command = latch_command(
+        &dir.path().join("state"),
+        &["status", "--local", "--follow"],
+        &[],
+    );
+    // SAFETY: only async-signal-safe calls between fork and exec.
+    unsafe {
+        command.pre_exec(|| {
+            let mut blocked: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&mut blocked);
+            libc::sigaddset(&mut blocked, libc::SIGCHLD);
+            libc::sigaddset(&mut blocked, libc::SIGTERM);
+            libc::pthread_sigmask(libc::SIG_BLOCK, &blocked, std::ptr::null_mut());
+            Ok(())
+        });
+    }
+    let mut child = command
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap()).lines();
+    let hello: Value = serde_json::from_str(&stdout.next().unwrap().unwrap()).unwrap();
+    assert_eq!(hello, json!({"type": "hello", "schema": 1}));
+    let status = stdout.next().unwrap().unwrap();
+    assert!(status.contains(r#""status""#), "{status}");
+    thread::spawn(move || stdout.for_each(drop));
+    // Ended by it: this stream keeps SIGTERM's default.
+    let ended = signalled(&mut child, libc::SIGTERM, 5);
+    assert_eq!(ended.signal(), Some(libc::SIGTERM), "{ended:?}");
 }
 
 fn exits_within(child: &mut std::process::Child, limit: u64) -> std::process::ExitStatus {
@@ -12200,4 +13054,36 @@ fn rules_try_says_what_is_missing_before_reaching_a_host() {
     assert!(help.contains("`gate.p` shows how sure it was"), "{help}");
     assert!(help.contains("Judge the request as this agent"), "{help}");
     assert!(help.contains("The host to preview on"), "{help}");
+}
+
+/// A 1PUX of 500 logins beside 310 MB of attachments, written as it goes.
+fn big_1pux(path: &Path) {
+    let items: Vec<Value> = (0..500)
+        .map(|i| {
+            json!({
+                "uuid": format!("i{i}"), "categoryUuid": "001", "state": "active",
+                "overview": {"title": format!("Site {i}"), "url": format!("https://site{i}.example")},
+                "details": {"loginFields": [
+                    {"designation": "username", "value": format!("user{i}")},
+                    {"designation": "password", "value": format!("made-up-pass-{i}")}
+                ]},
+            })
+        })
+        .collect();
+    let data = json!({"accounts": [{"vaults": [{"attrs": {"uuid": "v1", "name": "Personal"}, "items": items}]}]});
+    let mut zip = zip::ZipWriter::new(fs::File::create(path).unwrap());
+    let stored = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Stored)
+        .large_file(true);
+    zip.start_file("export.data", stored).unwrap();
+    zip.write_all(data.to_string().as_bytes()).unwrap();
+    let chunk = vec![7u8; 1024 * 1024];
+    for n in 0..31 {
+        zip.start_file(format!("files/scan{n}.pdf"), stored)
+            .unwrap();
+        for _ in 0..10 {
+            zip.write_all(&chunk).unwrap();
+        }
+    }
+    zip.finish().unwrap();
 }

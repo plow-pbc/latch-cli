@@ -174,6 +174,7 @@ pub struct ListedAgent {
 /// The line an agent serves, as people read it.
 #[derive(Deserialize, Debug, Clone)]
 pub struct ListedLine {
+    pub uid: String,
     /// The phone number or address.
     pub provider_key: String,
     pub display_name: Option<String>,
@@ -630,6 +631,20 @@ impl Plow {
     pub async fn delete_agent(&self, agent_uid: &str) -> Result<ListedAgent, Failure> {
         let url = format!("{}/v1/agents/{agent_uid}", self.api_url);
         let response = self.send(self.http.delete(url)).await?;
+        response.json().await.map_err(|_| bad_answer())
+    }
+
+    /// Moves an agent to `line_uid` with the credential it has. Plow answers
+    /// with the agent on its new line once it has asked a cloud agent to
+    /// restart there; asked for the line it is on, it restarts it again.
+    pub async fn move_agent(
+        &self,
+        agent_uid: &str,
+        line_uid: &str,
+    ) -> Result<ListedAgent, Failure> {
+        let url = format!("{}/v1/agents/{agent_uid}/line", self.api_url);
+        let body = serde_json::json!({"line_uid": line_uid});
+        let response = self.send(self.http.put(url).json(&body)).await?;
         response.json().await.map_err(|_| bad_answer())
     }
 

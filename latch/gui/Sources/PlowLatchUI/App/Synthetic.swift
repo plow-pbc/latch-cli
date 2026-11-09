@@ -327,6 +327,7 @@ nonisolated struct SyntheticLatchClient: LatchClient {
     func removeDevice(_ name: String) async throws {}
     func updateCheck() async throws -> UpdateCheck { try await read(Fixtures.updateCheck) }
     func update() async throws -> UpdateResult { UpdateResult(updated: false) }
+    func unseenUpdateFailure() async -> LatchError? { nil }
     func logout() async throws -> LogoutResult {
         session.loggedIn.withLock { $0 = false }
         return LogoutResult(device: nil)

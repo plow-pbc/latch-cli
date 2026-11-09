@@ -9,6 +9,7 @@ a skip. `just test-list` lists the suites; `just test-plan ...` prints a
 plan without running it.
 """
 import argparse
+import ctypes
 import json
 import os
 from pathlib import Path
@@ -140,6 +141,24 @@ def filterset(suite, where):
     raise ValueError(suite)
 
 
+def screen_unusable():
+    """Why this Mac's screen can't run an AppKit animation to its end, if
+    it can't: its session locked, or its display asleep."""
+    root = subprocess.run(["ioreg", "-n", "Root", "-d1"], capture_output=True, text=True).stdout
+    locked = '"CGSSessionScreenIsLocked"=Yes' in root
+    graphics = ctypes.CDLL("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
+    graphics.CGMainDisplayID.restype = ctypes.c_uint32
+    graphics.CGDisplayIsAsleep.argtypes = [ctypes.c_uint32]
+    asleep = bool(graphics.CGDisplayIsAsleep(graphics.CGMainDisplayID()))
+    if locked and asleep:
+        return "screen is locked and display is off"
+    if locked:
+        return "screen is locked"
+    if asleep:
+        return "display is off"
+    return None
+
+
 def plan(args):
     where = where_we_are(args)
     asked = args.suites or ["gate"]
@@ -223,6 +242,14 @@ def plan(args):
         if not 1 <= shard <= count:
             raise SystemExit("test.py: --shard N/COUNT with 1 <= N <= COUNT")
         args.shard = (shard, count)
+    # Only an unsharded run or the first shard runs the installer suite.
+    first_shard = not args.shard or args.shard[0] == 1
+    if where == "macos" and "installer" in suites and first_shard and not building:
+        unusable = screen_unusable()
+        if unusable:
+            raise SystemExit("test.py: installer: the Mac app's Swift tests need the screen unlocked "
+                             "and the display on so AppKit animations can finish; "
+                             f"this Mac's {unusable}: wake and unlock it, then run again")
     return where, suites, gate, not_here
 
 
@@ -259,14 +286,14 @@ def steps(where, suites, gate, shard, archive=None, ci=False, only=None):
     building, built = (archive or (None, None))[0] == "out", (archive or (None, None))[0] == "in"
     if gate and first_shard and not built:
         out.append(("fmt", ["gate"], ["cargo", "fmt", "--check"], LATCH))
-        out.append(("clippy", ["gate"], ["cargo", "clippy", "--locked", "--all-targets", "--features",
+        out.append(("clippy", ["gate"], ["cargo", "clippy", "--workspace", "--locked", "--all-targets", "--features",
                                          features, "--", "-D", "warnings"], LATCH))
     if building:
-        out.append(("build", rust, ["cargo", "nextest", "archive", "--locked", "--features", features,
+        out.append(("build", rust, ["cargo", "nextest", "archive", "--workspace", "--locked", "--features", features,
                                     "--archive-file", str(archive[1])], LATCH))
         return out
     if rust and not built:
-        out.append(("build", rust, ["cargo", "nextest", "list", "--locked", "--features", features,
+        out.append(("build", rust, ["cargo", "nextest", "list", "--workspace", "--locked", "--features", features,
                                     "--message-format", "oneline"], LATCH))
     if {"browser", "scenario"} & set(suites):
         state = engines_state(where)
@@ -287,7 +314,7 @@ def steps(where, suites, gate, shard, archive=None, ci=False, only=None):
         # The archive's build, unpacked where it was made: the tests use
         # paths compiled into them (CARGO_BIN_EXE_latch, CARGO_MANIFEST_DIR).
         source = (["--archive-file", str(archive[1]), "--workspace-remap", str(LATCH), "--extract-to",
-                   str(LATCH), "--extract-overwrite"] if built else ["--locked", "--features", features])
+                   str(LATCH), "--extract-overwrite"] if built else ["--workspace", "--locked", "--features", features])
         # CI's profile (latch/.config/nextest.toml) for latch's run only.
         profile = ["--profile", "ci-mac" if where == "macos" else "ci"] if ci else []
         out.append(("rust", rust, ["cargo", "nextest", "run", *source, *profile, "--no-fail-fast",
@@ -361,7 +388,7 @@ def count(where, suites, env, only=None):
     features = FEATURES["macos" if where == "macos" else "linux"]
     counts = {}
     for suite in suites:
-        listed = subprocess.run(["cargo", "nextest", "list", "--locked", "--features", features,
+        listed = subprocess.run(["cargo", "nextest", "list", "--workspace", "--locked", "--features", features,
                                  "--message-format", "json", "-E", selection(suite, where, only)],
                                 cwd=LATCH, env=env, capture_output=True, text=True, check=True)
         counts[suite] = sum(1 for binary in json.loads(listed.stdout)["rust-suites"].values()

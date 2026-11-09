@@ -1,7 +1,8 @@
-# The latch workspace. Today it holds one crate (this one); the `[workspace]`
-# table makes this directory the workspace root so later crates can join it.
-# DEPENDENCIES.md has each crate's usage numbers from the library audit.
+# The latch workspace: the latch crate (this one) and `mandate` (mandate/),
+# the mandate library Swarm shares. DEPENDENCIES.md has each crate's usage
+# numbers from the library audit.
 [workspace]
+members = [".", "mandate"]
 
 [package]
 name = "latch"

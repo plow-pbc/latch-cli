@@ -589,30 +589,26 @@ impl Signer {
             );
             Failure::new(code::bad_app_signature, message)
         };
-        let shown = tool("codesign", &["-dvv".as_ref(), app.as_os_str()]).await?;
-        let field = |name: &str| {
-            shown
-                .lines()
-                .find_map(|line| line.strip_prefix(name)?.strip_prefix('='))
-                .unwrap_or("none")
-                .to_string()
-        };
-        let (team, identifier) = (field("TeamIdentifier"), field("Identifier"));
-        if team != self.team || identifier != self.identifier {
-            return Err(refused(format!(
-                "is {identifier} signed by team {team}, not {} by team {}",
-                self.identifier, self.team
-            )));
-        }
-        let strict = ["--verify", "--deep", "--strict"];
+        // The installer's requirement: `=` makes it text, not a file.
+        let requirement = format!(
+            r#"-R=anchor apple generic and identifier "{}" and certificate leaf[subject.OU] = "{}""#,
+            self.identifier, self.team
+        );
+        let strict = ["--verify", "--deep", "--strict", &requirement];
         let args: Vec<&std::ffi::OsStr> = strict
             .iter()
             .map(|arg| arg.as_ref())
             .chain([app.as_os_str()])
             .collect();
-        tool("codesign", &args)
+        tool("codesign", &args, TOOL_WITHIN)
             .await
-            .map_err(|_| refused("is not intact as signed".into()))?;
+            .map_err(|failure| match failure.code == code::tool_failed.name {
+                true => refused(format!(
+                    "is not {} signed by team {}, intact",
+                    self.identifier, self.team
+                )),
+                false => failure,
+            })?;
         tool(
             "spctl",
             &[
@@ -621,20 +617,35 @@ impl Signer {
                 "execute".as_ref(),
                 app.as_os_str(),
             ],
+            TOOL_WITHIN,
         )
         .await
-        .map_err(|_| refused("is not accepted by Gatekeeper".into()))?;
+        .map_err(|failure| match failure.code == code::tool_failed.name {
+            true => refused("is not accepted by Gatekeeper".into()),
+            false => failure,
+        })?;
         Ok(())
     }
 }
 
-/// Runs a system tool; what it printed on stderr, where codesign prints
-/// what it shows, if it succeeded.
-async fn tool(program: &str, args: &[&std::ffi::OsStr]) -> Result<String, Failure> {
-    let output = tokio::process::Command::new(program)
+/// How long `codesign` or `spctl` may take before the update gives up on
+/// it: Gatekeeper may ask Apple over the network, and a check that never
+/// answers would hold the update, and the app waiting on it, forever.
+const TOOL_WITHIN: Duration = Duration::from_secs(120);
+
+/// Runs a system tool for at most `within`: tool_failed with what it
+/// printed on stderr, or timed_out, stopping it, if it did not finish.
+async fn tool(program: &str, args: &[&std::ffi::OsStr], within: Duration) -> Result<(), Failure> {
+    let run = tokio::process::Command::new(program)
         .args(args)
-        .output()
+        .kill_on_drop(true)
+        .output();
+    let output = tokio::time::timeout(within, run)
         .await
+        .map_err(|_| {
+            let message = format!("`{program}` did not finish in {} seconds", within.as_secs());
+            Failure::new(code::timed_out, message)
+        })?
         .map_err(|err| io_failure(program, err))?;
     if !output.status.success() {
         let message = format!(
@@ -643,7 +654,7 @@ async fn tool(program: &str, args: &[&std::ffi::OsStr]) -> Result<String, Failur
         );
         return Err(Failure::new(code::tool_failed, message));
     }
-    Ok(String::from_utf8_lossy(&output.stderr).to_string())
+    Ok(())
 }
 
 fn io_failure(what: &str, err: std::io::Error) -> Failure {

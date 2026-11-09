@@ -685,6 +685,13 @@ final class AppModel {
         await refreshStatus()
     }
 
+    /// How an update this app started and didn't see end failed, offered
+    /// as a failed install is, so the pill and Settings say so.
+    func noticeUnseenUpdate() async {
+        guard !installingUpdate, let failure = await client.unseenUpdateFailure() else { return }
+        installUpdateError = failure
+    }
+
     /// Stops this Mac's host; agents can't reach it until it's started.
     /// "Keep this Mac awake while plugged in": latch saves it (no host or
     /// restart needed), then the switch shows what latch reads back.

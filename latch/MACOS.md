@@ -138,13 +138,19 @@ ticket.
 bundle. Then it copies the whole bundle to `/Applications`, for every account
 on the Mac, when this user can write there (an admin can, with no sudo) and
 no other user's copy is there. Otherwise, as for a standard user, it goes to
-`~/Applications`, this user's own. The installer never asks for sudo on
-macOS. It replaces the copy there unless every file is the same (a new
-window with the same latch is a new app), and makes `~/.local/bin/latch` (or
-`--bin-dir`'s) a symlink to `Plow Latch.app/Contents/MacOS/latch` in that
-folder. Once the new copy is in place it removes this user's copy in the
-other folder, such as one an earlier latch put in `~/Applications`, so only
-one app has latch's bundle id; a link to latch that led into it, other than
+`~/Applications`, this user's own. An app there by the same name that isn't
+latch (another bundle id, such as the older Plow Latch app) is never quit,
+moved or removed: latch goes in the other folder, and when the only folder
+it can use holds one, the install stops before changing anything. Two
+"Plow Latch" apps can then show in Spotlight: delete the older one when you
+no longer use it, and the next update moves latch to `/Applications` when
+you can write there. The installer never asks for sudo on macOS. It
+replaces the copy there unless every file is the same (a new window with the
+same latch is a new app), and makes `~/.local/bin/latch` (or `--bin-dir`'s)
+a symlink to `Plow Latch.app/Contents/MacOS/latch` in that folder. Once the
+new copy is in place it removes this user's copy in the other folder, such
+as one an earlier latch put in `~/Applications`, so only one app has latch's
+bundle id; a link to latch that led into it, other than
 the one the installer makes, must be made again. macOS keeps "Start when you
 log in" for the copy it was turned on in, so when it was on there, the new
 copy's latch turns it on again (`latch login-item --again`, internal) once
