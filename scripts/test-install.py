@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import plistlib
 import re
 import shlex
 import shutil
@@ -814,14 +815,17 @@ class MacAppFolder(unittest.TestCase):
     ~/Applications; and this user's copy in the other folder goes."""
 
     def install(self, shared="writable", own=None, host="none", cut_short=False,
-                login_item="not_registered", window=None):
+                login_item="not_registered", window=None, another_app=None):
         """Installs an app whose latch says 0.1.0 (2), with `own` the version
         of a copy in ~/Applications already, if any (`cut_short`: moved aside
         by a run cut short), and `host` a host on the state folder ("none",
         "managed", or "other_version"), and the login item as the new app's
         latch reports it. `window`, if given, is the pid macOS gives for a
-        window open from the ~/Applications copy. Returns the result, the
-        stops, starts and opens, HOME and the stand-in /Applications."""
+        window open from the ~/Applications copy, or from `another_app`'s.
+        `another_app`, if given, is the folder ("shared" or "own") holding
+        another app named Plow Latch.app, with a bundle id that isn't
+        latch's. Returns the result, the stops, starts and opens, HOME and
+        the stand-in /Applications."""
         parent = ROOT / ".dev/tests"
         parent.mkdir(parents=True, exist_ok=True)
         directory = tempfile.TemporaryDirectory(dir=parent)
@@ -842,6 +846,8 @@ class MacAppFolder(unittest.TestCase):
             (app / "Contents/MacOS").mkdir(parents=True)
             (app / "Contents/MacOS/latch").write_text(latch)
             (app / "Contents/MacOS/latch").chmod(0o755)
+            (app / "Contents/Info.plist").write_bytes(
+                plistlib.dumps({"CFBundleIdentifier": "co.plow.latch.cli"}))
         (setup / "latch").symlink_to("Plow Latch.app/Contents/MacOS/latch")
         if cut_short:
             (home / "Applications/Plow Latch.app").rename(home / "Applications/Plow Latch.app.old")
@@ -854,15 +860,31 @@ class MacAppFolder(unittest.TestCase):
             # A copy this user doesn't own: the root folder stands in for it.
             applications.mkdir()
             (applications / "Plow Latch.app").symlink_to("/")
-        # What macOS says is open from an app folder, and opening one.
-        own_app = home / "Applications/Plow Latch.app"
+        window_app = home / "Applications/Plow Latch.app"
+        if another_app:
+            window_app = applications / "Plow Latch.app" if another_app == "shared" else window_app
+            (window_app / "Contents/MacOS").mkdir(parents=True)
+            (window_app / "Contents/MacOS/Plow Latch").write_text("#!/bin/sh\n")
+            (window_app / "Contents/Info.plist").write_bytes(
+                plistlib.dumps({"CFBundleIdentifier": "co.plow.domo-desktop"}))
+        # What macOS says is open from an app folder, and opening one; and
+        # plutil, reading an app's bundle id.
         (tools / "lsappinfo").write_text(
             '#!/bin/sh\n'
-            f'if [ "$1" = find ] && [ "$2" = {shlex.quote(f"bundlepath={own_app}")} ] '
+            f'if [ "$1" = find ] && [ "$2" = {shlex.quote(f"bundlepath={window_app}")} ] '
             f'&& [ -n "{window or ""}" ]; then echo \'ASN:0x0-0x1-"Plow_Latch":\'; fi\n'
             f'if [ "$1" = info ]; then echo "    pid = {window} !cgsConnection"; fi\n')
         (tools / "open").write_text(f'#!/bin/sh\necho "open $*" >> {shlex.quote(str(log))}\n')
-        for tool in ["lsappinfo", "open"]:
+        (tools / "plutil").write_text(
+            "#!/usr/bin/env python3\n"
+            "import plistlib, sys\n"
+            "_, extract, key, raw, out, dash, path = sys.argv\n"
+            "assert (extract, raw, out, dash) == ('-extract', 'raw', '-o', '-'), sys.argv\n"
+            "try:\n"
+            "    print(plistlib.load(open(path, 'rb'))[key])\n"
+            "except (OSError, KeyError, plistlib.InvalidFileException):\n"
+            "    sys.exit(1)\n")
+        for tool in ["lsappinfo", "open", "plutil"]:
             (tools / tool).chmod(0o755)
         env = {**os.environ, "HOME": str(home), "LATCH_APPLICATIONS": str(applications),
                "PATH": f"{tools}:{os.environ['PATH']}"}
@@ -998,6 +1020,41 @@ class MacAppFolder(unittest.TestCase):
         result, _, home, applications = self.install(own="0.1.0 (1)", cut_short=True)
         self.assert_installed_in(applications, home, result)
         self.assertEqual(list((home / "Applications").iterdir()), [])
+
+    def test_another_app_named_plow_latch_is_left_running_and_in_place(self):
+        # Such as the older Plow Latch app, which latch replaces but which
+        # isn't latch: latch goes in the other folder and never quits, moves
+        # or removes it.
+        for another_app in ["shared", "own"]:
+            with self.subTest(another_app=another_app):
+                window = self.window("sleep 60")
+                result, calls, home, applications = self.install(another_app=another_app,
+                                                                 window=window)
+                shared_app = applications / "Plow Latch.app"
+                own_app = home / "Applications/Plow Latch.app"
+                theirs, ours = (shared_app, own_app) if another_app == "shared" else (own_app, shared_app)
+                self.assert_installed_in(ours.parent, home, result)
+                self.assertTrue(self.is_running(window))
+                self.assertTrue((theirs / "Contents/MacOS/Plow Latch").exists())
+                self.assertEqual(plistlib.loads((theirs / "Contents/Info.plist").read_bytes()),
+                                 {"CFBundleIdentifier": "co.plow.domo-desktop"})
+                self.assertEqual(calls, [])
+                if another_app == "shared":
+                    self.assertIn(f"{theirs} is a different app; leaving it in place and "
+                                  f"installing to {home}/Applications, for this user only",
+                                  result.stdout)
+
+    def test_another_app_in_the_only_folder_latch_can_use_stops_the_install(self):
+        window = self.window("sleep 60")
+        result, calls, home, _ = self.install(shared="absent", another_app="own", window=window)
+        theirs = home / "Applications/Plow Latch.app"
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn(f"install-binary.sh: {theirs} is a different app, so nothing was installed; "
+                      f"move it out of {home}/Applications, then install again\n", result.stderr)
+        self.assertTrue(self.is_running(window))
+        self.assertTrue((theirs / "Contents/MacOS/Plow Latch").exists())
+        self.assertFalse((home / ".local/bin/latch").exists())
+        self.assertEqual(calls, [])
 
     def test_a_host_the_new_latch_cannot_stop_keeps_the_copy_it_may_run_from(self):
         result, calls, home, applications = self.install(own="0.1.0 (1)", host="other_version")
