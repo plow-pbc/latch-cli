@@ -114,4 +114,33 @@ struct DetachedUpdateTests {
         _ = try await LiveLatchClient(executable: latch, stateDir: state.path).update()
         #expect(try String(contentsOf: folder.appending(path: "blocked"), encoding: .utf8) == "")
     }
+
+    /// A recorded run is stopped only if it's still that process: a record
+    /// whose start time names another (its pid since given to a new one),
+    /// or one that doesn't read, signals nothing.
+    @Test func onlyTheRecordedRunIsStopped() async throws {
+        let folder = FileManager.default.temporaryDirectory.appending(path: "latch-update-\(UUID().uuidString.prefix(8))")
+        let state = folder.appending(path: "state")
+        let record = state.appending(path: "app-update/pid")
+        try FileManager.default.createDirectory(at: record.deletingLastPathComponent(), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let latch = folder.appending(path: "latch")
+        try "#!/bin/sh\necho '{\"updated\":true}'\n".write(to: latch, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: latch.path)
+        // A process leading its own group, as a recorded run does.
+        let other = Process()
+        other.executableURL = URL(filePath: "/usr/bin/perl")
+        other.arguments = ["-e", "setpgrp(0, 0); sleep 60"]
+        try other.run()
+        defer { other.terminate() }
+        let pid = other.processIdentifier
+        await waitUntil(within: .seconds(10)) { getpgid(pid) == pid }
+
+        let client = LiveLatchClient(executable: latch, stateDir: state.path)
+        for text in ["\(pid) 1.0", "\(pid)", "\(pid) 1.0 extra", "not a record", ""] {
+            try text.write(to: record, atomically: true, encoding: .utf8)
+            #expect(try await client.update() == UpdateResult(updated: true))
+            #expect(other.isRunning, "signalled for \(text)")
+        }
+    }
 }
