@@ -143,8 +143,8 @@ latch (another bundle id, such as the older Plow Latch app) is never quit,
 moved or removed: latch goes in the other folder, and when the only folder
 it can use holds one, the install stops before changing anything. Two
 "Plow Latch" apps can then show in Spotlight: delete the older one when you
-no longer use it, and the next update moves latch to `/Applications`. The
-installer never asks for sudo on macOS. It replaces the copy there unless
+no longer use it, and the next update moves latch to `/Applications` when
+you can write there. The installer never asks for sudo on macOS. It replaces the copy there unless
 every file is the same (a new window with the same latch is a new app), and
 makes `~/.local/bin/latch` (or `--bin-dir`'s) a symlink to
 `Plow Latch.app/Contents/MacOS/latch` in that folder. Once the new copy is
