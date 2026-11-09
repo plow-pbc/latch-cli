@@ -239,7 +239,7 @@ nonisolated final class LatchProcess: @unchecked Sendable {
         guard let status else {
             let minutes = Int(within.components.seconds / 60)
             throw LatchError.unreachable("Latch's update didn't finish.",
-                                         detail: "latch update was still running after \(minutes) minutes. Retry stops it and starts again.")
+                                         detail: "The update was still running after \(minutes) minutes. Retry stops it and starts again.")
         }
         try? FileManager.default.removeItem(at: record)
         let printed = (try? Data(contentsOf: out)) ?? Data()

@@ -10391,6 +10391,46 @@ fn shows(shown: &std::sync::mpsc::Receiver<String>, text: &str) -> String {
     all
 }
 
+/// latch unblocks every signal as it starts, whatever its starter left
+/// blocked (a thread of the Mac app's, as Install Update ran it): with
+/// SIGCHLD blocked it would never see a program it runs end, and with
+/// SIGTERM blocked nothing short of SIGKILL would stop it.
+#[test]
+fn latch_hears_signals_its_starter_blocked() {
+    use std::os::unix::process::{CommandExt, ExitStatusExt};
+    let dir = test_dir();
+    let mut command = latch_command(
+        &dir.path().join("state"),
+        &["status", "--local", "--follow"],
+        &[],
+    );
+    // SAFETY: only async-signal-safe calls between fork and exec.
+    unsafe {
+        command.pre_exec(|| {
+            let mut blocked: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&mut blocked);
+            libc::sigaddset(&mut blocked, libc::SIGCHLD);
+            libc::sigaddset(&mut blocked, libc::SIGTERM);
+            libc::pthread_sigmask(libc::SIG_BLOCK, &blocked, std::ptr::null_mut());
+            Ok(())
+        });
+    }
+    let mut child = command
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap()).lines();
+    let hello: Value = serde_json::from_str(&stdout.next().unwrap().unwrap()).unwrap();
+    assert_eq!(hello, json!({"type": "hello", "schema": 1}));
+    let status = stdout.next().unwrap().unwrap();
+    assert!(status.contains(r#""status""#), "{status}");
+    thread::spawn(move || stdout.for_each(drop));
+    // Ended by it: this stream keeps SIGTERM's default.
+    let ended = signalled(&mut child, libc::SIGTERM, 5);
+    assert_eq!(ended.signal(), Some(libc::SIGTERM), "{ended:?}");
+}
+
 fn exits_within(child: &mut std::process::Child, limit: u64) -> std::process::ExitStatus {
     let mut status = None;
     assert!(

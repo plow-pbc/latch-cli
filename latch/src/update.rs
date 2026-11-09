@@ -643,7 +643,7 @@ async fn tool(program: &str, args: &[&std::ffi::OsStr], within: Duration) -> Res
     let output = tokio::time::timeout(within, run)
         .await
         .map_err(|_| {
-            let message = format!("{program} did not finish in {} seconds", within.as_secs());
+            let message = format!("`{program}` did not finish in {} seconds", within.as_secs());
             Failure::new(code::timed_out, message)
         })?
         .map_err(|err| io_failure(program, err))?;
