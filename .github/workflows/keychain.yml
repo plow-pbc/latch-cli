@@ -123,7 +123,8 @@ jobs:
           sudo launchctl bootout system/co.plow.latch.keychain-check || true
           cat "$RUNNER_TEMP/daemon.err"
           grep -q '"keychain_failed"' "$RUNNER_TEMP/daemon.err"
-          sudo ls -la "$state"
+          # login may refuse before it makes the state folder at all
+          if sudo test -d "$state"; then sudo ls -la "$state"; fi
           if sudo test -e "$state/key"; then
             echo "a key file was written" >&2
             exit 1
