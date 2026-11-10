@@ -23,14 +23,22 @@ pub const WARNING: &str =
     "Freeform rules are judged, not guaranteed. --deny-exec is enforced in code.";
 
 /// `rules`: one owner command on the rules in `state_dir`, for the host
-/// named `host`. `kind` is the caller's kind as Plow says.
-pub async fn run(state_dir: &Path, plow: &Plow, host: &str, kind: &str, args: &Value) -> Done {
+/// whose key is `host_key`, named `host`. `kind` is the caller's kind as
+/// Plow says.
+pub async fn run(
+    state_dir: &Path,
+    plow: &Plow,
+    host_key: &str,
+    host: &str,
+    kind: &str,
+    args: &Value,
+) -> Done {
     let command = args["command"].as_str().unwrap_or_default();
     let mut audit = Map::new();
     audit.insert("command".into(), json!(command));
     let result = match owner_only(kind, "the rules") {
         Ok(()) => {
-            let dir = RulesDir::new(state_dir);
+            let dir = RulesDir::new(state_dir, host_key);
             let from = args["from"].as_str();
             match command {
                 "show" => show(state_dir, &dir, plow, host, from).await,
@@ -419,7 +427,15 @@ mod tests {
         }
 
         async fn done(&self, kind: &str, args: Value) -> Done {
-            run(self.dir.path(), &self.plow, "studio", kind, &args).await
+            run(
+                self.dir.path(),
+                &self.plow,
+                "studio-key",
+                "studio",
+                kind,
+                &args,
+            )
+            .await
         }
 
         /// The owner's command, as its result or its error.
@@ -437,7 +453,7 @@ mod tests {
 
         /// The rules a judgment reads for `agent`.
         fn judged(&self, agent: &str) -> Rules {
-            RuleFiles::new(self.dir.path())
+            RuleFiles::new(self.dir.path(), "studio-key", "studio")
                 .unwrap()
                 .rules(agent)
                 .unwrap()

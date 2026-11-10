@@ -46,7 +46,11 @@ pub(crate) async fn preview_here(state: &StateDir, args: &Value) -> Result<Value
     let gatekeeper = Gatekeeper::new(
         plow.clone(),
         provider,
-        Box::new(RuleFiles::new(&state.path)?),
+        Box::new(RuleFiles::new(
+            &state.path,
+            &config.peer.key,
+            &config.peer.name,
+        )?),
     )
     .keeping_requests(&state.path);
     let state_dir = state
