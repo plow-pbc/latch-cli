@@ -1792,26 +1792,6 @@ async fn observe_suggests_from_hints_and_the_checks_refuse_contradictions(engine
     );
     assert!(shown.contains("password accepted, confirm accepted"));
     assert_eq!(audit["mapping"]["password"], json!([new, confirm]));
-    // The same mapping as a plan's fill step.
-    let observed = open(&mut h, "signup.html?two=1").await;
-    let mut plan = super::act("click e1");
-    plan["plan"]["steps"][0] = json!({"literal": {"op": "fill", "item": login.item,
-        "press": find(&observed, "button", "Create account"),
-        "fields": [["username", [find(&observed, "textbox", "Email")]],
-                   ["password", [find(&observed, "textbox", "New password")]],
-                   ["password", [find(&observed, "textbox", "Confirm password")]]]}});
-    plan.as_object_mut().unwrap().remove("act");
-    let planned = h.call("do", plan).await;
-    println!(
-        "sign-up in a plan: {:?}",
-        planned.as_ref().map_err(|f| &f.message)
-    );
-    planned.unwrap();
-    assert!(
-        h.text()
-            .await
-            .contains("password accepted, confirm accepted")
-    );
     // Refused, nothing released: the confirm box in another form.
     let observed = open(&mut h, "signup-two-forms.html").await;
     let (refused, _) = h

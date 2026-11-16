@@ -75,10 +75,8 @@ pub struct Literal {
     pub text: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub item: Option<String>,
-    /// Item field and its refs, in order; a field listed again goes whole
-    /// into those refs too.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub fields: Vec<(String, Vec<String>)>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub fields: BTreeMap<String, Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub press: Option<String>,
     /// A `fill` that takes one of latch's suggestions, by its id, in place
@@ -272,7 +270,7 @@ impl Literal {
             snapshot: None,
             text: None,
             item: None,
-            fields: Vec::new(),
+            fields: BTreeMap::new(),
             press: None,
             suggestion: None,
         }
@@ -453,10 +451,10 @@ fn fill_words(words: &[(String, bool)]) -> Result<Literal, String> {
                 let (label, refs) = value
                     .rsplit_once('=')
                     .ok_or(format!("--field takes LABEL=eN, not {value:?}"))?;
-                literal.fields.push((
+                literal.fields.insert(
                     label.to_string(),
                     refs.split(',').map(|r| r.trim().to_string()).collect(),
-                ));
+                );
             }
             other => {
                 return Err(format!(
@@ -597,16 +595,7 @@ mod tests {
         let step =
             short_step("fill --item v2 --field number=e4 --field expiry=e5,e6 --press e9").unwrap();
         let literal = step.literal.unwrap();
-        assert_eq!(
-            literal.fields[1],
-            ("expiry".into(), vec!["e5".into(), "e6".into()])
-        );
-        // A field listed again keeps both: a password and its confirmation.
-        let step = short_step("fill --field password=e5 --field password=e6 --press e7").unwrap();
-        assert_eq!(
-            json!(step.literal.unwrap().fields),
-            json!([["password", ["e5"]], ["password", ["e6"]]])
-        );
+        assert_eq!(literal.fields["expiry"], ["e5", "e6"]);
         assert_eq!(literal.press.unwrap(), "e9");
         // With no --item, the host finds the login saved for the page's site.
         let step = short_step("fill --field password=e4 --press e5").unwrap();
