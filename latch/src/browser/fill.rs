@@ -466,7 +466,8 @@ pub async fn run(
 
 /// What the agent asked to fill, checked against the item.
 struct Plan {
-    /// Item field, and the refs it goes into.
+    /// Item field, and the refs it goes into: split across them, but a
+    /// login's password whole into each (a sign-up's confirm box).
     fields: Vec<(String, Vec<String>)>,
     press: Option<String>,
 }
@@ -519,7 +520,9 @@ impl Plan {
                 return Err(usage("each --field names its refs: FIELD=eN[,eN…]"));
             }
             if fields.iter().any(|(other, _)| *other == label) {
-                return Err(usage(&format!("{label} is mapped twice")));
+                return Err(usage(&format!(
+                    "{label} is mapped twice: name all its boxes in one --field, {label}=eN,eN"
+                )));
             }
             for reference in &refs {
                 let taken = fields.iter().any(|(_, others)| others.contains(reference))
@@ -754,15 +757,41 @@ fn answer_events(answer: &mut Map<String, Value>, mut events: Vec<Value>, sites:
 
 /// Each prepared element against the item field it takes: the field's
 /// outcome (`filled` once set), or `bad_target` for the first that the
-/// page's markup contradicts.
+/// page's markup contradicts. A login's password in several boxes goes
+/// only into password inputs of one form.
 fn checked(meta: &Meta, prepared: &Value) -> Result<Vec<Value>, Failure> {
     let mut outcomes = Vec::new();
     for field in prepared["fields"].as_array().into_iter().flatten() {
         let label = field["field"].as_str().unwrap_or_default();
-        for target in field["boxes"].as_array().into_iter().flatten() {
-            let control = Control::of(target);
-            let mismatch = suggest::check(meta.kind, label, &control)
-                .map_err(|why| bad_target(label, &why))?;
+        let boxes: Vec<Control> = field["boxes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(Control::of)
+            .collect();
+        for control in &boxes {
+            if boxes.len() > 1 && whole_in_each(meta, label) {
+                if !control.password() {
+                    return Err(bad_target(
+                        label,
+                        &format!(
+                            "{} is not a password input, and a password in more than one box goes only into password inputs",
+                            control.reference
+                        ),
+                    ));
+                }
+                if control.form.is_none() || boxes.iter().any(|c| c.form != control.form) {
+                    return Err(bad_target(
+                        label,
+                        &format!(
+                            "{} is not in the same form as the field's other boxes",
+                            control.reference
+                        ),
+                    ));
+                }
+            }
+            let mismatch =
+                suggest::check(meta.kind, label, control).map_err(|why| bad_target(label, &why))?;
             let mut outcome =
                 json!({"field": label, "ref": control.reference, "outcome": "filled"});
             if let Some(token) = mismatch {
@@ -772,6 +801,12 @@ fn checked(meta: &Meta, prepared: &Value) -> Result<Vec<Value>, Failure> {
         }
     }
     Ok(outcomes)
+}
+
+/// A login's password goes whole into each of its boxes (a sign-up's
+/// confirm box); any other value is split across them.
+fn whole_in_each(meta: &Meta, label: &str) -> bool {
+    meta.kind == "login" && label == "password"
 }
 
 /// How a login's second stage went.
@@ -1047,7 +1082,12 @@ async fn release_and_set(
         let boxes: Vec<Value> = field["boxes"].as_array().cloned().unwrap_or_default();
         let value = release(item, label)?;
         let value = shaped(label, value, &boxes[0])?;
-        let pieces = split(&value, &boxes).ok_or_else(|| {
+        let pieces = if whole_in_each(&meta, label) {
+            Some(vec![value.clone(); boxes.len()])
+        } else {
+            split(&value, &boxes)
+        };
+        let pieces = pieces.ok_or_else(|| {
             Failure::new(
                 code::split_mismatch,
                 format!(
@@ -1349,6 +1389,56 @@ mod tests {
         assert!(plan("email").identifier_stage(&meta));
         assert!(!plan("account number").identifier_stage(&meta));
         assert!(!plan("otp").identifier_stage(&meta));
+    }
+
+    /// A login's password in two boxes goes only into password inputs of one
+    /// form: a text box, another form, another frame or no form refuses it.
+    #[test]
+    fn a_password_in_two_boxes_goes_only_into_password_inputs_of_one_form() {
+        let meta = Item {
+            id: "v1".into(),
+            revision: 1,
+            sites: vec!["shop.example".into()],
+            other_top_sites: vec![],
+            raw: Raw::from_labels(
+                LOGIN,
+                "Shop",
+                &[
+                    ("username".into(), "ada".into()),
+                    ("password".into(), "made-up".into()),
+                ],
+            )
+            .unwrap(),
+        }
+        .meta();
+        let pw = |reference: &str, kind: &str, frame: &str, form: i64| {
+            json!({"ref": reference, "frame": frame, "origin": "https://shop.example",
+                   "tag": "input", "type": kind, "autocomplete": "", "form": form})
+        };
+        let prepared = |second: Value| {
+            json!({"fields": [{"field": "password",
+                               "boxes": [pw("e1", "password", "f0", 0), second]}]})
+        };
+        assert_eq!(
+            checked(&meta, &prepared(pw("e2", "password", "f0", 0)))
+                .unwrap()
+                .len(),
+            2
+        );
+        // Any other field splits across its boxes: no same-form rule.
+        let split = json!({"fields": [{"field": "username",
+            "boxes": [pw("e1", "text", "f0", 0), pw("e2", "text", "f0", 1)]}]});
+        assert_eq!(checked(&meta, &split).unwrap().len(), 2);
+        for (second, why) in [
+            (pw("e2", "text", "f0", 0), "not a password input"),
+            (pw("e2", "password", "f0", 1), "not in the same form"),
+            (pw("e2", "password", "f1", 0), "not in the same form"),
+            (pw("e2", "password", "f0", -1), "not in the same form"),
+        ] {
+            let refused = checked(&meta, &prepared(second)).unwrap_err();
+            assert_eq!(refused.code, "bad_target");
+            assert!(refused.message.contains(why), "{}", refused.message);
+        }
     }
 
     #[test]

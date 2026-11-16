@@ -256,7 +256,7 @@ impl Control {
         self.takes_value() && self.unusable.is_none()
     }
 
-    fn password(&self) -> bool {
+    pub fn password(&self) -> bool {
         self.tag == "input" && self.kind == "password"
     }
 
@@ -696,9 +696,7 @@ pub fn check(kind: &str, label: &str, control: &Control) -> Result<Option<String
     let search = control.kind == "search";
     match role(kind, label) {
         Role::Password => {
-            if let Some(t) = token
-                .filter(|t| matches!(*t, "new-password" | "one-time-code") || t.starts_with("cc-"))
-            {
+            if let Some(t) = token.filter(|t| *t == "one-time-code" || t.starts_with("cc-")) {
                 return Err(marked(t));
             }
             if search {
@@ -1002,10 +1000,16 @@ mod tests {
         let refused =
             |kind: &str, label: &str, control: Control| check(kind, label, &control).unwrap_err();
         refused("login", "password", input("e1", "text", ""));
+        // A sign-up's password box takes the login's password.
         assert!(
-            refused("login", "password", input("e1", "password", "new-password"))
-                .contains("new-password")
+            check(
+                "login",
+                "password",
+                &input("e1", "password", "new-password")
+            )
+            .is_ok()
         );
+        refused("login", "password", input("e1", "text", "new-password"));
         refused("login", "username", input("e1", "password", ""));
         refused("login", "otp", input("e1", "password", "current-password"));
         let mut area = input("e1", "", "");

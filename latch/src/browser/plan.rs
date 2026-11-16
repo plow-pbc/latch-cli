@@ -451,10 +451,12 @@ fn fill_words(words: &[(String, bool)]) -> Result<Literal, String> {
                 let (label, refs) = value
                     .rsplit_once('=')
                     .ok_or(format!("--field takes LABEL=eN, not {value:?}"))?;
-                literal.fields.insert(
-                    label.to_string(),
-                    refs.split(',').map(|r| r.trim().to_string()).collect(),
-                );
+                let refs = refs.split(',').map(|r| r.trim().to_string()).collect();
+                if literal.fields.insert(label.to_string(), refs).is_some() {
+                    return Err(format!(
+                        "{label} is mapped twice: name all its boxes in one --field, {label}=eN,eN"
+                    ));
+                }
             }
             other => {
                 return Err(format!(
@@ -596,6 +598,8 @@ mod tests {
             short_step("fill --item v2 --field number=e4 --field expiry=e5,e6 --press e9").unwrap();
         let literal = step.literal.unwrap();
         assert_eq!(literal.fields["expiry"], ["e5", "e6"]);
+        let twice = short_step("fill --field password=e5 --field password=e6 --press e7");
+        assert!(twice.unwrap_err().contains("password=eN,eN"));
         assert_eq!(literal.press.unwrap(), "e9");
         // With no --item, the host finds the login saved for the page's site.
         let step = short_step("fill --field password=e4 --press e5").unwrap();

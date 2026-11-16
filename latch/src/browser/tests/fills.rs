@@ -297,12 +297,17 @@ fn site() -> u16 {
                         if path == "/slow-welcome" {
                             std::thread::sleep(Duration::from_secs(3));
                         }
-                        let ok = get("password") == PASSWORD;
+                        let verdict = |ok: bool| if ok { "accepted" } else { "rejected" };
+                        let confirm = if fields.iter().any(|(n, _)| n == "confirm") {
+                            format!(", confirm {}", verdict(get("confirm") == PASSWORD))
+                        } else {
+                            String::new()
+                        };
                         Some(answer(
                             "latch welcome",
                             format!(
-                                "signed in: password {}",
-                                if ok { "accepted" } else { "rejected" }
+                                "signed in: password {}{confirm}",
+                                verdict(get("password") == PASSWORD)
                             ),
                         ))
                     }
@@ -642,6 +647,21 @@ async fn vault_fills_go_only_where_the_item_allows_and_never_show_a_value(engine
             .all(|e| e.get("value").is_none()),
         "nothing filled"
     );
+    // A password and its confirmation are held to the login's site alike.
+    let page = h
+        .call("open", json!({"url": format!("{evil}/signup.html?two=1")}))
+        .await
+        .unwrap();
+    let (refused, _) = h
+        .fill(
+            json!({"item": login.item, "press": find(&page, "button", "Create account"),
+                     "fields": [["password", [find(&page, "textbox", "New password"),
+                                              find(&page, "textbox", "Confirm password")]]]}),
+        )
+        .await;
+    let refused = refused.unwrap_err();
+    println!("lookalike sign-up: {} ({})", refused.code, refused.message);
+    assert_eq!(refused.code, "origin_mismatch");
     let page = h
         .call(
             "open",
@@ -1720,18 +1740,18 @@ async fn observe_suggests_from_hints_and_the_checks_refuse_contradictions(engine
         assert_eq!(refused.code, "bad_target");
     }
     let observed = open(&mut h, "signup.html").await;
-    let (refused, _) = h
+    let (filled, _) = h
         .fill(
             json!({"item": login.item, "press": find(&observed, "button", "Create account"),
                      "fields": [["password", [find(&observed, "textbox", "New password")]]]}),
         )
         .await;
-    let refused = refused.unwrap_err();
     println!(
-        "a password into new-password: {} ({})",
-        refused.code, refused.message
+        "a password into new-password: {:?}",
+        filled.as_ref().map_err(|f| &f.message)
     );
-    assert!(refused.code == "bad_target" && refused.message.contains("new-password"));
+    assert_eq!(filled.unwrap()["submitted"], true);
+    assert!(h.text().await.contains("password accepted"));
     let observed = open(&mut h, "idf-password.html").await;
     let (refused, _) = h
         .fill(
@@ -1745,6 +1765,81 @@ async fn observe_suggests_from_hints_and_the_checks_refuse_contradictions(engine
         refused.code, refused.message
     );
     assert_eq!(refused.code, "bad_target");
+    assert!(
+        h.call("eval", json!({"script": "1"})).await.is_ok(),
+        "nothing was released"
+    );
+
+    // Allowed: one password whole into a sign-up's two boxes, the audit
+    // naming both.
+    let observed = open(&mut h, "signup.html?two=1").await;
+    let (new, confirm) = (
+        find(&observed, "textbox", "New password"),
+        find(&observed, "textbox", "Confirm password"),
+    );
+    let (filled, audit) = h
+        .fill(
+            json!({"item": login.item, "press": find(&observed, "button", "Create account"),
+                     "fields": [["username", [find(&observed, "textbox", "Email")]],
+                                ["password", [&new, &confirm]]]}),
+        )
+        .await;
+    assert_eq!(filled.unwrap()["submitted"], true);
+    let shown = h.text().await;
+    println!(
+        "sign-up with a confirm box: {shown}; audit mapping {}",
+        audit["mapping"]
+    );
+    assert!(shown.contains("password accepted, confirm accepted"));
+    assert_eq!(audit["mapping"]["password"], json!([new, confirm]));
+    // The same as a plan's fill step; a field named twice is a usage error.
+    let observed = open(&mut h, "signup.html?two=1").await;
+    let (new, confirm) = (
+        find(&observed, "textbox", "New password"),
+        find(&observed, "textbox", "Confirm password"),
+    );
+    let mut plan = super::act("click e1");
+    plan["plan"]["steps"][0] = json!({"literal": {"op": "fill", "item": login.item,
+        "press": find(&observed, "button", "Create account"),
+        "fields": {"username": [find(&observed, "textbox", "Email")],
+                   "password": [&new, &confirm]}}});
+    plan.as_object_mut().unwrap().remove("act");
+    let planned = h.call("do", plan).await;
+    println!(
+        "sign-up in a plan: {:?}",
+        planned.as_ref().map_err(|f| &f.message)
+    );
+    planned.unwrap();
+    assert!(
+        h.text()
+            .await
+            .contains("password accepted, confirm accepted")
+    );
+    let observed = open(&mut h, "signup.html?two=1").await;
+    let (refused, _) = h
+        .fill(
+            json!({"item": login.item, "press": find(&observed, "button", "Create account"),
+                     "fields": [["password", [find(&observed, "textbox", "New password")]],
+                                ["password", [find(&observed, "textbox", "Confirm password")]]]}),
+        )
+        .await;
+    let refused = refused.unwrap_err();
+    assert!(refused.code == "bad_arguments" && refused.message.contains("password=eN,eN"));
+    // Refused, nothing released: the confirm box in another form.
+    let observed = open(&mut h, "signup-two-forms.html").await;
+    let (refused, _) = h
+        .fill(
+            json!({"item": login.item, "press": find(&observed, "button", "Create account"),
+                     "fields": [["password", [find(&observed, "textbox", "New password"),
+                                              find(&observed, "textbox", "Confirm password")]]]}),
+        )
+        .await;
+    let refused = refused.unwrap_err();
+    println!(
+        "confirm box in another form: {} ({})",
+        refused.code, refused.message
+    );
+    assert!(refused.code == "bad_target" && refused.message.contains("same form"));
     assert!(
         h.call("eval", json!({"script": "1"})).await.is_ok(),
         "nothing was released"

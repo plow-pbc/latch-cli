@@ -213,8 +213,10 @@ vault lacks is refused `no_such_item`. The mapping is
 `--field FIELD=eN` for each item field (`username`,
 `password`, `otp` for a login's current authenticator code, computed on
 the host; a card's `number`, `expiry`, `cvv`, …; an identity's or a note's
-fields), `--field number=e4,e5,e6,e7` for a value split across boxes; or
-`--suggested S`, a mapping latch suggested. Dates and expiries are
+fields), `--field number=e4,e5,e6,e7` for a value split across boxes,
+a login's password whole into each of its boxes (`--field
+password=e5,e6`, a sign-up's password and confirm boxes, both password
+inputs in one form); or `--suggested S`, a mapping latch suggested. Dates and expiries are
 reshaped to the field's own format. A mapping that includes a login's
 secret (a password, a code) needs `--press eN`, the button that submits
 it (given, or in the suggestion). A card or an identity takes none
@@ -246,8 +248,10 @@ refused `stale_snapshot`, with the fresh suggestions.
 
 Before any value leaves the vault, each mapped element must take its
 field (`bad_target`, exit 4, naming the field and why, otherwise): a
-password only into a password field or one marked `current-password`,
-never `new-password` or a code field; a username never into a password or
+password only into a password input, one marked `new-password` too (a
+sign-up's box, or a change-password form's new one on the login's own
+site), or a field marked `current-password`, never a code field; a
+username never into a password or
 search field; a code never into the sign-in's password field; a card's
 number and code only into a text, tel or number input whose token, if any,
 is theirs; anything else unless the markup contradicts it. Hidden,

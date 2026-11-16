@@ -549,7 +549,8 @@ pub enum BrowserCommand {
         /// login saved for the site of the page
         #[arg(long)]
         item: Option<String>,
-        /// FIELD=eN, or FIELD=eN,eN,… to split it across boxes
+        /// FIELD=eN, or FIELD=eN,eN,… to split it across boxes; a login's
+        /// password goes whole into each (a sign-up's confirm box)
         #[arg(
             long = "field",
             value_name = "FIELD=REFS",
