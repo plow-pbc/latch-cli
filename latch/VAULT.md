@@ -213,8 +213,9 @@ vault lacks is refused `no_such_item`. The mapping is
 `--field FIELD=eN` for each item field (`username`,
 `password`, `otp` for a login's current authenticator code, computed on
 the host; a card's `number`, `expiry`, `cvv`, …; an identity's or a note's
-fields), `--field number=e4,e5,e6,e7` for a value split across boxes; or
-`--suggested S`, a mapping latch suggested. Dates and expiries are
+fields), `--field number=e4,e5,e6,e7` for a value split across boxes,
+`--field password=e5 --field password=e6` for one whole in each (a
+password and its confirmation); or `--suggested S`, a mapping latch suggested. Dates and expiries are
 reshaped to the field's own format. A mapping that includes a login's
 secret (a password, a code) needs `--press eN`, the button that submits
 it (given, or in the suggestion). A card or an identity takes none

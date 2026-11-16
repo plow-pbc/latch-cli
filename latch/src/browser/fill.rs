@@ -466,19 +466,25 @@ pub async fn run(
 
 /// What the agent asked to fill, checked against the item.
 struct Plan {
-    /// Item field, and the refs it goes into.
+    /// Item field, and the refs it goes into; a field listed again (a
+    /// password and its confirmation) goes whole into each listing's refs.
     fields: Vec<(String, Vec<String>)>,
     press: Option<String>,
 }
 
 impl Plan {
+    /// Each field and the refs it went into; a field mapped more than once
+    /// lists every ref it took.
     fn mapping(&self) -> Value {
-        Value::Object(
-            self.fields
-                .iter()
-                .map(|(label, refs)| (label.clone(), json!(refs)))
-                .collect(),
-        )
+        let mut mapping = Map::new();
+        for (label, refs) in &self.fields {
+            let taken = mapping.entry(label.clone()).or_insert(json!([]));
+            taken
+                .as_array_mut()
+                .expect("a field's refs")
+                .extend(refs.iter().map(|r| json!(r)));
+        }
+        Value::Object(mapping)
     }
 
     fn of(item: &Item, args: &Value) -> Result<Plan, Failure> {
@@ -517,9 +523,6 @@ impl Plan {
             }
             if refs.is_empty() {
                 return Err(usage("each --field names its refs: FIELD=eN[,eN…]"));
-            }
-            if fields.iter().any(|(other, _)| *other == label) {
-                return Err(usage(&format!("{label} is mapped twice")));
             }
             for reference in &refs {
                 let taken = fields.iter().any(|(_, others)| others.contains(reference))

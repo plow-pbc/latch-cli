@@ -297,12 +297,17 @@ fn site() -> u16 {
                         if path == "/slow-welcome" {
                             std::thread::sleep(Duration::from_secs(3));
                         }
-                        let ok = get("password") == PASSWORD;
+                        let verdict = |ok: bool| if ok { "accepted" } else { "rejected" };
+                        let confirm = fields
+                            .iter()
+                            .any(|(n, _)| n == "confirm")
+                            .then(|| format!(", confirm {}", verdict(get("confirm") == PASSWORD)))
+                            .unwrap_or_default();
                         Some(answer(
                             "latch welcome",
                             format!(
-                                "signed in: password {}",
-                                if ok { "accepted" } else { "rejected" }
+                                "signed in: password {}{confirm}",
+                                verdict(get("password") == PASSWORD)
                             ),
                         ))
                     }
@@ -1749,6 +1754,29 @@ async fn observe_suggests_from_hints_and_the_checks_refuse_contradictions(engine
         h.call("eval", json!({"script": "1"})).await.is_ok(),
         "nothing was released"
     );
+
+    // Allowed: one password whole into a sign-up's two boxes, the audit
+    // naming both.
+    let observed = open(&mut h, "signup.html?two=1").await;
+    let (new, confirm) = (
+        find(&observed, "textbox", "New password"),
+        find(&observed, "textbox", "Confirm password"),
+    );
+    let (filled, audit) = h
+        .fill(
+            json!({"item": login.item, "press": find(&observed, "button", "Create account"),
+                     "fields": [["username", [find(&observed, "textbox", "Email")]],
+                                ["password", [&new]], ["password", [&confirm]]]}),
+        )
+        .await;
+    assert_eq!(filled.unwrap()["submitted"], true);
+    let shown = h.text().await;
+    println!(
+        "sign-up with a confirm box: {shown}; audit mapping {}",
+        audit["mapping"]
+    );
+    assert!(shown.contains("password accepted, confirm accepted"));
+    assert_eq!(audit["mapping"]["password"], json!([new, confirm]));
 
     // Allowed: a revealed password; an email into a box marked as a phone
     // number, flagged; an unmarked card field on the agent's map, whose
