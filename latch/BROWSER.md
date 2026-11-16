@@ -298,8 +298,9 @@ it still names the same element (one no longer on the page is
 `no_such_target`). A target is scrolled only as far as a click needs, since a
 scroll can move the page under it (a header that sticks once the page
 scrolls): one already in view is clicked where it is, one a click would not
-reach at the nearest edge is centred, and one a scroll brought into view is
-found again once the page has moved. A target that is hidden, disabled, covered or still moving is
+reach at the nearest edge (in a frame, also under the page around the frame)
+is centred, and one a scroll brought into view is found again once the page
+has moved. A target that is hidden, disabled, covered or still moving is
 refused with `covered_target`; a covered one's `covered_by` names what a
 click would land on instead (its role and name, or a frame's site), and
 one under a layer of the page around its frame says so. A click that lands

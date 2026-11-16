@@ -260,16 +260,18 @@
   // far as a click needs, since a scroll can move the page under it (a
   // header that sticks once the page scrolls): an element already in view
   // stays where it is, and one a click would not reach at the nearest edge
-  // is centred.
-  const locate = (snap, index) => {
+  // is centred. With `centre` it is centred anyway: a frame cannot see what
+  // the page around it draws over it.
+  const locate = (snap, index, centre) => {
     const el = (snaps.get(snap) || [])[index];
     if (!el || !el.isConnected) return { gone: true };
     if (!rendered(el)) return { hidden: true };
     const before = el.getBoundingClientRect();
-    el.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'instant' });
+    const scroll = (to) => el.scrollIntoView({ block: to, inline: to, behavior: 'instant' });
+    scroll(centre ? 'center' : 'nearest');
     let at = aim(el);
-    if (!at.reaches) {
-      el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+    if (!at.reaches && !centre) {
+      scroll('center');
       at = aim(el);
     }
     const { rect, x, y, reaches } = at;

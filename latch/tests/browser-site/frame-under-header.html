@@ -1,0 +1,13 @@
+<!doctype html><meta charset="utf-8"><title>Pay · Market</title>
+<!-- A header fixed over the top of the page, and a frame the page, scrolled
+     as it loads, leaves under it: the frame's button is in view in its own
+     frame, which cannot see the header, and only centring it clears it. -->
+<style>
+  body { margin: 0; }
+  header { position: fixed; top: 0; left: 0; right: 0; height: 154px; background: #234; }
+  iframe { display: block; border: 0; margin-top: 600px; }
+</style>
+<header></header>
+<iframe src="same.html" width="300" height="60"></iframe>
+<div style="height: 150vh"></div>
+<script>scrollTo(0, 580);</script>
