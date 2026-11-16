@@ -1036,12 +1036,20 @@ impl<D: Driver> Core<D> {
     }
 
     /// Brings the element into view and finds a point that reaches it,
-    /// twice, so a target still moving is refused.
+    /// twice, so a target still moving is refused. A page can move under
+    /// the scroll that brought it into view (a header that sticks once the
+    /// page scrolls), so after a scroll the first point is the one found
+    /// once the page has moved.
     fn locate(&mut self, snapshot: &str, position: usize) -> Result<Located, Failure> {
         let (frame, index) = self.reference(snapshot, position)?;
         let expression = format!("__latch.locate({snapshot:?}, {index})");
-        let first = self.driver.run(&frame, &expression)?;
-        std::thread::sleep(std::time::Duration::from_millis(80));
+        let pause = || std::thread::sleep(std::time::Duration::from_millis(80));
+        let mut first = self.driver.run(&frame, &expression)?;
+        if first["scrolled"] == true {
+            pause();
+            first = self.driver.run(&frame, &expression)?;
+        }
+        pause();
         let second = self.driver.run(&frame, &expression)?;
         let refused = |reason: &str| {
             let mut failure = Failure::new(

@@ -234,33 +234,49 @@
     return cover;
   };
 
-  // Brings element `index` of `snap` into view and reports where to click
-  // it, in this frame's viewport, and whether a click there would reach it:
-  // its centre, or for a link that wraps onto several lines (whose box's
-  // centre may fall between them) the middle of the first line that does.
-  const locate = (snap, index) => {
-    const el = (snaps.get(snap) || [])[index];
-    if (!el || !el.isConnected) return { gone: true };
-    if (!rendered(el)) return { hidden: true };
-    el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+  // Where a click on `el` lands, in this frame's viewport, and whether it
+  // reaches it there: its centre, or for a link that wraps onto several
+  // lines (whose box's centre may fall between them) the middle of the
+  // first line that does.
+  const aim = (el) => {
     const rect = el.getBoundingClientRect();
     const reachesAt = (px, py) => {
       const hit = document.elementFromPoint(px, py);
       return !!hit && hitsTarget(hit, el);
     };
-    let x = rect.left + rect.width / 2;
-    let y = rect.top + rect.height / 2;
-    let reaches = reachesAt(x, y);
-    const top = reaches ? null : document.elementFromPoint(x, y);
-    for (const line of reaches ? [] : el.getClientRects()) {
+    const [x, y] = [rect.left + rect.width / 2, rect.top + rect.height / 2];
+    if (reachesAt(x, y)) return { rect, x, y, reaches: true };
+    for (const line of el.getClientRects()) {
       const [lx, ly] = [line.left + line.width / 2, line.top + line.height / 2];
       if (line.width > 0 && line.height > 0 && reachesAt(lx, ly)) {
-        [x, y, reaches] = [lx, ly, true];
-        break;
+        return { rect, x: lx, y: ly, reaches: true };
       }
     }
+    return { rect, x, y, reaches: false };
+  };
+
+  // Brings element `index` of `snap` into view and reports where to click
+  // it (`aim`), and whether it `scrolled` to get there. It scrolls only as
+  // far as a click needs, since a scroll can move the page under it (a
+  // header that sticks once the page scrolls): an element already in view
+  // stays where it is, and one a click would not reach at the nearest edge
+  // is centred.
+  const locate = (snap, index) => {
+    const el = (snaps.get(snap) || [])[index];
+    if (!el || !el.isConnected) return { gone: true };
+    if (!rendered(el)) return { hidden: true };
+    const before = el.getBoundingClientRect();
+    el.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'instant' });
+    let at = aim(el);
+    if (!at.reaches) {
+      el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+      at = aim(el);
+    }
+    const { rect, x, y, reaches } = at;
+    const top = reaches ? null : document.elementFromPoint(x, y);
     return {
       x, y, width: rect.width, height: rect.height,
+      scrolled: rect.left !== before.left || rect.top !== before.top,
       covered: !reaches,
       cover: !reaches && top ? coverOf(top) : undefined,
       disabled: isDisabled(el),

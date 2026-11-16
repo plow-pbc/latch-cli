@@ -1,0 +1,29 @@
+<!doctype html><meta charset="utf-8"><title>Sign in · Market</title>
+<!-- A header that sticks once the page scrolls and leaves the flow, so
+     everything under it moves up by its height: a scroll moves the page
+     under the element it brought into view. "Sign in" is in view, a little
+     below the middle: centring it scrolls the header into sticking, and
+     centring it again scrolls back to the top, where the header unsticks.
+     "Sign in with a code" is below the fold. Scroll anchoring is off, as
+     it would make up for the header in some engines and not others. -->
+<style>
+  html { overflow-anchor: none; }
+  body { margin: 0; font: 16px sans-serif; }
+  header { height: 154px; background: #234; color: #fff; }
+  .stuck header { position: fixed; top: 0; left: 0; right: 0; }
+  button { display: block; height: 40px; margin: 0; }
+</style>
+<header>Market: <span id="out">nothing clicked</span></header>
+<div style="height: calc(50vh - 154px + 80px)"></div>
+<button id="password">Sign in</button>
+<div style="height: 150vh"></div>
+<button id="code">Sign in with a code</button>
+<div style="height: 100vh"></div>
+<script>
+  addEventListener('scroll', () => document.documentElement.classList.toggle('stuck', scrollY > 0));
+  for (const id of ['password', 'code']) {
+    document.getElementById(id).addEventListener('click', () => {
+      document.getElementById('out').textContent = `clicked ${id}`;
+    });
+  }
+</script>

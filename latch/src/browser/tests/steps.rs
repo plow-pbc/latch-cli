@@ -36,6 +36,7 @@ conformance!(
     typing_a_code_reaches_the_fields_one_time_code_pages_use,
     a_return_goes_through_selection_cards_in_batched_plans,
     a_container_drawn_over_its_target_still_covers_it,
+    a_page_that_moves_under_a_scroll_still_takes_the_click,
     waiting_for_the_page_counts_as_settle_time,
 );
 
@@ -1208,6 +1209,29 @@ async fn a_container_drawn_over_its_target_still_covers_it(engine: &str) {
     let picked = h.short(&[&format!("click {card}")]).await.unwrap();
     assert_eq!(picked["status"], "dispatched", "{picked}");
     assert!(h.text().await.contains("card picked"));
+    h.close().await;
+}
+
+/// A header that sticks once the page scrolls moves everything under it.
+/// A button already in view is clicked where it is, with no scroll that
+/// would set the header sticking and unsticking under the click; one below
+/// the fold is clicked where it lands once the page has moved under the
+/// scroll that brought it into view.
+async fn a_page_that_moves_under_a_scroll_still_takes_the_click(engine: &str) {
+    let (_dir, state, _area) = test_state(engine);
+    let site = site();
+    let mut h = Harness::start(&state, engine, Some(Arc::new(Fake::default()))).await;
+    h.open(&format!("{site}/sticky-header.html")).await;
+    let page = h.call("observe", json!({"all": true})).await;
+    for (name, clicked) in [
+        ("Sign in", "clicked password"),
+        ("Sign in with a code", "clicked code"),
+    ] {
+        let target = find(&page, "button", name);
+        let done = h.short(&[&format!("click {target}")]).await;
+        assert_eq!(done.unwrap()["status"], "dispatched", "{name}");
+        assert!(h.text().await.contains(clicked), "{name}");
+    }
     h.close().await;
 }
 
