@@ -324,7 +324,7 @@ pub async fn run(
             failure
         };
         let mut refs: Vec<String> = literal.target.iter().cloned().collect();
-        refs.extend(literal.fields.values().flatten().cloned());
+        refs.extend(literal.fields.iter().flat_map(|(_, refs)| refs).cloned());
         refs.extend(literal.press.iter().cloned());
         for target in refs {
             let (pinned, _) = call(
@@ -1443,12 +1443,7 @@ fn popup_of(result: &Value) -> Option<String> {
 
 /// A literal fill as `fill.rs` takes its arguments.
 fn fill_args(literal: &Literal) -> Value {
-    let fields: Vec<Value> = literal
-        .fields
-        .iter()
-        .map(|(label, refs)| json!([label, refs]))
-        .collect();
-    json!({"item": literal.item, "fields": fields, "press": literal.press,
+    json!({"item": literal.item, "fields": literal.fields, "press": literal.press,
            "snapshot": literal.snapshot, "suggested": literal.suggestion})
 }
 

@@ -237,7 +237,7 @@ pub(super) async fn names(entry: &Entry, plan: &Plan) -> Names {
         let refs = literal
             .target
             .iter()
-            .chain(literal.fields.values().flatten())
+            .chain(literal.fields.iter().flat_map(|(_, refs)| refs))
             .chain(literal.press.iter());
         for target in refs {
             let key = (literal.snapshot.clone(), target.clone());
