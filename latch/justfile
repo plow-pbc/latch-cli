@@ -117,7 +117,7 @@ build api="":
         suffix="-dev" ;;
     esac
     # The host's socket lives in the state folder; macOS caps its path at 104 bytes.
-    if [ "$(printf '%s' "$state/serve-v4.sock" | wc -c)" -ge 104 ]; then
+    if [ "$(printf '%s' "$state/serve-v5.sock" | wc -c)" -ge 104 ]; then
         echo "$state is too deep for the host's socket; use a worktree with a shorter path" >&2
         exit 1
     fi

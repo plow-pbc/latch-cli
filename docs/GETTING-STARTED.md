@@ -93,7 +93,7 @@ latch --version
 ```
 
 ```json
-{"version":"0.1.0 (151): commit …, protocol plow/latch/4"}
+{"version":"0.1.0 (151): commit …, protocol plow/latch/5"}
 ```
 
 ## 2. Log in and start the host
