@@ -64,7 +64,7 @@ normal answer, not an error.
  "plugins":[{"name":"google","state":"enabled"},…],
  "update":{"available":false,"build":null,"checked_at":null},
  "last_error":null,"api_url":"https://api.plow.co","state_dir":"/Users/me/.latch",
- "version":"0.1.0 (commit b0be31f8b, built 2026-10-23 19:40 UTC, local build, protocol plow/latch/5)","protocol":5}
+ "version":"0.1.0 (commit b0be31f8b, built 2026-10-23 19:40 UTC, local build, protocol plow/latch/4)","protocol":4}
 ```
 
 Field by field:
@@ -261,7 +261,7 @@ updated with `latch update` there.
 Run ordinary `latch exec`, `latch file`, `latch browser` and `latch google` commands on the
 host's state folder. A saved host resolves locally, even while Plow is
 unreachable; explicitly naming this machine with `--host` also resolves
-locally. The CLI connects to `<state-dir>/serve-v5.sock`, inside the private
+locally. The CLI connects to `<state-dir>/serve-v4.sock`, inside the private
 state folder, mode 0600. It never dials its own iroh key.
 
 The socket accepts the same length-prefixed `Request` and `Response`

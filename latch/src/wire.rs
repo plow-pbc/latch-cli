@@ -30,10 +30,8 @@ use crate::state::to_hex;
 /// every browser `open` a disposable session on the engine it names, which
 /// an older host would run on its persistent default profile instead;
 /// version 4 lets a `rules_try` preview carry draft rules and judge as a new
-/// agent, which an older host would ignore and judge by its saved rules;
-/// version 5 sends a plan's fill fields as ordered `[field, refs]` pairs,
-/// which an older host refuses as a malformed plan.
-pub const ALPN: &[u8] = b"plow/latch/5";
+/// agent, which an older host would ignore and judge by its saved rules.
+pub const ALPN: &[u8] = b"plow/latch/4";
 
 /// The protocol version in `ALPN`, as a number.
 pub fn protocol() -> u32 {
