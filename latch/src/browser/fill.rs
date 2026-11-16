@@ -757,13 +757,41 @@ fn answer_events(answer: &mut Map<String, Value>, mut events: Vec<Value>, sites:
 
 /// Each prepared element against the item field it takes: the field's
 /// outcome (`filled` once set), or `bad_target` for the first that the
-/// page's markup contradicts.
+/// page's markup contradicts. A field mapped more than once (a password
+/// and its confirmation) goes only into password inputs of one form.
 fn checked(meta: &Meta, prepared: &Value) -> Result<Vec<Value>, Failure> {
+    let fields = prepared["fields"].as_array().cloned().unwrap_or_default();
     let mut outcomes = Vec::new();
-    for field in prepared["fields"].as_array().into_iter().flatten() {
+    for field in &fields {
         let label = field["field"].as_str().unwrap_or_default();
+        let copies: Vec<Control> = fields
+            .iter()
+            .filter(|f| f["field"] == label)
+            .flat_map(|f| f["boxes"].as_array().cloned().unwrap_or_default())
+            .map(|target| Control::of(&target))
+            .collect();
         for target in field["boxes"].as_array().into_iter().flatten() {
             let control = Control::of(target);
+            if copies.len() > 1 {
+                if !control.password() {
+                    return Err(bad_target(
+                        label,
+                        &format!(
+                            "{} is not a password input, and a field filled into more than one box goes only into password inputs",
+                            control.reference
+                        ),
+                    ));
+                }
+                if control.form.is_none() || copies.iter().any(|c| c.form != control.form) {
+                    return Err(bad_target(
+                        label,
+                        &format!(
+                            "{} is not in the same form as the field's other boxes",
+                            control.reference
+                        ),
+                    ));
+                }
+            }
             let mismatch = suggest::check(meta.kind, label, &control)
                 .map_err(|why| bad_target(label, &why))?;
             let mut outcome =
@@ -1352,6 +1380,44 @@ mod tests {
         assert!(plan("email").identifier_stage(&meta));
         assert!(!plan("account number").identifier_stage(&meta));
         assert!(!plan("otp").identifier_stage(&meta));
+    }
+
+    /// A password mapped twice goes only into password inputs of one form:
+    /// a text box, another form, another frame or no form refuses it.
+    #[test]
+    fn a_field_filled_twice_goes_only_into_password_inputs_of_one_form() {
+        let meta = Item {
+            id: "v1".into(),
+            revision: 1,
+            sites: vec!["shop.example".into()],
+            other_top_sites: vec![],
+            raw: Raw::from_labels(LOGIN, "Shop", &[("password".into(), "made-up".into())]).unwrap(),
+        }
+        .meta();
+        let pw = |reference: &str, kind: &str, frame: &str, form: i64| {
+            json!({"ref": reference, "frame": frame, "origin": "https://shop.example",
+                   "tag": "input", "type": kind, "autocomplete": "", "form": form})
+        };
+        let prepared = |second: Value| {
+            json!({"fields": [{"field": "password", "boxes": [pw("e1", "password", "f0", 0)]},
+                              {"field": "password", "boxes": [second]}]})
+        };
+        assert_eq!(
+            checked(&meta, &prepared(pw("e2", "password", "f0", 0)))
+                .unwrap()
+                .len(),
+            2
+        );
+        for (second, why) in [
+            (pw("e2", "text", "f0", 0), "not a password input"),
+            (pw("e2", "password", "f0", 1), "not in the same form"),
+            (pw("e2", "password", "f1", 0), "not in the same form"),
+            (pw("e2", "password", "f0", -1), "not in the same form"),
+        ] {
+            let refused = checked(&meta, &prepared(second)).unwrap_err();
+            assert_eq!(refused.code, "bad_target");
+            assert!(refused.message.contains(why), "{}", refused.message);
+        }
     }
 
     #[test]

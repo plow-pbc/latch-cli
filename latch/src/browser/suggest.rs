@@ -256,7 +256,7 @@ impl Control {
         self.takes_value() && self.unusable.is_none()
     }
 
-    fn password(&self) -> bool {
+    pub fn password(&self) -> bool {
         self.tag == "input" && self.kind == "password"
     }
 
