@@ -102,8 +102,8 @@ then `latch browser --session ID fill --field username=eN --field
 password=eN --press eN` with no `--item`: latch uses the login saved for
 that site. When several are (`which_item` lists them), add `--item vN`.
 `--item` takes an id, never a title. A form that asks for the password
-twice (a sign-up's confirm box) takes it twice: `--field password=eN
---field password=eN`.
+twice (a sign-up's confirm box) takes both boxes in one field:
+`--field password=eN,eN`.
 
 The vault holds the owner's logins, cards, identities and notes. To find
 one, narrow the list rather than reading all of it: `latch vault list
