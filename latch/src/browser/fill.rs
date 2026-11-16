@@ -764,15 +764,15 @@ fn checked(meta: &Meta, prepared: &Value) -> Result<Vec<Value>, Failure> {
     let mut outcomes = Vec::new();
     for field in &fields {
         let label = field["field"].as_str().unwrap_or_default();
-        let copies: Vec<Control> = fields
+        let mapped: Vec<&Value> = fields.iter().filter(|f| f["field"] == label).collect();
+        let copies: Vec<Control> = mapped
             .iter()
-            .filter(|f| f["field"] == label)
             .flat_map(|f| f["boxes"].as_array().cloned().unwrap_or_default())
             .map(|target| Control::of(&target))
             .collect();
         for target in field["boxes"].as_array().into_iter().flatten() {
             let control = Control::of(target);
-            if copies.len() > 1 {
+            if mapped.len() > 1 {
                 if !control.password() {
                     return Err(bad_target(
                         label,
@@ -1408,6 +1408,10 @@ mod tests {
                 .len(),
             2
         );
+        // One mapping split across boxes is no copy: no same-form rule.
+        let split = json!({"fields": [{"field": "password",
+            "boxes": [pw("e1", "password", "f0", 0), pw("e2", "password", "f0", 1)]}]});
+        assert_eq!(checked(&meta, &split).unwrap().len(), 2);
         for (second, why) in [
             (pw("e2", "text", "f0", 0), "not a password input"),
             (pw("e2", "password", "f0", 1), "not in the same form"),
