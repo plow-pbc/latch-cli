@@ -247,8 +247,10 @@ refused `stale_snapshot`, with the fresh suggestions.
 
 Before any value leaves the vault, each mapped element must take its
 field (`bad_target`, exit 4, naming the field and why, otherwise): a
-password only into a password field or one marked `current-password`,
-never `new-password` or a code field; a username never into a password or
+password only into a password input, one marked `new-password` too (a
+sign-up's box, or a change-password form's new one on the login's own
+site), or a field marked `current-password`, never a code field; a
+username never into a password or
 search field; a code never into the sign-in's password field; a card's
 number and code only into a text, tel or number input whose token, if any,
 is theirs; anything else unless the markup contradicts it. Hidden,

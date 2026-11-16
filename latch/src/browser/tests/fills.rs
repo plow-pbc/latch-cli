@@ -1740,18 +1740,18 @@ async fn observe_suggests_from_hints_and_the_checks_refuse_contradictions(engine
         assert_eq!(refused.code, "bad_target");
     }
     let observed = open(&mut h, "signup.html").await;
-    let (refused, _) = h
+    let (filled, _) = h
         .fill(
             json!({"item": login.item, "press": find(&observed, "button", "Create account"),
                      "fields": [["password", [find(&observed, "textbox", "New password")]]]}),
         )
         .await;
-    let refused = refused.unwrap_err();
     println!(
-        "a password into new-password: {} ({})",
-        refused.code, refused.message
+        "a password into new-password: {:?}",
+        filled.as_ref().map_err(|f| &f.message)
     );
-    assert!(refused.code == "bad_target" && refused.message.contains("new-password"));
+    assert_eq!(filled.unwrap()["submitted"], true);
+    assert!(h.text().await.contains("password accepted"));
     let observed = open(&mut h, "idf-password.html").await;
     let (refused, _) = h
         .fill(
