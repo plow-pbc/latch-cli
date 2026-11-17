@@ -182,6 +182,9 @@ pub enum Call {
         #[serde(default)]
         shows: bool,
     },
+    /// Keeps the session open, touching no browser: what a handoff sends
+    /// while the owner takes longer than the session may sit idle.
+    Ping,
     /// Closes the browser, ending the session.
     Close,
 }
@@ -497,6 +500,7 @@ impl<D: Driver> Core<D> {
             Call::Downloads => self.downloads(&mut audit),
             Call::DownloadGet { download } => self.download_get(&download, &mut audit),
             Call::Close => unreachable!("the worker closes the browser"),
+            Call::Ping => unreachable!("the worker answers a ping"),
         };
         self.lift_guard();
         if let Some(settled) = self.settled {

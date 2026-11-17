@@ -31,6 +31,8 @@
 //!   audit record. When bytes follow the line (a screenshot, a download),
 //!   the answer says how many: `"bytes": N`. An upload's call is followed
 //!   by its file's `size` bytes;
+//! - `{"op": "ping"}` is answered at once, touching no browser: it only
+//!   keeps the session from going idle;
 //! - `{"op": "close"}` closes the browser, waits for every process it
 //!   started to end, answers and exits.
 //!
@@ -310,6 +312,12 @@ fn serve<B: Runtime>(
             let reply = json!({"result": closed, "audit": {}});
             answer(&mut stdout, Response::Ok(reply), None);
             return ExitCode::SUCCESS;
+        }
+        if let Call::Ping = call {
+            last_call = Instant::now();
+            let reply = json!({"result": {"ping": true}, "audit": {}});
+            answer(&mut stdout, Response::Ok(reply), None);
+            continue;
         }
         // Every wait for the engine in this call, together, ends by then.
         let deadline = Instant::now() + call.limit(call_limit);

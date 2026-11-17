@@ -6,6 +6,8 @@
 //! (600 by default). Meanwhile:
 //! - that session is paused: every other call on it is answered
 //!   `session_paused`, while other sessions go on;
+//! - its browser stays open however long the owner takes: the wait pings
+//!   the worker every half idle timeout, so the session never idles out;
 //! - its window alone comes to the front: the one thing in latch that
 //!   activates the browser;
 //! - the pending handoff is a file in `browser/handoff/`, named by the
@@ -165,6 +167,7 @@ async fn wait(
     browsers.notice_handoffs();
     worker(entry, json!({"op": "front"}), audit).await?;
     let started = Instant::now();
+    let mut pinged = started;
     loop {
         if !file.exists() {
             return Ok(started.elapsed());
@@ -184,6 +187,10 @@ async fn wait(
                 code::browser_gone,
                 "the browser closed during the handoff".into(),
             ));
+        }
+        if pinged.elapsed() >= entry.runtime.idle / 2 {
+            worker(entry, json!({"op": "ping"}), audit).await?;
+            pinged = Instant::now();
         }
         tokio::time::sleep(POLL).await;
     }
