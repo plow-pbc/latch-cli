@@ -21,9 +21,10 @@
 //! 5. budgets: 8 actions a step, 30 a plan, the plan's time (and 2 waits
 //!    a step, after which waiting is not offered);
 //! 6. a chosen target below p 0.5: `ambiguous_target`;
-//! 7. typing with none of the step's own values fitting: `needs_text`
-//!    (a step's values are its quoted texts and the plan's facts it names
-//!    as `{NAME}`; it types nothing else);
+//! 7. typing with none of the step's own values fitting a field: with
+//!    no values, `needs_text`; with values that no field on the page
+//!    takes, `no_text_field` (a step's values are its quoted texts and the
+//!    plan's facts it names as `{NAME}`; it types nothing else);
 //! 8. a fill on a sign-in page whose fitting login the plan does not
 //!    name: `needs_login`;
 //! 9. a fill with no suggestion chosen (`none`, or none complete for an
@@ -521,17 +522,28 @@ impl Run<'_> {
                 _ => None,
             };
 
-            // 7. Typing needs a supplied text that fits.
+            // 7. Typing needs a supplied text, and a field on the page
+            // that takes it.
+            if op == "type" && chosen.is_none() && !values.is_empty() {
+                let mut failure = stopped(
+                    code::no_text_field,
+                    format!(
+                        "step {n}: none of the text fields on the page takes the step's text; nothing was typed. The field it goes into may not show yet (a box still to open) or be one latch can't reach; look at the page, then name the field in a literal step"
+                    ),
+                );
+                let fields: Vec<Value> = seen
+                    .fields
+                    .iter()
+                    .map(|t| json!({"ref": t.at, "role": t.role, "name": t.name}))
+                    .collect();
+                failure.details = json!({"fields": fields});
+                return Err(failure);
+            }
             if op == "type" && chosen.is_none() {
                 let field = decision
-                    .typed
-                    .iter()
-                    .flat_map(|p| &p.likeliest)
-                    .find_map(|(id, _)| seen.types.iter().find(|t| &t.offer.id == id))
-                    .or_else(|| {
-                        let id = &decision.type_field.as_ref()?.id;
-                        seen.fields.iter().find(|t| &t.offer.id == id)
-                    })
+                    .type_field
+                    .as_ref()
+                    .and_then(|p| seen.fields.iter().find(|t| t.offer.id == p.id))
                     .map(|t| json!({"ref": t.at, "role": t.role, "name": t.name}))
                     .or_else(|| first_field(view));
                 let mut failure = stopped(

@@ -384,6 +384,7 @@ conformance!(
     a_dialog_that_opens_between_calls_is_refused_at_once,
     typing_that_opens_a_dialog_returns_without_waiting_on_the_page,
     a_dialog_in_one_session_does_not_hold_another_sessions_download,
+    open_shadow_roots_read_as_the_page_and_closed_roots_and_other_sites_do_not,
     ;
     mac:
     the_engine_runs_from_the_host_with_its_own_sandbox_and_leaves_nothing,
@@ -1715,6 +1716,97 @@ async fn an_element_keeps_its_ref_when_the_page_adds_one_before_it(engine: &str)
         .unwrap()
         .result;
     assert_eq!(text["value"], "x");
+    session.close().await.unwrap();
+}
+
+/// A page drawn partly in shadow roots: what an open root holds is listed,
+/// typed into and clicked like the rest of the page, and its text is the
+/// page's; a closed root's is never read, and a frame from another site
+/// inside the open root stays a frame of its own, with its own origin.
+async fn open_shadow_roots_read_as_the_page_and_closed_roots_and_other_sites_do_not(engine: &str) {
+    let (_dir, state, _area) = test_state(engine);
+    let mut session =
+        Session::start_with(&latch(), &state, engine, Duration::from_secs(120), HEADLESS)
+            .await
+            .unwrap();
+    let url = test_site().replace("frames.html", "shadow.html");
+    let page = session
+        .call(json!({"op": "open", "url": url}))
+        .await
+        .unwrap()
+        .result;
+    let message = find(&page, "textbox", "Write a message");
+    let typed = session
+        .call(json!({"op": "act", "action": "type", "target": message, "text": "hello shadow"}))
+        .await
+        .unwrap()
+        .result;
+    assert_eq!(element(&typed, &message)["value"], "hello shadow");
+    let send = find(&typed, "button", "Send");
+    session
+        .call(json!({"op": "act", "action": "click", "target": send}))
+        .await
+        .unwrap();
+    let text = session.call(json!({"op": "text"})).await.unwrap().result;
+    let text = text["text"].as_str().unwrap();
+    assert!(text.contains("Conversation with Ada Lovelace"), "{text}");
+    // Text in a boxless wrapper and a slot's own text show, too.
+    assert!(
+        text.contains("Seen 2h ago") && text.contains("No older messages"),
+        "{text}"
+    );
+    assert!(text.contains("sent: hello shadow, trusted true"), "{text}");
+    // A control drawn wholly by its own root takes the click itself.
+    let chip = find(&typed, "button", "Mark read");
+    session
+        .call(json!({"op": "act", "action": "click", "target": chip}))
+        .await
+        .unwrap();
+    let marked = session.call(json!({"op": "text"})).await.unwrap().result;
+    assert!(
+        marked["text"]
+            .as_str()
+            .unwrap()
+            .contains("marked read, trusted true")
+    );
+
+    // The closed root, in neither the elements nor the text.
+    let all = session
+        .call(json!({"op": "observe", "all": true}))
+        .await
+        .unwrap()
+        .result;
+    for shown in [all.to_string(), text.to_string()] {
+        assert!(!shown.contains("closed-root-text") && !shown.contains("Closed field"));
+        for hidden in [
+            "hidden-shadow-text",
+            "hidden-boxless-text",
+            "hidden-host-text",
+        ] {
+            assert!(!shown.contains(hidden), "{hidden}");
+        }
+    }
+    // A form in the root is one form, with an identity of its own.
+    let view = session.call(json!({"op": "view"})).await.unwrap().result;
+    let form = |name: &str| element(&view, &find(&view, "textbox", name))["form"].clone();
+    assert!(
+        form("First name").as_i64().is_some_and(|f| f >= 0),
+        "{view:#}"
+    );
+    assert_eq!(form("First name"), form("City"));
+    // The other site's button is its own frame's, at its own origin.
+    let cross = element(&all, &find(&all, "button", "Cross-site button"))["frame"].clone();
+    assert_ne!(cross, element(&all, &message)["frame"]);
+    let origin = all["frames"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["frame"] == cross)
+        .unwrap()["origin"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(origin.starts_with("http://localhost:"), "{origin}");
     session.close().await.unwrap();
 }
 

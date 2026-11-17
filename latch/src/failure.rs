@@ -376,6 +376,7 @@ codes! {
     no_such_tab: Usage,
     no_such_target: Failed,
     no_terminal: Usage,
+    no_text_field: Failed,
     not_a_file: Usage,
     not_allowed: Denied,
     not_an_agent: Usage,
