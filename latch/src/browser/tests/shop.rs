@@ -148,11 +148,12 @@ pub(super) fn plan_of(case: &Case, site: &str) -> Result<Plan, String> {
 const VAULT_KINDS: [&str; 3] = ["card", "login", "login-no-password"];
 
 /// The stop codes a plan can end with (exit 1 and exit 4).
-const STOP_CODES: [&str; 30] = [
+const STOP_CODES: [&str; 31] = [
     "check_not_met",
     "unconfirmed",
     "already_true",
     "needs_text",
+    "no_text_field",
     "needs_fields",
     "needs_login",
     "needs_owner",

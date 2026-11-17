@@ -1424,3 +1424,56 @@ async fn a_plan_stopped_for_the_owner_goes_on_after_the_handoff() {
     assert_eq!(went["status"], "reached", "{went:#}");
     h.close().await;
 }
+
+/// A message box drawn in an open shadow root, as some sites draw a
+/// pop-up, takes a step's text like any field; where the box is in a
+/// closed root, and only a search box shows, the step stops saying no
+/// field takes its text, rather than asking for text it was given.
+#[tokio::test]
+async fn a_step_types_into_an_open_shadow_root_and_stops_where_no_field_shows() {
+    let (_dir, state, _area) = test_state("cft");
+    let site = super::steps::site();
+    let told = Arc::new(Told::default());
+    let mut h = Harness::start_with(
+        &state,
+        "cft",
+        Some(told.clone()),
+        vec![(site.clone(), "https://shop.example".into())],
+    )
+    .await;
+
+    h.open(&format!("{site}/shadow.html")).await;
+    told.tell(|s| {
+        if fields(s).contains("Hello Ada") {
+            complete("[field] textbox \"Write a message\": \"Hello Ada\"", "done")
+        } else {
+            choose("type", Some("textbox \"Write a message\""))
+        }
+    });
+    let typed = h
+        .send(plan(
+            &["write \"Hello Ada\" in the message box"],
+            &site,
+            &[],
+            &[],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(typed["status"], "reached", "{typed:#}");
+
+    h.open(&format!("{site}/shadow.html?closed")).await;
+    told.tell(|_| choose("type", None));
+    let (code, details) = stop(
+        h.send(plan(
+            &["write \"Hello Ada\" in the message box"],
+            &site,
+            &[],
+            &[],
+        ))
+        .await,
+    );
+    assert_eq!(code, "no_text_field", "{details:#}");
+    assert_eq!(details["stop"]["fields"][0]["name"], "Search");
+    assert!(!details.to_string().contains("Closed field"));
+    assert_eq!(sent(&details), 0);
+}

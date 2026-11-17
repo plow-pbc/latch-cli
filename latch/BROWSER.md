@@ -498,7 +498,8 @@ offer no passkey, to the agent or to the owner in a handoff), `blocked`,
 `unconfirmed`, `stuck` or `already_true`, a budget (8 actions a step, 30 a
 plan, 2 waits a step: `step_budget`, `plan_budget`, `deadline`), a target
 below p 0.5 (`ambiguous_target`, with candidate refs), text that was not
-supplied (`needs_text`, naming the field), a sign-in form whose login
+supplied (`needs_text`, naming the field), supplied text that no field on
+the page takes (`no_text_field`, with the page's text fields), a sign-in form whose login
 the plan doesn't name (`needs_login`, with the items that fit), a fill
 with no suggestion chosen (`needs_fields`, with the page's fields, offers
 and other controls, for a literal `fill`), the same action on an
