@@ -40,7 +40,7 @@
   // The element at a point, inside open shadow roots too: the document's
   // own answer is the shadow host.
   const pointAt = (x, y) => {
-    let hit = pointAt(x, y);
+    let hit = document.elementFromPoint(x, y);
     while (hit && hit.shadowRoot) {
       const inner = hit.shadowRoot.elementFromPoint(x, y);
       if (!inner || inner === hit) break;
