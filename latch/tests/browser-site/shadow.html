@@ -22,7 +22,9 @@
       <button id="send">Send</button>
       <iframe id="cross" width="300" height="80"></iframe>
     </section>
-    <p hidden>hidden-shadow-text</p>`;
+    <p hidden>hidden-shadow-text</p>
+    <div style="display:contents">Seen 2h ago</div>
+    <slot>No older messages</slot>`;
     const box = open.querySelector('[role=textbox]');
     open.getElementById('send').addEventListener('click', (e) => {
       document.getElementById('out').textContent = 'sent: ' + box.textContent + ', trusted ' + e.isTrusted;

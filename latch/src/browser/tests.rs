@@ -1750,6 +1750,11 @@ async fn open_shadow_roots_read_as_the_page_and_closed_roots_and_other_sites_do_
     let text = session.call(json!({"op": "text"})).await.unwrap().result;
     let text = text["text"].as_str().unwrap();
     assert!(text.contains("Conversation with Ada Lovelace"), "{text}");
+    // Text in a boxless wrapper and a slot's own text show, too.
+    assert!(
+        text.contains("Seen 2h ago") && text.contains("No older messages"),
+        "{text}"
+    );
     assert!(text.contains("sent: hello shadow, trusted true"), "{text}");
 
     // The closed root, in neither the elements nor the text.

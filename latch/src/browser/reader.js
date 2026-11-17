@@ -48,11 +48,23 @@
     }
     return hit;
   };
-  // The page's text: the document's, then each open shadow root's. Only
-  // a rendered child's: `innerText` gives a hidden one's text whole.
+  // What nodes in a shadow root show as text: a rendered element's
+  // `innerText` (which leaves out what it hides; a hidden element's would
+  // be its text whole), a boxless one's (`display: contents`, as a slot
+  // is) by its own nodes, nothing of a hidden one. A slot given the page's
+  // own nodes shows them, and the document's text already has them.
+  const boxless = (el) => getComputedStyle(el).display === 'contents';
+  const shownIn = (nodes) => [...nodes].map((node) => {
+    if (node.nodeType === Node.TEXT_NODE) return node.textContent.trim();
+    if (node.nodeType !== Node.ELEMENT_NODE) return '';
+    if (rendered(node)) return node.innerText;
+    if (!boxless(node) || (node.localName === 'slot' && node.assignedNodes().length)) return '';
+    return shownIn(node.childNodes);
+  }).filter(Boolean).join('\n');
+  // The page's text: the document's, then each shown open shadow root's.
   const pageText = () => [document.body ? document.body.innerText : '',
-    ...deepAll(document, '*').filter((el) => el.shadowRoot)
-      .map((host) => [...host.shadowRoot.children].filter(rendered).map((el) => el.innerText).join('\n'))]
+    ...deepAll(document, '*').filter((el) => el.shadowRoot && (rendered(el) || boxless(el)))
+      .map((host) => shownIn(host.shadowRoot.childNodes))]
     .filter(Boolean).join('\n');
 
   const clean = (text, max = MAX_TEXT) => {
