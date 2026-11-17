@@ -2,14 +2,15 @@
 <!-- Parts of a page drawn inside shadow roots, as some sites draw a
      message pop-up: an open root, read like the page around it, holding a
      frame from another site (served at ?cross=PORT), which stays a frame
-     of its own, and text it hides; and a closed root, which no reader
-     reaches. The page's own search box is beside them; ?closed draws only
-     the closed root. -->
+     of its own, and text it hides; an open root in a hidden element; and
+     a closed root, which no reader reaches. The page's own search box is
+     beside them; ?closed draws only the closed root. -->
 <h1>Messages</h1>
 <p><label>Search <input type="search" id="search"></label></p>
 <p id="out">nothing sent</p>
 <div id="overlay"></div>
 <div id="closed"></div>
+<div id="hidden-host" hidden></div>
 <script>
   const params = new URLSearchParams(location.search);
   if (!params.has('closed')) {
@@ -24,6 +25,7 @@
     </section>
     <p hidden>hidden-shadow-text</p>
     <div style="display:contents">Seen 2h ago</div>
+    <div style="display:contents;visibility:hidden">hidden-boxless-text</div>
     <slot>No older messages</slot>`;
     const box = open.querySelector('[role=textbox]');
     open.getElementById('send').addEventListener('click', (e) => {
@@ -31,6 +33,8 @@
     });
     if (params.get('cross')) open.getElementById('cross').src = 'http://localhost:' + params.get('cross') + '/cross.html';
   }
+  document.getElementById('hidden-host').attachShadow({ mode: 'open' }).innerHTML =
+    '<div style="display:contents">hidden-host-text</div>';
   const closed = document.getElementById('closed').attachShadow({ mode: 'closed' });
   closed.innerHTML = '<p>closed-root-text</p><label>Closed field <input></label>';
 </script>

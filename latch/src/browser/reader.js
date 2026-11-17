@@ -48,23 +48,22 @@
     }
     return hit;
   };
-  // What nodes in a shadow root show as text: a rendered element's
-  // `innerText` (which leaves out what it hides; a hidden element's would
-  // be its text whole), a boxless one's (`display: contents`, as a slot
-  // is) by its own nodes, nothing of a hidden one. A slot given the page's
-  // own nodes shows them, and the document's text already has them.
-  const boxless = (el) => getComputedStyle(el).display === 'contents';
-  const shownIn = (nodes) => [...nodes].map((node) => {
-    if (node.nodeType === Node.TEXT_NODE) return node.textContent.trim();
-    if (node.nodeType !== Node.ELEMENT_NODE) return '';
-    if (rendered(node)) return node.innerText;
-    if (!boxless(node) || (node.localName === 'slot' && node.assignedNodes().length)) return '';
-    return shownIn(node.childNodes);
-  }).filter(Boolean).join('\n');
-  // The page's text: the document's, then each shown open shadow root's.
+  // Whether a text node is drawn: it has boxes (none under a hidden
+  // ancestor, nor in a slot's fallback while the slot holds the page's
+  // own nodes) and its element is visible.
+  const draws = (node) => {
+    const range = document.createRange();
+    range.selectNodeContents(node);
+    const el = node.parentElement || node.getRootNode().host;
+    return range.getClientRects().length > 0 && getComputedStyle(el).visibility === 'visible';
+  };
+  // The page's text: the document's, then what the open shadow roots in
+  // it draw (a slot's own nodes, the page's, are in the document's).
   const pageText = () => [document.body ? document.body.innerText : '',
-    ...deepAll(document, '*').filter((el) => el.shadowRoot && (rendered(el) || boxless(el)))
-      .map((host) => shownIn(host.shadowRoot.childNodes))]
+    ...deepAll(document, '*').filter((el) => el.shadowRoot && el.getRootNode() === document)
+      .map((host) => [...textNodes(host.shadowRoot)]
+        .filter((node) => !SKIP_TEXT.has(node.parentElement?.tagName) && node.textContent.trim() && draws(node))
+        .map((node) => node.textContent.trim()).join(' '))]
     .filter(Boolean).join('\n');
 
   const clean = (text, max = MAX_TEXT) => {
