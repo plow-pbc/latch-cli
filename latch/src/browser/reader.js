@@ -21,6 +21,39 @@
   const ROWS = 'tr, li, [role=row], [role=listitem], [role=gridcell], article, dd';
   const SECRET = /pass|secret|token|otp|one-time|cvv|cvc|cc-number|cc-csc|\bpin\b/i;
 
+  // Open shadow roots are part of the page a person sees, so every lookup
+  // goes through them: `deepAll` is `querySelectorAll` that also searches
+  // each open shadow root below `root`, in document order. A closed root
+  // stays out of reach (its `shadowRoot` is null), and a frame's document
+  // is its own frame's to read, as before.
+  const deepAll = (root, selector) => {
+    const found = [];
+    const visit = (scope) => {
+      for (const el of scope.querySelectorAll('*')) {
+        if (el.matches(selector)) found.push(el);
+        if (el.shadowRoot) visit(el.shadowRoot);
+      }
+    };
+    visit(root);
+    return found;
+  };
+  // The element at a point, inside open shadow roots too: the document's
+  // own answer is the shadow host.
+  const pointAt = (x, y) => {
+    let hit = pointAt(x, y);
+    while (hit && hit.shadowRoot) {
+      const inner = hit.shadowRoot.elementFromPoint(x, y);
+      if (!inner || inner === hit) break;
+      hit = inner;
+    }
+    return hit;
+  };
+  // The page's text: the document's, then each open shadow root's.
+  const pageText = () => [document.body ? document.body.innerText : '',
+    ...deepAll(document, '*').filter((el) => el.shadowRoot)
+      .map((host) => [...host.shadowRoot.children].map((el) => el.innerText || '').join('\n'))]
+    .filter(Boolean).join('\n');
+
   const clean = (text, max = MAX_TEXT) => {
     const flat = (text || '').replace(/\s+/g, ' ').trim();
     return flat.length > max ? flat.slice(0, max - 1) + '…' : flat;
@@ -65,8 +98,8 @@
     return copy.textContent;
   };
 
-  const byIds = (ids) => ids.split(/\s+/)
-    .map((id) => document.getElementById(id))
+  const byIds = (root, ids) => ids.split(/\s+/)
+    .map((id) => root.getElementById(id))
     .filter(Boolean)
     .map((el) => el.innerText || el.textContent)
     .join(' ');
@@ -89,7 +122,7 @@
 
   const name = (el) => {
     const labelledby = el.getAttribute('aria-labelledby');
-    if (labelledby) { const text = clean(byIds(labelledby)); if (text) return text; }
+    if (labelledby) { const text = clean(byIds(el.getRootNode(), labelledby)); if (text) return text; }
     const label = el.getAttribute('aria-label');
     if (label && label.trim()) return clean(label);
     if (el.labels && el.labels.length) {
@@ -207,7 +240,7 @@
     }
     // A file input is often hidden behind a styled label; it is listed
     // anyway, since `upload` needs no click on it.
-    const all = [...root.querySelectorAll(INTERACTIVE)]
+    const all = deepAll(root, INTERACTIVE)
       .filter((el) => (rendered(el) || fileInput(el)) && !unread(el));
     if (root !== document && root.matches && root.matches(INTERACTIVE)) all.unshift(root);
     const kept = all.slice(0, limit);
@@ -241,7 +274,7 @@
   const aim = (el) => {
     const rect = el.getBoundingClientRect();
     const reachesAt = (px, py) => {
-      const hit = document.elementFromPoint(px, py);
+      const hit = pointAt(px, py);
       return !!hit && hitsTarget(hit, el);
     };
     const [x, y] = [rect.left + rect.width / 2, rect.top + rect.height / 2];
@@ -275,7 +308,7 @@
       at = aim(el);
     }
     const { rect, x, y, reaches } = at;
-    const top = reaches ? null : document.elementFromPoint(x, y);
+    const top = reaches ? null : pointAt(x, y);
     return {
       x, y, width: rect.width, height: rect.height,
       scrolled: rect.left !== before.left || rect.top !== before.top,
@@ -328,7 +361,7 @@
     const reachesAt = (rect) => {
       const x = Math.min(Math.max(rect.left + rect.width / 2, 0), innerWidth - 1);
       const y = Math.min(Math.max(rect.top + rect.height / 2, 0), innerHeight - 1);
-      const hit = document.elementFromPoint(x, y);
+      const hit = pointAt(x, y);
       const reaches = !hit || hitsTarget(hit, el) || (field && !layerOver(hit, el));
       top ??= reaches ? null : hit;
       return reaches;
@@ -376,7 +409,7 @@
   // moves to another stage of a sign-in, and whether one asks for a
   // password or a code.
   const stageMark = () => {
-    const shown = [...document.querySelectorAll('input:not([type=hidden]), textarea, select')]
+    const shown = deepAll(document, 'input:not([type=hidden]), textarea, select')
       .filter((el) => rendered(el) && !unread(el));
     const tokens = (el) => (el.getAttribute('autocomplete') || '').toLowerCase().split(/\s+/);
     return {
@@ -397,15 +430,15 @@
       const text = el && rendered(el) && !unread(el) ? clean(el.innerText, 160) : '';
       if (text && !errors.includes(text)) errors.push(text);
     };
-    document.querySelectorAll('[role=alert], [aria-live=assertive]').forEach(add);
-    document.querySelectorAll('[aria-invalid=true]').forEach((field) => {
+    deepAll(document, '[role=alert], [aria-live=assertive]').forEach(add);
+    deepAll(document, '[aria-invalid=true]').forEach((field) => {
       const ids = field.getAttribute('aria-errormessage') || field.getAttribute('aria-describedby') || '';
-      ids.split(/\s+/).filter(Boolean).forEach((id) => add(document.getElementById(id)));
+      ids.split(/\s+/).filter(Boolean).forEach((id) => add(field.getRootNode().getElementById(id)));
     });
     return errors.slice(0, 3);
   };
   const signInShown = () => {
-    const shownField = (selector) => [...document.querySelectorAll(selector)]
+    const shownField = (selector) => deepAll(document, selector)
       .find((el) => rendered(el) && !unread(el));
     const state = (el) => (el ? (el.value ? 'filled' : 'empty') : null);
     return {
@@ -419,7 +452,7 @@
   // its required fields left empty, its invalid fields and its own error
   // text. A page that marks nothing says nothing about its form.
   const marks = () => {
-    const fields = [...document.querySelectorAll('input, select, textarea, [role=textbox], [role=combobox], [role=searchbox]')]
+    const fields = deepAll(document, 'input, select, textarea, [role=textbox], [role=combobox], [role=searchbox]')
       .filter((el) => el.type !== 'hidden' && !isDisabled(el) && rendered(el) && !unread(el));
     // A native required field is missing what the browser says it is (a
     // radio group with one checked is not); one required only for its
@@ -438,12 +471,12 @@
   // What a click shows it did, to compare with what the page showed before
   // it. It leaves the frame only as a comparison: never the text itself.
   const seen = () => {
-    const states = [...document.querySelectorAll('[aria-expanded], [aria-selected], [aria-pressed], [aria-checked], input[type=checkbox], input[type=radio]')]
+    const states = deepAll(document, '[aria-expanded], [aria-selected], [aria-pressed], [aria-checked], input[type=checkbox], input[type=radio]')
       .map((el) => [el.checked, ...['expanded', 'selected', 'pressed', 'checked'].map((state) => el.getAttribute(`aria-${state}`))]);
-    const text = document.body ? document.body.innerText : '';
+    const text = pageText();
     let hash = 0;
     for (let at = 0; at < text.length; at += 1) hash = (hash * 31 + text.charCodeAt(at)) | 0;
-    return JSON.stringify([text.length, hash, document.querySelectorAll(':disabled').length, states]);
+    return JSON.stringify([text.length, hash, deepAll(document, ':disabled').length, states]);
   };
 
   // Fields whose markup marks them secret, which a note never fills.
@@ -660,7 +693,7 @@
 
   // Non-secret fields as lines, for a judgement of what the page shows.
   const FIELD_ROLES = ['textbox', 'searchbox', 'combobox', 'spinbutton', 'checkbox', 'radio'];
-  const fields = (max) => [...document.querySelectorAll(INTERACTIVE)]
+  const fields = (max) => deepAll(document, INTERACTIVE)
     .filter((el) => rendered(el) && FIELD_ROLES.includes(role(el)) && !secret(el) && !filled.has(el))
     .slice(0, max)
     .map((el) => {
@@ -730,9 +763,10 @@
   };
   let watcher = null;
   const mark = (step) => {
-    if (!watcher) {
-      watcher = new MutationObserver(note);
-      watcher.observe(document, { subtree: true, childList: true, characterData: true });
+    if (!watcher) watcher = new MutationObserver(note);
+    // Shadow roots are watched on their own; observing one again is free.
+    for (const root of [document, ...deepAll(document, '*').filter((el) => el.shadowRoot).map((el) => el.shadowRoot)]) {
+      watcher.observe(root, { subtree: true, childList: true, characterData: true });
     }
     watcher.takeRecords();
     marked = step;
@@ -745,6 +779,15 @@
   // separate elements. With `step`, also whether each line was written
   // since that step began (`fresh`): all of them on a document the step
   // did not begin on; none when `begin` starts the step here.
+  // The text nodes below `root` in document order, each open shadow root's
+  // before its host's own children.
+  function* textNodes(root) {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
+    for (let node = walker.currentNode; node; node = walker.nextNode()) {
+      if (node.nodeType === Node.TEXT_NODE) yield node;
+      else if (node.shadowRoot) yield* textNodes(node.shadowRoot);
+    }
+  }
   const SKIP_TEXT = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'OPTION', 'TEXTAREA', 'SELECT']);
   const screenView = (max, step, begin) => {
     if (step != null && begin) mark(step);
@@ -775,9 +818,8 @@
       line = '';
       rewritten = false;
     };
-    const root = document.body || document.documentElement;
-    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-    for (let node = walker.nextNode(); node && lines.length < max; node = walker.nextNode()) {
+    for (const node of textNodes(document.body || document.documentElement)) {
+      if (lines.length >= max) break;
       const parent = node.parentElement;
       if (!parent || SKIP_TEXT.has(parent.tagName) || !node.textContent.trim() || !rendered(parent)) continue;
       const range = document.createRange();
@@ -819,7 +861,7 @@
   });
 
   // Whether this frame shows a password field: a two-page login's second page.
-  const passwordShown = () => [...document.querySelectorAll('input[type=password]')].some(rendered);
+  const passwordShown = () => deepAll(document, 'input[type=password]').some(rendered);
 
   // What an instruction step stops at, or offers to sign in on: a CAPTCHA's
   // frame with a size, as the middle of its viewport (whether the pages
@@ -868,7 +910,7 @@
     },
     selected: (snap, index) => { const el = element(snap, index); return el ? [...el.selectedOptions].map((o) => o.label) : null; },
     text: (max) => {
-      const body = document.body ? document.body.innerText : '';
+      const body = pageText();
       return { text: body.length > max ? body.slice(0, max) : body, truncated: body.length > max };
     },
     controls,

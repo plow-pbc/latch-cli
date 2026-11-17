@@ -51,6 +51,7 @@ conformance!(
     no_secret_goes_into_a_form_sent_by_get,
     requests_go_on_while_a_guard_outlives_its_call,
     no_vault_value_goes_into_an_editable_region,
+    a_value_filled_in_a_shadow_root_stays_out_of_every_read,
     a_stored_password_with_a_line_break_fills_a_single_line_field,
     a_login_an_agent_asked_for_by_phone_link_fills_on_its_site,
     a_login_field_that_drops_characters_does_not_hold_the_login,
@@ -2304,6 +2305,68 @@ async fn no_vault_value_goes_into_an_editable_region(engine: &str) {
     let text = h.text().await;
     let observed = h.call("observe", json!({})).await.unwrap();
     for value in [NAME, LAST] {
+        assert!(!text.contains(value) && !observed.to_string().contains(value));
+        assert!(!h.shown.join("\n").contains(value));
+    }
+    h.call("close", json!({})).await.unwrap();
+}
+
+/// Fields drawn in an open shadow root fill as any other, and their
+/// values stay as hidden: from observe, text and the audit, from eval
+/// while they are on the page, and in screenshots.
+async fn a_value_filled_in_a_shadow_root_stays_out_of_every_read(engine: &str) {
+    const NAME: &str = "Ada-s4d7";
+    const CITY: &str = "Lovelace-on-Shadow-9q2w";
+    let (_dir, state, _area) = test_state(engine);
+    let vault = Vault::new(state.clone());
+    let identity = vault
+        .with(|s| {
+            s.add(item(
+                IDENTITY,
+                "Home",
+                &[],
+                &[("first name", NAME), ("city", CITY)],
+            ))
+        })
+        .unwrap();
+    let local = format!("http://127.0.0.1:{}", site());
+    let mut browsers = Browsers::new(state.clone(), vault.clone(), super::HEADLESS);
+    browsers.test = Some((
+        latch(),
+        vec![(local.clone(), "https://shop.example".into())],
+    ));
+    let mut h = Harness::start(browsers, engine).await;
+    let page = h
+        .call("open", json!({"url": format!("{local}/shadow.html")}))
+        .await
+        .unwrap();
+    let fields = json!([
+        ["first name", [find(&page, "textbox", "First name")]],
+        ["city", [find(&page, "textbox", "City")]],
+    ]);
+    let (filled, _) = h
+        .fill(json!({"item": identity.item, "fields": fields}))
+        .await;
+    assert_eq!(filled.unwrap()["submitted"], false);
+
+    let observed = h.call("observe", json!({"all": true})).await.unwrap();
+    assert_eq!(
+        observed["elements"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["filled"] == true)
+            .count(),
+        2,
+        "{observed:#}"
+    );
+    let text = h.text().await;
+    let values = json!({"script":
+        "[...document.getElementById('overlay').shadowRoot.querySelectorAll('input')].map((i) => i.value)"});
+    let refused = h.call("eval", values).await.unwrap_err();
+    assert_eq!(refused.code, "secret_on_page");
+    assert!(h.call("screenshot", json!({})).await.is_ok());
+    for value in [NAME, CITY] {
         assert!(!text.contains(value) && !observed.to_string().contains(value));
         assert!(!h.shown.join("\n").contains(value));
     }
