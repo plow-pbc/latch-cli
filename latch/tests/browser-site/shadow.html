@@ -11,6 +11,7 @@
 <div id="overlay"></div>
 <div id="closed"></div>
 <div id="hidden-host" hidden></div>
+<div id="chip" role="button" tabindex="0" aria-label="Mark read"></div>
 <script>
   const params = new URLSearchParams(location.search);
   if (!params.has('closed')) {
@@ -18,8 +19,10 @@
     open.innerHTML = `<section role="dialog" aria-labelledby="who">
       <h2 id="who">Conversation with Ada Lovelace</h2>
       <div role="textbox" contenteditable="true" aria-label="Write a message" style="border:1px solid #888;min-height:2em"></div>
-      <p><label>First name <input id="first" autocomplete="given-name"></label></p>
-      <p><label>City <input id="city" autocomplete="address-level2"></label></p>
+      <form>
+        <p><label>First name <input id="first" autocomplete="given-name"></label></p>
+        <p><label>City <input id="city" autocomplete="address-level2"></label></p>
+      </form>
       <button id="send">Send</button>
       <iframe id="cross" width="300" height="80"></iframe>
     </section>
@@ -35,6 +38,11 @@
   }
   document.getElementById('hidden-host').attachShadow({ mode: 'open' }).innerHTML =
     '<div style="display:contents">hidden-host-text</div>';
+  // A control drawn wholly by its own shadow root: a click lands on what
+  // the root draws, inside the control.
+  const chip = document.getElementById('chip');
+  chip.attachShadow({ mode: 'open' }).innerHTML = '<span style="display:inline-block;padding:8px;border:1px solid #888">Mark read</span>';
+  chip.addEventListener('click', (e) => { document.getElementById('out').textContent = 'marked read, trusted ' + e.isTrusted; });
   const closed = document.getElementById('closed').attachShadow({ mode: 'closed' });
   closed.innerHTML = '<p>closed-root-text</p><label>Closed field <input></label>';
 </script>

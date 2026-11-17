@@ -1756,6 +1756,19 @@ async fn open_shadow_roots_read_as_the_page_and_closed_roots_and_other_sites_do_
         "{text}"
     );
     assert!(text.contains("sent: hello shadow, trusted true"), "{text}");
+    // A control drawn wholly by its own root takes the click itself.
+    let chip = find(&typed, "button", "Mark read");
+    session
+        .call(json!({"op": "act", "action": "click", "target": chip}))
+        .await
+        .unwrap();
+    let marked = session.call(json!({"op": "text"})).await.unwrap().result;
+    assert!(
+        marked["text"]
+            .as_str()
+            .unwrap()
+            .contains("marked read, trusted true")
+    );
 
     // The closed root, in neither the elements nor the text.
     let all = session
@@ -1773,6 +1786,14 @@ async fn open_shadow_roots_read_as_the_page_and_closed_roots_and_other_sites_do_
             assert!(!shown.contains(hidden), "{hidden}");
         }
     }
+    // A form in the root is one form, with an identity of its own.
+    let view = session.call(json!({"op": "view"})).await.unwrap().result;
+    let form = |name: &str| element(&view, &find(&view, "textbox", name))["form"].clone();
+    assert!(
+        form("First name").as_i64().is_some_and(|f| f >= 0),
+        "{view:#}"
+    );
+    assert_eq!(form("First name"), form("City"));
     // The other site's button is its own frame's, at its own origin.
     let cross = element(&all, &find(&all, "button", "Cross-site button"))["frame"].clone();
     assert_ne!(cross, element(&all, &message)["frame"]);

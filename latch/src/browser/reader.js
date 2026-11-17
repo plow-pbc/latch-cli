@@ -208,8 +208,13 @@
   // whose whole box takes the click. A hit on a container of anything
   // else is something covering it, such as the container's ::before or
   // ::after drawn over it, or a container that never passes it the click.
+  // Whether `el` holds `node`, through the shadow roots between them.
+  const holds = (el, node) => {
+    for (let at = node; at; at = at.parentNode || at.host) if (at === el) return true;
+    return false;
+  };
   const hitsTarget = (hit, el) => {
-    if (hit === el || el.contains(hit)) return true;
+    if (holds(el, hit)) return true;
     if (el.labels && [...el.labels].some((l) => l.contains(hit))) return true;
     if (!hit.contains(el) || el.localName !== 'input' || !['checkbox', 'radio'].includes(el.type)) return false;
     if (drawsOver(hit)) return false;
@@ -384,8 +389,8 @@
   const covered = (el) => cover(el) !== null;
 
   // What a fill needs to know of one element, from the page's own markup:
-  // its tag and input type, its `autocomplete` attribute, its form (an
-  // index into the document's forms), whether it is a submit button or a
+  // its tag and input type, its `autocomplete` attribute, its form (its
+  // identity in this document, as `uid`), whether it is a submit button or a
   // button or link at all, its role and name, and whether a value could go
   // into it now. Never its value, and never a guess from its words.
   const controlOf = (el) => {
@@ -398,7 +403,7 @@
       tag: el.isContentEditable ? 'editable' : el.localName,
       type: el.localName === 'input' ? (el.getAttribute('type') || 'text').toLowerCase() : '',
       autocomplete: el.getAttribute('autocomplete') || '',
-      form: form ? [...document.forms].indexOf(form) : -1,
+      form: form ? uid(form) : -1,
       submit: !!form && el.matches(SUBMIT_BUTTONS),
       clickable: r === 'button' || r === 'link',
       role: r,
@@ -848,7 +853,7 @@
   };
 
   // For each element of snapshot `snap`: what kind of input it takes, a
-  // dropdown's options, its form (an index into the document's forms) and
+  // dropdown's options, its form (its identity, as `uid`) and
   // whether something else, such as a modal or a banner, covers it so a
   // click could not reach it now. Off-screen elements are never covered:
   // a click scrolls them into view first. A link that wraps onto several
@@ -862,7 +867,7 @@
     };
     if (el.localName === 'select') item.options = [...el.options].slice(0, 50).map((o) => clean(o.label, 80));
     const form = el.form || el.closest('form');
-    if (form) item.form = [...document.forms].indexOf(form);
+    if (form) item.form = uid(form);
     if (covered(el)) item.covered = true;
     return item;
   };

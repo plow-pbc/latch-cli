@@ -541,14 +541,9 @@ impl Run<'_> {
             }
             if op == "type" && chosen.is_none() {
                 let field = decision
-                    .typed
-                    .iter()
-                    .flat_map(|p| &p.likeliest)
-                    .find_map(|(id, _)| seen.types.iter().find(|t| &t.offer.id == id))
-                    .or_else(|| {
-                        let id = &decision.type_field.as_ref()?.id;
-                        seen.fields.iter().find(|t| &t.offer.id == id)
-                    })
+                    .type_field
+                    .as_ref()
+                    .and_then(|p| seen.fields.iter().find(|t| t.offer.id == p.id))
                     .map(|t| json!({"ref": t.at, "role": t.role, "name": t.name}))
                     .or_else(|| first_field(view));
                 let mut failure = stopped(
