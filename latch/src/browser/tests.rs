@@ -1760,6 +1760,7 @@ async fn open_shadow_roots_read_as_the_page_and_closed_roots_and_other_sites_do_
         .result;
     for shown in [all.to_string(), text.to_string()] {
         assert!(!shown.contains("closed-root-text") && !shown.contains("Closed field"));
+        assert!(!shown.contains("hidden-shadow-text"));
     }
     // The other site's button is its own frame's, at its own origin.
     let cross = element(&all, &find(&all, "button", "Cross-site button"))["frame"].clone();

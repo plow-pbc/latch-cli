@@ -1,9 +1,10 @@
 <!doctype html><meta charset="utf-8"><title>latch shadow test</title>
 <!-- Parts of a page drawn inside shadow roots, as some sites draw a
      message pop-up: an open root, read like the page around it, holding a
-     frame from another site (served at ?cross=PORT), which stays a frame of
-     its own; and a closed root, which no reader reaches. ?closed draws only
-     the closed root, beside the page's own search box. -->
+     frame from another site (served at ?cross=PORT), which stays a frame
+     of its own, and text it hides; and a closed root, which no reader
+     reaches. The page's own search box is beside them; ?closed draws only
+     the closed root. -->
 <h1>Messages</h1>
 <p><label>Search <input type="search" id="search"></label></p>
 <p id="out">nothing sent</p>
@@ -20,7 +21,8 @@
       <p><label>City <input id="city" autocomplete="address-level2"></label></p>
       <button id="send">Send</button>
       <iframe id="cross" width="300" height="80"></iframe>
-    </section>`;
+    </section>
+    <p hidden>hidden-shadow-text</p>`;
     const box = open.querySelector('[role=textbox]');
     open.getElementById('send').addEventListener('click', (e) => {
       document.getElementById('out').textContent = 'sent: ' + box.textContent + ', trusted ' + e.isTrusted;

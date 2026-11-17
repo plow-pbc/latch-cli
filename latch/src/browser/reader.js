@@ -48,10 +48,11 @@
     }
     return hit;
   };
-  // The page's text: the document's, then each open shadow root's.
+  // The page's text: the document's, then each open shadow root's. Only
+  // a rendered child's: `innerText` gives a hidden one's text whole.
   const pageText = () => [document.body ? document.body.innerText : '',
     ...deepAll(document, '*').filter((el) => el.shadowRoot)
-      .map((host) => [...host.shadowRoot.children].map((el) => el.innerText || '').join('\n'))]
+      .map((host) => [...host.shadowRoot.children].filter(rendered).map((el) => el.innerText).join('\n'))]
     .filter(Boolean).join('\n');
 
   const clean = (text, max = MAX_TEXT) => {
