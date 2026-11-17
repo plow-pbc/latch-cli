@@ -22,6 +22,7 @@ conformance!(
     a_handoff_pauses_the_session_until_the_owner_hands_it_back,
     a_plan_running_when_the_handoff_starts_sends_nothing_more,
     refs_are_forgotten_even_while_another_session_holds_the_browser,
+    a_handoff_longer_than_the_idle_timeout_keeps_its_browser,
     ;
     mac:
     a_host_with_no_screen_answers_needs_owner_at_once,
@@ -149,6 +150,37 @@ async fn a_handoff_pauses_the_session_until_the_owner_hands_it_back(engine: &str
     assert!(handoff::pending(&state).is_empty());
     let (after, _) = super::run_as(&browsers, OWNER_AGENT.into(), "observe", &id, json!({})).await;
     assert!(after.is_ok());
+    browsers.close_all().await;
+}
+
+async fn a_handoff_longer_than_the_idle_timeout_keeps_its_browser(engine: &str) {
+    let (_dir, state, _area) = test_state(engine);
+    let mut browsers = Arc::into_inner(browsers(&state, true)).unwrap();
+    browsers.idle = Some(Duration::from_secs(2));
+    let browsers = Arc::new(browsers);
+    let (opened, _) = super::run_as(
+        &browsers,
+        OWNER_AGENT.into(),
+        "open",
+        named(engine),
+        json!({"url": local_page()}),
+    )
+    .await;
+    let id = opened.unwrap()["session"].as_str().unwrap().to_string();
+    // The owner takes longer than the session may sit idle, and never
+    // hands it back: the handoff runs to its own deadline...
+    let (late, _) = super::run_as(
+        &browsers,
+        OWNER_AGENT.into(),
+        "handoff",
+        &id,
+        json!({"reason": "signin", "within": 6}),
+    )
+    .await;
+    assert_eq!(late.unwrap_err().code, "timeout");
+    // ...and the agent gets back a session whose browser is still open.
+    let (after, _) = super::run_as(&browsers, OWNER_AGENT.into(), "observe", &id, json!({})).await;
+    assert!(after.is_ok(), "{after:?}");
     browsers.close_all().await;
 }
 
