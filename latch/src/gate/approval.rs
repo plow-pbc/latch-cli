@@ -1,10 +1,13 @@
 //! The owner's OK by a reaction in Swarm. When this host's settings turn it
 //! on (`swarm_approvals`), an agent's action that the owner's rules and
 //! chat left uncovered is posted, through Plow, to the owner's Swarm
-//! approval room as one short line, with the reference latch made of the
-//! exact action. The owner's ✅ on that line, there, within 30 minutes,
-//! allows that action once: Plow checks the reaction, and latch takes its
-//! answer from Plow only, never from the agent.
+//! approval room as one short line. Its reference binds that line to the
+//! exact action: the sha256 of the host, the agent, the line's fields and
+//! the action's digest, which Plow's function computes itself from what it
+//! posts and what it is asked to confirm. A line whose text is not this
+//! action's has a reference the gate never confirms. The owner's ✅ on the
+//! line, there, within 30 minutes, allows that action once: Plow checks the
+//! reaction, and latch takes its answer from Plow only, never from the agent.
 //!
 //! Only an action the line names whole is asked: filling a vault item, which
 //! goes only onto the item's saved sites (what, which site, which item).
@@ -31,10 +34,24 @@ pub fn summary(action: &Value) -> Option<Value> {
     Some(json!({"verb": format!("fill {kind}"), "site": site, "item": item}))
 }
 
-/// The reference of `action` by agent `agent` on host `host`: what the
-/// owner's ✅ allows, and nothing else.
-pub fn reference(host: &str, agent: &str, action: &Value) -> String {
-    sha256(&json!({"host": host, "agent": agent, "action": action}).to_string())
+/// The digest of `action`, as the judge was shown it.
+pub fn digest(action: &Value) -> String {
+    sha256(&action.to_string())
+}
+
+/// The reference of the line `summary` for an action of `digest` by agent
+/// `agent` on host `host`: what the owner's ✅ on that line allows, and
+/// nothing else. Plow's function computes the same from the same fields.
+pub fn reference(host: &str, agent: &str, summary: &Value, digest: &str) -> String {
+    let fields = [
+        &json!(host),
+        &json!(agent),
+        &summary["verb"],
+        &summary["site"],
+        &summary["item"],
+        &json!(digest),
+    ];
+    sha256(&serde_json::to_string(&fields).expect("fields serialize"))
 }
 
 /// How an approval call went.
@@ -46,18 +63,21 @@ pub enum Asked {
     Waiting { prompt: String },
 }
 
-/// Whether the owner's ✅ already allows `reference`; if not, the request
-/// posted for it (Plow posts each reference once while it is live).
+/// Whether the owner's ✅ already allows the line `summary` for an action
+/// of `digest`; if not, the request posted for it (Plow posts each line
+/// once while it is live).
 pub async fn ask(
     plow: &Plow,
-    reference: &str,
     host: &str,
     agent: &str,
     summary: &Value,
+    digest: &str,
 ) -> Result<Asked, Failure> {
-    let confirmed = plow
-        .approval(&json!({"op": "confirm", "ref": reference}))
-        .await?;
+    let body = |op: &str| {
+        json!({"op": op, "host": host, "agent": agent, "verb": summary["verb"],
+               "site": summary["site"], "item": summary["item"], "digest": digest})
+    };
+    let confirmed = plow.approval(&body("confirm")).await?;
     let id = |answer: &Value, key: &str| answer[key].as_str().unwrap_or_default().to_string();
     if confirmed["approved"] == true {
         return Ok(Asked::Approved {
@@ -65,11 +85,7 @@ pub async fn ask(
             reaction: id(&confirmed, "reaction"),
         });
     }
-    let mut body = json!({"op": "ask", "ref": reference, "host": host, "agent": agent});
-    for field in ["verb", "site", "item"] {
-        body[field] = summary[field].clone();
-    }
-    let asked = plow.approval(&body).await?;
+    let asked = plow.approval(&body("ask")).await?;
     Ok(Asked::Waiting {
         prompt: id(&asked, "prompt"),
     })
@@ -101,19 +117,33 @@ mod tests {
     }
 
     #[test]
-    fn a_reference_names_the_exact_action_its_agent_and_its_host() {
+    fn a_reference_binds_the_line_to_the_exact_action_its_agent_and_its_host() {
         let fill = |item: &str| {
             json!({"kind": "vault_fill", "site": "amazon.com",
                    "item": {"kind": "login", "title": item}, "fields": ["password"]})
         };
-        let one = reference("mba", "agent-a", &fill("AWS root"));
-        assert_eq!(one, reference("mba", "agent-a", &fill("AWS root")));
+        let line = |item: &str| json!({"verb": "fill login", "site": "amazon.com", "item": item});
+        let root = digest(&fill("AWS root"));
+        let one = reference("mba", "agent-a", &line("AWS root"), &root);
+        assert_eq!(one, reference("mba", "agent-a", &line("AWS root"), &root));
         for other in [
-            reference("mba", "agent-a", &fill("AWS billing")),
-            reference("mba", "agent-b", &fill("AWS root")),
-            reference("mbp", "agent-a", &fill("AWS root")),
+            reference(
+                "mba",
+                "agent-a",
+                &line("AWS root"),
+                &digest(&fill("AWS billing")),
+            ),
+            reference("mba", "agent-a", &line("Test"), &root),
+            reference("mba", "agent-b", &line("AWS root"), &root),
+            reference("mbp", "agent-a", &line("AWS root"), &root),
         ] {
             assert_ne!(one, other);
         }
+        // The vector Plow's function is tested against (test_handler.py):
+        // both sides must hash the same fields to the same reference.
+        assert_eq!(
+            reference("mba", "agt_1", &line("AWS root"), &"d".repeat(64)),
+            "722286032ea8ea14a0ccb96c6e241649369442041e5e36f66bcd563e17b64421"
+        );
     }
 }

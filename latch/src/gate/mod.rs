@@ -480,8 +480,9 @@ impl Gatekeeper {
         let Some(summary) = approval::summary(action).filter(|_| on) else {
             return Err(refused);
         };
-        let reference = approval::reference(host, agent, action);
-        match approval::ask(&self.plow, &reference, host, agent, &summary).await {
+        let digest = approval::digest(action);
+        let reference = approval::reference(host, agent, &summary, &digest);
+        match approval::ask(&self.plow, host, agent, &summary, &digest).await {
             Ok(approval::Asked::Approved { prompt, reaction }) => {
                 gate["source"] = json!("swarm_approval");
                 gate["approval"] = json!({"ref": reference, "status": "approved",

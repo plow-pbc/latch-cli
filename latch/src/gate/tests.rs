@@ -1940,10 +1940,13 @@ async fn the_owners_reaction_in_swarm_allows_exactly_the_action_it_was_asked_for
     assert_eq!(refused.details["reason"], "not_covered");
     assert_eq!(refused.details["approval"]["status"], "asked");
     assert!(refused.message.contains("Swarm"), "{}", refused.message);
-    let request = asked().last().cloned().unwrap();
+    let (request, posted_ref) = asked().last().cloned().unwrap();
     let mut keys: Vec<&String> = request.as_object().unwrap().keys().collect();
     keys.sort();
-    assert_eq!(keys, ["agent", "host", "item", "op", "ref", "site", "verb"]);
+    assert_eq!(
+        keys,
+        ["agent", "digest", "host", "item", "op", "site", "verb"]
+    );
     assert_eq!(
         (
             &request["verb"],
@@ -1960,7 +1963,8 @@ async fn the_owners_reaction_in_swarm_allows_exactly_the_action_it_was_asked_for
             &json!(AGENT)
         )
     );
-    let root = request["ref"].as_str().unwrap().to_string();
+    // The gate's reference is the one Plow computes for the line it posted.
+    let root = posted_ref;
     assert_eq!(refused.details["approval"]["ref"], root);
 
     // The owner reacts ✅ on that request. Another action is not it: a fill
@@ -2062,5 +2066,47 @@ async fn a_reaction_never_lifts_a_veto() {
         fake.world.lock().unwrap().approved,
         [reference],
         "the ✅ is not spent"
+    );
+}
+
+/// The line the owner reads is bound to the action: someone with the host's
+/// login who posts a harmless line beside a real fill's digest gets a ✅ on
+/// a reference the gate never confirms, and the fill stays refused.
+#[tokio::test]
+async fn a_reaction_on_a_line_that_is_not_the_actions_allows_nothing() {
+    let real = json!({"kind": "vault_fill", "site": "amazon.com",
+                      "item": {"kind": "login", "title": "AWS root", "sites": ["amazon.com"]},
+                      "fields": ["username", "password"]});
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join(crate::settings::FILE),
+        r#"{"swarm_approvals": true}"#,
+    )
+    .unwrap();
+    let fake = fake::serve(World::default());
+    let decoy = json!({"op": "ask", "host": "mba", "agent": AGENT, "verb": "fill login",
+                       "site": "example.com", "item": "Test", "digest": approval::digest(&real)});
+    let posted = fake.client().approval(&decoy).await.unwrap();
+    fake.world
+        .lock()
+        .unwrap()
+        .approved
+        .push(posted["ref"].as_str().unwrap().to_string());
+
+    let model = Recorder::layers(Some([0.2, 0.7, 0.1]), None);
+    let keeper = Gatekeeper::new(fake.client(), model.clone(), Box::new(host_rules()))
+        .asking_in_swarm(dir.path(), "mba");
+    let action = serde_json::value::to_raw_value(&real).unwrap();
+    let refused = keeper
+        .judge(AGENT_CALLER, &action)
+        .await
+        .verdict
+        .unwrap_err();
+    assert_eq!(refused.details["approval"]["status"], "asked");
+    assert_ne!(refused.details["approval"]["ref"], posted["ref"]);
+    assert_eq!(
+        fake.world.lock().unwrap().approved,
+        [posted["ref"].as_str().unwrap()],
+        "the decoy's ✅ is never confirmed"
     );
 }

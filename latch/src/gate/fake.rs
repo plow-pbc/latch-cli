@@ -40,8 +40,9 @@ pub struct World {
     pub google_reauth: Vec<String>,
     /// The Google token route holds its answer while this is set.
     pub google_paused: bool,
-    /// Each owner-approval request posted (`ask`), in order.
-    pub approvals_asked: Vec<Value>,
+    /// Each owner-approval request posted (`ask`), in order, with the
+    /// reference Plow's function computes for it from its fields.
+    pub approvals_asked: Vec<(Value, String)>,
     /// The references the owner's ✅ in Swarm allows, each once.
     pub approved: Vec<String>,
 }
@@ -98,11 +99,20 @@ impl World {
         }
         if method == "POST" && path == "/v1/latch/approvals" {
             let asked: Value = serde_json::from_slice(body).unwrap();
-            let reference = asked["ref"].as_str().unwrap_or_default().to_string();
-            let prompt = format!("$prompt-{}", &reference[..8.min(reference.len())]);
+            // As Plow's function computes it: the line's fields and the
+            // action's digest, never a reference the caller sends.
+            let fields =
+                ["host", "agent", "verb", "site", "item", "digest"].map(|f| asked[f].clone());
+            let reference = crate::state::to_hex(&<sha2::Sha256 as sha2::Digest>::digest(
+                serde_json::to_string(&fields).unwrap().as_bytes(),
+            ));
+            let prompt = format!("$prompt-{}", &reference[..8]);
             if asked["op"] == "ask" {
-                self.approvals_asked.push(asked);
-                return (200, json!({"status": "asked", "prompt": prompt}));
+                self.approvals_asked.push((asked, reference.clone()));
+                return (
+                    200,
+                    json!({"status": "asked", "prompt": prompt, "ref": reference}),
+                );
             }
             return match self.approved.iter().position(|r| *r == reference) {
                 Some(at) => {
