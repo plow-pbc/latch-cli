@@ -103,7 +103,8 @@ password=eN --press eN` with no `--item`: latch uses the login saved for
 that site. When several are (`which_item` lists them), add `--item vN`.
 `--item` takes an id, never a title. A form that asks for the password
 twice (a sign-up's confirm box) takes both boxes in one field:
-`--field password=eN,eN`.
+`--field password=eN,eN`. A code asked for a digit a box takes its first
+box: `--field otp=eN`.
 
 The vault holds the owner's logins, cards, identities and notes. To find
 one, narrow the list rather than reading all of it: `latch vault list

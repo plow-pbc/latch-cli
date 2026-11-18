@@ -537,8 +537,12 @@
   // the field, focuses it and sets `head` (all but the value's last keys,
   // usually nothing); the engine's own keys type the rest, each after
   // `typeKey`; `typeEnd` answers whether the field holds the value. Any
-  // other field (`assign`) is filled in one step.
+  // other field (`assign`) is filled in one step. A code asked for in
+  // boxes of one character, each moving the focus on once full, takes the
+  // keys where the page moves it, as a person's typing would go: `boxes`
+  // holds the boxes this value's keys went into, the field first.
   const TYPED = ['text', 'email', 'password', 'search', 'tel', 'url', 'number'];
+  let boxes = [];
   const typeStart = (snap, index, head, origin, expected) => {
     const { el, refused } = fillable(snap, index, origin, expected);
     if (refused) return { refused };
@@ -546,24 +550,45 @@
     el.focus();
     if (!focused(el)) return { assign: true };
     filled.add(el);
+    boxes = [el];
     if (current(el) !== head) setValue(el, head);
     return { caret: caretAt(el, head.length) };
   };
-  // Before each key: the field still has the focus, and its caret is where
-  // the typing left it. A field that puts its caret back at the start, as
-  // some do on each change, would take the keys in reverse.
+  // Before each key: the box the keys go into still has the focus, and its
+  // caret is where the typing left it. A field that puts its caret back at
+  // the start, as some do on each change, would take the keys in reverse.
   const typeKey = (snap, index, caret, expected) => {
-    const el = element(snap, index);
-    if (!el || expected !== token) return { refused: 'the field is gone' };
+    if (expected !== token || element(snap, index) !== boxes[0]) return { refused: 'the field is gone' };
+    let el = boxes[boxes.length - 1];
+    const next = movedOn(el);
+    if (next) {
+      filled.add(next);
+      boxes.push(next);
+      el = next;
+    }
+    if (!el.isConnected) return { refused: 'the field is gone' };
     if (!focused(el)) el.focus();
     if (!focused(el)) return { refused: 'the field lost the focus' };
     return { caret: caretAt(el, caret) };
   };
+  // The box the page moved the focus on to from `el`, once `el` was full:
+  // an empty box of the same form, with a length of its own, the keys have
+  // not been in yet. Any other move of the focus is not followed.
+  const movedOn = (el) => {
+    const next = el.getRootNode().activeElement;
+    const full = (box) => box.maxLength > 0 && box.value.length >= box.maxLength;
+    if (!next || next === el || !full(el)) return null;
+    if (next.localName !== 'input' || !TYPED.includes(next.type) || next.maxLength <= 0) return null;
+    if (next.form !== el.form || next.value !== '' || boxes.includes(next)) return null;
+    return next;
+  };
   // A field that took none of the keys, or only the first ones, gets the
-  // value in one step.
+  // value in one step. Boxes that took the keys between them hold the
+  // value when their characters, in order, are the value.
   const typeEnd = (snap, index, value, expected, formatted) => {
     const el = element(snap, index);
-    if (!el || expected !== token) return { refused: 'the field is gone' };
+    if (!el || expected !== token || el !== boxes[0]) return { refused: 'the field is gone' };
+    if (boxes.length > 1) return judged(boxes.map(current).join(''), value, formatted, true);
     const now = current(el);
     if (now !== value && value.startsWith(now)) setValue(el, value);
     return held(el, value, formatted);
@@ -587,19 +612,24 @@
 
   // Whether the field holds `value` (`formatted`: a value sites format as
   // they like), never the value.
-  const held = (el, value, formatted) => {
+  const held = (el, value, formatted) => el.localName === 'select'
+    ? { held: true }
+    : judged(current(el), value, formatted, el.localName === 'input');
+  // Whether text `now` is `value` as a field holds it (`input`: a
+  // single-line one), never the value.
+  const judged = (now, value, formatted, input) => {
     const same = formatted ? keepsFormatted : keeps;
-    if (el.localName === 'select' || same(current(el), value)) return { held: true };
+    if (same(now, value)) return { held: true };
     // A single-line field drops line breaks, as it does from a paste: it
     // holds the value less them, which is what a person would have got.
     const unbroken = value.replace(/[\r\n]/g, '');
-    if (el.localName === 'input' && unbroken !== value && same(current(el), unbroken)) {
+    if (input && unbroken !== value && same(now, unbroken)) {
       return { held: true, dropped_breaks: true };
     }
     // What the page did with it, never what it holds.
-    const now = bare(current(el));
+    const left = bare(now);
     const whole = bare(value);
-    const page = now === '' ? 'cleared' : now !== whole && whole.startsWith(now) ? 'cut_short' : 'changed';
+    const page = left === '' ? 'cleared' : left !== whole && whole.startsWith(left) ? 'cut_short' : 'changed';
     return { held: false, page };
   };
 
