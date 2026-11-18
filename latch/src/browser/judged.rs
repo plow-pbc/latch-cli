@@ -85,6 +85,12 @@ pub(super) struct Page {
 
 #[derive(Serialize, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct ItemShown {
+    /// The item's id and revision, so that what is judged (and an owner's
+    /// approval of it) is this item as it is, not another of the same name.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    revision: Option<u64>,
     kind: String,
     title: String,
     /// The sites the item is saved for, which a login fills only on: the
@@ -177,12 +183,16 @@ pub(super) fn item(browsers: &Browsers, id: &str) -> ItemShown {
         .flatten();
     match meta {
         Some(meta) => ItemShown {
+            id: meta.item,
+            revision: Some(meta.revision),
             kind: meta.kind.to_string(),
             title: meta.title,
             sites: meta.sites,
             other_top_sites: meta.other_top_sites,
         },
         None => ItemShown {
+            id: String::new(),
+            revision: None,
             kind: "unknown".into(),
             title: id.to_string(),
             sites: vec![],
@@ -215,6 +225,8 @@ pub(crate) fn previewed_fill(
     let site = sites::site_of(url);
     Action::VaultFill {
         item: ItemShown {
+            id: String::new(),
+            revision: None,
             kind: kind.to_string(),
             title: title.to_string(),
             sites: site.iter().cloned().collect(),

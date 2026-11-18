@@ -1908,10 +1908,12 @@ async fn live_owner_only_request_readback() {
 /// action, once. Anything a line can't name whole is never posted.
 #[tokio::test]
 async fn the_owners_reaction_in_swarm_allows_exactly_the_action_it_was_asked_for_once() {
-    let fill = |title: &str| {
+    // Two saved logins of one title, told apart only by id and revision.
+    let fill = |id: &str, revision: u64| {
         serde_json::value::to_raw_value(&json!({
             "kind": "vault_fill", "site": "amazon.com",
-            "item": {"kind": "login", "title": title, "sites": ["amazon.com"]},
+            "item": {"id": id, "revision": revision, "kind": "login", "title": "AWS root",
+                     "sites": ["amazon.com"]},
             "fields": ["username", "password"]
         }))
         .unwrap()
@@ -1924,7 +1926,7 @@ async fn the_owners_reaction_in_swarm_allows_exactly_the_action_it_was_asked_for
     let asked = || fake.world.lock().unwrap().approvals_asked.clone();
 
     // Off by default: the refusal stands and nothing is posted.
-    let judgment = keeper.judge(AGENT_CALLER, &fill("AWS root")).await;
+    let judgment = keeper.judge(AGENT_CALLER, &fill("v1", 3)).await;
     assert_eq!(judgment.gate["verdict"], "not_covered");
     assert_eq!(fake.saw("/v1/latch/approvals"), 0);
 
@@ -1935,7 +1937,7 @@ async fn the_owners_reaction_in_swarm_allows_exactly_the_action_it_was_asked_for
         r#"{"swarm_approvals": true}"#,
     )
     .unwrap();
-    let judgment = keeper.judge(AGENT_CALLER, &fill("AWS root")).await;
+    let judgment = keeper.judge(AGENT_CALLER, &fill("v1", 3)).await;
     let refused = judgment.verdict.unwrap_err();
     assert_eq!(refused.details["reason"], "not_covered");
     assert_eq!(refused.details["approval"]["status"], "asked");
@@ -1958,7 +1960,7 @@ async fn the_owners_reaction_in_swarm_allows_exactly_the_action_it_was_asked_for
         (
             &json!("fill login"),
             &json!("amazon.com"),
-            &json!("AWS root"),
+            &json!("AWS root (v1)"),
             &json!("mba"),
             &json!(AGENT)
         )
@@ -1968,16 +1970,22 @@ async fn the_owners_reaction_in_swarm_allows_exactly_the_action_it_was_asked_for
     assert_eq!(refused.details["approval"]["ref"], root);
 
     // The owner reacts ✅ on that request. Another action is not it: a fill
-    // of another item is asked on its own, and the ✅ allows nothing there.
+    // of another login of the same title, or of this one since edited, is
+    // asked on its own, and the ✅ allows nothing there.
     fake.world.lock().unwrap().approved.push(root.clone());
-    let judgment = keeper.judge(AGENT_CALLER, &fill("AWS billing")).await;
-    let refused = judgment.verdict.unwrap_err();
-    assert_eq!(refused.details["approval"]["status"], "asked");
-    assert_ne!(refused.details["approval"]["ref"], root);
+    for other in [fill("v2", 3), fill("v1", 4)] {
+        let refused = keeper
+            .judge(AGENT_CALLER, &other)
+            .await
+            .verdict
+            .unwrap_err();
+        assert_eq!(refused.details["approval"]["status"], "asked");
+        assert_ne!(refused.details["approval"]["ref"], root);
+    }
 
     // The action asked for runs, once, and the record names the request
     // and the reaction by event id.
-    let judgment = keeper.judge(AGENT_CALLER, &fill("AWS root")).await;
+    let judgment = keeper.judge(AGENT_CALLER, &fill("v1", 3)).await;
     assert!(judgment.verdict.is_ok(), "{:?}", judgment.verdict);
     assert_eq!(judgment.gate["verdict"], "allow");
     assert_eq!(judgment.gate["source"], "swarm_approval");
@@ -1989,14 +1997,15 @@ async fn the_owners_reaction_in_swarm_allows_exactly_the_action_it_was_asked_for
             .unwrap()
             .starts_with('$')
     );
-    let again = keeper.judge(AGENT_CALLER, &fill("AWS root")).await;
+    let again = keeper.judge(AGENT_CALLER, &fill("v1", 3)).await;
     assert_eq!(
         again.verdict.unwrap_err().details["approval"]["status"],
         "asked"
     );
 
     // What one line can't name whole is never posted: an exec, a script, a
-    // page to open (its port, path and query would not show).
+    // page to open (its port, path and query would not show), a card fill
+    // (it may go into another site's frame).
     let before = asked().len();
     let script = serde_json::value::to_raw_value(
         &json!({"kind": "run_script", "site": "amazon.com", "script": "document.title"}),
@@ -2006,7 +2015,12 @@ async fn the_owners_reaction_in_swarm_allows_exactly_the_action_it_was_asked_for
         &json!({"kind": "open_site", "url": "http://localhost:2375/containers/json"}),
     )
     .unwrap();
-    for blind in [order(), script, open] {
+    let card = serde_json::value::to_raw_value(&json!({
+        "kind": "vault_fill", "site": "shop.example",
+        "item": {"id": "v9", "revision": 1, "kind": "card", "title": "Visa"}, "fields": ["number"]
+    }))
+    .unwrap();
+    for blind in [order(), script, open, card] {
         let judgment = keeper.judge(AGENT_CALLER, &blind).await;
         let refused = judgment.verdict.unwrap_err();
         assert_eq!(refused.details["reason"], "not_covered");
@@ -2016,7 +2030,7 @@ async fn the_owners_reaction_in_swarm_allows_exactly_the_action_it_was_asked_for
 
     // Plow unable to ask: the refusal stands, saying so.
     fake.world.lock().unwrap().broken = Some("/v1/latch/approvals".into());
-    let judgment = keeper.judge(AGENT_CALLER, &fill("AWS root")).await;
+    let judgment = keeper.judge(AGENT_CALLER, &fill("v1", 3)).await;
     let refused = judgment.verdict.unwrap_err();
     assert_eq!(refused.details["reason"], "not_covered");
     assert_eq!(refused.details["approval"]["status"], "unavailable");
@@ -2028,7 +2042,7 @@ async fn the_owners_reaction_in_swarm_allows_exactly_the_action_it_was_asked_for
 async fn a_reaction_never_lifts_a_veto() {
     let action = serde_json::value::to_raw_value(&json!({
         "kind": "vault_fill", "site": "amazon.com",
-        "item": {"kind": "login", "title": "AWS root", "sites": ["amazon.com"]},
+        "item": {"id": "v1", "revision": 3, "kind": "login", "title": "AWS root", "sites": ["amazon.com"]},
         "fields": ["password"]
     }))
     .unwrap();
@@ -2075,7 +2089,7 @@ async fn a_reaction_never_lifts_a_veto() {
 #[tokio::test]
 async fn a_reaction_on_a_line_that_is_not_the_actions_allows_nothing() {
     let real = json!({"kind": "vault_fill", "site": "amazon.com",
-                      "item": {"kind": "login", "title": "AWS root", "sites": ["amazon.com"]},
+                      "item": {"id": "v1", "revision": 3, "kind": "login", "title": "AWS root", "sites": ["amazon.com"]},
                       "fields": ["username", "password"]});
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(

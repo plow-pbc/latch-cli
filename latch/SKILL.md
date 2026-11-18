@@ -245,7 +245,8 @@ owner message, judged both with the full chat and with only the owner's
 messages and the messages they answer. Wait for any condition, such as a
 review, to be met. Connector, path and sandbox limits still apply.
 No approval prompt exists: latch never shows the owner a dialog to allow
-a call, so never ask them to approve one.
+a call, so never ask them to approve one. The one request latch sends
+itself is a Swarm approval, when the host has it on (below).
 
 An owner's task on a site includes signing in with its saved login there,
 including opening their link or responding to their sign-in nudge. This
@@ -269,7 +270,7 @@ Exit 4 is a refusal, and its code says what you may do:
   (`chat_lookup` `found` or `none`) and which of the messages read were the
   owner's (`owner_messages`). With `none`, only their rules can allow it.
   For work you'll repeat, the owner can allow it in their rules instead.
-  When the host has Swarm approvals on, a refused vault fill also
+  When the host has Swarm approvals on, a refused saved-login fill also
   carries `details.approval`: with `status` `asked`, latch has
   posted the exact action to the owner in Swarm itself. Retry it unchanged
   once they react ✅ there (within 30 minutes; it runs once). Any change to

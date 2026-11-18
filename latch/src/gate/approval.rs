@@ -9,8 +9,10 @@
 //! line, there, within 30 minutes, allows that action once: Plow checks the
 //! reaction, and latch takes its answer from Plow only, never from the agent.
 //!
-//! Only an action the line names whole is asked: filling a vault item, which
-//! goes only onto the item's saved sites (what, which site, which item).
+//! Only an action the line names whole is asked: filling a saved login, which
+//! goes only onto the login's saved sites (what, which site, which item, by
+//! its id). A card or an identity may fill into a frame of another site,
+//! which no line names.
 //! Everything else keeps the chat's way. A short line could only say "run a
 //! command" of an exec, and only a host of a page to open, hiding its port,
 //! path and query: the owner would approve blind.
@@ -25,13 +27,13 @@ use crate::plow::Plow;
 /// shows: what it does, on which site, with which vault item. `None` for an
 /// action no such line names whole.
 pub fn summary(action: &Value) -> Option<Value> {
-    if action["kind"] != "vault_fill" {
+    if action["kind"] != "vault_fill" || action["item"]["kind"] != "login" {
         return None;
     }
     let site = action["site"].as_str()?;
     let item = action["item"]["title"].as_str()?;
-    let kind = action["item"]["kind"].as_str().unwrap_or("item");
-    Some(json!({"verb": format!("fill {kind}"), "site": site, "item": item}))
+    let id = action["item"]["id"].as_str()?;
+    Some(json!({"verb": "fill login", "site": site, "item": format!("{item} ({id})")}))
 }
 
 /// The digest of `action`, as the judge was shown it.
@@ -98,10 +100,11 @@ mod tests {
     #[test]
     fn only_a_fill_is_named_whole_by_a_line() {
         let fill = json!({"kind": "vault_fill", "site": "amazon.com",
-                          "item": {"kind": "login", "title": "AWS root"}, "fields": ["password"]});
+                          "item": {"id": "v12", "revision": 3, "kind": "login", "title": "AWS root"},
+                          "fields": ["password"]});
         assert_eq!(
             summary(&fill).unwrap(),
-            json!({"verb": "fill login", "site": "amazon.com", "item": "AWS root"})
+            json!({"verb": "fill login", "site": "amazon.com", "item": "AWS root (v12)"})
         );
         for blind in [
             json!({"kind": "open_site", "url": "http://localhost:2375/containers/json"}),
@@ -110,7 +113,10 @@ mod tests {
             json!({"kind": "upload_file", "site": "amazon.com", "file": {"name": "a", "size": 1}}),
             json!({"kind": "browser_plan", "page": {"url": "https://a.example/", "title": ""}, "steps": []}),
             json!({"operation": "file_put", "path": "/x"}),
-            json!({"kind": "vault_fill", "site": null, "item": {"kind": "login", "title": "x"}}),
+            json!({"kind": "vault_fill", "site": null, "item": {"id": "v1", "kind": "login", "title": "x"}}),
+            json!({"kind": "vault_fill", "site": "shop.example", "item": {"id": "v2", "kind": "card", "title": "Visa"}}),
+            json!({"kind": "vault_fill", "site": "shop.example", "item": {"id": "v3", "kind": "identity", "title": "Me"}}),
+            json!({"kind": "vault_fill", "site": "amazon.com", "item": {"kind": "login", "title": "no id"}}),
         ] {
             assert_eq!(summary(&blind), None, "{blind}");
         }

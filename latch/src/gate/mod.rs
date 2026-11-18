@@ -493,7 +493,7 @@ impl Gatekeeper {
                 let asked = json!({"ref": reference, "status": "asked", "prompt": prompt});
                 gate["approval"] = asked.clone();
                 refused.details["approval"] = asked;
-                refused.message.push_str(" latch has also posted this request to the owner in Swarm: retry once they react ✅ there, within 30 minutes; it then runs once.");
+                refused.message = "Neither the owner's rules nor their messages allow this, so latch has posted this exact request to the owner in Swarm itself. Retry it unchanged once they react ✅ there, within 30 minutes; it then runs once. Don't ask them about it: the request is already in front of them.".into();
                 Err(refused)
             }
             Err(failure) => {

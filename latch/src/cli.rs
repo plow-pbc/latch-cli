@@ -94,7 +94,9 @@ Agents:
   Exit 4 means denied. A host's gatekeeper refusal, gatekeeper_denied with
   reason not_covered, is the one to retry: latch has no approval prompt, so
   ask the owner in your Plow chat, naming exactly what you will do, then
-  retry once they agree there; refused again, stop and tell them. owner_said_no
+  retry once they agree there; refused again, stop and tell them. When its
+  details.approval says asked, latch posted the request to the owner in
+  Swarm itself: retry it unchanged once they react there. owner_said_no
   and exec_denied (the owner turned exec off on that host) mean no.
   Exit 3, gatekeeper_unavailable: the host could not judge. Its message says
   what fixes it: often a retry later, but a host out of Plow credits fails
