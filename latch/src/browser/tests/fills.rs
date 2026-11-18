@@ -2600,35 +2600,58 @@ async fn a_code_in_one_character_boxes_fills_every_box(engine: &str) {
 
     // Six boxes of one digit each, each moving the focus on once it holds
     // its digit. Mapped as the agent sees it, the first box alone, the code
-    // is typed key by key where the page moves the focus; mapped box by
-    // box, it is split a digit a box. Either way the page sends it whole.
-    for mapped in [1, 6] {
-        let page = h
-            .call("open", json!({"url": format!("{local}/totp-boxes.html")}))
+    // is typed key by key where the page moves the focus, in a form or in
+    // none (each box in a wrapper of its own); mapped box by box, it is
+    // split a digit a box. Either way the page sends it whole.
+    for (page, mapped) in [
+        ("totp-boxes", 1),
+        ("totp-boxes", 6),
+        ("totp-boxes-formless", 1),
+    ] {
+        let opened = h
+            .call("open", json!({"url": format!("{local}/{page}.html")}))
             .await
             .unwrap();
         let boxes: Vec<String> = (1..=mapped)
-            .map(|n| find(&page, "textbox", &format!("Digit {n}")))
+            .map(|n| find(&opened, "textbox", &format!("Digit {n}")))
             .collect();
         let (verified, _) = h
             .fill(json!({
                 "item": login.item,
                 "fields": [["otp", boxes]],
-                "press": find(&page, "button", "Verify"),
+                "press": find(&opened, "button", "Verify"),
             }))
             .await;
         let verified = verified.unwrap();
-        println!(
-            "boxed code, {mapped} box(es) mapped: {}",
-            verified["fields"]
-        );
+        println!("{page}, {mapped} box(es) mapped: {}", verified["fields"]);
         assert_eq!(verified["submitted"], true);
         let answer = h.text().await;
         assert!(
             answer.contains("code accepted"),
-            "{mapped} box(es): {answer}"
+            "{page}, {mapped}: {answer}"
         );
     }
+
+    // Outside a form, a move of the focus to a field elsewhere on the page
+    // is not followed: the fill stops, and no digit goes into that field.
+    let opened = h
+        .call(
+            "open",
+            json!({"url": format!("{local}/totp-boxes-formless.html?stray")}),
+        )
+        .await
+        .unwrap();
+    let (stopped, _) = h
+        .fill(json!({
+            "item": login.item,
+            "fields": [["otp", [find(&opened, "textbox", "Digit 1")]]],
+            "press": find(&opened, "button", "Verify"),
+        }))
+        .await;
+    let stopped = stopped.unwrap_err();
+    println!("stray focus: {} ({})", stopped.code, stopped.message);
+    assert_eq!(stopped.code, "needs_owner");
+    assert!(!h.text().await.contains("promo touched"));
     h.call("close", json!({})).await.ok();
 }
 
