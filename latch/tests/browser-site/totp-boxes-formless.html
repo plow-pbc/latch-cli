@@ -1,10 +1,9 @@
 <!doctype html><title>latch formless boxed code test</title>
 <!-- A code in six one-character boxes in no form, each in a wrapper of
      its own, each moving the focus on to the next once it holds its digit.
-     With ?stray, box 3 moves the focus instead to a promo field elsewhere
-     on the page, which says so if anything is typed into it. Verify posts
+     With ?stray, box 3 moves the focus instead to a promo field after the
+     boxes, outside their group, which says so if anything is typed into it. Verify posts
      the joined code as `otp` to /verify. -->
-<header><label>Promo code <input id="promo" maxlength="10"></label> <span id="touched"></span></header>
 <h1>Two-step verification</h1>
 <div role="group" aria-label="Authentication code">
   <div><input aria-label="Digit 1" autocomplete="one-time-code" inputmode="numeric" maxlength="1"></div>
@@ -14,6 +13,7 @@
   <div><input aria-label="Digit 5" inputmode="numeric" maxlength="1"></div>
   <div><input aria-label="Digit 6" inputmode="numeric" maxlength="1"></div>
 </div>
+<footer><label>Promo code <input id="promo" maxlength="10"></label> <span id="touched"></span></footer>
 <form method="post" action="verify">
   <input type="hidden" name="otp">
   <p><button type="submit">Verify</button></p>
