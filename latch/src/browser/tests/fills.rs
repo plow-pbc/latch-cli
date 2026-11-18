@@ -47,6 +47,7 @@ conformance!(
     a_login_is_typed_with_the_engines_own_keys,
     no_part_of_a_typed_secret_goes_into_an_address,
     a_field_that_formats_its_value_still_holds_it,
+    a_code_in_one_character_boxes_fills_every_box,
     only_a_layer_of_its_own_covers_a_field_and_the_refusal_names_it,
     no_secret_goes_into_a_form_sent_by_get,
     requests_go_on_while_a_guard_outlives_its_call,
@@ -2579,6 +2580,55 @@ async fn a_field_that_formats_its_value_still_holds_it(engine: &str) {
     println!("spaced code: {}", verified["fields"]);
     assert_eq!(verified["submitted"], true);
     assert!(h.text().await.contains("code accepted"));
+    h.call("close", json!({})).await.ok();
+}
+
+async fn a_code_in_one_character_boxes_fills_every_box(engine: &str) {
+    let (_dir, state, _area) = test_state(engine);
+    let vault = Vault::new(state.clone());
+    let login = vault
+        .with(|s| s.add(item(LOGIN, "Shop", &["shop.example"], &[("totp", KEY)])))
+        .unwrap();
+    let pages = site();
+    let local = format!("http://127.0.0.1:{pages}");
+    let mut browsers = Browsers::new(state.clone(), vault.clone(), super::HEADLESS);
+    browsers.test = Some((
+        latch(),
+        vec![(local.clone(), "https://login.shop.example".into())],
+    ));
+    let mut h = Harness::start(browsers, engine).await;
+
+    // Six boxes of one digit each, each moving the focus on once it holds
+    // its digit. Mapped as the agent sees it, the first box alone, the code
+    // is typed key by key where the page moves the focus; mapped box by
+    // box, it is split a digit a box. Either way the page sends it whole.
+    for mapped in [1, 6] {
+        let page = h
+            .call("open", json!({"url": format!("{local}/totp-boxes.html")}))
+            .await
+            .unwrap();
+        let boxes: Vec<String> = (1..=mapped)
+            .map(|n| find(&page, "textbox", &format!("Digit {n}")))
+            .collect();
+        let (verified, _) = h
+            .fill(json!({
+                "item": login.item,
+                "fields": [["otp", boxes]],
+                "press": find(&page, "button", "Verify"),
+            }))
+            .await;
+        let verified = verified.unwrap();
+        println!(
+            "boxed code, {mapped} box(es) mapped: {}",
+            verified["fields"]
+        );
+        assert_eq!(verified["submitted"], true);
+        let answer = h.text().await;
+        assert!(
+            answer.contains("code accepted"),
+            "{mapped} box(es): {answer}"
+        );
+    }
     h.call("close", json!({})).await.ok();
 }
 

@@ -1,0 +1,36 @@
+<!doctype html><title>latch boxed code test</title>
+<!-- A code in six one-character boxes, the way Slack's two-factor page
+     asks for it: each box takes one digit and moves the focus on to the
+     next, and a paste of the whole code spreads it across them. Posts the
+     joined code as `otp` to /verify, which checks it against the test key. -->
+<h1>Two-step verification</h1>
+<form method="post" action="verify">
+  <fieldset><legend>Authentication code</legend>
+    <input aria-label="Digit 1" autocomplete="one-time-code" inputmode="numeric" maxlength="1">
+    <input aria-label="Digit 2" inputmode="numeric" maxlength="1">
+    <input aria-label="Digit 3" inputmode="numeric" maxlength="1">
+    <input aria-label="Digit 4" inputmode="numeric" maxlength="1">
+    <input aria-label="Digit 5" inputmode="numeric" maxlength="1">
+    <input aria-label="Digit 6" inputmode="numeric" maxlength="1">
+  </fieldset>
+  <input type="hidden" name="otp">
+  <p><button type="submit">Verify</button></p>
+</form>
+<script>
+  const boxes = [...document.querySelectorAll('[aria-label^=Digit]')];
+  boxes.forEach((box, at) => {
+    box.addEventListener('input', () => {
+      box.value = box.value.replace(/\D/g, '').slice(-1);
+      if (box.value && boxes[at + 1]) boxes[at + 1].focus();
+    });
+    box.addEventListener('paste', (event) => {
+      event.preventDefault();
+      const digits = event.clipboardData.getData('text').replace(/\D/g, '');
+      [...digits].forEach((d, i) => { if (boxes[at + i]) boxes[at + i].value = d; });
+      (boxes[at + digits.length] || boxes[boxes.length - 1]).focus();
+    });
+  });
+  document.querySelector('form').addEventListener('submit', () => {
+    document.querySelector('[name=otp]').value = boxes.map(b => b.value).join('');
+  });
+</script>
