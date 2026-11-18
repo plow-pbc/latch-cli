@@ -584,11 +584,15 @@
   };
   // A field that took none of the keys, or only the first ones, gets the
   // value in one step. Boxes that took the keys between them hold the
-  // value when their characters, in order, are the value.
+  // value when their characters, in order, are the value; one the page
+  // has since removed holds none of it.
   const typeEnd = (snap, index, value, expected, formatted) => {
     const el = element(snap, index);
     if (!el || expected !== token || el !== boxes[0]) return { refused: 'the field is gone' };
-    if (boxes.length > 1) return judged(boxes.map(current).join(''), value, formatted, true);
+    if (boxes.length > 1) {
+      const text = boxes.map((box) => (box.isConnected ? current(box) : '')).join('');
+      return judged(text, value, formatted, true);
+    }
     const now = current(el);
     if (now !== value && value.startsWith(now)) setValue(el, value);
     return held(el, value, formatted);
