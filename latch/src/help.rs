@@ -1391,7 +1391,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "settings.set",
         runs_on: |_| RunsOn::Local,
-        output: "`settings`, every setting as saved (`keep_awake`, and `swarm_approvals`, set in `settings.json` only: whether the gatekeeper may post an uncovered vault fill or site opening to the owner in Swarm and allow it once on their ✅ there; off by default), and `next`: `latch status --local`, whose `this_machine.hosting.keep_awake` (`enabled`; `held`, null while the running host has not said; `reason` when not held: disabled, not_serving, on_battery, unsupported, refused or unknown) says what the host makes of it. Saved is all this says.",
+        output: "`settings`, every setting as saved (`keep_awake`, and `swarm_approvals`, set in `settings.json` only: whether the gatekeeper may post an uncovered vault fill to the owner in Swarm and allow it once on their ✅ there; off by default), and `next`: `latch status --local`, whose `this_machine.hosting.keep_awake` (`enabled`; `held`, null while the running host has not said; `reason` when not held: disabled, not_serving, on_battery, unsupported, refused or unknown) says what the host makes of it. Saved is all this says.",
         effect: Repeatable(
             "saves this machine's host setting, which a running host picks up without a restart",
         ),

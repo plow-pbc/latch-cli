@@ -1975,6 +1975,7 @@ async fn the_owners_reaction_in_swarm_allows_exactly_the_action_it_was_asked_for
     // and the reaction by event id.
     let judgment = keeper.judge(AGENT_CALLER, &fill("AWS root")).await;
     assert!(judgment.verdict.is_ok(), "{:?}", judgment.verdict);
+    assert_eq!(judgment.gate["verdict"], "allow");
     assert_eq!(judgment.gate["source"], "swarm_approval");
     assert_eq!(judgment.gate["approval"]["ref"], root);
     assert_eq!(judgment.gate["approval"]["reaction"], "$ok");
@@ -1990,13 +1991,18 @@ async fn the_owners_reaction_in_swarm_allows_exactly_the_action_it_was_asked_for
         "asked"
     );
 
-    // What one line can't name whole is never posted: an exec, a script.
+    // What one line can't name whole is never posted: an exec, a script, a
+    // page to open (its port, path and query would not show).
     let before = asked().len();
     let script = serde_json::value::to_raw_value(
         &json!({"kind": "run_script", "site": "amazon.com", "script": "document.title"}),
     )
     .unwrap();
-    for blind in [order(), script] {
+    let open = serde_json::value::to_raw_value(
+        &json!({"kind": "open_site", "url": "http://localhost:2375/containers/json"}),
+    )
+    .unwrap();
+    for blind in [order(), script, open] {
         let judgment = keeper.judge(AGENT_CALLER, &blind).await;
         let refused = judgment.verdict.unwrap_err();
         assert_eq!(refused.details["reason"], "not_covered");
@@ -2017,7 +2023,9 @@ async fn the_owners_reaction_in_swarm_allows_exactly_the_action_it_was_asked_for
 #[tokio::test]
 async fn a_reaction_never_lifts_a_veto() {
     let action = serde_json::value::to_raw_value(&json!({
-        "kind": "open_site", "url": "https://signin.aws.amazon.com/console"
+        "kind": "vault_fill", "site": "amazon.com",
+        "item": {"kind": "login", "title": "AWS root", "sites": ["amazon.com"]},
+        "fields": ["password"]
     }))
     .unwrap();
     let dir = tempfile::tempdir().unwrap();

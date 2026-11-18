@@ -6,10 +6,11 @@
 //! allows that action once: Plow checks the reaction, and latch takes its
 //! answer from Plow only, never from the agent.
 //!
-//! Only an action the line names whole is asked: filling a vault item on a
-//! site (what, where, which item) and opening a site. Everything else (an
-//! exec, a script, a file, a plan) keeps the chat's way: a short line could
-//! only say "run a command", and the owner would approve blind.
+//! Only an action the line names whole is asked: filling a vault item, which
+//! goes only onto the item's saved sites (what, which site, which item).
+//! Everything else keeps the chat's way. A short line could only say "run a
+//! command" of an exec, and only a host of a page to open, hiding its port,
+//! path and query: the owner would approve blind.
 
 use serde_json::{Value, json};
 
@@ -21,19 +22,13 @@ use crate::plow::Plow;
 /// shows: what it does, on which site, with which vault item. `None` for an
 /// action no such line names whole.
 pub fn summary(action: &Value) -> Option<Value> {
-    match action["kind"].as_str()? {
-        "vault_fill" => {
-            let site = action["site"].as_str()?;
-            let item = action["item"]["title"].as_str()?;
-            let kind = action["item"]["kind"].as_str().unwrap_or("item");
-            Some(json!({"verb": format!("fill {kind}"), "site": site, "item": item}))
-        }
-        "open_site" => {
-            let url = url::Url::parse(action["url"].as_str()?).ok()?;
-            Some(json!({"verb": "open", "site": url.host_str()?, "item": null}))
-        }
-        _ => None,
+    if action["kind"] != "vault_fill" {
+        return None;
     }
+    let site = action["site"].as_str()?;
+    let item = action["item"]["title"].as_str()?;
+    let kind = action["item"]["kind"].as_str().unwrap_or("item");
+    Some(json!({"verb": format!("fill {kind}"), "site": site, "item": item}))
 }
 
 /// The reference of `action` by agent `agent` on host `host`: what the
@@ -85,19 +80,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_a_fill_or_an_opened_site_is_named_whole_by_a_line() {
+    fn only_a_fill_is_named_whole_by_a_line() {
         let fill = json!({"kind": "vault_fill", "site": "amazon.com",
                           "item": {"kind": "login", "title": "AWS root"}, "fields": ["password"]});
         assert_eq!(
             summary(&fill).unwrap(),
             json!({"verb": "fill login", "site": "amazon.com", "item": "AWS root"})
         );
-        let open = json!({"kind": "open_site", "url": "https://signin.aws.amazon.com/console"});
-        assert_eq!(
-            summary(&open).unwrap(),
-            json!({"verb": "open", "site": "signin.aws.amazon.com", "item": null})
-        );
         for blind in [
+            json!({"kind": "open_site", "url": "http://localhost:2375/containers/json"}),
             json!({"operation": "exec", "argv": ["rm", "-rf", "/"]}),
             json!({"kind": "run_script", "site": "amazon.com", "script": "1"}),
             json!({"kind": "upload_file", "site": "amazon.com", "file": {"name": "a", "size": 1}}),

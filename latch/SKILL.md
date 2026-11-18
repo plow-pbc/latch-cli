@@ -269,8 +269,8 @@ Exit 4 is a refusal, and its code says what you may do:
   (`chat_lookup` `found` or `none`) and which of the messages read were the
   owner's (`owner_messages`). With `none`, only their rules can allow it.
   For work you'll repeat, the owner can allow it in their rules instead.
-  When the host has Swarm approvals on, a refused vault fill or site
-  opening also carries `details.approval`: with `status` `asked`, latch has
+  When the host has Swarm approvals on, a refused vault fill also
+  carries `details.approval`: with `status` `asked`, latch has
   posted the exact action to the owner in Swarm itself. Retry it unchanged
   once they react ✅ there (within 30 minutes; it runs once). Any change to
   the action is a different request.
