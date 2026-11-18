@@ -1,8 +1,10 @@
 <!doctype html><title>latch boxed code test</title>
 <!-- A code in six one-character boxes, the way Slack's two-factor page
      asks for it: each box takes one digit and moves the focus on to the
-     next, and a paste of the whole code spreads it across them. Posts the
-     joined code as `otp` to /verify, which checks it against the test key. -->
+     next, and a paste of the whole code spreads it across them. With
+     ?beacon, every box after the first sends its digit to /beacon in the
+     address as it arrives. Posts the joined code as `otp` to /verify,
+     which checks it against the test key. -->
 <h1>Two-step verification</h1>
 <form method="post" action="verify">
   <fieldset><legend>Authentication code</legend>
@@ -21,6 +23,9 @@
   boxes.forEach((box, at) => {
     box.addEventListener('input', () => {
       box.value = box.value.replace(/\D/g, '').slice(-1);
+      if (box.value && at > 0 && location.search === '?beacon') {
+        fetch(`beacon?leak=${encodeURIComponent(box.value)}`).catch(() => {});
+      }
       if (box.value && boxes[at + 1]) boxes[at + 1].focus();
     });
     box.addEventListener('paste', (event) => {

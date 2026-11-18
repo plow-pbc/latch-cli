@@ -2652,6 +2652,33 @@ async fn a_code_in_one_character_boxes_fills_every_box(engine: &str) {
     println!("stray focus: {} ({})", stopped.code, stopped.message);
     assert_eq!(stopped.code, "needs_owner");
     assert!(!h.text().await.contains("promo touched"));
+
+    // A box the keys follow into is guarded before its first key: a page
+    // that sends each later box's digit in an address sends none of them,
+    // and the fill says the page tried.
+    let opened = h
+        .call(
+            "open",
+            json!({"url": format!("{local}/totp-boxes.html?beacon")}),
+        )
+        .await
+        .unwrap();
+    let (stopped, _) = h
+        .fill(json!({
+            "item": login.item,
+            "fields": [["otp", [find(&opened, "textbox", "Digit 1")]]],
+            "press": find(&opened, "button", "Verify"),
+        }))
+        .await;
+    let stopped = stopped.unwrap_err();
+    println!(
+        "boxes with a beacon: {} ({}); beacons {:?}",
+        stopped.code,
+        stopped.message,
+        beacons(pages)
+    );
+    assert_eq!(stopped.code, "get_form");
+    assert_eq!(beacons(pages).1, 0);
     h.call("close", json!({})).await.ok();
 }
 
