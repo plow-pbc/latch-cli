@@ -49,6 +49,8 @@ pub struct Runtime {
     pub pauses: AtomicU32,
     /// How long a call (its line, upload, answer and bytes) may take.
     within: fn(&Value) -> Duration,
+    /// How long the session may go without a call before its worker ends it.
+    pub idle: Duration,
 }
 
 struct Worker {
@@ -168,6 +170,7 @@ impl Runtime {
             filling: AtomicBool::new(false),
             pauses: AtomicU32::new(0),
             within,
+            idle,
         })
     }
 

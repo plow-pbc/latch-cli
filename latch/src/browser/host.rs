@@ -87,6 +87,9 @@ pub struct Browsers {
     /// Tests only: whether the host has a screen, in place of the check.
     #[cfg(test)]
     pub(super) screen: Option<bool>,
+    /// Tests only: how long a session may sit idle, in place of `IDLE`.
+    #[cfg(test)]
+    pub(super) idle: Option<std::time::Duration>,
     /// Open sessions, by id.
     sessions: Mutex<HashMap<String, Arc<Entry>>>,
     /// The profiles a session runs on, or is starting on.
@@ -251,6 +254,8 @@ impl Browsers {
             dashboard: Default::default(),
             #[cfg(test)]
             screen: None,
+            #[cfg(test)]
+            idle: None,
             sessions: Mutex::new(HashMap::new()),
             in_use: Default::default(),
             closing: Default::default(),
@@ -458,7 +463,7 @@ impl Browsers {
                 &self.state_dir,
                 engine,
                 profile,
-                super::runtime::IDLE,
+                self.idle.unwrap_or(super::runtime::IDLE),
                 self.headless,
             )
             .await;
