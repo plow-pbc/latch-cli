@@ -531,7 +531,8 @@ async fn run_host(
             .map_err(|why| Failure::new(code::not_logged_in, why))?,
         Box::new(rules),
     )
-    .keeping_requests(&state.path);
+    .keeping_requests(&state.path)
+    .asking_in_swarm(&state.path, &config.peer.name);
     let mut audit = AuditLog::open(state.path.join(crate::audit::FILE))?;
     log(&format!("audit log verified: {} records", audit.len()));
     let home = std::env::home_dir().unwrap_or_default();

@@ -392,6 +392,15 @@ impl Plow {
         response.json().await.map_err(|_| bad_answer())
     }
 
+    /// Plow's answer to one owner-approval call (`gate/approval.rs`):
+    /// `ask` posts the request in the owner's Swarm approval room, `confirm`
+    /// says whether the owner's ✅ there allows it.
+    pub async fn approval(&self, body: &serde_json::Value) -> Result<serde_json::Value, Failure> {
+        let url = format!("{}/v1/latch/approvals", self.api_url);
+        let response = self.send(self.http.post(url).json(body)).await?;
+        response.json().await.map_err(|_| bad_answer())
+    }
+
     /// Every live peer in the account, machines and agents, online or not.
     pub async fn list_peers(&self) -> Result<Vec<Peer>, Failure> {
         let url = format!("{}/v1/latch/peers", self.api_url);

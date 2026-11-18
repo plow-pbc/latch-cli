@@ -605,7 +605,8 @@ async fn a_refused_command_sends_nothing_to_the_page(engine: &str) {
         assert_eq!(
             judge.last_action(),
             json!({"kind": "vault_fill", "site": "shop.example",
-                   "item": {"kind": "login", "title": "Test site", "sites": ["shop.example"]},
+                   "item": {"id": added, "revision": 1, "kind": "login", "title": "Test site",
+                            "sites": ["shop.example"]},
                    "fields": ["username", "password"]}),
             "{item:?}"
         );
@@ -710,7 +711,7 @@ async fn a_refused_command_sends_nothing_to_the_page(engine: &str) {
     assert_eq!(
         judge.last_action(),
         json!({"kind": "vault_fill", "site": "shop.example",
-               "item": {"kind": "card", "title": "Test Visa"},
+               "item": {"id": card.item, "revision": 1, "kind": "card", "title": "Test Visa"},
                "fields": ["number", "expiry", "cvv"]})
     );
     let everything = judge
@@ -955,7 +956,8 @@ async fn a_fill_inside_a_plan_is_judged_as_a_fill(engine: &str) {
         json!({"request": format!("r-plan-fill-{n}"),
                "plan": Plan { steps: vec![step], items, ..Default::default() }})
     };
-    let shown = json!({"kind": "login", "title": "Test site", "sites": ["shop.example"]});
+    let shown = json!({"id": login, "revision": 1, "kind": "login", "title": "Test site",
+                       "sites": ["shop.example"]});
     // Each judgment takes the judge 300 ms: the plan's and its fill's are
     // both the call's gatekeeper time.
     judge.slow.store(300, std::sync::atomic::Ordering::SeqCst);

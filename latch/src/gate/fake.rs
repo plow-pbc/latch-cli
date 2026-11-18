@@ -40,6 +40,11 @@ pub struct World {
     pub google_reauth: Vec<String>,
     /// The Google token route holds its answer while this is set.
     pub google_paused: bool,
+    /// Each owner-approval request posted (`ask`), in order, with the
+    /// reference Plow's function computes for it from its fields.
+    pub approvals_asked: Vec<(Value, String)>,
+    /// The references the owner's ✅ in Swarm allows, each once.
+    pub approved: Vec<String>,
 }
 
 impl World {
@@ -91,6 +96,37 @@ impl World {
                            "time_ban": {"type": "noul", "noul": 0.0}},
                        "usage": {"input_tokens": 1000, "output_tokens": 0, "cost": 0.0001}}),
             );
+        }
+        if method == "POST" && path == "/v1/latch/approvals" {
+            let asked: Value = serde_json::from_slice(body).unwrap();
+            // As Plow's function computes it: the line's fields and the
+            // action's digest, never a reference the caller sends.
+            let fields =
+                ["host", "agent", "verb", "site", "item", "digest"].map(|f| asked[f].clone());
+            let reference = crate::state::to_hex(&<sha2::Sha256 as sha2::Digest>::digest(
+                serde_json::to_string(&fields).unwrap().as_bytes(),
+            ));
+            let prompt = format!("$prompt-{}", &reference[..8]);
+            if asked["op"] == "ask" {
+                self.approvals_asked.push((asked, reference.clone()));
+                return (
+                    200,
+                    json!({"status": "asked", "prompt": prompt, "ref": reference}),
+                );
+            }
+            return match self.approved.iter().position(|r| *r == reference) {
+                Some(at) => {
+                    self.approved.remove(at);
+                    (
+                        200,
+                        json!({"approved": true, "prompt": prompt, "reaction": "$ok"}),
+                    )
+                }
+                None => (
+                    200,
+                    json!({"approved": false, "refused": "no ✅ from the approver yet"}),
+                ),
+            };
         }
         if method == "POST" && path == "/v1/connectors/gmail/access-token" {
             // Plow's answer with no Google account connected.
