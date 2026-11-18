@@ -345,29 +345,6 @@ impl<D: Driver> Core<D> {
         {
             return Err(refused("the document was replaced"));
         }
-        // A secret is guarded before it reaches the page, as stored and as
-        // a single-line field holds it, without its line breaks; and each
-        // part of it the field holds as the keys arrive.
-        if secret {
-            let unbroken = value.replace(['\r', '\n'], "");
-            let parts: Vec<String> = [value, unbroken.as_str()]
-                .iter()
-                .flat_map(|form| {
-                    form.char_indices()
-                        .map(|(at, ch)| form[..at + ch.len_utf8()].to_string())
-                })
-                .collect();
-            let mut added = false;
-            for form in parts {
-                if !form.is_empty() && !self.fill.guarded.contains(&form) {
-                    self.fill.guarded.push(form);
-                    added = true;
-                }
-            }
-            if added {
-                self.driver.guard(&self.fill.guarded)?;
-            }
-        }
         let (frame, snapshot, index, origin, token) = (
             target.frame.clone(),
             target.snapshot.clone(),
@@ -375,6 +352,12 @@ impl<D: Driver> Core<D> {
             target.origin.clone(),
             target.token.clone(),
         );
+        // A secret is guarded before it reaches the page, as stored and as
+        // a single-line field holds it, without its line breaks.
+        if secret {
+            let unbroken = value.replace(['\r', '\n'], "");
+            self.guard_parts(&[value, unbroken.as_str()])?;
+        }
         // The frame is registered before the first key: a fill that fails
         // part-way through the typing is cleaned up there too.
         if !self
@@ -386,14 +369,34 @@ impl<D: Driver> Core<D> {
             let tab = self.driver.active_tab();
             self.fill.filled.push((tab, frame.clone()));
         }
-        let answer =
-            self.type_value(&frame, &snapshot, index, value, &origin, &token, formatted)?;
+        let answer = self.type_value(
+            &frame, &snapshot, index, value, &origin, &token, formatted, secret,
+        )?;
         if let Some(why) = answer["refused"].as_str() {
             return Err(refused(why));
         }
         Ok(json!({"held": answer["held"] == true,
                   "dropped_breaks": answer["dropped_breaks"] == true,
                   "page": answer["page"]}))
+    }
+
+    /// Guards each part of each of `forms` a field holds as the keys
+    /// arrive: every prefix.
+    fn guard_parts(&mut self, forms: &[&str]) -> Result<(), Failure> {
+        let mut added = false;
+        for form in forms {
+            for (at, ch) in form.char_indices() {
+                let part = form[..at + ch.len_utf8()].to_string();
+                if !self.fill.guarded.contains(&part) {
+                    self.fill.guarded.push(part);
+                    added = true;
+                }
+            }
+        }
+        if added {
+            self.driver.guard(&self.fill.guarded)?;
+        }
+        Ok(())
     }
 
     /// Puts `value` into the field as a person types it: a text field
@@ -412,6 +415,7 @@ impl<D: Driver> Core<D> {
         origin: &str,
         token: &str,
         formatted: bool,
+        secret: bool,
     ) -> Result<Value, Failure> {
         let at = value
             .char_indices()
@@ -454,7 +458,7 @@ impl<D: Driver> Core<D> {
             );
         }
         let mut caret = start["caret"].as_u64().unwrap_or(0);
-        for key in tail.chars() {
+        for (at, key) in tail.char_indices() {
             let ready = self.driver.call(
                 frame,
                 "function (s, i, c, t) { return __latch.typeKey(s, i, c, t); }",
@@ -462,6 +466,11 @@ impl<D: Driver> Core<D> {
             )?;
             if ready["refused"].is_string() {
                 return Ok(ready);
+            }
+            // A box the page moved the focus on to holds what is left of a
+            // secret, from its start: guarded before its first key.
+            if secret && ready["followed"] == true {
+                self.guard_parts(&[&tail[at..]])?;
             }
             if !self.driver.holds_focus(frame)? {
                 return Ok(json!({"refused": "the field's frame lost the focus"}));

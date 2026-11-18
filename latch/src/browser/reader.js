@@ -569,7 +569,7 @@
     if (!el.isConnected) return { refused: 'the field is gone' };
     if (!focused(el)) el.focus();
     if (!focused(el)) return { refused: 'the field lost the focus' };
-    return { caret: caretAt(el, caret) };
+    return { caret: caretAt(el, caret), followed: !!next };
   };
   // The box the page moved the focus on to from `el`, once `el` was full:
   // an empty box after it in the same form (in none, beside it: the same
