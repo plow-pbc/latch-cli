@@ -572,7 +572,8 @@
     return { caret: caretAt(el, caret) };
   };
   // The box the page moved the focus on to from `el`, once `el` was full:
-  // an empty box after it in the same form, with a length of its own, the
+  // an empty box after it in the same form (in none, beside it: the same
+  // parent, or wrappers of the same parent), with a length of its own, the
   // keys have not been in yet. Any other move of the focus is not followed.
   const movedOn = (el) => {
     const next = el.getRootNode().activeElement;
@@ -580,6 +581,8 @@
     if (!next || next === el || !full(el)) return null;
     if (next.localName !== 'input' || !TYPED.includes(next.type) || next.maxLength <= 0) return null;
     if (next.form !== el.form || next.value !== '' || boxes.includes(next)) return null;
+    const up = (box) => box.parentElement?.parentElement;
+    if (!el.form && next.parentElement !== el.parentElement && (!up(el) || up(next) !== up(el))) return null;
     if (!(el.compareDocumentPosition(next) & Node.DOCUMENT_POSITION_FOLLOWING)) return null;
     return next;
   };
