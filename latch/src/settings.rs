@@ -1,9 +1,9 @@
 //! `latch settings`: this machine's own choices for its host, kept in
 //! `<state-dir>/settings.json`. A host reads them when it starts and
 //! watches the file while it runs, so a change needs no restart and no
-//! host at all; `serve -d --again` replays its flags, never these. Today
-//! there is one: whether the host keeps this machine awake (see
-//! `keep_awake.rs`).
+//! host at all; `serve -d --again` replays its flags, never these: whether
+//! the host keeps this machine awake (see `keep_awake.rs`), and whether its
+//! gatekeeper may ask the owner in Swarm (see `gate/approval.rs`).
 
 use std::path::Path;
 
@@ -20,6 +20,11 @@ pub struct Settings {
     /// The host keeps this machine from idle sleep while it serves.
     #[serde(default)]
     pub keep_awake: bool,
+    /// The gatekeeper may post an action the owner's rules and chat left
+    /// uncovered to the owner's Swarm approval room, and allow it once on
+    /// their ✅ there. Off until the owner turns it on in this file.
+    #[serde(default)]
+    pub swarm_approvals: bool,
 }
 
 /// The settings saved in `dir`; the defaults if there are none yet.

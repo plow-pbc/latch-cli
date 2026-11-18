@@ -32,6 +32,7 @@
 //! request and answer apart from it, for its owner (`requests.rs`).
 
 mod action;
+mod approval;
 mod chat;
 pub mod client;
 #[cfg(test)]
@@ -255,6 +256,9 @@ pub struct Gatekeeper {
     provider: Arc<dyn Provider>,
     rules: Box<dyn RulesSource>,
     requests: Option<PathBuf>,
+    /// The host's state folder, whose settings say whether the owner's ✅
+    /// in Swarm may allow an action (`approval.rs`), and the host's name.
+    approvals: Option<(PathBuf, String)>,
 }
 
 /// One judgment: `Ok` to run the operation or the failure the agent gets,
@@ -334,6 +338,16 @@ impl Gatekeeper {
             provider,
             rules,
             requests: None,
+            approvals: None,
+        }
+    }
+
+    /// This gatekeeper, asking the owner in Swarm when `state_dir`'s
+    /// settings turn it on, as host `host`.
+    pub fn asking_in_swarm(self, state_dir: &Path, host: &str) -> Self {
+        Gatekeeper {
+            approvals: Some((state_dir.to_path_buf(), host.to_string())),
+            ..self
         }
     }
 
@@ -370,6 +384,7 @@ impl Gatekeeper {
             provider: self.provider.clone(),
             rules: Box::new(rules),
             requests: self.requests.clone(),
+            approvals: None,
         })
     }
 
@@ -433,8 +448,61 @@ impl Gatekeeper {
         let owner = matches!(caller, Caller::Owner | Caller::OwnerOnHost);
         let now = jiff::Zoned::now();
         let clock = now.strftime("%a %Y-%m-%d %H:%M %Z").to_string();
-        self.consider(owner, rules, chat, now.timestamp(), &clock, action, gate)
-            .await
+        let verdict = self
+            .consider(owner, rules, chat, now.timestamp(), &clock, action, gate)
+            .await;
+        match (caller, verdict) {
+            (Caller::Agent { uid, .. }, Err(refused))
+                if refused.details["reason"] == "not_covered" =>
+            {
+                self.ask_owner(uid, &shown, refused, gate).await
+            }
+            (_, verdict) => verdict,
+        }
+    }
+
+    /// An agent's action the owner's rules and chat left uncovered: allowed
+    /// once by the owner's ✅ in Swarm, or else `refused`, saying the request
+    /// is posted there. A veto never comes here, nor an action no short line
+    /// names whole (`approval::summary`), nor any while the host's settings
+    /// leave it off.
+    async fn ask_owner(
+        &self,
+        agent: &str,
+        action: &Value,
+        mut refused: Failure,
+        gate: &mut Value,
+    ) -> Result<(), Failure> {
+        let Some((state_dir, host)) = &self.approvals else {
+            return Err(refused);
+        };
+        let on = crate::settings::load(state_dir).is_ok_and(|s| s.swarm_approvals);
+        let Some(summary) = approval::summary(action).filter(|_| on) else {
+            return Err(refused);
+        };
+        let reference = approval::reference(host, agent, action);
+        match approval::ask(&self.plow, &reference, host, agent, &summary).await {
+            Ok(approval::Asked::Approved { prompt, reaction }) => {
+                gate["source"] = json!("swarm_approval");
+                gate["approval"] = json!({"ref": reference, "status": "approved",
+                                          "prompt": prompt, "reaction": reaction});
+                Ok(())
+            }
+            Ok(approval::Asked::Waiting { prompt }) => {
+                let asked = json!({"ref": reference, "status": "asked", "prompt": prompt});
+                gate["approval"] = asked.clone();
+                refused.details["approval"] = asked;
+                refused.message.push_str(" latch has also posted this request to the owner in Swarm: retry once they react ✅ there, within 30 minutes; it then runs once.");
+                Err(refused)
+            }
+            Err(failure) => {
+                let unavailable = json!({"ref": reference, "status": "unavailable",
+                                         "why": failure.message});
+                gate["approval"] = unavailable.clone();
+                refused.details["approval"] = unavailable;
+                Err(refused)
+            }
+        }
     }
 
     /// The verdict on `action` by the owner or an agent with `rules`, read
