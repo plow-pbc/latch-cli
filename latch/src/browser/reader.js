@@ -572,14 +572,15 @@
     return { caret: caretAt(el, caret) };
   };
   // The box the page moved the focus on to from `el`, once `el` was full:
-  // an empty box of the same form, with a length of its own, the keys have
-  // not been in yet. Any other move of the focus is not followed.
+  // an empty box after it in the same form, with a length of its own, the
+  // keys have not been in yet. Any other move of the focus is not followed.
   const movedOn = (el) => {
     const next = el.getRootNode().activeElement;
     const full = (box) => box.maxLength > 0 && box.value.length >= box.maxLength;
     if (!next || next === el || !full(el)) return null;
     if (next.localName !== 'input' || !TYPED.includes(next.type) || next.maxLength <= 0) return null;
     if (next.form !== el.form || next.value !== '' || boxes.includes(next)) return null;
+    if (!(el.compareDocumentPosition(next) & Node.DOCUMENT_POSITION_FOLLOWING)) return null;
     return next;
   };
   // A field that took none of the keys, or only the first ones, gets the
