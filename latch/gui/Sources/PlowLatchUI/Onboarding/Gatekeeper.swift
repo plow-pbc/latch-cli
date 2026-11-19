@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Set your rules, as the old app's Gatekeeper screen: the rules box, two
-/// defaults, and five requests crossing a glowing boundary to the Mac.
+/// defaults, and four requests crossing a glowing boundary to the Mac.
 /// An allowed one passes the beam; a refused one stops at it.
 struct RulesView: View {
     @Bindable var flow: Onboarding
@@ -90,7 +90,7 @@ struct RulesView: View {
     }
 }
 
-/// The five lanes, the beam and the Mac. Geometry is the old app's: a lane
+/// The four lanes, the beam and the Mac. Geometry is the old app's: a lane
 /// 46 pt tall with a 36 pt pill, the Mac 118 pt wide at the right, the beam
 /// 168 pt from the right edge.
 private struct Deck: View {

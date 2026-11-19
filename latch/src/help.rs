@@ -1254,7 +1254,7 @@ const ENTRIES: &[Entry] = &[
                 ],
             ),
             ex(
-                "Start from the rules the Mac app offers a family assistant, only if there are none yet",
+                "Start from a family assistant's rules, only if there are none yet",
                 &["rules", "set", "--preset", "family", "--revision", "none"],
             ),
             ex(

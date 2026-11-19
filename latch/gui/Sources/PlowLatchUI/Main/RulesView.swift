@@ -298,8 +298,8 @@ final class Trial {
 
     var words: [String]? { ShellWords.split(request) }
 
-    /// The rules screen's examples that are words to edit: the Instacart
-    /// sign-in, a saved login's fill, has none.
+    /// The rules screen's examples that are words to edit: a saved login's
+    /// fill has none.
     static var examples: [Onboarding.Example] { Onboarding.examples.filter { $0.request.words != nil } }
 
     /// An example from the rules screen, in the request field to edit.

@@ -116,9 +116,8 @@ each is skipped once done, so you can run setup again at any time:
 3. **On a Mac, turn on Messages and Contacts.** These need Full Disk Access
    for the Plow Latch app.
 4. **Set rules for your agents**, when there are none yet: a family
-   assistant's, a work assistant's (the same two the Mac app offers), or none
-   for now (`latch rules set --preset family`, or `work`). Enter takes the
-   family assistant's.
+   assistant's, a work assistant's, or none for now (`latch rules set
+   --preset family`, or `work`). Enter takes the family assistant's.
 5. **Start the host** (`latch serve -d`), if you say yes.
 
 Ctrl-C stops setup at any step. Run `latch setup` again to pick up where
