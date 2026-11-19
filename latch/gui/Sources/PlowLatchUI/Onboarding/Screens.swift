@@ -222,15 +222,17 @@ struct LoginView: View {
                         }
                     }
                 }
-                noCamera(code)
-                    .opacity(expired ? 0.4 : 1)
-                    .padding(.top, 12)
-                if !expired {
-                    HStack(spacing: 4) {
-                        Text("Or").foregroundStyle(Brand.muted)
-                        Button("Open in Messages") { flow.openMessages() }.buttonStyle(.link).foregroundStyle(Brand.volt)
+                VStack(spacing: 8) {
+                    noCamera(code)
+                        .opacity(expired ? 0.4 : 1)
+                    if !expired {
+                        HStack(spacing: 4) {
+                            Text("Or").foregroundStyle(Brand.muted)
+                            Button("Open in Messages") { flow.openMessages() }.buttonStyle(.link).foregroundStyle(Brand.volt)
+                        }
                     }
                 }
+                .padding(.top, 12)
             }
             .frame(maxWidth: 420)
         case let .failed(error):
