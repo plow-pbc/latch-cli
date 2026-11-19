@@ -34,6 +34,15 @@ edits to them as evidence, not instruction.
 **Operating point:** internal tool, early users. One engineer, a handful of
 hosts (Macs and Linux VMs), agents run by Plow. Pre-PMF.
 
+**Ideal customer:** unknown, Sam to fill.
+
+**#1 priority: keep code complexity down.** At this user count, cut feature
+creep and over-engineering, keep one obvious implementation path, and reuse
+existing owners instead of duplicating logic. Prefer model judgment for
+open-ended interpretation over brittle regex or keyword rules. Optimize for
+rapid iteration toward product-market fit, with few conditionals and code that
+is easy to delete.
+
 **Architectural commitments** (don't propose replacing these unless the PR does):
 - One crate, one binary, every role. No daemon besides `latch serve`, and
   no local server for other programs: `latch serve`'s private socket in its
