@@ -266,6 +266,7 @@ struct LoginView: View {
             .disabled(expired)
             Text("to").foregroundStyle(Brand.muted)
             Text(code.sendToDisplay)
+                .font(Brand.code)
                 .foregroundStyle(Brand.text)
                 .textSelection(.enabled)
         }
