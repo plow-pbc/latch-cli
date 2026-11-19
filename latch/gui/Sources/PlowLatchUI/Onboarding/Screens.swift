@@ -224,6 +224,7 @@ struct LoginView: View {
                 }
                 noCamera(code)
                     .opacity(expired ? 0.4 : 1)
+                    .padding(.top, 12)
                 if !expired {
                     HStack(spacing: 4) {
                         Text("Or").foregroundStyle(Brand.muted)
