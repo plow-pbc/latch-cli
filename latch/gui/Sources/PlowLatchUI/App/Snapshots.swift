@@ -563,6 +563,19 @@ package enum SnapshotRunner {
                 try await renderWindow(app, size: mainSize, dark: dark,
                                  file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
             }
+            // Home on this Mac with nothing in its vault: the logins to add.
+            do {
+                let app = AppModel(client: FakeLatchClient(), still: true)
+                app.stage(status: try Fixtures.decode(Fixtures.status(Fixtures.serving, plugins: Fixtures.studioPlugins)))
+                app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
+                app.stage(summary: HostSummary(rules: .success(try Fixtures.decode(Fixtures.studioRules)),
+                                               vault: .success(try Fixtures.decode(Fixtures.piVault))), for: "studio")
+                app.place = .host(.home)
+                stageActivity(app)
+                _ = app.stage(.done, progress: full)
+                try await renderWindow(app, size: mainSize, dark: dark,
+                                 file: output.appending(path: "10-home-this-mac-empty-vault-\(dark ? "dark" : "light").png"))
+            }
             // Home at the default and narrowest sizes, on this Mac and
             // another host, Connections already read.
             for chosen in ["studio", "pi-kitchen"] {

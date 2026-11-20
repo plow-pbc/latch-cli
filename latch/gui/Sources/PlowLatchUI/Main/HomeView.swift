@@ -26,7 +26,7 @@ struct HomeView: View {
             }
             if let host = app.host {
                 if host.isThisMac {
-                    NeedsSection()
+                    NeedsSection(host: host)
                     ActivitySections(feed: app.feed(for: host), host: host)
                     OnHostSection(host: host)
                 } else if host.online == false {
@@ -80,8 +80,10 @@ private struct ViewerSection: View {
     }
 }
 
-/// What on this Mac's own host needs the person, from `status --local`.
+/// What on this Mac's own host needs the person, from `status --local`,
+/// and its vault's logins while it holds none.
 private struct NeedsSection: View {
+    var host: HostEntry
     @Environment(AppModel.self) private var app
 
     var body: some View {
@@ -103,13 +105,20 @@ private struct NeedsSection: View {
                         InstallUpdateButton()
                     }
                     UpdateProgress()
+                case .logins:
+                    HStack(alignment: .top) {
+                        Need(symbol: "key", text: "Add the logins your agents need",
+                             detail: "Copy each one, such as GitHub's, from your password manager. Agents sign in with it without ever seeing it.")
+                        Spacer(minLength: 12)
+                        Button("Add a Login…") { app.sheet = .vaultItem(VaultEditor(on: host)) }
+                    }
                 }
             }
         }
     }
 
     private enum Needed: Hashable {
-        case unchecked(LatchError), blocked(LatchError), stopped(lastError: LatchError?), update(build: Int?)
+        case unchecked(LatchError), blocked(LatchError), stopped(lastError: LatchError?), update(build: Int?), logins
     }
 
     /// What the person should act on, as latch reports it.
@@ -123,6 +132,7 @@ private struct NeedsSection: View {
             needs.append(.stopped(lastError: status.lastError.map(LatchError.failed)))
         }
         if app.updateAvailable, !app.updateInstalled { needs.append(.update(build: app.availableBuild)) }
+        if case let .success(vault)? = app.summaries[host.name]?.vault, vault.items.isEmpty { needs.append(.logins) }
         return needs
     }
 }
