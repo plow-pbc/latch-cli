@@ -237,7 +237,7 @@ final class Onboarding {
         step = next
     }
 
-    /// Done's "Open Latch": onboarding is finished; the main window takes over.
+    /// Leaving Done, texting an agent or not: onboarding is finished; the main window takes over.
     func finish() {
         progress.passed[.done] = .continued
         progress.finished = true
@@ -302,7 +302,9 @@ final class Onboarding {
         case .access:
             if accessDone { next() } else if accessFailed { skip() } else if accessGranted { checkAccess() } else { requestAccess() }
         case .start: Task { await startLatch() }
-        case .done: if let textAgent { text(textAgent) } else { finish() }
+        case .done:
+            if let textAgent { text(textAgent) }
+            finish()
         }
     }
 

@@ -26,9 +26,7 @@ struct DoneTests {
         #expect(flow.primaryTitle == "Text scout")
         flow.primary()
         #expect(opened() == [URL(string: "sms:+15550000002?&body=Use%20Latch%20to%20say%20%22hello%20world%22%20out%20loud%20on%20my%20Mac.")!])
-        // Texting leaves Done up; Open Latch finishes.
-        #expect(!flow.progress.finished)
-        flow.finish()
+        // Texting finishes onboarding: the main window is up on coming back from Messages.
         #expect(flow.progress.finished)
     }
 

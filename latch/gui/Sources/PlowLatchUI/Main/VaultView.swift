@@ -478,10 +478,12 @@ struct VaultItemSheet: View {
                             Picker("Kind", selection: $editor.kind) {
                                 ForEach(VaultKind.allCases) { Label($0.title, systemImage: $0.symbol).tag($0) }
                             }
+                            .help("What you're saving: a sign-in, a card, an identity or a note")
                         }
-                        TextField("Title", text: $editor.title, prompt: Text(editor.kind == .login ? "Shop" : "Required"))
+                        TextField("Title", text: $editor.title, prompt: Text(editor.kind == .login ? "e.g. GitHub" : "Required"))
+                            .help("A name you and your agents use to find it")
                         if editor.kind == .login {
-                            TextField("Website", text: $editor.sites, prompt: Text("shop.example"))
+                            TextField("Website", text: $editor.sites, prompt: Text("github.com"))
                             TextField("Also inside", text: $editor.otherTopSites, prompt: Text("Optional"))
                                 .help("Other sites that show this sign-in page inside their own")
                         } else if editor.kind != .note {
@@ -548,7 +550,9 @@ struct VaultItemSheet: View {
         let title = VaultKind.title(of: entry.label)
         if editor.secret(entry) {
             SecureField(title, text: value(entry.label),
-                        prompt: Text(editor.saved(entry.label) ? "Saved · type to replace" : entry.label == "totp" ? "Optional" : ""))
+                        prompt: Text(editor.saved(entry.label) ? "Saved · type to replace"
+                                     : entry.label == "totp" ? "Optional · setup key, not a 6-digit code" : ""))
+                .help(entry.label == "totp" ? "The setup key or QR link from the site's two-factor settings. Latch makes the codes at sign-in." : "")
         } else {
             TextField(title, text: value(entry.label))
         }
