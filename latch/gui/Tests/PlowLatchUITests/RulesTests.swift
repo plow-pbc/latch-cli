@@ -135,9 +135,8 @@ struct RulesTests {
     /// Each of the Examples menu's items fills the request field with
     /// words that split back to the example's request.
     @Test func everyExampleFillsTheRequestWithItsWords() {
-        // The Instacart sign-in is a saved login's fill, with no words.
-        #expect(Trial.examples.map(\.title) == Onboarding.examples.map(\.title).filter { !$0.contains("Instacart") })
-        #expect(Trial.examples.count == 9)
+        #expect(Trial.examples.map(\.title) == Onboarding.examples.map(\.title))
+        #expect(Trial.examples.count == 8)
         let trial = Trial()
         for example in Trial.examples {
             trial.use(example)

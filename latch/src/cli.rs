@@ -946,8 +946,8 @@ pub enum RulesCommand {
         text: Option<String>,
         #[arg(long, value_name = "F", conflicts_with = "preset")]
         file: Option<PathBuf>,
-        /// Rules to start from: family (a family assistant: calendar, texts and email, groceries; never documents or passwords) or work (a work assistant: email, calendar, GitHub; not personal texts and chats), as the Mac app offers them
-        #[arg(long, value_name = "NAME")]
+        /// Rules to start from: chief-of-staff (email, calendar, drafts; never email outside the company) or developer (tests, reviews, pull requests; never push to main), as the Mac app offers them
+        #[arg(long, value_name = "NAME", value_parser = crate::gate::rules::Preset::parser())]
         preset: Option<crate::gate::rules::Preset>,
         /// Save only if the rules are still at revision R, as `rules show`
         /// gave it (`none`: there were none); otherwise refused, and

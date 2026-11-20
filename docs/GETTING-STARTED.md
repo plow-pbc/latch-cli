@@ -115,10 +115,10 @@ each is skipped once done, so you can run setup again at any time:
    (`latch plugins enable google --add-account`); Enter moves on.
 3. **On a Mac, turn on Messages and Contacts.** These need Full Disk Access
    for the Plow Latch app.
-4. **Set rules for your agents**, when there are none yet: a family
-   assistant's, a work assistant's (the same two the Mac app offers), or none
-   for now (`latch rules set --preset family`, or `work`). Enter takes the
-   family assistant's.
+4. **Set rules for your agents**, when there are none yet: a chief of
+   staff's, a developer's (the same two the Mac app offers), or none for now
+   (`latch rules set --preset chief-of-staff`, or `developer`). Enter takes
+   the chief of staff's.
 5. **Start the host** (`latch serve -d`), if you say yes.
 
 Ctrl-C stops setup at any step. Run `latch setup` again to pick up where
@@ -327,8 +327,8 @@ latch rules show
 ```
 
 `latch rules set TEXT` sets them without an editor, and
-`latch rules set --preset family` (or `work`) to the rules setup and the Mac
-app offer. Your rules stay in force
+`latch rules set --preset chief-of-staff` (or `developer`) to the rules
+setup and the Mac app offer. Your rules stay in force
 when you ask in chat, and they can restrict everyday work too, for example
 "Do not read or search this Mac's Messages."
 

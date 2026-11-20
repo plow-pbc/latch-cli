@@ -169,8 +169,8 @@ login.
   context and conditions such as “let me review it first”. Rules/defaults
   may allow work even with no chat.
   A new host starts with no rules: `latch setup`, like the Mac app's
-  onboarding, offers a family or a work assistant's to start from
-  (`latch rules set --preset family`, or `work`).
+  onboarding, offers a chief of staff's or a developer's to start from
+  (`latch rules set --preset chief-of-staff`, or `developer`).
 - **Which chat.** The agent's chat, if its line has one. If it has several,
   the agent names one with `--plow-chat ID` or `LATCH_PLOW_CHAT`. Otherwise
   the call stops with `which_chat` (exit 2), which lists the choices. Your
