@@ -45,34 +45,37 @@ impl RulesSource for Rules {
 /// texts (`Onboarding.decks`).
 #[derive(clap::ValueEnum, Clone, Copy, PartialEq, Debug)]
 pub enum Preset {
-    Family,
-    Work,
+    // `family` and `work` are the names these had before, and still work.
+    #[value(alias = "family")]
+    ChiefOfStaff,
+    #[value(alias = "work")]
+    Developer,
 }
 
 impl Preset {
-    pub const ALL: [Preset; 2] = [Preset::Family, Preset::Work];
+    pub const ALL: [Preset; 2] = [Preset::ChiefOfStaff, Preset::Developer];
 
     pub fn word(self) -> &'static str {
         match self {
-            Preset::Family => "family",
-            Preset::Work => "work",
+            Preset::ChiefOfStaff => "chief-of-staff",
+            Preset::Developer => "developer",
         }
     }
 
     pub fn name(self) -> &'static str {
         match self {
-            Preset::Family => "Family assistant",
-            Preset::Work => "Work assistant",
+            Preset::ChiefOfStaff => "Chief of Staff",
+            Preset::Developer => "Developer",
         }
     }
 
     pub fn text(self) -> &'static str {
         match self {
-            Preset::Family => {
-                "Allow my family assistant to keep our calendar, text and email people for me, and order groceries online. Never let it share my documents or passwords with anyone."
+            Preset::ChiefOfStaff => {
+                "Let my chief of staff read email, check my calendar and draft replies. Never let it email outside the company."
             }
-            Preset::Work => {
-                "Allow my work assistant to read and send my email, keep my calendar, and work on my GitHub projects. Keep it out of my personal texts and chats."
+            Preset::Developer => {
+                "Let my developer run tests, review changes and open pull requests. Never let it push directly to main."
             }
         }
     }
@@ -425,5 +428,22 @@ mod preset_tests {
             from += at + deck.len();
         }
         assert_eq!(onboarding.matches("Deck(name: ").count(), Preset::ALL.len());
+    }
+
+    /// Each preset is picked by its word, and by its name from before.
+    #[test]
+    fn a_preset_is_picked_by_its_word_or_its_old_name() {
+        use clap::ValueEnum;
+        for (typed, preset) in [
+            ("chief-of-staff", Preset::ChiefOfStaff),
+            ("family", Preset::ChiefOfStaff),
+            ("developer", Preset::Developer),
+            ("work", Preset::Developer),
+        ] {
+            assert_eq!(Preset::from_str(typed, false), Ok(preset), "{typed}");
+        }
+        for preset in Preset::ALL {
+            assert_eq!(Preset::from_str(preset.word(), false), Ok(preset));
+        }
     }
 }

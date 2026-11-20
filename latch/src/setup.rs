@@ -403,11 +403,11 @@ impl Setup {
         say("  3. None for now");
         let answer = self.input().answer("Rules for your agents? [1/2/3] ");
         let preset = match answer.as_str() {
-            "" | "1" | "f" | "family" => Preset::Family,
-            "2" | "w" | "work" => Preset::Work,
+            "" | "1" | "c" | "chief-of-staff" | "f" | "family" => Preset::ChiefOfStaff,
+            "2" | "d" | "developer" | "w" | "work" => Preset::Developer,
             _ => {
                 say(
-                    "No rules; later: `latch rules set --preset family` (or work), or `latch rules edit`.",
+                    "No rules; later: `latch rules set --preset chief-of-staff` (or developer), or `latch rules edit`.",
                 );
                 return;
             }
@@ -644,7 +644,7 @@ pub async fn status(state: &StateDir, check_access: bool) -> Result<Status, Fail
                 "rules",
                 "set",
                 "--preset",
-                "family",
+                "chief-of-staff",
                 "--revision",
                 "none",
             ]),

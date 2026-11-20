@@ -557,7 +557,7 @@ fn no_to_the_connectors() -> &'static str {
 /// With no rules yet, setup shows the two presets and Enter takes the
 /// first, saved by `rules set` only while there are still none.
 #[test]
-fn a_host_with_no_rules_is_offered_the_presets_and_enter_takes_family() {
+fn a_host_with_no_rules_is_offered_the_presets_and_enter_takes_chief_of_staff() {
     let stub = Stub::new();
     stub.file("peer", "");
     stub.file("no-rules", "");
@@ -565,16 +565,16 @@ fn a_host_with_no_rules_is_offered_the_presets_and_enter_takes_family() {
     let (code, shown) = stub.setup(&format!("{}\n\n", no_to_the_connectors()));
     assert_eq!(code, Some(0), "{shown}");
     for line in [
-        "  1. Family assistant: Allow my family assistant to keep our calendar",
-        "  2. Work assistant: Allow my work assistant to read and send my email",
+        "  1. Chief of Staff: Let my chief of staff read email",
+        "  2. Developer: Let my developer run tests",
         "  3. None for now",
         "Rules for your agents? [1/2/3] ",
-        "→ Set rules: latch rules set --preset family --revision none",
-        "✓ Your agents have the Family assistant rules",
+        "→ Set rules: latch rules set --preset chief-of-staff --revision none",
+        "✓ Your agents have the Chief of Staff rules",
     ] {
         assert!(shown.contains(line), "{line}: {shown}");
     }
-    assert_eq!(stub.read("rules"), "family\n");
+    assert_eq!(stub.read("rules"), "chief-of-staff\n");
     // Before the host starts, so it starts with them.
     let calls = stub.read("calls");
     assert!(
@@ -584,10 +584,12 @@ fn a_host_with_no_rules_is_offered_the_presets_and_enter_takes_family() {
 }
 
 #[test]
-fn work_or_none_is_saved_as_chosen() {
+fn developer_or_none_is_saved_as_chosen() {
     for (typed, saved) in [
-        ("2", Some("work\n")),
-        ("w", Some("work\n")),
+        ("2", Some("developer\n")),
+        ("d", Some("developer\n")),
+        ("w", Some("developer\n")),
+        ("f", Some("chief-of-staff\n")),
         ("3", None),
         ("n", None),
     ] {
@@ -601,7 +603,9 @@ fn work_or_none_is_saved_as_chosen() {
             None => {
                 assert!(!stub.read("calls").contains("rules set"), "{typed}");
                 assert!(
-                    shown.contains("No rules; later: `latch rules set --preset family` (or work)"),
+                    shown.contains(
+                        "No rules; later: `latch rules set --preset chief-of-staff` (or developer)"
+                    ),
                     "{typed}: {shown}"
                 );
             }
@@ -749,7 +753,14 @@ fn status_reads_the_saved_connectors_and_serve_flags_and_changes_nothing() {
     assert_eq!(steps["rules"]["state"], "needed");
     assert_eq!(
         steps["rules"]["args"],
-        serde_json::json!(["rules", "set", "--preset", "family", "--revision", "none"])
+        serde_json::json!([
+            "rules",
+            "set",
+            "--preset",
+            "chief-of-staff",
+            "--revision",
+            "none"
+        ])
     );
     if cfg!(target_os = "macos") {
         let messages = &steps["messages"];

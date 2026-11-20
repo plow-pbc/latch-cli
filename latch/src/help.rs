@@ -1254,8 +1254,15 @@ const ENTRIES: &[Entry] = &[
                 ],
             ),
             ex(
-                "Start from a family assistant's rules, only if there are none yet",
-                &["rules", "set", "--preset", "family", "--revision", "none"],
+                "Start from the rules the Mac app offers a chief of staff, only if there are none yet",
+                &[
+                    "rules",
+                    "set",
+                    "--preset",
+                    "chief-of-staff",
+                    "--revision",
+                    "none",
+                ],
             ),
             ex(
                 "Save over the rules only if they are still at the revision `rules show` gave (`none`: there were none); otherwise stale_revision, with the revision they are at",

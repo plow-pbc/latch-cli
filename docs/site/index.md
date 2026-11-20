@@ -40,8 +40,8 @@ and walks you through it.
 2. **Optional: connect Google.**
 3. **Optional, Mac only: turn on Messages and Contacts.** Grant Full Disk
    Access to Plow Latch.
-4. **Pick rules for your agents:** a family assistant's, a work assistant's,
-   or none for now.
+4. **Pick rules for your agents:** a chief of staff's, a developer's, or
+   none for now.
 5. **Start the host.**
 
 Then make the rules your own: what your agents may and may not do.

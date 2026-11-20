@@ -1982,18 +1982,29 @@ fn rules_set_a_preset_only_where_there_are_none() {
     let (_dir, state, _key) = owner_host();
     let set = latch(
         &state,
-        &["rules", "set", "--preset", "work", "--revision", "none"],
+        &[
+            "rules",
+            "set",
+            "--preset",
+            "developer",
+            "--revision",
+            "none",
+        ],
         &[],
     );
     assert_eq!(set.status.code(), Some(0), "{set:?}");
     let saved = fs::read_to_string(state.join("rules/host.txt")).unwrap();
-    assert!(
-        saved.starts_with("Allow my work assistant to read and send my email"),
-        "{saved}"
-    );
+    assert!(saved.starts_with("Let my developer run tests"), "{saved}");
     let again = latch(
         &state,
-        &["rules", "set", "--preset", "family", "--revision", "none"],
+        &[
+            "rules",
+            "set",
+            "--preset",
+            "chief-of-staff",
+            "--revision",
+            "none",
+        ],
         &[],
     );
     assert_ne!(again.status.code(), Some(0), "{again:?}");
@@ -2003,7 +2014,7 @@ fn rules_set_a_preset_only_where_there_are_none() {
     );
     let both = latch(
         &state,
-        &["rules", "set", "Never send email.", "--preset", "work"],
+        &["rules", "set", "Never send email.", "--preset", "developer"],
         &[],
     );
     assert_eq!(both.status.code(), Some(2), "{both:?}");
@@ -10517,7 +10528,7 @@ fn setup_without_a_terminal_names_the_first_step_setup_status_lists() {
             "latch login --events",
             "latch plugins enable google --events",
             "latch plugins enable google",
-            "latch rules set --preset family --revision none",
+            "latch rules set --preset chief-of-staff --revision none",
             "latch serve -d"
         ]
     );
