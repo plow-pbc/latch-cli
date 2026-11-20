@@ -46,7 +46,7 @@ gatekeeper what="checks" out="":
     export LATCH_GATEKEEPER_STATE="$state"
     case "{{what}}" in
     checks)
-        cargo test --locked --features live-model -- gate::tests::live_owner serve::gated_tests::live browser::tests::steps::live --nocapture ;;
+        cargo test --locked --features live-model -- gate::tests::live_owner gate::tests::live_agent serve::gated_tests::live browser::tests::steps::live --nocapture ;;
     replay)
         [ -n "{{out}}" ] || { echo "usage: just gatekeeper replay OUT" >&2; exit 2; }
         LATCH_TEST_REPLAY_OUT="{{out}}" cargo test --locked --features live-model gate::tests::live_held_out_replay -- --nocapture ;;
