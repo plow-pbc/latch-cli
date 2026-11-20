@@ -403,8 +403,15 @@ impl Setup {
         say("  3. None for now");
         let answer = self.input().answer("Rules for your agents? [1/2/3] ");
         let preset = match answer.as_str() {
-            "" | "1" | "c" | "chief-of-staff" | "f" | "family" => Preset::ChiefOfStaff,
-            "2" | "d" | "developer" | "w" | "work" => Preset::Developer,
+            "" | "1" | "c" | "chief-of-staff" => Preset::ChiefOfStaff,
+            "2" | "d" | "developer" => Preset::Developer,
+            old if matches!(old, "f" | "w") || Preset::renamed(old) => {
+                eprintln!("✗ {old}: {}", Preset::RENAMED);
+                say(
+                    "No rules; later: `latch rules set --preset chief-of-staff` (or developer), or `latch rules edit`.",
+                );
+                return;
+            }
             _ => {
                 say(
                     "No rules; later: `latch rules set --preset chief-of-staff` (or developer), or `latch rules edit`.",

@@ -45,15 +45,27 @@ impl RulesSource for Rules {
 /// texts (`Onboarding.decks`).
 #[derive(clap::ValueEnum, Clone, Copy, PartialEq, Debug)]
 pub enum Preset {
-    // `family` and `work` are the names these had before, and still work.
-    #[value(alias = "family")]
     ChiefOfStaff,
-    #[value(alias = "work")]
     Developer,
 }
 
 impl Preset {
     pub const ALL: [Preset; 2] = [Preset::ChiefOfStaff, Preset::Developer];
+
+    /// What naming a preset by its old name says: `family` and `work` were
+    /// renamed, and are refused rather than taken as the new ones.
+    pub const RENAMED: &str = "renamed: use chief-of-staff or developer";
+
+    /// Whether `word` is a preset's old name.
+    pub fn renamed(word: &str) -> bool {
+        matches!(word, "family" | "work")
+    }
+
+    /// `--preset`'s parser: a preset by its word, listed in help as clap
+    /// lists any, and an old name refused with [`Preset::RENAMED`].
+    pub fn parser() -> PresetParser {
+        PresetParser
+    }
 
     pub fn word(self) -> &'static str {
         match self {
@@ -78,6 +90,43 @@ impl Preset {
                 "Let my developer run tests, review changes and open pull requests. Never let it push directly to main."
             }
         }
+    }
+}
+
+#[derive(Clone)]
+pub struct PresetParser;
+
+impl clap::builder::TypedValueParser for PresetParser {
+    type Value = Preset;
+
+    fn parse_ref(
+        &self,
+        cmd: &clap::Command,
+        arg: Option<&clap::Arg>,
+        value: &std::ffi::OsStr,
+    ) -> Result<Preset, clap::Error> {
+        if let Some(word) = value.to_str()
+            && Preset::renamed(word)
+        {
+            let arg = arg.map_or("--preset".to_string(), |arg| arg.to_string());
+            return Err(clap::Error::raw(
+                clap::error::ErrorKind::InvalidValue,
+                format!("invalid value '{word}' for '{arg}': {}\n", Preset::RENAMED),
+            )
+            .with_cmd(cmd));
+        }
+        clap::builder::EnumValueParser::<Preset>::new().parse_ref(cmd, arg, value)
+    }
+
+    fn possible_values(
+        &self,
+    ) -> Option<Box<dyn Iterator<Item = clap::builder::PossibleValue> + '_>> {
+        use clap::ValueEnum;
+        Some(Box::new(
+            Preset::value_variants()
+                .iter()
+                .filter_map(ValueEnum::to_possible_value),
+        ))
     }
 }
 
@@ -430,20 +479,21 @@ mod preset_tests {
         assert_eq!(onboarding.matches("Deck(name: ").count(), Preset::ALL.len());
     }
 
-    /// Each preset is picked by its word, and by its name from before.
+    /// Each preset is picked by its word; its old name is refused with
+    /// what it is called now.
     #[test]
-    fn a_preset_is_picked_by_its_word_or_its_old_name() {
-        use clap::ValueEnum;
-        for (typed, preset) in [
-            ("chief-of-staff", Preset::ChiefOfStaff),
-            ("family", Preset::ChiefOfStaff),
-            ("developer", Preset::Developer),
-            ("work", Preset::Developer),
-        ] {
-            assert_eq!(Preset::from_str(typed, false), Ok(preset), "{typed}");
-        }
+    fn a_preset_is_picked_by_its_word_and_an_old_name_is_refused() {
+        use clap::builder::TypedValueParser;
+        let cmd = clap::Command::new("latch");
+        let parse = |typed: &str| Preset::parser().parse_ref(&cmd, None, typed.as_ref());
         for preset in Preset::ALL {
-            assert_eq!(Preset::from_str(preset.word(), false), Ok(preset));
+            assert_eq!(parse(preset.word()).unwrap(), preset);
         }
+        for old in ["family", "work"] {
+            let refused = parse(old).unwrap_err().to_string();
+            assert!(refused.contains(Preset::RENAMED), "{old}: {refused}");
+            assert!(refused.contains(&format!("'{old}'")), "{old}: {refused}");
+        }
+        assert!(!parse("bogus").unwrap_err().to_string().contains("renamed"));
     }
 }

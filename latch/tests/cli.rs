@@ -2018,6 +2018,20 @@ fn rules_set_a_preset_only_where_there_are_none() {
         &[],
     );
     assert_eq!(both.status.code(), Some(2), "{both:?}");
+    // The old names are refused with the new ones, and change nothing.
+    for old in ["family", "work"] {
+        let renamed = latch(&state, &["rules", "set", "--preset", old], &[]);
+        assert_eq!(renamed.status.code(), Some(2), "{renamed:?}");
+        let stderr = String::from_utf8_lossy(&renamed.stderr);
+        assert!(
+            stderr.contains("renamed: use chief-of-staff or developer"),
+            "{stderr}"
+        );
+    }
+    assert_eq!(
+        fs::read_to_string(state.join("rules/host.txt")).unwrap(),
+        saved
+    );
 }
 
 #[test]

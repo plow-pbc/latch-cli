@@ -588,8 +588,6 @@ fn developer_or_none_is_saved_as_chosen() {
     for (typed, saved) in [
         ("2", Some("developer\n")),
         ("d", Some("developer\n")),
-        ("w", Some("developer\n")),
-        ("f", Some("chief-of-staff\n")),
         ("3", None),
         ("n", None),
     ] {
@@ -610,6 +608,26 @@ fn developer_or_none_is_saved_as_chosen() {
                 );
             }
         }
+    }
+}
+
+/// The presets' old names and letters are refused with their new names,
+/// and set no rules.
+#[test]
+fn an_old_preset_name_is_refused_with_the_new_ones() {
+    for typed in ["f", "w", "family", "work"] {
+        let stub = Stub::new();
+        stub.file("peer", "");
+        stub.file("no-rules", "");
+        let (code, shown) = stub.setup(&format!("{}{typed}\nn\n", no_to_the_connectors()));
+        assert_eq!(code, Some(0), "{shown}");
+        assert!(!stub.read("calls").contains("rules set"), "{typed}");
+        assert!(
+            shown.contains(&format!(
+                "✗ {typed}: renamed: use chief-of-staff or developer"
+            )),
+            "{typed}: {shown}"
+        );
     }
 }
 
