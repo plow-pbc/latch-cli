@@ -153,8 +153,8 @@ login.
   messages: sending or posting, inviting or answering people, deleting
   other files or mail, adding packages, pushing code, and changing
   settings, accounts or shared systems. Some work must be named explicitly:
-  buying or paying, reading secrets, sending private data off the machine,
-  code that does either, downloaded code, bulk deletion, and rules that act
+  buying or paying, reading secrets, sending your files or private data off
+  the machine, code that does either, downloaded code, bulk deletion, and rules that act
   on mail later. A rule that allows everything (“approve everything”, “do
   whatever you need”) gives your permission for all other work, but names
   none of these. An OK to read something does not let an agent change it.
