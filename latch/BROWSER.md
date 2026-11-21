@@ -575,7 +575,9 @@ confirmation if it still looks consequential. A confirmation is used once, in th
 only while the element and the reviewed lines are unchanged; otherwise
 `confirm_stale` with a fresh page (a total that changes from $10.00 to
 $100.00 is refused, even with the same ref, URL and button name). It needs
-no new risk decision, so it still works while the model is down. A
+no new risk decision, so it still works while the model is down; an
+agent's confirmation still needs the gatekeeper, and without it stops with
+`gatekeeper_unavailable`. A
 vault fill needs no confirmation: a card or identity fill presses
 nothing, and the agent presses the page's button (Pay, Submit) itself, a click judged like any other ([VAULT.md](VAULT.md)). A step
 whose `new text` check already holds stops before the confirmation is
@@ -587,7 +589,7 @@ or Enter that needs a risk decision stops with it before that action is
 sent. If the model fails while judging a step's sentence check, the plan
 stops with `model_unavailable` after that step's action was sent. Literal
 `type`, `select`, `scroll` and `back`, typed checks and confirmations
-already issued still work.
+already issued still work (an agent's while the gatekeeper answers).
 
 **Request ids and the journal.** The client makes an id per request, so it
 knows it even if the answer is lost: an exit 5 names it. The host journals
