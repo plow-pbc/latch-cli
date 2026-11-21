@@ -252,6 +252,7 @@ const TRUNCATED: &str = "Older messages in this chat were left out to fit. An ea
 /// request in.
 pub struct Gatekeeper {
     host: String,
+    machine: String,
     plow: Plow,
     provider: Arc<dyn Provider>,
     rules: Box<dyn RulesSource>,
@@ -332,6 +333,7 @@ impl Gatekeeper {
     pub fn new(plow: Plow, provider: Arc<dyn Provider>, rules: Box<dyn RulesSource>) -> Self {
         Gatekeeper {
             host: String::new(),
+            machine: String::new(),
             plow,
             provider,
             rules,
@@ -340,8 +342,9 @@ impl Gatekeeper {
     }
 
     /// Names the host whose judged actions this gatekeeper binds approvals to.
-    pub fn on_host(mut self, host: &str) -> Self {
+    pub fn on_host(mut self, host: &str, machine: &str) -> Self {
         self.host = host.into();
+        self.machine = machine.into();
         self
     }
 
@@ -375,6 +378,7 @@ impl Gatekeeper {
         rules.host = draft;
         Ok(Gatekeeper {
             host: self.host.clone(),
+            machine: self.machine.clone(),
             plow: self.plow.clone(),
             provider: self.provider.clone(),
             rules: Box::new(rules),
@@ -682,14 +686,17 @@ impl Gatekeeper {
             return verdict;
         }
         let action: Value = serde_json::from_str(action.get()).expect("the action is JSON");
-        if action["operation"] == "exec" {
+        if !approval_supported(&action) {
             return verdict;
         }
-        let reference = approval_ref(&self.host, uid, &action);
-        let confirmed = self
+        let reference = approval_ref(&self.machine, uid, &action);
+        let Some(confirmed) = self
             .plow
             .approval(&json!({"op": "confirm", "ref": reference}))
-            .await?;
+            .await?
+        else {
+            return verdict;
+        };
         if confirmed.approved {
             let (Some(prompt), Some(reaction)) = (confirmed.prompt, confirmed.reaction) else {
                 return Err(unavailable("Plow's approval answer had no event ids"));
@@ -702,15 +709,20 @@ impl Gatekeeper {
             });
             return Ok(());
         }
-        self.plow
+        if self.plow
             .approval(&json!({
                 "op": "ask",
                 "ref": reference,
                 "host": self.host,
+                "machine": self.machine,
                 "agent": uid,
                 "action": action,
             }))
-            .await?;
+            .await?
+            .is_none()
+        {
+            return verdict;
+        }
         let mut failure = verdict.unwrap_err();
         failure.details["approval"] = json!({"ref": reference, "status": "asked"});
         failure.message = "The owner has been asked in Swarm to approve this exact action. Retry after they react ✅; if it is refused again, stop and tell them.".into();
@@ -1253,7 +1265,33 @@ fn sha256(text: &str) -> String {
     to_hex(&Sha256::digest(text.as_bytes()))
 }
 
-fn approval_ref(host: &str, agent_uid: &str, action: &Value) -> String {
-    let bound = json!({"host": host, "agent_uid": agent_uid, "action": action});
+fn approval_ref(machine: &str, agent_uid: &str, action: &Value) -> String {
+    let bound = json!({"machine": machine, "agent_uid": agent_uid, "action": action});
     to_hex(&Sha256::digest(mandate::jcs(&bound)))
+}
+
+fn approval_supported(action: &Value) -> bool {
+    if action["operation"] == "file_put" {
+        return action["path"].is_string()
+            && action["size"].is_u64()
+            && action["sha256"]
+                .as_str()
+                .is_some_and(|hash| hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    }
+    if action["kind"] == "vault_fill" {
+        return action["site"].is_string() && action["item"]["title"].is_string();
+    }
+    let Some(command) = action["command"].as_array() else {
+        return false;
+    };
+    command.get(0).and_then(Value::as_str) == Some("gmail")
+        && command.get(1).and_then(Value::as_str) == Some("send")
+        && ["--to", "--subject", "--body"].iter().all(|flag| {
+            command
+                .windows(2)
+                .any(|pair| pair[0].as_str() == Some(flag) && pair[1].is_string())
+        })
+        && !["--attach", "--body-file", "--body-html", "--body-html-file"]
+            .iter()
+            .any(|flag| command.iter().any(|word| word.as_str() == Some(flag)))
 }

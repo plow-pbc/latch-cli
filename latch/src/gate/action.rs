@@ -44,6 +44,8 @@ struct Action<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     size: Option<&'a Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    sha256: Option<&'a Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     file_name: Option<&'a Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     command: Option<&'a Value>,
@@ -85,6 +87,7 @@ pub fn gated(op: &str, args: &Value) -> Option<Gated> {
         secret_env: None,
         path: None,
         size: None,
+        sha256: None,
         file_name: None,
         command: None,
         accounts: None,
@@ -122,6 +125,7 @@ pub fn gated(op: &str, args: &Value) -> Option<Gated> {
             let action = Action {
                 path: Some(&args["remote_path"]),
                 size: Some(&args["size"]),
+                sha256: Some(&args["sha256"]),
                 file_name: Some(&args["name"]),
                 ..none
             };

@@ -194,7 +194,8 @@ fn order() -> Box<RawValue> {
 
 fn file_put(path: &str) -> Box<RawValue> {
     serde_json::value::to_raw_value(
-        &json!({"operation": "file_put", "path": path, "size": 12, "file_name": "report.txt"}),
+        &json!({"operation": "file_put", "path": path, "size": 12, "file_name": "report.txt",
+                "sha256": "a".repeat(64)}),
     )
     .unwrap()
 }
@@ -202,11 +203,13 @@ fn file_put(path: &str) -> Box<RawValue> {
 #[test]
 fn an_approval_reference_matches_the_plow_contract() {
     let action = json!({"operation": "file_put", "path": "/Users/sam/report.txt",
-                        "size": 12, "file_name": "report.txt"});
-    assert_eq!(
-        approval_ref("mba", "agt_1", &action),
-        "41e037468f72b78f40cd733bf657e8c27a1c7ce7f5495abe141809a11347ecd8"
-    );
+                        "size": 12, "file_name": "report.txt", "sha256": "a".repeat(64)});
+    let first = approval_ref("machine-a", "agt_1", &action);
+    assert_eq!(first, "61f32c870839503de2cce3adb26e1c92036a8919933bc3b042d12476909a5a21");
+    assert_ne!(first, approval_ref("machine-b", "agt_1", &action));
+    let mut changed = action.clone();
+    changed["sha256"] = json!("b".repeat(64));
+    assert_ne!(first, approval_ref("machine-a", "agt_1", &changed));
 }
 
 fn one_chat() -> World {
@@ -870,7 +873,8 @@ async fn a_swarm_approval_is_bound_consumed_and_never_overrides_a_veto() {
     let fake = fake::serve(World::default());
     let model = Recorder::answering(0.1, 0.8, 0.1);
     let keeper =
-        Gatekeeper::new(fake.client(), model, Box::new(Rules::default())).on_host("test-host");
+        Gatekeeper::new(fake.client(), model, Box::new(Rules::default()))
+            .on_host("test-host", "machine-a");
     let action = file_put("/Users/morgan/report.txt");
 
     let first = keeper.judge(AGENT_CALLER, &action).await;
@@ -900,7 +904,8 @@ async fn a_swarm_approval_is_bound_consumed_and_never_overrides_a_veto() {
     fake.world.lock().unwrap().latch_approval = Some(reference.into());
     let veto = Recorder::answering(0.1, 0.1, 0.8);
     let veto_keeper =
-        Gatekeeper::new(fake.client(), veto, Box::new(Rules::default())).on_host("test-host");
+        Gatekeeper::new(fake.client(), veto, Box::new(Rules::default()))
+            .on_host("test-host", "machine-a");
     let vetoed = veto_keeper.judge(AGENT_CALLER, &action).await;
     assert_eq!(
         vetoed.verdict.unwrap_err().details["reason"],
@@ -911,6 +916,26 @@ async fn a_swarm_approval_is_bound_consumed_and_never_overrides_a_veto() {
     let exec = keeper.judge(AGENT_CALLER, &order()).await;
     assert_eq!(exec.verdict.unwrap_err().details["reason"], "not_covered");
     assert_eq!(fake.saw("/v1/latch/approval"), before);
+}
+
+#[tokio::test]
+async fn an_unavailable_approval_route_keeps_the_normal_refusal() {
+    for status in [403, 404, 503] {
+        let mut world = World { latch_status: Some(status), ..World::default() };
+        world.decide = Some(|_| Some([0.1, 0.8, 0.1]));
+        let fake = fake::serve(world);
+        let model = Recorder::answering(0.1, 0.8, 0.1);
+        let keeper = Gatekeeper::new(fake.client(), model, Box::new(Rules::default()))
+            .on_host("test-host", "machine-a");
+        let failure = keeper
+            .judge(AGENT_CALLER, &file_put("/Users/morgan/report.txt"))
+            .await
+            .verdict
+            .unwrap_err();
+        assert_eq!(failure.details["reason"], "not_covered", "HTTP {status}");
+        assert!(failure.details.get("approval").is_none(), "HTTP {status}");
+        assert!(failure.message.contains("Plow chat"), "HTTP {status}: {}", failure.message);
+    }
 }
 
 /// The two layers through a judgment, each answering for itself.

@@ -531,7 +531,7 @@ async fn run_host(
             .map_err(|why| Failure::new(code::not_logged_in, why))?,
         Box::new(rules),
     )
-    .on_host(&config.peer.name)
+    .on_host(&config.peer.name, &config.peer.key)
     .keeping_requests(&state.path);
     let mut audit = AuditLog::open(state.path.join(crate::audit::FILE))?;
     log(&format!("audit log verified: {} records", audit.len()));

@@ -44,6 +44,8 @@ pub struct World {
     pub latch_approval: Option<String>,
     /// The last latch action ref for which the fake posted an approval ask.
     pub latch_asked: Option<String>,
+    /// An HTTP status the approval route answers instead of handling a call.
+    pub latch_status: Option<u16>,
 }
 
 impl World {
@@ -97,6 +99,9 @@ impl World {
             );
         }
         if method == "POST" && path == "/v1/latch/approval" {
+            if let Some(status) = self.latch_status {
+                return (status, json!({"detail": "approval unavailable"}));
+            }
             let request: Value = serde_json::from_slice(body).unwrap();
             let reference = request["ref"].as_str().unwrap();
             return match request["op"].as_str() {

@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use crate::transport::{Connection, RecvStream};
 use serde_json::{Value, json};
 use tokio::fs::File;
+use tokio::io::{AsyncSeekExt, SeekFrom};
 
 use crate::dial::{self, ANSWER_WITHIN};
 use crate::failure::{Failure, code};
@@ -72,7 +73,7 @@ pub fn get_args(remote_path: &str) -> Value {
 /// for it: its size, and its name, sent along so a host can put the file
 /// inside a folder named as the target, as `cp` does.
 pub async fn put_args(local: &Path, remote_path: &str) -> Result<(File, Value), Failure> {
-    let file = File::open(local)
+    let mut file = File::open(local)
         .await
         .map_err(|err| local_failure(local, err))?;
     let metadata = file
@@ -86,7 +87,13 @@ pub async fn put_args(local: &Path, remote_path: &str) -> Result<(File, Value), 
         ));
     }
     let name = local.file_name().and_then(|name| name.to_str());
-    let args = json!({ "remote_path": remote_path, "size": metadata.len(), "name": name });
+    let sha256 = wire::copy(&mut file, &mut tokio::io::sink(), metadata.len())
+        .await
+        .map_err(|err| local_failure(local, err))?;
+    file.seek(SeekFrom::Start(0))
+        .await
+        .map_err(|err| local_failure(local, err))?;
+    let args = json!({ "remote_path": remote_path, "size": metadata.len(), "name": name, "sha256": sha256 });
     Ok((file, args))
 }
 

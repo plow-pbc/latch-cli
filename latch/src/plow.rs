@@ -401,10 +401,18 @@ impl Plow {
     }
 
     /// Posts or confirms one action-bound approval in the owner's Swarm room.
-    pub async fn approval(&self, request: &serde_json::Value) -> Result<Approval, Failure> {
+    pub async fn approval(&self, request: &serde_json::Value) -> Result<Option<Approval>, Failure> {
         let url = format!("{}/v1/latch/approval", self.api_url);
-        let response = self.send(self.http.post(url).json(request)).await?;
-        response.json().await.map_err(|_| bad_answer())
+        let response = match self.send(self.http.post(url).json(request)).await {
+            Ok(response) => response,
+            Err(failure)
+                if matches!(failure.details["http_status"].as_u64(), Some(403 | 404 | 503)) =>
+            {
+                return Ok(None);
+            }
+            Err(failure) => return Err(failure),
+        };
+        response.json().await.map(Some).map_err(|_| bad_answer())
     }
 
     /// Every live peer in the account, machines and agents, online or not.
@@ -777,6 +785,7 @@ impl Plow {
         };
         let message = format!("Plow answered HTTP {}: {meaning}", status.as_u16());
         let mut failure = Failure::new(code, message);
+        failure.details["http_status"] = json!(status.as_u16());
         let retry_after = response
             .headers()
             .get("retry-after")
