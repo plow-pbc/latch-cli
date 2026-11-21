@@ -1870,6 +1870,28 @@ async fn an_agents_confirmation_of_a_paused_send_is_judged_before_it_runs(engine
     .await;
     let back = format!("{body}.value = {message:?}");
     host.look("eval", &id, json!({"script": back})).await;
+    // And a change to a field past those the judge is shown.
+    let notes = "const form = document.getElementById('compose');
+        for (let i = 0; i < 21; i++) {
+          const label = document.createElement('label');
+          label.textContent = `Note ${i} `;
+          const note = document.createElement('input');
+          note.className = 'note';
+          note.value = `note ${i}`;
+          label.append(note);
+          form.append(label);
+        }";
+    host.look("eval", &id, json!({"script": notes})).await;
+    raced(
+        &host,
+        "document.querySelectorAll('.note')[20].value = 'wire it all'",
+    )
+    .await;
+    let fields = judge.last_action()["fields"].to_string();
+    assert!(fields.contains("more fields not shown"), "{fields}");
+    assert!(!fields.contains("note 20"), "{fields}");
+    let drop = "document.querySelectorAll('.note').forEach((n) => n.parentNode.remove())";
+    host.look("eval", &id, json!({"script": drop})).await;
 
     // Covered, the confirmed Send goes out.
     let confirmation = paused(&host).await;

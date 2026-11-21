@@ -698,14 +698,14 @@
   const linesOf = (region) => (region ? region.innerText : '').split('\n').map((line) => clean(line, 160)).filter(Boolean).slice(0, 20);
   // The fields an action submits, whole: every control its form submits,
   // wherever it is drawn, else those of the part of the page it is in. A
-  // secret or vault-filled field shows only that it is hidden.
-  const VALUE_FIELDS = 20;
+  // secret or vault-filled field shows only that it is hidden. All of them:
+  // the worker binds the confirmation to every one and shows the judge a few.
   const submitted = (el, around) => {
     const form = el.form || el.closest('form');
     const found = form ? new Set([...form.elements, ...form.querySelectorAll(INTERACTIVE)])
       : regionOf(around).querySelectorAll(INTERACTIVE);
     const all = [...found].filter((f) => rendered(f) && FIELD_ROLES.includes(role(f)));
-    const shown = all.slice(0, VALUE_FIELDS).map((f) => {
+    return all.map((f) => {
       const item = describe(f);
       const label = `${item.role} "${item.name}"`;
       if (item.secret || item.filled) return { label, state: '(hidden)' };
@@ -714,7 +714,6 @@
         : f.isContentEditable ? f.innerText : f.value || '';
       return text.trim() ? { label, text } : { label, state: 'empty' };
     });
-    return { shown, more: all.length - shown.length };
   };
   // A click is judged with the element's state (a collapsed section, an
   // unchecked option) and, on a form's submit control, the form it submits.
