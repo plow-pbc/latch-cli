@@ -47,6 +47,7 @@ conformance!(
     a_login_is_typed_with_the_engines_own_keys,
     no_part_of_a_typed_secret_goes_into_an_address,
     a_field_that_formats_its_value_still_holds_it,
+    a_code_in_one_character_boxes_fills_every_box,
     only_a_layer_of_its_own_covers_a_field_and_the_refusal_names_it,
     no_secret_goes_into_a_form_sent_by_get,
     requests_go_on_while_a_guard_outlives_its_call,
@@ -2579,6 +2580,93 @@ async fn a_field_that_formats_its_value_still_holds_it(engine: &str) {
     println!("spaced code: {}", verified["fields"]);
     assert_eq!(verified["submitted"], true);
     assert!(h.text().await.contains("code accepted"));
+    h.call("close", json!({})).await.ok();
+}
+
+async fn a_code_in_one_character_boxes_fills_every_box(engine: &str) {
+    let (_dir, state, _area) = test_state(engine);
+    let vault = Vault::new(state.clone());
+    let login = vault
+        .with(|s| s.add(item(LOGIN, "Shop", &["shop.example"], &[("totp", KEY)])))
+        .unwrap();
+    let pages = site();
+    let local = format!("http://127.0.0.1:{pages}");
+    let mut browsers = Browsers::new(state.clone(), vault.clone(), super::HEADLESS);
+    browsers.test = Some((
+        latch(),
+        vec![(local.clone(), "https://login.shop.example".into())],
+    ));
+    let mut h = Harness::start(browsers, engine).await;
+
+    // Six boxes of one digit each, each moving the focus on once it holds
+    // its digit. Mapped as the agent sees it, the first box alone, or box
+    // by box, in a form or in none (each box in a wrapper of its own), the
+    // code is split a digit a box and the page sends it whole. A page that
+    // moves the focus elsewhere gets no digit there (`stray`), and one that
+    // loads `page=N` as the boxes fill is let through (`paged`).
+    for (page, mapped) in [
+        ("totp-boxes.html", 1),
+        ("totp-boxes.html", 6),
+        ("totp-boxes.html?formless", 1),
+        ("totp-boxes.html?formless&stray", 1),
+        ("totp-boxes.html?paged", 1),
+    ] {
+        let before = beacons(pages).0;
+        let opened = h
+            .call("open", json!({"url": format!("{local}/{page}")}))
+            .await
+            .unwrap();
+        let boxes: Vec<String> = (1..=mapped)
+            .map(|n| find(&opened, "textbox", &format!("Digit {n}")))
+            .collect();
+        let (verified, _) = h
+            .fill(json!({
+                "item": login.item,
+                "fields": [["otp", boxes]],
+                "press": find(&opened, "button", "Verify"),
+            }))
+            .await;
+        let verified = verified.unwrap();
+        println!("{page}, {mapped} box(es) mapped: {}", verified["fields"]);
+        assert_eq!(verified["submitted"], true);
+        assert_eq!(verified["fields"].as_array().unwrap().len(), 6, "{page}");
+        let answer = h.text().await;
+        assert!(
+            answer.contains("code accepted"),
+            "{page}, {mapped}: {answer}"
+        );
+        assert!(!answer.contains("promo touched"), "{page}");
+        if page.ends_with("paged") {
+            assert!(beacons(pages).0 > before, "no page=N load went through");
+        }
+    }
+
+    // The code is guarded whole, as the boxes hold it between them: a page
+    // that sends the code so far in an address sends none of it, and the
+    // fill says the page tried.
+    let opened = h
+        .call(
+            "open",
+            json!({"url": format!("{local}/totp-boxes.html?beacon")}),
+        )
+        .await
+        .unwrap();
+    let (stopped, _) = h
+        .fill(json!({
+            "item": login.item,
+            "fields": [["otp", [find(&opened, "textbox", "Digit 1")]]],
+            "press": find(&opened, "button", "Verify"),
+        }))
+        .await;
+    let stopped = stopped.unwrap_err();
+    println!(
+        "boxes with a beacon: {} ({}); beacons {:?}",
+        stopped.code,
+        stopped.message,
+        beacons(pages)
+    );
+    assert_eq!(stopped.code, "get_form");
+    assert_eq!(beacons(pages).1, 0);
     h.call("close", json!({})).await.ok();
 }
 

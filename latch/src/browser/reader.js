@@ -358,6 +358,7 @@
       clickable: r === 'button' || r === 'link',
       role: r,
       name: name(el),
+      max_length: el.maxLength > 0 ? el.maxLength : null,
       hidden: !rendered(el) || unread(el),
       disabled: isDisabled(el),
       readonly: !!el.readOnly,
@@ -460,7 +461,6 @@
       origin: self.origin === 'null' ? 'opaque' : self.origin,
       token,
       kind: el.localName === 'select' ? 'select' : textLike(el) ? 'text' : 'other',
-      max_length: el.maxLength > 0 ? el.maxLength : null,
       placeholder: el.getAttribute('placeholder') || '',
       page_secret: markedSecret(el),
     };
