@@ -1289,7 +1289,7 @@ fn approval_supported(action: &Value) -> bool {
 }
 
 fn gmail_command_supported(command: &[Value]) -> bool {
-    if command.get(0).and_then(Value::as_str) != Some("gmail")
+    if command.first().and_then(Value::as_str) != Some("gmail")
         || command.get(1).and_then(Value::as_str) != Some("send")
     {
         return false;
