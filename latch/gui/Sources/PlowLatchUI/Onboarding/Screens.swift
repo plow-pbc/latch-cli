@@ -147,7 +147,7 @@ struct LoginView: View {
 
     private var subhead: String {
         if case let .verified(name) = flow.login { return "This Mac is named \(name) in Plow." }
-        return "Scan with your phone's camera, or text the code below."
+        return "Scan with your phone. Messages opens ready to send."
     }
 
     private var qrLabel: String {
@@ -206,13 +206,6 @@ struct LoginView: View {
             Text("Getting a code…").foregroundStyle(Brand.muted)
         case let .waiting(code), let .expired(code):
             VStack(spacing: 12) {
-                VStack(spacing: 0) {
-                    codeRow("To", code.sendToDisplay)
-                    Rectangle().fill(Brand.line).frame(height: 1)
-                    codeRow("Text", code.code, mono: true)
-                }
-                .background(Brand.surface, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .opacity(expired ? 0.4 : 1)
                 if expired {
                     HStack(spacing: 10) {
                         Text("This code expired.").foregroundStyle(Brand.muted)
@@ -228,14 +221,20 @@ struct LoginView: View {
                             Text("Waiting for your text.").foregroundStyle(Brand.muted)
                         }
                     }
-                    Button("Open in Messages") { flow.openMessages() }.buttonStyle(.link).foregroundStyle(Brand.volt)
                 }
-                Text("Keep this code private. The phone that texts it gets access to this Mac.")
-                    .font(.callout)
-                    .foregroundStyle(Brand.muted)
-                    .multilineTextAlignment(.center)
+                VStack(spacing: 8) {
+                    noCamera(code)
+                        .opacity(expired ? 0.4 : 1)
+                    if !expired {
+                        HStack(spacing: 4) {
+                            Text("Or").foregroundStyle(Brand.muted)
+                            Button("Open in Messages") { flow.openMessages() }.buttonStyle(.link).foregroundStyle(Brand.volt)
+                        }
+                    }
+                }
+                .padding(.top, 12)
             }
-            .frame(maxWidth: 360)
+            .frame(maxWidth: 460)
         case let .failed(error):
             VStack(spacing: 8) {
                 ErrorText(error: error, titled: true).foregroundStyle(Brand.clay).multilineTextAlignment(.center)
@@ -248,18 +247,44 @@ struct LoginView: View {
         }
     }
 
-    private func codeRow(_ label: String, _ value: String, mono: Bool = false) -> some View {
-        HStack {
-            Text(label).font(.callout).foregroundStyle(Brand.muted)
-            Spacer()
-            Text(value)
-                .font(mono ? Brand.code : .title3)
-                .foregroundStyle(mono ? Brand.volt : Brand.text)
-                .textSelection(.enabled)
+    /// The way in without a camera: the code to text, with a copy button,
+    /// and the number to text it to. On one line when it fits, else the
+    /// number goes on a second, so it is never cut off.
+    private func noCamera(_ code: LoginCode) -> some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 6) {
+                textCode(code)
+                sendTo(code)
+            }
+            VStack(spacing: 4) {
+                HStack(spacing: 6) { textCode(code) }
+                HStack(spacing: 6) { sendTo(code) }
+            }
         }
-        .padding(.horizontal, 14)
-        .frame(height: 42)
-        .accessibilityElement(children: .combine)
+    }
+
+    @ViewBuilder private func textCode(_ code: LoginCode) -> some View {
+        Text("No camera? Text").foregroundStyle(Brand.muted)
+        Text(code.code)
+            .font(Brand.code)
+            .foregroundStyle(Brand.text)
+            .textSelection(.enabled)
+        Button { flow.app.copy(code.code) } label: {
+            Image(systemName: "doc.on.doc")
+        }
+        .buttonStyle(.borderless)
+        .foregroundStyle(Brand.muted)
+        .help("Copy the code")
+        .accessibilityLabel("Copy the code")
+        .disabled(expired)
+    }
+
+    @ViewBuilder private func sendTo(_ code: LoginCode) -> some View {
+        Text("to").foregroundStyle(Brand.muted)
+        Text(code.sendToDisplay)
+            .font(Brand.code)
+            .foregroundStyle(Brand.text)
+            .textSelection(.enabled)
     }
 }
 
