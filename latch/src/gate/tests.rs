@@ -866,7 +866,7 @@ fn either_layers_veto_refuses_before_either_layers_allow() {
 }
 
 #[tokio::test]
-async fn a_swarm_approval_is_bound_to_one_action_and_consumed_once() {
+async fn a_swarm_approval_is_bound_consumed_and_never_overrides_a_veto() {
     let fake = fake::serve(World::default());
     let model = Recorder::answering(0.1, 0.8, 0.1);
     let keeper =
@@ -877,16 +877,13 @@ async fn a_swarm_approval_is_bound_to_one_action_and_consumed_once() {
     let failure = first.verdict.unwrap_err();
     assert_eq!(failure.details["reason"], "not_covered");
     assert_eq!(failure.details["approval"]["status"], "asked");
-    let reference = failure.details["approval"]["ref"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let reference = failure.details["approval"]["ref"].as_str().unwrap();
     assert_eq!(
-        fake.world.lock().unwrap().latch_asked,
-        Some(reference.clone())
+        fake.world.lock().unwrap().latch_asked.as_deref(),
+        Some(reference)
     );
 
-    fake.world.lock().unwrap().latch_approval = Some(reference.clone());
+    fake.world.lock().unwrap().latch_approval = Some(reference.into());
     let other = keeper
         .judge(AGENT_CALLER, &file_put("/Users/morgan/other.txt"))
         .await;
@@ -897,25 +894,10 @@ async fn a_swarm_approval_is_bound_to_one_action_and_consumed_once() {
     assert_eq!(approved.gate["approval"]["ref"], reference);
     assert_eq!(approved.gate["approval"]["prompt"], "prompt_fake");
     assert_eq!(approved.gate["approval"]["reaction"], "reaction_fake");
-
     let spent = keeper.judge(AGENT_CALLER, &action).await;
     assert_eq!(code(&spent), "gatekeeper_denied");
-}
 
-#[tokio::test]
-async fn a_swarm_approval_never_overrides_a_veto_and_exec_never_asks() {
-    let fake = fake::serve(World::default());
-    let action = file_put("/Users/morgan/report.txt");
-    let neither = Recorder::answering(0.1, 0.8, 0.1);
-    let keeper =
-        Gatekeeper::new(fake.client(), neither, Box::new(Rules::default())).on_host("test-host");
-    let asked = keeper.judge(AGENT_CALLER, &action).await;
-    let reference = asked.verdict.unwrap_err().details["approval"]["ref"]
-        .as_str()
-        .unwrap()
-        .to_string();
-
-    fake.world.lock().unwrap().latch_approval = Some(reference);
+    fake.world.lock().unwrap().latch_approval = Some(reference.into());
     let veto = Recorder::answering(0.1, 0.1, 0.8);
     let veto_keeper =
         Gatekeeper::new(fake.client(), veto, Box::new(Rules::default())).on_host("test-host");

@@ -661,6 +661,28 @@ async fn a_refused_command_sends_nothing_to_the_page(engine: &str) {
         "the judge saw a vault value"
     );
 
+    // The item loaded for judgment is the one executed across an owner edit.
+    judge.answer(|_| COVERED);
+    judge.slow.store(200, std::sync::atomic::Ordering::SeqCst);
+    let mut args = fill(Some(&added));
+    args["fields"][0][1][0] = json!("missing");
+    args["press"] = json!(find(&login, "button", "Sign in"));
+    let filling = host.agent("fill", &id, args, None);
+    let editing = async {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        host.browsers.vault.with(|store| {
+            let mut edited = store.item(&added).unwrap();
+            edited.raw.login.as_mut().unwrap().password = Some("changed-password".into());
+            store.update(edited, 1)
+        })
+    };
+    let ((filled, audit), edited) = tokio::join!(filling, editing);
+    edited.unwrap();
+    filled.unwrap_err();
+    assert_eq!(audit["revision"], json!(1));
+    judge.slow.store(0, std::sync::atomic::Ordering::SeqCst);
+    judge.answer(|_| NOT_COVERED);
+
     // A card fill is judged once, as any fill: the item, the fields and
     // the page's site, never the number. Refused, nothing is filled.
     let card = host

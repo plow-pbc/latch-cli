@@ -625,9 +625,10 @@ impl Run<'_> {
                 if let Some(object) = args.as_object_mut() {
                     object.remove("kind");
                 }
-                self.judge_fill(n, &args).await?;
+                let item = super::super::fill::item_of(self.browsers, &args)?;
+                self.judge_fill(n, &args, &item).await?;
                 self.choice = Some(choice_record(&decision, Some(pick)));
-                let sent = self.fill_now(n, args).await;
+                let sent = self.fill_now(n, args, item).await;
                 self.choice = None;
                 *acted += 1;
                 before = Some(state);

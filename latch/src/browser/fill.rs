@@ -55,7 +55,7 @@ use crate::vault::item::{Item, Meta};
 use crate::vault::store::Backend;
 use crate::vault::{classify, dates, sites, totp};
 
-fn item_of(browsers: &Browsers, args: &Value) -> Result<Item, Failure> {
+pub(super) fn item_of(browsers: &Browsers, args: &Value) -> Result<Item, Failure> {
     let id = args["item"].as_str().ok_or_else(|| {
         Failure::new(
             code::bad_arguments,
@@ -392,10 +392,14 @@ pub async fn run(
     browsers: &Browsers,
     entry: &Entry,
     args: &Value,
+    item: Option<Item>,
     audit: &mut Map<String, Value>,
 ) -> Result<Value, Failure> {
     let args = &resolve(browsers, entry, args).await?;
-    let item = item_of(browsers, args)?;
+    let item = match item {
+        Some(item) => item,
+        None => item_of(browsers, args)?,
+    };
     audit.insert("item".into(), json!(item.id));
     let meta = item.meta();
     audit.insert("kind".into(), json!(meta.kind));

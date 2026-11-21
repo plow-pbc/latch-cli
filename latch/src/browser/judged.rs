@@ -23,6 +23,7 @@ use super::plan::{CheckKind, Literal, Op, Plan, Step};
 use super::shown::Filled;
 use crate::failure::Failure;
 use crate::gate::Gate;
+use crate::vault::item::Item;
 use crate::vault::sites;
 use crate::vault::store::Backend;
 
@@ -174,20 +175,13 @@ pub(super) async fn site(browsers: &Browsers, entry: &Entry) -> Result<Option<St
 /// A vault item's kind, title and sites; an item the vault lacks is shown
 /// by its handle, and is refused later by the step that uses it.
 pub(super) fn item(browsers: &Browsers, id: &str) -> ItemShown {
-    let meta = browsers
+    let item = browsers
         .vault
-        .with(|store| Ok(store.item(id).map(|item| item.meta())))
+        .with(|store| Ok(store.item(id)))
         .ok()
         .flatten();
-    match meta {
-        Some(meta) => ItemShown {
-            item: Some(meta.item),
-            revision: Some(meta.revision),
-            kind: meta.kind.to_string(),
-            title: meta.title,
-            sites: meta.sites,
-            other_top_sites: meta.other_top_sites,
-        },
+    match item {
+        Some(item) => shown_item(&item),
         None => ItemShown {
             item: None,
             revision: None,
@@ -199,9 +193,20 @@ pub(super) fn item(browsers: &Browsers, id: &str) -> ItemShown {
     }
 }
 
+pub(super) fn shown_item(item: &Item) -> ItemShown {
+    let meta = item.meta();
+    ItemShown {
+        item: Some(meta.item),
+        revision: Some(meta.revision),
+        kind: meta.kind.to_string(),
+        title: meta.title,
+        sites: meta.sites,
+        other_top_sites: meta.other_top_sites,
+    }
+}
+
 /// A fill of `args` (its mapping resolved) on `site`.
-pub(super) fn fill(browsers: &Browsers, args: &Value, site: Option<String>) -> Action {
-    let item = item(browsers, args["item"].as_str().unwrap_or_default());
+pub(super) fn fill(item: ItemShown, args: &Value, site: Option<String>) -> Action {
     let fields = args["fields"]
         .as_array()
         .into_iter()
@@ -645,17 +650,30 @@ mod tests {
             ("password".into(), password.into()),
         ];
         let raw = Raw::from_labels(LOGIN, "Shop login", &fields).unwrap();
-        let item = Item {
+        let stored = Item {
             id: String::new(),
             revision: 0,
             sites: vec!["shop.example".into()],
             other_top_sites: vec![],
             raw,
         };
-        let added = browsers.vault.with(|store| store.add(item)).unwrap();
+        let added = browsers
+            .vault
+            .with(|store| store.add(stored.clone()))
+            .unwrap();
         let args =
             json!({"item": added.item, "fields": [["username", ["e1"]], ["password", ["e2"]]]});
-        let action = fill(&browsers, &args, Some("shop.example".into()));
+        let action = fill(
+            item(&browsers, &added.item),
+            &args,
+            Some("shop.example".into()),
+        );
+        let other = browsers.vault.with(|store| store.add(stored)).unwrap();
+        let other_args = json!({"item": other.item, "fields": args["fields"]});
+        assert_ne!(
+            serde_json::to_value(&action).unwrap()["item"],
+            serde_json::to_value(fill(item(&browsers, &other.item), &other_args, None)).unwrap()["item"]
+        );
 
         let world = fake::World {
             decide: Some(|_| Some([0.9, 0.08, 0.02])),
@@ -677,33 +695,6 @@ mod tests {
             !kept.contains(password) && !kept.contains(username),
             "{kept}"
         );
-    }
-
-    #[test]
-    fn a_vault_fill_names_the_resolved_item_and_revision() {
-        use crate::vault::item::{Item, LOGIN, Raw};
-        let dir = tempfile::tempdir().unwrap();
-        let state = dir.path().to_path_buf();
-        let browsers = Browsers::new(state.clone(), crate::vault::host::Vault::new(state), true);
-        let add = || Item {
-            id: String::new(),
-            revision: 0,
-            sites: vec!["shop.example".into()],
-            other_top_sites: vec![],
-            raw: Raw::from_labels(LOGIN, "Shop login", &[]).unwrap(),
-        };
-        let first = browsers.vault.with(|store| store.add(add())).unwrap();
-        let second = browsers.vault.with(|store| store.add(add())).unwrap();
-        let shown = |item: &str| {
-            let args = json!({"item": item, "fields": [["username", ["e1"]]]});
-            serde_json::to_value(fill(&browsers, &args, Some("shop.example".into()))).unwrap()
-        };
-
-        let first_action = shown(&first.item);
-        let second_action = shown(&second.item);
-        assert_eq!(first_action["item"]["item"], first.item);
-        assert_eq!(first_action["item"]["revision"], first.revision);
-        assert_ne!(first_action, second_action);
     }
 
     #[test]

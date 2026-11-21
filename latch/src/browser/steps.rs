@@ -643,13 +643,18 @@ fn stopped(code: Code, message: String) -> Failure {
 impl<'a> Run<'a> {
     /// Judges a vault fill the plan is about to make, as `fill` is
     /// judged; a refusal is recorded and stops the plan, nothing sent.
-    async fn judge_fill(&mut self, n: usize, args: &Value) -> Result<(), Failure> {
+    async fn judge_fill(
+        &mut self,
+        n: usize,
+        args: &Value,
+        item: &crate::vault::item::Item,
+    ) -> Result<(), Failure> {
         let Some(gate) = self.gate else {
             return Ok(());
         };
         let site = judged::site(self.browsers, self.entry).await?;
         let action = judged::shown(
-            &judged::fill(self.browsers, args, site),
+            &judged::fill(judged::shown_item(item), args, site),
             &self.entry.filled(),
         );
         let judging = Instant::now();
@@ -1071,21 +1076,34 @@ impl Run<'_> {
     /// A literal fill, judged, then carried out.
     async fn fill(&mut self, n: usize, literal: &Literal) -> Result<(), Failure> {
         let args = super::fill::resolve(self.browsers, self.entry, &fill_args(literal)).await?;
-        self.judge_fill(n, &args).await?;
-        self.fill_now(n, args).await
+        let item = super::fill::item_of(self.browsers, &args)?;
+        self.judge_fill(n, &args, &item).await?;
+        self.fill_now(n, args, item).await
     }
 
     /// A vault fill as one action: pause, origin match, set, press, clean
     /// up (`fill.rs`). The trail records the item and the fields filled,
     /// never a value.
-    async fn fill_now(&mut self, n: usize, args: Value) -> Result<(), Failure> {
+    async fn fill_now(
+        &mut self,
+        n: usize,
+        args: Value,
+        item: crate::vault::item::Item,
+    ) -> Result<(), Failure> {
         let action = self.begin(
             n,
             Op::Fill,
             json!({"item": args["item"], "press": args["press"]}),
         )?;
         let mut fill_audit = Map::new();
-        let outcome = super::fill::run(self.browsers, self.entry, &args, &mut fill_audit).await;
+        let outcome = super::fill::run(
+            self.browsers,
+            self.entry,
+            &args,
+            Some(item),
+            &mut fill_audit,
+        )
+        .await;
         let result = match &outcome {
             Ok(_) => "dispatched",
             Err(failure) if refused(failure) => "refused",

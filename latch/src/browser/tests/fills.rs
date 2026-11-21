@@ -460,7 +460,7 @@ impl Harness {
     ) -> (Result<Value, crate::failure::Failure>, Map<String, Value>) {
         let mut audit = Map::new();
         let result =
-            crate::browser::fill::run(&self.browsers, &self.entry, &args, &mut audit).await;
+            crate::browser::fill::run(&self.browsers, &self.entry, &args, None, &mut audit).await;
         self.shown.push(seen(&Value::Object(audit.clone())));
         match &result {
             Ok(value) => self.shown.push(seen(value)),
@@ -666,7 +666,7 @@ async fn vault_fills_go_only_where_the_item_allows_and_never_show_a_value(engine
     let (browsers, entry) = (h.browsers.clone(), h.entry.clone());
     let filling = tokio::spawn(async move {
         let mut audit = Map::new();
-        let result = crate::browser::fill::run(&browsers, &entry, &args, &mut audit).await;
+        let result = crate::browser::fill::run(&browsers, &entry, &args, None, &mut audit).await;
         (result, audit)
     });
     tokio::time::sleep(Duration::from_millis(1500)).await;
@@ -1081,7 +1081,7 @@ async fn a_fill_pauses_its_own_session_and_no_other(engine: &str) {
     let (browsers, entry) = (h.browsers.clone(), h.entry.clone());
     let filling = tokio::spawn(async move {
         let mut audit = Map::new();
-        let result = crate::browser::fill::run(&browsers, &entry, &args, &mut audit).await;
+        let result = crate::browser::fill::run(&browsers, &entry, &args, None, &mut audit).await;
         (result, audit)
     });
     tokio::time::sleep(Duration::from_millis(1500)).await;
@@ -1350,7 +1350,7 @@ async fn a_login_goes_on_to_its_password_stage_in_one_pause(engine: &str) {
     let (browsers, entry, mapped) = (h.browsers.clone(), h.entry.clone(), args.clone());
     let filling = tokio::spawn(async move {
         let mut audit = Map::new();
-        let result = crate::browser::fill::run(&browsers, &entry, &mapped, &mut audit).await;
+        let result = crate::browser::fill::run(&browsers, &entry, &mapped, None, &mut audit).await;
         (result, audit)
     });
     tokio::time::sleep(Duration::from_millis(1000)).await;

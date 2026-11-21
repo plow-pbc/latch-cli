@@ -709,17 +709,18 @@ pub(super) async fn fill(
     let args = super::fill::named(browsers, entry, args).await?;
     audit.insert("item".into(), args["item"].clone());
     let args = super::fill::resolve(browsers, entry, &args).await?;
+    let item = super::fill::item_of(browsers, &args)?;
     if caller.gate.is_some() {
         let site = judged::site(browsers, entry).await?;
         judged::judge(
             caller.gate,
-            judged::fill(browsers, &args, site),
+            judged::fill(judged::shown_item(&item), &args, site),
             &entry.filled(),
             audit,
         )
         .await?;
     }
-    super::fill::run(browsers, entry, &args, audit).await
+    super::fill::run(browsers, entry, &args, Some(item), audit).await
 }
 
 /// One command for `caller`, as `answer` runs it, the page in its answer
