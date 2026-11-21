@@ -110,6 +110,12 @@ additive ones: a probe whose honest answer is "this isn't needed" should land
 as a deletion, not a new guard. When the same class of finding recurs across
 rounds, name the one seam change that retires it.
 
+The bar is simple, maintainable, extensible code. Push back on speculative
+abstractions, impossible-case guards and configuration nobody asked for.
+Compute costs less than brittle text machinery: flag piles of regex and
+hand-rolled parsing, and prefer a clear model call for semantic work or a
+maintained standard parser for structured input.
+
 **The one carve-out: enforcement code is the product, and it is not bloat.**
 Keep the bar high on these paths, because a wrong answer is the failure the
 tool exists to prevent:
