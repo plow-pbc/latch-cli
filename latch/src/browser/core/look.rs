@@ -190,6 +190,8 @@ impl<D: Driver> Core<D> {
             "element": read["element"],
             "acts_on": read["acts_on"],
             "lines": read["lines"],
+            "values": read["values"],
+            "secret": read["secret"],
             "title": page["title"],
             "url": page["url"],
         }))
@@ -547,10 +549,10 @@ fn clip(line: &str, max: usize) -> String {
 }
 
 /// A reviewed context (`Core::review`) hashed: the document, the element's
-/// identity and what it acts on, the page title and the lines around it.
-/// A confirmation, and an action judged on that context, hold only while it
-/// is unchanged.
-pub fn fingerprint(reviewed: &Value) -> String {
+/// identity and what it acts on, the page title and the lines around it,
+/// with `fields` the text of the fields it submits too. A confirmation, and
+/// an action judged on that context, hold only while it is unchanged.
+pub fn fingerprint(reviewed: &Value, fields: bool) -> String {
     let bound = json!([
         reviewed["document"],
         reviewed["uid"],
@@ -558,6 +560,11 @@ pub fn fingerprint(reviewed: &Value) -> String {
         reviewed["acts_on"],
         reviewed["title"],
         reviewed["lines"],
+        if fields {
+            &reviewed["values"]
+        } else {
+            &Value::Null
+        },
     ]);
     to_hex(&Sha256::digest(bound.to_string().as_bytes()))
 }

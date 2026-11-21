@@ -223,6 +223,9 @@ pub struct Guard {
     pub fingerprint: String,
     #[serde(default)]
     pub enter: bool,
+    /// Whether the fingerprint holds the text of the fields it submits.
+    #[serde(default)]
+    pub fields: bool,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Copy, PartialEq)]
@@ -789,10 +792,10 @@ impl<D: Driver> Core<D> {
                 );
                 if let Some(guard) = guard {
                     let now = self.review(Some(&snapshot), target, guard.enter, &mut Map::new())?;
-                    if fingerprint(&now) != guard.fingerprint {
+                    if fingerprint(&now, guard.fields) != guard.fingerprint {
                         return Err(Failure::new(
                             code::context_changed,
-                            "what this action acts on, or the lines around it, changed after latch judged it; nothing was sent".into(),
+                            "what this action acts on, its fields or the lines around it, changed after latch judged it; nothing was sent".into(),
                         ));
                     }
                 }

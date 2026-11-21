@@ -747,9 +747,9 @@ impl Run<'_> {
         record_model(&self.model, self.audit);
         let p = judged.map_err(|_| model_unavailable(&self.model, "a click or Enter"))?;
         if p < RISKY_P {
-            let guard = fingerprint(&reviewed);
+            let guard = fingerprint(&reviewed, false);
             return match self
-                .dispatch(n, literal, Some(p), None, Some((&guard, enter)))
+                .dispatch(n, literal, Some(p), None, Some((&guard, enter, false)))
                 .await
             {
                 Err(failure) if failure.code == "context_changed" => Err(stopped(
@@ -811,7 +811,7 @@ impl Run<'_> {
                 .unwrap_or_default()
                 .to_string(),
             uid: reviewed["uid"].clone(),
-            fingerprint: fingerprint(reviewed),
+            fingerprint: fingerprint(reviewed, false),
             used: false,
         };
         self.entry
@@ -891,19 +891,27 @@ impl Run<'_> {
         if reviewed["document"] != document.as_str() || reviewed["uid"] != uid {
             return Err(stale("is for an element no longer on the page"));
         }
-        if fingerprint(&reviewed) != print {
+        if fingerprint(&reviewed, false) != print {
             return Err(stale(
                 "no longer matches the page: the element or the lines around it changed",
             ));
         }
-        self.judge_confirmed(n, id, &literal, &reviewed, enter)
-            .await?;
-        let guard = Some((print.as_str(), enter));
+        // What the judge saw is what is sent: a field changed since sends
+        // nothing.
+        let guard = if self
+            .judge_confirmed(n, id, &literal, &reviewed, enter)
+            .await?
+        {
+            (fingerprint(&reviewed, true), enter, true)
+        } else {
+            (print, enter, false)
+        };
+        let guard = Some((guard.0.as_str(), guard.1, guard.2));
         let sent = self.dispatch(n, &literal, None, Some(id), guard).await;
         match sent {
             Err(failure) if failure.code == "context_changed" => {
                 return Err(stale(
-                    "no longer matches the page: the element or the lines around it changed",
+                    "no longer matches the page: the element, its fields or the lines around it changed",
                 ));
             }
             sent => sent?,
@@ -913,8 +921,8 @@ impl Run<'_> {
 
     /// Judges an agent's confirmation of what the risk decision paused,
     /// before it is carried out: the agent's say-so is no permission. A
-    /// refusal, or a judge that can't be reached, sends nothing; so does a
-    /// field that changed while the judge decided.
+    /// refusal, or a judge that can't be reached, sends nothing. Whether it
+    /// was judged.
     async fn judge_confirmed(
         &mut self,
         n: usize,
@@ -922,61 +930,50 @@ impl Run<'_> {
         literal: &Literal,
         reviewed: &Value,
         enter: bool,
-    ) -> Result<(), Failure> {
+    ) -> Result<bool, Failure> {
         let Some(gate) = self
             .gate
             .filter(|gate| matches!(gate.caller, Caller::Agent { .. }))
         else {
-            return Ok(());
+            return Ok(false);
         };
-        let fields = |seen: &Value| strings(&seen["fields"]);
-        let (seen, _) = call(self.entry, json!({"op": "lines"}), self.audit).await?;
         let typing = literal.op == Op::Type;
         let mut what = action_line(reviewed, enter, typing);
-        if let Some(text) = literal.text.as_deref().filter(|_| typing) {
-            what.push_str(&format!(", typing {text:?}"));
+        match literal.text.as_deref().filter(|_| typing) {
+            Some(_) if reviewed["secret"] == true => what.push_str(", typing a hidden value"),
+            Some(text) => what.push_str(&format!(", typing {text:?}")),
+            None => {}
         }
-        let action = judged::confirmed_step(self.browsers, what, reviewed, fields(&seen));
+        let action = judged::confirmed_step(self.browsers, what, reviewed);
         let filled = self.entry.filled();
-        if let Err(failure) = judged::judge(Some(gate), action, &filled, self.audit).await {
+        let judged = judged::judge(Some(gate), action, &filled, self.audit).await;
+        if judged.is_err() {
             self.records
                 .push(json!({"step": n, "op": literal.op, "ref": literal.target,
                                      "confirmation": id, "dispatch": "refused"}));
-            return Err(failure);
         }
-        let (now, _) = call(self.entry, json!({"op": "lines"}), self.audit).await?;
-        if fields(&now) != fields(&seen) {
-            let mut failure = Failure::new(
-                code::confirm_stale,
-                format!(
-                    "confirmation {id} no longer matches the page: a field changed while it was judged; nothing was sent. Look at the page again"
-                ),
-            );
-            failure.details = json!({"confirmation": id});
-            return Err(failure);
-        }
-        Ok(())
+        judged.map(|()| true)
     }
 
     /// One action, journaled before it is sent and once its result is known.
-    /// With `guard` (a reviewed context's fingerprint, and whether it was
-    /// reviewed as an Enter), the worker makes it only while the page still
-    /// shows that context.
+    /// With `guard` (a reviewed context's fingerprint, whether it was
+    /// reviewed as an Enter, and whether it holds the fields' text), the
+    /// worker makes it only while the page still shows that context.
     async fn dispatch(
         &mut self,
         n: usize,
         literal: &Literal,
         risk_p: Option<f64>,
         confirmation: Option<&str>,
-        guard: Option<(&str, bool)>,
+        guard: Option<(&str, bool, bool)>,
     ) -> Result<(), Failure> {
         let action = self.begin(n, literal.op, json!({"ref": literal.target}))?;
         let mut act = json!({
             "op": "act", "action": action_of(literal.op), "quiet": true,
             "snapshot": literal.snapshot, "target": literal.target, "text": literal.text,
         });
-        if let Some((fingerprint, enter)) = guard {
-            act["guard"] = json!({"fingerprint": fingerprint, "enter": enter});
+        if let Some((fingerprint, enter, fields)) = guard {
+            act["guard"] = json!({"fingerprint": fingerprint, "enter": enter, "fields": fields});
         }
         let reply = call(self.entry, act, self.audit).await;
         let mut record = json!({"step": n, "action": action, "op": literal.op, "chosen": "ref"});
@@ -1613,7 +1610,7 @@ mod tests {
             "element": {"role": "button", "name": "Place order"}, "lines": ["Total $10.00", "Place order"]});
         let mut repriced = reviewed.clone();
         repriced["lines"][0] = json!("Total $100.00");
-        assert_ne!(fingerprint(&reviewed), fingerprint(&repriced));
+        assert_ne!(fingerprint(&reviewed, false), fingerprint(&repriced, false));
         assert_eq!(
             action_line(&reviewed, false, false),
             "click button \"Place order\""

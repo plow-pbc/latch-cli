@@ -1715,7 +1715,12 @@ async fn an_agents_confirmation_of_a_paused_send_is_judged_before_it_runs(engine
     });
     let mut host = Host::start(&state, &site, &judge, chat.clone());
     host.browsers.provider = Some(Arc::new(Wary));
-    let (id, send, _) = composed(&host, &site, engine, "wire the deposit today").await;
+    // Longer than a page read shows of a field: the judge reads it whole.
+    let message = format!(
+        "{}wire the deposit today",
+        "Hi Ada, hope you are well. ".repeat(12)
+    );
+    let (id, send, _) = composed(&host, &site, engine, &message).await;
     let paused = async |host: &Host| {
         let (clicked, _) = host
             .agent("do", &id, act(&format!("click {send}")), None)
@@ -1734,7 +1739,7 @@ async fn an_agents_confirmation_of_a_paused_send_is_judged_before_it_runs(engine
     };
 
     // Refused: nothing is sent, and the judge was asked once, shown the
-    // Send, its page and the message.
+    // Send, its page and the whole message.
     let confirmation = paused(&host).await;
     let asked = judge.judged();
     let (refusal, audit) = confirm(&host, &confirmation).await;
@@ -1763,11 +1768,51 @@ async fn an_agents_confirmation_of_a_paused_send_is_judged_before_it_runs(engine
         "{judged:#}"
     );
     assert!(
-        judged.to_string().contains("wire the deposit today"),
+        judged["fields"].to_string().contains(&message),
         "{judged:#}"
     );
     assert_eq!(audit["gate"]["verdict"], "not_covered");
     assert!(shows(&host, &id).await.contains("nothing sent"));
+
+    // A message longer than the judge is shown says it was cut short.
+    let long = "document.getElementById('body').value = 'a'.repeat(4100)";
+    host.look("eval", &id, json!({"script": long})).await;
+    let confirmation = paused(&host).await;
+    confirm(&host, &confirmation).await.0.unwrap_err();
+    let fields = judge.last_action()["fields"].to_string();
+    assert!(
+        fields.contains("cut short: the field holds 4100 characters"),
+        "{fields}"
+    );
+    let back = format!("document.getElementById('body').value = {message:?}");
+    host.look("eval", &id, json!({"script": back})).await;
+
+    // Text typed into a secret field is never shown the judge or kept.
+    let pin = find(
+        &host.look("observe", &id, json!({})).await,
+        "textbox",
+        "PIN",
+    );
+    let (keyed, _) = host
+        .agent("do", &id, act(&format!("type {pin} 4321\n")), None)
+        .await;
+    let failure = keyed.unwrap_err();
+    assert_eq!(failure.code, "confirm_needed", "{failure:?}");
+    let keys = failure.details["stop"]["confirmation"]["id"]
+        .as_str()
+        .unwrap();
+    let (refusal, audit) = confirm(&host, keys).await;
+    assert_eq!(refusal.unwrap_err().code, "gatekeeper_denied");
+    let judged = judge.last_action();
+    assert!(
+        judged["action"]
+            .as_str()
+            .unwrap()
+            .contains("a hidden value"),
+        "{judged:#}"
+    );
+    assert!(!judged.to_string().contains("4321"), "{judged:#}");
+    assert!(!Value::Object(audit).to_string().contains("4321"));
 
     // A judge that can't be reached sends nothing either.
     let confirmation = paused(&host).await;
@@ -1784,16 +1829,19 @@ async fn an_agents_confirmation_of_a_paused_send_is_judged_before_it_runs(engine
     // what was judged is not what would be sent, so nothing is.
     judge.answer(|_| COVERED);
     let confirmation = paused(&host).await;
-    judge.slow.store(2000, std::sync::atomic::Ordering::SeqCst);
+    judge.slow.store(1000, std::sync::atomic::Ordering::SeqCst);
     let swap = "document.getElementById('body').value = 'wire it all today'";
+    let asked = judge.judged();
     let ((raced, _), _) = tokio::join!(confirm(&host, &confirmation), async {
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        while judge.judged() == asked {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
         host.look("eval", &id, json!({"script": swap})).await
     });
     judge.slow.store(0, std::sync::atomic::Ordering::SeqCst);
     assert_eq!(raced.unwrap_err().code, "confirm_stale");
     assert!(shows(&host, &id).await.contains("nothing sent"));
-    let back = "document.getElementById('body').value = 'wire the deposit today'";
+    let back = format!("document.getElementById('body').value = {message:?}");
     host.look("eval", &id, json!({"script": back})).await;
 
     // Covered, the confirmed Send goes out.
@@ -1804,7 +1852,7 @@ async fn an_agents_confirmation_of_a_paused_send_is_judged_before_it_runs(engine
     assert!(
         shows(&host, &id)
             .await
-            .contains("sent: wire the deposit today")
+            .contains(&format!("sent: {message}"))
     );
     host.look("close", &id, json!({})).await;
 }

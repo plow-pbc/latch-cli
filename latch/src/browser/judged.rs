@@ -70,8 +70,8 @@ pub(super) enum Action {
     /// A click or Enter the risk decision paused as one that can't be
     /// undone (a send, a payment, a delete), as the agent's confirmation
     /// would carry it out: what it does, the lines of the part of the page
-    /// it acts in, and the page's fields, so what was typed is judged with
-    /// the click that sends it.
+    /// it acts in, and the whole text of the fields it submits, so what was
+    /// typed is judged with the click that sends it.
     ConfirmedStep {
         page: Page,
         action: String,
@@ -176,27 +176,25 @@ pub(super) async fn page(browsers: &Browsers, entry: &Entry) -> Result<Page, Fai
     })
 }
 
-/// `action` on the context `reviewed` (`Core::review`), with the page's
-/// non-secret `fields`.
-pub(super) fn confirmed_step(
-    browsers: &Browsers,
-    action: String,
-    reviewed: &Value,
-    fields: Vec<String>,
-) -> Action {
+/// `action` on the context `reviewed` (`Core::review`): its page, the
+/// lines around it and the fields it submits.
+pub(super) fn confirmed_step(browsers: &Browsers, action: String, reviewed: &Value) -> Action {
+    let strings = |key: &str| {
+        reviewed[key]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|line| line.as_str().map(str::to_string))
+            .collect()
+    };
     Action::ConfirmedStep {
         page: Page {
             url: url_as(browsers, reviewed["url"].as_str().unwrap_or_default()),
             title: reviewed["title"].as_str().unwrap_or_default().to_string(),
         },
         action,
-        around: reviewed["lines"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|line| line.as_str().map(str::to_string))
-            .collect(),
-        fields,
+        around: strings("lines"),
+        fields: strings("values"),
     }
 }
 
