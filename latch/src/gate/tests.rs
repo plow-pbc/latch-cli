@@ -889,6 +889,10 @@ async fn a_swarm_approval_is_bound_consumed_and_never_overrides_a_veto() {
         fake.world.lock().unwrap().latch_asked.as_deref(),
         Some(reference)
     );
+    assert_eq!(
+        fake.world.lock().unwrap().latch_requests[0],
+        json!({"op": "confirm", "ref": reference, "machine": "machine-a"})
+    );
 
     fake.world.lock().unwrap().latch_approval = Some(reference.into());
     let other = keeper
@@ -948,30 +952,6 @@ async fn a_swarm_approval_is_bound_consumed_and_never_overrides_a_veto() {
         );
         assert_eq!(fake.saw("/v1/latch/approval"), before);
     }
-}
-
-#[tokio::test]
-async fn an_approval_confirmation_sends_the_machine_key() {
-    let fake = fake::serve(World::default());
-    let keeper = Gatekeeper::new(
-        fake.client(),
-        Recorder::answering(0.1, 0.8, 0.1),
-        Box::new(Rules::default()),
-    )
-    .on_host("test-host", "machine-a");
-
-    let _ = keeper
-        .judge(AGENT_CALLER, &file_put("/Users/morgan/report.txt"))
-        .await;
-
-    assert_eq!(
-        fake.world.lock().unwrap().latch_requests[0],
-        json!({
-            "op": "confirm",
-            "ref": "b9a7f2dba0464e073af151f88a20e69857071dfd71a986c7a84fb40e1b367879",
-            "machine": "machine-a",
-        })
-    );
 }
 
 #[tokio::test]
