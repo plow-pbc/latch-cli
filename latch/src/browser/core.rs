@@ -161,6 +161,9 @@ pub enum Call {
     SetValue {
         target: String,
         value: String,
+        /// The value this one is a piece of, split across boxes.
+        #[serde(default)]
+        whole: Option<String>,
         /// A secret (a password, a code, a card or identity secret): no GET
         /// request may carry it while it may be on the page.
         #[serde(default)]
@@ -445,9 +448,10 @@ impl<D: Driver> Core<D> {
             Call::SetValue {
                 target,
                 value,
+                whole,
                 secret,
                 formatted,
-            } => self.set_value(&target, &value, secret, formatted),
+            } => self.set_value(&target, &value, whole.as_deref(), secret, formatted),
             Call::FillSubmit { target } => self.fill_submit(&target),
             Call::FillCleanup => self.fill_cleanup(),
             Call::FillResume { shows } => self.fill_resume(shows, &mut audit),

@@ -198,6 +198,8 @@ pub struct Control {
     pub clickable: bool,
     pub role: String,
     pub name: String,
+    /// The characters it takes at most, when the page limits them.
+    pub max_length: Option<u64>,
     /// Why a value can't go into it now: hidden (`aria-hidden`, inert, not
     /// rendered), disabled, read-only or covered. None when it can.
     pub unusable: Option<String>,
@@ -237,6 +239,7 @@ impl Control {
             clickable: found["clickable"] == true,
             role: text("role"),
             name: text("name"),
+            max_length: found["max_length"].as_u64(),
             unusable,
         }
     }
