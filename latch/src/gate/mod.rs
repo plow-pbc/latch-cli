@@ -1286,12 +1286,26 @@ fn approval_supported(action: &Value) -> bool {
     };
     command.get(0).and_then(Value::as_str) == Some("gmail")
         && command.get(1).and_then(Value::as_str) == Some("send")
-        && ["--to", "--subject", "--body"].iter().all(|flag| {
-            command
-                .windows(2)
-                .any(|pair| pair[0].as_str() == Some(flag) && pair[1].is_string())
-        })
+        && ["--to", "--subject", "--body"]
+            .iter()
+            .all(|flag| command_flag(command, flag).is_some())
         && !["--attach", "--body-file", "--body-html", "--body-html-file"]
             .iter()
-            .any(|flag| command.iter().any(|word| word.as_str() == Some(flag)))
+            .any(|flag| command.iter().any(|word| flag_present(word, flag)))
+}
+
+fn command_flag<'a>(command: &'a [Value], flag: &str) -> Option<&'a str> {
+    command.iter().enumerate().find_map(|(index, word)| {
+        let word = word.as_str()?;
+        if word == flag {
+            return command.get(index + 1).and_then(Value::as_str);
+        }
+        word.strip_prefix(flag)?.strip_prefix('=')
+    })
+}
+
+fn flag_present(word: &Value, flag: &str) -> bool {
+    word.as_str().is_some_and(|word| {
+        word == flag || word.strip_prefix(flag).is_some_and(|rest| rest.starts_with('='))
+    })
 }

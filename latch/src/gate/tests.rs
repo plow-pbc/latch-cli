@@ -916,6 +916,15 @@ async fn a_swarm_approval_is_bound_consumed_and_never_overrides_a_veto() {
     let exec = keeper.judge(AGENT_CALLER, &order()).await;
     assert_eq!(exec.verdict.unwrap_err().details["reason"], "not_covered");
     assert_eq!(fake.saw("/v1/latch/approval"), before);
+
+    let file_backed_email = serde_json::value::to_raw_value(&json!({
+        "operation": "google",
+        "command": ["gmail", "send", "--to=a@example.com", "--subject=hello", "--body-file=/tmp/body"]
+    }))
+    .unwrap();
+    let refused = keeper.judge(AGENT_CALLER, &file_backed_email).await;
+    assert_eq!(refused.verdict.unwrap_err().details["reason"], "not_covered");
+    assert_eq!(fake.saw("/v1/latch/approval"), before);
 }
 
 #[tokio::test]
