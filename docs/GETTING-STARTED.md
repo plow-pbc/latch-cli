@@ -93,7 +93,7 @@ latch --version
 ```
 
 ```json
-{"version":"0.1.0 (151): commit …, protocol plow/latch/4"}
+{"version":"0.1.0 (151): commit …, protocol plow/latch/5"}
 ```
 
 ## 2. Log in and start the host
@@ -338,9 +338,9 @@ the host with `latch serve --deny-exec`: no agent can run programs there.
 
 **When an agent is refused** (exit 4, `gatekeeper_denied`):
 
-- `not_covered`: for non-exec work, react ✅ to the exact request latch posts
-  in your Swarm approval room, then the agent tries once more. Exec keeps the
-  Plow-chat route named in its refusal.
+- `not_covered`: follow the refusal's message. If latch posted an exact request
+  in your Swarm approval room, react ✅ and the agent tries once more;
+  otherwise use the Plow-chat route named there.
 - `owner_said_no` or `exec_denied`: the answer is no.
 
 ## 5. Update

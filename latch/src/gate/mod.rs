@@ -1294,26 +1294,28 @@ fn gmail_command_supported(command: &[Value]) -> bool {
     {
         return false;
     }
-    let allowed = ["--to", "--cc", "--bcc", "--subject", "--body"];
+    let Some(command) = command
+        .iter()
+        .map(Value::as_str)
+        .collect::<Option<Vec<_>>>()
+    else {
+        return false;
+    };
+    let command: Vec<String> = command.into_iter().map(str::to_owned).collect();
+    let Ok(plan) = crate::google::policy::parse(&command) else {
+        return false;
+    };
+    let allowed = ["to", "cc", "bcc", "subject", "body"];
     let mut seen = std::collections::HashSet::new();
-    let mut index = 2;
-    while index < command.len() {
-        let Some(word) = command[index].as_str() else {
-            return false;
-        };
-        let (flag, has_value) = match word.split_once('=') {
-            Some((flag, value)) => (flag, !value.is_empty()),
-            None => {
-                index += 1;
-                (word, command.get(index).and_then(Value::as_str).is_some())
-            }
-        };
-        if !has_value || !allowed.contains(&flag) || !seen.insert(flag) {
+    if plan.command != "gmail.send" || !plan.positionals.is_empty() || !plan.inputs.is_empty() {
+        return false;
+    }
+    for (flag, value) in &plan.flags {
+        if value.is_empty() || !allowed.contains(&flag.as_str()) || !seen.insert(flag.as_str()) {
             return false;
         }
-        index += 1;
     }
-    ["--to", "--subject", "--body"]
+    ["to", "subject", "body"]
         .iter()
         .all(|required| seen.contains(required))
 }

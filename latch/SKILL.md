@@ -260,12 +260,11 @@ iMessage conversation, separately.
 
 Exit 4 is a refusal, and its code says what you may do:
 
-- `gatekeeper_denied` with reason `not_covered`: for a non-exec action,
-  latch posts the exact action in the owner's Swarm approval room. Retry
-  after they react ✅. Exec posts nothing: ask the owner in your Plow chat,
-  naming exactly what you will do, then retry once they agree there. Refused
-  again, stop and tell them. For work you'll repeat, the owner can allow it
-  in their rules instead.
+- `gatekeeper_denied` with reason `not_covered`: if the refusal says latch
+  posted the exact action in the owner's Swarm approval room, retry after
+  they react ✅. Otherwise use the Plow-chat route named in the refusal.
+  Refused again, stop and tell them. For work you'll repeat, the owner can
+  allow it in their rules instead.
 - `confirm_needed`: a browser step that can't be undone, nothing sent. If
   it is what the task needs, carry it out with `latch browser --session ID
   do --confirm C`, as its message says.

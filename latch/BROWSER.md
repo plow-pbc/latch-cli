@@ -120,7 +120,7 @@ latch browser --session SESSION close
 ```
 
 A saved local host resolves without Plow and connects through the private
-`serve-v4.sock` in its state folder; `--host` naming this machine does the same.
+`serve-v5.sock` in its state folder; `--host` naming this machine does the same.
 These calls use the same browser sessions, vault, gatekeeper and
 audit as remote calls, with caller kind `owner_on_host`. A stopped receiver
 returns `serve_required`, with instructions to start `latch serve`.
@@ -399,9 +399,9 @@ each before anything of it reaches the page:
 Clicks, typing, `act`, page reads, screenshots and the `--confirm` of an
 ordinary click are not judged: the risk decision, confirmations and the
 fill and pause checks above still hold. A refusal is exit 4,
-`gatekeeper_denied`, and nothing was sent: with reason `not_covered`, ask
-the owner to react ✅ to the exact request latch posted in Swarm, then retry; with
-`owner_said_no`, don't. A gatekeeper that can't judge (the chat or the
+`gatekeeper_denied`, and nothing was sent: with reason `not_covered`, follow
+the refusal's message—react ✅ to an exact Swarm request if one was posted,
+otherwise use the named Plow-chat route; with `owner_said_no`, don't retry. A gatekeeper that can't judge (the chat or the
 model unreachable) is exit 3, `gatekeeper_unavailable`, and nothing runs;
 its message says what fixes it (below, under the decision model).
 An agent whose line has more than one chat names the one it acts for

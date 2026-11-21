@@ -139,7 +139,7 @@ login.
 |---|---|---|
 | What the gatekeeper reads | Your request, plus the host's rules. | The built-in policy and your rules, without chat. If there is a chat, two parallel judgments also read it: the whole conversation, and only your own messages with the message each answers. Both see the same rules. |
 | Allowed when | The rules don't forbid it. It's refused only when the gatekeeper finds "forbidden" at least as likely as "covered". | No judgment vetoes. The rules/defaults allow it, or both chat judgments allow it with an actual message from you in the window. Each allow needs at least 50% confidence. |
-| When refused | `gatekeeper_denied`, reason `owner_said_no` (exit 4). Change the rules to go ahead. | `gatekeeper_denied` (exit 4). `not_covered`: retry a non-exec action after approving its Swarm request with ✅; exec keeps the Plow-chat route. `owner_said_no`: don't retry unless the owner changes their mind. |
+| When refused | `gatekeeper_denied`, reason `owner_said_no` (exit 4). Change the rules to go ahead. | `gatekeeper_denied` (exit 4). `not_covered`: follow its message—approve the Swarm request with ✅ when one was posted; otherwise use the named Plow-chat route. `owner_said_no`: don't retry unless the owner changes their mind. |
 
 - **Everyday work needs no request.** Agents may look things up in your
   calendar, email, messages, contacts, files and the web, including opening
@@ -175,11 +175,11 @@ login.
   the agent names one with `--plow-chat ID` or `LATCH_PLOW_CHAT`. Otherwise
   the call stops with `which_chat` (exit 2), which lists the choices. Your
   own calls refuse the selector (`plow_chat_not_supported`, exit 2).
-- **When permission is missing.** For a non-exec action, a `not_covered`
-  refusal posts the exact action in your Swarm approval room. React ✅ within
-  30 minutes to allow that action once. Exec posts nothing; its refusal asks
-  the agent to use its Plow chat. A rule can allow repeated work. If a retry
-  is refused again, the agent must stop and tell you.
+- **When permission is missing.** Follow the `not_covered` refusal's message.
+  If latch posted the exact action in your Swarm approval room, react ✅ within
+  30 minutes to allow that action once. Otherwise the message directs the
+  agent to its Plow chat. A rule can allow repeated work. If a retry is refused
+  again, the agent must stop and tell you.
 - **Fresh every time.** The chat and the rules are read again at every
   judgment, so a "stop" or a rules change counts from the next call. The
   gatekeeper doesn't remember earlier calls: a repeat is judged again on

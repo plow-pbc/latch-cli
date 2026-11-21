@@ -44,7 +44,7 @@ pub fn default_api_url(channel: Option<&str>) -> Option<&'static str> {
 }
 
 /// The version `--version` prints (as `{"version": …}`), e.g. `0.1.0 (commit 1a2b3c4d5, built 2026-10-21
-/// 03:45 UTC, local build, protocol plow/latch/4)`, or for a release build
+/// 03:45 UTC, local build, protocol plow/latch/5)`, or for a release build
 /// `0.1.0 (1327): commit …, standalone tag v0.1.0-1327, …`: where this build
 /// came from (see `build.rs`), the protocol it speaks to peers and, for a
 /// build with baked-in defaults, those, so it is obvious which build this is.
@@ -92,10 +92,10 @@ Agents:
   judging it as yours.
 
   Exit 4 means denied. A host's gatekeeper refusal, gatekeeper_denied with
-  reason not_covered, is the one to retry. For a non-exec action, latch posts
-  its exact request in the owner's Swarm approval room: retry after they react
-  ✅. Exec keeps the Plow-chat route named in its refusal. Refused again, stop
-  and tell them. owner_said_no and exec_denied (the owner turned exec off on
+  reason not_covered, is the one to retry. If its message says latch posted a
+  Swarm approval request, retry after the owner reacts ✅; otherwise use the
+  Plow-chat route named in the refusal. Refused again, stop and tell them.
+  owner_said_no and exec_denied (the owner turned exec off on
   that host) mean no.
   Exit 3, gatekeeper_unavailable: the host could not judge. Its message says
   what fixes it: often a retry later, but a host out of Plow credits fails
