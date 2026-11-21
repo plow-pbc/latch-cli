@@ -920,15 +920,27 @@ async fn a_swarm_approval_is_bound_consumed_and_never_overrides_a_veto() {
     assert_eq!(fake.saw("/v1/latch/approval"), before);
 
     for command in [
-        json!(["gmail", "send", "--to=a@example.com", "--subject=hello", "--body=shown",
-               "--body-file=/tmp/body"]),
-        json!(["gmail", "send", "--to", "shown@example.com", "--subject=hello", "--body=shown",
-               "--to=hidden@example.com"]),
+        json!([
+            "gmail",
+            "send",
+            "--to=a@example.com",
+            "--subject=hello",
+            "--body=shown",
+            "--body-file=/tmp/body"
+        ]),
+        json!([
+            "gmail",
+            "send",
+            "--to",
+            "shown@example.com",
+            "--subject=hello",
+            "--body=shown",
+            "--to=hidden@example.com"
+        ]),
     ] {
-        let action = serde_json::value::to_raw_value(
-            &json!({"operation": "google", "command": command}),
-        )
-        .unwrap();
+        let action =
+            serde_json::value::to_raw_value(&json!({"operation": "google", "command": command}))
+                .unwrap();
         let refused = keeper.judge(AGENT_CALLER, &action).await;
         assert_eq!(
             refused.verdict.unwrap_err().details["reason"],
