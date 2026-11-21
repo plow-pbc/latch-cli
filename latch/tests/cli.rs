@@ -5527,7 +5527,7 @@ fn local_status_says_login_serving_and_how_the_host_ended_without_asking_plow() 
     assert!(!never.exists(), "status --local made the state folder");
     assert_eq!(before["login"], Value::Null);
     assert_eq!(before["this_machine"]["name"], Value::Null);
-    assert_eq!(before["protocol"], 4);
+    assert_eq!(before["protocol"], 5);
     assert_eq!(
         before["this_machine"]["hosting"],
         json!({"running": false, "ready": false, "configuring": false, "managed": false, "attached": false,
@@ -6260,7 +6260,7 @@ fn a_call_through_this_machines_host_answers_and_is_recorded_as_a_direct_one() {
     };
 
     // No host serves on studio: its commands dial directly.
-    assert!(!owners.studio.join(format!("serve-v{}.sock", 4)).exists());
+    assert!(!owners.studio.join(format!("serve-v{}.sock", 5)).exists());
     let direct = run_all(&owners.studio);
     let direct_follow = followed(&owners.studio, "one");
     // A follow's record is written as the host sees it end, after the
