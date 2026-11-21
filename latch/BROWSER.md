@@ -401,9 +401,10 @@ each before anything of it reaches the page:
 - every upload (the file's name and size);
 - an agent's `--confirm` of a click or Enter the risk decision paused,
   before it is carried out: what it does, the lines around it and the
-  page's fields, so what was typed is judged with the click that sends
-  it. A field that changes while it is judged sends nothing
-  (`confirm_stale`).
+  whole text of the fields it submits (up to 4,000 characters each, said
+  when cut short; a secret field's text is never shown), so what was typed
+  is judged with the click that sends it. A field that changes after it
+  is judged sends nothing (`confirm_stale`).
 
 Other clicks, typing, `act`, page reads and screenshots are not judged:
 the risk decision, confirmations and the
