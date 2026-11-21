@@ -168,5 +168,5 @@ latch exec --host my-mac -- ls -la
 | 1 | Failed. | Read the error. |
 | 2 | The command is wrong, or it names no host. | Fix the command. |
 | 3 | The host couldn't be reached, or couldn't judge the request. | Retry later. A browser plan may have run some steps: read its `steps`. |
-| 4 | Refused. | Don't retry. For `not_covered`, ask the owner in your Plow chat, then retry. |
+| 4 | Refused. | Don't retry. For `not_covered`, follow its Swarm approval or Plow-chat instruction, then retry once. |
 | 5 | Sent, but no answer came back. | Check what happened before you send it again. |

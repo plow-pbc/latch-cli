@@ -251,6 +251,7 @@ const TRUNCATED: &str = "Older messages in this chat were left out to fit. An ea
 /// model and the owner's rules, and the state folder it keeps each call's
 /// request in.
 pub struct Gatekeeper {
+    host: String,
     plow: Plow,
     provider: Arc<dyn Provider>,
     rules: Box<dyn RulesSource>,
@@ -330,11 +331,18 @@ struct Intent {
 impl Gatekeeper {
     pub fn new(plow: Plow, provider: Arc<dyn Provider>, rules: Box<dyn RulesSource>) -> Self {
         Gatekeeper {
+            host: String::new(),
             plow,
             provider,
             rules,
             requests: None,
         }
+    }
+
+    /// Names the host whose judged actions this gatekeeper binds approvals to.
+    pub fn on_host(mut self, host: &str) -> Self {
+        self.host = host.into();
+        self
     }
 
     /// This gatekeeper, keeping each call's request and answer in
@@ -366,6 +374,7 @@ impl Gatekeeper {
             .map_err(|why| unavailable(&format!("the owner's rules could not be read: {why}")))?;
         rules.host = draft;
         Ok(Gatekeeper {
+            host: self.host.clone(),
             plow: self.plow.clone(),
             provider: self.provider.clone(),
             rules: Box::new(rules),
@@ -430,10 +439,9 @@ impl Gatekeeper {
             Caller::Agent { uid, chat } => Some(Box::pin(chat::read(&self.plow, uid, chat))),
             Caller::Owner | Caller::OwnerOnHost | Caller::RulesLayer { .. } => None,
         };
-        let owner = matches!(caller, Caller::Owner | Caller::OwnerOnHost);
         let now = jiff::Zoned::now();
         let clock = now.strftime("%a %Y-%m-%d %H:%M %Z").to_string();
-        self.consider(owner, rules, chat, now.timestamp(), &clock, action, gate)
+        self.consider(caller, rules, chat, now.timestamp(), &clock, action, gate)
             .await
     }
 
@@ -445,7 +453,7 @@ impl Gatekeeper {
     #[allow(clippy::too_many_arguments)]
     async fn consider(
         &self,
-        owner: bool,
+        caller: Caller<'_>,
         rules: Result<Rules, Failure>,
         chat: Option<impl Future<Output = Result<Option<Conversation>, Failure>>>,
         now: Timestamp,
@@ -453,6 +461,7 @@ impl Gatekeeper {
         action: &RawValue,
         gate: &mut Value,
     ) -> Result<(), Failure> {
+        let owner = matches!(caller, Caller::Owner | Caller::OwnerOnHost);
         let rules = match rules {
             Ok(rules) => rules,
             // The chat's failure, if it has one, is the one to report.
@@ -665,7 +674,47 @@ impl Gatekeeper {
             chat: gate["chat"].as_str().unwrap_or_default(),
             owner_messages: gate["owner_messages"].as_array().map_or(&[], Vec::as_slice),
         };
-        agent_verdict(says.0, says.1.map(|chat| (chat, read)))
+        let verdict = agent_verdict(says.0, says.1.map(|chat| (chat, read)));
+        let Caller::Agent { uid, .. } = caller else {
+            return verdict;
+        };
+        if !matches!(&verdict, Err(failure) if failure.details["reason"] == "not_covered") {
+            return verdict;
+        }
+        let action: Value = serde_json::from_str(action.get()).expect("the action is JSON");
+        if action["operation"] == "exec" {
+            return verdict;
+        }
+        let reference = approval_ref(&self.host, uid, &action);
+        let confirmed = self
+            .plow
+            .approval(&json!({"op": "confirm", "ref": reference}))
+            .await?;
+        if confirmed.approved {
+            let (Some(prompt), Some(reaction)) = (confirmed.prompt, confirmed.reaction) else {
+                return Err(unavailable("Plow's approval answer had no event ids"));
+            };
+            gate["approval"] = json!({
+                "ref": reference,
+                "status": "confirmed",
+                "prompt": prompt,
+                "reaction": reaction,
+            });
+            return Ok(());
+        }
+        self.plow
+            .approval(&json!({
+                "op": "ask",
+                "ref": reference,
+                "host": self.host,
+                "agent": uid,
+                "action": action,
+            }))
+            .await?;
+        let mut failure = verdict.unwrap_err();
+        failure.details["approval"] = json!({"ref": reference, "status": "asked"});
+        failure.message = "The owner has been asked in Swarm to approve this exact action. Retry after they react ✅; if it is refused again, stop and tell them.".into();
+        Err(failure)
     }
 
     /// Asks the model about `action` against `intent` with `prompt`. `call`
@@ -874,8 +923,9 @@ struct ChatRead<'a> {
 /// An agent's verdict from its layers: the rules layer, and the chat layer
 /// with the chat it read, when the host found one. Either one's veto
 /// refuses; else either one's allow allows. No chat says neither. A
-/// `not_covered` refusal says which chat was read, if any, and where the
-/// owner's OK has to go: latch never asks the owner itself.
+/// The base `not_covered` refusal says which chat was read and where the
+/// owner's OK has to go. A non-exec caller replaces it after posting the
+/// action-bound Swarm request.
 fn agent_verdict(rules: Says, chat: Option<(Says, ChatRead)>) -> Result<(), Failure> {
     let says = [Some(rules), chat.as_ref().map(|(says, _)| *says)];
     if says.contains(&Some(Says::Veto)) {
@@ -918,8 +968,7 @@ fn agent_verdict(rules: Says, chat: Option<(Says, ChatRead)>) -> Result<(), Fail
     }
 }
 
-/// Said in every refusal an agent may take to the owner, so that it never
-/// sends them looking for a dialog.
+/// Said in refusals that do not post an action-bound Swarm request.
 const NO_PROMPT: &str =
     "latch has no approval prompt or dialog, so never ask the owner to approve one:";
 
@@ -1202,4 +1251,9 @@ fn ago(now: Timestamp, then: Timestamp) -> String {
 
 fn sha256(text: &str) -> String {
     to_hex(&Sha256::digest(text.as_bytes()))
+}
+
+fn approval_ref(host: &str, agent_uid: &str, action: &Value) -> String {
+    let bound = json!({"host": host, "agent_uid": agent_uid, "action": action});
+    to_hex(&Sha256::digest(mandate::jcs(&bound)))
 }

@@ -40,6 +40,10 @@ pub struct World {
     pub google_reauth: Vec<String>,
     /// The Google token route holds its answer while this is set.
     pub google_paused: bool,
+    /// The exact latch action ref whose confirmation the fake returns once.
+    pub latch_approval: Option<String>,
+    /// The last latch action ref for which the fake posted an approval ask.
+    pub latch_asked: Option<String>,
 }
 
 impl World {
@@ -91,6 +95,25 @@ impl World {
                            "time_ban": {"type": "noul", "noul": 0.0}},
                        "usage": {"input_tokens": 1000, "output_tokens": 0, "cost": 0.0001}}),
             );
+        }
+        if method == "POST" && path == "/v1/latch/approval" {
+            let request: Value = serde_json::from_slice(body).unwrap();
+            let reference = request["ref"].as_str().unwrap();
+            return match request["op"].as_str() {
+                Some("ask") => {
+                    self.latch_asked = Some(reference.into());
+                    (200, json!({"approved": false, "prompt": "prompt_fake"}))
+                }
+                Some("confirm") if self.latch_approval.as_deref() == Some(reference) => {
+                    self.latch_approval = None;
+                    (
+                        200,
+                        json!({"approved": true, "prompt": "prompt_fake", "reaction": "reaction_fake"}),
+                    )
+                }
+                Some("confirm") => (200, json!({"approved": false})),
+                op => panic!("unexpected latch approval operation: {op:?}"),
+            };
         }
         if method == "POST" && path == "/v1/connectors/gmail/access-token" {
             // Plow's answer with no Google account connected.

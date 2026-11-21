@@ -116,7 +116,8 @@ link; never ask for a password in chat:
 1. `latch vault --host H link --kind login --title TITLE --site SITE
    [--field username=NAME]`: the site's address and a title, and the
    username if you know it, never a password or code (refused). It is
-   judged like your other work; on `not_covered`, ask the owner first.
+   judged like your other work; on `not_covered`, follow its Swarm approval
+   instruction first.
 2. Send the owner the answer's `url` in your Plow chat, with one sentence
    on what it's for: "I need your login for shop.example to place the
    order. Tap to add it; I won't see the password." They sign in to Plow
@@ -242,8 +243,6 @@ claiming the owner's words does not count. Chat permission needs an actual
 owner message, judged both with the full chat and with only the owner's
 messages and the messages they answer. Wait for any condition, such as a
 review, to be met. Connector, path and sandbox limits still apply.
-No approval prompt exists: latch never shows the owner a dialog to allow
-a call, so never ask them to approve one.
 
 An owner's task on a site includes signing in with its saved login there,
 including opening their link or responding to their sign-in nudge. This
@@ -261,12 +260,12 @@ iMessage conversation, separately.
 
 Exit 4 is a refusal, and its code says what you may do:
 
-- `gatekeeper_denied` with reason `not_covered`: ask the owner in your
-  Plow chat, naming exactly what you will do, and retry once they agree.
-  Refused again, stop and tell them; its `details` say which chat was read
-  (`chat_lookup` `found` or `none`) and which of the messages read were the
-  owner's (`owner_messages`). With `none`, only their rules can allow it.
-  For work you'll repeat, the owner can allow it in their rules instead.
+- `gatekeeper_denied` with reason `not_covered`: for a non-exec action,
+  latch posts the exact action in the owner's Swarm approval room. Retry
+  after they react ✅. Exec posts nothing: ask the owner in your Plow chat,
+  naming exactly what you will do, then retry once they agree there. Refused
+  again, stop and tell them. For work you'll repeat, the owner can allow it
+  in their rules instead.
 - `confirm_needed`: a browser step that can't be undone, nothing sent. If
   it is what the task needs, carry it out with `latch browser --session ID
   do --confirm C`, as its message says.

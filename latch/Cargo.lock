@@ -1980,6 +1980,7 @@ dependencies = [
  "iroh-relay",
  "jiff",
  "libc",
+ "mandate",
  "minisign",
  "minisign-verify",
  "n0-error",

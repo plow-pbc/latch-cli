@@ -187,7 +187,14 @@ fn gatekeeper(
 
 fn order() -> Box<RawValue> {
     serde_json::value::to_raw_value(
-        &json!({"op": "exec", "argv": ["pytest"], "cwd": "/Users/morgan/work"}),
+        &json!({"operation": "exec", "argv": ["pytest"], "working_folder": "/Users/morgan/work"}),
+    )
+    .unwrap()
+}
+
+fn file_put(path: &str) -> Box<RawValue> {
+    serde_json::value::to_raw_value(
+        &json!({"operation": "file_put", "path": path, "size": 12, "file_name": "report.txt"}),
     )
     .unwrap()
 }
@@ -758,11 +765,10 @@ fn a_layer_allows_at_one_half_and_vetoes_where_forbidden_outweighs_the_rest() {
     assert_eq!(says(0.0, 1.0, 0.0), Says::Neither);
 }
 
-/// latch shows the owner no dialog, so no refusal an agent may pass on
-/// sends the owner to approve one, and each `not_covered` says where the
-/// owner's OK goes instead.
+/// A refusal that did not post an action-bound request never invents an
+/// approval prompt, and says where the owner's OK goes instead.
 #[test]
-fn no_refusal_claims_an_approval_prompt() {
+fn a_refusal_without_an_action_bound_request_claims_no_approval_prompt() {
     use Says::{Neither, Veto};
     let theirs = [json!("m1")];
     let refusals = [
@@ -847,6 +853,72 @@ fn either_layers_veto_refuses_before_either_layers_allow() {
     ] {
         assert_eq!(reason(rules, chat), expected, "{rules:?} {chat:?}");
     }
+}
+
+#[tokio::test]
+async fn a_swarm_approval_is_bound_to_one_action_and_consumed_once() {
+    let fake = fake::serve(World::default());
+    let model = Recorder::answering(0.1, 0.8, 0.1);
+    let keeper =
+        Gatekeeper::new(fake.client(), model, Box::new(Rules::default())).on_host("test-host");
+    let action = file_put("/Users/morgan/report.txt");
+
+    let first = keeper.judge(AGENT_CALLER, &action).await;
+    let failure = first.verdict.unwrap_err();
+    assert_eq!(failure.details["reason"], "not_covered");
+    assert_eq!(failure.details["approval"]["status"], "asked");
+    let reference = failure.details["approval"]["ref"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        fake.world.lock().unwrap().latch_asked,
+        Some(reference.clone())
+    );
+
+    fake.world.lock().unwrap().latch_approval = Some(reference.clone());
+    let other = keeper
+        .judge(AGENT_CALLER, &file_put("/Users/morgan/other.txt"))
+        .await;
+    assert_eq!(code(&other), "gatekeeper_denied");
+
+    let approved = keeper.judge(AGENT_CALLER, &action).await;
+    assert!(approved.verdict.is_ok(), "{:?}", approved.gate);
+    assert_eq!(approved.gate["approval"]["ref"], reference);
+    assert_eq!(approved.gate["approval"]["prompt"], "prompt_fake");
+    assert_eq!(approved.gate["approval"]["reaction"], "reaction_fake");
+
+    let spent = keeper.judge(AGENT_CALLER, &action).await;
+    assert_eq!(code(&spent), "gatekeeper_denied");
+}
+
+#[tokio::test]
+async fn a_swarm_approval_never_overrides_a_veto_and_exec_never_asks() {
+    let fake = fake::serve(World::default());
+    let action = file_put("/Users/morgan/report.txt");
+    let neither = Recorder::answering(0.1, 0.8, 0.1);
+    let keeper =
+        Gatekeeper::new(fake.client(), neither, Box::new(Rules::default())).on_host("test-host");
+    let asked = keeper.judge(AGENT_CALLER, &action).await;
+    let reference = asked.verdict.unwrap_err().details["approval"]["ref"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    fake.world.lock().unwrap().latch_approval = Some(reference);
+    let veto = Recorder::answering(0.1, 0.1, 0.8);
+    let veto_keeper =
+        Gatekeeper::new(fake.client(), veto, Box::new(Rules::default())).on_host("test-host");
+    let vetoed = veto_keeper.judge(AGENT_CALLER, &action).await;
+    assert_eq!(
+        vetoed.verdict.unwrap_err().details["reason"],
+        "owner_said_no"
+    );
+
+    let before = fake.saw("/v1/latch/approval");
+    let exec = keeper.judge(AGENT_CALLER, &order()).await;
+    assert_eq!(exec.verdict.unwrap_err().details["reason"], "not_covered");
+    assert_eq!(fake.saw("/v1/latch/approval"), before);
 }
 
 /// The two layers through a judgment, each answering for itself.
@@ -1200,7 +1272,15 @@ async fn judge_held_out(
     let clock = probe["clock_text"].as_str().unwrap();
     let mut gate = json!({});
     let verdict = gatekeeper
-        .consider(false, Ok(rules), Some(chat), now, clock, &action, &mut gate)
+        .consider(
+            AGENT_CALLER,
+            Ok(rules),
+            Some(chat),
+            now,
+            clock,
+            &action,
+            &mut gate,
+        )
         .await;
     (verdict, gate)
 }

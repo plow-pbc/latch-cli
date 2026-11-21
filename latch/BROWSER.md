@@ -400,7 +400,7 @@ Clicks, typing, `act`, page reads, screenshots and the `--confirm` of an
 ordinary click are not judged: the risk decision, confirmations and the
 fill and pause checks above still hold. A refusal is exit 4,
 `gatekeeper_denied`, and nothing was sent: with reason `not_covered`, ask
-the owner in chat, saying exactly what you will do, then retry; with
+the owner to react ✅ to the exact request latch posted in Swarm, then retry; with
 `owner_said_no`, don't. A gatekeeper that can't judge (the chat or the
 model unreachable) is exit 3, `gatekeeper_unavailable`, and nothing runs;
 its message says what fixes it (below, under the decision model).

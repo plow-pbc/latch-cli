@@ -304,6 +304,14 @@ pub struct MessagePage {
     pub has_more: bool,
 }
 
+/// Plow's pass-through answer from the latch approval room.
+#[derive(Deserialize)]
+pub struct Approval {
+    pub approved: bool,
+    pub prompt: Option<String>,
+    pub reaction: Option<String>,
+}
+
 #[derive(Deserialize)]
 struct List<T> {
     data: Vec<T>,
@@ -389,6 +397,13 @@ impl Plow {
         let url = format!("{}/v1/latch/peers", self.api_url);
         let request = self.http.post(url).json(registration);
         let response = self.send(request).await?;
+        response.json().await.map_err(|_| bad_answer())
+    }
+
+    /// Posts or confirms one action-bound approval in the owner's Swarm room.
+    pub async fn approval(&self, request: &serde_json::Value) -> Result<Approval, Failure> {
+        let url = format!("{}/v1/latch/approval", self.api_url);
+        let response = self.send(self.http.post(url).json(request)).await?;
         response.json().await.map_err(|_| bad_answer())
     }
 

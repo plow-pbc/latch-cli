@@ -92,10 +92,11 @@ Agents:
   judging it as yours.
 
   Exit 4 means denied. A host's gatekeeper refusal, gatekeeper_denied with
-  reason not_covered, is the one to retry: latch has no approval prompt, so
-  ask the owner in your Plow chat, naming exactly what you will do, then
-  retry once they agree there; refused again, stop and tell them. owner_said_no
-  and exec_denied (the owner turned exec off on that host) mean no.
+  reason not_covered, is the one to retry. For a non-exec action, latch posts
+  its exact request in the owner's Swarm approval room: retry after they react
+  ✅. Exec keeps the Plow-chat route named in its refusal. Refused again, stop
+  and tell them. owner_said_no and exec_denied (the owner turned exec off on
+  that host) mean no.
   Exit 3, gatekeeper_unavailable: the host could not judge. Its message says
   what fixes it: often a retry later, but a host out of Plow credits fails
   until the host's account owner adds them. A browser step's
