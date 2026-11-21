@@ -267,11 +267,6 @@ impl TestHost {
     ) -> (Response, Option<Response>) {
         use sha2::{Digest, Sha256};
 
-        let connection = client
-            .connect(self.host.endpoint.addr(), wire::ALPN)
-            .await
-            .unwrap();
-        let (mut send, mut recv) = connection.open_bi().await.unwrap();
         let request = Request {
             op: "file_put".into(),
             args: json!({
@@ -282,6 +277,20 @@ impl TestHost {
             }),
             chat: None,
         };
+        self.put_request(client, request, sent).await
+    }
+
+    async fn put_request(
+        &self,
+        client: &Endpoint,
+        request: Request,
+        sent: &[u8],
+    ) -> (Response, Option<Response>) {
+        let connection = client
+            .connect(self.host.endpoint.addr(), wire::ALPN)
+            .await
+            .unwrap();
+        let (mut send, mut recv) = connection.open_bi().await.unwrap();
         wire::write_frame(&mut send, &serde_json::to_vec(&request).unwrap())
             .await
             .unwrap();
@@ -661,6 +670,20 @@ async fn a_put_is_judged_at_its_resolved_path_and_a_short_one_changes_nothing() 
     let (exit, code, _) = refusal(&first);
     assert_eq!((exit, code), (Exit::Denied, "bad_path"));
     assert_eq!(t.judged(), 2);
+}
+
+#[tokio::test]
+async fn a_put_from_an_older_client_without_a_hash_still_works() {
+    let t = start(a_chat(always_covered)).await;
+    let agent = t.caller("agent").await;
+    let request = Request {
+        op: "file_put".into(),
+        args: json!({"remote_path": "area/from-old.txt", "size": 2, "name": "from-old.txt"}),
+        chat: None,
+    };
+    let (_, last) = t.put_request(&agent, request, b"hi").await;
+    assert!(matches!(last, Some(Response::Ok(_))), "{last:?}");
+    assert_eq!(std::fs::read(t.area.join("from-old.txt")).unwrap(), b"hi");
 }
 
 #[tokio::test]

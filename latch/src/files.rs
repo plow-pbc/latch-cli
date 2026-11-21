@@ -134,11 +134,17 @@ pub async fn put(
     let copied = wire::copy(recv, &mut stdin, size).await;
     drop(stdin);
     match (copied, worker.finish().await) {
-        (Ok(sha256), Ok(())) if args["sha256"] != sha256 => Done::failed(
-            code::checksum_mismatch,
-            "the uploaded bytes do not match the request's sha256".into(),
-            json!({"path": path, "size": size}),
-        ),
+        (Ok(sha256), Ok(()))
+            if args["sha256"]
+                .as_str()
+                .is_some_and(|expected| expected != sha256) =>
+        {
+            Done::failed(
+                code::checksum_mismatch,
+                "the uploaded bytes do not match the request's sha256".into(),
+                json!({"path": path, "size": size}),
+            )
+        }
         (Ok(sha256), Ok(())) => match place::place(&staged, Path::new(path), workers) {
             Ok(()) => moved(path, size, sha256),
             Err(failure) => Done {
