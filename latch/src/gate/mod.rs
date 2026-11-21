@@ -692,7 +692,7 @@ impl Gatekeeper {
         let reference = approval_ref(&self.machine, uid, &action);
         let Some(confirmed) = self
             .plow
-            .approval(&json!({"op": "confirm", "ref": reference}))
+            .approval(&json!({"op": "confirm", "ref": reference, "machine": self.machine}))
             .await?
         else {
             return verdict;

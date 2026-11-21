@@ -42,6 +42,8 @@ pub struct World {
     pub google_paused: bool,
     /// The exact latch action ref whose confirmation the fake returns once.
     pub latch_approval: Option<String>,
+    /// Latch approval requests, in order.
+    pub latch_requests: Vec<Value>,
     /// The last latch action ref for which the fake posted an approval ask.
     pub latch_asked: Option<String>,
     /// An HTTP status the approval route answers instead of handling a call.
@@ -104,6 +106,7 @@ impl World {
             }
             let request: Value = serde_json::from_slice(body).unwrap();
             let reference = request["ref"].as_str().unwrap();
+            self.latch_requests.push(request.clone());
             return match request["op"].as_str() {
                 Some("ask") => {
                     self.latch_asked = Some(reference.into());
