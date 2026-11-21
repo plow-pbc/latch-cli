@@ -4,10 +4,9 @@
      next, and a paste of the whole code spreads it across them. With
      ?beacon, every box after the first sends the code so far to /beacon
      in the address, as a page checking it as it is typed would. With
-     ?paged, every box after the first loads /beacon?page=N, N its own
-     digit, unless that is the code's first, which is guarded as the
-     start of the code. Posts the joined code as `otp` to /verify, which
-     checks it against the test key. -->
+     ?paged, every box loads /beacon?page=N, N its own digit. Posts the
+     joined code as `otp` to /verify, which checks it against the test
+     key. -->
 <h1>Two-step verification</h1>
 <form method="post" action="verify">
   <fieldset><legend>Authentication code</legend>
@@ -30,7 +29,7 @@
       if (box.value && at > 0 && location.search === '?beacon') {
         fetch(`beacon?leak=${encodeURIComponent(typed)}`).catch(() => {});
       }
-      if (box.value && at > 0 && location.search === '?paged' && box.value !== boxes[0].value) {
+      if (box.value && location.search === '?paged') {
         fetch(`beacon?page=${box.value}`).catch(() => {});
       }
       if (box.value && boxes[at + 1]) boxes[at + 1].focus();

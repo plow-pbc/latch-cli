@@ -349,21 +349,21 @@ impl<D: Driver> Core<D> {
         // A secret is guarded before it reaches the page, as stored and as
         // a single-line field holds it, without its line breaks; and each
         // part of it the field holds as the keys arrive. A piece of one
-        // split across boxes is guarded whole, as the boxes hold it between
-        // them, and as its own box holds it unless it is one character:
-        // that says nothing of the secret, and is in many an address
+        // split across boxes is guarded as its box holds it and whole, as
+        // the boxes hold it between them; but no part of one character,
+        // which says nothing of the secret and is in many an address
         // (`page=3`).
         if secret {
-            let whole = whole.unwrap_or(value);
-            let unbroken = whole.replace(['\r', '\n'], "");
-            let piece = (value.chars().count() > 1).then_some(value);
-            let parts: Vec<String> = [Some(whole), Some(unbroken.as_str()), piece]
-                .iter()
-                .flatten()
+            let forms = [value, whole.unwrap_or(value)];
+            let unbroken = forms.map(|form| form.replace(['\r', '\n'], ""));
+            let parts: Vec<String> = forms
+                .into_iter()
+                .chain(unbroken.iter().map(String::as_str))
                 .flat_map(|form| {
                     form.char_indices()
                         .map(|(at, ch)| form[..at + ch.len_utf8()].to_string())
                 })
+                .filter(|part| whole.is_none() || part.chars().count() > 1)
                 .collect();
             let mut added = false;
             for form in parts {
