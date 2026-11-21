@@ -130,7 +130,7 @@ login.
 | Call | Judged? |
 |---|---|
 | `exec`, `file get`, `file put`, `google`, `messages`, `contacts` | Every call, yours and your agents' alike. |
-| `browser` | Going to a site the session hasn't been judged for, every `do` plan with steps, every fill, scripts, uploads and downloads. Reading a page, screenshots, a single `act` step and a `do --confirm` that only confirms a click aren't judged. Separately, the browser's own risk check stops a click or Enter it judges consequential (paying, sending, deleting) until the caller confirms it with `browser do --confirm`. |
+| `browser` | Going to a site the session hasn't been judged for, every `do` plan with steps, every fill, scripts, uploads and downloads. Reading a page, screenshots and a single `act` step aren't judged; an agent's `do --confirm` of a click or Enter the risk check paused is, before it runs. Separately, the browser's own risk check stops a click or Enter it judges consequential (paying, sending, deleting) until the caller confirms it with `browser do --confirm`. |
 | `vault`, `rules`, `plugins` | Never, except an agent's `vault list` and `vault link`, which are judged like its other work. |
 
 **You and your agents are judged differently.**
