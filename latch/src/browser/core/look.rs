@@ -562,14 +562,16 @@ fn clip(line: &str, max: usize) -> String {
 
 /// The most of a field's text the judge is shown.
 const VALUE_CHARS: usize = 4000;
+/// The most fields the judge is shown.
+const VALUE_FIELDS: usize = 20;
 
-/// The fields an action submits (`__latch.review`'s `submitted`) as lines,
-/// each text cut to [`VALUE_CHARS`], saying so.
+/// The fields an action submits (`__latch.review`'s `submitted`) as lines:
+/// the first [`VALUE_FIELDS`], each text cut to [`VALUE_CHARS`], saying so.
 fn value_lines(submitted: &Value) -> Vec<String> {
-    let mut lines: Vec<String> = submitted["shown"]
-        .as_array()
-        .into_iter()
-        .flatten()
+    let all = submitted.as_array().map(Vec::as_slice).unwrap_or_default();
+    let mut lines: Vec<String> = all
+        .iter()
+        .take(VALUE_FIELDS)
         .map(|field| {
             let label = field["label"].as_str().unwrap_or_default();
             let Some(text) = field["text"].as_str() else {
@@ -584,7 +586,8 @@ fn value_lines(submitted: &Value) -> Vec<String> {
             line
         })
         .collect();
-    if let Some(more) = submitted["more"].as_u64().filter(|&more| more > 0) {
+    if all.len() > VALUE_FIELDS {
+        let more = all.len() - VALUE_FIELDS;
         lines.push(format!("({more} more fields not shown)"));
     }
     lines
