@@ -2599,17 +2599,21 @@ async fn a_code_in_one_character_boxes_fills_every_box(engine: &str) {
     let mut h = Harness::start(browsers, engine).await;
 
     // Six boxes of one digit each, each moving the focus on once it holds
-    // its digit. Mapped as the agent sees it, the first box alone, the code
-    // is typed key by key where the page moves the focus, in a form or in
-    // none (each box in a wrapper of its own); mapped box by box, it is
-    // split a digit a box. Either way the page sends it whole.
+    // its digit. Mapped as the agent sees it, the first box alone, or box
+    // by box, in a form or in none (each box in a wrapper of its own), the
+    // code is split a digit a box and the page sends it whole. A page that
+    // moves the focus elsewhere gets no digit there (`stray`), and one that
+    // loads `page=N` as the boxes fill is let through (`paged`).
     for (page, mapped) in [
-        ("totp-boxes", 1),
-        ("totp-boxes", 6),
-        ("totp-boxes-formless", 1),
+        ("totp-boxes.html", 1),
+        ("totp-boxes.html", 6),
+        ("totp-boxes-formless.html", 1),
+        ("totp-boxes-formless.html?stray", 1),
+        ("totp-boxes.html?paged", 1),
     ] {
+        let before = beacons(pages).0;
         let opened = h
-            .call("open", json!({"url": format!("{local}/{page}.html")}))
+            .call("open", json!({"url": format!("{local}/{page}")}))
             .await
             .unwrap();
         let boxes: Vec<String> = (1..=mapped)
@@ -2625,37 +2629,21 @@ async fn a_code_in_one_character_boxes_fills_every_box(engine: &str) {
         let verified = verified.unwrap();
         println!("{page}, {mapped} box(es) mapped: {}", verified["fields"]);
         assert_eq!(verified["submitted"], true);
+        assert_eq!(verified["fields"].as_array().unwrap().len(), 6, "{page}");
         let answer = h.text().await;
         assert!(
             answer.contains("code accepted"),
             "{page}, {mapped}: {answer}"
         );
+        assert!(!answer.contains("promo touched"), "{page}");
+        if page.ends_with("paged") {
+            assert!(beacons(pages).0 > before, "no page=N load went through");
+        }
     }
 
-    // Outside a form, a move of the focus to a field elsewhere on the page
-    // is not followed: the fill stops, and no digit goes into that field.
-    let opened = h
-        .call(
-            "open",
-            json!({"url": format!("{local}/totp-boxes-formless.html?stray")}),
-        )
-        .await
-        .unwrap();
-    let (stopped, _) = h
-        .fill(json!({
-            "item": login.item,
-            "fields": [["otp", [find(&opened, "textbox", "Digit 1")]]],
-            "press": find(&opened, "button", "Verify"),
-        }))
-        .await;
-    let stopped = stopped.unwrap_err();
-    println!("stray focus: {} ({})", stopped.code, stopped.message);
-    assert_eq!(stopped.code, "needs_owner");
-    assert!(!h.text().await.contains("promo touched"));
-
-    // A box the keys follow into is guarded before its first key: a page
-    // that sends each later box's digit in an address sends none of them,
-    // and the fill says the page tried.
+    // The code is guarded whole, as the boxes hold it between them: a page
+    // that sends the code so far in an address sends none of it, and the
+    // fill says the page tried.
     let opened = h
         .call(
             "open",
