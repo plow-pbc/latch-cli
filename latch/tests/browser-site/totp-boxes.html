@@ -1,38 +1,43 @@
 <!doctype html><title>latch boxed code test</title>
 <!-- A code in six one-character boxes, the way Slack's two-factor page
-     asks for it: each box takes one digit and moves the focus on to the
-     next, and a paste of the whole code spreads it across them. With
-     ?beacon, every box after the first sends the code so far to /beacon
-     in the address, as a page checking it as it is typed would. With
-     ?paged, every box loads /beacon?page=N, N its own digit. Posts the
-     joined code as `otp` to /verify, which checks it against the test
-     key. -->
+     asks for it: each box, in a wrapper of its own, takes one digit and
+     moves the focus on to the next, and a paste of the whole code spreads
+     it across them. Options: ?formless puts the boxes before the form, in
+     none; ?stray has box 3 move the focus to a promo field after the
+     boxes instead, which says so if anything is typed into it; ?beacon
+     has every box after the first send the code so far to /beacon in the
+     address, as a page checking it as it is typed would; ?paged has every
+     box load /beacon?page=N, N its own digit. Verify posts the joined
+     code as `otp` to /verify, which checks it against the test key. -->
 <h1>Two-step verification</h1>
 <form method="post" action="verify">
   <fieldset><legend>Authentication code</legend>
-    <input aria-label="Digit 1" autocomplete="one-time-code" inputmode="numeric" maxlength="1">
-    <input aria-label="Digit 2" inputmode="numeric" maxlength="1">
-    <input aria-label="Digit 3" inputmode="numeric" maxlength="1">
-    <input aria-label="Digit 4" inputmode="numeric" maxlength="1">
-    <input aria-label="Digit 5" inputmode="numeric" maxlength="1">
-    <input aria-label="Digit 6" inputmode="numeric" maxlength="1">
+    <div><input aria-label="Digit 1" autocomplete="one-time-code" inputmode="numeric" maxlength="1"></div>
+    <div><input aria-label="Digit 2" inputmode="numeric" maxlength="1"></div>
+    <div><input aria-label="Digit 3" inputmode="numeric" maxlength="1"></div>
+    <div><input aria-label="Digit 4" inputmode="numeric" maxlength="1"></div>
+    <div><input aria-label="Digit 5" inputmode="numeric" maxlength="1"></div>
+    <div><input aria-label="Digit 6" inputmode="numeric" maxlength="1"></div>
   </fieldset>
   <input type="hidden" name="otp">
   <p><button type="submit">Verify</button></p>
 </form>
+<footer><label>Promo code <input id="promo" maxlength="10"></label> <span id="touched"></span></footer>
 <script>
+  const options = new URLSearchParams(location.search);
+  const form = document.querySelector('form');
+  if (options.has('formless')) form.before(document.querySelector('fieldset'));
   const boxes = [...document.querySelectorAll('[aria-label^=Digit]')];
+  const promo = document.getElementById('promo');
   boxes.forEach((box, at) => {
     box.addEventListener('input', () => {
       box.value = box.value.replace(/\D/g, '').slice(-1);
+      if (!box.value) return;
       const typed = boxes.map((b) => b.value).join('');
-      if (box.value && at > 0 && location.search === '?beacon') {
-        fetch(`beacon?leak=${encodeURIComponent(typed)}`).catch(() => {});
-      }
-      if (box.value && location.search === '?paged') {
-        fetch(`beacon?page=${box.value}`).catch(() => {});
-      }
-      if (box.value && boxes[at + 1]) boxes[at + 1].focus();
+      if (at > 0 && options.has('beacon')) fetch(`beacon?leak=${encodeURIComponent(typed)}`).catch(() => {});
+      if (options.has('paged')) fetch(`beacon?page=${box.value}`).catch(() => {});
+      if (options.has('stray') && at === 2) promo.focus();
+      else if (boxes[at + 1]) boxes[at + 1].focus();
     });
     box.addEventListener('paste', (event) => {
       event.preventDefault();
@@ -41,7 +46,8 @@
       (boxes[at + digits.length] || boxes[boxes.length - 1]).focus();
     });
   });
-  document.querySelector('form').addEventListener('submit', () => {
-    document.querySelector('[name=otp]').value = boxes.map(b => b.value).join('');
+  promo.addEventListener('input', () => { document.getElementById('touched').textContent = 'promo touched'; });
+  form.addEventListener('submit', () => {
+    form.querySelector('[name=otp]').value = boxes.map((b) => b.value).join('');
   });
 </script>

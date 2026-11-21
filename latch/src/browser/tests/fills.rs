@@ -2607,8 +2607,8 @@ async fn a_code_in_one_character_boxes_fills_every_box(engine: &str) {
     for (page, mapped) in [
         ("totp-boxes.html", 1),
         ("totp-boxes.html", 6),
-        ("totp-boxes-formless.html", 1),
-        ("totp-boxes-formless.html?stray", 1),
+        ("totp-boxes.html?formless", 1),
+        ("totp-boxes.html?formless&stray", 1),
         ("totp-boxes.html?paged", 1),
     ] {
         let before = beacons(pages).0;
