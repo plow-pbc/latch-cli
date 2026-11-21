@@ -101,6 +101,9 @@ pub enum Call {
         target: String,
         #[serde(default)]
         enter: bool,
+        /// With the fields it submits, for a judged confirmation.
+        #[serde(default)]
+        fields: bool,
     },
     /// The page now: where it is, its first lines and an element list.
     Glance,
@@ -427,7 +430,8 @@ impl<D: Driver> Core<D> {
                 snapshot,
                 target,
                 enter,
-            } => self.review(snapshot.as_deref(), &target, enter, &mut audit),
+                fields,
+            } => self.review(snapshot.as_deref(), &target, enter, fields, &mut audit),
             Call::Glance => self.glance(&mut audit),
             Call::Page => self.page(&mut audit).map(Value::Object),
             Call::Lines => self.lines(&mut audit),
@@ -791,7 +795,13 @@ impl<D: Driver> Core<D> {
                     json!({"ref": target, "role": element["role"], "name": element["name"], "row": element["row"]}),
                 );
                 if let Some(guard) = guard {
-                    let now = self.review(Some(&snapshot), target, guard.enter, &mut Map::new())?;
+                    let now = self.review(
+                        Some(&snapshot),
+                        target,
+                        guard.enter,
+                        guard.fields,
+                        &mut Map::new(),
+                    )?;
                     if fingerprint(&now, guard.fields) != guard.fingerprint {
                         return Err(Failure::new(
                             code::context_changed,

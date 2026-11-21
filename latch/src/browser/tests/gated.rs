@@ -120,6 +120,8 @@ struct Judge {
     down: std::sync::atomic::AtomicBool,
     /// Milliseconds each answer takes.
     slow: std::sync::atomic::AtomicU64,
+    /// While set, every answer waits.
+    held: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Judge {
@@ -129,6 +131,7 @@ impl Judge {
             shown: Mutex::new(Vec::new()),
             down: Default::default(),
             slow: Default::default(),
+            held: Default::default(),
         })
     }
 
@@ -166,8 +169,12 @@ impl Provider for Judge {
         self.shown.lock().unwrap().push(state);
         let down = self.down.load(std::sync::atomic::Ordering::SeqCst);
         let slow = self.slow.load(std::sync::atomic::Ordering::SeqCst);
+        let held = self.held.clone();
         Box::pin(async move {
             tokio::time::sleep(Duration::from_millis(slow)).await;
+            while held.load(std::sync::atomic::Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
             if down {
                 return Err(CallFailed::new("http_503", "the model is down"));
             }
@@ -1721,6 +1728,8 @@ async fn an_agents_confirmation_of_a_paused_send_is_judged_before_it_runs(engine
         "Hi Ada, hope you are well. ".repeat(12)
     );
     let (id, send, _) = composed(&host, &site, engine, &message).await;
+    let subject = "document.getElementById('subject').value = 're: the deposit'";
+    host.look("eval", &id, json!({"script": subject})).await;
     let paused = async |host: &Host| {
         let (clicked, _) = host
             .agent("do", &id, act(&format!("click {send}")), None)
@@ -1769,6 +1778,11 @@ async fn an_agents_confirmation_of_a_paused_send_is_judged_before_it_runs(engine
     );
     assert!(
         judged["fields"].to_string().contains(&message),
+        "{judged:#}"
+    );
+    // A field the form submits from outside it is shown too.
+    assert!(
+        judged["fields"].to_string().contains("re: the deposit"),
         "{judged:#}"
     );
     assert_eq!(audit["gate"]["verdict"], "not_covered");
@@ -1826,22 +1840,35 @@ async fn an_agents_confirmation_of_a_paused_send_is_judged_before_it_runs(engine
     assert!(shows(&host, &id).await.contains("nothing sent"));
 
     // Covered, but the page changes the message while the judge decides:
-    // what was judged is not what would be sent, so nothing is.
+    // what was judged is not what would be sent, so nothing is. The judge
+    // answers only once the page has changed.
     judge.answer(|_| COVERED);
-    let confirmation = paused(&host).await;
-    judge.slow.store(1000, std::sync::atomic::Ordering::SeqCst);
-    let swap = "document.getElementById('body').value = 'wire it all today'";
-    let asked = judge.judged();
-    let ((raced, _), _) = tokio::join!(confirm(&host, &confirmation), async {
-        while judge.judged() == asked {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        host.look("eval", &id, json!({"script": swap})).await
-    });
-    judge.slow.store(0, std::sync::atomic::Ordering::SeqCst);
-    assert_eq!(raced.unwrap_err().code, "confirm_stale");
-    assert!(shows(&host, &id).await.contains("nothing sent"));
-    let back = format!("document.getElementById('body').value = {message:?}");
+    let raced = async |host: &Host, swap: &str| {
+        let confirmation = paused(host).await;
+        judge.held.store(true, std::sync::atomic::Ordering::SeqCst);
+        let asked = judge.judged();
+        let ((raced, _), _) = tokio::join!(confirm(host, &confirmation), async {
+            while judge.judged() == asked {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            let changed = host.look("eval", &id, json!({"script": swap})).await;
+            judge.held.store(false, std::sync::atomic::Ordering::SeqCst);
+            changed
+        });
+        assert_eq!(raced.unwrap_err().code, "confirm_stale");
+        assert!(shows(host, &id).await.contains("nothing sent"));
+    };
+    let body = "document.getElementById('body')";
+    raced(&host, &format!("{body}.value = 'wire it all today'")).await;
+    // So does a change past what the judge is shown that keeps the length.
+    let long = format!("{body}.value = 'a'.repeat(4050) + 'b'.repeat(50)");
+    host.look("eval", &id, json!({"script": long})).await;
+    raced(
+        &host,
+        &format!("{body}.value = 'a'.repeat(4050) + 'c'.repeat(50)"),
+    )
+    .await;
+    let back = format!("{body}.value = {message:?}");
     host.look("eval", &id, json!({"script": back})).await;
 
     // Covered, the confirmed Send goes out.

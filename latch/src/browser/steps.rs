@@ -875,9 +875,14 @@ impl Run<'_> {
             },
         };
         let enter = presses_enter(&literal);
+        // An agent's confirmation is judged, with the fields it submits.
+        let gate = self
+            .gate
+            .filter(|gate| matches!(gate.caller, Caller::Agent { .. }));
         let reviewed = call(
             self.entry,
-            json!({"op": "review", "snapshot": snapshot, "target": target, "enter": enter}),
+            json!({"op": "review", "snapshot": snapshot, "target": target, "enter": enter,
+                   "fields": gate.is_some()}),
             self.audit,
         )
         .await;
@@ -898,13 +903,13 @@ impl Run<'_> {
         }
         // What the judge saw is what is sent: a field changed since sends
         // nothing.
-        let guard = if self
-            .judge_confirmed(n, id, &literal, &reviewed, enter)
-            .await?
-        {
-            (fingerprint(&reviewed, true), enter, true)
-        } else {
-            (print, enter, false)
+        let guard = match gate {
+            Some(gate) => {
+                self.judge_confirmed(gate, n, id, &literal, &reviewed, enter)
+                    .await?;
+                (fingerprint(&reviewed, true), enter, true)
+            }
+            None => (print, enter, false),
         };
         let guard = Some((guard.0.as_str(), guard.1, guard.2));
         let sent = self.dispatch(n, &literal, None, Some(id), guard).await;
@@ -921,22 +926,16 @@ impl Run<'_> {
 
     /// Judges an agent's confirmation of what the risk decision paused,
     /// before it is carried out: the agent's say-so is no permission. A
-    /// refusal, or a judge that can't be reached, sends nothing. Whether it
-    /// was judged.
+    /// refusal, or a judge that can't be reached, sends nothing.
     async fn judge_confirmed(
         &mut self,
+        gate: Gate<'_>,
         n: usize,
         id: &str,
         literal: &Literal,
         reviewed: &Value,
         enter: bool,
-    ) -> Result<bool, Failure> {
-        let Some(gate) = self
-            .gate
-            .filter(|gate| matches!(gate.caller, Caller::Agent { .. }))
-        else {
-            return Ok(false);
-        };
+    ) -> Result<(), Failure> {
         let typing = literal.op == Op::Type;
         let mut what = action_line(reviewed, enter, typing);
         match literal.text.as_deref().filter(|_| typing) {
@@ -952,7 +951,7 @@ impl Run<'_> {
                 .push(json!({"step": n, "op": literal.op, "ref": literal.target,
                                      "confirmation": id, "dispatch": "refused"}));
         }
-        judged.map(|()| true)
+        judged
     }
 
     /// One action, journaled before it is sent and once its result is known.

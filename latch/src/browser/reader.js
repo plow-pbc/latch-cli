@@ -696,33 +696,30 @@
   const regionOf = (around) => around.closest('dialog, [role=dialog], section, article, main')
     || around.closest('form') || document.body;
   const linesOf = (region) => (region ? region.innerText : '').split('\n').map((line) => clean(line, 160)).filter(Boolean).slice(0, 20);
-  // The fields an action submits, each with its whole text up to
-  // VALUE_CHARS: those of its form, else of the part of the page it is in.
-  // A secret or vault-filled field shows only that it is hidden.
-  const VALUE_CHARS = 4000;
+  // The fields an action submits, whole: every control its form submits,
+  // wherever it is drawn, else those of the part of the page it is in. A
+  // secret or vault-filled field shows only that it is hidden.
   const VALUE_FIELDS = 20;
   const submitted = (el, around) => {
-    const scope = el.form || el.closest('form') || regionOf(around);
-    const all = [...scope.querySelectorAll(INTERACTIVE)]
-      .filter((f) => rendered(f) && FIELD_ROLES.includes(role(f)));
-    const lines = all.slice(0, VALUE_FIELDS).map((f) => {
+    const form = el.form || el.closest('form');
+    const found = form ? new Set([...form.elements, ...form.querySelectorAll(INTERACTIVE)])
+      : regionOf(around).querySelectorAll(INTERACTIVE);
+    const all = [...found].filter((f) => rendered(f) && FIELD_ROLES.includes(role(f)));
+    const shown = all.slice(0, VALUE_FIELDS).map((f) => {
       const item = describe(f);
       const label = `${item.role} "${item.name}"`;
-      if (item.secret || item.filled) return `${label}: (hidden)`;
-      if ('checked' in item) return `${label}: ${item.checked ? 'checked' : 'not checked'}`;
+      if (item.secret || item.filled) return { label, state: '(hidden)' };
+      if ('checked' in item) return { label, state: item.checked ? 'checked' : 'not checked' };
       const text = f.localName === 'select' ? item.value || ''
         : f.isContentEditable ? f.innerText : f.value || '';
-      if (!text.trim()) return `${label}: empty`;
-      const cut = text.length > VALUE_CHARS
-        ? ` (cut short: the field holds ${text.length} characters)` : '';
-      return `${label}: ${JSON.stringify(text.slice(0, VALUE_CHARS))}${cut}`;
+      return text.trim() ? { label, text } : { label, state: 'empty' };
     });
-    if (all.length > VALUE_FIELDS) lines.push(`(${all.length - VALUE_FIELDS} more fields not shown)`);
-    return lines;
+    return { shown, more: all.length - shown.length };
   };
   // A click is judged with the element's state (a collapsed section, an
   // unchecked option) and, on a form's submit control, the form it submits.
-  const review = (snap, index, enter) => {
+  // With `fields`, also the fields it submits.
+  const review = (snap, index, enter, fields) => {
     const el = element(snap, index);
     if (!el) return null;
     const { role: r, name: n, row, checked, expanded } = describe(el);
@@ -732,7 +729,7 @@
     else if (el.form && el.matches(SUBMIT_BUTTONS)) actsOn = formOf(el.form);
     const lines = linesOf(regionOf(around));
     return { uid: uid(el), element: { role: r, name: n, row, checked, expanded }, acts_on: actsOn, lines,
-      values: submitted(el, around), secret: secret(el) };
+      submitted: fields ? submitted(el, around) : undefined, secret: secret(el) };
   };
 
   // --- What a plan's decision sees ----------------------------------------
