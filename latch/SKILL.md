@@ -279,6 +279,9 @@ Exit 4 is a refusal, and its code says what you may do:
   agree resend with `--confirm-conflict`.
 - `gatekeeper_denied` with reason `login_site_mismatch`: use the login only
   on its saved sites; the model is never asked to approve it elsewhere.
+- `approvals_link_broken`: the owner linked your approvals to another
+  agent's chat, and that agent or chat is gone. Nothing was judged; tell
+  the owner, who links it again or removes the link.
 - Any other exit 4 (`owner_said_no`, `exec_denied`, …) means no.
 
 Exit 3: the host was unreachable or could not judge; its message says what

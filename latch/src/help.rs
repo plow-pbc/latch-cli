@@ -1307,6 +1307,37 @@ const ENTRIES: &[Entry] = &[
         examples: &[ex("Show the rules", &["rules", "show"])],
     },
     Entry {
+        id: "rules.link-approvals",
+        runs_on: |_| RunsOn::Either,
+        output: "The link: `agent_uid` and `agent_name` (whose approvals), `approvals_from` (`agent_uid`, `agent_name` and `chat` of the agent whose line is read) and `chats_on_line`, that line's chats. A `--chat` not on that line is `which_chat`. From the next judgment the agent's chat layer reads only that line: if its agent leaves Plow or the linked chat leaves its line, the agent's judged calls are refused `approvals_link_broken` (exit 4) until it is linked again or unlinked. `rules show` shows each agent's `approvals_from`.",
+        effect: Repeatable("replaces the agent's approvals link"),
+        owner_only: true,
+        connector: None,
+        examples: &[ex(
+            "Read Penny's approvals from the chat you have with the agent you text",
+            &[
+                "rules",
+                "link-approvals",
+                "--agent",
+                "Penny",
+                "--from-agent",
+                "Penny (iMessage)",
+            ],
+        )],
+    },
+    Entry {
+        id: "rules.unlink-approvals",
+        runs_on: |_| RunsOn::Either,
+        output: "`unlinked`: whether there was a link. From the next judgment the agent's approvals are read on its own line again.",
+        effect: Repeatable("removes the agent's approvals link"),
+        owner_only: true,
+        connector: None,
+        examples: &[ex(
+            "Read Penny's approvals on its own line again",
+            &["rules", "unlink-approvals", "--agent", "Penny"],
+        )],
+    },
+    Entry {
         id: "rules.try",
         runs_on: |_| RunsOn::Either,
         output: "`verdict`: allow, not_covered, owner_said_no, or host_refused (a refusal the host makes without asking the judge, named in `refused`); `as` (owner, new_agent, or the agent), `request` (the operation, and the action as the judge was shown it: secret values and an exec's stdin masked) and `gate` (the judgment's details: probabilities, source, rule revisions, model, latency, cost). An agent's preview is its rules layer: the built-in policy (everyday work allowed, anything riskier needing a rule) and the rules, with no chat; a real call also judges its chat, which may add an OK or a no. A refusal is a preview that worked: exit 0. This machine's previews are judged by the calling latch, so they need no running host; another host's go to it. `--draft` judges against draft rules for every agent, never saved; `--new-agent` judges as a new agent, with no rules of its own, whatever connectors and --deny-exec the host has. `--fill-login TITLE --url URL` previews a browser fill of that saved login, as saved for the URL's site, in place of REQUEST (`request` is op browser with the `vault_fill` action the judge sees): the fill's judgment only, not the whole sign-in (opening the site is judged on its own) nor whether the vault has that login; nothing is opened or filled and the vault is not read.",

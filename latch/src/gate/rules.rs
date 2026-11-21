@@ -27,10 +27,24 @@ impl Rules {
     }
 }
 
+/// The owner's link for one agent: its approvals are read from the chats on
+/// another Plow agent's line, the one the owner texts, and from `chat`
+/// there when the owner named one.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ApprovalsLink {
+    pub agent_uid: String,
+    pub chat: Option<String>,
+}
+
 /// Where the rules come from, read at every judgment so an edit applies at
 /// once. An error says why they could not be read, and the judgment fails.
 pub trait RulesSource: Send + Sync {
     fn rules(&self, agent: &str) -> Result<Rules, String>;
+
+    /// The owner's approvals link for `agent`, if they made one.
+    fn approvals(&self, _agent: &str) -> Result<Option<ApprovalsLink>, String> {
+        Ok(None)
+    }
 }
 
 /// The same rules whoever asks: a draft's, fixed for one preview.
@@ -139,6 +153,11 @@ pub const RULES_DIR: &str = "rules";
 /// `<agent_uid>.txt` beside it.
 const HOST_FILE: &str = "host.txt";
 
+/// The file beside an agent's rules that holds its approvals link.
+fn approvals_file(uid: &str) -> String {
+    format!("{uid}.approvals")
+}
+
 /// Rules kept as files in the host's state directory, read at every
 /// judgment: a missing file is no rules.
 pub struct RuleFiles {
@@ -221,25 +240,38 @@ impl RuleFiles {
         }
         Ok(real)
     }
+
+    /// The text of `name` in the rules folder, `None` if there is no such
+    /// file; one that resolves outside protected state is an error.
+    fn read(&self, name: &str) -> Result<Option<String>, String> {
+        let path = self.dir.join(name);
+        match self.protected(&path).and_then(fs::read_to_string) {
+            Ok(text) => Ok(Some(text)),
+            Err(err) if err.kind() == ErrorKind::NotFound && !path.is_symlink() => Ok(None),
+            Err(err) => Err(format!("{name}: {err}")),
+        }
+    }
 }
 
 impl RulesSource for RuleFiles {
     fn rules(&self, agent: &str) -> Result<Rules, String> {
-        let read = |name: &str| {
-            let path = self.dir.join(name);
-            match self.protected(&path).and_then(fs::read_to_string) {
-                Ok(text) => Ok(Some(text)),
-                Err(err) if err.kind() == ErrorKind::NotFound && !path.is_symlink() => Ok(None),
-                Err(err) => Err(format!("{name}: {err}")),
-            }
-        };
         Ok(Rules {
-            host: read(HOST_FILE)?,
+            host: self.read(HOST_FILE)?,
             agent: match is_agent_uid(agent) {
-                true => read(&format!("{agent}.txt"))?,
+                true => self.read(&format!("{agent}.txt"))?,
                 false => None,
             },
         })
+    }
+
+    fn approvals(&self, agent: &str) -> Result<Option<ApprovalsLink>, String> {
+        if !is_agent_uid(agent) {
+            return Ok(None);
+        }
+        let name = approvals_file(agent);
+        self.read(&name)?
+            .map(|text| serde_json::from_str(&text).map_err(|err| format!("{name}: {err}")))
+            .transpose()
     }
 }
 
@@ -295,8 +327,51 @@ impl RulesDir {
         self.read(&format!("{uid}.peer"))
     }
 
+    /// The owner's approvals link for `uid`, if there is one.
+    pub fn approvals(&self, uid: &str) -> Result<Option<ApprovalsLink>, Failure> {
+        let name = approvals_file(uid);
+        self.read(&name)?
+            .map(|text| {
+                serde_json::from_str(&text).map_err(|err| {
+                    Failure::new(
+                        code::rules_io,
+                        format!("{}: {err}", self.dir.join(&name).display()),
+                    )
+                })
+            })
+            .transpose()
+    }
+
+    /// Links `uid`'s approvals to `link`, replacing any link it had; the
+    /// link before, if any.
+    pub fn link(&self, uid: &str, link: &ApprovalsLink) -> Result<Option<ApprovalsLink>, Failure> {
+        let _lock = self.lock()?;
+        let before = self.approvals(uid)?;
+        let text = serde_json::to_string(link).expect("a link serializes");
+        self.replace(&approvals_file(uid), &text)?;
+        Ok(before)
+    }
+
+    /// Removes `uid`'s approvals link; the link it had, if any.
+    pub fn unlink(&self, uid: &str) -> Result<Option<ApprovalsLink>, Failure> {
+        let _lock = self.lock()?;
+        let before = self.approvals(uid)?;
+        self.remove(&approvals_file(uid))?;
+        Ok(before)
+    }
+
+    /// The uids that have an approvals link.
+    pub fn linked(&self) -> Result<Vec<String>, Failure> {
+        self.uids_with(".approvals")
+    }
+
     /// The uids that have rules of their own.
     pub fn agents(&self) -> Result<Vec<String>, Failure> {
+        self.uids_with(".txt")
+    }
+
+    /// The uids with a file ending in `suffix`.
+    fn uids_with(&self, suffix: &str) -> Result<Vec<String>, Failure> {
         let entries = match fs::read_dir(&self.dir) {
             Ok(entries) => entries,
             Err(err) if err.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
@@ -308,7 +383,7 @@ impl RulesDir {
                 .map_err(|err| self.failure(&self.dir, err))?
                 .file_name();
             let name = name.to_string_lossy();
-            if let Some(uid) = name.strip_suffix(".txt").filter(|uid| is_agent_uid(uid)) {
+            if let Some(uid) = name.strip_suffix(suffix).filter(|uid| is_agent_uid(uid)) {
                 uids.push(uid.to_string());
             }
         }

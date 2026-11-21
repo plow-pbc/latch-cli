@@ -427,7 +427,21 @@ impl Gatekeeper {
             // Boxed, as are the layers' calls below: held all at once,
             // inline they would make every caller's future several times
             // larger, deep in the browser's stack.
-            Caller::Agent { uid, chat } => Some(Box::pin(chat::read(&self.plow, uid, chat))),
+            Caller::Agent { uid, chat } => {
+                // Where the owner said this agent's approvals are: one that
+                // can't be read refuses, as an unreadable chat does.
+                let link = self.rules.approvals(uid).map_err(|why| {
+                    unavailable(&format!(
+                        "the owner's approvals link could not be read: {why}"
+                    ))
+                });
+                if let Ok(Some(link)) = &link {
+                    gate["approvals_from"] = json!(link.agent_uid);
+                }
+                Some(Box::pin(async move {
+                    chat::read(&self.plow, uid, link?.as_ref(), chat).await
+                }))
+            }
             Caller::Owner | Caller::OwnerOnHost | Caller::RulesLayer { .. } => None,
         };
         let owner = matches!(caller, Caller::Owner | Caller::OwnerOnHost);

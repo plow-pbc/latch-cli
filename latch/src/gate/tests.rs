@@ -1195,7 +1195,7 @@ async fn judge_held_out(
         agent: None,
     };
     let gatekeeper = Gatekeeper::new(plow, provider, Box::new(rules.clone()));
-    let chat = chat::read(&gatekeeper.plow, AGENT, None);
+    let chat = chat::read(&gatekeeper.plow, AGENT, None, None);
     let action = RawValue::from_string(probe["action"].as_str().unwrap().to_string()).unwrap();
     let clock = probe["clock_text"].as_str().unwrap();
     let mut gate = json!({});
@@ -1370,6 +1370,175 @@ async fn an_owner_command_applies_to_the_next_judgment() {
         model.state()["owner_rules"],
         json!({"rules for every agent on this host": "Run tests in ~/work."})
     );
+}
+
+/// The owner's agents: the one that calls latch, in its own chat, and the
+/// one they text, whose chat says what they want done now.
+fn texted_world() -> World {
+    let mut world = one_chat();
+    world.texted = true;
+    world.add(
+        "chat_t",
+        fake::TEXTED_LINE,
+        vec![message("t1", owner(), "run pytest in ~/work now", 2)],
+    );
+    world
+}
+
+/// An owner command's answer, or its error code.
+async fn owner_command(
+    dir: &std::path::Path,
+    world: World,
+    kind: &str,
+    args: Value,
+) -> Result<Value, String> {
+    let done = owner::run(dir, &plow(world).0, "studio", kind, &args).await;
+    match done.response {
+        crate::wire::Response::Ok(answer) => Ok(answer),
+        crate::wire::Response::Error { code, .. } => Err(code),
+    }
+}
+
+#[tokio::test]
+async fn linked_approvals_are_read_from_the_texted_agents_chat_and_never_its_own() {
+    let dir = tempfile::tempdir().unwrap();
+    let link =
+        json!({"command": "link_approvals", "from": "Juno", "approvals_from": "Juno (iMessage)"});
+    let linked = owner_command(dir.path(), texted_world(), "device", link)
+        .await
+        .unwrap();
+    assert_eq!(linked["agent_uid"], AGENT);
+    assert_eq!(linked["approvals_from"]["agent_uid"], fake::TEXTED);
+    assert_eq!(linked["chats_on_line"], json!(["chat_t"]));
+
+    let model = Recorder::answering(0.9, 0.05, 0.05);
+    let (client, seen) = plow(texted_world());
+    let files = RuleFiles::new(dir.path()).unwrap();
+    let gatekeeper = Gatekeeper::new(client, model.clone(), Box::new(files));
+    let judgment = gatekeeper.judge(AGENT_CALLER, &order()).await;
+    assert!(judgment.verdict.is_ok());
+    assert_eq!(judgment.gate["chat"], "chat_t");
+    assert_eq!(judgment.gate["approvals_from"], fake::TEXTED);
+    assert_eq!(model.chat_state()["conversation"][0]["id"], "t1");
+    assert!(
+        !seen.lock().unwrap().iter().any(|r| r.contains("chat_a")),
+        "its own chat is never read"
+    );
+
+    // The agent can't name a chat off the linked line, its own included.
+    let judgment = gatekeeper
+        .judge(
+            Caller::Agent {
+                uid: AGENT,
+                chat: Some("chat_a"),
+            },
+            &order(),
+        )
+        .await;
+    assert_eq!(code(&judgment), "which_chat");
+
+    // The owner sees the link, and a linked chat must be on that line.
+    let shown = owner_command(
+        dir.path(),
+        texted_world(),
+        "device",
+        json!({"command": "show"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(shown["agents"][0]["agent_uid"], AGENT);
+    assert_eq!(
+        shown["agents"][0]["approvals_from"]["agent_uid"],
+        fake::TEXTED
+    );
+    let elsewhere = json!({"command": "link_approvals", "from": AGENT,
+                           "approvals_from": fake::TEXTED, "chat": "chat_a"});
+    let refused = owner_command(dir.path(), texted_world(), "device", elsewhere).await;
+    assert_eq!(refused.unwrap_err(), "which_chat");
+
+    // Unlinked, the agent's own chat is read again.
+    let unlink = json!({"command": "unlink_approvals", "from": AGENT});
+    let unlinked = owner_command(dir.path(), texted_world(), "device", unlink)
+        .await
+        .unwrap();
+    assert_eq!(unlinked["unlinked"], true);
+    let judgment = gatekeeper.judge(AGENT_CALLER, &order()).await;
+    assert_eq!(judgment.gate["chat"], "chat_a");
+    assert!(judgment.gate.get("approvals_from").is_none());
+}
+
+#[tokio::test]
+async fn only_the_owner_links_or_unlinks_an_agents_approvals() {
+    let dir = tempfile::tempdir().unwrap();
+    for args in [
+        json!({"command": "link_approvals", "from": AGENT, "approvals_from": fake::TEXTED}),
+        json!({"command": "unlink_approvals", "from": AGENT}),
+    ] {
+        let refused = owner_command(dir.path(), texted_world(), "agent", args).await;
+        assert_eq!(refused.unwrap_err(), "owner_only");
+    }
+    assert_eq!(
+        super::rules::RulesDir::new(dir.path())
+            .approvals(AGENT)
+            .unwrap(),
+        None
+    );
+}
+
+/// The owner's rules, with this agent's approvals linked to `link`.
+struct Linked(super::rules::ApprovalsLink);
+
+impl RulesSource for Linked {
+    fn rules(&self, _: &str) -> Result<Rules, String> {
+        Ok(host_rules())
+    }
+
+    fn approvals(&self, _: &str) -> Result<Option<super::rules::ApprovalsLink>, String> {
+        Ok(Some(self.0.clone()))
+    }
+}
+
+#[tokio::test]
+async fn a_link_to_a_gone_agent_or_chat_refuses_and_never_reads_its_own_line() {
+    let to = |chat: Option<&str>| {
+        Linked(super::rules::ApprovalsLink {
+            agent_uid: fake::TEXTED.into(),
+            chat: chat.map(str::to_string),
+        })
+    };
+    // The agent it linked to was deleted (or re-created under a new uid);
+    // then the linked chat left that agent's line.
+    for (world, link) in [
+        (one_chat(), to(None)),
+        (texted_world(), to(Some("chat_gone"))),
+    ] {
+        let model = Recorder::answering(0.9, 0.05, 0.05);
+        let (client, seen) = plow(world);
+        let judgment = Gatekeeper::new(client, model.clone(), Box::new(link))
+            .judge(AGENT_CALLER, &order())
+            .await;
+        assert_eq!(code(&judgment), "approvals_link_broken");
+        let failure = judgment.verdict.as_ref().unwrap_err();
+        assert_eq!(failure.exit, Exit::Denied);
+        assert!(
+            failure.message.contains("link-approvals"),
+            "{}",
+            failure.message
+        );
+        assert_eq!(judgment.gate["approvals_from"], fake::TEXTED);
+        assert!(!seen.lock().unwrap().iter().any(|r| r.contains("/messages")));
+        unheeded(&judgment.gate, &model);
+    }
+
+    // Plow failing to answer for it refuses too.
+    let mut world = texted_world();
+    world.broken = Some(format!("/v1/agents/{}", fake::TEXTED));
+    let model = Recorder::answering(0.9, 0.05, 0.05);
+    let judgment = gatekeeper(world, &model, to(None))
+        .judge(AGENT_CALLER, &order())
+        .await;
+    assert_eq!(code(&judgment), "gatekeeper_unavailable");
+    unheeded(&judgment.gate, &model);
 }
 
 /// The held-out corpus through the judge on Plow's decision route, twice

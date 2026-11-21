@@ -13,7 +13,7 @@ use std::path::Path;
 
 use serde_json::{Map, Value, json};
 
-use super::rules::{Change, RulesDir, Scope, is_agent_uid, revision};
+use super::rules::{ApprovalsLink, Change, RulesDir, Scope, is_agent_uid, revision};
 use crate::failure::{Failure, code};
 use crate::plow::{NamedAgent, Peer, Plow};
 use crate::serve::Done;
@@ -38,6 +38,8 @@ pub async fn run(state_dir: &Path, plow: &Plow, host: &str, kind: &str, args: &V
                 "clear" | "clear_at_revision" => {
                     clear(&dir, plow, host, command, args, &mut audit).await
                 }
+                "link_approvals" => link(&dir, plow, host, args, &mut audit).await,
+                "unlink_approvals" => unlink(&dir, plow, host, args, &mut audit).await,
                 _ => Err(Failure::new(
                     code::bad_command,
                     format!("unknown rules command {command:?}"),
@@ -141,6 +143,9 @@ async fn show(
     from: Option<&str>,
 ) -> Result<Value, Failure> {
     let mut uids = dir.agents()?;
+    uids.extend(dir.linked()?);
+    uids.sort();
+    uids.dedup();
     let mut agents = Vec::new();
     if from.is_some() || !uids.is_empty() {
         let account = Account::read(plow).await?;
@@ -155,6 +160,9 @@ async fn show(
                 "text": text,
                 "revision": text.as_deref().map(revision),
             });
+            if let Some(link) = dir.approvals(&uid)? {
+                shown["approvals_from"] = linked(&account, &link);
+            }
             if account.name(&uid).is_none() {
                 shown["deleted"] = json!(true);
                 shown["note"] = json!(
@@ -181,6 +189,116 @@ async fn show(
         "agents": agents,
         "deny_exec": crate::managed::saved_deny_exec(state_dir),
         "warning": WARNING,
+    }))
+}
+
+/// An approvals link as the owner reads it: the agent whose line is read,
+/// by uid and current name (none once it no longer exists), and the chat
+/// there, if one was named.
+fn linked(account: &Account, link: &ApprovalsLink) -> Value {
+    let mut shown = json!({"agent_uid": link.agent_uid, "agent_name": account.name(&link.agent_uid),
+                           "chat": link.chat});
+    if account.name(&link.agent_uid).is_none() {
+        shown["deleted"] = json!(true);
+    }
+    shown
+}
+
+/// `link_approvals`: the approvals of the agent `from` names are read from
+/// the line of the agent `approvals_from` names, and from its `chat` when
+/// one is given, which must be on that line. Both must be live agents of
+/// the account.
+async fn link(
+    dir: &RulesDir,
+    plow: &Plow,
+    host: &str,
+    args: &Value,
+    audit: &mut Map<String, Value>,
+) -> Result<Value, Failure> {
+    let named = |field: &str, what: &str| {
+        args[field]
+            .as_str()
+            .ok_or_else(|| Failure::new(code::bad_arguments, format!("{what} is missing")))
+    };
+    let from = named("from", "the agent whose approvals are linked (--agent)")?;
+    let to = named(
+        "approvals_from",
+        "the agent whose line is read (--from-agent)",
+    )?;
+    let chat = args["chat"].as_str().map(str::to_string);
+    let account = Account::read(plow).await?;
+    let uid = account.resolve(from, false)?;
+    let link = ApprovalsLink {
+        agent_uid: account.resolve(to, false)?,
+        chat,
+    };
+    let chats = super::chat::on_line(plow, &link.agent_uid).await?;
+    if let Some(chat) = &link.chat
+        && !chats.contains(chat)
+    {
+        let mut refused = Failure::new(
+            code::which_chat,
+            format!(
+                "chat {chat} is not on agent {}'s line; its chats there: {}",
+                link.agent_uid,
+                if chats.is_empty() {
+                    "none".to_string()
+                } else {
+                    chats.join(", ")
+                }
+            ),
+        );
+        refused.details = json!({"chats": chats});
+        return Err(refused);
+    }
+    let before = dir.link(&uid, &link)?;
+    audit.insert("agent_uid".into(), json!(uid));
+    audit.insert("approvals_from".into(), json!(link.agent_uid));
+    audit.insert("chat".into(), json!(link.chat));
+    audit.insert(
+        "before".into(),
+        json!(before.as_ref().map(|b| &b.agent_uid)),
+    );
+    Ok(json!({
+        "host": host,
+        "agent_uid": uid,
+        "agent_name": account.name(&uid),
+        "approvals_from": linked(&account, &link),
+        "chats_on_line": chats,
+        "applies": "applies to the next judgment",
+    }))
+}
+
+/// `unlink_approvals`: the agent `from` names reads approvals on its own
+/// line again. Its uid may be one no live agent has, to remove a link a
+/// deleted agent left.
+async fn unlink(
+    dir: &RulesDir,
+    plow: &Plow,
+    host: &str,
+    args: &Value,
+    audit: &mut Map<String, Value>,
+) -> Result<Value, Failure> {
+    let from = args["from"].as_str().ok_or_else(|| {
+        Failure::new(
+            code::bad_arguments,
+            "the agent whose approvals are unlinked (--agent) is missing".into(),
+        )
+    })?;
+    let account = Account::read(plow).await?;
+    let uid = account.resolve(from, true)?;
+    let before = dir.unlink(&uid)?;
+    audit.insert("agent_uid".into(), json!(uid));
+    audit.insert(
+        "before".into(),
+        json!(before.as_ref().map(|b| &b.agent_uid)),
+    );
+    Ok(json!({
+        "host": host,
+        "agent_uid": uid,
+        "agent_name": account.name(&uid),
+        "unlinked": before.is_some(),
+        "applies": "applies to the next judgment",
     }))
 }
 

@@ -976,6 +976,37 @@ pub enum RulesCommand {
         #[command(flatten)]
         scope: RulesScope,
     },
+    /// Read an agent's approvals from the chat on another agent's line, the one you text
+    ///
+    /// Its chat layer then reads your messages there instead of on its own
+    /// line, and never falls back to its own line: if that agent or chat is
+    /// gone, its calls are refused until you link again or unlink
+    LinkApprovals {
+        /// The agent whose approvals these are: its name, the peer name of
+        /// the latch it calls from, or its agent uid
+        #[arg(long, value_name = "NAME")]
+        agent: String,
+        /// The agent you text, whose line's chat is read: its name or agent uid
+        #[arg(long, value_name = "NAME")]
+        from_agent: String,
+        /// That chat, which must be on its line [default: the line's only
+        /// chat, or the one the agent names with --plow-chat]
+        #[arg(long, value_name = "CHAT")]
+        chat: Option<String>,
+        /// The serving machine the link is for [default: this machine's own host state]
+        #[arg(long)]
+        host: Option<String>,
+    },
+    /// Read an agent's approvals on its own line again
+    UnlinkApprovals {
+        /// The agent: its name, the peer name of the latch it calls from,
+        /// or its agent uid (also one no longer in Plow)
+        #[arg(long, value_name = "NAME")]
+        agent: String,
+        /// The serving machine the link is for [default: this machine's own host state]
+        #[arg(long)]
+        host: Option<String>,
+    },
     /// Preview the gatekeeper's verdict on a request, without running it
     ///
     /// As the agent --agent names, or as you. An agent

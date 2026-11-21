@@ -13,6 +13,9 @@ use serde_json::{Value, json};
 
 pub const AGENT: &str = "0123456789abcdef0123456789abcdef";
 pub const LINE: &str = "line_agent";
+/// The owner's other agent, the one they text, on a line of its own.
+pub const TEXTED: &str = "fedcba9876543210fedcba9876543210";
+pub const TEXTED_LINE: &str = "line_texted";
 
 /// The probabilities of COVERED, NOT_COVERED and FORBIDDEN for a state,
 /// or none for a decision route that fails.
@@ -40,6 +43,8 @@ pub struct World {
     pub google_reauth: Vec<String>,
     /// The Google token route holds its answer while this is set.
     pub google_paused: bool,
+    /// Whether the account has the agent the owner texts ([`TEXTED`]).
+    pub texted: bool,
 }
 
 impl World {
@@ -143,13 +148,27 @@ impl World {
             );
         }
         if path == "/v1/agents" {
-            return (
-                200,
-                json!([{"uid": AGENT, "name": "Juno", "provider": "exe:juno",
+            let mut agents = vec![json!({"uid": AGENT, "name": "Juno", "provider": "exe:juno",
                         "line": {"uid": LINE, "provider_type": "imessage",
                                  "provider_key": "+14155550100", "display_name": null},
                         "created_at": "2026-10-20T10:00:00Z", "status": "running",
-                        "failure_code": null, "credential": null}]),
+                        "failure_code": null, "credential": null})];
+            if self.texted {
+                agents.push(
+                    json!({"uid": TEXTED, "name": "Juno (iMessage)", "provider": "self_hosted",
+                        "line": {"uid": TEXTED_LINE, "provider_type": "imessage",
+                                 "provider_key": "+14155550177", "display_name": null},
+                        "created_at": "2026-10-20T10:00:00Z", "status": "running",
+                        "failure_code": null, "credential": null}),
+                );
+            }
+            return (200, json!(agents));
+        }
+        if self.texted && path == format!("/v1/agents/{TEXTED}") {
+            return (
+                200,
+                json!({"uid": TEXTED, "name": "Juno (iMessage)", "provider": "self_hosted",
+                       "line": {"uid": TEXTED_LINE, "provider_type": "imessage", "provider_key": "+14155550177"}}),
             );
         }
         if path == "/v1/latch/peers" {

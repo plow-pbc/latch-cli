@@ -48,6 +48,30 @@ pub async fn run(state: &StateDir, args: RulesArgs) -> Result<Value, Failure> {
             }
             return preview(state, host, args, draft, request).await;
         }
+        RulesCommand::LinkApprovals {
+            agent,
+            from_agent,
+            chat,
+            host,
+        } => {
+            let target = Target {
+                state,
+                host: hosts::pinned(state, host)?,
+            };
+            return target
+                .call(json!({"command": "link_approvals", "from": agent,
+                             "approvals_from": from_agent, "chat": chat}))
+                .await;
+        }
+        RulesCommand::UnlinkApprovals { agent, host } => {
+            let target = Target {
+                state,
+                host: hosts::pinned(state, host)?,
+            };
+            return target
+                .call(json!({"command": "unlink_approvals", "from": agent}))
+                .await;
+        }
         RulesCommand::Set { ref scope, .. }
         | RulesCommand::Edit { ref scope }
         | RulesCommand::Clear { ref scope, .. }
@@ -127,7 +151,9 @@ pub async fn run(state: &StateDir, args: RulesArgs) -> Result<Value, Failure> {
             target.call(args).await
         }
         RulesCommand::Show { .. } => target.call(json!({"command": "show", "from": from})).await,
-        RulesCommand::Try { .. } => unreachable!("previewed above"),
+        RulesCommand::Try { .. }
+        | RulesCommand::LinkApprovals { .. }
+        | RulesCommand::UnlinkApprovals { .. } => unreachable!("answered above"),
     }
 }
 

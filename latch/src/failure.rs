@@ -212,6 +212,7 @@ codes! {
     ambiguous_chat: Usage,
     ambiguous_target: Failed,
     app_broken: Failed,
+    approvals_link_broken: Denied,
     audit_broken: Failed,
     audit_failed: Failed,
     audit_io: Failed,

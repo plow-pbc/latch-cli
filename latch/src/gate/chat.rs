@@ -9,6 +9,7 @@
 
 use jiff::Timestamp;
 
+use super::rules::ApprovalsLink;
 use super::unavailable;
 use crate::failure::{Failure, code};
 use crate::model::REQUEST_BUDGET;
@@ -32,48 +33,55 @@ pub struct Said {
     pub text: String,
 }
 
-/// The chat `agent` acts in: `named` if it is on the agent's line, else
-/// the line's one chat. `None` when the line has no chat. Refused
-/// `which_chat` when the agent must name one, or named one not on its line.
+/// The chat `agent` acts in, on its own line or, when its owner linked its
+/// approvals (`link`), on the linked agent's line, never its own: the
+/// linked chat, else `named` if it is on that line, else the line's one
+/// chat. `None` when the line has no chat. Refused `which_chat` when the
+/// agent must name one, or named one not on the line; and
+/// `approvals_link_broken` when the linked agent or chat is gone.
 pub async fn read(
     plow: &Plow,
     agent: &str,
+    link: Option<&ApprovalsLink>,
     named: Option<&str>,
 ) -> Result<Option<Conversation>, Failure> {
-    let failed = |what: &str| {
-        let what = what.to_string();
-        move |failure: Failure| unavailable(&format!("{what}: {}", failure.message))
-    };
-    let line = plow
-        .agent(agent)
-        .await
-        .map_err(failed("Plow did not say which line this agent serves"))?
-        .line;
-    let chats = plow
-        .chats()
-        .await
-        .map_err(failed("Plow did not list the chats"))?;
-    let on_line: Vec<String> = chats
-        .into_iter()
-        .filter(|c| c.line().is_some_and(|l| l.uid == line.uid))
-        .map(|c| c.uid)
-        .collect();
-    let chat = match (named, on_line.as_slice()) {
-        (Some(named), _) if on_line.iter().any(|c| c == named) => named.to_string(),
-        (Some(named), _) => {
-            return Err(which_chat(format!(
-                "chat {named} is not one of this agent's chats ({}); name one of those with --plow-chat or $LATCH_PLOW_CHAT",
-                listed(&on_line)
-            )));
+    let failed = |failure: Failure| unavailable(&failure.message);
+    let chat = match link {
+        None => {
+            let on_line = on_line(plow, agent).await.map_err(failed)?;
+            match choose(named, &on_line, "this agent's")? {
+                Some(chat) => chat,
+                None => return Ok(None),
+            }
         }
-        (None, []) => return Ok(None),
-        (None, [only]) => only.clone(),
-        (None, _) => {
-            return Err(which_chat(format!(
-                "this agent is in {} chats ({}); name the one you act for with --plow-chat or $LATCH_PLOW_CHAT",
-                on_line.len(),
-                listed(&on_line)
-            )));
+        Some(link) => {
+            let asked = match (&link.chat, named) {
+                (Some(linked), Some(named)) if linked != named => {
+                    return Err(which_chat(format!(
+                        "this agent's approvals are read from chat {linked}, as its owner linked them; omit --plow-chat and $LATCH_PLOW_CHAT, or name that chat"
+                    )));
+                }
+                (Some(linked), _) => Some(linked.as_str()),
+                (None, named) => named,
+            };
+            let on_line = match on_line(plow, &link.agent_uid).await {
+                Err(failure) if failure.code == code::not_found.name => {
+                    return Err(broken(link, "that agent no longer exists in Plow"));
+                }
+                result => result.map_err(failed)?,
+            };
+            if let Some(linked) = &link.chat
+                && !on_line.contains(linked)
+            {
+                return Err(broken(
+                    link,
+                    &format!("chat {linked} is no longer on that agent's line"),
+                ));
+            }
+            match choose(asked, &on_line, "the linked agent's")? {
+                Some(chat) => chat,
+                None => return Ok(None),
+            }
         }
     };
 
@@ -82,10 +90,12 @@ pub async fn read(
     let mut more_before = true;
     while more_before && bytes <= REQUEST_BUDGET {
         let after = newest_first.last().map(|m: &Message| m.uid.as_str());
-        let page = plow
-            .messages(&chat, after)
-            .await
-            .map_err(failed("Plow did not give the chat's messages"))?;
+        let page = plow.messages(&chat, after).await.map_err(|failure| {
+            unavailable(&format!(
+                "Plow did not give the chat's messages: {}",
+                failure.message
+            ))
+        })?;
         more_before = page.has_more && !page.messages.is_empty();
         bytes += page.messages.iter().map(|m| m.body.len()).sum::<usize>();
         newest_first.extend(page.messages);
@@ -122,6 +132,66 @@ fn said(message: Message) -> Result<Said, Failure> {
         at,
         text: message.body,
     })
+}
+
+/// The owner's chats on `agent`'s line, as Plow lists them to the host.
+/// Plow's own failure as it is (`not_found`: no such agent), with what was
+/// being asked.
+pub async fn on_line(plow: &Plow, agent: &str) -> Result<Vec<String>, Failure> {
+    let asking = |what: &str| {
+        let what = what.to_string();
+        move |mut failure: Failure| {
+            failure.message = format!("{what}: {}", failure.message);
+            failure
+        }
+    };
+    let line = plow
+        .agent(agent)
+        .await
+        .map_err(asking("Plow did not say which line this agent serves"))?
+        .line;
+    let chats = plow
+        .chats()
+        .await
+        .map_err(asking("Plow did not list the chats"))?;
+    Ok(chats
+        .into_iter()
+        .filter(|c| c.line().is_some_and(|l| l.uid == line.uid))
+        .map(|c| c.uid)
+        .collect())
+}
+
+/// The chat on a line with `chats` (`whose` they are, as a refusal says):
+/// `named` if it is one of them, else the only one.
+fn choose(named: Option<&str>, chats: &[String], whose: &str) -> Result<Option<String>, Failure> {
+    match (named, chats) {
+        (Some(named), _) if chats.iter().any(|c| c == named) => Ok(Some(named.to_string())),
+        (Some(named), _) => Err(which_chat(format!(
+            "chat {named} is not one of {whose} chats ({}); name one of those with --plow-chat or $LATCH_PLOW_CHAT",
+            listed(chats)
+        ))),
+        (None, []) => Ok(None),
+        (None, [only]) => Ok(Some(only.clone())),
+        (None, _) => Err(which_chat(format!(
+            "{whose} line has {} chats ({}); name the one you act for with --plow-chat or $LATCH_PLOW_CHAT",
+            chats.len(),
+            listed(chats)
+        ))),
+    }
+}
+
+/// A link that no longer leads to a chat: nothing is judged until the
+/// owner links again or removes it.
+fn broken(link: &ApprovalsLink, why: &str) -> Failure {
+    let mut failure = Failure::new(
+        code::approvals_link_broken,
+        format!(
+            "This agent's owner linked its approvals to agent {}'s line, but {why}, so nothing was judged. Ask the owner to link it again (`latch rules link-approvals`) or remove the link (`latch rules unlink-approvals`).",
+            link.agent_uid
+        ),
+    );
+    failure.details = serde_json::json!({"approvals_from": link.agent_uid, "chat": link.chat});
+    failure
 }
 
 fn which_chat(message: String) -> Failure {

@@ -132,6 +132,8 @@ latch browser open --host my-mac https://example.com
 | `latch rules edit` | Host | Change the rules in $EDITOR; saved only if they did not change meanwhile. Owner only.<br>Edit one agent's rules: `latch rules edit --agent ada` |
 | `latch rules clear` | Host | Remove the rules. Owner only. |
 | `latch rules show` | Host | The rules for every agent and each agent's own, with their revisions. Owner only. |
+| `latch rules link-approvals` | Host | Read an agent's approvals from the chat on another agent's line, the one you text. Owner only.<br>Read Penny's approvals from the chat you have with the agent you text: `latch rules link-approvals --agent Penny --from-agent 'Penny (iMessage)'` |
+| `latch rules unlink-approvals` | Host | Read an agent's approvals on its own line again. Owner only.<br>Read Penny's approvals on its own line again: `latch rules unlink-approvals --agent Penny` |
 | `latch rules try` | Host | Preview the gatekeeper's verdict on a request, without running it. Owner only.<br>Would Penny be allowed to build the site? `latch rules try --agent Penny -- exec --write ~/site -- npm run build` |
 
 ## Connectors

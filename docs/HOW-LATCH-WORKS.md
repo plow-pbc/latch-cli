@@ -177,6 +177,16 @@ login.
   the agent names one with `--plow-chat ID` or `LATCH_PLOW_CHAT`. Otherwise
   the call stops with `which_chat` (exit 2), which lists the choices. Your
   own calls refuse the selector (`plow_chat_not_supported`, exit 2).
+- **The chat you text, when it's another agent's.** If you text a
+  different agent of yours than the one that calls latch (an iMessage
+  agent through Swarm, say), link them on the host:
+  `latch rules link-approvals --agent CALLER --from-agent TEXTED`
+  (`--chat ID` picks one chat on its line). From the next judgment the
+  caller's approvals are read only on that agent's line, never on its own.
+  If that agent or chat is gone, the caller's judged calls stop with
+  `approvals_link_broken` (exit 4) until you link again or run
+  `latch rules unlink-approvals --agent CALLER`. `latch rules show` shows
+  each link as `approvals_from`, and the audit's `gate` names it too.
 - **When permission is missing.** A `not_covered` refusal names the Plow
   chat read, if one was found, and the messages there that were yours.
   Say what the agent may do in that chat, or allow it in the host's rules.
@@ -252,7 +262,7 @@ at least as likely as not covered.
 
 | Task | On the host | From another of your machines | Works while the host is stopped |
 |---|---|---|---|
-| Rules | `latch rules show\|set\|edit\|clear\|try`, `--agent AGENT` for one agent's rules | add `--host NAME` | Yes |
+| Rules | `latch rules show\|set\|edit\|clear\|try`, `--agent AGENT` for one agent's rules; `latch rules link-approvals\|unlink-approvals --agent AGENT` for the chat its approvals come from | add `--host NAME` | Yes |
 | Vault | `latch vault list\|show\|add\|edit\|remove\|import\|link\|link-state` | add `--host NAME` | Yes, except `vault link` and `link-state` |
 | Connectors | `latch plugins enable\|disable google` (on a Mac, also `messages` and `contacts`) | `latch status` shows the ones each host has on; `latch status --host NAME` lists them all | Yes |
 | Refuse exec to agents | `latch serve --deny-exec` or `--deny-exec=AGENT_UID` | No | Set when the host starts |
