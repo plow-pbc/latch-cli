@@ -1284,28 +1284,35 @@ fn approval_supported(action: &Value) -> bool {
     let Some(command) = action["command"].as_array() else {
         return false;
     };
-    command.get(0).and_then(Value::as_str) == Some("gmail")
-        && command.get(1).and_then(Value::as_str) == Some("send")
-        && ["--to", "--subject", "--body"]
-            .iter()
-            .all(|flag| command_flag(command, flag).is_some())
-        && !["--attach", "--body-file", "--body-html", "--body-html-file"]
-            .iter()
-            .any(|flag| command.iter().any(|word| flag_present(word, flag)))
+    gmail_command_supported(command)
 }
 
-fn command_flag<'a>(command: &'a [Value], flag: &str) -> Option<&'a str> {
-    command.iter().enumerate().find_map(|(index, word)| {
-        let word = word.as_str()?;
-        if word == flag {
-            return command.get(index + 1).and_then(Value::as_str);
+fn gmail_command_supported(command: &[Value]) -> bool {
+    if command.get(0).and_then(Value::as_str) != Some("gmail")
+        || command.get(1).and_then(Value::as_str) != Some("send")
+    {
+        return false;
+    }
+    let allowed = ["--to", "--cc", "--bcc", "--subject", "--body"];
+    let mut seen = std::collections::HashSet::new();
+    let mut index = 2;
+    while index < command.len() {
+        let Some(word) = command[index].as_str() else {
+            return false;
+        };
+        let (flag, has_value) = match word.split_once('=') {
+            Some((flag, value)) => (flag, !value.is_empty()),
+            None => {
+                index += 1;
+                (word, command.get(index).and_then(Value::as_str).is_some())
+            }
+        };
+        if !has_value || !allowed.contains(&flag) || !seen.insert(flag) {
+            return false;
         }
-        word.strip_prefix(flag)?.strip_prefix('=')
-    })
-}
-
-fn flag_present(word: &Value, flag: &str) -> bool {
-    word.as_str().is_some_and(|word| {
-        word == flag || word.strip_prefix(flag).is_some_and(|rest| rest.starts_with('='))
-    })
+        index += 1;
+    }
+    ["--to", "--subject", "--body"]
+        .iter()
+        .all(|required| seen.contains(required))
 }
