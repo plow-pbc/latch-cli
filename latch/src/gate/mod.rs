@@ -709,7 +709,8 @@ impl Gatekeeper {
             });
             return Ok(());
         }
-        if self.plow
+        if self
+            .plow
             .approval(&json!({
                 "op": "ask",
                 "ref": reference,
@@ -1274,9 +1275,9 @@ fn approval_supported(action: &Value) -> bool {
     if action["operation"] == "file_put" {
         return action["path"].is_string()
             && action["size"].is_u64()
-            && action["sha256"]
-                .as_str()
-                .is_some_and(|hash| hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit()));
+            && action["sha256"].as_str().is_some_and(|hash| {
+                hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+            });
     }
     if action["kind"] == "vault_fill" {
         return action["site"].is_string() && action["item"]["title"].is_string();

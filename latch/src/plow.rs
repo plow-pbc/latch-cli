@@ -406,7 +406,10 @@ impl Plow {
         let response = match self.send(self.http.post(url).json(request)).await {
             Ok(response) => response,
             Err(failure)
-                if matches!(failure.details["http_status"].as_u64(), Some(403 | 404 | 503)) =>
+                if matches!(
+                    failure.details["http_status"].as_u64(),
+                    Some(403 | 404 | 503)
+                ) =>
             {
                 return Ok(None);
             }
@@ -785,7 +788,7 @@ impl Plow {
         };
         let message = format!("Plow answered HTTP {}: {meaning}", status.as_u16());
         let mut failure = Failure::new(code, message);
-        failure.details["http_status"] = json!(status.as_u16());
+        failure.details["http_status"] = serde_json::json!(status.as_u16());
         let retry_after = response
             .headers()
             .get("retry-after")
