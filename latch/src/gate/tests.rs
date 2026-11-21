@@ -199,6 +199,16 @@ fn file_put(path: &str) -> Box<RawValue> {
     .unwrap()
 }
 
+#[test]
+fn an_approval_reference_matches_the_plow_contract() {
+    let action = json!({"operation": "file_put", "path": "/Users/sam/report.txt",
+                        "size": 12, "file_name": "report.txt"});
+    assert_eq!(
+        approval_ref("mba", "agt_1", &action),
+        "41e037468f72b78f40cd733bf657e8c27a1c7ce7f5495abe141809a11347ecd8"
+    );
+}
+
 fn one_chat() -> World {
     World::with_chat(
         "chat_a",

@@ -85,6 +85,10 @@ pub(super) struct Page {
 
 #[derive(Serialize, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct ItemShown {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    item: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    revision: Option<u64>,
     kind: String,
     title: String,
     /// The sites the item is saved for, which a login fills only on: the
@@ -177,12 +181,16 @@ pub(super) fn item(browsers: &Browsers, id: &str) -> ItemShown {
         .flatten();
     match meta {
         Some(meta) => ItemShown {
+            item: Some(meta.item),
+            revision: Some(meta.revision),
             kind: meta.kind.to_string(),
             title: meta.title,
             sites: meta.sites,
             other_top_sites: meta.other_top_sites,
         },
         None => ItemShown {
+            item: None,
+            revision: None,
             kind: "unknown".into(),
             title: id.to_string(),
             sites: vec![],
@@ -215,6 +223,8 @@ pub(crate) fn previewed_fill(
     let site = sites::site_of(url);
     Action::VaultFill {
         item: ItemShown {
+            item: None,
+            revision: None,
             kind: kind.to_string(),
             title: title.to_string(),
             sites: site.iter().cloned().collect(),
@@ -667,6 +677,33 @@ mod tests {
             !kept.contains(password) && !kept.contains(username),
             "{kept}"
         );
+    }
+
+    #[test]
+    fn a_vault_fill_names_the_resolved_item_and_revision() {
+        use crate::vault::item::{Item, LOGIN, Raw};
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().to_path_buf();
+        let browsers = Browsers::new(state.clone(), crate::vault::host::Vault::new(state), true);
+        let add = || Item {
+            id: String::new(),
+            revision: 0,
+            sites: vec!["shop.example".into()],
+            other_top_sites: vec![],
+            raw: Raw::from_labels(LOGIN, "Shop login", &[]).unwrap(),
+        };
+        let first = browsers.vault.with(|store| store.add(add())).unwrap();
+        let second = browsers.vault.with(|store| store.add(add())).unwrap();
+        let shown = |item: &str| {
+            let args = json!({"item": item, "fields": [["username", ["e1"]]]});
+            serde_json::to_value(fill(&browsers, &args, Some("shop.example".into()))).unwrap()
+        };
+
+        let first_action = shown(&first.item);
+        let second_action = shown(&second.item);
+        assert_eq!(first_action["item"]["item"], first.item);
+        assert_eq!(first_action["item"]["revision"], first.revision);
+        assert_ne!(first_action, second_action);
     }
 
     #[test]
