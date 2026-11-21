@@ -265,6 +265,8 @@ impl TestHost {
         size: usize,
         sent: &[u8],
     ) -> (Response, Option<Response>) {
+        use sha2::{Digest, Sha256};
+
         let connection = client
             .connect(self.host.endpoint.addr(), wire::ALPN)
             .await
@@ -272,7 +274,12 @@ impl TestHost {
         let (mut send, mut recv) = connection.open_bi().await.unwrap();
         let request = Request {
             op: "file_put".into(),
-            args: json!({"remote_path": remote, "size": size, "name": "upload.txt"}),
+            args: json!({
+                "remote_path": remote,
+                "size": size,
+                "sha256": crate::state::to_hex(&Sha256::digest(sent)),
+                "name": "upload.txt",
+            }),
             chat: None,
         };
         wire::write_frame(&mut send, &serde_json::to_vec(&request).unwrap())
