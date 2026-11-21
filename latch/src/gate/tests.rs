@@ -202,17 +202,18 @@ fn file_put(path: &str) -> Box<RawValue> {
 
 #[test]
 fn an_approval_reference_matches_the_plow_contract() {
+    let machine = "1".repeat(64);
     let action = json!({"operation": "file_put", "path": "/Users/sam/report.txt",
                         "size": 12, "file_name": "report.txt", "sha256": "a".repeat(64)});
-    let first = approval_ref("machine-a", "agt_1", &action);
+    let first = approval_ref(&machine, "agt_1", &action);
     assert_eq!(
         first,
         "61f32c870839503de2cce3adb26e1c92036a8919933bc3b042d12476909a5a21"
     );
-    assert_ne!(first, approval_ref("machine-b", "agt_1", &action));
+    assert_ne!(first, approval_ref(&"2".repeat(64), "agt_1", &action));
     let mut changed = action.clone();
     changed["sha256"] = json!("b".repeat(64));
-    assert_ne!(first, approval_ref("machine-a", "agt_1", &changed));
+    assert_ne!(first, approval_ref(&machine, "agt_1", &changed));
 }
 
 fn one_chat() -> World {
