@@ -392,14 +392,10 @@ pub async fn run(
     browsers: &Browsers,
     entry: &Entry,
     args: &Value,
-    item: Option<Item>,
+    item: Item,
     audit: &mut Map<String, Value>,
 ) -> Result<Value, Failure> {
     let args = &resolve(browsers, entry, args).await?;
-    let item = match item {
-        Some(item) => item,
-        None => item_of(browsers, args)?,
-    };
     audit.insert("item".into(), json!(item.id));
     let meta = item.meta();
     audit.insert("kind".into(), json!(meta.kind));

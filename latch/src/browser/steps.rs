@@ -1096,14 +1096,8 @@ impl Run<'_> {
             json!({"item": args["item"], "press": args["press"]}),
         )?;
         let mut fill_audit = Map::new();
-        let outcome = super::fill::run(
-            self.browsers,
-            self.entry,
-            &args,
-            Some(item),
-            &mut fill_audit,
-        )
-        .await;
+        let outcome =
+            super::fill::run(self.browsers, self.entry, &args, item, &mut fill_audit).await;
         let result = match &outcome {
             Ok(_) => "dispatched",
             Err(failure) if refused(failure) => "refused",

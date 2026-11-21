@@ -720,7 +720,7 @@ pub(super) async fn fill(
         )
         .await?;
     }
-    super::fill::run(browsers, entry, &args, Some(item), audit).await
+    super::fill::run(browsers, entry, &args, item, audit).await
 }
 
 /// One command for `caller`, as `answer` runs it, the page in its answer
