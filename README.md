@@ -1,6 +1,6 @@
-# Latch
+# Plow Computer Use (Latch)
 
-Latch lets your AI agents use a machine you trust: its files, programs and
+Plow Computer Use (Latch) lets your AI agents use a machine you trust: its files, programs and
 browser, your Google account through it, and on a Mac its Messages and
 Contacts. That machine runs a Latch **host**. Your agents call it from
 wherever they run. The host's **gatekeeper** checks each call against your
