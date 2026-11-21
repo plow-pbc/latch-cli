@@ -50,7 +50,7 @@ pub async fn run(state: &StateDir, args: RulesArgs) -> Result<Value, Failure> {
         }
         RulesCommand::LinkApprovals {
             agent,
-            from_agent,
+            texted,
             chat,
             host,
         } => {
@@ -60,7 +60,7 @@ pub async fn run(state: &StateDir, args: RulesArgs) -> Result<Value, Failure> {
             };
             return target
                 .call(json!({"command": "link_approvals", "from": agent,
-                             "approvals_from": from_agent, "chat": chat}))
+                             "approvals_from": texted, "chat": chat}))
                 .await;
         }
         RulesCommand::UnlinkApprovals { agent, host } => {

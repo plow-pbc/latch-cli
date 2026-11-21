@@ -1309,21 +1309,34 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "rules.link-approvals",
         runs_on: |_| RunsOn::Either,
-        output: "The link: `agent_uid` and `agent_name` (whose approvals), `approvals_from` (`agent_uid`, `agent_name` and `chat` of the agent whose line is read) and `chats_on_line`, that line's chats. A `--chat` not on that line is `which_chat`. From the next judgment the agent's chat layer reads only that line: if its agent leaves Plow or the linked chat leaves its line, the agent's judged calls are refused `approvals_link_broken` (exit 4) until it is linked again or unlinked. `rules show` shows each agent's `approvals_from`.",
+        output: "The link: `agent_uid` and `agent_name` (whose approvals), `approvals_from` (`agent_uid`, `agent_name` and `chat` of the agent whose line is read) and `chats_on_line`, that line's chats. TEXTED_AGENT must be one of your agents in Plow (`no_such_agent` otherwise); a `--chat` not on its line is `which_chat`. From the next judgment the agent's chat layer reads only that line, after asking Plow on your login that TEXTED_AGENT is still yours and the chat still on its line. If not, the agent's judged calls are refused `approvals_link_broken` (exit 4), whose message gives the exact command to run: this one again, or `latch rules unlink-approvals --agent AGENT`. `rules show` shows each agent's `approvals_from`.",
         effect: Repeatable("replaces the agent's approvals link"),
         owner_only: true,
         connector: None,
-        examples: &[ex(
-            "Read Penny's approvals from the chat you have with the agent you text",
-            &[
-                "rules",
-                "link-approvals",
-                "--agent",
-                "Penny",
-                "--from-agent",
-                "Penny (iMessage)",
-            ],
-        )],
+        examples: &[
+            ex(
+                "Read Penny's approvals from your chat with the agent you text, by its agent uid",
+                &[
+                    "rules",
+                    "link-approvals",
+                    "4c105af1562405f4743bc710601e0391",
+                    "--agent",
+                    "Penny",
+                ],
+            ),
+            ex(
+                "The same, from one chat on that agent's line",
+                &[
+                    "rules",
+                    "link-approvals",
+                    "4c105af1562405f4743bc710601e0391",
+                    "--agent",
+                    "Penny",
+                    "--chat",
+                    "cht_liWtJyrMzHYd_xLPMiwkag",
+                ],
+            ),
+        ],
     },
     Entry {
         id: "rules.unlink-approvals",

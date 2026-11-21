@@ -979,16 +979,20 @@ pub enum RulesCommand {
     /// Read an agent's approvals from the chat on another agent's line, the one you text
     ///
     /// Its chat layer then reads your messages there instead of on its own
-    /// line, and never falls back to its own line: if that agent or chat is
-    /// gone, its calls are refused until you link again or unlink
+    /// line, and never falls back to its own line. At every judgment the
+    /// host asks Plow, on your login, that the agent you text is still one
+    /// of yours and the chat still on its line; if not, the calls are
+    /// refused until you run this again or `latch rules unlink-approvals
+    /// --agent NAME`
     LinkApprovals {
+        /// The agent you text, whose line's chat is read: its agent uid, or
+        /// its exact name; it must be one of your agents
+        #[arg(value_name = "TEXTED_AGENT")]
+        texted: String,
         /// The agent whose approvals these are: its name, the peer name of
         /// the latch it calls from, or its agent uid
         #[arg(long, value_name = "NAME")]
         agent: String,
-        /// The agent you text, whose line's chat is read: its name or agent uid
-        #[arg(long, value_name = "NAME")]
-        from_agent: String,
         /// That chat, which must be on its line [default: the line's only
         /// chat, or the one the agent names with --plow-chat]
         #[arg(long, value_name = "CHAT")]

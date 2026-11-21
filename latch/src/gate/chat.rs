@@ -65,8 +65,15 @@ pub async fn read(
                 (None, named) => named,
             };
             let on_line = match on_line(plow, &link.agent_uid).await {
+                // Plow answers this on the owner's login: an agent that is
+                // gone, or not the owner's, is one it does not know.
                 Err(failure) if failure.code == code::not_found.name => {
-                    return Err(broken(link, "that agent no longer exists in Plow"));
+                    return Err(broken(
+                        agent,
+                        link,
+                        "Plow no longer has that agent among the owner's",
+                        &format!("latch rules link-approvals TEXTED_AGENT_UID --agent {agent}"),
+                    ));
                 }
                 result => result.map_err(failed)?,
             };
@@ -74,8 +81,13 @@ pub async fn read(
                 && !on_line.contains(linked)
             {
                 return Err(broken(
+                    agent,
                     link,
                     &format!("chat {linked} is no longer on that agent's line"),
+                    &format!(
+                        "latch rules link-approvals {} --agent {agent}",
+                        link.agent_uid
+                    ),
                 ));
             }
             match choose(asked, &on_line, "the linked agent's")? {
@@ -180,17 +192,20 @@ fn choose(named: Option<&str>, chats: &[String], whose: &str) -> Result<Option<S
     }
 }
 
-/// A link that no longer leads to a chat: nothing is judged until the
-/// owner links again or removes it.
-fn broken(link: &ApprovalsLink, why: &str) -> Failure {
+/// A link of `agent`'s that no longer leads to a chat: nothing is judged
+/// until the owner runs `fix`, or removes the link.
+fn broken(agent: &str, link: &ApprovalsLink, why: &str, fix: &str) -> Failure {
+    let unlink = format!("latch rules unlink-approvals --agent {agent}");
     let mut failure = Failure::new(
         code::approvals_link_broken,
         format!(
-            "This agent's owner linked its approvals to agent {}'s line, but {why}, so nothing was judged. Ask the owner to link it again (`latch rules link-approvals`) or remove the link (`latch rules unlink-approvals`).",
+            "This agent's owner linked its approvals to agent {}'s line, but {why}, so nothing was judged. Ask the owner to run, on this host, `{fix}`, or `{unlink}` to read this agent's own line again.",
             link.agent_uid
         ),
     );
-    failure.details = serde_json::json!({"approvals_from": link.agent_uid, "chat": link.chat});
+    failure.next = Some(fix.into());
+    failure.details = serde_json::json!({"approvals_from": link.agent_uid, "chat": link.chat,
+                                         "fix": fix, "unlink": unlink});
     failure
 }
 

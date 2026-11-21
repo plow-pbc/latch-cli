@@ -333,7 +333,7 @@ when you ask in chat, and they can restrict everyday work too, for example
 "Do not read or search this Mac's Messages."
 
 If you text a different agent of yours than the one that calls latch,
-`latch rules link-approvals --agent my-agent --from-agent the-one-you-text`
+`latch rules link-approvals AGENT_YOU_TEXT --agent my-agent`
 makes its approvals come from that chat instead of its own.
 
 A model judges the rules, so they are not a guarantee. For a hard stop, start

@@ -1424,6 +1424,16 @@ async fn linked_approvals_are_read_from_the_texted_agents_chat_and_never_its_own
         !seen.lock().unwrap().iter().any(|r| r.contains("chat_a")),
         "its own chat is never read"
     );
+    let texted = format!("GET /v1/agents/{}", fake::TEXTED);
+    assert_eq!(
+        seen.lock()
+            .unwrap()
+            .iter()
+            .filter(|r| **r == texted)
+            .count(),
+        1,
+        "the judgment asked Plow for the linked agent itself"
+    );
 
     // The agent can't name a chat off the linked line, its own included.
     let judgment = gatekeeper
@@ -1477,6 +1487,11 @@ async fn only_the_owner_links_or_unlinks_an_agents_approvals() {
         let refused = owner_command(dir.path(), texted_world(), "agent", args).await;
         assert_eq!(refused.unwrap_err(), "owner_only");
     }
+    // Nor may the owner link an agent that is not one of theirs in Plow.
+    let theirs =
+        json!({"command": "link_approvals", "from": AGENT, "approvals_from": fake::TEXTED});
+    let refused = owner_command(dir.path(), one_chat(), "device", theirs).await;
+    assert_eq!(refused.unwrap_err(), "no_such_agent");
     assert_eq!(
         super::rules::RulesDir::new(dir.path())
             .approvals(AGENT)
@@ -1520,11 +1535,13 @@ async fn a_link_to_a_gone_agent_or_chat_refuses_and_never_reads_its_own_line() {
         assert_eq!(code(&judgment), "approvals_link_broken");
         let failure = judgment.verdict.as_ref().unwrap_err();
         assert_eq!(failure.exit, Exit::Denied);
-        assert!(
-            failure.message.contains("link-approvals"),
-            "{}",
-            failure.message
-        );
+        // What the owner runs to fix it, exactly.
+        let unlink = format!("`latch rules unlink-approvals --agent {AGENT}`");
+        assert!(failure.message.contains(&unlink), "{}", failure.message);
+        let fix = failure.details["fix"].as_str().unwrap();
+        assert!(fix.starts_with("latch rules link-approvals "), "{fix}");
+        assert!(fix.ends_with(&format!(" --agent {AGENT}")), "{fix}");
+        assert!(failure.message.contains(fix), "{}", failure.message);
         assert_eq!(judgment.gate["approvals_from"], fake::TEXTED);
         assert!(!seen.lock().unwrap().iter().any(|r| r.contains("/messages")));
         unheeded(&judgment.gate, &model);

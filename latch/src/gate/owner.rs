@@ -223,7 +223,7 @@ async fn link(
     let from = named("from", "the agent whose approvals are linked (--agent)")?;
     let to = named(
         "approvals_from",
-        "the agent whose line is read (--from-agent)",
+        "the agent whose line is read (TEXTED_AGENT)",
     )?;
     let chat = args["chat"].as_str().map(str::to_string);
     let account = Account::read(plow).await?;

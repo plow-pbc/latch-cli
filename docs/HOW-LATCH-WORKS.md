@@ -180,9 +180,11 @@ login.
 - **The chat you text, when it's another agent's.** If you text a
   different agent of yours than the one that calls latch (an iMessage
   agent through Swarm, say), link them on the host:
-  `latch rules link-approvals --agent CALLER --from-agent TEXTED`
-  (`--chat ID` picks one chat on its line). From the next judgment the
-  caller's approvals are read only on that agent's line, never on its own.
+  `latch rules link-approvals TEXTED --agent CALLER`, TEXTED being that
+  agent's uid (`--chat ID` picks one chat on its line). From the next
+  judgment the caller's approvals are read only on that agent's line,
+  never on its own, and each judgment first asks Plow, on your login, that
+  TEXTED is still yours and the chat still on its line.
   If that agent or chat is gone, the caller's judged calls stop with
   `approvals_link_broken` (exit 4) until you link again or run
   `latch rules unlink-approvals --agent CALLER`. `latch rules show` shows
