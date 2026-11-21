@@ -33,9 +33,11 @@ browser's risky steps.
 - **Other work needs your OK** in rules or your own Plow chat: sending,
   inviting, deleting other files or mail, installing other software,
   pushing code, and changing settings, accounts or shared systems. Buying,
-  paying, reading secrets, sharing private data, code that does either,
+  paying, reading secrets, sending your files or private data off the
+  machine, code that does either,
   downloaded code, bulk deletion and rules that act on mail later must be
-  named explicitly.
+  named explicitly. A rule that allows everything (“approve everything”)
+  covers all other work, but names none of these.
 - **Permissions add; restrictions still apply.** A grant leaves other
   everyday work allowed. “Do not”, “never” and “only” set limits. Time
   limits apply inside their window. “Never” stays absolute; “unless I ask
