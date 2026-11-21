@@ -1,9 +1,10 @@
 //! What the gatekeeper judges of a caller's browser use, and how each is
 //! put to the judge: opening a site the session has not been judged for,
-//! each plan, each vault fill, and every `eval`, upload and download. Clicks, typing,
-//! page reads and screenshots are not judged, nor is `act`'s one such
-//! action (a `do` of one step is judged): they pass the browser's own
-//! checks (the risk decision, confirmations, fill and pause checks).
+//! each plan, each vault fill, every `eval`, upload and download, and an
+//! agent's confirmation of a click or Enter the risk decision paused. Other
+//! clicks, typing, page reads and screenshots are not judged, nor is `act`'s
+//! one such action (a `do` of one step is judged): they pass the browser's
+//! own checks (the risk decision, confirmations, fill and pause checks).
 //!
 //! Each is judged before anything of it is sent to the page. A refusal
 //! sends nothing; the audit gets the judgment's `gate` object either way.
@@ -65,6 +66,19 @@ pub(super) enum Action {
     DownloadFile {
         site: Option<String>,
         file: FileShown,
+    },
+    /// A click or Enter the risk decision paused as one that can't be
+    /// undone (a send, a payment, a delete), as the agent's confirmation
+    /// would carry it out: what it does, the lines of the part of the page
+    /// it acts in, and the page's fields, so what was typed is judged with
+    /// the click that sends it.
+    ConfirmedStep {
+        page: Page,
+        action: String,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        around: Vec<String>,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        fields: Vec<String>,
     },
 }
 
@@ -160,6 +174,30 @@ pub(super) async fn page(browsers: &Browsers, entry: &Entry) -> Result<Page, Fai
         url: url_as(browsers, page["url"].as_str().unwrap_or_default()),
         title: page["title"].as_str().unwrap_or_default().to_string(),
     })
+}
+
+/// `action` on the context `reviewed` (`Core::review`), with the page's
+/// non-secret `fields`.
+pub(super) fn confirmed_step(
+    browsers: &Browsers,
+    action: String,
+    reviewed: &Value,
+    fields: Vec<String>,
+) -> Action {
+    Action::ConfirmedStep {
+        page: Page {
+            url: url_as(browsers, reviewed["url"].as_str().unwrap_or_default()),
+            title: reviewed["title"].as_str().unwrap_or_default().to_string(),
+        },
+        action,
+        around: reviewed["lines"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|line| line.as_str().map(str::to_string))
+            .collect(),
+        fields,
+    }
 }
 
 /// The site of the session's active tab.

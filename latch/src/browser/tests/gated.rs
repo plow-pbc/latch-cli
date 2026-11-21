@@ -40,6 +40,8 @@ conformance!(
     goto_on_a_new_site_is_judged_as_a_tab_there_is,
     the_owners_devices_are_judged_as_the_owner,
     a_local_address_is_refused_before_the_judge_or_an_engine,
+    an_agents_confirmation_of_a_paused_send_is_judged_before_it_runs,
+    a_click_the_risk_check_lets_go_asks_the_judge_nothing,
 );
 
 /// The owner's chat, oldest message first; a test may add to it between
@@ -1644,4 +1646,192 @@ async fn a_local_address_is_refused_before_the_judge_or_an_engine(engine: &str) 
     assert!(!audit.contains_key("gate"));
     assert_eq!(judge.judged(), 0);
     assert!(hits.lock().unwrap().is_empty());
+}
+
+/// A risk decision that finds every click and Enter can't be undone, so
+/// each pauses for a confirmation.
+struct Wary;
+
+impl Provider for Wary {
+    fn ask<'a>(&'a self, _: &'a Value, questions: &'a [Question]) -> Asked<'a> {
+        let answers = questions
+            .iter()
+            .map(|question| (question.id.clone(), Answer::Yes(0.97)))
+            .collect();
+        let meta = CallMeta {
+            provider: "wary",
+            model: "wary-1".into(),
+            request_id: None,
+            latency_ms: 0,
+            cost: None,
+            exchange: None,
+        };
+        Box::pin(async move { Ok((answers, meta)) })
+    }
+}
+
+/// The compose page open in an agent's session, its message typed: the
+/// session, and the Send and Mark read buttons' refs.
+async fn composed(
+    host: &Host,
+    site: &str,
+    engine: &str,
+    message: &str,
+) -> (String, String, String) {
+    let (page, _) = host
+        .agent(
+            "open",
+            named(engine),
+            json!({"url": format!("{site}/compose.html")}),
+            None,
+        )
+        .await;
+    let page = page.unwrap();
+    let id = page["session"].as_str().unwrap().to_string();
+    let body = find(&page, "textbox", "Message");
+    let typed = act(&format!("type {body} {message}"));
+    host.agent("do", &id, typed, None).await.0.unwrap();
+    let send = find(&page, "button", "Send");
+    let read = find(&page, "button", "Mark read");
+    (id, send, read)
+}
+
+async fn shows(host: &Host, id: &str) -> String {
+    let text = host.look("text", id, json!({})).await;
+    text["text"].as_str().unwrap().to_string()
+}
+
+/// The risk decision pauses a Send; the agent's own confirmation of it
+/// is no permission, so the gatekeeper judges it, with what was typed,
+/// before it is carried out.
+async fn an_agents_confirmation_of_a_paused_send_is_judged_before_it_runs(engine: &str) {
+    let (_dir, state, _area) = test_state(engine);
+    let (site, _) = serve_site();
+    let chat = vec![message("m1", true, "have a look at my test site", 10)];
+    // The site may open; nothing confirmed is covered.
+    let judge = Judge::new(|state| match state["proposed_action"]["kind"].as_str() {
+        Some("open_site") => COVERED,
+        _ => NOT_COVERED,
+    });
+    let mut host = Host::start(&state, &site, &judge, chat.clone());
+    host.browsers.provider = Some(Arc::new(Wary));
+    let (id, send, _) = composed(&host, &site, engine, "wire the deposit today").await;
+    let paused = async |host: &Host| {
+        let (clicked, _) = host
+            .agent("do", &id, act(&format!("click {send}")), None)
+            .await;
+        let failure = clicked.unwrap_err();
+        assert_eq!(failure.code, "confirm_needed", "{failure:?}");
+        failure.details["stop"]["confirmation"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let confirm = async |host: &Host, confirmation: &str| {
+        let request = format!("r{:012x}", rand::random::<u64>() & 0xffff_ffff_ffff);
+        let args = json!({"request": request, "plan": {"steps": []}, "confirm": confirmation});
+        host.agent("do", &id, args, None).await
+    };
+
+    // Refused: nothing is sent, and the judge was asked once, shown the
+    // Send, its page and the message.
+    let confirmation = paused(&host).await;
+    let asked = judge.judged();
+    let (refusal, audit) = confirm(&host, &confirmation).await;
+    let failure = refusal.unwrap_err();
+    assert_eq!(
+        (
+            failure.exit,
+            failure.code.as_str(),
+            &failure.details["stop"]["reason"]
+        ),
+        (Exit::Denied, "gatekeeper_denied", &json!("not_covered")),
+        "{failure:?}"
+    );
+    assert_eq!(judge.judged(), asked + 1);
+    let judged = judge.last_action();
+    assert_eq!(judged["kind"], "confirmed_step", "{judged:#}");
+    assert!(
+        judged["action"].as_str().unwrap().contains("\"Send\""),
+        "{judged:#}"
+    );
+    assert!(
+        judged["page"]["url"]
+            .as_str()
+            .unwrap()
+            .ends_with("/compose.html"),
+        "{judged:#}"
+    );
+    assert!(
+        judged.to_string().contains("wire the deposit today"),
+        "{judged:#}"
+    );
+    assert_eq!(audit["gate"]["verdict"], "not_covered");
+    assert!(shows(&host, &id).await.contains("nothing sent"));
+
+    // A judge that can't be reached sends nothing either.
+    let confirmation = paused(&host).await;
+    judge.down.store(true, std::sync::atomic::Ordering::SeqCst);
+    let failure = confirm(&host, &confirmation).await.0.unwrap_err();
+    judge.down.store(false, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(
+        (failure.exit, failure.code.as_str()),
+        (Exit::Unreachable, "gatekeeper_unavailable")
+    );
+    assert!(shows(&host, &id).await.contains("nothing sent"));
+
+    // Covered, but the page changes the message while the judge decides:
+    // what was judged is not what would be sent, so nothing is.
+    judge.answer(|_| COVERED);
+    let confirmation = paused(&host).await;
+    judge.slow.store(2000, std::sync::atomic::Ordering::SeqCst);
+    let swap = "document.getElementById('body').value = 'wire it all today'";
+    let ((raced, _), _) = tokio::join!(confirm(&host, &confirmation), async {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        host.look("eval", &id, json!({"script": swap})).await
+    });
+    judge.slow.store(0, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(raced.unwrap_err().code, "confirm_stale");
+    assert!(shows(&host, &id).await.contains("nothing sent"));
+    let back = "document.getElementById('body').value = 'wire the deposit today'";
+    host.look("eval", &id, json!({"script": back})).await;
+
+    // Covered, the confirmed Send goes out.
+    let confirmation = paused(&host).await;
+    let asked = judge.judged();
+    confirm(&host, &confirmation).await.0.unwrap();
+    assert_eq!(judge.judged(), asked + 1);
+    assert!(
+        shows(&host, &id)
+            .await
+            .contains("sent: wire the deposit today")
+    );
+    host.look("close", &id, json!({})).await;
+}
+
+/// A click the risk decision lets go is not judged: only a paused one
+/// that is confirmed is.
+async fn a_click_the_risk_check_lets_go_asks_the_judge_nothing(engine: &str) {
+    let (_dir, state, _area) = test_state(engine);
+    let (site, _) = serve_site();
+    let chat = vec![message("m1", true, "have a look at my test site", 10)];
+    let judge = Judge::new(|state| match state["proposed_action"]["kind"].as_str() {
+        Some("open_site") => COVERED,
+        _ => NOT_COVERED,
+    });
+    let host = Host::start(&state, &site, &judge, chat.clone());
+    let (id, _, read) = composed(&host, &site, engine, "On my way").await;
+    let asked = judge.judged();
+    let (clicked, audit) = host
+        .agent("do", &id, act(&format!("click {read}")), None)
+        .await;
+    clicked.unwrap();
+    assert_eq!(judge.judged(), asked);
+    assert!(!audit.contains_key("gate"));
+    assert!(
+        shows(&host, &id)
+            .await
+            .contains("marked read, trusted true")
+    );
+    host.look("close", &id, json!({})).await;
 }

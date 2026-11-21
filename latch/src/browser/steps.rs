@@ -43,7 +43,7 @@ use super::model::{self, CHECKABLE_P, RISKY_P};
 use super::plan::{Check, CheckKind, Literal, Op, Plan, Step};
 use super::session::Session;
 use crate::failure::{Code, Exit, Failure, code};
-use crate::gate::Gate;
+use crate::gate::{Caller, Gate};
 use crate::model::Model;
 use crate::state::to_hex;
 
@@ -823,7 +823,8 @@ impl Run<'_> {
     }
 
     /// Carries out confirmation `id`: once, on the element and context it
-    /// was issued for, with no new risk decision.
+    /// was issued for, with no new risk decision, once an agent's has been
+    /// judged.
     async fn confirmed(&mut self, n: usize, id: &str) -> Result<Done, Failure> {
         let taken = {
             let mut all = self.entry.confirmations.lock().expect("confirmations lock");
@@ -895,6 +896,8 @@ impl Run<'_> {
                 "no longer matches the page: the element or the lines around it changed",
             ));
         }
+        self.judge_confirmed(n, id, &literal, &reviewed, enter)
+            .await?;
         let guard = Some((print.as_str(), enter));
         let sent = self.dispatch(n, &literal, None, Some(id), guard).await;
         match sent {
@@ -906,6 +909,53 @@ impl Run<'_> {
             sent => sent?,
         }
         self.check(n, &literal, None, Vec::new()).await
+    }
+
+    /// Judges an agent's confirmation of what the risk decision paused,
+    /// before it is carried out: the agent's say-so is no permission. A
+    /// refusal, or a judge that can't be reached, sends nothing; so does a
+    /// field that changed while the judge decided.
+    async fn judge_confirmed(
+        &mut self,
+        n: usize,
+        id: &str,
+        literal: &Literal,
+        reviewed: &Value,
+        enter: bool,
+    ) -> Result<(), Failure> {
+        let Some(gate) = self
+            .gate
+            .filter(|gate| matches!(gate.caller, Caller::Agent { .. }))
+        else {
+            return Ok(());
+        };
+        let fields = |seen: &Value| strings(&seen["fields"]);
+        let (seen, _) = call(self.entry, json!({"op": "lines"}), self.audit).await?;
+        let typing = literal.op == Op::Type;
+        let mut what = action_line(reviewed, enter, typing);
+        if let Some(text) = literal.text.as_deref().filter(|_| typing) {
+            what.push_str(&format!(", typing {text:?}"));
+        }
+        let action = judged::confirmed_step(self.browsers, what, reviewed, fields(&seen));
+        let filled = self.entry.filled();
+        if let Err(failure) = judged::judge(Some(gate), action, &filled, self.audit).await {
+            self.records
+                .push(json!({"step": n, "op": literal.op, "ref": literal.target,
+                                     "confirmation": id, "dispatch": "refused"}));
+            return Err(failure);
+        }
+        let (now, _) = call(self.entry, json!({"op": "lines"}), self.audit).await?;
+        if fields(&now) != fields(&seen) {
+            let mut failure = Failure::new(
+                code::confirm_stale,
+                format!(
+                    "confirmation {id} no longer matches the page: a field changed while it was judged; nothing was sent. Look at the page again"
+                ),
+            );
+            failure.details = json!({"confirmation": id});
+            return Err(failure);
+        }
+        Ok(())
     }
 
     /// One action, journaled before it is sent and once its result is known.
