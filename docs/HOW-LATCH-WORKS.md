@@ -134,8 +134,9 @@ asks through Plow, on the host's own Plow login.
 | An operation the host doesn't know | Refused: `unknown_op`. |
 | `vault`, `rules`, `agents`, `plugins` (yours) | Never judged. |
 
-Reading a page, screenshots, a single `act` step and a `do --confirm` that
-only confirms a click aren't judged. Separately, the browser's own risk
+Reading a page, screenshots and a single `act` step aren't judged; an
+agent's `do --confirm` of a click or Enter the risk check paused is, as
+intent work, before it runs. Separately, the browser's own risk
 check stops a click or Enter it judges consequential (paying, sending,
 deleting) until the caller confirms it with `browser do --confirm`.
 

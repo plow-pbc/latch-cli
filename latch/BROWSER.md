@@ -398,10 +398,15 @@ each before anything of it reaches the page:
 - every `eval`, judged on its whole script: a script that reads form
   fields, listens to input, keyboard or form events, or sends page data
   off the page needs the owner's explicit OK;
-- every upload (the file's name and size).
+- every upload (the file's name and size);
+- an agent's `--confirm` of a click or Enter the risk decision paused,
+  before it is carried out: what it does, the lines around it and the
+  page's fields, so what was typed is judged with the click that sends
+  it. A field that changes while it is judged sends nothing
+  (`confirm_stale`).
 
-Clicks, typing, `act`, page reads, screenshots and the `--confirm` of an
-ordinary click are not judged: the risk decision, confirmations and the
+Other clicks, typing, `act`, page reads and screenshots are not judged:
+the risk decision, confirmations and the
 fill and pause checks above still hold. A refusal is exit 4,
 `gatekeeper_denied`, and nothing was sent; its `next` says the one thing
 to do. With reason `not_covered`, ask the owner in your 1:1 room, saying
