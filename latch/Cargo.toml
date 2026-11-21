@@ -26,7 +26,7 @@ iroh-relay = { version = "1.3.0", default-features = false }
 n0-error = "1.0.1"
 # Time stamps (RFC 3339, UTC) in the audit log and the host's log.
 jiff = { version = "0.2.38", features = ["serde"] }
-mandate = { path = "mandate" }
+mandate = { version = "0.1.0", path = "mandate" }
 # The C library: `killpg` to stop a timed-out program with everything it
 # started, and signal numbers to name how a program ended.
 libc = "0.2.190"
