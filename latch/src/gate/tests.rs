@@ -1522,9 +1522,13 @@ async fn a_link_to_a_gone_agent_or_chat_refuses_and_never_reads_its_own_line() {
         })
     };
     // The agent it linked to was deleted (or re-created under a new uid);
-    // then the linked chat left that agent's line.
+    // its line has no chat the host can read; the linked chat left it. The
+    // rules layer allows each, and is not enough.
+    let mut no_chat = one_chat();
+    no_chat.texted = true;
     for (world, link) in [
         (one_chat(), to(None)),
+        (no_chat, to(None)),
         (texted_world(), to(Some("chat_gone"))),
     ] {
         let model = Recorder::answering(0.9, 0.05, 0.05);

@@ -36,9 +36,10 @@ pub struct Said {
 /// The chat `agent` acts in, on its own line or, when its owner linked its
 /// approvals (`link`), on the linked agent's line, never its own: the
 /// linked chat, else `named` if it is on that line, else the line's one
-/// chat. `None` when the line has no chat. Refused `which_chat` when the
-/// agent must name one, or named one not on the line; and
-/// `approvals_link_broken` when the linked agent or chat is gone.
+/// chat. `None` when its own line has no chat. Refused `which_chat` when
+/// the agent must name one, or named one not on the line; and
+/// `approvals_link_broken` when the linked agent is gone or its line has no
+/// chat, or the linked chat left it.
 pub async fn read(
     plow: &Plow,
     agent: &str,
@@ -77,6 +78,19 @@ pub async fn read(
                 }
                 result => result.map_err(failed)?,
             };
+            // A linked line with no chat the host can read is no grant of
+            // rules-only judgment: the owner meant this chat to be read.
+            if on_line.is_empty() {
+                return Err(broken(
+                    agent,
+                    link,
+                    "the owner has no chat on that agent's line that this host can read",
+                    &format!(
+                        "latch rules link-approvals {} --agent {agent}",
+                        link.agent_uid
+                    ),
+                ));
+            }
             if let Some(linked) = &link.chat
                 && !on_line.contains(linked)
             {
@@ -90,10 +104,8 @@ pub async fn read(
                     ),
                 ));
             }
-            match choose(asked, &on_line, "the linked agent's")? {
-                Some(chat) => chat,
-                None => return Ok(None),
-            }
+            choose(asked, &on_line, "the linked agent's")?
+                .expect("a line with a chat has one to choose")
         }
     };
 

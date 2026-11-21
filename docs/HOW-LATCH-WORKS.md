@@ -185,7 +185,8 @@ login.
   judgment the caller's approvals are read only on that agent's line,
   never on its own, and each judgment first asks Plow, on your login, that
   TEXTED is still yours and the chat still on its line.
-  If that agent or chat is gone, the caller's judged calls stop with
+  If that agent is gone, its line has no chat the host can read, or the
+  linked chat left it, the caller's judged calls stop with
   `approvals_link_broken` (exit 4) until you link again or run
   `latch rules unlink-approvals --agent CALLER`. `latch rules show` shows
   each link as `approvals_from`, and the audit's `gate` names it too.
