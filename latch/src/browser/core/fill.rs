@@ -59,6 +59,8 @@ type FrameRefs = (Frame, Vec<(String, usize)>);
 
 /// One field a value goes into.
 struct Target {
+    /// The item's field it takes, for the audit of a refusal.
+    field: String,
     reference: String,
     frame: Frame,
     snapshot: String,
@@ -164,6 +166,10 @@ impl<D: Driver> Core<D> {
                     return Err(stale());
                 }
                 if info["disabled"] == true {
+                    audit.insert(
+                        "fill_refused".into(),
+                        json!({"field": key, "reason": "the page has disabled this field"}),
+                    );
                     return Err(Failure::new(
                         code::fill_refused,
                         "nothing was filled: the page has disabled this field, as a page does while it sends a form or takes a payment; don't fill or press again: look at the page, and the site's orders or account, for how it ended".into(),
@@ -176,6 +182,7 @@ impl<D: Driver> Core<D> {
                     object.insert("frame".into(), json!(frame.id));
                 }
                 targets.push(Target {
+                    field: key.clone(),
                     reference: reference.clone(),
                     frame,
                     snapshot: id,
@@ -328,6 +335,7 @@ impl<D: Driver> Core<D> {
         value: &str,
         secret: bool,
         formatted: bool,
+        audit: &mut Map<String, Value>,
     ) -> Result<Value, Failure> {
         let Some(at) = self.fill.targets.iter().position(|t| t.reference == target) else {
             return Err(Failure::new(
@@ -337,8 +345,15 @@ impl<D: Driver> Core<D> {
         };
         let frames = self.driver.frames()?;
         let target = &self.fill.targets[at];
-        let refused =
-            |why: &str| Failure::new(code::fill_refused, format!("nothing was filled: {why}"));
+        // The audit keeps the field and the reason: never the value.
+        let field = target.field.clone();
+        let mut refused = |why: &str| {
+            audit.insert(
+                "fill_refused".into(),
+                json!({"field": field, "reason": why}),
+            );
+            Failure::new(code::fill_refused, format!("nothing was filled: {why}"))
+        };
         if !frames
             .iter()
             .any(|f| f.id == target.frame.id && f.document == target.frame.document)
@@ -925,6 +940,43 @@ mod tests {
             sign_in_shown("/", &[nothing, None]),
             "after the submit, the page (/) could not be read"
         );
+    }
+
+    /// A refused fill's audit names the field and the refusal, and never
+    /// holds the value latch was about to set.
+    #[test]
+    fn a_refused_fill_audits_its_field_and_reason_but_no_value() {
+        let mut core = Core::new(Fake {
+            shown: Shown::Gone,
+            guarded: Vec::new(),
+        });
+        core.paused = true;
+        core.fill.targets.push(Target {
+            field: "state".into(),
+            reference: "e5".into(),
+            frame: Frame {
+                id: "f1".into(),
+                parent: Some("f0".into()),
+                document: "d1".into(),
+            },
+            snapshot: "s1".into(),
+            index: 0,
+            origin: "https://shop.example".into(),
+            token: "t".into(),
+        });
+        let set = Call::SetValue {
+            target: "e5".into(),
+            value: "Arizona".into(),
+            secret: false,
+            formatted: false,
+        };
+        let refused = core.call(set, None).err().unwrap();
+        assert_eq!(refused.code, "fill_refused");
+        assert_eq!(
+            refused.details["audit"]["fill_refused"],
+            json!({"field": "state", "reason": "the document was replaced"})
+        );
+        assert!(!refused.details.to_string().contains("Arizona"));
     }
 
     #[test]
