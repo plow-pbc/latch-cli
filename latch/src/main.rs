@@ -291,8 +291,12 @@ async fn run(
             match login::run(&state, args).await {
                 Ok(output) => {
                     let peer = &output.peer;
-                    login::event(json!({"type": "verified", "peer":
-                        {"name": peer.name, "key": peer.key, "kind": peer.kind}}));
+                    let mut verified = json!({"type": "verified", "peer":
+                        {"name": peer.name, "key": peer.key, "kind": peer.kind}});
+                    if let Some(warning) = &output.policy_warning {
+                        verified["policy_warning"] = json!(warning);
+                    }
+                    login::event(verified);
                     Ok(Printed(String::new()))
                 }
                 Err(failure) if failure.code == "code_expired" => {

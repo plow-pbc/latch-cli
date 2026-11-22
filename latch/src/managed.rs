@@ -329,6 +329,21 @@ pub fn saved_deny_exec(dir: &Path) -> Option<crate::serve::DenyExec> {
     )
 }
 
+/// The individual agents and original flags from the last host start.
+pub fn saved_denials(dir: &Path) -> Result<(Vec<String>, Vec<String>), Failure> {
+    let Some((given, args)) = saved(dir)? else {
+        return Ok((Vec::new(), Vec::new()));
+    };
+    let mut agents: Vec<String> = args
+        .deny_exec
+        .into_iter()
+        .filter(|uid| uid != crate::cli::EVERY_AGENT)
+        .collect();
+    agents.sort();
+    agents.dedup();
+    Ok((agents, given))
+}
+
 /// The flags the last host on `dir` saved, as given and as parsed.
 fn saved(dir: &Path) -> Result<Option<(Vec<String>, ServeArgs)>, Failure> {
     let path = dir.join(ARGS_FILE);
