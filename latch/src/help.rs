@@ -259,6 +259,46 @@ const ENTRIES: &[Entry] = &[
         ],
     },
     Entry {
+        id: "agents.adopt",
+        runs_on: |_| RunsOn::Local,
+        output: "`agent` (as `agents show` gives it), `credential_file` (the absolute path of its private environment file), `api_url`, `credential_id` and `expires_at`. The credential secret is only in the file, never the output.",
+        effect: Once(
+            "mints a separately expiring Latch credential for an existing agent and writes its secret and lifecycle metadata to a new private environment file; the agent logs in with a fresh state folder and peer key",
+        ),
+        owner_only: true,
+        connector: None,
+        examples: &[ex(
+            "Use Latch as an agent you already text",
+            &[
+                "agents",
+                "adopt",
+                "Maple",
+                "--credential-file",
+                "maple-latch.env",
+            ],
+        )],
+    },
+    Entry {
+        id: "agents.revoke",
+        runs_on: |_| RunsOn::Local,
+        output: "`agent`, `status` (`revoked`), `credential_id` and `credential_file`. The environment file remains as the record of what was revoked.",
+        effect: Once(
+            "revokes only the adopted Latch credential named in the environment file; the agent and its other credentials remain active",
+        ),
+        owner_only: true,
+        connector: None,
+        examples: &[ex(
+            "Revoke an adopted agent's Latch credential",
+            &[
+                "agents",
+                "revoke",
+                "Maple",
+                "--credential-file",
+                "maple-latch.env",
+            ],
+        )],
+    },
+    Entry {
         id: "agents.card",
         runs_on: |_| RunsOn::Local,
         output: "`agent` (its uid), `card_url`, the `path` the vCard was saved to and its `size`. The card is the one Plow names for the agent's line (its persona's, photo included), fetched without your credential; an unnamed line has none (`no_card`).",
