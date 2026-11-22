@@ -1242,7 +1242,7 @@ pub enum AgentsAction {
     ///
     /// Reads the agent and credential ids from its environment file, stages a
     /// new credential, revokes the old one, then atomically replaces the file.
-    /// The new secret, id and expiry are never printed.
+    /// The new secret is never printed.
     Rotate {
         /// The existing agent, by its uid or exact name
         agent: String,

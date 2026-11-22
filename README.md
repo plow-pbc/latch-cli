@@ -60,16 +60,6 @@ Then run `latch` alone to see this machine at a glance.
   Give `FILE` to the agent. It sets `PLOW_API_BASE` and `PLOW_AGENT_TOKEN`:
   load it into the agent's environment (Docker Compose's `env_file`, or
   `set -a; . FILE; set +a`), then run `latch login` there.
-- **An agent you already text** can use Latch without creating another agent:
-
-  ```sh
-  latch agents adopt NAME --credential-file FILE
-  ```
-
-  Load `FILE` into the agent's environment and run `latch login` there.
-  `latch agents rotate NAME --credential-file FILE` replaces that Latch
-  credential; `latch agents revoke NAME --credential-file FILE` revokes only
-  it, without removing the agent or its other credential.
 - **Never copy your own login to an agent.** A host treats your login as
   you, so it would not judge the agent's calls as the agent's.
 

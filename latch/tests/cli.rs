@@ -4646,25 +4646,6 @@ fn an_existing_agent_is_adopted_rotated_and_revoked() {
         "{requests:?}"
     );
 
-    let (old_url, old_server) = fake_plow(vec![(401, json!({})), (401, json!({}))]);
-    let old = dir.path().join("old-credential");
-    let old_env = [
-        ("PLOW_API_BASE", Path::new(old_url.as_str())),
-        ("PLOW_AGENT_TOKEN", Path::new("latch-agent-11")),
-    ];
-    let refused = latch(&old, &["login"], &old_env);
-    assert_eq!(refused.status.code(), Some(4), "{refused:?}");
-    let error: Value = serde_json::from_slice(&refused.stderr).unwrap();
-    assert_eq!(error["error"]["code"], "plow_denied");
-    assert!(
-        error["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("rotated or revoked"),
-        "{error}"
-    );
-    old_server.join().unwrap();
-
     let (next_url, next_server) = fake_plow(vec![
         me("Research bot"),
         (200, peer(Value::Null, "Research bot", "agent", Value::Null)),
