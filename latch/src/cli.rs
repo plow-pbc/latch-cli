@@ -1227,7 +1227,9 @@ pub enum AgentsAction {
     /// Plow mints a separately expiring credential for the named agent. Its
     /// secret, id and expiry go to a new private environment file; the secret
     /// is never printed. Load that file into the agent's environment, then run
-    /// `latch login` there.
+    /// `latch --state-dir NEW login` with a fresh state folder. Reusing another
+    /// agent's state would reuse its peer key, which identifies that agent
+    /// until its credential is revoked.
     Adopt {
         /// The existing agent, by its uid or exact name
         agent: String,
@@ -1240,9 +1242,9 @@ pub enum AgentsAction {
     },
     /// Replace an adopted agent's Latch credential
     ///
-    /// Reads the agent and credential ids from its environment file, stages a
-    /// new credential, revokes the old one, then atomically replaces the file.
-    /// The new secret is never printed.
+    /// Reads the agent and credential ids from its environment file, asks Plow
+    /// to replace the credential atomically, then replaces the file. The new
+    /// secret is never printed.
     Rotate {
         /// The existing agent, by its uid or exact name
         agent: String,

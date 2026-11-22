@@ -543,39 +543,24 @@ async fn adopt(
     Ok(credential_output(agent, path, agent_api_url, &credential))
 }
 
-/// Rotates the credential named inside `credential_file`, then atomically
-/// replaces that file so a partial write never destroys the old identity.
+/// Atomically rotates the credential named inside `credential_file`, then
+/// replaces that file so a partial write never destroys its lifecycle record.
 async fn rotate(plow: &Plow, named: &str, credential_file: &Path) -> Result<Value, Failure> {
     let agent = resolve(plow, named).await?;
     let saved = StoredCredential::read(credential_file)?;
     saved.require_agent(&agent.uid, credential_file)?;
     let replacement = CredentialFile::replacement(credential_file)?;
-    let credential = match plow.mint_agent_credential(&agent.uid).await {
+    let credential = match plow
+        .rotate_agent_credential(&agent.uid, saved.credential_id)
+        .await
+    {
         Ok(credential) => credential,
         Err(failure) => {
             replacement.abandon();
             return Err(credential_request_failed(failure, "rotated"));
         }
     };
-    let temporary =
-        keep_minted(plow, replacement, &saved.api_base, &credential, &agent.uid).await?;
-    if let Err(mut failure) = plow
-        .revoke_agent_credential(&agent.uid, saved.credential_id)
-        .await
-    {
-        failure.message = format!(
-            "{}; credential {} may or may not be revoked, so replacement credential {} remains in {} for reconciliation",
-            failure.message,
-            saved.credential_id,
-            credential.id,
-            temporary.display()
-        );
-        failure.details = json!({"agent_uid": agent.uid,
-                                 "previous_credential_id": saved.credential_id,
-                                 "replacement_credential_id": credential.id,
-                                 "replacement_credential_file": temporary});
-        return Err(credential_request_failed(failure, "rotated"));
-    }
+    let temporary = replacement.keep_scoped(&saved.api_base, &credential, &agent.uid)?;
     std::fs::rename(&temporary, credential_file).map_err(|err| {
         let message = format!(
             "credential {} was rotated and saved privately to {}, but couldn't replace {}: {err}",

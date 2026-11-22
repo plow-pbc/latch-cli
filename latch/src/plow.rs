@@ -246,6 +246,7 @@ pub struct CreatedAgent {
 pub struct AgentCredential {
     pub id: u64,
     pub token: String,
+    scopes: Vec<String>,
     pub expires_at: String,
 }
 
@@ -647,7 +648,23 @@ impl Plow {
         let response = self
             .send(self.http.post(url).json(&serde_json::json!({})))
             .await?;
-        response.json().await.map_err(|_| bad_answer())
+        agent_credential(response).await
+    }
+
+    /// Atomically replaces one Latch credential for an agent.
+    pub async fn rotate_agent_credential(
+        &self,
+        agent_uid: &str,
+        credential_id: u64,
+    ) -> Result<AgentCredential, Failure> {
+        let url = format!(
+            "{}/v1/latch/agents/{agent_uid}/credentials/{credential_id}/rotate",
+            self.api_url
+        );
+        let response = self
+            .send(self.http.post(url).json(&serde_json::json!({})))
+            .await?;
+        agent_credential(response).await
     }
 
     /// Revokes only the named Latch credential, leaving its agent intact.
@@ -864,6 +881,14 @@ fn bad_answer() -> Failure {
         code::plow_error,
         "Plow's answer was not what latch expected".to_string(),
     )
+}
+
+async fn agent_credential(response: reqwest::Response) -> Result<AgentCredential, Failure> {
+    let credential: AgentCredential = response.json().await.map_err(|_| bad_answer())?;
+    if credential.scopes.as_slice() != ["latch:agent"] {
+        return Err(bad_answer());
+    }
+    Ok(credential)
 }
 
 #[cfg(test)]
