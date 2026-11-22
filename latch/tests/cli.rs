@@ -3186,7 +3186,7 @@ fn switching_an_agent_login_lists_local_policy_to_reapply() {
     const OLD: &str = "11111111111111111111111111111111";
     const NEW: &str = "22222222222222222222222222222222";
     let dir = test_dir();
-    let state = dir.path().join("state");
+    let state = dir.path().join("custom state");
     let token = dir.path().join("agent.token");
     fs::write(&token, "old-agent\n").unwrap();
     let env = [("PLOW_TOKEN_FILE", token.as_path())];
@@ -3198,6 +3198,7 @@ fn switching_an_agent_login_lists_local_policy_to_reapply() {
     let first = latch(&state, &["login", "--api-url", &api_url], &env);
     assert_eq!(first.status.code(), Some(0), "{first:?}");
     server.join().unwrap();
+    let saved_config = fs::read(state.join("config.json")).unwrap();
     let switching = |registration| {
         fake_plow(vec![
             (200, json!({"agent": {"uid": NEW, "name": "New agent"}})),
@@ -3223,24 +3224,31 @@ fn switching_an_agent_login_lists_local_policy_to_reapply() {
     .unwrap();
     fs::write(&token, "new-agent\n").unwrap();
     fs::remove_file(state.join("agent-uid")).unwrap();
+    fs::remove_file(state.join("config.json")).unwrap();
     let (api_url, server) = fake_plow(vec![
         (200, json!({"agent": {"uid": NEW, "name": "New agent"}})),
         (500, json!({})),
     ]);
     let missing = latch(&state, &["login", "--api-url", &api_url], &env);
     assert_ne!(missing.status.code(), Some(0));
+    assert!(
+        String::from_utf8_lossy(&missing.stderr)
+            .contains(&format!("Local restrictions name agents other than {NEW}")),
+        "{missing:?}"
+    );
+    let latch = format!("latch --state-dir '{}'", state.display());
     let reapply = format!(
-        "latch serve -d --headless-browsers --deny-exec={OLD} --deny-exec=33333333333333333333333333333333 --deny-exec={NEW}"
+        "{latch} serve -d --headless-browsers --deny-exec={OLD} --deny-exec=33333333333333333333333333333333 --deny-exec={NEW}"
     );
     assert!(
         [
-            "previous agent uid was not recorded",
+            &format!("Stop the host first: {latch} stop"),
             &format!("--deny-exec={OLD}: {reapply}"),
             &format!("--deny-exec=33333333333333333333333333333333: {reapply}"),
-            &format!("rules/{OLD}.txt: latch rules edit --agent {NEW}"),
+            &format!("rules/{OLD}.txt: {latch} rules edit --agent {NEW}"),
         ]
         .iter()
-        .all(|text| String::from_utf8_lossy(&missing.stderr).contains(text)),
+        .all(|text| String::from_utf8_lossy(&missing.stderr).contains(*text)),
         "{missing:?}"
     );
     assert!(
@@ -3248,7 +3256,8 @@ fn switching_an_agent_login_lists_local_policy_to_reapply() {
         "{missing:?}"
     );
     assert_eq!(server.join().unwrap().len(), 2);
-    fs::write(state.join("agent-uid"), OLD).unwrap();
+    fs::write(state.join("config.json"), &saved_config).unwrap();
+    fs::write(state.join("agent-uid"), NEW).unwrap();
 
     let (api_url, server) = switching((500, json!({})));
     let unattended = latch_command(&state, &["login", "--api-url", &api_url], &env)
@@ -3256,8 +3265,11 @@ fn switching_an_agent_login_lists_local_policy_to_reapply() {
         .unwrap();
     assert_ne!(unattended.status.code(), Some(0));
     let warning = String::from_utf8_lossy(&unattended.stderr);
+    assert!(warning.contains(&format!("Local restrictions name agents other than {NEW}")));
     assert!(warning.contains("Restrictions are NOT carried or copied"));
-    assert!(warning.contains(&format!("rules/{OLD}.txt: latch rules edit --agent {NEW}")));
+    assert!(warning.contains(&format!(
+        "rules/{OLD}.txt: {latch} rules edit --agent {NEW}"
+    )));
     assert!(!warning.contains("terminal") && !warning.contains("studio"));
     assert_eq!(
         fs::read_to_string(state.join(format!("rules/{NEW}.txt"))).unwrap(),
@@ -3285,8 +3297,10 @@ fn switching_an_agent_login_lists_local_policy_to_reapply() {
         .find(|event| event["type"] == "verified")
         .unwrap();
     let warning = verified["policy_warning"].as_str().unwrap();
-    assert!(warning.contains(&format!("--deny-exec={OLD}: latch serve -d")));
-    assert!(warning.contains(&format!("rules/{OLD}.txt: latch rules edit --agent {NEW}")));
+    assert!(warning.contains(&format!("--deny-exec={OLD}: {latch} serve -d")));
+    assert!(warning.contains(&format!(
+        "rules/{OLD}.txt: {latch} rules edit --agent {NEW}"
+    )));
     assert!(verified.get("policy_handoff").is_none());
     assert_eq!(server.join().unwrap().len(), 2);
     fs::write(state.join("agent-uid"), OLD).unwrap();

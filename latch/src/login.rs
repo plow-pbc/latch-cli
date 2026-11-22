@@ -177,19 +177,9 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
         } else {
             Some(plow.agent_me().await?)
         };
-        let policy_warning = match (&saved, &me, saved_agent_uid.as_deref()) {
-            (Some(config), Some(me), Some(old_uid))
-                if config.peer.kind == "agent" && old_uid != me.uid =>
-            {
-                Some(policy_inventory_warning(state, Some(old_uid), &me.uid)?)
-            }
-            (Some(config), Some(me), None) if config.peer.kind == "agent" => {
-                Some(policy_inventory_warning(state, None, &me.uid)?)
-            }
-            (None, Some(me), Some(old_uid)) if old_uid != me.uid => {
-                Some(policy_inventory_warning(state, Some(old_uid), &me.uid)?)
-            }
-            _ => None,
+        let policy_warning = match &me {
+            Some(me) => policy_inventory_warning(state, saved_agent_uid.as_deref(), &me.uid)?,
+            None => None,
         };
         if let Some(warning) = &policy_warning {
             eprintln!("{warning}");
@@ -254,15 +244,30 @@ fn policy_inventory_warning(
     state: &StateDir,
     old_uid: Option<&str>,
     new_uid: &str,
-) -> Result<String, Failure> {
-    let mut warning = match old_uid {
+) -> Result<Option<String>, Failure> {
+    let (denied, mut flags) = crate::managed::saved_denials(&state.path)?;
+    let denied: Vec<String> = denied.into_iter().filter(|uid| uid != new_uid).collect();
+    let rules: Vec<String> = RulesDir::new(&state.path)
+        .agents()?
+        .into_iter()
+        .filter(|uid| uid != new_uid)
+        .collect();
+    if denied.is_empty() && rules.is_empty() {
+        return Ok(None);
+    }
+    let mut warning = match old_uid.filter(|old_uid| *old_uid != new_uid) {
         Some(old_uid) => format!(
             "This state was agent {old_uid}; it is logging in as agent {new_uid}. Restrictions are NOT carried or copied. Review these local entries and re-apply only their restrictions by hand:"
         ),
-        None => "The previous agent uid was not recorded. Restrictions are NOT carried or copied. Review these local entries and re-apply only their restrictions by hand before switching credentials:"
-            .to_string(),
+        None => format!(
+            "Local restrictions name agents other than {new_uid}. Restrictions are NOT carried or copied. Review these entries and re-apply only their restrictions by hand:"
+        ),
     };
-    let (denied, mut flags) = crate::managed::saved_denials(&state.path)?;
+    let latch = format!(
+        "latch --state-dir {}",
+        shell_quoted(&state.path.to_string_lossy())
+    );
+    warning.push_str(&format!("\nStop the host first: {latch} stop"));
     if !flags
         .iter()
         .any(|flag| flag == "--deny-exec" || flag == &format!("--deny-exec={new_uid}"))
@@ -274,19 +279,15 @@ fn policy_inventory_warning(
         .map(|flag| shell_quoted(flag))
         .collect::<Vec<_>>()
         .join(" ");
-    for uid in denied.into_iter().filter(|uid| uid != new_uid) {
-        warning.push_str(&format!("\n--deny-exec={uid}: latch serve -d {serve}"));
+    for uid in denied {
+        warning.push_str(&format!("\n--deny-exec={uid}: {latch} serve -d {serve}"));
     }
-    for uid in RulesDir::new(&state.path)
-        .agents()?
-        .into_iter()
-        .filter(|uid| uid != new_uid)
-    {
+    for uid in rules {
         warning.push_str(&format!(
-            "\nrules/{uid}.txt: latch rules edit --agent {new_uid}"
+            "\nrules/{uid}.txt: {latch} rules edit --agent {new_uid}"
         ));
     }
-    Ok(warning)
+    Ok(Some(warning))
 }
 
 /// Logs an agent in on its first command that needs Plow or a host, as
