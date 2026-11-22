@@ -2682,8 +2682,7 @@ impl LivePlow {
                 )
             }
             ("DELETE", path)
-                if kind == "device"
-                    && path == format!("/v1/latch/agents/{AGENT_UID}/credentials/11") =>
+                if kind == "device" && path == "/v1/api-keys/11" =>
             {
                 state.agent_credentials.retain(|token| token != "latch-agent-11");
                 (200, json!({"status": "revoked", "id": 11}))
@@ -4723,7 +4722,7 @@ fn agents_are_shown_created_and_removed_by_their_owner() {
     let seen = plow.seen();
     for request in [
         format!("POST /v1/latch/agents/{AGENT_UID}/credentials "),
-        format!("DELETE /v1/latch/agents/{AGENT_UID}/credentials/11 "),
+        "DELETE /v1/api-keys/11 ".to_string(),
     ] {
         assert!(
             seen.iter().any(|(line, _)| line.starts_with(&request)),

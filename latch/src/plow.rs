@@ -646,15 +646,8 @@ impl Plow {
     }
 
     /// Revokes only the named Latch credential, leaving its agent intact.
-    pub async fn revoke_agent_credential(
-        &self,
-        agent_uid: &str,
-        credential_id: u64,
-    ) -> Result<(), Failure> {
-        let url = format!(
-            "{}/v1/latch/agents/{agent_uid}/credentials/{credential_id}",
-            self.api_url
-        );
+    pub async fn revoke_agent_credential(&self, credential_id: u64) -> Result<(), Failure> {
+        let url = format!("{}/v1/api-keys/{credential_id}", self.api_url);
         self.send(self.http.delete(url)).await?;
         Ok(())
     }

@@ -554,7 +554,7 @@ async fn revoke(plow: &Plow, named: &str, credential_file: &Path) -> Result<Valu
     let agent = resolve(plow, named).await?;
     let saved = StoredCredential::read(credential_file)?;
     saved.require_agent(&agent.uid, credential_file)?;
-    plow.revoke_agent_credential(&agent.uid, saved.credential_id)
+    plow.revoke_agent_credential(saved.credential_id)
         .await
         .map_err(|failure| credential_request_failed(failure, "revoked"))?;
     Ok(
@@ -580,10 +580,7 @@ async fn keep_minted(
     match file.keep(&text) {
         Ok(path) => Ok(path),
         Err((file, err)) => {
-            let revoked = plow
-                .revoke_agent_credential(agent_uid, credential.id)
-                .await
-                .is_ok();
+            let revoked = plow.revoke_agent_credential(credential.id).await.is_ok();
             let file_removed = remove_reserved_file(&file, revoked);
             let message = format!(
                 "credential {} was minted but couldn't be saved to {}: {err}; inspect this credential before retrying",
@@ -1028,8 +1025,11 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_failed_mint_frees_only_its_own_file_after_revocation() {
+    #[tokio::test]
+    async fn a_failed_mint_frees_only_its_own_file_after_revocation() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::net::TcpListener;
+
         let dir = tempfile::tempdir().unwrap();
         for revoked in [false, true] {
             let path = dir.path().join(revoked.to_string());
@@ -1043,5 +1043,47 @@ mod tests {
         std::fs::write(&path, "new credential").unwrap();
         assert!(!remove_reserved_file(&file, true));
         assert_eq!(std::fs::read_to_string(path).unwrap(), "new credential");
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let mut socket = listener.accept().unwrap().0;
+            let mut reader = BufReader::new(socket.try_clone().unwrap());
+            let mut request = String::new();
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                request.push_str(&line);
+                if line == "\r\n" {
+                    break;
+                }
+            }
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                .unwrap();
+            request
+        });
+        let path = dir.path().join("failed-save");
+        let mut file = CredentialFile::reserve(&path).unwrap();
+        file.file = std::fs::File::open(&path).unwrap();
+        let credential = AgentCredential {
+            id: 11,
+            token: "secret".into(),
+            expires_at: "2026-12-21T12:00:00Z".into(),
+        };
+        let plow = Plow::new(&format!("http://{address}"), "owner-login").unwrap();
+        let error = keep_minted(&plow, file, "https://api.plow.co", &credential, UID)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, "credential_not_saved");
+        assert_eq!(error.details["revoked"], true);
+        assert_eq!(error.details["file_removed"], true);
+        assert!(!path.exists());
+        let request = server.join().unwrap().to_ascii_lowercase();
+        assert!(request.starts_with("delete /v1/api-keys/11 "), "{request}");
+        assert!(
+            request.contains("authorization: bearer owner-login"),
+            "{request}"
+        );
     }
 }
