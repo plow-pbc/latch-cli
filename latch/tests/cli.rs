@@ -3268,7 +3268,7 @@ fn switching_an_agent_login_lists_local_policy_to_reapply() {
     assert!(warning.contains(&format!("Local restrictions name agents other than {NEW}")));
     assert!(warning.contains("Restrictions are NOT carried or copied"));
     assert!(warning.contains(&format!(
-        "On host Old agent, as the owner, re-apply these from {folder} to agent {NEW}:"
+        "As the owner, re-apply these from {folder} to agent {NEW}:"
     )));
     assert!(warning.contains(&format!("{folder}: rules file: {}", old_rules.display())));
     assert!(!warning.lines().any(|line| line.contains("latch ")));

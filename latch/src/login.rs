@@ -182,7 +182,10 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
                 state,
                 saved_agent_uid.as_deref(),
                 &me.uid,
-                saved.as_ref().map(|config| config.peer.name.as_str()),
+                saved
+                    .as_ref()
+                    .filter(|config| config.peer.kind == "device")
+                    .map(|config| config.peer.name.as_str()),
             )?,
             None => None,
         };
