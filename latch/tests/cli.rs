@@ -4052,10 +4052,7 @@ fn an_agents_vault_list_names_its_plow_chat() {
         ("bridge", vec![("PLOW_TOKEN_FILE", bridge_file.clone())]),
         (
             "adopted",
-            vec![
-                ("PLOW_API_BASE", PathBuf::from(&plow.url)),
-                ("PLOW_AGENT_TOKEN", PathBuf::from("latch-agent-11")),
-            ],
+            vec![("PLOW_AGENT_TOKEN", PathBuf::from("latch-agent-11"))],
         ),
     ];
     let _serve = serving(&host, &relay);
@@ -4065,7 +4062,7 @@ fn an_agents_vault_list_names_its_plow_chat() {
             .iter()
             .map(|(name, value)| (*name, value.as_path()))
             .collect();
-        let login = latch(&agent, &["login"], &agent_env);
+        let login = latch(&agent, &["login", "--api-url", &plow.url], &agent_env);
         assert_eq!(login.status.code(), Some(0), "{case}: {login:?}");
         let login: Value = serde_json::from_slice(&login.stdout).unwrap();
         assert_eq!(login["peer"]["name"], "Research bot", "{case}: {login}");
