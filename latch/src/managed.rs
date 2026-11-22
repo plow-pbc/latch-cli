@@ -653,7 +653,7 @@ fn not_serving(failure: Failure) -> Failure {
 
 /// Held while a host is started or stopped on `dir`.
 /// `None` once `until` passes with another start or stop still holding it.
-async fn launch_lock(dir: &Path, until: Instant) -> Result<Option<File>, Failure> {
+pub(crate) async fn launch_lock(dir: &Path, until: Instant) -> Result<Option<File>, Failure> {
     let path = dir.join("launch.lock");
     let file = OpenOptions::new()
         .write(true)

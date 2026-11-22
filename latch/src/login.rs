@@ -270,6 +270,16 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
         };
         let authenticated_agent_uid = me.as_ref().map(|me| me.uid.clone());
         if copy_requested {
+            let dir = state.path.canonicalize().unwrap_or(state.path.clone());
+            let _launching = crate::managed::launch_lock(&dir, Instant::now())
+                .await?
+                .ok_or_else(|| {
+                    let message = "another `latch serve` or `latch stop` is changing this state folder"
+                        .to_string();
+                    let mut failure = Failure::new(code::state_busy, message);
+                    failure.next = Some("latch stop, then latch login --again".into());
+                    failure
+                })?;
             let _held = crate::serve::hold_state(
                 &state.path,
                 "latch login",

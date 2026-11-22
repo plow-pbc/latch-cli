@@ -3296,6 +3296,39 @@ fn switching_an_agent_login_offers_to_copy_its_host_policy() {
     );
     server.join().unwrap();
 
+    // A launch may have read the old flags before taking serve.lock. Refuse
+    // the copy while it can still save that snapshot over the accepted block.
+    let launching = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(state.join("launch.lock"))
+        .unwrap();
+    launching.lock().unwrap();
+    let (api_url, server) = fake_plow(vec![
+        (200, json!({"agent": {"uid": NEW, "name": "New agent"}})),
+        (
+            200,
+            json!({"data": [{"key": "host-key", "kind": "device", "name": "studio"}]}),
+        ),
+    ]);
+    let (code, shown, _) = latch_at_a_terminal(
+        &state,
+        &["login", "--api-url", &api_url],
+        "y\n",
+        false,
+        &env,
+    );
+    assert_ne!(code, Some(0), "{shown}");
+    assert!(shown.contains("latch stop"), "{shown}");
+    assert!(
+        !fs::read_to_string(state.join("serve-args.json"))
+            .unwrap()
+            .contains(NEW)
+    );
+    server.join().unwrap();
+    drop(launching);
+
     // Saved flags describe the running host. Refuse to change them under its
     // startup snapshot, before registration changes the remote identity.
     let mut serving = fs::OpenOptions::new()
