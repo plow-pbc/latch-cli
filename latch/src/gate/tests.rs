@@ -1946,7 +1946,7 @@ async fn chat_permission_needs_both_judgments_and_either_failure_refuses() {
             [0.42, 0.34, 0.24],
             Some([0.03, 0.12, 0.85]),
             "owner_said_no",
-            "chat",
+            "will",
         ),
         ([0.9, 0.05, 0.05], None, "gatekeeper_unavailable", ""),
         ([0.9, 0.05, 0.05], Some([0.9, 0.05, 0.05]), "allow", "chat"),
@@ -1966,7 +1966,7 @@ async fn chat_permission_needs_both_judgments_and_either_failure_refuses() {
         }
         if decided_by == "will" && expected == "owner_said_no" {
             assert_eq!(judgment.gate["p"]["FORBIDDEN"], 0.85);
-            assert_eq!(judgment.gate["layers"]["chat"]["p"]["COVERED"], 0.9);
+            assert_eq!(judgment.gate["layers"]["chat"]["p"]["COVERED"], whole[0]);
         }
     }
 }

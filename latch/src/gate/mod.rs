@@ -646,7 +646,7 @@ impl Gatekeeper {
         if let Some(chat) = says.1 {
             layers["chat"]["says"] = json!(chat.word());
         }
-        let decided_by = decided_by(says, whole_will);
+        let decided_by = decided_by(says, chat_p);
         gate["decided_by"] = json!(decided_by);
         gate["p"] = layers[decided_by]["p"].clone();
         gate["layers"] = layers;
@@ -654,9 +654,7 @@ impl Gatekeeper {
             chat: gate["chat"].as_str().unwrap_or_default(),
             owner_messages: gate["owner_messages"].as_array().map_or(&[], Vec::as_slice),
             unsure_stop: decided_by == "chat"
-                && chat_p.is_some_and(|(whole, will)| {
-                    whole.forbidden < whole.not_covered && will.says() != Says::Veto
-                }),
+                && chat_p.is_some_and(|(whole, _)| whole.forbidden < whole.not_covered),
         };
         agent_verdict(says.0, says.1.map(|chat| (chat, read)))
     }
@@ -832,16 +830,19 @@ impl Says {
 }
 
 /// The layer whose probabilities are behind an agent's verdict, the rules
-/// layer first; in the chat, the judge that vetoed, or the owner's-messages
-/// judge when it alone held back the whole chat's allow.
-fn decided_by(says: (Says, Option<Says>), whole_will: Option<(Says, Says)>) -> &'static str {
-    match (says, whole_will) {
+/// layer first. In the chat: a plain veto, the whole chat's before the
+/// owner's-messages judge's, then the whole chat's unsure stop; or the
+/// owner's-messages judge when it alone held back the whole chat's allow.
+fn decided_by(says: (Says, Option<Says>), chat: Option<(P, P)>) -> &'static str {
+    let judges = chat.map(|(whole, will)| (whole.chat_says(), whole.says(), will.says()));
+    match (says, judges) {
         ((Says::Veto, _), _) => "rules",
-        ((_, Some(Says::Veto)), Some((Says::Veto, _))) => "chat",
-        ((_, Some(Says::Veto)), _) => "will",
+        ((_, Some(Says::Veto)), Some((_, Says::Veto, _))) => "chat",
+        ((_, Some(Says::Veto)), Some((_, _, Says::Veto))) => "will",
+        ((_, Some(Says::Veto)), _) => "chat",
         ((Says::Allow, _), _) => "rules",
         ((_, Some(Says::Allow)), _) => "chat",
-        ((_, Some(Says::Neither)), Some((Says::Allow, will))) if will != Says::Allow => "will",
+        ((_, Some(Says::Neither)), Some((Says::Allow, _, will))) if will != Says::Allow => "will",
         _ => "rules",
     }
 }
@@ -874,8 +875,8 @@ fn owner_verdict(p: P) -> Result<(), Failure> {
 
 /// The chat an agent's chat layer read, as the record names it: its id,
 /// and the owner's messages among those the judge was shown. `unsure_stop`
-/// marks a veto by the chat alone at `CHAT_VETO_P`, with FORBIDDEN still
-/// below NOT_COVERED and no plain veto from the owner's-messages judge: an
+/// marks the whole chat's veto at `CHAT_VETO_P`, with FORBIDDEN still
+/// below NOT_COVERED, deciding the verdict, so no judge vetoed plainly: an
 /// unsure stop, most often an action that differs from what the owner
 /// asked. The judge names no owner message behind it.
 struct ChatRead<'a> {
