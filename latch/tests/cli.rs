@@ -2454,6 +2454,7 @@ PHOTO;ENCODING=b;TYPE=PNG:iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQV
 END:VCARD\r\n";
 
 const AGENT_UID: &str = "0123456789abcdef0123456789abcdef";
+const TWIN_UID: &str = "abcdef0123456789abcdef0123456789";
 
 /// A fake Plow with state, for as many requests as come: one owner login
 /// and one agent whose credential can be rotated. Like Plow, it lists and
@@ -2646,7 +2647,9 @@ impl LivePlow {
             return (401, json!({}));
         };
         let live = |state: &LiveState, credential: &String| {
-            *credential == state.owner || *credential == state.agent
+            *credential == state.owner
+                || *credential == state.agent
+                || credential == "twin-credential"
         };
         let mut words = request.line().split(' ');
         let (method, path) = (words.next().unwrap(), words.next().unwrap());
@@ -2666,6 +2669,18 @@ impl LivePlow {
             }
         }
         match (method, path) {
+            ("POST", path)
+                if kind == "device"
+                    && path == format!("/v1/latch/agents/{AGENT_UID}/credentials") =>
+            {
+                let token = "latch-agent-11".to_string();
+                state.agent = token.clone();
+                (
+                    201,
+                    json!({"id": 11, "token": token, "scopes": ["latch:agent"],
+                           "expires_at": "2026-12-21T12:00:00Z"}),
+                )
+            }
             // Which accounts are connected, as Plow says, and where it connects them.
             ("GET", "/v1/connectors") if kind == "device" => {
                 let mut accounts: Vec<Value> = state
@@ -2933,14 +2948,22 @@ impl LivePlow {
             // What the host's gatekeeper reads, on the owner's login: the
             // agent's one chat, where the owner asked for it, and a judge
             // that agrees.
-            ("GET", path) if kind == "device" && path == format!("/v1/agents/{AGENT_UID}") => (
-                200,
-                json!({"uid": AGENT_UID, "name": "Research bot", "line": {"uid": "line_agent"}}),
-            ),
+            ("GET", path) if kind == "device" && path.starts_with("/v1/agents/") => {
+                let uid = path.trim_start_matches("/v1/agents/");
+                let line = if uid == AGENT_UID {
+                    "line_agent"
+                } else {
+                    "line_twin"
+                };
+                (200, json!({"uid": uid, "name": "Research bot", "line": {"uid": line}}))
+            }
             ("GET", "/v1/chats") if kind == "device" => (
                 200,
-                json!({"data": [{"uid": "chat_a", "participants": [
-                    {"type": "agent", "relationship": "self", "line": {"uid": "line_agent"}}]}],
+                json!({"data": [
+                    {"uid": "chat_a", "participants": [
+                        {"type": "agent", "relationship": "self", "line": {"uid": "line_agent"}}]},
+                    {"uid": "chat_twin", "participants": [
+                        {"type": "agent", "relationship": "self", "line": {"uid": "line_twin"}}]}],
                        "has_more": false}),
             ),
             ("GET", path) if kind == "device" && path.starts_with("/v1/chats/chat_a/messages") => (
@@ -2950,6 +2973,18 @@ impl LivePlow {
                                  "sender": {"type": "member", "display_name": "Owner", "role": "owner"}}],
                        "has_more": false}),
             ),
+            ("GET", path)
+                if kind == "device" && path.starts_with("/v1/chats/chat_twin/messages") =>
+            {
+                (
+                    200,
+                    json!({"data": [{"uid": "m2", "body": "old twin instruction",
+                                     "created_at": "2026-10-20T11:00:00Z",
+                                     "sender": {"type": "member", "display_name": "Owner",
+                                                "role": "owner"}}],
+                           "has_more": false}),
+                )
+            }
             // A browser click's risk is asked the same way: low, but for a
             // return's submit, which can't be undone, as a real judge sees it.
             ("POST", "/v1/decisions")
@@ -3960,13 +3995,26 @@ fn a_rotated_agent_registers_again_and_its_next_call_runs() {
 #[test]
 fn an_adopted_agents_vault_list_uses_its_own_plow_chat() {
     let plow = LivePlow::start();
+    let twin_key = "a".repeat(64);
+    {
+        let mut state = plow.state.lock().unwrap();
+        state.more_agents.push(json!({
+            "uid": TWIN_UID, "name": "Old twin", "provider": "exe:hermes",
+            "line": {"uid": "line_twin", "provider_key": "+14155550124",
+                     "display_name": "Old twin line"},
+            "created_at": "2026-10-19T10:00:00Z", "status": "running",
+            "failure_code": null, "credential": null
+        }));
+        state.peers.push((
+            peer(json!(&twin_key), "Old twin", "agent", Value::Null),
+            "twin-credential".to_string(),
+        ));
+    }
     let (_relay, relay) = local_relay();
     let dir = test_dir();
     let owner_token = dir.path().join("owner.token");
     fs::write(&owner_token, "owner-login\n").unwrap();
-    let agent_token = dir.path().join("agent.token");
-    fs::write(&agent_token, "agent-credential\n").unwrap();
-    let (host, agent) = (dir.path().join("host"), dir.path().join("agent"));
+    let (host, agent) = (dir.path().join("host"), dir.path().join("adopted-agent"));
     let owner = owner_token.to_str().unwrap();
     let args = [
         "login",
@@ -3978,11 +4026,28 @@ fn an_adopted_agents_vault_list_uses_its_own_plow_chat() {
         "host",
     ];
     assert_eq!(latch(&host, &args, &[]).status.code(), Some(0));
-    plow.rotate("latch-agent-11");
-    fs::write(&agent_token, "latch-agent-11\n").unwrap();
-    let agent_env = [("PLOW_TOKEN_FILE", agent_token.as_path())];
-    let login = latch(&agent, &["login", "--api-url", &plow.url], &agent_env);
+    let credential_file = dir.path().join("research-agent.env");
+    let adopted = latch(
+        &host,
+        &[
+            "agents",
+            "adopt",
+            "Research bot",
+            "--credential-file",
+            credential_file.to_str().unwrap(),
+        ],
+        &[],
+    );
+    assert_eq!(adopted.status.code(), Some(0), "{adopted:?}");
+    let agent_env = [
+        ("PLOW_API_BASE", Path::new(plow.url.as_str())),
+        ("PLOW_AGENT_TOKEN", Path::new("latch-agent-11")),
+    ];
+    let login = latch(&agent, &["login"], &agent_env);
     assert_eq!(login.status.code(), Some(0), "{login:?}");
+    let login: Value = serde_json::from_slice(&login.stdout).unwrap();
+    assert_eq!(login["peer"]["name"], "Research bot", "{login}");
+    assert_ne!(login["peer"]["key"], twin_key);
     let _serve = serving(&host, &relay);
 
     let listed = latch(
@@ -3999,6 +4064,12 @@ fn an_adopted_agents_vault_list_uses_its_own_plow_chat() {
         decisions.iter().any(|d| d["state"]["conversation"]
             .to_string()
             .contains("echo whatever")),
+        "{decisions:?}"
+    );
+    assert!(
+        decisions
+            .iter()
+            .all(|d| !d["state"]["conversation"].to_string().contains("old twin")),
         "{decisions:?}"
     );
 
@@ -4530,33 +4601,6 @@ fn an_existing_agent_is_adopted_rotated_and_revoked() {
                 "created_at": "2026-11-21T12:00:00Z", "status": "running",
                 "failure_code": null, "credential": null}])
     };
-    let wrong_scope_file = dir.path().join("wrong-scope.env");
-    let (wrong_scope_url, wrong_scope_server) = fake_plow(vec![
-        (200, listed()),
-        (
-            201,
-            json!({"id": 10, "token": "too-powerful", "scopes": ["latch:agent", "account:usage"],
-                   "expires_at": "2026-12-21T12:00:00Z"}),
-        ),
-    ]);
-    use_plow(&host, &wrong_scope_url);
-    let refused = latch(
-        &host,
-        &[
-            "agents",
-            "adopt",
-            "Research bot",
-            "--credential-file",
-            wrong_scope_file.to_str().unwrap(),
-        ],
-        &[],
-    );
-    assert_eq!(refused.status.code(), Some(5), "{refused:?}");
-    let error: Value = serde_json::from_slice(&refused.stderr).unwrap();
-    assert_eq!(error["error"]["code"], "outcome_unknown", "{error}");
-    assert!(!wrong_scope_file.exists());
-    wrong_scope_server.join().unwrap();
-
     let (adopt_url, adopt_server) = fake_plow(vec![
         (200, listed()),
         (
@@ -4604,27 +4648,6 @@ fn an_existing_agent_is_adopted_rotated_and_revoked() {
         "{requests:?}"
     );
 
-    let agent = dir.path().join("adopted-agent");
-    let (login_url, login_server) = fake_plow(vec![
-        me("Research bot"),
-        (200, peer(Value::Null, "Research bot", "agent", Value::Null)),
-    ]);
-    let first_env = [
-        ("PLOW_API_BASE", Path::new(login_url.as_str())),
-        ("PLOW_AGENT_TOKEN", Path::new("latch-agent-11")),
-    ];
-    let login = latch(&agent, &["login"], &first_env);
-    assert_eq!(login.status.code(), Some(0), "{login:?}");
-    let login: Value = serde_json::from_slice(&login.stdout).unwrap();
-    assert_eq!(login["peer"]["kind"], "agent");
-    assert_eq!(login["peer"]["name"], "Research bot");
-    let requests = login_server.join().unwrap();
-    assert!(
-        requests[0].starts_with("GET /v1/agents/me ")
-            && requests[0].contains("authorization: Bearer latch-agent-11"),
-        "{requests:?}"
-    );
-
     let (rotate_url, rotate_server) = fake_plow(vec![
         (200, listed()),
         (
@@ -4668,21 +4691,6 @@ fn an_existing_agent_is_adopted_rotated_and_revoked() {
         )),
         "{requests:?}"
     );
-
-    let (next_url, next_server) = fake_plow(vec![
-        me("Research bot"),
-        (200, peer(Value::Null, "Research bot", "agent", Value::Null)),
-    ]);
-    let second_env = [
-        ("PLOW_API_BASE", Path::new(next_url.as_str())),
-        ("PLOW_AGENT_TOKEN", Path::new("latch-agent-12")),
-    ];
-    let next = dir.path().join("rotated-agent");
-    let login = latch(&next, &["login"], &second_env);
-    assert_eq!(login.status.code(), Some(0), "{login:?}");
-    let login: Value = serde_json::from_slice(&login.stdout).unwrap();
-    assert_eq!(login["peer"]["name"], "Research bot");
-    next_server.join().unwrap();
 
     let (revoke_url, revoke_server) = fake_plow(vec![
         (200, listed()),

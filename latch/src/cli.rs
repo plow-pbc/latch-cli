@@ -1229,7 +1229,8 @@ pub enum AgentsAction {
     /// is never printed. Load that file into the agent's environment, then run
     /// `latch --state-dir NEW login` with a fresh state folder. Reusing another
     /// agent's state would reuse its peer key, which identifies that agent
-    /// until its credential is revoked.
+    /// until its credential is revoked. Revoke the twin's credential to retire
+    /// its old key; do not delete the twin just to clear the key.
     Adopt {
         /// The existing agent, by its uid or exact name
         agent: String,

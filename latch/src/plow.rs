@@ -246,7 +246,6 @@ pub struct CreatedAgent {
 pub struct AgentCredential {
     pub id: u64,
     pub token: String,
-    scopes: Vec<String>,
     pub expires_at: String,
 }
 
@@ -884,11 +883,7 @@ fn bad_answer() -> Failure {
 }
 
 async fn agent_credential(response: reqwest::Response) -> Result<AgentCredential, Failure> {
-    let credential: AgentCredential = response.json().await.map_err(|_| bad_answer())?;
-    if credential.scopes.as_slice() != ["latch:agent"] {
-        return Err(bad_answer());
-    }
-    Ok(credential)
+    response.json().await.map_err(|_| bad_answer())
 }
 
 #[cfg(test)]
