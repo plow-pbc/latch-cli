@@ -1715,10 +1715,12 @@ mod tests {
     }
 
     /// A page of `frames` frames, each read taking `each`, as a page
-    /// under heavy load answers; within its own limit every time.
+    /// under heavy load answers; within its own limit every time. Its
+    /// first `replaced` reads land while its document is being replaced.
     struct Slow {
         frames: usize,
         each: Duration,
+        replaced: usize,
     }
 
     impl Driver for Slow {
@@ -1752,6 +1754,10 @@ mod tests {
         }
         fn run(&mut self, _: &Frame, _: &str) -> Result<Value, Failure> {
             std::thread::sleep(self.each);
+            if self.replaced > 0 {
+                self.replaced -= 1;
+                return Err(Failure::new(code::stale_snapshot, "replaced".into()));
+            }
             Ok(
                 json!({"origin": "https://shop.example", "url": "https://shop.example/", "elements": [], "text": "a page"}),
             )
@@ -1842,6 +1848,7 @@ mod tests {
         let mut core = Core::new(Slow {
             frames: 40,
             each: Duration::from_millis(50),
+            replaced: 0,
         });
         let started = Instant::now();
         core.limit(started + Duration::from_millis(400));
@@ -1868,6 +1875,7 @@ mod tests {
         let mut core = Core::new(Slow {
             frames: MAX_FRAMES + 30,
             each: Duration::ZERO,
+            replaced: 0,
         });
         core.limit(Instant::now() + CALL);
         let observed = core
@@ -1882,5 +1890,30 @@ mod tests {
             .result;
         assert_eq!(observed["truncated"], true);
         assert_eq!(observed["frames"].as_array().unwrap().len(), MAX_FRAMES);
+    }
+
+    #[test]
+    fn a_text_wait_goes_on_through_a_page_being_replaced() {
+        // A form sent while the wait polls: its first reads land as the next
+        // page replaces this one, and the text is on the page that follows.
+        let mut core = Core::new(Slow {
+            frames: 1,
+            each: Duration::ZERO,
+            replaced: 2,
+        });
+        core.limit(Instant::now() + CALL);
+        let waited = core
+            .call(
+                Call::Wait {
+                    condition: Condition::Text {
+                        text: "a page".into(),
+                    },
+                    within_ms: 5000,
+                },
+                None,
+            )
+            .unwrap()
+            .result;
+        assert_eq!(waited["met"], true, "{waited}");
     }
 }
