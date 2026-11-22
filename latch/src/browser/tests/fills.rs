@@ -2031,21 +2031,25 @@ async fn a_list_of_us_states_takes_a_state_by_name_or_code(engine: &str) {
     };
 
     // A list of states alone takes a state's name as its code and its code
-    // as its name; any other list matches as it always has: the value or
+    // as its name, never from an option with no value; any other list matches as it always has: the value or
     // the text, else the same number, first option first.
     for (value, name) in [
         ("Arizona", "State code"),
         ("AZ", "State name"),
+        ("AZ", "Blank and real Arizona"),
         ("3", "Month"),
         ("03", "Day"),
         ("Mobile", "Phone"),
     ] {
         assert_eq!(fill(value, name).await, "filled", "{value} into {name}");
     }
-    // A state two options name, and a country, a name in another language
-    // or a part of an option's text, are no option.
+    // A state two options name or only a blank option names, and a
+    // country, a name in another language or a part of an option's text,
+    // are no option.
     for (value, name) in [
         ("AZ", "Two Arizonas"),
+        ("AZ", "Blank Arizona"),
+        ("GA", "Georgia the country"),
         ("Kanada", "Countries"),
         ("Germany", "Deutschland"),
         ("Georgia", "Gabon or Ghana"),
@@ -2059,7 +2063,9 @@ async fn a_list_of_us_states_takes_a_state_by_name_or_code(engine: &str) {
     }
     let text = h.text().await;
     assert!(
-        text.contains("form: state-code=AZ state-name=Arizona month=03 day=03 phone=home-mobile"),
+        text.contains(
+            "form: state-code=AZ state-name=Arizona blank-real=AZ month=03 day=03 phone=home-mobile"
+        ),
         "{text}"
     );
     h.call("close", json!({})).await.ok();
