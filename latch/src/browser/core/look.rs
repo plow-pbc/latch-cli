@@ -163,12 +163,15 @@ impl<D: Driver> Core<D> {
     /// form's submit control (else the form); the lines of the form or
     /// section around it, which name the item, amount or recipient; the
     /// page's title; and the document and element identity a confirmation
-    /// is bound to.
+    /// is bound to. With `fields`, the fields it submits as the judge is
+    /// shown them (`values`), and their whole text hashed (`values_print`):
+    /// the values themselves stay here.
     pub(super) fn review(
         &mut self,
         snapshot: Option<&str>,
         target: &str,
         enter: bool,
+        fields: bool,
         audit: &mut Map<String, Value>,
     ) -> Result<Value, Failure> {
         self.no_dialog()?;
@@ -177,12 +180,12 @@ impl<D: Driver> Core<D> {
         let (frame, index) = self.reference(&snapshot, position)?;
         let read = self.driver.run(
             &frame,
-            &format!("__latch.review({snapshot:?}, {index}, {enter})"),
+            &format!("__latch.review({snapshot:?}, {index}, {enter}, {fields})"),
         )?;
         if read.is_null() {
             return Err(super::stale());
         }
-        Ok(json!({
+        let mut reviewed = json!({
             "snapshot": snapshot,
             "ref": target,
             "document": document_key(&frame),
@@ -190,9 +193,17 @@ impl<D: Driver> Core<D> {
             "element": read["element"],
             "acts_on": read["acts_on"],
             "lines": read["lines"],
+            "secret": read["secret"],
             "title": page["title"],
             "url": page["url"],
-        }))
+        });
+        if fields {
+            let submitted = &read["submitted"];
+            reviewed["values"] = json!(value_lines(submitted));
+            reviewed["values_print"] =
+                json!(to_hex(&Sha256::digest(submitted.to_string().as_bytes())));
+        }
+        Ok(reviewed)
     }
 
     /// Where the page is, its first lines and an element list the agent
@@ -546,11 +557,44 @@ fn clip(line: &str, max: usize) -> String {
     format!("{kept}…")
 }
 
+/// The most of a field's text the judge is shown.
+const VALUE_CHARS: usize = 4000;
+/// The most fields the judge is shown.
+const VALUE_FIELDS: usize = 20;
+
+/// The fields an action submits (`__latch.review`'s `submitted`) as lines:
+/// the first [`VALUE_FIELDS`], each text cut to [`VALUE_CHARS`], saying so.
+fn value_lines(submitted: &Value) -> Vec<String> {
+    let all = submitted.as_array().map(Vec::as_slice).unwrap_or_default();
+    let mut lines: Vec<String> = all
+        .iter()
+        .take(VALUE_FIELDS)
+        .map(|field| {
+            let label = field["label"].as_str().unwrap_or_default();
+            let Some(text) = field["text"].as_str() else {
+                return format!("{label}: {}", field["state"].as_str().unwrap_or_default());
+            };
+            let count = text.chars().count();
+            let kept: String = text.chars().take(VALUE_CHARS).collect();
+            let mut line = format!("{label}: {}", json!(kept));
+            if count > VALUE_CHARS {
+                line.push_str(&format!(" (cut short: the field holds {count} characters)"));
+            }
+            line
+        })
+        .collect();
+    if all.len() > VALUE_FIELDS {
+        let more = all.len() - VALUE_FIELDS;
+        lines.push(format!("({more} more fields not shown)"));
+    }
+    lines
+}
+
 /// A reviewed context (`Core::review`) hashed: the document, the element's
-/// identity and what it acts on, the page title and the lines around it.
-/// A confirmation, and an action judged on that context, hold only while it
-/// is unchanged.
-pub fn fingerprint(reviewed: &Value) -> String {
+/// identity and what it acts on, the page title and the lines around it,
+/// with `fields` the whole text of the fields it submits too. A confirmation, and
+/// an action judged on that context, hold only while it is unchanged.
+pub fn fingerprint(reviewed: &Value, fields: bool) -> String {
     let bound = json!([
         reviewed["document"],
         reviewed["uid"],
@@ -558,6 +602,11 @@ pub fn fingerprint(reviewed: &Value) -> String {
         reviewed["acts_on"],
         reviewed["title"],
         reviewed["lines"],
+        if fields {
+            &reviewed["values_print"]
+        } else {
+            &Value::Null
+        },
     ]);
     to_hex(&Sha256::digest(bound.to_string().as_bytes()))
 }

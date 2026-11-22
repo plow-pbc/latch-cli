@@ -40,6 +40,8 @@ conformance!(
     goto_on_a_new_site_is_judged_as_a_tab_there_is,
     the_owners_devices_are_judged_as_the_owner,
     a_local_address_is_refused_before_the_judge_or_an_engine,
+    an_agents_confirmation_of_a_paused_send_is_judged_before_it_runs,
+    a_click_the_risk_check_lets_go_asks_the_judge_nothing,
 );
 
 /// The owner's chat, oldest message first; a test may add to it between
@@ -118,6 +120,8 @@ struct Judge {
     down: std::sync::atomic::AtomicBool,
     /// Milliseconds each answer takes.
     slow: std::sync::atomic::AtomicU64,
+    /// While set, every answer waits.
+    held: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Judge {
@@ -127,6 +131,7 @@ impl Judge {
             shown: Mutex::new(Vec::new()),
             down: Default::default(),
             slow: Default::default(),
+            held: Default::default(),
         })
     }
 
@@ -164,8 +169,12 @@ impl Provider for Judge {
         self.shown.lock().unwrap().push(state);
         let down = self.down.load(std::sync::atomic::Ordering::SeqCst);
         let slow = self.slow.load(std::sync::atomic::Ordering::SeqCst);
+        let held = self.held.clone();
         Box::pin(async move {
             tokio::time::sleep(Duration::from_millis(slow)).await;
+            while held.load(std::sync::atomic::Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
             if down {
                 return Err(CallFailed::new("http_503", "the model is down"));
             }
@@ -1644,4 +1653,282 @@ async fn a_local_address_is_refused_before_the_judge_or_an_engine(engine: &str) 
     assert!(!audit.contains_key("gate"));
     assert_eq!(judge.judged(), 0);
     assert!(hits.lock().unwrap().is_empty());
+}
+
+/// A risk decision that finds every click and Enter can't be undone, so
+/// each pauses for a confirmation.
+struct Wary;
+
+impl Provider for Wary {
+    fn ask<'a>(&'a self, _: &'a Value, questions: &'a [Question]) -> Asked<'a> {
+        let answers = questions
+            .iter()
+            .map(|question| (question.id.clone(), Answer::Yes(0.97)))
+            .collect();
+        let meta = CallMeta {
+            provider: "wary",
+            model: "wary-1".into(),
+            request_id: None,
+            latency_ms: 0,
+            cost: None,
+            exchange: None,
+        };
+        Box::pin(async move { Ok((answers, meta)) })
+    }
+}
+
+/// The compose page open in an agent's session, its message typed: the
+/// session, and the Send and Mark read buttons' refs.
+async fn composed(
+    host: &Host,
+    site: &str,
+    engine: &str,
+    message: &str,
+) -> (String, String, String) {
+    let (page, _) = host
+        .agent(
+            "open",
+            named(engine),
+            json!({"url": format!("{site}/compose.html")}),
+            None,
+        )
+        .await;
+    let page = page.unwrap();
+    let id = page["session"].as_str().unwrap().to_string();
+    let body = find(&page, "textbox", "Message");
+    let typed = act(&format!("type {body} {message}"));
+    host.agent("do", &id, typed, None).await.0.unwrap();
+    let send = find(&page, "button", "Send");
+    let read = find(&page, "button", "Mark read");
+    (id, send, read)
+}
+
+async fn shows(host: &Host, id: &str) -> String {
+    let text = host.look("text", id, json!({})).await;
+    text["text"].as_str().unwrap().to_string()
+}
+
+/// The risk decision pauses a Send; the agent's own confirmation of it
+/// is no permission, so the gatekeeper judges it, with what was typed,
+/// before it is carried out.
+async fn an_agents_confirmation_of_a_paused_send_is_judged_before_it_runs(engine: &str) {
+    let (_dir, state, _area) = test_state(engine);
+    let (site, _) = serve_site();
+    let chat = vec![message("m1", true, "have a look at my test site", 10)];
+    // The site may open; nothing confirmed is covered.
+    let judge = Judge::new(|state| match state["proposed_action"]["kind"].as_str() {
+        Some("open_site") => COVERED,
+        _ => NOT_COVERED,
+    });
+    let mut host = Host::start(&state, &site, &judge, chat.clone());
+    host.browsers.provider = Some(Arc::new(Wary));
+    // Longer than a page read shows of a field: the judge reads it whole.
+    let message = format!(
+        "{}wire the deposit today",
+        "Hi Ada, hope you are well. ".repeat(12)
+    );
+    let (id, send, _) = composed(&host, &site, engine, &message).await;
+    let subject = "document.getElementById('subject').value = 're: the deposit'";
+    host.look("eval", &id, json!({"script": subject})).await;
+    let paused = async |host: &Host| {
+        let (clicked, _) = host
+            .agent("do", &id, act(&format!("click {send}")), None)
+            .await;
+        let failure = clicked.unwrap_err();
+        assert_eq!(failure.code, "confirm_needed", "{failure:?}");
+        failure.details["stop"]["confirmation"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let confirm = async |host: &Host, confirmation: &str| {
+        let request = format!("r{:012x}", rand::random::<u64>() & 0xffff_ffff_ffff);
+        let args = json!({"request": request, "plan": {"steps": []}, "confirm": confirmation});
+        host.agent("do", &id, args, None).await
+    };
+
+    // Refused: nothing is sent, and the judge was asked once, shown the
+    // Send, its page and the whole message.
+    let confirmation = paused(&host).await;
+    let asked = judge.judged();
+    let (refusal, audit) = confirm(&host, &confirmation).await;
+    let failure = refusal.unwrap_err();
+    assert_eq!(
+        (
+            failure.exit,
+            failure.code.as_str(),
+            &failure.details["stop"]["reason"]
+        ),
+        (Exit::Denied, "gatekeeper_denied", &json!("not_covered")),
+        "{failure:?}"
+    );
+    assert_eq!(judge.judged(), asked + 1);
+    let judged = judge.last_action();
+    assert_eq!(judged["kind"], "confirmed_step", "{judged:#}");
+    assert!(
+        judged["action"].as_str().unwrap().contains("\"Send\""),
+        "{judged:#}"
+    );
+    assert!(
+        judged["page"]["url"]
+            .as_str()
+            .unwrap()
+            .ends_with("/compose.html"),
+        "{judged:#}"
+    );
+    assert!(
+        judged["fields"].to_string().contains(&message),
+        "{judged:#}"
+    );
+    // A field the form submits from outside it is shown too.
+    assert!(
+        judged["fields"].to_string().contains("re: the deposit"),
+        "{judged:#}"
+    );
+    assert_eq!(audit["gate"]["verdict"], "not_covered");
+    assert!(shows(&host, &id).await.contains("nothing sent"));
+
+    // A message longer than the judge is shown says it was cut short.
+    let long = "document.getElementById('body').value = 'a'.repeat(4100)";
+    host.look("eval", &id, json!({"script": long})).await;
+    let confirmation = paused(&host).await;
+    confirm(&host, &confirmation).await.0.unwrap_err();
+    let fields = judge.last_action()["fields"].to_string();
+    assert!(
+        fields.contains("cut short: the field holds 4100 characters"),
+        "{fields}"
+    );
+    let back = format!("document.getElementById('body').value = {message:?}");
+    host.look("eval", &id, json!({"script": back})).await;
+
+    // Text typed into a secret field is never shown the judge or kept.
+    let pin = find(
+        &host.look("observe", &id, json!({})).await,
+        "textbox",
+        "PIN",
+    );
+    let (keyed, _) = host
+        .agent("do", &id, act(&format!("type {pin} 4321\n")), None)
+        .await;
+    let failure = keyed.unwrap_err();
+    assert_eq!(failure.code, "confirm_needed", "{failure:?}");
+    let keys = failure.details["stop"]["confirmation"]["id"]
+        .as_str()
+        .unwrap();
+    let (refusal, audit) = confirm(&host, keys).await;
+    assert_eq!(refusal.unwrap_err().code, "gatekeeper_denied");
+    let judged = judge.last_action();
+    assert!(
+        judged["action"]
+            .as_str()
+            .unwrap()
+            .contains("a hidden value"),
+        "{judged:#}"
+    );
+    assert!(!judged.to_string().contains("4321"), "{judged:#}");
+    assert!(!Value::Object(audit).to_string().contains("4321"));
+
+    // A judge that can't be reached sends nothing either.
+    let confirmation = paused(&host).await;
+    judge.down.store(true, std::sync::atomic::Ordering::SeqCst);
+    let failure = confirm(&host, &confirmation).await.0.unwrap_err();
+    judge.down.store(false, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(
+        (failure.exit, failure.code.as_str()),
+        (Exit::Unreachable, "gatekeeper_unavailable")
+    );
+    assert!(shows(&host, &id).await.contains("nothing sent"));
+
+    // Covered, but the page changes the message while the judge decides:
+    // what was judged is not what would be sent, so nothing is. The judge
+    // answers only once the page has changed.
+    judge.answer(|_| COVERED);
+    let raced = async |host: &Host, swap: &str| {
+        let confirmation = paused(host).await;
+        judge.held.store(true, std::sync::atomic::Ordering::SeqCst);
+        let asked = judge.judged();
+        let ((raced, _), _) = tokio::join!(confirm(host, &confirmation), async {
+            while judge.judged() == asked {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            let changed = host.look("eval", &id, json!({"script": swap})).await;
+            judge.held.store(false, std::sync::atomic::Ordering::SeqCst);
+            changed
+        });
+        assert_eq!(raced.unwrap_err().code, "confirm_stale");
+        assert!(shows(host, &id).await.contains("nothing sent"));
+    };
+    let body = "document.getElementById('body')";
+    raced(&host, &format!("{body}.value = 'wire it all today'")).await;
+    // So does a change past what the judge is shown that keeps the length.
+    let long = format!("{body}.value = 'a'.repeat(4050) + 'b'.repeat(50)");
+    host.look("eval", &id, json!({"script": long})).await;
+    raced(
+        &host,
+        &format!("{body}.value = 'a'.repeat(4050) + 'c'.repeat(50)"),
+    )
+    .await;
+    let back = format!("{body}.value = {message:?}");
+    host.look("eval", &id, json!({"script": back})).await;
+    // And a change to a field past those the judge is shown.
+    let notes = "const form = document.getElementById('compose');
+        for (let i = 0; i < 21; i++) {
+          const label = document.createElement('label');
+          label.textContent = `Note ${i} `;
+          const note = document.createElement('input');
+          note.className = 'note';
+          note.value = `note ${i}`;
+          label.append(note);
+          form.append(label);
+        }";
+    host.look("eval", &id, json!({"script": notes})).await;
+    raced(
+        &host,
+        "document.querySelectorAll('.note')[20].value = 'wire it all'",
+    )
+    .await;
+    let fields = judge.last_action()["fields"].to_string();
+    assert!(fields.contains("more fields not shown"), "{fields}");
+    assert!(!fields.contains("note 20"), "{fields}");
+    let drop = "document.querySelectorAll('.note').forEach((n) => n.parentNode.remove())";
+    host.look("eval", &id, json!({"script": drop})).await;
+
+    // Covered, the confirmed Send goes out.
+    let confirmation = paused(&host).await;
+    let asked = judge.judged();
+    confirm(&host, &confirmation).await.0.unwrap();
+    assert_eq!(judge.judged(), asked + 1);
+    assert!(
+        shows(&host, &id)
+            .await
+            .contains(&format!("sent: {message}"))
+    );
+    host.look("close", &id, json!({})).await;
+}
+
+/// A click the risk decision lets go is not judged: only a paused one
+/// that is confirmed is.
+async fn a_click_the_risk_check_lets_go_asks_the_judge_nothing(engine: &str) {
+    let (_dir, state, _area) = test_state(engine);
+    let (site, _) = serve_site();
+    let chat = vec![message("m1", true, "have a look at my test site", 10)];
+    let judge = Judge::new(|state| match state["proposed_action"]["kind"].as_str() {
+        Some("open_site") => COVERED,
+        _ => NOT_COVERED,
+    });
+    let host = Host::start(&state, &site, &judge, chat.clone());
+    let (id, _, read) = composed(&host, &site, engine, "On my way").await;
+    let asked = judge.judged();
+    let (clicked, audit) = host
+        .agent("do", &id, act(&format!("click {read}")), None)
+        .await;
+    clicked.unwrap();
+    assert_eq!(judge.judged(), asked);
+    assert!(!audit.contains_key("gate"));
+    assert!(
+        shows(&host, &id)
+            .await
+            .contains("marked read, trusted true")
+    );
+    host.look("close", &id, json!({})).await;
 }
