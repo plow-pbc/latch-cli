@@ -827,6 +827,11 @@ fn no_refusal_claims_an_approval_prompt() {
         for claim in ["prompt", "dialog", "approve"] {
             assert!(!rest.contains(claim), "{reason}: {message}");
         }
+        // The judge names no owner message behind an unsure stop, so the
+        // refusal claims none.
+        if reason == "not_as_asked" {
+            assert!(!lower.contains("owner's messages"), "{message}");
+        }
         if reason == "not_covered" {
             assert!(lower.contains("no approval prompt"), "{message}");
             assert!(lower.contains("rules"), "{message}");

@@ -875,8 +875,9 @@ fn owner_verdict(p: P) -> Result<(), Failure> {
 /// The chat an agent's chat layer read, as the record names it: its id,
 /// and the owner's messages among those the judge was shown. `unsure_stop`
 /// marks a veto by the chat alone at `CHAT_VETO_P`, with FORBIDDEN still
-/// below NOT_COVERED and no plain veto from the owner's-messages judge: the owner's messages lean against the action as it
-/// is, most often because it differs from what they asked, not a plain no.
+/// below NOT_COVERED and no plain veto from the owner's-messages judge: an
+/// unsure stop, most often an action that differs from what the owner
+/// asked. The judge names no owner message behind it.
 struct ChatRead<'a> {
     chat: &'a str,
     owner_messages: &'a [Value],
@@ -897,7 +898,7 @@ fn agent_verdict(rules: Says, chat: Option<(Says, ChatRead)>) -> Result<(), Fail
         let mut failure = denied(
             "not_as_asked",
             format!(
-                "The owner's messages in Plow chat {} lean against this action as it is now, without a plain no: most likely it differs from what they last asked (another item, card, amount, recipient or time), or they never asked for it. Read their latest messages there. If they asked for it differently, change the action to match exactly and retry; otherwise {NO_PROMPT} ask them there, saying exactly what you will do, and retry once they agree. Refused again, stop and tell them.",
+                "The gatekeeper stopped this action as it is now without finding a plain no from the owner: most likely it differs from what the owner last asked in Plow chat {} (another item, card, amount, recipient or time), or they never asked for it. Read their latest messages there. If they asked for it differently, change the action to match exactly and retry; otherwise {NO_PROMPT} ask them there, saying exactly what you will do, and retry once they agree. Refused again, stop and tell them.",
                 read.chat
             ),
         );

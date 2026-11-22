@@ -340,8 +340,9 @@ the host with `latch serve --deny-exec`: no agent can run programs there.
 
 - `not_covered`: the agent asks you in chat, saying exactly what it will do,
   and tries again once you agree.
-- `not_as_asked`: your messages lean against the action as it is, most often
-  because it differs from what you asked; the agent fixes it and tries again.
+- `not_as_asked`: the action was stopped without a plain no from you, most
+  often because it differs from what you asked; the agent fixes it and tries
+  again.
 - `owner_said_no` or `exec_denied`: the answer is no.
 
 ## 5. Update

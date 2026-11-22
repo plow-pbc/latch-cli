@@ -236,6 +236,12 @@ fn results_say_what_happened_in_words() {
         json!({"reason": "owner_said_no"}),
     );
     run(&dashboard, agent(), "exec", exec(0), exec(0), no, None);
+    let differs = denied(
+        "gatekeeper_denied",
+        "The gatekeeper stopped this action.",
+        json!({"reason": "not_as_asked"}),
+    );
+    run(&dashboard, agent(), "exec", exec(0), exec(0), differs, None);
     let search = json!({"action": "search", "args": ["--", "code"]});
     let found = json!({"action": "messages.search", "result": {"count": 4}});
     run(
@@ -259,6 +265,7 @@ fn results_say_what_happened_in_words() {
             "Run: false: Failed - exit 1",
             "Run: false: Refused - judge unavailable",
             "Run: false: Refused - owner said no",
+            "Run: false: Refused - not as the owner asked",
             "Search Messages: Done - 4 matches",
         ]
     );
