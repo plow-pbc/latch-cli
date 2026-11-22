@@ -3296,6 +3296,41 @@ fn switching_an_agent_login_offers_to_copy_its_host_policy() {
     );
     server.join().unwrap();
 
+    // Saved flags describe the running host. Refuse to change them under its
+    // startup snapshot, before registration changes the remote identity.
+    let mut serving = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(state.join("serve.lock"))
+        .unwrap();
+    writeln!(serving, "latch serve (pid 123, /test/latch)").unwrap();
+    serving.lock().unwrap();
+    let (api_url, server) = fake_plow(vec![
+        (200, json!({"agent": {"uid": NEW, "name": "New agent"}})),
+        (
+            200,
+            json!({"data": [{"key": "host-key", "kind": "device", "name": "studio",
+                                "relay_url": null, "last_seen_at": null}]}),
+        ),
+    ]);
+    let (code, shown, _) = latch_at_a_terminal(
+        &state,
+        &["login", "--api-url", &api_url],
+        "y\n",
+        false,
+        &env,
+    );
+    assert_ne!(code, Some(0), "{shown}");
+    assert!(shown.contains("latch stop"), "{shown}");
+    assert!(
+        !fs::read_to_string(state.join("serve-args.json"))
+            .unwrap()
+            .contains(NEW)
+    );
+    server.join().unwrap();
+    drop(serving);
+
     // The accepted block is saved before registration, so a Plow failure
     // cannot switch identities first and lose the local restriction.
     let (api_url, server) = switching((500, json!({})));

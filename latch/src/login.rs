@@ -270,6 +270,20 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
         };
         let authenticated_agent_uid = me.as_ref().map(|me| me.uid.clone());
         if copy_requested {
+            let _held = crate::serve::hold_state(
+                &state.path,
+                "latch login",
+                Duration::ZERO,
+                |_| false,
+            )?
+            .map_err(|holder| {
+                let message = format!(
+                    "{holder} holds this state folder; stop it before copying its --deny-exec block"
+                );
+                let mut failure = Failure::new(code::state_busy, message);
+                failure.next = Some("latch stop, then latch login --again".into());
+                failure
+            })?;
             let handoff = policy_handoff.as_mut().expect("a policy was offered");
             copy_policy(state, handoff)?;
             handoff.deny_exec_copied = true;
