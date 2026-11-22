@@ -406,7 +406,8 @@ ordinary click are not judged: the risk decision, confirmations and the
 fill and pause checks above still hold. A refusal is exit 4,
 `gatekeeper_denied`, and nothing was sent: with reason `not_covered`, ask
 the owner in chat, saying exactly what you will do, then retry; with
-`owner_said_no`, don't. A gatekeeper that can't judge (the chat or the
+`not_as_asked`, make the action match what the owner last asked and retry;
+with `owner_said_no`, don't. A gatekeeper that can't judge (the chat or the
 model unreachable) is exit 3, `gatekeeper_unavailable`, and nothing runs;
 its message says what fixes it (below, under the decision model).
 An agent whose line has more than one chat names the one it acts for

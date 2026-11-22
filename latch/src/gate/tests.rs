@@ -643,7 +643,7 @@ async fn the_answer_decides_allow_ask_or_stop_and_a_failed_model_refuses() {
 
     for (p, reason) in [
         ([0.45, 0.45, 0.1], "not_covered"),
-        ([0.45, 0.4, 0.15], "owner_said_no"),
+        ([0.45, 0.4, 0.15], "not_as_asked"),
         ([0.2, 0.4, 0.4], "owner_said_no"),
     ] {
         let model = Recorder::answering(p[0], p[1], p[2]);
@@ -775,6 +775,7 @@ fn no_refusal_claims_an_approval_prompt() {
                 ChatRead {
                     chat: "chat_a",
                     owner_messages: &theirs,
+                    unsure_stop: false,
                 },
             )),
         ),
@@ -785,6 +786,18 @@ fn no_refusal_claims_an_approval_prompt() {
                 ChatRead {
                     chat: "chat_a",
                     owner_messages: &[],
+                    unsure_stop: false,
+                },
+            )),
+        ),
+        agent_verdict(
+            Neither,
+            Some((
+                Veto,
+                ChatRead {
+                    chat: "chat_a",
+                    owner_messages: &theirs,
+                    unsure_stop: true,
                 },
             )),
         ),
@@ -824,13 +837,16 @@ fn no_refusal_claims_an_approval_prompt() {
 #[test]
 fn either_layers_veto_refuses_before_either_layers_allow() {
     use Says::{Allow, Neither, Veto};
-    let read = || ChatRead {
-        chat: "chat_a",
-        owner_messages: &[],
-    };
-    let reason = |rules, chat: Option<Says>| match agent_verdict(rules, chat.map(|c| (c, read()))) {
-        Ok(()) => "allow".to_string(),
-        Err(failure) => failure.details["reason"].as_str().unwrap().to_string(),
+    let reason = |rules, chat: Option<Says>, unsure_stop| {
+        let read = ChatRead {
+            chat: "chat_a",
+            owner_messages: &[],
+            unsure_stop,
+        };
+        match agent_verdict(rules, chat.map(|c| (c, read))) {
+            Ok(()) => "allow".to_string(),
+            Err(failure) => failure.details["reason"].as_str().unwrap().to_string(),
+        }
     };
     for (rules, chat, expected) in [
         (Allow, None, "allow"),
@@ -845,8 +861,12 @@ fn either_layers_veto_refuses_before_either_layers_allow() {
         (Veto, Some(Neither), "owner_said_no"),
         (Neither, Some(Veto), "owner_said_no"),
     ] {
-        assert_eq!(reason(rules, chat), expected, "{rules:?} {chat:?}");
+        assert_eq!(reason(rules, chat, false), expected, "{rules:?} {chat:?}");
     }
+    // The chat's unsure stop names its cause, unless the rules also forbid.
+    assert_eq!(reason(Neither, Some(Veto), true), "not_as_asked");
+    assert_eq!(reason(Allow, Some(Veto), true), "not_as_asked");
+    assert_eq!(reason(Veto, Some(Veto), true), "owner_said_no");
 }
 
 /// The two layers through a judgment, each answering for itself.
@@ -1768,7 +1788,9 @@ async fn a_liftable_rule_waits_for_chat_permission_without_granting_it() {
 #[tokio::test]
 async fn the_chat_stop_threshold_vetoes_only_below_half_covered() {
     for (rules, chat, verdict) in [
-        ([0.9, 0.05, 0.05], [0.49, 0.36, 0.15], "owner_said_no"),
+        ([0.9, 0.05, 0.05], [0.49, 0.36, 0.15], "not_as_asked"),
+        ([0.65, 0.33, 0.02], [0.42, 0.34, 0.24], "not_as_asked"),
+        ([0.9, 0.05, 0.05], [0.4, 0.2, 0.4], "owner_said_no"),
         ([0.0, 1.0, 0.0], [0.5, 0.35, 0.15], "allow"),
         ([0.0, 1.0, 0.0], [0.49, 0.37, 0.14], "not_covered"),
         ([0.9, 0.05, 0.05], [0.49, 0.37, 0.14], "allow"),

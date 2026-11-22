@@ -270,6 +270,11 @@ Exit 4 is a refusal, and its code says what you may do:
   Refused again, stop and tell them; its `details` say which chat was read
   (`chat_lookup` `found` or `none`) and which of the messages read were the
   owner's (`owner_messages`). With `none`, only their rules can allow it.
+- `gatekeeper_denied` with reason `not_as_asked`: the owner's messages lean
+  against the action as it is, without a plain no. Most often it differs
+  from what they last asked (another item, card, amount, recipient or
+  time): read their latest messages, make the action match and retry; if
+  nothing differs, ask them as for `not_covered`.
   For work you'll repeat, the owner can allow it in their rules instead.
 - `confirm_needed`: a browser step that can't be undone, nothing sent. If
   it is what the task needs, carry it out with `latch browser --session ID

@@ -664,6 +664,8 @@ impl Gatekeeper {
         let read = ChatRead {
             chat: gate["chat"].as_str().unwrap_or_default(),
             owner_messages: gate["owner_messages"].as_array().map_or(&[], Vec::as_slice),
+            unsure_stop: decided_by == "chat"
+                && chat_p.is_some_and(|(whole, _)| whole.forbidden < whole.not_covered),
         };
         agent_verdict(says.0, says.1.map(|chat| (chat, read)))
     }
@@ -865,10 +867,14 @@ fn owner_verdict(p: P) -> Result<(), Failure> {
 }
 
 /// The chat an agent's chat layer read, as the record names it: its id,
-/// and the owner's messages among those the judge was shown.
+/// and the owner's messages among those the judge was shown. `unsure_stop`
+/// marks a veto by the chat alone at `CHAT_VETO_P`, with FORBIDDEN still
+/// below NOT_COVERED: the owner's messages lean against the action as it
+/// is, most often because it differs from what they asked, not a plain no.
 struct ChatRead<'a> {
     chat: &'a str,
     owner_messages: &'a [Value],
+    unsure_stop: bool,
 }
 
 /// An agent's verdict from its layers: the rules layer, and the chat layer
@@ -878,6 +884,21 @@ struct ChatRead<'a> {
 /// owner's OK has to go: latch never asks the owner itself.
 fn agent_verdict(rules: Says, chat: Option<(Says, ChatRead)>) -> Result<(), Failure> {
     let says = [Some(rules), chat.as_ref().map(|(says, _)| *says)];
+    if let Some((Says::Veto, read)) = &chat
+        && rules != Says::Veto
+        && read.unsure_stop
+    {
+        let mut failure = denied(
+            "not_as_asked",
+            format!(
+                "The owner's messages in Plow chat {} lean against this action as it is now, without a plain no: most likely it differs from what they last asked (another item, card, amount, recipient or time), or they never asked for it. Read their latest messages there. If they asked for it differently, change the action to match exactly and retry; otherwise {NO_PROMPT} ask them there, saying exactly what you will do, and retry once they agree. Refused again, stop and tell them.",
+                read.chat
+            ),
+        );
+        failure.details["chat"] = json!(read.chat);
+        failure.details["owner_messages"] = json!(read.owner_messages);
+        return Err(failure);
+    }
     if says.contains(&Some(Says::Veto)) {
         return Err(denied(
             "owner_said_no",
