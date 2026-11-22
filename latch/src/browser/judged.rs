@@ -118,7 +118,7 @@ pub(super) async fn judge(
         return Ok(());
     };
     let action = shown(&action, filled);
-    audit.insert("judged".into(), audited(&action));
+    audit.insert("judged".into(), action.clone());
     let judging = Instant::now();
     let judgment = gate.judge(&action).await;
     super::host::add_time(|phases| &mut phases.gate_ms, judging.elapsed());
@@ -135,39 +135,37 @@ pub(super) async fn judge(
     judgment.verdict
 }
 
-/// `action` as the audit keeps it: a page's address as its origin and
-/// path, never its query or fragment.
-fn audited(action: &Value) -> Value {
-    let mut kept = action.clone();
-    if let Some(url) = action["page"]["url"].as_str() {
-        let (origin, path) = super::core::origin_and_path(url);
-        kept["page"]["url"] = json!(origin + &path);
-    }
-    kept
-}
-
 /// The judgments one browser session made in the last hour: when, for
-/// which site and item, and whether each was allowed.
+/// which purchase (its site and item, kept here only, and the opaque id
+/// the audit names it by), and whether each was allowed.
 #[derive(Default)]
 pub(super) struct Attempts(std::sync::Mutex<Vec<Judgment>>);
 
 struct Judgment {
     at: Instant,
-    site: Option<String>,
-    item: String,
+    purchase: (String, String),
+    id: String,
     allowed: bool,
 }
 
 impl Attempts {
     /// Adds to `gate` the `context` of a judgment of `action` made `now`:
-    /// its site and item, how many judgments of both this session made in
+    /// an opaque, random id for its purchase (its site and item in this
+    /// session), how many judgments of that purchase the session made in
     /// the last hour (this one included), and the seconds since its last
-    /// allowed one on the site within that hour; then records it.
+    /// allowed one on the site within that hour; then records it. Numbers
+    /// only: with no site to tie it to, each is `unknown`. It is logging:
+    /// the verdict is already made.
     pub(super) fn judged(&self, action: &Value, gate: &mut Value, allowed: bool, now: Instant) {
         let site = action["site"]
             .as_str()
             .map(str::to_string)
             .or_else(|| action["page"]["url"].as_str().and_then(sites::site_of));
+        let Some(site) = site else {
+            gate["context"] = json!({"purchase": "unknown", "attempts_1h": "unknown",
+                                     "since_allowed_s": "unknown"});
+            return;
+        };
         let item = match action["item"]["title"].as_str() {
             Some(title) => title.to_string(),
             None => action["may_fill"]
@@ -176,22 +174,27 @@ impl Attempts {
                 .flatten()
                 .filter_map(|item| item["title"].as_str())
                 .collect::<Vec<_>>()
-                .join(", "),
+                .join("\n"),
         };
+        let purchase = (site, item);
         let mut judged = self.0.lock().expect("attempts lock");
         judged.retain(|j| now.duration_since(j.at) < Duration::from_secs(3600));
-        let on_site = || judged.iter().filter(|j| j.site == site);
-        let attempts = on_site().filter(|j| j.item == item).count() + 1;
-        let since_allowed = on_site()
-            .filter(|j| j.allowed)
+        let id = judged.iter().find(|j| j.purchase == purchase).map_or_else(
+            || super::host::hash_of(&rand::random::<u64>().to_string()),
+            |j| j.id.clone(),
+        );
+        let attempts = judged.iter().filter(|j| j.id == id).count() + 1;
+        let since_allowed = judged
+            .iter()
+            .filter(|j| j.allowed && j.purchase.0 == purchase.0)
             .map(|j| now.duration_since(j.at).as_secs())
             .min();
-        gate["context"] = json!({"site": site, "item": item, "attempts_1h": attempts,
+        gate["context"] = json!({"purchase": id, "attempts_1h": attempts,
                                  "since_allowed_s": since_allowed});
         judged.push(Judgment {
             at: now,
-            site,
-            item,
+            purchase,
+            id,
             allowed,
         });
     }
@@ -521,11 +524,12 @@ mod tests {
     use super::*;
     use crate::browser::plan::short_step;
 
-    /// Each judgment's context: its site and item, how many judgments of
-    /// both this session made in the last hour, and the seconds since its
-    /// last allowed one on the site.
+    /// Each judgment's context: an opaque id for the purchase (the session,
+    /// site and item it serves), how many judgments of it the session made
+    /// in the last hour, and the seconds since its last allowed one on the
+    /// site; numbers only, `unknown` where the site is not known.
     #[test]
-    fn a_judgment_records_its_attempts_and_the_last_allowed_one() {
+    fn a_judgment_records_opaque_attempts_and_the_last_allowed_one() {
         let attempts = Attempts::default();
         let start = std::time::Instant::now();
         let at = |s| start + std::time::Duration::from_secs(s);
@@ -536,31 +540,43 @@ mod tests {
                           "may_fill": [{"kind": "card", "title": "Visa"}]});
         let mut gate = json!({});
         attempts.judged(&fill, &mut gate, true, at(0));
+        let purchase = gate["context"]["purchase"].clone();
         assert_eq!(
             gate["context"],
-            json!({"site": "shop.example", "item": "Visa", "attempts_1h": 1, "since_allowed_s": null})
+            json!({"purchase": purchase, "attempts_1h": 1, "since_allowed_s": null})
         );
         attempts.judged(&plan, &mut gate, false, at(30));
         assert_eq!(
             gate["context"],
-            json!({"site": "shop.example", "item": "Visa", "attempts_1h": 2, "since_allowed_s": 30})
+            json!({"purchase": purchase, "attempts_1h": 2, "since_allowed_s": 30})
         );
         // An hour on, the first judgment, the allowed one, no longer counts.
         attempts.judged(&fill, &mut gate, false, at(3620));
         assert_eq!(gate["context"]["attempts_1h"], 2);
         assert_eq!(gate["context"]["since_allowed_s"], Value::Null);
-        assert!(!gate.to_string().contains("token"));
-    }
-
-    /// The audit keeps a judged page's address as its origin and path:
-    /// never its query or fragment.
-    #[test]
-    fn the_audit_keeps_a_judged_page_without_its_query() {
-        let plan = json!({"kind": "browser_plan",
-                          "page": {"url": "https://shop.example/pay?token=abc#card", "title": "Pay"}});
-        assert_eq!(audited(&plan)["page"]["url"], "https://shop.example/pay");
-        let fill = json!({"kind": "vault_fill", "site": "shop.example"});
-        assert_eq!(audited(&fill), fill);
+        // The id says nothing of what it stands for, and is not a hash of it.
+        let id = purchase.as_str().unwrap();
+        for derivable in [
+            "shop",
+            "Visa",
+            "token",
+            &super::super::host::hash_of("shop.example\nVisa"),
+        ] {
+            assert!(!gate.to_string().contains(derivable), "{derivable}");
+        }
+        assert_eq!(id.len(), 12);
+        // Another item on the site is another purchase.
+        let other = json!({"kind": "vault_fill", "site": "shop.example",
+                           "item": {"kind": "card", "title": "Amex"}});
+        attempts.judged(&other, &mut gate, false, at(3621));
+        assert_ne!(gate["context"]["purchase"], purchase);
+        assert_eq!(gate["context"]["attempts_1h"], 1);
+        // With no site to tie it to, nothing is guessed.
+        attempts.judged(&json!({"kind": "vault_fill"}), &mut gate, true, at(3622));
+        assert_eq!(
+            gate["context"],
+            json!({"purchase": "unknown", "attempts_1h": "unknown", "since_allowed_s": "unknown"})
+        );
     }
 
     #[test]

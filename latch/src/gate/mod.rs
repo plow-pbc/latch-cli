@@ -696,7 +696,7 @@ impl Gatekeeper {
                     .iter()
                     .rev()
                     .find(|m| m.owner)
-                    .map(|m| (now.as_second() - m.at.as_second()).max(0)),
+                    .map_or(json!("unknown"), |m| json!((now.as_second() - m.at.as_second()).max(0))),
             });
             call["owner_messages"] = json!(
                 window

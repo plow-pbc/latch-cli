@@ -414,11 +414,12 @@ with `--plow-chat C` or `LATCH_PLOW_CHAT`. Owner calls and local modes
 (`setup`, `handoff done`, `do --dry-run`) refuse this selector instead of
 ignoring it. The call's audit record holds the
 judgment as `gate` (verdict, probabilities, model, cost, latency, the
-message ids read and the newest owner message's age in seconds), never chat
-text. In a session, `gate.context` adds the site and item judged, how many
-judgments of both the session made in the last hour, and the seconds since
-its last allowed one on that site. A judged page's address is kept as its
-origin and path, never its query or fragment. `just gated-shopping HOST_STATE OUT`
+message ids read and the newest owner message's age in seconds, or
+`unknown`), never chat text. In a session, `gate.context` adds an opaque,
+random id for the purchase judged (its site and item in that session), how
+many judgments of it the session made in the last hour, and the seconds
+since its last allowed one on that site: numbers only, `unknown` where the
+site is not known. None of it is judged: it is recorded after the verdict. `just gated-shopping HOST_STATE OUT`
 measures a shopping task's judgments on the decision model.
 
 ## Plans, literal steps and confirmations

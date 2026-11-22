@@ -269,6 +269,37 @@ async fn only_the_member_plow_calls_the_owner_counts_as_the_owner() {
     assert!(!judgment.gate.to_string().contains("dog food"));
 }
 
+/// The owner messages' age is kept for the record only: it never moves
+/// the verdict, and with no owner message it is `unknown`.
+#[tokio::test]
+async fn the_owner_messages_age_is_recorded_and_never_judged() {
+    let mut said = Vec::new();
+    for (minutes, words) in [(1, "buy it"), (7200, "Fwd: buy it"), (5, "")] {
+        let messages = if words.is_empty() {
+            vec![message("m1", agent_self(), "Buying it.", minutes)]
+        } else {
+            vec![message("m1", owner(), words, minutes)]
+        };
+        let model = Recorder::answering(0.45, 0.4, 0.15);
+        let judgment = gatekeeper(
+            World::with_chat("chat_a", messages),
+            &model,
+            Rules::default(),
+        )
+        .judge(AGENT_CALLER, &order())
+        .await;
+        said.push((judgment.gate["verdict"].clone(), judgment.gate["p"].clone()));
+        let age = &judgment.gate["window"]["owner_newest_s"];
+        match minutes {
+            1 => assert!((60..120).contains(&age.as_i64().unwrap()), "{age}"),
+            7200 => assert!(age.as_i64().unwrap() >= 7200 * 60, "{age}"),
+            _ => assert_eq!(age, "unknown"),
+        }
+        assert!(!judgment.gate.to_string().contains("buy it"));
+    }
+    assert_eq!(said[0], said[1]);
+}
+
 #[tokio::test]
 async fn every_plow_call_sends_the_credential_once() {
     let messages = (0..150)
