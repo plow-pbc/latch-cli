@@ -270,10 +270,7 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
             // Two agents may share a name: unless one was asked for, try once
             // more as the name plus the start of this agent's uid.
             Err(failure) if failure.code == "conflict" && !owner && !named => {
-                let me = match me {
-                    Some(me) => me,
-                    None => plow.agent_me().await.map_err(|_| failure)?,
-                };
+                let me = me.expect("agent identity was fetched before registration");
                 let name = registration.name.as_deref().unwrap_or(&me.name);
                 let suffixed = Registration {
                     name: Some(format!("{name}-{}", &me.uid[..6.min(me.uid.len())])),
