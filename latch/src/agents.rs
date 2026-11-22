@@ -550,18 +550,49 @@ async fn rotate(plow: &Plow, named: &str, credential_file: &Path) -> Result<Valu
     let saved = StoredCredential::read(credential_file)?;
     saved.require_agent(&agent.uid, credential_file)?;
     let replacement = CredentialFile::replacement(credential_file)?;
-    let credential = match plow
-        .rotate_agent_credential(&agent.uid, saved.credential_id)
-        .await
-    {
+    let credential = match plow.mint_agent_credential(&agent.uid).await {
         Ok(credential) => credential,
         Err(failure) => {
             replacement.abandon();
             return Err(credential_request_failed(failure, "rotated"));
         }
     };
-    let path =
-        replacement.replace_scoped(credential_file, &saved.api_base, &credential, &agent.uid)?;
+    let temporary = replacement.keep_scoped(&saved.api_base, &credential, &agent.uid)?;
+    if let Err(mut failure) = plow
+        .revoke_agent_credential(&agent.uid, saved.credential_id)
+        .await
+    {
+        if plow
+            .revoke_agent_credential(&agent.uid, credential.id)
+            .await
+            .is_ok()
+        {
+            let _ = std::fs::remove_file(&temporary);
+        } else {
+            failure.message = format!(
+                "{}; replacement credential {} may also be live and remains in {} so it can be revoked",
+                failure.message,
+                credential.id,
+                temporary.display()
+            );
+            failure.details = json!({"agent_uid": agent.uid, "credential_id": credential.id,
+                                     "credential_file": temporary});
+        }
+        return Err(credential_request_failed(failure, "rotated"));
+    }
+    std::fs::rename(&temporary, credential_file).map_err(|err| {
+        let message = format!(
+            "credential {} was rotated and saved privately to {}, but couldn't replace {}: {err}",
+            credential.id,
+            temporary.display(),
+            credential_file.display()
+        );
+        let mut failure = Failure::new(code::credential_not_saved, message);
+        failure.details = json!({"agent_uid": agent.uid, "credential_id": credential.id,
+                                 "path": temporary, "target": credential_file});
+        failure
+    })?;
+    let path = credential_file.to_path_buf();
     Ok(credential_output(agent, path, saved.api_base, &credential))
 }
 
@@ -933,29 +964,6 @@ impl CredentialFile {
                 Err(failure)
             }
         }
-    }
-
-    fn replace_scoped(
-        self,
-        target: &Path,
-        api_base: &str,
-        credential: &AgentCredential,
-        agent_uid: &str,
-    ) -> Result<PathBuf, Failure> {
-        let temporary = self.keep_scoped(api_base, credential, agent_uid)?;
-        std::fs::rename(&temporary, target).map_err(|err| {
-            let message = format!(
-                "credential {} was rotated and saved privately to {}, but couldn't replace {}: {err}",
-                credential.id,
-                temporary.display(),
-                target.display()
-            );
-            let mut failure = Failure::new(code::credential_not_saved, message);
-            failure.details = json!({"agent_uid": agent_uid, "credential_id": credential.id,
-                                     "path": temporary, "target": target});
-            failure
-        })?;
-        Ok(target.to_path_buf())
     }
 }
 

@@ -650,22 +650,6 @@ impl Plow {
         response.json().await.map_err(|_| bad_answer())
     }
 
-    /// Replaces one Latch credential for an agent and returns its new secret.
-    pub async fn rotate_agent_credential(
-        &self,
-        agent_uid: &str,
-        credential_id: u64,
-    ) -> Result<AgentCredential, Failure> {
-        let url = format!(
-            "{}/v1/latch/agents/{agent_uid}/credentials/{credential_id}/rotate",
-            self.api_url
-        );
-        let response = self
-            .send(self.http.post(url).json(&serde_json::json!({})))
-            .await?;
-        response.json().await.map_err(|_| bad_answer())
-    }
-
     /// Revokes only the named Latch credential, leaving its agent intact.
     pub async fn revoke_agent_credential(
         &self,

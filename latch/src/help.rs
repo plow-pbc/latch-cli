@@ -283,7 +283,7 @@ const ENTRIES: &[Entry] = &[
         runs_on: |_| RunsOn::Local,
         output: "`agent`, `credential_file`, `api_url`, the new `credential_id` and `expires_at`. The new secret is only in the atomically replaced file, never the output.",
         effect: Once(
-            "revokes the Latch credential named in the environment file, mints its replacement and atomically replaces the file",
+            "mints and durably stages a replacement, revokes the Latch credential named in the environment file, then atomically replaces the file",
         ),
         owner_only: true,
         connector: None,

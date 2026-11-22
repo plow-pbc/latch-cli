@@ -4600,10 +4600,11 @@ fn an_existing_agent_is_adopted_rotated_and_revoked() {
     let (rotate_url, rotate_server) = fake_plow(vec![
         (200, listed()),
         (
-            200,
+            201,
             json!({"id": 12, "token": "latch-agent-12", "scopes": ["latch:agent"],
                      "expires_at": "2026-12-21T12:00:00Z"}),
         ),
+        (200, json!({"status": "revoked", "id": 11})),
     ]);
     use_plow(&host, &rotate_url);
     let rotated = latch(
@@ -4635,8 +4636,12 @@ fn an_existing_agent_is_adopted_rotated_and_revoked() {
     assert!(!saved.contains("latch-agent-11"), "{saved}");
     let requests = rotate_server.join().unwrap();
     assert!(
-        requests[1].starts_with(&format!(
-            "POST /v1/latch/agents/{AGENT_UID}/credentials/11/rotate "
+        requests[1].starts_with(&format!("POST /v1/latch/agents/{AGENT_UID}/credentials ")),
+        "{requests:?}"
+    );
+    assert!(
+        requests[2].starts_with(&format!(
+            "DELETE /v1/latch/agents/{AGENT_UID}/credentials/11 "
         )),
         "{requests:?}"
     );

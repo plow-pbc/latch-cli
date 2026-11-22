@@ -1240,9 +1240,9 @@ pub enum AgentsAction {
     },
     /// Replace an adopted agent's Latch credential
     ///
-    /// Reads the agent and credential ids from its environment file, asks
-    /// Plow to rotate that credential, then atomically replaces the file with
-    /// the new secret, id and expiry. The secret is never printed.
+    /// Reads the agent and credential ids from its environment file, stages a
+    /// new credential, revokes the old one, then atomically replaces the file.
+    /// The new secret, id and expiry are never printed.
     Rotate {
         /// The existing agent, by its uid or exact name
         agent: String,
