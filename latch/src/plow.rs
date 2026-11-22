@@ -240,6 +240,20 @@ pub struct CreatedAgent {
     pub token: Option<String>,
 }
 
+/// A separately expiring credential for an existing agent. Its token is
+/// returned only when Plow mints or rotates it.
+#[derive(Deserialize)]
+pub struct AgentCredential {
+    pub id: u64,
+    pub token: String,
+    pub expires_at: String,
+}
+
+#[derive(Deserialize)]
+struct RevokedAgentCredential {
+    id: u64,
+}
+
 #[derive(Deserialize, Debug, Clone)]
 pub struct ListedCredential {
     /// When the agent's credential was last used, as Plow recorded it.
@@ -627,6 +641,49 @@ impl Plow {
         response.json().await.map_err(|_| bad_answer())
     }
 
+    /// Gives Latch its own credential for an agent this owner already has.
+    pub async fn mint_agent_credential(&self, agent_uid: &str) -> Result<AgentCredential, Failure> {
+        let url = format!("{}/v1/latch/agents/{agent_uid}/credentials", self.api_url);
+        let response = self
+            .send(self.http.post(url).json(&serde_json::json!({})))
+            .await?;
+        response.json().await.map_err(|_| bad_answer())
+    }
+
+    /// Replaces one Latch credential for an agent and returns its new secret.
+    pub async fn rotate_agent_credential(
+        &self,
+        agent_uid: &str,
+        credential_id: u64,
+    ) -> Result<AgentCredential, Failure> {
+        let url = format!(
+            "{}/v1/latch/agents/{agent_uid}/credentials/{credential_id}/rotate",
+            self.api_url
+        );
+        let response = self
+            .send(self.http.post(url).json(&serde_json::json!({})))
+            .await?;
+        response.json().await.map_err(|_| bad_answer())
+    }
+
+    /// Revokes only the named Latch credential, leaving its agent intact.
+    pub async fn revoke_agent_credential(
+        &self,
+        agent_uid: &str,
+        credential_id: u64,
+    ) -> Result<(), Failure> {
+        let url = format!(
+            "{}/v1/latch/agents/{agent_uid}/credentials/{credential_id}",
+            self.api_url
+        );
+        let response = self.send(self.http.delete(url)).await?;
+        let revoked: RevokedAgentCredential = response.json().await.map_err(|_| bad_answer())?;
+        if revoked.id != credential_id {
+            return Err(bad_answer());
+        }
+        Ok(())
+    }
+
     /// Removes an agent; Plow answers with what it was.
     pub async fn delete_agent(&self, agent_uid: &str) -> Result<ListedAgent, Failure> {
         let url = format!("{}/v1/agents/{agent_uid}", self.api_url);
@@ -742,7 +799,11 @@ impl Plow {
             return Ok(response);
         }
         let (code, meaning) = match status.as_u16() {
-            401 | 403 => (code::plow_denied, "this credential may not do that"),
+            401 => (
+                code::plow_denied,
+                "this credential is no longer active; it may have expired, rotated or revoked",
+            ),
+            403 => (code::plow_denied, "this credential may not do that"),
             409 => (
                 code::conflict,
                 "that name, key or agent is taken by another peer",

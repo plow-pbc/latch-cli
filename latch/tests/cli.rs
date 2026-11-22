@@ -4510,6 +4510,223 @@ fn agents_are_listed_for_the_owner_with_their_standing_on_a_host() {
     assert_eq!(plow.seen().len(), seen);
 }
 
+/// An owner can give Latch a credential for an agent that already exists,
+/// without creating another agent. That credential identifies the existing
+/// agent through login, can be rotated in place, and is rejected after
+/// revocation.
+#[test]
+fn an_existing_agent_is_adopted_rotated_and_revoked() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = test_dir();
+    let (_owner, host, _key) = owner_host();
+    let credential_file = dir.path().join("research-agent.env");
+    let credential_path = credential_file.to_str().unwrap();
+    let listed = || {
+        json!([{"uid": AGENT_UID, "name": "Research bot", "provider": "exe:hermes",
+                "line": {"uid": "line_agent", "provider_key": "+14155550123",
+                         "display_name": "Research line", "card_url": null},
+                "created_at": "2026-11-21T12:00:00Z", "status": "running",
+                "failure_code": null, "credential": null}])
+    };
+    let (adopt_url, adopt_server) = fake_plow(vec![
+        (200, listed()),
+        (
+            201,
+            json!({"id": 11, "token": "latch-agent-11", "scopes": ["latch:agent"],
+                     "expires_at": "2026-12-21T12:00:00Z"}),
+        ),
+    ]);
+    use_plow(&host, &adopt_url);
+
+    let adopted = latch(
+        &host,
+        &[
+            "agents",
+            "adopt",
+            "Research bot",
+            "--credential-file",
+            credential_path,
+        ],
+        &[],
+    );
+    assert_eq!(adopted.status.code(), Some(0), "{adopted:?}");
+    assert!(!String::from_utf8_lossy(&adopted.stdout).contains("latch-agent-11"));
+    assert!(!String::from_utf8_lossy(&adopted.stderr).contains("latch-agent-11"));
+    let adopted: Value = serde_json::from_slice(&adopted.stdout).unwrap();
+    assert_eq!(adopted["agent"]["uid"], AGENT_UID);
+    assert_eq!(adopted["credential_id"], 11);
+    assert_eq!(adopted["credential_file"], credential_path);
+    assert_eq!(adopted["expires_at"], "2026-12-21T12:00:00Z");
+    assert_eq!(
+        fs::read_to_string(&credential_file).unwrap(),
+        format!(
+            "PLOW_API_BASE={}\nPLOW_AGENT_TOKEN=latch-agent-11\n# plow-agent-uid: {AGENT_UID}\n# plow-agent-credential-id: 11\n# plow-agent-credential-expires-at: 2026-12-21T12:00:00Z\n",
+            adopt_url
+        )
+    );
+    assert_eq!(
+        fs::metadata(&credential_file).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    let requests = adopt_server.join().unwrap();
+    assert!(requests[0].starts_with("GET /v1/agents "), "{requests:?}");
+    assert!(
+        requests[1].starts_with(&format!("POST /v1/latch/agents/{AGENT_UID}/credentials ")),
+        "{requests:?}"
+    );
+
+    let agent = dir.path().join("adopted-agent");
+    let (login_url, login_server) = fake_plow(vec![
+        me("Research bot"),
+        (200, peer(Value::Null, "Research bot", "agent", Value::Null)),
+    ]);
+    let first_env = [
+        ("PLOW_API_BASE", Path::new(login_url.as_str())),
+        ("PLOW_AGENT_TOKEN", Path::new("latch-agent-11")),
+    ];
+    let login = latch(&agent, &["login"], &first_env);
+    assert_eq!(login.status.code(), Some(0), "{login:?}");
+    let login: Value = serde_json::from_slice(&login.stdout).unwrap();
+    assert_eq!(login["peer"]["kind"], "agent");
+    assert_eq!(login["peer"]["name"], "Research bot");
+    let requests = login_server.join().unwrap();
+    assert!(
+        requests[0].starts_with("GET /v1/agents/me ")
+            && requests[0].contains("authorization: Bearer latch-agent-11"),
+        "{requests:?}"
+    );
+
+    let (rotate_url, rotate_server) = fake_plow(vec![
+        (200, listed()),
+        (
+            200,
+            json!({"id": 12, "token": "latch-agent-12", "scopes": ["latch:agent"],
+                     "expires_at": "2026-12-21T12:00:00Z"}),
+        ),
+    ]);
+    use_plow(&host, &rotate_url);
+    let rotated = latch(
+        &host,
+        &[
+            "agents",
+            "rotate",
+            "Research bot",
+            "--credential-file",
+            credential_path,
+        ],
+        &[],
+    );
+    assert_eq!(rotated.status.code(), Some(0), "{rotated:?}");
+    assert!(!String::from_utf8_lossy(&rotated.stdout).contains("latch-agent-12"));
+    assert!(!String::from_utf8_lossy(&rotated.stderr).contains("latch-agent-12"));
+    let rotated: Value = serde_json::from_slice(&rotated.stdout).unwrap();
+    assert_eq!(rotated["agent"]["uid"], AGENT_UID);
+    assert_eq!(rotated["credential_id"], 12);
+    let saved = fs::read_to_string(&credential_file).unwrap();
+    assert!(
+        saved.contains("PLOW_AGENT_TOKEN=latch-agent-12\n"),
+        "{saved}"
+    );
+    assert!(
+        saved.contains("# plow-agent-credential-id: 12\n"),
+        "{saved}"
+    );
+    assert!(!saved.contains("latch-agent-11"), "{saved}");
+    let requests = rotate_server.join().unwrap();
+    assert!(
+        requests[1].starts_with(&format!(
+            "POST /v1/latch/agents/{AGENT_UID}/credentials/11/rotate "
+        )),
+        "{requests:?}"
+    );
+
+    let (old_url, old_server) = fake_plow(vec![(401, json!({})), (401, json!({}))]);
+    let old = dir.path().join("old-credential");
+    let old_env = [
+        ("PLOW_API_BASE", Path::new(old_url.as_str())),
+        ("PLOW_AGENT_TOKEN", Path::new("latch-agent-11")),
+    ];
+    let refused = latch(&old, &["login"], &old_env);
+    assert_eq!(refused.status.code(), Some(4), "{refused:?}");
+    let error: Value = serde_json::from_slice(&refused.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "plow_denied");
+    assert!(
+        error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("rotated or revoked"),
+        "{error}"
+    );
+    old_server.join().unwrap();
+
+    let (next_url, next_server) = fake_plow(vec![
+        me("Research bot"),
+        (200, peer(Value::Null, "Research bot", "agent", Value::Null)),
+    ]);
+    let second_env = [
+        ("PLOW_API_BASE", Path::new(next_url.as_str())),
+        ("PLOW_AGENT_TOKEN", Path::new("latch-agent-12")),
+    ];
+    let next = dir.path().join("rotated-agent");
+    let login = latch(&next, &["login"], &second_env);
+    assert_eq!(login.status.code(), Some(0), "{login:?}");
+    let login: Value = serde_json::from_slice(&login.stdout).unwrap();
+    assert_eq!(login["peer"]["name"], "Research bot");
+    next_server.join().unwrap();
+
+    let (revoke_url, revoke_server) = fake_plow(vec![
+        (200, listed()),
+        (200, json!({"status": "revoked", "id": 12})),
+    ]);
+    use_plow(&host, &revoke_url);
+    let revoked = latch(
+        &host,
+        &[
+            "agents",
+            "revoke",
+            "Research bot",
+            "--credential-file",
+            credential_path,
+        ],
+        &[],
+    );
+    assert_eq!(revoked.status.code(), Some(0), "{revoked:?}");
+    let revoked: Value = serde_json::from_slice(&revoked.stdout).unwrap();
+    assert_eq!(revoked["status"], "revoked");
+    assert_eq!(revoked["credential_id"], 12);
+    assert_eq!(
+        fs::read_to_string(&credential_file).unwrap(),
+        saved,
+        "revocation leaves its lifecycle record in place"
+    );
+    let requests = revoke_server.join().unwrap();
+    assert!(
+        requests[1].starts_with(&format!(
+            "DELETE /v1/latch/agents/{AGENT_UID}/credentials/12 "
+        )),
+        "{requests:?}"
+    );
+
+    let (revoked_url, revoked_server) = fake_plow(vec![(401, json!({})), (401, json!({}))]);
+    let revoked_env = [
+        ("PLOW_API_BASE", Path::new(revoked_url.as_str())),
+        ("PLOW_AGENT_TOKEN", Path::new("latch-agent-12")),
+    ];
+    let revoked = latch(&dir.path().join("revoked-agent"), &["login"], &revoked_env);
+    assert_eq!(revoked.status.code(), Some(4), "{revoked:?}");
+    let error: Value = serde_json::from_slice(&revoked.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "plow_denied");
+    assert!(
+        error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("rotated or revoked"),
+        "{error}"
+    );
+    revoked_server.join().unwrap();
+}
+
 /// The owner reads Plow's catalog and lines, creates an own agent whose
 /// credential goes only to a new private file, and removes an agent once
 /// told to; latch never resends a create whose answer was lost.
