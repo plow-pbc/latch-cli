@@ -477,8 +477,7 @@ async fn a_refused_command_sends_nothing_to_the_page(engine: &str) {
     assert_eq!(shown["page"]["title"], "latch files test");
     // The audit keeps what kind of plan it was and where, by origin: not
     // its steps or the page's path and title.
-    let origin = shown["page"]["url"].as_str().unwrap();
-    let origin = crate::browser::core::origin_and_path(origin).0;
+    let origin = crate::browser::core::audited(shown["page"]["url"].as_str().unwrap());
     assert_eq!(
         plan.1["judged"],
         json!({"kind": "browser_plan", "page": {"url": origin}})
