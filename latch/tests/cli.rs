@@ -3236,16 +3236,14 @@ fn switching_an_agent_login_lists_local_policy_to_reapply() {
             .contains(&format!("Local restrictions name agents other than {NEW}")),
         "{missing:?}"
     );
-    let latch = format!("latch --state-dir '{}'", state.display());
-    let reapply = format!(
-        "{latch} serve -d --headless-browsers --deny-exec={OLD} --deny-exec=33333333333333333333333333333333 --deny-exec={NEW}"
-    );
+    let old_rules = state.join(format!("rules/{OLD}.txt"));
     assert!(
         [
-            &format!("Stop the host first: {latch} stop"),
-            &format!("--deny-exec={OLD}: {reapply}"),
-            &format!("--deny-exec=33333333333333333333333333333333: {reapply}"),
-            &format!("rules/{OLD}.txt: from an owner-authenticated state, run: latch --state-dir OWNER_STATE_DIR rules edit --agent {NEW}"),
+            &format!("On host New agent, as the owner, re-apply these to agent {NEW}:"),
+            &format!("deny-exec: {OLD}"),
+            "deny-exec: 33333333333333333333333333333333",
+            &format!("rules file: {}", old_rules.display()),
+            "See https://plow.co/latch/docs/commands.html#rules.",
         ]
         .iter()
         .all(|text| String::from_utf8_lossy(&missing.stderr).contains(*text)),
@@ -3268,8 +3266,9 @@ fn switching_an_agent_login_lists_local_policy_to_reapply() {
     assert!(warning.contains(&format!("Local restrictions name agents other than {NEW}")));
     assert!(warning.contains("Restrictions are NOT carried or copied"));
     assert!(warning.contains(&format!(
-        "rules/{OLD}.txt: from an owner-authenticated state, run: latch --state-dir OWNER_STATE_DIR rules edit --agent {NEW}"
+        "On host Old agent, as the owner, re-apply these to agent {NEW}:"
     )));
+    assert!(warning.contains(&format!("rules file: {}", old_rules.display())));
     assert!(!warning.contains("terminal") && !warning.contains("studio"));
     assert_eq!(
         fs::read_to_string(state.join(format!("rules/{NEW}.txt"))).unwrap(),
@@ -3297,9 +3296,9 @@ fn switching_an_agent_login_lists_local_policy_to_reapply() {
         .find(|event| event["type"] == "verified")
         .unwrap();
     let warning = verified["policy_warning"].as_str().unwrap();
-    assert!(warning.contains(&format!("--deny-exec={OLD}: {latch} serve -d")));
+    assert!(warning.contains(&format!("deny-exec: {OLD}")));
     assert!(warning.contains(&format!(
-        "rules/{OLD}.txt: from an owner-authenticated state, run: latch --state-dir OWNER_STATE_DIR rules edit --agent {NEW}"
+        "On host Old agent, as the owner, re-apply these to agent {NEW}:"
     )));
     assert!(verified.get("policy_handoff").is_none());
     assert_eq!(server.join().unwrap().len(), 2);

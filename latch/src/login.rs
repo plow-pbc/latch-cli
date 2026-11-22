@@ -178,7 +178,12 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
             Some(plow.agent_me().await?)
         };
         let policy_warning = match &me {
-            Some(me) => policy_inventory_warning(state, saved_agent_uid.as_deref(), &me.uid)?,
+            Some(me) => policy_inventory_warning(
+                state,
+                saved_agent_uid.as_deref(),
+                &me.uid,
+                registration.name.as_deref().unwrap_or(&me.name),
+            )?,
             None => None,
         };
         if let Some(warning) = &policy_warning {
@@ -244,8 +249,9 @@ fn policy_inventory_warning(
     state: &StateDir,
     old_uid: Option<&str>,
     new_uid: &str,
+    host_name: &str,
 ) -> Result<Option<String>, Failure> {
-    let (denied, mut flags) = crate::managed::saved_denials(&state.path)?;
+    let (denied, _) = crate::managed::saved_denials(&state.path)?;
     let denied: Vec<String> = denied.into_iter().filter(|uid| uid != new_uid).collect();
     let rules: Vec<String> = RulesDir::new(&state.path)
         .agents()?
@@ -263,30 +269,19 @@ fn policy_inventory_warning(
             "Local restrictions name agents other than {new_uid}. Restrictions are NOT carried or copied. Review these entries and re-apply only their restrictions by hand:"
         ),
     };
-    let latch = format!(
-        "latch --state-dir {}",
-        shell_quoted(&state.path.to_string_lossy())
-    );
-    warning.push_str(&format!("\nStop the host first: {latch} stop"));
-    if !flags
-        .iter()
-        .any(|flag| flag == "--deny-exec" || flag == &format!("--deny-exec={new_uid}"))
-    {
-        flags.push(format!("--deny-exec={new_uid}"));
-    }
-    let serve = flags
-        .iter()
-        .map(|flag| shell_quoted(flag))
-        .collect::<Vec<_>>()
-        .join(" ");
+    warning.push_str(&format!(
+        "\nOn host {host_name}, as the owner, re-apply these to agent {new_uid}:"
+    ));
     for uid in denied {
-        warning.push_str(&format!("\n--deny-exec={uid}: {latch} serve -d {serve}"));
+        warning.push_str(&format!("\ndeny-exec: {uid}"));
     }
     for uid in rules {
         warning.push_str(&format!(
-            "\nrules/{uid}.txt: from an owner-authenticated state, run: latch --state-dir OWNER_STATE_DIR rules edit --agent {new_uid}"
+            "\nrules file: {}",
+            state.path.join(format!("rules/{uid}.txt")).display()
         ));
     }
+    warning.push_str("\nSee https://plow.co/latch/docs/commands.html#rules.");
     Ok(Some(warning))
 }
 
