@@ -1,5 +1,9 @@
 # Review instructions — latch-cli
 
+## Cause-first bug fixes
+
+Fix a bug at its cause so the class can't recur. Never fix it with a layer, guard, link, workaround or hand-edit of data around it. A fix that adds net complexity must state why in the PR. When the bug comes from a duplicated source or identity, remove the duplicate rather than bridging the two.
+
 What is different about reviewing *this* repo: the operating point, the
 accepted limits, and the one carve-out where defensive code earns its keep.
 Universal review policy (voice posture, decline rules, review-loop rules) is
