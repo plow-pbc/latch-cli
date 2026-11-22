@@ -329,13 +329,6 @@ pub fn saved_deny_exec(dir: &Path) -> Option<crate::serve::DenyExec> {
     )
 }
 
-/// Whether the last host flags name this agent in `--deny-exec`. Invalid
-/// saved flags are an error here: an identity handoff must not hide policy it
-/// could not inspect.
-pub fn saved_denies_agent(dir: &Path, agent_uid: &str) -> Result<bool, Failure> {
-    Ok(saved(dir)?.is_some_and(|(_, args)| args.deny_exec.iter().any(|uid| uid == agent_uid)))
-}
-
 /// The individual agents and original flags from the last host start.
 pub fn saved_denials(dir: &Path) -> Result<(Vec<String>, Vec<String>), Failure> {
     let Some((given, args)) = saved(dir)? else {
@@ -349,20 +342,6 @@ pub fn saved_denials(dir: &Path) -> Result<(Vec<String>, Vec<String>), Failure> 
     agents.sort();
     agents.dedup();
     Ok((agents, given))
-}
-
-/// Copies one agent's saved `--deny-exec` standing to another, leaving all
-/// existing flags in their given order.
-pub fn copy_saved_denial(dir: &Path, from: &str, to: &str) -> Result<(), Failure> {
-    let Some((mut given, args)) = saved(dir)? else {
-        return Ok(());
-    };
-    let names = |uid: &str| args.deny_exec.iter().any(|saved| saved == uid);
-    if !names(crate::cli::EVERY_AGENT) && names(from) && !names(to) {
-        given.push(format!("--deny-exec={to}"));
-        save_given(dir, &given)?;
-    }
-    Ok(())
 }
 
 /// The flags the last host on `dir` saved, as given and as parsed.
@@ -653,7 +632,7 @@ fn not_serving(failure: Failure) -> Failure {
 
 /// Held while a host is started or stopped on `dir`.
 /// `None` once `until` passes with another start or stop still holding it.
-pub(crate) async fn launch_lock(dir: &Path, until: Instant) -> Result<Option<File>, Failure> {
+async fn launch_lock(dir: &Path, until: Instant) -> Result<Option<File>, Failure> {
     let path = dir.join("launch.lock");
     let file = OpenOptions::new()
         .write(true)

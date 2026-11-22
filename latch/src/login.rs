@@ -16,7 +16,7 @@ use crate::cli::{self, BUILD_API_URL, LoginArgs};
 use crate::credential;
 use crate::devices;
 use crate::failure::{Failure, code};
-use crate::gate::rules::{RulesDir, Scope};
+use crate::gate::rules::RulesDir;
 use crate::heartbeat;
 use crate::plow::{self, Peer, Plow, Registration};
 use crate::state::{Config, StateDir};
@@ -43,22 +43,8 @@ pub struct LoginOutput {
     /// This state folder was logged in already, and nothing was changed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub already_logged_in: Option<String>,
-    /// Local host policy that named the agent this peer key belonged to
-    /// before it was logged in as another agent.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub policy_handoff: Option<PolicyHandoff>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub policy_warning: Option<String>,
-}
-
-#[derive(Serialize)]
-pub struct PolicyHandoff {
-    pub from_agent_uid: String,
-    pub to_agent_uid: String,
-    pub rules: Option<String>,
-    pub deny_exec: bool,
-    pub hosts_to_review: Vec<String>,
-    pub deny_exec_copied: bool,
 }
 
 /// Where this login's credential comes from.
@@ -98,7 +84,6 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
             key_created: false,
             by_text: false,
             already_logged_in: Some(message),
-            policy_handoff: None,
             policy_warning: None,
         });
     }
@@ -192,112 +177,28 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
         } else {
             Some(plow.agent_me().await?)
         };
-        let policy_warning = match (&saved, &me, &saved_agent_uid) {
+        let policy_warning = match (&saved, &me, saved_agent_uid.as_deref()) {
+            (Some(config), Some(me), Some(old_uid))
+                if config.peer.kind == "agent" && old_uid != me.uid =>
+            {
+                Some(policy_inventory_warning(state, Some(old_uid), &me.uid)?)
+            }
             (Some(config), Some(me), None) if config.peer.kind == "agent" => {
-                Some(missing_predecessor_warning(state, &me.uid)?)
+                Some(policy_inventory_warning(state, None, &me.uid)?)
+            }
+            (None, Some(me), Some(old_uid)) if old_uid != me.uid => {
+                Some(policy_inventory_warning(state, Some(old_uid), &me.uid)?)
             }
             _ => None,
         };
         if let Some(warning) = &policy_warning {
             eprintln!("{warning}");
         }
-        let mut policy_handoff = match (&saved, &me) {
-            (Some(config), Some(me)) if config.peer.kind == "agent" => {
-                policy_handoff(
-                    state,
-                    &plow,
-                    saved_agent_uid.as_deref(),
-                    &config.peer.key,
-                    &me.uid,
-                )
-                .await?
-            }
-            (None, Some(me)) if saved_agent_uid.is_some() => {
-                policy_handoff(
-                    state,
-                    &plow,
-                    saved_agent_uid.as_deref(),
-                    &key.to_string(),
-                    &me.uid,
-                )
-                .await?
-            }
-            _ => None,
-        };
-        let mut copy_requested = false;
-        if let Some(handoff) = &policy_handoff {
-            eprintln!(
-                "This state was agent {}; it is logging in as agent {}.",
-                handoff.from_agent_uid, handoff.to_agent_uid
-            );
-            match &handoff.rules {
-                Some(rules) => eprintln!("Rules for {}: {rules:?}", handoff.from_agent_uid),
-                None => eprintln!("Rules for {}: none", handoff.from_agent_uid),
-            }
-            eprintln!(
-                "--deny-exec={}: {}",
-                handoff.from_agent_uid,
-                if handoff.deny_exec { "set" } else { "not set" }
-            );
-            if handoff.rules.is_some() {
-                eprintln!(
-                    "Rules are not copied because they may grant access. Re-apply only their restrictions to agent {} on each host: {}.",
-                    handoff.to_agent_uid,
-                    handoff.hosts_to_review.join(", ")
-                );
-            }
-            eprintln!("Restrictions are NOT carried; re-apply them by hand on each host:");
-            for host in &handoff.hosts_to_review {
-                eprintln!("{host}: latch login --again");
-            }
-            if handoff.deny_exec
-                && term::interactive()
-                && term::confirm(&format!(
-                    "Copy the --deny-exec block to agent {} on this host?",
-                    handoff.to_agent_uid
-                ))
-            {
-                copy_requested = true;
-            } else if handoff.deny_exec {
-                eprintln!(
-                    "The --deny-exec block was not copied without a person at the terminal."
-                );
-            }
-        }
         let registration = Registration {
             name: registration.name.or(me.as_ref().map(|me| me.name.clone())),
             ..registration
         };
         let authenticated_agent_uid = me.as_ref().map(|me| me.uid.clone());
-        if copy_requested {
-            let dir = state.path.canonicalize().unwrap_or(state.path.clone());
-            let _launching = crate::managed::launch_lock(&dir, Instant::now())
-                .await?
-                .ok_or_else(|| {
-                    let message = "another `latch serve` or `latch stop` is changing this state folder"
-                        .to_string();
-                    let mut failure = Failure::new(code::state_busy, message);
-                    failure.next = Some("latch stop, then latch login --again".into());
-                    failure
-                })?;
-            let _held = crate::serve::hold_state(
-                &state.path,
-                "latch login",
-                Duration::ZERO,
-                |_| false,
-            )?
-            .map_err(|holder| {
-                let message = format!(
-                    "{holder} holds this state folder; stop it before copying its --deny-exec block"
-                );
-                let mut failure = Failure::new(code::state_busy, message);
-                failure.next = Some("latch stop, then latch login --again".into());
-                failure
-            })?;
-            let handoff = policy_handoff.as_mut().expect("a policy was offered");
-            copy_policy(state, handoff)?;
-            handoff.deny_exec_copied = true;
-        }
         let peer = match plow.register(&registration).await {
             // Two agents may share a name: unless one was asked for, try once
             // more as the name plus the start of this agent's uid.
@@ -342,7 +243,6 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
             key_created,
             by_text: texted,
             already_logged_in: None,
-            policy_handoff,
             policy_warning,
         })
     }
@@ -350,50 +250,18 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
     registered.map_err(|failure| if texted { failure.told() } else { failure })
 }
 
-async fn policy_handoff(
+fn policy_inventory_warning(
     state: &StateDir,
-    plow: &Plow,
     old_uid: Option<&str>,
-    old_key: &str,
     new_uid: &str,
-) -> Result<Option<PolicyHandoff>, Failure> {
-    let Some(old_uid) = old_uid.filter(|old_uid| *old_uid != new_uid) else {
-        return Ok(None);
+) -> Result<String, Failure> {
+    let mut warning = match old_uid {
+        Some(old_uid) => format!(
+            "This state was agent {old_uid}; it is logging in as agent {new_uid}. Restrictions are NOT carried or copied. Review these local entries and re-apply only their restrictions by hand:"
+        ),
+        None => "The previous agent uid was not recorded. Restrictions are NOT carried or copied. Review these local entries and re-apply only their restrictions by hand before switching credentials:"
+            .to_string(),
     };
-    let rules_dir = RulesDir::new(&state.path);
-    let rules = rules_dir.text(&Scope::Agent(old_uid.to_string()))?;
-    let deny_exec = crate::managed::saved_denies_agent(&state.path, old_uid)?;
-    if (rules.is_some() || deny_exec) && rules_dir.peer(old_uid)?.as_deref() != Some(old_key) {
-        return Err(Failure::new(
-            code::bad_state,
-            format!("the saved agent uid {old_uid} is not bound to this peer key's policy"),
-        ));
-    }
-    if rules.is_none() && !deny_exec {
-        return Ok(None);
-    }
-    let mut hosts_to_review: Vec<String> = plow
-        .list_peers()
-        .await?
-        .into_iter()
-        .filter(|peer| peer.kind == "device")
-        .map(|peer| peer.name)
-        .collect();
-    hosts_to_review.sort();
-    hosts_to_review.dedup();
-    Ok(Some(PolicyHandoff {
-        from_agent_uid: old_uid.to_string(),
-        to_agent_uid: new_uid.to_string(),
-        rules,
-        deny_exec,
-        hosts_to_review,
-        deny_exec_copied: false,
-    }))
-}
-
-fn missing_predecessor_warning(state: &StateDir, new_uid: &str) -> Result<String, Failure> {
-    let mut warning = "The previous agent uid was not recorded. Restrictions are NOT carried; review these local entries and re-apply only their restrictions by hand before switching credentials."
-        .to_string();
     let (denied, mut flags) = crate::managed::saved_denials(&state.path)?;
     if !flags
         .iter()
@@ -419,17 +287,6 @@ fn missing_predecessor_warning(state: &StateDir, new_uid: &str) -> Result<String
         ));
     }
     Ok(warning)
-}
-
-fn copy_policy(state: &StateDir, handoff: &PolicyHandoff) -> Result<(), Failure> {
-    if handoff.deny_exec {
-        crate::managed::copy_saved_denial(
-            &state.path,
-            &handoff.from_agent_uid,
-            &handoff.to_agent_uid,
-        )?;
-    }
-    Ok(())
 }
 
 /// Logs an agent in on its first command that needs Plow or a host, as

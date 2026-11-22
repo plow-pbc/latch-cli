@@ -293,9 +293,6 @@ async fn run(
                     let peer = &output.peer;
                     let mut verified = json!({"type": "verified", "peer":
                         {"name": peer.name, "key": peer.key, "kind": peer.kind}});
-                    if let Some(handoff) = &output.policy_handoff {
-                        verified["policy_handoff"] = json!(handoff);
-                    }
                     if let Some(warning) = &output.policy_warning {
                         verified["policy_warning"] = json!(warning);
                     }

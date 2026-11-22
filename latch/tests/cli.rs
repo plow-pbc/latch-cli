@@ -3179,11 +3179,10 @@ fn login_again_replaces_the_saved_login_with_a_new_one() {
     assert_eq!(error["error"]["code"], "no_credential", "{error}");
 }
 
-/// Reusing a peer key for another agent changes who hosts see. The rules and
-/// hard exec refusal that name the old uid are shown before that happens and,
-/// when the person accepts, are also attached to the new uid.
+/// Reusing a peer key for another agent lists every local restriction that
+/// names another uid and changes none of it.
 #[test]
-fn switching_an_agent_login_offers_to_copy_its_host_policy() {
+fn switching_an_agent_login_lists_local_policy_to_reapply() {
     const OLD: &str = "11111111111111111111111111111111";
     const NEW: &str = "22222222222222222222222222222222";
     let dir = test_dir();
@@ -3199,16 +3198,9 @@ fn switching_an_agent_login_offers_to_copy_its_host_policy() {
     let first = latch(&state, &["login", "--api-url", &api_url], &env);
     assert_eq!(first.status.code(), Some(0), "{first:?}");
     server.join().unwrap();
-    let config: Value =
-        serde_json::from_slice(&fs::read(state.join("config.json")).unwrap()).unwrap();
-    let key = config["peer"]["key"].as_str().unwrap();
     let switching = |registration| {
         fake_plow(vec![
             (200, json!({"agent": {"uid": NEW, "name": "New agent"}})),
-            (
-                200,
-                json!({"data": [{"key": "host-key", "kind": "device", "name": "studio"}]}),
-            ),
             registration,
         ])
     };
@@ -3219,36 +3211,17 @@ fn switching_an_agent_login_offers_to_copy_its_host_policy() {
         "Only run approved tests.",
     )
     .unwrap();
-    fs::write(state.join(format!("rules/{OLD}.peer")), key).unwrap();
+    fs::write(
+        state.join(format!("rules/{NEW}.txt")),
+        "Already belongs to the new agent.",
+    )
+    .unwrap();
     fs::write(
         state.join("serve-args.json"),
         format!(r#"["--headless-browsers","--deny-exec={OLD}","--deny-exec=33333333333333333333333333333333"]"#),
     )
     .unwrap();
     fs::write(&token, "new-agent\n").unwrap();
-    fs::write(state.join(format!("rules/{OLD}.peer")), "wrong-key").unwrap();
-    fs::remove_file(state.join(format!("rules/{OLD}.txt"))).unwrap();
-    let (api_url, server) = fake_plow(vec![(
-        200,
-        json!({"agent": {"uid": NEW, "name": "New agent"}}),
-    )]);
-    let invalid = latch(&state, &["login", "--api-url", &api_url], &env);
-    assert_ne!(invalid.status.code(), Some(0));
-    let error: Value = serde_json::from_slice(&invalid.stderr).unwrap();
-    assert_eq!(error["error"]["code"], "bad_state");
-    server.join().unwrap();
-    fs::write(
-        state.join(format!("rules/{OLD}.txt")),
-        "Only run approved tests.",
-    )
-    .unwrap();
-    fs::write(state.join(format!("rules/{OLD}.peer")), key).unwrap();
-
-    fs::write(
-        state.join(format!("rules/{NEW}.txt")),
-        "Already belongs to the new agent.",
-    )
-    .unwrap();
     fs::remove_file(state.join("agent-uid")).unwrap();
     let (api_url, server) = fake_plow(vec![
         (200, json!({"agent": {"uid": NEW, "name": "New agent"}})),
@@ -3256,14 +3229,15 @@ fn switching_an_agent_login_offers_to_copy_its_host_policy() {
     ]);
     let missing = latch(&state, &["login", "--api-url", &api_url], &env);
     assert_ne!(missing.status.code(), Some(0));
+    let reapply = format!(
+        "latch serve -d --headless-browsers --deny-exec={OLD} --deny-exec=33333333333333333333333333333333 --deny-exec={NEW}"
+    );
     assert!(
         [
             "previous agent uid was not recorded",
-            &format!("--deny-exec={OLD}"),
-            &format!("rules/{OLD}.txt"),
-            "latch serve -d --headless-browsers",
-            &format!("--deny-exec={NEW}"),
-            &format!("latch rules edit --agent {NEW}"),
+            &format!("--deny-exec={OLD}: {reapply}"),
+            &format!("--deny-exec=33333333333333333333333333333333: {reapply}"),
+            &format!("rules/{OLD}.txt: latch rules edit --agent {NEW}"),
         ]
         .iter()
         .all(|text| String::from_utf8_lossy(&missing.stderr).contains(text)),
@@ -3273,7 +3247,7 @@ fn switching_an_agent_login_offers_to_copy_its_host_policy() {
         !String::from_utf8_lossy(&missing.stderr).contains(&format!("rules/{NEW}.txt:")),
         "{missing:?}"
     );
-    server.join().unwrap();
+    assert_eq!(server.join().unwrap().len(), 2);
     fs::write(state.join("agent-uid"), OLD).unwrap();
 
     let (api_url, server) = switching((500, json!({})));
@@ -3281,10 +3255,10 @@ fn switching_an_agent_login_offers_to_copy_its_host_policy() {
         .output()
         .unwrap();
     assert_ne!(unattended.status.code(), Some(0));
-    assert!(
-        String::from_utf8_lossy(&unattended.stderr)
-            .contains("--deny-exec block was not copied without a person")
-    );
+    let warning = String::from_utf8_lossy(&unattended.stderr);
+    assert!(warning.contains("Restrictions are NOT carried or copied"));
+    assert!(warning.contains(&format!("rules/{OLD}.txt: latch rules edit --agent {NEW}")));
+    assert!(!warning.contains("terminal") && !warning.contains("studio"));
     assert_eq!(
         fs::read_to_string(state.join(format!("rules/{NEW}.txt"))).unwrap(),
         "Already belongs to the new agent."
@@ -3294,103 +3268,11 @@ fn switching_an_agent_login_offers_to_copy_its_host_policy() {
             .unwrap()
             .contains(NEW)
     );
-    server.join().unwrap();
+    assert_eq!(server.join().unwrap().len(), 2);
 
-    // A launch may have read the old flags before taking serve.lock. Refuse
-    // the copy while it can still save that snapshot over the accepted block.
-    let launching = fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(state.join("launch.lock"))
-        .unwrap();
-    launching.lock().unwrap();
-    let (api_url, server) = fake_plow(vec![
-        (200, json!({"agent": {"uid": NEW, "name": "New agent"}})),
-        (
-            200,
-            json!({"data": [{"key": "host-key", "kind": "device", "name": "studio"}]}),
-        ),
-    ]);
-    let (code, shown, _) = latch_at_a_terminal(
-        &state,
-        &["login", "--api-url", &api_url],
-        "y\n",
-        false,
-        &env,
-    );
-    assert_ne!(code, Some(0), "{shown}");
-    assert!(shown.contains("latch stop"), "{shown}");
-    assert!(
-        !fs::read_to_string(state.join("serve-args.json"))
-            .unwrap()
-            .contains(NEW)
-    );
-    server.join().unwrap();
-    drop(launching);
-
-    // Saved flags describe the running host. Refuse to change them under its
-    // startup snapshot, before registration changes the remote identity.
-    let mut serving = fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(state.join("serve.lock"))
-        .unwrap();
-    writeln!(serving, "latch serve (pid 123, /test/latch)").unwrap();
-    serving.lock().unwrap();
-    let (api_url, server) = fake_plow(vec![
-        (200, json!({"agent": {"uid": NEW, "name": "New agent"}})),
-        (
-            200,
-            json!({"data": [{"key": "host-key", "kind": "device", "name": "studio",
-                                "relay_url": null, "last_seen_at": null}]}),
-        ),
-    ]);
-    let (code, shown, _) = latch_at_a_terminal(
-        &state,
-        &["login", "--api-url", &api_url],
-        "y\n",
-        false,
-        &env,
-    );
-    assert_ne!(code, Some(0), "{shown}");
-    assert!(shown.contains("latch stop"), "{shown}");
-    assert!(
-        !fs::read_to_string(state.join("serve-args.json"))
-            .unwrap()
-            .contains(NEW)
-    );
-    server.join().unwrap();
-    drop(serving);
-
-    // The accepted block is saved before registration, so a Plow failure
-    // cannot switch identities first and lose the local restriction.
-    let (api_url, server) = switching((500, json!({})));
-    let (code, shown, _) = latch_at_a_terminal(
-        &state,
-        &["login", "--api-url", &api_url],
-        "y\n",
-        false,
-        &env,
-    );
-    assert_ne!(code, Some(0), "{shown}");
-    assert!(
-        fs::read_to_string(state.join("serve-args.json"))
-            .unwrap()
-            .contains(NEW),
-        "the deny block must be written before registration"
-    );
-    server.join().unwrap();
-    fs::write(
-        state.join("serve-args.json"),
-        format!(r#"["--headless-browsers","--deny-exec={OLD}","--deny-exec=33333333333333333333333333333333"]"#),
-    )
-    .unwrap();
-
-    // --events is an unattended login: it succeeds, emits the handoff, and
-    // says that the block was skipped.
-    let (api_url, server) = switching((200, peer(json!(key), "New agent", "agent", Value::Null)));
+    // --events carries the same warning without changing the event shape for
+    // ordinary logins.
+    let (api_url, server) = switching((200, peer(Value::Null, "New agent", "agent", Value::Null)));
     let events = latch_command(&state, &["login", "--events", "--api-url", &api_url], &env)
         .output()
         .unwrap();
@@ -3402,12 +3284,14 @@ fn switching_an_agent_login_offers_to_copy_its_host_policy() {
         .map(|line| serde_json::from_slice::<Value>(line).unwrap())
         .find(|event| event["type"] == "verified")
         .unwrap();
-    assert_eq!(verified["policy_handoff"]["deny_exec_copied"], false);
-    assert!(String::from_utf8_lossy(&events.stderr).contains("was not copied"));
-    server.join().unwrap();
+    let warning = verified["policy_warning"].as_str().unwrap();
+    assert!(warning.contains(&format!("--deny-exec={OLD}: latch serve -d")));
+    assert!(warning.contains(&format!("rules/{OLD}.txt: latch rules edit --agent {NEW}")));
+    assert!(verified.get("policy_handoff").is_none());
+    assert_eq!(server.join().unwrap().len(), 2);
     fs::write(state.join("agent-uid"), OLD).unwrap();
 
-    let (api_url, server) = switching((200, peer(json!(key), "New agent", "agent", Value::Null)));
+    let (api_url, server) = switching((200, peer(Value::Null, "New agent", "agent", Value::Null)));
     let (code, shown, _) = latch_at_a_terminal(
         &state,
         &["login", "--api-url", &api_url],
@@ -3416,40 +3300,18 @@ fn switching_an_agent_login_offers_to_copy_its_host_policy() {
         &env,
     );
     assert_eq!(code, Some(0), "{shown}");
-    assert!(shown.contains("was not copied"), "{shown}");
-    server.join().unwrap();
-    fs::write(state.join("agent-uid"), OLD).unwrap();
-
-    fs::write(
-        state.join(format!("rules/{NEW}.txt")),
-        "Existing new-agent restrictions.",
-    )
-    .unwrap();
-    fs::remove_file(state.join("config.json")).unwrap();
-    let (api_url, server) = switching((200, peer(json!(key), "New agent", "agent", Value::Null)));
-    let (code, shown, stdout) = latch_at_a_terminal(
-        &state,
-        &["login", "--api-url", &api_url],
-        "y\n",
-        false,
-        &env,
+    assert!(
+        shown.contains("Restrictions are NOT carried or copied"),
+        "{shown}"
     );
-    assert_eq!(code, Some(0), "{shown}\n{stdout}");
-    assert!(shown.contains(OLD) && shown.contains(NEW), "{shown}");
-    assert!(shown.contains("Only run approved tests."), "{shown}");
-    assert!(shown.contains("--deny-exec"), "{shown}");
-    assert!(shown.contains("Restrictions are NOT carried"), "{shown}");
-    assert!(shown.contains("studio: latch login --again"), "{shown}");
-    let output: Value = serde_json::from_str(&stdout).unwrap();
-    assert_eq!(
-        output["policy_handoff"],
-        json!({"from_agent_uid": OLD, "to_agent_uid": NEW,
-               "rules": "Only run approved tests.", "deny_exec": true,
-               "hosts_to_review": ["studio"], "deny_exec_copied": true})
+    assert!(
+        !shown.contains("terminal") && !shown.contains("studio"),
+        "{shown}"
     );
+    assert_eq!(server.join().unwrap().len(), 2);
     assert_eq!(
         fs::read_to_string(state.join(format!("rules/{NEW}.txt"))).unwrap(),
-        "Existing new-agent restrictions."
+        "Already belongs to the new agent."
     );
     let flags: Value =
         serde_json::from_slice(&fs::read(state.join("serve-args.json")).unwrap()).unwrap();
@@ -3458,11 +3320,9 @@ fn switching_an_agent_login_offers_to_copy_its_host_policy() {
         json!([
             "--headless-browsers",
             format!("--deny-exec={OLD}"),
-            "--deny-exec=33333333333333333333333333333333",
-            format!("--deny-exec={NEW}")
+            "--deny-exec=33333333333333333333333333333333"
         ])
     );
-    assert_eq!(server.join().unwrap().len(), 3);
 }
 
 /// A second `latch login` on a logged-in state folder says so and asks
