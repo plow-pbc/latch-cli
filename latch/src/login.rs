@@ -182,7 +182,7 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
                 state,
                 saved_agent_uid.as_deref(),
                 &me.uid,
-                registration.name.as_deref().unwrap_or(&me.name),
+                saved.as_ref().map(|config| config.peer.name.as_str()),
             )?,
             None => None,
         };
@@ -249,7 +249,7 @@ fn policy_inventory_warning(
     state: &StateDir,
     old_uid: Option<&str>,
     new_uid: &str,
-    host_name: &str,
+    host_name: Option<&str>,
 ) -> Result<Option<String>, Failure> {
     let (denied, _) = crate::managed::saved_denials(&state.path)?;
     let denied: Vec<String> = denied.into_iter().filter(|uid| uid != new_uid).collect();
@@ -269,15 +269,19 @@ fn policy_inventory_warning(
             "Local restrictions name agents other than {new_uid}. Restrictions are NOT carried or copied. Review these entries and re-apply only their restrictions by hand:"
         ),
     };
+    let state_path = state.path.display();
+    let actor = host_name
+        .map(|name| format!("On host {name}, as"))
+        .unwrap_or_else(|| "As".into());
     warning.push_str(&format!(
-        "\nOn host {host_name}, as the owner, re-apply these to agent {new_uid}:"
+        "\n{actor} the owner, re-apply these from state folder {state_path} to agent {new_uid}:"
     ));
     for uid in denied {
-        warning.push_str(&format!("\ndeny-exec: {uid}"));
+        warning.push_str(&format!("\nstate folder {state_path}: deny-exec: {uid}"));
     }
     for uid in rules {
         warning.push_str(&format!(
-            "\nrules file: {}",
+            "\nstate folder {state_path}: rules file: {}",
             state.path.join(format!("rules/{uid}.txt")).display()
         ));
     }
