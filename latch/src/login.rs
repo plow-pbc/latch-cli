@@ -186,7 +186,7 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
         let me = if owner {
             None
         } else {
-            plow.agent_me().await.ok()
+            Some(plow.agent_me().await?)
         };
         let mut policy_handoff = match (&saved, &me) {
             (Some(config), Some(me)) if config.peer.kind == "agent" => {
@@ -194,7 +194,8 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
             }
             _ => None,
         };
-        if let Some(handoff) = &mut policy_handoff {
+        let mut copy_requested = false;
+        if let Some(handoff) = &policy_handoff {
             eprintln!(
                 "This state was agent {}; it is logging in as agent {}.",
                 handoff.from_agent_uid, handoff.to_agent_uid
@@ -214,8 +215,7 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
                     handoff.to_agent_uid
                 ))
             {
-                copy_policy(state, handoff, &key.to_string())?;
-                handoff.copied = true;
+                copy_requested = true;
             }
         }
         let registration = Registration {
@@ -252,6 +252,12 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
             }
             result => result?,
         };
+
+        if copy_requested {
+            let handoff = policy_handoff.as_mut().expect("a policy was offered");
+            copy_policy(state, handoff, &key.to_string())?;
+            handoff.copied = true;
+        }
 
         // Save only after Plow accepted us, so a failed first login leaves no
         // half-configured instance behind (apart from the key, and the token of
@@ -301,12 +307,14 @@ fn policy_handoff(
 
 fn copy_policy(state: &StateDir, handoff: &PolicyHandoff, peer_key: &str) -> Result<(), Failure> {
     if let Some(rules) = &handoff.rules {
-        RulesDir::new(&state.path).set(
-            &Scope::Agent(handoff.to_agent_uid.clone()),
-            rules,
-            Some(None),
-            Some(peer_key),
-        )?;
+        let dir = RulesDir::new(&state.path);
+        let scope = Scope::Agent(handoff.to_agent_uid.clone());
+        let current = dir.text(&scope)?;
+        let expected = match current.as_deref() {
+            Some(current) if current == rules => Some(crate::gate::rules::revision(current)),
+            _ => None,
+        };
+        dir.set(&scope, rules, Some(expected.as_deref()), Some(peer_key))?;
     }
     if handoff.deny_exec {
         crate::managed::copy_saved_denial(

@@ -3217,6 +3217,26 @@ fn switching_an_agent_login_offers_to_copy_its_host_policy() {
     fs::write(&token, "new-agent\n").unwrap();
     let (api_url, server) = fake_plow(vec![
         (200, json!({"agent": {"uid": NEW, "name": "New agent"}})),
+        (500, json!({})),
+    ]);
+    let (code, _, _) = latch_at_a_terminal(
+        &state,
+        &["login", "--api-url", &api_url],
+        "y\n",
+        false,
+        &env,
+    );
+    assert_ne!(code, Some(0));
+    assert!(!state.join(format!("rules/{NEW}.txt")).exists());
+    assert!(
+        !fs::read_to_string(state.join("serve-args.json"))
+            .unwrap()
+            .contains(NEW)
+    );
+    server.join().unwrap();
+
+    let (api_url, server) = fake_plow(vec![
+        (200, json!({"agent": {"uid": NEW, "name": "New agent"}})),
         (200, peer(json!(key), "New agent", "agent", Value::Null)),
     ]);
     let (code, shown, stdout) = latch_at_a_terminal(
