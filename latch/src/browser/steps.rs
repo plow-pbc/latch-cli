@@ -144,7 +144,7 @@ async fn send(
             (Err(failure), worker)
         }
     };
-    for key in ["tab", "origin", "path"] {
+    for key in ["tab", "origin"] {
         if let Some(value) = worker.get(key) {
             audit.entry(key).or_insert_with(|| value.clone());
         }
@@ -966,7 +966,7 @@ impl Run<'_> {
         }
         let outcome = match reply {
             Ok((result, worker)) => {
-                for key in ["role", "origin", "path"] {
+                for key in ["role", "origin"] {
                     if let Some(value) = worker.get(key) {
                         record[key] = value.clone();
                     }

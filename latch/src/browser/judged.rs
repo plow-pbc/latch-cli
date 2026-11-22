@@ -217,7 +217,7 @@ fn recorded(action: &Value) -> Value {
     let mut kept = action.clone();
     for url in ["/url", "/page/url"] {
         if let Some(url) = kept.pointer_mut(url) {
-            *url = json!(super::core::origin_and_path(url.as_str().unwrap_or_default()).0);
+            *url = json!(super::core::audited(url.as_str().unwrap_or_default()));
         }
     }
     let kept_map = kept.as_object_mut().expect("an action is an object");
