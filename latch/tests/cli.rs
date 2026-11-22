@@ -4680,6 +4680,43 @@ fn an_existing_agent_is_adopted_rotated_and_revoked() {
     assert_eq!(login["peer"]["name"], "Research bot");
     next_server.join().unwrap();
 
+    // A lost revoke answer may have revoked the old credential. Keep both
+    // the old file and the durably staged replacement for reconciliation.
+    let (uncertain_url, uncertain_server) = fake_plow(vec![
+        (200, listed()),
+        (
+            201,
+            json!({"id": 13, "token": "latch-agent-13", "scopes": ["latch:agent"],
+                   "expires_at": "2026-12-21T12:00:00Z"}),
+        ),
+        (500, json!({})),
+    ]);
+    use_plow(&host, &uncertain_url);
+    let uncertain = latch(
+        &host,
+        &[
+            "agents",
+            "rotate",
+            "Research bot",
+            "--credential-file",
+            credential_path,
+        ],
+        &[],
+    );
+    assert_eq!(uncertain.status.code(), Some(5), "{uncertain:?}");
+    let error: Value = serde_json::from_slice(&uncertain.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "outcome_unknown");
+    assert_eq!(error["error"]["previous_credential_id"], 12);
+    assert_eq!(error["error"]["replacement_credential_id"], 13);
+    assert_eq!(fs::read_to_string(&credential_file).unwrap(), saved);
+    let staged = dir.path().join(".research-agent.env.latch-rotate");
+    assert!(
+        fs::read_to_string(&staged)
+            .unwrap()
+            .contains("PLOW_AGENT_TOKEN=latch-agent-13")
+    );
+    assert_eq!(uncertain_server.join().unwrap().len(), 3);
+
     let (revoke_url, revoke_server) = fake_plow(vec![
         (200, listed()),
         (200, json!({"status": "revoked", "id": 12})),

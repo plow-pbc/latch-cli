@@ -562,22 +562,17 @@ async fn rotate(plow: &Plow, named: &str, credential_file: &Path) -> Result<Valu
         .revoke_agent_credential(&agent.uid, saved.credential_id)
         .await
     {
-        if plow
-            .revoke_agent_credential(&agent.uid, credential.id)
-            .await
-            .is_ok()
-        {
-            let _ = std::fs::remove_file(&temporary);
-        } else {
-            failure.message = format!(
-                "{}; replacement credential {} may also be live and remains in {} so it can be revoked",
-                failure.message,
-                credential.id,
-                temporary.display()
-            );
-            failure.details = json!({"agent_uid": agent.uid, "credential_id": credential.id,
-                                     "credential_file": temporary});
-        }
+        failure.message = format!(
+            "{}; credential {} may or may not be revoked, so replacement credential {} remains in {} for reconciliation",
+            failure.message,
+            saved.credential_id,
+            credential.id,
+            temporary.display()
+        );
+        failure.details = json!({"agent_uid": agent.uid,
+                                 "previous_credential_id": saved.credential_id,
+                                 "replacement_credential_id": credential.id,
+                                 "replacement_credential_file": temporary});
         return Err(credential_request_failed(failure, "rotated"));
     }
     std::fs::rename(&temporary, credential_file).map_err(|err| {
@@ -656,7 +651,11 @@ fn credential_request_failed(failure: Failure, operation: &str) -> Failure {
         let message = format!(
             "Plow may or may not have {operation} the credential: its answer was lost; inspect the agent before trying again"
         );
-        Failure::new(code::outcome_unknown, message)
+        let context = failure.message;
+        let details = failure.details;
+        let mut unknown = Failure::new(code::outcome_unknown, format!("{message}. {context}"));
+        unknown.details = details;
+        unknown
     } else {
         failure
     }
