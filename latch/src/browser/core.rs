@@ -1716,11 +1716,13 @@ mod tests {
 
     /// A page of `frames` frames, each read taking `each`, as a page
     /// under heavy load answers; within its own limit every time. Its
-    /// first `replaced` reads land while its document is being replaced.
+    /// first `replaced` reads land while its document is being replaced;
+    /// if it `closes`, its frames are gone once they have.
     struct Slow {
         frames: usize,
         each: Duration,
         replaced: usize,
+        closes: bool,
     }
 
     impl Driver for Slow {
@@ -1744,7 +1746,12 @@ mod tests {
             Vec::new()
         }
         fn frames(&mut self) -> Result<Vec<Frame>, Failure> {
-            Ok((0..self.frames)
+            let frames = if self.closes && self.replaced == 0 {
+                0
+            } else {
+                self.frames
+            };
+            Ok((0..frames)
                 .map(|n| Frame {
                     id: format!("F{n}"),
                     parent: (n > 0).then(|| "F0".to_string()),
@@ -1849,6 +1856,7 @@ mod tests {
             frames: 40,
             each: Duration::from_millis(50),
             replaced: 0,
+            closes: false,
         });
         let started = Instant::now();
         core.limit(started + Duration::from_millis(400));
@@ -1876,6 +1884,7 @@ mod tests {
             frames: MAX_FRAMES + 30,
             each: Duration::ZERO,
             replaced: 0,
+            closes: false,
         });
         core.limit(Instant::now() + CALL);
         let observed = core
@@ -1894,26 +1903,45 @@ mod tests {
 
     #[test]
     fn a_text_wait_goes_on_through_a_page_being_replaced() {
-        // A form sent while the wait polls: its first reads land as the next
-        // page replaces this one, and the text is on the page that follows.
-        let mut core = Core::new(Slow {
-            frames: 1,
-            each: Duration::ZERO,
-            replaced: 2,
-        });
-        core.limit(Instant::now() + CALL);
-        let waited = core
-            .call(
+        // A form sent while the wait polls: reads that land as the next page
+        // replaces this one are "not yet", as a page without the text is,
+        // until the text, the deadline, or the tab losing its page.
+        // Each ends no sooner than `at_least` and well inside 2 s.
+        for (replaced, closes, text, met, at_least) in [
+            (2, false, "a page", Ok(true), 0),
+            (usize::MAX, false, "a page", Ok(false), 1000),
+            (0, false, "not on the page", Ok(false), 1000),
+            (1, true, "a page", Err("browser_gone"), 0),
+        ] {
+            let mut core = Core::new(Slow {
+                frames: 1,
+                each: Duration::ZERO,
+                replaced,
+                closes,
+            });
+            core.limit(Instant::now() + CALL);
+            let started = Instant::now();
+            let waited = core.call(
                 Call::Wait {
-                    condition: Condition::Text {
-                        text: "a page".into(),
-                    },
-                    within_ms: 5000,
+                    condition: Condition::Text { text: text.into() },
+                    within_ms: 1000,
                 },
                 None,
-            )
-            .unwrap()
-            .result;
-        assert_eq!(waited["met"], true, "{waited}");
+            );
+            let case = format!("{replaced} replaced, closes {closes}, {text:?}");
+            let waited = waited
+                .map(|done| done.result)
+                .map_err(|failure| failure.code);
+            assert_eq!(
+                waited,
+                met.map(|met| json!({"met": met})).map_err(String::from),
+                "{case}"
+            );
+            let took = started.elapsed();
+            assert!(
+                (Duration::from_millis(at_least)..Duration::from_secs(2)).contains(&took),
+                "{case}: took {took:?}"
+            );
+        }
     }
 }
