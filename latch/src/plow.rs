@@ -249,6 +249,12 @@ pub struct AgentCredential {
     pub expires_at: String,
 }
 
+#[derive(Deserialize)]
+struct ListedAgentCredential {
+    agent_uid: Option<String>,
+    scopes: Vec<String>,
+}
+
 #[derive(Deserialize, Debug, Clone)]
 pub struct ListedCredential {
     /// When the agent's credential was last used, as Plow recorded it.
@@ -645,9 +651,22 @@ impl Plow {
         agent_credential(response).await
     }
 
-    /// Revokes only the named Latch credential, leaving its agent intact.
-    pub async fn revoke_agent_credential(&self, credential_id: u64) -> Result<(), Failure> {
+    /// Revokes only the named agent's Latch credential, leaving its agent intact.
+    pub async fn revoke_agent_credential(
+        &self,
+        agent_uid: &str,
+        credential_id: u64,
+    ) -> Result<(), Failure> {
         let url = format!("{}/v1/api-keys/{credential_id}", self.api_url);
+        let response = self.send(self.http.get(&url)).await?;
+        let credential: ListedAgentCredential = response.json().await.map_err(|_| bad_answer())?;
+        if credential.agent_uid.as_deref() != Some(agent_uid)
+            || credential.scopes != ["latch:agent"]
+        {
+            let message =
+                format!("credential {credential_id} is not {agent_uid}'s Latch credential");
+            return Err(Failure::new(code::bad_state, message));
+        }
         self.send(self.http.delete(url)).await?;
         Ok(())
     }

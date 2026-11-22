@@ -1245,8 +1245,8 @@ pub enum AgentsAction {
     },
     /// Revoke an adopted agent's Latch credential
     ///
-    /// Reads the credential id from its environment file and revokes only
-    /// that credential. The agent and its bridge credential remain active.
+    /// Reads the credential id from its environment file, asks Plow to verify
+    /// it belongs to this agent, then revokes it. The agent remains active.
     Revoke {
         /// The existing agent, by its uid or exact name
         agent: String,

@@ -553,8 +553,7 @@ async fn adopt(
 async fn revoke(plow: &Plow, named: &str, credential_file: &Path) -> Result<Value, Failure> {
     let agent = resolve(plow, named).await?;
     let saved = StoredCredential::read(credential_file)?;
-    saved.require_agent(&agent.uid, credential_file)?;
-    plow.revoke_agent_credential(saved.credential_id)
+    plow.revoke_agent_credential(&agent.uid, saved.credential_id)
         .await
         .map_err(|failure| credential_request_failed(failure, "revoked"))?;
     Ok(
@@ -580,7 +579,10 @@ async fn keep_minted(
     match file.keep(&text) {
         Ok(path) => Ok(path),
         Err((file, err)) => {
-            let revoked = plow.revoke_agent_credential(credential.id).await.is_ok();
+            let revoked = plow
+                .revoke_agent_credential(agent_uid, credential.id)
+                .await
+                .is_ok();
             let file_removed = remove_reserved_file(&file, revoked);
             let message = format!(
                 "credential {} was minted but couldn't be saved to {}: {err}; inspect this credential before retrying",
@@ -924,7 +926,6 @@ impl CredentialFile {
 
 /// Non-secret lifecycle metadata kept beside an adopted credential's token.
 struct StoredCredential {
-    agent_uid: String,
     credential_id: u64,
 }
 
@@ -952,28 +953,10 @@ impl StoredCredential {
         };
         // Require the secret line too, without retaining or reporting it.
         field("PLOW_AGENT_TOKEN=").ok_or_else(invalid)?;
-        let agent_uid = field("# plow-agent-uid: ").ok_or_else(invalid)?.to_string();
         let credential_id = field("# plow-agent-credential-id: ")
             .and_then(|id| id.parse().ok())
             .ok_or_else(invalid)?;
-        Ok(StoredCredential {
-            agent_uid,
-            credential_id,
-        })
-    }
-
-    fn require_agent(&self, agent_uid: &str, path: &Path) -> Result<(), Failure> {
-        if self.agent_uid == agent_uid {
-            return Ok(());
-        }
-        Err(Failure::new(
-            code::bad_state,
-            format!(
-                "{} belongs to agent {}, not {agent_uid}",
-                path.display(),
-                self.agent_uid
-            ),
-        ))
+        Ok(StoredCredential { credential_id })
     }
 }
 
@@ -1047,21 +1030,31 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let server = std::thread::spawn(move || {
-            let mut socket = listener.accept().unwrap().0;
-            let mut reader = BufReader::new(socket.try_clone().unwrap());
-            let mut request = String::new();
-            loop {
-                let mut line = String::new();
-                reader.read_line(&mut line).unwrap();
-                request.push_str(&line);
-                if line == "\r\n" {
-                    break;
+            let mut requests = Vec::new();
+            for body in [
+                format!(r#"{{"agent_uid":"{UID}","scopes":["latch:agent"]}}"#),
+                String::new(),
+            ] {
+                let mut socket = listener.accept().unwrap().0;
+                let mut reader = BufReader::new(socket.try_clone().unwrap());
+                let mut request = String::new();
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    request.push_str(&line);
+                    if line == "\r\n" {
+                        break;
+                    }
                 }
-            }
-            socket
-                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                write!(
+                    socket,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
+                    body.len()
+                )
                 .unwrap();
-            request
+                requests.push(request.to_ascii_lowercase());
+            }
+            requests
         });
         let path = dir.path().join("failed-save");
         let mut file = CredentialFile::reserve(&path).unwrap();
@@ -1079,11 +1072,13 @@ mod tests {
         assert_eq!(error.details["revoked"], true);
         assert_eq!(error.details["file_removed"], true);
         assert!(!path.exists());
-        let request = server.join().unwrap().to_ascii_lowercase();
-        assert!(request.starts_with("delete /v1/api-keys/11 "), "{request}");
+        let requests = server.join().unwrap();
+        assert!(requests[0].starts_with("get /v1/api-keys/11 "));
+        assert!(requests[1].starts_with("delete /v1/api-keys/11 "));
         assert!(
-            request.contains("authorization: bearer owner-login"),
-            "{request}"
+            requests
+                .iter()
+                .all(|request| request.contains("authorization: bearer owner-login"))
         );
     }
 }

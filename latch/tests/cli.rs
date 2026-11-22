@@ -2681,6 +2681,14 @@ impl LivePlow {
                            "expires_at": "2026-12-21T12:00:00Z"}),
                 )
             }
+            ("GET", "/v1/api-keys/11") if kind == "device" => (
+                200,
+                json!({"id": 11, "agent_uid": AGENT_UID, "scopes": ["latch:agent"]}),
+            ),
+            ("GET", "/v1/api-keys/99") if kind == "device" => (
+                200,
+                json!({"id": 99, "agent_uid": null, "scopes": ["*:*"]}),
+            ),
             ("DELETE", path)
                 if kind == "device" && path == "/v1/api-keys/11" =>
             {
@@ -4715,6 +4723,32 @@ fn agents_are_shown_created_and_removed_by_their_owner() {
         0o600
     );
     let saved = fs::read_to_string(&credential_file).unwrap();
+    fs::write(
+        &credential_file,
+        saved.replace(
+            "# plow-agent-credential-id: 11",
+            "# plow-agent-credential-id: 99",
+        ),
+    )
+    .unwrap();
+    let (code, refused, _) = lifecycle("revoke");
+    assert_eq!(
+        (code, &refused["error"]["code"]),
+        (Some(1), &json!("bad_state"))
+    );
+    let seen = plow.seen();
+    assert!(
+        seen.iter()
+            .any(|(line, _)| line.starts_with("GET /v1/api-keys/99 ")),
+        "{seen:?}"
+    );
+    assert!(
+        !seen
+            .iter()
+            .any(|(line, _)| line.starts_with("DELETE /v1/api-keys/99 ")),
+        "{seen:?}"
+    );
+    fs::write(&credential_file, &saved).unwrap();
     let (code, revoked, _) = lifecycle("revoke");
     assert_eq!(code, Some(0), "{revoked}");
     assert_eq!(revoked["status"], "revoked");
