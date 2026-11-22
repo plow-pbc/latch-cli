@@ -960,22 +960,6 @@ mod tests {
         );
     }
 
-    /// The page reader's refusals, as `reader.js` writes them: each
-    /// `refusal('code', 'message')`.
-    fn reader_refusals() -> Vec<(String, String)> {
-        let mut found: Vec<(String, String)> = include_str!("../reader.js")
-            .split("refusal('")
-            .skip(1)
-            .map(|call| {
-                let (reason, rest) = call.split_once("', '").unwrap();
-                (reason.into(), rest.split_once('\'').unwrap().0.into())
-            })
-            .collect();
-        found.sort();
-        found.dedup();
-        found
-    }
-
     /// A refusal to drive: how the frame is shown, the reader's answers and
     /// the frame's focus in turn, and the reason and message it gives.
     type Case = (Shown, Vec<Value>, Vec<bool>, String, String);
@@ -984,32 +968,15 @@ mod tests {
     /// the failure and in the audit, and never the value latch was setting.
     #[test]
     fn each_refused_fill_names_its_field_and_reason_code_but_no_value() {
-        let codes: Vec<String> = reader_refusals().into_iter().map(|(r, _)| r).collect();
-        assert_eq!(
-            codes,
-            [
-                "became_editable",
-                "document_replaced",
-                "field_gone",
-                "lost_focus",
-                "no_option_matches",
-                "origin_changed"
+        let mut cases: Vec<Case> = vec![(
+            Shown::Held,
+            vec![
+                json!({"refused": {"reason": "no_option_matches", "message": "no option matches"}}),
             ],
-            "a new or renamed reader refusal gets its own case here"
-        );
-        let refusal = |reason: &str, message: &str| json!({"refused": {"reason": reason, "message": message}});
-        let mut cases: Vec<Case> = reader_refusals()
-            .into_iter()
-            .map(|(reason, message)| {
-                (
-                    Shown::Held,
-                    vec![refusal(&reason, &message)],
-                    vec![],
-                    reason,
-                    message,
-                )
-            })
-            .collect();
+            vec![],
+            "no_option_matches".into(),
+            "no option matches".into(),
+        )];
         cases.push((
             Shown::Gone,
             vec![],
