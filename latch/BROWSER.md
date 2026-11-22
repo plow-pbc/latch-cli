@@ -335,15 +335,18 @@ An engine without a command's optional feature (`eval`, `upload`,
 `downloads`; CfT has all three) refuses it with `unsupported_capability`
 before anything is dispatched.
 
-The host audits each call: command, session, engine, tab, origin
-and path (never the query), snapshot, target ref and role, the outcome,
-and the client's parent process id. A plan
+The host audits each call: command, session, engine, tab, the page's
+origin, snapshot, target ref and role, the outcome, and the client's
+parent process id. Wherever the audit names a URL it keeps only
+`scheme://host[:port]` for http and https, the scheme alone for any
+other URL, and `unparseable` when it cannot be parsed: never a
+userinfo, path, query or fragment. A plan
 (`do`, or `act`) records its request id, its
 step count and how many are goals, its status and stop (step and code),
 each step's kind and outcome, and per action the step and action number,
 operation, ref and role, how it was chosen (`ref`, or `model` with the
 operation's and target's `p`, and what was left out to fit), the risk
-`p`, the confirmation id when one was used, the origin and path, the
+`p`, the confirmation id when one was used, the origin, the
 dispatch (`sent`, `refused`, `unknown`) and its screenshot's size and
 sha256. Each decision-model call records its purpose, provider, model,
 the provider's request id, latency and the kinds of data sent, never
