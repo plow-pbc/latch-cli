@@ -636,7 +636,17 @@ async fn keep_minted(
                 .await
                 .is_ok()
             {
-                let _ = std::fs::remove_file(path);
+                if let Err(cleanup) = std::fs::remove_file(&path) {
+                    failure.message = format!(
+                        "{}; the credential was revoked, but its partial file {} could not be removed: {cleanup}",
+                        failure.message,
+                        path.display()
+                    );
+                    failure.details = json!({"agent_uid": agent_uid,
+                                             "credential_id": credential.id,
+                                             "credential_file": path,
+                                             "cleanup_error": cleanup.to_string()});
+                }
             } else {
                 failure.message = format!(
                     "{}; credential {} may still be live and its private file remains at {} for reconciliation",
