@@ -539,7 +539,7 @@ async fn adopt(
             return Err(credential_request_failed(failure, "minted"));
         }
     };
-    let path = reserved.keep_scoped(&agent_api_url, &credential, &agent.uid)?;
+    let path = keep_minted(plow, reserved, &agent_api_url, &credential, &agent.uid).await?;
     Ok(credential_output(agent, path, agent_api_url, &credential))
 }
 
@@ -557,7 +557,8 @@ async fn rotate(plow: &Plow, named: &str, credential_file: &Path) -> Result<Valu
             return Err(credential_request_failed(failure, "rotated"));
         }
     };
-    let temporary = replacement.keep_scoped(&saved.api_base, &credential, &agent.uid)?;
+    let temporary =
+        keep_minted(plow, replacement, &saved.api_base, &credential, &agent.uid).await?;
     if let Err(mut failure) = plow
         .revoke_agent_credential(&agent.uid, saved.credential_id)
         .await
@@ -615,6 +616,41 @@ fn credential_output(
     json!({"agent": agent_shown(agent, None), "credential_file": path,
            "api_url": api_url, "credential_id": credential.id,
            "expires_at": credential.expires_at})
+}
+
+/// Saves a newly minted credential or revokes it. If the revoke answer is
+/// also lost, the private file and id remain so the owner can reconcile it.
+async fn keep_minted(
+    plow: &Plow,
+    file: CredentialFile,
+    api_base: &str,
+    credential: &AgentCredential,
+    agent_uid: &str,
+) -> Result<PathBuf, Failure> {
+    let path = file.path.clone();
+    match file.keep_scoped(api_base, credential, agent_uid) {
+        Ok(path) => Ok(path),
+        Err(mut failure) => {
+            if plow
+                .revoke_agent_credential(agent_uid, credential.id)
+                .await
+                .is_ok()
+            {
+                let _ = std::fs::remove_file(path);
+            } else {
+                failure.message = format!(
+                    "{}; credential {} may still be live and its private file remains at {} for reconciliation",
+                    failure.message,
+                    credential.id,
+                    path.display()
+                );
+                failure.details = json!({"agent_uid": agent_uid,
+                                         "credential_id": credential.id,
+                                         "credential_file": path});
+            }
+            Err(failure)
+        }
+    }
 }
 
 /// The address safe to write unquoted into an environment file.
@@ -951,7 +987,6 @@ impl CredentialFile {
         match written {
             Ok(()) => Ok(self.path),
             Err(err) => {
-                let file_removed = std::fs::remove_file(&self.path).is_ok();
                 let message = format!(
                     "credential {} was minted, but couldn't be saved to {}: {err}",
                     credential.id,
@@ -959,7 +994,7 @@ impl CredentialFile {
                 );
                 let mut failure = Failure::new(code::credential_not_saved, message);
                 failure.details = json!({"agent_uid": agent_uid, "credential_id": credential.id,
-                                         "path": self.path, "file_removed": file_removed});
+                                         "path": self.path});
                 Err(failure)
             }
         }
