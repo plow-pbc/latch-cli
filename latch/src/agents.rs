@@ -136,10 +136,6 @@ async fn managed(
             credential_file,
             agent_api_url,
         }) => adopt(plow, api_url, &agent, &credential_file, agent_api_url).await?,
-        Some(AgentsAction::Rotate {
-            agent,
-            credential_file,
-        }) => rotate(plow, &agent, &credential_file).await?,
         Some(AgentsAction::Revoke {
             agent,
             credential_file,
@@ -505,7 +501,12 @@ async fn new(
     };
     let uid = created.agent.uid.clone();
     let credential_file = match reserved {
-        Some(reserved) => Some(reserved.keep(&agent_api_url, created.token.as_deref(), &uid)?),
+        Some(file) => Some(keep_created(
+            file,
+            &agent_api_url,
+            created.token.as_deref(),
+            &uid,
+        )?),
         None => None,
     };
     let own = credential_file.is_some();
@@ -541,40 +542,6 @@ async fn adopt(
     };
     let path = keep_minted(plow, reserved, &agent_api_url, &credential, &agent.uid).await?;
     Ok(credential_output(agent, path, agent_api_url, &credential))
-}
-
-/// Atomically rotates the credential named inside `credential_file`, then
-/// replaces that file so a partial write never destroys its lifecycle record.
-async fn rotate(plow: &Plow, named: &str, credential_file: &Path) -> Result<Value, Failure> {
-    let agent = resolve(plow, named).await?;
-    let saved = StoredCredential::read(credential_file)?;
-    saved.require_agent(&agent.uid, credential_file)?;
-    let replacement = CredentialFile::replacement(credential_file)?;
-    let credential = match plow
-        .rotate_agent_credential(&agent.uid, saved.credential_id)
-        .await
-    {
-        Ok(credential) => credential,
-        Err(failure) => {
-            replacement.abandon();
-            return Err(credential_request_failed(failure, "rotated"));
-        }
-    };
-    let temporary = replacement.keep_scoped(&saved.api_base, &credential, &agent.uid)?;
-    std::fs::rename(&temporary, credential_file).map_err(|err| {
-        let message = format!(
-            "credential {} was rotated and saved privately to {}, but couldn't replace {}: {err}",
-            credential.id,
-            temporary.display(),
-            credential_file.display()
-        );
-        let mut failure = Failure::new(code::credential_not_saved, message);
-        failure.details = json!({"agent_uid": agent.uid, "credential_id": credential.id,
-                                 "path": temporary, "target": credential_file});
-        failure
-    })?;
-    let path = credential_file.to_path_buf();
-    Ok(credential_output(agent, path, saved.api_base, &credential))
 }
 
 /// Revokes only the credential named in `credential_file`. The file remains
@@ -613,39 +580,57 @@ async fn keep_minted(
     agent_uid: &str,
 ) -> Result<PathBuf, Failure> {
     let path = file.path.clone();
-    match file.keep_scoped(api_base, credential, agent_uid) {
+    let text = format!(
+        "PLOW_API_BASE={api_base}\nPLOW_AGENT_TOKEN={}\n# plow-agent-uid: {agent_uid}\n# plow-agent-credential-id: {}\n# plow-agent-credential-expires-at: {}\n",
+        credential.token, credential.id, credential.expires_at
+    );
+    match file.keep(&text) {
         Ok(path) => Ok(path),
-        Err(mut failure) => {
-            if plow
+        Err(err) => {
+            let revoked = plow
                 .revoke_agent_credential(agent_uid, credential.id)
                 .await
-                .is_ok()
-            {
-                if let Err(cleanup) = std::fs::remove_file(&path) {
-                    failure.message = format!(
-                        "{}; the credential was revoked, but its partial file {} could not be removed: {cleanup}",
-                        failure.message,
-                        path.display()
-                    );
-                    failure.details = json!({"agent_uid": agent_uid,
-                                             "credential_id": credential.id,
-                                             "credential_file": path,
-                                             "cleanup_error": cleanup.to_string()});
-                }
-            } else {
-                failure.message = format!(
-                    "{}; credential {} may still be live and its private file remains at {} for reconciliation",
-                    failure.message,
-                    credential.id,
-                    path.display()
-                );
-                failure.details = json!({"agent_uid": agent_uid,
-                                         "credential_id": credential.id,
-                                         "credential_file": path});
-            }
+                .is_ok();
+            let message = format!(
+                "credential {} was minted but couldn't be saved to {}: {err}; inspect this credential before retrying",
+                credential.id,
+                path.display()
+            );
+            let mut failure = Failure::new(code::credential_not_saved, message);
+            failure.details = json!({"agent_uid": agent_uid, "credential_id": credential.id,
+                                     "credential_file": path, "revoked": revoked});
             Err(failure)
         }
     }
+}
+
+fn keep_created(
+    file: CredentialFile,
+    api_base: &str,
+    token: Option<&str>,
+    agent_uid: &str,
+) -> Result<PathBuf, Failure> {
+    let path = file.path.clone();
+    let saved = token
+        .ok_or_else(|| "Plow sent no credential".to_string())
+        .and_then(|token| {
+            file.keep(&format!(
+            "PLOW_API_BASE={api_base}\nPLOW_AGENT_TOKEN={token}\n# plow-agent-uid: {agent_uid}\n"
+        ))
+        .map_err(|err| err.to_string())
+        });
+    saved.map_err(|why| {
+        let file_removed = std::fs::remove_file(&path).is_ok();
+        let message = format!(
+            "agent {agent_uid} was created, but its credential couldn't be saved to {}: {why}. Without it the agent can't log in",
+            path.display()
+        );
+        let mut failure = Failure::new(code::credential_not_saved, message);
+        failure.details = json!({"agent_uid": agent_uid, "path": path,
+                                 "file_removed": file_removed,
+                                 "next": format!("latch agents remove {agent_uid}")});
+        failure
+    })
 }
 
 /// The address safe to write unquoted into an environment file.
@@ -679,14 +664,13 @@ fn credential_api_url(
 
 fn credential_request_failed(failure: Failure, operation: &str) -> Failure {
     if lost(&failure.code) {
-        let message = format!(
-            "Plow may or may not have {operation} the credential: its answer was lost; inspect the agent before trying again"
-        );
-        let context = failure.message;
-        let details = failure.details;
-        let mut unknown = Failure::new(code::outcome_unknown, format!("{message}. {context}"));
-        unknown.details = details;
-        unknown
+        outcome_unknown(
+            failure,
+            format!(
+                "Plow may or may not have {operation} the credential: its answer was lost; inspect the agent before trying again"
+            ),
+            None,
+        )
     } else {
         failure
     }
@@ -731,12 +715,20 @@ fn not_created(failure: Failure, line: &str, image: bool) -> Failure {
         }
         (code, _) if lost(code) => {
             let message = "Plow may or may not have created the agent: its answer was lost; look before trying again";
-            let mut failure = Failure::new(code::outcome_unknown, message.into());
-            failure.next = Some("latch agents".into());
-            failure
+            outcome_unknown(failure, message.into(), Some("latch agents".into()))
         }
         _ => failure,
     }
+}
+
+fn outcome_unknown(failure: Failure, message: String, next: Option<String>) -> Failure {
+    let mut unknown = Failure::new(
+        code::outcome_unknown,
+        format!("{message}. {}", failure.message),
+    );
+    unknown.details = failure.details;
+    unknown.next = next.map(Into::into);
+    unknown
 }
 
 /// A failure after the request may have reached Plow: it may have done it.
@@ -910,95 +902,20 @@ impl CredentialFile {
         }
     }
 
-    /// A private sibling used to replace `path` atomically after rotation.
-    fn replacement(path: &Path) -> Result<CredentialFile, Failure> {
-        let name = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or_else(|| {
-                Failure::new(code::usage, "--credential-file has no file name".into())
-            })?;
-        let temporary = path.with_file_name(format!(".{name}.latch-rotate"));
-        Self::reserve(&temporary)
-    }
-
     /// Plow made no agent: the empty file goes.
     fn abandon(self) {
         let _ = std::fs::remove_file(&self.path);
     }
 
-    /// Writes the agent's Plow address, `token` and uid, and returns the
-    /// file's path. Plow made `agent_uid`, so a credential that cannot be
-    /// kept is said plainly, and the agent left for its owner to remove.
-    fn keep(
-        mut self,
-        api_base: &str,
-        token: Option<&str>,
-        agent_uid: &str,
-    ) -> Result<PathBuf, Failure> {
-        let written = match token {
-            Some(token) => self
-                .file
-                .write_all(
-                    format!(
-                        "PLOW_API_BASE={api_base}\nPLOW_AGENT_TOKEN={token}\n# plow-agent-uid: {agent_uid}\n"
-                    )
-                    .as_bytes(),
-                )
-                .and_then(|()| self.file.sync_all())
-                .map_err(|err| err.to_string()),
-            None => Err("Plow sent no credential".to_string()),
-        };
-        match written {
-            Ok(()) => Ok(self.path),
-            Err(why) => {
-                let file_removed = std::fs::remove_file(&self.path).is_ok();
-                let message = format!(
-                    "agent {agent_uid} was created, but its credential couldn't be saved to {}: {why}. Without it the agent can't log in",
-                    self.path.display()
-                );
-                let mut failure = Failure::new(code::credential_not_saved, message);
-                failure.details = json!({"agent_uid": agent_uid, "path": self.path,
-                    "file_removed": file_removed, "next": format!("latch agents remove {agent_uid}")});
-                Err(failure)
-            }
-        }
-    }
-
-    fn keep_scoped(
-        mut self,
-        api_base: &str,
-        credential: &AgentCredential,
-        agent_uid: &str,
-    ) -> Result<PathBuf, Failure> {
-        let text = format!(
-            "PLOW_API_BASE={api_base}\nPLOW_AGENT_TOKEN={}\n# plow-agent-uid: {agent_uid}\n# plow-agent-credential-id: {}\n# plow-agent-credential-expires-at: {}\n",
-            credential.token, credential.id, credential.expires_at
-        );
-        let written = self
-            .file
-            .write_all(text.as_bytes())
-            .and_then(|()| self.file.sync_all());
-        match written {
-            Ok(()) => Ok(self.path),
-            Err(err) => {
-                let message = format!(
-                    "credential {} was minted, but couldn't be saved to {}: {err}",
-                    credential.id,
-                    self.path.display()
-                );
-                let mut failure = Failure::new(code::credential_not_saved, message);
-                failure.details = json!({"agent_uid": agent_uid, "credential_id": credential.id,
-                                         "path": self.path});
-                Err(failure)
-            }
-        }
+    fn keep(mut self, text: &str) -> std::io::Result<PathBuf> {
+        self.file.write_all(text.as_bytes())?;
+        self.file.sync_all()?;
+        Ok(self.path)
     }
 }
 
 /// Non-secret lifecycle metadata kept beside an adopted credential's token.
 struct StoredCredential {
-    api_base: String,
     agent_uid: String,
     credential_id: u64,
 }
@@ -1027,14 +944,13 @@ impl StoredCredential {
         };
         // Require the secret line too, without retaining or reporting it.
         field("PLOW_AGENT_TOKEN=").ok_or_else(invalid)?;
-        let api_base = field("PLOW_API_BASE=").ok_or_else(invalid)?.to_string();
+        field("PLOW_API_BASE=").ok_or_else(invalid)?;
         let agent_uid = field("# plow-agent-uid: ").ok_or_else(invalid)?.to_string();
         let credential_id = field("# plow-agent-credential-id: ")
             .and_then(|id| id.parse().ok())
             .ok_or_else(invalid)?;
         field("# plow-agent-credential-expires-at: ").ok_or_else(invalid)?;
         Ok(StoredCredential {
-            api_base,
             agent_uid,
             credential_id,
         })

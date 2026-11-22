@@ -241,17 +241,12 @@ pub struct CreatedAgent {
 }
 
 /// A separately expiring credential for an existing agent. Its token is
-/// returned only when Plow mints or rotates it.
+/// returned only when Plow mints it.
 #[derive(Deserialize)]
 pub struct AgentCredential {
     pub id: u64,
     pub token: String,
     pub expires_at: String,
-}
-
-#[derive(Deserialize)]
-struct RevokedAgentCredential {
-    id: u64,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -650,22 +645,6 @@ impl Plow {
         agent_credential(response).await
     }
 
-    /// Atomically replaces one Latch credential for an agent.
-    pub async fn rotate_agent_credential(
-        &self,
-        agent_uid: &str,
-        credential_id: u64,
-    ) -> Result<AgentCredential, Failure> {
-        let url = format!(
-            "{}/v1/latch/agents/{agent_uid}/credentials/{credential_id}/rotate",
-            self.api_url
-        );
-        let response = self
-            .send(self.http.post(url).json(&serde_json::json!({})))
-            .await?;
-        agent_credential(response).await
-    }
-
     /// Revokes only the named Latch credential, leaving its agent intact.
     pub async fn revoke_agent_credential(
         &self,
@@ -676,11 +655,7 @@ impl Plow {
             "{}/v1/latch/agents/{agent_uid}/credentials/{credential_id}",
             self.api_url
         );
-        let response = self.send(self.http.delete(url)).await?;
-        let revoked: RevokedAgentCredential = response.json().await.map_err(|_| bad_answer())?;
-        if revoked.id != credential_id {
-            return Err(bad_answer());
-        }
+        self.send(self.http.delete(url)).await?;
         Ok(())
     }
 

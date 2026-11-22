@@ -1229,8 +1229,10 @@ pub enum AgentsAction {
     /// is never printed. Load that file into the agent's environment, then run
     /// `latch --state-dir NEW login` with a fresh state folder. Reusing another
     /// agent's state would reuse its peer key, which identifies that agent
-    /// until its credential is revoked. Revoke the twin's credential to retire
-    /// its old key; do not delete the twin just to clear the key.
+    /// until its credential is revoked. Delete the obsolete twin after
+    /// cutover; removing that agent revokes its credential and retires its key.
+    /// To replace this credential, adopt to another new file, switch the
+    /// agent to it, then revoke the old file.
     Adopt {
         /// The existing agent, by its uid or exact name
         agent: String,
@@ -1241,18 +1243,6 @@ pub enum AgentsAction {
         #[arg(long, value_name = "URL")]
         agent_api_url: Option<String>,
     },
-    /// Replace an adopted agent's Latch credential
-    ///
-    /// Reads the agent and credential ids from its environment file, asks Plow
-    /// to replace the credential atomically, then replaces the file. The new
-    /// secret is never printed.
-    Rotate {
-        /// The existing agent, by its uid or exact name
-        agent: String,
-        /// The environment file written by `latch agents adopt`
-        #[arg(long, value_name = "FILE")]
-        credential_file: PathBuf,
-    },
     /// Revoke an adopted agent's Latch credential
     ///
     /// Reads the credential id from its environment file and revokes only
@@ -1260,7 +1250,7 @@ pub enum AgentsAction {
     Revoke {
         /// The existing agent, by its uid or exact name
         agent: String,
-        /// The environment file written by `latch agents adopt` or rotate
+        /// The environment file written by `latch agents adopt`
         #[arg(long, value_name = "FILE")]
         credential_file: PathBuf,
     },

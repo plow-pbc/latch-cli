@@ -279,26 +279,6 @@ const ENTRIES: &[Entry] = &[
         )],
     },
     Entry {
-        id: "agents.rotate",
-        runs_on: |_| RunsOn::Local,
-        output: "`agent`, `credential_file`, `api_url`, the new `credential_id` and `expires_at`. The new secret is only in the atomically replaced file, never the output.",
-        effect: Once(
-            "atomically rotates the Latch credential named in the environment file through Plow, then replaces the file with the new secret",
-        ),
-        owner_only: true,
-        connector: None,
-        examples: &[ex(
-            "Rotate an adopted agent's Latch credential",
-            &[
-                "agents",
-                "rotate",
-                "Maple",
-                "--credential-file",
-                "maple-latch.env",
-            ],
-        )],
-    },
-    Entry {
         id: "agents.revoke",
         runs_on: |_| RunsOn::Local,
         output: "`agent`, `status` (`revoked`), `credential_id` and `credential_file`. The environment file remains as the record of what was revoked.",
