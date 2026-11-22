@@ -715,10 +715,14 @@ pub(super) async fn fill(
     audit.insert("item".into(), args["item"].clone());
     let args = super::fill::resolve(browsers, entry, &args).await?;
     if caller.gate.is_some() {
-        let site = judged::site(browsers, entry).await?;
         judged::judge(
             caller.gate,
-            judged::fill(browsers, &args, site),
+            judged::fill(
+                browsers,
+                &args,
+                judged::page(browsers, entry).await?,
+                &judged::fill_names(entry, &args).await,
+            ),
             &entry.filled(),
             audit,
         )

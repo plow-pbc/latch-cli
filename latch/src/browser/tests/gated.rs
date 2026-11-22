@@ -21,7 +21,7 @@ use crate::gate::rules::{Rules, RulesSource};
 use crate::gate::{Gate, Gatekeeper};
 use crate::model::{Answer, Asked, CallFailed, CallMeta, Provider, Question};
 use crate::vault::host::Vault;
-use crate::vault::item::{CARD, Item, LOGIN, Raw};
+use crate::vault::item::{CARD, IDENTITY, Item, LOGIN, Raw};
 use crate::vault::store::Backend;
 
 const AGENT: &str = "0123456789abcdef0123456789abcdef";
@@ -602,11 +602,16 @@ async fn a_refused_command_sends_nothing_to_the_page(engine: &str) {
         let filled = host.agent("fill", &id, fill(item), None).await;
         refused(&filled, "not_covered", &chat);
         assert_eq!(filled.1["item"], json!(added), "{item:?}");
+        let email = find(&login, "textbox", "Email");
+        let password = find(&login, "textbox", "Password");
         assert_eq!(
             judge.last_action(),
             json!({"kind": "vault_fill", "site": "shop.example",
+                   "page": {"url": "https://shop.example/login.html",
+                            "title": "latch login test"},
                    "item": {"kind": "login", "title": "Test site", "sites": ["shop.example"]},
-                   "fields": ["username", "password"]}),
+                   "fields": [format!("username={email} (textbox \"Email\")"),
+                              format!("password={password} (textbox \"Password\")")]}),
             "{item:?}"
         );
     }
@@ -658,8 +663,9 @@ async fn a_refused_command_sends_nothing_to_the_page(engine: &str) {
         "the judge saw a vault value"
     );
 
-    // A card fill is judged once, as any fill: the item, the fields and
-    // the page's site, never the number. Refused, nothing is filled.
+    // A card fill is judged once, as any fill: the item, the page, and each
+    // field with its name there, never the number. Refused, nothing is
+    // filled.
     let card = host
         .browsers
         .vault
@@ -707,11 +713,18 @@ async fn a_refused_command_sends_nothing_to_the_page(engine: &str) {
         )
         .await;
     refused(&filled, "not_covered", &chat);
+    let number = find(&checkout, "textbox", "Card number");
+    let expiry = find(&checkout, "textbox", "Expiry");
+    let cvv = find(&checkout, "textbox", "CVV");
     assert_eq!(
         judge.last_action(),
         json!({"kind": "vault_fill", "site": "shop.example",
+               "page": {"url": "https://shop.example/checkout.html",
+                        "title": "latch checkout test"},
                "item": {"kind": "card", "title": "Test Visa"},
-               "fields": ["number", "expiry", "cvv"]})
+               "fields": [format!("number={number} (textbox \"Card number\")"),
+                          format!("expiry={expiry} (textbox \"Expiry\")"),
+                          format!("cvv={cvv} (textbox \"CVV\")")]})
     );
     let everything = judge
         .shown
@@ -731,6 +744,61 @@ async fn a_refused_command_sends_nothing_to_the_page(engine: &str) {
     assert!(
         values["value"].as_array().unwrap().iter().all(|v| v == ""),
         "{values}"
+    );
+
+    // An address saved as a shipping address, filled as the billing
+    // address of a card payment: the judge reads which from the page.
+    let address = host
+        .browsers
+        .vault
+        .with(|store| {
+            store.add(Item {
+                id: String::new(),
+                revision: 0,
+                sites: vec![],
+                other_top_sites: vec![],
+                raw: Raw::from_labels(
+                    IDENTITY,
+                    "Shipping address",
+                    &[
+                        ("address1".into(), "1 Test Street".into()),
+                        ("city".into(), "Testville".into()),
+                        ("state".into(), "AZ".into()),
+                        ("postal code".into(), "85001".into()),
+                    ],
+                )
+                .unwrap(),
+            })
+        })
+        .unwrap();
+    host.agent(
+        "tab",
+        &id,
+        json!({"action": "new", "url": format!("{site}/billing.html")}),
+        None,
+    )
+    .await
+    .0
+    .unwrap();
+    let billing = host.agent("observe", &id, json!({}), None).await.0.unwrap();
+    let street = find(&billing, "textbox", "Billing address");
+    let filled = host
+        .agent(
+            "fill",
+            &id,
+            json!({"item": address.item, "snapshot": billing["snapshot"],
+                   "fields": [["address1", [street]]]}),
+            None,
+        )
+        .await;
+    refused(&filled, "not_covered", &chat);
+    assert_eq!(
+        judge.last_action()["page"]["title"],
+        "latch shuttle checkout test"
+    );
+    assert_eq!(
+        judge.last_action()["fields"],
+        json!([format!("address1={street} (textbox \"Billing address\")")])
     );
     host.browsers.close_all().await;
 }

@@ -12986,6 +12986,7 @@ fn rules_try_previews_a_verdict_and_runs_nothing() {
     assert_eq!(
         tried["request"],
         json!({"op": "browser", "action": {"kind": "vault_fill", "site": "instacart.com",
+               "page": {"url": "https://www.instacart.com/login", "title": ""},
                "item": {"kind": "login", "title": "Instacart", "sites": ["instacart.com"]},
                "fields": ["username", "password"]}})
     );

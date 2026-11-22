@@ -647,9 +647,13 @@ impl<'a> Run<'a> {
         let Some(gate) = self.gate else {
             return Ok(());
         };
-        let site = judged::site(self.browsers, self.entry).await?;
         let action = judged::shown(
-            &judged::fill(self.browsers, args, site),
+            &judged::fill(
+                self.browsers,
+                args,
+                judged::page(self.browsers, self.entry).await?,
+                &judged::fill_names(self.entry, args).await,
+            ),
             &self.entry.filled(),
         );
         let judging = Instant::now();

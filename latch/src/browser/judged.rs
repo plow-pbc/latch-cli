@@ -8,8 +8,8 @@
 //! Each is judged before anything of it is sent to the page. A refusal
 //! sends nothing; the audit gets the judgment's `gate` object either way.
 //! The judge sees an item's kind, title and the sites it is saved for, and
-//! the fields a fill maps, never a value. A plan step's refs
-//! are shown with the role and name the session's reading gave them
+//! the page and fields a fill maps, never a value. A plan step's refs, and
+//! a fill's, are shown with the role and name the session's reading gave them
 //! (`click e2 (button "Pay with card")`): text the page wrote, quoted and
 //! cut short, which the judge takes as context, never permission.
 
@@ -45,8 +45,11 @@ pub(super) enum Action {
         #[serde(skip_serializing_if = "Vec::is_empty")]
         may_fill: Vec<ItemShown>,
     },
-    /// Vault values put into a page's fields.
+    /// Vault values put into a page's fields, each field written as a
+    /// plan's `--field` is: its label, then its refs with their names on
+    /// the page.
     VaultFill {
+        page: Page,
         site: Option<String>,
         item: ItemShown,
         fields: Vec<String>,
@@ -191,16 +194,57 @@ pub(super) fn item(browsers: &Browsers, id: &str) -> ItemShown {
     }
 }
 
-/// A fill of `args` (its mapping resolved) on `site`.
-pub(super) fn fill(browsers: &Browsers, args: &Value, site: Option<String>) -> Action {
-    let item = item(browsers, args["item"].as_str().unwrap_or_default());
+/// A fill's mapping in `args`: its snapshot, and each label's refs.
+fn mapping(args: &Value) -> (Option<String>, Vec<(String, Vec<String>)>) {
     let fields = args["fields"]
         .as_array()
         .into_iter()
         .flatten()
-        .filter_map(|pair| pair[0].as_str().map(str::to_string))
+        .filter_map(|pair| {
+            let refs = pair[1].as_array().into_iter().flatten();
+            Some((
+                pair[0].as_str()?.to_string(),
+                refs.filter_map(|r| r.as_str().map(str::to_string))
+                    .collect(),
+            ))
+        })
         .collect();
-    Action::VaultFill { site, item, fields }
+    (args["snapshot"].as_str().map(str::to_string), fields)
+}
+
+/// What the session's reading named each ref a fill of `args` maps.
+pub(super) async fn fill_names(entry: &Entry, args: &Value) -> Names {
+    let (snapshot, fields) = mapping(args);
+    let mut targets = Vec::new();
+    for target in fields.into_iter().flat_map(|(_, refs)| refs) {
+        let key = (snapshot.clone(), target);
+        if !targets.contains(&key) {
+            targets.push(key);
+        }
+    }
+    name(entry, targets).await
+}
+
+/// A fill of `args` (its mapping resolved) on `page`, each ref with its
+/// role and name from `names`.
+pub(super) fn fill(browsers: &Browsers, args: &Value, page: Page, names: &Names) -> Action {
+    let (snapshot, fields) = mapping(args);
+    let fields = fields
+        .into_iter()
+        .map(|(label, refs)| {
+            let refs: Vec<String> = refs
+                .iter()
+                .map(|r| labelled(r, names.get(&(snapshot.clone(), r.clone()))))
+                .collect();
+            format!("{label}={}", refs.join(","))
+        })
+        .collect();
+    Action::VaultFill {
+        site: sites::site_of(&page.url),
+        page,
+        item: item(browsers, args["item"].as_str().unwrap_or_default()),
+        fields,
+    }
 }
 
 /// A login fill as `rules try --fill-login` previews it: the item's kind
@@ -214,6 +258,10 @@ pub(crate) fn previewed_fill(
 ) -> impl Serialize + use<> {
     let site = sites::site_of(url);
     Action::VaultFill {
+        page: Page {
+            url: url.to_string(),
+            title: String::new(),
+        },
         item: ItemShown {
             kind: kind.to_string(),
             title: title.to_string(),
@@ -246,6 +294,11 @@ pub(super) async fn names(entry: &Entry, plan: &Plan) -> Names {
             }
         }
     }
+    name(entry, targets).await
+}
+
+/// What the session's reading named each of `targets`.
+async fn name(entry: &Entry, targets: Vec<(Option<String>, String)>) -> Names {
     if targets.is_empty() {
         return Names::new();
     }
@@ -645,7 +698,11 @@ mod tests {
         let added = browsers.vault.with(|store| store.add(item)).unwrap();
         let args =
             json!({"item": added.item, "fields": [["username", ["e1"]], ["password", ["e2"]]]});
-        let action = fill(&browsers, &args, Some("shop.example".into()));
+        let page = Page {
+            url: "https://shop.example/".into(),
+            title: "Shop".into(),
+        };
+        let action = fill(&browsers, &args, page, &Names::new());
 
         let world = fake::World {
             decide: Some(|_| Some([0.9, 0.08, 0.02])),
