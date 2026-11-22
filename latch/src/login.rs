@@ -16,6 +16,7 @@ use crate::cli::{self, BUILD_API_URL, LoginArgs};
 use crate::credential;
 use crate::devices;
 use crate::failure::{Failure, code};
+use crate::gate::rules::{RulesDir, Scope};
 use crate::heartbeat;
 use crate::plow::{self, Peer, Plow, Registration};
 use crate::state::{Config, StateDir};
@@ -42,6 +43,19 @@ pub struct LoginOutput {
     /// This state folder was logged in already, and nothing was changed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub already_logged_in: Option<String>,
+    /// Local host policy that named the agent this peer key belonged to
+    /// before it was logged in as another agent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policy_handoff: Option<PolicyHandoff>,
+}
+
+#[derive(Serialize)]
+pub struct PolicyHandoff {
+    pub from_agent_uid: String,
+    pub to_agent_uid: String,
+    pub rules: Option<String>,
+    pub deny_exec: bool,
+    pub copied: bool,
 }
 
 /// Where this login's credential comes from.
@@ -58,6 +72,7 @@ enum Source {
 
 pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failure> {
     let saved = state.load_config()?;
+    let saved_agent_uid = state.load_agent_uid()?;
     // A plain `latch login` where one is saved changes nothing: an option
     // asks for a change (a token, a name, a Plow, by text), and --again for
     // a login anew.
@@ -69,6 +84,7 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
     if let Some(config) = &saved
         && plain
         && !args.again
+        && (config.peer.kind != "agent" || saved_agent_uid.is_some())
     {
         let message = format!(
             "already logged in as {} on this computer; `latch login --again` logs in anew",
@@ -79,6 +95,7 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
             key_created: false,
             by_text: false,
             already_logged_in: Some(message),
+            policy_handoff: None,
         });
     }
     let saved_url = match &saved {
@@ -171,10 +188,41 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
         } else {
             plow.agent_me().await.ok()
         };
+        let mut policy_handoff = match (&saved, &me) {
+            (Some(config), Some(me)) if config.peer.kind == "agent" => {
+                policy_handoff(state, saved_agent_uid.as_deref(), &me.uid)?
+            }
+            _ => None,
+        };
+        if let Some(handoff) = &mut policy_handoff {
+            eprintln!(
+                "This state was agent {}; it is logging in as agent {}.",
+                handoff.from_agent_uid, handoff.to_agent_uid
+            );
+            match &handoff.rules {
+                Some(rules) => eprintln!("Rules for {}: {rules:?}", handoff.from_agent_uid),
+                None => eprintln!("Rules for {}: none", handoff.from_agent_uid),
+            }
+            eprintln!(
+                "--deny-exec={}: {}",
+                handoff.from_agent_uid,
+                if handoff.deny_exec { "set" } else { "not set" }
+            );
+            if term::interactive()
+                && term::confirm(&format!(
+                    "Copy this policy to agent {}?",
+                    handoff.to_agent_uid
+                ))
+            {
+                copy_policy(state, handoff, &key.to_string())?;
+                handoff.copied = true;
+            }
+        }
         let registration = Registration {
             name: registration.name.or(me.as_ref().map(|me| me.name.clone())),
             ..registration
         };
+        let authenticated_agent_uid = me.as_ref().map(|me| me.uid.clone());
         let peer = match plow.register(&registration).await {
             // Two agents may share a name: unless one was asked for, try once
             // more as the name plus the start of this agent's uid.
@@ -216,15 +264,58 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
             api_url,
             peer: peer.clone(),
         })?;
+        state.save_agent_uid(authenticated_agent_uid.as_deref())?;
         Ok(LoginOutput {
             peer,
             key_created,
             by_text: texted,
             already_logged_in: None,
+            policy_handoff,
         })
     }
     .await;
     registered.map_err(|failure| if texted { failure.told() } else { failure })
+}
+
+fn policy_handoff(
+    state: &StateDir,
+    old_uid: Option<&str>,
+    new_uid: &str,
+) -> Result<Option<PolicyHandoff>, Failure> {
+    let Some(old_uid) = old_uid.filter(|old_uid| *old_uid != new_uid) else {
+        return Ok(None);
+    };
+    let rules = RulesDir::new(&state.path).text(&Scope::Agent(old_uid.to_string()))?;
+    let deny_exec = crate::managed::saved_denies_agent(&state.path, old_uid)?;
+    if rules.is_none() && !deny_exec {
+        return Ok(None);
+    }
+    Ok(Some(PolicyHandoff {
+        from_agent_uid: old_uid.to_string(),
+        to_agent_uid: new_uid.to_string(),
+        rules,
+        deny_exec,
+        copied: false,
+    }))
+}
+
+fn copy_policy(state: &StateDir, handoff: &PolicyHandoff, peer_key: &str) -> Result<(), Failure> {
+    if let Some(rules) = &handoff.rules {
+        RulesDir::new(&state.path).set(
+            &Scope::Agent(handoff.to_agent_uid.clone()),
+            rules,
+            Some(None),
+            Some(peer_key),
+        )?;
+    }
+    if handoff.deny_exec {
+        crate::managed::copy_saved_denial(
+            &state.path,
+            &handoff.from_agent_uid,
+            &handoff.to_agent_uid,
+        )?;
+    }
+    Ok(())
 }
 
 /// Logs an agent in on its first command that needs Plow or a host, as

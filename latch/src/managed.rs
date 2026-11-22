@@ -329,6 +329,27 @@ pub fn saved_deny_exec(dir: &Path) -> Option<crate::serve::DenyExec> {
     )
 }
 
+/// Whether the last host flags name this agent in `--deny-exec`. Invalid
+/// saved flags are an error here: an identity handoff must not hide policy it
+/// could not inspect.
+pub fn saved_denies_agent(dir: &Path, agent_uid: &str) -> Result<bool, Failure> {
+    Ok(saved(dir)?.is_some_and(|(_, args)| args.deny_exec.iter().any(|uid| uid == agent_uid)))
+}
+
+/// Copies one agent's saved `--deny-exec` standing to another, leaving all
+/// existing flags in their given order.
+pub fn copy_saved_denial(dir: &Path, from: &str, to: &str) -> Result<(), Failure> {
+    let Some((mut given, args)) = saved(dir)? else {
+        return Ok(());
+    };
+    let names = |uid: &str| args.deny_exec.iter().any(|saved| saved == uid);
+    if !names(crate::cli::EVERY_AGENT) && names(from) && !names(to) {
+        given.push(format!("--deny-exec={to}"));
+        save_given(dir, &given)?;
+    }
+    Ok(())
+}
+
 /// The flags the last host on `dir` saved, as given and as parsed.
 fn saved(dir: &Path) -> Result<Option<(Vec<String>, ServeArgs)>, Failure> {
     let path = dir.join(ARGS_FILE);

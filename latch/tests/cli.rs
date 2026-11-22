@@ -3179,6 +3179,81 @@ fn login_again_replaces_the_saved_login_with_a_new_one() {
     assert_eq!(error["error"]["code"], "no_credential", "{error}");
 }
 
+/// Reusing a peer key for another agent changes who hosts see. The rules and
+/// hard exec refusal that name the old uid are shown before that happens and,
+/// when the person accepts, are also attached to the new uid.
+#[test]
+fn switching_an_agent_login_offers_to_copy_its_host_policy() {
+    const OLD: &str = "11111111111111111111111111111111";
+    const NEW: &str = "22222222222222222222222222222222";
+    let dir = test_dir();
+    let state = dir.path().join("state");
+    let token = dir.path().join("agent.token");
+    fs::write(&token, "old-agent\n").unwrap();
+    let env = [("PLOW_TOKEN_FILE", token.as_path())];
+
+    let (api_url, server) = fake_plow(vec![
+        (200, json!({"agent": {"uid": OLD, "name": "Old agent"}})),
+        (200, peer(Value::Null, "Old agent", "agent", Value::Null)),
+    ]);
+    let first = latch(&state, &["login", "--api-url", &api_url], &env);
+    assert_eq!(first.status.code(), Some(0), "{first:?}");
+    server.join().unwrap();
+    let config: Value =
+        serde_json::from_slice(&fs::read(state.join("config.json")).unwrap()).unwrap();
+    let key = config["peer"]["key"].as_str().unwrap();
+
+    fs::create_dir_all(state.join("rules")).unwrap();
+    fs::write(
+        state.join(format!("rules/{OLD}.txt")),
+        "Only run approved tests.",
+    )
+    .unwrap();
+    fs::write(
+        state.join("serve-args.json"),
+        format!(r#"["--headless-browsers","--deny-exec={OLD}","--deny-exec=33333333333333333333333333333333"]"#),
+    )
+    .unwrap();
+    fs::write(&token, "new-agent\n").unwrap();
+    let (api_url, server) = fake_plow(vec![
+        (200, json!({"agent": {"uid": NEW, "name": "New agent"}})),
+        (200, peer(json!(key), "New agent", "agent", Value::Null)),
+    ]);
+    let (code, shown, stdout) = latch_at_a_terminal(
+        &state,
+        &["login", "--api-url", &api_url],
+        "y\n",
+        false,
+        &env,
+    );
+    assert_eq!(code, Some(0), "{shown}\n{stdout}");
+    assert!(shown.contains(OLD) && shown.contains(NEW), "{shown}");
+    assert!(shown.contains("Only run approved tests."), "{shown}");
+    assert!(shown.contains("--deny-exec"), "{shown}");
+    let output: Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(
+        output["policy_handoff"],
+        json!({"from_agent_uid": OLD, "to_agent_uid": NEW,
+               "rules": "Only run approved tests.", "deny_exec": true, "copied": true})
+    );
+    assert_eq!(
+        fs::read_to_string(state.join(format!("rules/{NEW}.txt"))).unwrap(),
+        "Only run approved tests."
+    );
+    let flags: Value =
+        serde_json::from_slice(&fs::read(state.join("serve-args.json")).unwrap()).unwrap();
+    assert_eq!(
+        flags,
+        json!([
+            "--headless-browsers",
+            format!("--deny-exec={OLD}"),
+            "--deny-exec=33333333333333333333333333333333",
+            format!("--deny-exec={NEW}")
+        ])
+    );
+    assert_eq!(server.join().unwrap().len(), 2);
+}
+
 /// A second `latch login` on a logged-in state folder says so and asks
 /// nothing of Plow; `--again` logs in anew.
 #[test]
