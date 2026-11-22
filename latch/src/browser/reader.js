@@ -470,11 +470,10 @@
   const STATES = new Map('AL Alabama|AK Alaska|AS American Samoa|AZ Arizona|AR Arkansas|CA California|CO Colorado|CT Connecticut|DE Delaware|DC District of Columbia|FL Florida|GA Georgia|GU Guam|HI Hawaii|ID Idaho|IL Illinois|IN Indiana|IA Iowa|KS Kansas|KY Kentucky|LA Louisiana|ME Maine|MD Maryland|MA Massachusetts|MI Michigan|MN Minnesota|MS Mississippi|MO Missouri|MT Montana|NE Nebraska|NV Nevada|NH New Hampshire|NJ New Jersey|NM New Mexico|NY New York|NC North Carolina|ND North Dakota|MP Northern Mariana Islands|OH Ohio|OK Oklahoma|OR Oregon|PA Pennsylvania|PR Puerto Rico|RI Rhode Island|SC South Carolina|SD South Dakota|TN Tennessee|TX Texas|UT Utah|VT Vermont|VI Virgin Islands|VA Virginia|WA Washington|WV West Virginia|WI Wisconsin|WY Wyoming'
     .split('|').flatMap((pair) => [[pair.slice(0, 2).toLowerCase(), pair.slice(3)], [pair.slice(3).toLowerCase(), pair.slice(3)]]));
   const stateOf = (text) => STATES.get(text.trim().toLowerCase());
-  // The state an option is: its text names one, and its value that one or
-  // none (an id).
+  // The state an option is: its value and its text both name it.
   const optionState = (o) => {
     const state = stateOf(o.label);
-    return state && [state, undefined].includes(stateOf(o.value)) ? state : undefined;
+    return state && stateOf(o.value) === state ? state : undefined;
   };
   // On a list of states alone (blank placeholders aside), a state's name
   // picks the option of its code and its code the option of its name: the
