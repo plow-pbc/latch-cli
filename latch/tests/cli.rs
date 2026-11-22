@@ -3245,7 +3245,7 @@ fn switching_an_agent_login_lists_local_policy_to_reapply() {
             &format!("Stop the host first: {latch} stop"),
             &format!("--deny-exec={OLD}: {reapply}"),
             &format!("--deny-exec=33333333333333333333333333333333: {reapply}"),
-            &format!("rules/{OLD}.txt: {latch} rules edit --agent {NEW}"),
+            &format!("rules/{OLD}.txt: from an owner-authenticated state, run: latch --state-dir OWNER_STATE_DIR rules edit --agent {NEW}"),
         ]
         .iter()
         .all(|text| String::from_utf8_lossy(&missing.stderr).contains(*text)),
@@ -3268,7 +3268,7 @@ fn switching_an_agent_login_lists_local_policy_to_reapply() {
     assert!(warning.contains(&format!("Local restrictions name agents other than {NEW}")));
     assert!(warning.contains("Restrictions are NOT carried or copied"));
     assert!(warning.contains(&format!(
-        "rules/{OLD}.txt: {latch} rules edit --agent {NEW}"
+        "rules/{OLD}.txt: from an owner-authenticated state, run: latch --state-dir OWNER_STATE_DIR rules edit --agent {NEW}"
     )));
     assert!(!warning.contains("terminal") && !warning.contains("studio"));
     assert_eq!(
@@ -3299,7 +3299,7 @@ fn switching_an_agent_login_lists_local_policy_to_reapply() {
     let warning = verified["policy_warning"].as_str().unwrap();
     assert!(warning.contains(&format!("--deny-exec={OLD}: {latch} serve -d")));
     assert!(warning.contains(&format!(
-        "rules/{OLD}.txt: {latch} rules edit --agent {NEW}"
+        "rules/{OLD}.txt: from an owner-authenticated state, run: latch --state-dir OWNER_STATE_DIR rules edit --agent {NEW}"
     )));
     assert!(verified.get("policy_handoff").is_none());
     assert_eq!(server.join().unwrap().len(), 2);

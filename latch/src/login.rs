@@ -284,7 +284,7 @@ fn policy_inventory_warning(
     }
     for uid in rules {
         warning.push_str(&format!(
-            "\nrules/{uid}.txt: {latch} rules edit --agent {new_uid}"
+            "\nrules/{uid}.txt: from an owner-authenticated state, run: latch --state-dir OWNER_STATE_DIR rules edit --agent {new_uid}"
         ));
     }
     Ok(Some(warning))
