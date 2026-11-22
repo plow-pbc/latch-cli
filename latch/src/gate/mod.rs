@@ -692,6 +692,11 @@ impl Gatekeeper {
                 "last": window.last().map(|m| &m.uid),
                 "count": window.len(),
                 "truncated": c.more_before || shown < c.messages.len(),
+                "owner_newest_s": window
+                    .iter()
+                    .rev()
+                    .find(|m| m.owner)
+                    .map(|m| (now.as_second() - m.at.as_second()).max(0)),
             });
             call["owner_messages"] = json!(
                 window

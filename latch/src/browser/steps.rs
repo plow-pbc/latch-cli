@@ -659,7 +659,9 @@ impl<'a> Run<'a> {
         let judging = Instant::now();
         let judgment = gate.judge(&action).await;
         super::host::add_time(|phases| &mut phases.gate_ms, judging.elapsed());
-        let record = judgment.gate;
+        let mut record = judgment.gate;
+        let allowed = judgment.verdict.is_ok();
+        (self.entry.attempts).judged(&action, &mut record, allowed, Instant::now());
         match judgment.verdict {
             Ok(()) => {
                 self.judgment = Some(record);

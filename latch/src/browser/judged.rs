@@ -14,6 +14,7 @@
 //! cut short, which the judge takes as context, never permission.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use serde_json::{Map, Value, json};
@@ -110,18 +111,90 @@ pub(super) async fn judge(
     gate: Option<Gate<'_>>,
     action: Action,
     filled: &[Filled],
+    attempts: Option<&Attempts>,
     audit: &mut Map<String, Value>,
 ) -> Result<(), Failure> {
     let Some(gate) = gate else {
         return Ok(());
     };
     let action = shown(&action, filled);
-    audit.insert("judged".into(), action.clone());
-    let judging = std::time::Instant::now();
+    audit.insert("judged".into(), audited(&action));
+    let judging = Instant::now();
     let judgment = gate.judge(&action).await;
     super::host::add_time(|phases| &mut phases.gate_ms, judging.elapsed());
-    audit.insert("gate".into(), judgment.gate);
+    let mut record = judgment.gate;
+    if let Some(attempts) = attempts {
+        attempts.judged(
+            &action,
+            &mut record,
+            judgment.verdict.is_ok(),
+            Instant::now(),
+        );
+    }
+    audit.insert("gate".into(), record);
     judgment.verdict
+}
+
+/// `action` as the audit keeps it: a page's address as its origin and
+/// path, never its query or fragment.
+fn audited(action: &Value) -> Value {
+    let mut kept = action.clone();
+    if let Some(url) = action["page"]["url"].as_str() {
+        let (origin, path) = super::core::origin_and_path(url);
+        kept["page"]["url"] = json!(origin + &path);
+    }
+    kept
+}
+
+/// The judgments one browser session made in the last hour: when, for
+/// which site and item, and whether each was allowed.
+#[derive(Default)]
+pub(super) struct Attempts(std::sync::Mutex<Vec<Judgment>>);
+
+struct Judgment {
+    at: Instant,
+    site: Option<String>,
+    item: String,
+    allowed: bool,
+}
+
+impl Attempts {
+    /// Adds to `gate` the `context` of a judgment of `action` made `now`:
+    /// its site and item, how many judgments of both this session made in
+    /// the last hour (this one included), and the seconds since its last
+    /// allowed one on the site within that hour; then records it.
+    pub(super) fn judged(&self, action: &Value, gate: &mut Value, allowed: bool, now: Instant) {
+        let site = action["site"]
+            .as_str()
+            .map(str::to_string)
+            .or_else(|| action["page"]["url"].as_str().and_then(sites::site_of));
+        let item = match action["item"]["title"].as_str() {
+            Some(title) => title.to_string(),
+            None => action["may_fill"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|item| item["title"].as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+        };
+        let mut judged = self.0.lock().expect("attempts lock");
+        judged.retain(|j| now.duration_since(j.at) < Duration::from_secs(3600));
+        let on_site = || judged.iter().filter(|j| j.site == site);
+        let attempts = on_site().filter(|j| j.item == item).count() + 1;
+        let since_allowed = on_site()
+            .filter(|j| j.allowed)
+            .map(|j| now.duration_since(j.at).as_secs())
+            .min();
+        gate["context"] = json!({"site": site, "item": item, "attempts_1h": attempts,
+                                 "since_allowed_s": since_allowed});
+        judged.push(Judgment {
+            at: now,
+            site,
+            item,
+            allowed,
+        });
+    }
 }
 
 /// `action` as the judge is shown it: the card numbers filled in the
@@ -447,6 +520,48 @@ pub(super) async fn download(
 mod tests {
     use super::*;
     use crate::browser::plan::short_step;
+
+    /// Each judgment's context: its site and item, how many judgments of
+    /// both this session made in the last hour, and the seconds since its
+    /// last allowed one on the site.
+    #[test]
+    fn a_judgment_records_its_attempts_and_the_last_allowed_one() {
+        let attempts = Attempts::default();
+        let start = std::time::Instant::now();
+        let at = |s| start + std::time::Duration::from_secs(s);
+        let fill = json!({"kind": "vault_fill", "site": "shop.example",
+                          "item": {"kind": "card", "title": "Visa"}});
+        let plan = json!({"kind": "browser_plan",
+                          "page": {"url": "https://shop.example/pay?token=abc", "title": "Pay"},
+                          "may_fill": [{"kind": "card", "title": "Visa"}]});
+        let mut gate = json!({});
+        attempts.judged(&fill, &mut gate, true, at(0));
+        assert_eq!(
+            gate["context"],
+            json!({"site": "shop.example", "item": "Visa", "attempts_1h": 1, "since_allowed_s": null})
+        );
+        attempts.judged(&plan, &mut gate, false, at(30));
+        assert_eq!(
+            gate["context"],
+            json!({"site": "shop.example", "item": "Visa", "attempts_1h": 2, "since_allowed_s": 30})
+        );
+        // An hour on, the first judgment, the allowed one, no longer counts.
+        attempts.judged(&fill, &mut gate, false, at(3620));
+        assert_eq!(gate["context"]["attempts_1h"], 2);
+        assert_eq!(gate["context"]["since_allowed_s"], Value::Null);
+        assert!(!gate.to_string().contains("token"));
+    }
+
+    /// The audit keeps a judged page's address as its origin and path:
+    /// never its query or fragment.
+    #[test]
+    fn the_audit_keeps_a_judged_page_without_its_query() {
+        let plan = json!({"kind": "browser_plan",
+                          "page": {"url": "https://shop.example/pay?token=abc#card", "title": "Pay"}});
+        assert_eq!(audited(&plan)["page"]["url"], "https://shop.example/pay");
+        let fill = json!({"kind": "vault_fill", "site": "shop.example"});
+        assert_eq!(audited(&fill), fill);
+    }
 
     #[test]
     fn a_plan_is_shown_as_written_with_the_sites_it_names() {

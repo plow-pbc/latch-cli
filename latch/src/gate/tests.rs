@@ -263,6 +263,10 @@ async fn only_the_member_plow_calls_the_owner_counts_as_the_owner() {
         ]
     );
     assert_eq!(judgment.gate["owner_messages"], json!(["m1"]));
+    // The newest owner message's age, never its words.
+    let age = judgment.gate["window"]["owner_newest_s"].as_i64().unwrap();
+    assert!((5 * 3600..5 * 3600 + 60).contains(&age), "{age}");
+    assert!(!judgment.gate.to_string().contains("dog food"));
 }
 
 #[tokio::test]
@@ -321,8 +325,10 @@ async fn a_long_chat_is_read_page_by_page_back_to_its_start() {
         .collect();
     assert_eq!(ids.len(), 250);
     assert_eq!((&ids[0], &ids[249]), (&json!("m000"), &json!("m249")));
+    let mut window = judgment.gate["window"].clone();
+    window.as_object_mut().unwrap().remove("owner_newest_s");
     assert_eq!(
-        judgment.gate["window"],
+        window,
         json!({"first": "m000", "last": "m249", "count": 250, "truncated": false})
     );
     assert!(model.chat_state().get("conversation_truncated").is_none());
