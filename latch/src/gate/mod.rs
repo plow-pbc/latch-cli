@@ -646,18 +646,7 @@ impl Gatekeeper {
         if let Some(chat) = says.1 {
             layers["chat"]["says"] = json!(chat.word());
         }
-        // The probabilities behind the verdict: the layer that decided it,
-        // the rules layer first.
-        let decided_by = match says {
-            (Says::Veto, _) => "rules",
-            (_, Some(Says::Veto)) => match whole_will {
-                Some((Says::Veto, _)) => "chat",
-                _ => "will",
-            },
-            (Says::Allow, _) => "rules",
-            (_, Some(Says::Allow)) => "chat",
-            _ => "rules",
-        };
+        let decided_by = decided_by(says, whole_will);
         gate["decided_by"] = json!(decided_by);
         gate["p"] = layers[decided_by]["p"].clone();
         gate["layers"] = layers;
@@ -840,6 +829,21 @@ impl Says {
     }
 }
 
+/// The layer whose probabilities are behind an agent's verdict, the rules
+/// layer first; in the chat, the judge that vetoed, or the owner's-messages
+/// judge when it alone held back the whole chat's allow.
+fn decided_by(says: (Says, Option<Says>), whole_will: Option<(Says, Says)>) -> &'static str {
+    match (says, whole_will) {
+        ((Says::Veto, _), _) => "rules",
+        ((_, Some(Says::Veto)), Some((Says::Veto, _))) => "chat",
+        ((_, Some(Says::Veto)), _) => "will",
+        ((Says::Allow, _), _) => "rules",
+        ((_, Some(Says::Allow)), _) => "chat",
+        ((_, Some(Says::Neither)), Some((Says::Allow, will))) if will != Says::Allow => "will",
+        _ => "rules",
+    }
+}
+
 /// How the owner sees and changes the rules that judged their own call.
 const OWNER_RULES: &str = "See them with `latch rules show` and change them with `latch rules edit` (with `--host NAME` from another machine), then retry.";
 
@@ -849,7 +853,7 @@ fn rule(owner: bool) -> &'static str {
     if owner {
         "refused when forbidden >= within instructions"
     } else {
-        "refused when a layer forbids; else allowed when a layer is within instructions >= 0.50"
+        "refused when a layer forbids; else allowed when the rules layer, or both chat judges (the whole chat and the owner's messages), are within instructions >= 0.50"
     }
 }
 

@@ -667,7 +667,7 @@ async fn the_answer_decides_allow_ask_or_stop_and_a_failed_model_refuses() {
         .await;
     assert_eq!(
         judgment.gate["rule"],
-        "refused when a layer forbids; else allowed when a layer is within instructions >= 0.50"
+        "refused when a layer forbids; else allowed when the rules layer, or both chat judges (the whole chat and the owner's messages), are within instructions >= 0.50"
     );
     let failure = judgment.verdict.unwrap_err();
     assert!(
@@ -1911,7 +1911,7 @@ async fn chat_permission_needs_both_judgments_and_either_failure_refuses() {
             [0.9, 0.05, 0.05],
             Some([0.1, 0.85, 0.05]),
             "not_covered",
-            "rules",
+            "will",
         ),
         (
             [0.1, 0.85, 0.05],
@@ -1953,7 +1953,7 @@ async fn chat_permission_needs_both_judgments_and_either_failure_refuses() {
             assert_eq!(judgment.gate["decided_by"], decided_by);
             assert_eq!(judgment.gate["p"], judgment.gate["layers"][decided_by]["p"]);
         }
-        if decided_by == "will" {
+        if decided_by == "will" && expected == "owner_said_no" {
             assert_eq!(judgment.gate["p"]["FORBIDDEN"], 0.85);
             assert_eq!(judgment.gate["layers"]["chat"]["p"]["COVERED"], 0.9);
         }
