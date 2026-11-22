@@ -76,7 +76,7 @@ pub fn requested(url: &str, local: bool) -> Result<(), Failure> {
         return Ok(());
     }
     let (Some(host), Some(port)) = (parsed.host_str(), parsed.port_or_known_default()) else {
-        return Err(refused(format!("{url} names no host")));
+        return Err(refused("the address names no host".into()));
     };
     let host = host.trim_start_matches('[').trim_end_matches(']');
     match (host, port).to_socket_addrs() {
@@ -94,7 +94,8 @@ fn web(url: &str) -> Result<Option<url::Url>, Failure> {
     if url == "about:blank" {
         return Ok(None);
     }
-    let parsed = url::Url::parse(url).map_err(|err| refused(format!("{url}: {err}")))?;
+    let parsed =
+        url::Url::parse(url).map_err(|err| refused(format!("not a valid address: {err}")))?;
     if !matches!(parsed.scheme(), "http" | "https") {
         return Err(refused(format!(
             "this host's browser goes only to http and https addresses, not {}:",
@@ -401,6 +402,18 @@ fn splice(client: TcpStream, site: TcpStream) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A refused address's message never repeats the userinfo it carried.
+    #[test]
+    fn a_refused_address_never_repeats_its_userinfo() {
+        for url in [
+            "https://who-sentinel:pw-sentinel@/private",
+            "https://who-sentinel:pw-sentinel@[bad/private",
+        ] {
+            let message = requested(url, false).unwrap_err().message;
+            assert!(!message.contains("sentinel"), "{message}");
+        }
+    }
     use crate::failure::Exit;
 
     /// A site on 127.0.0.1 that answers every request with what it was

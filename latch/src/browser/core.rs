@@ -1452,20 +1452,17 @@ fn scroll_delta(text: Option<&str>) -> Result<f64, Failure> {
     }
 }
 
-/// A URL's origin and path, for the audit: never its query or fragment.
+/// A URL's origin and path, for the audit: never its userinfo, query or fragment.
 pub fn origin_and_path(url: &str) -> (String, String) {
-    let without = url.split(['?', '#']).next().unwrap_or_default();
-    match without.split_once("://") {
-        Some((scheme, rest)) => {
-            let (host, path) = match rest.find('/') {
-                Some(at) => (&rest[..at], &rest[at..]),
-                None => (rest, "/"),
-            };
-            (format!("{scheme}://{host}"), path.to_string())
-        }
+    match url::Url::parse(url) {
+        // The parser's origin, which never keeps the userinfo before a host.
+        Ok(parsed) if parsed.origin().is_tuple() => (
+            parsed.origin().ascii_serialization(),
+            parsed.path().to_string(),
+        ),
         // about:blank, data: and the like have no origin to name.
-        None => (
-            without.split(':').next().unwrap_or_default().to_string() + ":",
+        _ => (
+            url.split(':').next().unwrap_or_default().to_string() + ":",
             String::new(),
         ),
     }
@@ -1518,6 +1515,15 @@ mod tests {
             ("data:".into(), "".into())
         );
         assert_eq!(origin_and_path("about:blank"), ("about:".into(), "".into()));
+    }
+
+    /// A URL's userinfo is a credential: the audit's origin never keeps it.
+    #[test]
+    fn the_audit_origin_never_keeps_a_urls_userinfo() {
+        assert_eq!(
+            origin_and_path("https://who-sentinel:pw-sentinel@shop.example/private"),
+            ("https://shop.example".into(), "/private".into())
+        );
     }
 
     #[test]
