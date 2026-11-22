@@ -541,7 +541,11 @@ async fn adopt(
         }
     };
     let path = keep_minted(plow, reserved, &agent_api_url, &credential, &agent.uid).await?;
-    Ok(credential_output(agent, path, agent_api_url, &credential))
+    Ok(
+        json!({"agent": agent_shown(agent, None), "credential_file": path,
+              "api_url": agent_api_url, "credential_id": credential.id,
+              "expires_at": credential.expires_at}),
+    )
 }
 
 /// Revokes only the credential named in `credential_file`. The file remains
@@ -557,17 +561,6 @@ async fn revoke(plow: &Plow, named: &str, credential_file: &Path) -> Result<Valu
         json!({"agent": agent_shown(agent, None), "status": "revoked",
               "credential_id": saved.credential_id, "credential_file": credential_file}),
     )
-}
-
-fn credential_output(
-    agent: ListedAgent,
-    path: PathBuf,
-    api_url: String,
-    credential: &AgentCredential,
-) -> Value {
-    json!({"agent": agent_shown(agent, None), "credential_file": path,
-           "api_url": api_url, "credential_id": credential.id,
-           "expires_at": credential.expires_at})
 }
 
 /// Saves a newly minted credential or revokes it. If the revoke answer is
@@ -586,11 +579,12 @@ async fn keep_minted(
     );
     match file.keep(&text) {
         Ok(path) => Ok(path),
-        Err(err) => {
+        Err((file, err)) => {
             let revoked = plow
                 .revoke_agent_credential(agent_uid, credential.id)
                 .await
                 .is_ok();
+            let file_removed = remove_reserved_file(&file, revoked);
             let message = format!(
                 "credential {} was minted but couldn't be saved to {}: {err}; inspect this credential before retrying",
                 credential.id,
@@ -598,10 +592,21 @@ async fn keep_minted(
             );
             let mut failure = Failure::new(code::credential_not_saved, message);
             failure.details = json!({"agent_uid": agent_uid, "credential_id": credential.id,
-                                     "credential_file": path, "revoked": revoked});
+                                     "credential_file": path, "revoked": revoked,
+                                     "file_removed": file_removed});
             Err(failure)
         }
     }
+}
+
+fn remove_reserved_file(file: &CredentialFile, remove: bool) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let same_file = || {
+        let held = file.file.metadata().ok()?;
+        let path = std::fs::symlink_metadata(&file.path).ok()?;
+        Some((held.dev(), held.ino()) == (path.dev(), path.ino()))
+    };
+    remove && same_file() == Some(true) && std::fs::remove_file(&file.path).is_ok()
 }
 
 fn keep_created(
@@ -610,17 +615,18 @@ fn keep_created(
     token: Option<&str>,
     agent_uid: &str,
 ) -> Result<PathBuf, Failure> {
-    let path = file.path.clone();
-    let saved = token
-        .ok_or_else(|| "Plow sent no credential".to_string())
-        .and_then(|token| {
-            file.keep(&format!(
+    let text = token.map(|token| {
+        format!(
             "PLOW_API_BASE={api_base}\nPLOW_AGENT_TOKEN={token}\n# plow-agent-uid: {agent_uid}\n"
-        ))
-        .map_err(|err| err.to_string())
-        });
-    saved.map_err(|why| {
-        let file_removed = std::fs::remove_file(&path).is_ok();
+        )
+    });
+    let saved = match text {
+        Some(text) => file.keep(&text),
+        None => Err((file, std::io::Error::other("Plow sent no credential"))),
+    };
+    saved.map_err(|(file, why)| {
+        let path = file.path.clone();
+        let file_removed = remove_reserved_file(&file, true);
         let message = format!(
             "agent {agent_uid} was created, but its credential couldn't be saved to {}: {why}. Without it the agent can't log in",
             path.display()
@@ -907,9 +913,14 @@ impl CredentialFile {
         let _ = std::fs::remove_file(&self.path);
     }
 
-    fn keep(mut self, text: &str) -> std::io::Result<PathBuf> {
-        self.file.write_all(text.as_bytes())?;
-        self.file.sync_all()?;
+    fn keep(mut self, text: &str) -> Result<PathBuf, (CredentialFile, std::io::Error)> {
+        if let Err(err) = self
+            .file
+            .write_all(text.as_bytes())
+            .and_then(|()| self.file.sync_all())
+        {
+            return Err((self, err));
+        }
         Ok(self.path)
     }
 }
@@ -944,12 +955,10 @@ impl StoredCredential {
         };
         // Require the secret line too, without retaining or reporting it.
         field("PLOW_AGENT_TOKEN=").ok_or_else(invalid)?;
-        field("PLOW_API_BASE=").ok_or_else(invalid)?;
         let agent_uid = field("# plow-agent-uid: ").ok_or_else(invalid)?.to_string();
         let credential_id = field("# plow-agent-credential-id: ")
             .and_then(|id| id.parse().ok())
             .ok_or_else(invalid)?;
-        field("# plow-agent-credential-expires-at: ").ok_or_else(invalid)?;
         Ok(StoredCredential {
             agent_uid,
             credential_id,
@@ -1017,5 +1026,22 @@ mod tests {
             assert_eq!(error.code, "bad_host_answer", "{rules}");
             assert!(error.message.contains("studio"), "{error:?}");
         }
+    }
+
+    #[test]
+    fn a_failed_mint_frees_only_its_own_file_after_revocation() {
+        let dir = tempfile::tempdir().unwrap();
+        for revoked in [false, true] {
+            let path = dir.path().join(revoked.to_string());
+            let file = CredentialFile::reserve(&path).unwrap();
+            assert_eq!(remove_reserved_file(&file, revoked), revoked);
+            assert_eq!(path.exists(), !revoked);
+        }
+        let path = dir.path().join("replaced");
+        let file = CredentialFile::reserve(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::fs::write(&path, "new credential").unwrap();
+        assert!(!remove_reserved_file(&file, true));
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "new credential");
     }
 }
