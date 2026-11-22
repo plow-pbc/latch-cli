@@ -20,8 +20,8 @@
 //! The audit record of each call holds what the worker reports (tab,
 //! origin and path, snapshot, target ref and role, how it was resolved),
 //! never page text or field values: `type` records the text's length and
-//! sha256. What the gatekeeper judged is kept whole (`judged.rs`), so a
-//! judged plan's typed values are in the record as written.
+//! sha256. What the gatekeeper judged is kept without its titles, URL
+//! paths or a plan's own words (`judged.rs`).
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;

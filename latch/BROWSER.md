@@ -359,10 +359,11 @@ It prints, per plan, its actions, model calls, the model's total time and
 its cost (an estimate: calls × Plow's stated $0.0001 a call), and over all plans
 the plan share, confirmations and how they were answered, what followed
 each stop, escapes to `eval`, turns, and stops by code.
-What the gatekeeper judged is kept whole, as `judged`, like an exec's
-argv: a plan's steps as written with their values, a site, a fill's item
-and fields (never a value). `serve.log`, the dashboard and `latch audit` show it with
-credential-looking values hidden. Otherwise never page text, field values
+What the gatekeeper judged is kept as `judged`: its kind, the sites it
+names, a fill's fields and item kind (never a value or title), and a URL
+by its origin, never a plan's steps or facts. The dashboard and `latch
+audit` show it with credential-looking values hidden; `serve.log` names a
+browser call by its command only. Otherwise never page text, field values
 or typed text: `type` records the text's length and sha256. `eval` records its script verbatim up to 4 KiB, its
 size and sha256, and workaround tags (other frames, shadow roots,
 synthetic events, setting field values, patching `fetch`/XHR, cookies or
@@ -414,12 +415,17 @@ with `--plow-chat C` or `LATCH_PLOW_CHAT`. Owner calls and local modes
 (`setup`, `handoff done`, `do --dry-run`) refuse this selector instead of
 ignoring it. The call's audit record holds the
 judgment as `gate` (verdict, probabilities, model, cost, latency, the
-message ids read and the newest owner message's age in seconds, or
-`unknown`), never chat text. In a session, `gate.context` adds an opaque,
-random id for the purchase judged (its site and item in that session), how
-many judgments of it the session made in the last hour, and the seconds
-since its last allowed one on that site: numbers only, `unknown` where the
-site is not known. None of it is judged: it is recorded after the verdict. `just gated-shopping HOST_STATE OUT`
+message ids read, `owner_newest_s`, the newest owner message's age in
+seconds, and `forwarded`, both `unknown` when nothing trusted says), never
+chat text. In a session, `gate.context` adds a random id for the purchase
+judged (the owner's newest message read, the site and the item, kept in
+host memory only), how many judgments of it the session made in the last
+hour, and the seconds since its last allowed one: numbers only, `unknown`
+with no owner message or site. None of it is judged: it is recorded after
+the verdict. What was judged is kept as `judged`, by kind, sites, fields
+and item kinds, a URL by its origin: no path, query, title or plan text.
+These stay in the sealed audit: `serve.log` names a browser call by its
+command only. `just gated-shopping HOST_STATE OUT`
 measures a shopping task's judgments on the decision model.
 
 ## Plans, literal steps and confirmations

@@ -264,7 +264,7 @@ async fn only_the_member_plow_calls_the_owner_counts_as_the_owner() {
     );
     assert_eq!(judgment.gate["owner_messages"], json!(["m1"]));
     // The newest owner message's age, never its words.
-    let age = judgment.gate["window"]["owner_newest_s"].as_i64().unwrap();
+    let age = judgment.gate["owner_newest_s"].as_i64().unwrap();
     assert!((5 * 3600..5 * 3600 + 60).contains(&age), "{age}");
     assert!(!judgment.gate.to_string().contains("dog food"));
 }
@@ -289,7 +289,7 @@ async fn the_owner_messages_age_is_recorded_and_never_judged() {
         .judge(AGENT_CALLER, &order())
         .await;
         said.push((judgment.gate["verdict"].clone(), judgment.gate["p"].clone()));
-        let age = &judgment.gate["window"]["owner_newest_s"];
+        let age = &judgment.gate["owner_newest_s"];
         match minutes {
             1 => assert!((60..120).contains(&age.as_i64().unwrap()), "{age}"),
             7200 => assert!(age.as_i64().unwrap() >= 7200 * 60, "{age}"),
@@ -356,10 +356,8 @@ async fn a_long_chat_is_read_page_by_page_back_to_its_start() {
         .collect();
     assert_eq!(ids.len(), 250);
     assert_eq!((&ids[0], &ids[249]), (&json!("m000"), &json!("m249")));
-    let mut window = judgment.gate["window"].clone();
-    window.as_object_mut().unwrap().remove("owner_newest_s");
     assert_eq!(
-        window,
+        judgment.gate["window"],
         json!({"first": "m000", "last": "m249", "count": 250, "truncated": false})
     );
     assert!(model.chat_state().get("conversation_truncated").is_none());
@@ -909,6 +907,30 @@ async fn the_layers_judge_apart_and_the_verdict_follows_the_rule() {
         let decided = &judgment.gate["layers"][decided_by]["p"];
         assert_eq!(judgment.gate["p"], *decided, "{case}");
         assert_eq!(judgment.verdict.is_ok(), expected == "allow", "{case}");
+    }
+}
+
+/// Every record says how old the owner's newest message is and whether it
+/// was forwarded, `unknown` where nothing trusted says: with no chat too.
+#[tokio::test]
+async fn every_record_has_the_owner_messages_age_and_whether_forwarded() {
+    let mut no_chat = World::default();
+    no_chat.add("chat_other", "line_other", vec![]);
+    let model = Recorder::answering(0.9, 0.05, 0.05);
+    for (world, caller, age) in [
+        (one_chat(), AGENT_CALLER, Some(90 * 60)),
+        (no_chat, AGENT_CALLER, None),
+        (one_chat(), Caller::Owner, None),
+    ] {
+        let judgment = gatekeeper(world, &model, host_rules())
+            .judge(caller, &order())
+            .await;
+        let newest = &judgment.gate["owner_newest_s"];
+        match age {
+            Some(s) => assert!((s..s + 60).contains(&newest.as_i64().unwrap()), "{newest}"),
+            None => assert_eq!(newest, "unknown"),
+        }
+        assert_eq!(judgment.gate["forwarded"], "unknown");
     }
 }
 

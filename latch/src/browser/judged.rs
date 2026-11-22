@@ -104,9 +104,8 @@ pub(super) struct FileShown {
 }
 
 /// Judges `action` for the caller's gate: no gate (a caller in the
-/// browser's own tests) is never judged. The audit keeps what was judged,
-/// whole, as `judged` (a plan's steps as written, like an exec's argv),
-/// and the judgment as `gate`.
+/// browser's own tests) is never judged. The audit keeps what was judged
+/// as `judged` ([`recorded`]), and the judgment as `gate`.
 pub(super) async fn judge(
     gate: Option<Gate<'_>>,
     action: Action,
@@ -118,7 +117,7 @@ pub(super) async fn judge(
         return Ok(());
     };
     let action = shown(&action, filled);
-    audit.insert("judged".into(), action.clone());
+    audit.insert("judged".into(), recorded(&action));
     let judging = Instant::now();
     let judgment = gate.judge(&action).await;
     super::host::add_time(|phases| &mut phases.gate_ms, judging.elapsed());
@@ -136,32 +135,34 @@ pub(super) async fn judge(
 }
 
 /// The judgments one browser session made in the last hour: when, for
-/// which purchase (its site and item, kept here only, and the opaque id
-/// the audit names it by), and whether each was allowed.
+/// which purchase (the owner's message that asked for it, its site and
+/// item, kept here only, and the random id the audit names it by), and
+/// whether each was allowed.
 #[derive(Default)]
 pub(super) struct Attempts(std::sync::Mutex<Vec<Judgment>>);
 
 struct Judgment {
     at: Instant,
-    purchase: (String, String),
+    purchase: (String, String, String),
     id: String,
     allowed: bool,
 }
 
 impl Attempts {
     /// Adds to `gate` the `context` of a judgment of `action` made `now`:
-    /// an opaque, random id for its purchase (its site and item in this
-    /// session), how many judgments of that purchase the session made in
-    /// the last hour (this one included), and the seconds since its last
-    /// allowed one on the site within that hour; then records it. Numbers
-    /// only: with no site to tie it to, each is `unknown`. It is logging:
-    /// the verdict is already made.
+    /// a random id for its purchase (the owner's newest message the judge
+    /// read, the site and the item), how many judgments of that purchase
+    /// the session made in the last hour (this one included), and the
+    /// seconds since its last allowed one within that hour; then records
+    /// it. Numbers only: with no owner message or site to tie it to, each
+    /// is `unknown`. It is logging: the verdict is already made.
     pub(super) fn judged(&self, action: &Value, gate: &mut Value, allowed: bool, now: Instant) {
+        let asked = gate["owner_messages"].as_array().and_then(|m| m.last());
         let site = action["site"]
             .as_str()
             .map(str::to_string)
             .or_else(|| action["page"]["url"].as_str().and_then(sites::site_of));
-        let Some(site) = site else {
+        let (Some(asked), Some(site)) = (asked.and_then(Value::as_str), site) else {
             gate["context"] = json!({"purchase": "unknown", "attempts_1h": "unknown",
                                      "since_allowed_s": "unknown"});
             return;
@@ -176,7 +177,7 @@ impl Attempts {
                 .collect::<Vec<_>>()
                 .join("\n"),
         };
-        let purchase = (site, item);
+        let purchase = (asked.to_string(), site, item);
         let mut judged = self.0.lock().expect("attempts lock");
         judged.retain(|j| now.duration_since(j.at) < Duration::from_secs(3600));
         let id = judged.iter().find(|j| j.purchase == purchase).map_or_else(
@@ -186,7 +187,7 @@ impl Attempts {
         let attempts = judged.iter().filter(|j| j.id == id).count() + 1;
         let since_allowed = judged
             .iter()
-            .filter(|j| j.allowed && j.purchase.0 == purchase.0)
+            .filter(|j| j.allowed && j.id == id)
             .map(|j| now.duration_since(j.at).as_secs())
             .min();
         gate["context"] = json!({"purchase": id, "attempts_1h": attempts,
@@ -207,6 +208,32 @@ pub(super) fn shown(action: &Action, filled: &[Filled]) -> Value {
     let mut shown = serde_json::to_value(action).expect("an action serializes");
     super::shown::mask_filled(&mut shown, filled);
     shown
+}
+
+/// What the audit keeps of `action` as judged: its kind, sites, fields
+/// and item kinds, and a URL by its origin; never a path, query or
+/// fragment, a title, or a plan's steps and facts, the agent's own words.
+fn recorded(action: &Value) -> Value {
+    let mut kept = action.clone();
+    for url in ["/url", "/page/url"] {
+        if let Some(url) = kept.pointer_mut(url) {
+            *url = json!(super::core::origin_and_path(url.as_str().unwrap_or_default()).0);
+        }
+    }
+    let kept_map = kept.as_object_mut().expect("an action is an object");
+    kept_map.remove("steps");
+    kept_map.remove("facts");
+    for (key, value) in kept_map.iter_mut() {
+        let titled = match (key.as_str(), value) {
+            ("page" | "item", value) => std::slice::from_mut(value),
+            ("may_fill", Value::Array(items)) => items.as_mut_slice(),
+            _ => continue,
+        };
+        for titled in titled.iter_mut().filter_map(Value::as_object_mut) {
+            titled.remove("title");
+        }
+    }
+    kept
 }
 
 /// A URL as the site rules read it: outside tests, itself.
@@ -524,8 +551,8 @@ mod tests {
     use super::*;
     use crate::browser::plan::short_step;
 
-    /// Each judgment's context: an opaque id for the purchase (the session,
-    /// site and item it serves), how many judgments of it the session made
+    /// Each judgment's context: an opaque id for the purchase (the owner's
+    /// message, site and item it serves), how many judgments of it the session made
     /// in the last hour, and the seconds since its last allowed one on the
     /// site; numbers only, `unknown` where the site is not known.
     #[test]
@@ -538,7 +565,7 @@ mod tests {
         let plan = json!({"kind": "browser_plan",
                           "page": {"url": "https://shop.example/pay?token=abc", "title": "Pay"},
                           "may_fill": [{"kind": "card", "title": "Visa"}]});
-        let mut gate = json!({});
+        let mut gate = json!({"owner_messages": ["m1"]});
         attempts.judged(&fill, &mut gate, true, at(0));
         let purchase = gate["context"]["purchase"].clone();
         assert_eq!(
@@ -571,11 +598,64 @@ mod tests {
         attempts.judged(&other, &mut gate, false, at(3621));
         assert_ne!(gate["context"]["purchase"], purchase);
         assert_eq!(gate["context"]["attempts_1h"], 1);
-        // With no site to tie it to, nothing is guessed.
+        // With no site or owner message to tie it to, nothing is guessed.
+        let unknown =
+            json!({"purchase": "unknown", "attempts_1h": "unknown", "since_allowed_s": "unknown"});
         attempts.judged(&json!({"kind": "vault_fill"}), &mut gate, true, at(3622));
+        assert_eq!(gate["context"], unknown);
+        let mut unasked = json!({"owner_messages": []});
+        attempts.judged(&fill, &mut unasked, true, at(3623));
+        assert_eq!(unasked["context"], unknown);
+    }
+
+    /// Two orders of the same item on the same site, each the owner named
+    /// in their own message, are two purchases: an allowed one says
+    /// nothing of the other.
+    #[test]
+    fn two_orders_of_the_same_item_are_two_purchases() {
+        let attempts = Attempts::default();
+        let start = std::time::Instant::now();
+        let at = |s| start + std::time::Duration::from_secs(s);
+        let fill = json!({"kind": "vault_fill", "site": "shop.example",
+                          "item": {"kind": "card", "title": "Visa"}});
+        let mut first = json!({"owner_messages": ["m1"]});
+        attempts.judged(&fill, &mut first, true, at(0));
+        let mut second = json!({"owner_messages": ["m1", "m7"]});
+        attempts.judged(&fill, &mut second, false, at(60));
+        assert_ne!(first["context"]["purchase"], second["context"]["purchase"]);
         assert_eq!(
-            gate["context"],
-            json!({"purchase": "unknown", "attempts_1h": "unknown", "since_allowed_s": "unknown"})
+            second["context"],
+            json!({"purchase": second["context"]["purchase"], "attempts_1h": 1,
+                   "since_allowed_s": null})
+        );
+    }
+
+    /// The audit keeps what kind of thing was judged and where, a URL by
+    /// its origin only: never a path, query or fragment, an item's or
+    /// page's title, or a plan's steps and facts, the agent's own words.
+    #[test]
+    fn the_audit_keeps_no_url_path_title_or_plan_text_of_what_was_judged() {
+        let plan = json!({"kind": "browser_plan",
+            "page": {"url": "https://shop.example/order/42?session=s3c#pay", "title": "Order 42"},
+            "steps": [{"step": "goto https://shop.example/cart/7?code=c0de", "values": {"v1": "x"}}],
+            "facts": {"order": "42"}, "sites": ["shop.example"],
+            "may_fill": [{"kind": "card", "title": "Visa Gold", "sites": ["shop.example"]}]});
+        assert_eq!(
+            recorded(&plan),
+            json!({"kind": "browser_plan", "page": {"url": "https://shop.example"},
+                   "sites": ["shop.example"], "may_fill": [{"kind": "card", "sites": ["shop.example"]}]})
+        );
+        let fill = json!({"kind": "vault_fill", "site": "shop.example",
+                          "item": {"kind": "card", "title": "Visa Gold"}, "fields": ["number"]});
+        assert_eq!(
+            recorded(&fill),
+            json!({"kind": "vault_fill", "site": "shop.example", "item": {"kind": "card"},
+                   "fields": ["number"]})
+        );
+        let open = json!({"kind": "open_site", "url": "https://shop.example/p/1?state=s7#top"});
+        assert_eq!(
+            recorded(&open),
+            json!({"kind": "open_site", "url": "https://shop.example"})
         );
     }
 
