@@ -283,7 +283,10 @@ presses (`isTrusted`), checking before each key that the field still has
 the focus and its caret has not gone back; only the head of a value
 longer than 64 characters is set in one step. A field that takes no keys,
 or only the first ones, gets the value in one step, as does any other
-field (a list, a date) and a value with a line break or a tab. A field that
+field (a list, a date) and a value with a line break or a tab. A list of
+US states and territories alone takes one by its name or its USPS code,
+from the one option that is it; two such options, or none, refuse the fill.
+A field that
 formats what it gets (a code as "123 456") still holds the value: only
 spaces, dashes, dots, slashes, parentheses and plus signs may come between
 its characters, none lost, added or moved. A value sites format as they
