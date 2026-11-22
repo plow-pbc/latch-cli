@@ -642,8 +642,8 @@ impl Plow {
     }
 
     /// Gives Latch its own credential for an agent this owner already has.
-    pub async fn mint_agent_credential(&self, agent_ref: &str) -> Result<AgentCredential, Failure> {
-        let url = format!("{}/v1/latch/agents/{agent_ref}/credentials", self.api_url);
+    pub async fn mint_agent_credential(&self, agent_uid: &str) -> Result<AgentCredential, Failure> {
+        let url = format!("{}/v1/latch/agents/{agent_uid}/credentials", self.api_url);
         let response = self
             .send(self.http.post(url).json(&serde_json::json!({})))
             .await?;
@@ -653,11 +653,11 @@ impl Plow {
     /// Revokes only the named Latch credential, leaving its agent intact.
     pub async fn revoke_agent_credential(
         &self,
-        agent_ref: &str,
+        agent_uid: &str,
         credential_id: u64,
     ) -> Result<(), Failure> {
         let url = format!(
-            "{}/v1/latch/agents/{agent_ref}/credentials/{credential_id}",
+            "{}/v1/latch/agents/{agent_uid}/credentials/{credential_id}",
             self.api_url
         );
         let response = self.send(self.http.delete(url)).await?;
