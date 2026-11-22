@@ -3209,24 +3209,54 @@ fn switching_an_agent_login_offers_to_copy_its_host_policy() {
         "Only run approved tests.",
     )
     .unwrap();
+    fs::write(state.join(format!("rules/{OLD}.peer")), key).unwrap();
     fs::write(
         state.join("serve-args.json"),
         format!(r#"["--headless-browsers","--deny-exec={OLD}","--deny-exec=33333333333333333333333333333333"]"#),
     )
     .unwrap();
     fs::write(&token, "new-agent\n").unwrap();
+    fs::write(state.join(format!("rules/{OLD}.peer")), "wrong-key").unwrap();
+    let (api_url, server) = fake_plow(vec![(
+        200,
+        json!({"agent": {"uid": NEW, "name": "New agent"}}),
+    )]);
+    let invalid = latch(&state, &["login", "--api-url", &api_url], &env);
+    assert_ne!(invalid.status.code(), Some(0));
+    let error: Value = serde_json::from_slice(&invalid.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "bad_state");
+    server.join().unwrap();
+    fs::write(state.join(format!("rules/{OLD}.peer")), key).unwrap();
+
+    fs::remove_file(state.join("agent-uid")).unwrap();
     let (api_url, server) = fake_plow(vec![
         (200, json!({"agent": {"uid": NEW, "name": "New agent"}})),
         (500, json!({})),
     ]);
-    let (code, _, _) = latch_at_a_terminal(
-        &state,
-        &["login", "--api-url", &api_url],
-        "y\n",
-        false,
-        &env,
+    let missing = latch(&state, &["login", "--api-url", &api_url], &env);
+    assert_ne!(missing.status.code(), Some(0));
+    assert!(
+        String::from_utf8_lossy(&missing.stderr).contains("previous agent uid was not recorded"),
+        "{missing:?}"
     );
-    assert_ne!(code, Some(0));
+    server.join().unwrap();
+    fs::write(state.join("agent-uid"), OLD).unwrap();
+
+    let (api_url, server) = fake_plow(vec![
+        (200, json!({"agent": {"uid": NEW, "name": "New agent"}})),
+        (
+            200,
+            json!({"data": [{"key": "host-key", "kind": "device", "name": "studio",
+                                "relay_url": null, "last_seen_at": null}]}),
+        ),
+        (500, json!({})),
+    ]);
+    let unattended = latch(&state, &["login", "--api-url", &api_url], &env);
+    assert_ne!(unattended.status.code(), Some(0));
+    assert!(
+        String::from_utf8_lossy(&unattended.stderr)
+            .contains("--deny-exec block was not copied without a person")
+    );
     assert!(!state.join(format!("rules/{NEW}.txt")).exists());
     assert!(
         !fs::read_to_string(state.join("serve-args.json"))
@@ -3235,8 +3265,19 @@ fn switching_an_agent_login_offers_to_copy_its_host_policy() {
     );
     server.join().unwrap();
 
+    fs::write(
+        state.join(format!("rules/{NEW}.txt")),
+        "Existing new-agent restrictions.",
+    )
+    .unwrap();
+    fs::remove_file(state.join("config.json")).unwrap();
     let (api_url, server) = fake_plow(vec![
         (200, json!({"agent": {"uid": NEW, "name": "New agent"}})),
+        (
+            200,
+            json!({"data": [{"key": "host-key", "kind": "device", "name": "studio",
+                                "relay_url": null, "last_seen_at": null}]}),
+        ),
         (200, peer(json!(key), "New agent", "agent", Value::Null)),
     ]);
     let (code, shown, stdout) = latch_at_a_terminal(
@@ -3254,11 +3295,12 @@ fn switching_an_agent_login_offers_to_copy_its_host_policy() {
     assert_eq!(
         output["policy_handoff"],
         json!({"from_agent_uid": OLD, "to_agent_uid": NEW,
-               "rules": "Only run approved tests.", "deny_exec": true, "copied": true})
+               "rules": "Only run approved tests.", "deny_exec": true,
+               "hosts_to_review": ["studio"], "deny_exec_copied": true})
     );
     assert_eq!(
         fs::read_to_string(state.join(format!("rules/{NEW}.txt"))).unwrap(),
-        "Only run approved tests."
+        "Existing new-agent restrictions."
     );
     let flags: Value =
         serde_json::from_slice(&fs::read(state.join("serve-args.json")).unwrap()).unwrap();
@@ -3271,7 +3313,7 @@ fn switching_an_agent_login_offers_to_copy_its_host_policy() {
             format!("--deny-exec={NEW}")
         ])
     );
-    assert_eq!(server.join().unwrap().len(), 2);
+    assert_eq!(server.join().unwrap().len(), 3);
 }
 
 /// A second `latch login` on a logged-in state folder says so and asks

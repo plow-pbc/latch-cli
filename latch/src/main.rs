@@ -292,7 +292,9 @@ async fn run(
                 Ok(output) => {
                     let peer = &output.peer;
                     login::event(json!({"type": "verified", "peer":
-                        {"name": peer.name, "key": peer.key, "kind": peer.kind}}));
+                        {"name": peer.name, "key": peer.key, "kind": peer.kind},
+                        "policy_handoff": &output.policy_handoff,
+                        "policy_warning": &output.policy_warning}));
                     Ok(Printed(String::new()))
                 }
                 Err(failure) if failure.code == "code_expired" => {

@@ -47,6 +47,8 @@ pub struct LoginOutput {
     /// before it was logged in as another agent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub policy_handoff: Option<PolicyHandoff>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policy_warning: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -55,7 +57,8 @@ pub struct PolicyHandoff {
     pub to_agent_uid: String,
     pub rules: Option<String>,
     pub deny_exec: bool,
-    pub copied: bool,
+    pub hosts_to_review: Vec<String>,
+    pub deny_exec_copied: bool,
 }
 
 /// Where this login's credential comes from.
@@ -96,6 +99,7 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
             by_text: false,
             already_logged_in: Some(message),
             policy_handoff: None,
+            policy_warning: None,
         });
     }
     let saved_url = match &saved {
@@ -188,9 +192,36 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
         } else {
             Some(plow.agent_me().await?)
         };
+        let policy_warning = match (&saved, &me, &saved_agent_uid) {
+            (Some(config), Some(_), None) if config.peer.kind == "agent" => Some(
+                "The previous agent uid was not recorded. Review every host for rules and --deny-exec entries that still name it before switching credentials."
+                    .to_string(),
+            ),
+            _ => None,
+        };
+        if let Some(warning) = &policy_warning {
+            eprintln!("{warning}");
+        }
         let mut policy_handoff = match (&saved, &me) {
             (Some(config), Some(me)) if config.peer.kind == "agent" => {
-                policy_handoff(state, saved_agent_uid.as_deref(), &me.uid)?
+                policy_handoff(
+                    state,
+                    &plow,
+                    saved_agent_uid.as_deref(),
+                    &config.peer.key,
+                    &me.uid,
+                )
+                .await?
+            }
+            (None, Some(me)) if saved_agent_uid.is_some() => {
+                policy_handoff(
+                    state,
+                    &plow,
+                    saved_agent_uid.as_deref(),
+                    &key.to_string(),
+                    &me.uid,
+                )
+                .await?
             }
             _ => None,
         };
@@ -209,13 +240,25 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
                 handoff.from_agent_uid,
                 if handoff.deny_exec { "set" } else { "not set" }
             );
+            if handoff.rules.is_some() {
+                eprintln!(
+                    "Rules are not copied because they may grant access. Carry only their restrictions to agent {} on each host: {}.",
+                    handoff.to_agent_uid,
+                    handoff.hosts_to_review.join(", ")
+                );
+            }
             if term::interactive()
+                && handoff.deny_exec
                 && term::confirm(&format!(
-                    "Copy this policy to agent {}?",
+                    "Copy the --deny-exec block to agent {} on this host?",
                     handoff.to_agent_uid
                 ))
             {
                 copy_requested = true;
+            } else if handoff.deny_exec && !term::interactive() {
+                eprintln!(
+                    "The --deny-exec block was not copied without a person at the terminal."
+                );
             }
         }
         let registration = Registration {
@@ -255,8 +298,8 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
 
         if copy_requested {
             let handoff = policy_handoff.as_mut().expect("a policy was offered");
-            copy_policy(state, handoff, &key.to_string())?;
-            handoff.copied = true;
+            copy_policy(state, handoff)?;
+            handoff.deny_exec_copied = true;
         }
 
         // Save only after Plow accepted us, so a failed first login leaves no
@@ -277,45 +320,54 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
             by_text: texted,
             already_logged_in: None,
             policy_handoff,
+            policy_warning,
         })
     }
     .await;
     registered.map_err(|failure| if texted { failure.told() } else { failure })
 }
 
-fn policy_handoff(
+async fn policy_handoff(
     state: &StateDir,
+    plow: &Plow,
     old_uid: Option<&str>,
+    old_key: &str,
     new_uid: &str,
 ) -> Result<Option<PolicyHandoff>, Failure> {
     let Some(old_uid) = old_uid.filter(|old_uid| *old_uid != new_uid) else {
         return Ok(None);
     };
     let rules = RulesDir::new(&state.path).text(&Scope::Agent(old_uid.to_string()))?;
+    if rules.is_some() && RulesDir::new(&state.path).peer(old_uid)?.as_deref() != Some(old_key) {
+        return Err(Failure::new(
+            code::bad_state,
+            format!("the saved agent uid {old_uid} is not bound to this peer key's rules"),
+        ));
+    }
     let deny_exec = crate::managed::saved_denies_agent(&state.path, old_uid)?;
     if rules.is_none() && !deny_exec {
         return Ok(None);
     }
+    let mut hosts_to_review: Vec<String> = plow
+        .list_peers()
+        .await?
+        .into_iter()
+        .filter(|peer| peer.kind == "device")
+        .map(|peer| peer.name)
+        .collect();
+    hosts_to_review.sort();
+    hosts_to_review.dedup();
     Ok(Some(PolicyHandoff {
         from_agent_uid: old_uid.to_string(),
         to_agent_uid: new_uid.to_string(),
         rules,
         deny_exec,
-        copied: false,
+        hosts_to_review,
+        deny_exec_copied: false,
     }))
 }
 
-fn copy_policy(state: &StateDir, handoff: &PolicyHandoff, peer_key: &str) -> Result<(), Failure> {
-    if let Some(rules) = &handoff.rules {
-        let dir = RulesDir::new(&state.path);
-        let scope = Scope::Agent(handoff.to_agent_uid.clone());
-        let current = dir.text(&scope)?;
-        let expected = match current.as_deref() {
-            Some(current) if current == rules => Some(crate::gate::rules::revision(current)),
-            _ => None,
-        };
-        dir.set(&scope, rules, Some(expected.as_deref()), Some(peer_key))?;
-    }
+fn copy_policy(state: &StateDir, handoff: &PolicyHandoff) -> Result<(), Failure> {
     if handoff.deny_exec {
         crate::managed::copy_saved_denial(
             &state.path,

@@ -134,12 +134,6 @@ async fn log_out(path: PathBuf, purge: bool) -> Result<Value, Failure> {
             Err(err) if err.kind() == io::ErrorKind::NotFound => {}
             Err(err) => return Err(io_failure(&config, err)),
         }
-        let agent_uid = path.join("agent-uid");
-        match fs::remove_file(&agent_uid) {
-            Ok(()) => removed.push("agent-uid"),
-            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
-            Err(err) => return Err(io_failure(&agent_uid, err)),
-        }
     }
     Ok(json!({
         "removed": removed,

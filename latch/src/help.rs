@@ -90,7 +90,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "login",
         runs_on: |_| RunsOn::Local,
-        output: "This machine or agent as `peer` (name, key, kind), and whether its key was created now; when this state folder was logged in already and nothing changed, `already_logged_in` says as whom; when an agent peer key changes agent uid and local host policy names the old uid, `policy_handoff` shows both uids, the old rules and deny-exec standing, and whether the person copied them; with --events, JSON lines (hello, code, waiting, verified, expired, error) instead.",
+        output: "This machine or agent as `peer` (name, key, kind), and whether its key was created now; when this state folder was logged in already and nothing changed, `already_logged_in` says as whom; when an agent peer key changes agent uid and local host policy names the old uid, `policy_handoff` shows both uids, the old rules, hosts to review and whether the enforced deny-exec block was copied; rules are never copied because they may grant access; with --events, the verified JSON line carries the same handoff or warning.",
         effect: Repeatable(
             "creates this machine's or agent's key if missing and registers it with Plow",
         ),
