@@ -118,9 +118,9 @@ maintained standard parser for structured input.
 
 ## Cause-first bug fixes
 
-Fix at the cause; never with a workaround that leaves the cause in place. A guard or check at the boundary where the cause lives is a cause-level fix. If a fix adds a maintained path or net complexity, explain why removing the cause directly is insufficient. No stopgaps: they promote brittle, confusing, unreliable code. Ship the fix at the cause. When the bug comes from a duplicated source or identity, remove the duplicate rather than bridging the two. Limits a REVIEW.md already records as accepted stay out of review unless the diff widens them.
+Fix at the cause; never with a workaround that leaves the cause in place. A guard or check at the boundary where the cause lives is a cause-level fix. If a fix adds a maintained path or net complexity, explain why removing the cause directly is insufficient. No stopgaps: they promote brittle, confusing, unreliable code. Ship the fix at the cause. Required rollout sequencing (staged removals, compatibility windows) and authorized incident containment, labeled with when it's removed, are not stopgaps. When the bug comes from a duplicated source or identity, remove the duplicate rather than bridging the two. Limits a REVIEW.md already records as accepted stay out of review unless the diff widens them.
 
-In latch, justified defense-in-depth security checks stay (for example a worker-side check backing the gatekeeper's fail-closed guarantee).
+In latch, justified defense-in-depth security checks stay (for example a worker-side check backing the gatekeeper's fail-closed guarantee), and the duplicate-removal clause governs the durable fix.
 
 **The one carve-out: enforcement code is the product, and it is not bloat.**
 Keep the bar high on these paths, because a wrong answer is the failure the
