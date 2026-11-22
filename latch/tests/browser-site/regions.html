@@ -1,0 +1,22 @@
+<!doctype html><title>latch regions test</title>
+<form>
+  <p><label>State code <select name="state-code"><option value="">Choose</option><option>AZ</option><option>CA</option><option>NY</option></select></label></p>
+  <p><label>State name <select name="state-name"><option value="">Choose</option><option>Arizona</option><option>California</option><option>New York</option></select></label></p>
+  <p><label>Two Arizonas <select name="arizonas"><option value="">Choose</option><option value="AZ">Arizona</option><option value="AZ2">Arizona</option></select></label></p>
+  <p><label>Countries <select name="countries"><option value="">Choose</option><option>Canada</option><option>Germany</option></select></label></p>
+  <p><label>Deutschland <select name="deutschland"><option value="">Choose</option><option value="FR">Deutschland</option><option value="US">United States</option></select></label></p>
+  <p><label>Gabon or Ghana <select name="gabon-ghana"><option value="">Choose</option><option value="GA">Gabon / Ghana</option><option value="AL">Alabama</option></select></label></p>
+  <p><label>Mixed regions <select name="mixed"><option value="">Choose</option><option value="CA">Canada</option><option value="NY">New York</option></select></label></p>
+  <p><label>Month <select name="month"><option value="">Choose</option><option>01</option><option>02</option><option>03</option></select></label></p>
+  <p><label>Day <select name="day"><option value="">Choose</option><option>3</option><option>03</option></select></label></p>
+  <p><label>Phone <select name="phone"><option value="">Choose</option><optgroup label="Home"><option value="home-mobile">Mobile</option></optgroup><optgroup label="Work"><option value="work-mobile">Mobile</option></optgroup></select></label></p>
+</form>
+<p id="out">nothing yet</p>
+<script>
+  // What the form holds, as the page's own text: the test reads it there,
+  // since latch never shows a value it filled.
+  document.querySelector('form').addEventListener('change', () => {
+    document.getElementById('out').textContent = 'form: ' +
+      [...document.querySelectorAll('select')].filter((f) => f.value).map((f) => `${f.name}=${f.value}`).join(' ');
+  });
+</script>

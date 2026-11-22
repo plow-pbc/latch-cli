@@ -58,6 +58,7 @@ conformance!(
     mac:
     vault_fills_go_only_where_the_item_allows_and_never_show_a_value,
     a_filled_value_is_guarded_in_every_tab_and_blank_in_screenshots,
+    a_list_of_us_states_takes_a_state_by_name_or_code,
 );
 
 /// `value` as an agent or the audit saw it, for the leak checks, less what
@@ -1998,6 +1999,70 @@ async fn a_filled_value_is_guarded_in_every_tab_and_blank_in_screenshots(engine:
     assert!(h.call("screenshot", json!({})).await.is_ok());
     assert!(!h.shown.join("\n").contains("Lovelace-on-Thames"));
     h.call("close", json!({})).await.unwrap();
+}
+
+async fn a_list_of_us_states_takes_a_state_by_name_or_code(engine: &str) {
+    let (_dir, state, _area) = test_state(engine);
+    let vault = Vault::new(state.clone());
+    let add = |value: &str| {
+        vault
+            .with(|s| s.add(item(IDENTITY, value, &[], &[("state", value)])))
+            .unwrap()
+            .item
+    };
+    let local = format!("http://127.0.0.1:{}", site());
+    let mut browsers = Browsers::new(state.clone(), vault.clone(), super::HEADLESS);
+    browsers.test = Some((
+        latch(),
+        vec![(local.clone(), "https://shop.example".into())],
+    ));
+    let mut h = Harness::start(browsers, engine).await;
+    h.call("open", json!({"url": format!("{local}/regions.html")}))
+        .await
+        .unwrap();
+    let page = h.call("observe", json!({"all": true})).await.unwrap();
+    let mut fill = async |value: &str, name: &str| {
+        let item = add(value);
+        let list = find(&page, "combobox", name);
+        let (filled, _) = h
+            .fill(json!({"item": item, "fields": [["state", [list]]]}))
+            .await;
+        filled.map_or_else(|failure| failure.code, |_| "filled".into())
+    };
+
+    // A list of states alone takes a state's name as its code and its code
+    // as its name; any other list matches as it always has: the value or
+    // the text, else the same number, first option first.
+    for (value, name) in [
+        ("Arizona", "State code"),
+        ("AZ", "State name"),
+        ("3", "Month"),
+        ("03", "Day"),
+        ("Mobile", "Phone"),
+    ] {
+        assert_eq!(fill(value, name).await, "filled", "{value} into {name}");
+    }
+    // A state two options name, and a country, a name in another language
+    // or a part of an option's text, are no option.
+    for (value, name) in [
+        ("AZ", "Two Arizonas"),
+        ("Kanada", "Countries"),
+        ("Germany", "Deutschland"),
+        ("Georgia", "Gabon or Ghana"),
+        ("California", "Mixed regions"),
+    ] {
+        assert_eq!(
+            fill(value, name).await,
+            "fill_refused",
+            "{value} into {name}"
+        );
+    }
+    let text = h.text().await;
+    assert!(
+        text.contains("form: state-code=AZ state-name=Arizona month=03 day=03 phone=home-mobile"),
+        "{text}"
+    );
+    h.call("close", json!({})).await.ok();
 }
 
 async fn no_secret_goes_into_a_form_sent_by_get(engine: &str) {
