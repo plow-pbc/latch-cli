@@ -1560,6 +1560,14 @@ mod tests {
         }
     }
 
+    /// url 2.5.8's `origin()` overflows the stack on a deeply nested blob:
+    /// URL (RUSTSEC-2026-0592): the audit never asks for one.
+    #[test]
+    fn a_deeply_nested_blob_url_is_audited_by_its_scheme_alone() {
+        let url = format!("{}https://u:p@shop.example/x", "blob:".repeat(100_000));
+        assert_eq!(audited(&url), "blob:");
+    }
+
     #[test]
     fn calls_parse_from_the_hosts_lines() {
         let call: Call = serde_json::from_value(json!({
