@@ -606,7 +606,7 @@ fn refusal(code: &str, details: &Value) -> Option<Outcome> {
     let why = match code {
         "gatekeeper_denied" => match details["reason"].as_str() {
             Some("owner_said_no") => "owner said no",
-            Some("not_as_asked") => "not as the owner asked",
+            Some("not_as_asked") => "stopped as it is now, no plain no from the owner",
             _ => "needed the owner's OK",
         },
         "gatekeeper_unavailable" => "judge unavailable",

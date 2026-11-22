@@ -265,7 +265,7 @@ fn results_say_what_happened_in_words() {
             "Run: false: Failed - exit 1",
             "Run: false: Refused - judge unavailable",
             "Run: false: Refused - owner said no",
-            "Run: false: Refused - not as the owner asked",
+            "Run: false: Refused - stopped as it is now, no plain no from the owner",
             "Search Messages: Done - 4 matches",
         ]
     );
