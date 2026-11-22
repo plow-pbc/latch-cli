@@ -193,10 +193,9 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
             Some(plow.agent_me().await?)
         };
         let policy_warning = match (&saved, &me, &saved_agent_uid) {
-            (Some(config), Some(_), None) if config.peer.kind == "agent" => Some(
-                "The previous agent uid was not recorded. Review every host for rules and --deny-exec entries that still name it before switching credentials."
-                    .to_string(),
-            ),
+            (Some(config), Some(me), None) if config.peer.kind == "agent" => {
+                Some(missing_predecessor_warning(state, &me.uid)?)
+            }
             _ => None,
         };
         if let Some(warning) = &policy_warning {
@@ -242,20 +241,24 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
             );
             if handoff.rules.is_some() {
                 eprintln!(
-                    "Rules are not copied because they may grant access. Carry only their restrictions to agent {} on each host: {}.",
+                    "Rules are not copied because they may grant access. Re-apply only their restrictions to agent {} on each host: {}.",
                     handoff.to_agent_uid,
                     handoff.hosts_to_review.join(", ")
                 );
             }
-            if term::interactive()
-                && handoff.deny_exec
+            eprintln!("Restrictions are NOT carried; re-apply them by hand on each host:");
+            for host in &handoff.hosts_to_review {
+                eprintln!("{host}: latch login --again");
+            }
+            if handoff.deny_exec
+                && term::interactive()
                 && term::confirm(&format!(
                     "Copy the --deny-exec block to agent {} on this host?",
                     handoff.to_agent_uid
                 ))
             {
                 copy_requested = true;
-            } else if handoff.deny_exec && !term::interactive() {
+            } else if handoff.deny_exec {
                 eprintln!(
                     "The --deny-exec block was not copied without a person at the terminal."
                 );
@@ -266,6 +269,11 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
             ..registration
         };
         let authenticated_agent_uid = me.as_ref().map(|me| me.uid.clone());
+        if copy_requested {
+            let handoff = policy_handoff.as_mut().expect("a policy was offered");
+            copy_policy(state, handoff)?;
+            handoff.deny_exec_copied = true;
+        }
         let peer = match plow.register(&registration).await {
             // Two agents may share a name: unless one was asked for, try once
             // more as the name plus the start of this agent's uid.
@@ -292,12 +300,6 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
             }
             result => result?,
         };
-
-        if copy_requested {
-            let handoff = policy_handoff.as_mut().expect("a policy was offered");
-            copy_policy(state, handoff)?;
-            handoff.deny_exec_copied = true;
-        }
 
         // Save only after Plow accepted us, so a failed first login leaves no
         // half-configured instance behind (apart from the key, and the token of
@@ -334,14 +336,15 @@ async fn policy_handoff(
     let Some(old_uid) = old_uid.filter(|old_uid| *old_uid != new_uid) else {
         return Ok(None);
     };
-    let rules = RulesDir::new(&state.path).text(&Scope::Agent(old_uid.to_string()))?;
-    if rules.is_some() && RulesDir::new(&state.path).peer(old_uid)?.as_deref() != Some(old_key) {
+    let rules_dir = RulesDir::new(&state.path);
+    let rules = rules_dir.text(&Scope::Agent(old_uid.to_string()))?;
+    let deny_exec = crate::managed::saved_denies_agent(&state.path, old_uid)?;
+    if (rules.is_some() || deny_exec) && rules_dir.peer(old_uid)?.as_deref() != Some(old_key) {
         return Err(Failure::new(
             code::bad_state,
-            format!("the saved agent uid {old_uid} is not bound to this peer key's rules"),
+            format!("the saved agent uid {old_uid} is not bound to this peer key's policy"),
         ));
     }
-    let deny_exec = crate::managed::saved_denies_agent(&state.path, old_uid)?;
     if rules.is_none() && !deny_exec {
         return Ok(None);
     }
@@ -362,6 +365,36 @@ async fn policy_handoff(
         hosts_to_review,
         deny_exec_copied: false,
     }))
+}
+
+fn missing_predecessor_warning(state: &StateDir, new_uid: &str) -> Result<String, Failure> {
+    let mut warning = "The previous agent uid was not recorded. Restrictions are NOT carried; review these local entries and re-apply only their restrictions by hand before switching credentials."
+        .to_string();
+    let (denied, mut flags) = crate::managed::saved_denials(&state.path)?;
+    if !flags
+        .iter()
+        .any(|flag| flag == "--deny-exec" || flag == &format!("--deny-exec={new_uid}"))
+    {
+        flags.push(format!("--deny-exec={new_uid}"));
+    }
+    let serve = flags
+        .iter()
+        .map(|flag| shell_quoted(flag))
+        .collect::<Vec<_>>()
+        .join(" ");
+    for uid in denied.into_iter().filter(|uid| uid != new_uid) {
+        warning.push_str(&format!("\n--deny-exec={uid}: latch serve -d {serve}"));
+    }
+    for uid in RulesDir::new(&state.path)
+        .agents()?
+        .into_iter()
+        .filter(|uid| uid != new_uid)
+    {
+        warning.push_str(&format!(
+            "\nrules/{uid}.txt: latch rules edit --agent {new_uid}"
+        ));
+    }
+    Ok(warning)
 }
 
 fn copy_policy(state: &StateDir, handoff: &PolicyHandoff) -> Result<(), Failure> {

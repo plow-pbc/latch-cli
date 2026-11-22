@@ -336,6 +336,21 @@ pub fn saved_denies_agent(dir: &Path, agent_uid: &str) -> Result<bool, Failure> 
     Ok(saved(dir)?.is_some_and(|(_, args)| args.deny_exec.iter().any(|uid| uid == agent_uid)))
 }
 
+/// The individual agents and original flags from the last host start.
+pub fn saved_denials(dir: &Path) -> Result<(Vec<String>, Vec<String>), Failure> {
+    let Some((given, args)) = saved(dir)? else {
+        return Ok((Vec::new(), Vec::new()));
+    };
+    let mut agents: Vec<String> = args
+        .deny_exec
+        .into_iter()
+        .filter(|uid| uid != crate::cli::EVERY_AGENT)
+        .collect();
+    agents.sort();
+    agents.dedup();
+    Ok((agents, given))
+}
+
 /// Copies one agent's saved `--deny-exec` standing to another, leaving all
 /// existing flags in their given order.
 pub fn copy_saved_denial(dir: &Path, from: &str, to: &str) -> Result<(), Failure> {
