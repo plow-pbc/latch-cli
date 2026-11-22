@@ -1,9 +1,5 @@
 # Review instructions — latch-cli
 
-## Cause-first bug fixes
-
-Fix at the cause; never with a workaround that leaves the cause in place. A guard or check at the boundary where the cause lives is a cause-level fix. If a fix adds a maintained path or net complexity, explain why removing the cause directly is insufficient. Label any authorized temporary containment and state when it can be removed. When the bug comes from a duplicated source or identity, remove the duplicate rather than bridging the two. Limits a REVIEW.md already records as accepted stay out of review unless the diff widens them.
-
 What is different about reviewing *this* repo: the operating point, the
 accepted limits, and the one carve-out where defensive code earns its keep.
 Universal review policy (voice posture, decline rules, review-loop rules) is
@@ -119,6 +115,12 @@ abstractions, impossible-case guards and configuration nobody asked for.
 Compute costs less than brittle text machinery: flag piles of regex and
 hand-rolled parsing, and prefer a clear model call for semantic work or a
 maintained standard parser for structured input.
+
+## Cause-first bug fixes
+
+Fix at the cause; never with a workaround that leaves the cause in place. A guard or check at the boundary where the cause lives is a cause-level fix. If a fix adds a maintained path or net complexity, explain why removing the cause directly is insufficient. Label any authorized temporary containment and state when it can be removed. When the bug comes from a duplicated source or identity, remove the duplicate rather than bridging the two. Limits a REVIEW.md already records as accepted stay out of review unless the diff widens them.
+
+In latch, justified defense-in-depth security checks stay (for example a worker-side check backing the gatekeeper's fail-closed guarantee), and the duplicate-removal clause governs the durable fix, not an authorized, labeled temporary bridge.
 
 **The one carve-out: enforcement code is the product, and it is not bloat.**
 Keep the bar high on these paths, because a wrong answer is the failure the
