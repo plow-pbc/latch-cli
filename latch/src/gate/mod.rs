@@ -654,7 +654,9 @@ impl Gatekeeper {
             chat: gate["chat"].as_str().unwrap_or_default(),
             owner_messages: gate["owner_messages"].as_array().map_or(&[], Vec::as_slice),
             unsure_stop: decided_by == "chat"
-                && chat_p.is_some_and(|(whole, _)| whole.forbidden < whole.not_covered),
+                && chat_p.is_some_and(|(whole, will)| {
+                    whole.forbidden < whole.not_covered && will.says() != Says::Veto
+                }),
         };
         agent_verdict(says.0, says.1.map(|chat| (chat, read)))
     }
@@ -873,7 +875,7 @@ fn owner_verdict(p: P) -> Result<(), Failure> {
 /// The chat an agent's chat layer read, as the record names it: its id,
 /// and the owner's messages among those the judge was shown. `unsure_stop`
 /// marks a veto by the chat alone at `CHAT_VETO_P`, with FORBIDDEN still
-/// below NOT_COVERED: the owner's messages lean against the action as it
+/// below NOT_COVERED and no plain veto from the owner's-messages judge: the owner's messages lean against the action as it
 /// is, most often because it differs from what they asked, not a plain no.
 struct ChatRead<'a> {
     chat: &'a str,

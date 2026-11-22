@@ -1937,6 +1937,12 @@ async fn chat_permission_needs_both_judgments_and_either_failure_refuses() {
             "owner_said_no",
             "chat",
         ),
+        (
+            [0.42, 0.34, 0.24],
+            Some([0.03, 0.12, 0.85]),
+            "owner_said_no",
+            "chat",
+        ),
         ([0.9, 0.05, 0.05], None, "gatekeeper_unavailable", ""),
         ([0.9, 0.05, 0.05], Some([0.9, 0.05, 0.05]), "allow", "chat"),
     ] {
