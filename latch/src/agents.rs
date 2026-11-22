@@ -136,10 +136,7 @@ async fn managed(
             credential_file,
             agent_api_url,
         }) => adopt(plow, api_url, &agent, &credential_file, agent_api_url).await?,
-        Some(AgentsAction::Revoke {
-            agent,
-            credential_file,
-        }) => revoke(plow, &agent, &credential_file).await?,
+        Some(AgentsAction::Revoke { agent }) => revoke(plow, &agent).await?,
         Some(AgentsAction::Card { agent, output }) => card(plow, api_url, &agent, &output).await?,
         Some(AgentsAction::Move { agent, line }) => move_to(plow, &agent, &line).await?,
         Some(AgentsAction::Remove { agent, line, yes }) => {
@@ -548,22 +545,21 @@ async fn adopt(
     )
 }
 
-/// Revokes only the credential named in `credential_file`. The file remains
-/// as the record of which credential was revoked and can no longer log in.
-async fn revoke(plow: &Plow, named: &str, credential_file: &Path) -> Result<Value, Failure> {
+/// Revokes every separately minted Latch credential for the named agent.
+async fn revoke(plow: &Plow, named: &str) -> Result<Value, Failure> {
     let agent = resolve(plow, named).await?;
-    let saved = StoredCredential::read(credential_file)?;
-    plow.revoke_agent_credential(&agent.uid, saved.credential_id)
+    let credential_ids = plow
+        .revoke_agent_credentials(&agent.uid)
         .await
         .map_err(|failure| credential_request_failed(failure, "revoked"))?;
     Ok(
         json!({"agent": agent_shown(agent, None), "status": "revoked",
-              "credential_id": saved.credential_id, "credential_file": credential_file}),
+              "credential_ids": credential_ids}),
     )
 }
 
 /// Saves a newly minted credential or revokes it. If the revoke answer is
-/// also lost, the private file and id remain so the owner can reconcile it.
+/// also lost, the private file remains and the error names the id to inspect.
 async fn keep_minted(
     plow: &Plow,
     file: CredentialFile,
@@ -573,16 +569,13 @@ async fn keep_minted(
 ) -> Result<PathBuf, Failure> {
     let path = file.path.clone();
     let text = format!(
-        "PLOW_API_BASE={api_base}\nPLOW_AGENT_TOKEN={}\n# plow-agent-uid: {agent_uid}\n# plow-agent-credential-id: {}\n# plow-agent-credential-expires-at: {}\n",
-        credential.token, credential.id, credential.expires_at
+        "PLOW_API_BASE={api_base}\nPLOW_AGENT_TOKEN={}\n# plow-agent-uid: {agent_uid}\n# plow-agent-credential-expires-at: {}\n",
+        credential.token, credential.expires_at
     );
     match file.keep(&text) {
         Ok(path) => Ok(path),
         Err((file, err)) => {
-            let revoked = plow
-                .revoke_agent_credential(agent_uid, credential.id)
-                .await
-                .is_ok();
+            let revoked = plow.revoke_agent_credential(credential.id).await.is_ok();
             let file_removed = remove_reserved_file(&file, revoked);
             let message = format!(
                 "credential {} was minted but couldn't be saved to {}: {err}; inspect this credential before retrying",
@@ -924,42 +917,6 @@ impl CredentialFile {
     }
 }
 
-/// Non-secret lifecycle metadata kept beside an adopted credential's token.
-struct StoredCredential {
-    credential_id: u64,
-}
-
-impl StoredCredential {
-    fn read(path: &Path) -> Result<StoredCredential, Failure> {
-        let text = std::fs::read_to_string(path).map_err(|err| {
-            Failure::new(
-                code::bad_state,
-                format!("cannot read credential file {}: {err}", path.display()),
-            )
-        })?;
-        let field = |prefix: &str| {
-            text.lines()
-                .find_map(|line| line.strip_prefix(prefix))
-                .filter(|value| !value.is_empty())
-        };
-        let invalid = || {
-            Failure::new(
-                code::bad_state,
-                format!(
-                    "{} is not an adopted agent credential file; mint one with `latch agents adopt`",
-                    path.display()
-                ),
-            )
-        };
-        // Require the secret line too, without retaining or reporting it.
-        field("PLOW_AGENT_TOKEN=").ok_or_else(invalid)?;
-        let credential_id = field("# plow-agent-credential-id: ")
-            .and_then(|id| id.parse().ok())
-            .ok_or_else(invalid)?;
-        Ok(StoredCredential { credential_id })
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1030,31 +987,21 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let server = std::thread::spawn(move || {
-            let mut requests = Vec::new();
-            for body in [
-                format!(r#"{{"agent_uid":"{UID}","scopes":["latch:agent"]}}"#),
-                String::new(),
-            ] {
-                let mut socket = listener.accept().unwrap().0;
-                let mut reader = BufReader::new(socket.try_clone().unwrap());
-                let mut request = String::new();
-                loop {
-                    let mut line = String::new();
-                    reader.read_line(&mut line).unwrap();
-                    request.push_str(&line);
-                    if line == "\r\n" {
-                        break;
-                    }
+            let mut socket = listener.accept().unwrap().0;
+            let mut reader = BufReader::new(socket.try_clone().unwrap());
+            let mut request = String::new();
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                request.push_str(&line);
+                if line == "\r\n" {
+                    break;
                 }
-                write!(
-                    socket,
-                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
-                    body.len()
-                )
-                .unwrap();
-                requests.push(request.to_ascii_lowercase());
             }
-            requests
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                .unwrap();
+            request
         });
         let path = dir.path().join("failed-save");
         let mut file = CredentialFile::reserve(&path).unwrap();
@@ -1072,13 +1019,11 @@ mod tests {
         assert_eq!(error.details["revoked"], true);
         assert_eq!(error.details["file_removed"], true);
         assert!(!path.exists());
-        let requests = server.join().unwrap();
-        assert!(requests[0].starts_with("get /v1/api-keys/11 "));
-        assert!(requests[1].starts_with("delete /v1/api-keys/11 "));
+        let request = server.join().unwrap().to_ascii_lowercase();
+        assert!(request.starts_with("delete /v1/api-keys/11 "), "{request}");
         assert!(
-            requests
-                .iter()
-                .all(|request| request.contains("authorization: bearer owner-login"))
+            request.contains("authorization: bearer owner-login"),
+            "{request}"
         );
     }
 }

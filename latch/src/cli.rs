@@ -1225,7 +1225,7 @@ pub enum AgentsAction {
     /// Give Latch a credential for an agent that already exists
     ///
     /// Plow mints a separately expiring credential for the named agent. Its
-    /// secret, id and expiry go to a new private environment file; the secret
+    /// secret and expiry go to a new private environment file; the secret
     /// is never printed. Load that file into the agent's environment, then run
     /// `latch --state-dir NEW login` with a fresh state folder. Reusing another
     /// agent's state would reuse its peer key, which identifies that agent
@@ -1243,16 +1243,13 @@ pub enum AgentsAction {
         #[arg(long, value_name = "URL")]
         agent_api_url: Option<String>,
     },
-    /// Revoke an adopted agent's Latch credential
+    /// Revoke all adopted Latch credentials for an agent
     ///
-    /// Reads the credential id from its environment file, asks Plow to verify
-    /// it belongs to this agent, then revokes it. The agent remains active.
+    /// Plow lists the credentials belonging to this agent; every separately
+    /// minted latch:agent credential is revoked. The agent remains active.
     Revoke {
         /// The existing agent, by its uid or exact name
         agent: String,
-        /// The environment file written by `latch agents adopt`
-        #[arg(long, value_name = "FILE")]
-        credential_file: PathBuf,
     },
     /// Save the contact card of an agent's line, by the agent's uid or exact name
     ///

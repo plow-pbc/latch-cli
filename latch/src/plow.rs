@@ -251,6 +251,7 @@ pub struct AgentCredential {
 
 #[derive(Deserialize)]
 struct ListedAgentCredential {
+    id: u64,
     agent_uid: Option<String>,
     scopes: Vec<String>,
 }
@@ -651,24 +652,31 @@ impl Plow {
         agent_credential(response).await
     }
 
-    /// Revokes only the named agent's Latch credential, leaving its agent intact.
-    pub async fn revoke_agent_credential(
-        &self,
-        agent_uid: &str,
-        credential_id: u64,
-    ) -> Result<(), Failure> {
+    /// Revokes only the named credential, leaving its agent intact.
+    pub async fn revoke_agent_credential(&self, credential_id: u64) -> Result<(), Failure> {
         let url = format!("{}/v1/api-keys/{credential_id}", self.api_url);
-        let response = self.send(self.http.get(&url)).await?;
-        let credential: ListedAgentCredential = response.json().await.map_err(|_| bad_answer())?;
-        if credential.agent_uid.as_deref() != Some(agent_uid)
-            || credential.scopes != ["latch:agent"]
-        {
-            let message =
-                format!("credential {credential_id} is not {agent_uid}'s Latch credential");
-            return Err(Failure::new(code::bad_state, message));
-        }
         self.send(self.http.delete(url)).await?;
         Ok(())
+    }
+
+    /// Revokes every separately minted Latch credential for an agent.
+    pub async fn revoke_agent_credentials(&self, agent_uid: &str) -> Result<Vec<u64>, Failure> {
+        let url = format!("{}/v1/api-keys", self.api_url);
+        let response = self.send(self.http.get(url)).await?;
+        let credentials: Vec<ListedAgentCredential> =
+            response.json().await.map_err(|_| bad_answer())?;
+        let ids: Vec<u64> = credentials
+            .into_iter()
+            .filter(|credential| {
+                credential.agent_uid.as_deref() == Some(agent_uid)
+                    && credential.scopes == ["latch:agent"]
+            })
+            .map(|credential| credential.id)
+            .collect();
+        for id in &ids {
+            self.revoke_agent_credential(*id).await?;
+        }
+        Ok(ids)
     }
 
     /// Removes an agent; Plow answers with what it was.

@@ -2675,25 +2675,32 @@ impl LivePlow {
             {
                 let token = "latch-agent-11".to_string();
                 state.agent_credentials.push(token.clone());
+                state.agent_credentials.push("latch-agent-12".to_string());
                 (
                     201,
                     json!({"id": 11, "token": token, "scopes": ["latch:agent"],
                            "expires_at": "2026-12-21T12:00:00Z"}),
                 )
             }
-            ("GET", "/v1/api-keys/11") if kind == "device" => (
+            ("GET", "/v1/api-keys") if kind == "device" => (
                 200,
-                json!({"id": 11, "agent_uid": AGENT_UID, "scopes": ["latch:agent"]}),
-            ),
-            ("GET", "/v1/api-keys/99") if kind == "device" => (
-                200,
-                json!({"id": 99, "agent_uid": null, "scopes": ["*:*"]}),
+                json!([
+                    {"id": 7, "agent_uid": AGENT_UID, "scopes": ["chats:use"]},
+                    {"id": 11, "agent_uid": AGENT_UID, "scopes": ["latch:agent"]},
+                    {"id": 12, "agent_uid": AGENT_UID, "scopes": ["latch:agent"]}
+                ]),
             ),
             ("DELETE", path)
                 if kind == "device" && path == "/v1/api-keys/11" =>
             {
                 state.agent_credentials.retain(|token| token != "latch-agent-11");
                 (200, json!({"status": "revoked", "id": 11}))
+            }
+            ("DELETE", path)
+                if kind == "device" && path == "/v1/api-keys/12" =>
+            {
+                state.agent_credentials.retain(|token| token != "latch-agent-12");
+                (200, json!({"status": "revoked", "id": 12}))
             }
             // Which accounts are connected, as Plow says, and where it connects them.
             ("GET", "/v1/connectors") if kind == "device" => {
@@ -4703,16 +4710,13 @@ fn agents_are_shown_created_and_removed_by_their_owner() {
     // without changing the agent or its bridge credential.
     let credential_file = dir.path().join("research-agent.env");
     let credential_path = credential_file.to_str().unwrap();
-    let lifecycle = |action| {
-        run(&[
-            "agents",
-            action,
-            "Research bot",
-            "--credential-file",
-            credential_path,
-        ])
-    };
-    let (code, adopted, output) = lifecycle("adopt");
+    let (code, adopted, output) = run(&[
+        "agents",
+        "adopt",
+        "Research bot",
+        "--credential-file",
+        credential_path,
+    ]);
     assert_eq!(code, Some(0), "{adopted}");
     assert_eq!(adopted["credential_id"], 11);
     assert_eq!(adopted["credential_file"], credential_path);
@@ -4723,40 +4727,21 @@ fn agents_are_shown_created_and_removed_by_their_owner() {
         0o600
     );
     let saved = fs::read_to_string(&credential_file).unwrap();
-    fs::write(
-        &credential_file,
-        saved.replace(
-            "# plow-agent-credential-id: 11",
-            "# plow-agent-credential-id: 99",
-        ),
-    )
-    .unwrap();
-    let (code, refused, _) = lifecycle("revoke");
-    assert_eq!(
-        (code, &refused["error"]["code"]),
-        (Some(1), &json!("bad_state"))
-    );
-    let seen = plow.seen();
-    assert!(
-        seen.iter()
-            .any(|(line, _)| line.starts_with("GET /v1/api-keys/99 ")),
-        "{seen:?}"
-    );
-    assert!(
-        !seen
-            .iter()
-            .any(|(line, _)| line.starts_with("DELETE /v1/api-keys/99 ")),
-        "{seen:?}"
-    );
-    fs::write(&credential_file, &saved).unwrap();
-    let (code, revoked, _) = lifecycle("revoke");
+    let (code, revoked, _) = run(&["agents", "revoke", "Research bot"]);
     assert_eq!(code, Some(0), "{revoked}");
     assert_eq!(revoked["status"], "revoked");
+    assert_eq!(revoked["credential_ids"], json!([11, 12]));
     assert_eq!(fs::read_to_string(&credential_file).unwrap(), saved);
+    assert_eq!(
+        plow.state.lock().unwrap().agent_credentials,
+        ["agent-credential"]
+    );
     let seen = plow.seen();
     for request in [
         format!("POST /v1/latch/agents/{AGENT_UID}/credentials "),
+        "GET /v1/api-keys ".to_string(),
         "DELETE /v1/api-keys/11 ".to_string(),
+        "DELETE /v1/api-keys/12 ".to_string(),
     ] {
         assert!(
             seen.iter().any(|(line, _)| line.starts_with(&request)),
