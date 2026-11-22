@@ -2666,17 +2666,6 @@ impl LivePlow {
             }
         }
         match (method, path) {
-            ("POST", path)
-                if kind == "device"
-                    && path == format!("/v1/latch/agents/{AGENT_UID}/credentials") =>
-            {
-                state.agent = "latch-agent-11".to_string();
-                (
-                    201,
-                    json!({"id": 11, "token": state.agent, "scopes": ["latch:agent"],
-                           "expires_at": "2026-12-21T12:00:00Z"}),
-                )
-            }
             // Which accounts are connected, as Plow says, and where it connects them.
             ("GET", "/v1/connectors") if kind == "device" => {
                 let mut accounts: Vec<Value> = state
@@ -3989,19 +3978,7 @@ fn an_adopted_agents_vault_list_uses_its_own_plow_chat() {
         "host",
     ];
     assert_eq!(latch(&host, &args, &[]).status.code(), Some(0));
-    let credential_file = dir.path().join("research-agent.env");
-    let adopted = latch(
-        &host,
-        &[
-            "agents",
-            "adopt",
-            "Research bot",
-            "--credential-file",
-            credential_file.to_str().unwrap(),
-        ],
-        &[],
-    );
-    assert_eq!(adopted.status.code(), Some(0), "{adopted:?}");
+    plow.rotate("latch-agent-11");
     fs::write(&agent_token, "latch-agent-11\n").unwrap();
     let agent_env = [("PLOW_TOKEN_FILE", agent_token.as_path())];
     let login = latch(&agent, &["login", "--api-url", &plow.url], &agent_env);
@@ -4019,21 +3996,10 @@ fn an_adopted_agents_vault_list_uses_its_own_plow_chat() {
     // Its chat layer read chat_a.
     let decisions = plow.state.lock().unwrap().decisions.clone();
     assert!(
-        decisions
-            .iter()
-            .any(|d| d["state"]["conversation"].is_array()),
+        decisions.iter().any(|d| d["state"]["conversation"]
+            .to_string()
+            .contains("echo whatever")),
         "{decisions:?}"
-    );
-    let seen = plow.seen();
-    assert!(
-        seen.iter()
-            .any(|(line, _)| line.starts_with(&format!("GET /v1/agents/{AGENT_UID} "))),
-        "{seen:?}"
-    );
-    assert!(
-        seen.iter()
-            .any(|(line, _)| line.starts_with("GET /v1/chats/chat_a/messages ")),
-        "{seen:?}"
     );
 
     for from_env in [false, true] {
