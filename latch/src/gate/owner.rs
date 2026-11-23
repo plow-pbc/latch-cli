@@ -7,14 +7,13 @@
 //! The audit gets each change's revisions before and after, and the
 //! agent uid and Swarm account a mapping names; never the rule's text.
 
-use std::collections::HashMap;
 use std::path::Path;
 
 use serde_json::{Map, Value, json};
 
-use super::rules::{Change, Snapshot, Store, is_agent_uid, revision};
+use super::rules::{Change, Snapshot, Store, revision};
 use crate::failure::{Failure, code};
-use crate::plow::{NamedAgent, Peer, Plow};
+use crate::plow::Plow;
 use crate::serve::Done;
 
 /// What `show` always says.
@@ -138,8 +137,8 @@ fn changed(host: &str, change: &Change, audit: &mut Map<String, Value>) -> Value
     })
 }
 
-/// Maps the agent `agent` names (its name, its latch's name or its uid)
-/// to the Swarm account `swarm_id`.
+/// Maps the agent `agent` names (its name or its uid) to the Swarm
+/// account `swarm_id`.
 async fn map_agent(
     store: &Store,
     plow: &Plow,
@@ -151,103 +150,18 @@ async fn map_agent(
         let message = "map_agent needs an agent and a swarm_id".to_string();
         return Err(Failure::new(code::bad_arguments, message));
     };
-    let account = Account::read(plow).await?;
-    let uid = account.resolve(agent, true)?;
-    let before = store.map_agent(&uid, swarm_id)?;
-    audit.insert("agent_uid".into(), json!(uid));
+    let agent = crate::agents::resolve(plow, agent).await?;
+    let before = store.map_agent(&agent.uid, swarm_id)?;
+    audit.insert("agent_uid".into(), json!(agent.uid));
     audit.insert("swarm_id".into(), json!(swarm_id));
     audit.insert("before".into(), json!(before));
     Ok(json!({
         "host": host,
-        "agent_uid": uid,
-        "agent_name": account.name(&uid),
+        "agent_uid": agent.uid,
+        "agent_name": agent.name,
         "swarm_id": swarm_id,
         "replaced": before,
     }))
-}
-
-/// The account as `--agent` is resolved against: its agents, its peers, and
-/// the agent each agent peer belongs to.
-struct Account {
-    agents: Vec<NamedAgent>,
-    peers: Vec<Peer>,
-    /// Agent uids by peer key, for the agents' peers.
-    agent_of: HashMap<String, String>,
-}
-
-impl Account {
-    async fn read(plow: &Plow) -> Result<Account, Failure> {
-        let agents = plow.agents().await?;
-        let peers = plow.list_peers().await?;
-        let mut agent_of = HashMap::new();
-        for peer in peers.iter().filter(|peer| peer.kind == "agent") {
-            if let Some(uid) = plow.lookup(&peer.key).await?.agent_uid {
-                agent_of.insert(peer.key.clone(), uid);
-            }
-        }
-        Ok(Account {
-            agents,
-            peers,
-            agent_of,
-        })
-    }
-
-    /// The agent uid `name` stands for. With `any_uid`, a uid no live agent
-    /// has is taken as it is, so rules left by a deleted agent can be
-    /// shown and cleared.
-    fn resolve(&self, name: &str, any_uid: bool) -> Result<String, Failure> {
-        let by_agent = self
-            .agents
-            .iter()
-            .filter(|agent| agent.name == name || agent.uid == name)
-            .map(|agent| agent.uid.clone());
-        let by_peer = self
-            .peers
-            .iter()
-            .filter(|peer| peer.name == name)
-            .filter_map(|peer| self.agent_of.get(&peer.key).cloned());
-        let mut uids: Vec<String> = by_agent.chain(by_peer).collect();
-        uids.sort();
-        uids.dedup();
-        match uids.as_slice() {
-            [uid] => Ok(uid.clone()),
-            [] if self
-                .peers
-                .iter()
-                .any(|peer| peer.name == name && peer.kind == "device") =>
-            {
-                Err(Failure::new(
-                    code::not_an_agent,
-                    format!(
-                        "{name:?} is a device: `--agent` names an agent, and a device is judged on the rules for every agent"
-                    ),
-                ))
-            }
-            [] if any_uid && is_agent_uid(name) => Ok(name.to_string()),
-            [] => Err(Failure::new(
-                code::no_such_agent,
-                format!("no agent or agent's latch in this account is called {name:?}"),
-            )),
-            many => {
-                let mut refused = Failure::new(
-                    code::ambiguous_agent,
-                    format!(
-                        "{} agents go by {name:?}: {}; name one by its uid with --agent",
-                        many.len(),
-                        many.join(", ")
-                    ),
-                );
-                refused.details = json!({"agents": many});
-                Err(refused)
-            }
-        }
-    }
-
-    /// The agent's current name in Plow; `None` once it no longer exists.
-    fn name(&self, uid: &str) -> Option<String> {
-        let agent = self.agents.iter().find(|agent| agent.uid == uid)?;
-        Some(agent.name.clone())
-    }
 }
 
 #[cfg(test)]
@@ -262,61 +176,35 @@ mod tests {
 
     const ADA: &str = "0123456789abcdef0123456789abcdef";
     const BOB: &str = "fedcba9876543210fedcba9876543210";
-    const ADA_KEY: &str = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1";
 
-    /// What the synthetic Plow holds: agents by uid and name, and peers as
-    /// (key, kind, name, agent uid).
-    #[derive(Default)]
+    /// The synthetic Plow's agents, by uid and name.
     struct World {
         agents: Vec<(String, String)>,
-        peers: Vec<(String, String, String, Option<String>)>,
     }
 
     impl World {
         fn answer(&self, target: &str) -> (u16, Value) {
-            let peer = |(key, kind, name, _): &(String, String, String, Option<String>)| {
-                json!({"key": key, "kind": kind, "name": name, "relay_url": null,
-                       "last_seen_at": null, "online": false})
-            };
-            if target == "/v1/agents" {
-                let agents: Vec<Value> = self
-                    .agents
-                    .iter()
-                    .map(|(uid, name)| json!({"uid": uid, "name": name, "provider": "self"}))
-                    .collect();
-                return (200, json!(agents));
+            if target != "/v1/agents" {
+                return (404, json!({}));
             }
-            if target == "/v1/latch/peers" {
-                let peers: Vec<Value> = self.peers.iter().map(peer).collect();
-                return (200, json!({"data": peers}));
-            }
-            let key = target.strip_prefix("/v1/latch/peers/").unwrap_or_default();
-            match self.peers.iter().find(|(k, ..)| k == key) {
-                Some(found) => {
-                    let mut identity = peer(found);
-                    identity["agent_uid"] = json!(found.3);
-                    identity["permissions"] = json!({"call": true});
-                    (200, identity)
-                }
-                None => (404, json!({})),
-            }
+            let agents: Vec<Value> = self
+                .agents
+                .iter()
+                .map(|(uid, name)| {
+                    json!({"uid": uid, "name": name, "provider": "self_hosted",
+                           "line": {"uid": "line", "provider_key": "+14155550100", "display_name": null},
+                           "created_at": "2026-11-01T00:00:00Z", "status": null,
+                           "failure_code": null, "credential": null})
+                })
+                .collect();
+            (200, json!(agents))
         }
     }
 
-    /// The account the tests start from: Ada (also the name of the latch
-    /// she calls from, `ada-latch`), Bob, and the owner's mac.
+    /// The account the tests start from: Ada and Bob.
     fn world() -> World {
         World {
             agents: vec![(ADA.into(), "Ada".into()), (BOB.into(), "Bob".into())],
-            peers: vec![
-                (
-                    ADA_KEY.into(),
-                    "agent".into(),
-                    "ada-latch".into(),
-                    Some(ADA.into()),
-                ),
-                ("d".repeat(64), "device".into(), "mac".into(), None),
-            ],
         }
     }
 
@@ -469,9 +357,7 @@ mod tests {
     async fn the_owner_maps_an_agent_by_name_to_its_swarm_account() {
         let host = Host::new();
         let mapped = host
-            .owner(
-                json!({"command": "map_agent", "agent": "ada-latch", "swarm_id": "@ada:plow.co"}),
-            )
+            .owner(json!({"command": "map_agent", "agent": "Ada", "swarm_id": "@ada:plow.co"}))
             .await
             .unwrap();
         assert_eq!(

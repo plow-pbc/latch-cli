@@ -479,7 +479,7 @@ async fn an_agents_op_runs_only_on_a_cited_intent_and_every_call_is_judged() {
     let agent = t.caller("agent").await;
     let tidy = exec("echo tidied >> made");
     // Citing nothing, it is refused before any judge is asked.
-    let (answer, _) = t.cite(&agent, "exec", tidy.clone()).await;
+    let (answer, _) = t.call(&agent, "exec", tidy.clone()).await;
     let (exit, code, details) = refusal(&answer);
     assert_eq!((exit, code), (Exit::Denied, "gatekeeper_denied"));
     assert_eq!(details["reason"], "intent_required");

@@ -287,6 +287,9 @@ async fn allowed_only_when_covered_and_not_denied() {
         }
         let judgment = host.agent(Some(CITED), send_mail()).await;
         assert_eq!(reason(&judgment), expected, "{cited} / {rule:?}");
+        if let Err(failure) = &judgment.verdict {
+            assert!(failure.next.is_some(), "{expected}");
+        }
         assert_eq!(
             host.judge.state()["device_rule"].as_str().unwrap(),
             rule.unwrap_or("(none: nothing is always denied)")
@@ -365,6 +368,7 @@ async fn a_bad_citation_is_refused_in_code_before_any_model_is_asked() {
         let judgment = host.agent(intent, send_mail()).await;
         assert_eq!(reason(&judgment), expected);
         assert_eq!(judgment.gate["verdict"], expected);
+        assert!(judgment.verdict.unwrap_err().next.is_some(), "{expected}");
         assert_eq!(host.judge.calls(), 0, "{expected}");
     }
 }
@@ -575,6 +579,8 @@ async fn a_one_time_intent_is_spent_once_even_by_concurrent_calls() {
             host.judge.state()["already_done"].as_array().unwrap().len(),
             1
         );
+        // The judge reads when it was done, as it reads a message's time.
+        assert_eq!(host.judge.state()["already_done"][0]["when"], "0 min ago");
     }
 }
 
@@ -605,27 +611,9 @@ async fn a_login_is_filled_only_on_its_saved_sites_whoever_asks() {
     assert_eq!(reason(&host.owner(fill).await), "login_site_mismatch");
 }
 
-/// Every refusal says the one thing to do next; a citation's teaches how
-/// to cite.
-#[tokio::test]
-async fn every_refusal_teaches_its_next_step() {
-    let cases = [
-        ("intent_required", None, Ok(Some(asked("x")))),
-        ("bad_intent", Some("x"), Ok(Some(asked("x")))),
-        ("intent_not_found", Some(CITED), Ok(None)),
-        (
-            "not_covered",
-            Some(CITED),
-            Ok(Some(asked("Book a haircut"))),
-        ),
-        ("thread_unreadable", Some(CITED), Err("down".into())),
-    ];
-    for (expected, intent, read) in cases {
-        let host = host(Judge::new(by_words), read);
-        let failure = host.agent(intent, send_mail()).await.verdict.unwrap_err();
-        assert_eq!(failure.details["reason"], expected);
-        assert!(failure.next.is_some(), "{expected}");
-    }
+/// A citation's refusal teaches how to cite; the others say what to do.
+#[test]
+fn every_refusal_teaches_its_next_step() {
     let next = |reason: &str| next_step(reason);
     for citing in [
         "intent_required",

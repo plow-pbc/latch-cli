@@ -171,7 +171,8 @@ citation is judged only against the device rule, and with no rule runs
 without a model call.
 
 - **The device rule** is one plain-text deny-only list per host, in your
-  words (“Never touch my tax returns”). It grants nothing, and no message
+  words (“Never pay anyone or delete my photos”). It covers actions, never reads, which aren't
+  judged. It grants nothing, and no message
   overrides it. No rule file denies nothing; an empty one means you
   answered “nothing”; one that can't be read refuses every judged call,
   yours included (`device_rule_unreadable`, exit 3). `latch setup` and

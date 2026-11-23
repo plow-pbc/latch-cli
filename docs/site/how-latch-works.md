@@ -50,7 +50,8 @@ run.
   Earlier steps of a browser plan may already have acted.
 
 **The device rule** is plain words, one per host: what agents are always
-denied there (“Never touch my tax returns”). It grants nothing, and your
+denied there (“Never pay anyone or delete my photos”). It covers what agents do, not what they read
+(reads aren't judged). It grants nothing, and your
 own calls are judged only against it. Setup asks “Always deny:” once. Edit
 it on the host, or from another of your computers with `--host`:
 

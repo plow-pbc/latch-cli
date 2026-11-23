@@ -93,7 +93,7 @@ latch --version
 ```
 
 ```json
-{"version":"0.1.0 (151): commit …, protocol plow/latch/4"}
+{"version":"0.1.0 (151): commit …, protocol plow/latch/5"}
 ```
 
 ## 2. Log in and start the host
@@ -336,7 +336,8 @@ latch rules show
 ```
 
 `latch rules set TEXT` sets it without an editor, for example
-"Never touch my tax returns."
+"Never pay anyone or delete my photos." It covers what agents do, not what they read:
+reads aren't judged.
 
 A model judges each action, so this is not a guarantee. For a hard stop,
 start the host with `latch serve --deny-exec`: no agent can run programs

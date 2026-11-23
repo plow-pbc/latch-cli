@@ -129,7 +129,7 @@ latch browser open --host my-mac https://example.com
 
 | Command | For | What it does, and an example |
 |---|---|---|
-| `latch rules set` | Host | Replace the device rule, what agents are always denied, with TEXT or the text of --file F (- reads stdin); an empty text denies nothing. Owner only.<br>Never let agents near your taxes: `latch rules set 'Never touch my tax returns or anything in ~/Finance.'` |
+| `latch rules set` | Host | Replace the device rule, what agents are always denied, with TEXT or the text of --file F (- reads stdin); an empty text denies nothing. Owner only.<br>Never let agents pay anyone or delete your photos: `latch rules set 'Never pay anyone or delete anything in ~/Photos.'` |
 | `latch rules edit` | Host | Change the device rule in $EDITOR; saved only if it did not change meanwhile. Owner only. |
 | `latch rules clear` | Host | Remove the device rule: nothing is always denied. Owner only. |
 | `latch rules show` | Host | The device rule with its revision, and the agent map. Owner only. |

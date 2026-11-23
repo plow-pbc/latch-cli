@@ -1258,11 +1258,11 @@ const ENTRIES: &[Entry] = &[
         connector: None,
         examples: &[
             ex(
-                "Never let agents near your taxes",
+                "Never let agents pay anyone or delete your photos",
                 &[
                     "rules",
                     "set",
-                    "Never touch my tax returns or anything in ~/Finance.",
+                    "Never pay anyone or delete anything in ~/Photos.",
                 ],
             ),
             ex(

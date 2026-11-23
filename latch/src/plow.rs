@@ -145,13 +145,6 @@ pub struct ConnectedAccount {
     pub account: String,
 }
 
-/// One of the account's agents, from `GET /v1/agents`, by its uid and name.
-#[derive(Deserialize, Debug, Clone)]
-pub struct NamedAgent {
-    pub uid: String,
-    pub name: String,
-}
-
 /// One of the account's agents, from `GET /v1/agents`, in full.
 #[derive(Deserialize, Debug, Clone)]
 pub struct ListedAgent {
@@ -512,11 +505,6 @@ impl Plow {
         let url = format!("{}/v1/connectors", self.api_url);
         let response = self.send(self.http.get(url)).await?;
         response.json().await.map_err(|_| bad_answer())
-    }
-
-    /// Every live agent in the account. Owner logins only.
-    pub async fn agents(&self) -> Result<Vec<NamedAgent>, Failure> {
-        self.agent_list().await
     }
 
     /// The kinds of agent Plow can run, its own `self_hosted` among them.

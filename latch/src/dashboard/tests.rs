@@ -117,12 +117,9 @@ fn busy() -> Dashboard {
         },
         None,
     );
-    let gate = json!({"caller": "agent", "rule": "allowed when within instructions >= 0.50",
-        "verdict": "not_covered",
-        "p": {"COVERED": 0.21, "NOT_COVERED": 0.76, "FORBIDDEN": 0.03},
-        "model": "jev-1.14", "source": "chat_and_rules",
-        "rules": {"host": "aa".repeat(32), "agent": "bb".repeat(32)},
-        "chat": "chat-7", "window": {"first": "m1", "last": "m9", "count": 9}});
+    let gate = json!({"caller": "agent", "class": "intent", "verdict": "not_covered",
+        "p": {"covered": 0.21, "denied": 0.03}, "model": "jev-1.14",
+        "device_rule": "aaaaaaaaaaaaaaaa", "intent": "swarm:!dm:plow.co/$ask", "already_done": 2});
     run(
         &dashboard,
         agent(),
@@ -457,16 +454,19 @@ fn the_decision_tab_shows_the_judgment_as_recorded_and_no_more() {
     let decision = screen(&view, 80, 40).join("\n");
     assert!(decision.contains("[Decision]"));
     assert!(
-        decision.contains("Judge P: within instructions 0.21 | not covered 0.76 | forbidden 0.03"),
+        decision.contains(
+            "Judge P: covered by the cited message 0.21 | denied by the device rule 0.03"
+        ),
         "{decision}"
     );
-    assert!(decision.contains("Decision rule: allowed when within instructions >= 0.50"));
     assert!(
-        decision
-            .contains("Rules used: this host + this agent | revisions: aaaaaaaaaaaa, bbbbbbbbbbbb")
+        decision.contains("Cited: swarm:!dm:plow.co/$ask; done before on it: 2"),
+        "{decision}"
     );
-    assert!(decision.contains("Matched rule: not provided by the judge"));
-    assert!(decision.contains("Chat: chat-7; messages m1 to m9 (9)"));
+    assert!(
+        decision.contains("Device rule: revision aaaaaaaaaaaaaaaa"),
+        "{decision}"
+    );
     // The whole audit id, wrapped where it must be, never cut.
     let id = "27ff057f18f54d04a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718";
     assert!(decision.replace('\n', "").contains(id), "{decision}");
@@ -930,8 +930,7 @@ fn a_browser_call_shows_the_judgment_its_own_record_holds() {
         "plan": {"steps": [{"literal": {"op": "click", "ref": "e7"},
                             "check": {"kind": "path", "value": "/nowhere.html"}}]}});
     let audit = json!({"command": "do", "session": "x", "origin": "http://127.0.0.1:5", "path": "/search.html",
-        "gate": {"caller": "owner_device", "rule": "allowed when within instructions >= 0.50",
-                 "p": {"COVERED": 0.9, "NOT_COVERED": 0.05, "FORBIDDEN": 0.05}},
+        "gate": {"caller": "owner_device", "class": "intent", "p": {"covered": null, "denied": 0.05}},
         "step_outcomes": [{"step": 1, "outcome": "stopped", "code": "check_not_met"}],
         "stop": {"step": 1, "code": "check_not_met"}});
     let stopped = Response::Error {
@@ -954,7 +953,7 @@ fn a_browser_call_shows_the_judgment_its_own_record_holds() {
     view.key(Key::Tab);
     let decision = screen(&view, 100, 30).join("\n");
     assert!(
-        decision.contains("Judge P: within instructions 0.90"),
+        decision.contains("denied by the device rule 0.05"),
         "{decision}"
     );
 }
@@ -1344,6 +1343,14 @@ fn a_refilled_call_is_at_the_time_it_began() {
     record.started = None;
     let (_, at, _) = recorded(&record, "host-key").unwrap();
     assert_eq!(at.to_string(), "2026-10-22T14:00:02Z");
+}
+
+/// A gate record is the judgment written before its operation ran; the
+/// operation's own record is the call, so a restart shows no extra one.
+#[test]
+fn a_gate_record_is_no_call_of_its_own() {
+    let record = crate::audit::record("agent-key", Some("a".repeat(32)), "gate", "allow", "judged");
+    assert!(recorded(&record, "host-key").is_none());
 }
 
 #[test]

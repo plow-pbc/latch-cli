@@ -370,7 +370,7 @@ impl Gatekeeper {
             .ask(&asked, now.timestamp(), &clock, action, gate)
             .await?;
         verdict(p)?;
-        held.record(&now.timestamp().to_string(), action.get())
+        held.record(now.timestamp(), action.get())
             .map_err(|why| unavailable("ledger_unwritable", &why))
     }
 
@@ -702,12 +702,7 @@ fn state<'a>(
         state.already_done = Some(
             done.iter()
                 .map(|d| DoneShown {
-                    when: d
-                        .at
-                        .parse::<i64>()
-                        .ok()
-                        .and_then(|s| Timestamp::from_second(s).ok())
-                        .map_or_else(|| d.at.clone(), |at| ago(now, at)),
+                    when: ago(now, d.at),
                     action: &d.action,
                 })
                 .collect(),

@@ -143,7 +143,7 @@ latch agents map my-agent @my-agent:plow.co
 ```
 
 Each host also keeps a device rule: what agents are always denied there,
-whatever a message says (“Never touch my tax returns”). See
+whatever a message says (“Never pay anyone or delete my photos”); reads aren't judged. See
 [How Latch works](how-latch-works.md#the-gatekeeper-and-the-device-rule).
 
 ## Built for agents

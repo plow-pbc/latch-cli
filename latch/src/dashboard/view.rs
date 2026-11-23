@@ -589,61 +589,33 @@ fn decision(task: &Task, call: &Call) -> Vec<String> {
     let p = &gate["p"];
     if p.is_object() {
         lines.push(format!(
-            "Judge P: within instructions {} | not covered {} | forbidden {}",
-            score(&p["COVERED"]),
-            score(&p["NOT_COVERED"]),
-            score(&p["FORBIDDEN"])
+            "Judge P: covered by the cited message {} | denied by the device rule {}",
+            score(&p["covered"]),
+            score(&p["denied"])
         ));
+    } else if gate["class"] == "free" {
+        lines.push("A read: it runs unjudged.".to_string());
     } else {
-        lines.push("Judge P: no answer from the judge".to_string());
+        lines.push("Judge P: not asked, or no answer from the judge".to_string());
     }
-    lines.push(format!(
-        "Decision rule: {}",
-        gate["rule"].as_str().unwrap_or("not recorded")
-    ));
+    if let Some(intent) = gate["intent"].as_str() {
+        lines.push(format!(
+            "Cited: {intent}; done before on it: {}; message text not kept here",
+            gate["already_done"].as_u64().unwrap_or(0)
+        ));
+    }
     if let Some(model) = gate["model"].as_str() {
         lines.push(format!("Model: {model}"));
     }
     if let Some(reason) = gate["model_failed"].as_str() {
         lines.push(format!("Judge unavailable: {reason}"));
     }
-    if let Some(source) = gate["source"].as_str() {
-        lines.push(format!("Judged on: {}", source.replace('_', " ")));
-    }
-    let rules = &gate["rules"];
-    if rules.is_object() {
-        let scope: Vec<&str> = [("host", "this host"), ("agent", "this agent")]
-            .iter()
-            .filter(|(key, _)| rules[*key].is_string())
-            .map(|(_, name)| *name)
-            .collect();
-        let revisions: Vec<String> = ["host", "agent"]
-            .iter()
-            .filter_map(|key| rules[*key].as_str())
-            .map(|hash| hash.chars().take(12).collect())
-            .collect();
-        lines.push(format!(
-            "Rules used: {} | revisions: {}",
-            scope.join(" + "),
-            revisions.join(", ")
-        ));
-        lines.push("Matched rule: not provided by the judge".to_string());
-        lines.push(
-            "Rule pointer: `latch rules show` has the current rules; they may differ from these revisions"
-                .to_string(),
-        );
-    } else {
-        lines.push("Rules used: none".to_string());
-    }
-    if let Some(chat) = gate["chat"].as_str() {
-        let window = &gate["window"];
-        lines.push(format!(
-            "Chat: {chat}; messages {} to {} ({}); message text not kept here",
-            window["first"].as_str().unwrap_or("?"),
-            window["last"].as_str().unwrap_or("?"),
-            window["count"].as_u64().unwrap_or(0)
-        ));
-    }
+    lines.push(match gate["device_rule"].as_str() {
+        Some(revision) => {
+            format!("Device rule: revision {revision}; `latch rules show` has the current one")
+        }
+        None => "Device rule: none".to_string(),
+    });
     lines.push("Scores are the model's outputs, not explanations.".to_string());
     lines.push(String::new());
     lines.push(format!(

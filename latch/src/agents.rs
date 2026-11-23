@@ -291,7 +291,7 @@ fn agent_shown(agent: ListedAgent, standing: Option<Standing>) -> AgentShown {
 
 /// The agent `named` names: a 32-hex uid is that agent's; anything else is
 /// an exact name, which must be one agent's.
-async fn resolve(plow: &Plow, named: &str) -> Result<ListedAgent, Failure> {
+pub(crate) async fn resolve(plow: &Plow, named: &str) -> Result<ListedAgent, Failure> {
     let agents: Vec<ListedAgent> = plow.agent_list().await?;
     let is_uid = named.len() == 32 && named.bytes().all(|b| b.is_ascii_hexdigit());
     let found = agents

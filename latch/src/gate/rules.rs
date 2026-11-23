@@ -2,7 +2,8 @@
 //! changed only by the owner's own devices (`owner.rs`).
 //!
 //! The device rule is one plain text in the owner's words naming what is
-//! always denied on this host ("Never touch my tax returns"). It grants
+//! always denied on this host ("Never pay anyone"): what agents do, never
+//! what they read, as reads are not judged. It grants
 //! nothing: permission comes only from the owner's message an agent cites.
 //! No file denies nothing; a file that can't be read refuses every judged
 //! call. It is read at every judgment, so an edit applies at once.

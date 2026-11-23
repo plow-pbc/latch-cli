@@ -50,11 +50,12 @@ pub fn run(state_dir: Option<PathBuf>) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Setup's device-rule step alone, as an update runs it: asked only when
-/// the owner never answered, and only on the owner's own login.
-pub fn device_rule(state_dir: Option<PathBuf>) {
+/// Setup's device-rule step alone, as an update runs it with `latch`, the
+/// program it just replaced: asked only when the owner never answered, and
+/// only on the owner's own login.
+pub fn device_rule(latch: PathBuf, state_dir: Option<PathBuf>) {
     let mut setup = Setup {
-        latch: latch_program(),
+        latch,
         state_dir,
         input: None,
     };
@@ -63,7 +64,7 @@ pub fn device_rule(state_dir: Option<PathBuf>) {
 
 /// The latch this setup runs its commands with: itself.
 /// `LATCH_SETUP_LATCH` names another, for tests.
-fn latch_program() -> PathBuf {
+pub fn latch_program() -> PathBuf {
     std::env::var_os("LATCH_SETUP_LATCH")
         .map(PathBuf::from)
         .or_else(|| std::env::current_exe().ok())
@@ -401,7 +402,7 @@ impl Setup {
             return;
         }
         say(
-            "Your agents act only on a message of yours they cite. Name anything they must never do on this machine, whatever a message says (such as \"Never touch my tax returns\"), or leave it blank for nothing.",
+            "Your agents act only on a message of yours they cite. Name anything they must never do on this machine, whatever a message says (such as \"Never pay anyone or delete my photos\"), or leave it blank for nothing. Reads are never judged, so this covers what they do, not what they read.",
         );
         let answer = self.input().answer("Always deny: ");
         let args = ["rules", "set", "--revision", "none", answer.as_str()];

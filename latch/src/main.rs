@@ -406,11 +406,14 @@ async fn run(
             command: cli::SettingsCommand::Set { keep_awake },
         }) => json(pretty, settings::set(&state, keep_awake == cli::OnOff::On)?),
         Command::Update(args) => {
+            // Where latch is now, taken before the update replaces it: on
+            // Linux the running program's own path then names a deleted file.
+            let program = setup::latch_program();
             let answer = update::run(&state, args).await?;
             // An updated latch asks what is always denied, once, at a
-            // terminal: from its own build, the one just installed.
+            // terminal: from its own build, the one just installed there.
             if answer["updated"] == true && term::interactive() {
-                setup::device_rule(Some(state.path.clone()));
+                setup::device_rule(program, Some(state.path.clone()));
             }
             json(pretty, answer)
         }

@@ -155,6 +155,11 @@ pub fn recorded(
     record: &crate::audit::Record,
     host: &str,
 ) -> Option<(Caller, Timestamp, Finished)> {
+    // A gate record is the judgment written before its operation runs: the
+    // operation's own record is the task.
+    if record.op == "gate" {
+        return None;
+    }
     let at = record
         .started
         .as_ref()

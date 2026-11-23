@@ -29,7 +29,7 @@ const KEPT_ACTION: usize = 2 * 1024;
 /// One allowed action.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Done {
-    pub at: String,
+    pub at: jiff::Timestamp,
     pub action: String,
 }
 
@@ -84,7 +84,7 @@ impl Held {
     }
 
     /// Records `action`, allowed `at`.
-    pub fn record(&self, at: &str, action: &str) -> Result<(), String> {
+    pub fn record(&self, at: jiff::Timestamp, action: &str) -> Result<(), String> {
         let failed = |err: std::io::Error| format!("{}: {err}", self.path.display());
         let dir = self.path.parent().expect("a ledger file has a folder");
         fs::DirBuilder::new()
@@ -97,7 +97,7 @@ impl Held {
             cut -= 1;
         }
         let done = Done {
-            at: at.to_string(),
+            at,
             action: action[..cut].to_string(),
         };
         let mut line = serde_json::to_string(&done).expect("a ledger entry serializes");
