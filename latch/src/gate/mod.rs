@@ -380,6 +380,12 @@ impl Gatekeeper {
         let owner = matches!(caller, Caller::Owner | Caller::OwnerOnHost);
         let mut gate = json!({"caller": caller.kind(), "rule": rule(owner)});
         let verdict = self.decide(caller, action, &mut gate).await;
+        // For the record only, never the verdict: the age of the owner's
+        // newest message read, and whether it was forwarded, which Plow's
+        // messages do not say.
+        let record = gate.as_object_mut().expect("the gate record is an object");
+        record.entry("owner_newest_s").or_insert(json!("unknown"));
+        record.insert("forwarded".into(), json!("unknown"));
         gate["verdict"] = json!(match &verdict {
             Ok(()) => "allow",
             Err(failure) => failure.details["reason"].as_str().unwrap_or(&failure.code),
@@ -574,13 +580,13 @@ impl Gatekeeper {
         // The record: the chat shown, each layer's call, and their total.
         let mut layers = json!({"rules": rules_call});
         if by_chat.is_some() {
-            for field in ["chat", "window", "owner_messages"] {
+            for field in ["chat", "window", "owner_messages", "owner_newest_s"] {
                 if let Some(value) = chat_call.as_object_mut().and_then(|c| c.remove(field)) {
                     gate[field] = value;
                 }
             }
             layers["chat"] = chat_call;
-            for field in ["chat", "window", "owner_messages"] {
+            for field in ["chat", "window", "owner_messages", "owner_newest_s"] {
                 will_call.as_object_mut().map(|c| c.remove(field));
             }
             layers["will"] = will_call;
@@ -693,6 +699,9 @@ impl Gatekeeper {
                 "count": window.len(),
                 "truncated": c.more_before || shown < c.messages.len(),
             });
+            if let Some(newest) = window.iter().rev().find(|m| m.owner) {
+                call["owner_newest_s"] = json!((now.as_second() - newest.at.as_second()).max(0));
+            }
             call["owner_messages"] = json!(
                 window
                     .iter()

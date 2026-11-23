@@ -22,6 +22,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 
+use super::core::audited;
 use crate::failure::{Failure, code};
 
 /// The owner's settings file in the state directory.
@@ -76,7 +77,7 @@ pub fn requested(url: &str, local: bool) -> Result<(), Failure> {
         return Ok(());
     }
     let (Some(host), Some(port)) = (parsed.host_str(), parsed.port_or_known_default()) else {
-        return Err(refused(format!("{url} names no host")));
+        return Err(refused(format!("{} names no host", audited(url))));
     };
     let host = host.trim_start_matches('[').trim_end_matches(']');
     match (host, port).to_socket_addrs() {
@@ -94,7 +95,7 @@ fn web(url: &str) -> Result<Option<url::Url>, Failure> {
     if url == "about:blank" {
         return Ok(None);
     }
-    let parsed = url::Url::parse(url).map_err(|err| refused(format!("{url}: {err}")))?;
+    let parsed = url::Url::parse(url).map_err(|err| refused(format!("{}: {err}", audited(url))))?;
     if !matches!(parsed.scheme(), "http" | "https") {
         return Err(refused(format!(
             "this host's browser goes only to http and https addresses, not {}:",
@@ -117,9 +118,9 @@ pub fn shown(url: &str) -> bool {
 
 /// What a tab that is not `shown` answers; the tab is left blank.
 pub fn not_shown(url: &str) -> Failure {
-    let scheme = url.split(':').next().unwrap_or_default();
     refused(format!(
-        "the tab went to a {scheme}: address, which this host's browser does not show; it is blank now"
+        "the tab went to a {} address, which this host's browser does not show; it is blank now",
+        audited(url)
     ))
 }
 
@@ -401,6 +402,18 @@ fn splice(client: TcpStream, site: TcpStream) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A refused address's message never repeats its userinfo or path.
+    #[test]
+    fn a_refused_address_never_repeats_its_userinfo_or_path() {
+        for url in [
+            "https://who-sentinel:pw-sentinel@/path-sentinel",
+            "https://who-sentinel:pw-sentinel@[bad/path-sentinel",
+        ] {
+            let message = requested(url, false).unwrap_err().message;
+            assert!(!message.contains("sentinel"), "{message}");
+        }
+    }
     use crate::failure::Exit;
 
     /// A site on 127.0.0.1 that answers every request with what it was

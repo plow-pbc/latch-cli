@@ -1391,7 +1391,7 @@ async fn serve_request(
             log(&format!(
                 "{op}: {caller}: {decision}: {} {}",
                 done.outcome,
-                crate::redact::shown(op, &done.audit_args)
+                crate::redact::logged(op, &done.audit_args)
             ));
             let judged = judgment.map(|judgment| judgment.gate);
             let mut record = audit::record(

@@ -20,8 +20,8 @@
 //! The audit record of each call holds what the worker reports (tab,
 //! origin and path, snapshot, target ref and role, how it was resolved),
 //! never page text or field values: `type` records the text's length and
-//! sha256. What the gatekeeper judged is kept whole (`judged.rs`), so a
-//! judged plan's typed values are in the record as written.
+//! sha256. What the gatekeeper judged is kept without its titles, URL
+//! paths or a plan's own words (`judged.rs`).
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -175,6 +175,8 @@ pub(super) struct Entry {
     /// The card numbers and identity secrets filled in this session: what
     /// the gatekeeper is shown masked.
     pub(super) masks: std::sync::Mutex<Vec<super::shown::Filled>>,
+    /// The gatekeeper's judgments in this session, for each one's context.
+    pub(super) attempts: judged::Attempts,
     /// The profile it runs on, until its browser has closed.
     profile: std::sync::Mutex<Option<InUse>>,
 }
@@ -441,6 +443,7 @@ impl Browsers {
             confirmations: Default::default(),
             handing: Default::default(),
             judged_sites: Default::default(),
+            attempts: Default::default(),
             masks: Default::default(),
             profile: std::sync::Mutex::new(Some(in_use)),
         });
@@ -720,6 +723,7 @@ pub(super) async fn fill(
             caller.gate,
             judged::fill(browsers, &args, site),
             &entry.filled(),
+            Some(&entry.attempts),
             audit,
         )
         .await?;
@@ -822,7 +826,14 @@ async fn answer(
     if caller.gate.is_some()
         && let Some(action) = judged_action(browsers, &entry, command, args).await?
     {
-        judged::judge(caller.gate, action, &entry.filled(), audit).await?;
+        judged::judge(
+            caller.gate,
+            action,
+            &entry.filled(),
+            Some(&entry.attempts),
+            audit,
+        )
+        .await?;
     }
     let result = match command {
         "close" => browsers.close(name, key).await.map(|closed| (closed, None)),
@@ -969,7 +980,7 @@ async fn open(
     }
     if let Some(url) = url {
         let action = judged::open_site(browsers, url);
-        judged::judge(caller.gate, action, &[], audit).await?;
+        judged::judge(caller.gate, action, &[], None, audit).await?;
     }
     // Judged first, as a named engine's own check comes only at its launch.
     let engine = match named {

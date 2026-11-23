@@ -12,6 +12,8 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use super::core::audited;
+
 /// The most steps one plan holds.
 pub const MAX_STEPS: usize = 10;
 /// A plan's deadline in seconds: by default, and at most.
@@ -244,9 +246,9 @@ impl Step {
                 }
                 for url in self.urls.values() {
                     let parsed = url::Url::parse(url)
-                        .map_err(|_| format!("{url:?} is not an absolute URL"))?;
+                        .map_err(|_| format!("{} is not an absolute URL", audited(url)))?;
                     if !matches!(parsed.scheme(), "http" | "https") {
-                        return Err(format!("{url:?} is not an http or https URL"));
+                        return Err(format!("{} is not an http or https URL", audited(url)));
                     }
                 }
                 Ok(())
