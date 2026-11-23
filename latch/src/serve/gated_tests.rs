@@ -687,11 +687,18 @@ async fn a_get_reads_any_readable_path_in_home_and_never_a_hidden_one() {
         .await;
     assert!(matches!(answer, Response::Ok(_)), "{answer:?}");
     assert!(bytes.starts_with(b"Host example"), "{bytes:?}");
-    // The host's state, and a link into it, are refused.
+    // The host's state, a link into it, and the owner's Swarm sign-in are
+    // refused.
     std::fs::write(t.state.join("key"), "made-up key").unwrap();
     std::os::unix::fs::symlink(t.state.join("key"), home.join("key-link")).unwrap();
+    std::fs::create_dir_all(home.join(".swarm/owner/sam")).unwrap();
+    std::fs::write(home.join(".swarm/owner/sam/backup_key"), "made-up key").unwrap();
     let key = t.state.join("key");
-    for hidden in [key.to_str().unwrap(), "~/key-link"] {
+    for hidden in [
+        key.to_str().unwrap(),
+        "~/key-link",
+        "~/.swarm/owner/sam/backup_key",
+    ] {
         let (answer, _) = t
             .call(&agent, "file_get", json!({"remote_path": hidden}))
             .await;
@@ -772,6 +779,12 @@ async fn exec_reads_home_but_writes_only_declarations_and_caches() {
     std::fs::write(home.join(".ssh/config"), "readable-dotfile").unwrap();
     std::fs::create_dir(home.join(".latch")).unwrap();
     std::fs::write(home.join(".latch/private"), "hidden-private-value").unwrap();
+    std::fs::create_dir_all(home.join(".swarm/owner/sam")).unwrap();
+    std::fs::write(
+        home.join(".swarm/owner/sam/credential.json"),
+        "hidden-swarm-value",
+    )
+    .unwrap();
     std::fs::create_dir(t.area.join("peer")).unwrap();
     std::fs::write(
         t.area.join("peer/latch.json"),
@@ -792,6 +805,7 @@ async fn exec_reads_home_but_writes_only_declarations_and_caches() {
     let script = r#"
         cat .ssh/config
         cat .latch/private 2>/dev/null
+        cat .swarm/owner/sam/credential.json 2>/dev/null
         cat area/peer/private 2>/dev/null
         echo bad > undeclared 2>/dev/null
         for p in .cache .npm .cargo/registry .cargo/git go/pkg/mod; do
@@ -817,6 +831,12 @@ async fn exec_reads_home_but_writes_only_declarations_and_caches() {
             .as_str()
             .unwrap()
             .contains("hidden-private-value")
+    );
+    assert!(
+        !result["stdout"]
+            .as_str()
+            .unwrap()
+            .contains("hidden-swarm-value")
     );
     assert!(
         result["stdout"]
