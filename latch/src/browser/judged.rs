@@ -139,11 +139,16 @@ pub(super) async fn judge(
 }
 
 /// The audit's copy of a judged action: no plan steps or facts, no
-/// titles, and its URLs cut to their origin.
+/// titles, none of a confirmed step's page text, and its URLs cut to their
+/// origin.
 fn audited(mut value: Value) -> Value {
     let action = value.as_object_mut().expect("an action is an object");
-    action.remove("steps");
-    action.remove("facts");
+    for words in ["steps", "facts", "around", "fields"] {
+        action.remove(words);
+    }
+    if action["kind"] == "confirmed_step" {
+        action.remove("action");
+    }
     for (key, shown) in action.iter_mut() {
         let titled = match key.as_str() {
             "page" | "item" => std::slice::from_mut(shown),
@@ -496,6 +501,14 @@ mod tests {
             audited(judged),
             json!({"kind": "browser_plan", "page": {"url": "https://shop.example"},
                 "sites": ["shop.example"], "may_fill": [{"kind": "card"}]})
+        );
+        let confirmed = json!({"kind": "confirmed_step",
+            "page": {"url": "https://mail.example/inbox/7", "title": "Ada"},
+            "action": "click \"Send\", typing \"wire it\"", "around": ["Hi Ada"],
+            "fields": ["wire the deposit today"]});
+        assert_eq!(
+            audited(confirmed),
+            json!({"kind": "confirmed_step", "page": {"url": "https://mail.example"}})
         );
     }
 
