@@ -580,10 +580,17 @@ fn verdict(p: P) -> Result<(), Failure> {
             "The owner's device rule always denies this.".into(),
         ));
     }
-    if p.covered.is_some_and(|p| p < YES_P) {
-        // A judge whose `why` says it was asked contradicts its own no: the
-        // refusal then says only that it isn't covered.
-        let why = p.why.filter(|(why, _)| *why != "asked");
+    // A `why` naming what didn't match refuses even past the line: either
+    // answer saying no is a no. One saying it was asked, or that it's
+    // unclear, leaves `covered` to decide, and a refusal then says only that.
+    let mismatch = p
+        .why
+        .filter(|(why, _)| !matches!(*why, "asked" | "unclear"));
+    let unclear = p.why.filter(|(why, _)| *why == "unclear");
+    let refused =
+        p.covered.is_some_and(|c| c < YES_P) || (p.covered.is_some() && mismatch.is_some());
+    if refused {
+        let why = mismatch.or(unclear);
         let line = why.map_or("The owner's cited message, as their later messages leave it, does not ask for this action as it is now.", |(_, line)| line);
         let mut failure = denied("not_covered", line.into());
         if let Some((why, _)) = why {

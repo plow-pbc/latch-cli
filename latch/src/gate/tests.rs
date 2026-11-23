@@ -659,31 +659,44 @@ async fn a_one_time_intent_is_spent_once_even_by_concurrent_calls() {
 
 /// A refusal for not being covered says, in one line, what didn't match,
 /// and the audit keeps which; a judge whose reason contradicts its no
-/// leaves the refusal saying only that it isn't covered.
+/// leaves the refusal saying only that it isn't covered, and one whose
+/// reason names a mismatch refuses even when `covered` says yes.
 #[tokio::test]
 async fn not_covered_says_what_did_not_match() {
-    let refusal = |why: &'static str| async move {
-        let mut judge = Judge::new(|_| Some((0.0, 0.1)));
+    let judged = |why: &'static str, covered: f64| async move {
+        let mut judge = Judge::new(if covered < YES_P {
+            |_| Some((0.0, 0.1))
+        } else {
+            |_| Some((0.0, 0.9))
+        });
         Arc::get_mut(&mut judge).unwrap().why = why;
         let host = host(judge, Ok(Some(asked("Send Bob the invoice for March"))));
         let judgment = host.agent(Some(CITED), send_mail()).await;
         assert_eq!(judgment.gate["why"], why);
-        judgment.verdict.unwrap_err()
+        judgment.verdict
     };
-    let beyond = refusal("goes_beyond").await;
+    let beyond = judged("goes_beyond", 0.1).await.unwrap_err();
     assert_eq!(beyond.details["why"], "goes_beyond");
     assert!(
         beyond.message.contains("recipient, contents, amount"),
         "{}",
         beyond.message
     );
-    let asked = refusal("asked").await;
+    let asked = judged("asked", 0.1).await.unwrap_err();
     assert_eq!(asked.details.get("why"), None);
     assert!(
         asked.message.contains("does not ask for this action"),
         "{}",
         asked.message
     );
+    // Past the line, a why naming a mismatch still refuses; asked or
+    // unclear leaves it allowed.
+    for why in ["other_task", "goes_beyond", "used_up", "withdrawn"] {
+        assert_eq!(judged(why, 0.9).await.unwrap_err().details["why"], why);
+    }
+    for why in ["asked", "unclear"] {
+        assert!(judged(why, 0.9).await.is_ok(), "{why}");
+    }
 }
 
 #[tokio::test]
