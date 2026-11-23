@@ -67,6 +67,7 @@ latch browser open --host my-mac https://example.com
 |---|---|---|
 | `latch agents` | Host | List your agents, with their lines and Plow status. Owner only. |
 | `latch agents show` | Host | Show one agent, by its uid or its exact name. Owner only.<br>One agent, by its name: `latch agents show Scout` |
+| `latch agents map` | Host | Map an agent to its Swarm account, on a host. Owner only.<br>Take Scout's citations only from @scout:plow.co's 1:1 rooms with you: `latch agents map Scout @scout:plow.co` |
 | `latch agents catalog` | Host | The kinds of cloud agent Plow can run, for `agents new --cloud`. Owner only. |
 | `latch agents start-by-text` | Host | Show how to start a cloud agent by texting Plow. Owner only. |
 | `latch agents lines` | Host | Plow's phone lines, and which are free for a new agent. Owner only. |
@@ -128,11 +129,10 @@ latch browser open --host my-mac https://example.com
 
 | Command | For | What it does, and an example |
 |---|---|---|
-| `latch rules set` | Host | Replace the rules with TEXT, with the text of --file F (- reads stdin), or with a preset's. Owner only.<br>Let agents read mail, never send it: `latch rules set 'Agents may search my mail but never send any.'` |
-| `latch rules edit` | Host | Change the rules in $EDITOR; saved only if they did not change meanwhile. Owner only.<br>Edit one agent's rules: `latch rules edit --agent ada` |
-| `latch rules clear` | Host | Remove the rules. Owner only. |
-| `latch rules show` | Host | The rules for every agent and each agent's own, with their revisions. Owner only. |
-| `latch rules try` | Host | Preview the gatekeeper's verdict on a request, without running it. Owner only.<br>Would Penny be allowed to build the site? `latch rules try --agent Penny -- exec --write ~/site -- npm run build` |
+| `latch rules set` | Host | Replace the device rule, what agents are always denied, with TEXT or the text of --file F (- reads stdin); an empty text denies nothing. Owner only.<br>Never let agents pay anyone or delete your photos: `latch rules set 'Never pay anyone or delete anything in ~/Photos.'` |
+| `latch rules edit` | Host | Change the device rule in $EDITOR; saved only if it did not change meanwhile. Owner only. |
+| `latch rules clear` | Host | Remove the device rule: nothing is always denied. Owner only. |
+| `latch rules show` | Host | The device rule with its revision, and the agent map. Owner only. |
 
 ## Connectors
 

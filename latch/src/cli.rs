@@ -91,12 +91,14 @@ Agents:
   machine: hosts would take it for the owner's own request instead of
   judging it as yours.
 
-  Exit 4 means denied. A host's gatekeeper refusal, gatekeeper_denied with
-  reason not_covered, is the one to retry: latch has no approval prompt, so
-  ask the owner in your Plow chat, naming exactly what you will do, then
-  retry once they agree there; refused again, stop and tell them. With reason
-  not_as_asked, the action differs from what the owner last asked: make it
-  match and retry. owner_said_no and exec_denied (the owner turned exec off on that host) mean no.
+  Exit 4 means denied. Anything but a read needs the owner's intent: pass
+  --intent ROOM/EVENT, the id of the owner's message you are acting on, in
+  your own 1:1 room with them; the host reads it and what they said after
+  it. gatekeeper_denied with reason not_covered: that message doesn't ask for
+  this action as it is now. latch has no approval prompt, so ask the owner
+  there, naming exactly what you will do, and cite their answer; refused
+  again, stop and tell them. denied_by_rule (the owner always denies it on
+  that host) and exec_denied (the owner turned exec off there) mean no.
   Exit 3, gatekeeper_unavailable: the host could not judge. Its message says
   what fixes it: often a retry later, but a host out of Plow credits fails
   until the host's account owner adds them. A browser step's
@@ -343,11 +345,12 @@ pub struct BrowserArgs {
     /// The session to use: the id `open` answered
     #[arg(long, env = "LATCH_BROWSER_SESSION", global = true)]
     pub session: Option<String>,
-    /// The owner's Plow chat this agent acts for, when its line has more
-    /// than one: the host's gatekeeper reads what the owner asked there.
-    /// Refused on owner calls and local modes
-    #[arg(long, env = "LATCH_PLOW_CHAT", global = true)]
-    pub plow_chat: Option<String>,
+    /// The owner's message this agent acts on, as <room>/<event>, from its
+    /// own 1:1 room with the owner: the host's gatekeeper reads it and
+    /// what the owner said after it. Reads need none. Refused on owner
+    /// calls and local modes
+    #[arg(long, value_name = "ROOM/EVENT", global = true)]
+    pub intent: Option<String>,
     #[command(subcommand)]
     pub command: BrowserCommand,
 }
@@ -668,12 +671,11 @@ pub struct VaultArgs {
     /// Host to use (default: this machine's vault; naming this machine is local too; `default`, the one `latch hosts default` saved)
     #[arg(long, env = "LATCH_HOST", global = true)]
     pub host: Option<String>,
-    /// The owner's Plow chat an agent's `list` or `link` acts for, when its
-    /// line has more than one: the host's gatekeeper reads what the owner
-    /// asked there. Refused on owner calls, local modes and every other
-    /// command
-    #[arg(long, env = "LATCH_PLOW_CHAT", global = true)]
-    pub plow_chat: Option<String>,
+    /// The owner's message an agent's `link` acts on, as <room>/<event>,
+    /// from its own 1:1 room with the owner. Refused on owner calls, local
+    /// modes and every other command
+    #[arg(long, value_name = "ROOM/EVENT", global = true)]
+    pub intent: Option<String>,
     #[command(subcommand)]
     pub command: VaultCommand,
 }
@@ -864,16 +866,12 @@ pub struct RulesArgs {
     pub command: RulesCommand,
 }
 
-/// Which rules a rules command is about.
+/// Which host a rules command is about.
 #[derive(Args, Debug)]
 pub struct RulesScope {
-    /// The serving machine the rules are for [default: this machine's own host state]
+    /// The serving machine the rule is for [default: this machine's own host state]
     #[arg(long)]
     pub host: Option<String>,
-    /// Whose rules: an agent's name, the peer name of the latch it calls
-    /// from, or its agent uid, resolved once to the uid [default: every agent's]
-    #[arg(long, value_name = "NAME")]
-    pub agent: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -941,91 +939,38 @@ pub enum OnOff {
 
 #[derive(Subcommand, Debug)]
 pub enum RulesCommand {
-    /// Replace the rules with TEXT, with the text of --file F (- reads stdin), or with a preset's
+    /// Replace the device rule, what agents are always denied, with TEXT or the text of --file F (- reads stdin); an empty text denies nothing
     Set {
-        #[arg(conflicts_with_all = ["file", "preset"])]
+        #[arg(conflicts_with = "file")]
         text: Option<String>,
-        #[arg(long, value_name = "F", conflicts_with = "preset")]
+        #[arg(long, value_name = "F")]
         file: Option<PathBuf>,
-        /// Rules to start from: chief-of-staff (email, calendar, drafts; never email outside the company) or developer (tests, reviews, pull requests; never push to main), as the Mac app offers them
-        #[arg(long, value_name = "NAME", value_parser = crate::gate::rules::Preset::parser())]
-        preset: Option<crate::gate::rules::Preset>,
-        /// Save only if the rules are still at revision R, as `rules show`
-        /// gave it (`none`: there were none); otherwise refused, and
+        /// Save only if the rule is still at revision R, as `rules show`
+        /// gave it (`none`: there was none); otherwise refused, and
         /// nothing changes
         #[arg(long, value_name = "R")]
         revision: Option<String>,
         #[command(flatten)]
         scope: RulesScope,
     },
-    /// Change the rules in $EDITOR; saved only if they did not change meanwhile
+    /// Change the device rule in $EDITOR; saved only if it did not change meanwhile
     Edit {
         #[command(flatten)]
         scope: RulesScope,
     },
-    /// Remove the rules
+    /// Remove the device rule: nothing is always denied
     Clear {
-        /// Remove them only if they are still at revision R, as `rules
-        /// show` gave it; otherwise refused, and nothing changes
+        /// Remove it only if it is still at revision R, as `rules show`
+        /// gave it; otherwise refused, and nothing changes
         #[arg(long, value_name = "R")]
         revision: Option<String>,
         #[command(flatten)]
         scope: RulesScope,
     },
-    /// The rules for every agent and each agent's own, with their revisions
+    /// The device rule with its revision, and the agent map
     Show {
         #[command(flatten)]
         scope: RulesScope,
-    },
-    /// Preview the gatekeeper's verdict on a request, without running it
-    ///
-    /// As the agent --agent names, or as you. An agent
-    /// is judged by the built-in policy and the rules alone, with no chat:
-    /// what it may do whatever its chat says, though a real call's chat may
-    /// add an OK or a no. The verdict is the gatekeeper's judgment at this
-    /// moment, so a close call can come out differently next time; the
-    /// answer's `gate.p` shows how sure it was. Each preview is billed to
-    /// your Plow balance like a real judgment, about $0.0001
-    Try {
-        /// The host to preview on [default: this machine's own host]
-        #[arg(long)]
-        host: Option<String>,
-        /// Judge the request as this agent: its name, the peer name of the
-        /// latch it calls from, or its agent uid [default: you]
-        #[arg(long, value_name = "NAME")]
-        agent: Option<String>,
-        /// Judge as a new agent: no rules of its own, whatever connectors
-        /// and --deny-exec the host has
-        #[arg(long, conflicts_with = "agent")]
-        new_agent: bool,
-        /// Judge against draft rules for every agent instead of the saved
-        /// ones, without saving them: the text of F (- reads stdin). An
-        /// empty draft is no such rules
-        #[arg(long, value_name = "F")]
-        draft: Option<PathBuf>,
-        /// Preview a browser fill of the saved login TITLE on --url instead
-        /// of REQUEST, as a login saved for that page's site. It previews
-        /// the fill's judgment only, not the whole sign-in (opening the site
-        /// is judged on its own) nor whether the vault has that login
-        #[arg(long, value_name = "TITLE", requires = "url")]
-        fill_login: Option<String>,
-        /// The page --fill-login fills the login on
-        #[arg(long, value_name = "URL", requires = "fill_login")]
-        url: Option<String>,
-        /// A field --fill-login fills, by its label; repeat for each
-        /// [default: username and password]
-        #[arg(long = "field", value_name = "LABEL", requires = "fill_login")]
-        fields: Vec<String>,
-        /// The latch command to preview, after `--`, as an agent would send
-        /// it: exec, file, google, messages or contacts. Example: `-- exec
-        /// --write ~/site -- npm run build`
-        #[arg(
-            last = true,
-            required_unless_present = "fill_login",
-            conflicts_with = "fill_login",
-            value_name = "REQUEST"
-        )]
-        request: Vec<String>,
     },
 }
 
@@ -1138,8 +1083,8 @@ pub enum WorkerAction {
 #[derive(Args, Debug)]
 #[command(args_conflicts_with_subcommands = true)]
 pub struct AgentsArgs {
-    /// Also show each agent's standing on this host: its own rules there,
-    /// and whether the host refuses it exec. Never taken from $LATCH_HOST
+    /// Also show each agent's standing on this host: the Swarm account it
+    /// is mapped to there, and whether the host refuses it exec. Never taken from $LATCH_HOST
     #[arg(long)]
     pub host: Option<String>,
     #[command(subcommand)]
@@ -1152,6 +1097,19 @@ pub enum AgentsAction {
     ///
     /// Its line and Plow status (a cloud agent's starts as provisioning)
     Show { agent: String },
+    /// Map an agent to its Swarm account, on a host
+    ///
+    /// The host's gatekeeper accepts an agent's --intent only from that
+    /// account's own 1:1 rooms with you; an unmapped agent is refused.
+    /// AGENT is its name, the peer name of the latch it calls from, or its
+    /// uid; SWARM_ID is like @name:server
+    Map {
+        agent: String,
+        swarm_id: String,
+        /// The serving machine to map it on [default: this machine's own host state]
+        #[arg(long)]
+        host: Option<String>,
+    },
     /// The kinds of cloud agent Plow can run, for `agents new --cloud`
     Catalog,
     /// Show how to start a cloud agent by texting Plow
@@ -1559,11 +1517,12 @@ pub struct HostArg {
     /// saved
     #[arg(long, env = "LATCH_HOST")]
     pub host: Option<String>,
-    /// The owner's Plow chat this agent acts for, when its line has more
-    /// than one: the host's gatekeeper reads what the owner asked there.
-    /// Refused on owner calls and local modes
-    #[arg(long, env = "LATCH_PLOW_CHAT")]
-    pub plow_chat: Option<String>,
+    /// The owner's message this agent acts on, as <room>/<event>, from its
+    /// own 1:1 room with the owner: the host's gatekeeper reads it and
+    /// what the owner said after it. Reads need none. Refused on owner
+    /// calls and local modes
+    #[arg(long, value_name = "ROOM/EVENT")]
+    pub intent: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]

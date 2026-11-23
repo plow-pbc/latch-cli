@@ -591,7 +591,7 @@ async fn request_now(dir: &Path, op: &str, args: Value) -> Result<(Value, UnixSt
     let request = Request {
         op: op.to_string(),
         args,
-        chat: None,
+        intent: None,
     };
     let lost = |err: std::io::Error| {
         Failure::new(

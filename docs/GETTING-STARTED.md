@@ -115,10 +115,10 @@ each is skipped once done, so you can run setup again at any time:
    (`latch plugins enable google --add-account`); Enter moves on.
 3. **On a Mac, turn on Messages and Contacts.** These need Full Disk Access
    for the Plow Latch app.
-4. **Set rules for your agents**, when there are none yet: a chief of
-   staff's, a developer's (the same two the Mac app offers), or none for now
-   (`latch rules set --preset chief-of-staff`, or `developer`). Enter takes
-   the chief of staff's.
+4. **Set the device rule**, when there is none yet: it asks “Always
+   deny:” for anything agents must never do on this machine, whatever you
+   tell them (`latch rules set TEXT`). Enter leaves it empty: nothing
+   denied.
 5. **Start the host** (`latch serve -d`), if you say yes.
 
 Ctrl-C stops setup at any step. Run `latch setup` again to pick up where
@@ -228,10 +228,10 @@ elements as `e1`, `e2` and so on. See [BROWSER.md](../latch/BROWSER.md).
 `latch serve`. Calls such as `exec` then go to the running host directly.
 `rules` and `vault` work there even when the host is stopped.
 
-**Your own calls are judged too.** The gatekeeper checks `exec`, `file`,
-`google`, `messages`, `contacts` and the browser's risky steps against your
-rules on that host. Your settings commands (`rules`, `vault`) are never
-judged.
+**Your own calls are judged too,** but only against the host's device
+rule: `exec`, `file put`, Google writes and the browser's risky steps. With
+no device rule they run without a model call. Your settings commands
+(`rules`, `vault`) are never judged.
 
 ## 4. Give an agent its own login
 
@@ -292,7 +292,7 @@ once and its line is freed.
 To move the agent to another phone line, run
 `latch agents move my-agent --line LINE`. Choose a free phone line where you
 have no open chat, by text or email. It doesn't ask first. The agent keeps
-its credential, settings and rules, so `my-agent.env` keeps working.
+its credential and settings, so `my-agent.env` keeps working.
 
 Plow closes your chats on the line the agent leaves, email included. While no
 agent of yours uses the old number, one-to-one texts from your number get at
@@ -301,7 +301,7 @@ unless another account on the thread has an agent on that line. If you later
 move the agent back, your first text starts a fresh chat there.
 
 Text the new number first to start a fresh chat: the agent can't text you
-until you do, and until then it can't ask your permission in a Plow chat.
+until you do.
 
 Plow restarts a cloud agent; it doesn't restart a program you run yourself.
 The command doesn't wait for the agent to be ready.
@@ -310,40 +310,48 @@ People who text the agent need its new number:
 `latch agents card my-agent --output my-agent.vcf` saves its new contact card.
 
 **What an agent may do.** Your agents can look things up in your calendar,
-email, messages and files, and create or edit ordinary files, without asking
-first. What they read goes back to the agent. Riskier actions need your
-permission, in your rules or in your Plow chat with the agent. These include
-sending, buying, deleting, changing calendars or shared systems, giving a
-program internet access, using secrets, and sending data elsewhere.
+email, messages, contacts, files and the web, and write Gmail drafts,
+without asking. What they read goes back to the agent. Everything else
+(running programs, copying files in, sending, booking, buying, browser
+steps) runs only on a message of yours the agent cites with `--intent`,
+from its own 1:1 room with you (its Swarm DM with you, or its iMessage
+room). The host reads that message and your later ones itself; a later
+“stop” wins, and a one-time ask is spent once done.
 
-**Rules** are plain text in your own words. There is one text for every
-agent, and one for each agent. Only you can read or change them:
+Each host must know the agent's Swarm account. On the host, or with
+`--host NAME`:
+
+```sh
+latch agents map my-agent @my-agent:plow.co
+```
+
+**The device rule** is what agents are always denied on a host, in your
+own words. It grants nothing, and no message overrides it. Only you can
+read or change it:
 
 ```sh
 latch rules edit                     # on the host itself
 latch rules edit --host my-mac       # from another of your machines
-latch rules edit --agent my-agent    # rules for one agent only
 latch rules show
 ```
 
-`latch rules set TEXT` sets them without an editor, and
-`latch rules set --preset chief-of-staff` (or `developer`) to the rules
-setup and the Mac app offer. Your rules stay in force
-when you ask in chat, and they can restrict everyday work too, for example
-"Do not read or search this Mac's Messages."
+`latch rules set TEXT` sets it without an editor, for example
+"Never pay anyone or delete my photos." It covers what agents do, not what they read:
+reads aren't judged.
 
-A model judges the rules, so they are not a guarantee. For a hard stop, start
-the host with `latch serve --deny-exec`: no agent can run programs there.
-`--deny-exec=AGENT_UID` stops one agent.
+A model judges each action, so this is not a guarantee. For a hard stop,
+start the host with `latch serve --deny-exec`: no agent can run programs
+there. `--deny-exec=AGENT_UID` stops one agent.
 
-**When an agent is refused** (exit 4, `gatekeeper_denied`):
+**When an agent is refused** (exit 4, `gatekeeper_denied`), the refusal's
+`next` says what to do:
 
-- `not_covered`: the agent asks you in chat, saying exactly what it will do,
-  and tries again once you agree.
-- `not_as_asked`: the action was stopped without a plain no from you, most
-  often because it differs from what you asked; the agent fixes it and tries
-  again.
-- `owner_said_no` or `exec_denied`: the answer is no.
+- `not_covered`: the agent asks you in its 1:1 room, saying exactly what it
+  will do, and cites your answer.
+- `intent_required`, `not_owner_dm` and similar: the agent cited no message,
+  or the wrong one, and cites yours.
+- `agent_unmapped`: run `latch agents map` on that host.
+- `denied_by_rule` or `exec_denied`: the answer is no.
 
 ## 5. Update
 
@@ -353,7 +361,8 @@ latch update
 
 This installs the newest release. `latch update --check` only says whether
 there is a newer one. `latch update TAG` installs a given release, which is
-also how you go back to an older one.
+also how you go back to an older one. On a host with no device rule yet,
+it asks “Always deny:” once.
 
 Latch checks the release's signature first, and on a Mac that Plow signed
 the app. A host started with `latch serve -d` restarts on the new version.

@@ -21,7 +21,7 @@ use crate::wire::{self, Request};
 pub async fn get(
     state: &StateDir,
     host: &Peer,
-    chat: Option<String>,
+    intent: Option<String>,
     remote_path: &str,
     local_dest: Option<PathBuf>,
 ) -> Result<Value, Failure> {
@@ -36,21 +36,21 @@ pub async fn get(
         },
     };
     let link = dial::connect(state, host).await?;
-    let result = receive(&link.connection, chat, remote_path, &local).await;
+    let result = receive(&link.connection, intent, remote_path, &local).await;
     link.close();
     result.map_err(dial::naming(host))
 }
 
 async fn receive(
     connection: &Connection,
-    chat: Option<String>,
+    intent: Option<String>,
     remote_path: &str,
     local: &Path,
 ) -> Result<Value, Failure> {
     let request = Request {
         op: "file_get".to_string(),
         args: get_args(remote_path),
-        chat,
+        intent,
     };
     let (start, done, sha256) = download(connection, &request, local).await?;
     Ok(json!({
@@ -94,13 +94,13 @@ pub async fn put_args(local: &Path, remote_path: &str) -> Result<(File, Value), 
 pub async fn put(
     state: &StateDir,
     host: &Peer,
-    chat: Option<String>,
+    intent: Option<String>,
     local: &Path,
     remote_path: &str,
 ) -> Result<Value, Failure> {
     let (mut file, args) = put_args(local, remote_path).await?;
     let link = dial::connect(state, host).await?;
-    let result = send(&link.connection, chat, &mut file, args).await;
+    let result = send(&link.connection, intent, &mut file, args).await;
     link.close();
     let mut result = result.map_err(dial::naming(host))?;
     result["local_path"] = json!(local);
@@ -109,7 +109,7 @@ pub async fn put(
 
 async fn send(
     connection: &Connection,
-    chat: Option<String>,
+    intent: Option<String>,
     file: &mut File,
     args: Value,
 ) -> Result<Value, Failure> {
@@ -117,7 +117,7 @@ async fn send(
     let request = Request {
         op: "file_put".to_string(),
         args,
-        chat,
+        intent,
     };
     let (done, sha256) = upload(connection, &request, file, size).await?;
     check_same(&done, &sha256)?;
@@ -311,7 +311,7 @@ mod tests {
         Request {
             op: "file_get".into(),
             args: json!({}),
-            chat: None,
+            intent: None,
         }
     }
 

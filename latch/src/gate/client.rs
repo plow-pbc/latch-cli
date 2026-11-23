@@ -1,234 +1,106 @@
-//! `latch rules …`: the owner's commands on a host's rules for agents.
-//! With another `--host` they go over latch's connection, as the
-//! `rules` operation; a failed call never falls back to a local file.
-//! Without it, or naming this peer, they act locally, audited in its
-//! log as the host would.
+//! `latch rules …` and `latch agents map`: the owner's commands on a
+//! host's device rule and agent map. With another `--host` they go over
+//! latch's connection, as the `rules` operation; a failed call never falls
+//! back to a local file. Without it, or naming this peer, they act
+//! locally, audited in its log as the host would.
 
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
-use clap::parser::ValueSource;
-use clap::{CommandFactory, FromArgMatches};
 use serde_json::{Value, json};
 
 use super::owner;
 use crate::audit::{self, AuditLog};
-use crate::cli::{Cli, Command as Latch, FileCommand, HostArg, RulesArgs, RulesCommand};
+use crate::cli::{RulesArgs, RulesCommand};
 use crate::dial::{self, ANSWER_WITHIN};
 use crate::failure::{Failure, code};
 use crate::hosts;
 use crate::plow::Plow;
 use crate::state::StateDir;
 use crate::wire::Request;
-use crate::{google, transfer};
 
 pub async fn run(state: &StateDir, args: RulesArgs) -> Result<Value, Failure> {
-    let scope = match args.command {
-        RulesCommand::Try {
-            host,
-            agent,
-            new_agent,
-            draft,
-            fill_login,
-            url,
-            fields,
-            request,
-        } => {
-            let mut args = json!({"from": agent, "new_agent": new_agent});
-            if let (Some(title), Some(url)) = (fill_login, url) {
-                let fields = match fields.is_empty() {
-                    true => vec!["username".to_string(), "password".to_string()],
-                    false => fields,
-                };
-                args["fill"] = json!({"url": url, "item": {"kind": "login", "title": title},
-                                      "fields": fields});
-                args["draft"] = json!(draft.map(|file| read_file(&file)).transpose()?);
-                return previewed(state, host, args).await;
-            }
-            return preview(state, host, args, draft, request).await;
-        }
-        RulesCommand::Set { ref scope, .. }
-        | RulesCommand::Edit { ref scope }
-        | RulesCommand::Clear { ref scope, .. }
-        | RulesCommand::Show { ref scope } => scope,
+    let scope = match &args.command {
+        RulesCommand::Set { scope, .. }
+        | RulesCommand::Edit { scope }
+        | RulesCommand::Clear { scope, .. }
+        | RulesCommand::Show { scope } => scope,
     };
     // `--host default` read once: an edit's save goes where its show went.
     let target = Target {
         state,
         host: hosts::pinned(state, scope.host.clone())?,
     };
-    // The operation still calls the agent `from`, as hosts of every
-    // version read it.
-    let from = scope.agent.clone();
     match args.command {
         RulesCommand::Set {
             text,
             file,
-            preset,
             revision,
             ..
         } => {
-            let text = match (text, file, preset) {
-                (Some(text), None, None) => text,
-                (None, Some(file), None) => read_file(&file)?,
-                (None, None, Some(preset)) => preset.text().to_string(),
+            let text = match (text, file) {
+                (Some(text), None) => text,
+                (None, Some(file)) => read_file(&file)?,
                 _ => {
-                    let message =
-                        "give the rules as TEXT, --file F (- reads stdin) or --preset NAME";
+                    let message = "give the device rule as TEXT or --file F (- reads stdin)";
                     return Err(Failure::new(code::bad_arguments, message.into()));
                 }
             };
-            // A save at a revision is the edit hosts of every version
-            // check.
             let args = match revision {
-                None => json!({"command": "set", "from": from, "text": text}),
-                Some(revision) => json!({"command": "edit", "from": from, "text": text,
-                                         "revision": expected(&revision)}),
+                None => json!({"command": "set", "text": text}),
+                Some(revision) => {
+                    json!({"command": "edit", "text": text, "revision": expected(&revision)})
+                }
             };
             target.call(args).await
         }
         RulesCommand::Edit { .. } => {
-            // It opens the person's editor: a program sets the rules instead.
+            // It opens the person's editor: a program sets the rule instead.
             if !crate::term::interactive() {
                 let message = "`latch rules edit` opens your editor, so it needs a terminal";
                 let mut failure = Failure::new(code::no_terminal, message.into());
                 failure.next = Some("latch rules set TEXT".into());
                 return Err(failure);
             }
-            let shown = target
-                .call(json!({"command": "show", "from": from}))
-                .await?;
-            // The text being edited, and who it is for, as the host resolved it.
-            let (current, from) = match from {
-                None => (&shown["every_agent"], None),
-                Some(_) => (
-                    &shown["agents"][0],
-                    shown["agents"][0]["agent_uid"].as_str(),
-                ),
-            };
+            let shown = target.call(json!({"command": "show"})).await?;
+            let current = &shown["device_rule"];
             // From the editor on, what goes wrong is the person's to read.
             let text =
                 edited(current["text"].as_str().unwrap_or_default()).map_err(Failure::told)?;
             target
-                .call(json!({"command": "edit", "from": from, "text": text,
-                             "revision": current["revision"]}))
+                .call(json!({"command": "edit", "text": text, "revision": current["revision"]}))
                 .await
                 .map_err(Failure::told)
         }
         RulesCommand::Clear { revision, .. } => {
-            // A host older than the revision check refuses the command it
-            // does not know, rather than clearing.
             let args = match revision {
-                None => json!({"command": "clear", "from": from}),
-                Some(revision) => json!({"command": "clear_at_revision", "from": from,
-                                         "revision": expected(&revision)}),
+                None => json!({"command": "clear"}),
+                Some(revision) => {
+                    json!({"command": "clear_at_revision", "revision": expected(&revision)})
+                }
             };
             target.call(args).await
         }
-        RulesCommand::Show { .. } => target.call(json!({"command": "show", "from": from})).await,
-        RulesCommand::Try { .. } => unreachable!("previewed above"),
+        RulesCommand::Show { .. } => target.call(json!({"command": "show"})).await,
     }
 }
 
-/// `latch rules try -- REQUEST`: REQUEST parsed and built exactly as
-/// latch would send it, then previewed (the `rules_try` operation, with
-/// `args` saying as whom and against which rules), which runs nothing. The
-/// host is the one `--host` names, where it runs; or this machine's own,
-/// judged here, running or not. Never `LATCH_HOST`, as for every rules
-/// command, and a `--host` inside REQUEST is refused. Its `--plow-chat`
-/// (or `LATCH_PLOW_CHAT`) means what it would on the real call. A
-/// `--draft` is read before REQUEST is built, and only one of them may
-/// read stdin.
-async fn preview(
+/// `latch agents map AGENT SWARM_ID`: maps an agent to its Swarm account
+/// on the host `--host` names, or this machine's own.
+pub async fn map_agent(
     state: &StateDir,
     host: Option<String>,
-    mut args: Value,
-    draft: Option<PathBuf>,
-    words: Vec<String>,
+    agent: &str,
+    swarm_id: &str,
 ) -> Result<Value, Failure> {
-    // The parser's message, its usage line written as the request goes
-    // after `latch rules try --`.
-    let usage = |err: clap::Error| {
-        let message = err.to_string().trim_end().to_string();
-        let message = message.replacen("Usage: latch ", "Usage: latch rules try -- ", 1);
-        Failure::new(code::usage, message)
+    let target = Target {
+        state,
+        host: hosts::pinned(state, host)?,
     };
-    let matches = Cli::command()
-        .try_get_matches_from(std::iter::once("latch".to_string()).chain(words))
-        .map_err(usage)?;
-    let parsed = Cli::from_arg_matches(&matches).map_err(usage)?;
-    let mut innermost = &matches;
-    while let Some((_, deeper)) = innermost.subcommand() {
-        innermost = deeper;
-    }
-    if innermost.ids().any(|id| id == "host")
-        && innermost.value_source("host") == Some(ValueSource::CommandLine)
-    {
-        let message = "the host goes on `latch rules try`, not on the request";
-        let mut failure = Failure::new(code::usage, message.to_string());
-        failure.next = Some("latch rules try --host NAME -- <request>".into());
-        return Err(failure);
-    }
-    if draft.as_deref() == Some(Path::new("-"))
-        && matches!(&parsed.command, Some(Latch::Exec(exec)) if exec.stdin)
-    {
-        let message = "--draft - and exec --stdin both read stdin";
-        let mut failure = Failure::new(code::usage, message.to_string());
-        failure.next = Some("give the draft as a file: --draft F".into());
-        return Err(failure);
-    }
-    args["draft"] = json!(draft.map(|file| read_file(&file)).transpose()?);
-    let (op, request, asked): (&str, Value, HostArg) = match parsed.command {
-        Some(Latch::Exec(args)) => ("exec", crate::exec::request(&args)?, args.host),
-        Some(Latch::File(FileCommand::Get {
-            remote_path, host, ..
-        })) => ("file_get", transfer::get_args(&remote_path), host),
-        Some(Latch::File(FileCommand::Put {
-            local_path,
-            remote_path,
-            host,
-        })) => {
-            let (_, args) = transfer::put_args(&local_path, &remote_path).await?;
-            ("file_put", args, host)
-        }
-        Some(Latch::Google(args)) if !args.local_help() => {
-            let prepared = google::client::prepare(&args).await?;
-            let request = serde_json::to_value(&prepared.request).expect("request serializes");
-            ("google", request, args.host)
-        }
-        Some(Latch::Messages(command)) => (
-            "messages",
-            crate::messages::messages_request(&command),
-            command.host(),
-        ),
-        Some(Latch::Contacts(command)) => (
-            "contacts",
-            crate::messages::contacts_request(&command),
-            command.host(),
-        ),
-        _ => {
-            let name = matches.subcommand_name().unwrap_or_default();
-            return Err(crate::serve::not_previewable(name));
-        }
-    };
-    args["request"] = json!({"op": op, "args": request, "chat": asked.plow_chat});
-    previewed(state, host, args).await
-}
-
-/// The `rules_try` operation with `args`, on this machine's own host or the
-/// one `--host` names.
-async fn previewed(state: &StateDir, host: Option<String>, args: Value) -> Result<Value, Failure> {
-    if hosts::local_target(state, host.as_deref())? {
-        return crate::serve::preview_here(state, &args).await;
-    }
-    let peer = hosts::resolve(state, host).await?;
-    let request = Request {
-        op: "rules_try".to_string(),
-        args,
-        chat: None,
-    };
-    dial::call(state, &peer, &request, ANSWER_WITHIN).await
+    target
+        .call(json!({"command": "map_agent", "agent": agent, "swarm_id": swarm_id}))
+        .await
 }
 
 /// Where the commands go: the host named by `--host`, or this machine's
@@ -245,7 +117,7 @@ impl Target<'_> {
             let request = Request {
                 op: "rules".to_string(),
                 args,
-                chat: None,
+                intent: None,
             };
             return dial::call(self.state, &host, &request, ANSWER_WITHIN).await;
         }
@@ -253,7 +125,7 @@ impl Target<'_> {
         let plow = Plow::from_state(self.state)?;
         // A log that can't be written to stops the command before it changes anything.
         let mut log = AuditLog::open(self.state.path.join(crate::audit::FILE))?;
-        let done = owner::run(
+        let (done, snapshot) = owner::changing(
             &self.state.path,
             &plow,
             &config.peer.name,
@@ -265,12 +137,13 @@ impl Target<'_> {
         let mut record = audit::record(&config.peer.key, None, "rules", decision, &done.outcome);
         record.caller_name = Some(config.peer.name.clone());
         record.args = done.audit_args;
-        let audit_id = log.append(record)?;
+        // A change the log doesn't hold is put back.
+        let audit_id = log.append(record).inspect_err(|_| owner::undo(snapshot))?;
         crate::serve::with_audit_id(done.response, audit_id).into_result()
     }
 }
 
-/// `--revision R` as the host compares it: `none` is no rules.
+/// `--revision R` as the host compares it: `none` is no rule.
 fn expected(revision: &str) -> Value {
     match revision {
         "none" => Value::Null,
@@ -278,7 +151,7 @@ fn expected(revision: &str) -> Value {
     }
 }
 
-/// The rules in `file`, or on stdin for `-`.
+/// The text in `file`, or on stdin for `-`.
 fn read_file(file: &Path) -> Result<String, Failure> {
     let local =
         |err: std::io::Error| Failure::new(code::local_file, format!("{}: {err}", file.display()));
@@ -315,5 +188,5 @@ fn edited(text: &str) -> Result<String, Failure> {
         )));
     }
     std::fs::read_to_string(file.path())
-        .map_err(|err| failed(format!("cannot read the edited rules: {err}")))
+        .map_err(|err| failed(format!("cannot read the edited rule: {err}")))
 }

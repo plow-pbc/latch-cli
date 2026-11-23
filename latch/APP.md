@@ -201,35 +201,32 @@ latch audit judge ID [--raw] [--host NAME]
 ```
 
 This prints one gatekeeper call the host kept: what it sent Plow's
-decision route and what came back. ID is a record's `kept_request`: in
-`details.gate` for the owner's own call, in `details.gate.layers.rules`,
-`details.gate.layers.chat` and `details.gate.layers.will` for an agent's.
-It prints `{"id", "time", "layer", "request", "answer"}`:
+decision route and what came back. ID is the `kept_request` in a record's
+`details.gate`; each judgment is one call. It prints `{"id", "time",
+"layer", "request", "answer"}`:
 
-- `layer`: `owner`, `rules`, `chat` (whole chat) or `will` (only the owner's
-  messages and the message each answers).
+- `layer`: `gatekeeper`.
 - `request`: the body as sent, `{"model", "state", "questions"}`. The
-  state holds the rules of judgment, the conversation as the judge saw it
-  (`"(no chat)"` when there was none), the owner's rules and the proposed
-  action. Keys print sorted.
+  state holds the rules of judgment, the time, the device rule, and for
+  an agent the cited message, the owner's later messages, what was
+  already done on that intent and the thread's other messages as context;
+  then the proposed action. Keys print sorted.
 - `answer`: Plow's reply, an error's included, or null when none came
   (the record's `model_failed` says why).
 
-An agent's `details.gate.decided_by` names the deciding call (`rules`,
-`chat` or `will`), and `details.gate.p` holds that call's probabilities.
-`details.gate.layers` records each call's probabilities, prompt/model
-identity and cost; the gate's total includes all calls.
-
-An agent's record also says `details.gate.chat_lookup`: `found`, or
-`none` when the host found no Plow chat for the agent, so it read none of
-the owner's messages; a refusal then says so too.
+`details.gate.p` holds the call's probabilities (`denied`, `covered`);
+`details.gate` also names the caller, the class (`free`, `intent` or
+`unknown`), the intent cited, the device rule's revision, the prompt,
+model and cost, `already_done`, `later_owner_messages`, `context` (`shown`
+of `of`), `thread_read_ms`, the verdict, `latency_ms` and, for an allowed
+intent action, `gate_record`: the audit record (op `gate`) written before
+it ran.
 
 A host keeps a call 7 days, on that host only, sealed with its audit key.
 It prints the request and answer with credential-looking values hidden,
 as `latch audit` hides them (best effort); `--raw` prints exactly what
 the model was sent, a credential typed into a command included. The judge is never shown a vault or secret value, so
-none is kept. When an agent's chat could not be read, its rules layer
-is still kept and named in `details.gate.layers.rules`. Errors: `no_such_request` (exit
+none is kept. Errors: `no_such_request` (exit
 2), the host keeps no call ID.
 
 ## Another host: `--host NAME`

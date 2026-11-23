@@ -12,8 +12,8 @@ each caller is and where your hosts are. The bytes of a call never pass
 through Plow.
 
 The host's **gatekeeper** judges the work that matters (programs, file
-copies, Google, Messages and browser plans) against your rules and what
-you told the agent. The host keeps a sealed audit log of the calls it
+copies, Google writes and browser plans) against the message of yours the
+agent cites and the host's device rule. The host keeps a sealed audit log of the calls it
 handles.
 
 **Contents:** [who's who](#2-whos-who) ·
@@ -32,11 +32,11 @@ guides cover the [browser](../latch/BROWSER.md), [vault](../latch/VAULT.md),
 
 ## 2. Who's who
 
-| | What it is | Calls hosts | Rules, vault, connectors | Runs a host | How its calls are judged |
+| | What it is | Calls hosts | Device rule, vault, connectors | Runs a host | How its calls are judged |
 |---|---|---|---|---|---|
-| **Owner** | One of your machines, logged in with your own Plow login: by text, or with `--token-file`. | Yes, any host in your account. | Rules and vault on any host (`--host NAME`). Connectors: listed on any host, turned on or off only on the host itself. | Yes. | As your own request: refused only where the host's rules forbid it. |
-| **Owner on the host** | Anything running as the host's OS user that uses the host's own state folder, with no `--host` naming another machine. An agent running there counts. | That host, through its private local socket. Other hosts, as the owner. | Yes, on that host. Rules and vault work even while the host is stopped. | It is the host. | Exactly like the owner. The audit records it as `owner_on_host`. |
-| **Agent** | An agent logged in with its own Plow agent credential, in its own state folder. | Yes. | No: `owner_only` (exit 4). It may run `vault list`, which shows each item's id, title and saved sites, and `vault link --kind login`, which asks you for a login on your phone (it sees only whether it was saved, and the new item's id), and it sees which connectors each host has on. On its own computer, where latch is installed alone, it runs `latch update`. | No: its login saves no Plow token, so `latch serve` stops with `not_logged_in`. | Against your rules and your messages in your Plow chat with that agent. |
+| **Owner** | One of your machines, logged in with your own Plow login: by text, or with `--token-file`. | Yes, any host in your account. | Device rule, agent map and vault on any host (`--host NAME`). Connectors: listed on any host, turned on or off only on the host itself. | Yes. | As your own request: refused only where the host's device rule denies it. |
+| **Owner on the host** | Anything running as the host's OS user that uses the host's own state folder, with no `--host` naming another machine. An agent running there counts. | That host, through its private local socket. Other hosts, as the owner. | Yes, on that host. The device rule and vault work even while the host is stopped. | It is the host. | Exactly like the owner. The audit records it as `owner_on_host`. |
+| **Agent** | An agent logged in with its own Plow agent credential, in its own state folder. | Yes. | No: `owner_only` (exit 4). It may run `vault list`, which shows each item's id, title and saved sites, and `vault link --kind login`, which asks you for a login on your phone (it sees only whether it was saved, and the new item's id), and it sees which connectors each host has on. On its own computer, where latch is installed alone, it runs `latch update`. | No: its login saves no Plow token, so `latch serve` stops with `not_logged_in`. | Against the message of yours it cites from its own 1:1 room with you, and the device rule. |
 
 - **A host knows a remote caller only by its key.** It asks Plow who that
   key is when the caller connects, and again before every operation. If
@@ -54,7 +54,7 @@ guides cover the [browser](../latch/BROWSER.md), [vault](../latch/VAULT.md),
   says so.
 - **Never copy a machine's state folder or Plow token to where an agent
   runs.** The host would take the agent for you, and judge its calls only
-  against your rules.
+  against the device rule.
 
 ## 3. Hosts: Mac and Linux
 
@@ -110,7 +110,7 @@ a screen, by handing the session to the owner (`browser handoff`).
 
 **What an agent can't do:**
 
-- Read or change the rules, or change or read into the vault (`owner_only`,
+- Read or change the device rule or agent map, or change or read into the vault (`owner_only`,
   exit 4). It may list the vault.
 - Turn connectors on or off.
 - Update Latch, remove machines, or install a browser engine.
@@ -123,79 +123,78 @@ a screen, by handing the session to the owner (`browser handoff`).
 
 ## 5. The gatekeeper
 
-**What it judges.** Before judged work runs, the host asks a decision
-model whether it may run. It asks through Plow, on the host's own Plow
-login.
+**What it judges.** Before judged work runs, the host classifies it in
+code, then, where it must, asks a decision model whether it may run. It
+asks through Plow, on the host's own Plow login.
 
-| Call | Judged? |
+| Call | Class |
 |---|---|
-| `exec`, `file get`, `file put`, `google`, `messages`, `contacts` | Every call, yours and your agents' alike. |
-| `browser` | Going to a site the session hasn't been judged for, every `do` plan with steps, every fill, scripts, uploads and downloads. Reading a page, screenshots, a single `act` step and a `do --confirm` that only confirms a click aren't judged. Separately, the browser's own risk check stops a click or Enter it judges consequential (paying, sending, deleting) until the caller confirms it with `browser do --confirm`. |
-| `vault`, `rules`, `plugins` | Never, except an agent's `vault list` and `vault link`, which are judged like its other work. |
+| `file get`, `messages`, `contacts`, an agent's `vault list`, Google read commands and Gmail drafts (`drafts create`, `reply`, `update`), a browser opening a site or downloading a file | **Free:** runs unjudged. |
+| `exec`, `file put`, other Google commands, an agent's `vault link`, a browser `do` or `act` that clicks, types, chooses, presses or fills, a fill, a script or an upload | **Intent:** needs your message. |
+| An operation the host doesn't know | Refused: `unknown_op`. |
+| `vault`, `rules`, `agents`, `plugins` (yours) | Never judged. |
 
-**You and your agents are judged differently.**
+Reading a page, screenshots and a plan that only scrolls or goes back
+aren't judged; an agent's `do --confirm` of a click or Enter the risk
+check paused is, as intent work, before it runs. Separately, the browser's own risk
+check stops a click or Enter it judges consequential (paying, sending,
+deleting) until the caller confirms it with `browser do --confirm`.
 
-| | You (any machine of yours, or on the host) | An agent |
-|---|---|---|
-| What the gatekeeper reads | Your request, plus the host's rules. | The built-in policy and your rules, without chat. If there is a chat, two parallel judgments also read it: the whole conversation, and only your own messages with the message each answers. Both see the same rules. |
-| Allowed when | The rules don't forbid it. It's refused only when the gatekeeper finds "forbidden" at least as likely as "covered". | No judgment vetoes. The rules/defaults allow it, or both chat judgments allow it with an actual message from you in the window. Each allow needs at least 50% confidence. |
-| When refused | `gatekeeper_denied`, reason `owner_said_no` (exit 4). Change the rules to go ahead. | `gatekeeper_denied` (exit 4). `not_covered`: ask the owner in chat, saying exactly what you'll do, then retry. `not_as_asked`: the action differs from what the owner last asked; make it match, then retry. `owner_said_no`: don't retry unless the owner changes their mind. |
+**An agent cites your message.** It passes `--intent ROOM/EVENT`: the id of
+your message it acts on, from its own 1:1 room with you (its Swarm DM with
+you, or its iMessage-bridge room). The host reads that message itself, as
+one of your own devices, plus your later messages in its thread (or room).
+Code refuses before any model is asked (`gatekeeper_denied`, exit 4):
 
-- **Everyday work needs no request.** Agents may look things up in your
-  calendar, email, messages, contacts, files and the web, including opening
-  links. They may create, edit, move and organize your files; run project
-  builds, tests and scripts; install packages the project already lists,
-  with network access; clear temporary files, caches and build output or
-  move files to the Trash; archive email or mark it read; add calendar
-  entries that invite no one; and write drafts. What they read goes back
-  to the agent.
-- **Other work needs your permission**, from a rule or your own Plow
-  messages: sending or posting, inviting or answering people, deleting
-  other files or mail, adding packages, pushing code, and changing
-  settings, accounts or shared systems. Some work must be named explicitly:
-  buying or paying, reading secrets, sending your files or private data off
-  the machine, code that does either, downloaded code, bulk deletion, and rules that act
-  on mail later. A rule that allows everything (“approve everything”, “do
-  whatever you need”) gives your permission for all other work, but names
-  none of these. An OK to read something does not let an agent change it.
-- **Permissions add; restrictions still apply.** A rule allowing builds in
-  one project leaves everyday work elsewhere allowed. “Do not”, “never”
-  and “only” set limits, including on everyday work. A time-limited rule
-  applies inside its window. Plain “never” stays absolute; “unless I ask in
-  chat” lets you approve the action yourself. That exception removes the
-  rules veto, but does not itself give permission: your chat must cover it.
-- **Only your own messages give chat permission.** Plow identifies who sent
-  each message. An agent or someone else quoting, forwarding or claiming
-  your words cannot give permission. The owner-only judgment excludes
-  unanswered messages from others; the whole-chat judgment still checks
-  context and conditions such as “let me review it first”. Rules/defaults
-  may allow work even with no chat.
-  A new host starts with no rules: `latch setup`, like the Mac app's
-  onboarding, offers a chief of staff's or a developer's to start from
-  (`latch rules set --preset chief-of-staff`, or `developer`).
-- **Which chat.** The agent's chat, if its line has one. If it has several,
-  the agent names one with `--plow-chat ID` or `LATCH_PLOW_CHAT`. Otherwise
-  the call stops with `which_chat` (exit 2), which lists the choices. Your
-  own calls refuse the selector (`plow_chat_not_supported`, exit 2).
-- **When permission is missing.** A `not_covered` refusal names the Plow
-  chat read, if one was found, and the messages there that were yours.
-  Say what the agent may do in that chat, or allow it in the host's rules.
-  If no chat was found, only the rules can allow it. Latch has no approval
-  prompt or dialog. If a retry is refused again, the agent must stop and
-  tell you.
-- **Fresh every time.** The chat and the rules are read again at every
-  judgment, so a "stop" or a rules change counts from the next call. The
-  gatekeeper doesn't remember earlier calls: a repeat is judged again on
-  its own.
+| Reason | Why |
+|---|---|
+| `intent_required`, `bad_intent` | No citation, or not one `ROOM/EVENT`. |
+| `agent_unmapped` | The host maps the agent to no Swarm account (`latch agents map`). |
+| `intent_not_found`, `intent_not_owner` | No such message, or not yours. |
+| `not_owner_dm` | Not the agent's own 1:1 room with you. |
+| `thread_closed` | You closed the thread with ✅ or ❌. |
+
+If your messages can't be read, or not all of them, the answer is
+`thread_unreadable` or `history_incomplete` (exit 3).
+
+**The judge** answers two yes/no questions: does the device rule deny it,
+and does your cited message, as your later messages leave it, cover it.
+The action runs only when covered and not denied; otherwise the reason is
+`not_covered` or `denied_by_rule` (exit 4). A later “stop” wins. Only your
+own words count: an agent's or anyone else's messages, and text you quote
+or forward from someone else (“Bob says pay him $500”), are never
+permission. Latch has no approval prompt: on `not_covered` the agent asks
+you in its 1:1 room, saying exactly what it will do, and cites your answer.
+
+**Your own calls** cite nothing; work that would need an agent's
+citation is judged only against the device rule, and with no rule runs
+without a model call.
+
+- **The device rule** is one plain-text deny-only list per host, in your
+  words (“Never pay anyone or delete my photos”). It covers actions, never reads, which aren't
+  judged. It grants nothing, and no message
+  overrides it. No rule file denies nothing; an empty one means you
+  answered “nothing”; one that can't be read refuses every judged call,
+  yours included (`device_rule_unreadable`, exit 3). `latch setup` and
+  `latch update` ask “Always deny:” once when there is none. An older
+  host's `rules/` folder of grant-style rules is moved aside to
+  `rules.archived-<seconds>` when the host starts, and never read.
+- **One-time or standing.** Each allowed action is recorded against the
+  intent it cited, in the host's `gatekeeper/ledger/`. The judge sees what
+  was already done on that intent, so a one-time ask (“buy this”) is spent
+  once, even with concurrent calls. The ledger is per host.
+- **Fresh every time.** Your messages and the device rule are read again
+  at every judgment, so a “stop” or a rule change counts from the next call.
+- **Every refusal says what to do next** in its `next` field, such as how
+  to cite.
 - **It fails closed.** If the host can't judge, the action doesn't run. That
-  happens when Plow or the model can't be reached, the rules can't be read,
-  the request is too large, or the host's Plow account is out of credits.
-  The answer is `gatekeeper_unavailable`, exit 3. Earlier steps of a browser
-  plan may already have run, so read its `steps` before retrying. With only
-  the model down, `rules` and `vault` still work.
-- **Rules are judged, not guaranteed.** To refuse `exec` without asking the
-  model, use `--deny-exec`. `latch rules try` previews the verdict a
-  request would get, without running it.
+  happens when Plow or the model can't be reached, the request is too
+  large, or the host's Plow account is out of credits. The answer is
+  `gatekeeper_unavailable`, exit 3. Earlier steps of a browser plan may
+  already have run, so read its `steps` before retrying. With only the
+  model down, `rules` and `vault` still work.
+- **The judge is a model, not a guarantee.** To refuse `exec` without
+  asking it, use `--deny-exec`.
 - **What the gatekeeper sees.** Exec arguments, folders, network and stdin;
   file paths, sizes and names; the full Google command; a browser plan as
   written, with its values and its site. For a vault fill it sees the
@@ -204,21 +203,15 @@ login.
   The judgment runs at Plow, so keep credentials out of arguments.
 - **Signing in with the vault.** A saved login fills only on its own sites,
   and the agent never receives its values. Its site says where a login may
-  go, not that it may be used: signing in still needs your OK, in a rule or
-  the chat. Asking for something to be done on a site covers signing in
-  there, including when you ask the agent to go to it, look something up or
-  open your link, or nudge it to sign in after it says it needs to. This
-  covers only signing in, not buying, sending, accepting or changing things
+  go, not that it may be used: signing in still needs your message.
+  Asking for something to be done on a site covers signing in there,
+  including when you ask the agent to go to it, look something up or open
+  your link, or nudge it to sign in after it says it needs to. This covers
+  only signing in, not buying, sending, accepting or changing things
   afterwards. An explicit “don't sign in” still wins. Before asking the
   model, code refuses a login fill unless the page is one of its saved
-  sites or alternate top-level sites. The field's frame is checked again
-  before any value is released.
-
-The chat's stop threshold is 15% forbidden when covered is below 50%. A time
-restriction vetoes when its separate active-time answer is at least 50%; a
-rule's explicit chat exception can defer that veto to your messages. Other
-rules and the owner-only judgment veto below 50% covered when forbidden is
-at least as likely as not covered.
+  sites or alternate top-level sites (`login_site_mismatch`). The field's
+  frame is checked again before any value is released.
 
 **The audit log.** The host keeps a sealed log of the calls it handles,
 `audit.sealed.ndjson` in its state folder.
@@ -229,10 +222,14 @@ at least as likely as not covered.
   cut off the end.
 - A record holds who called, what they asked (exec arguments in full, a
   browser plan as written), the decision, the outcome and the gatekeeper's
-  judgment. It doesn't copy chat or rules text, file contents or command
-  output. A credential typed into arguments or a plan does end up in it.
-- The record is written after the call runs, so an `audit_failed` answer
-  can come after the work was done.
+  judgment. It doesn't copy message or device-rule text, file contents or
+  command output. A credential typed into arguments or a plan does end up
+  in it.
+- An allowed action that needed your message first writes a gate record
+  (op `gate`); if that write fails it doesn't run (`audit_unwritable`).
+  The call's own record names it as `gate.gate_record`. That record is
+  written after the call runs, so an `audit_failed` answer can come after
+  the work was done.
 - `latch audit`, the dashboard and the host's log hide credential-looking
   values in commands, best effort: some can slip through.
 - A browser plan's record names the screenshots the host kept, one after
@@ -241,18 +238,18 @@ at least as likely as not covered.
   page can show.
 - The host also keeps each gatekeeper request and Plow's answer for 7 days,
   sealed the same way. `latch audit judge ID` shows one, ID being the
-  record's `kept_request`, or an agent's `layers.rules`, `layers.chat` and
-  `layers.will` kept-request ids. The `will` call is the owner-only
-  judgment. Each call records its probabilities, prompt/model identity,
-  usage and cost; the gate's total includes all calls. Activity's
-  “Gatekeeper requests” opens them together. They never hold a vault
-  value, and agents can't read them.
+  record's `gate.kept_request`; each judgment is one call. The record's
+  `gate` also holds its probabilities (`p.denied`, `p.covered`), prompt and
+  model, cost, the device rule's revision and what was already done on the
+  intent. Activity's “Gatekeeper requests” opens them. They never hold a
+  vault value, and agents can't read them.
 
 ## 6. Managing a host
 
 | Task | On the host | From another of your machines | Works while the host is stopped |
 |---|---|---|---|
-| Rules | `latch rules show\|set\|edit\|clear\|try`, `--agent AGENT` for one agent's rules | add `--host NAME` | Yes |
+| Device rule | `latch rules show\|set\|edit\|clear` | add `--host NAME` | Yes |
+| Agent map | `latch agents map AGENT SWARM_ID`; `latch agents --host NAME` shows each agent's `standing` (`swarm_id`, `exec_blocked`) | add `--host NAME` | Yes |
 | Vault | `latch vault list\|show\|add\|edit\|remove\|import\|link\|link-state` | add `--host NAME` | Yes, except `vault link` and `link-state` |
 | Connectors | `latch plugins enable\|disable google` (on a Mac, also `messages` and `contacts`) | `latch status` shows the ones each host has on; `latch status --host NAME` lists them all | Yes |
 | Refuse exec to agents | `latch serve --deny-exec` or `--deny-exec=AGENT_UID` | No | Set when the host starts |
@@ -260,9 +257,9 @@ at least as likely as not covered.
 | Audit log | `latch audit` (`--before ID`, `--all`, `--follow`), `latch audit judge ID`, `latch audit shot ID N --output FILE`, `latch audit verify`, `latch audit rotate-key` | `audit`, `audit judge` and `audit shot` with `--host NAME`; `verify` and `rotate-key` only on the host | Yes |
 | Watch it | `latch dashboard`, `latch logs [-f]`, `latch audit --follow`, `latch status --local --follow` | `latch audit --follow --host NAME`, `latch status --host NAME --follow` | Yes, except `dashboard` |
 
-- **Rules** are plain text in your own words. There is one text for every
-  agent, which your own calls are judged against too, and one per agent.
-  Together they are at most 8 KiB.
+- **The device rule** is plain text in your own words, at most 8 KiB: what
+  agents are always denied on that host. Your own calls are judged
+  against it too.
 - **Vault** secrets never come from the command line or the environment.
   You type them at a prompt, import another password manager's export, or
   add them from your phone with `vault link`. See [VAULT.md](../latch/VAULT.md).
@@ -289,7 +286,7 @@ at least as likely as not covered.
   is inside. `latch setup --status` lists setup's steps as JSON, for an
   app. [APP.md](../latch/APP.md) describes the JSON an app reads.
 - From another machine, the host has to be running. A failed `--host` call
-  never falls back to this machine's rules or vault.
+  never falls back to this machine's device rule or vault.
 
 **Which host a command goes to.** `--host NAME`, or `LATCH_HOST`. (`rules`,
 `audit` and `status` read only `--host`.) Otherwise this machine, if it has
@@ -322,7 +319,7 @@ refuse `--host` and `LATCH_HOST` (`host_not_supported`, exit 2).
 - **Running a host means trusting everything that runs as your OS user on
   that machine.** Any such process can use the host's local socket and act
   as you (`owner_on_host`). Only the socket's file permissions protect it.
-  That includes changing the rules and the vault, which are never judged.
+  That includes changing the device rule and the vault, which are never judged.
 - **So run a host in a place you trust:** your own Mac, or a machine or
   container where nothing else runs as that user.
 - Latch's workers for exec, files and connectors never see the host's state
@@ -331,8 +328,8 @@ refuse `--host` and `LATCH_HOST` (`host_not_supported`, exit 2).
   sandbox, so a compromised engine could read the host's state folder.
   Root, and your other processes outside Latch, can read all of it.
 - **What leaves the host.** What the gatekeeper reads goes to Plow's
-  decision route: the request, your rules, and your chat with the agent
-  (see section 5). The browser's own risk checks send it lines of the page
+  decision route: the request, the device rule, and the message the agent
+  cites with your later messages and their context (see section 5). The browser's own risk checks send it lines of the page
   they look at. Plow also answers who a caller is, where your hosts are
   and, for Google, short-lived access tokens.
 - **What stays between the two machines.** The bytes of `file get` and
@@ -371,7 +368,7 @@ For how to report a vulnerability, see [SECURITY.md](../SECURITY.md).
     own. `LATCH_NO_UPDATE_CHECK=1` turns the looking off.
 - **Log out:** `latch logout` stops this machine's host, removes the machine
   from your Plow account and deletes its Plow token. It keeps the machine's
-  key, its name, the vault, the audit log, rules and settings, so after
+  key, its name, the vault, the audit log, device rule and settings, so after
   the next `latch login` it is the same machine, under the same name, to
   every agent. An agent's logout leaves Plow alone.
   - It first says what it deletes and keeps, with the state folder's full
@@ -397,7 +394,7 @@ For how to report a vulnerability, see [SECURITY.md](../SECURITY.md).
 | Another machine's dashboard or logs | Not supported |
 | Exec stdin over 16 KiB, or stdin that isn't UTF-8 text | Refused (`stdin_not_judgeable`, exit 2) |
 | Browsing anything but web addresses, or local addresses without `host.json` | Refused |
-| Per-agent permission lists | None, by design: write rules for that agent, or use `--deny-exec=AGENT_UID` |
+| Per-agent permission lists | None, by design: each action needs your message, and `--deny-exec=AGENT_UID` refuses exec to one agent |
 | A state folder in a format this Latch doesn't read | Refused (`state_format`); there's no migration |
 
 ## 10. Where a host runs

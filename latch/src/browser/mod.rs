@@ -43,7 +43,6 @@ pub mod handoff;
 pub mod host;
 pub(crate) mod journal;
 mod judged;
-pub(crate) use judged::previewed_fill;
 pub mod model;
 mod opened;
 pub mod plan;

@@ -893,19 +893,18 @@ async fn judged_action(
             let plan = serde_json::from_value::<super::plan::Plan>(args["plan"].clone())
                 .ok()
                 .filter(|plan| plan.validate().is_ok());
-            // What `act` sends, and says so, is a single click, keypress or
-            // scroll: one literal step that is no fill, which the risk
-            // decision judges, not the gatekeeper. Every `do` plan is
-            // judged, a one-step one too.
-            let one_action = |plan: &super::plan::Plan| {
-                args["act"] == true
-                    && match plan.steps.as_slice() {
-                        [step] => step.literal.as_ref().is_some_and(|l| l.op != Op::Fill),
-                        _ => false,
-                    }
+            // Every step that can change something is judged, from `act`
+            // or `do`; only moving around the page (scrolling, going back)
+            // is free, like going to a site.
+            let moves_only = |plan: &super::plan::Plan| {
+                plan.steps.iter().all(|step| {
+                    step.literal
+                        .as_ref()
+                        .is_some_and(|l| matches!(l.op, Op::Scroll | Op::Back))
+                })
             };
             match plan {
-                Some(mut plan) if !plan.steps.is_empty() && !one_action(&plan) => {
+                Some(mut plan) if !moves_only(&plan) => {
                     plan.resolve_facts();
                     let page = judged::page(browsers, entry).await?;
                     let names = judged::names(entry, &plan).await;

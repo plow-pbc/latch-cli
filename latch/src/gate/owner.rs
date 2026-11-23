@@ -1,55 +1,80 @@
-//! The `rules` operation: the owner's commands on a host's rules, from the
-//! owner's own devices only (an agent's key gets exit 4 `owner_only`, for
-//! every command, `show` included). `latch rules` sends it over latch's
-//! connection with `--host`, and runs it on this machine's own host state
-//! without.
+//! The `rules` operation: the owner's commands on a host's device rule
+//! and agent map, from the owner's own devices only (an agent's key gets
+//! exit 4 `owner_only`, for every command, `show` included). `latch rules`
+//! and `latch agents map` send it over latch's connection with `--host`,
+//! and run it on this machine's own host state without.
 //!
-//! `--agent NAME` is resolved here, once, to an agent uid: an agent's name,
-//! the peer name of the latch it calls from, or the uid itself. The audit
-//! gets the scope, the uid and the revisions before and after; never text.
+//! The audit gets each change's revisions before and after, and the
+//! agent uid and Swarm account a mapping names; never the rule's text.
 
-use std::collections::HashMap;
 use std::path::Path;
 
 use serde_json::{Map, Value, json};
 
-use super::rules::{Change, RulesDir, Scope, is_agent_uid, revision};
+use super::rules::{Change, Snapshot, Store, revision};
 use crate::failure::{Failure, code};
-use crate::plow::{NamedAgent, Peer, Plow};
+use crate::plow::Plow;
 use crate::serve::Done;
 
 /// What `show` always says.
-pub const WARNING: &str =
-    "Freeform rules are judged, not guaranteed. --deny-exec is enforced in code.";
+pub const WARNING: &str = "The device rule only denies: an agent acts only on the owner's message it cites. It is judged, not guaranteed; --deny-exec is enforced in code.";
 
-/// `rules`: one owner command on the rules in `state_dir`, for the host
-/// named `host`. `kind` is the caller's kind as Plow says.
+/// `rules`: one owner command on the device rule or agent map in
+/// `state_dir`, for the host named `host`. `kind` is the caller's kind as
+/// Plow says.
 pub async fn run(state_dir: &Path, plow: &Plow, host: &str, kind: &str, args: &Value) -> Done {
+    changing(state_dir, plow, host, kind, args).await.0
+}
+
+/// `run`, and for a change it made, the file as it was, locked: the caller
+/// audits the change and, if the audit can't be written, puts the file
+/// back, then drops it.
+pub async fn changing(
+    state_dir: &Path,
+    plow: &Plow,
+    host: &str,
+    kind: &str,
+    args: &Value,
+) -> (Done, Option<Snapshot>) {
     let command = args["command"].as_str().unwrap_or_default();
     let mut audit = Map::new();
     audit.insert("command".into(), json!(command));
-    let result = match owner_only(kind, "the rules") {
-        Ok(()) => {
-            let dir = RulesDir::new(state_dir);
-            let from = args["from"].as_str();
-            match command {
-                "show" => show(state_dir, &dir, plow, host, from).await,
-                "set" | "edit" => set(&dir, plow, host, command, args, &mut audit).await,
-                "clear" | "clear_at_revision" => {
-                    clear(&dir, plow, host, command, args, &mut audit).await
-                }
-                _ => Err(Failure::new(
-                    code::bad_command,
-                    format!("unknown rules command {command:?}"),
-                )),
-            }
-        }
+    let store = Store::new(state_dir);
+    let mut snapshot = None;
+    let result = match owner_only(kind, "the device rule") {
         Err(failure) => Err(failure),
+        Ok(()) if !args["from"].is_null() => Err(Failure::new(
+            code::bad_arguments,
+            "a host has one device rule, for every agent: per-agent rules are gone".into(),
+        )),
+        Ok(()) => match command {
+            "show" => show(state_dir, &store, host),
+            "set" | "edit" | "clear" | "clear_at_revision" => {
+                change_rule(&store, host, command, args, &mut audit, &mut snapshot).await
+            }
+            "map_agent" => map_agent(&store, plow, host, args, &mut audit, &mut snapshot).await,
+            _ => Err(Failure::new(
+                code::bad_command,
+                format!("unknown rules command {command:?}"),
+            )),
+        },
     };
-    crate::vault::host::done(result, audit)
+    (crate::vault::host::done(result, audit), snapshot)
 }
 
-/// Only the owner's own devices may use `what` (the rules, a host's
+/// Puts back a change whose audit record couldn't be written; a failure
+/// to put it back is logged, never silent.
+pub fn undo(snapshot: Option<Snapshot>) {
+    if let Some(snapshot) = snapshot
+        && let Err(err) = snapshot.restore()
+    {
+        crate::log::log(&format!(
+            "rules: an unaudited change could not be put back: {err}"
+        ));
+    }
+}
+
+/// Only the owner's own devices may use `what` (the device rule, a host's
 /// audit): an agent's key gets exit 4.
 pub(crate) fn owner_only(kind: &str, what: &str) -> Result<(), Failure> {
     if kind == "device" {
@@ -61,245 +86,105 @@ pub(crate) fn owner_only(kind: &str, what: &str) -> Result<(), Failure> {
     ))
 }
 
-/// The agent `from` names, resolved as `--agent` is for every rules
-/// command: its uid, and its current name in Plow.
-pub async fn agent(plow: &Plow, from: &str) -> Result<(String, Option<String>), Failure> {
-    let account = Account::read(plow).await?;
-    let uid = account.resolve(from, false)?;
-    let name = account.name(&uid);
-    Ok((uid, name))
-}
-
-async fn set(
-    dir: &RulesDir,
-    plow: &Plow,
-    host: &str,
-    command: &str,
-    args: &Value,
-    audit: &mut Map<String, Value>,
-) -> Result<Value, Failure> {
-    let text = args["text"]
-        .as_str()
-        .ok_or_else(|| Failure::new(code::bad_arguments, "the rules' text is missing".into()))?;
-    let (scope, name, peer) = match args["from"].as_str() {
-        None => (Scope::Host, None, None),
-        Some(from) => {
-            let account = Account::read(plow).await?;
-            let uid = account.resolve(from, false)?;
-            let name = account.name(&uid);
-            let peer = account.peer_key(&uid);
-            (Scope::Agent(uid), name, peer)
-        }
-    };
-    note_scope(audit, &scope);
-    // An edit saves only over the text it started from.
-    let expected = (command == "edit").then(|| args["revision"].as_str());
-    let change = dir.set(&scope, text, expected, peer.as_deref())?;
-    note_change(audit, &change);
-    let mut done = described(host, &scope, name);
-    done["revision"] = json!(change.after);
-    done["applies"] = json!("applies to the next judgment");
-    Ok(done)
-}
-
-async fn clear(
-    dir: &RulesDir,
-    plow: &Plow,
-    host: &str,
-    command: &str,
-    args: &Value,
-    audit: &mut Map<String, Value>,
-) -> Result<Value, Failure> {
-    let (scope, name) = match args["from"].as_str() {
-        None => (Scope::Host, None),
-        Some(from) => {
-            let account = Account::read(plow).await?;
-            let uid = account.resolve(from, true)?;
-            let name = account.name(&uid);
-            (Scope::Agent(uid), name)
-        }
-    };
-    note_scope(audit, &scope);
-    let expected = (command == "clear_at_revision").then(|| args["revision"].as_str());
-    let change = dir.clear(&scope, expected)?;
-    note_change(audit, &change);
-    let mut done = described(host, &scope, name);
-    done["cleared"] = json!(change.before.is_some());
-    done["applies"] = json!("applies to the next judgment");
-    Ok(done)
-}
-
-/// The rules for every agent and each agent's own (or only `from`'s),
-/// with each agent's current name, a mark on rules whose agent no longer
-/// exists, and a note when its latch moved machines since they were set;
-/// and the agents `--deny-exec` refuses exec here.
-async fn show(
-    state_dir: &Path,
-    dir: &RulesDir,
-    plow: &Plow,
-    host: &str,
-    from: Option<&str>,
-) -> Result<Value, Failure> {
-    let mut uids = dir.agents()?;
-    let mut agents = Vec::new();
-    if from.is_some() || !uids.is_empty() {
-        let account = Account::read(plow).await?;
-        if let Some(from) = from {
-            uids = vec![account.resolve(from, true)?];
-        }
-        for uid in uids {
-            let text = dir.text(&Scope::Agent(uid.clone()))?;
-            let mut shown = json!({
-                "agent_uid": uid,
-                "agent_name": account.name(&uid),
-                "text": text,
-                "revision": text.as_deref().map(revision),
-            });
-            if account.name(&uid).is_none() {
-                shown["deleted"] = json!(true);
-                shown["note"] = json!(
-                    "this agent no longer exists in Plow (re-provisioned or deleted): set its rules again with --agent its new name, and clear these with --agent its old uid"
-                );
-            } else if text.is_some() {
-                match dir.peer(&uid)? {
-                    None => shown["note"] = json!("no latch registered when set"),
-                    Some(then) if !account.has_peer(&uid, &then) => {
-                        shown["moved"] = json!(true);
-                        shown["note"] =
-                            json!("this agent's latch has moved machines since its rules were set");
-                    }
-                    _ => {}
-                }
-            }
-            agents.push(shown);
-        }
-    }
-    let every = dir.text(&Scope::Host)?;
+fn show(state_dir: &Path, store: &Store, host: &str) -> Result<Value, Failure> {
+    let rule = store
+        .deny()
+        .map_err(|why| Failure::new(code::rules_io, why))?;
+    let agents = store
+        .agents()
+        .map_err(|why| Failure::new(code::rules_io, why))?;
     Ok(json!({
         "host": host,
-        "every_agent": every.as_deref().map(|text| json!({"text": text, "revision": revision(text)})),
+        "device_rule": rule.as_deref().map(|text| json!({"text": text, "revision": revision(text)})),
         "agents": agents,
         "deny_exec": crate::managed::saved_deny_exec(state_dir),
         "warning": WARNING,
     }))
 }
 
-/// What a change was to: the host, and which text.
-fn described(host: &str, scope: &Scope, name: Option<String>) -> Value {
-    match scope {
-        Scope::Host => json!({"host": host, "scope": "every agent"}),
-        Scope::Agent(uid) => {
-            json!({"host": host, "scope": "agent", "agent_uid": uid, "agent_name": name})
-        }
-    }
-}
-
-fn note_scope(audit: &mut Map<String, Value>, scope: &Scope) {
-    let (scope, uid) = match scope {
-        Scope::Host => ("every agent", None),
-        Scope::Agent(uid) => ("agent", Some(uid)),
-    };
-    audit.insert("scope".into(), json!(scope));
-    audit.insert("agent_uid".into(), json!(uid));
-}
-
-fn note_change(audit: &mut Map<String, Value>, change: &Change) {
+fn changed(host: &str, change: &Change, audit: &mut Map<String, Value>) -> Value {
     audit.insert("before".into(), json!(change.before));
     audit.insert("after".into(), json!(change.after));
+    json!({
+        "host": host,
+        "revision": change.after,
+        "cleared": change.after.is_none() && change.before.is_some(),
+        "applies": "applies to the next judgment",
+    })
 }
 
-/// The account as `--agent` is resolved against: its agents, its peers, and
-/// the agent each agent peer belongs to.
-struct Account {
-    agents: Vec<NamedAgent>,
-    peers: Vec<Peer>,
-    /// Agent uids by peer key, for the agents' peers.
-    agent_of: HashMap<String, String>,
+/// Sets, edits or clears the device rule, as `command` says.
+async fn change_rule(
+    store: &Store,
+    host: &str,
+    command: &str,
+    args: &Value,
+    audit: &mut Map<String, Value>,
+    snapshot: &mut Option<Snapshot>,
+) -> Result<Value, Failure> {
+    let expected =
+        matches!(command, "edit" | "clear_at_revision").then(|| args["revision"].as_str());
+    let text = match command {
+        "set" | "edit" => args["text"].as_str().ok_or_else(|| {
+            Failure::new(
+                code::bad_arguments,
+                "the device rule's text is missing".into(),
+            )
+        })?,
+        _ => "",
+    };
+    let held = held(store, Store::snapshot_deny).await?;
+    let change = match command {
+        "set" | "edit" => store.set_deny(text, expected),
+        _ => store.clear_deny(expected),
+    }?;
+    *snapshot = Some(held);
+    Ok(changed(host, &change, audit))
 }
 
-impl Account {
-    async fn read(plow: &Plow) -> Result<Account, Failure> {
-        let agents = plow.agents().await?;
-        let peers = plow.list_peers().await?;
-        let mut agent_of = HashMap::new();
-        for peer in peers.iter().filter(|peer| peer.kind == "agent") {
-            if let Some(uid) = plow.lookup(&peer.key).await?.agent_uid {
-                agent_of.insert(peer.key.clone(), uid);
-            }
-        }
-        Ok(Account {
-            agents,
-            peers,
-            agent_of,
-        })
-    }
+/// A snapshot `take` makes, its lock waited for off the async runtime: a
+/// change holding it over its audit never waits on a thread this one
+/// blocks.
+async fn held(
+    store: &Store,
+    take: fn(&Store) -> Result<Snapshot, Failure>,
+) -> Result<Snapshot, Failure> {
+    let store = store.clone();
+    tokio::task::spawn_blocking(move || take(&store))
+        .await
+        .expect("waiting for the lock does not panic")
+}
 
-    /// The agent uid `name` stands for. With `any_uid`, a uid no live agent
-    /// has is taken as it is, so rules left by a deleted agent can be
-    /// shown and cleared.
-    fn resolve(&self, name: &str, any_uid: bool) -> Result<String, Failure> {
-        let by_agent = self
-            .agents
-            .iter()
-            .filter(|agent| agent.name == name || agent.uid == name)
-            .map(|agent| agent.uid.clone());
-        let by_peer = self
-            .peers
-            .iter()
-            .filter(|peer| peer.name == name)
-            .filter_map(|peer| self.agent_of.get(&peer.key).cloned());
-        let mut uids: Vec<String> = by_agent.chain(by_peer).collect();
-        uids.sort();
-        uids.dedup();
-        match uids.as_slice() {
-            [uid] => Ok(uid.clone()),
-            [] if self
-                .peers
-                .iter()
-                .any(|peer| peer.name == name && peer.kind == "device") =>
-            {
-                Err(Failure::new(
-                    code::not_an_agent,
-                    format!(
-                        "{name:?} is a device: `--agent` names an agent, and a device is judged on the rules for every agent"
-                    ),
-                ))
-            }
-            [] if any_uid && is_agent_uid(name) => Ok(name.to_string()),
-            [] => Err(Failure::new(
-                code::no_such_agent,
-                format!("no agent or agent's latch in this account is called {name:?}"),
-            )),
-            many => {
-                let mut refused = Failure::new(
-                    code::ambiguous_agent,
-                    format!(
-                        "{} agents go by {name:?}: {}; name one by its uid with --agent",
-                        many.len(),
-                        many.join(", ")
-                    ),
-                );
-                refused.details = json!({"agents": many});
-                Err(refused)
-            }
-        }
-    }
-
-    /// The agent's current name in Plow; `None` once it no longer exists.
-    fn name(&self, uid: &str) -> Option<String> {
-        let agent = self.agents.iter().find(|agent| agent.uid == uid)?;
-        Some(agent.name.clone())
-    }
-
-    /// A key of a latch the agent calls from now, if it has one.
-    fn peer_key(&self, uid: &str) -> Option<String> {
-        let (key, _) = self.agent_of.iter().find(|(_, agent)| *agent == uid)?;
-        Some(key.clone())
-    }
-
-    fn has_peer(&self, uid: &str, key: &str) -> bool {
-        self.agent_of.get(key).is_some_and(|agent| agent == uid)
-    }
+/// Maps the agent `agent` names (its name or its uid) to the Swarm
+/// account `swarm_id`.
+async fn map_agent(
+    store: &Store,
+    plow: &Plow,
+    host: &str,
+    args: &Value,
+    audit: &mut Map<String, Value>,
+    snapshot: &mut Option<Snapshot>,
+) -> Result<Value, Failure> {
+    let (Some(agent), Some(swarm_id)) = (args["agent"].as_str(), args["swarm_id"].as_str()) else {
+        let message = "map_agent needs an agent and a swarm_id".to_string();
+        return Err(Failure::new(code::bad_arguments, message));
+    };
+    // Plow is asked before the map is locked: a slow answer holds up no
+    // other change.
+    let agent = crate::agents::resolve(plow, agent).await?;
+    let held = held(store, Store::snapshot_agents).await?;
+    let before = store.map_agent(&agent.uid, swarm_id)?;
+    *snapshot = Some(held);
+    audit.insert("agent_uid".into(), json!(agent.uid));
+    audit.insert("swarm_id".into(), json!(swarm_id));
+    audit.insert("before".into(), json!(before));
+    Ok(json!({
+        "host": host,
+        "agent_uid": agent.uid,
+        "agent_name": agent.name,
+        "swarm_id": swarm_id,
+        "replaced": before,
+    }))
 }
 
 #[cfg(test)]
@@ -310,66 +195,39 @@ mod tests {
 
     use super::*;
     use crate::failure::Exit;
-    use crate::gate::rules::{RuleFiles, Rules, RulesSource};
     use crate::wire::Response;
 
     const ADA: &str = "0123456789abcdef0123456789abcdef";
     const BOB: &str = "fedcba9876543210fedcba9876543210";
-    const ADA_KEY: &str = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1";
 
-    /// What the synthetic Plow holds: agents by uid and name, and peers as
-    /// (key, kind, name, agent uid).
-    #[derive(Default)]
+    /// The synthetic Plow's agents, by uid and name.
     struct World {
         agents: Vec<(String, String)>,
-        peers: Vec<(String, String, String, Option<String>)>,
     }
 
     impl World {
         fn answer(&self, target: &str) -> (u16, Value) {
-            let peer = |(key, kind, name, _): &(String, String, String, Option<String>)| {
-                json!({"key": key, "kind": kind, "name": name, "relay_url": null,
-                       "last_seen_at": null, "online": false})
-            };
-            if target == "/v1/agents" {
-                let agents: Vec<Value> = self
-                    .agents
-                    .iter()
-                    .map(|(uid, name)| json!({"uid": uid, "name": name, "provider": "self"}))
-                    .collect();
-                return (200, json!(agents));
+            if target != "/v1/agents" {
+                return (404, json!({}));
             }
-            if target == "/v1/latch/peers" {
-                let peers: Vec<Value> = self.peers.iter().map(peer).collect();
-                return (200, json!({"data": peers}));
-            }
-            let key = target.strip_prefix("/v1/latch/peers/").unwrap_or_default();
-            match self.peers.iter().find(|(k, ..)| k == key) {
-                Some(found) => {
-                    let mut identity = peer(found);
-                    identity["agent_uid"] = json!(found.3);
-                    identity["permissions"] = json!({"call": true});
-                    (200, identity)
-                }
-                None => (404, json!({})),
-            }
+            let agents: Vec<Value> = self
+                .agents
+                .iter()
+                .map(|(uid, name)| {
+                    json!({"uid": uid, "name": name, "provider": "self_hosted",
+                           "line": {"uid": "line", "provider_key": "+14155550100", "display_name": null},
+                           "created_at": "2026-11-01T00:00:00Z", "status": null,
+                           "failure_code": null, "credential": null})
+                })
+                .collect();
+            (200, json!(agents))
         }
     }
 
-    /// The account the tests start from: Ada (also the name of the latch
-    /// she calls from, `ada-latch`), Bob, and the owner's mac.
+    /// The account the tests start from: Ada and Bob.
     fn world() -> World {
         World {
             agents: vec![(ADA.into(), "Ada".into()), (BOB.into(), "Bob".into())],
-            peers: vec![
-                (
-                    ADA_KEY.into(),
-                    "agent".into(),
-                    "ada-latch".into(),
-                    Some(ADA.into()),
-                ),
-                ("d".repeat(64), "device".into(), "mac".into(), None),
-            ],
         }
     }
 
@@ -403,10 +261,9 @@ mod tests {
         Plow::new(&url, "made-up-login").unwrap()
     }
 
-    /// A host's state folder, its Plow, and the world behind it.
+    /// A host's state folder and its Plow.
     struct Host {
         dir: tempfile::TempDir,
-        world: Arc<Mutex<World>>,
         plow: Plow,
     }
 
@@ -418,7 +275,6 @@ mod tests {
             Host {
                 dir: tempfile::tempdir_in(parent).unwrap(),
                 plow: plow(&world),
-                world,
             }
         }
 
@@ -438,18 +294,6 @@ mod tests {
                 } => Err((exit, code, message)),
             }
         }
-
-        /// The rules a judgment reads for `agent`.
-        fn judged(&self, agent: &str) -> Rules {
-            RuleFiles::new(self.dir.path())
-                .unwrap()
-                .rules(agent)
-                .unwrap()
-        }
-    }
-
-    fn set(from: Option<&str>, text: &str) -> Value {
-        json!({"command": "set", "from": from, "text": text})
     }
 
     fn refusal(result: Result<Value, (Exit, String, String)>) -> (Exit, String) {
@@ -458,219 +302,143 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn set_replaces_the_text_and_says_what_it_set() {
+    async fn the_owner_sets_edits_shows_and_clears_the_device_rule() {
         let host = Host::new();
-        host.owner(set(None, "Never send email.")).await.unwrap();
-        let done = host.owner(set(None, "Run tests in ~/work.")).await.unwrap();
-        assert_eq!(
-            done,
-            json!({"host": "studio", "scope": "every agent",
-                   "revision": revision("Run tests in ~/work."),
-                   "applies": "applies to the next judgment"})
-        );
-        assert_eq!(
-            host.judged(ADA).host.as_deref(),
-            Some("Run tests in ~/work.")
-        );
-
-        let done = host.owner(set(Some("Ada"), "Only pytest.")).await.unwrap();
-        assert_eq!(
-            done,
-            json!({"host": "studio", "scope": "agent", "agent_uid": ADA, "agent_name": "Ada",
-                   "revision": revision("Only pytest."),
-                   "applies": "applies to the next judgment"})
-        );
-        assert_eq!(host.judged(ADA).agent.as_deref(), Some("Only pytest."));
-        assert_eq!(host.judged(BOB).agent, None);
-    }
-
-    #[tokio::test]
-    async fn from_takes_an_agent_name_a_peer_name_or_a_uid_and_never_a_device() {
-        let host = Host::new();
-        for (from, text) in [("Ada", "one"), ("ada-latch", "two"), (ADA, "three")] {
-            let done = host.owner(set(Some(from), text)).await.unwrap();
-            assert_eq!(done["agent_uid"], ADA, "{from}");
-            assert_eq!(host.judged(ADA).agent.as_deref(), Some(text), "{from}");
-        }
-
-        host.world
-            .lock()
-            .unwrap()
-            .agents
-            .push(("1".repeat(32), "Ada".into()));
-        let (exit, code, message) = host.owner(set(Some("Ada"), "four")).await.unwrap_err();
-        assert_eq!((exit, code.as_str()), (Exit::Usage, "ambiguous_agent"));
-        assert!(
-            message.contains(ADA) && message.contains(&"1".repeat(32)),
-            "{message}"
-        );
-        assert_eq!(host.judged(ADA).agent.as_deref(), Some("three"));
-
-        assert_eq!(
-            refusal(host.owner(set(Some("mac"), "five")).await),
-            (Exit::Usage, "not_an_agent".into())
-        );
-        assert_eq!(
-            refusal(host.owner(set(Some("Carol"), "six")).await),
-            (Exit::Usage, "no_such_agent".into())
-        );
-        // A uid no agent has is no agent to set rules for.
-        assert_eq!(
-            refusal(host.owner(set(Some(&"2".repeat(32)), "seven")).await),
-            (Exit::Usage, "no_such_agent".into())
-        );
-    }
-
-    #[tokio::test]
-    async fn a_rename_after_set_leaves_the_rules_with_the_same_agent() {
-        let host = Host::new();
-        host.owner(set(Some("Ada"), "Only pytest.")).await.unwrap();
-        host.world.lock().unwrap().agents[0].1 = "Ada Lovelace".into();
-        assert_eq!(host.judged(ADA).agent.as_deref(), Some("Only pytest."));
         let shown = host.owner(json!({"command": "show"})).await.unwrap();
-        assert_eq!(shown["agents"][0]["agent_uid"], ADA);
-        assert_eq!(shown["agents"][0]["agent_name"], "Ada Lovelace");
-        assert_eq!(shown["agents"][0]["text"], "Only pytest.");
-    }
-
-    #[tokio::test]
-    async fn an_edit_saves_only_over_the_revision_it_read() {
-        let host = Host::new();
-        let edit = |revision: Value, text: &str| json!({"command": "edit", "from": "Ada", "text": text, "revision": revision});
-        // Nothing yet: an edit from no text saves.
-        host.owner(edit(Value::Null, "one")).await.unwrap();
-        host.owner(edit(json!(revision("one")), "two"))
+        assert_eq!(shown["device_rule"], Value::Null);
+        let set = host
+            .owner(json!({"command": "set", "text": "Never touch my tax returns."}))
             .await
             .unwrap();
-        let (exit, code, message) = host
-            .owner(edit(json!(revision("one")), "three"))
+        assert_eq!(set["revision"], revision("Never touch my tax returns."));
+        let stale = host
+            .owner(json!({"command": "edit", "text": "x", "revision": revision("other")}))
+            .await;
+        assert_eq!(refusal(stale).1, "stale_revision");
+        let shown = host.owner(json!({"command": "show"})).await.unwrap();
+        assert_eq!(shown["device_rule"]["text"], "Never touch my tax returns.");
+        // An empty rule is an answer: it denies nothing, and stays set.
+        host.owner(json!({"command": "set", "text": ""}))
             .await
-            .unwrap_err();
-        assert_eq!((exit, code.as_str()), (Exit::Denied, "stale_revision"));
-        assert!(message.contains("current text is kept"), "{message}");
-        assert_eq!(host.judged(ADA).agent.as_deref(), Some("two"));
+            .unwrap();
         assert_eq!(
-            refusal(host.owner(edit(Value::Null, "four")).await),
-            (Exit::Denied, "stale_revision".into())
+            Store::new(host.dir.path()).deny().unwrap().as_deref(),
+            Some("")
         );
+        let cleared = host.owner(json!({"command": "clear"})).await.unwrap();
+        assert_eq!(cleared["cleared"], true);
+        assert_eq!(Store::new(host.dir.path()).deny().unwrap(), None);
     }
 
+    /// A change whose audit record can't be written is put back: the rule
+    /// and the agent map are as they were, and a refused change has
+    /// nothing to put back.
     #[tokio::test]
-    async fn a_clear_at_a_revision_removes_only_the_text_it_read() {
+    async fn an_unaudited_change_is_put_back() {
         let host = Host::new();
-        let clear = |revision: Value| json!({"command": "clear_at_revision", "from": "Ada", "revision": revision});
-        host.owner(set(Some("Ada"), "one")).await.unwrap();
-        let (exit, code, _) = host.owner(clear(Value::Null)).await.unwrap_err();
-        assert_eq!((exit, code.as_str()), (Exit::Denied, "stale_revision"));
-        assert_eq!(host.judged(ADA).agent.as_deref(), Some("one"));
-        let done = host.owner(clear(json!(revision("one")))).await.unwrap();
-        assert_eq!(done["cleared"], true);
-        assert_eq!(host.judged(ADA).agent, None);
-    }
-
-    #[tokio::test]
-    async fn empty_rules_are_refused() {
-        let host = Host::new();
-        host.owner(set(None, "Never buy anything.")).await.unwrap();
-        for text in ["", " \n\t"] {
-            assert_eq!(
-                refusal(host.owner(set(None, text)).await),
-                (Exit::Usage, "empty_rules".into())
-            );
-        }
-        assert_eq!(
-            host.judged(ADA).host.as_deref(),
-            Some("Never buy anything.")
-        );
-    }
-
-    #[tokio::test]
-    async fn rules_past_8_kib_together_are_refused_and_change_nothing() {
-        let host = Host::new();
-        let text = |bytes: usize| "r".repeat(bytes);
-        host.owner(set(None, &text(3000))).await.unwrap();
-        host.owner(set(Some("Ada"), &text(5000))).await.unwrap();
-        host.owner(set(Some("Bob"), &text(1000))).await.unwrap();
-        let before = host.judged(ADA);
-
-        // Ada's own past the limit with the host's.
-        assert_eq!(
-            refusal(host.owner(set(Some("Ada"), &text(5193))).await),
-            (Exit::Usage, "rules_too_long".into())
-        );
-        // The host's past it with Ada's, though fine with Bob's.
-        assert_eq!(
-            refusal(host.owner(set(None, &text(3193))).await),
-            (Exit::Usage, "rules_too_long".into())
-        );
-        assert_eq!(host.judged(ADA), before);
-        assert_eq!(host.judged(BOB).agent, Some(text(1000)));
-
-        host.owner(set(None, &text(3192))).await.unwrap();
-        host.owner(set(Some("Bob"), &text(5000))).await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn an_interrupted_write_leaves_the_old_text() {
-        let host = Host::new();
-        host.owner(set(None, "Never send email.")).await.unwrap();
-        let rules = host.dir.path().join("rules");
-        // A write stopped before its rename leaves only its temporary file:
-        // judgments, and a restarted host, still read the old text.
-        std::fs::write(rules.join("host.txt.interrupted.tmp"), "Anyth").unwrap();
-        assert_eq!(host.judged(ADA).host.as_deref(), Some("Never send email."));
-        // A write that fails partway changes nothing.
-        let mode = |mode| {
-            std::fs::set_permissions(&rules, std::os::unix::fs::PermissionsExt::from_mode(mode))
-                .unwrap()
+        host.owner(json!({"command": "set", "text": "Never pay."}))
+            .await
+            .unwrap();
+        let changing = |args: Value| {
+            let dir = host.dir.path().to_path_buf();
+            let plow = host.plow.clone();
+            async move { changing(&dir, &plow, "studio", "device", &args).await }
         };
-        mode(0o500);
+        let store = Store::new(host.dir.path());
+        for (args, kept) in [
+            (
+                json!({"command": "set", "text": "Anything goes."}),
+                Some("Never pay."),
+            ),
+            (json!({"command": "clear"}), Some("Never pay.")),
+        ] {
+            let (done, snapshot) = changing(args.clone()).await;
+            assert!(matches!(done.response, Response::Ok(_)), "{args}");
+            undo(snapshot);
+            assert_eq!(store.deny().unwrap().as_deref(), kept, "{args}");
+        }
+        let (_, snapshot) =
+            changing(json!({"command": "map_agent", "agent": "Ada", "swarm_id": "@ada:plow.co"}))
+                .await;
+        undo(snapshot);
+        assert!(store.agents().unwrap().is_empty());
+        let (_, nothing) =
+            changing(json!({"command": "edit", "text": "x", "revision": "stale"})).await;
+        assert!(nothing.is_none());
+    }
+
+    /// On a host with one runtime thread, a change waiting for another's
+    /// lock never blocks the thread the other needs to finish its audit.
+    #[test]
+    fn a_change_waiting_for_another_holds_up_nothing() {
+        let host = Host::new();
+        let (dir, plow) = (host.dir.path().to_path_buf(), host.plow.clone());
+        let (finished, done) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(async move {
+                let set = |text: &str| json!({"command": "set", "text": text});
+                let (_, held) = changing(&dir, &plow, "studio", "device", &set("one")).await;
+                let second = tokio::spawn(async move {
+                    changing(&dir, &plow, "studio", "device", &set("two")).await;
+                });
+                // The first, still holding the lock, awaits as an audit would.
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                drop(held);
+                second.await.unwrap();
+            });
+            finished.send(()).unwrap();
+        });
+        done.recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the waiting change held up the runtime's only thread");
         assert_eq!(
-            refusal(host.owner(set(None, "Anything goes.")).await),
-            (Exit::Failed, "rules_io".into())
+            Store::new(host.dir.path()).deny().unwrap().as_deref(),
+            Some("two")
         );
-        mode(0o700);
-        assert_eq!(host.judged(ADA).host.as_deref(), Some("Never send email."));
-        host.owner(set(None, "Anything goes.")).await.unwrap();
-        assert_eq!(host.judged(ADA).host.as_deref(), Some("Anything goes."));
     }
 
     #[tokio::test]
-    async fn clear_removes_only_its_own_text() {
+    async fn per_agent_rules_are_refused() {
         let host = Host::new();
-        host.owner(set(None, "Never send email.")).await.unwrap();
-        host.owner(set(Some("Ada"), "Only pytest.")).await.unwrap();
-        host.owner(set(Some("Bob"), "Only git.")).await.unwrap();
+        let refused = host
+            .owner(json!({"command": "set", "from": "Ada", "text": "Only git."}))
+            .await;
+        assert_eq!(refusal(refused).1, "bad_arguments");
+    }
 
-        let done = host
-            .owner(json!({"command": "clear", "from": "Ada"}))
+    #[tokio::test]
+    async fn the_owner_maps_an_agent_by_name_to_its_swarm_account() {
+        let host = Host::new();
+        let mapped = host
+            .owner(json!({"command": "map_agent", "agent": "Ada", "swarm_id": "@ada:plow.co"}))
             .await
             .unwrap();
-        assert_eq!(done["cleared"], true);
-        assert_eq!(host.judged(ADA).agent, None);
-        assert_eq!(host.judged(ADA).host.as_deref(), Some("Never send email."));
-        assert_eq!(host.judged(BOB).agent.as_deref(), Some("Only git."));
-        assert!(!host.dir.path().join(format!("rules/{ADA}.peer")).exists());
-
-        host.owner(json!({"command": "clear"})).await.unwrap();
-        assert_eq!(host.judged(BOB).host, None);
-        assert_eq!(host.judged(BOB).agent.as_deref(), Some("Only git."));
+        assert_eq!(
+            (mapped["agent_uid"].as_str(), mapped["agent_name"].as_str()),
+            (Some(ADA), Some("Ada"))
+        );
+        assert_eq!(
+            Store::new(host.dir.path()).agents().unwrap()[ADA],
+            "@ada:plow.co"
+        );
     }
 
     #[tokio::test]
-    async fn an_agent_gets_owner_only_for_every_command() {
+    async fn an_agent_can_neither_read_nor_change_the_rule_or_the_agent_map() {
         let host = Host::new();
-        host.owner(set(None, "Never send email.")).await.unwrap();
         for args in [
             json!({"command": "show"}),
-            set(None, "Anything goes."),
-            json!({"command": "edit", "text": "Anything goes.", "revision": revision("Never send email.")}),
+            json!({"command": "set", "text": ""}),
             json!({"command": "clear"}),
-            json!({"command": "show", "from": "Ada"}),
+            json!({"command": "map_agent", "agent": ADA, "swarm_id": "@evil:plow.co"}),
+            json!({"command": "map_agent", "agent": BOB, "swarm_id": "@bob:plow.co"}),
         ] {
             let done = host.done("agent", args.clone()).await;
             let Response::Error { exit, code, .. } = done.response else {
-                panic!("{args}: answered");
+                panic!("an agent ran {args}");
             };
             assert_eq!(
                 (exit, code.as_str()),
@@ -678,128 +446,7 @@ mod tests {
                 "{args}"
             );
         }
-        assert_eq!(host.judged(ADA).host.as_deref(), Some("Never send email."));
-    }
-
-    #[tokio::test]
-    async fn show_marks_deleted_agents_and_moved_latches() {
-        let host = Host::new();
-        host.owner(set(None, "Never send email.")).await.unwrap();
-        host.owner(set(Some("Ada"), "Only pytest.")).await.unwrap();
-        // Bob has no latch when his rules are set.
-        host.owner(set(Some("Bob"), "Only git.")).await.unwrap();
-        host.world
-            .lock()
-            .unwrap()
-            .agents
-            .push(("3".repeat(32), "Cy".into()));
-        host.owner(set(Some("Cy"), "Read only.")).await.unwrap();
-
-        // A separately adopted credential registers another peer key for the
-        // same agent; the key saved with its rules is still live.
-        host.world.lock().unwrap().peers.push((
-            "b".repeat(64),
-            "agent".into(),
-            "ada-adopted".into(),
-            Some(ADA.into()),
-        ));
-        let account = Account::read(&host.plow).await.unwrap();
-        assert!(account.has_peer(ADA, ADA_KEY));
-        assert!(account.has_peer(ADA, &"b".repeat(64)));
-
-        let shown = host.owner(json!({"command": "show"})).await.unwrap();
-        assert_eq!(shown["warning"], WARNING);
-        assert_eq!(
-            shown["every_agent"],
-            json!({"text": "Never send email.", "revision": revision("Never send email.")})
-        );
-        let agent = |uid: &str| {
-            shown["agents"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|a| a["agent_uid"] == uid)
-                .unwrap()
-                .clone()
-        };
-        // Unchanged: nothing to note.
-        assert_eq!(
-            agent(ADA),
-            json!({"agent_uid": ADA, "agent_name": "Ada", "text": "Only pytest.",
-                   "revision": revision("Only pytest.")})
-        );
-        assert_eq!(agent(BOB)["note"], "no latch registered when set");
-
-        {
-            let mut world = host.world.lock().unwrap();
-            // Ada's original latch goes away; Cy is deleted.
-            world.peers.remove(0);
-            world.agents.retain(|(_, name)| name != "Cy");
-        }
-        let shown = host.owner(json!({"command": "show"})).await.unwrap();
-        let agent = |uid: &str| {
-            shown["agents"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|a| a["agent_uid"] == uid)
-                .unwrap()
-                .clone()
-        };
-        assert_eq!(agent(ADA)["moved"], true);
-        assert!(
-            agent(ADA)["note"]
-                .as_str()
-                .unwrap()
-                .contains("moved machines")
-        );
-        let cy = agent(&"3".repeat(32));
-        assert_eq!(
-            (cy["deleted"].clone(), cy["agent_name"].clone()),
-            (json!(true), Value::Null)
-        );
-        assert_eq!(cy["text"], "Read only.");
-
-        // `--agent` shows one agent's beside every agent's, and a deleted
-        // agent's rules are shown and cleared by its uid.
-        let one = host
-            .owner(json!({"command": "show", "from": "3".repeat(32)}))
-            .await
-            .unwrap();
-        assert_eq!(one["agents"].as_array().unwrap().len(), 1);
-        assert_eq!(one["every_agent"]["text"], "Never send email.");
-        host.owner(json!({"command": "clear", "from": "3".repeat(32)}))
-            .await
-            .unwrap();
-        assert_eq!(host.judged(&"3".repeat(32)).agent, None);
-    }
-
-    #[tokio::test]
-    async fn every_change_is_audited_by_revision_never_by_text() {
-        let host = Host::new();
-        let first = host.done("device", set(Some("Ada"), "Only pytest.")).await;
-        assert_eq!(
-            first.audit_args,
-            json!({"command": "set", "scope": "agent", "agent_uid": ADA,
-                   "before": null, "after": revision("Only pytest.")})
-        );
-        let edit = json!({"command": "edit", "from": ADA, "text": "Only git.",
-                          "revision": revision("Only pytest.")});
-        assert_eq!(
-            host.done("device", edit).await.audit_args,
-            json!({"command": "edit", "scope": "agent", "agent_uid": ADA,
-                   "before": revision("Only pytest."), "after": revision("Only git.")})
-        );
-        let cleared = host.done("device", json!({"command": "clear"})).await;
-        assert_eq!(
-            cleared.audit_args,
-            json!({"command": "clear", "scope": "every agent", "agent_uid": null,
-                   "before": null, "after": null})
-        );
-        let refused = host
-            .done("device", set(Some("Ada"), &"r".repeat(9000)))
-            .await;
-        assert_eq!(refused.outcome, "rules_too_long");
-        assert!(!refused.audit_args.to_string().contains("rrrr"));
+        assert!(Store::new(host.dir.path()).agents().unwrap().is_empty());
+        assert_eq!(Store::new(host.dir.path()).deny().unwrap(), None);
     }
 }

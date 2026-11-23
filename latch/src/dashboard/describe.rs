@@ -155,6 +155,11 @@ pub fn recorded(
     record: &crate::audit::Record,
     host: &str,
 ) -> Option<(Caller, Timestamp, Finished)> {
+    // A gate record is the judgment written before its operation runs: the
+    // operation's own record is the task.
+    if record.op == "gate" {
+        return None;
+    }
     let at = record
         .started
         .as_ref()
@@ -605,9 +610,9 @@ fn failed(op: &str, code: &str, details: &Value, audit: &Value) -> Outcome {
 fn refusal(code: &str, details: &Value) -> Option<Outcome> {
     let why = match code {
         "gatekeeper_denied" => match details["reason"].as_str() {
-            Some("owner_said_no") => "owner said no",
-            Some("not_as_asked") => "stopped as it is now, no plain no from the owner",
-            _ => "needed the owner's OK",
+            Some("denied_by_rule") => "always denied on this host",
+            Some("not_covered") => "not what the owner asked",
+            _ => "needed the owner's message",
         },
         "gatekeeper_unavailable" => "judge unavailable",
         "exec_denied" => "exec is off for this agent",

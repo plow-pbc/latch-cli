@@ -117,12 +117,9 @@ fn busy() -> Dashboard {
         },
         None,
     );
-    let gate = json!({"caller": "agent", "rule": "allowed when within instructions >= 0.50",
-        "verdict": "not_covered",
-        "p": {"COVERED": 0.21, "NOT_COVERED": 0.76, "FORBIDDEN": 0.03},
-        "model": "jev-1.14", "source": "chat_and_rules",
-        "rules": {"host": "aa".repeat(32), "agent": "bb".repeat(32)},
-        "chat": "chat-7", "window": {"first": "m1", "last": "m9", "count": 9}});
+    let gate = json!({"caller": "agent", "class": "intent", "verdict": "not_covered",
+        "p": {"covered": 0.21, "denied": 0.03}, "model": "jev-1.14",
+        "device_rule": "aaaaaaaaaaaaaaaa", "intent": "swarm:!dm:plow.co/$ask", "already_done": 2});
     run(
         &dashboard,
         agent(),
@@ -196,7 +193,10 @@ fn a_browser_session_groups_its_calls_and_a_plan_its_steps() {
     assert_eq!(exec.calls[0].outcome.line(), "Done - exit 0");
     let upload = board.tasks.front().unwrap();
     assert_eq!(upload.title, "Write: report.pdf");
-    assert_eq!(upload.outcome().line(), "Refused - needed the owner's OK");
+    assert_eq!(
+        upload.outcome().line(),
+        "Refused - not what the owner asked"
+    );
     let detail = &upload.calls[0].detail;
     assert!(detail.audit_id.as_deref().unwrap().starts_with("27ff057f"));
 }
@@ -232,14 +232,14 @@ fn results_say_what_happened_in_words() {
     );
     let no = denied(
         "gatekeeper_denied",
-        "The owner said not to do this.",
-        json!({"reason": "owner_said_no"}),
+        "The owner's device rule always denies this.",
+        json!({"reason": "denied_by_rule"}),
     );
     run(&dashboard, agent(), "exec", exec(0), exec(0), no, None);
     let differs = denied(
         "gatekeeper_denied",
-        "The gatekeeper stopped this action.",
-        json!({"reason": "not_as_asked"}),
+        "The owner's cited message does not ask for this action as it is now.",
+        json!({"reason": "not_covered"}),
     );
     run(&dashboard, agent(), "exec", exec(0), exec(0), differs, None);
     let search = json!({"action": "search", "args": ["--", "code"]});
@@ -264,8 +264,8 @@ fn results_say_what_happened_in_words() {
         [
             "Run: false: Failed - exit 1",
             "Run: false: Refused - judge unavailable",
-            "Run: false: Refused - owner said no",
-            "Run: false: Refused - stopped as it is now, no plain no from the owner",
+            "Run: false: Refused - always denied on this host",
+            "Run: false: Refused - not what the owner asked",
             "Search Messages: Done - 4 matches",
         ]
     );
@@ -393,7 +393,7 @@ fn each_column_is_its_own_at_120_and_the_caller_goes_under_the_command_at_80() {
             .iter()
             .map(|line| line.get(result..).unwrap_or_default().trim())
             .collect();
-        assert_eq!(words.join(" ").trim(), "refused · needed the owner's OK");
+        assert_eq!(words.join(" ").trim(), "refused · not what the owner asked");
         assert!(!lines.iter().any(|line| line.contains('…')));
         let footer = lines[lines.len() - 2..].join("\n");
         assert!(
@@ -446,7 +446,7 @@ fn the_decision_tab_shows_the_judgment_as_recorded_and_no_more() {
     );
     assert!(steps.contains("[Steps]"));
     assert!(
-        steps.contains("REFUSED - needed the owner's OK. This action did not run."),
+        steps.contains("REFUSED - not what the owner asked. This action did not run."),
         "{steps}"
     );
     assert!(steps.contains("The owner's messages don't cover this."));
@@ -454,16 +454,19 @@ fn the_decision_tab_shows_the_judgment_as_recorded_and_no_more() {
     let decision = screen(&view, 80, 40).join("\n");
     assert!(decision.contains("[Decision]"));
     assert!(
-        decision.contains("Judge P: within instructions 0.21 | not covered 0.76 | forbidden 0.03"),
+        decision.contains(
+            "Judge P: covered by the cited message 0.21 | denied by the device rule 0.03"
+        ),
         "{decision}"
     );
-    assert!(decision.contains("Decision rule: allowed when within instructions >= 0.50"));
     assert!(
-        decision
-            .contains("Rules used: this host + this agent | revisions: aaaaaaaaaaaa, bbbbbbbbbbbb")
+        decision.contains("Cited: swarm:!dm:plow.co/$ask; done before on it: 2"),
+        "{decision}"
     );
-    assert!(decision.contains("Matched rule: not provided by the judge"));
-    assert!(decision.contains("Chat: chat-7; messages m1 to m9 (9)"));
+    assert!(
+        decision.contains("Device rule: revision aaaaaaaaaaaaaaaa"),
+        "{decision}"
+    );
     // The whole audit id, wrapped where it must be, never cut.
     let id = "27ff057f18f54d04a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718";
     assert!(decision.replace('\n', "").contains(id), "{decision}");
@@ -801,11 +804,11 @@ fn a_session_shows_its_latest_plan_or_problem_not_just_its_last_call() {
 #[test]
 fn a_row_taller_than_the_screen_shows_what_fits_and_where_the_rest_is() {
     let dashboard = Dashboard::new("host");
-    let long = "The owner said not to do this. ".repeat(20);
+    let long = "The owner's device rule always denies this. ".repeat(20);
     let refused = denied(
         "gatekeeper_denied",
         &long,
-        json!({"reason": "owner_said_no"}),
+        json!({"reason": "denied_by_rule"}),
     );
     let words: Vec<String> = (0..60).map(|n| format!("word{n}")).collect();
     let request = json!({"argv": words});
@@ -833,9 +836,7 @@ fn a_row_taller_than_the_screen_shows_what_fits_and_where_the_rest_is() {
         "{lines:#?}"
     );
     assert!(
-        lines
-            .iter()
-            .any(|line| line.contains("refused · owner said")),
+        lines.iter().any(|line| line.contains("refused · always")),
         "{lines:#?}"
     );
     // And all of it is in its details.
@@ -929,8 +930,7 @@ fn a_browser_call_shows_the_judgment_its_own_record_holds() {
         "plan": {"steps": [{"literal": {"op": "click", "ref": "e7"},
                             "check": {"kind": "path", "value": "/nowhere.html"}}]}});
     let audit = json!({"command": "do", "session": "x", "origin": "http://127.0.0.1:5", "path": "/search.html",
-        "gate": {"caller": "owner_device", "rule": "allowed when within instructions >= 0.50",
-                 "p": {"COVERED": 0.9, "NOT_COVERED": 0.05, "FORBIDDEN": 0.05}},
+        "gate": {"caller": "owner_device", "class": "intent", "p": {"covered": null, "denied": 0.05}},
         "step_outcomes": [{"step": 1, "outcome": "stopped", "code": "check_not_met"}],
         "stop": {"step": 1, "code": "check_not_met"}});
     let stopped = Response::Error {
@@ -953,7 +953,7 @@ fn a_browser_call_shows_the_judgment_its_own_record_holds() {
     view.key(Key::Tab);
     let decision = screen(&view, 100, 30).join("\n");
     assert!(
-        decision.contains("Judge P: within instructions 0.90"),
+        decision.contains("denied by the device rule 0.05"),
         "{decision}"
     );
 }
@@ -986,7 +986,7 @@ fn a_fill_refused_part_way_through_a_plan_says_what_ran_first() {
     assert_eq!(call.outcome.line(), "Stopped - step 3; 2 ran");
     assert_eq!(
         call.steps[2].outcome.as_ref().map(Outcome::line).as_deref(),
-        Some("Refused - needed the owner's OK")
+        Some("Refused - needed the owner's message")
     );
     // So it reads after a restart too, from its audit record alone.
     let mut record = crate::audit::record(
@@ -1332,42 +1332,6 @@ fn nothing_typed_queried_or_sent_as_a_terminal_command_reaches_the_screen() {
 }
 
 #[test]
-fn the_decision_tab_shows_the_owners_rule_for_an_owners_call() {
-    let dashboard = Dashboard::new("host");
-    let gate = json!({"caller": "owner_on_host",
-        "rule": "refused when forbidden >= within instructions",
-        "p": {"COVERED": 0.3, "NOT_COVERED": 0.3, "FORBIDDEN": 0.4}});
-    let request = json!({"argv": ["rm", "-rf", "build"]});
-    let refused = denied(
-        "gatekeeper_denied",
-        "The gatekeeper judged that this host's rules forbid this.",
-        json!({"reason": "owner_said_no"}),
-    );
-    run(
-        &dashboard,
-        owner(),
-        "exec",
-        request.clone(),
-        request,
-        refused,
-        Some(gate),
-    );
-    let mut view = view_of(&dashboard, false);
-    view.key(Key::Enter);
-    view.key(Key::Tab);
-    let decision = screen(&view, 100, 30).join("\n");
-    assert!(
-        decision.contains("Refused - owner said no")
-            || decision.contains("REFUSED - owner said no"),
-        "{decision}"
-    );
-    assert!(
-        decision.contains("Decision rule: refused when forbidden >= within instructions"),
-        "{decision}"
-    );
-}
-
-#[test]
 fn a_refilled_call_is_at_the_time_it_began() {
     let mut record = crate::audit::record("host-key", None, "exec", "allow", "ok");
     record.args = json!({"argv": ["ls"], "exit_code": 0});
@@ -1379,6 +1343,14 @@ fn a_refilled_call_is_at_the_time_it_began() {
     record.started = None;
     let (_, at, _) = recorded(&record, "host-key").unwrap();
     assert_eq!(at.to_string(), "2026-10-22T14:00:02Z");
+}
+
+/// A gate record is the judgment written before its operation ran; the
+/// operation's own record is the call, so a restart shows no extra one.
+#[test]
+fn a_gate_record_is_no_call_of_its_own() {
+    let record = crate::audit::record("agent-key", Some("a".repeat(32)), "gate", "allow", "judged");
+    assert!(recorded(&record, "host-key").is_none());
 }
 
 #[test]

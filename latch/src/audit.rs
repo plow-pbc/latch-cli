@@ -379,7 +379,7 @@ pub async fn run(state: &StateDir, action: AuditAction) -> Result<Value, Failure
                 let request = crate::wire::Request {
                     op: "audit_judge".into(),
                     args: json!({"request": request, "raw": raw}),
-                    chat: None,
+                    intent: None,
                 };
                 let mut kept =
                     crate::dial::call(state, &host, &request, crate::dial::ANSWER_WITHIN).await?;
@@ -402,7 +402,7 @@ pub async fn run(state: &StateDir, action: AuditAction) -> Result<Value, Failure
                     let request = crate::wire::Request {
                         op: "audit_shot".into(),
                         args: json!({"record": record, "shot": shot}),
-                        chat: None,
+                        intent: None,
                     };
                     let link = crate::dial::connect(state, &host).await?;
                     let got = crate::transfer::download(&link.connection, &request, &output).await;

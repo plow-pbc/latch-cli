@@ -1,6 +1,6 @@
 //! `latch setup`: one pass, at a terminal, through what a new machine
-//! needs: a login, Google, on macOS Messages and Contacts, rules for its
-//! agents, and a running host. None of the steps before the last needs a host running; the last
+//! needs: a login, Google, on macOS Messages and Contacts, the device rule
+//! (what its agents are always denied), and a running host. None of the steps before the last needs a host running; the last
 //! offers to start one. It is thin: every step runs an existing latch command (and says
 //! which), so a person can do any step by hand later. Each step first looks
 //! whether it is done already and then skips it, so setup can be run again
@@ -19,7 +19,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::failure::{Failure, code};
-use crate::gate::rules::{Preset, RulesDir, Scope};
+use crate::gate::rules::Store;
 use crate::state::StateDir;
 
 /// How often, and how long, the Full Disk Access step checks again.
@@ -50,9 +50,21 @@ pub fn run(state_dir: Option<PathBuf>) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// Setup's device-rule step alone, as an update runs it with `latch`, the
+/// program it just replaced: asked only when the owner never answered, and
+/// only on the owner's own login.
+pub fn device_rule(latch: PathBuf, state_dir: Option<PathBuf>) {
+    let mut setup = Setup {
+        latch,
+        state_dir,
+        input: None,
+    };
+    setup.rules();
+}
+
 /// The latch this setup runs its commands with: itself.
 /// `LATCH_SETUP_LATCH` names another, for tests.
-fn latch_program() -> PathBuf {
+pub fn latch_program() -> PathBuf {
     std::env::var_os("LATCH_SETUP_LATCH")
         .map(PathBuf::from)
         .or_else(|| std::env::current_exe().ok())
@@ -294,7 +306,7 @@ impl Setup {
             }
             if waiting {
                 while let Ok(line) = input.0.try_recv() {
-                    if line == "s" {
+                    if line.eq_ignore_ascii_case("s") {
                         drop(stdin.take());
                     }
                 }
@@ -373,9 +385,9 @@ impl Setup {
         }
     }
 
-    /// Step 4: rules for agents, from a preset, when there are none yet; the
-    /// owner's to set, so not for an agent's login. A choice of none leaves
-    /// agents to the built-in policy, and the next setup asks again.
+    /// Step 4: the device rule, what agents are always denied, when the
+    /// owner never answered; the owner's to set, so not for an agent's
+    /// login. A blank answer denies nothing and is saved as an answer.
     fn rules(&mut self) {
         if self.local()["login"]["kind"] != "device" {
             return;
@@ -385,58 +397,26 @@ impl Setup {
             failed(&shown.json, "latch rules show");
             return;
         }
-        if has_rules(&shown.json) {
-            done("Your agents have rules: `latch rules show` shows them.");
+        if !shown.json["device_rule"].is_null() {
+            done("Your device rule is set: `latch rules show` shows it.");
             return;
         }
         say(
-            "Rules tell the gatekeeper what your agents may do; with none, they may only do everyday work without asking you.",
+            "Your agents act only on a message of yours they cite. Name anything they must never do on this machine, whatever a message says (such as \"Never pay anyone or delete my photos\"), or leave it blank for nothing. Reads are never judged, so this covers what they do, not what they read.",
         );
-        for (number, preset) in Preset::ALL.iter().enumerate() {
-            say(&format!(
-                "  {}. {}: {}",
-                number + 1,
-                preset.name(),
-                preset.text()
-            ));
-        }
-        say("  3. None for now");
-        let answer = self.input().answer("Rules for your agents? [1/2/3] ");
-        let preset = match answer.as_str() {
-            "" | "1" | "c" | "chief-of-staff" => Preset::ChiefOfStaff,
-            "2" | "d" | "developer" => Preset::Developer,
-            old if matches!(old, "f" | "w") || Preset::renamed(old) => {
-                eprintln!("✗ {old}: {}", Preset::RENAMED);
-                say(
-                    "No rules; later: `latch rules set --preset chief-of-staff` (or developer), or `latch rules edit`.",
-                );
-                return;
-            }
-            _ => {
-                say(
-                    "No rules; later: `latch rules set --preset chief-of-staff` (or developer), or `latch rules edit`.",
-                );
-                return;
-            }
-        };
-        let args = [
-            "rules",
-            "set",
-            "--preset",
-            preset.word(),
-            "--revision",
-            "none",
-        ];
-        let command = format!("latch {}", args.join(" "));
-        step("Set rules", &command);
+        let answer = self.input().answer("Always deny: ");
+        let args = ["rules", "set", "--revision", "none", answer.as_str()];
+        step(
+            "Set the device rule",
+            "latch rules set --revision none TEXT",
+        );
         let set = self.latch(&args);
-        if set.ok {
-            done(&format!(
-                "Your agents have the {} rules; change them with `latch rules edit`.",
-                preset.name()
-            ));
+        if !set.ok {
+            failed(&set.json, "latch rules set");
+        } else if answer.trim().is_empty() {
+            done("Nothing is always denied; change it with `latch rules edit`.");
         } else {
-            failed(&set.json, &command);
+            done("Saved; change it with `latch rules edit`.");
         }
     }
 
@@ -631,30 +611,29 @@ pub async fn status(state: &StateDir, check_access: bool) -> Result<Status, Fail
         }
         steps.push(step);
     }
-    let rules = RulesDir::new(&state.path);
-    let any_rules = rules.text(&Scope::Host)?.is_some() || !rules.agents()?.is_empty();
+    let answered = Store::new(&state.path)
+        .deny()
+        .map_err(|why| Failure::new(code::rules_io, why))?
+        .is_some();
     steps.push(match &local.login {
-        None => Step::new("rules", Blocked, "Rules need a login first.".into(), None),
+        None => Step::new(
+            "rules",
+            Blocked,
+            "The device rule needs a login first.".into(),
+            None,
+        ),
         Some(login) if login.kind != "device" => Step::new(
             "rules",
             Blocked,
-            "Rules are set by the owner's own login, not an agent's.".into(),
+            "The device rule is set by the owner's own login, not an agent's.".into(),
             None,
         ),
-        Some(_) if any_rules => Step::new("rules", Done, "Your agents have rules.".into(), None),
+        Some(_) if answered => Step::new("rules", Done, "Your device rule is set.".into(), None),
         Some(_) => Step::new(
             "rules",
             Needed,
-            "Your agents have no rules, so they may only do everyday work without asking you."
-                .into(),
-            Some(vec![
-                "rules",
-                "set",
-                "--preset",
-                "chief-of-staff",
-                "--revision",
-                "none",
-            ]),
+            "Say what agents are always denied on this machine, or that nothing is.".into(),
+            Some(vec!["rules", "edit"]),
         ),
     });
     steps.push(match (&local.login, &local.this_machine.hosting) {
@@ -847,7 +826,7 @@ impl Input {
         std::thread::spawn(move || {
             for line in std::io::stdin().lock().lines() {
                 let Ok(line) = line else { break };
-                if lines.send(line.trim().to_lowercase()).is_err() {
+                if lines.send(line.trim().to_string()).is_err() {
                     break;
                 }
             }
@@ -857,13 +836,13 @@ impl Input {
 
     /// Asks `question`; an empty answer (or a closed stdin) is `default`.
     fn yes(&self, question: &str, default: bool) -> bool {
-        match self.answer(question).as_str() {
+        match self.answer(question).to_lowercase().as_str() {
             "" => default,
             answer => answer.starts_with('y'),
         }
     }
 
-    /// Asks `question`: the line typed, trimmed and lowercased; empty for a
+    /// Asks `question`: the line typed, trimmed, as typed; empty for a
     /// closed stdin.
     fn answer(&self, question: &str) -> String {
         eprint!("{question}");
@@ -879,7 +858,7 @@ impl Input {
                 .0
                 .recv_timeout(until.saturating_duration_since(Instant::now()))
             {
-                Ok(line) if line == "s" => return true,
+                Ok(line) if line.eq_ignore_ascii_case("s") => return true,
                 Ok(_) => continue,
                 Err(RecvTimeoutError::Timeout) => return false,
                 // No one types any more: just wait.
@@ -938,12 +917,4 @@ fn done(text: &str) {
 fn failed(json: &Value, command: &str) {
     let message = json["error"]["message"].as_str().unwrap_or("it failed");
     eprintln!("✗ {message}\n  Try again later: {command}");
-}
-
-/// Whether `rules show` lists rules: every agent's, or an agent's own.
-fn has_rules(shown: &Value) -> bool {
-    !shown["every_agent"].is_null()
-        || shown["agents"]
-            .as_array()
-            .is_some_and(|agents| agents.iter().any(|agent| !agent["text"].is_null()))
 }

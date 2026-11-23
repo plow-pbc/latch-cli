@@ -716,9 +716,29 @@
   const regionOf = (around) => around.closest('dialog, [role=dialog], section, article, main')
     || around.closest('form') || document.body;
   const linesOf = (region) => (region ? region.innerText : '').split('\n').map((line) => clean(line, 160)).filter(Boolean).slice(0, 20);
+  // The fields an action submits, whole: every control its form submits,
+  // wherever it is drawn, else those of the part of the page it is in. A
+  // secret or vault-filled field shows only that it is hidden. All of them:
+  // the worker binds the confirmation to every one and shows the judge a few.
+  const submitted = (el, around) => {
+    const form = el.form || el.closest('form');
+    const found = form ? new Set([...form.elements, ...form.querySelectorAll(INTERACTIVE)])
+      : regionOf(around).querySelectorAll(INTERACTIVE);
+    const all = [...found].filter((f) => rendered(f) && FIELD_ROLES.includes(role(f)));
+    return all.map((f) => {
+      const item = describe(f);
+      const label = `${item.role} "${item.name}"`;
+      if (item.secret || item.filled) return { label, state: '(hidden)' };
+      if ('checked' in item) return { label, state: item.checked ? 'checked' : 'not checked' };
+      const text = f.localName === 'select' ? item.value || ''
+        : f.isContentEditable ? f.innerText : f.value || '';
+      return text.trim() ? { label, text } : { label, state: 'empty' };
+    });
+  };
   // A click is judged with the element's state (a collapsed section, an
   // unchecked option) and, on a form's submit control, the form it submits.
-  const review = (snap, index, enter) => {
+  // With `fields`, also the fields it submits.
+  const review = (snap, index, enter, fields) => {
     const el = element(snap, index);
     if (!el) return null;
     const { role: r, name: n, row, checked, expanded } = describe(el);
@@ -727,7 +747,8 @@
     if (enter) ({ actsOn, around } = enterOn(el));
     else if (el.form && el.matches(SUBMIT_BUTTONS)) actsOn = formOf(el.form);
     const lines = linesOf(regionOf(around));
-    return { uid: uid(el), element: { role: r, name: n, row, checked, expanded }, acts_on: actsOn, lines };
+    return { uid: uid(el), element: { role: r, name: n, row, checked, expanded }, acts_on: actsOn, lines,
+      submitted: fields ? submitted(el, around) : undefined, secret: secret(el) };
   };
 
   // --- What a plan's decision sees ----------------------------------------

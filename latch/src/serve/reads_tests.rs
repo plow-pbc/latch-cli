@@ -6,11 +6,11 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use super::gated_tests::{TestHost, always_covered, refusal, start};
+use super::gated_tests::{ASKED, TestHost, always_covered, refusal, start};
 use super::*;
 use crate::audit::Range;
 use crate::failure::Exit;
-use crate::gate::fake::{World, message, owner};
+use crate::gate::fake::World;
 
 fn ok(response: Response) -> Value {
     match response {
@@ -35,7 +35,7 @@ impl Stream {
         let request = Request {
             op: op.into(),
             args,
-            chat: None,
+            intent: None,
         };
         wire::write_frame(&mut send, &serde_json::to_vec(&request).unwrap())
             .await
@@ -207,7 +207,7 @@ async fn the_owner_fetches_the_screenshot_a_plans_record_names() {
     let request = Request {
         op: "audit_shot".into(),
         args: json!({"record": id, "shot": "1"}),
-        chat: None,
+        intent: None,
     };
     let (start, done, got) = crate::transfer::download(&connection.into(), &request, &path)
         .await
@@ -410,10 +410,15 @@ async fn judge(t: &TestHost, device: &Endpoint, id: &Value, raw: bool) -> Value 
 
 #[tokio::test]
 async fn the_owner_reads_back_each_gatekeeper_call_as_sent_and_an_agent_cannot() {
-    let chat = vec![message("m1", owner(), "run what you need", 5)];
-    let mut world = World::with_chat("chat_a", chat);
-    world.decide = Some(always_covered);
+    let world = World {
+        decide: Some(always_covered),
+        ..World::default()
+    };
     let t = start(world).await;
+    // A device rule, so the owner's call is judged too.
+    crate::gate::rules::Store::new(&t.state)
+        .set_deny("Never send email.", None)
+        .unwrap();
     let (device, agent) = (t.caller("device").await, t.caller("agent").await);
     let secret = "synthetic-secret-env-value-5b3e";
     let bearer = "synthetic-bearer-9f2c";
@@ -421,25 +426,20 @@ async fn the_owner_reads_back_each_gatekeeper_call_as_sent_and_an_agent_cannot()
     // A credential in an argument of its own, after its flag, too.
     let argv = json!(["true", "-H", header, "--password", "short-secret"]);
     let exec = json!({"argv": argv, "secret_env": {"TOKEN": secret}});
-    for caller in [&device, &agent] {
-        assert!(matches!(
-            t.call(caller, "exec", exec.clone()).await.0,
-            Response::Ok(_)
-        ));
-    }
+    assert!(matches!(
+        t.call(&device, "exec", exec.clone()).await.0,
+        Response::Ok(_)
+    ));
+    assert!(matches!(
+        t.cite(&agent, "exec", exec.clone()).await.0,
+        Response::Ok(_)
+    ));
     let records = execs(&t);
     let (by_owner, by_agent) = (&records[0]["gate"], &records[1]["gate"]);
-    assert_eq!(by_agent["chat_lookup"], "found");
-    let layers = &by_agent["layers"];
-    let (mut sent, mut hidden) = (Vec::new(), Vec::new());
-    for (layer, call) in [
-        ("owner", by_owner),
-        ("rules", &layers["rules"]),
-        ("chat", &layers["chat"]),
-        ("will", &layers["will"]),
-    ] {
+    let mut sent = Vec::new();
+    for call in [by_owner, by_agent] {
         // By default, credential-looking values are hidden, as in `latch
-        // audit`: in the action and in the owner's request.
+        // audit`.
         let shown = judge(&t, &device, &call["kept_request"], false).await;
         for hidden in [bearer, "short-secret"] {
             assert!(!shown.to_string().contains(hidden), "{shown}");
@@ -459,7 +459,7 @@ async fn the_owner_reads_back_each_gatekeeper_call_as_sent_and_an_agent_cannot()
         let kept = judge(&t, &device, &call["kept_request"], true).await;
         assert_eq!(
             (&kept["id"], &kept["layer"]),
-            (&call["kept_request"], &json!(layer))
+            (&call["kept_request"], &json!("gatekeeper"))
         );
         assert_eq!(kept["request"]["model"], gate::MODEL);
         assert_eq!(kept["answer"]["id"], call["model_request"]);
@@ -468,44 +468,22 @@ async fn the_owner_reads_back_each_gatekeeper_call_as_sent_and_an_agent_cannot()
         // typed into the command included.
         assert_eq!(kept["request"]["state"]["proposed_action"]["argv"], argv);
         sent.push(kept["request"]["state"].clone());
-        hidden.push(shown["request"]["state"].clone());
     }
-    let owners = sent[0]["conversation"][0]["text"].as_str().unwrap();
-    assert!(
-        owners.starts_with("Do this now: ")
-            && owners.contains(bearer)
-            && owners.contains("short-secret"),
-        "{owners}"
-    );
-    let owners = hidden[0]["conversation"][0]["text"].as_str().unwrap();
-    assert!(
-        owners.starts_with("Do this now: ")
-            && owners.contains("Authorization: [redacted]")
-            && !owners.contains(bearer)
-            && !owners.contains("short-secret"),
-        "{owners}"
-    );
-    // Each state the decision route was sent, chat text and all.
-    let mut asked = t.plow.world.lock().unwrap().asked.clone();
-    asked.sort_by_key(Value::to_string);
-    sent.sort_by_key(Value::to_string);
-    assert_eq!(sent, asked);
-    assert!(
-        sent.iter()
-            .any(|s| s["conversation"][0]["text"] == "run what you need")
-    );
+    // Each state the decision route was sent, the owner's words and all.
+    assert_eq!(sent, t.judgments());
+    assert_eq!(sent[1]["cited_message"]["text"], ASKED);
     // Private to the host's user.
     use std::os::unix::fs::PermissionsExt;
     let folder = t.state.join("gatekeeper/requests");
     let mode = |path: &std::path::Path| std::fs::metadata(path).unwrap().permissions().mode();
     assert_eq!(mode(&folder) & 0o777, 0o700);
-    // Sealed with the audit key: neither the credential nor the chat is
-    // on disk in the clear.
+    // Sealed with the audit key: neither the credential nor the owner's
+    // words are on disk in the clear.
     for file in std::fs::read_dir(&folder).unwrap() {
         let file = file.unwrap().path();
         assert_eq!(mode(&file) & 0o777, 0o600);
         let text = std::fs::read_to_string(&file).unwrap();
-        for clear in [bearer, "run what you need", "Authorization"] {
+        for clear in [bearer, ASKED, "Never send email", "Authorization"] {
             assert!(!text.contains(clear), "{text}");
         }
     }
@@ -516,7 +494,7 @@ async fn the_owner_reads_back_each_gatekeeper_call_as_sent_and_an_agent_cannot()
         .into_iter()
         .filter(|r| r["op"] == "audit_judge")
         .collect();
-    assert_eq!(reads.len(), 8);
+    assert_eq!(reads.len(), 4);
     assert_eq!(
         reads[..2].iter().map(|r| &r["args"]).collect::<Vec<_>>(),
         [
@@ -536,34 +514,14 @@ async fn the_owner_reads_back_each_gatekeeper_call_as_sent_and_an_agent_cannot()
 }
 
 #[tokio::test]
-async fn the_owners_request_is_shown_as_its_hidden_action() {
-    let world = World {
-        decide: Some(always_covered),
-        ..World::default()
-    };
-    let t = start(world).await;
-    let device = t.caller("device").await;
-    let exec = json!({"argv": ["true", "--password", "short-secret"]});
-    let (answer, _) = t.call(&device, "exec", exec).await;
-    assert!(matches!(answer, Response::Ok(_)), "{answer:?}");
-    let shown = judge(&t, &device, &execs(&t)[0]["gate"]["kept_request"], false).await;
-    assert!(!shown.to_string().contains("short-secret"), "{shown}");
-    let state = &shown["request"]["state"];
-    let argv = &state["proposed_action"]["argv"];
-    assert_eq!(argv, &json!(["true", "--password", "[redacted]"]));
-    let text = format!("Do this now: {}", state["proposed_action"]);
-    assert_eq!(state["conversation"][0]["text"], text);
-}
-
-#[tokio::test]
 async fn a_call_plow_never_answered_is_kept_for_7_days() {
     let t = start(World::default()).await;
     let (device, agent) = (t.caller("device").await, t.caller("agent").await);
-    let (answer, _) = t.call(&agent, "exec", json!({"argv": ["true"]})).await;
+    let (answer, _) = t.cite(&agent, "exec", json!({"argv": ["true"]})).await;
     assert_eq!(refusal(&answer).1, "gatekeeper_unavailable");
-    let id = &execs(&t)[0]["gate"]["layers"]["rules"]["kept_request"];
+    let id = &execs(&t)[0]["gate"]["kept_request"];
     let kept = judge(&t, &device, id, true).await;
-    assert_eq!(kept["request"]["state"]["conversation"], "(no chat)");
+    assert_eq!(kept["request"]["state"]["cited_message"]["text"], ASKED);
     assert_eq!(
         kept["answer"],
         json!({"detail": "unavailable"}),
@@ -590,27 +548,10 @@ async fn a_call_that_cannot_be_kept_is_still_judged() {
     std::fs::create_dir_all(t.state.join("gatekeeper")).unwrap();
     std::fs::write(t.state.join("gatekeeper/requests"), "not a folder").unwrap();
     let agent = t.caller("agent").await;
-    let (answer, _) = t.call(&agent, "exec", json!({"argv": ["true"]})).await;
+    let (answer, _) = t.cite(&agent, "exec", json!({"argv": ["true"]})).await;
     assert!(matches!(answer, Response::Ok(_)), "{answer:?}");
-    let call = &execs(&t)[0]["gate"]["layers"]["rules"];
+    let call = &execs(&t)[0]["gate"];
     assert!(call.get("kept_request").is_none(), "{call}");
     let logged = crate::log::captured();
     assert!(logged.iter().any(|line| line.contains("could not be kept")));
-}
-
-#[tokio::test]
-async fn a_rules_layer_asked_before_the_chat_failed_is_kept_and_named() {
-    let chat = vec![message("m1", owner(), "run what you need", 5)];
-    let mut world = World::with_chat("chat_a", chat);
-    world.decide = Some(always_covered);
-    world.broken = Some("/v1/chats".into());
-    let t = start(world).await;
-    let (device, agent) = (t.caller("device").await, t.caller("agent").await);
-    let (answer, _) = t.call(&agent, "exec", json!({"argv": ["true"]})).await;
-    assert_eq!(refusal(&answer).1, "gatekeeper_unavailable");
-    let gate = &execs(&t)[0]["gate"];
-    let id = &gate["layers"]["rules"]["kept_request"];
-    let kept = judge(&t, &device, id, true).await;
-    assert_eq!(kept["layer"], "rules");
-    assert!(kept["answer"]["answers"].is_object(), "{kept}");
 }

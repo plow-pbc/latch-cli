@@ -357,7 +357,7 @@ async fn run(
             let peer = hosts::resolve(&state, host.host).await?;
             json(
                 pretty,
-                transfer::get(&state, &peer, host.plow_chat, &remote_path, local_dest).await?,
+                transfer::get(&state, &peer, host.intent, &remote_path, local_dest).await?,
             )
         }
         Command::File(FileCommand::Put {
@@ -368,7 +368,7 @@ async fn run(
             let peer = hosts::resolve(&state, host.host).await?;
             json(
                 pretty,
-                transfer::put(&state, &peer, host.plow_chat, &local_path, &remote_path).await?,
+                transfer::put(&state, &peer, host.intent, &local_path, &remote_path).await?,
             )
         }
         Command::Google(args) => json(pretty, google::client::run(&state, args).await?),
@@ -405,7 +405,18 @@ async fn run(
         Command::Settings(cli::SettingsArgs {
             command: cli::SettingsCommand::Set { keep_awake },
         }) => json(pretty, settings::set(&state, keep_awake == cli::OnOff::On)?),
-        Command::Update(args) => json(pretty, update::run(&state, args).await?),
+        Command::Update(args) => {
+            // Where latch is now, taken before the update replaces it: on
+            // Linux the running program's own path then names a deleted file.
+            let program = setup::latch_program();
+            let answer = update::run(&state, args).await?;
+            // An updated latch asks what is always denied, once, at a
+            // terminal: from its own build, the one just installed there.
+            if answer["updated"] == true && term::interactive() {
+                setup::device_rule(program, Some(state.path.clone()));
+            }
+            json(pretty, answer)
+        }
         Command::Audit(cli::AuditArgs {
             action: Some(action),
             ..
@@ -562,7 +573,7 @@ async fn call_host(
     let request = Request {
         op: op.to_string(),
         args,
-        chat: host.plow_chat,
+        intent: host.intent,
     };
     dial::call(state, &peer, &request, answer_within).await
 }

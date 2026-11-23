@@ -136,7 +136,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "agents",
         runs_on: |_| RunsOn::Either,
-        output: "`host` (with --host: its `name` and whether it is `online`; else null) and `agents`, in Plow's order: each one's `uid`, `name`, `kind` (cloud or own), `cloud_kind` (its catalog kind, or `exe:` followed by its image reference for an agent made with --image; null for an own agent), `line` (`number`, `name`, `card_url`: its persona's contact card, null for an unnamed line), `created_at`, `status` (a cloud agent's phase in Plow; null for own agents), `failure_code`, `last_seen_at` (its credential's last use, not proof it runs) and `standing` on the host (`own_rules`, `exec_blocked`; null without --host).",
+        output: "`host` (with --host: its `name` and whether it is `online`; else null) and `agents`, in Plow's order: each one's `uid`, `name`, `kind` (cloud or own), `cloud_kind` (its catalog kind, or `exe:` followed by its image reference for an agent made with --image; null for an own agent), `line` (`number`, `name`, `card_url`: its persona's contact card, null for an unnamed line), `created_at`, `status` (a cloud agent's phase in Plow; null for own agents), `failure_code`, `last_seen_at` (its credential's last use, not proof it runs) and `standing` on the host (`swarm_id`: the Swarm account it is mapped to there, or null; `exec_blocked`; null without --host).",
         effect: ReadOnly,
         owner_only: true,
         connector: None,
@@ -156,6 +156,18 @@ const ENTRIES: &[Entry] = &[
         owner_only: true,
         connector: None,
         examples: &[ex("One agent, by its name", &["agents", "show", "Scout"])],
+    },
+    Entry {
+        id: "agents.map",
+        runs_on: |_| RunsOn::Either,
+        output: "`agent_uid`, `agent_name`, `swarm_id`, and `replaced`: the account it was mapped to before, or null.",
+        effect: Repeatable("maps the agent to that Swarm account on the host"),
+        owner_only: true,
+        connector: None,
+        examples: &[ex(
+            "Take Scout's citations only from @scout:plow.co's 1:1 rooms with you",
+            &["agents", "map", "Scout", "@scout:plow.co"],
+        )],
     },
     Entry {
         id: "agents.catalog",
@@ -1000,7 +1012,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "vault.list",
         // An agent's list, the one that names a chat, goes to a host.
-        runs_on: |args| match args.try_get_one::<String>("plow_chat") {
+        runs_on: |args| match args.try_get_one::<String>("intent") {
             Ok(Some(_)) => RunsOn::Host,
             _ => RunsOn::Either,
         },
@@ -1116,7 +1128,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "vault.link",
         // An agent's link, the one that names a chat, goes to a host.
-        runs_on: |args| match args.try_get_one::<String>("plow_chat") {
+        runs_on: |args| match args.try_get_one::<String>("intent") {
             Ok(Some(_)) => RunsOn::Host,
             _ => RunsOn::Either,
         },
@@ -1240,127 +1252,57 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "rules.set",
         runs_on: |_| RunsOn::Either,
-        output: "The rules saved, with their revision.",
-        effect: Repeatable("replaces the rules"),
+        output: "The device rule saved, with its revision. It names what agents are always denied on the host and grants nothing; an empty text denies nothing.",
+        effect: Repeatable("replaces the device rule"),
         owner_only: true,
         connector: None,
         examples: &[
             ex(
-                "Let agents read mail, never send it",
+                "Never let agents pay anyone or delete your photos",
                 &[
                     "rules",
                     "set",
-                    "Agents may search my mail but never send any.",
+                    "Never pay anyone or delete anything in ~/Photos.",
                 ],
             ),
             ex(
-                "Start from the rules the Mac app offers a chief of staff, only if there are none yet",
-                &[
-                    "rules",
-                    "set",
-                    "--preset",
-                    "chief-of-staff",
-                    "--revision",
-                    "none",
-                ],
-            ),
-            ex(
-                "Save over the rules only if they are still at the revision `rules show` gave (`none`: there were none); otherwise stale_revision, with the revision they are at",
-                &["rules", "set", "--revision", "9f2c…", "--file", "rules.txt"],
+                "Save over the rule only if it is still at the revision `rules show` gave (`none`: there was none); otherwise stale_revision, with the revision it is at",
+                &["rules", "set", "--revision", "9f2c…", "--file", "deny.txt"],
             ),
         ],
     },
     Entry {
         id: "rules.edit",
         runs_on: |_| RunsOn::Either,
-        output: "At a terminal, the person's editor, then a line when the rules are saved; without one, `no_terminal` (use `rules set`).",
-        effect: Once("changes the rules"),
+        output: "At a terminal, the person's editor, then a line when the rule is saved; without one, `no_terminal` (use `rules set`).",
+        effect: Once("changes the device rule"),
         owner_only: true,
         connector: None,
-        examples: &[ex(
-            "Edit one agent's rules",
-            &["rules", "edit", "--agent", "ada"],
-        )],
+        examples: &[ex("Edit the device rule", &["rules", "edit"])],
     },
     Entry {
         id: "rules.clear",
         runs_on: |_| RunsOn::Either,
-        output: "The rules removed.",
-        effect: Repeatable("removes the rules"),
+        output: "The device rule removed: nothing is always denied.",
+        effect: Repeatable("removes the device rule"),
         owner_only: true,
         connector: None,
         examples: &[
-            ex("Remove every agent's rules", &["rules", "clear"]),
+            ex("Remove the device rule", &["rules", "clear"]),
             ex(
-                "Remove one agent's rules only if they are still at the revision `rules show` gave",
-                &["rules", "clear", "--agent", "ada", "--revision", "9f2c…"],
+                "Remove it only if it is still at the revision `rules show` gave",
+                &["rules", "clear", "--revision", "9f2c…"],
             ),
         ],
     },
     Entry {
         id: "rules.show",
         runs_on: |_| RunsOn::Either,
-        output: "The rules for every agent and each agent's own, with their revisions, and `deny_exec`: the agents the host refuses exec (`every_agent`, `agent_uids`), as it runs or last ran, null if its saved flags are unreadable.",
+        output: "`device_rule` (its `text` and `revision`, or null when never set), `agents` (each mapped agent's Swarm account, by uid) and `deny_exec`: the agents the host refuses exec (`every_agent`, `agent_uids`), as it runs or last ran, null if its saved flags are unreadable.",
         effect: ReadOnly,
         owner_only: true,
         connector: None,
-        examples: &[ex("Show the rules", &["rules", "show"])],
-    },
-    Entry {
-        id: "rules.try",
-        runs_on: |_| RunsOn::Either,
-        output: "`verdict`: allow, not_covered, not_as_asked, owner_said_no, or host_refused (a refusal the host makes without asking the judge, named in `refused`); `as` (owner, new_agent, or the agent), `request` (the operation, and the action as the judge was shown it: secret values and an exec's stdin masked) and `gate` (the judgment's details: probabilities, source, rule revisions, model, latency, cost). An agent's preview is its rules layer: the built-in policy (everyday work allowed, anything riskier needing a rule) and the rules, with no chat; a real call also judges its chat, which may add an OK or a no. A refusal is a preview that worked: exit 0. This machine's previews are judged by the calling latch, so they need no running host; another host's go to it. `--draft` judges against draft rules for every agent, never saved; `--new-agent` judges as a new agent, with no rules of its own, whatever connectors and --deny-exec the host has. `--fill-login TITLE --url URL` previews a browser fill of that saved login, as saved for the URL's site, in place of REQUEST (`request` is op browser with the `vault_fill` action the judge sees): the fill's judgment only, not the whole sign-in (opening the site is judged on its own) nor whether the vault has that login; nothing is opened or filled and the vault is not read.",
-        effect: Repeatable(
-            "asks the gatekeeper, billed to your Plow balance like a real judgment (about $0.0001); the request itself never runs, the draft is never saved, and the preview is not audited",
-        ),
-        owner_only: true,
-        connector: None,
-        examples: &[
-            ex(
-                "Would Penny be allowed to build the site?",
-                &[
-                    "rules", "try", "--agent", "Penny", "--", "exec", "--write", "~/site", "--",
-                    "npm", "run", "build",
-                ],
-            ),
-            ex(
-                "Would a new agent be allowed to build the site under draft rules read from stdin?",
-                &[
-                    "rules",
-                    "try",
-                    "--new-agent",
-                    "--draft",
-                    "-",
-                    "--",
-                    "exec",
-                    "--write",
-                    "~/site",
-                    "--",
-                    "npm",
-                    "run",
-                    "build",
-                ],
-            ),
-            ex(
-                "Would a new agent be allowed to fill your saved Instacart login into its sign-in page?",
-                &[
-                    "rules",
-                    "try",
-                    "--new-agent",
-                    "--fill-login",
-                    "Instacart",
-                    "--url",
-                    "https://www.instacart.com/login",
-                ],
-            ),
-            ex(
-                "Preview a mail search on another host, as yourself",
-                &[
-                    "rules", "try", "--host", "mac", "--", "google", "--", "gmail", "search",
-                    "invoice",
-                ],
-            ),
-        ],
+        examples: &[ex("Show the device rule", &["rules", "show"])],
     },
     Entry {
         id: "plugins.enable",
@@ -1803,11 +1745,11 @@ pub fn check_selectors(matches: &ArgMatches) -> Result<(), Failure> {
             ),
         ));
     }
-    if has("plow_chat") && location != RunsOn::Host {
+    if has("intent") && location != RunsOn::Host {
         return Err(Failure::new(
-            code::plow_chat_not_supported,
+            code::intent_not_supported,
             format!(
-                "`latch {}` does not use a Plow chat; omit --plow-chat and unset LATCH_PLOW_CHAT",
+                "`latch {}` cites no owner message; omit --intent",
                 id.replace('.', " ")
             ),
         ));
@@ -2143,7 +2085,7 @@ mod tests {
         let mut runnable = Vec::new();
         actions(&root, &[], true, &mut runnable);
         for (id, command) in runnable {
-            for (selector, flag) in [("host", "--host"), ("plow_chat", "--plow-chat")] {
+            for (selector, flag) in [("host", "--host"), ("intent", "--intent")] {
                 let accepts_selector = command.get_arguments().any(|arg| arg.get_id() == selector);
                 let entry = ENTRIES.iter().find(|entry| entry.id == id);
                 let examples: Vec<Vec<&str>> = entry.map_or_else(

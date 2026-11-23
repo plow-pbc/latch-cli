@@ -42,9 +42,9 @@ with and goes back to it on a launch with no arguments, since macOS's Quit &
 Reopen (after Full Disk Access is granted) drops them; opening it with
 `--state-dir` naming latch's default folder forgets it.
 
-The window walks a new owner through setup (log in, rules, Google,
+The window walks a new owner through setup (log in, the device rule, Google,
 Contacts & Messages, starting latch), each step a latch command
-(`login --events`, `rules show/set`, `rules try`, `plugins enable`,
+(`login --events`, `rules show/set`, `plugins enable`,
 `serve -d`), then shows this Mac's `status --local`. It remembers only which
 screens were passed, in its own preferences; a relaunch resumes at the first
 screen not passed. `swift run Snapshots DIR` in `latch/gui` renders every

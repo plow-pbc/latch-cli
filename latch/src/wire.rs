@@ -31,6 +31,9 @@ use crate::state::to_hex;
 /// an older host would run on its persistent default profile instead;
 /// version 4 lets a `rules_try` preview carry draft rules and judge as a new
 /// agent, which an older host would ignore and judge by its saved rules.
+/// An agent's `intent` is an optional field within version 4, so hosts and
+/// clients update one at a time: an older host ignores it and judges by its
+/// own rules, and an older client's call cites nothing.
 pub const ALPN: &[u8] = b"plow/latch/4";
 
 /// The protocol version in `ALPN`, as a number.
@@ -57,9 +60,10 @@ pub const MAX_FRAME: usize = 16 * 1024 * 1024;
 pub struct Request {
     pub op: String,
     pub args: Value,
-    /// The Plow chat an agent acts for, when its line has more than one.
+    /// The owner's message an agent acts on, `<room>/<event>`. Absent
+    /// from an older client, whose `chat` is ignored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub chat: Option<String>,
+    pub intent: Option<String>,
 }
 
 /// The host's answer: `{"ok": ...}` or `{"error": {...}}`. Errors carry
@@ -198,7 +202,7 @@ mod tests {
         let request = Request {
             op: "exec".to_string(),
             args: serde_json::json!({"argv": ["uname", "-a"]}),
-            chat: None,
+            intent: None,
         };
         let mut buffer = Vec::new();
         write_frame(&mut buffer, &serde_json::to_vec(&request).unwrap())
@@ -210,6 +214,31 @@ mod tests {
         let back: Request = serde_json::from_slice(&json).unwrap();
         assert_eq!(back.op, "exec");
         assert_eq!(back.args["argv"][1], "-a");
+    }
+
+    /// The same protocol either side of the intent field: an older client's
+    /// call reads as citing nothing, and an older host, whose request had
+    /// `chat` in its place, reads a cited call without it.
+    #[test]
+    fn an_intent_and_an_older_chat_are_each_ignored_by_the_other_side() {
+        let older = br#"{"op":"exec","args":{},"chat":"family"}"#;
+        let request: Request = serde_json::from_slice(older).unwrap();
+        assert_eq!(request.intent, None);
+
+        #[derive(Deserialize)]
+        struct OlderRequest {
+            op: String,
+            #[serde(default)]
+            chat: Option<String>,
+        }
+        let cited = Request {
+            op: "exec".to_string(),
+            args: Value::Null,
+            intent: Some("!room/$event".to_string()),
+        };
+        let read: OlderRequest =
+            serde_json::from_slice(&serde_json::to_vec(&cited).unwrap()).unwrap();
+        assert_eq!((read.op.as_str(), read.chat), ("exec", None));
     }
 
     #[tokio::test]

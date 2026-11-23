@@ -101,12 +101,10 @@ struct PhoneGrant {
     request: String,
 }
 
-/// An agent, from `GET /v1/agents/{uid}`: its current name and the line
-/// it serves.
+/// An agent, from `GET /v1/agents/{uid}`: its current name.
 #[derive(Deserialize, Debug)]
 pub struct Agent {
     pub name: String,
-    pub line: Line,
 }
 
 /// `GET /v1/connectors`: the owner's connected accounts, and where Plow's
@@ -145,13 +143,6 @@ pub struct Connection {
 #[derive(Deserialize, Debug)]
 pub struct ConnectedAccount {
     pub account: String,
-}
-
-/// One of the account's agents, from `GET /v1/agents`, by its uid and name.
-#[derive(Deserialize, Debug, Clone)]
-pub struct NamedAgent {
-    pub uid: String,
-    pub name: String,
 }
 
 /// One of the account's agents, from `GET /v1/agents`, in full.
@@ -246,69 +237,9 @@ pub struct ListedCredential {
     pub last_seen_at: Option<String>,
 }
 
-/// A messaging line (a phone number or a mailbox).
-#[derive(Deserialize, Debug, Clone)]
-pub struct Line {
-    pub uid: String,
-}
-
-/// A chat, from `GET /v1/chats`. Its line is the agent participant whose
-/// relationship is `self`.
-#[derive(Deserialize, Debug)]
-pub struct Chat {
-    pub uid: String,
-    pub participants: Vec<Participant>,
-}
-
-impl Chat {
-    pub fn line(&self) -> Option<&Line> {
-        self.participants.iter().find_map(|p| match p {
-            Participant::Agent { line, relationship } if relationship == "self" => Some(line),
-            _ => None,
-        })
-    }
-}
-
-#[derive(Deserialize, Debug)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum Participant {
-    Agent {
-        line: Line,
-        relationship: String,
-    },
-    #[serde(other)]
-    Other,
-}
-
-/// A chat message, from `GET /v1/chats/{uid}/messages`.
-#[derive(Deserialize, Debug, Clone)]
-pub struct Message {
-    pub uid: String,
-    pub body: String,
-    pub sender: Sender,
-    pub created_at: String,
-}
-
-/// Who sent a message, as Plow classifies it. A member's `role` is `owner`
-/// when the sender is the account the chat belongs to.
-#[derive(Deserialize, Debug, Clone)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum Sender {
-    Agent { relationship: String },
-    Member { display_name: String, role: String },
-    System {},
-}
-
-pub struct MessagePage {
-    pub messages: Vec<Message>,
-    pub has_more: bool,
-}
-
 #[derive(Deserialize)]
 struct List<T> {
     data: Vec<T>,
-    #[serde(default)]
-    has_more: bool,
 }
 
 // No `Debug`: this struct holds the Plow credential, and a debug print of
@@ -576,11 +507,6 @@ impl Plow {
         response.json().await.map_err(|_| bad_answer())
     }
 
-    /// Every live agent in the account. Owner logins only.
-    pub async fn agents(&self) -> Result<Vec<NamedAgent>, Failure> {
-        self.agent_list().await
-    }
-
     /// The kinds of agent Plow can run, its own `self_hosted` among them.
     pub async fn agent_kinds(&self) -> Result<Vec<AgentKind>, Failure> {
         let url = format!("{}/v1/agents/providers", self.api_url);
@@ -654,36 +580,6 @@ impl Plow {
         let url = format!("{}/v1/agents", self.api_url);
         let response = self.send(self.http.get(url)).await?;
         response.json().await.map_err(|_| bad_answer())
-    }
-
-    /// Every chat this login may see, oldest first.
-    pub async fn chats(&self) -> Result<Vec<Chat>, Failure> {
-        let url = format!("{}/v1/chats", self.api_url);
-        let response = self.send(self.http.get(url)).await?;
-        let list: List<Chat> = response.json().await.map_err(|_| bad_answer())?;
-        Ok(list.data)
-    }
-
-    /// One page of a chat's messages, newest first, older than
-    /// `starting_after` when given, each body as the literal text sent.
-    pub async fn messages(
-        &self,
-        chat_uid: &str,
-        starting_after: Option<&str>,
-    ) -> Result<MessagePage, Failure> {
-        let url = format!("{}/v1/chats/{chat_uid}/messages", self.api_url);
-        let mut query = vec![("limit", "100"), ("format", "text_decorations")];
-        if let Some(uid) = starting_after {
-            query.push(("starting_after", uid));
-        }
-        let url = url::Url::parse_with_params(&url, &query).map_err(|_| bad_answer())?;
-        let request = self.http.get(url);
-        let response = self.send(request).await?;
-        let page: List<Message> = response.json().await.map_err(|_| bad_answer())?;
-        Ok(MessagePage {
-            messages: page.data,
-            has_more: page.has_more,
-        })
     }
 
     /// Fresh short-lived credentials for the owner's connected Google accounts.

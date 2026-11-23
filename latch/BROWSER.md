@@ -374,49 +374,53 @@ and command.
 ## The gatekeeper
 
 Every caller's browser commands pass the host's gatekeeper. An agent's
-are judged like its other calls: on the built-in defaults, the owner's
-rules on the host and the owner's Plow chat with that agent. The owner's
-own devices are allowed unless the host's rules forbid it. Judged,
+are judged like its other calls: on the owner's message it cites with
+`--intent ROOM/EVENT`, as the owner's later messages leave it, and the
+host's device rule. The owner's own devices cite nothing and are allowed
+unless the device rule denies it. Opening a site (`open URL`, or `goto
+URL` or `tab new URL` on another site) and downloads run unjudged. Judged,
 each before anything of it reaches the page:
 
-- opening a site this session has not been judged for: `open URL`, or
-  `goto URL` or `tab new URL` on another site;
-- each plan (`do`): its steps as written with each step's values, the
-  page it starts on (URL and title), the sites it names and the vault
-  items it may fill (kind, title and saved sites). Every `do` is judged,
-  one of a single step too; only `act`'s one click, keypress or scroll is
-  not;
+- each plan (`do`) and each `act`: its steps as written with each
+  step's values, the page it starts on (URL and title), the sites it
+  names and the vault items it may fill (kind, title and saved sites).
+  Every click, typing, choice, keypress and fill is judged, one step on
+  its own too; only a plan that just scrolls or goes back is not. The
+  judge sees what was already allowed on the same cited message, so the
+  steps of one task go through as that task;
 - every vault fill: a `fill`, each fill a plan makes (a literal fill step
   or one a goal chose), and every `do --confirm` that releases an
   identity: the item's kind and title, the sites it is saved for, the
   fields and the page's site, never a value. The judge is told that the
   agent never receives the values and that a login fills only on its own
-  sites. A sign-in still needs the owner's OK, from a rule or the chat,
-  where asking for something to be done on a site covers signing in
-  there; with it, a sign-in on the login's own site isn't read as sharing the
-  password, while a login on any other site is. A refused fill in a plan
-  stops the plan at that step, the reason in its `stop`;
-- every `eval`, judged on its whole script: ordinary page work (closing a
-  pop-up, scrolling, clicking, reading visible text) is everyday, while a
-  script that reads form fields, listens to input, keyboard or form
-  events, or sends page data off the page needs the owner's explicit OK;
-- every upload and download (the file's name and size).
+  sites. A sign-in still needs the owner's message, where asking for
+  something to be done on a site covers signing in there; a login fill on
+  any other site is refused by code (`login_site_mismatch`). A refused
+  fill in a plan stops the plan at that step, the reason in its `stop`;
+- every `eval`, judged on its whole script: a script that reads form
+  fields, listens to input, keyboard or form events, or sends page data
+  off the page needs the owner's explicit OK;
+- every upload (the file's name and size);
+- an agent's `--confirm` of a click or Enter the risk decision paused,
+  before it is carried out: what it does, the lines around it and the
+  whole text of the fields it submits (up to 4,000 characters each, said
+  when cut short; a secret field's text is never shown), so what was typed
+  is judged with the click that sends it. A field that changes after it
+  is judged sends nothing (`confirm_stale`).
 
-Clicks, typing, `act`, page reads, screenshots and the `--confirm` of an
-ordinary click are not judged: the risk decision, confirmations and the
+Scrolling, going back, page reads and screenshots are not judged:
+the risk decision, confirmations and the
 fill and pause checks above still hold. A refusal is exit 4,
-`gatekeeper_denied`, and nothing was sent: with reason `not_covered`, ask
-the owner in chat, saying exactly what you will do, then retry; with
-`not_as_asked`, make the action match what the owner last asked and retry;
-with `owner_said_no`, don't. A gatekeeper that can't judge (the chat or the
-model unreachable) is exit 3, `gatekeeper_unavailable`, and nothing runs;
-its message says what fixes it (below, under the decision model).
-An agent whose line has more than one chat names the one it acts for
-with `--plow-chat C` or `LATCH_PLOW_CHAT`. Owner calls and local modes
-(`setup`, `handoff done`, `do --dry-run`) refuse this selector instead of
-ignoring it. The call's audit record holds the
+`gatekeeper_denied`, and nothing was sent; its `next` says the one thing
+to do. With reason `not_covered`, ask the owner in your 1:1 room, saying
+exactly what you will do, and cite their answer; with `denied_by_rule`,
+don't. A gatekeeper that can't judge (the owner's messages or the model
+unreachable) is exit 3, `gatekeeper_unavailable`, and nothing runs; its
+message says what fixes it (below, under the decision model). Owner calls
+and local modes (`setup`, `handoff done`, `do --dry-run`) refuse
+`--intent` instead of ignoring it. The call's audit record holds the
 judgment as `gate` (verdict, probabilities, model, cost, latency, the
-message ids read), never chat text. `just gated-shopping HOST_STATE OUT`
+intent cited), never message text. `just gated-shopping HOST_STATE OUT`
 measures a shopping task's judgments on the decision model.
 
 ## Plans, literal steps and confirmations
@@ -573,7 +577,9 @@ confirmation if it still looks consequential. A confirmation is used once, in th
 only while the element and the reviewed lines are unchanged; otherwise
 `confirm_stale` with a fresh page (a total that changes from $10.00 to
 $100.00 is refused, even with the same ref, URL and button name). It needs
-no new risk decision, so it still works while the model is down. A
+no new risk decision, so it still works while the model is down; an
+agent's confirmation still needs the gatekeeper, and without it stops with
+`gatekeeper_unavailable`. A
 vault fill needs no confirmation: a card or identity fill presses
 nothing, and the agent presses the page's button (Pay, Submit) itself, a click judged like any other ([VAULT.md](VAULT.md)). A step
 whose `new text` check already holds stops before the confirmation is
@@ -585,7 +591,7 @@ or Enter that needs a risk decision stops with it before that action is
 sent. If the model fails while judging a step's sentence check, the plan
 stops with `model_unavailable` after that step's action was sent. Literal
 `type`, `select`, `scroll` and `back`, typed checks and confirmations
-already issued still work.
+already issued still work (an agent's while the gatekeeper answers).
 
 **Request ids and the journal.** The client makes an id per request, so it
 knows it even if the answer is lost: an exit 5 names it. The host journals

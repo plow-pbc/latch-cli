@@ -2,7 +2,7 @@
 
 Latch lets your AI agents use a computer you trust: its files, programs,
 browser, Google account and, on a Mac, Messages and Contacts. That computer is
-a host. Its gatekeeper checks each request against your rules first.
+a host. Its gatekeeper lets an agent act only on a message of yours it cites.
 
 You need macOS 13 or later, or 64-bit Linux, and a Plow account.
 
@@ -40,11 +40,11 @@ and walks you through it.
 2. **Optional: connect Google.**
 3. **Optional, Mac only: turn on Messages and Contacts.** Grant Full Disk
    Access to Plow Latch.
-4. **Pick rules for your agents:** a chief of staff's, a developer's, or
-   none for now.
+4. **Say what agents are always denied** on this host ("Never touch my tax
+   returns"), or nothing.
 5. **Start the host.**
 
-Then make the rules your own: what your agents may and may not do.
+Change that list any time:
 
 ```sh host
 latch rules edit

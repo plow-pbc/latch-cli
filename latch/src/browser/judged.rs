@@ -1,9 +1,10 @@
 //! What the gatekeeper judges of a caller's browser use, and how each is
 //! put to the judge: opening a site the session has not been judged for,
-//! each plan, each vault fill, and every `eval`, upload and download. Clicks, typing,
-//! page reads and screenshots are not judged, nor is `act`'s one such
-//! action (a `do` of one step is judged): they pass the browser's own
-//! checks (the risk decision, confirmations, fill and pause checks).
+//! each plan, each vault fill, every `eval`, upload and download, and an
+//! agent's confirmation of a click or Enter the risk decision paused. Other
+//! clicks, typing, page reads and screenshots are not judged, nor is `act`'s
+//! one such action (a `do` of one step is judged): they pass the browser's
+//! own checks (the risk decision, confirmations, fill and pause checks).
 //!
 //! Each is judged before anything of it is sent to the page. A refusal
 //! sends nothing; the audit gets the judgment's `gate` object either way.
@@ -66,6 +67,19 @@ pub(super) enum Action {
         site: Option<String>,
         file: FileShown,
     },
+    /// A click or Enter the risk decision paused as one that can't be
+    /// undone (a send, a payment, a delete), as the agent's confirmation
+    /// would carry it out: what it does, the lines of the part of the page
+    /// it acts in, and the whole text of the fields it submits, so what was
+    /// typed is judged with the click that sends it.
+    ConfirmedStep {
+        page: Page,
+        action: String,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        around: Vec<String>,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        fields: Vec<String>,
+    },
 }
 
 /// A plan step as the agent wrote it, and the texts it names: a plan
@@ -125,11 +139,16 @@ pub(super) async fn judge(
 }
 
 /// The audit's copy of a judged action: no plan steps or facts, no
-/// titles, and its URLs cut to their origin.
+/// titles, none of a confirmed step's page text, and its URLs cut to their
+/// origin.
 fn audited(mut value: Value) -> Value {
     let action = value.as_object_mut().expect("an action is an object");
-    action.remove("steps");
-    action.remove("facts");
+    for words in ["steps", "facts", "around", "fields"] {
+        action.remove(words);
+    }
+    if action["kind"] == "confirmed_step" {
+        action.remove("action");
+    }
     for (key, shown) in action.iter_mut() {
         let titled = match key.as_str() {
             "page" | "item" => std::slice::from_mut(shown),
@@ -186,6 +205,28 @@ pub(super) async fn page(browsers: &Browsers, entry: &Entry) -> Result<Page, Fai
     })
 }
 
+/// `action` on the context `reviewed` (`Core::review`): its page, the
+/// lines around it and the fields it submits.
+pub(super) fn confirmed_step(browsers: &Browsers, action: String, reviewed: &Value) -> Action {
+    let strings = |key: &str| {
+        reviewed[key]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|line| line.as_str().map(str::to_string))
+            .collect()
+    };
+    Action::ConfirmedStep {
+        page: Page {
+            url: url_as(browsers, reviewed["url"].as_str().unwrap_or_default()),
+            title: reviewed["title"].as_str().unwrap_or_default().to_string(),
+        },
+        action,
+        around: strings("lines"),
+        fields: strings("values"),
+    }
+}
+
 /// The site of the session's active tab.
 pub(super) async fn site(browsers: &Browsers, entry: &Entry) -> Result<Option<String>, Failure> {
     Ok(sites::site_of(&page(browsers, entry).await?.url))
@@ -225,28 +266,6 @@ pub(super) fn fill(browsers: &Browsers, args: &Value, site: Option<String>) -> A
         .filter_map(|pair| pair[0].as_str().map(str::to_string))
         .collect();
     Action::VaultFill { site, item, fields }
-}
-
-/// A login fill as `rules try --fill-login` previews it: the item's kind
-/// and title as given, never looked up in the vault, on the site of `url`,
-/// as a login saved for that site.
-pub(crate) fn previewed_fill(
-    url: &str,
-    kind: &str,
-    title: &str,
-    fields: Vec<String>,
-) -> impl Serialize + use<> {
-    let site = sites::site_of(url);
-    Action::VaultFill {
-        item: ItemShown {
-            kind: kind.to_string(),
-            title: title.to_string(),
-            sites: site.iter().cloned().collect(),
-            other_top_sites: vec![],
-        },
-        site,
-        fields,
-    }
 }
 
 /// What the page's reading named each ref a plan's literal steps act on:
@@ -483,6 +502,14 @@ mod tests {
             json!({"kind": "browser_plan", "page": {"url": "https://shop.example"},
                 "sites": ["shop.example"], "may_fill": [{"kind": "card"}]})
         );
+        let confirmed = json!({"kind": "confirmed_step",
+            "page": {"url": "https://mail.example/inbox/7", "title": "Ada"},
+            "action": "click \"Send\", typing \"wire it\"", "around": ["Hi Ada"],
+            "fields": ["wire the deposit today"]});
+        assert_eq!(
+            audited(confirmed),
+            json!({"kind": "confirmed_step", "page": {"url": "https://mail.example"}})
+        );
     }
 
     #[test]
@@ -653,7 +680,7 @@ mod tests {
     /// item's kind, title and sites, never a value.
     #[tokio::test]
     async fn a_kept_vault_fill_holds_no_vault_value() {
-        use crate::gate::{Caller, Gatekeeper, fake, rules::RuleFiles};
+        use crate::gate::{Caller, Gatekeeper, fake, rules::Store};
         use crate::vault::item::{Item, LOGIN, Raw};
         let parent = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/tests");
         std::fs::create_dir_all(&parent).unwrap();
@@ -690,9 +717,13 @@ mod tests {
         };
         let plow = fake::serve(world);
         let provider = crate::model::Plow::new(&plow.url, "made-up-login".into());
-        let rules = Box::new(RuleFiles::new(&state).unwrap());
-        let keeper = Gatekeeper::new(plow.client(), std::sync::Arc::new(provider), rules)
-            .keeping_requests(&state);
+        // A device rule, so the owner's fill is asked about at all.
+        Store::new(&state)
+            .set_deny("Never buy anything.", None)
+            .unwrap();
+        let reader = Box::new(fake::Reader(Err("not read".into())));
+        let keeper =
+            Gatekeeper::new(std::sync::Arc::new(provider), reader, &state).keeping_requests(&state);
         let action = serde_json::value::to_raw_value(&action).unwrap();
         let judgment = keeper.judge(Caller::Owner, &action).await;
         let id = judgment.gate["kept_request"].as_str().unwrap();

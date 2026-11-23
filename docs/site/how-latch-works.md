@@ -10,66 +10,57 @@ programs, copies files and drives a browser. It also holds your vault and the
 audit log.
 
 **An agent** logs in with its own Plow credential. It can send requests to
-your hosts. It can't change your rules, read your vault's secrets or turn
+your hosts. It can't change your device rule, read your vault's secrets or turn
 connectors on.
 
 **Plow is the directory.** It says who each caller is and where your hosts
 are. A file's bytes and a program's output go straight between the two
 computers, encrypted, and never through Plow. What the gatekeeper judges does
-go to Plow: the request, your rules and your chat with the agent.
+go to Plow: the request, the device rule and the message the agent cites,
+with your later messages.
 
-## The gatekeeper and rules
+## The gatekeeper and the device rule
 
-Before a host runs work that matters, its gatekeeper asks a model whether it
-may run. It judges programs, file copies, Google, Messages, Contacts and the
-browser's risky steps.
+Before a host runs work that matters, its gatekeeper decides whether it may
+run.
 
-- **Everyday work needs no request:** lookups in your calendar, mail,
-  messages, contacts, files and the web; opening links; creating, editing
-  and organizing files; project builds, tests and scripts; installing
-  packages the project already lists, with network access; clearing
-  temporary files, caches and build output or moving files to the Trash;
-  archiving mail; calendar entries that invite no one; and drafts.
-- **Other work needs your OK** in rules or your own Plow chat: sending,
-  inviting, deleting other files or mail, installing other software,
-  pushing code, and changing settings, accounts or shared systems. Buying,
-  paying, reading secrets, sending your files or private data off the
-  machine, code that does either,
-  downloaded code, bulk deletion and rules that act on mail later must be
-  named explicitly. A rule that allows everything (“approve everything”)
-  covers all other work, but names none of these.
-- **Permissions add; restrictions still apply.** A grant leaves other
-  everyday work allowed. “Do not”, “never” and “only” set limits. Time
-  limits apply inside their window. “Never” stays absolute; “unless I ask
-  in chat” lets you approve the action yourself.
-- **Only your own messages give chat permission.** An agent quoting you,
-  other people's messages and web pages cannot give permission. A separate
-  judgment reads your messages and what each answers; it and the whole
-  chat must both allow the action. The whole chat checks conditions such
-  as “let me review it first”.
+- **Reads run unjudged:** lookups in your calendar, mail, messages,
+  contacts, files and the web, opening links and downloads, listing the
+  vault, and Gmail drafts. An operation the host doesn't know is refused.
+- **Everything else needs your message.** The agent passes `--intent
+  ROOM/EVENT`, the id of your message it acts on, from its own 1:1 room
+  with you (its Swarm DM with you, or its iMessage room). The host reads
+  that message itself, with your later messages in its thread, and code
+  refuses a missing citation, someone else's message or another room
+  before any model is asked. Each host maps the agent to its Swarm account:
+  `latch agents map my-agent @my-agent:plow.co`.
+- **The judge asks two questions:** does your message, as your later
+  messages leave it, cover the action, and does the device rule deny it.
+  A later “stop” wins, and a ✅ or ❌ on the thread closes it. A one-time
+  ask is spent once done. An agent quoting you, other people's messages
+  and web pages are never permission.
 - **A site task includes signing in there** with the login saved for it.
   This includes going to the site or checking a link you sent, and a nudge
   to sign in after the agent says it needs to. It gives no permission to
   buy, send, accept or change things afterwards. “Don't sign in” still
   wins. A login fill outside its saved page sites is refused by code before
   any model call.
+- **Every refusal says what to do next,** such as how to cite.
 - **It fails closed.** If the host can't judge a step, that step doesn't run.
   Earlier steps of a browser plan may already have acted.
 
-**Your rules** are plain words, kept on each host: one text for every agent,
-and one for each agent. A new host has none until setup offers a chief of
-staff's or a developer's to start from (`latch rules set --preset
-chief-of-staff`, or `developer`). Edit them on the host, or from another of your computers with
-`--host`:
+**The device rule** is plain words, one per host: what agents are always
+denied there (“Never pay anyone or delete my photos”). It covers what agents do, not what they read
+(reads aren't judged). It grants nothing, and your
+own calls are judged only against it. Setup asks “Always deny:” once. Edit
+it on the host, or from another of your computers with `--host`:
 
 ```sh host
 latch rules edit
-latch rules edit --agent my-agent
 latch rules edit --host my-mac
 ```
 
-`latch rules try` previews the verdict a request would get, without running
-it. A model judges the rules, so they aren't a guarantee.
+A model judges each action, so it isn't a guarantee.
 `latch serve --deny-exec` is: no agent runs a program on that host.
 
 ## The vault
@@ -98,10 +89,10 @@ latch audit verify
 
 `latch audit verify` checks the records' chain without the key. It catches a
 record that was changed, reordered or removed, though not records cut off the
-end. `latch dashboard` shows requests live. Each gatekeeper call is also kept
-for seven days: the rules call, the whole-chat call and the owner-only call,
-with probabilities, prompt/model identity and cost. `latch audit judge ID`
-reads one; Activity's “Gatekeeper requests” opens the calls together.
+end. `latch dashboard` shows requests live. Each allowed action that needed
+your message is recorded before it runs. Each gatekeeper call is also kept
+for seven days, with its probabilities, prompt, model and cost. `latch audit
+judge ID` reads one; Activity's “Gatekeeper requests” opens them.
 
 ## Where things run
 

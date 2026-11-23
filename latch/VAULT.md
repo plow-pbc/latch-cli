@@ -32,7 +32,7 @@ state folder or login is needed. Agents are refused with exit 4, but for
 `LATCH_HOST`); it must be serving, and a failed remote call never falls
 back to the local vault.
 
-**An agent's `vault list --host NAME`** is judged like its other work and
+**An agent's `vault list --host NAME`** is a read, so it runs unjudged, and
 answers each item's id, title and saved sites only, never a username or a
 value. The owner's list is never judged.
 
@@ -88,8 +88,8 @@ or note only when every field it keeps is the same, custom fields
 included, so a renewed card is new) or that would update a changed
 password, and imports only the rows you pick,
 writing the vault once; nothing is picked by default. Without a prompt,
-`--preview` returns that preview as JSON, imports nothing and, like a
-rules preview, is not audited; and `--pick
+`--preview` returns that preview as JSON, imports nothing and is not
+audited; and `--pick
 1,3-5` (or `all`) imports those rows of it. That pick reads the vault
 again, so pass the preview's `expect` with `--expect`: if what any row
 would do to the vault changed since the preview (an item it would update
@@ -151,8 +151,8 @@ latch vault link --host my-mac --kind login --title Shop --site shop.example \
   site.** The code is the only thing the host checks for an owner's link,
   so the owner should keep it to themselves.
 - **An agent may ask for a login:** `latch vault link --kind login` from an
-  agent is judged by the host's gatekeeper like its other work, on the
-  site, title and username it names, and recorded in the audit; it sends
+  agent needs the owner's message it cites (`--intent`), like its other
+  work, and is judged on the site, title and username it names, and recorded in the audit; it sends
   the link to the owner. Any other kind, any secret `--field`, and
   `--page` are refused: an agent's link always opens the page its host
   sets (`$LATCH_PHONE_PAGE` where `latch serve` runs, else

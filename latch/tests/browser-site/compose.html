@@ -1,0 +1,18 @@
+<!doctype html><meta charset="utf-8"><title>latch compose test</title>
+<!-- A message composer: a box, a PIN and their Send, which can't be
+     undone, and a Subject drawn outside the form it belongs to. -->
+<h1>Messages</h1>
+<p id="out">nothing sent</p>
+<form id="compose">
+  <p><label>Message <textarea id="body"></textarea></label></p>
+  <p><label>PIN <input type="password" id="pin"></label></p>
+  <p><button type="submit" id="send">Send</button></p>
+</form>
+<p><label>Subject <input id="subject" form="compose"></label></p>
+<script>
+  const out = document.getElementById('out');
+  document.getElementById('compose').addEventListener('submit', (e) => {
+    e.preventDefault();
+    out.textContent = 'sent: ' + document.getElementById('body').value;
+  });
+</script>

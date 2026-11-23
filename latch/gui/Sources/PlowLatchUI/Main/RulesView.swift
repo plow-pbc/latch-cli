@@ -351,9 +351,8 @@ struct VerdictView: View {
                     LabeledContent("Read", value: Why.sources[source] ?? source)
                 }
                 if let p = gate.p {
-                    Likelihood(title: "Covered", value: p["COVERED"], tint: .green)
-                    Likelihood(title: "Not covered", value: p["NOT_COVERED"], tint: .orange)
-                    Likelihood(title: "Forbidden", value: p["FORBIDDEN"], tint: .red)
+                    Likelihood(title: "Covered", value: p["covered"] ?? nil, tint: .green)
+                    Likelihood(title: "Denied", value: p["denied"] ?? nil, tint: .red)
                 }
             }
         }

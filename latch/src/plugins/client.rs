@@ -51,7 +51,7 @@ pub async fn run(state: &StateDir, args: PluginsArgs) -> Result<Value, Failure> 
     let request = Request {
         op: "plugins".to_string(),
         args,
-        chat: None,
+        intent: None,
     };
     let send = || async {
         match dial::call(state, &host, &request, ANSWER_WITHIN).await {

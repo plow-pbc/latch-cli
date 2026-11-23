@@ -32,17 +32,17 @@ pub async fn run(state: &StateDir, args: VaultArgs) -> Result<Value, Failure> {
     let call = |args: Value| Request {
         op: "vault".to_string(),
         args,
-        chat: None,
+        intent: None,
     };
     match args.command {
-        // An agent's list or link is judged in the chat it names, as its
-        // other calls are.
+        // An agent's link cites the owner's message on a host, as its other
+        // calls do.
         VaultCommand::List { .. } | VaultCommand::Link { .. }
-            if target.host.is_none() && args.plow_chat.is_some() =>
+            if target.host.is_none() && args.intent.is_some() =>
         {
             Err(Failure::new(
-            code::plow_chat_not_supported,
-            "--plow-chat and LATCH_PLOW_CHAT select an agent's Plow chat on a host; this machine's own vault takes none: omit them".into(),
+            code::intent_not_supported,
+            "--intent cites the owner's message to a host's gatekeeper; this machine's own vault takes none: omit it".into(),
             ))
         }
         VaultCommand::List {
@@ -55,7 +55,7 @@ pub async fn run(state: &StateDir, args: VaultArgs) -> Result<Value, Failure> {
             let narrow = Narrow::new(site, search, kind, (!all).then_some(limit))?;
             let listed = target
                 .call(Request {
-                    chat: args.plow_chat,
+                    intent: args.intent,
                     ..call(json!({"command": "list"}))
                 })
                 .await?;
@@ -173,7 +173,7 @@ pub async fn run(state: &StateDir, args: VaultArgs) -> Result<Value, Failure> {
             }
             let values = given(&kind, &field)?;
             let request = Request {
-                chat: args.plow_chat,
+                intent: args.intent,
                 ..call(json!({
                     "command": "link",
                     "kind": kind,
@@ -614,7 +614,7 @@ async fn import(
     let request = Request {
         op: "vault".to_string(),
         args: json!({"command": if preview { "preview" } else { "import" }, "size": size}),
-        chat: None,
+        intent: None,
     };
     // One stream: the go-ahead, the bytes, the preview, the picks, the
     // outcome. The host drops the export if the stream ends before picks.

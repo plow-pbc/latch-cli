@@ -283,9 +283,8 @@ struct Why: View {
                 LabeledContent("Verdict", value: Self.verdicts[verdict] ?? verdict)
             }
             if let p = gate.p {
-                Likelihood(title: "Covered", value: p["COVERED"], tint: .green)
-                Likelihood(title: "Not covered", value: p["NOT_COVERED"], tint: .orange)
-                Likelihood(title: "Forbidden", value: p["FORBIDDEN"], tint: .red)
+                Likelihood(title: "Covered", value: p["covered"] ?? nil, tint: .green)
+                Likelihood(title: "Denied", value: p["denied"] ?? nil, tint: .red)
             }
             if gate.model != nil || gate.latencyMs != nil || gate.cost != nil || gate.rule != nil {
             DisclosureGroup("Details") {

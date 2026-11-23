@@ -56,7 +56,9 @@ struct Action<'a> {
     login: Option<Value>,
 }
 
-/// `op` with `args` as the judge sees it, if the gatekeeper judges `op`.
+/// `op` with `args` as the judge sees it, if the gatekeeper judges `op`:
+/// every operation but the browser's and the owner's settings, an
+/// unknown one included.
 /// An exec's paths are normalized before judgment. Its stdin
 /// may be the program itself (`sh`, `python -`), so the judge reads it
 /// too; the audit keeps only its size and sha256.
@@ -171,7 +173,13 @@ pub fn gated(op: &str, args: &Value) -> Option<Gated> {
             };
             (action, audit)
         }
-        _ => return None,
+        // Not judged here: the browser judges each action itself, and the
+        // rest are the owner's own settings and records, refused to an
+        // agent by their own checks.
+        "browser" | "rules" | "plugins" | "status" | "audit" | "audit_shot" | "audit_judge"
+        | "vault" => return None,
+        // An operation this list does not name is judged, and refused.
+        _ => (none, json!({"operation": op})),
     };
     Some(Gated {
         action: serde_json::value::to_raw_value(&action).expect("an action serializes"),
@@ -201,4 +209,76 @@ pub(crate) fn judged_stdin(stdin: &Value) -> Result<Option<String>, Failure> {
     String::from_utf8(bytes)
         .map(Some)
         .map_err(|_| refused("not UTF-8 text"))
+}
+
+/// What the gatekeeper asks of an action, by its kind alone.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Class {
+    /// A read: it runs unjudged.
+    Free,
+    /// Anything else: it needs the owner's intent.
+    Intent,
+    /// An operation latch does not know: refused.
+    Unknown,
+}
+
+impl Class {
+    pub fn word(self) -> &'static str {
+        match self {
+            Class::Free => "free",
+            Class::Intent => "intent",
+            Class::Unknown => "unknown",
+        }
+    }
+}
+
+/// Drafts send nothing, so writing one is free.
+const FREE_DRAFTS: [&str; 3] = [
+    "gmail.drafts.create",
+    "gmail.drafts.reply",
+    "gmail.drafts.update",
+];
+
+/// The class of `action`, as the judge is shown it: an operation's
+/// (`gated`) or a browser action's (`browser::judged`).
+pub fn classify(action: &Value) -> Class {
+    if let Some(kind) = action["kind"].as_str() {
+        return match kind {
+            "open_site" | "download_file" => Class::Free,
+            "browser_plan" | "vault_fill" | "run_script" | "upload_file" | "confirmed_step" => {
+                Class::Intent
+            }
+            _ => Class::Unknown,
+        };
+    }
+    match action["operation"].as_str().unwrap_or_default() {
+        "file_get" | "vault.list" => Class::Free,
+        "exec" | "file_put" | "vault.link" => Class::Intent,
+        "google" => {
+            let words: Vec<String> =
+                serde_json::from_value(action["command"].clone()).unwrap_or_default();
+            let Ok(lifted) = crate::google::policy::lift(&words) else {
+                return Class::Intent;
+            };
+            if lifted.args == ["accounts"] {
+                return Class::Free;
+            }
+            match crate::google::policy::parse(&lifted.args) {
+                Ok(plan) if plan.read_only() || FREE_DRAFTS.contains(&plan.command.as_str()) => {
+                    Class::Free
+                }
+                _ => Class::Intent,
+            }
+        }
+        // The connectors' reads, named one by one: an action added later is
+        // unknown until it is classified here.
+        "messages.search"
+        | "messages.thread"
+        | "messages.chats"
+        | "messages.unreplied"
+        | "messages.attachment"
+        | "contacts.search"
+        | "contacts.lookup" => Class::Free,
+        _ => Class::Unknown,
+    }
 }

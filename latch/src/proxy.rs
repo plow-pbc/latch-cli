@@ -108,7 +108,7 @@ pub async fn connect(state: &StateDir, host: &Peer) -> Result<Proxied, Failure> 
     let request = Request {
         op: OP.to_string(),
         args: serde_json::json!({ "host": host }),
-        chat: None,
+        intent: None,
     };
     let json = serde_json::to_vec(&request).expect("a request serializes");
     let within = crate::dial::CONNECT_TIMEOUT + ANSWER_GRACE;

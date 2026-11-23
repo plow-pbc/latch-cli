@@ -14,8 +14,8 @@ owner trusts, over Plow's peer directory. The same binary plays every role:
 - a **host** runs `latch serve` and answers callers over iroh (QUIC,
   ALPN `plow/latch/4`), each operation in a sandboxed worker;
 - a **device** is one of the owner's own machines, logged in with an owner
-  login; it is the owner acting, judged only against the host's rules
-  (allowed unless they forbid it);
+  login; it is the owner acting, judged only against the host's device
+  rule (allowed unless it denies it);
 - an **agent** logs in with its own Plow credential and reaches hosts with
   `latch exec|file|browser|google|messages|contacts … --host NAME`; exec,
   file copies, Google, Messages, Contacts and selected browser operations
@@ -43,8 +43,9 @@ hosts (Macs and Linux VMs), agents run by Plow. Pre-PMF.
   ed25519 key; the host asks Plow (`GET /v1/latch/peers/{key}`) who that key
   is on every operation. Names are labels.
 - **The gatekeeper is the gate.** No per-agent permission lists. Intent comes
-  from the owner's own Plow chat with that agent and the host's rules, never
-  from what the agent says. It fails closed: a host that cannot judge
+  from the owner's own message the agent cites from its 1:1 room with the
+  owner, read by the host itself, bounded by the host's deny-only device
+  rule; never from what the agent says. It fails closed: a host that cannot judge
   dispatches nothing.
 - **State lives in one folder** (`--state-dir`, default `~/.latch`), mode
   0600 files, versioned by `latch.json`'s format. A latch reads only its own
@@ -57,18 +58,19 @@ hosts (Macs and Linux VMs), agents run by Plow. Pre-PMF.
 **Accepted limits — known, recorded, not new findings.** Re-raising one costs
 a review slot. Flag a diff that *widens* one, not the limit itself:
 - **The gatekeeper's judge is a model and leaks** about 7% of held-out
-  decisions (timing, amounts, weak "ok"s read as yes). Host rules are judged,
-  not enforced; only `--deny-exec` is a guarantee.
-- **Owner provenance is Plow's classification** of chat messages, not proven
-  ingress.
+  decisions (timing, amounts, weak "ok"s read as yes). The device rule is
+  judged, not enforced; only `--deny-exec` is a guarantee.
+- **Owner provenance is the Swarm sender id** the host reads as one of the
+  owner's devices, not proven ingress.
 - **A device login placed where an agent runs is judged as the owner**:
-  allowed unless the host's rules forbid it, instead of being judged as
+  allowed unless the host's device rule denies it, instead of being judged as
   the agent's call. The docs tell agents to use their own credential; the
   host cannot tell.
-- **The gatekeeper does not remember what a caller already ran.** The same
-  send or purchase asked twice is judged twice, on its own. Repeats are
-  left to request ids (`duplicate_request`), exit 5's "outcome unknown"
-  and the agent's guidance to check before resending.
+- **The gatekeeper remembers what ran only per cited intent, per host.** Its
+  ledger spends a one-time ask once on that host; another host gating the
+  same agent keeps its own. Other repeats are left to request ids
+  (`duplicate_request`), exit 5's "outcome unknown" and the agent's
+  guidance to check before resending.
 - **The state folder is protected only from latch's own workers.** Root, and
   any process of the host's OS user outside latch, can read or write it.
 - **On macOS the browser engine runs outside latch's Seatbelt** (Chrome's own
@@ -131,7 +133,7 @@ tool exists to prevent:
 - credentials and the vault (`src/vault/`, `credential.rs`, `state.rs`'s
   token and key files), including the phone page's link and submit path;
 - the gatekeeper (`src/gate/`), including who counts as the owner and which
-  chat text reaches the judge;
+  messages reach the judge;
 - the browser engines' launch recipe, pin checks and origin rules
   (`src/browser/`);
 - Plow auth: which credential registers which kind of peer, and the host's
@@ -147,7 +149,7 @@ owner set, or does it manage a resource nobody has run out of?
 | A migration, compatibility branch or fallback path for an older state folder or wire shape. A format change raises `FORMAT` (or the vault's version) and refuses the old one. | A secret (token, key, vault value, TOTP seed) reaching a log line, an error string, a URL, stdout JSON, the audit log or a test fixture, in any encoding. |
 | A defensive branch for a state the pinned engine or the OS cannot produce. | A caller trusted by its name, or by anything the agent sent, rather than by its key and Plow's answer for it. |
 | An integration test that needs a live Plow stack or a real model to be the remedy; say "verify by hand and report what you saw". | A sandbox policy that newly lets a worker write outside its areas, see the state folder, or reach the network it should not. |
-| A new abstraction, registry or manager to hold state an existing owner already holds. | Chat text or page content reaching anything but the judge's input: a rule key, a sandbox policy, a launch flag. |
+| A new abstraction, registry or manager to hold state an existing owner already holds. | Message text or page content reaching anything but the judge's input: the device rule, a sandbox policy, a launch flag. |
 | Cloning a test to vary one input. | A change to the wire protocol or a state file's shape without the version bump that makes an old peer refuse it. |
 | — | A change that Plow owns: the peer directory, auth, `POST /v1/decisions`, chats and agents routes live in `plow-pbc/plow`. The test is who else would have to change if the fact changed. |
 

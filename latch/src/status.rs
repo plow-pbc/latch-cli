@@ -258,7 +258,7 @@ pub async fn ask_plugins(
     let request = Request {
         op: "plugins".to_string(),
         args: json!({"command": "list"}),
-        chat: None,
+        intent: None,
     };
     crate::dial::ask_each(state, &peers, &request, PLUGINS_WITHIN, |at, answer| {
         each(

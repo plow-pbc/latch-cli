@@ -680,7 +680,7 @@ mod tests {
         let request = Request {
             op: "plugins".to_string(),
             args: serde_json::json!({"command": "list"}),
-            chat: None,
+            intent: None,
         };
         let mut codes = Vec::new();
         let ((), logged) = traced(ask_each(
