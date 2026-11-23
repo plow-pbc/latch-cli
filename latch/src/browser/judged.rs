@@ -631,7 +631,7 @@ mod tests {
     /// item's kind, title and sites, never a value.
     #[tokio::test]
     async fn a_kept_vault_fill_holds_no_vault_value() {
-        use crate::gate::{Caller, Gatekeeper, fake, rules::RuleFiles};
+        use crate::gate::{Caller, Gatekeeper, fake, rules::Store};
         use crate::vault::item::{Item, LOGIN, Raw};
         let parent = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/tests");
         std::fs::create_dir_all(&parent).unwrap();
@@ -668,8 +668,10 @@ mod tests {
         };
         let plow = fake::serve(world);
         let provider = crate::model::Plow::new(&plow.url, "made-up-login".into());
-        let rules = Box::new(RuleFiles::new(&state).unwrap());
-        let keeper = Gatekeeper::new(plow.client(), std::sync::Arc::new(provider), rules)
+        // A device rule, so the owner's fill is asked about at all.
+        Store::new(&state).set_deny("Never buy anything.", None).unwrap();
+        let reader = Box::new(fake::Reader(Err("not read".into())));
+        let keeper = Gatekeeper::new(std::sync::Arc::new(provider), reader, &state)
             .keeping_requests(&state);
         let action = serde_json::value::to_raw_value(&action).unwrap();
         let judgment = keeper.judge(Caller::Owner, &action).await;

@@ -15,7 +15,9 @@ pub const AGENT: &str = "0123456789abcdef0123456789abcdef";
 pub const LINE: &str = "line_agent";
 
 /// The probabilities of COVERED, NOT_COVERED and FORBIDDEN for a state,
-/// or none for a decision route that fails.
+/// or none for a decision route that fails: COVERED answers whether the
+/// cited intent covers the action, FORBIDDEN whether the device rule
+/// denies it.
 pub type Decide = fn(&Value) -> Option<[f64; 3]>;
 
 /// What the synthetic Plow holds: each chat's line and messages (oldest
@@ -72,23 +74,22 @@ impl World {
         if method == "POST" && path == "/v1/decisions" {
             let asked: Value = serde_json::from_slice(body).unwrap();
             self.asked.push(asked["state"].clone());
-            let Some([c, n, f]) = self.decide.and_then(|decide| decide(&asked["state"])) else {
+            let Some([c, _, f]) = self.decide.and_then(|decide| decide(&asked["state"])) else {
                 return (503, json!({"detail": "unavailable"}));
             };
-            let top = if c >= n && c >= f {
-                "COVERED"
-            } else if n >= f {
-                "NOT_COVERED"
-            } else {
-                "FORBIDDEN"
-            };
+            // COVERED is the intent's yes, FORBIDDEN the device rule's.
+            let answers: serde_json::Map<String, Value> = asked["questions"]
+                .as_object()
+                .into_iter()
+                .flatten()
+                .map(|(id, _)| {
+                    let p = if id == "denied" { f } else { c };
+                    (id.clone(), json!({"type": "noul", "noul": p}))
+                })
+                .collect();
             return (
                 200,
-                json!({"id": "req_fake", "model": asked["model"],
-                       "answers": {"decision": {"type": "choice", "choice": top,
-                           "probabilities": {"COVERED": c, "NOT_COVERED": n, "FORBIDDEN": f}},
-                           "exception": {"type": "noul", "noul": 0.0},
-                           "time_ban": {"type": "noul", "noul": 0.0}},
+                json!({"id": "req_fake", "model": asked["model"], "answers": answers,
                        "usage": {"input_tokens": 1000, "output_tokens": 0, "cost": 0.0001}}),
             );
         }
@@ -319,4 +320,41 @@ pub fn member(name: &str) -> Value {
 pub fn agent_self() -> Value {
     json!({"type": "agent", "relationship": "self",
            "line": {"uid": LINE, "provider_type": "imessage", "provider_key": "+14155550100"}})
+}
+
+/// The citation tests' agents send: a message in the agent's own DM.
+pub const CITED: &str = "!dm:test/$asked";
+/// The Swarm account the test agent is mapped to.
+pub const AGENT_SWARM: &str = "@agent:test";
+
+/// A thread reader answering every citation with `read`: by default the
+/// owner's `asked`, in the agent's own DM, nothing after it.
+pub struct Reader(pub Result<Option<crate::gate::thread::Thread>, String>);
+
+impl Reader {
+    pub fn asked(text: &str) -> Reader {
+        Reader(Ok(Some(crate::gate::thread::Thread {
+            cited: crate::gate::thread::Said {
+                text: text.into(),
+                at: Timestamp::now() - SignedDuration::from_mins(30),
+            },
+            sender_is_owner: true,
+            later_owner: vec![],
+            context: vec![],
+            is_owner_dm: true,
+            closed: false,
+            complete: true,
+        })))
+    }
+}
+
+impl crate::gate::thread::ThreadSource for Reader {
+    fn read<'a>(
+        &'a self,
+        _intent: &'a crate::gate::thread::IntentRef,
+        _agent: &'a str,
+    ) -> crate::gate::thread::Reading<'a> {
+        let read = self.0.clone();
+        Box::pin(async move { read })
+    }
 }

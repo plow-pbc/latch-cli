@@ -75,11 +75,22 @@ pub(super) async fn start_denying(world: World, deny_exec: DenyExec) -> TestHost
     start_with(fake, Arc::new(provider), deny_exec).await
 }
 
-/// A host on `plow`, its gatekeeper asking `provider`.
+/// A host on `plow`, its gatekeeper asking `provider`, every citation
+/// the owner asking `ASKED`.
 pub(super) async fn start_with(
     plow: FakePlow,
     provider: Arc<dyn model::Provider>,
     deny_exec: DenyExec,
+) -> TestHost {
+    start_reading(plow, provider, deny_exec, fake::Reader::asked(ASKED)).await
+}
+
+/// The same, its citations read by `reader`.
+pub(super) async fn start_reading(
+    plow: FakePlow,
+    provider: Arc<dyn model::Provider>,
+    deny_exec: DenyExec,
+    reader: fake::Reader,
 ) -> TestHost {
     let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.dev/tests");
     std::fs::create_dir_all(&parent).unwrap();
@@ -110,12 +121,15 @@ pub(super) async fn start_with(
         .await
         .unwrap();
     let vault = crate::vault::host::Vault::new(state.clone());
-    let rules = RuleFiles::new(&state).unwrap();
+    crate::gate::rules::Store::new(&state)
+        .map_agent(AGENT, fake::AGENT_SWARM)
+        .unwrap();
+    let audit = Arc::new(Mutex::new(
+        AuditLog::open(state.join(crate::audit::FILE)).unwrap(),
+    ));
     let host = Arc::new(Host {
         plow: plow.client(),
-        audit: Arc::new(Mutex::new(
-            AuditLog::open(state.join(crate::audit::FILE)).unwrap(),
-        )),
+        audit: audit.clone(),
         dashboard: Dashboard::new("test-host"),
         lifetime: super::Lifetime::new(false, false),
         workers: WorkerSetup {
@@ -130,8 +144,9 @@ pub(super) async fn start_with(
         vault,
         endpoint: endpoint.clone(),
         name: "test-host".into(),
-        gatekeeper: Gatekeeper::new(plow.client(), provider, Box::new(rules))
-            .keeping_requests(&state),
+        gatekeeper: Gatekeeper::new(provider, Box::new(reader), &state)
+            .keeping_requests(&state)
+            .recording(audit),
         deny_exec,
         binary: Binary::at(&binary).unwrap(),
         plugins: crate::plugins::Plugins::load(
@@ -196,7 +211,21 @@ impl TestHost {
             Request {
                 op: op.into(),
                 args,
-                chat: None,
+                intent: None,
+            },
+        )
+        .await
+    }
+
+    /// The same, citing the owner's message `fake::CITED`, as an agent's
+    /// every call but a read does.
+    pub(super) async fn cite(&self, client: &Endpoint, op: &str, args: Value) -> (Response, Vec<u8>) {
+        self.request(
+            client,
+            Request {
+                op: op.into(),
+                args,
+                intent: Some(fake::CITED.into()),
             },
         )
         .await
@@ -223,7 +252,7 @@ impl TestHost {
         self.local_request(Request {
             op: op.into(),
             args,
-            chat: None,
+            intent: None,
         })
         .await
     }
@@ -273,7 +302,7 @@ impl TestHost {
         let request = Request {
             op: "file_put".into(),
             args: json!({"remote_path": remote, "size": size, "name": "upload.txt"}),
-            chat: None,
+            intent: None,
         };
         wire::write_frame(&mut send, &serde_json::to_vec(&request).unwrap())
             .await
