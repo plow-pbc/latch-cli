@@ -338,7 +338,7 @@ final class Onboarding {
     func loadRules() async {
         do {
             let saved = try await client.rulesShow().deviceRule
-            if draftRules.isEmpty || draftRules == savedRules?.text {
+            if draftRules == (savedRules?.text ?? "") {
                 savedRules = saved
                 draftRules = saved?.text ?? ""
             }

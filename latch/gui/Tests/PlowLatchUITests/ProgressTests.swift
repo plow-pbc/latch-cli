@@ -168,10 +168,12 @@ struct GatekeeperTests {
         client.savedText = "Changed on the laptop."
         await flow.loadRules()
         #expect(flow.draftRules == "Changed on the laptop.")
-        flow.draftRules = "My edit."
-        client.savedText = "Changed again."
-        await flow.loadRules()
-        #expect(flow.draftRules == "My edit." && flow.savedRules?.text == "Changed on the laptop.")
+        for edit in ["My edit.", ""] {
+            flow.draftRules = edit
+            client.savedText = "Changed again."
+            await flow.loadRules()
+            #expect(flow.draftRules == edit && flow.savedRules?.text == "Changed on the laptop.")
+        }
     }
 
     /// An answer that couldn't be read can't be saved over; Skip still
