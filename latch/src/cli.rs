@@ -1097,7 +1097,7 @@ pub enum AgentsAction {
     ///
     /// Its line and Plow status (a cloud agent's starts as provisioning)
     Show { agent: String },
-    /// Map an agent to its Swarm account, on a host (owner only)
+    /// Map an agent to its Swarm account, on a host
     ///
     /// The host's gatekeeper accepts an agent's --intent only from that
     /// account's own 1:1 rooms with you; an unmapped agent is refused.

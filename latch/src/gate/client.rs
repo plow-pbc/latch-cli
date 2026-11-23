@@ -34,7 +34,10 @@ pub async fn run(state: &StateDir, args: RulesArgs) -> Result<Value, Failure> {
     };
     match args.command {
         RulesCommand::Set {
-            text, file, revision, ..
+            text,
+            file,
+            revision,
+            ..
         } => {
             let text = match (text, file) {
                 (Some(text), None) => text,

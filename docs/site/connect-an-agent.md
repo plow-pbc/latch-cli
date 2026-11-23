@@ -138,8 +138,8 @@ agent quoting you cannot give permission.
 
 Each host must know the agent's Swarm account, set by you:
 
-```sh
-latch agents map my-agent @my-agent:plow.co --host my-mac
+```sh host
+latch agents map my-agent @my-agent:plow.co
 ```
 
 Each host also keeps a device rule: what agents are always denied there,

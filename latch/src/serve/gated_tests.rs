@@ -1,7 +1,8 @@
 //! A host's gatekeeper in front of exec, files and Google, and the owner's
-//! rules for it, end to end: a headless host on this machine with real
-//! sandboxed workers, callers over iroh, and a synthetic Plow holding the
-//! owner's chat. No real chat is ever read.
+//! device rule for it, end to end: a headless host on this machine with
+//! real sandboxed workers, callers over iroh, and a synthetic Plow and
+//! thread reader standing in for the owner's messages. No real message is
+//! ever read.
 
 use std::path::{Path, PathBuf};
 
@@ -9,39 +10,30 @@ use serde_json::{Value, json};
 
 use super::*;
 use crate::failure::Exit;
-use crate::gate::fake::{self, AGENT, FakePlow, World, agent_self, message, owner};
+use crate::gate::fake::{self, AGENT, FakePlow, World};
 use crate::model;
 
-/// The owner's yes covers an operation; anything else does not.
-pub(super) fn covered_after_a_yes(state: &Value) -> Option<[f64; 3]> {
-    let said_yes = state["conversation"].as_array().is_some_and(|messages| {
-        messages
-            .iter()
-            .any(|m| m["from"] == "OWNER" && m["text"].as_str().unwrap().contains("yes"))
-    });
-    Some(if said_yes {
-        [0.9, 0.08, 0.02]
-    } else {
-        [0.1, 0.85, 0.05]
-    })
+pub(super) fn always_covered(_: &Value) -> Option<[f64; 3]> {
+    Some([0.9, 0.08, 0.02])
+}
+
+/// The cited intent never covers the action; no device rule forbids it.
+fn never_covered(_: &Value) -> Option<[f64; 3]> {
+    Some([0.1, 0.85, 0.05])
 }
 
 fn down(_: &Value) -> Option<[f64; 3]> {
     None
 }
 
-const ASKED: &str = "could you tidy up the work folder at some point?";
+pub(super) const ASKED: &str = "could you tidy up the work folder at some point?";
 
-fn a_chat(decide: fake::Decide) -> World {
-    let mut world = World::with_chat(
-        "chat_a",
-        vec![
-            message("m1", owner(), ASKED, 30),
-            message("m2", agent_self(), "Sure, I'll look later.", 29),
-        ],
-    );
-    world.decide = Some(decide);
-    world
+/// A synthetic Plow whose decision route answers by `decide`.
+fn judged_by(decide: fake::Decide) -> World {
+    World {
+        decide: Some(decide),
+        ..World::default()
+    }
 }
 
 pub(super) struct TestHost {
@@ -219,7 +211,12 @@ impl TestHost {
 
     /// The same, citing the owner's message `fake::CITED`, as an agent's
     /// every call but a read does.
-    pub(super) async fn cite(&self, client: &Endpoint, op: &str, args: Value) -> (Response, Vec<u8>) {
+    pub(super) async fn cite(
+        &self,
+        client: &Endpoint,
+        op: &str,
+        args: Value,
+    ) -> (Response, Vec<u8>) {
         self.request(
             client,
             Request {
@@ -267,12 +264,13 @@ impl TestHost {
         serde_json::from_slice(&wire::read_frame(&mut recv).await.unwrap()).unwrap()
     }
 
-    /// The audit's records, opened with the key, connections left out.
+    /// The audit's operation records, opened with the key: connections
+    /// and the gate records written before an allowed intent op left out.
     pub(super) fn audit(&self) -> Vec<Value> {
         self.audit_text()
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
-            .filter(|record: &Value| record["op"] != "connect")
+            .filter(|record: &Value| record["op"] != "connect" && record["op"] != "gate")
             .collect()
     }
 
@@ -285,8 +283,9 @@ impl TestHost {
             .collect()
     }
 
-    /// A `file_put` of `sent` to `remote`, promising `size` bytes: the
-    /// first answer, and the final one if the host got that far.
+    /// An agent's `file_put` of `sent` to `remote`, promising `size` bytes,
+    /// citing `fake::CITED`: the first answer, and the final one if the
+    /// host got that far.
     async fn put(
         &self,
         client: &Endpoint,
@@ -302,7 +301,7 @@ impl TestHost {
         let request = Request {
             op: "file_put".into(),
             args: json!({"remote_path": remote, "size": size, "name": "upload.txt"}),
-            intent: None,
+            intent: Some(fake::CITED.into()),
         };
         wire::write_frame(&mut send, &serde_json::to_vec(&request).unwrap())
             .await
@@ -327,24 +326,10 @@ impl TestHost {
         self.judgments().len()
     }
 
-    /// The state of each judgment, in order: an owner's call, or an
-    /// agent's rules layer, which every agent judgment has. An agent's chat
-    /// layer is asked beside it, in either order.
+    /// The state of each judgment, in order.
     pub(super) fn judgments(&self) -> Vec<Value> {
-        let world = self.plow.world.lock().unwrap();
-        world
-            .asked
-            .iter()
-            .filter(|s| !chat_layer(s))
-            .cloned()
-            .collect()
+        self.plow.world.lock().unwrap().asked.clone()
     }
-}
-
-/// Whether `state` is an agent's chat layer: a chat that is neither
-/// absent nor the owner's own request.
-pub(super) fn chat_layer(state: &Value) -> bool {
-    state["conversation"] != "(no chat)" && state["conversation"][0]["id"] != "request"
 }
 
 fn exec(script: &str) -> Value {
@@ -393,7 +378,7 @@ async fn an_operation_is_audited_before_dashboard_name_lookup() {
         (requested, records)
     };
     let ((answer, _), (requested, records)) =
-        tokio::join!(t.call(&agent, "exec", exec("touch made")), during_lookup);
+        tokio::join!(t.cite(&agent, "exec", exec("touch made")), during_lookup);
     assert!(requested.is_ok(), "the dashboard never asked for the name");
     assert_eq!(refusal(&answer).1, "exec_denied");
     assert!(!t.area.join("made").exists());
@@ -403,11 +388,11 @@ async fn an_operation_is_audited_before_dashboard_name_lookup() {
 
 #[tokio::test]
 async fn a_refused_operation_runs_nothing_and_returns_nothing() {
-    let t = start(a_chat(covered_after_a_yes)).await;
+    let t = start(judged_by(never_covered)).await;
     let agent = t.caller("agent").await;
 
     let (answer, rest) = t
-        .call(&agent, "exec", exec("echo the-output; touch made"))
+        .cite(&agent, "exec", exec("echo the-output; touch made"))
         .await;
     let (exit, code, details) = refusal(&answer);
     assert_eq!((exit, code), (Exit::Denied, "gatekeeper_denied"));
@@ -415,21 +400,14 @@ async fn a_refused_operation_runs_nothing_and_returns_nothing() {
     assert!(rest.is_empty());
     assert!(!t.area.join("made").exists(), "the program never ran");
 
-    let (answer, rest) = t
-        .call(&agent, "file_get", json!({"remote_path": "area/notes.txt"}))
-        .await;
-    assert_eq!(refusal(&answer).1, "gatekeeper_denied");
-    assert!(rest.is_empty(), "no bytes of the file");
-    assert!(!format!("{answer:?}").contains("own words"));
-
     let put = json!({"remote_path": "area/new.txt", "size": 5, "name": "new.txt"});
-    let (answer, _) = t.call(&agent, "file_put", put).await;
+    let (answer, _) = t.cite(&agent, "file_put", put).await;
     assert_eq!(refusal(&answer).1, "gatekeeper_denied");
     assert!(!t.area.join("new.txt").exists());
 
-    let google = json!({"gog_args": ["gmail", "search", "invoice"], "account": [],
-                        "confirm_conflict": false, "inputs": []});
-    let (answer, rest) = t.call(&agent, "google", google).await;
+    let google = json!({"gog_args": ["gmail", "send", "--to", "a@example.com", "--body", "hi"],
+                        "account": [], "confirm_conflict": false, "inputs": []});
+    let (answer, rest) = t.cite(&agent, "google", google).await;
     assert_eq!(refusal(&answer).1, "gatekeeper_denied");
     assert!(rest.is_empty());
     assert_eq!(
@@ -438,32 +416,37 @@ async fn a_refused_operation_runs_nothing_and_returns_nothing() {
         "no Google credential fetched"
     );
 
-    assert_eq!(t.judged(), 4);
+    assert_eq!(t.judged(), 3);
     let records = t.audit();
-    assert_eq!(records.len(), 4);
+    assert_eq!(records.len(), 3, "and no gate record");
     for record in &records {
         assert_eq!(record["decision"], "deny");
         assert_eq!(record["outcome"], "gatekeeper_denied");
         assert_eq!(record["gate"]["verdict"], "not_covered");
     }
-    assert_eq!(records[3]["args"], json!({"command": "gmail.search"}));
+    assert_eq!(records[2]["args"], json!({"command": "gmail.send"}));
 }
 
 #[tokio::test]
-async fn a_judge_that_cannot_answer_runs_nothing() {
-    let t = start(a_chat(down)).await;
+async fn a_judge_that_cannot_answer_runs_nothing_but_reads() {
+    let t = start(judged_by(down)).await;
     let agent = t.caller("agent").await;
-    let (answer, _) = t.call(&agent, "exec", exec("touch made")).await;
+    let (answer, _) = t.cite(&agent, "exec", exec("touch made")).await;
     let (exit, code, _) = refusal(&answer);
     assert_eq!((exit, code), (Exit::Unreachable, "gatekeeper_unavailable"));
     assert!(!t.area.join("made").exists());
-    let (answer, rest) = t
-        .call(&agent, "file_get", json!({"remote_path": "area/notes.txt"}))
-        .await;
+    let put = json!({"remote_path": "area/new.txt", "size": 5, "name": "new.txt"});
+    let (answer, _) = t.cite(&agent, "file_put", put).await;
     assert_eq!(refusal(&answer).1, "gatekeeper_unavailable");
-    assert!(rest.is_empty());
+    assert!(!t.area.join("new.txt").exists());
     let records = t.audit();
     assert!(records.iter().all(|r| r["decision"] == "deny"));
+    // A read asks no judge, so it runs.
+    let (answer, bytes) = t
+        .call(&agent, "file_get", json!({"remote_path": "area/notes.txt"}))
+        .await;
+    assert!(matches!(answer, Response::Ok(_)), "{answer:?}");
+    assert!(bytes.starts_with(b"the notes' own words"));
 }
 
 #[tokio::test]
@@ -483,7 +466,7 @@ async fn the_answer_does_not_wait_for_the_dashboard_name_lookup() {
     )
     .await;
     let agent = t.caller("agent").await;
-    let call = t.call(&agent, "exec", exec("touch made"));
+    let call = t.cite(&agent, "exec", exec("touch made"));
     let answered = tokio::time::timeout(Duration::from_secs(10), call).await;
     released.store(true, Ordering::SeqCst);
     let (answer, _) = answered.expect("the answer waited for the name lookup");
@@ -491,28 +474,25 @@ async fn the_answer_does_not_wait_for_the_dashboard_name_lookup() {
 }
 
 #[tokio::test]
-async fn the_owners_reply_lets_the_retry_through_and_every_call_is_judged() {
-    let t = start(a_chat(covered_after_a_yes)).await;
+async fn an_agents_op_runs_only_on_a_cited_intent_and_every_call_is_judged() {
+    let t = start(judged_by(always_covered)).await;
     let agent = t.caller("agent").await;
     let tidy = exec("echo tidied >> made");
-    let (answer, _) = t.call(&agent, "exec", tidy.clone()).await;
-    assert_eq!(refusal(&answer).2["reason"], "not_covered");
+    // Citing nothing, it is refused before any judge is asked.
+    let (answer, _) = t.cite(&agent, "exec", tidy.clone()).await;
+    let (exit, code, details) = refusal(&answer);
+    assert_eq!((exit, code), (Exit::Denied, "gatekeeper_denied"));
+    assert_eq!(details["reason"], "intent_required");
+    let Response::Error { next, .. } = &answer else {
+        unreachable!()
+    };
+    assert!(next.as_deref().unwrap().contains("--intent"), "{next:?}");
+    assert!(!t.area.join("made").exists());
+    assert_eq!(t.judged(), 0);
 
-    // The agent asks; the owner answers in the chat.
-    {
-        let mut world = t.plow.world.lock().unwrap();
-        let chat = world.messages.get_mut("chat_a").unwrap();
-        chat.push(message(
-            "m3",
-            agent_self(),
-            "May I run `echo tidied >> made`?",
-            2,
-        ));
-        chat.push(message("m4", owner(), "yes, go ahead", 1));
-    }
-
+    // Citing the owner's message, it runs, judged each time.
     for _ in 0..2 {
-        let (answer, _) = t.call(&agent, "exec", tidy.clone()).await;
+        let (answer, _) = t.cite(&agent, "exec", tidy.clone()).await;
         let Response::Ok(result) = answer else {
             panic!("refused: {answer:?}");
         };
@@ -522,32 +502,42 @@ async fn the_owners_reply_lets_the_retry_through_and_every_call_is_judged() {
         std::fs::read_to_string(t.area.join("made")).unwrap(),
         "tidied\ntidied\n"
     );
-    assert_eq!(t.judged(), 3, "the same exec is judged each time");
+    assert_eq!(t.judged(), 2, "the same exec is judged each time");
+    assert_eq!(t.judgments()[0]["cited_message"]["text"], ASKED);
 
-    let records = t.audit();
-    let gate = &records[2]["gate"];
-    assert_eq!(gate["verdict"], "allow");
-    assert_eq!(gate["source"], "chat");
-    assert_eq!(gate["chat"], "chat_a");
-    assert_eq!(gate["owner_messages"], json!(["m1", "m4"]));
-    assert_eq!(gate["window"]["count"], 4);
-    assert_eq!(gate["model"], gate::MODEL);
-    assert!(
-        (gate["cost"].as_f64().unwrap() - 0.0003).abs() < 1e-12,
-        "all three calls"
-    );
-    // The owner's yes is in the chat: the chat layer allowed it.
-    assert_eq!(gate["decided_by"], "chat");
-    assert_eq!(gate["layers"]["chat"]["says"], "allow");
-    assert_eq!(gate["layers"]["rules"]["says"], "neither");
-    for layer in ["rules", "chat", "will"] {
-        assert_eq!(gate["layers"][layer]["model_request"], "req_fake");
-        assert!(gate["layers"][layer]["latency_ms"].is_u64(), "{gate}");
+    // Each allowed op's gate record is written before its own, which names it.
+    let all: Vec<crate::audit::Record> = crate::audit::read_all(&t.state.join(crate::audit::FILE))
+        .unwrap()
+        .into_iter()
+        .filter(|record| record.op != "connect")
+        .collect();
+    let ops: Vec<&str> = all.iter().map(|r| r.op.as_str()).collect();
+    assert_eq!(ops, ["exec", "gate", "exec", "gate", "exec"]);
+    assert_eq!(all[0].gate.as_ref().unwrap()["verdict"], "intent_required");
+    for pair in all[1..].chunks(2) {
+        let (gate, op) = (&pair[0], &pair[1]);
+        assert_eq!(op.gate.as_ref().unwrap()["gate_record"], gate.hash);
+        assert_eq!(gate.gate.as_ref().unwrap()["verdict"], "allow");
+        assert_eq!(gate.agent.as_deref(), Some(AGENT));
     }
-    assert!(gate["chat_read_ms"].is_u64(), "{gate}");
-    assert!(gate["p"]["COVERED"].as_f64().unwrap() >= 0.5);
+    let all: Vec<Value> = all
+        .iter()
+        .map(|record| serde_json::to_value(record).unwrap())
+        .collect();
+    let gate = &all[4]["gate"];
+    assert_eq!(gate["verdict"], "allow");
+    assert_eq!(gate["class"], "intent");
+    assert_eq!(gate["intent"], format!("swarm:{}", fake::CITED));
+    assert_eq!(gate["model"], gate::MODEL);
+    assert_eq!(gate["model_request"], "req_fake");
+    assert!(
+        (gate["cost"].as_f64().unwrap() - 0.0001).abs() < 1e-12,
+        "{gate}"
+    );
+    assert!(gate["p"]["covered"].as_f64().unwrap() >= 0.5);
+    assert!(gate["latency_ms"].is_u64(), "{gate}");
     // Both caller checks are timed: on connect, and before the operation.
-    assert!(records[2]["timings"]["caller_check_ms"].is_u64());
+    assert!(all[4]["timings"]["caller_check_ms"].is_u64());
     let connects: Vec<Value> = t
         .audit_text()
         .lines()
@@ -558,21 +548,16 @@ async fn the_owners_reply_lets_the_retry_through_and_every_call_is_judged() {
     for connect in &connects {
         assert!(connect["timings"]["caller_check_ms"].is_u64(), "{connect}");
     }
-    assert_eq!(records[2]["args"]["argv"][2], "echo tidied >> made");
-
-    let log = t.audit_text();
-    for said in [ASKED, "yes, go ahead", "May I run", "Sure, I'll look later"] {
-        assert!(!log.contains(said), "chat text in the audit: {said}");
-    }
-}
-
-pub(super) fn always_covered(_: &Value) -> Option<[f64; 3]> {
-    Some([0.9, 0.08, 0.02])
+    assert_eq!(all[4]["args"]["argv"][2], "echo tidied >> made");
+    assert!(
+        !t.audit_text().contains(ASKED),
+        "the owner's words in the audit"
+    );
 }
 
 fn replace_the_judged_write_folder(state: &Value) -> Option<[f64; 3]> {
     let path = Path::new(state["proposed_action"]["writes"][0].as_str().unwrap());
-    // Asked once for each layer: the folder is swapped at the first.
+    // Swapped at the judgment, so the folder judged is not the one written.
     if path.is_symlink() {
         return always_covered(state);
     }
@@ -584,7 +569,7 @@ fn replace_the_judged_write_folder(state: &Value) -> Option<[f64; 3]> {
 
 #[tokio::test]
 async fn a_write_path_retargeted_after_judgment_is_refused() {
-    let t = start(a_chat(replace_the_judged_write_folder)).await;
+    let t = start(judged_by(replace_the_judged_write_folder)).await;
     let approved = t.area.join("approved");
     let outside = t.host.workers.home.join("outside-write");
     std::fs::create_dir(&approved).unwrap();
@@ -593,7 +578,7 @@ async fn a_write_path_retargeted_after_judgment_is_refused() {
     let agent = t.caller("agent").await;
     let args =
         json!({"argv": ["/bin/sh", "-c", "printf overwritten > victim.txt"], "writes": [approved]});
-    let (answer, _) = t.call(&agent, "exec", args).await;
+    let (answer, _) = t.cite(&agent, "exec", args).await;
     assert_eq!(
         std::fs::read(outside.join("victim.txt")).unwrap(),
         b"unchanged"
@@ -603,7 +588,7 @@ async fn a_write_path_retargeted_after_judgment_is_refused() {
 
 #[tokio::test]
 async fn unusual_and_missing_caches_do_not_fail_exec_or_grant_aliases() {
-    let t = start(a_chat(always_covered)).await;
+    let t = start(judged_by(always_covered)).await;
     let home = &t.host.workers.home;
     std::fs::write(home.join(".cache"), "plain file").unwrap();
     let target = home.join("outside-write");
@@ -611,7 +596,7 @@ async fn unusual_and_missing_caches_do_not_fail_exec_or_grant_aliases() {
     std::os::unix::fs::symlink(&target, home.join(".npm")).unwrap();
     let agent = t.caller("agent").await;
     let (answer, _) = t
-        .call(
+        .cite(
             &agent,
             "exec",
             json!({
@@ -630,8 +615,8 @@ async fn unusual_and_missing_caches_do_not_fail_exec_or_grant_aliases() {
 }
 
 #[tokio::test]
-async fn a_repeated_google_change_is_judged_afresh_with_no_history() {
-    let t = start(a_chat(always_covered)).await;
+async fn a_repeated_google_change_is_judged_again_with_what_was_done_and_a_read_never() {
+    let t = start(judged_by(always_covered)).await;
     let agent = t.caller("agent").await;
     let google = |gog_args: &[&str]| json!({"gog_args": gog_args, "account": [], "confirm_conflict": false, "inputs": []});
     let send = google(&[
@@ -644,23 +629,23 @@ async fn a_repeated_google_change_is_judged_afresh_with_no_history() {
     ]);
     let search = google(&["gmail", "search", "invoice"]);
     for args in [&search, &send, &send] {
-        t.call(&agent, "google", args.clone()).await;
+        t.cite(&agent, "google", args.clone()).await;
     }
     let asked = t.judgments();
-    assert_eq!(asked.len(), 3, "each one judged");
-    for state in &asked {
-        assert!(state.get("already_done_by_agent").is_none(), "{state}");
-    }
+    assert_eq!(asked.len(), 2, "each send judged, the search not at all");
     assert_eq!(
-        asked[1]["proposed_action"], asked[2]["proposed_action"],
+        asked[0]["proposed_action"], asked[1]["proposed_action"],
         "the second send is judged as the first"
     );
-    assert_eq!(asked[2]["proposed_action"]["command"], send["gog_args"]);
+    assert_eq!(asked[1]["proposed_action"]["command"], send["gog_args"]);
+    // The second is judged knowing the first was done on the same intent.
+    assert_eq!(asked[0]["already_done"], json!([]));
+    assert_eq!(asked[1]["already_done"].as_array().unwrap().len(), 1);
 }
 
 #[tokio::test]
 async fn a_put_is_judged_at_its_resolved_path_and_a_short_one_changes_nothing() {
-    let t = start(a_chat(always_covered)).await;
+    let t = start(judged_by(always_covered)).await;
     let agent = t.caller("agent").await;
     let notes = t.area.join("notes.txt");
     // A folder destination takes the file's name, and the judge is shown
@@ -687,9 +672,9 @@ async fn a_put_is_judged_at_its_resolved_path_and_a_short_one_changes_nothing() 
 
 #[tokio::test]
 async fn a_get_reads_any_readable_path_in_home_and_never_a_hidden_one() {
-    let t = start(a_chat(always_covered)).await;
+    let t = start(judged_by(always_covered)).await;
     let agent = t.caller("agent").await;
-    // A dotfile outside any shared folder: readable, judged at its path.
+    // A dotfile outside any shared folder: readable, and a read is not judged.
     let home = &t.host.workers.home;
     std::fs::create_dir(home.join(".ssh")).unwrap();
     std::fs::write(home.join(".ssh/config"), "Host example").unwrap();
@@ -698,10 +683,7 @@ async fn a_get_reads_any_readable_path_in_home_and_never_a_hidden_one() {
         .await;
     assert!(matches!(answer, Response::Ok(_)), "{answer:?}");
     assert!(bytes.starts_with(b"Host example"), "{bytes:?}");
-    let asked = t.judgments();
-    let shown = home.join(".ssh/config").display().to_string();
-    assert!(asked[0].to_string().contains(&shown), "{}", asked[0]);
-    // The host's state, and a link into it, are refused before judging.
+    // The host's state, and a link into it, are refused.
     std::fs::write(t.state.join("key"), "made-up key").unwrap();
     std::os::unix::fs::symlink(t.state.join("key"), home.join("key-link")).unwrap();
     let key = t.state.join("key");
@@ -712,25 +694,23 @@ async fn a_get_reads_any_readable_path_in_home_and_never_a_hidden_one() {
         let (exit, code, _) = refusal(&answer);
         assert_eq!((exit, code), (Exit::Denied, "bad_path"), "{hidden}");
     }
-    assert_eq!(t.judged(), 1);
+    assert_eq!(t.judged(), 0);
 }
 
 #[tokio::test]
 async fn an_exec_the_host_denies_is_refused_without_asking_the_judge() {
     let every_agent = DenyExec::from_flags(&[crate::cli::EVERY_AGENT.to_string()]);
-    let t = start_denying(a_chat(always_covered), every_agent).await;
+    let t = start_denying(judged_by(always_covered), every_agent).await;
     let agent = t.caller("agent").await;
-    let (answer, _) = t.call(&agent, "exec", exec("touch made")).await;
+    let (answer, _) = t.cite(&agent, "exec", exec("touch made")).await;
     let (exit, code, _) = refusal(&answer);
     assert_eq!((exit, code), (Exit::Denied, "exec_denied"));
     assert!(!t.area.join("made").exists());
     assert_eq!(t.judged(), 0);
     assert!(t.audit()[0].get("gate").is_none());
     // Other operations are still judged.
-    let (answer, _) = t
-        .call(&agent, "file_get", json!({"remote_path": "area/notes.txt"}))
-        .await;
-    assert!(matches!(answer, Response::Ok(_)), "{answer:?}");
+    let (_, last) = t.put(&agent, "area/new.txt", 2, b"hi").await;
+    assert!(matches!(last, Some(Response::Ok(_))), "{last:?}");
     assert_eq!(t.judged(), 1);
 }
 
@@ -741,11 +721,11 @@ fn exec_stdin(stdin: &[u8]) -> Value {
 
 #[tokio::test]
 async fn exec_paths_are_validated_before_judgment_and_created_only_after_allow() {
-    let t = start(a_chat(covered_after_a_yes)).await;
+    let t = start(judged_by(never_covered)).await;
     let agent = t.caller("agent").await;
     for path in ["~", "~/..", "/", "~/.latch/new", t.state.to_str().unwrap()] {
         let args = json!({"argv": ["true"], "writes": [path]});
-        let (answer, _) = t.call(&agent, "exec", args).await;
+        let (answer, _) = t.cite(&agent, "exec", args).await;
         assert_eq!(refusal(&answer).1, "bad_path", "{path}");
         assert_eq!(refusal(&answer).2["writes"], json!([path]));
         assert_eq!(refusal(&answer).2["network"], false);
@@ -754,17 +734,17 @@ async fn exec_paths_are_validated_before_judgment_and_created_only_after_allow()
     let path = t.host.workers.home.join("new-project");
     let args = json!({"argv": ["/bin/sh", "-c", "printf built > result"],
                       "writes": ["~/new-project"], "network": true});
-    let (refused, _) = t.call(&agent, "exec", args.clone()).await;
+    let (refused, _) = t.cite(&agent, "exec", args.clone()).await;
     assert_eq!(refusal(&refused).1, "gatekeeper_denied");
     assert!(!path.exists());
     t.plow.world.lock().unwrap().decide = Some(always_covered);
-    let (answer, _) = t.call(&agent, "exec", args).await;
+    let (answer, _) = t.cite(&agent, "exec", args).await;
     let Response::Ok(result) = answer else {
         panic!("{answer:?}")
     };
     assert_eq!(result["exit_code"], 0, "{result}");
     assert_eq!(std::fs::read(path.join("result")).unwrap(), b"built");
-    let asked = t.plow.world.lock().unwrap().asked.clone();
+    let asked = t.judgments();
     for state in asked {
         assert_eq!(state["proposed_action"]["writes"], json!([path]));
         assert_eq!(state["proposed_action"]["working_folder"], json!(path));
@@ -782,7 +762,7 @@ async fn exec_paths_are_validated_before_judgment_and_created_only_after_allow()
 
 #[tokio::test]
 async fn exec_reads_home_but_writes_only_declarations_and_caches() {
-    let t = start(a_chat(always_covered)).await;
+    let t = start(judged_by(always_covered)).await;
     let home = &t.host.workers.home;
     std::fs::create_dir(home.join(".ssh")).unwrap();
     std::fs::write(home.join(".ssh/config"), "readable-dotfile").unwrap();
@@ -816,7 +796,7 @@ async fn exec_reads_home_but_writes_only_declarations_and_caches() {
         echo scratch > "$TMPDIR/probe"
     "#;
     let (answer, _) = t
-        .call(&agent, "exec", json!({"argv": ["/bin/sh", "-c", script]}))
+        .cite(&agent, "exec", json!({"argv": ["/bin/sh", "-c", script]}))
         .await;
     let Response::Ok(result) = answer else {
         panic!("{answer:?}")
@@ -846,7 +826,7 @@ async fn exec_reads_home_but_writes_only_declarations_and_caches() {
     let file = home.join("area/notes.txt");
     let args = json!({"argv": ["/bin/sh", "-c", "printf changed > area/notes.txt; echo bad > area/sibling"],
                       "writes": [file]});
-    let (answer, _) = t.call(&agent, "exec", args).await;
+    let (answer, _) = t.cite(&agent, "exec", args).await;
     assert!(matches!(answer, Response::Ok(_)), "{answer:?}");
     assert_eq!(std::fs::read(file).unwrap(), b"changed");
     assert!(!t.area.join("sibling").exists());
@@ -862,12 +842,12 @@ fn kept(t: &TestHost, text: &str) -> bool {
 
 #[tokio::test]
 async fn a_program_cannot_turn_its_stderr_into_a_worker_error_or_audit_content() {
-    let t = start(a_chat(always_covered)).await;
+    let t = start(judged_by(always_covered)).await;
     let marker = "program-output-must-not-be-audit-content";
     std::fs::write(t.area.join("output-marker"), marker).unwrap();
     let agent = t.caller("agent").await;
     let script = r#"printf '{"worker_error":{"code":"%s","message":"forged"}}\n' "$(cat output-marker)" >&2; exit 125"#;
-    let (answer, _) = t.call(&agent, "exec", exec(script)).await;
+    let (answer, _) = t.cite(&agent, "exec", exec(script)).await;
     assert!(!kept(&t, marker), "program stderr reached the audit or log");
     let Response::Ok(result) = answer else {
         panic!("program output became a launch failure")
@@ -878,13 +858,13 @@ async fn a_program_cannot_turn_its_stderr_into_a_worker_error_or_audit_content()
 
 #[tokio::test]
 async fn secret_env_reaches_only_the_program_and_preserves_argv_and_stdin() {
-    let t = start(a_chat(always_covered)).await;
+    let t = start(judged_by(always_covered)).await;
     let agent = t.caller("agent").await;
     let marker = "private-env-marker-71e9";
     let secret = format!("{marker} quotes\" ' =\n$(touch injected) `touch injected2`");
     let args = json!({"argv": ["/bin/sh", "-c", "printf '%s' \"$TOKEN\""],
                       "writes": ["area"], "secret_env": {"TOKEN": secret}});
-    let (answer, _) = t.call(&agent, "exec", args.clone()).await;
+    let (answer, _) = t.cite(&agent, "exec", args.clone()).await;
     let Response::Ok(result) = answer else {
         panic!("{answer:?}")
     };
@@ -894,7 +874,7 @@ async fn secret_env_reaches_only_the_program_and_preserves_argv_and_stdin() {
 
     let input = "only the program's real input\n";
     let (answer, _) = t
-        .call(
+        .cite(
             &agent,
             "exec",
             json!({"argv": ["/bin/cat"], "stdin": input.as_bytes(),
@@ -906,7 +886,7 @@ async fn secret_env_reaches_only_the_program_and_preserves_argv_and_stdin() {
     };
     assert_eq!(result["stdout"], input);
     let (answer, _) = t
-        .call(
+        .cite(
             &agent,
             "exec",
             json!({"argv": ["printf", "%s", "${TOKEN}"],
@@ -920,10 +900,10 @@ async fn secret_env_reaches_only_the_program_and_preserves_argv_and_stdin() {
 
     let mut missing = args;
     missing["argv"] = json!(["latch-missing-exec-for-secret-test"]);
-    let (answer, _) = t.call(&agent, "exec", missing).await;
+    let (answer, _) = t.cite(&agent, "exec", missing).await;
     assert_eq!(refusal(&answer).1, "program_not_found");
     assert!(!serde_json::to_string(&answer).unwrap().contains(marker));
-    let asked = t.plow.world.lock().unwrap().asked.clone();
+    let asked = t.judgments();
     assert!(!serde_json::to_string(&asked).unwrap().contains(marker));
     assert_eq!(
         asked[0]["proposed_action"]["secret_env"],
@@ -936,7 +916,7 @@ async fn secret_env_reaches_only_the_program_and_preserves_argv_and_stdin() {
 
 #[tokio::test]
 async fn secret_names_that_control_execution_are_allowed_and_explained_to_the_judge() {
-    let t = start(a_chat(always_covered)).await;
+    let t = start(judged_by(always_covered)).await;
     let agent = t.caller("agent").await;
     let marker = "hidden-execution-value-742e";
     let names = [
@@ -952,7 +932,7 @@ async fn secret_names_that_control_execution_are_allowed_and_explained_to_the_ju
         .collect();
     // true does not interpret these values. This checks judgment, not a payload.
     let (answer, _) = t
-        .call(
+        .cite(
             &agent,
             "exec",
             json!({
@@ -961,7 +941,7 @@ async fn secret_names_that_control_execution_are_allowed_and_explained_to_the_ju
         )
         .await;
     assert!(matches!(answer, Response::Ok(_)), "{answer:?}");
-    let asked = t.plow.world.lock().unwrap().asked.clone();
+    let asked = t.judgments();
     let state = &asked[0];
     assert!(!serde_json::to_string(state).unwrap().contains(marker));
     for name in names {
@@ -993,7 +973,7 @@ async fn secret_names_that_control_execution_are_allowed_and_explained_to_the_ju
 
 #[tokio::test]
 async fn invalid_or_reserved_secret_names_never_reach_the_judge() {
-    let t = start(a_chat(always_covered)).await;
+    let t = start(judged_by(always_covered)).await;
     let agent = t.caller("agent").await;
     let marker = "invalid-env-private-marker-993f";
     for name in [
@@ -1009,7 +989,7 @@ async fn invalid_or_reserved_secret_names_never_reach_the_judge() {
         "DYLD_INSERT_LIBRARIES",
     ] {
         let args = json!({"argv": ["true"], "secret_env": {(name): marker}});
-        let (answer, _) = t.call(&agent, "exec", args).await;
+        let (answer, _) = t.cite(&agent, "exec", args).await;
         assert_eq!(refusal(&answer).1, "bad_secret_env", "{name}");
         assert!(!serde_json::to_string(&answer).unwrap().contains(marker));
     }
@@ -1019,13 +999,13 @@ async fn invalid_or_reserved_secret_names_never_reach_the_judge() {
 
 #[tokio::test]
 async fn an_agents_exec_stdin_is_judged_with_its_argv_and_never_kept() {
-    let t = start(a_chat(always_covered)).await;
+    let t = start(judged_by(always_covered)).await;
     let agent = t.caller("agent").await;
     let script = "touch made # stdin-judged-7f3a";
-    let (answer, _) = t.call(&agent, "exec", exec_stdin(script.as_bytes())).await;
+    let (answer, _) = t.cite(&agent, "exec", exec_stdin(script.as_bytes())).await;
     assert!(matches!(answer, Response::Ok(_)), "{answer:?}");
     assert!(t.area.join("made").exists());
-    let asked = t.plow.world.lock().unwrap().asked.clone();
+    let asked = t.judgments();
     assert_eq!(asked[0]["proposed_action"]["argv"], json!(["/bin/sh"]));
     assert_eq!(asked[0]["proposed_action"]["stdin"], script);
     assert_eq!(t.audit()[0]["args"]["stdin"]["size"], script.len());
@@ -1034,12 +1014,12 @@ async fn an_agents_exec_stdin_is_judged_with_its_argv_and_never_kept() {
 
 #[tokio::test]
 async fn an_agents_stdin_the_judge_cannot_read_runs_nothing() {
-    let t = start(a_chat(always_covered)).await;
+    let t = start(judged_by(always_covered)).await;
     let agent = t.caller("agent").await;
     let mut too_long = b"touch made\n".to_vec();
     too_long.resize(crate::gate::JUDGED_STDIN + 1, b'#');
     for stdin in [too_long, b"touch made\n\xff".to_vec()] {
-        let (answer, _) = t.call(&agent, "exec", exec_stdin(&stdin)).await;
+        let (answer, _) = t.cite(&agent, "exec", exec_stdin(&stdin)).await;
         let (exit, code, _) = refusal(&answer);
         assert_eq!((exit, code), (Exit::Usage, "stdin_not_judgeable"));
         assert!(!t.area.join("made").exists());
@@ -1048,7 +1028,7 @@ async fn an_agents_stdin_the_judge_cannot_read_runs_nothing() {
     let records = t.audit();
     assert_eq!(records.len(), 2);
     assert!(records.iter().all(|record| record["decision"] == "deny"));
-    // The owner's stdin is judged too, so the same bounds apply.
+    // The owner's stdin, judged against a device rule, has the same bounds.
     let device = t.caller("device").await;
     let mut long = b"touch made\n".to_vec();
     long.resize(crate::gate::JUDGED_STDIN + 1, b'#');
@@ -1060,10 +1040,10 @@ async fn an_agents_stdin_the_judge_cannot_read_runs_nothing() {
 #[tokio::test]
 async fn an_exec_the_host_denies_keeps_no_trace_of_its_stdin() {
     let every_agent = DenyExec::from_flags(&[crate::cli::EVERY_AGENT.to_string()]);
-    let t = start_denying(a_chat(always_covered), every_agent).await;
+    let t = start_denying(judged_by(always_covered), every_agent).await;
     let agent = t.caller("agent").await;
     let secret = b"echo denied-stdin-91c2";
-    let (answer, _) = t.call(&agent, "exec", exec_stdin(secret)).await;
+    let (answer, _) = t.cite(&agent, "exec", exec_stdin(secret)).await;
     assert_eq!(refusal(&answer).1, "exec_denied");
     let record = &t.audit()[0];
     assert_eq!(record["args"]["argv"], json!(["/bin/sh"]));
@@ -1075,29 +1055,15 @@ async fn an_exec_the_host_denies_keeps_no_trace_of_its_stdin() {
     assert!(!kept(&t, as_numbers));
 }
 
-/// The owner's own request is covered; anything else is judged as before.
-fn the_owners_request(state: &Value) -> Option<[f64; 3]> {
-    let owner = state["rules_of_judgment"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|rule| {
-            rule.as_str()
-                .unwrap()
-                .starts_with("The caller is the owner")
-        });
-    covered_after_a_yes(state).map(|p| if owner { [0.9, 0.08, 0.02] } else { p })
-}
-
 #[tokio::test]
-async fn owners_cannot_select_an_agents_plow_chat() {
-    let t = start(a_chat(the_owners_request)).await;
+async fn owners_cannot_cite_an_intent() {
+    let t = start(judged_by(always_covered)).await;
     let device = t.caller("device").await;
     for local in [false, true] {
         let request = Request {
             op: "browser".into(),
             args: json!({"command": "sessions"}),
-            chat: Some("chat_a".into()),
+            intent: Some(fake::CITED.into()),
         };
         let answer = if local {
             t.local_request(request).await
@@ -1112,117 +1078,101 @@ async fn owners_cannot_select_an_agents_plow_chat() {
 }
 
 #[tokio::test]
-async fn the_owners_own_devices_are_judged_as_the_owner() {
-    let t = start(a_chat(the_owners_request)).await;
+async fn the_owners_own_devices_are_judged_as_the_owner_against_the_device_rule() {
+    let t = start(judged_by(never_covered)).await;
     let device = t.caller("device").await;
+    let google = json!({"gog_args": ["gmail", "send", "--to", "a@example.com", "--body", "hi"],
+                        "account": [], "confirm_conflict": false, "inputs": []});
+    // With no device rule, the owner's calls run unjudged.
     let (answer, _) = t.call(&device, "exec", exec("touch made")).await;
     assert!(matches!(answer, Response::Ok(_)), "{answer:?}");
     assert!(t.area.join("made").exists());
-    let (answer, _) = t
-        .call(
-            &device,
-            "file_get",
-            json!({"remote_path": "area/notes.txt"}),
-        )
-        .await;
-    assert!(matches!(answer, Response::Ok(_)), "{answer:?}");
     let put = json!({"remote_path": "area/new.txt", "size": 0, "name": "new.txt"});
     t.call(&device, "file_put", put).await;
-    let google = json!({"gog_args": ["gmail", "search", "invoice"], "account": [],
-                        "confirm_conflict": false, "inputs": []});
-    t.call(&device, "google", google).await;
-    assert_eq!(t.judged(), 4, "exec, file get, file put and google");
-    // A browser open is judged too, before any engine starts.
+    t.call(&device, "google", google.clone()).await;
+    assert_eq!(t.judged(), 0);
+    // The browser keeps its gate with its arguments.
     let open = json!({"command": "open", "url": "https://example.com/"});
     t.call(&device, "browser", open).await;
-    assert_eq!(t.judged(), 5, "and the browser's open");
     let browsed = t.audit().pop().unwrap();
     assert_eq!(browsed["op"], "browser");
-    // The browser keeps its judgment with its arguments.
     assert_eq!(
         browsed["args"]["gate"]["caller"], "owner_device",
         "{browsed}"
     );
 
-    // Judged as the owner's own request, sent just now: no agent's chat.
-    let asked = t.plow.world.lock().unwrap().asked.clone();
-    for state in &asked {
-        let said = state["conversation"].as_array().unwrap();
-        assert_eq!(said.len(), 1, "{said:?}");
-        assert_eq!(said[0]["from"], "OWNER");
-        let text = said[0]["text"].as_str().unwrap();
-        let request: Value =
-            serde_json::from_str(text.strip_prefix("Do this now: ").unwrap()).unwrap();
-        assert_eq!(request, state["proposed_action"]);
+    // With one, each is judged against it alone, as the owner's request.
+    crate::gate::rules::Store::new(&t.state)
+        .set_deny("Never send email.", None)
+        .unwrap();
+    let (answer, _) = t.call(&device, "exec", exec("true")).await;
+    assert!(matches!(answer, Response::Ok(_)), "{answer:?}");
+    t.call(&device, "google", google).await;
+    assert_eq!(t.judged(), 2, "exec and google");
+    for state in &t.judgments() {
+        assert_eq!(state["device_rule"], "Never send email.");
+        assert!(state.get("cited_message").is_none(), "{state}");
         assert!(
             state["rules_of_judgment"]
                 .to_string()
                 .contains("The caller is the owner")
         );
     }
-    let records = t.audit();
-    assert_eq!(records[0]["gate"]["caller"], "owner_device");
-    assert_eq!(records[0]["gate"]["source"], "owner_request");
-    assert_eq!(records[0]["gate"]["verdict"], "allow");
+    let record = t
+        .audit()
+        .into_iter()
+        .rfind(|record| record["op"] == "exec")
+        .unwrap();
+    assert_eq!(record["gate"]["caller"], "owner_device");
+    assert_eq!(record["gate"]["verdict"], "allow");
+    assert!(record["gate"]["device_rule"].is_string(), "{record}");
 
-    // An agent on the same host is judged as an agent, on its chat.
+    // An agent on the same host is judged as an agent, on its intent and
+    // the same rule.
     let agent = t.caller("agent").await;
-    let (answer, _) = t.call(&agent, "exec", exec("touch other")).await;
+    let (answer, _) = t.cite(&agent, "exec", exec("touch other")).await;
     assert_eq!(refusal(&answer).2["reason"], "not_covered");
     let record = t.audit().pop().unwrap();
     assert_eq!(record["gate"]["caller"], "agent");
     assert_eq!(record["gate"]["verdict"], "not_covered");
     assert_eq!(record["agent"], AGENT);
-
-    // The host's rules hold for the owner too, read as the host's, and
-    // for an agent as every agent's.
-    let rules = t.state.join(crate::gate::rules::RULES_DIR);
-    std::fs::create_dir_all(&rules).unwrap();
-    std::fs::write(rules.join("host.txt"), "Never send email.").unwrap();
-    t.call(&device, "exec", exec("true")).await;
-    t.call(&agent, "exec", exec("true")).await;
-    let asked = t.judgments();
-    let [.., owners, agents] = &asked[..] else {
-        panic!("{asked:?}");
-    };
-    assert_eq!(
-        owners["owner_rules"],
-        json!({"rules on this host": "Never send email."})
-    );
-    assert_eq!(
-        agents["owner_rules"],
-        json!({"rules for every agent on this host": "Never send email."})
-    );
+    let agents = t.judgments().pop().unwrap();
+    assert_eq!(agents["device_rule"], "Never send email.");
+    assert_eq!(agents["cited_message"]["text"], ASKED);
 }
 
 #[tokio::test]
-async fn an_outage_refuses_gated_operations_for_everyone_but_not_the_owners_settings() {
-    let t = start(a_chat(down)).await;
+async fn an_outage_refuses_judged_operations_for_everyone_but_not_reads_or_the_owners_settings() {
+    let t = start(judged_by(down)).await;
+    crate::gate::rules::Store::new(&t.state)
+        .set_deny("Never send email.", None)
+        .unwrap();
     let device = t.caller("device").await;
     let agent = t.caller("agent").await;
-    for caller in [&device, &agent] {
-        let (answer, _) = t.call(caller, "exec", exec("touch made")).await;
+    for answer in [
+        t.call(&device, "exec", exec("touch made")).await.0,
+        t.cite(&agent, "exec", exec("touch made")).await.0,
+    ] {
         let (exit, code, _) = refusal(&answer);
         assert_eq!((exit, code), (Exit::Unreachable, "gatekeeper_unavailable"));
-        let Response::Error { message, .. } = answer else {
-            unreachable!()
-        };
-        assert!(message.contains("rules, vault"), "{message}");
     }
     assert!(!t.area.join("made").exists());
     let asked = t.judged();
 
     // The owner's settings never ask the judge, and work while it is down.
-    let set = json!({"command": "set", "text": "Never send email."});
+    let set = json!({"command": "set", "text": "Never send email or texts."});
     let (answer, _) = t.call(&device, "rules", set).await;
     assert!(matches!(answer, Response::Ok(_)), "{answer:?}");
     let (answer, _) = t.call(&device, "rules", json!({"command": "show"})).await;
     assert!(matches!(answer, Response::Ok(_)), "{answer:?}");
     let (answer, _) = t.call(&device, "vault", json!({"command": "list"})).await;
     assert!(matches!(answer, Response::Ok(_)), "{answer:?}");
-    assert_eq!(t.judged(), asked, "no judgment for the owner's settings");
+    // Nor does an agent's vault list, a read.
+    let (answer, _) = t.call(&agent, "vault", json!({"command": "list"})).await;
+    assert!(matches!(answer, Response::Ok(_)), "{answer:?}");
+    assert_eq!(t.judged(), asked, "no judgment for settings or reads");
 
-    // And they stay the owner's: an agent is refused them, unasked.
+    // And the settings stay the owner's: an agent is refused them, unasked.
     for (op, args) in [
         ("rules", json!({"command": "show"})),
         ("vault", json!({"command": "show", "item": "v1"})),
@@ -1231,22 +1181,17 @@ async fn an_outage_refuses_gated_operations_for_everyone_but_not_the_owners_sett
         assert_eq!(refusal(&answer).1, "owner_only", "{op}");
     }
     assert_eq!(t.judged(), asked);
-    // But for an agent's vault list, judged like its other work, which
-    // the outage refuses.
-    let (answer, _) = t.call(&agent, "vault", json!({"command": "list"})).await;
-    let (exit, code, _) = refusal(&answer);
-    assert_eq!((exit, code), (Exit::Unreachable, "gatekeeper_unavailable"));
 }
 
-/// An agent may list the vault, judged as its other work is, and sees
+/// An agent may list the vault, a read no judge is asked about, and sees
 /// each item's id, title and saved sites, and how to sign in with one:
-/// never a username, a field or a value. The owner's list is never judged
-/// and shows all of its metadata; every other vault command stays theirs.
+/// never a username, a field or a value. The owner's list shows all of its
+/// metadata; every other vault command stays theirs.
 #[tokio::test]
-async fn an_agents_vault_list_is_judged_and_shows_ids_titles_and_sites_only() {
+async fn an_agents_vault_list_is_unjudged_and_shows_ids_titles_and_sites_only() {
     use crate::vault::item::{CARD, Item, LOGIN, Raw};
     use crate::vault::store::Backend;
-    let t = start(a_chat(covered_after_a_yes)).await;
+    let t = start(judged_by(never_covered)).await;
     let device = t.caller("device").await;
     let agent = t.caller("agent").await;
     let login = [
@@ -1288,42 +1233,14 @@ async fn an_agents_vault_list_is_judged_and_shows_ids_titles_and_sites_only() {
     }
     let list = || json!({"command": "list"});
 
-    // The owner's list asks no judge, and shows the login's username.
-    let asked = t.judged();
+    // The owner's list shows the login's username.
     let (answer, _) = t.call(&device, "vault", list()).await;
     let Response::Ok(owners) = answer else {
         panic!("{answer:?}")
     };
     assert_eq!(owners["items"][0]["username"], "morgan@example.com");
-    assert_eq!(t.judged(), asked);
 
-    // The agent's is judged: with no OK in the chat it is refused, and
-    // nothing is listed.
-    let (answer, _) = t.call(&agent, "vault", list()).await;
-    let (exit, code, details) = refusal(&answer);
-    assert_eq!(
-        (exit, code, &details["reason"]),
-        (Exit::Denied, "gatekeeper_denied", &json!("not_covered"))
-    );
-    assert_eq!(
-        t.judgments().last().unwrap()["proposed_action"],
-        json!({"operation": "vault.list"})
-    );
-
-    // Once the owner says yes, it lists what is saved where, and no more.
-    t.plow
-        .world
-        .lock()
-        .unwrap()
-        .messages
-        .get_mut("chat_a")
-        .unwrap()
-        .push(message(
-            "m3",
-            owner(),
-            "yes, sign in to ParentSquare for me",
-            0,
-        ));
+    // The agent's lists what is saved where, and no more.
     let (answer, _) = t.call(&agent, "vault", list()).await;
     let Response::Ok(listed) = answer else {
         panic!("{answer:?}")
@@ -1354,25 +1271,24 @@ async fn an_agents_vault_list_is_judged_and_shows_ids_titles_and_sites_only() {
         .into_iter()
         .rfind(|record| record["op"] == "vault")
         .unwrap();
-    assert_eq!(record["gate"]["verdict"], "allow");
+    assert_eq!(record["gate"]["class"], "free");
     assert_eq!(record["args"], json!({"command": "list"}));
 
-    // Every other vault command stays the owner's, unasked.
-    let asked = t.judged();
+    // Every other vault command stays the owner's.
     let (answer, _) = t
         .call(&agent, "vault", json!({"command": "show", "item": "v1"}))
         .await;
     assert_eq!(refusal(&answer).1, "owner_only");
-    assert_eq!(t.judged(), asked);
+    assert_eq!(t.judged(), 0);
 }
 
 #[tokio::test]
 async fn an_agent_plow_gives_no_uid_runs_nothing() {
-    let t = start(a_chat(covered_after_a_yes)).await;
+    let t = start(judged_by(never_covered)).await;
     let agent = t.caller("agent").await;
     let key = agent.id().to_string();
     t.plow.world.lock().unwrap().callers.get_mut(&key).unwrap()["agent_uid"] = Value::Null;
-    let (answer, _) = t.call(&agent, "exec", exec("touch made")).await;
+    let (answer, _) = t.cite(&agent, "exec", exec("touch made")).await;
     let (exit, code, _) = refusal(&answer);
     assert_eq!((exit, code), (Exit::Unreachable, "gatekeeper_unavailable"));
     assert!(!t.area.join("made").exists());
@@ -1380,131 +1296,75 @@ async fn an_agent_plow_gives_no_uid_runs_nothing() {
     assert_eq!(t.audit()[0]["decision"], "deny");
 }
 
-#[tokio::test]
-async fn an_agent_with_no_chat_and_no_rules_is_judged_by_the_built_in_policy() {
-    let world = World {
-        decide: Some(covered_after_a_yes),
-        ..World::default()
-    };
-    let t = start(world).await;
-    let agent = t.caller("agent").await;
-    let (answer, _) = t.call(&agent, "exec", exec("touch made")).await;
-    assert_eq!(refusal(&answer).2["reason"], "not_covered");
-    let Response::Error { message, .. } = &answer else {
-        unreachable!()
-    };
-    assert!(
-        message.contains("found no Plow chat between you and the owner"),
-        "{message}"
-    );
-    assert!(!t.area.join("made").exists());
-    let asked = t.judgments();
-    assert_eq!(asked.len(), 1);
-    assert_eq!(
-        (&asked[0]["conversation"], &asked[0]["owner_rules"]),
-        (&json!("(no chat)"), &json!("(none)"))
-    );
-    let gate = &t.audit()[0]["gate"];
-    assert_eq!(gate["source"], "defaults");
-    assert_eq!(gate["verdict"], "not_covered");
-    assert_eq!(gate["chat_lookup"], "none");
-    assert!(gate["layers"].get("chat").is_none());
-}
-
-/// The owner's `latch rules` commands over a real connection, as the
-/// client sends them: set, edit, show and clear work from a device, an
-/// agent gets `owner_only` for each, and the agent's next judgment reads
-/// what the owner set.
+/// The owner's `latch rules` and `latch agents map` commands over a real
+/// connection, as the client sends them: set, edit, show, map and clear
+/// work from a device, an agent gets `owner_only` for each, and the
+/// agent's next judgment reads what the owner set.
 #[tokio::test]
 async fn the_owners_rules_commands_work_over_the_connection_and_never_for_an_agent() {
-    let world = World {
-        decide: Some(always_covered),
-        ..World::default()
-    };
-    let t = start(world).await;
+    let t = start(judged_by(always_covered)).await;
     let device = t.caller("device").await;
     let agent = t.caller("agent").await;
     let ok = |answer: Response| match answer {
         Response::Ok(result) => result,
         refused => panic!("refused: {refused:?}"),
     };
-    let rules = |name: &str| std::fs::read_to_string(t.state.join("rules").join(name)).ok();
+    let rule = || crate::gate::rules::Store::new(&t.state).deny().unwrap();
 
     let set = json!({"command": "set", "text": "Never send email."});
     let done = ok(t.call(&device, "rules", set).await.0);
     assert_eq!(done["host"], "test-host");
-    assert_eq!(done["scope"], "every agent");
     assert_eq!(done["applies"], "applies to the next judgment");
-    // `--agent` by the peer name of the agent's latch.
-    let set = json!({"command": "set", "from": "a agent", "text": "Run tests in the work folder."});
-    let done = ok(t.call(&device, "rules", set).await.0);
-    assert_eq!(
-        (done["agent_uid"].as_str(), done["agent_name"].as_str()),
-        (Some(AGENT), Some("Juno"))
-    );
 
-    // `latch rules edit --agent Juno`: a show, then an edit at its revision.
-    let shown = ok(t
-        .call(&device, "rules", json!({"command": "show", "from": "Juno"}))
-        .await
-        .0);
-    let read = shown["agents"][0]["revision"].clone();
-    let edit = |text: &str, revision: &Value| json!({"command": "edit", "from": AGENT, "text": text, "revision": revision});
-    let edited = "Run tests in the work folder. Nothing else.";
+    // `latch rules edit`: a show, then an edit at its revision.
+    let shown = ok(t.call(&device, "rules", json!({"command": "show"})).await.0);
+    assert_eq!(shown["device_rule"]["text"], "Never send email.");
+    assert_eq!(shown["agents"], json!({(AGENT): fake::AGENT_SWARM}));
+    assert!(shown["warning"].as_str().unwrap().contains("--deny-exec"));
+    let read = shown["device_rule"]["revision"].clone();
+    let edit = |text: &str, revision: &Value| json!({"command": "edit", "text": text, "revision": revision});
+    let edited = "Never send email. Never pay.";
     ok(t.call(&device, "rules", edit(edited, &read)).await.0);
     let (stale, _) = t
         .call(&device, "rules", edit("Anything goes.", &read))
         .await;
     assert_eq!(refusal(&stale).0, Exit::Denied);
     assert_eq!(refusal(&stale).1, "stale_revision");
-    assert_eq!(rules(&format!("{AGENT}.txt")).as_deref(), Some(edited));
+    assert_eq!(rule().as_deref(), Some(edited));
 
-    let shown = ok(t.call(&device, "rules", json!({"command": "show"})).await.0);
-    assert_eq!(shown["every_agent"]["text"], "Never send email.");
-    assert_eq!(shown["agents"][0]["text"], edited);
+    // `latch agents map`, by the agent's name.
+    let map = json!({"command": "map_agent", "agent": "Juno", "swarm_id": "@juno:test"});
+    let mapped = ok(t.call(&device, "rules", map).await.0);
     assert_eq!(
-        shown["warning"],
-        "Freeform rules are judged, not guaranteed. --deny-exec is enforced in code."
+        (mapped["agent_uid"].as_str(), mapped["replaced"].as_str()),
+        (Some(AGENT), Some(fake::AGENT_SWARM))
     );
 
     for args in [
         json!({"command": "show"}),
         json!({"command": "set", "text": "Anything goes."}),
         json!({"command": "edit", "text": "Anything goes.", "revision": read}),
-        json!({"command": "clear", "from": "Juno"}),
+        json!({"command": "map_agent", "agent": "Juno", "swarm_id": "@other:test"}),
+        json!({"command": "clear"}),
     ] {
         let (answer, _) = t.call(&agent, "rules", args.clone()).await;
         assert_eq!(refusal(&answer).0, Exit::Denied, "{args}");
         assert_eq!(refusal(&answer).1, "owner_only", "{args}");
     }
-    assert_eq!(rules("host.txt").as_deref(), Some("Never send email."));
-    assert_eq!(rules(&format!("{AGENT}.txt")).as_deref(), Some(edited));
+    assert_eq!(rule().as_deref(), Some(edited));
 
-    // The agent's next operation is judged on both texts, with no restart.
-    let (answer, _) = t.call(&agent, "exec", exec("true")).await;
-    ok(answer);
-    let asked = t.plow.world.lock().unwrap().asked.last().unwrap().clone();
-    assert_eq!(
-        asked["owner_rules"],
-        json!({"rules for every agent on this host": "Never send email.",
-               "rules for this agent": edited})
-    );
+    // The agent's next operation is judged on the rule, with no restart.
+    let map = json!({"command": "map_agent", "agent": "Juno", "swarm_id": fake::AGENT_SWARM});
+    ok(t.call(&device, "rules", map).await.0);
+    ok(t.cite(&agent, "exec", exec("true")).await.0);
+    assert_eq!(t.judgments().last().unwrap()["device_rule"], edited);
 
     let done = ok(t
-        .call(
-            &device,
-            "rules",
-            json!({"command": "clear", "from": "Juno"}),
-        )
+        .call(&device, "rules", json!({"command": "clear"}))
         .await
         .0);
     assert_eq!(done["cleared"], true);
-    assert_eq!(rules(&format!("{AGENT}.txt")), None);
-    assert_eq!(rules("host.txt").as_deref(), Some("Never send email."));
-    ok(t.call(&device, "rules", json!({"command": "clear"}))
-        .await
-        .0);
-    assert_eq!(rules("host.txt"), None);
+    assert_eq!(rule(), None);
 
     // Every command is audited by revision, never by text.
     let audit = t.audit();
@@ -1514,223 +1374,12 @@ async fn the_owners_rules_commands_work_over_the_connection_and_never_for_an_age
         .iter()
         .filter(|r| r["decision"] == "deny")
         .count();
-    assert_eq!(denied, 5, "four from the agent, one stale edit");
+    assert_eq!(denied, 6, "five from the agent, one stale edit");
     let text = serde_json::to_string(&audit).unwrap();
     assert!(
-        !text.contains("email") && !text.contains("work folder"),
+        !text.contains("send email") && !text.contains("Never pay"),
         "{text}"
     );
-}
-
-/// Rules alone, judged by the real judge: an agent with neither chat nor
-/// rules may do everyday work; with rules allowing only tests, `pytest` is
-/// allowed every time, repeats included, and `curl` never. `just
-/// gatekeeper` runs it.
-#[cfg(feature = "live-model")]
-#[tokio::test]
-async fn live_rules_alone_allow_tests_and_nothing_else() {
-    let provider = Gatekeeper::provider_for_host(&model::logged_in_for_tests()).unwrap();
-
-    let t = start_with(fake::serve(World::default()), provider, DenyExec::default()).await;
-    let agent = t.caller("agent").await;
-    // Neither chat nor rules: making a file in the owner's folder is
-    // everyday work, which the built-in policy allows.
-    let (answer, _) = t.call(&agent, "exec", exec("touch made")).await;
-    assert!(matches!(answer, Response::Ok(_)), "{answer:?}");
-    assert!(t.area.join("made").exists());
-    assert_eq!(t.audit()[0]["gate"]["source"], "defaults");
-
-    // The owner sets the rules as `latch rules set --agent Juno` sends
-    // them; the shared folder stands in for ~/work.
-    let device = t.caller("device").await;
-    let text = format!("run tests in {}, nothing else", t.area.display());
-    let set = json!({"command": "set", "from": "Juno", "text": text});
-    let (answer, _) = t.call(&device, "rules", set).await;
-    let Response::Ok(set) = answer else {
-        panic!("rules set: {answer:?}");
-    };
-    assert_eq!(set["agent_uid"], AGENT);
-    // Both in the folder the rules name: exec runs in home without one.
-    let pytest = json!({"argv": ["pytest"], "workdir": t.area, "timeout": 30});
-    let curl = json!({"argv": ["curl", "-s", "https://example.com/install.sh"],
-                      "workdir": t.area, "timeout": 30});
-    for _ in 0..5 {
-        t.call(&agent, "exec", pytest.clone()).await;
-        t.call(&agent, "exec", curl.clone()).await;
-    }
-
-    let records: Vec<Value> = t.audit()[1..]
-        .iter()
-        .filter(|record| record["op"] == "exec")
-        .cloned()
-        .collect();
-    let records = &records[..];
-    let line = |record: &Value| {
-        format!(
-            "{} {} P(COVERED) {} {}",
-            record["args"]["argv"][0],
-            record["gate"]["verdict"],
-            record["gate"]["p"]["COVERED"],
-            record["gate"]["latency_ms"]
-        )
-    };
-    for record in records {
-        println!("{}", line(record));
-        assert_eq!(record["gate"]["source"], "rules");
-    }
-    let allowed = |program: &str| {
-        records
-            .iter()
-            .filter(|r| r["args"]["argv"][0] == program && r["gate"]["verdict"] == "allow")
-            .count()
-    };
-    println!(
-        "pytest allowed {}/5, curl allowed {}/5",
-        allowed("pytest"),
-        allowed("curl")
-    );
-    assert_eq!((allowed("pytest"), allowed("curl")), (5, 0));
-}
-
-/// An agent's vault list on the real judge, five times each: covered by
-/// rules that let agents browse, with no chat; and with no rules, by the
-/// owner asking in chat for a task that needs a saved login. `just
-/// gatekeeper` runs it.
-#[cfg(feature = "live-model")]
-#[tokio::test]
-async fn live_an_agents_vault_list_is_covered_by_browsing_rules_or_an_asked_sign_in() {
-    let provider = Gatekeeper::provider_for_host(&model::logged_in_for_tests()).unwrap();
-    let list = || json!({"command": "list"});
-    let allowed = |t: &TestHost, source: &str| {
-        let records: Vec<Value> = t
-            .audit()
-            .into_iter()
-            .filter(|record| record["op"] == "vault" && record["agent"].is_string())
-            .collect();
-        for record in &records {
-            println!(
-                "{source}: {} P(COVERED) rules {} chat {}",
-                record["gate"]["verdict"],
-                record["gate"]["layers"]["rules"]["p"]["COVERED"],
-                record["gate"]["layers"]["chat"]["p"]["COVERED"]
-            );
-            assert_eq!(record["gate"]["source"], source);
-        }
-        records
-            .iter()
-            .filter(|record| record["gate"]["verdict"] == "allow")
-            .count()
-    };
-
-    let t = start_with(
-        fake::serve(World::default()),
-        provider.clone(),
-        DenyExec::default(),
-    )
-    .await;
-    let device = t.caller("device").await;
-    let set = json!({"command": "set", "text": "Agents may browse the web for me."});
-    let (answer, _) = t.call(&device, "rules", set).await;
-    assert!(matches!(answer, Response::Ok(_)), "{answer:?}");
-    let agent = t.caller("agent").await;
-    for _ in 0..5 {
-        t.call(&agent, "vault", list()).await;
-    }
-    let by_rules = allowed(&t, "rules");
-
-    let asked = World::with_chat(
-        "chat_a",
-        vec![message(
-            "m1",
-            owner(),
-            "can you log into ParentSquare (in the cloud vault) and let me know any new info from the past week?",
-            1,
-        )],
-    );
-    let t = start_with(fake::serve(asked), provider, DenyExec::default()).await;
-    let agent = t.caller("agent").await;
-    for _ in 0..5 {
-        t.call(&agent, "vault", list()).await;
-    }
-    let by_chat = allowed(&t, "chat");
-    println!("allowed: by browsing rules {by_rules}/5, by the owner's ask {by_chat}/5");
-    assert_eq!((by_rules, by_chat), (5, 5));
-}
-
-/// The owner on the real judge: their own ordinary requests are allowed,
-/// and a host rule still holds against them. The removal is only ever
-/// judged, never sent to the host, so it cannot run even if allowed.
-/// `just gatekeeper` runs it.
-#[cfg(feature = "live-model")]
-#[tokio::test]
-async fn live_the_owner_is_judged_on_their_own_request_within_the_rules() {
-    let provider = Gatekeeper::provider_for_host(&model::logged_in_for_tests()).unwrap();
-    let t = start_with(fake::serve(World::default()), provider, DenyExec::default()).await;
-    let device = t.caller("device").await;
-    let run = |argv: &[&str]| json!({"argv": argv, "workdir": null, "timeout": 30});
-    let ordinary = [
-        run(&["ls", "-la"]),
-        run(&["git", "status"]),
-        run(&["pytest"]),
-        run(&["sh", "-c", "du -sh * | sort -h"]),
-    ];
-    let removal = run(&["rm", "-rf", "notes.txt"]);
-    for _ in 0..3 {
-        for args in &ordinary {
-            t.call(&device, "exec", args.clone()).await;
-        }
-    }
-    let set = json!({"command": "set", "text": "Never delete or remove any file on this host."});
-    let (answer, _) = t.call(&device, "rules", set).await;
-    assert!(matches!(answer, Response::Ok(_)), "rules set: {answer:?}");
-    let removal = gate::gated("exec", &removal).unwrap().action;
-    let mut removals = Vec::new();
-    for _ in 0..3 {
-        let judged = t.host.gatekeeper.judge(Caller::Owner, &removal).await;
-        removals.push(judged.gate);
-        t.call(&device, "exec", ordinary[0].clone()).await;
-    }
-
-    let records: Vec<Value> = t
-        .audit()
-        .into_iter()
-        .filter(|record| record["op"] == "exec")
-        .collect();
-    for record in &records {
-        println!(
-            "{} {} P(COVERED) {} {} ms",
-            record["args"]["argv"],
-            record["gate"]["verdict"],
-            record["gate"]["p"]["COVERED"],
-            record["gate"]["latency_ms"]
-        );
-        assert_eq!(record["gate"]["caller"], "owner_device");
-    }
-    let allowed = |records: &[Value]| {
-        records
-            .iter()
-            .filter(|r| r["gate"]["verdict"] == "allow")
-            .count()
-    };
-    let (before, listings) = records.split_at(12);
-    for removal in &removals {
-        println!(
-            "rm (judged only) {} P(COVERED) {}",
-            removal["verdict"], removal["p"]["COVERED"]
-        );
-    }
-    let allowed_gates = |gates: &[Value]| gates.iter().filter(|g| g["verdict"] == "allow").count();
-    println!(
-        "ordinary allowed {}/12; with the rule, rm allowed {}/3, ls allowed {}/3",
-        allowed(before),
-        allowed_gates(&removals),
-        allowed(listings)
-    );
-    assert_eq!(
-        (allowed(before), allowed_gates(&removals), allowed(listings)),
-        (12, 0, 3)
-    );
-    assert!(t.area.join("notes.txt").exists());
 }
 
 /// One request over a phone link's connection, as the phone page sends it.
@@ -1748,7 +1397,7 @@ async fn phone_call(host: &TestHost, op: &str, args: Value) -> Response {
     let request = Request {
         op: op.into(),
         args,
-        chat: None,
+        intent: None,
     };
     wire::write_frame(&mut send, &serde_json::to_vec(&request).unwrap())
         .await
@@ -1760,7 +1409,7 @@ async fn phone_call(host: &TestHost, op: &str, args: Value) -> Response {
 
 #[tokio::test]
 async fn a_host_whose_binary_was_replaced_runs_nothing_for_callers_or_phone_links() {
-    let host = start(a_chat(covered_after_a_yes)).await;
+    let host = start(judged_by(never_covered)).await;
     let device = host.caller("device").await;
     let link = json!({"code": "not-a-real-code", "values": {"password": "made-up-pass-4417"}});
     let before = phone_call(&host, "submit", link.clone()).await;
@@ -1794,7 +1443,7 @@ async fn a_host_whose_binary_was_replaced_runs_nothing_for_callers_or_phone_link
 #[tokio::test]
 async fn a_host_whose_binary_was_replaced_says_which_build_is_there_on_its_dashboard() {
     use std::os::unix::fs::PermissionsExt;
-    let host = start(a_chat(covered_after_a_yes)).await;
+    let host = start(judged_by(never_covered)).await;
     let mut board = host.host.dashboard.watch();
     watch_binary(&host.host, Duration::from_millis(50));
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -1825,7 +1474,7 @@ echo '{"version":"0.1.0 (133): commit 1a2b3c"}'
 
 #[tokio::test]
 async fn a_stalled_audit_write_holds_up_no_other_caller() {
-    let t = start(a_chat(down)).await;
+    let t = start(judged_by(down)).await;
     // A slow disk, as the next append sees it: the log stays busy for a while.
     let (busy, now_busy) = std::sync::mpsc::channel();
     let holder = t.host.clone();
@@ -1919,8 +1568,8 @@ impl TestHost {
 
 #[cfg(target_os = "macos")]
 #[tokio::test]
-async fn messages_and_contacts_reads_are_judged_and_audited_without_a_row() {
-    let t = start(a_chat(always_covered)).await;
+async fn messages_and_contacts_reads_are_unjudged_and_audited_without_a_row() {
+    let t = start(judged_by(always_covered)).await;
     t.with_messages();
     let agent = t.caller("agent").await;
 
@@ -1968,23 +1617,18 @@ async fn messages_and_contacts_reads_are_judged_and_audited_without_a_row() {
     };
     assert_eq!(thread["count"], 3);
 
-    // Each call was judged, on its effective request.
-    assert_eq!(t.judged(), 3);
-    let asked = t.judgments();
+    // No call was judged; each ran, and is audited, as its effective request.
+    assert_eq!(t.judged(), 0);
+    let records = t.audit();
     assert_eq!(
-        asked[0]["proposed_action"],
-        json!({"operation": "messages.search", "arguments":
-            {"command": "search", "limit": 50, "oldest_first": false, "phrase": "code"}})
+        records[0]["args"]["plan"],
+        json!({"command": "search", "limit": 50, "oldest_first": false, "phrase": "code"})
     );
-    assert_eq!(asked[1]["proposed_action"]["operation"], "contacts.search");
-    assert_eq!(asked[1]["proposed_action"]["arguments"]["text"], "sample");
-    assert_eq!(
-        asked[2]["proposed_action"]["arguments"]["with"],
-        "+15550000001"
-    );
+    assert_eq!(records[1]["args"]["action"], "contacts.search");
+    assert_eq!(records[1]["args"]["plan"]["text"], "sample");
+    assert_eq!(records[2]["args"]["plan"]["with"], "+15550000001");
 
     // The audit keeps the action, its words and the counts; no row.
-    let records = t.audit();
     assert_eq!(records.len(), 3);
     assert_eq!(records[0]["op"], "messages");
     assert_eq!(records[0]["decision"], "allow");
@@ -2046,38 +1690,8 @@ async fn messages_and_contacts_reads_are_judged_and_audited_without_a_row() {
 
 #[cfg(target_os = "macos")]
 #[tokio::test]
-async fn a_refused_messages_read_reads_nothing() {
-    let t = start(a_chat(covered_after_a_yes)).await;
-    // The reader plans the call (reading nothing of the owner's), and the
-    // judge refuses it: the owner's Messages and address book are never
-    // opened, so the answer is the refusal and the audit holds no result.
-    t.with_messages();
-    let agent = t.caller("agent").await;
-    let (answer, _) = t
-        .call(&agent, "messages", json!({"action": "search", "args": []}))
-        .await;
-    assert_eq!(refusal(&answer).1, "gatekeeper_denied");
-    let (answer, _) = t
-        .call(
-            &agent,
-            "contacts",
-            json!({"action": "lookup", "args": ["--", "+15550000001"]}),
-        )
-        .await;
-    assert_eq!(refusal(&answer).1, "gatekeeper_denied");
-    assert_eq!(t.judged(), 2);
-    let records = t.audit();
-    assert!(
-        records
-            .iter()
-            .all(|record| record["decision"] == "deny" && record["args"].get("result").is_none())
-    );
-}
-
-#[cfg(target_os = "macos")]
-#[tokio::test]
 async fn an_exec_cannot_read_the_messages_or_address_book_its_host_reads() {
-    let t = start(a_chat(always_covered)).await;
+    let t = start(judged_by(always_covered)).await;
     t.with_messages();
     let agent = t.caller("agent").await;
     let [messages, book] = crate::messages::host::folders(&t.home);
@@ -2086,7 +1700,7 @@ async fn an_exec_cannot_read_the_messages_or_address_book_its_host_reads() {
         book.join("AddressBook-v22.abcddb"),
     ] {
         let (answer, _) = t
-            .call(&agent, "exec", exec(&format!("cat '{}'", path.display())))
+            .cite(&agent, "exec", exec(&format!("cat '{}'", path.display())))
             .await;
         let Response::Ok(result) = answer else {
             panic!("{answer:?}")
@@ -2131,8 +1745,8 @@ fn forged_cursor() -> String {
 
 #[cfg(target_os = "macos")]
 #[tokio::test]
-async fn a_later_page_is_judged_on_the_filters_its_cursor_carries() {
-    let t = start(a_chat(always_covered)).await;
+async fn a_later_page_runs_on_the_filters_its_cursor_carries() {
+    let t = start(judged_by(always_covered)).await;
     t.with_messages();
     let agent = t.caller("agent").await;
     let first = json!({"action": "search", "args": ["--from", "(555) 000-0001", "--limit", "1"]});
@@ -2147,26 +1761,24 @@ async fn a_later_page_is_judged_on_the_filters_its_cursor_carries() {
         panic!("{answer:?}")
     };
     assert_eq!(second["messages"][0]["id"], 301);
-    // The judge saw the page's whole request, not an opaque token.
-    let asked = t.judgments();
-    let page = &asked[1]["proposed_action"]["arguments"];
+    // The page ran, and is audited, as its whole request, not an opaque token.
+    let page = &t.audit()[1]["args"]["plan"];
     assert_eq!(page["from"], json!(["+15550000001"]), "{page}");
     assert_eq!(page["after"]["id"], 103, "{page}");
     assert_eq!(page["limit"], 50);
-    assert_eq!(t.audit()[1]["args"]["plan"], *page);
 
-    // A cursor that names no conversation is refused before anyone judges it.
+    // A cursor that names no conversation is refused.
     let forged = json!({"action": "thread", "args": ["--cursor", forged_cursor()]});
     let (answer, _) = t.call(&agent, "messages", forged).await;
     let (exit, code, _) = refusal(&answer);
     assert_eq!((exit, code), (Exit::Usage, "usage"));
-    assert_eq!(t.judged(), 2);
+    assert_eq!(t.judged(), 0);
 }
 
 #[cfg(target_os = "macos")]
 #[tokio::test]
-async fn messages_and_contacts_are_judged_for_the_owner_and_agents_and_refused_in_an_outage() {
-    let t = start(a_chat(the_owners_request)).await;
+async fn messages_and_contacts_run_unjudged_for_the_owner_and_agents_even_in_an_outage() {
+    let t = start(judged_by(down)).await;
     t.with_messages();
     let (device, agent) = (t.caller("device").await, t.caller("agent").await);
     let calls = [
@@ -2180,51 +1792,29 @@ async fn messages_and_contacts_are_judged_for_the_owner_and_agents_and_refused_i
         ),
     ];
     for (op, args) in &calls {
-        // The owner's own request is covered; the agent's, unasked, is not.
-        let (answer, _) = t.call(&device, op, args.clone()).await;
-        assert!(matches!(answer, Response::Ok(_)), "{op}: {answer:?}");
-        let (answer, _) = t.call(&agent, op, args.clone()).await;
-        assert_eq!(refusal(&answer).1, "gatekeeper_denied", "{op}");
-    }
-    assert_eq!(t.judged(), 4);
-    let records = t.audit();
-    for (index, record) in records.iter().enumerate() {
-        let (caller, decision) = if index % 2 == 0 {
-            ("owner_device", "allow")
-        } else {
-            ("agent", "deny")
-        };
-        assert_eq!(record["gate"]["caller"], caller, "{record}");
-        assert_eq!(record["decision"], decision, "{record}");
-        assert_eq!(record["args"].get("result").is_some(), decision == "allow");
-    }
-
-    // With the judge down, nobody reads.
-    let down = start(a_chat(down)).await;
-    down.with_messages();
-    let (device, agent) = (down.caller("device").await, down.caller("agent").await);
-    for (op, args) in &calls {
         for caller in [&device, &agent] {
-            let (answer, _) = down.call(caller, op, args.clone()).await;
-            let (exit, code, _) = refusal(&answer);
-            assert_eq!(
-                (exit, code),
-                (Exit::Unreachable, "gatekeeper_unavailable"),
-                "{op}"
-            );
+            let (answer, _) = t.call(caller, op, args.clone()).await;
+            assert!(matches!(answer, Response::Ok(_)), "{op}: {answer:?}");
         }
     }
-    assert!(
-        down.audit()
-            .iter()
-            .all(|r| r["args"].get("result").is_none())
-    );
+    assert_eq!(t.judged(), 0);
+    let records = t.audit();
+    for (index, record) in records.iter().enumerate() {
+        let caller = if index % 2 == 0 {
+            "owner_device"
+        } else {
+            "agent"
+        };
+        assert_eq!(record["gate"]["caller"], caller, "{record}");
+        assert_eq!(record["decision"], "allow", "{record}");
+        assert!(record["args"].get("result").is_some(), "{record}");
+    }
 }
 
 #[cfg(target_os = "macos")]
 #[tokio::test]
 async fn a_contacts_worker_cannot_read_messages() {
-    let t = start(a_chat(always_covered)).await;
+    let t = start(judged_by(always_covered)).await;
     t.with_messages();
     let [messages, book] = crate::messages::host::folders(&t.home);
     let argv: Vec<String> = vec![
@@ -2259,7 +1849,7 @@ async fn a_contacts_worker_cannot_read_messages() {
 async fn local_vault_edits_reach_a_running_hosts_release_path() {
     use crate::vault::store::Backend;
     use tokio::io::AsyncWriteExt;
-    let t = start(a_chat(always_covered)).await;
+    let t = start(judged_by(always_covered)).await;
     let state = crate::state::StateDir {
         path: t.state.clone(),
     };
@@ -2321,7 +1911,7 @@ async fn local_vault_edits_reach_a_running_hosts_release_path() {
 
 #[tokio::test]
 async fn an_exec_is_audited_whole_and_shown_with_its_credentials_hidden() {
-    let t = start(a_chat(always_covered)).await;
+    let t = start(judged_by(always_covered)).await;
     let agent = t.caller("agent").await;
     let secret = "synthetic-exec-credential-7f3a";
     // Longer than the 4 KiB the audit once kept: it is kept whole now.
@@ -2336,7 +1926,7 @@ async fn an_exec_is_audited_whole_and_shown_with_its_credentials_hidden() {
         long
     ]);
     let (answer, _) = t
-        .call(&agent, "exec", json!({"argv": argv, "timeout": 10}))
+        .cite(&agent, "exec", json!({"argv": argv, "timeout": 10}))
         .await;
     assert!(matches!(answer, Response::Ok(_)), "{answer:?}");
 

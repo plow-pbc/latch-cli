@@ -131,14 +131,18 @@ async fn a_disabled_connector_is_refused_before_it_is_judged_or_given_a_credenti
 
 /// Where this host's pinned gog goes.
 /// What this host can't run at all, an operation it doesn't know or a
-/// connector its platform lacks, is its own refusal: audited as a deny, so
+/// connector its platform lacks, is refused in code: audited as a deny, so
 /// no one reads it as allowed, and never judged.
 #[tokio::test]
 async fn what_this_host_cannot_run_is_audited_as_its_refusal() {
     let t = start(covered()).await;
     let agent = t.caller("agent").await;
     let (answer, _) = t.call(&agent, "teleport", json!({})).await;
-    assert_eq!(refusal(&answer).1, "not_built_yet");
+    let (_, code, details) = refusal(&answer);
+    assert_eq!(
+        (code, &details["reason"]),
+        ("gatekeeper_denied", &json!("unknown_op"))
+    );
     // A Mac host runs these, so only another can refuse them.
     let elsewhere: &[&str] = if cfg!(target_os = "macos") {
         &[]
@@ -161,7 +165,7 @@ async fn what_this_host_cannot_run_is_audited_as_its_refusal() {
     let refused = elsewhere
         .iter()
         .map(|&op| (op, "unsupported_platform"))
-        .chain([("teleport", "not_built_yet")]);
+        .chain([("teleport", "gatekeeper_denied")]);
     for (op, outcome) in refused {
         let record = records.iter().find(|r| r["op"] == op).unwrap();
         assert_eq!(record["decision"], "deny", "{record}");

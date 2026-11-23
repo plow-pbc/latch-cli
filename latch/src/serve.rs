@@ -107,7 +107,8 @@ impl<'a> Checks<'a> {
             if intent.is_some() {
                 return Err(Failure::new(
                     code::intent_not_supported,
-                    "--intent cites the owner's message for an agent; omit it on owner calls".into(),
+                    "--intent cites the owner's message for an agent; omit it on owner calls"
+                        .into(),
                 ));
             }
             return Ok(Gate {
@@ -474,13 +475,17 @@ async fn run_locked(
 ) -> Result<(), Failure> {
     let workers = workers(state_dir)?;
     // An older latch's grant-style rules are never read: kept aside.
-    match crate::gate::rules::Store::new(&state.path).archive_legacy(jiff::Timestamp::now().as_second()) {
+    match crate::gate::rules::Store::new(&state.path)
+        .archive_legacy(jiff::Timestamp::now().as_second())
+    {
         Ok(Some((archived, files))) => log(&format!(
             "moved an older latch's rules ({files} files) to {}; nothing reads them",
             archived.display()
         )),
         Ok(None) => {}
-        Err(err) => log(&format!("could not move the older rules folder aside: {err}")),
+        Err(err) => log(&format!(
+            "could not move the older rules folder aside: {err}"
+        )),
     }
     workers.probe().await.map_err(|err| {
         let message = format!("latch cannot sandbox host operations here: {}", err.message);
@@ -505,15 +510,7 @@ async fn run_locked(
         )),
     }
     let key = own_key(state, lifetime.attached.load(Ordering::SeqCst)).await?;
-    run_host(
-        state,
-        key,
-        workers,
-        headless_browsers,
-        deny_exec,
-        lifetime,
-    )
-    .await
+    run_host(state, key, workers, headless_browsers, deny_exec, lifetime).await
 }
 
 async fn run_host(

@@ -20,12 +20,12 @@ impl IntentRef {
     /// hold no `/`, but a room alias may.
     pub fn parse(text: &str) -> Option<IntentRef> {
         let (room, event) = text.trim().rsplit_once('/')?;
-        (!room.is_empty() && !event.is_empty() && !event.contains(char::is_whitespace)).then(
-            || IntentRef {
+        (!room.is_empty() && !event.is_empty() && !event.contains(char::is_whitespace)).then(|| {
+            IntentRef {
                 room: room.to_string(),
                 event: event.to_string(),
-            },
-        )
+            }
+        })
     }
 
     /// The ledger's key for every action taken on this intent.
@@ -86,9 +86,7 @@ pub struct NoReader;
 
 impl ThreadSource for NoReader {
     fn read<'a>(&'a self, _intent: &'a IntentRef, _agent: &'a str) -> Reading<'a> {
-        Box::pin(async {
-            Err("this host has no Swarm reader set up yet".into())
-        })
+        Box::pin(async { Err("this host has no Swarm reader set up yet".into()) })
     }
 }
 
@@ -99,7 +97,10 @@ mod tests {
     #[test]
     fn a_reference_is_a_room_and_an_event() {
         let r = IntentRef::parse("!abc:plow.co/$ev1").unwrap();
-        assert_eq!((r.room.as_str(), r.event.as_str()), ("!abc:plow.co", "$ev1"));
+        assert_eq!(
+            (r.room.as_str(), r.event.as_str()),
+            ("!abc:plow.co", "$ev1")
+        );
         assert_eq!(r.key(), "swarm:!abc:plow.co/$ev1");
         for bad in ["", "room", "/ev", "room/", "room/e v"] {
             assert_eq!(IntentRef::parse(bad), None, "{bad:?}");

@@ -18,8 +18,8 @@ use std::thread;
 /// with `--events`. With `taken`, login finds this machine's
 /// name taken and asks, as the real one does, whether to replace it and
 /// else for a new name; it keeps the answers in `login-answers`. With
-/// `agent`, the login is an agent's. Rules are set unless `no-rules`; a
-/// `rules set --preset NAME` keeps NAME in `rules`.
+/// `agent`, the login is an agent's. A device rule is set unless
+/// `no-rules`; a `rules set --revision none TEXT` keeps TEXT in `rules`.
 const STUB: &str = r#"#!/bin/sh
 [ "$1" = --state-dir ] && shift 2
 echo "${LATCH_HOST:+LATCH_HOST=$LATCH_HOST }$*" >> "$STUB/calls"
@@ -56,11 +56,11 @@ case "$*" in
     touch "$STUB/peer" ;;
   "serve -d"|"serve -d --again") touch "$STUB/ready"; echo '{"pid":4242}' ;;
   "rules show")
-    if [ -f "$STUB/no-rules" ] && [ ! -f "$STUB/rules" ]; then echo '{"every_agent":null,"agents":[]}'
-    else echo '{"every_agent":{"text":"Agents may read my mail.","revision":"r"},"agents":[]}'; fi ;;
-  "rules set --preset "*" --revision none")
-    if [ -f "$STUB/rules" ] || [ ! -f "$STUB/no-rules" ]; then echo '{"error":{"code":"stale_revision","message":"the rules changed"}}' >&2; exit 1; fi
-    echo "$4" > "$STUB/rules"; echo '{"saved":true}' ;;
+    if [ -f "$STUB/no-rules" ] && [ ! -f "$STUB/rules" ]; then echo '{"device_rule":null,"agents":{}}'
+    else echo '{"device_rule":{"text":"Never pay.","revision":"r"},"agents":{}}'; fi ;;
+  "rules set --revision none "*)
+    if [ -f "$STUB/rules" ] || [ ! -f "$STUB/no-rules" ]; then echo '{"error":{"code":"stale_revision","message":"the device rule changed"}}' >&2; exit 1; fi
+    printf '%s\n' "$5" > "$STUB/rules"; echo '{"saved":true}' ;;
   "plugins enable "*)
     name=$3
     answer=$(head -n 1 "$STUB/enable-$name" 2>/dev/null || echo ok)
@@ -544,7 +544,7 @@ fn a_failure_on_a_later_check_is_reported_not_waited_out() {
     assert!(!shown.contains("Not granted yet"), "{shown}");
 }
 
-/// What setup's questions before the rules one are answered `no` with:
+/// What setup's questions before the device rule's are answered `no` with:
 /// Google, and on macOS Messages.
 fn no_to_the_connectors() -> &'static str {
     if cfg!(target_os = "macos") {
@@ -554,28 +554,42 @@ fn no_to_the_connectors() -> &'static str {
     }
 }
 
-/// With no rules yet, setup shows the two presets and Enter takes the
-/// first, saved by `rules set` only while there are still none.
+/// With no device rule yet, setup asks what is always denied and saves the
+/// answer, a blank one included, by `rules set` only while there is still
+/// none.
 #[test]
-fn a_host_with_no_rules_is_offered_the_presets_and_enter_takes_chief_of_staff() {
+fn a_host_with_no_device_rule_saves_what_the_owner_always_denies() {
+    for (typed, said) in [
+        (
+            "Never touch my tax returns",
+            "✓ Saved; change it with `latch rules edit`.",
+        ),
+        (
+            "",
+            "✓ Nothing is always denied; change it with `latch rules edit`.",
+        ),
+    ] {
+        let stub = Stub::new();
+        stub.file("peer", "");
+        stub.file("no-rules", "");
+        // The device rule, then start: no.
+        let (code, shown) = stub.setup(&format!("{}{typed}\nn\n", no_to_the_connectors()));
+        assert_eq!(code, Some(0), "{shown}");
+        for line in [
+            "Always deny: ",
+            "→ Set the device rule: latch rules set --revision none TEXT",
+            said,
+        ] {
+            assert!(shown.contains(line), "{line}: {shown}");
+        }
+        assert_eq!(stub.read("rules"), format!("{typed}\n"));
+    }
+    // Before the host starts, so it starts with it.
     let stub = Stub::new();
     stub.file("peer", "");
     stub.file("no-rules", "");
-    // Rules: Enter; start: Enter.
     let (code, shown) = stub.setup(&format!("{}\n\n", no_to_the_connectors()));
     assert_eq!(code, Some(0), "{shown}");
-    for line in [
-        "  1. Chief of Staff: Let my chief of staff read email",
-        "  2. Developer: Let my developer run tests",
-        "  3. None for now",
-        "Rules for your agents? [1/2/3] ",
-        "→ Set rules: latch rules set --preset chief-of-staff --revision none",
-        "✓ Your agents have the Chief of Staff rules",
-    ] {
-        assert!(shown.contains(line), "{line}: {shown}");
-    }
-    assert_eq!(stub.read("rules"), "chief-of-staff\n");
-    // Before the host starts, so it starts with them.
     let calls = stub.read("calls");
     assert!(
         calls.find("rules set").unwrap() < calls.find("serve").unwrap(),
@@ -583,76 +597,28 @@ fn a_host_with_no_rules_is_offered_the_presets_and_enter_takes_chief_of_staff() 
     );
 }
 
+/// A device rule set before, here or by hand: nothing asked, nothing changed.
 #[test]
-fn developer_or_none_is_saved_as_chosen() {
-    for (typed, saved) in [
-        ("2", Some("developer\n")),
-        ("d", Some("developer\n")),
-        ("3", None),
-        ("n", None),
-    ] {
-        let stub = Stub::new();
-        stub.file("peer", "");
-        stub.file("no-rules", "");
-        let (code, shown) = stub.setup(&format!("{}{typed}\nn\n", no_to_the_connectors()));
-        assert_eq!(code, Some(0), "{shown}");
-        match saved {
-            Some(saved) => assert_eq!(stub.read("rules"), saved, "{typed}: {shown}"),
-            None => {
-                assert!(!stub.read("calls").contains("rules set"), "{typed}");
-                assert!(
-                    shown.contains(
-                        "No rules; later: `latch rules set --preset chief-of-staff` (or developer)"
-                    ),
-                    "{typed}: {shown}"
-                );
-            }
-        }
-    }
-}
-
-/// The presets' old names and letters are refused with their new names,
-/// and set no rules.
-#[test]
-fn an_old_preset_name_is_refused_with_the_new_ones() {
-    for typed in ["f", "w", "family", "work"] {
-        let stub = Stub::new();
-        stub.file("peer", "");
-        stub.file("no-rules", "");
-        let (code, shown) = stub.setup(&format!("{}{typed}\nn\n", no_to_the_connectors()));
-        assert_eq!(code, Some(0), "{shown}");
-        assert!(!stub.read("calls").contains("rules set"), "{typed}");
-        assert!(
-            shown.contains(&format!(
-                "✗ {typed}: renamed: use chief-of-staff or developer"
-            )),
-            "{typed}: {shown}"
-        );
-    }
-}
-
-/// Rules set before, here or by hand: nothing asked, nothing changed.
-#[test]
-fn rules_already_set_skip_the_step() {
+fn a_device_rule_already_set_skips_the_step() {
     let stub = Stub::new();
     stub.file("peer", "");
     let (code, shown) = stub.setup(&format!("{}n\n", no_to_the_connectors()));
     assert_eq!(code, Some(0), "{shown}");
-    assert!(shown.contains("✓ Your agents have rules"), "{shown}");
-    assert!(!shown.contains("Rules for your agents?"), "{shown}");
+    assert!(shown.contains("✓ Your device rule is set"), "{shown}");
+    assert!(!shown.contains("Always deny:"), "{shown}");
     assert!(!stub.read("calls").contains("rules set"));
 }
 
-/// Rules are the owner's: an agent's login is not asked for them.
+/// The device rule is the owner's: an agent's login is not asked for it.
 #[test]
-fn an_agent_login_is_not_asked_for_rules() {
+fn an_agent_login_is_not_asked_for_the_device_rule() {
     let stub = Stub::new();
     stub.file("peer", "");
     stub.file("agent", "");
     stub.file("no-rules", "");
     let (code, shown) = stub.setup(&format!("{}n\n", no_to_the_connectors()));
     assert_eq!(code, Some(0), "{shown}");
-    assert!(!shown.contains("Rules for your agents?"), "{shown}");
+    assert!(!shown.contains("Always deny:"), "{shown}");
     assert!(!stub.read("calls").contains("rules"));
 }
 
@@ -766,20 +732,9 @@ fn status_reads_the_saved_connectors_and_serve_flags_and_changes_nothing() {
         steps["host"]["args"],
         serde_json::json!(["serve", "-d", "--again"])
     );
-    // No rules here yet: the preset the Mac app starts from, set only
-    // while there are still none.
+    // No device rule here yet: the owner edits one.
     assert_eq!(steps["rules"]["state"], "needed");
-    assert_eq!(
-        steps["rules"]["args"],
-        serde_json::json!([
-            "rules",
-            "set",
-            "--preset",
-            "chief-of-staff",
-            "--revision",
-            "none"
-        ])
-    );
+    assert_eq!(steps["rules"]["args"], serde_json::json!(["rules", "edit"]));
     if cfg!(target_os = "macos") {
         let messages = &steps["messages"];
         assert_eq!(messages["state"], "blocked");
@@ -814,14 +769,14 @@ fn status_on_an_agent_login_leaves_the_connectors_to_the_owner() {
 }
 
 #[test]
-fn status_says_rules_are_done_once_any_are_set() {
-    for file in ["host.txt", "0123456789abcdef0123456789abcdef.txt"] {
+fn status_says_the_device_rule_is_done_once_answered_even_blank() {
+    for text in ["", "Never pay."] {
         let stub = Stub::new();
         let state = logged_in(&stub, "device", &[]);
-        fs::create_dir_all(state.join("rules")).unwrap();
-        fs::write(state.join("rules").join(file), "Agents may read my mail.").unwrap();
+        fs::create_dir_all(state.join("gatekeeper")).unwrap();
+        fs::write(state.join("gatekeeper/deny.txt"), text).unwrap();
         let steps = status(&state);
-        assert_eq!(steps["rules"]["state"], "done", "{file}");
-        assert_eq!(steps["rules"]["args"], serde_json::Value::Null, "{file}");
+        assert_eq!(steps["rules"]["state"], "done", "{text:?}");
+        assert_eq!(steps["rules"]["args"], serde_json::Value::Null, "{text:?}");
     }
 }

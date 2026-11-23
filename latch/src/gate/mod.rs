@@ -159,7 +159,11 @@ impl Gate<'_> {
         let action = serde_json::value::to_raw_value(action).expect("an action serializes");
         let mut judgment = self.keeper.judge(self.caller, &action).await;
         if judgment.verdict.is_ok() && judgment.gate["class"] == "intent" {
-            match self.keeper.gate_record(self.peer, self.caller, &judgment.gate).await {
+            match self
+                .keeper
+                .gate_record(self.peer, self.caller, &judgment.gate)
+                .await
+            {
                 Ok(Some(id)) => judgment.gate["gate_record"] = json!(id),
                 Ok(None) => {}
                 Err(why) => {
@@ -220,9 +224,12 @@ impl Gatekeeper {
         })
         .await
         .map_err(|stopped| format!("the audit append stopped: {stopped}"))?;
-        appended
-            .map(Some)
-            .map_err(|failure| format!("the host could not write its audit log: {}", failure.message))
+        appended.map(Some).map_err(|failure| {
+            format!(
+                "the host could not write its audit log: {}",
+                failure.message
+            )
+        })
     }
 
     /// This gatekeeper, keeping each call's request and answer in
@@ -274,7 +281,10 @@ impl Gatekeeper {
             Class::Intent => {}
         }
         let rule = self.store.deny().map_err(|why| {
-            unavailable("device_rule_unreadable", &format!("the device rule could not be read: {why}"))
+            unavailable(
+                "device_rule_unreadable",
+                &format!("the device rule could not be read: {why}"),
+            )
         })?;
         let rule = rule.filter(|text| !text.trim().is_empty());
         if let Some(text) = &rule {
@@ -289,7 +299,9 @@ impl Gatekeeper {
                     rule: Some(&rule),
                     intent: None,
                 };
-                let p = self.ask(&asked, now.timestamp(), &clock, action, gate).await?;
+                let p = self
+                    .ask(&asked, now.timestamp(), &clock, action, gate)
+                    .await?;
                 return verdict(p);
             }
             Caller::Agent { uid, intent } => (uid, intent),
@@ -310,7 +322,10 @@ impl Gatekeeper {
         let key = intent.key();
         gate["intent"] = json!(key);
         let agents = self.store.agents().map_err(|why| {
-            unavailable("agent_map_unreadable", &format!("the agent map could not be read: {why}"))
+            unavailable(
+                "agent_map_unreadable",
+                &format!("the agent map could not be read: {why}"),
+            )
         })?;
         let Some(swarm) = agents.get(uid) else {
             return Err(denied(
@@ -331,7 +346,10 @@ impl Gatekeeper {
             .ok_or_else(|| {
                 denied(
                     "intent_not_found",
-                    format!("The host found no message {} in room {}.", intent.event, intent.room),
+                    format!(
+                        "The host found no message {} in room {}.",
+                        intent.event, intent.room
+                    ),
                 )
             })?;
         cited_checks(&thread)?;
@@ -345,7 +363,9 @@ impl Gatekeeper {
             rule: rule.as_deref(),
             intent: Some((&thread, &done)),
         };
-        let p = self.ask(&asked, now.timestamp(), &clock, action, gate).await?;
+        let p = self
+            .ask(&asked, now.timestamp(), &clock, action, gate)
+            .await?;
         verdict(p)?;
         held.record(&now.timestamp().to_string(), action.get())
             .map_err(|why| unavailable("ledger_unwritable", &why))
@@ -370,7 +390,12 @@ impl Gatekeeper {
         gate["prompt"] = json!(prompt_id(&questions));
         let mut model = Model::new(Box::new(self.provider.clone()));
         let answers = model
-            .ask_as_written("gatekeeper", &["messages", "rule", "action"], state, questions)
+            .ask_as_written(
+                "gatekeeper",
+                &["messages", "rule", "action"],
+                state,
+                questions,
+            )
             .await;
         if let Some(call) = model.calls.first() {
             for field in ["model", "model_request", "cost"] {
@@ -383,21 +408,20 @@ impl Gatekeeper {
             }
         }
         self.keep(gate, model.exchanges.pop());
-        let answers = answers.map_err(|why| unavailable("model_failed", &why))?;
+        // The model's answers are checked against the questions asked: one
+        // that answers badly is malformed, any other failure the model's.
+        let answers = answers.map_err(|why| match model.reason() {
+            Some("bad_answer") => unavailable("judge_malformed", &why),
+            _ => unavailable("model_failed", &why),
+        })?;
         let yes = |id: &str| match answers.get(id) {
-            Some(Answer::Yes(p)) => Ok(Some(*p)),
-            None => Ok(None),
-            Some(_) => Err(unavailable("judge_malformed", "the decision model answered badly")),
+            Some(Answer::Yes(p)) => Some(*p),
+            _ => None,
         };
         let p = P {
-            denied: yes("denied")?,
-            covered: yes("covered")?,
+            denied: yes("denied"),
+            covered: yes("covered"),
         };
-        if asked.rule.is_some() && p.denied.is_none()
-            || asked.intent.is_some() && p.covered.is_none()
-        {
-            return Err(unavailable("judge_malformed", "the decision model gave no answer"));
-        }
         gate["p"] = json!({"denied": p.denied, "covered": p.covered});
         Ok(p)
     }
@@ -428,9 +452,10 @@ fn site_bound(shown: &Value, gate: &mut Value) -> Result<(), Failure> {
         .and_then(|site| crate::vault::sites::registrable(site).ok());
     let saved = ["sites", "other_top_sites"].into_iter().any(|list| {
         shown["item"][list].as_array().is_some_and(|sites| {
-            sites
-                .iter()
-                .any(|saved| site.as_deref().is_some_and(|site| saved.as_str() == Some(site)))
+            sites.iter().any(|saved| {
+                site.as_deref()
+                    .is_some_and(|site| saved.as_str() == Some(site))
+            })
         })
     });
     if saved {
@@ -570,7 +595,14 @@ fn questions(asked: &Asked) -> Vec<Question> {
 /// Which prompt this is, as the audit names it: its fixed text's sha256.
 fn prompt_id(questions: &[Question]) -> String {
     let mut text = RULES_OF_JUDGMENT.join("\n");
-    for part in [OWNER_CALLS, EXEC_PERMISSIONS, VAULT_FILL, CARD_FILL, VAULT_LINK, RUN_SCRIPT] {
+    for part in [
+        OWNER_CALLS,
+        EXEC_PERMISSIONS,
+        VAULT_FILL,
+        CARD_FILL,
+        VAULT_LINK,
+        RUN_SCRIPT,
+    ] {
         text.push('\n');
         text.push_str(part);
     }
@@ -620,12 +652,12 @@ struct ContextShown<'a> {
 
 /// The judge's state with the newest `context` messages of the thread's
 /// context.
-fn state(
-    asked: &Asked,
+fn state<'a>(
+    asked: &Asked<'a>,
     context: usize,
     now: Timestamp,
-    clock: &str,
-    action: &RawValue,
+    clock: &'a str,
+    action: &'a RawValue,
 ) -> Box<RawValue> {
     let shown: Value = serde_json::from_str(action.get()).unwrap_or_default();
     let mut rules_of_judgment = match asked.intent {
@@ -647,7 +679,10 @@ fn state(
     if shown["kind"] == "run_script" {
         rules_of_judgment.push(RUN_SCRIPT);
     }
-    let said = |m: &'_ thread::Said| (ago(now, m.at), m.text.clone());
+    let entry = |m: &'a thread::Said| Entry {
+        when: ago(now, m.at),
+        text: &m.text,
+    };
     let mut state = State {
         rules_of_judgment,
         now: clock,
@@ -658,26 +693,9 @@ fn state(
         context: None,
         proposed_action: action,
     };
-    let owned;
     if let Some((thread, done)) = asked.intent {
-        owned = (
-            said(&thread.cited),
-            thread.later_owner.iter().map(said).collect::<Vec<_>>(),
-        );
-        state.cited_message = Some(Entry {
-            when: owned.0.0.clone(),
-            text: &owned.0.1,
-        });
-        state.later_owner_messages = Some(
-            owned
-                .1
-                .iter()
-                .map(|(when, text)| Entry {
-                    when: when.clone(),
-                    text,
-                })
-                .collect(),
-        );
+        state.cited_message = Some(entry(&thread.cited));
+        state.later_owner_messages = Some(thread.later_owner.iter().map(entry).collect());
         state.already_done = Some(
             done.iter()
                 .map(|d| DoneShown {
@@ -702,7 +720,6 @@ fn state(
                 })
                 .collect(),
         );
-        return serde_json::value::to_raw_value(&state).expect("the state serializes");
     }
     serde_json::value::to_raw_value(&state).expect("the state serializes")
 }

@@ -196,7 +196,10 @@ fn a_browser_session_groups_its_calls_and_a_plan_its_steps() {
     assert_eq!(exec.calls[0].outcome.line(), "Done - exit 0");
     let upload = board.tasks.front().unwrap();
     assert_eq!(upload.title, "Write: report.pdf");
-    assert_eq!(upload.outcome().line(), "Refused - needed the owner's OK");
+    assert_eq!(
+        upload.outcome().line(),
+        "Refused - not what the owner asked"
+    );
     let detail = &upload.calls[0].detail;
     assert!(detail.audit_id.as_deref().unwrap().starts_with("27ff057f"));
 }
@@ -232,14 +235,14 @@ fn results_say_what_happened_in_words() {
     );
     let no = denied(
         "gatekeeper_denied",
-        "The owner said not to do this.",
-        json!({"reason": "owner_said_no"}),
+        "The owner's device rule always denies this.",
+        json!({"reason": "denied_by_rule"}),
     );
     run(&dashboard, agent(), "exec", exec(0), exec(0), no, None);
     let differs = denied(
         "gatekeeper_denied",
-        "The gatekeeper stopped this action.",
-        json!({"reason": "not_as_asked"}),
+        "The owner's cited message does not ask for this action as it is now.",
+        json!({"reason": "not_covered"}),
     );
     run(&dashboard, agent(), "exec", exec(0), exec(0), differs, None);
     let search = json!({"action": "search", "args": ["--", "code"]});
@@ -264,8 +267,8 @@ fn results_say_what_happened_in_words() {
         [
             "Run: false: Failed - exit 1",
             "Run: false: Refused - judge unavailable",
-            "Run: false: Refused - owner said no",
-            "Run: false: Refused - stopped as it is now, no plain no from the owner",
+            "Run: false: Refused - always denied on this host",
+            "Run: false: Refused - not what the owner asked",
             "Search Messages: Done - 4 matches",
         ]
     );
@@ -393,7 +396,7 @@ fn each_column_is_its_own_at_120_and_the_caller_goes_under_the_command_at_80() {
             .iter()
             .map(|line| line.get(result..).unwrap_or_default().trim())
             .collect();
-        assert_eq!(words.join(" ").trim(), "refused · needed the owner's OK");
+        assert_eq!(words.join(" ").trim(), "refused · not what the owner asked");
         assert!(!lines.iter().any(|line| line.contains('…')));
         let footer = lines[lines.len() - 2..].join("\n");
         assert!(
@@ -446,7 +449,7 @@ fn the_decision_tab_shows_the_judgment_as_recorded_and_no_more() {
     );
     assert!(steps.contains("[Steps]"));
     assert!(
-        steps.contains("REFUSED - needed the owner's OK. This action did not run."),
+        steps.contains("REFUSED - not what the owner asked. This action did not run."),
         "{steps}"
     );
     assert!(steps.contains("The owner's messages don't cover this."));
@@ -801,11 +804,11 @@ fn a_session_shows_its_latest_plan_or_problem_not_just_its_last_call() {
 #[test]
 fn a_row_taller_than_the_screen_shows_what_fits_and_where_the_rest_is() {
     let dashboard = Dashboard::new("host");
-    let long = "The owner said not to do this. ".repeat(20);
+    let long = "The owner's device rule always denies this. ".repeat(20);
     let refused = denied(
         "gatekeeper_denied",
         &long,
-        json!({"reason": "owner_said_no"}),
+        json!({"reason": "denied_by_rule"}),
     );
     let words: Vec<String> = (0..60).map(|n| format!("word{n}")).collect();
     let request = json!({"argv": words});
@@ -833,9 +836,7 @@ fn a_row_taller_than_the_screen_shows_what_fits_and_where_the_rest_is() {
         "{lines:#?}"
     );
     assert!(
-        lines
-            .iter()
-            .any(|line| line.contains("refused · owner said")),
+        lines.iter().any(|line| line.contains("refused · always")),
         "{lines:#?}"
     );
     // And all of it is in its details.
@@ -986,7 +987,7 @@ fn a_fill_refused_part_way_through_a_plan_says_what_ran_first() {
     assert_eq!(call.outcome.line(), "Stopped - step 3; 2 ran");
     assert_eq!(
         call.steps[2].outcome.as_ref().map(Outcome::line).as_deref(),
-        Some("Refused - needed the owner's OK")
+        Some("Refused - needed the owner's message")
     );
     // So it reads after a restart too, from its audit record alone.
     let mut record = crate::audit::record(
@@ -1329,42 +1330,6 @@ fn nothing_typed_queried_or_sent_as_a_terminal_command_reaches_the_screen() {
     let mut view = view_of(&dashboard, false);
     view.key(Key::Enter);
     screen(&view, 80, 30);
-}
-
-#[test]
-fn the_decision_tab_shows_the_owners_rule_for_an_owners_call() {
-    let dashboard = Dashboard::new("host");
-    let gate = json!({"caller": "owner_on_host",
-        "rule": "refused when forbidden >= within instructions",
-        "p": {"COVERED": 0.3, "NOT_COVERED": 0.3, "FORBIDDEN": 0.4}});
-    let request = json!({"argv": ["rm", "-rf", "build"]});
-    let refused = denied(
-        "gatekeeper_denied",
-        "The gatekeeper judged that this host's rules forbid this.",
-        json!({"reason": "owner_said_no"}),
-    );
-    run(
-        &dashboard,
-        owner(),
-        "exec",
-        request.clone(),
-        request,
-        refused,
-        Some(gate),
-    );
-    let mut view = view_of(&dashboard, false);
-    view.key(Key::Enter);
-    view.key(Key::Tab);
-    let decision = screen(&view, 100, 30).join("\n");
-    assert!(
-        decision.contains("Refused - owner said no")
-            || decision.contains("REFUSED - owner said no"),
-        "{decision}"
-    );
-    assert!(
-        decision.contains("Decision rule: refused when forbidden >= within instructions"),
-        "{decision}"
-    );
 }
 
 #[test]

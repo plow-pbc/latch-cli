@@ -138,8 +138,9 @@ impl Store {
     pub fn agents(&self) -> Result<BTreeMap<String, String>, String> {
         let path = self.dir().join(AGENTS_FILE);
         match fs::read(&path) {
-            Ok(bytes) => serde_json::from_slice(&bytes)
-                .map_err(|err| format!("{}: {err}", path.display())),
+            Ok(bytes) => {
+                serde_json::from_slice(&bytes).map_err(|err| format!("{}: {err}", path.display()))
+            }
             Err(err) if err.kind() == ErrorKind::NotFound => Ok(BTreeMap::new()),
             Err(err) => Err(format!("{}: {err}", path.display())),
         }
@@ -159,7 +160,9 @@ impl Store {
         }
         let _lock = self.lock()?;
         let path = self.dir().join(AGENTS_FILE);
-        let mut agents = self.agents().map_err(|why| Failure::new(code::rules_io, why))?;
+        let mut agents = self
+            .agents()
+            .map_err(|why| Failure::new(code::rules_io, why))?;
         let before = agents.insert(uid.to_string(), swarm_id.to_string());
         let json = serde_json::to_vec_pretty(&agents).expect("the agent map serializes");
         write_private(&path, &json).map_err(|err| failure(&path, err))?;
@@ -262,9 +265,16 @@ mod tests {
         let store = Store::new(dir.path());
         assert!(store.archive_legacy(1).unwrap().is_none());
         fs::create_dir(dir.path().join(LEGACY_DIR)).unwrap();
-        fs::write(dir.path().join(LEGACY_DIR).join("host.txt"), "Approve everything.").unwrap();
+        fs::write(
+            dir.path().join(LEGACY_DIR).join("host.txt"),
+            "Approve everything.",
+        )
+        .unwrap();
         let (archived, files) = store.archive_legacy(7).unwrap().unwrap();
-        assert_eq!((archived.file_name().unwrap(), files), ("rules.archived-7".as_ref(), 1));
+        assert_eq!(
+            (archived.file_name().unwrap(), files),
+            ("rules.archived-7".as_ref(), 1)
+        );
         assert!(!dir.path().join(LEGACY_DIR).exists());
         assert_eq!(store.deny().unwrap(), None);
     }

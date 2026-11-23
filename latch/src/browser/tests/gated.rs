@@ -1,7 +1,7 @@
 //! The gatekeeper in front of an agent's browser commands, on the pinned
-//! engine, headless. A synthetic Plow serves the agent's one chat with the
-//! owner, and a stand-in judge answers from what it is shown: the action's
-//! kind, or the owner's last message. No real chat is read.
+//! engine, headless. A stand-in thread reader gives every citation the
+//! owner's one message, and a stand-in judge answers from what it is
+//! shown: the action's kind, or who is calling. No real message is read.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
@@ -17,93 +17,54 @@ use super::{CALLER, Calm, HEADLESS, act, find, latch, test_state};
 use crate::browser::engine::named;
 use crate::browser::host::{Browsers, Caller};
 use crate::failure::{Exit, Failure};
-use crate::gate::rules::{Rules, RulesSource};
-use crate::gate::{Gate, Gatekeeper};
+use crate::gate::thread::{IntentRef, Reading, Said, Thread, ThreadSource};
+use crate::gate::{Gate, Gatekeeper, fake};
 use crate::model::{Answer, Asked, CallFailed, CallMeta, Provider, Question};
 use crate::vault::host::Vault;
 use crate::vault::item::{CARD, Item, LOGIN, Raw};
 use crate::vault::store::Backend;
 
-const AGENT: &str = "0123456789abcdef0123456789abcdef";
-const LINE: &str = "line_agent";
-const CHAT: &str = "chat_a";
+const AGENT: &str = fake::AGENT;
 const PASSWORD: &str = "made-up-pass-9d27";
 const NUMBER: &str = "4242424242424242";
 
 conformance!(
     a_refused_command_sends_nothing_to_the_page,
-    clicks_and_reads_in_an_allowed_session_ask_the_judge_nothing,
-    an_owner_stop_refuses_the_next_plan,
+    clicks_reads_and_opens_ask_the_judge_nothing,
     a_fill_inside_a_plan_is_judged_as_a_fill,
     a_one_step_do_plan_is_judged_and_act_is_not,
     a_host_out_of_plow_credits_says_its_account_owner_must_add_them,
-    goto_on_a_new_site_is_judged_as_a_tab_there_is,
-    the_owners_devices_are_judged_as_the_owner,
+    goto_loads_any_web_site_unjudged_and_nothing_off_the_web,
+    the_owners_devices_are_judged_as_the_owner_against_the_device_rule,
     a_local_address_is_refused_before_the_judge_or_an_engine,
 );
 
-/// The owner's chat, oldest message first; a test may add to it between
-/// calls.
-type Messages = Arc<Mutex<Vec<Value>>>;
+/// The owner's thread every citation reads: their message `asked`, which
+/// a test may follow with more of theirs.
+#[derive(Clone)]
+struct Owner(Arc<Mutex<Thread>>);
 
-fn message(uid: &str, owner: bool, body: &str, minutes_ago: i64) -> Value {
-    let at = Timestamp::now() - SignedDuration::from_mins(minutes_ago);
-    let sender = if owner {
-        json!({"type": "member", "uid": "cp_owner", "display_name": "Morgan", "role": "owner",
-               "provider_key": "+14155550199"})
-    } else {
-        json!({"type": "agent", "relationship": "self",
-               "line": {"uid": LINE, "provider_type": "imessage", "provider_key": "+14155550100"}})
-    };
-    json!({"uid": uid, "object": "message", "chat_uid": CHAT, "body": body,
-           "sender": sender, "created_at": at.to_string()})
+impl Owner {
+    fn asking(asked: &str) -> Owner {
+        let thread = fake::Reader::asked(asked).0.unwrap().unwrap();
+        Owner(Arc::new(Mutex::new(thread)))
+    }
+
+    /// The owner says `text`, after the message cited.
+    fn says(&self, text: &str) {
+        let at = Timestamp::now() - SignedDuration::from_mins(0);
+        self.0.lock().unwrap().later_owner.push(Said {
+            text: text.into(),
+            at,
+        });
+    }
 }
 
-/// A local Plow with the agent's line, its one chat, and `messages`.
-fn plow(messages: Messages) -> crate::plow::Plow {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let url = format!("http://{}", listener.local_addr().unwrap());
-    std::thread::spawn(move || {
-        for socket in listener.incoming() {
-            let mut socket = socket.unwrap();
-            let mut reader = BufReader::new(socket.try_clone().unwrap());
-            let mut first = String::new();
-            reader.read_line(&mut first).unwrap();
-            loop {
-                let mut line = String::new();
-                reader.read_line(&mut line).unwrap();
-                if line == "\r\n" || line.is_empty() {
-                    break;
-                }
-            }
-            let target = first.split(' ').nth(1).unwrap_or_default();
-            let path = target.split('?').next().unwrap_or_default();
-            let line =
-                json!({"uid": LINE, "provider_type": "imessage", "provider_key": "+14155550100"});
-            let (status, body) = if path == format!("/v1/agents/{AGENT}") {
-                (200, json!({"uid": AGENT, "name": "Juno", "line": line}))
-            } else if path == "/v1/chats" {
-                let chat = json!({"uid": CHAT, "participants": [
-                    {"type": "agent", "relationship": "self", "line": line},
-                    {"type": "member", "uid": "cp_owner", "display_name": "Morgan", "role": "owner"},
-                ]});
-                (200, json!({"data": [chat], "has_more": false}))
-            } else if path == format!("/v1/chats/{CHAT}/messages") {
-                let newest_first: Vec<Value> =
-                    messages.lock().unwrap().iter().rev().cloned().collect();
-                (200, json!({"data": newest_first, "has_more": false}))
-            } else {
-                (404, json!({"detail": "not found"}))
-            };
-            let body = body.to_string();
-            let _ = write!(
-                socket,
-                "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
-            );
-        }
-    });
-    crate::plow::Plow::new(&url, "made-up-login").unwrap()
+impl ThreadSource for Owner {
+    fn read<'a>(&'a self, _: &'a IntentRef, _: &'a str) -> Reading<'a> {
+        let thread = self.0.lock().unwrap().clone();
+        Box::pin(async move { Ok(Some(thread)) })
+    }
 }
 
 /// P(COVERED), P(NOT_COVERED), P(FORBIDDEN) for a judge's state.
@@ -130,18 +91,9 @@ impl Judge {
         })
     }
 
-    fn answer(&self, answers: impl Fn(&Value) -> [f64; 3] + Send + Sync + 'static) {
-        *self.answers.lock().unwrap() = Box::new(answers);
-    }
-
-    /// How many judgments it made: an agent's chat layer is asked beside
-    /// its rules layer, and counted with it.
+    /// How many judgments it made.
     fn judged(&self) -> usize {
-        let shown = self.shown.lock().unwrap();
-        let chat_layer = |state: &&Value| {
-            state["conversation"] != "(no chat)" && state["conversation"][0]["id"] != "request"
-        };
-        shown.iter().filter(|state| !chat_layer(state)).count()
+        self.shown.lock().unwrap().len()
     }
 
     fn last_action(&self) -> Value {
@@ -151,16 +103,16 @@ impl Judge {
 
 const COVERED: [f64; 3] = [0.9, 0.08, 0.02];
 const NOT_COVERED: [f64; 3] = [0.1, 0.85, 0.05];
-const FORBIDDEN: [f64; 3] = [0.03, 0.12, 0.85];
 
 impl Provider for Judge {
     fn ask<'a>(&'a self, _: &'a Value, _: &'a [Question]) -> Asked<'a> {
         unreachable!("the gatekeeper sends its state as written")
     }
 
-    fn ask_as_written<'a>(&'a self, state: &'a RawValue, _: &'a [Question]) -> Asked<'a> {
+    /// Answers `covered` with P(COVERED), and `denied` with P(FORBIDDEN).
+    fn ask_as_written<'a>(&'a self, state: &'a RawValue, questions: &'a [Question]) -> Asked<'a> {
         let state: Value = serde_json::from_str(state.get()).unwrap();
-        let [c, n, f] = (self.answers.lock().unwrap())(&state);
+        let [c, _, f] = (self.answers.lock().unwrap())(&state);
         self.shown.lock().unwrap().push(state);
         let down = self.down.load(std::sync::atomic::Ordering::SeqCst);
         let slow = self.slow.load(std::sync::atomic::Ordering::SeqCst);
@@ -169,21 +121,13 @@ impl Provider for Judge {
             if down {
                 return Err(CallFailed::new("http_503", "the model is down"));
             }
-            let top = if c >= n && c >= f {
-                "COVERED"
-            } else if n >= f {
-                "NOT_COVERED"
-            } else {
-                "FORBIDDEN"
-            };
-            let answer = Answer::Chose {
-                choice: top.into(),
-                probabilities: vec![
-                    ("COVERED".into(), c),
-                    ("NOT_COVERED".into(), n),
-                    ("FORBIDDEN".into(), f),
-                ],
-            };
+            let answers = questions
+                .iter()
+                .map(|q| {
+                    let p = if q.id == "denied" { f } else { c };
+                    (q.id.clone(), Answer::Yes(p))
+                })
+                .collect();
             let meta = CallMeta {
                 provider: "stand-in",
                 model: crate::gate::MODEL.into(),
@@ -192,23 +136,8 @@ impl Provider for Judge {
                 cost: Some(0.0003),
                 exchange: None,
             };
-            Ok((
-                std::collections::HashMap::from([
-                    ("decision".to_string(), answer),
-                    ("exception".to_string(), Answer::Yes(0.0)),
-                    ("time_ban".to_string(), Answer::Yes(0.0)),
-                ]),
-                meta,
-            ))
+            Ok((answers, meta))
         })
-    }
-}
-
-struct NoRules;
-
-impl RulesSource for NoRules {
-    fn rules(&self, _: &str) -> Result<Rules, String> {
-        Ok(Rules::default())
     }
 }
 
@@ -264,37 +193,37 @@ fn fetched(hits: &Mutex<Vec<String>>) -> Vec<String> {
         .collect()
 }
 
-/// The host's browsers and gatekeeper for one test: the agent's chat holds
-/// `messages`, and `judge` answers.
+/// The host's browsers and gatekeeper for one test: every citation reads
+/// the owner's thread, and `judge` answers.
 struct Host {
     browsers: Browsers,
     keeper: Gatekeeper,
-    messages: Messages,
+    owner: Owner,
 }
+
+/// What the owner asked, as the agent's every citation reads it.
+const ASKED: &str = "have a look at my test site for me";
 
 impl Host {
     /// `site`'s local origin reads as `https://shop.example` to the site
     /// rules, so a card fills there.
-    fn start(state: &Path, site: &str, judge: &Arc<Judge>, messages: Vec<Value>) -> Host {
+    fn start(state: &Path, site: &str, judge: &Arc<Judge>) -> Host {
         let mut browsers = Browsers::new(state.to_path_buf(), Vault::new(state.into()), HEADLESS);
         browsers.test = Some((latch(), vec![(site.into(), "https://shop.example".into())]));
         browsers.provider = Some(Arc::new(Calm));
-        let messages = Arc::new(Mutex::new(messages));
-        let keeper = Gatekeeper::new(plow(messages.clone()), judge.clone(), Box::new(NoRules));
-        Host {
-            browsers,
-            keeper,
-            messages,
-        }
+        Host::with(state, browsers, judge.clone(), Owner::asking(ASKED))
     }
 
-    fn gate(&self) -> Gate<'_> {
-        Gate {
-            keeper: &self.keeper,
-            caller: crate::gate::Caller::Agent {
-                uid: AGENT,
-                chat: None,
-            },
+    /// A host on `browsers`, its gatekeeper asking `judge`, the agent
+    /// mapped to its Swarm account.
+    fn with(state: &Path, browsers: Browsers, judge: Arc<dyn Provider>, owner: Owner) -> Host {
+        crate::gate::rules::Store::new(state)
+            .map_agent(AGENT, fake::AGENT_SWARM)
+            .unwrap();
+        Host {
+            browsers,
+            keeper: Gatekeeper::new(judge, Box::new(owner.clone()), state),
+            owner,
         }
     }
 
@@ -311,12 +240,14 @@ impl Host {
             gate: Some(Gate {
                 keeper: &self.keeper,
                 caller: crate::gate::Caller::Owner,
+                peer: CALLER,
             }),
         };
         self.run(caller, command, name, args, None).await
     }
 
-    /// One command from the agent, through its gate, and its audit.
+    /// One command from the agent, citing the owner's message, through its
+    /// gate, and its audit.
     async fn agent(
         &self,
         command: &str,
@@ -327,7 +258,14 @@ impl Host {
         let caller = Caller {
             key: CALLER,
             device: false,
-            gate: Some(self.gate()),
+            gate: Some(Gate {
+                keeper: &self.keeper,
+                caller: crate::gate::Caller::Agent {
+                    uid: AGENT,
+                    intent: Some(fake::CITED),
+                },
+                peer: CALLER,
+            }),
         };
         self.run(caller, command, name, args, input).await
     }
@@ -365,12 +303,8 @@ impl Host {
 }
 
 /// A refusal as the agent gets it: exit 4, `gatekeeper_denied`, and why;
-/// and the audit's `gate` object, with no chat text.
-fn refused(
-    (result, audit): &(Result<Value, Failure>, Map<String, Value>),
-    reason: &str,
-    chat: &[Value],
-) {
+/// and the audit's `gate` object, with none of the owner's words.
+fn refused((result, audit): &(Result<Value, Failure>, Map<String, Value>), reason: &str) {
     let failure = result.as_ref().expect_err("the gatekeeper refuses");
     assert_eq!(
         (
@@ -383,14 +317,8 @@ fn refused(
     );
     let gate = &audit["gate"];
     assert_eq!(gate["verdict"], reason, "{gate}");
-    assert_eq!(gate["source"], "chat");
     let recorded = Value::Object(audit.clone()).to_string();
-    for said in chat {
-        assert!(
-            !recorded.contains(said["body"].as_str().unwrap()),
-            "{recorded}"
-        );
-    }
+    assert!(!recorded.contains(ASKED), "{recorded}");
 }
 
 /// A plan of two clicks on the download link: no single action, so a plan
@@ -409,66 +337,36 @@ fn two_clicks(link: &str) -> Value {
 async fn a_refused_command_sends_nothing_to_the_page(engine: &str) {
     let (_dir, state, _area) = test_state(engine);
     let (site, hits) = serve_site();
-    let chat = vec![
-        message(
-            "m1",
-            true,
-            "have a look at the files page on my test site",
-            30,
-        ),
-        message("m2", false, "Looking now.", 29),
-    ];
     let judge = Judge::new(|_| NOT_COVERED);
-    let host = Host::start(&state, &site, &judge, chat.clone());
+    let host = Host::start(&state, &site, &judge);
     let files = format!("{site}/files.html");
 
-    // A judge that can't answer runs nothing: no session starts.
+    // Opening a site is a read: it runs with no judge, even one that is down.
     judge.down.store(true, std::sync::atomic::Ordering::SeqCst);
-    let (unjudged, audit) = host
-        .agent("open", named(engine), json!({"url": files}), None)
-        .await;
-    let failure = unjudged.unwrap_err();
-    assert_eq!(
-        (failure.exit, failure.code.as_str()),
-        (Exit::Unreachable, "gatekeeper_unavailable")
-    );
-    assert_eq!(audit["gate"]["verdict"], "gatekeeper_unavailable");
-    judge.down.store(false, std::sync::atomic::Ordering::SeqCst);
-
-    // A refused open starts no session and loads nothing.
-    let opened = host
-        .agent("open", named(engine), json!({"url": files}), None)
-        .await;
-    refused(&opened, "not_covered", &chat);
-    assert_eq!(
-        judge.last_action(),
-        json!({"kind": "open_site", "url": "https://shop.example/files.html"})
-    );
-    assert_eq!(
-        host.browsers.list(CALLER).await,
-        json!({"sessions": []}),
-        "no session was started"
-    );
-    assert!(hits.lock().unwrap().is_empty(), "{:?}", fetched(&hits));
-
-    // The judge lets the site open, and nothing else.
-    judge.answer(|state| match state["proposed_action"]["kind"].as_str() {
-        Some("open_site") => COVERED,
-        _ => NOT_COVERED,
-    });
     let (page, audit) = host
         .agent("open", named(engine), json!({"url": files}), None)
         .await;
     let page = page.unwrap();
-    assert_eq!(audit["gate"]["verdict"], "allow");
+    assert_eq!(audit["gate"]["class"], "free");
+    assert_eq!(judge.judged(), 0);
     let id = page["session"].as_str().unwrap().to_string();
     let link = find(&page, "link", "Download the report");
     let attach = find(&page, "button", "Attachment");
     let loaded = fetched(&hits).len();
 
+    // A judge that can't answer runs nothing: the plan clicks nothing.
+    let (unjudged, audit) = host.agent("do", &id, two_clicks(&link), None).await;
+    let failure = unjudged.unwrap_err();
+    assert_eq!(
+        (failure.exit, failure.code.as_str()),
+        (Exit::Unreachable, "gatekeeper_unavailable")
+    );
+    assert_eq!(audit["gate"]["verdict"], "model_failed");
+    judge.down.store(false, std::sync::atomic::Ordering::SeqCst);
+
     // A refused plan clicks nothing: the report is never fetched.
     let plan = host.agent("do", &id, two_clicks(&link), None).await;
-    refused(&plan, "not_covered", &chat);
+    refused(&plan, "not_covered");
     let shown = judge.last_action();
     assert_eq!(shown["kind"], "browser_plan");
     // Each ref with the role and name the session's reading gave it.
@@ -489,7 +387,7 @@ async fn a_refused_command_sends_nothing_to_the_page(engine: &str) {
             None,
         )
         .await;
-    refused(&eval, "not_covered", &chat);
+    refused(&eval, "not_covered");
     assert_eq!(judge.last_action()["kind"], "run_script");
     assert_eq!(
         judge.last_action()["script"],
@@ -508,13 +406,14 @@ async fn a_refused_command_sends_nothing_to_the_page(engine: &str) {
             Some(&super::super::runtime::upload_file(&bytes)),
         )
         .await;
-    refused(&upload, "not_covered", &chat);
+    refused(&upload, "not_covered");
     assert_eq!(
         judge.last_action()["file"],
         json!({"name": "notes.txt", "size": bytes.len()})
     );
 
-    // A refused download sends no bytes. The download itself is the test's.
+    // A download is a read: sent with no judge. The download itself is the
+    // test's.
     host.look("do", &id, act(&format!("click {link}"))).await;
     let mut listed = Value::Null;
     for _ in 0..40 {
@@ -528,13 +427,13 @@ async fn a_refused_command_sends_nothing_to_the_page(engine: &str) {
         .as_str()
         .unwrap()
         .to_string();
-    let got = host
+    let asked = judge.judged();
+    let (got, audit) = host
         .agent("download_get", &id, json!({"download": download}), None)
         .await;
-    refused(&got, "not_covered", &chat);
-    assert!(!got.1.contains_key("sha256"), "{:?}", got.1);
-    assert_eq!(judge.last_action()["kind"], "download_file");
-    assert_eq!(judge.last_action()["file"]["name"], "report.csv");
+    got.unwrap();
+    assert_eq!(audit["gate"]["class"], "free", "{audit:?}");
+    assert_eq!(judge.judged(), asked);
 
     // Back on the page, nothing the agent was refused happened.
     let text = host.look("text", &id, json!({})).await;
@@ -602,7 +501,7 @@ async fn a_refused_command_sends_nothing_to_the_page(engine: &str) {
     // either way the judge is shown the item as the vault holds it.
     for item in [Some(added.as_str()), None] {
         let filled = host.agent("fill", &id, fill(item), None).await;
-        refused(&filled, "not_covered", &chat);
+        refused(&filled, "not_covered");
         assert_eq!(filled.1["item"], json!(added), "{item:?}");
         assert_eq!(
             judge.last_action(),
@@ -708,7 +607,7 @@ async fn a_refused_command_sends_nothing_to_the_page(engine: &str) {
             None,
         )
         .await;
-    refused(&filled, "not_covered", &chat);
+    refused(&filled, "not_covered");
     assert_eq!(
         judge.last_action(),
         json!({"kind": "vault_fill", "site": "shop.example",
@@ -740,13 +639,9 @@ async fn a_refused_command_sends_nothing_to_the_page(engine: &str) {
 async fn a_one_step_do_plan_is_judged_and_act_is_not(engine: &str) {
     let (_dir, state, _area) = test_state(engine);
     let (site, hits) = serve_site();
-    let chat = vec![message("m1", true, "have a look at my test site", 10)];
-    // The site may open; no plan is covered.
-    let judge = Judge::new(|state| match state["proposed_action"]["kind"].as_str() {
-        Some("open_site") => COVERED,
-        _ => NOT_COVERED,
-    });
-    let host = Host::start(&state, &site, &judge, chat.clone());
+    // No plan is covered.
+    let judge = Judge::new(|_| NOT_COVERED);
+    let host = Host::start(&state, &site, &judge);
     let (page, _) = host
         .agent(
             "open",
@@ -764,18 +659,14 @@ async fn a_one_step_do_plan_is_judged_and_act_is_not(engine: &str) {
     let mut one_step = act(&format!("click {link}"));
     one_step.as_object_mut().unwrap().remove("act");
     let refusal = host.agent("do", &id, one_step, None).await;
-    refused(&refusal, "not_covered", &chat);
+    refused(&refusal, "not_covered");
     assert_eq!(judge.last_action()["kind"], "browser_plan");
     assert_eq!(fetched(&hits).len(), loaded, "the link was never clicked");
 
     // Saying `act` exempts only one action: two steps are still a plan.
     let mut two = two_clicks(&link);
     two["act"] = json!(true);
-    refused(
-        &host.agent("do", &id, two, None).await,
-        "not_covered",
-        &chat,
-    );
+    refused(&host.agent("do", &id, two, None).await, "not_covered");
 
     // `act click eN` is left to the risk decision.
     let asked = judge.judged();
@@ -788,17 +679,11 @@ async fn a_one_step_do_plan_is_judged_and_act_is_not(engine: &str) {
     host.look("close", &id, json!({})).await;
 }
 
-async fn clicks_and_reads_in_an_allowed_session_ask_the_judge_nothing(engine: &str) {
+async fn clicks_reads_and_opens_ask_the_judge_nothing(engine: &str) {
     let (_dir, state, _area) = test_state(engine);
     let (site, _hits) = serve_site();
-    let chat = vec![message(
-        "m1",
-        true,
-        "download the report from the files page on my test site",
-        10,
-    )];
     let judge = Judge::new(|_| COVERED);
-    let host = Host::start(&state, &site, &judge, chat);
+    let host = Host::start(&state, &site, &judge);
     let (page, _) = host
         .agent(
             "open",
@@ -809,7 +694,7 @@ async fn clicks_and_reads_in_an_allowed_session_ask_the_judge_nothing(engine: &s
         .await;
     let page = page.unwrap();
     let id = page["session"].as_str().unwrap().to_string();
-    assert_eq!(judge.judged(), 1, "the site was judged as it opened");
+    assert_eq!(judge.judged(), 0, "opening a site is a read");
 
     let link = find(&page, "link", "Download the report");
     for (command, args) in [
@@ -833,66 +718,7 @@ async fn clicks_and_reads_in_an_allowed_session_ask_the_judge_nothing(engine: &s
         result.unwrap_or_else(|f| panic!("{command}: {f:?}"));
         assert!(!audit.contains_key("gate"), "{command} was judged");
     }
-    assert_eq!(judge.judged(), 1, "no click or read was judged");
-    host.browsers.close_all().await;
-}
-
-async fn an_owner_stop_refuses_the_next_plan(engine: &str) {
-    let (_dir, state, _area) = test_state(engine);
-    let (site, hits) = serve_site();
-    let chat = vec![message(
-        "m1",
-        true,
-        "get the report from the files page on my test site, twice if the first click does nothing",
-        10,
-    )];
-    // Covered, unless the owner's newest message says to stop.
-    let judge = Judge::new(|state| {
-        let owners: Vec<&str> = state["conversation"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter(|m| m["from"] == "OWNER")
-            .filter_map(|m| m["text"].as_str())
-            .collect();
-        match owners.last() {
-            Some(text) if text.starts_with("stop") => FORBIDDEN,
-            _ => COVERED,
-        }
-    });
-    let host = Host::start(&state, &site, &judge, chat);
-    let (page, _) = host
-        .agent(
-            "open",
-            named(engine),
-            json!({"url": format!("{site}/files.html")}),
-            None,
-        )
-        .await;
-    let page = page.unwrap();
-    let id = page["session"].as_str().unwrap().to_string();
-    let link = find(&page, "link", "Download the report");
-
-    let (ran, audit) = host.agent("do", &id, two_clicks(&link), None).await;
-    ran.unwrap();
-    assert_eq!(audit["gate"]["verdict"], "allow");
-    let before = fetched(&hits);
-
-    host.messages.lock().unwrap().push(message(
-        "m2",
-        true,
-        "stop, don't download anything else",
-        0,
-    ));
-    let stopped = host.agent("do", &id, two_clicks(&link), None).await;
-    let chat = host.messages.lock().unwrap().clone();
-    refused(&stopped, "owner_said_no", &chat);
-    assert_eq!(
-        stopped.1["gate"]["owner_messages"],
-        json!(["m1", "m2"]),
-        "the chat was read again"
-    );
-    assert_eq!(fetched(&hits), before, "nothing was clicked");
+    assert_eq!(judge.judged(), 0, "no click or read was judged");
     host.browsers.close_all().await;
 }
 
@@ -905,13 +731,12 @@ async fn a_fill_inside_a_plan_is_judged_as_a_fill(engine: &str) {
     use crate::browser::plan::{Plan, short_step};
     let (_dir, state, _area) = test_state(engine);
     let (site, hits) = serve_site();
-    let chat = vec![message("m1", true, "sign in to my test site", 10)];
-    // Plans and sites are covered; a vault fill is not.
+    // Plans are covered; a vault fill is not.
     let judge = Judge::new(|state| match state["proposed_action"]["kind"].as_str() {
         Some("vault_fill") => NOT_COVERED,
         _ => COVERED,
     });
-    let host = Host::start(&state, &site, &judge, chat.clone());
+    let host = Host::start(&state, &site, &judge);
     let (page, _) = host
         .agent(
             "open",
@@ -1053,10 +878,11 @@ async fn a_fill_inside_a_plan_is_judged_as_a_fill(engine: &str) {
 
 /// A shopping task as an agent would run it, every command through the
 /// gate: the judge is jev on Plow's decision route (the host state in
-/// `LATCH_GATE_HOST_STATE`, logged in to a dev Plow), the chat is
-/// synthetic, and the browser's own decisions go to the same route. One
-/// line per command goes to `LATCH_GATE_OUT/<time>/calls.ndjson` (its
-/// judgment's `gate` object, no chat text), and the totals to
+/// `LATCH_GATE_HOST_STATE`, logged in to a dev Plow), the owner's message
+/// the agent cites is synthetic, and the browser's own decisions go to the
+/// same route. One line per command goes to
+/// `LATCH_GATE_OUT/<time>/calls.ndjson` (its judgment's `gate` object, no
+/// message text), and the totals to
 /// `summary.json`. `just gated-shopping HOST_STATE OUT`.
 #[tokio::test]
 #[ignore = "calls the decision model through a dev Plow; see `just gated-shopping`"]
@@ -1070,34 +896,14 @@ async fn a_gated_shopping_task_on_the_decision_model() {
     let host_state = Path::new(&host_state);
     let (_dir, state, _area) = test_state("cft");
     let site = super::shop::serve_shop();
-    let chat = vec![
-        message(
-            "m1",
-            true,
-            "Can you order me a large Chicken Caesar Salad from the Greenleaf grocery site (shop.example)? Sign in with my saved Greenleaf login and pay with my Test Visa. Up to $25 is fine.",
-            40,
-        ),
-        message(
-            "m2",
-            false,
-            "On it: I'll sign in, add a large Chicken Caesar Salad to the cart and pay with your Test Visa.",
-            39,
-        ),
-    ];
+    let owner = Owner::asking(
+        "Can you order me a large Chicken Caesar Salad from the Greenleaf grocery site (shop.example)? Sign in with my saved Greenleaf login and pay with my Test Visa. Up to $25 is fine.",
+    );
     let mut browsers = Browsers::new(state.clone(), Vault::new(state.clone()), HEADLESS);
     browsers.test = Some((latch(), vec![(site.clone(), "https://shop.example".into())]));
     browsers.provider = Some(Arc::new(crate::model::Plow::for_host(host_state).unwrap()));
-    let messages = Arc::new(Mutex::new(chat));
-    let keeper = Gatekeeper::new(
-        plow(messages.clone()),
-        Gatekeeper::provider_for_host(host_state).unwrap(),
-        Box::new(NoRules),
-    );
-    let host = Host {
-        browsers,
-        keeper,
-        messages,
-    };
+    let judge = Gatekeeper::provider_for_host(host_state).unwrap();
+    let host = Host::with(&state, browsers, judge, owner);
     let (login, card) = host
         .browsers
         .vault
@@ -1317,10 +1123,7 @@ async fn a_gated_shopping_task_on_the_decision_model() {
         let _ = agent(command, id, args).await;
     }
     // The owner says stop; the next plan is judged against that.
-    host.messages
-        .lock()
-        .unwrap()
-        .push(message("m3", true, "stop, don't order anything else", 0));
+    host.owner.says("stop, don't order anything else");
     let after_stop = agent(
         "do",
         id,
@@ -1418,12 +1221,7 @@ async fn a_host_out_of_plow_credits_says_its_account_owner_must_add_them(engine:
     let mut browsers = Browsers::new(state.to_path_buf(), Vault::new(state.clone()), HEADLESS);
     browsers.test = Some((latch(), Vec::new()));
     browsers.provider = Some(route.clone());
-    let messages = Arc::new(Mutex::new(vec![message("m1", true, "Order the mug", 1)]));
-    let h = Host {
-        keeper: Gatekeeper::new(plow(messages.clone()), route, Box::new(NoRules)),
-        browsers,
-        messages,
-    };
+    let h = Host::with(&state, browsers, route, Owner::asking("Order the mug"));
     let owner_adds = "the host's account owner must add Plow credits";
     let shown = |failure: &Failure| {
         let text = failure.to_json();
@@ -1438,21 +1236,20 @@ async fn a_host_out_of_plow_credits_says_its_account_owner_must_add_them(engine:
     };
 
     let url = format!("{site}/order.html");
-    let (opened, _) = h
-        .agent("open", named(engine), json!({"url": url}), None)
-        .await;
-    let failure = opened.unwrap_err();
+    let page = h.look("open", named(engine), json!({"url": url})).await;
+    let id = page["session"].as_str().unwrap().to_string();
+    let place = find(&page, "button", "Place order");
+    let loaded = fetched(&hits).len();
+    let (planned, _) = h.agent("do", &id, two_clicks(&place), None).await;
+    let failure = planned.unwrap_err();
     shown(&failure);
     assert_eq!(
         (failure.exit, failure.code.as_str()),
         (Exit::Unreachable, "gatekeeper_unavailable")
     );
     assert!(failure.message.contains(owner_adds), "{}", failure.message);
-    assert!(fetched(&hits).is_empty(), "nothing was opened");
+    assert_eq!(fetched(&hits).len(), loaded, "nothing was clicked");
 
-    let page = h.look("open", named(engine), json!({"url": url})).await;
-    let id = page["session"].as_str().unwrap().to_string();
-    let place = find(&page, "button", "Place order");
     let (clicked, _) = h
         .run(
             CALLER.into(),
@@ -1474,32 +1271,16 @@ async fn a_host_out_of_plow_credits_says_its_account_owner_must_add_them(engine:
     h.look("close", &id, json!({})).await;
 }
 
-/// `goto` loads a URL in the active tab: on a site the session was judged
-/// for, nothing more is asked; on another, the judge is asked first, as
-/// for `tab new` there, and a refusal loads nothing.
-async fn goto_on_a_new_site_is_judged_as_a_tab_there_is(engine: &str) {
+/// `goto` loads a URL in the active tab, on the session's site or
+/// another, with no judge: loading a page is a read. An address off the
+/// web is refused before the gatekeeper is asked.
+async fn goto_loads_any_web_site_unjudged_and_nothing_off_the_web(engine: &str) {
     let (_dir, state, _area) = test_state(engine);
     let (site, _hits) = serve_site();
-    let (other, other_hits) = serve_site();
+    let (other, _other_hits) = serve_site();
     let other = other.replace("127.0.0.1", "localhost");
-    let chat = vec![message(
-        "m1",
-        true,
-        "look at the files page on my test site",
-        5,
-    )];
-    let judge = Judge::new(|state| {
-        let action = &state["proposed_action"];
-        let ours = action["url"]
-            .as_str()
-            .is_some_and(|url| url.starts_with("https://shop.example/"));
-        if action["kind"] == "open_site" && ours {
-            COVERED
-        } else {
-            NOT_COVERED
-        }
-    });
-    let host = Host::start(&state, &site, &judge, chat.clone());
+    let judge = Judge::new(|_| NOT_COVERED);
+    let host = Host::start(&state, &site, &judge);
     let (page, _) = host
         .agent(
             "open",
@@ -1509,9 +1290,8 @@ async fn goto_on_a_new_site_is_judged_as_a_tab_there_is(engine: &str) {
         )
         .await;
     let id = page.unwrap()["session"].as_str().unwrap().to_string();
-    assert_eq!(judge.judged(), 1);
 
-    let (went, audit) = host
+    let (went, _) = host
         .agent(
             "goto",
             &id,
@@ -1520,50 +1300,20 @@ async fn goto_on_a_new_site_is_judged_as_a_tab_there_is(engine: &str) {
         )
         .await;
     let went = went.unwrap();
-    println!("goto on the judged site: {} {}", went["url"], went["title"]);
+    println!(
+        "goto on the session's site: {} {}",
+        went["url"], went["title"]
+    );
     assert!(went["url"].as_str().unwrap().ends_with("/login.html"));
     assert!(went["elements"].is_array() && went["snapshot"].is_string());
-    assert!(!audit.contains_key("gate"), "the site was judged at open");
-    assert_eq!(judge.judged(), 1);
 
     let elsewhere = format!("{other}/files.html");
-    let refusal = host
-        .agent("goto", &id, json!({"url": elsewhere}), None)
-        .await;
-    refused(&refusal, "not_covered", &chat);
-    println!(
-        "goto elsewhere: {}",
-        refusal.0.as_ref().unwrap_err().to_json()
-    );
-    assert_eq!(
-        judge.last_action(),
-        json!({"kind": "open_site", "url": elsewhere})
-    );
-    assert!(fetched(&other_hits).is_empty(), "nothing was loaded there");
-    let still = host.look("text", &id, json!({})).await;
-    assert!(still["url"].as_str().unwrap().ends_with("/login.html"));
-
-    // Allowed there, the site is the session's: its next goto asks nothing.
-    judge.answer(|_| COVERED);
-    let (went, audit) = host
+    let (went, _) = host
         .agent("goto", &id, json!({"url": elsewhere}), None)
         .await;
     assert_eq!(went.unwrap()["url"], json!(elsewhere));
-    assert_eq!(audit["gate"]["verdict"], "allow");
-    let asked = judge.judged();
-    let (went, audit) = host
-        .agent(
-            "goto",
-            &id,
-            json!({"url": format!("{other}/login.html")}),
-            None,
-        )
-        .await;
-    went.unwrap();
-    assert!(!audit.contains_key("gate"));
-    assert_eq!(judge.judged(), asked);
+    assert_eq!(judge.judged(), 0);
 
-    // An address off the web is refused before the gatekeeper is asked.
     for (command, name, url) in [
         ("goto", id.as_str(), "file:///etc/hosts"),
         ("tab", id.as_str(), "chrome://version"),
@@ -1574,58 +1324,62 @@ async fn goto_on_a_new_site_is_judged_as_a_tab_there_is(engine: &str) {
         assert_eq!(refusal.unwrap_err().code, "url_refused", "{command} {url}");
         assert!(!audit.contains_key("gate"), "{command}");
     }
-    assert_eq!(judge.judged(), asked);
+    assert_eq!(judge.judged(), 0);
     host.look("close", &id, json!({})).await;
 }
 
-async fn the_owners_devices_are_judged_as_the_owner(engine: &str) {
+async fn the_owners_devices_are_judged_as_the_owner_against_the_device_rule(engine: &str) {
     let (_dir, state, _area) = test_state(engine);
     let (site, hits) = serve_site();
-    // The owner's own request is covered; an agent with no chat is not.
+    // The owner's own request is never forbidden; an agent's is not covered.
     let judge = Judge::new(|state| {
         let owner = state["rules_of_judgment"]
             .to_string()
             .contains("The caller is the owner");
         if owner { COVERED } else { NOT_COVERED }
     });
-    let host = Host::start(&state, &site, &judge, Vec::new());
+    let host = Host::start(&state, &site, &judge);
     let files = format!("{site}/files.html");
 
-    let (page, audit) = host
+    let (page, _) = host
         .device("open", named(engine), json!({"url": files}))
         .await;
     let page = page.unwrap();
-    assert_eq!(judge.judged(), 1, "the owner's open is judged");
-    assert_eq!(audit["gate"]["caller"], "owner_device");
-    assert_eq!(audit["gate"]["verdict"], "allow");
     let id = page["session"].as_str().unwrap().to_string();
     let link = find(&page, "link", "Download the report");
 
-    let (planned, audit) = host.device("do", &id, two_clicks(&link)).await;
-    planned.unwrap();
-    assert_eq!(judge.judged(), 2, "the owner's plan is judged");
-    assert_eq!(judge.last_action()["kind"], "browser_plan");
+    // With no device rule, the owner's script runs unjudged.
+    let script = json!({"script": "document.title"});
+    let (ran, audit) = host.device("eval", &id, script.clone()).await;
+    ran.unwrap();
+    assert_eq!(judge.judged(), 0);
     assert_eq!(audit["gate"]["caller"], "owner_device");
 
-    let script = json!({"script": "document.title"});
-    let (ran, audit) = host.device("eval", &id, script).await;
-    ran.unwrap();
-    assert_eq!(judge.judged(), 3, "the owner's script is judged");
+    // With one, the owner's plan and script are judged against it.
+    crate::gate::rules::Store::new(&state)
+        .set_deny("Never buy anything.", None)
+        .unwrap();
+    let (planned, audit) = host.device("do", &id, two_clicks(&link)).await;
+    planned.unwrap();
+    assert_eq!(judge.judged(), 1, "the owner's plan is judged");
+    assert_eq!(judge.last_action()["kind"], "browser_plan");
     assert_eq!(audit["gate"]["caller"], "owner_device");
-    host.look("close", &id, json!({})).await;
+    assert_eq!(audit["gate"]["verdict"], "allow");
+    let (ran, _) = host.device("eval", &id, script).await;
+    ran.unwrap();
+    assert_eq!(judge.judged(), 2, "the owner's script is judged");
 
     // An agent on the same host is still judged as an agent.
     let loaded = fetched(&hits).len();
-    let (opened, audit) = host
-        .agent("open", named(engine), json!({"url": files}), None)
-        .await;
-    assert_eq!(opened.unwrap_err().code, "gatekeeper_denied");
-    assert_eq!(audit["gate"]["caller"], "agent");
+    let refusal = host.agent("do", &id, two_clicks(&link), None).await;
+    refused(&refusal, "not_covered");
+    assert_eq!(refusal.1["gate"]["caller"], "agent");
     assert_eq!(
         fetched(&hits).len(),
         loaded,
-        "the refused open loaded nothing"
+        "the refused plan clicked nothing"
     );
+    host.look("close", &id, json!({})).await;
 }
 
 async fn a_local_address_is_refused_before_the_judge_or_an_engine(engine: &str) {
@@ -1634,7 +1388,7 @@ async fn a_local_address_is_refused_before_the_judge_or_an_engine(engine: &str) 
     std::fs::remove_file(state.join("host.json")).unwrap();
     let (site, hits) = serve_site();
     let judge = Judge::new(|_| COVERED);
-    let host = Host::start(&state, &site, &judge, Vec::new());
+    let host = Host::start(&state, &site, &judge);
     let started = std::time::Instant::now();
     let (refusal, audit) = host
         .agent(

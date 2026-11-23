@@ -233,7 +233,11 @@ impl Class {
 }
 
 /// Drafts send nothing, so writing one is free.
-const FREE_DRAFTS: [&str; 3] = ["gmail.drafts.create", "gmail.drafts.reply", "gmail.drafts.update"];
+const FREE_DRAFTS: [&str; 3] = [
+    "gmail.drafts.create",
+    "gmail.drafts.reply",
+    "gmail.drafts.update",
+];
 
 /// The class of `action`, as the judge is shown it: an operation's
 /// (`gated`) or a browser action's (`browser::judged`).

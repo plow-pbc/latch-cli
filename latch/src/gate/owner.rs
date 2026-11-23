@@ -18,8 +18,7 @@ use crate::plow::{NamedAgent, Peer, Plow};
 use crate::serve::Done;
 
 /// What `show` always says.
-pub const WARNING: &str =
-    "The device rule only denies: an agent acts only on the owner's message it cites. It is judged, not guaranteed; --deny-exec is enforced in code.";
+pub const WARNING: &str = "The device rule only denies: an agent acts only on the owner's message it cites. It is judged, not guaranteed; --deny-exec is enforced in code.";
 
 /// `rules`: one owner command on the device rule or agent map in
 /// `state_dir`, for the host named `host`. `kind` is the caller's kind as
@@ -50,8 +49,7 @@ pub async fn run(state_dir: &Path, plow: &Plow, host: &str, kind: &str, args: &V
                 }
             }
             "clear" | "clear_at_revision" => {
-                let expected =
-                    (command == "clear_at_revision").then(|| args["revision"].as_str());
+                let expected = (command == "clear_at_revision").then(|| args["revision"].as_str());
                 store
                     .clear_deny(expected)
                     .map(|change| changed(host, &change, &mut audit))
@@ -79,7 +77,9 @@ pub(crate) fn owner_only(kind: &str, what: &str) -> Result<(), Failure> {
 }
 
 fn show(state_dir: &Path, store: &Store, host: &str) -> Result<Value, Failure> {
-    let rule = store.deny().map_err(|why| Failure::new(code::rules_io, why))?;
+    let rule = store
+        .deny()
+        .map_err(|why| Failure::new(code::rules_io, why))?;
     let agents = store
         .agents()
         .map_err(|why| Failure::new(code::rules_io, why))?;
@@ -213,7 +213,6 @@ impl Account {
         let agent = self.agents.iter().find(|agent| agent.uid == uid)?;
         Some(agent.name.clone())
     }
-
 }
 
 #[cfg(test)]
@@ -316,10 +315,9 @@ mod tests {
         Plow::new(&url, "made-up-login").unwrap()
     }
 
-    /// A host's state folder, its Plow, and the world behind it.
+    /// A host's state folder and its Plow.
     struct Host {
         dir: tempfile::TempDir,
-        world: Arc<Mutex<World>>,
         plow: Plow,
     }
 
@@ -331,7 +329,6 @@ mod tests {
             Host {
                 dir: tempfile::tempdir_in(parent).unwrap(),
                 plow: plow(&world),
-                world,
             }
         }
 
@@ -375,8 +372,13 @@ mod tests {
         let shown = host.owner(json!({"command": "show"})).await.unwrap();
         assert_eq!(shown["device_rule"]["text"], "Never touch my tax returns.");
         // An empty rule is an answer: it denies nothing, and stays set.
-        host.owner(json!({"command": "set", "text": ""})).await.unwrap();
-        assert_eq!(Store::new(host.dir.path()).deny().unwrap().as_deref(), Some(""));
+        host.owner(json!({"command": "set", "text": ""}))
+            .await
+            .unwrap();
+        assert_eq!(
+            Store::new(host.dir.path()).deny().unwrap().as_deref(),
+            Some("")
+        );
         let cleared = host.owner(json!({"command": "clear"})).await.unwrap();
         assert_eq!(cleared["cleared"], true);
         assert_eq!(Store::new(host.dir.path()).deny().unwrap(), None);
@@ -395,11 +397,19 @@ mod tests {
     async fn the_owner_maps_an_agent_by_name_to_its_swarm_account() {
         let host = Host::new();
         let mapped = host
-            .owner(json!({"command": "map_agent", "agent": "ada-latch", "swarm_id": "@ada:plow.co"}))
+            .owner(
+                json!({"command": "map_agent", "agent": "ada-latch", "swarm_id": "@ada:plow.co"}),
+            )
             .await
             .unwrap();
-        assert_eq!((mapped["agent_uid"].as_str(), mapped["agent_name"].as_str()), (Some(ADA), Some("Ada")));
-        assert_eq!(Store::new(host.dir.path()).agents().unwrap()[ADA], "@ada:plow.co");
+        assert_eq!(
+            (mapped["agent_uid"].as_str(), mapped["agent_name"].as_str()),
+            (Some(ADA), Some("Ada"))
+        );
+        assert_eq!(
+            Store::new(host.dir.path()).agents().unwrap()[ADA],
+            "@ada:plow.co"
+        );
     }
 
     #[tokio::test]
@@ -416,7 +426,11 @@ mod tests {
             let Response::Error { exit, code, .. } = done.response else {
                 panic!("an agent ran {args}");
             };
-            assert_eq!((exit, code.as_str()), (Exit::Denied, "owner_only"), "{args}");
+            assert_eq!(
+                (exit, code.as_str()),
+                (Exit::Denied, "owner_only"),
+                "{args}"
+            );
         }
         assert!(Store::new(host.dir.path()).agents().unwrap().is_empty());
         assert_eq!(Store::new(host.dir.path()).deny().unwrap(), None);

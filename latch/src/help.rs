@@ -1259,7 +1259,11 @@ const ENTRIES: &[Entry] = &[
         examples: &[
             ex(
                 "Never let agents near your taxes",
-                &["rules", "set", "Never touch my tax returns or anything in ~/Finance."],
+                &[
+                    "rules",
+                    "set",
+                    "Never touch my tax returns or anything in ~/Finance.",
+                ],
             ),
             ex(
                 "Save over the rule only if it is still at the revision `rules show` gave (`none`: there was none); otherwise stale_revision, with the revision it is at",

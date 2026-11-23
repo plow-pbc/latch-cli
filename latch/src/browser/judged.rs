@@ -669,10 +669,12 @@ mod tests {
         let plow = fake::serve(world);
         let provider = crate::model::Plow::new(&plow.url, "made-up-login".into());
         // A device rule, so the owner's fill is asked about at all.
-        Store::new(&state).set_deny("Never buy anything.", None).unwrap();
+        Store::new(&state)
+            .set_deny("Never buy anything.", None)
+            .unwrap();
         let reader = Box::new(fake::Reader(Err("not read".into())));
-        let keeper = Gatekeeper::new(std::sync::Arc::new(provider), reader, &state)
-            .keeping_requests(&state);
+        let keeper =
+            Gatekeeper::new(std::sync::Arc::new(provider), reader, &state).keeping_requests(&state);
         let action = serde_json::value::to_raw_value(&action).unwrap();
         let judgment = keeper.judge(Caller::Owner, &action).await;
         let id = judgment.gate["kept_request"].as_str().unwrap();

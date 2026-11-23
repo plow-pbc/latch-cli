@@ -305,7 +305,7 @@ impl Setup {
             }
             if waiting {
                 while let Ok(line) = input.0.try_recv() {
-                    if line == "s" {
+                    if line.eq_ignore_ascii_case("s") {
                         drop(stdin.take());
                     }
                 }
@@ -405,7 +405,10 @@ impl Setup {
         );
         let answer = self.input().answer("Always deny: ");
         let args = ["rules", "set", "--revision", "none", answer.as_str()];
-        step("Set the device rule", "latch rules set --revision none TEXT");
+        step(
+            "Set the device rule",
+            "latch rules set --revision none TEXT",
+        );
         let set = self.latch(&args);
         if !set.ok {
             failed(&set.json, "latch rules set");
@@ -612,7 +615,12 @@ pub async fn status(state: &StateDir, check_access: bool) -> Result<Status, Fail
         .map_err(|why| Failure::new(code::rules_io, why))?
         .is_some();
     steps.push(match &local.login {
-        None => Step::new("rules", Blocked, "The device rule needs a login first.".into(), None),
+        None => Step::new(
+            "rules",
+            Blocked,
+            "The device rule needs a login first.".into(),
+            None,
+        ),
         Some(login) if login.kind != "device" => Step::new(
             "rules",
             Blocked,
@@ -817,7 +825,7 @@ impl Input {
         std::thread::spawn(move || {
             for line in std::io::stdin().lock().lines() {
                 let Ok(line) = line else { break };
-                if lines.send(line.trim().to_lowercase()).is_err() {
+                if lines.send(line.trim().to_string()).is_err() {
                     break;
                 }
             }
@@ -827,13 +835,13 @@ impl Input {
 
     /// Asks `question`; an empty answer (or a closed stdin) is `default`.
     fn yes(&self, question: &str, default: bool) -> bool {
-        match self.answer(question).as_str() {
+        match self.answer(question).to_lowercase().as_str() {
             "" => default,
             answer => answer.starts_with('y'),
         }
     }
 
-    /// Asks `question`: the line typed, trimmed and lowercased; empty for a
+    /// Asks `question`: the line typed, trimmed, as typed; empty for a
     /// closed stdin.
     fn answer(&self, question: &str) -> String {
         eprint!("{question}");
@@ -849,7 +857,7 @@ impl Input {
                 .0
                 .recv_timeout(until.saturating_duration_since(Instant::now()))
             {
-                Ok(line) if line == "s" => return true,
+                Ok(line) if line.eq_ignore_ascii_case("s") => return true,
                 Ok(_) => continue,
                 Err(RecvTimeoutError::Timeout) => return false,
                 // No one types any more: just wait.

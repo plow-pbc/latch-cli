@@ -792,10 +792,8 @@ mod tests {
 
     #[test]
     fn standing_is_read_from_the_agent_map_and_deny_exec() {
-        let rules = read(
-            json!({"agents": {UID: "@ada:plow.co"},
-            "deny_exec": {"every_agent": false, "agent_uids": [UID]}}),
-        )
+        let rules = read(json!({"agents": {UID: "@ada:plow.co"},
+            "deny_exec": {"every_agent": false, "agent_uids": [UID]}}))
         .unwrap();
         let standing = rules.standing(UID);
         assert_eq!(
