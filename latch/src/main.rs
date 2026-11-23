@@ -405,6 +405,9 @@ async fn run(
         Command::Settings(cli::SettingsArgs {
             command: cli::SettingsCommand::Set { keep_awake },
         }) => json(pretty, settings::set(&state, keep_awake == cli::OnOff::On)?),
+        Command::Swarm(cli::SwarmCommand::Signin { company }) => {
+            json(pretty, gate::swarm::sign_in(&state, &company).await?)
+        }
         Command::Update(args) => {
             // Where latch is now, taken before the update replaces it: on
             // Linux the running program's own path then names a deleted file.

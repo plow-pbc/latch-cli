@@ -460,6 +460,7 @@ codes! {
     store_failed: Failed,
     store_rejected: Failed,
     stuck: Failed,
+    swarm_signin_failed: Failed,
     sync_off: Denied,
     timed_out: Failed,
     timeout: Failed,
