@@ -604,6 +604,16 @@ fn add_calendar_list_max(plan: &mut Plan) {
     }
 }
 
+/// Whether `gog_args`, latch's own flags among them, are within the allowed
+/// interface: what `parse` refuses runs nothing.
+pub fn check(gog_args: &[String]) -> Result<(), Failure> {
+    let lifted = lift(gog_args)?;
+    if lifted.args != ["accounts"] {
+        parse(&lifted.args)?;
+    }
+    Ok(())
+}
+
 fn denied() -> Failure {
     Failure::new(
         code::not_allowed,

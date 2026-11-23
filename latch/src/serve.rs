@@ -1585,6 +1585,15 @@ async fn check<'a>(
             Err(done) => unplanned = Some(*done),
         }
     }
+    // A Google command outside the allowed interface runs nothing: it is
+    // refused as it is, not judged.
+    let ungrammatical = (op == "google")
+        .then(|| {
+            let words: Vec<String> =
+                serde_json::from_value(request.args["gog_args"].clone()).unwrap_or_default();
+            crate::google::policy::check(&words).err()
+        })
+        .flatten();
     // The vault is the owner's own setting: only an agent's list is judged.
     let gated = gate::gated(op, &request.args).filter(|_| {
         (op != "vault" || identity.kind == "agent")
@@ -1594,6 +1603,7 @@ async fn check<'a>(
             && exec_failure.is_none()
             && unplanned.is_none()
             && unplaced.is_none()
+            && ungrammatical.is_none()
     });
     let unjudgeable = match (&gate, &gated) {
         (Ok(_), Some(gated)) => gated.unjudgeable.as_ref(),
@@ -1642,6 +1652,9 @@ async fn check<'a>(
         Some(Stop::Host(refused_now(failure, audit)))
     } else if let Some(unplanned) = unplanned {
         Some(Stop::Refused(unplanned))
+    } else if let Some(failure) = ungrammatical {
+        let audit = gate::gated(op, &request.args).map_or(Value::Null, |gated| gated.audit);
+        Some(Stop::Refused(refused_now(failure, audit)))
     } else if let Some(refused) = refused {
         Some(Stop::Refused(refused))
     } else if let Some(unplaced) = unplaced {
