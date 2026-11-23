@@ -183,6 +183,14 @@ struct LoginView: View {
                     .font(.system(size: 44, weight: .bold))
                     .foregroundStyle(Brand.clay)
             } else {
+                // Still being made: a code out of focus, behind the spinner.
+                if let placeholder = QRCode.placeholder {
+                    Image(decorative: placeholder, scale: 1)
+                        .resizable()
+                        .aspectRatio(1, contentMode: .fit)
+                        .padding(16)
+                        .opacity(0.45)
+                }
                 ProgressView().controlSize(.large).tint(.black)
             }
         }
@@ -196,7 +204,7 @@ struct LoginView: View {
     @ViewBuilder private var caption: some View {
         switch flow.login {
         case .starting:
-            Text("Getting a code…").foregroundStyle(Brand.muted)
+            EmptyView()
         case let .waiting(code), let .expired(code):
             VStack(spacing: 12) {
                 if expired {
