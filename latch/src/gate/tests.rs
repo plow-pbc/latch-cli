@@ -23,8 +23,8 @@ struct Judge {
     answer: fn(&Value) -> Option<(f64, f64)>,
     /// Answers a choice in place of a yes or no: a malformed answer.
     malformed: bool,
-    /// Its answer to `why`.
-    why: &'static str,
+    /// Its answer to `why`; by default asked when it covers, else unclear.
+    why: Option<&'static str>,
     /// How long each answer takes, so concurrent calls overlap.
     takes: Duration,
     asked: Mutex<Vec<Value>>,
@@ -35,7 +35,7 @@ impl Judge {
         Arc::new(Judge {
             answer,
             malformed: false,
-            why: "unclear",
+            why: None,
             takes: Duration::ZERO,
             asked: Mutex::new(Vec::new()),
         })
@@ -72,6 +72,9 @@ impl Provider for Judge {
             tokio::time::sleep(self.takes).await;
             let (denied, covered) =
                 (self.answer)(&state).ok_or(CallFailed::new("http_503", "the model is down"))?;
+            let why = self
+                .why
+                .unwrap_or(if covered >= YES_P { "asked" } else { "unclear" });
             let answers = ids
                 .into_iter()
                 .map(|(id, options)| {
@@ -82,11 +85,11 @@ impl Provider for Judge {
                             probabilities: vec![],
                         },
                         (false, Some(options)) => Answer::Chose {
-                            choice: self.why.into(),
+                            choice: why.into(),
                             probabilities: options
                                 .into_iter()
                                 .map(|o| {
-                                    let p = f64::from(u8::from(o == self.why));
+                                    let p = f64::from(u8::from(o == why));
                                     (o, p)
                                 })
                                 .collect(),
@@ -659,8 +662,8 @@ async fn a_one_time_intent_is_spent_once_even_by_concurrent_calls() {
 
 /// A refusal for not being covered says, in one line, what didn't match,
 /// and the audit keeps which; a judge whose reason contradicts its no
-/// leaves the refusal saying only that it isn't covered, and one whose
-/// reason names a mismatch refuses even when `covered` says yes.
+/// leaves the refusal saying only that it isn't covered, and any reason
+/// but asked refuses even when `covered` says yes.
 #[tokio::test]
 async fn not_covered_says_what_did_not_match() {
     let judged = |why: &'static str, covered: f64| async move {
@@ -669,7 +672,7 @@ async fn not_covered_says_what_did_not_match() {
         } else {
             |_| Some((0.0, 0.9))
         });
-        Arc::get_mut(&mut judge).unwrap().why = why;
+        Arc::get_mut(&mut judge).unwrap().why = Some(why);
         let host = host(judge, Ok(Some(asked("Send Bob the invoice for March"))));
         let judgment = host.agent(Some(CITED), send_mail()).await;
         assert_eq!(judgment.gate["why"], why);
@@ -689,14 +692,17 @@ async fn not_covered_says_what_did_not_match() {
         "{}",
         asked.message
     );
-    // Past the line, a why naming a mismatch still refuses; asked or
-    // unclear leaves it allowed.
-    for why in ["other_task", "goes_beyond", "used_up", "withdrawn"] {
+    // Past the line, any why but asked still refuses.
+    for why in [
+        "other_task",
+        "goes_beyond",
+        "used_up",
+        "withdrawn",
+        "unclear",
+    ] {
         assert_eq!(judged(why, 0.9).await.unwrap_err().details["why"], why);
     }
-    for why in ["asked", "unclear"] {
-        assert!(judged(why, 0.9).await.is_ok(), "{why}");
-    }
+    assert!(judged("asked", 0.9).await.is_ok());
 }
 
 #[tokio::test]
