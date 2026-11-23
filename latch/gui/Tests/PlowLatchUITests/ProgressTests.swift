@@ -149,7 +149,7 @@ struct GatekeeperTests {
         #expect(flow.verdicts == [true, true, true, true, true] && flow.signedIn == true)
         flow.draftRules = "Never post my tax return."
         flow.draftChanged()
-        await waitUntil { flow.verdicts == [true, true, nil, false, true] }
+        await waitUntil { client.tried.count == 5 && flow.verdicts == [true, true, nil, false, true] }
         #expect(Set(client.tried) == ["Never post my tax return."])
         client.signedOut = true
         await flow.loadRules()
@@ -376,11 +376,13 @@ final class ScriptedClient: LatchClient, @unchecked Sendable {
         let setup = host.map { Fixtures.setup(on: connectorsOn, google: google, host: $0) } ?? Fixtures.setup(on: connectorsOn, google: google)
         return try Fixtures.decode(signedOut ? setup.replacingOccurrences(of: #""state":"done","reason":"Logged in"#, with: #""state":"needed","reason":"Not logged in"#) : setup)
     }
-    /// The drafts `rules try` judged, one for each sample.
-    private(set) var tried: [String] = []
+    /// The drafts `rules try` judged, one for each sample, which are
+    /// judged at once.
+    private let drafts = Mutex<[String]>([])
+    var tried: [String] { drafts.withLock { $0 } }
     /// A stand-in judge that can't judge a vault fill.
     func rulesTry(draft: String, action: String) async throws -> Bool {
-        tried.append(draft)
+        drafts.withLock { $0.append(draft) }
         if action.contains("vault_fill") { throw LatchError.unreachable("no answer") }
         return wordsDeny(draft: draft, action: action)
     }
