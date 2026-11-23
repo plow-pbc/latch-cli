@@ -327,7 +327,11 @@ async fn a_bad_citation_is_refused_in_code_before_any_model_is_asked() {
         edit(&mut thread);
         Ok(Some(thread))
     };
-    type Case = (&'static str, Option<&'static str>, Result<Option<Thread>, String>);
+    type Case = (
+        &'static str,
+        Option<&'static str>,
+        Result<Option<Thread>, String>,
+    );
     let cases: Vec<Case> = vec![
         ("intent_required", None, thread(|_| {})),
         ("bad_intent", Some("just-an-id"), thread(|_| {})),

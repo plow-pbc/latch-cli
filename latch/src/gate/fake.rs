@@ -224,11 +224,7 @@ pub fn serve(world: World) -> FakePlow {
             );
         }
     });
-    FakePlow {
-        url,
-        world,
-        seen,
-    }
+    FakePlow { url, world, seen }
 }
 
 /// The citation tests' agents send: a message in the agent's own DM.
