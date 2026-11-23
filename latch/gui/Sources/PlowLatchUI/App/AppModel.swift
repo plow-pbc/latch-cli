@@ -953,6 +953,11 @@ final class AppModel {
         await refreshRules(on: entry)
         savingRules.remove(host)
         switch result {
+        case .success? where savedRule(host)?.text != text:
+            // Saved, then changed elsewhere before it was read back: the
+            // newer rule shows, and typing since isn't saved over it.
+            rulesDrafts[host] = nil
+            rulesErrors[host] = nil
         case .success?:
             rulesErrors[host] = nil
             rulesSaved.insert(host)

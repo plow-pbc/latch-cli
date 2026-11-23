@@ -286,11 +286,11 @@ struct PrivacyView: View {
     var flow: Onboarding
     private static let rows = [
         ("desktopcomputer", "Data stays on your Mac",
-         "Your messages, calendar, and logins live on your Mac and reach an agent only through actions you approve."),
-        ("slider.horizontal.3", "You stay in control", "Choose what runs automatically and what needs your approval."),
-        ("checkmark.shield", "The Plow gatekeeper reviews every data request",
-         "The Plow adversarial reviewer catches actions that don't look right."),
-        ("lock", "Never sold. Never trained on.", "Your data isn't sold, stored, or used to train AI models."),
+         "Your messages, calendar, and logins live on your Mac. Agents reach them only through Latch, and every request is on the record."),
+        ("slider.horizontal.3", "You stay in control", "Choose what your agents may never do on this Mac."),
+        ("checkmark.shield", "The Plow gatekeeper checks every action",
+         "Reads run freely. Anything else an agent does must follow a message of yours and respect what you've ruled out."),
+        ("lock", "Never sold. Never trained on.", "Your data isn't sold or used to train AI models."),
     ]
 
     var body: some View {

@@ -95,16 +95,19 @@ pub async fn run(state: &StateDir, args: RulesArgs) -> Result<Value, Failure> {
 /// this machine as the owner's own call.
 async fn preview(state: &StateDir, draft: &Path, actions: &[String]) -> Result<Value, Failure> {
     let rule = read_file(draft)?;
-    let named = |action: &str, mut failure: Failure| {
-        failure.message = format!("{action}: {}", failure.message);
+    // A failure names the action by its place, never its text, which may
+    // hold a secret.
+    let named = |index: usize, mut failure: Failure| {
+        failure.message = format!("action {}: {}", index + 1, failure.message);
         failure
     };
     let raws = actions
         .iter()
-        .map(|action| {
+        .enumerate()
+        .map(|(index, action)| {
             RawValue::from_string(action.clone()).map_err(|err| {
                 named(
-                    action,
+                    index,
                     Failure::new(code::bad_arguments, format!("not a JSON action: {err}")),
                 )
             })
@@ -119,11 +122,11 @@ async fn preview(state: &StateDir, draft: &Path, actions: &[String]) -> Result<V
         &state.path,
     );
     let mut verdicts = Vec::new();
-    for raw in &raws {
+    for (index, raw) in raws.iter().enumerate() {
         let denied = keeper
             .preview(&rule, raw)
             .await
-            .map_err(|failure| named(raw.get(), failure))?;
+            .map_err(|failure| named(index, failure))?;
         verdicts.push(json!({"denied": denied}));
     }
     Ok(json!({"verdicts": verdicts}))

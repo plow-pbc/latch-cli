@@ -149,8 +149,7 @@ struct GatekeeperTests {
         #expect(flow.verdicts == [true, true, true, true, true] && flow.signedIn == true)
         flow.draftRules = "Never post my tax return."
         flow.draftChanged()
-        await waitUntil { client.tried.count == 5 && flow.verdicts[3] == false }
-        #expect(flow.verdicts == [true, true, nil, false, true])
+        await waitUntil { flow.verdicts == [true, true, nil, false, true] }
         #expect(Set(client.tried) == ["Never post my tax return."])
         client.signedOut = true
         await flow.loadRules()

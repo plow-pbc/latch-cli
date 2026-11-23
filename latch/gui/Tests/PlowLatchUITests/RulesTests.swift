@@ -10,6 +10,8 @@ final class RulesClient: LatchClient, @unchecked Sendable {
     private(set) var sets: [(text: String, host: String?)] = []
     /// Holds each save until opened.
     var holdSet: Gate?
+    /// Saved by another device right after the next save.
+    var thenElsewhere: String?
 
     func localStatus() async throws -> LocalStatus { try Fixtures.decode(Fixtures.serving) }
     func accountStatus() async throws -> AccountStatus { try Fixtures.decode(Fixtures.studioHosts) }
@@ -29,6 +31,11 @@ final class RulesClient: LatchClient, @unchecked Sendable {
         }
         sets.append((text, host))
         show.deviceRule = .init(text: text, revision: "r\(sets.count)")
+        if let elsewhere = thenElsewhere {
+            thenElsewhere = nil
+            sets.append((elsewhere, host))
+            show.deviceRule = .init(text: elsewhere, revision: "r\(sets.count)")
+        }
     }
     func vaultList(host: String?) async throws -> VaultList { try Fixtures.decode(#"{"items":[]}"#) }
     func enable(_ plugin: String) async throws -> GoogleEnabled? { nil }
@@ -105,5 +112,24 @@ struct RulesTests {
         #expect(client.sets.map(\.text) == ["Never touch ~/Taxes.", "Never touch ~/Taxes or ~/Finance."])
         #expect(app.savedRule("studio")?.text == "Never touch ~/Taxes or ~/Finance.")
         #expect(app.rulesSaved.contains("studio"))
+    }
+
+    /// A rule saved elsewhere just after a save isn't saved over by the
+    /// typing that waited behind it: the newer rule shows.
+    @Test func typingBehindASaveNeverOverwritesARuleSavedElsewhereMeanwhile() async throws {
+        let client = RulesClient()
+        let app = try await app(client)
+        let held = Gate()
+        client.holdSet = held
+        client.thenElsewhere = "Changed on the laptop."
+        app.typeRule("Never touch ~/Taxes.", on: "studio")
+        let saving = Task { await app.saveRuleDraft("studio") }
+        await waitUntil { app.savingRules.contains("studio") }
+        app.typeRule("Never touch ~/Taxes or ~/Finance.", on: "studio")
+        held.open()
+        await saving.value
+        #expect(client.sets.map(\.text) == ["Never touch ~/Taxes.", "Changed on the laptop."])
+        #expect(app.rulesDrafts["studio"] == nil)
+        #expect(app.savedRule("studio")?.text == "Changed on the laptop.")
     }
 }
