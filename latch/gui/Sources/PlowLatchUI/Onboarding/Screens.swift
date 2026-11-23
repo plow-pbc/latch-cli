@@ -281,29 +281,44 @@ struct LoginView: View {
     }
 }
 
-/// Privacy: what the person controls, and what Plow sees.
+/// How Latch works: what stays the person's, as the legacy app said it.
 struct PrivacyView: View {
+    var flow: Onboarding
+    private static let rows = [
+        ("desktopcomputer", "Data stays on your Mac",
+         "Your messages, calendar, and logins live on your Mac and reach an agent only through actions you approve."),
+        ("slider.horizontal.3", "You stay in control", "Choose what runs automatically and what needs your approval."),
+        ("checkmark.shield", "The Plow gatekeeper reviews every data request",
+         "The Plow adversarial reviewer catches actions that don't look right."),
+        ("lock", "Never sold. Never trained on.", "Your data isn't sold, stored, or used to train AI models."),
+    ]
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 22) {
-            Label("Logged in to Plow.", systemImage: "checkmark")
+        VStack(spacing: 18) {
+            Label("Signed in to Plow. This Mac is linked.", systemImage: "checkmark")
                 .font(.callout)
                 .foregroundStyle(Brand.volt)
-            ScreenHeader(title: "You decide what your agents do on this Mac.",
-                         lead: "Their requests are checked before they run, and every one is on the record. The connection is encrypted end to end.")
+                .opacity(flow.signedIn == true ? 1 : 0)
+            Text("Stay in control of how your AI agents use your data")
+                .font(.system(size: 30, weight: .semibold))
+                .frame(maxWidth: 520)
+            Text("Your agents can get things done without giving up control of your data.")
+                .foregroundStyle(Brand.muted)
             VStack(alignment: .leading, spacing: 0) {
-                statement("checkmark", "Checked before it runs.",
-                          "Commands, file changes, Google calls and browser plans are checked, and anything risky needs your OK. If the check can't run, nothing runs.")
-                Rectangle().fill(Brand.line).frame(height: 1).padding(.leading, 44)
-                statement("list.bullet", "On the record.",
-                          "Every request, allowed or refused, goes in a sealed log on this Mac.")
-                Rectangle().fill(Brand.line).frame(height: 1).padding(.leading, 44)
-                statement("lock", "Encrypted end to end.",
-                          "The connection between your agents and this Mac is encrypted end to end.")
+                ForEach(Array(Self.rows.enumerated()), id: \.offset) { index, row in
+                    if index > 0 { Rectangle().fill(Brand.line).frame(height: 1).padding(.leading, 44) }
+                    statement(row.0, row.1, row.2)
+                }
             }
+            .frame(maxWidth: 460)
+            .multilineTextAlignment(.leading)
+            .padding(.top, 6)
             Spacer(minLength: 0)
         }
+        .multilineTextAlignment(.center)
         .padding(.horizontal, 48)
-        .padding(.top, 48)
+        .padding(.top, 40)
+        .task { if !flow.app.still { await flow.checkSignedIn() } }
     }
 
     private func statement(_ symbol: String, _ title: String, _ detail: String) -> some View {
@@ -316,8 +331,9 @@ struct PrivacyView: View {
                 Text(title).font(.headline)
                 Text(detail).foregroundStyle(Brand.muted).fixedSize(horizontal: false, vertical: true)
             }
+            Spacer(minLength: 0)
         }
-        .padding(.vertical, 14)
+        .padding(.vertical, 12)
         .accessibilityElement(children: .combine)
     }
 }

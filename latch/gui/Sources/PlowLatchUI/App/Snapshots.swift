@@ -54,6 +54,7 @@ nonisolated struct FakeLatchClient: LatchClient {
         #"{"id": "\#(id)", "request": {"model": "typesafe/jev-1.14"}, "answer": null}"#
     }
     func rulesSet(_ text: String, host: String?, revision: String?) async throws {}
+    func rulesTry(draft: String, action: String) async throws -> Bool { wordsDeny(draft: draft, action: action) }
     func agents(host: String?) async throws -> AgentsList {
         switch host {
         case nil: try Fixtures.decode(Fixtures.agents)
@@ -350,9 +351,19 @@ package enum SnapshotRunner {
             }),
             ("02-login-name-taken", .login, Fixtures.loggedOut, Progress(), { $0.login = .nameTaken(existing: "studio", lastSeen: nil); $0.loginName = "studio-2" }),
             ("02-login-verified", .login, Fixtures.serving, Progress(), { $0.login = .verified(name: "studio") }),
-            ("03-privacy", .privacy, Fixtures.stopped, Progress(), { _ in }),
+            ("03-privacy", .privacy, Fixtures.stopped, Progress(), { await $0.checkSignedIn() }),
             // Never answered: the box is empty.
             ("04-rules-first-run", .rules, Fixtures.stopped, Progress(), { await $0.loadRules() }),
+            // An answer, judged live: the samples it denies are refused.
+            ("04-rules-live", .rules, Fixtures.stopped, Progress(), {
+                $0.draftRules = "Never post my tax documents. Never touch my passwords."
+                $0.stage(signedIn: true, verdicts: [true, true, false, false, false])
+            }),
+            // Signed out: no judge, so no marks.
+            ("04-rules-signed-out", .rules, Fixtures.stopped, Progress(), {
+                $0.draftRules = "Never post my tax documents."
+                $0.stage(signedIn: false, verdicts: [nil, nil, nil, nil, nil])
+            }),
             // Answered on this Mac: read into the box.
             ("04-rules-rerun-prefilled", .rules, Fixtures.stopped, Progress(), {
                 $0.savedRules = rules; $0.draftRules = rules.text

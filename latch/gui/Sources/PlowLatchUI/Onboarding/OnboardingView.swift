@@ -35,7 +35,7 @@ struct OnboardingView: View {
         switch flow.step {
         case .welcome: WelcomeView(flow: flow, time: entranceTime)
         case .login: LoginView(flow: flow)
-        case .privacy: PrivacyView()
+        case .privacy: PrivacyView(flow: flow)
         case .rules: RulesView(flow: flow)
         case .access: GrantAccessView(flow: flow)
         case .start: StartView(flow: flow)

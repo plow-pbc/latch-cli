@@ -137,6 +137,27 @@ struct GatekeeperTests {
         #expect(flow.savedRules?.text == "")
     }
 
+    /// The samples are judged by the gate against the draft once typing
+    /// pauses: a blank draft denies nothing and asks no one, a sample the
+    /// gate couldn't judge gets no mark, and signed out of Plow, with no
+    /// judge, none does.
+    @Test func theSamplesAreJudgedAgainstTheDraft() async {
+        let client = ScriptedClient { _ in nil }
+        let flow = flow(client)
+        flow.judgeDelay = .zero
+        await flow.loadRules()
+        #expect(flow.verdicts == [true, true, true, true, true] && flow.signedIn == true)
+        flow.draftRules = "Never post my tax return."
+        flow.draftChanged()
+        await waitUntil { client.tried.count == 5 && flow.verdicts[3] == false }
+        #expect(flow.verdicts == [true, true, nil, false, true])
+        #expect(Set(client.tried) == ["Never post my tax return."])
+        client.signedOut = true
+        await flow.loadRules()
+        #expect(flow.signedIn == false && flow.verdicts == [nil, nil, nil, nil, nil])
+        #expect(client.tried.count == 5)
+    }
+
     /// Answered already: the box holds the answer, and Continue writes
     /// nothing unless it changed.
     @Test func anAnswerAlreadyHereIsKeptUnlessChanged() async {
@@ -348,10 +369,21 @@ final class ScriptedClient: LatchClient, @unchecked Sendable {
     var host: String?
     /// How many times `setup --status` was read.
     private(set) var looked = 0
+    /// `setup --status` says this Mac isn't signed in to Plow.
+    var signedOut = false
     func setupStatus() async throws -> SetupStatus {
         looked += 1
         await held("look \(looked)")
-        return try Fixtures.decode(host.map { Fixtures.setup(on: connectorsOn, google: google, host: $0) } ?? Fixtures.setup(on: connectorsOn, google: google))
+        let setup = host.map { Fixtures.setup(on: connectorsOn, google: google, host: $0) } ?? Fixtures.setup(on: connectorsOn, google: google)
+        return try Fixtures.decode(signedOut ? setup.replacingOccurrences(of: #""state":"done","reason":"Logged in"#, with: #""state":"needed","reason":"Not logged in"#) : setup)
+    }
+    /// The drafts `rules try` judged, one for each sample.
+    private(set) var tried: [String] = []
+    /// A stand-in judge that can't judge a vault fill.
+    func rulesTry(draft: String, action: String) async throws -> Bool {
+        tried.append(draft)
+        if action.contains("vault_fill") { throw LatchError.unreachable("no answer") }
+        return wordsDeny(draft: draft, action: action)
     }
     /// What `--check-access` says of Full Disk Access.
     var access: String?

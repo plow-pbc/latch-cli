@@ -120,6 +120,19 @@ final class ContractTests {
         #expect(error.code == "not_logged_in")
     }
 
+    /// Judging setup's samples is words latch takes, each sample an action
+    /// it reads: it gets as far as needing a login, not a usage error.
+    @Test func judgingTheSamplesIsALatchCommand() async throws {
+        for sample in SampleRequest.all {
+            let refusal = await AppModel.result { try await client.rulesTry(draft: "Never post my taxes.", action: sample.action) }
+            guard case let .failure(error) = refusal else {
+                Issue.record("`rules try` answered without a login: \(refusal)")
+                return
+            }
+            #expect(error.code == "not_logged_in", "\(sample.text)")
+        }
+    }
+
     /// The app's removal is words latch takes: it gets as far as needing a
     /// login, not a usage error.
     @Test func removingAnAgentByUidIsALatchCommand() async throws {

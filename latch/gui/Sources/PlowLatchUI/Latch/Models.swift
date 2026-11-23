@@ -179,6 +179,12 @@ nonisolated struct RulesShow: Decodable, Equatable {
     var older = false
 }
 
+/// `latch rules try`: one verdict for each action, in order.
+nonisolated struct RulesTry: Decodable {
+    struct Verdict: Decodable { var denied: Bool }
+    var verdicts: [Verdict]
+}
+
 nonisolated extension RulesShow {
     private enum Keys: String, CodingKey { case deviceRule, denyExec }
 
