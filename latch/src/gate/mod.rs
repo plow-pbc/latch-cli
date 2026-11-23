@@ -174,12 +174,12 @@ impl Caller<'_> {
     }
 }
 
-/// An action this host allowed on an intent (its ledger key, `Thread::key`),
-/// as the ledger keeps it: what a later action can carry on.
+/// An action this host allowed on an intent (its ledger key,
+/// `Thread::key`), by its ledger entry: what a later action can carry on.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Allowed {
     pub intent: String,
-    pub action: String,
+    pub entry: String,
 }
 
 /// One caller's gate, for the operations of one request.
@@ -438,17 +438,18 @@ impl Gatekeeper {
         let mut done = held
             .done()
             .map_err(|why| unavailable("ledger_unreadable", &why))?;
-        // What this carries on (the plan whose step paused), allowed on this
-        // same intent, is the same use of it, not an earlier one: the judge
-        // doesn't see it as done, and this is not recorded as another. It is
-        // the newest entry like it: a standing ask may hold the same plan
-        // done before.
+        // What this carries on (the plan whose step paused), by its entry
+        // on this same intent, is the same use of it, not an earlier one:
+        // the judge doesn't see it as done, and this is not recorded as
+        // another. An entry is carried on once: after that it is done.
         let continued = continues
             .filter(|allowed| allowed.intent == key)
-            .map(|allowed| ledger::kept(&allowed.action))
-            .and_then(|continued| done.iter().rposition(|d| d.action == continued));
-        if let Some(at) = continued {
-            done.remove(at);
+            .and_then(|allowed| {
+                done.iter()
+                    .position(|d| !d.continued && d.id.as_ref() == Some(&allowed.entry))
+            })
+            .map(|at| done.remove(at));
+        if continued.is_some() {
             gate["continues"] = json!(true);
         }
         gate["already_done"] = json!(done.len());
@@ -460,11 +461,13 @@ impl Gatekeeper {
             .ask(&asked, now.timestamp(), &clock, action, gate)
             .await?;
         verdict(p)?;
-        if continued.is_some() {
-            return Ok(());
-        }
-        held.record(now.timestamp(), action.get())
-            .map_err(|why| unavailable("ledger_unwritable", &why))
+        let recorded = match continued.and_then(|entry| entry.id) {
+            Some(id) => held.continued(now.timestamp(), &id),
+            None => held
+                .record(now.timestamp(), action.get())
+                .map(|id| gate["entry"] = json!(id)),
+        };
+        recorded.map_err(|why| unavailable("ledger_unwritable", &why))
     }
 
     /// Asks the model about `action`, recording in `gate` the prompt and

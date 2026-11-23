@@ -26,20 +26,28 @@ use crate::state::to_hex;
 /// The most of one action the ledger keeps, for the judge to read back.
 const KEPT_ACTION: usize = 2 * 1024;
 
-/// As much of `action` as the ledger keeps.
-pub fn kept(action: &str) -> &str {
-    let mut cut = action.len().min(KEPT_ACTION);
-    while !action.is_char_boundary(cut) {
-        cut -= 1;
-    }
-    &action[..cut]
-}
-
-/// One allowed action.
+/// One allowed action, by its id (none on an entry from before ids), and
+/// whether a confirmation has carried it on, which only one may.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Done {
     pub at: jiff::Timestamp,
     pub action: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip)]
+    pub continued: bool,
+}
+
+/// A line of the ledger: an allowed action, or the mark that the one
+/// `continued` names was carried on.
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+enum Line {
+    Done(Done),
+    Continued {
+        at: jiff::Timestamp,
+        continued: String,
+    },
 }
 
 pub struct Ledger {
@@ -87,13 +95,49 @@ impl Held {
             Err(err) if err.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
             Err(err) => return Err(format!("{}: {err}", self.path.display())),
         };
-        text.lines()
+        let lines = text
+            .lines()
             .map(|line| serde_json::from_str(line).map_err(|err| format!("ledger: {err}")))
-            .collect()
+            .collect::<Result<Vec<Line>, String>>()?;
+        let mut done = Vec::new();
+        for line in lines {
+            match line {
+                Line::Done(entry) => done.push(entry),
+                Line::Continued { continued, .. } => {
+                    for entry in &mut done {
+                        entry.continued |= entry.id.as_deref() == Some(&continued);
+                    }
+                }
+            }
+        }
+        Ok(done)
     }
 
-    /// Records `action`, allowed `at`.
-    pub fn record(&self, at: jiff::Timestamp, action: &str) -> Result<(), String> {
+    /// Records `action`, allowed `at`; its new id comes back.
+    pub fn record(&self, at: jiff::Timestamp, action: &str) -> Result<String, String> {
+        let mut cut = action.len().min(KEPT_ACTION);
+        while !action.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        let id = to_hex(&rand::random::<[u8; 8]>());
+        self.append(&Line::Done(Done {
+            at,
+            action: action[..cut].to_string(),
+            id: Some(id.clone()),
+            continued: false,
+        }))?;
+        Ok(id)
+    }
+
+    /// Marks the action `id` carried on, `at`.
+    pub fn continued(&self, at: jiff::Timestamp, id: &str) -> Result<(), String> {
+        self.append(&Line::Continued {
+            at,
+            continued: id.to_string(),
+        })
+    }
+
+    fn append(&self, line: &Line) -> Result<(), String> {
         let failed = |err: std::io::Error| format!("{}: {err}", self.path.display());
         let dir = self.path.parent().expect("a ledger file has a folder");
         fs::DirBuilder::new()
@@ -101,11 +145,7 @@ impl Held {
             .mode(0o700)
             .create(dir)
             .map_err(failed)?;
-        let done = Done {
-            at,
-            action: kept(action).to_string(),
-        };
-        let mut line = serde_json::to_string(&done).expect("a ledger entry serializes");
+        let mut line = serde_json::to_string(line).expect("a ledger line serializes");
         line.push('\n');
         OpenOptions::new()
             .create(true)

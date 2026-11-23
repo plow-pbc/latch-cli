@@ -137,13 +137,19 @@ pub(super) async fn judge(
     let judging = std::time::Instant::now();
     let judgment = gate.judge_continuing(&action, continues).await;
     super::host::add_time(|phases| &mut phases.gate_ms, judging.elapsed());
-    let intent = judgment.gate["intent"].as_str().map(str::to_string);
+    let allowed = match (
+        judgment.gate["intent"].as_str(),
+        judgment.gate["entry"].as_str(),
+    ) {
+        (Some(intent), Some(entry)) => Some(Allowed {
+            intent: intent.into(),
+            entry: entry.into(),
+        }),
+        _ => None,
+    };
     audit.insert("gate".into(), judgment.gate);
     judgment.verdict?;
-    Ok(intent.map(|intent| Allowed {
-        intent,
-        action: serde_json::to_string(&action).expect("an action serializes"),
-    }))
+    Ok(allowed)
 }
 
 /// The audit's copy of a judged action: no plan steps or facts, no
