@@ -645,6 +645,13 @@ async fn a_repeated_google_change_is_judged_again_with_what_was_done_and_a_read_
     // The second is judged knowing the first was done on the same intent.
     assert_eq!(asked[0]["already_done"], json!([]));
     assert_eq!(asked[1]["already_done"].as_array().unwrap().len(), 1);
+    // A read with a flag the grammar lacks runs nothing, so it is refused as
+    // it is, never judged as a change needing the owner's word.
+    let (answer, _) = t
+        .cite(&agent, "google", google(&["gmail", "get", "m1", "--full"]))
+        .await;
+    assert_eq!(refusal(&answer).1, "not_allowed");
+    assert_eq!(t.judgments().len(), 2);
 }
 
 #[tokio::test]
