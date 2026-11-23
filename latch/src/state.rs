@@ -9,8 +9,6 @@
 //!   host's owner token). An agent's own credential is not copied here; see
 //!   `credential.rs`.
 //! - `config.json`: the Plow API URL and this peer's record as Plow returned it.
-//! - `agent-uid`: the agent this peer key last authenticated as, so a later
-//!   credential switch can carry that agent's local host policy forward.
 //! - `plow-url`: the Plow a saved token belongs to, written with it, so a
 //!   login that fails after the token arrived is retried against that Plow.
 //! - `name`: the name this peer had when it logged out, so the next login
@@ -428,35 +426,6 @@ impl StateDir {
         // Serializing our own plain struct cannot fail.
         let text = serde_json::to_string_pretty(config).expect("config serializes") + "\n";
         write_private(&path, text.as_bytes()).map_err(|err| self.io_failure(&path, err))
-    }
-
-    pub fn load_agent_uid(&self) -> Result<Option<String>, Failure> {
-        let path = self.path.join("agent-uid");
-        if !path.exists() {
-            return Ok(None);
-        }
-        let uid = self.read(&path)?.trim().to_string();
-        if !crate::gate::rules::is_agent_uid(&uid) {
-            return Err(Failure::new(
-                code::bad_state,
-                format!("{} is not a Plow agent uid", path.display()),
-            ));
-        }
-        Ok(Some(uid))
-    }
-
-    pub fn save_agent_uid(&self, uid: Option<&str>) -> Result<(), Failure> {
-        let path = self.path.join("agent-uid");
-        match uid {
-            Some(uid) => {
-                write_private(&path, uid.as_bytes()).map_err(|err| self.io_failure(&path, err))
-            }
-            None => match fs::remove_file(&path) {
-                Ok(()) => Ok(()),
-                Err(err) if err.kind() == ErrorKind::NotFound => Ok(()),
-                Err(err) => Err(self.io_failure(&path, err)),
-            },
-        }
     }
 
     /// Like `load_config`, for commands that need a completed `login`. Reads
