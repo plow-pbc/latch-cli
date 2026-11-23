@@ -407,6 +407,7 @@ pub async fn run(
         gate: gate.as_ref().map(|(gate, _)| *gate),
         judgment: None,
         allowed: gate.and_then(|(_, allowed)| allowed),
+        checking: None,
     };
     let mut stop = None;
     for (n, step) in work.into_iter().enumerate() {
@@ -640,6 +641,8 @@ struct Run<'a> {
     judgment: Option<Value>,
     /// This run's plan as the gate allowed it.
     allowed: Option<Allowed>,
+    /// What the session's checkout does with the fill being made.
+    checking: Option<judged::Checking>,
 }
 
 fn stopped(code: Code, message: String) -> Failure {
@@ -654,16 +657,24 @@ impl<'a> Run<'a> {
             return Ok(());
         };
         let site = judged::site(self.browsers, self.entry).await?;
-        let action = judged::shown(
-            &judged::fill(self.browsers, args, site),
-            &self.entry.filled(),
-        );
+        let fill = judged::fill(self.browsers, args, site);
+        let item = args["item"].as_str().unwrap_or_default();
+        if let Some((record, covered)) =
+            judged::Checkout::covering(self.browsers, self.entry, item, &fill)
+        {
+            self.judgment = Some(record);
+            self.checking = Some(covered);
+            return Ok(());
+        }
+        let opens = judged::Checkout::opened_by(item, &fill);
+        let action = judged::shown(&fill, &self.entry.filled());
         let judging = Instant::now();
         let judgment = gate.judge(&action).await;
         super::host::add_time(|phases| &mut phases.gate_ms, judging.elapsed());
         let record = judgment.gate;
         match judgment.verdict {
             Ok(()) => {
+                self.checking = opens;
                 self.judgment = Some(record);
                 Ok(())
             }
@@ -1140,7 +1151,11 @@ impl Run<'_> {
             json!({"item": args["item"], "press": args["press"]}),
         )?;
         let mut fill_audit = Map::new();
-        let outcome = super::fill::run(self.browsers, self.entry, &args, &mut fill_audit).await;
+        let checking = self.checking.take();
+        let within = judged::Checking::within(&checking);
+        let outcome =
+            super::fill::run(self.browsers, self.entry, &args, within, &mut fill_audit).await;
+        judged::Checking::settle(checking, self.entry, outcome.is_ok(), &fill_audit);
         let result = match &outcome {
             Ok(_) => "dispatched",
             Err(failure) if refused(failure) => "refused",

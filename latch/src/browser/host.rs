@@ -172,6 +172,8 @@ pub(super) struct Entry {
     handing: std::sync::atomic::AtomicBool,
     /// The sites the gatekeeper let this session go to.
     judged_sites: std::sync::Mutex<HashSet<String>>,
+    /// The checkout an allowed card fill opened (`judged::Checkout`).
+    pub(super) checkout: std::sync::Mutex<Option<judged::Checkout>>,
     /// The card numbers and identity secrets filled in this session: what
     /// the gatekeeper is shown masked.
     pub(super) masks: std::sync::Mutex<Vec<super::shown::Filled>>,
@@ -441,6 +443,7 @@ impl Browsers {
             confirmations: Default::default(),
             handing: Default::default(),
             judged_sites: Default::default(),
+            checkout: Default::default(),
             masks: Default::default(),
             profile: std::sync::Mutex::new(Some(in_use)),
         });
@@ -714,18 +717,24 @@ pub(super) async fn fill(
     let args = super::fill::named(browsers, entry, args).await?;
     audit.insert("item".into(), args["item"].clone());
     let args = super::fill::resolve(browsers, entry, &args).await?;
+    let mut checking = None;
     if caller.gate.is_some() {
         let site = judged::site(browsers, entry).await?;
-        judged::judge(
-            caller.gate,
-            judged::fill(browsers, &args, site),
-            &entry.filled(),
-            None,
-            audit,
-        )
-        .await?;
+        let action = judged::fill(browsers, &args, site);
+        let item = args["item"].as_str().unwrap_or_default();
+        if let Some((record, covered)) = judged::Checkout::covering(browsers, entry, item, &action)
+        {
+            audit.insert("gate".into(), record);
+            checking = Some(covered);
+        } else {
+            checking = judged::Checkout::opened_by(item, &action);
+            judged::judge(caller.gate, action, &entry.filled(), None, audit).await?;
+        }
     }
-    super::fill::run(browsers, entry, &args, audit).await
+    let within = judged::Checking::within(&checking);
+    let filled = super::fill::run(browsers, entry, &args, within, audit).await;
+    judged::Checking::settle(checking, entry, filled.is_ok(), audit);
+    filled
 }
 
 /// One command for `caller`, as `answer` runs it, the page in its answer
