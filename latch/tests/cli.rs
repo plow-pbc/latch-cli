@@ -6240,6 +6240,9 @@ impl Logged {
 /// how long it took.
 fn answered_alike(output: &Output) -> (Option<i32>, Value) {
     let (code, mut answer) = answered(output);
+    if let Some(error) = answer.get_mut("error").and_then(Value::as_object_mut) {
+        error.remove("audit_id");
+    }
     if let Some(answer) = answer.as_object_mut() {
         answer.remove("audit_id");
         answer.remove("duration_ms");
