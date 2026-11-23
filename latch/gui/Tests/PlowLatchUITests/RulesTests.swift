@@ -8,13 +8,18 @@ final class RulesClient: LatchClient, @unchecked Sendable {
     let stateDir = "/s"
     var show = try! Fixtures.decode(Fixtures.studioRules) as RulesShow
     private(set) var sets: [(text: String, host: String?)] = []
+    /// `rules show` fails once a rule was set.
+    var readFailsAfterSet = false
 
     func localStatus() async throws -> LocalStatus { try Fixtures.decode(Fixtures.serving) }
     func accountStatus() async throws -> AccountStatus { try Fixtures.decode(Fixtures.studioHosts) }
     func login(name: String?, replace: Bool) -> AsyncThrowingStream<LoginEvent, Error> { AsyncThrowingStream { $0.finish() } }
     func setupStatus() async throws -> SetupStatus { try Fixtures.decode(Fixtures.setup(on: [])) }
     func setupStatusCheckingAccess() async throws -> SetupStatus { try await setupStatus() }
-    func rulesShow(host: String?) async throws -> RulesShow { show }
+    func rulesShow(host: String?) async throws -> RulesShow {
+        if readFailsAfterSet, !sets.isEmpty { throw LatchError.failed(LatchFailure(code: "state_busy", message: "busy")) }
+        return show
+    }
     /// As `rules set --revision R` does: refused with `stale_revision`
     /// unless the rule is still at R (nil: none); an empty text is saved.
     func rulesSet(_ text: String, host: String?, revision: String?) async throws {
@@ -87,6 +92,18 @@ struct RulesTests {
         #expect(app.sheet == nil)
         await app.askGatekeeperIfUnanswered()
         #expect(app.sheet == nil)
+    }
+
+    // Saved, the question goes even when the read after the save fails.
+    @Test func anAnswerSavedClosesTheQuestionThoughTheReadAfterFails() async throws {
+        let client = RulesClient()
+        client.show.deviceRule = nil
+        let app = try await app(client)
+        await app.askGatekeeperIfUnanswered()
+        client.readFailsAfterSet = true
+        await app.saveRuleDraft("studio", answer: true)
+        #expect(client.sets.map(\.text) == [""])
+        #expect(app.sheet == nil && app.rulesErrors["studio"] == nil)
     }
 
     @Test func aDraftSurvivesGoingToAnotherScreenAndHostAndBack() async throws {
