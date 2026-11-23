@@ -294,7 +294,8 @@ impl Checkout {
             } if shown.kind == "card" => Some(Checkout {
                 card: item.to_string(),
                 site: site.clone(),
-                until: std::time::Instant::now() + CHECKOUT_FOR,
+                // Set when it opens, once the fill is allowed.
+                until: std::time::Instant::now(),
             }),
             _ => None,
         }
@@ -324,8 +325,9 @@ impl Checkout {
         (item == self.card || kind == "identity") && site == self.site && at < self.until
     }
 
-    /// Makes this the session's open checkout.
-    pub(super) fn open(self, entry: &Entry) {
+    /// Makes this the session's open checkout, for the next ten minutes.
+    pub(super) fn open(mut self, entry: &Entry) {
+        self.until = std::time::Instant::now() + CHECKOUT_FOR;
         *entry.checkout.lock().expect("checkout lock") = Some(self);
     }
 }
