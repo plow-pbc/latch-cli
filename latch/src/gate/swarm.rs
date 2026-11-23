@@ -6,9 +6,11 @@
 //!
 //! The owner is the account `swarm signin` signed in, saved in the state
 //! folder; a phone account counts as the owner when the server's identity
-//! record says it speaks for them. A room is the agent's own 1:1 with the
-//! owner when its only members besides the agent are the owner and phone
-//! accounts that speak for them.
+//! record says it speaks for them, on a message or a reaction alike. A
+//! room is the agent's own 1:1 with the owner when every member has joined
+//! (an invitation counts for nothing) and the only ones besides the agent
+//! are the owner and phone accounts that speak for them. An answer missing
+//! any part the gatekeeper reads is refused, never read as empty.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -125,11 +127,8 @@ struct Read {
     room: String,
     event: Message,
     thread_root: String,
-    #[serde(default)]
     root_reactions: Vec<Reaction>,
-    #[serde(default)]
     members: Vec<Member>,
-    #[serde(default)]
     messages: Vec<Message>,
     complete: bool,
 }
@@ -148,11 +147,13 @@ struct Message {
 struct Reaction {
     key: String,
     sender: String,
+    speaks_for: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct Member {
     user_id: String,
+    membership: String,
 }
 
 /// The thread a read shows, for the agent whose account is `agent`.
@@ -161,26 +162,31 @@ fn thread(read: &Value, owner: &str, agent: &str, now: Timestamp) -> Result<Thre
         .map_err(|err| format!("swarm read gave an answer latch can't read: {err}"))?;
     let is_owner = |m: &Message| m.sender == owner || m.speaks_for.as_deref() == Some(owner);
     let at = |s: i64| Timestamp::from_second(s).unwrap_or(Timestamp::UNIX_EPOCH);
-    let speaks_for_owner: Vec<&str> = std::iter::once(&read.event)
-        .chain(&read.messages)
-        .filter(|m| m.speaks_for.as_deref() == Some(owner))
-        .map(|m| m.sender.as_str())
+    let speaks_for_owner: Vec<&str> = std::iter::once((&read.event.sender, &read.event.speaks_for))
+        .chain(read.messages.iter().map(|m| (&m.sender, &m.speaks_for)))
+        .chain(
+            read.root_reactions
+                .iter()
+                .map(|r| (&r.sender, &r.speaks_for)),
+        )
+        .filter(|(_, speaks_for)| speaks_for.as_deref() == Some(owner))
+        .map(|(sender, _)| sender.as_str())
         .collect();
+    let owners = |id: &str| id == owner || speaks_for_owner.contains(&id);
     let others: Vec<&str> = read
         .members
         .iter()
         .map(|m| m.user_id.as_str())
         .filter(|id| *id != agent)
         .collect();
-    let is_owner_dm = read.members.iter().any(|m| m.user_id == agent)
+    let is_owner_dm = read.members.iter().all(|m| m.membership == "join")
+        && read.members.iter().any(|m| m.user_id == agent)
         && !others.is_empty()
-        && others
-            .iter()
-            .all(|id| *id == owner || speaks_for_owner.contains(id));
+        && others.iter().all(|id| owners(id));
     let closed = read
         .root_reactions
         .iter()
-        .any(|r| r.sender == owner && CLOSED.contains(&r.key.as_str()));
+        .any(|r| CLOSED.contains(&r.key.as_str()) && owners(&r.sender));
     // What follows the cited message: its thread, or for a message in no
     // thread, the room's unthreaded messages. Every owner message counts;
     // others' are context, kept to the last day and the newest 50.
@@ -336,6 +342,20 @@ mod tests {
 
     #[test]
     fn a_room_is_the_owners_dm_only_with_no_one_else_in_it() {
+        // An invitation counts for nothing: the owner invited, or someone
+        // else invited, is no 1:1.
+        for invited in [OWNER, "@bob:plow.co"] {
+            let mut r = read(&[OWNER, AGENT], vec![]);
+            r["members"] = json!([{"user_id": AGENT, "membership": "join"},
+                                  {"user_id": invited, "membership": "invite"}]);
+            if invited != OWNER {
+                r["members"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(json!({"user_id": OWNER, "membership": "join"}));
+            }
+            assert!(!of(&r).is_owner_dm, "{invited}");
+        }
         for (members, dm) in [
             (vec![OWNER, AGENT], true),
             (vec![OWNER, AGENT, "@bob:plow.co"], false),
@@ -358,6 +378,12 @@ mod tests {
         r["root_reactions"] = json!([{"key": "✅", "sender": AGENT, "event_id": "$r1"}]);
         assert!(!of(&r).closed);
         r["root_reactions"] = json!([{"key": "❌", "sender": OWNER, "event_id": "$r2"}]);
+        assert!(of(&r).closed);
+        // The owner's phone closes it too; a phone that speaks for no one
+        // does not.
+        r["root_reactions"] = json!([{"key": "✅", "sender": PHONE, "event_id": "$r3"}]);
+        assert!(!of(&r).closed);
+        r["root_reactions"][0]["speaks_for"] = json!(OWNER);
         assert!(of(&r).closed);
     }
 
@@ -396,6 +422,16 @@ mod tests {
         let t = of(&r);
         assert!(!t.complete && !t.sender_is_owner);
         assert!(thread(&json!({"nonsense": true}), OWNER, AGENT, Timestamp::now()).is_err());
+        // A part the gatekeeper reads that is missing is refused, never read
+        // as empty.
+        for part in ["root_reactions", "members", "messages", "complete"] {
+            let mut r = read(&[OWNER, AGENT], vec![]);
+            r.as_object_mut().unwrap().remove(part);
+            assert!(
+                thread(&r, OWNER, AGENT, Timestamp::now()).is_err(),
+                "{part}"
+            );
+        }
     }
 
     /// The reader runs `swarm` as the owner signed in here: no sign-in, a
