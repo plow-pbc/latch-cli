@@ -610,11 +610,14 @@ fn decision(task: &Task, call: &Call) -> Vec<String> {
     if let Some(reason) = gate["model_failed"].as_str() {
         lines.push(format!("Judge unavailable: {reason}"));
     }
-    lines.push(match gate["device_rule"].as_str() {
-        Some(revision) => {
+    lines.push(match (gate["checkout"].as_str(), gate["device_rule"].as_str()) {
+        (Some(card), _) => format!(
+            "Allowed by the checkout card {card}'s fill opened: judged with that fill, device rule included"
+        ),
+        (None, Some(revision)) => {
             format!("Device rule: revision {revision}; `latch rules show` has the current one")
         }
-        None => "Device rule: none".to_string(),
+        (None, None) => "Device rule: none".to_string(),
     });
     lines.push("Scores are the model's outputs, not explanations.".to_string());
     lines.push(String::new());

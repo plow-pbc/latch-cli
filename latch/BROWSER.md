@@ -396,7 +396,13 @@ each before anything of it reaches the page:
   sites. A sign-in still needs the owner's message, where asking for
   something to be done on a site covers signing in there; a login fill on
   any other site is refused by code (`login_site_mismatch`). A refused
-  fill in a plan stops the plan at that step, the reason in its `stop`;
+  fill in a plan stops the plan at that step, the reason in its `stop`.
+  One exception: an allowed card fill opens its checkout for 10 minutes,
+  and the judge is told so when it judges the card. In that session and
+  on that site, the same card and the non-secret fields of the owner's
+  identity items (an address) fill with no judgment of their own; the
+  audit's gate record is `{"verdict": "allow", "checkout": CARD}`. An
+  identity's secret fields are always judged;
 - every `eval`, judged on its whole script: a script that reads form
   fields, listens to input, keyboard or form events, or sends page data
   off the page needs the owner's explicit OK;

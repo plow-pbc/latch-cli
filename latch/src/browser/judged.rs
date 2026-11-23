@@ -24,8 +24,8 @@ use super::plan::{CheckKind, Literal, Op, Plan, Step};
 use super::shown::Filled;
 use crate::failure::Failure;
 use crate::gate::{Allowed, Gate};
-use crate::vault::sites;
 use crate::vault::store::Backend;
+use crate::vault::{classify, sites};
 
 /// An action as the judge reads it.
 #[derive(Serialize, Clone, Debug)]
@@ -51,6 +51,9 @@ pub(super) enum Action {
         site: Option<String>,
         item: ItemShown,
         fields: Vec<String>,
+        /// What allowing it opens besides: a card's checkout.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        opens: Option<&'static str>,
     },
     /// The agent's own JavaScript, run in the page.
     RunScript {
@@ -270,6 +273,9 @@ pub(super) fn item(browsers: &Browsers, id: &str) -> ItemShown {
     }
 }
 
+/// What the judge is told a card fill opens if it is allowed.
+pub(super) const CHECKOUT_OPENS: &str = "If this card fill is allowed, the owner's saved addresses (their non-secret fields) and this card also fill on this site, in this session, for the next 10 minutes, with no judgment of their own: judge this as the checkout's card and its address.";
+
 /// How long an allowed card fill lets its checkout through.
 const CHECKOUT_FOR: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
@@ -303,26 +309,45 @@ impl Checkout {
 
     /// The gate record of the session's open checkout letting the fill
     /// `action` of `item` through, if it does.
-    pub(super) fn covering(entry: &Entry, item: &str, action: &Action) -> Option<Value> {
+    pub(super) fn covering(
+        browsers: &Browsers,
+        entry: &Entry,
+        item: &str,
+        action: &Action,
+    ) -> Option<Value> {
         let Action::VaultFill {
             site: Some(site),
             item: shown,
+            fields,
             ..
         } = action
         else {
             return None;
         };
+        // An identity's secrets (an ID or passport number) are never an
+        // address: they are judged on their own.
+        let address = shown.kind == "identity"
+            && browsers
+                .vault
+                .with(|store| {
+                    Ok(store
+                        .item(item)
+                        .map(|it| fields.iter().all(|f| !classify::is_secret(&it.raw, f))))
+                })
+                .ok()
+                .flatten()
+                .unwrap_or(false);
         let open = entry.checkout.lock().expect("checkout lock");
         let checkout = open.as_ref()?;
         checkout
-            .covers(item, &shown.kind, site, std::time::Instant::now())
+            .covers(item, address, site, std::time::Instant::now())
             .then(|| json!({"verdict": "allow", "checkout": checkout.card}))
     }
 
-    /// Whether it lets a fill of `item`, of `kind`, on `site` through `at`:
-    /// its own card, or an identity item, on its site, while it is open.
-    fn covers(&self, item: &str, kind: &str, site: &str, at: std::time::Instant) -> bool {
-        (item == self.card || kind == "identity") && site == self.site && at < self.until
+    /// Whether it lets a fill of `item` (an address's, or not) on `site`
+    /// through `at`: its own card, or an address, on its site, while open.
+    fn covers(&self, item: &str, address: bool, site: &str, at: std::time::Instant) -> bool {
+        (item == self.card || address) && site == self.site && at < self.until
     }
 
     /// Makes this the session's open checkout, for the next ten minutes.
@@ -341,7 +366,15 @@ pub(super) fn fill(browsers: &Browsers, args: &Value, site: Option<String>) -> A
         .flatten()
         .filter_map(|pair| pair[0].as_str().map(str::to_string))
         .collect();
-    Action::VaultFill { site, item, fields }
+    // The judge weighs what a card's approval opens: the device rule may
+    // deny the address it lets through.
+    let opens = (item.kind == "card" && site.is_some()).then_some(CHECKOUT_OPENS);
+    Action::VaultFill {
+        site,
+        item,
+        fields,
+        opens,
+    }
 }
 
 /// What the page's reading named each ref a plan's literal steps act on:
@@ -577,21 +610,22 @@ mod tests {
             until: now + CHECKOUT_FOR,
         };
         let later = now + CHECKOUT_FOR - std::time::Duration::from_secs(1);
-        for (item, kind, site, at, covered) in [
-            ("v7", "card", "shop.example", now, true),
-            ("v3", "identity", "shop.example", later, true),
-            ("v8", "card", "shop.example", now, false),
-            ("v4", "login", "shop.example", now, false),
-            ("v3", "identity", "other.example", now, false),
-            ("v7", "card", "shop.example", now + CHECKOUT_FOR, false),
+        // (item, an address's non-secret fields only, site, when, covered)
+        for (item, address, site, at, covered) in [
+            ("v7", false, "shop.example", now, true),
+            ("v3", true, "shop.example", later, true),
+            ("v8", false, "shop.example", now, false),
+            ("v3", true, "other.example", now, false),
+            ("v7", false, "shop.example", now + CHECKOUT_FOR, false),
         ] {
             assert_eq!(
-                checkout.covers(item, kind, site, at),
+                checkout.covers(item, address, site, at),
                 covered,
-                "{item} {kind} {site}"
+                "{item} {site}"
             );
         }
     }
+
     use crate::browser::plan::short_step;
 
     #[test]

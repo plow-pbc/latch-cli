@@ -638,7 +638,8 @@ async fn a_refused_command_sends_nothing_to_the_page(engine: &str) {
         judge.last_action(),
         json!({"kind": "vault_fill", "site": "shop.example",
                "item": {"kind": "card", "title": "Test Visa"},
-               "fields": ["number", "expiry", "cvv"]})
+               "fields": ["number", "expiry", "cvv"],
+               "opens": crate::browser::judged::CHECKOUT_OPENS})
     );
     let everything = judge
         .shown
@@ -1561,7 +1562,11 @@ async fn one_approved_card_fill_covers_its_checkouts_address(engine: &str) {
     let home = add(
         IDENTITY,
         "Home",
-        &[("first name", "Ada"), ("city", "London")],
+        &[
+            ("first name", "Ada"),
+            ("city", "London"),
+            ("ssn", "078-05-1120"),
+        ],
     );
     let (page, _) = host
         .agent(
@@ -1614,6 +1619,19 @@ async fn one_approved_card_fill_covers_its_checkouts_address(engine: &str) {
     assert_eq!(judge.judged(), asked, "the address asked the judge nothing");
     let text = shows(&host, &id).await;
     assert!(text.contains("Ada") && text.contains("London"), "{text}");
+    // An identity's secret is no address: judged on its own, and refused.
+    let secret = host
+        .agent(
+            "fill",
+            &id,
+            json!({"item": home, "snapshot": address["snapshot"], "fields": [
+                ["ssn", [find(&address, "textbox", "Postcode")]],
+            ]}),
+            None,
+        )
+        .await;
+    refused(&secret, "not_covered");
+    assert_eq!(judge.judged(), asked + 1);
     host.look("close", &id, json!({})).await;
 }
 

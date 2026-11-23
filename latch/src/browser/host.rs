@@ -721,7 +721,7 @@ pub(super) async fn fill(
         let site = judged::site(browsers, entry).await?;
         let action = judged::fill(browsers, &args, site);
         let item = args["item"].as_str().unwrap_or_default();
-        match judged::Checkout::covering(entry, item, &action) {
+        match judged::Checkout::covering(browsers, entry, item, &action) {
             Some(record) => {
                 audit.insert("gate".into(), record);
             }
