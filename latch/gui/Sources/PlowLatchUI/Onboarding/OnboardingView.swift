@@ -98,11 +98,9 @@ struct OnboardingFooter: View {
 
     @ViewBuilder private var leading: some View {
         HStack(spacing: 18) {
-            if [.login, .privacy, .rules, .access, .start].contains(flow.step) {
-                Button("Back") { flow.back() }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(Brand.muted)
-            }
+            Button("Back") { flow.back() }
+                .buttonStyle(.plain)
+                .foregroundStyle(Brand.muted)
             // Once the step is set up, Continue is the way on.
             if flow.step.skippable, !flow.stepDone, !flow.primarySkips {
                 Button("Skip for now") { flow.skip() }
