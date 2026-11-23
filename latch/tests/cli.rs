@@ -2454,7 +2454,6 @@ PHOTO;ENCODING=b;TYPE=PNG:iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQV
 END:VCARD\r\n";
 
 const AGENT_UID: &str = "0123456789abcdef0123456789abcdef";
-const TWIN_UID: &str = "abcdef0123456789abcdef0123456789";
 
 /// A fake Plow with state, for as many requests as come: one owner login
 /// and one agent whose credential can be rotated. Like Plow, it lists and
@@ -2469,7 +2468,7 @@ struct LivePlow {
 
 struct LiveState {
     owner: String,
-    agent_credentials: Vec<String>,
+    agent: String,
     model_down: bool,
     /// The decision route answers that the owner's Plow balance is empty.
     out_of_credits: bool,
@@ -2522,7 +2521,7 @@ impl LivePlow {
                 out_of_credits: false,
                 forbidden: false,
                 decisions: Vec::new(),
-                agent_credentials: vec!["agent-credential".to_string()],
+                agent: "agent-credential".to_string(),
                 peers: Vec::new(),
                 seen: Vec::new(),
                 google: None,
@@ -2583,7 +2582,7 @@ impl LivePlow {
     /// The agent's credential is replaced: the old one stops working, and
     /// its peer is no longer live.
     fn rotate(&self, new: &str) {
-        self.state.lock().unwrap().agent_credentials = vec![new.to_string()];
+        self.state.lock().unwrap().agent = new.to_string();
     }
 
     fn seen(&self) -> Vec<(String, Option<String>)> {
@@ -2641,15 +2640,13 @@ impl LivePlow {
         let token = bearer.unwrap_or_default();
         let kind = if token == state.owner {
             "device"
-        } else if state.agent_credentials.contains(&token) {
+        } else if token == state.agent {
             "agent"
         } else {
             return (401, json!({}));
         };
         let live = |state: &LiveState, credential: &String| {
-            *credential == state.owner
-                || state.agent_credentials.contains(credential)
-                || credential == "twin-credential"
+            *credential == state.owner || *credential == state.agent
         };
         let mut words = request.line().split(' ');
         let (method, path) = (words.next().unwrap(), words.next().unwrap());
@@ -2669,24 +2666,6 @@ impl LivePlow {
             }
         }
         match (method, path) {
-            ("POST", path)
-                if kind == "device"
-                    && path == format!("/v1/latch/agents/{AGENT_UID}/credentials") =>
-            {
-                let token = "latch-agent-11".to_string();
-                state.agent_credentials.push(token.clone());
-                (
-                    201,
-                    json!({"id": 11, "token": token, "scopes": ["latch:agent"],
-                           "expires_at": "2026-12-21T12:00:00Z"}),
-                )
-            }
-            ("DELETE", path)
-                if kind == "device" && path == "/v1/api-keys/11" =>
-            {
-                state.agent_credentials.retain(|token| token != "latch-agent-11");
-                (200, json!({"status": "revoked", "id": 11}))
-            }
             // Which accounts are connected, as Plow says, and where it connects them.
             ("GET", "/v1/connectors") if kind == "device" => {
                 let mut accounts: Vec<Value> = state
@@ -2954,22 +2933,14 @@ impl LivePlow {
             // What the host's gatekeeper reads, on the owner's login: the
             // agent's one chat, where the owner asked for it, and a judge
             // that agrees.
-            ("GET", path) if kind == "device" && path.starts_with("/v1/agents/") => {
-                let uid = path.trim_start_matches("/v1/agents/");
-                let line = if uid == AGENT_UID {
-                    "line_agent"
-                } else {
-                    "line_twin"
-                };
-                (200, json!({"uid": uid, "name": "Research bot", "line": {"uid": line}}))
-            }
+            ("GET", path) if kind == "device" && path == format!("/v1/agents/{AGENT_UID}") => (
+                200,
+                json!({"uid": AGENT_UID, "name": "Research bot", "line": {"uid": "line_agent"}}),
+            ),
             ("GET", "/v1/chats") if kind == "device" => (
                 200,
-                json!({"data": [
-                    {"uid": "chat_a", "participants": [
-                        {"type": "agent", "relationship": "self", "line": {"uid": "line_agent"}}]},
-                    {"uid": "chat_twin", "participants": [
-                        {"type": "agent", "relationship": "self", "line": {"uid": "line_twin"}}]}],
+                json!({"data": [{"uid": "chat_a", "participants": [
+                    {"type": "agent", "relationship": "self", "line": {"uid": "line_agent"}}]}],
                        "has_more": false}),
             ),
             ("GET", path) if kind == "device" && path.starts_with("/v1/chats/chat_a/messages") => (
@@ -2979,18 +2950,6 @@ impl LivePlow {
                                  "sender": {"type": "member", "display_name": "Owner", "role": "owner"}}],
                        "has_more": false}),
             ),
-            ("GET", path)
-                if kind == "device" && path.starts_with("/v1/chats/chat_twin/messages") =>
-            {
-                (
-                    200,
-                    json!({"data": [{"uid": "m2", "body": "old twin instruction",
-                                     "created_at": "2026-10-20T11:00:00Z",
-                                     "sender": {"type": "member", "display_name": "Owner",
-                                                "role": "owner"}}],
-                           "has_more": false}),
-                )
-            }
             // A browser click's risk is asked the same way: low, but for a
             // return's submit, which can't be undone, as a real judge sees it.
             ("POST", "/v1/decisions")
@@ -3996,31 +3955,19 @@ fn a_rotated_agent_registers_again_and_its_next_call_runs() {
     );
 }
 
-/// An agent's `vault list` names its own Plow chat whether it uses the bridge
-/// credential file or a separately adopted credential.
+/// An agent's `vault list` names the Plow chat it acts for, as its other
+/// calls do, from the flag or the environment: the host reads a chat on
+/// the agent's line, and refuses one that isn't (`which_chat`).
 #[test]
 fn an_agents_vault_list_names_its_plow_chat() {
     let plow = LivePlow::start();
-    let twin_key = "a".repeat(64);
-    {
-        let mut state = plow.state.lock().unwrap();
-        state.more_agents.push(json!({
-            "uid": TWIN_UID, "name": "Old twin", "provider": "exe:hermes",
-            "line": {"uid": "line_twin", "provider_key": "+14155550124",
-                     "display_name": "Old twin line"},
-            "created_at": "2026-10-19T10:00:00Z", "status": "running",
-            "failure_code": null, "credential": null
-        }));
-        state.peers.push((
-            peer(json!(&twin_key), "Old twin", "agent", Value::Null),
-            "twin-credential".to_string(),
-        ));
-    }
     let (_relay, relay) = local_relay();
     let dir = test_dir();
     let owner_token = dir.path().join("owner.token");
     fs::write(&owner_token, "owner-login\n").unwrap();
-    let host = dir.path().join("host");
+    let agent_token = dir.path().join("agent.token");
+    fs::write(&agent_token, "agent-credential\n").unwrap();
+    let (host, agent) = (dir.path().join("host"), dir.path().join("agent"));
     let owner = owner_token.to_str().unwrap();
     let args = [
         "login",
@@ -4032,73 +3979,40 @@ fn an_agents_vault_list_names_its_plow_chat() {
         "host",
     ];
     assert_eq!(latch(&host, &args, &[]).status.code(), Some(0));
-    let credential_file = dir.path().join("research-agent.env");
-    let adopted = latch(
-        &host,
-        &[
-            "agents",
-            "adopt",
-            "Research bot",
-            "--credential-file",
-            credential_file.to_str().unwrap(),
-        ],
-        &[],
-    );
-    assert_eq!(adopted.status.code(), Some(0), "{adopted:?}");
-    let bridge_file = dir.path().join("agent.token");
-    fs::write(&bridge_file, "agent-credential\n").unwrap();
-    let cases = [
-        ("bridge", vec![("PLOW_TOKEN_FILE", bridge_file.clone())]),
-        (
-            "adopted",
-            vec![("PLOW_AGENT_TOKEN", PathBuf::from("latch-agent-11"))],
-        ),
-    ];
+    let agent_env = [("PLOW_TOKEN_FILE", agent_token.as_path())];
+    let login = latch(&agent, &["login", "--api-url", &plow.url], &agent_env);
+    assert_eq!(login.status.code(), Some(0), "{login:?}");
     let _serve = serving(&host, &relay);
-    for (case, paths) in cases {
-        let agent = dir.path().join(case);
-        let agent_env: Vec<(&str, &Path)> = paths
+
+    let listed = latch(
+        &agent,
+        &["vault", "--host", "host", "--plow-chat", "chat_a", "list"],
+        &agent_env,
+    );
+    assert_eq!(listed.status.code(), Some(0), "{listed:?}");
+    let answer: Value = serde_json::from_slice(&listed.stdout).unwrap();
+    assert_eq!(answer["items"], json!([]), "{answer}");
+    // Its chat layer read chat_a.
+    let decisions = plow.state.lock().unwrap().decisions.clone();
+    assert!(
+        decisions
             .iter()
-            .map(|(name, value)| (*name, value.as_path()))
-            .collect();
-        let login = latch(&agent, &["login", "--api-url", &plow.url], &agent_env);
-        assert_eq!(login.status.code(), Some(0), "{case}: {login:?}");
-        let login: Value = serde_json::from_slice(&login.stdout).unwrap();
-        assert_eq!(login["peer"]["name"], "Research bot", "{case}: {login}");
-        assert_ne!(login["peer"]["key"], twin_key, "{case}");
-        let before = plow.state.lock().unwrap().decisions.len();
-        let listed = latch(
-            &agent,
-            &["vault", "--host", "host", "--plow-chat", "chat_a", "list"],
-            &agent_env,
-        );
-        assert_eq!(listed.status.code(), Some(0), "{case}: {listed:?}");
-        let decisions = plow.state.lock().unwrap().decisions[before..].to_vec();
-        assert!(
-            decisions.iter().any(|d| d["state"]["conversation"]
-                .to_string()
-                .contains("echo whatever")),
-            "{case}: {decisions:?}"
-        );
-        assert!(
-            decisions
-                .iter()
-                .all(|d| !d["state"]["conversation"].to_string().contains("old twin")),
-            "{case}: {decisions:?}"
-        );
-        for from_env in [false, true] {
-            let mut argv = vec!["vault", "--host", "host", "list"];
-            let mut env = agent_env.clone();
-            if from_env {
-                env.push(("LATCH_PLOW_CHAT", Path::new("chat_z")));
-            } else {
-                argv.splice(3..3, ["--plow-chat", "chat_z"]);
-            }
-            let refused = latch(&agent, &argv, &env);
-            assert_eq!(refused.status.code(), Some(2), "{case}: {refused:?}");
-            let error: Value = serde_json::from_slice(&refused.stderr).unwrap();
-            assert_eq!(error["error"]["code"], "which_chat", "{case}: {error}");
+            .any(|d| d["state"]["conversation"].is_array()),
+        "{decisions:?}"
+    );
+
+    for from_env in [false, true] {
+        let mut argv = vec!["vault", "--host", "host", "list"];
+        let mut env = agent_env.to_vec();
+        if from_env {
+            env.push(("LATCH_PLOW_CHAT", Path::new("chat_z")));
+        } else {
+            argv.splice(3..3, ["--plow-chat", "chat_z"]);
         }
+        let refused = latch(&agent, &argv, &env);
+        assert_eq!(refused.status.code(), Some(2), "{refused:?}");
+        let error: Value = serde_json::from_slice(&refused.stderr).unwrap();
+        assert_eq!(error["error"]["code"], "which_chat", "{error}");
     }
 }
 
@@ -4691,45 +4605,6 @@ fn agents_are_shown_created_and_removed_by_their_owner() {
         (Some(2), &json!("no_such_agent"))
     );
 
-    // An existing agent gets a private Latch credential that can be revoked
-    // without changing the agent or its bridge credential.
-    let credential_file = dir.path().join("research-agent.env");
-    let credential_path = credential_file.to_str().unwrap();
-    let lifecycle = |action| {
-        run(&[
-            "agents",
-            action,
-            "Research bot",
-            "--credential-file",
-            credential_path,
-        ])
-    };
-    let (code, adopted, output) = lifecycle("adopt");
-    assert_eq!(code, Some(0), "{adopted}");
-    assert_eq!(adopted["credential_id"], 11);
-    assert_eq!(adopted["credential_file"], credential_path);
-    assert_eq!(adopted["expires_at"], "2026-12-21T12:00:00Z");
-    assert!(!String::from_utf8_lossy(&output.stdout).contains("latch-agent-11"));
-    assert_eq!(
-        fs::metadata(&credential_file).unwrap().permissions().mode() & 0o777,
-        0o600
-    );
-    let saved = fs::read_to_string(&credential_file).unwrap();
-    let (code, revoked, _) = lifecycle("revoke");
-    assert_eq!(code, Some(0), "{revoked}");
-    assert_eq!(revoked["status"], "revoked");
-    assert_eq!(fs::read_to_string(&credential_file).unwrap(), saved);
-    let seen = plow.seen();
-    for request in [
-        format!("POST /v1/latch/agents/{AGENT_UID}/credentials "),
-        "DELETE /v1/api-keys/11 ".to_string(),
-    ] {
-        assert!(
-            seen.iter().any(|(line, _)| line.starts_with(&request)),
-            "{seen:?}"
-        );
-    }
-
     // An own agent: its credential only in the new environment file, mode 600.
     const MADE: &str = "fedcba9876543210fedcba9876543210";
     let new_own = |file: &str, extra: &[&str]| {
@@ -5079,7 +4954,7 @@ fn agents_are_shown_created_and_removed_by_their_owner() {
     let deletes = || {
         plow.seen()
             .iter()
-            .filter(|(line, _)| line.starts_with("DELETE /v1/agents/"))
+            .filter(|(line, _)| line.starts_with("DELETE "))
             .count()
     };
     let (code, error, _) = run(&["agents", "remove", "Research bot"]);

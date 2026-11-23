@@ -186,8 +186,7 @@ fn plow_rows_wait_then_say_plow_did_not_answer_never_logged_out_or_zero() {
     );
 
     facts.plow = Some(Pending::Failed(
-        "Plow answered HTTP 401: this credential is no longer active; it may have expired, rotated or revoked"
-            .into(),
+        "Plow answered HTTP 401: this credential may not do that".into(),
     ));
     let refused = shown(&facts);
     assert!(
