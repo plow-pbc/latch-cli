@@ -174,6 +174,14 @@ impl Caller<'_> {
     }
 }
 
+/// An action this host allowed on an intent (its ledger key,
+/// `Thread::key`), by its ledger entry: what a later action can carry on.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Allowed {
+    pub intent: String,
+    pub entry: String,
+}
+
 /// One caller's gate, for the operations of one request.
 #[derive(Clone, Copy)]
 pub struct Gate<'a> {
@@ -188,8 +196,20 @@ impl Gate<'_> {
     /// action the judge was asked about runs only once its gate record is
     /// in the host's audit log, named in `gate` as `gate_record`.
     pub async fn judge(&self, action: &impl Serialize) -> Judgment {
+        self.judge_continuing(action, None).await
+    }
+
+    /// As `judge`, for an action that carries on `continues`, an action
+    /// this host allowed earlier (a paused step of an allowed plan): on the
+    /// intent it was allowed on, that one is no earlier use of it, and this
+    /// is not recorded as another.
+    pub async fn judge_continuing(
+        &self,
+        action: &impl Serialize,
+        continues: Option<&Allowed>,
+    ) -> Judgment {
         let action = serde_json::value::to_raw_value(action).expect("an action serializes");
-        let mut judgment = self.keeper.judge(self.caller, &action).await;
+        let mut judgment = self.keeper.judge(self.caller, &action, continues).await;
         if judgment.verdict.is_ok() && judgment.gate.get("prompt").is_some() {
             match self
                 .keeper
@@ -279,11 +299,17 @@ impl Gatekeeper {
         model::host_provider(state_dir, MODEL).map(Arc::from)
     }
 
-    /// Whether `action` by `caller` may run.
-    pub async fn judge(&self, caller: Caller<'_>, action: &RawValue) -> Judgment {
+    /// Whether `action` by `caller` may run; see `Gate::judge_continuing`
+    /// for `continues`.
+    pub async fn judge(
+        &self,
+        caller: Caller<'_>,
+        action: &RawValue,
+        continues: Option<&Allowed>,
+    ) -> Judgment {
         let started = Instant::now();
         let mut gate = json!({"caller": caller.kind()});
-        let verdict = self.decide(caller, action, &mut gate).await;
+        let verdict = self.decide(caller, action, continues, &mut gate).await;
         gate["verdict"] = json!(match &verdict {
             Ok(()) => "allow",
             Err(failure) => failure.details["reason"].as_str().unwrap_or(&failure.code),
@@ -319,6 +345,7 @@ impl Gatekeeper {
         &self,
         caller: Caller<'_>,
         action: &RawValue,
+        continues: Option<&Allowed>,
         gate: &mut Value,
     ) -> Result<(), Failure> {
         let shown: Value = serde_json::from_str(action.get()).expect("the action is JSON");
@@ -408,9 +435,23 @@ impl Gatekeeper {
         gate["intent"] = json!(key);
         gate["later_owner_messages"] = json!(thread.later_owner.len());
         let held = self.ledger.hold(&key).await;
-        let done = held
+        let mut done = held
             .done()
             .map_err(|why| unavailable("ledger_unreadable", &why))?;
+        // What this carries on (the plan whose step paused), by its entry
+        // on this same intent, is the same use of it, not an earlier one:
+        // the judge doesn't see it as done, and this is not recorded as
+        // another. An entry is carried on once: after that it is done.
+        let continued = continues
+            .filter(|allowed| allowed.intent == key)
+            .and_then(|allowed| {
+                done.iter()
+                    .position(|d| !d.continued && d.id.as_ref() == Some(&allowed.entry))
+            })
+            .map(|at| done.remove(at));
+        if continued.is_some() {
+            gate["continues"] = json!(true);
+        }
         gate["already_done"] = json!(done.len());
         let asked = Asked {
             rule: rule.as_deref(),
@@ -420,8 +461,13 @@ impl Gatekeeper {
             .ask(&asked, now.timestamp(), &clock, action, gate)
             .await?;
         verdict(p)?;
-        held.record(now.timestamp(), action.get())
-            .map_err(|why| unavailable("ledger_unwritable", &why))
+        let recorded = match continued.and_then(|entry| entry.id) {
+            Some(id) => held.continued(now.timestamp(), &id),
+            None => held
+                .record(now.timestamp(), action.get())
+                .map(|id| gate["entry"] = json!(id)),
+        };
+        recorded.map_err(|why| unavailable("ledger_unwritable", &why))
     }
 
     /// Asks the model about `action`, recording in `gate` the prompt and

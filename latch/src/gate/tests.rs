@@ -226,12 +226,12 @@ impl Host {
     async fn agent(&self, intent: Option<&str>, action: Value) -> Judgment {
         let action = serde_json::value::to_raw_value(&action).unwrap();
         let caller = Caller::Agent { uid: AGENT, intent };
-        self.keeper.judge(caller, &action).await
+        self.keeper.judge(caller, &action, None).await
     }
 
     async fn owner(&self, action: Value) -> Judgment {
         let action = serde_json::value::to_raw_value(&action).unwrap();
-        self.keeper.judge(Caller::Owner, &action).await
+        self.keeper.judge(Caller::Owner, &action, None).await
     }
 }
 
@@ -413,7 +413,7 @@ async fn an_unmapped_agent_and_an_unknown_operation_are_refused() {
         intent: Some(CITED),
     };
     assert_eq!(
-        reason(&host.keeper.judge(stranger, &action).await),
+        reason(&host.keeper.judge(stranger, &action, None).await),
         "agent_unmapped"
     );
     for unknown in [
@@ -793,6 +793,102 @@ async fn a_one_time_intent_is_spent_once_even_by_concurrent_calls() {
     }
 }
 
+/// A paused step of an allowed plan carries that plan on, by its ledger
+/// entry: its judgment isn't shown the plan as an earlier use of a
+/// one-time ask, and it isn't recorded as another. An entry is carried on
+/// once; anything else on the spent ask is still shown it.
+#[tokio::test]
+async fn a_confirmed_step_carries_on_its_allowed_plan_once_and_nothing_else_does() {
+    let host = host(
+        Judge::new(once),
+        Ok(Some(asked("Send Hoa a text: any time after 2pm"))),
+    );
+    let caller = Caller::Agent {
+        uid: AGENT,
+        intent: Some(CITED),
+    };
+    let raw = |action: Value| serde_json::value::to_raw_value(&action).unwrap();
+    let plan = raw(
+        json!({"kind": "browser_plan", "page": {"url": "https://voice.google.com"},
+        "steps": [{"step": "type e55 (textbox \"Text message\") \"Any time after 2pm works\""},
+                  {"step": "click e58 (button \"Send message\")"}]}),
+    );
+    let confirmed = raw(
+        json!({"kind": "confirmed_step", "page": {"url": "https://voice.google.com"},
+        "action": "click button \"Send message\"",
+        "fields": ["textbox \"Text message\": \"Any time after 2pm works\""]}),
+    );
+    let first = host.keeper.judge(caller, &plan, None).await;
+    assert_eq!(reason(&first), "allow");
+    let on = |intent: &str, entry: &str| Allowed {
+        intent: intent.into(),
+        entry: entry.into(),
+    };
+    let key = first.gate["intent"].as_str().unwrap();
+    let allowed = on(key, first.gate["entry"].as_str().unwrap());
+    // The plan's Send, paused and confirmed: allowed, and not recorded again.
+    let carried = host.keeper.judge(caller, &confirmed, Some(&allowed)).await;
+    assert_eq!(reason(&carried), "allow");
+    assert_eq!(carried.gate["continues"], true);
+    assert_eq!(carried.gate["already_done"], 0);
+    // A second confirmation carrying on the same entry is judged with it
+    // done; so is a second, different send, the step with no continuation,
+    // one naming no entry the ledger holds, and the entry as on another ask.
+    let other = raw(
+        json!({"kind": "browser_plan", "page": {"url": "https://voice.google.com"},
+        "steps": [{"step": "type e55 (textbox \"Text message\") \"See you at 3\""},
+                  {"step": "click e58 (button \"Send message\")"}]}),
+    );
+    let refused = host.keeper.judge(caller, &other, None).await;
+    assert_eq!(reason(&refused), "not_covered");
+    assert_eq!(refused.gate["already_done"], 1);
+    let elsewhere = on("swarm:!other:plow.co/$ask", &allowed.entry);
+    for continues in [
+        Some(&allowed),
+        None,
+        Some(&on(key, "0000000000000000")),
+        Some(&elsewhere),
+    ] {
+        let judged = host.keeper.judge(caller, &confirmed, continues).await;
+        assert_eq!(reason(&judged), "not_covered", "{continues:?}");
+    }
+}
+
+/// Two identical plans on a standing ask, each with its paused Send: each
+/// confirmation carries on only its own plan's entry, once, so neither can
+/// spend the other's.
+#[tokio::test]
+async fn identical_plans_are_each_carried_on_by_their_own_confirmation_only() {
+    let thread = asked("Text Hoa good morning every morning");
+    let key = thread.key();
+    let host = host(Judge::new(|_| Some((0.0, 0.9))), Ok(Some(thread)));
+    let caller = Caller::Agent {
+        uid: AGENT,
+        intent: Some(CITED),
+    };
+    let plan = serde_json::value::to_raw_value(&send_mail()).unwrap();
+    let entry = |judgment: &Judgment| Allowed {
+        intent: key.clone(),
+        entry: judgment.gate["entry"].as_str().unwrap().into(),
+    };
+    let e1 = host.keeper.judge(caller, &plan, None).await;
+    let e2 = host.keeper.judge(caller, &plan, None).await;
+    let (c1, c2) = (entry(&e1), entry(&e2));
+    assert_ne!(c1, c2);
+    // C1, then C2: each carries on its own entry, the other shown done.
+    for c in [&c1, &c2] {
+        let carried = host.keeper.judge(caller, &plan, Some(c)).await;
+        assert_eq!(carried.gate["continues"], true, "{c:?}");
+        assert_eq!(carried.gate["already_done"], 1, "{c:?}");
+    }
+    // Either again: its entry is spent, so nothing is hidden, and it is
+    // judged as one more send.
+    for c in [&c1, &c2] {
+        let again = host.keeper.judge(caller, &plan, Some(c)).await;
+        assert_eq!(again.gate.get("continues"), None, "{c:?}");
+    }
+}
+
 /// A refusal for not being covered says, in one line, what didn't match,
 /// and the audit keeps which; a judge whose reason contradicts its no
 /// leaves the refusal saying only that it isn't covered, and any reason
@@ -1000,7 +1096,7 @@ async fn live_intent_judgments() {
             uid: AGENT,
             intent: Some(CITED),
         };
-        let judgment = keeper.judge(caller, &action).await;
+        let judgment = keeper.judge(caller, &action, None).await;
         println!("{name}: {}", judgment.gate);
         assert_eq!(
             judgment.verdict.is_ok(),

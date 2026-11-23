@@ -38,6 +38,7 @@ conformance!(
     the_owners_devices_are_judged_as_the_owner_against_the_device_rule,
     a_local_address_is_refused_before_the_judge_or_an_engine,
     an_agents_confirmation_of_a_paused_send_is_judged_before_it_runs,
+    a_confirmed_send_carries_on_its_allowed_plan,
 );
 
 /// The owner's thread every citation reads: their message `asked`, which
@@ -1468,6 +1469,50 @@ async fn composed(host: &Host, site: &str, engine: &str, message: &str) -> (Stri
     let typed = act(&format!("type {body} {message}"));
     host.agent("do", &id, typed, None).await.0.unwrap();
     (id, find(&page, "button", "Send"))
+}
+
+/// A Send the gatekeeper allowed in a plan and the risk decision paused:
+/// its confirmation carries that plan on, so the judge isn't shown the plan
+/// as a send already done, and it goes; a second, different send on the
+/// same ask is shown the first, and is refused.
+async fn a_confirmed_send_carries_on_its_allowed_plan(engine: &str) {
+    let (_dir, state, _area) = test_state(engine);
+    let (site, _) = serve_site();
+    // A one-time ask: covered until a send was already done on it.
+    let judge = Judge::new(
+        |state| match state["already_done"].to_string().contains("Send") {
+            true => NOT_COVERED,
+            false => COVERED,
+        },
+    );
+    let mut host = Host::start(&state, &site, &judge);
+    host.browsers.provider = Some(Arc::new(Wary));
+    let (id, send) = composed(&host, &site, engine, "Any time after 2pm works").await;
+    let (clicked, _) = host
+        .agent("do", &id, act(&format!("click {send}")), None)
+        .await;
+    let failure = clicked.unwrap_err();
+    assert_eq!(failure.code, "confirm_needed", "{failure:?}");
+    let confirmation = failure.details["stop"]["confirmation"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let request = format!("r{:012x}", rand::random::<u64>() & 0xffff_ffff_ffff);
+    let args = json!({"request": request, "plan": {"steps": []}, "confirm": confirmation});
+    let (sent, audit) = host.agent("do", &id, args, None).await;
+    sent.unwrap();
+    assert_eq!(audit["gate"]["continues"], true);
+    assert!(
+        shows(&host, &id)
+            .await
+            .contains("sent: Any time after 2pm works")
+    );
+    // Another send on the same ask: the first is done, so it is refused.
+    let (again, _) = host
+        .agent("do", &id, act(&format!("click {send}")), None)
+        .await;
+    assert_eq!(again.unwrap_err().code, "gatekeeper_denied");
+    host.look("close", &id, json!({})).await;
 }
 
 async fn shows(host: &Host, id: &str) -> String {
