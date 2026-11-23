@@ -1215,6 +1215,17 @@ impl<D: Driver> Core<D> {
             .ok_or_else(|| Failure::new(code::browser_gone, "the tab has no frame".into()))
     }
 
+    /// `expression`'s answer in `frame`, or `None` when the frame went away
+    /// since: pages drop frames all the time, and one being replaced holds
+    /// nothing yet.
+    fn in_frame(&mut self, frame: &Frame, expression: &str) -> Result<Option<Value>, Failure> {
+        match self.driver.run(frame, expression) {
+            Ok(found) => Ok(Some(found)),
+            Err(failure) if failure.code == "stale_snapshot" => Ok(None),
+            Err(failure) => Err(failure),
+        }
+    }
+
     /// Reads the active tab into a new snapshot: every frame, or only the
     /// element `scope` and what is inside it.
     fn read(&mut self, scope: Option<(String, usize)>) -> Result<Reading, Failure> {
@@ -1788,10 +1799,14 @@ mod tests {
     }
 
     /// A page of `frames` frames, each read taking `each`, as a page
-    /// under heavy load answers; within its own limit every time.
+    /// under heavy load answers; within its own limit every time. Its
+    /// first `replaced` reads land while its document is being replaced;
+    /// if it `closes`, its frames are gone once they have.
     struct Slow {
         frames: usize,
         each: Duration,
+        replaced: usize,
+        closes: bool,
     }
 
     impl Driver for Slow {
@@ -1815,7 +1830,12 @@ mod tests {
             Vec::new()
         }
         fn frames(&mut self) -> Result<Vec<Frame>, Failure> {
-            Ok((0..self.frames)
+            let frames = if self.closes && self.replaced == 0 {
+                0
+            } else {
+                self.frames
+            };
+            Ok((0..frames)
                 .map(|n| Frame {
                     id: format!("F{n}"),
                     parent: (n > 0).then(|| "F0".to_string()),
@@ -1825,6 +1845,10 @@ mod tests {
         }
         fn run(&mut self, _: &Frame, _: &str) -> Result<Value, Failure> {
             std::thread::sleep(self.each);
+            if self.replaced > 0 {
+                self.replaced -= 1;
+                return Err(Failure::new(code::stale_snapshot, "replaced".into()));
+            }
             Ok(
                 json!({"origin": "https://shop.example", "url": "https://shop.example/", "elements": [], "text": "a page"}),
             )
@@ -1915,6 +1939,8 @@ mod tests {
         let mut core = Core::new(Slow {
             frames: 40,
             each: Duration::from_millis(50),
+            replaced: 0,
+            closes: false,
         });
         let started = Instant::now();
         core.limit(started + Duration::from_millis(400));
@@ -1941,6 +1967,8 @@ mod tests {
         let mut core = Core::new(Slow {
             frames: MAX_FRAMES + 30,
             each: Duration::ZERO,
+            replaced: 0,
+            closes: false,
         });
         core.limit(Instant::now() + CALL);
         let observed = core
@@ -1955,5 +1983,49 @@ mod tests {
             .result;
         assert_eq!(observed["truncated"], true);
         assert_eq!(observed["frames"].as_array().unwrap().len(), MAX_FRAMES);
+    }
+
+    #[test]
+    fn a_text_wait_goes_on_through_a_page_being_replaced() {
+        // A form sent while the wait polls: reads that land as the next page
+        // replaces this one are "not yet", as a page without the text is,
+        // until the text, the deadline, or the tab losing its page.
+        // Each ends no sooner than `at_least` and well inside 2 s.
+        for (replaced, closes, text, met, at_least) in [
+            (2, false, "a page", Ok(true), 0),
+            (usize::MAX, false, "a page", Ok(false), 1000),
+            (0, false, "not on the page", Ok(false), 1000),
+            (1, true, "a page", Err("browser_gone"), 0),
+        ] {
+            let mut core = Core::new(Slow {
+                frames: 1,
+                each: Duration::ZERO,
+                replaced,
+                closes,
+            });
+            core.limit(Instant::now() + CALL);
+            let started = Instant::now();
+            let waited = core.call(
+                Call::Wait {
+                    condition: Condition::Text { text: text.into() },
+                    within_ms: 1000,
+                },
+                None,
+            );
+            let case = format!("{replaced} replaced, closes {closes}, {text:?}");
+            let waited = waited
+                .map(|done| done.result)
+                .map_err(|failure| failure.code);
+            assert_eq!(
+                waited,
+                met.map(|met| json!({"met": met})).map_err(String::from),
+                "{case}"
+            );
+            let took = started.elapsed();
+            assert!(
+                (Duration::from_millis(at_least)..Duration::from_secs(2)).contains(&took),
+                "{case}: took {took:?}"
+            );
+        }
     }
 }

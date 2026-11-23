@@ -301,17 +301,6 @@ impl<D: Driver> Core<D> {
         Ok(stage)
     }
 
-    /// `expression`'s answer in one of a snapshot's frames, or `None` when
-    /// the frame went away since (pages drop frames all the time); one that
-    /// went away held no field to fill.
-    fn in_frame(&mut self, frame: &Frame, expression: &str) -> Result<Option<Value>, Failure> {
-        match self.driver.run(frame, expression) {
-            Ok(found) => Ok(Some(found)),
-            Err(failure) if failure.code == "stale_snapshot" => Ok(None),
-            Err(failure) => Err(failure),
-        }
-    }
-
     /// Each frame of a snapshot, with its refs and their in-frame indexes.
     fn frames_of(&self, snapshot: &str) -> Result<Vec<FrameRefs>, Failure> {
         let mut frames: Vec<FrameRefs> = Vec::new();
