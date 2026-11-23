@@ -118,6 +118,14 @@ Compute costs less than brittle text machinery: flag piles of regex and
 hand-rolled parsing, and prefer a clear model call for semantic work or a
 maintained standard parser for structured input.
 
+**CLI first: functionality lives in the Rust CLI; the Mac app presents it.**
+Wherever it can, the app (`apps/macos`) gets what it shows by calling `latch`
+and reading its JSON, so agents, scripts and the app all see the same answer.
+Flag logic that exists only in the GUI (deciding, computing, judging or
+wording something the CLI could return) and name the `latch` command or JSON
+field it belongs in. Layout, navigation and platform glue (windows,
+notifications, login items) stay in the app.
+
 ## Cause-first bug fixes
 
 Fix at the cause; never with a workaround that leaves the cause in place. A guard or check at the boundary where the cause lives is a cause-level fix. If a fix adds a maintained path or net complexity, explain why removing the cause directly is insufficient. No stopgaps: they promote brittle, confusing, unreliable code. Ship the fix at the cause. Required rollout sequencing (staged removals, compatibility windows) and authorized incident containment, labeled with when it's removed, are not stopgaps. When the bug comes from a duplicated source or identity, remove the duplicate rather than bridging the two. Limits a REVIEW.md already records as accepted stay out of review unless the diff widens them.
