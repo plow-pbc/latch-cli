@@ -953,11 +953,6 @@ final class AppModel {
         await refreshRules(on: entry)
         savingRules.remove(host)
         switch result {
-        case .success? where savedRule(host)?.text != text:
-            // Saved, then changed elsewhere before it was read back: the
-            // newer rule shows, and typing since isn't saved over it.
-            rulesDrafts[host] = nil
-            rulesErrors[host] = nil
         case .success?:
             rulesErrors[host] = nil
             rulesSaved.insert(host)
@@ -965,7 +960,9 @@ final class AppModel {
                 try? await Task.sleep(for: .seconds(2))
                 rulesSaved.remove(host)
             }
-            draft.base = savedRule(host)?.revision
+            // The revision this save made, read back or not: typing since
+            // is saved over it alone.
+            draft.base = RulesShow.Rule.revision(of: text)
             if draft.text == text { rulesDrafts[host] = nil } else { await saveRuleDraft(host) }
         case let .failure(error)? where error.code == "stale_revision":
             rulesDrafts[host] = nil

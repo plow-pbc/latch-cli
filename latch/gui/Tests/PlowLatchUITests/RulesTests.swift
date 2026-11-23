@@ -12,6 +12,8 @@ final class RulesClient: LatchClient, @unchecked Sendable {
     var holdSet: Gate?
     /// Saved by another device right after the next save.
     var thenElsewhere: String?
+    /// The next `rules show` fails.
+    var failNextShow = false
 
     func localStatus() async throws -> LocalStatus { try Fixtures.decode(Fixtures.serving) }
     func accountStatus() async throws -> AccountStatus { try Fixtures.decode(Fixtures.studioHosts) }
@@ -19,7 +21,11 @@ final class RulesClient: LatchClient, @unchecked Sendable {
     func setupStatus() async throws -> SetupStatus { try Fixtures.decode(Fixtures.setup(on: [])) }
     func setupStatusCheckingAccess() async throws -> SetupStatus { try await setupStatus() }
     func rulesShow(host: String?) async throws -> RulesShow {
-        show
+        if failNextShow {
+            failNextShow = false
+            throw LatchError.unreachable("timed out")
+        }
+        return show
     }
     /// As `rules set --revision R` does: refused with `stale_revision`
     /// unless the rule is still at R (nil: none); an empty text is saved.
@@ -30,11 +36,11 @@ final class RulesClient: LatchClient, @unchecked Sendable {
             throw LatchError.failed(LatchFailure(code: "stale_revision", message: "the rule changed; it is at \(current ?? "none")"))
         }
         sets.append((text, host))
-        show.deviceRule = .init(text: text, revision: "r\(sets.count)")
+        show.deviceRule = .init(text: text, revision: RulesShow.Rule.revision(of: text))
         if let elsewhere = thenElsewhere {
             thenElsewhere = nil
             sets.append((elsewhere, host))
-            show.deviceRule = .init(text: elsewhere, revision: "r\(sets.count)")
+            show.deviceRule = .init(text: elsewhere, revision: RulesShow.Rule.revision(of: elsewhere))
         }
     }
     func vaultList(host: String?) async throws -> VaultList { try Fixtures.decode(#"{"items":[]}"#) }
@@ -112,6 +118,23 @@ struct RulesTests {
         #expect(client.sets.map(\.text) == ["Never touch ~/Taxes.", "Never touch ~/Taxes or ~/Finance."])
         #expect(app.savedRule("studio")?.text == "Never touch ~/Taxes or ~/Finance.")
         #expect(app.rulesSaved.contains("studio"))
+    }
+
+    /// A save whose read-back fails still saves the typing behind it.
+    @Test func typingBehindASaveIsSavedWhenTheReadBackFails() async throws {
+        let client = RulesClient()
+        let app = try await app(client)
+        let held = Gate()
+        client.holdSet = held
+        app.typeRule("Never touch ~/Taxes.", on: "studio")
+        let saving = Task { await app.saveRuleDraft("studio") }
+        await waitUntil { app.savingRules.contains("studio") }
+        app.typeRule("Never touch ~/Taxes or ~/Finance.", on: "studio")
+        client.failNextShow = true
+        held.open()
+        await saving.value
+        #expect(client.sets.map(\.text) == ["Never touch ~/Taxes.", "Never touch ~/Taxes or ~/Finance."])
+        #expect(app.rulesDrafts["studio"] == nil)
     }
 
     /// A rule saved elsewhere just after a save isn't saved over by the

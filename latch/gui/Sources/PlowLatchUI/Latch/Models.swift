@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// `latch status --local`: what this Mac knows about its own latch.
@@ -166,6 +167,11 @@ nonisolated struct RulesShow: Decodable, Equatable {
     struct Rule: Decodable, Equatable {
         var text: String
         var revision: String
+
+        /// A text's revision as latch gives it: its sha256, as hex.
+        static func revision(of text: String) -> String {
+            SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
+        }
     }
     /// Agents the host refuses exec (`serve --deny-exec`).
     struct DenyExec: Decodable, Equatable {
