@@ -494,7 +494,7 @@ fn cited_checks(thread: &Thread) -> Result<(), Failure> {
     if thread.redacted {
         return Err(denied(
             "thread_redacted",
-            "Someone removed another's message or reaction after the cited one, so what the owner said there can't be read.".into(),
+            "A message or reaction after the cited one was removed, so what the owner said there can't be read.".into(),
         ));
     }
     if !thread.complete {

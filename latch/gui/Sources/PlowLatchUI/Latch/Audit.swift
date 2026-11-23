@@ -123,7 +123,7 @@ nonisolated struct AuditRecord: Decodable, Equatable, Identifiable {
             "intent_not_owner": "Cited message isn't yours",
             "not_owner_dm": "Cited outside its 1:1 room with you",
             "thread_closed": "Its thread is closed",
-            "thread_redacted": "A message after it was removed",
+            "thread_redacted": "A later message or reaction was removed",
             "agent_unmapped": "No Swarm account mapped for it here",
             "unknown_op": "Unknown operation",
             "login_site_mismatch": "Login not saved for this site",

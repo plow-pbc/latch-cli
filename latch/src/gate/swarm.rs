@@ -14,7 +14,7 @@
 //! are the owner and phone accounts that speak for them; the iMessage
 //! bridge's notice account on the owner's server is no one. Nothing sent from
 //! latch's own device is the owner's, and a later redaction of someone else's
-//! message or reaction spoils the citation. An answer missing any part the
+//! message or reaction, or any as the owner, spoils the citation. An answer missing any part the
 //! gatekeeper reads is refused, never read as empty.
 
 use std::path::{Path, PathBuf};
@@ -276,11 +276,12 @@ fn thread(
         CLOSED.contains(&r.key.as_str()) && owners(&r.sender) && !own_device(&r.device_id)
     });
     // A redaction of someone else's message or reaction (the owner's "stop",
-    // or their ✅) took back what they said, and leaves nothing to read.
+    // or their ✅) took back what they said, and leaves nothing to read. One
+    // as the owner may be anyone holding latch's token, so it counts too.
     let redacted = read
         .redactions
         .iter()
-        .any(|r| r.redacts_sender.as_deref() != Some(r.sender.as_str()));
+        .any(|r| r.sender == owner || r.redacts_sender.as_deref() != Some(r.sender.as_str()));
     // What follows the cited message: its thread, and for a message in no
     // thread, the room's unthreaded messages too, so a "stop" said outside
     // its replies still counts. Every owner message counts; others' are
@@ -488,15 +489,16 @@ mod tests {
     }
 
     /// Removing another's message or reaction after the cited one (the
-    /// owner's "stop", or their ✅) leaves nothing to read; anyone taking
-    /// back their own counts for nothing. One before a cited reply, in its
+    /// owner's "stop", or their ✅) leaves nothing to read, and so does any
+    /// redaction as the owner, whom latch's token can stand in for; the agent
+    /// taking back its own counts for nothing. One before a cited reply, in its
     /// thread, is behind the owner's newer word.
     #[test]
     fn a_later_redaction_of_someone_elses_event_spoils_the_citation() {
         let redaction = |sender: &str, of: Option<&str>| json!([{"event_id": "$x", "sender": sender, "redacts": "$r", "redacts_sender": of}]);
         for (redactions, spoiled) in [
             (redaction(AGENT, Some(AGENT)), false),
-            (redaction(OWNER, Some(OWNER)), false),
+            (redaction(OWNER, Some(OWNER)), true),
             (redaction(AGENT, Some(OWNER)), true),
             (redaction(AGENT, None), true),
         ] {
