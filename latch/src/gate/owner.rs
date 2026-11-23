@@ -4,9 +4,8 @@
 //! and `latch agents map` send it over latch's connection with `--host`,
 //! and run it on this machine's own host state without.
 //!
-//! The audit gets each change's revisions before and after, the text a
-//! set or edit saves (so a judgment's revision can be quoted later), and
-//! the agent uid and Swarm account a mapping names.
+//! The audit gets each change's revisions before and after, and the
+//! agent uid and Swarm account a mapping names; never the rule's text.
 
 use std::path::Path;
 
@@ -140,9 +139,6 @@ async fn change_rule(
         _ => store.clear_deny(expected),
     }?;
     *snapshot = Some(held);
-    if change.after.is_some() {
-        audit.insert("text".into(), json!(text));
-    }
     Ok(changed(host, &change, audit))
 }
 
