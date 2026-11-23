@@ -55,6 +55,11 @@ nonisolated struct FakeLatchClient: LatchClient {
     }
     func rulesSet(_ text: String, host: String?, revision: String?) async throws {}
     func rulesTry(draft: String, action: String) async throws -> Bool { wordsDeny(draft: draft, action: action) }
+    /// What latch suggests for studio's records, as `audit suggest` checks
+    /// them with the judge.
+    func auditSuggest(_ record: String, host: String?) async throws -> AuditSuggest {
+        try Fixtures.decode(Fixtures.suggestions.first { record.hasPrefix($0.key) }?.value ?? #"{"suggestion":null}"#)
+    }
     func agents(host: String?) async throws -> AgentsList {
         switch host {
         case nil: try Fixtures.decode(Fixtures.agents)
@@ -176,11 +181,17 @@ nonisolated enum Fixtures {
     static let noHosts = #"{"account":{"owner_uid":"usr_5f2c9a7e","display_name":"Morgan"},"hosts":[],"default_host":null,"default_host_reason":"no_host","api_url":"http://127.0.0.1:18934"}"#
     // `rules show`, `vault list` and `status --local`'s `plugins` on studio,
     // and on pi-kitchen (read from laptop with `--host`).
-    /// `latch audit judge` of the calls studio's fixture keeps, as two of
-    /// scout's requests were judged.
+    /// `latch audit judge` of the calls studio's fixture keeps, as scout's
+    /// last allowed and refused requests were judged.
     static let keptCalls = [
         "g43d47feb6f0de89c18a243f8": #"{"id":"g43d47feb6f0de89c18a243f8","layer":"owner","request":{"state":{"cited_message":{"when":"0 min ago","text":"show me the latch demo's readme"},"proposed_action":{"operation":"exec","argv":["cat","Projects/latch-demo/README.md"],"working_folder":"/Users/me","writes":[],"network":false,"secret_env":[]}}},"answer":null}"#,
         "g0cb70261a6f2d3e48b9c1d05": #"{"id":"g0cb70261a6f2d3e48b9c1d05","layer":"owner","request":{"state":{"cited_message":{"when":"0 min ago","text":"what did we spend this year? it's in my Finance folder"},"proposed_action":{"operation":"exec","argv":["cat","Finance/2026.csv"],"working_folder":"/Users/me","writes":[],"network":false,"secret_env":[]}}},"answer":null}"#,
+    ]
+    /// `latch audit suggest` of scout's last allowed and refused requests on
+    /// studio, by record id, under studio's rule.
+    static let suggestions = [
+        "5e49f9": #"{"suggestion":"rule","rule":"Never touch ~/Finance or my tax returns. Never run `cat Projects/latch-demo/README.md`.","revision":"ea4ac6c6bd9184d7479f8312f4ebca18db1804f21bba03212ac8f0dc80f35c7c"}"#,
+        "0cb702": #"{"suggestion":"rule","rule":"Never touch my tax returns.","revision":"ea4ac6c6bd9184d7479f8312f4ebca18db1804f21bba03212ac8f0dc80f35c7c"}"#,
     ]
     static let studioRules = #"{"agents":{"ba3c0b3ad1eba7a9a1eb04b67c9db0dd":"@scout:plow.co"},"deny_exec":{"agent_uids":[],"every_agent":false},"device_rule":{"revision":"ea4ac6c6bd9184d7479f8312f4ebca18db1804f21bba03212ac8f0dc80f35c7c","text":"Never touch ~/Finance or my tax returns."},"host":"studio"}"#
     static let studioVault = #"{"audit_id":"bcaf28dedfe777a60303c3ccd802a8a2380237b6f02988bc33dabb307431e0a6","items":[{"fields":[{"alias":false,"custom":false,"hidden":false,"label":"username"},{"alias":false,"custom":false,"hidden":true,"label":"password"}],"item":"v1","kind":"login","revision":1,"sites":["shop.example"],"title":"Shop (test)","totp":false,"username":"ada"},{"fields":[{"alias":false,"custom":false,"hidden":false,"label":"username"},{"alias":false,"custom":false,"hidden":true,"label":"password"}],"item":"v2","kind":"login","other_top_sites":["grocer-login.example"],"revision":1,"sites":["grocer.example"],"title":"Grocer (test)","totp":false,"username":"ada@example.com"},{"fields":[],"item":"v3","kind":"note","revision":1,"sites":[],"title":"Building notes (test)","totp":false},{"fields":[{"alias":false,"custom":false,"hidden":true,"label":"number"},{"alias":false,"custom":false,"hidden":true,"label":"code"},{"alias":false,"custom":false,"hidden":false,"label":"cardholder name"}],"item":"v4","kind":"card","revision":1,"sites":["shop.example"],"title":"Visa (test)","totp":false}]}"#
@@ -582,6 +593,8 @@ package enum SnapshotRunner {
                 await stageKeptCalls(app)
                 if let host = app.host, let record = app.feed(for: host).records.last(where: pick) {
                     app.selectedRecord = OnHost(host: host.name, id: record.id)
+                    // A refusal's inspector offers the edit that lets it through.
+                    if record.outcome == "gatekeeper_denied" { await app.suggest(for: record, on: host) }
                 }
                 _ = app.stage(.done, progress: full)
                 try await renderWindow(app, size: CGSize(width: 1180, height: 640), dark: dark,
@@ -775,12 +788,17 @@ package enum SnapshotRunner {
                     .environment(app), size: CGSize(width: 640, height: 500), dark: dark, file: menu)
             }
         }
-        // The device rule: studio's Rules, an unsaved change to it,
-        // pi-kitchen's never answered, and sidecar on a latch from before
-        // device rules.
+        // Rules: studio's, its last allowed and refused each with the edit
+        // that would flip it, an unsaved change to it, pi-kitchen's never answered,
+        // sidecar on a latch from before device rules, and the banner of a
+        // recent refusal over Home.
         for dark in [false, true] {
             let screens: [(String, String?, (AppModel) -> Void)] = [
                 ("16-device-rule-studio-rules", nil, { _ in }),
+                ("16-device-rule-denial-banner", nil, { app in
+                    app.place = .host(.home)
+                    app.denial = Denial(host: "studio", request: "latch exec cat Finance/2026.csv")
+                }),
                 ("16-device-rule-studio-unsaved", nil, { app in
                     app.typeRule("Never touch ~/Finance or my tax returns.\nNever send email outside the company.", on: "studio")
                 }),
@@ -798,8 +816,15 @@ package enum SnapshotRunner {
                 app.place = .host(.rules)
                 stageActivity(app)
                 stage(app)
+                if let host = app.host {
+                    for refused in [false, true] {
+                        guard let record = app.lastJudged(on: host, refused: refused) else { continue }
+                        await app.readKeptCall(record, on: host)
+                        await app.suggest(for: record, on: host)
+                    }
+                }
                 _ = app.stage(.done, progress: full)
-                try await renderWindow(app, size: CGSize(width: 1180, height: 700), dark: dark,
+                try await renderWindow(app, size: CGSize(width: 1180, height: 760), dark: dark,
                                        file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
             }
         }

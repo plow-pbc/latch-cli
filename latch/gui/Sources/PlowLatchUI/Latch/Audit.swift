@@ -71,6 +71,9 @@ nonisolated struct AuditRecord: Decodable, Equatable, Identifiable {
         var action: String?
         var url: String?
         var origin: String?
+        /// A rules change's revision after it, and the text it saved.
+        var after: String?
+        var text: String?
         /// A browser judgment, kept beside what was judged (`judged`).
         var gate: Gate?
         /// A plan's actions, each with the screenshot the host kept after it.
@@ -153,7 +156,7 @@ nonisolated struct AuditRecord: Decodable, Equatable, Identifiable {
     var isOwnerRead: Bool {
         guard agent == nil else { return false }
         switch op {
-        case "status", "audit", "audit_shot", "audit_judge": return true
+        case "status", "audit", "audit_shot", "audit_judge", "audit_suggest": return true
         case "rules": return args?.command == "show"
         case "vault": return ["list", "show"].contains(args?.command)
         case "plugins": return args?.command == "list"

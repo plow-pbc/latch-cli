@@ -28,6 +28,9 @@ nonisolated protocol LatchClient: Sendable {
     /// rule, would deny `action` (an action as the gatekeeper is shown it)
     /// asked for by the owner. Judged here; nothing is saved or audited.
     func rulesTry(draft: String, action: String) async throws -> Bool
+    /// `latch audit suggest RECORD [--host NAME]`: the checked edit of a
+    /// host's rule that would rule one of its judgments the other way.
+    func auditSuggest(_ record: String, host: String?) async throws -> AuditSuggest
     /// `latch agents [--host NAME]`.
     func agents(host: String?) async throws -> AgentsList
     /// `latch vault list`, on this Mac's host or, with `host`, another.
@@ -213,6 +216,10 @@ nonisolated struct LiveLatchClient: LatchClient {
         let tried = try decode(RulesTry.self, try await run(["rules", "try", "--draft", "-", action], input: Data(draft.utf8)))
         guard let verdict = tried.verdicts.first else { throw LatchError.unreachable("Latch returned an unreadable response.") }
         return verdict.denied
+    }
+
+    func auditSuggest(_ record: String, host: String?) async throws -> AuditSuggest {
+        try decode(AuditSuggest.self, try await run(["audit", "suggest", record] + on(host)))
     }
 
     func agents(host: String?) async throws -> AgentsList {

@@ -1,4 +1,4 @@
-//! The `status`, `audit`, `audit_shot` and `audit_judge` operations: what
+//! The `status`, `audit`, `audit_shot`, `audit_judge` and `audit_suggest` operations: what
 //! this host's owner reads from another machine with `--host`, the same
 //! output as `latch status --local [--follow]`, `latch audit`, `latch audit
 //! shot` and `latch audit judge` give on the host itself. From the owner's
@@ -38,6 +38,7 @@ pub(super) async fn run(
     let result = match crate::gate::owner::owner_only(kind, &format!("this host's {op}")) {
         Ok(()) if op == "audit_shot" => return shot(host, args, send).await,
         Ok(()) if op == "audit_judge" => return judge(host, args).await,
+        Ok(()) if op == "audit_suggest" => return suggest(host, args).await,
         Ok(()) => read(host, op, args, send, cut_off).await,
         Err(failure) => Err(failure),
     };
@@ -89,6 +90,21 @@ async fn judge(host: &Host, args: &Value) -> Done {
     })
     .await;
     crate::vault::host::done(read, audit)
+}
+
+/// `audit suggest`: the checked rule edit for one of this host's
+/// judgments, judged with the host's own login.
+async fn suggest(host: &Host, args: &Value) -> Done {
+    let record = args["record"].clone();
+    let audit = Map::from_iter([("record".into(), record.clone())]);
+    let suggested = match record.as_str() {
+        Some(record) => crate::gate::suggest::run(&host.workers.state_dir, record).await,
+        None => Err(Failure::new(
+            code::bad_request,
+            "audit suggest takes a record's id".into(),
+        )),
+    };
+    crate::vault::host::done(suggested, audit)
 }
 
 async fn read(

@@ -367,29 +367,32 @@ impl AuditLog {
 }
 
 /// `latch audit verify` and `latch audit rotate-key`, on this machine's
-/// host state, and `latch audit judge` and `latch audit shot`, on this
+/// host state, and `latch audit judge`, `suggest` and `shot`, on this
 /// machine's host or another.
 pub async fn run(state: &StateDir, action: AuditAction) -> Result<Value, Failure> {
     let path = state.path.join(FILE);
     match action {
-        AuditAction::Judge { request, raw, host } => match crate::remote::other_host(state, host)
+        AuditAction::Judge { request, raw, host } => {
+            match crate::remote::other_host(state, host).await? {
+                Some(host) => {
+                    crate::remote::read(
+                        state,
+                        &host,
+                        "audit_judge",
+                        json!({"request": request, "raw": raw}),
+                    )
+                    .await
+                }
+                None => crate::gate::requests::read(&state.path, &request, raw),
+            }
+        }
+        AuditAction::Suggest { record, host } => match crate::remote::other_host(state, host)
             .await?
         {
             Some(host) => {
-                let request = crate::wire::Request {
-                    op: "audit_judge".into(),
-                    args: json!({"request": request, "raw": raw}),
-                    intent: None,
-                };
-                let mut kept =
-                    crate::dial::call(state, &host, &request, crate::dial::ANSWER_WITHIN).await?;
-                // Printed as the host prints it, without its record of this read.
-                if let Some(kept) = kept.as_object_mut() {
-                    kept.remove("audit_id");
-                }
-                Ok(kept)
+                crate::remote::read(state, &host, "audit_suggest", json!({"record": record})).await
             }
-            None => crate::gate::requests::read(&state.path, &request, raw),
+            None => crate::gate::suggest::run(&state.path, &record).await,
         },
         AuditAction::Shot {
             record,

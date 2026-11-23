@@ -133,6 +133,17 @@ final class ContractTests {
         }
     }
 
+    /// Asking for a rule suggestion is words latch takes: on a fresh state
+    /// folder it gets as far as looking for the record, not a usage error.
+    @Test func askingForARuleSuggestionIsALatchCommand() async throws {
+        let refusal = await AppModel.result { try await client.auditSuggest(String(repeating: "0", count: 64), host: nil) }
+        guard case let .failure(error) = refusal else {
+            Issue.record("`audit suggest` answered for no record: \(refusal)")
+            return
+        }
+        #expect(error.code == "no_such_record", "\(error)")
+    }
+
     /// The app's removal is words latch takes: it gets as far as needing a
     /// login, not a usage error.
     @Test func removingAnAgentByUidIsALatchCommand() async throws {

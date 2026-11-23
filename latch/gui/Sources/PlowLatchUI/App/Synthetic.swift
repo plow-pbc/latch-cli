@@ -271,6 +271,7 @@ nonisolated struct SyntheticLatchClient: LatchClient {
     }
     func rulesSet(_ text: String, host: String?, revision: String?) async throws {}
     func rulesTry(draft: String, action: String) async throws -> Bool { wordsDeny(draft: draft, action: action) }
+    func auditSuggest(_ record: String, host: String?) async throws -> AuditSuggest { try Fixtures.decode(#"{"suggestion":null}"#) }
     func vaultAdd(_ draft: VaultDraft, host: String?) async throws -> VaultList.Item { try await base.vaultAdd(draft, host: host) }
     func vaultEdit(_ item: String, revision: Int, _ draft: VaultDraft, host: String?) async throws -> VaultList.Item {
         try await base.vaultEdit(item, revision: revision, draft, host: host)

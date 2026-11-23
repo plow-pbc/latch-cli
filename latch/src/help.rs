@@ -1454,6 +1454,26 @@ const ENTRIES: &[Entry] = &[
         ],
     },
     Entry {
+        id: "audit.suggest",
+        runs_on: |_| RunsOn::Either,
+        output: "`suggestion`: `rule`, with `rule` (the device rule as edited) and `revision` (the rule it edits, null when there is none), when an edit would rule that judgment the other way next time; `ask_in_message` when the owner's message didn't cover the request, which a device rule, denying only, can't change; else null (nothing to change, the rule changed since, or the call the host kept is gone after 7 days). Each edit is a template (an allowed request: the rule and \"Never ...\"; a refused one: the rule without one of its sentences, the rule and \"You may ...\", or no rule), offered only once the gatekeeper, judging it as the owner's own call against the rule as it is now, rules the other way. Nothing is saved or audited.",
+        effect: Repeatable(
+            "asks the decision model up to six times, billed to your Plow balance like a real judgment, with the host's login; saves nothing",
+        ),
+        owner_only: true,
+        connector: None,
+        examples: &[
+            ex(
+                "What rule would have let a refused request through?",
+                &["audit", "suggest", "RECORD"],
+            ),
+            ex(
+                "The same, for another host's record",
+                &["audit", "suggest", "RECORD", "--host", "studio"],
+            ),
+        ],
+    },
+    Entry {
         id: "audit.shot",
         runs_on: |_| RunsOn::Either,
         output: "The `record`, the `shot`, the `path` the PNG was saved to, its `size` and `sha256`. Only a screenshot a browser plan's record names (an action's number from its `step_records`, or `final`), and only the bytes that record's sha256 says were kept: a host keeps a request's screenshots 7 days (then `no_such_shot`). A standalone `browser screenshot` was saved on its caller's machine, not kept on the host. While a value filled from the vault is on the page, a screenshot shows the fields that hold it blank, and none is taken of a fill step; latch redacts nothing else, so typed text and the rest of the page can show.",

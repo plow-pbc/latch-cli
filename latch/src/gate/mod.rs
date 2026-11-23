@@ -35,6 +35,7 @@ pub mod ledger;
 pub(crate) mod owner;
 pub mod requests;
 pub mod rules;
+pub mod suggest;
 pub mod swarm;
 #[cfg(test)]
 mod tests;

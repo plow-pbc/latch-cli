@@ -1351,7 +1351,7 @@ async fn serve_request(
                         )
                         .await
                     }
-                    "status" | "audit" | "audit_shot" | "audit_judge" => {
+                    "status" | "audit" | "audit_shot" | "audit_judge" | "audit_suggest" => {
                         reads::run(host, &identity.kind, op, &request.args, &mut send, cut_off)
                             .await
                     }
@@ -1384,9 +1384,10 @@ async fn serve_request(
                 None => timings,
             };
             let decision = decision(&done.response);
-            // A browser call is logged by its command; the rest stays in the sealed audit.
+            // A browser or rules call is logged by its command (a saved
+            // rule's text stays in the sealed audit); the rest as shown.
             let shown = match op {
-                "browser" => json!({"command": done.audit_args["command"]}),
+                "browser" | "rules" => json!({"command": done.audit_args["command"]}),
                 _ => crate::redact::shown(op, &done.audit_args),
             };
             log(&format!(

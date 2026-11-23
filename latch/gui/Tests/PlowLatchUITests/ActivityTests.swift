@@ -273,7 +273,7 @@ struct OwnerReadTests {
 
     @Test func readsAreBackgroundAndActionsAreNot() throws {
         for (op, args) in [("rules", #"{"command":"show"}"#), ("vault", #"{"command":"list"}"#), ("vault", #"{"command":"show","item":"v1"}"#),
-                           ("plugins", #"{"command":"list"}"#), ("status", "{}"), ("audit", "{}"),
+                           ("plugins", #"{"command":"list"}"#), ("status", "{}"), ("audit", "{}"), ("audit_suggest", #"{"record":"r1"}"#),
                            // The owner's own rule changes wait behind the checkbox too.
                            ("rules", #"{"command":"set","scope":"every agent"}"#), ("rules", #"{"command":"map_agent"}"#)] {
             #expect(try record(op: op, args: args).isBackground, "\(op) \(args)")
@@ -709,10 +709,13 @@ struct AccountActivityTests {
         #expect(await app.readKeptCall(unkept, on: studio) == nil)
     }
 
-    /// A refusal's inspector opens its host's Rules, where the rule is.
-    @Test func aRefusalOpensItsHostsRules() throws {
+    /// A refusal's suggestion opens its host's Rules with that request,
+    /// ready to apply there.
+    @Test func aRefusalOpensOnItsHostsRules() throws {
         let (app, _, kitchen) = try app()
-        app.showRules(on: kitchen)
+        let refused = try #require(app.activityRows.first { $0.host == kitchen && $0.record.outcome == "gatekeeper_denied" })
+        app.review(refused.record, on: kitchen)
         #expect(app.route == .host(.rules, kitchen))
+        #expect(app.rulesFocus == refused.selection)
     }
 }

@@ -48,6 +48,17 @@ final class RulesClient: LatchClient, @unchecked Sendable {
     func statusFollow() -> AsyncThrowingStream<LocalStatus, Error> { AsyncThrowingStream { _ in } }
     func auditFollow(host: String?, after: String?, last: Int?) -> AsyncThrowingStream<AuditLine, Error> { AsyncThrowingStream { _ in } }
     func agents(host: String?) async throws -> AgentsList { try Fixtures.decode(host == nil ? Fixtures.agents : Fixtures.agentsStudio) }
+    /// `audit suggest`'s answer for a record, as the test scripts it.
+    var suggested: (String) throws -> String = { _ in #"{"suggestion":null}"# }
+    func auditSuggest(_ record: String, host: String?) async throws -> AuditSuggest {
+        try Fixtures.decode(try suggested(record))
+    }
+    func auditJudge(_ id: String, host: String?) async throws -> String {
+        try Fixtures.keptCalls[id] ?? { throw LatchError.failed(LatchFailure(code: "no_such_request", message: "no \(id)")) }()
+    }
+    func audit(host: String?, before: String?) async throws -> AuditPage {
+        try AuditPage.parse(Data((host == nil ? Fixtures.studioAudit : Fixtures.kitchenAudit).utf8))
+    }
     func perform(_ args: [String]) async throws {}
     func stop() async throws {}
 }
@@ -138,5 +149,81 @@ struct RulesTests {
         let last = changedElsewhere ? "Changed on the laptop." : "Never touch ~/Taxes or ~/Finance."
         #expect(client.sets.map(\.text) == ["Never touch ~/Taxes.", last])
         #expect(app.rulesDrafts["studio"] == nil && app.savedRule("studio")?.text == last)
+    }
+}
+
+/// Rules' last allowed and refused requests: the rule they were judged by,
+/// in words, and the edit the judge says would rule each the other way.
+@MainActor
+struct RulesCoachTests {
+    private func app(_ client: RulesClient) async throws -> (AppModel, HostEntry) {
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
+        app.stage(status: try Fixtures.decode(Fixtures.serving))
+        app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
+        app.place = .host(.rules)
+        await app.enter(.host(.rules, app.host))
+        let studio = try #require(app.host)
+        app.feed(for: studio).stage(Fixtures.studioAudit)
+        return (app, studio)
+    }
+
+    /// Rules presents latch's checked edit, and Apply saves it; an edit of
+    /// a rule that has changed since isn't offered.
+    @Test func latchsSuggestionIsShownAndApplySavesIt() async throws {
+        let client = RulesClient()
+        let (app, studio) = try await app(client)
+        let allowed = try #require(app.lastJudged(on: studio, refused: false))
+        #expect(allowed.command == "latch exec cat Projects/latch-demo/README.md")
+        let never = "Never touch ~/Finance or my tax returns. Never run `cat Projects/latch-demo/README.md`."
+        let revision = try #require(app.savedRule(studio.name)?.revision)
+        client.suggested = { record in
+            #expect(record == allowed.id)
+            return #"{"suggestion":"rule","rule":"\#(never)","revision":"\#(revision)"}"#
+        }
+        await app.suggest(for: allowed, on: studio)
+        #expect(app.suggestion(for: allowed, on: studio) == .rule(never))
+        await app.applyRule(never, on: studio.name)
+        #expect(client.sets.map(\.text) == [never])
+        await app.suggest(for: allowed, on: studio)
+        #expect(app.suggestion(for: allowed, on: studio) == .nothing)
+    }
+
+    /// A check that failed is asked again the next time, not kept as none.
+    @Test func aFailedCheckIsAskedAgain() async throws {
+        let client = RulesClient()
+        let (app, studio) = try await app(client)
+        let notCovered = try #require(app.feed(for: studio).records.last { $0.gate?.verdict == "not_covered" })
+        client.suggested = { _ in throw LatchError.failed(LatchFailure(code: "plow_unreachable", message: "no Plow")) }
+        await app.suggest(for: notCovered, on: studio)
+        #expect(app.suggestion(for: notCovered, on: studio) == .nothing)
+        client.suggested = { _ in #"{"suggestion":"ask_in_message"}"# }
+        await app.suggest(for: notCovered, on: studio)
+        #expect(app.suggestion(for: notCovered, on: studio) == .askInMessage)
+    }
+
+    /// A judgment names its rule by revision: the rule now when it's at that
+    /// revision, else the text its save kept, else none.
+    @Test func aJudgmentsRuleIsQuotedByItsRevision() async throws {
+        let (app, studio) = try await app(RulesClient())
+        app.feed(for: studio).stage(#"""
+        {"cursor":"9f00","record":{"agent":null,"caller":"6b55a78f","caller_name":"studio","decision":"allow","details":{"args":{"after":"abc1230000000000ffff","before":null,"command":"set","text":"Never send email."}},"id":"9f00","op":"rules","outcome":"ok","time":"2026-10-23T04:50:00Z","command":"latch rules set"},"type":"record"}
+        """#)
+        #expect(app.ruleText("ea4ac6c6bd9184d7", on: studio) == "Never touch ~/Finance or my tax returns.")
+        #expect(app.ruleText("abc1230000000000", on: studio) == "Never send email.")
+        #expect(app.ruleText("0000000000000000", on: studio) == nil)
+    }
+
+    /// The window opens on the newest refusal of the last 15 minutes, on
+    /// any host; its banner opens that host's Rules.
+    @Test func aRecentRefusalOnAnyHostOpensItsRules() async throws {
+        let (app, _) = try await app(RulesClient())
+        let kitchen = try #require(try AuditPage.parse(Data(Fixtures.kitchenAudit.utf8)).records.last { $0.outcome == "gatekeeper_denied" })
+        await app.noticeDenials(now: kitchen.time.addingTimeInterval(14 * 60))
+        #expect(app.denial == Denial(host: "pi-kitchen", request: "latch exec rm recipes/old.txt"))
+        app.reviewDenial()
+        #expect(app.route == .host(.rules, app.hosts.first { $0.name == "pi-kitchen" }))
+        #expect(app.denial == nil)
+        await app.noticeDenials(now: kitchen.time.addingTimeInterval(16 * 60))
+        #expect(app.denial == nil)
     }
 }

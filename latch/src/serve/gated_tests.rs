@@ -1397,7 +1397,8 @@ async fn the_owners_rules_commands_work_over_the_connection_and_never_for_an_age
     assert_eq!(done["cleared"], true);
     assert_eq!(rule(), None);
 
-    // Every command is audited by revision, never by text.
+    // Every command is audited by revision; a saved rule's text is kept
+    // with its revision, and no refused one's is.
     let audit = t.audit();
     let rules_records: Vec<&Value> = audit.iter().filter(|r| r["op"] == "rules").collect();
     assert_eq!(rules_records.len(), 12);
@@ -1406,11 +1407,27 @@ async fn the_owners_rules_commands_work_over_the_connection_and_never_for_an_age
         .filter(|r| r["decision"] == "deny")
         .count();
     assert_eq!(denied, 6, "five from the agent, one stale edit");
-    let text = serde_json::to_string(&audit).unwrap();
-    assert!(
-        !text.contains("send email") && !text.contains("Never pay"),
-        "{text}"
+    let saved: Vec<(&Value, &Value)> = rules_records
+        .iter()
+        .filter(|r| !r["args"]["text"].is_null())
+        .map(|r| (&r["args"]["after"], &r["args"]["text"]))
+        .collect();
+    assert_eq!(
+        saved,
+        [
+            (
+                &json!(crate::gate::rules::revision("Never send email.")),
+                &json!("Never send email.")
+            ),
+            (&json!(crate::gate::rules::revision(edited)), &json!(edited)),
+        ]
     );
+    let text = serde_json::to_string(&audit).unwrap();
+    assert!(!text.contains("Anything goes"), "{text}");
+    // serve.log names each command, never a saved rule's text.
+    let log = crate::log::captured().join("\n");
+    assert!(log.contains("rules:"), "{log}");
+    assert!(!log.contains("Never send email"), "{log}");
 }
 
 /// One request over a phone link's connection, as the phone page sends it.
