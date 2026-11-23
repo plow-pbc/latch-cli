@@ -181,7 +181,7 @@ final class AppModel {
 
     var entry: Entry {
         switch route {
-        case .account(.agents): Entry(place: place, hosts: hosts.filter { $0.isThisMac || $0.online != false }.map(\.name))
+        case .account(.agents), .account(.activity): Entry(place: place, hosts: reachableHosts.map(\.name))
         case .account: Entry(place: place)
         case let .host(_, host): Entry(place: place, hosts: host.map { [$0.name] } ?? [], online: host?.online)
         }
@@ -189,6 +189,10 @@ final class AppModel {
 
     /// The sidebar's hosts, this Mac first.
     var hosts: [HostEntry] { HostEntry.list(local: status, account: account) }
+
+    /// The hosts that can be asked: this Mac, and every other one Plow
+    /// doesn't count offline.
+    var reachableHosts: [HostEntry] { hosts.filter { $0.isThisMac || $0.online != false } }
 
     /// The host the workspace shows: the one picked while it's listed,
     /// else this Mac when it hosts, else the first other host.
@@ -269,11 +273,13 @@ final class AppModel {
         case .account(.connections):
             if refresh || connections == nil { await refreshConnections() }
             if refresh || !Self.held(devices) { await refreshDevices() }
-        case let .host(.activity, host):
-            // Its feed is the window's (`activityFeed`); its device rule
-            // heads it.
+        case let .host(.rules, host):
+            // Its feed is the window's (`activityFeeds`), under the device rule.
             guard let host, host.isThisMac || host.online != false else { return }
             if refresh || !Self.held(summaries[host.name]?.rules) { await refreshRules(on: host) }
+        case .account(.activity):
+            // Its feeds are the window's; the agents' names are Plow's.
+            if refresh || agents == nil { await refreshAgentList() }
         }
     }
 
@@ -974,6 +980,9 @@ final class AppModel {
         }
     }
 
+    /// Each gate record's kept call, by record id, as Activity read it.
+    var keptCalls: [String: KeptCall] = [:]
+
     /// For snapshots: as `latch agents` said.
     func stage(agents: AgentsList, standings: [String: Result<AgentsList, LatchError>]) {
         self.agents = agents.agents
@@ -985,12 +994,14 @@ final class AppModel {
     /// Each host's activity, by host name, made when a screen first shows it.
     private var feeds: [String: ActivityFeed] = [:]
 
-    /// The feed Home or Activity shows for the selected host, while one of
-    /// them is the screen; the window runs it.
-    var activityFeed: ActivityFeed? {
-        guard case let .host(screen, host?) = route, screen == .home || screen == .activity,
-              host.isThisMac || host.online != false else { return nil }
-        return feed(for: host)
+    /// The feeds the screen showing shows, which the window runs: the
+    /// selected host's on Home and Rules, every reachable host's on Activity.
+    var activityFeeds: [ActivityFeed] {
+        switch route {
+        case .account(.activity): reachableHosts.map(feed(for:))
+        case let .host(screen, host?) where [.home, .rules].contains(screen) && (host.isThisMac || host.online != false): [feed(for: host)]
+        default: []
+        }
     }
 
     /// The window closed: every feed stops now, not after its grace.
@@ -1022,43 +1033,41 @@ final class AppModel {
     var activitySearch = ""
     var activityAgent: AgentTarget?
 
-    /// A host's requests, or one agent's there: that host's Activity with
+    /// The account's requests, or one agent's on a host: Activity with
     /// every outcome, or the one asked for, no search, and no connections or
     /// owner's reads, which Home's counts leave out.
     func openActivity(_ host: HostEntry, agent uid: String? = nil, showing filter: ActivityFilter = .all) {
-        chosenHost = host.name
-        place = .host(.activity)
+        place = .account(.activity)
         activityAgent = uid.map { AgentTarget(host: host.name, agent: $0) }
         activityFilter = filter
         activitySearch = ""
         showConnections = false
     }
 
-    /// One request on a host: that host's Activity, the request selected
-    /// and shown in the inspector, opened if it was closed. Filters it
-    /// passes are kept; if one would hide it, the outcome, search and agent
-    /// filters go.
+    /// One request on a host: Activity, the request selected and shown in
+    /// the inspector, opened if it was closed. Filters it passes are kept;
+    /// if one would hide it, the outcome, search and agent filters go.
     func openRecord(_ record: AuditRecord, on host: HostEntry) {
         if activityRows([record], on: host).isEmpty {
             openActivity(host)
         } else {
-            chosenHost = host.name
-            place = .host(.activity)
+            place = .account(.activity)
         }
         selectedRecord = OnHost(host: host.name, id: record.id)
-        inspecting.insert(.activity)
+        inspecting.insert(.account(.activity))
     }
 
-    /// The record the inspector shows on a host: the one selected there,
+    /// The record the inspector shows, with its host: the one selected,
     /// while Activity lists it.
-    func inspectedRecord(on host: HostEntry) -> AuditRecord? {
-        guard let selected = selectedRecord, selected.host == host.name,
-              let record = feeds[host.name]?.records.last(where: { $0.id == selected.id }) else { return nil }
-        return activityRows([record], on: host).isEmpty ? nil : record
+    var inspectedRecord: ActivityRow? {
+        guard let selected = selectedRecord, let host = reachableHosts.first(where: { $0.name == selected.host }),
+              let record = feeds[host.name]?.records.last(where: { $0.id == selected.id }),
+              !activityRows([record], on: host).isEmpty else { return nil }
+        return ActivityRow(record: record, host: host)
     }
 
-    /// Which of the screens with an inspector show it; each keeps its own.
-    var inspecting: Set<HostScreen> = [.activity, .vault]
+    /// Which of the places with an inspector show it; each keeps its own.
+    var inspecting = Place.inspected
 
     /// The agent Activity narrows to on a host: only the one asked for
     /// there.
@@ -1066,13 +1075,30 @@ final class AppModel {
         activityAgent?.host == host.name ? activityAgent?.agent : nil
     }
 
-    /// What Activity lists of a host's loaded records, newest first: those
-    /// its filters all match. The agent is matched by uid, never by name.
+    /// What Activity lists: every reachable host's rows, newest first.
+    var activityRows: [ActivityRow] {
+        reachableHosts.flatMap { host in activityRows(feed(for: host).records, on: host).map { ActivityRow(record: $0, host: host) } }
+            .sorted { $0.record.time > $1.record.time }
+    }
+
+    /// Who asked a record's request: an agent by its name, Plow's when the
+    /// record has none; else the owner, from which machine.
+    func caller(of record: AuditRecord, on host: HostEntry) -> (who: String, kind: String) {
+        var caller = record.callerLabel(hostKey: key(of: host), hostName: host.name, isThisMac: host.isThisMac)
+        if record.callerName == nil, let uid = record.agent, let name = agents?.first(where: { $0.uid == uid })?.name { caller.who = name }
+        return caller
+    }
+
+    /// What Activity lists of a host's loaded records, newest first: one
+    /// row per request (a judgment's own record is its request's), those
+    /// its filters all match. An agent asked for is matched by uid, never
+    /// by name, on its host alone.
     func activityRows(_ records: [AuditRecord], on host: HostEntry) -> [AuditRecord] {
-        let agent = activityAgent(on: host), hostKey = key(of: host)
+        if let target = activityAgent, target.host != host.name { return [] }
+        let agent = activityAgent(on: host)
         let query = activitySearch.trimmingCharacters(in: .whitespaces).lowercased()
         return records.reversed().filter { record in
-            guard showConnections || !record.isBackground else { return false }
+            guard record.op != "gate", showConnections || !record.isBackground else { return false }
             if let agent, record.agent != agent { return false }
             switch activityFilter {
             case .all: break
@@ -1080,8 +1106,8 @@ final class AppModel {
             case .refused: guard record.isRefused else { return false }
             }
             guard !query.isEmpty else { return true }
-            let caller = record.callerLabel(hostKey: hostKey, hostName: host.name, isThisMac: host.isThisMac)
-            return [record.command ?? "", caller.who, caller.kind, record.status.title].contains { $0.lowercased().contains(query) }
+            let caller = self.caller(of: record, on: host)
+            return [record.command ?? "", caller.who, caller.kind, record.status.title, host.name].contains { $0.lowercased().contains(query) }
         }
     }
 

@@ -79,7 +79,7 @@ struct EntryTests {
     }
 
     @Test(arguments: [Place.host(.home), .host(.settings), .host(.vault), .account(.agents), .account(.connections),
-                      .host(.activity)])
+                      .host(.rules), .account(.activity)])
     func comingBackToALoadedScreenStartsNoLatch(_ place: Place) async throws {
         let client = CountingClient()
         let app = try app(client)
@@ -102,7 +102,7 @@ struct EntryTests {
         #expect(client.calls == ["rules show"])
         await app.enter(.host(.settings, kitchen))
         #expect(client.calls.dropFirst(1).sorted() == ["rules show", "status --host"])
-        await app.enter(.host(.activity, mac))
+        await app.enter(.host(.rules, mac))
         #expect(client.calls.count == 3)
         await app.enter(.host(.home, mac))
         #expect(client.calls.dropFirst(3) == ["vault list"])
@@ -186,17 +186,20 @@ struct EntryTests {
         #expect(reachable.allSatisfy { app.standings[$0.name] != nil })
     }
 
-    @Test func homeAndActivityShareTheirHostsFeedAndOtherScreensHaveNone() throws {
+    @Test func homeRulesAndActivityShareTheirHostsFeedsAndOtherScreensHaveNone() throws {
         let app = try app(CountingClient())
         app.place = .host(.home)
-        let home = try #require(app.activityFeed)
-        app.place = .host(.activity)
-        #expect(app.activityFeed === home)
+        let home = try #require(app.activityFeeds.first)
+        app.place = .host(.rules)
+        #expect(app.activityFeeds.map(ObjectIdentifier.init) == [ObjectIdentifier(home)])
         app.place = .host(.vault)
-        #expect(app.activityFeed == nil)
-        app.place = .host(.activity)
+        #expect(app.activityFeeds.isEmpty)
+        // Activity follows every host it can reach, the one picked among them.
+        app.place = .account(.activity)
+        #expect(app.activityFeeds.count == app.reachableHosts.count && app.activityFeeds.contains { $0 === home })
+        app.place = .host(.home)
         app.chosenHost = "pi-kitchen"
-        #expect(app.activityFeed !== home)
+        #expect(app.activityFeeds.first !== home)
     }
 }
 
@@ -240,7 +243,7 @@ struct FeedGraceTests {
     @Test func theWindowClosingEndsEveryFeedAtOnce() async throws {
         let app = AppModel(client: Following(), store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
         app.stage(status: try Fixtures.decode(Fixtures.serving))
-        let feed = try #require(app.activityFeed)
+        let feed = try #require(app.activityFeeds.first)
         feed.start()
         await waitUntil { feed.caughtUp }
         app.endFeeds()
@@ -273,7 +276,7 @@ struct FeedGraceTests {
 /// Back in front, the app reads again the screen showing, whichever it is.
 @MainActor
 struct ActivationTests {
-    @Test(arguments: [HostScreen.activity, .vault, .home])
+    @Test(arguments: [HostScreen.rules, .vault, .home])
     func comingToTheFrontReadsTheVisibleScreenAgain(_ section: HostScreen) async throws {
         let client = CountingClient()
         let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)

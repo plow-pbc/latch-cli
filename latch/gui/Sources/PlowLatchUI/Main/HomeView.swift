@@ -181,8 +181,7 @@ private struct ActivitySections: View {
                 }
                 ForEach(calls.recent) { record in
                     GoRow(hint: "Opens it in Activity") { app.openRecord(record, on: host) } label: {
-                        RecentRow(record: record, caller: record.callerLabel(hostKey: app.key(of: host), hostName: host.name,
-                                                                            isThisMac: host.isThisMac))
+                        RecentRow(record: record, caller: app.caller(of: record, on: host))
                     }
                 }
                 // Home reaches back only a few pages on its own; the rest is
@@ -284,7 +283,7 @@ private struct OnHostSection: View {
         let summary = app.summaries[host.name]
         let plugins = app.plugins(of: host)
         Section("On \(host.name)") {
-            SummaryRow(host: host.spoken, title: "Always denied", value: summary?.rules?.map(Self.rules), opens: "Activity") { app.place = .host(.activity) }
+            SummaryRow(host: host.spoken, title: "Always denied", value: summary?.rules?.map(Self.rules), opens: "Rules") { app.place = .host(.rules) }
             SummaryRow(host: host.spoken, title: "Vault", value: summary?.vault?.map(Self.vault), opens: "Vault") { app.place = .host(.vault) }
             SummaryRow(host: host.spoken, title: "Plugins", value: plugins?.map(Self.plugins), opens: "Host Settings") {
                 app.place = .host(.settings)

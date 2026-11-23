@@ -51,7 +51,7 @@ nonisolated struct FakeLatchClient: LatchClient {
         return try await MainActor.run { try Fixtures.page(shot) }
     }
     func auditJudge(_ id: String, host: String?) async throws -> String {
-        #"{"id": "\#(id)", "request": {"model": "typesafe/jev-1.14"}, "answer": null}"#
+        Fixtures.keptCalls[id] ?? #"{"id": "\#(id)", "request": {"model": "typesafe/jev-1.14"}, "answer": null}"#
     }
     func rulesSet(_ text: String, host: String?, revision: String?) async throws {}
     func rulesTry(draft: String, action: String) async throws -> Bool { wordsDeny(draft: draft, action: action) }
@@ -176,6 +176,12 @@ nonisolated enum Fixtures {
     static let noHosts = #"{"account":{"owner_uid":"usr_5f2c9a7e","display_name":"Morgan"},"hosts":[],"default_host":null,"default_host_reason":"no_host","api_url":"http://127.0.0.1:18934"}"#
     // `rules show`, `vault list` and `status --local`'s `plugins` on studio,
     // and on pi-kitchen (read from laptop with `--host`).
+    /// `latch audit judge` of the calls studio's fixture keeps, as two of
+    /// scout's requests were judged.
+    static let keptCalls = [
+        "g43d47feb6f0de89c18a243f8": #"{"id":"g43d47feb6f0de89c18a243f8","layer":"owner","request":{"state":{"cited_message":{"when":"0 min ago","text":"show me the latch demo's readme"},"proposed_action":{"operation":"exec","argv":["cat","Projects/latch-demo/README.md"],"working_folder":"/Users/me","writes":[],"network":false,"secret_env":[]}}},"answer":null}"#,
+        "g0cb70261a6f2d3e48b9c1d05": #"{"id":"g0cb70261a6f2d3e48b9c1d05","layer":"owner","request":{"state":{"cited_message":{"when":"0 min ago","text":"what did we spend this year? it's in my Finance folder"},"proposed_action":{"operation":"exec","argv":["cat","Finance/2026.csv"],"working_folder":"/Users/me","writes":[],"network":false,"secret_env":[]}}},"answer":null}"#,
+    ]
     static let studioRules = #"{"agents":{"ba3c0b3ad1eba7a9a1eb04b67c9db0dd":"@scout:plow.co"},"deny_exec":{"agent_uids":[],"every_agent":false},"device_rule":{"revision":"ea4ac6c6bd9184d7479f8312f4ebca18db1804f21bba03212ac8f0dc80f35c7c","text":"Never touch ~/Finance or my tax returns."},"host":"studio"}"#
     static let studioVault = #"{"audit_id":"bcaf28dedfe777a60303c3ccd802a8a2380237b6f02988bc33dabb307431e0a6","items":[{"fields":[{"alias":false,"custom":false,"hidden":false,"label":"username"},{"alias":false,"custom":false,"hidden":true,"label":"password"}],"item":"v1","kind":"login","revision":1,"sites":["shop.example"],"title":"Shop (test)","totp":false,"username":"ada"},{"fields":[{"alias":false,"custom":false,"hidden":false,"label":"username"},{"alias":false,"custom":false,"hidden":true,"label":"password"}],"item":"v2","kind":"login","other_top_sites":["grocer-login.example"],"revision":1,"sites":["grocer.example"],"title":"Grocer (test)","totp":false,"username":"ada@example.com"},{"fields":[],"item":"v3","kind":"note","revision":1,"sites":[],"title":"Building notes (test)","totp":false},{"fields":[{"alias":false,"custom":false,"hidden":true,"label":"number"},{"alias":false,"custom":false,"hidden":true,"label":"code"},{"alias":false,"custom":false,"hidden":false,"label":"cardholder name"}],"item":"v4","kind":"card","revision":1,"sites":["shop.example"],"title":"Visa (test)","totp":false}]}"#
     static let studioPlugins = #"[{"enable":"latch plugins enable google","name":"google","reason":"its owner has not enabled it on this host","state":"disabled"},{"enable":"latch plugins enable messages","name":"messages","reason":"its owner has not enabled it on this host","state":"disabled"},{"enable":"latch plugins enable contacts","name":"contacts","reason":"its owner has not enabled it on this host","state":"disabled"}]"#
@@ -260,7 +266,7 @@ nonisolated enum Fixtures {
 {"cursor":"fa1629671e2b00ff12cd7a6c97b386dd6df5caec50ed83e22c03fccb0fc710b8","record":{"agent":"a74f38668570a45ddc4b762ba0465d74","caller":"9f4d06180a5fa0824b2bc4fc4f056b0395e90914cedf7709621e6559047263f2","caller_name":null,"decision":"allow","details":{"args":null,"gate":null,"started":null},"id":"fa1629671e2b00ff12cd7a6c97b386dd6df5caec50ed83e22c03fccb0fc710b8","op":"connect","outcome":"connected","time":"2026-10-23T04:58:04.519463Z","command":null},"type":"record"}
 {"cursor":"7b22c2ecbeb978b5ae0802dc6dd6c56d87d14c7d891c53d121dccb85d929a669","record":{"agent":"a74f38668570a45ddc4b762ba0465d74","caller":"9f4d06180a5fa0824b2bc4fc4f056b0395e90914cedf7709621e6559047263f2","caller_name":null,"decision":"deny","details":{"args":{"argv":["ls","Projects"],"network":false,"secret_env":[],"workdir":"/Users/me","writes":[]},"gate":{"caller":"agent","class":"intent","cited":"!kD3vqPmXc:plow.co/$Yx9pQ2rLmT0aWbN4","later_owner_messages":0,"device_rule":"ea4ac6c6bd9184d7","cost":1e-05,"latency_ms":416,"model":"typesafe/jev-1.14-20261014","model_request":"req_pjacfdrynfkuwigb","p":{"denied":0.0,"covered":0.44},"verdict":"not_covered"},"started":"2026-10-23T04:58:04.541515Z"},"id":"7b22c2ecbeb978b5ae0802dc6dd6c56d87d14c7d891c53d121dccb85d929a669","op":"exec","outcome":"gatekeeper_denied","time":"2026-10-23T04:58:04.967315Z","command":"latch exec ls Projects"},"type":"record"}
 {"cursor":"1f8656f30d7ad55e5bbe4ffc9ad1e915a6848c4ba0b15f613951794f9c4f5456","record":{"agent":"a74f38668570a45ddc4b762ba0465d74","caller":"9f4d06180a5fa0824b2bc4fc4f056b0395e90914cedf7709621e6559047263f2","caller_name":"scout","decision":"allow","details":{"args":null,"gate":null,"started":null},"id":"1f8656f30d7ad55e5bbe4ffc9ad1e915a6848c4ba0b15f613951794f9c4f5456","op":"connect","outcome":"connected","time":"2026-10-23T04:58:05.362647Z","command":null},"type":"record"}
-{"cursor":"0cb70259b986c3f4a06dad3e850c70bb3791f2e5ab4371517fd2658b2b8573a2","record":{"agent":"a74f38668570a45ddc4b762ba0465d74","caller":"9f4d06180a5fa0824b2bc4fc4f056b0395e90914cedf7709621e6559047263f2","caller_name":"scout","decision":"deny","details":{"args":{"argv":["cat","Finance/2026.csv"],"network":false,"secret_env":[],"workdir":"/Users/me","writes":[]},"gate":{"caller":"agent","class":"intent","cited":"!kD3vqPmXc:plow.co/$Yx9pQ2rLmT0aWbN4","later_owner_messages":0,"device_rule":"ea4ac6c6bd9184d7","cost":1e-05,"latency_ms":286,"model":"typesafe/jev-1.14-20261014","model_request":"req_xcprcsejhfkehxgp","p":{"denied":0.99,"covered":0.0},"verdict":"denied_by_rule"},"started":"2026-10-23T04:58:05.400589Z"},"id":"0cb70259b986c3f4a06dad3e850c70bb3791f2e5ab4371517fd2658b2b8573a2","op":"exec","outcome":"gatekeeper_denied","time":"2026-10-23T04:58:05.688109Z","command":"latch exec cat Finance/2026.csv"},"type":"record"}
+{"cursor":"0cb70259b986c3f4a06dad3e850c70bb3791f2e5ab4371517fd2658b2b8573a2","record":{"agent":"a74f38668570a45ddc4b762ba0465d74","caller":"9f4d06180a5fa0824b2bc4fc4f056b0395e90914cedf7709621e6559047263f2","caller_name":"scout","decision":"deny","details":{"args":{"argv":["cat","Finance/2026.csv"],"network":false,"secret_env":[],"workdir":"/Users/me","writes":[]},"gate":{"caller":"agent","class":"intent","cited":"!kD3vqPmXc:plow.co/$Yx9pQ2rLmT0aWbN4","later_owner_messages":0,"device_rule":"ea4ac6c6bd9184d7","cost":1e-05,"latency_ms":286,"model":"typesafe/jev-1.14-20261014","model_request":"req_xcprcsejhfkehxgp","p":{"denied":0.99,"covered":0.0},"kept_request":"g0cb70261a6f2d3e48b9c1d05","verdict":"denied_by_rule"},"started":"2026-10-23T04:58:05.400589Z"},"id":"0cb70259b986c3f4a06dad3e850c70bb3791f2e5ab4371517fd2658b2b8573a2","op":"exec","outcome":"gatekeeper_denied","time":"2026-10-23T04:58:05.688109Z","command":"latch exec cat Finance/2026.csv"},"type":"record"}
 {"cursor":"8f79bb19999f991d95fa4d5f40a8105d5a781460010c3338db102f95a60928fc","record":{"agent":"a74f38668570a45ddc4b762ba0465d74","caller":"9f4d06180a5fa0824b2bc4fc4f056b0395e90914cedf7709621e6559047263f2","caller_name":"scout","decision":"allow","details":{"args":null,"gate":null,"started":null},"id":"8f79bb19999f991d95fa4d5f40a8105d5a781460010c3338db102f95a60928fc","op":"connect","outcome":"connected","time":"2026-10-23T04:58:17.143652Z","command":null},"type":"record"}
 {"cursor":"f85509e49fcc611c3f36f66b4cbabaf6a396e6aa4e332ea0c51c951aaae3635f","record":{"agent":"a74f38668570a45ddc4b762ba0465d74","caller":"9f4d06180a5fa0824b2bc4fc4f056b0395e90914cedf7709621e6559047263f2","caller_name":"scout","decision":"allow","details":{"args":{"argv":["ls","Projects"],"duration_ms":28,"exit_code":0,"network":false,"secret_env":[],"signal":null,"stderr_bytes":0,"timed_out":false,"timeout":60,"workdir":"/Users/me","writes":[]},"gate":{"caller":"agent","class":"intent","cited":"!kD3vqPmXc:plow.co/$Yx9pQ2rLmT0aWbN4","later_owner_messages":0,"device_rule":"ea4ac6c6bd9184d7","cost":1.1e-05,"latency_ms":505,"model":"typesafe/jev-1.14-20261014","model_request":"req_hzjunxllqsenomkr","p":{"denied":0.0,"covered":0.87},"verdict":"allow"},"started":"2026-10-23T04:58:17.190603Z"},"id":"f85509e49fcc611c3f36f66b4cbabaf6a396e6aa4e332ea0c51c951aaae3635f","op":"exec","outcome":"ok","time":"2026-10-23T04:58:17.738563Z","command":"latch exec ls Projects"},"type":"record"}
 {"cursor":"2b5df2550f8a2afbf4abf629b92bdaf2fd6985313989e80be3464f8cdf8dbd3a","record":{"agent":"a74f38668570a45ddc4b762ba0465d74","caller":"9f4d06180a5fa0824b2bc4fc4f056b0395e90914cedf7709621e6559047263f2","caller_name":"scout","decision":"allow","details":{"args":null,"gate":null,"started":null},"id":"2b5df2550f8a2afbf4abf629b92bdaf2fd6985313989e80be3464f8cdf8dbd3a","op":"connect","outcome":"connected","time":"2026-10-23T04:58:18.208986Z","command":null},"type":"record"}
@@ -528,20 +534,20 @@ package enum SnapshotRunner {
                                                              message: #"could not connect to host "pi-kitchen"; nothing was sent"#))
             let stopped = LatchError.failed(LatchFailure(code: "host_stopped", message: #"host "pi-kitchen" stopped serving"#))
             let busy = LatchError.failed(LatchFailure(code: "state_busy", message: "another latch is changing /Users/me/.latch; try again"))
-            let errors: [(String, String?, HostScreen, HostSummary)] = [
-                ("23-error-rules-pi-kitchen-unreachable", "pi-kitchen", .activity, HostSummary(rules: .failure(unreachable))),
-                ("23-error-activity-pi-kitchen-stopped", "pi-kitchen", .activity, HostSummary()),
-                ("23-error-rules-unknown-code", nil, .activity, HostSummary(rules: .failure(busy))),
-                ("23-error-home-pi-kitchen-rules-unreachable", "pi-kitchen", .home,
+            let errors: [(String, String?, Place, HostSummary)] = [
+                ("23-error-rules-pi-kitchen-unreachable", "pi-kitchen", .host(.rules), HostSummary(rules: .failure(unreachable))),
+                ("23-error-activity-pi-kitchen-stopped", "pi-kitchen", .account(.activity), HostSummary()),
+                ("23-error-rules-unknown-code", nil, .host(.rules), HostSummary(rules: .failure(busy))),
+                ("23-error-home-pi-kitchen-rules-unreachable", "pi-kitchen", .host(.home),
                  HostSummary(rules: .failure(unreachable), vault: .success(try Fixtures.decode(Fixtures.piVault)))),
             ]
-            for (name, chosen, screen, summary) in errors {
+            for (name, chosen, place, summary) in errors {
                 let app = AppModel(client: FakeLatchClient(), still: true)
                 app.stage(status: try Fixtures.decode(Fixtures.serving))
                 app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
                 app.stage(summary: summary, for: chosen ?? "studio")
                 app.chosenHost = chosen
-                app.place = .host(screen)
+                app.place = place
                 stageActivity(app)
                 if let kitchen = app.hosts.first(where: { $0.name == "pi-kitchen" }) {
                     app.feed(for: kitchen).stage("", error: stopped)
@@ -570,9 +576,10 @@ package enum SnapshotRunner {
                 app.stage(account: try Fixtures.decode(account))
                 try stageSummaries(app)
                 app.chosenHost = chosen
-                app.place = .host(.activity)
+                app.place = .account(.activity)
                 app.activityFilter = filter
                 stageActivity(app)
+                await stageKeptCalls(app)
                 if let host = app.host, let record = app.feed(for: host).records.last(where: pick) {
                     app.selectedRecord = OnHost(host: host.name, id: record.id)
                 }
@@ -586,7 +593,7 @@ package enum SnapshotRunner {
                 let app = AppModel(client: FakeLatchClient(), still: true)
                 app.stage(status: try Fixtures.decode(Fixtures.serving))
                 app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
-                app.place = .host(.activity)
+                app.place = .account(.activity)
                 app.activityFilter = .refused
                 if let studio = app.host {
                     let stops = Fixtures.studioAudit.replacingOccurrences(of: #"{"cursor":"afe3958"#, with: Fixtures.stops + #"{"cursor":"afe3958"#)
@@ -620,19 +627,19 @@ package enum SnapshotRunner {
             let shells: [(String, (AppModel, HostEntry) -> Void)] = [
                 ("25-shell-activity-inspector", { app, studio in
                     app.feed(for: studio).stage(Fixtures.studioAudit)
-                    app.place = .host(.activity)
+                    app.place = .account(.activity)
                     if let record = app.feed(for: studio).records.last(where: { $0.callerName == "scout" && $0.op == "exec" }) {
                         app.selectedRecord = OnHost(host: studio.name, id: record.id)
                     }
                 }),
                 ("25-shell-activity-no-selection", { app, studio in
                     app.feed(for: studio).stage(Fixtures.studioAudit)
-                    app.place = .host(.activity)
+                    app.place = .account(.activity)
                 }),
                 ("25-shell-vault-inspector-closed", { app, studio in
                     app.stage(summary: HostSummary(vault: .success(try! Fixtures.decode(Fixtures.vaultItems))), for: studio.name)
                     app.place = .host(.vault)
-                    app.inspecting.remove(.vault)
+                    app.inspecting.remove(.host(.vault))
                 }),
                 ("25-shell-account-connections", { app, _ in
                     app.stage(connections: Connections(try! Fixtures.decode(Fixtures.setup(on: [])) as SetupStatus))
@@ -659,7 +666,7 @@ package enum SnapshotRunner {
                 let app = AppModel(client: FakeLatchClient(), still: true)
                 app.stage(status: try Fixtures.decode(Fixtures.serving))
                 app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
-                app.place = .host(.activity)
+                app.place = .account(.activity)
                 if let studio = app.host {
                     app.feed(for: studio).stage(Fixtures.studioAudit)
                     if let record = app.feed(for: studio).records.last(where: { $0.callerName == "scout" && $0.op == "exec" }) {
@@ -674,7 +681,7 @@ package enum SnapshotRunner {
                     let app = AppModel(client: FakeLatchClient(), still: true)
                     app.stage(status: try Fixtures.decode(Fixtures.serving))
                     app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
-                    app.place = .host(.activity)
+                    app.place = .account(.activity)
                     guard let studio = app.host else { continue }
                     stage(app, studio)
                     _ = app.stage(.done, progress: full)
@@ -691,7 +698,7 @@ package enum SnapshotRunner {
                 guard let record = try AuditPage.parse(Data(Fixtures.browserAudit.utf8)).records.last(where: { $0.args?.command == command }) else {
                     throw LatchError.unreachable("no \(command) record in the fixture")
                 }
-                let inspector = RecordInspector(record: record, caller: ("You", "on this Mac"), hostName: "studio", host: nil)
+                let inspector = RecordInspector(record: record, host: HostEntry(name: "studio", isThisMac: true))
                 try await render(inspector.environment(app).frame(width: 340, height: 760), size: CGSize(width: 340, height: 760), dark: dark,
                                  file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
             }
@@ -702,7 +709,7 @@ package enum SnapshotRunner {
                 guard let record = records.last(where: { $0.gate?.keptRequest != nil }) else {
                     throw LatchError.unreachable("no record with a kept gatekeeper request in the fixture")
                 }
-                let inspector = RecordInspector(record: record, caller: ("scout", "agent"), hostName: "studio", host: nil)
+                let inspector = RecordInspector(record: record, host: HostEntry(name: "studio", isThisMac: true))
                 try await render(inspector.environment(app).frame(width: 340, height: 1240), size: CGSize(width: 340, height: 1240), dark: dark,
                                  file: output.appending(path: "14-activity-inspector-gatekeeper-request-\(dark ? "dark" : "light").png"))
             }
@@ -768,12 +775,12 @@ package enum SnapshotRunner {
                     .environment(app), size: CGSize(width: 640, height: 500), dark: dark, file: menu)
             }
         }
-        // The device rule: Activity headed by studio's, an unsaved change
-        // to it, pi-kitchen's never answered, and sidecar on a latch from
-        // before device rules.
+        // The device rule: studio's Rules, an unsaved change to it,
+        // pi-kitchen's never answered, and sidecar on a latch from before
+        // device rules.
         for dark in [false, true] {
             let screens: [(String, String?, (AppModel) -> Void)] = [
-                ("16-device-rule-studio-activity", nil, { _ in }),
+                ("16-device-rule-studio-rules", nil, { _ in }),
                 ("16-device-rule-studio-unsaved", nil, { app in
                     app.typeRule("Never touch ~/Finance or my tax returns.\nNever send email outside the company.", on: "studio")
                 }),
@@ -788,7 +795,7 @@ package enum SnapshotRunner {
                 app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
                 try stageSummaries(app)
                 app.chosenHost = chosen
-                app.place = .host(.activity)
+                app.place = .host(.rules)
                 stageActivity(app)
                 stage(app)
                 _ = app.stage(.done, progress: full)
@@ -1064,6 +1071,15 @@ package enum SnapshotRunner {
     private static func stageActivity(_ app: AppModel) {
         for host in app.hosts where host.name == "studio" || host.name == "pi-kitchen" {
             app.feed(for: host).stage(host.name == "studio" ? Fixtures.studioAudit : Fixtures.kitchenAudit)
+        }
+    }
+
+    /// The messages the staged records cite, as their kept calls say.
+    private static func stageKeptCalls(_ app: AppModel) async {
+        for host in app.reachableHosts {
+            for record in app.feed(for: host).records where record.gate?.keptRequest != nil {
+                await app.readKeptCall(record, on: host)
+            }
         }
     }
 

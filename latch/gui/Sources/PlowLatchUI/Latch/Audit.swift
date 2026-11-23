@@ -96,6 +96,8 @@ nonisolated struct AuditRecord: Decodable, Equatable, Identifiable {
         var cited: String?
         /// The device rule's revision it was judged by, when there was one.
         var deviceRule: String?
+        /// The judgment's own record, written before the request ran.
+        var gateRecord: String?
         /// The owner's messages after the cited one, read with it.
         var laterOwnerMessages: Int?
         /// `denied` and `covered`, each 0…1, or null when not asked.
@@ -158,12 +160,21 @@ nonisolated struct AuditRecord: Decodable, Equatable, Identifiable {
         }
     }
 
-    /// A connection, an owner's read, or any caller's list of plugins that
-    /// was answered (every `latch status` asks each host for it): shown in
-    /// Activity only on request. A refused one stays in view.
+    /// A connection, an owner's read or change of the rules, a host that
+    /// couldn't reach Plow, or any caller's list of plugins that was
+    /// answered (every `latch status` asks each host for it): shown in
+    /// Activity only on request. Another refusal stays in view.
     var isBackground: Bool {
-        (op == "connect" && decision == "allow") || isOwnerRead
+        (op == "connect" && decision == "allow") || isOwnerRead || (agent == nil && op == "rules") || outcome == "plow_unreachable"
             || (op == "plugins" && args?.command == "list" && outcome == "ok")
+    }
+
+    /// The request as Activity lists it: latch's words, without `latch exec`
+    /// before a command line or `latch` before anything else.
+    var request: String? {
+        guard let command else { return nil }
+        let prefix = ["latch exec ", "latch "].first(where: command.hasPrefix) ?? ""
+        return String(command.dropFirst(prefix.count))
     }
 }
 

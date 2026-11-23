@@ -7,7 +7,7 @@ import SwiftUI
 /// the sidebar and the inspector's content are SwiftUI, on the one
 /// `AppModel`. While it's open it runs what the model reads and follows
 /// for the window: this Mac's status, Plow's hosts, the reads of the place
-/// showing (cancelled when it changes) and the selected host's activity;
+/// showing (cancelled when it changes) and the hosts' activity;
 /// closing it ends them. It presents the model's sheets and questions.
 final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolbarDelegate, NSUserInterfaceValidations {
     /// The open main window; the app has at most one.
@@ -47,7 +47,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     private var tasks: [Task<Void, Never>] = []
     private var entered: AppModel.Entry?
     private var entering: Task<Void, Never>?
-    private var following: ActivityFeed?
+    private var following: [ActivityFeed] = []
     private var activation: NSObjectProtocol?
     private var closed = false
 
@@ -67,7 +67,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         if let defaults, !app.still {
             app.restore(place: defaults.string(forKey: Self.placeKey) ?? "", host: defaults.string(forKey: Self.hostKey))
             if let inspecting = defaults.stringArray(forKey: Self.inspectingKey) {
-                app.inspecting = Set(inspecting.compactMap(HostScreen.init(rawValue:)))
+                app.inspecting = Set(inspecting.compactMap(Place.init(rawValue:)))
             }
         }
 
@@ -122,7 +122,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         bar.pageTarget = screens
         bar.search = { [app] text in
             switch app.place {
-            case .host(.activity): app.activitySearch = text
+            case .account(.activity): app.activitySearch = text
             case .host(.vault): app.vaultSearch = text
             default: break
             }
@@ -199,7 +199,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         tasks = []
         entering?.cancel()
         entering = nil
-        following = nil
+        following = []
         app.endFeeds()
         // What was over the window goes with it, unanswered.
         if let window { sheets.end(over: window) }
@@ -236,23 +236,23 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         if window.title != title { window.title = title }
         if window.subtitle != subtitle { window.subtitle = subtitle }
 
-        let onHost = if case .host = app.place { true } else { false }
-        if barItem.isHidden == onHost { Self.unanimated { barItem.isHidden = !onHost } }
+        // The bar over a host's screens, and over Activity for its search.
+        let barred = if case .host = app.place { true } else { app.place == .account(.activity) }
+        if barItem.isHidden == barred { Self.unanimated { barItem.isHidden = !barred } }
         // The accessory only folds away; hidden, the bar's tabs and field
         // leave the key loop and what VoiceOver reads as well.
-        if bar.isHidden == onHost { bar.isHidden = !onHost }
+        if bar.isHidden == barred { bar.isHidden = !barred }
 
         // The inspector on the screens that have one, as each was left;
         // shown or hidden by a change of place at once, not slid.
-        let inspecting = if case let .host(screen) = app.place { HostScreen.inspected.contains(screen) && app.inspecting.contains(screen) }
-            else { false }
+        let inspecting = Place.inspected.contains(app.place) && app.inspecting.contains(app.place)
         if inspectorItem.isCollapsed == inspecting {
             Self.unanimated { inspectorItem.isCollapsed = !inspecting }
             // Tab reaches what the inspector shows only once the window
             // has counted it in again: AppKit leaves out a collapsed one.
             window.recalculateKeyViewLoop()
         }
-        if case let .host(screen, _) = route, HostScreen.inspected.contains(screen), inspectorShows.route != route { inspectorShows.route = route }
+        if Place.inspected.contains(app.place), inspectorShows.route != route { inspectorShows.route = route }
 
         if !app.still {
             // Each place's reads, for the route that keyed them: a change of
@@ -263,13 +263,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
                 entering?.cancel()
                 entering = Task { [app] in await app.enter(route) }
             }
-            // Home and Activity share the selected host's feed: going between
-            // them keeps it running.
-            let feed = app.activityFeed
-            if feed !== following {
-                feed?.start()
-                following?.stop()
-                following = feed
+            // Home, Rules and Activity share the hosts' feeds: going between
+            // them keeps each running.
+            let feeds = app.activityFeeds
+            if feeds.map(ObjectIdentifier.init) != following.map(ObjectIdentifier.init) {
+                feeds.forEach { $0.start() }
+                following.forEach { $0.stop() }
+                following = feeds
             }
         }
         if let defaults, !app.still {
@@ -281,18 +281,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         // gone, not greyed, on a page of the account's. Last: what lays the
         // window out above can draw the screen, which sets its buttons'
         // actions, and a change made during this pass isn't followed.
-        if case let .host(screen) = app.place {
-            let search: (String, String)? = switch screen {
-            case .activity: ("Search requests", app.activitySearch)
-            case .vault: ("Search items", app.vaultSearch)
-            default: nil
-            }
+        if app.place == .account(.activity) {
+            bar.show(nil, pages: [], search: ("Search requests", app.activitySearch))
+        } else if case let .host(screen) = app.place {
             let actions = screens.actions
-            let pages: [(PageButton, Bool)] = switch screen {
-            case .vault: [(.newItem, actions?.newItem != nil), (.importItems, actions?.importItems != nil)]
-            default: []
-            }
-            bar.show(screen, pages: pages, search: search)
+            let vault = screen == .vault
+            bar.show(screen, pages: vault ? [(.newItem, actions?.newItem != nil), (.importItems, actions?.importItems != nil)] : [],
+                     search: vault ? ("Search items", app.vaultSearch) : nil)
         }
         let pending = app.updateAvailable && !app.updateInstalled
         if updateItem.isHidden == pending { updateItem.isHidden = !pending }
@@ -314,7 +309,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     /// The place showing has a search: Activity's requests, Vault's items.
     /// The place's, not the bar's field: an account page hides the bar
     /// whole, leaving the field as the last host screen had it.
-    private var searches: Bool { app.place == .host(.activity) || app.place == .host(.vault) }
+    private var searches: Bool { app.place == .account(.activity) || app.place == .host(.vault) }
 
     /// The screen's commands answer from anywhere in the window, as a
     /// document's do: New Item works with the focus in the sidebar, and
@@ -367,9 +362,8 @@ final class MainSplitController: NSSplitViewController, NSToolbarItemValidation 
 
     required init?(coder: NSCoder) { nil }
 
-    private var inspected: HostScreen? {
-        guard case let .host(screen) = app.place, HostScreen.inspected.contains(screen) else { return nil }
-        return screen
+    private var inspected: Place? {
+        Place.inspected.contains(app.place) ? app.place : nil
     }
 
     override func toggleInspector(_ sender: Any?) {
@@ -441,7 +435,7 @@ final class ScreenController: NSViewController, NSUserInterfaceValidations {
         guard shown?.place != place else { return }
         let actions = ScreenActions()
         // Activity's table is AppKit's; every other screen is SwiftUI.
-        let controller = place == .host(.activity) ? ActivityController(app: app, autosaveName: autosave ? "Activity" : nil)
+        let controller = place == .account(.activity) ? ActivityController(app: app, autosaveName: autosave ? "Activity" : nil)
             : MainWindowController.hosting(Self.screen(place).environment(actions), app)
         addChild(controller)
         controller.view.frame = view.bounds
@@ -471,8 +465,9 @@ final class ScreenController: NSViewController, NSUserInterfaceValidations {
         switch place {
         case .account(.agents): AgentsView()
         case .account(.connections): ConnectionsView()
+        case .account(.activity): EmptyView()
         case .host(.home): HomeView()
-        case .host(.activity): EmptyView()
+        case .host(.rules): RulesScreen()
         case .host(.vault): VaultView()
         case .host(.settings): HostSettingsView()
         }
@@ -559,8 +554,11 @@ final class ContentBar: NSView {
     /// `pages`: the screen's buttons, each enabled while the screen can
     /// run it; `search`: the field's prompt and text, on a screen that has
     /// one.
-    func show(_ screen: HostScreen, pages: [(PageButton, enabled: Bool)], search: (prompt: String, text: String)?) {
-        let index = HostScreen.allCases.firstIndex(of: screen) ?? 0
+    /// `screen`: the host's screen showing; nil over Activity, which shows
+    /// no tabs.
+    func show(_ screen: HostScreen?, pages: [(PageButton, enabled: Bool)], search: (prompt: String, text: String)?) {
+        tabs.isHidden = screen == nil
+        let index = screen.flatMap(HostScreen.allCases.firstIndex(of:)) ?? 0
         if tabs.selectedSegment != index { tabs.selectedSegment = index }
         if shownPages != pages.map(\.0.action) {
             shownPages = pages.map(\.0.action)
@@ -622,15 +620,13 @@ struct Inspector: View {
     var route: Route
     @Environment(AppModel.self) private var app
 
-    private var showing: Bool { app.place == .host(.vault) && app.inspecting.contains(.vault) }
+    private var showing: Bool { app.place == .host(.vault) && app.inspecting.contains(.host(.vault)) }
 
     var body: some View {
         switch route {
-        case let .host(.activity, host?):
-            if let record = app.inspectedRecord(on: host) {
-                RecordInspector(record: record, caller: record.callerLabel(hostKey: app.key(of: host), hostName: host.name,
-                                                                          isThisMac: host.isThisMac), hostName: host.name,
-                                host: host.isThisMac ? nil : host.name)
+        case .account(.activity):
+            if let row = app.inspectedRecord {
+                RecordInspector(record: row.record, host: row.host)
             } else {
                 ContentUnavailableView("No Selection", systemImage: "doc.text.magnifyingglass",
                                        description: Text("Select a request to see who asked, why it was allowed or refused, and what ran."))

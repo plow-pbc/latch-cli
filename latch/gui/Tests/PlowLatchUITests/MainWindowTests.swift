@@ -14,7 +14,10 @@ struct MainWindowTests {
         let statuses = AsyncThrowingStream<LocalStatus, Error>.makeStream()
         let lines = AsyncThrowingStream<AuditLine, Error>.makeStream()
         nonisolated func statusFollow() -> AsyncThrowingStream<LocalStatus, Error> { statuses.stream }
-        nonisolated func auditFollow(host: String?, after: String?, last: Int?) -> AsyncThrowingStream<AuditLine, Error> { lines.stream }
+        /// This Mac's audit is the test's; another host's sends nothing.
+        nonisolated func auditFollow(host: String?, after: String?, last: Int?) -> AsyncThrowingStream<AuditLine, Error> {
+            host == nil ? lines.stream : AsyncThrowingStream { _ in }
+        }
     }
 
     private func app(_ client: some LatchClient, progress: PlowLatchUI.Progress = PlowLatchUI.Progress(passed: [.welcome: .continued], finished: true)) throws -> AppModel {
@@ -45,7 +48,7 @@ struct MainWindowTests {
         defer { controller.close() }
         let fixed: [NSToolbarItem.Identifier] = [.toggleSidebar, .sidebarTrackingSeparator, .flexibleSpace, .update,
                                                  .inspectorTrackingSeparator, .flexibleSpace, .toggleInspector]
-        for place in [Place.host(.home), .host(.activity), .account(.agents), .host(.vault), .account(.connections), .host(.settings)] {
+        for place in [Place.host(.home), .host(.rules), .account(.activity), .account(.agents), .host(.vault), .account(.connections), .host(.settings)] {
             app.place = place
             try await Task.sleep(for: .milliseconds(20))
             #expect(controller.window?.toolbar?.items.map(\.itemIdentifier) == fixed, "\(place)")
@@ -80,7 +83,7 @@ struct MainWindowTests {
         let controller = open(app)
         defer { controller.close() }
         let toolbar = try #require(controller.window?.toolbar)
-        for (place, enabled) in [(Place.host(.activity), true), (.host(.home), false), (.host(.vault), true),
+        for (place, enabled) in [(Place.account(.activity), true), (.host(.home), false), (.host(.vault), true),
                                  (.host(.settings), false), (.account(.agents), false), (.account(.connections), false)] {
             app.place = place
             try await Task.sleep(for: .milliseconds(20))
@@ -94,7 +97,7 @@ struct MainWindowTests {
     // while closed, as the menu's do.
     @Test func theTogglesAreNamedForWhatTheyDo() async throws {
         let app = try app(LiveClient())
-        app.place = .host(.activity)
+        app.place = .account(.activity)
         let controller = open(app)
         defer { controller.close() }
         let toolbar = try #require(controller.window?.toolbar)
@@ -124,7 +127,7 @@ struct MainWindowTests {
         }
         #expect(names() == ["|Hide Sidebar|Hide Sidebar", "|Hide Inspector|Hide Inspector"])
         split.toggleSidebar(nil)
-        app.inspecting.remove(.activity)
+        app.inspecting.remove(.account(.activity))
         await waitUntil { names() == ["|Show Sidebar|Show Sidebar", "|Show Inspector|Show Inspector"] }
         #expect(names() == ["|Show Sidebar|Show Sidebar", "|Show Inspector|Show Inspector"])
     }
@@ -162,17 +165,19 @@ struct MainWindowTests {
     @Test func theWindowFollowsStatusAndActivityLive() async throws {
         let client = LiveClient()
         let app = try app(client)
-        app.place = .host(.activity)
+        app.place = .account(.activity)
         let controller = open(app)
         defer { controller.close() }
-        let feed = try #require(app.activityFeed)
+        let feed = try #require(app.activityFeeds.first)
         await waitUntil { feed.running }
         client.lines.continuation.yield(.caughtUp(cursor: String(format: "%064d", 0), hasOlder: false))
         for n in 1...3 {
             client.lines.continuation.yield(try LatchJSON.decoder.decode(AuditLine.self, from: Data(PagedClient.line(n, op: "exec").utf8)))
         }
         await waitUntil { feed.records.count == 3 }
-        // This Mac stops: the window's title says so as latch does.
+        // This Mac stops: its Home's title says so as latch does.
+        app.place = .host(.home)
+        await waitUntil { controller.window?.subtitle.hasPrefix("This Mac") == true }
         let serving = controller.window?.subtitle
         client.statuses.continuation.yield(try Fixtures.decode(Fixtures.stopped))
         await waitUntil { app.status?.thisMachine.hosting.state == "stopped" }
@@ -184,12 +189,12 @@ struct MainWindowTests {
         let app = try app(client)
         app.place = .host(.home)
         let controller = open(app)
-        let feed = try #require(app.activityFeed)
+        let feed = try #require(app.activityFeeds.first)
         await waitUntil { feed.running }
         controller.close()
         #expect(!feed.running)
         // Nothing the window ran comes back: no feed starts on a change.
-        app.place = .host(.activity)
+        app.place = .account(.activity)
         try await Task.sleep(for: .milliseconds(50))
         #expect(!feed.running)
     }
@@ -218,7 +223,7 @@ struct MainWindowTests {
         let client = VaultClient()
         let app = try app(client)
         app.place = .host(.vault)
-        app.inspecting.remove(.vault)
+        app.inspecting.remove(.host(.vault))
         let controller = open(app)
         defer { controller.close() }
         await waitUntil { AppModel.held(app.summaries["studio"]?.vault) }
@@ -227,7 +232,7 @@ struct MainWindowTests {
         app.selectedVaultItem = OnHost(host: "studio", id: "v1")
         try await Task.sleep(for: .milliseconds(200))
         #expect(app.vaultShows["studio"]?["v1"] == nil)
-        app.inspecting.insert(.vault)
+        app.inspecting.insert(.host(.vault))
         await waitUntil { !split.splitViewItems[2].isCollapsed }
         await waitUntil { app.vaultShows["studio"]?["v1"] != nil }
     }
@@ -237,8 +242,8 @@ struct MainWindowTests {
     // window as it is.
     @Test func openingTheInspectorAtTheNarrowestGrowsTheWindow() async throws {
         let app = try app(LiveClient())
-        app.place = .host(.activity)
-        app.inspecting.remove(.activity)
+        app.place = .account(.activity)
+        app.inspecting.remove(.account(.activity))
         let controller = open(app)
         defer { controller.close() }
         let window = try #require(controller.window)
@@ -264,7 +269,7 @@ struct MainWindowTests {
     @Test func theSearchFieldIsUsableAtTheNarrowest() async throws {
         let app = try app(VaultClient())
         app.place = .host(.vault)
-        app.inspecting.remove(.vault)
+        app.inspecting.remove(.host(.vault))
         let controller = open(app)
         defer { controller.close() }
         let window = try #require(controller.window)
@@ -297,7 +302,7 @@ struct MainWindowTests {
         #expect(bar().allSatisfy { !$0.isEnabled })
         gate.open()
         await waitUntil { bar().allSatisfy(\.isEnabled) }
-        for place in [Place.host(.activity), .account(.agents)] {
+        for place in [Place.account(.activity), .account(.agents)] {
             app.place = place
             await waitUntil { bar().isEmpty }
         }
@@ -318,7 +323,7 @@ struct MainWindowTests {
         let controller = MainWindowController(app: first, window: window, defaults: defaults, presenter: SheetRecorder())
         first.showHost("pi-kitchen")
         first.place = .host(.vault)
-        first.inspecting.remove(.vault)
+        first.inspecting.remove(.host(.vault))
         await waitUntil { defaults.string(forKey: "MainWindowPlace") == "vault" && defaults.stringArray(forKey: "MainWindowInspecting") == ["activity"] }
         controller.close()
 
@@ -327,7 +332,7 @@ struct MainWindowTests {
                                          defaults: defaults, presenter: SheetRecorder())
         defer { again.close() }
         #expect(second.route == .host(.vault, second.hosts.first { $0.name == "pi-kitchen" }))
-        #expect(second.inspecting == [.activity])
+        #expect(second.inspecting == [.account(.activity)])
     }
 }
 
@@ -346,7 +351,8 @@ extension MainWindowTests {
         await waitUntil { AppModel.held(app.summaries["studio"]?.vault) }
         let expected: [(Place, Set<String>)] = [
             (.host(.home), []),
-            (.host(.activity), ["findInScreen:", "toggleInspector:"]),
+            (.host(.rules), []),
+            (.account(.activity), ["findInScreen:", "toggleInspector:"]),
             (.host(.vault), ["newDocument:", "importItems:", "findInScreen:", "toggleInspector:"]),
             (.host(.settings), []),
             (.account(.agents), []),
@@ -359,9 +365,9 @@ extension MainWindowTests {
         }
         // The sidebar's and inspector's titles say what they will do.
         #expect(MenuBridge.state(MenuBridge.toggleSidebar, in: controller.window) == .init(enabled: true, title: "Hide Sidebar"))
-        app.place = .host(.activity)
+        app.place = .account(.activity)
         await waitUntil { MenuBridge.state(MenuBridge.toggleInspector, in: controller.window).title == "Hide Inspector" }
-        app.inspecting.remove(.activity)
+        app.inspecting.remove(.account(.activity))
         await waitUntil { MenuBridge.state(MenuBridge.toggleInspector, in: controller.window).title == "Show Inspector" }
     }
 
@@ -373,7 +379,7 @@ extension MainWindowTests {
         let controller = open(app)
         defer { controller.close() }
         let window = try #require(controller.window)
-        for (from, to) in [(Place.host(.activity), Place.account(.agents)), (.host(.vault), .account(.connections))] {
+        for (from, to) in [(Place.account(.activity), Place.account(.agents)), (.host(.vault), .account(.connections))] {
             app.place = from
             await waitUntil { MenuBridge.state(MenuBridge.find, in: window).enabled }
             app.place = to
@@ -421,7 +427,7 @@ extension MainWindowTests {
     // VoiceOver find its tabs or the search field the last host screen left.
     @Test func aHiddenBarIsOutOfTheKeyLoopAndAccessibility() async throws {
         let app = try app(LiveClient())
-        app.place = .host(.activity)
+        app.place = .account(.activity)
         let controller = open(app)
         defer { controller.close() }
         let window = try #require(controller.window)
@@ -461,7 +467,7 @@ extension MainWindowTests {
     // The bar's search field holds each screen's own search.
     @Test func eachScreenKeepsItsOwnSearch() async throws {
         let app = try app(LiveClient())
-        app.place = .host(.activity)
+        app.place = .account(.activity)
         let controller = open(app)
         defer { controller.close() }
         let field = try #require(searchFields(in: controller.window!.contentView!.superview!).first)
@@ -476,7 +482,7 @@ extension MainWindowTests {
         type("card")
         app.place = .host(.settings)
         await waitUntil { field.isHidden }
-        app.place = .host(.activity)
+        app.place = .account(.activity)
         await waitUntil { field.placeholderString == "Search requests" }
         #expect(field.stringValue == "exec")
         #expect(app.activitySearch == "exec" && app.vaultSearch == "card")

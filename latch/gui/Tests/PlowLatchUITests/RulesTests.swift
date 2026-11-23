@@ -46,7 +46,6 @@ final class RulesClient: LatchClient, @unchecked Sendable {
     func vaultList(host: String?) async throws -> VaultList { try Fixtures.decode(#"{"items":[]}"#) }
     func enable(_ plugin: String) async throws -> GoogleEnabled? { nil }
     func statusFollow() -> AsyncThrowingStream<LocalStatus, Error> { AsyncThrowingStream { _ in } }
-    func audit(host: String?, before: String?) async throws -> AuditPage { AuditPage(records: [], hasOlder: false) }
     func auditFollow(host: String?, after: String?, last: Int?) -> AsyncThrowingStream<AuditLine, Error> { AsyncThrowingStream { _ in } }
     func agents(host: String?) async throws -> AgentsList { try Fixtures.decode(host == nil ? Fixtures.agents : Fixtures.agentsStudio) }
     func perform(_ args: [String]) async throws {}
@@ -59,8 +58,8 @@ struct RulesTests {
         let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
         app.stage(status: try Fixtures.decode(Fixtures.serving))
         app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
-        app.place = .host(.activity)
-        await app.enter(.host(.activity, app.host))
+        app.place = .host(.rules)
+        await app.enter(.host(.rules, app.host))
         app.ruleSaveDelay = .seconds(600)
         return app
     }
@@ -73,7 +72,7 @@ struct RulesTests {
         let app = try await app(client)
         app.typeRule("Never send email.", on: "studio")
         try await client.rulesSet("Answered on the laptop.", host: nil, revision: nil)
-        // Activity read again: the draft still began from no rule.
+        // Rules read again: the draft still began from no rule.
         await app.enter(app.route, refresh: true)
         await app.saveRuleDraft("studio")
         #expect(client.sets.map(\.text) == ["Answered on the laptop."])
@@ -93,7 +92,7 @@ struct RulesTests {
         let client = RulesClient()
         let app = try await app(client)
         app.typeRule("Never touch ~/Taxes.", on: "studio")
-        for (screen, host) in [(HostScreen.home, "studio"), (.activity, "pi-kitchen"), (.vault, "pi-kitchen"), (.activity, "studio")] {
+        for (screen, host) in [(HostScreen.home, "studio"), (.rules, "pi-kitchen"), (.vault, "pi-kitchen"), (.rules, "studio")] {
             app.place = .host(screen)
             app.chosenHost = host
             await app.enter(app.route)
