@@ -104,7 +104,8 @@ pub(super) struct FileShown {
 
 /// Judges `action` for the caller's gate: no gate (a caller in the
 /// browser's own tests) is never judged. The audit keeps what was judged
-/// as `judged`, without titles or URL paths, and the judgment as `gate`.
+/// as `judged`, without titles, URL paths or a plan's steps and facts, and
+/// the judgment as `gate`.
 pub(super) async fn judge(
     gate: Option<Gate<'_>>,
     action: Action,
@@ -123,11 +124,13 @@ pub(super) async fn judge(
     judgment.verdict
 }
 
-/// `value` with every title dropped and every URL cut to its origin.
+/// `value` without titles or a plan's own words, every URL cut to its origin.
 fn audited(mut value: Value) -> Value {
     match &mut value {
         Value::Object(map) => {
-            map.remove("title");
+            for key in ["title", "steps", "facts"] {
+                map.remove(key);
+            }
             for (key, item) in map.iter_mut() {
                 *item = match (key.as_str(), item.as_str()) {
                     ("url", Some(url)) => json!(super::core::origin_and_path(url).0),
