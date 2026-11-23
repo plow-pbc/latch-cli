@@ -59,6 +59,8 @@ type FrameRefs = (Frame, Vec<(String, usize)>);
 
 /// One field a value goes into.
 struct Target {
+    /// The item's field it takes, for the audit of a refusal.
+    field: String,
     reference: String,
     frame: Frame,
     snapshot: String,
@@ -164,9 +166,11 @@ impl<D: Driver> Core<D> {
                     return Err(stale());
                 }
                 if info["disabled"] == true {
-                    return Err(Failure::new(
-                        code::fill_refused,
-                        "nothing was filled: the page has disabled this field, as a page does while it sends a form or takes a payment; don't fill or press again: look at the page, and the site's orders or account, for how it ended".into(),
+                    return Err(fill_refused(
+                        key,
+                        "field_disabled",
+                        "the page has disabled this field, as a page does while it sends a form or takes a payment; don't fill or press again: look at the page, and the site's orders or account, for how it ended",
+                        audit,
                     ));
                 }
                 let token = info["token"].as_str().unwrap_or_default().to_string();
@@ -176,6 +180,7 @@ impl<D: Driver> Core<D> {
                     object.insert("frame".into(), json!(frame.id));
                 }
                 targets.push(Target {
+                    field: key.clone(),
                     reference: reference.clone(),
                     frame,
                     snapshot: id,
@@ -328,6 +333,7 @@ impl<D: Driver> Core<D> {
         value: &str,
         secret: bool,
         formatted: bool,
+        audit: &mut Map<String, Value>,
     ) -> Result<Value, Failure> {
         let Some(at) = self.fill.targets.iter().position(|t| t.reference == target) else {
             return Err(Failure::new(
@@ -337,13 +343,14 @@ impl<D: Driver> Core<D> {
         };
         let frames = self.driver.frames()?;
         let target = &self.fill.targets[at];
-        let refused =
-            |why: &str| Failure::new(code::fill_refused, format!("nothing was filled: {why}"));
+        let field = target.field.clone();
+        let mut refused =
+            |reason: &str, message: &str| fill_refused(&field, reason, message, audit);
         if !frames
             .iter()
             .any(|f| f.id == target.frame.id && f.document == target.frame.document)
         {
-            return Err(refused("the document was replaced"));
+            return Err(refused("document_replaced", "the document was replaced"));
         }
         // A secret is guarded before it reaches the page, as stored and as
         // a single-line field holds it, without its line breaks; and each
@@ -388,8 +395,11 @@ impl<D: Driver> Core<D> {
         }
         let answer =
             self.type_value(&frame, &snapshot, index, value, &origin, &token, formatted)?;
-        if let Some(why) = answer["refused"].as_str() {
-            return Err(refused(why));
+        let why = &answer["refused"];
+        if !why.is_null() {
+            // A reader that answers with no reason is a source latch does not know.
+            let reason = why["reason"].as_str().unwrap_or("unknown");
+            return Err(refused(reason, why["message"].as_str().unwrap_or(reason)));
         }
         Ok(json!({"held": answer["held"] == true,
                   "dropped_breaks": answer["dropped_breaks"] == true,
@@ -434,7 +444,7 @@ impl<D: Driver> Core<D> {
                 ],
             )?
         };
-        if start["refused"].is_string() {
+        if !start["refused"].is_null() {
             return Ok(start);
         }
         // A field whose frame can't hold the page's focus gets no keys:
@@ -460,11 +470,12 @@ impl<D: Driver> Core<D> {
                 "function (s, i, c, t) { return __latch.typeKey(s, i, c, t); }",
                 vec![json!(snapshot), json!(index), json!(caret), json!(token)],
             )?;
-            if ready["refused"].is_string() {
+            if !ready["refused"].is_null() {
                 return Ok(ready);
             }
             if !self.driver.holds_focus(frame)? {
-                return Ok(json!({"refused": "the field's frame lost the focus"}));
+                return Ok(json!({"refused": {"reason": "frame_lost_focus",
+                                             "message": "the field's frame lost the focus"}}));
             }
             self.driver.type_text(&key.to_string())?;
             caret = ready["caret"].as_u64().unwrap_or(0) + key.len_utf16() as u64;
@@ -701,6 +712,22 @@ impl<D: Driver> Core<D> {
     }
 }
 
+/// A fill refused at `field`, for `reason` (a stable code from latch or its
+/// page reader) meaning `message`. The failure and the audit name the field
+/// and the code: never the value.
+fn fill_refused(
+    field: &str,
+    reason: &str,
+    message: &str,
+    audit: &mut Map<String, Value>,
+) -> Failure {
+    let refused = json!({"field": field, "reason": reason});
+    audit.insert("fill_refused".into(), refused.clone());
+    let mut failure = Failure::new(code::fill_refused, format!("nothing was filled: {message}"));
+    failure.details = json!({"fill_refused": refused});
+    failure
+}
+
 /// A screenshot refused: a filled value would show in it.
 fn unhidden() -> Failure {
     Failure::new(
@@ -733,10 +760,14 @@ mod tests {
         Broken,
     }
 
-    /// A browser whose one filled frame is shown as `shown`.
+    /// A browser whose one filled frame is shown as `shown`, whose page
+    /// reader gives `answers` in turn, and whose frame holds the focus as
+    /// `focus` says, in turn.
     struct Fake {
         shown: Shown,
         guarded: Vec<String>,
+        answers: Vec<Value>,
+        focus: Vec<bool>,
     }
 
     impl Driver for Fake {
@@ -817,10 +848,10 @@ mod tests {
             }
         }
         fn call(&mut self, _: &Frame, _: &str, _: Vec<Value>) -> Result<Value, Failure> {
-            unreachable!()
+            Ok(self.answers.remove(0))
         }
         fn holds_focus(&mut self, _: &Frame) -> Result<bool, Failure> {
-            unreachable!()
+            Ok(self.focus.remove(0))
         }
         fn reaches(&mut self, _: &Frame, _: f64, _: f64) -> Result<bool, Failure> {
             unreachable!()
@@ -878,6 +909,8 @@ mod tests {
         let mut core = Core::new(Fake {
             shown: Shown::Held,
             guarded: vec!["4242424242424242".into()],
+            answers: Vec::new(),
+            focus: Vec::new(),
         });
         let frame = Frame {
             id: "f1".into(),
@@ -927,11 +960,89 @@ mod tests {
         );
     }
 
+    /// A refusal to drive: how the frame is shown, the reader's answers and
+    /// the frame's focus in turn, and the reason and message it gives.
+    type Case = (Shown, Vec<Value>, Vec<bool>, String, String);
+
+    /// Every refusal names its field and its source's own reason code, in
+    /// the failure and in the audit, and never the value latch was setting.
+    #[test]
+    fn each_refused_fill_names_its_field_and_reason_code_but_no_value() {
+        let mut cases: Vec<Case> = vec![(
+            Shown::Held,
+            vec![
+                json!({"refused": {"reason": "no_option_matches", "message": "no option matches"}}),
+            ],
+            vec![],
+            "no_option_matches".into(),
+            "no option matches".into(),
+        )];
+        cases.push((
+            Shown::Gone,
+            vec![],
+            vec![],
+            "document_replaced".into(),
+            "the document was replaced".into(),
+        ));
+        cases.push((
+            Shown::Held,
+            vec![json!({"caret": 0}), json!({"caret": 0})],
+            vec![true, false],
+            "frame_lost_focus".into(),
+            "the field's frame lost the focus".into(),
+        ));
+        // A reader answer with no reason is a source latch does not know.
+        cases.push((
+            Shown::Held,
+            vec![json!({"refused": {}})],
+            vec![],
+            "unknown".into(),
+            "unknown".into(),
+        ));
+        for (shown, answers, focus, reason, message) in cases {
+            let mut core = Core::new(Fake {
+                shown,
+                guarded: Vec::new(),
+                answers,
+                focus,
+            });
+            core.paused = true;
+            core.fill.targets.push(Target {
+                field: "state".into(),
+                reference: "e5".into(),
+                frame: Frame {
+                    id: "f1".into(),
+                    parent: Some("f0".into()),
+                    document: "d1".into(),
+                },
+                snapshot: "s1".into(),
+                index: 0,
+                origin: "https://shop.example".into(),
+                token: "t".into(),
+            });
+            let set = Call::SetValue {
+                target: "e5".into(),
+                value: "Arizona".into(),
+                secret: false,
+                formatted: false,
+            };
+            let refused = core.call(set, None).err().unwrap();
+            assert_eq!(refused.code, "fill_refused", "{reason}");
+            assert_eq!(refused.message, format!("nothing was filled: {message}"));
+            let why = json!({"field": "state", "reason": reason});
+            assert_eq!(refused.details["audit"]["fill_refused"], why);
+            assert_eq!(refused.details["fill_refused"], why);
+            assert!(!refused.details.to_string().contains("Arizona"), "{reason}");
+        }
+    }
+
     #[test]
     fn a_cleanup_that_fails_keeps_every_later_resume_out() {
         let mut core = Core::new(Fake {
             shown: Shown::Broken,
             guarded: Vec::new(),
+            answers: Vec::new(),
+            focus: Vec::new(),
         });
         core.paused = true;
         core.fill.filled.push((
