@@ -81,6 +81,7 @@ impl Store {
     /// Replaces the device rule with `text`; an empty text denies nothing
     /// and still records that the owner answered. With `expected`, only if
     /// the current rule is still at that revision (`None`: there is none).
+    /// The caller holds the lock its `snapshot_deny` took.
     pub fn set_deny(&self, text: &str, expected: Option<Option<&str>>) -> Result<Change, Failure> {
         if text.len() as u64 > MAX_RULE {
             let message = format!(
@@ -89,9 +90,8 @@ impl Store {
             );
             return Err(Failure::new(code::rules_too_long, message));
         }
-        let _lock = self.lock()?;
         let before = self.current(expected)?;
-        let path = self.dir().join(DENY_FILE);
+        let path = self.made()?.join(DENY_FILE);
         write_private(&path, text.as_bytes()).map_err(|err| failure(&path, err))?;
         Ok(Change {
             before,
@@ -99,9 +99,9 @@ impl Store {
         })
     }
 
-    /// Removes the device rule. With `expected`, as `set_deny`.
+    /// Removes the device rule. With `expected`, and under the lock, as
+    /// `set_deny`.
     pub fn clear_deny(&self, expected: Option<Option<&str>>) -> Result<Change, Failure> {
-        let _lock = self.lock()?;
         let before = self.current(expected)?;
         let path = self.dir().join(DENY_FILE);
         match fs::remove_file(&path) {
@@ -135,16 +135,21 @@ impl Store {
         Ok(before)
     }
 
-    /// The device rule's file as it is now.
+    /// The device rule's file as it is now, locked until the snapshot is
+    /// dropped or put back.
     pub fn snapshot_deny(&self) -> Result<Snapshot, Failure> {
-        let path = self.dir().join(DENY_FILE);
-        Snapshot::of(path.clone()).map_err(|err| failure(&path, err))
+        self.snapshot(DENY_FILE)
     }
 
-    /// The agent map's file as it is now.
+    /// The agent map's file as it is now, locked as `snapshot_deny`.
     pub fn snapshot_agents(&self) -> Result<Snapshot, Failure> {
-        let path = self.dir().join(AGENTS_FILE);
-        Snapshot::of(path.clone()).map_err(|err| failure(&path, err))
+        self.snapshot(AGENTS_FILE)
+    }
+
+    fn snapshot(&self, file: &str) -> Result<Snapshot, Failure> {
+        let held = self.lock()?;
+        let path = self.dir().join(file);
+        Snapshot::of(path.clone(), held).map_err(|err| failure(&path, err))
     }
 
     /// Every agent's Swarm account, by Plow agent uid.
@@ -160,7 +165,8 @@ impl Store {
     }
 
     /// Maps the agent `uid` to the Swarm account `swarm_id`, replacing any
-    /// account it had. Returns the account it had.
+    /// account it had. Returns the account it had. The caller holds the
+    /// lock its `snapshot_agents` took.
     pub fn map_agent(&self, uid: &str, swarm_id: &str) -> Result<Option<String>, Failure> {
         if !is_agent_uid(uid) {
             let message = format!("{uid:?} is not a Plow agent uid (32 lowercase hex characters)");
@@ -171,8 +177,7 @@ impl Store {
                 format!("{swarm_id:?} is not a Swarm account id, like @name:server.example");
             return Err(Failure::new(code::bad_arguments, message));
         }
-        let _lock = self.lock()?;
-        let path = self.dir().join(AGENTS_FILE);
+        let path = self.made()?.join(AGENTS_FILE);
         let mut agents = self
             .agents()
             .map_err(|why| Failure::new(code::rules_io, why))?;
@@ -182,14 +187,19 @@ impl Store {
         Ok(before)
     }
 
-    fn lock(&self) -> Result<File, Failure> {
+    /// The store's folder, made if it isn't there.
+    fn made(&self) -> Result<PathBuf, Failure> {
         let dir = self.dir();
         fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
             .create(&dir)
             .map_err(|err| failure(&dir, err))?;
-        let path = dir.join(".rule.lock");
+        Ok(dir)
+    }
+
+    fn lock(&self) -> Result<File, Failure> {
+        let path = self.made()?.join(".rule.lock");
         let file = fs::OpenOptions::new()
             .create(true)
             .truncate(false)
@@ -219,20 +229,27 @@ impl Store {
 }
 
 /// A file as it was before a change, to put back if the change can't be
-/// audited: a change the audit log doesn't hold must not stand.
+/// audited: a change the audit log doesn't hold must not stand. It holds
+/// the store's lock from before the change until after its audit, so no
+/// other change lands in between and is lost when this one is put back.
 pub struct Snapshot {
     path: PathBuf,
     before: Option<Vec<u8>>,
+    _held: File,
 }
 
 impl Snapshot {
-    fn of(path: PathBuf) -> std::io::Result<Snapshot> {
+    fn of(path: PathBuf, _held: File) -> std::io::Result<Snapshot> {
         let before = match fs::read(&path) {
             Ok(bytes) => Some(bytes),
             Err(err) if err.kind() == ErrorKind::NotFound => None,
             Err(err) => return Err(err),
         };
-        Ok(Snapshot { path, before })
+        Ok(Snapshot {
+            path,
+            before,
+            _held,
+        })
     }
 
     /// Puts the file back as it was.
@@ -334,5 +351,31 @@ mod tests {
             Some("@alder:plow.co")
         );
         assert_eq!(store.agents().unwrap()[uid], "@alder2:plow.co");
+    }
+
+    /// A change put back because its audit failed takes nothing else with
+    /// it: another change waits for it, so isn't lost when it is undone.
+    #[test]
+    fn a_change_put_back_loses_no_other_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let (ada, bob) = (
+            "0123456789abcdef0123456789abcdef",
+            "fedcba9876543210fedcba9876543210",
+        );
+        let first = Store::new(dir.path()).snapshot_agents().unwrap();
+        Store::new(dir.path())
+            .map_agent(ada, "@ada:plow.co")
+            .unwrap();
+        let state = dir.path().to_path_buf();
+        let second = std::thread::spawn(move || {
+            let store = Store::new(&state);
+            let _held = store.snapshot_agents().unwrap();
+            store.map_agent(bob, "@bob:plow.co").unwrap();
+        });
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        first.restore().unwrap();
+        second.join().unwrap();
+        let agents = Store::new(dir.path()).agents().unwrap();
+        assert_eq!(agents.keys().collect::<Vec<_>>(), [bob]);
     }
 }

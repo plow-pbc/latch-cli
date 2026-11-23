@@ -26,8 +26,9 @@ pub async fn run(state_dir: &Path, plow: &Plow, host: &str, kind: &str, args: &V
     changing(state_dir, plow, host, kind, args).await.0
 }
 
-/// `run`, and for a change it made, the file as it was: the caller audits
-/// the change and, if the audit can't be written, puts the file back.
+/// `run`, and for a change it made, the file as it was, locked: the caller
+/// audits the change and, if the audit can't be written, puts the file
+/// back, then drops it.
 pub async fn changing(
     state_dir: &Path,
     plow: &Plow,
@@ -39,15 +40,7 @@ pub async fn changing(
     let mut audit = Map::new();
     audit.insert("command".into(), json!(command));
     let store = Store::new(state_dir);
-    let snapshot = match command {
-        "set" | "edit" | "clear" | "clear_at_revision" => Some(store.snapshot_deny()),
-        "map_agent" => Some(store.snapshot_agents()),
-        _ => None,
-    };
-    let snapshot = match snapshot.transpose() {
-        Ok(snapshot) => snapshot,
-        Err(failure) => return (crate::vault::host::done(Err(failure), audit), None),
-    };
+    let mut snapshot = None;
     let result = match owner_only(kind, "the device rule") {
         Err(failure) => Err(failure),
         Ok(()) if !args["from"].is_null() => Err(Failure::new(
@@ -56,34 +49,36 @@ pub async fn changing(
         )),
         Ok(()) => match command {
             "show" => show(state_dir, &store, host),
-            "set" | "edit" => {
-                let expected = (command == "edit").then(|| args["revision"].as_str());
-                match args["text"].as_str() {
-                    None => Err(Failure::new(
-                        code::bad_arguments,
-                        "the device rule's text is missing".into(),
-                    )),
-                    Some(text) => store
-                        .set_deny(text, expected)
-                        .map(|change| changed(host, &change, &mut audit)),
-                }
+            "set" | "edit" | "clear" | "clear_at_revision" => {
+                let expected = matches!(command, "edit" | "clear_at_revision")
+                    .then(|| args["revision"].as_str());
+                let text = match command {
+                    "set" | "edit" => args["text"].as_str().ok_or_else(|| {
+                        Failure::new(
+                            code::bad_arguments,
+                            "the device rule's text is missing".into(),
+                        )
+                    }),
+                    _ => Ok(""),
+                };
+                text.and_then(|text| {
+                    let held = store.snapshot_deny()?;
+                    let change = match command {
+                        "set" | "edit" => store.set_deny(text, expected),
+                        _ => store.clear_deny(expected),
+                    }?;
+                    snapshot = Some(held);
+                    Ok(changed(host, &change, &mut audit))
+                })
             }
-            "clear" | "clear_at_revision" => {
-                let expected = (command == "clear_at_revision").then(|| args["revision"].as_str());
-                store
-                    .clear_deny(expected)
-                    .map(|change| changed(host, &change, &mut audit))
-            }
-            "map_agent" => map_agent(&store, plow, host, args, &mut audit).await,
+            "map_agent" => map_agent(&store, plow, host, args, &mut audit, &mut snapshot).await,
             _ => Err(Failure::new(
                 code::bad_command,
                 format!("unknown rules command {command:?}"),
             )),
         },
     };
-    let changed = result.is_ok();
-    let done = crate::vault::host::done(result, audit);
-    (done, snapshot.filter(|_| changed))
+    (crate::vault::host::done(result, audit), snapshot)
 }
 
 /// Puts back a change whose audit record couldn't be written; a failure
@@ -145,13 +140,18 @@ async fn map_agent(
     host: &str,
     args: &Value,
     audit: &mut Map<String, Value>,
+    snapshot: &mut Option<Snapshot>,
 ) -> Result<Value, Failure> {
     let (Some(agent), Some(swarm_id)) = (args["agent"].as_str(), args["swarm_id"].as_str()) else {
         let message = "map_agent needs an agent and a swarm_id".to_string();
         return Err(Failure::new(code::bad_arguments, message));
     };
+    // Plow is asked before the map is locked: a slow answer holds up no
+    // other change.
     let agent = crate::agents::resolve(plow, agent).await?;
+    let held = store.snapshot_agents()?;
     let before = store.map_agent(&agent.uid, swarm_id)?;
+    *snapshot = Some(held);
     audit.insert("agent_uid".into(), json!(agent.uid));
     audit.insert("swarm_id".into(), json!(swarm_id));
     audit.insert("before".into(), json!(before));
