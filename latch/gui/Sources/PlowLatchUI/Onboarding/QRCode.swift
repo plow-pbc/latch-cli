@@ -13,6 +13,15 @@ enum QRCode {
         return context.createCGImage(output, from: output.extent)
     }
 
+    /// A code out of focus, for while the real one is being made: blurred
+    /// in the image itself, so it never scans.
+    static let placeholder: CGImage? = {
+        let filter = CIFilter.qrCodeGenerator()
+        filter.message = Data("Plow Latch".utf8)
+        guard let code = filter.outputImage?.transformed(by: CGAffineTransform(scaleX: 12, y: 12)) else { return nil }
+        return context.createCGImage(code.clampedToExtent().applyingGaussianBlur(sigma: 14), from: code.extent)
+    }()
+
     /// Made once: making a context costs more than drawing with it, and a
     /// view asks for its code each time it's drawn.
     private static let context = CIContext()
