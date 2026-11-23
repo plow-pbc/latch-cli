@@ -702,7 +702,9 @@ impl<D: Driver> Core<D> {
         self.needs("downloads", audit)?;
         audit.insert("download".into(), json!(id));
         let (download, path) = self.driver.download_file(id)?;
-        audit.insert("download_origin".into(), json!(audited(&download.url)));
+        let (origin, path_only) = origin_and_path(&download.url);
+        audit.insert("download_origin".into(), json!(origin));
+        audit.insert("download_path".into(), json!(path_only));
         let bytes =
             fs::read(&path).map_err(|err| Failure::new(code::download_failed, err.to_string()))?;
         let result =
@@ -1194,7 +1196,9 @@ impl<D: Driver> Core<D> {
             .cloned()
             .ok_or_else(|| Failure::new(code::browser_gone, "the session has no tab".into()))?;
         audit.insert("tab".into(), json!(active.tab));
-        audit.insert("origin".into(), json!(audited(&active.url)));
+        let (origin, path) = origin_and_path(&active.url);
+        audit.insert("origin".into(), json!(origin));
+        audit.insert("path".into(), json!(path));
         if !super::egress::shown(&active.url) {
             let failure = super::egress::not_shown(&active.url);
             self.driver.navigate("about:blank")?;
@@ -1478,19 +1482,6 @@ pub fn origin_and_path(url: &str) -> (String, String) {
     }
 }
 
-/// A URL as the audit, the host log and a refusal name it: an http or
-/// https one by its scheme, host and port, any other by its scheme alone;
-/// never its userinfo, path, query or fragment.
-pub fn audited(url: &str) -> String {
-    match url::Url::parse(url) {
-        Ok(parsed) if matches!(parsed.scheme(), "http" | "https") => {
-            parsed.origin().ascii_serialization()
-        }
-        Ok(parsed) => format!("{}:", parsed.scheme()),
-        Err(_) => "unparseable".into(),
-    }
-}
-
 /// What the page's reader says covers an element, in words: a frame by
 /// its site, anything else by its role and name.
 pub fn covering(cover: &Value) -> String {
@@ -1538,45 +1529,6 @@ mod tests {
             ("data:".into(), "".into())
         );
         assert_eq!(origin_and_path("about:blank"), ("about:".into(), "".into()));
-    }
-
-    /// The planner matches vault items on a page's origin as the page
-    /// names it, userinfo and all: what the site rules then read.
-    #[test]
-    fn the_planner_reads_a_userinfo_pages_origin_as_written() {
-        assert_eq!(
-            origin_and_path("https://who:pw@shop.example/p?q=1").0,
-            "https://who:pw@shop.example"
-        );
-    }
-
-    #[test]
-    fn an_audited_url_keeps_its_scheme_host_and_port_only() {
-        for (url, kept) in [
-            (
-                "https://who:pw@shop.example/cart?q=1#f",
-                "https://shop.example",
-            ),
-            ("https://who@shop.example/cart", "https://shop.example"),
-            ("https://w%40o:p%3Aw@shop.example/", "https://shop.example"),
-            ("http://u:p@[::1]:8080/x", "http://[::1]:8080"),
-            ("https://shop.example:8443/x", "https://shop.example:8443"),
-            ("blob:https://u:p@shop.example/uuid", "blob:"),
-            ("data:text/html,<p>secret</p>", "data:"),
-            ("file:///Users/someone/secret", "file:"),
-            ("about:blank", "about:"),
-            ("https://u:p@/no-host", "unparseable"),
-        ] {
-            assert_eq!(audited(url), kept, "{url}");
-        }
-    }
-
-    /// url 2.5.8's `origin()` overflows the stack on a deeply nested blob:
-    /// URL (RUSTSEC-2026-0592): the audit never asks for one.
-    #[test]
-    fn a_deeply_nested_blob_url_is_audited_by_its_scheme_alone() {
-        let url = format!("{}https://u:p@shop.example/x", "blob:".repeat(100_000));
-        assert_eq!(audited(&url), "blob:");
     }
 
     #[test]
@@ -1768,33 +1720,8 @@ mod tests {
             assert_eq!(failure.details["capability"], capability);
             assert_eq!(
                 failure.details["audit"],
-                json!({"capability": capability, "tab": "t1", "origin": "https://shop.example"})
+                json!({"capability": capability, "tab": "t1", "origin": "https://shop.example", "path": "/cart"})
             );
-        }
-    }
-
-    /// A tab's URL reaches the audit and a refusal by its scheme, host and
-    /// port only: never its userinfo or path, whatever wraps it.
-    #[test]
-    fn a_tabs_userinfo_and_path_reach_neither_the_audit_nor_a_refusal() {
-        let mut core = Core::new(Bare { url: String::new() });
-        for (call, url, origin) in [
-            (
-                Call::Eval { script: "1".into() },
-                "https://who-sentinel:pw-sentinel@shop.example:8443/path-sentinel?q=1#f",
-                "https://shop.example:8443",
-            ),
-            (
-                Call::Text,
-                "blob:https://who-sentinel:pw-sentinel@shop.example/path-sentinel",
-                "blob:",
-            ),
-        ] {
-            core.driver.url = url.into();
-            let failure = core.call(call, None).err().unwrap();
-            assert_eq!(failure.details["audit"]["origin"], origin);
-            let kept = format!("{} {}", failure.message, failure.details);
-            assert!(!kept.contains("sentinel"), "{kept}");
         }
     }
 

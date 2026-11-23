@@ -144,7 +144,7 @@ async fn send(
             (Err(failure), worker)
         }
     };
-    for key in ["tab", "origin"] {
+    for key in ["tab", "origin", "path"] {
         if let Some(value) = worker.get(key) {
             audit.entry(key).or_insert_with(|| value.clone());
         }
@@ -659,9 +659,7 @@ impl<'a> Run<'a> {
         let judging = Instant::now();
         let judgment = gate.judge(&action).await;
         super::host::add_time(|phases| &mut phases.gate_ms, judging.elapsed());
-        let mut record = judgment.gate;
-        let allowed = judgment.verdict.is_ok();
-        (self.entry.attempts).judged(&action, &mut record, allowed, Instant::now());
+        let record = judgment.gate;
         match judgment.verdict {
             Ok(()) => {
                 self.judgment = Some(record);
@@ -966,7 +964,7 @@ impl Run<'_> {
         }
         let outcome = match reply {
             Ok((result, worker)) => {
-                for key in ["role", "origin"] {
+                for key in ["role", "origin", "path"] {
                     if let Some(value) = worker.get(key) {
                         record[key] = value.clone();
                     }

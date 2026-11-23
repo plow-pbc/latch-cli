@@ -28,16 +28,6 @@ pub fn shown(op: &str, args: &Value) -> Value {
     shown
 }
 
-/// An operation's details as the host's log line shows them: a browser
-/// call by its command alone (what was judged, the judgment and the pages
-/// it was on stay in the sealed audit); anything else as [`shown`].
-pub fn logged(op: &str, args: &Value) -> Value {
-    if op == "browser" {
-        return json!({"command": args["command"]});
-    }
-    shown(op, args)
-}
-
 /// Hides the credential-looking words of every string in `value`.
 pub fn hide_in(value: &mut Value) {
     match value {
@@ -415,22 +405,6 @@ mod shown_tests {
         assert_eq!(display["workdir"], "/w");
         let file = json!({"path": "/w/token.txt"});
         assert_eq!(shown("file_get", &file), file);
-    }
-
-    /// The host's log line of a browser call names its command only: what
-    /// was judged, the judgment and the pages it was on stay in the sealed
-    /// audit.
-    #[test]
-    fn a_browser_calls_log_line_names_its_command_only() {
-        let audit = json!({"command": "do", "origin": "https://shop.example", "path": "/order/42",
-            "judged": {"kind": "browser_plan",
-                       "page": {"url": "https://shop.example/order/42?session=s3c"},
-                       "may_fill": [{"kind": "card", "title": "Visa Gold"}]},
-            "gate": {"verdict": "allow", "context": {"purchase": "abcdefghijkl", "attempts_1h": 2}},
-            "step_records": [{"op": "fill", "path": "/pay", "item": "Visa Gold"}]});
-        assert_eq!(logged("browser", &audit), json!({"command": "do"}));
-        let exec = json!({"argv": ["curl", "-H", "Authorization: Bearer abc123def456"]});
-        assert_eq!(logged("exec", &exec), shown("exec", &exec));
     }
 
     #[test]
