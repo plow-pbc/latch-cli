@@ -1617,34 +1617,21 @@ async fn one_approved_card_fill_covers_its_checkouts_address(engine: &str) {
     // so the same fill again is judged.
     let frames = url(&format!("card-elements.html?frame={port}"));
     host.agent("goto", &id, frames, None).await.0.unwrap();
-    // The provider's frames load after the page: observe until latch
-    // suggests the card across them.
-    let mut last = Value::Null;
-    let (hosted, suggested) = 'loaded: {
+    // The provider's frames load after the page: observe until the card's
+    // number field shows in its frame.
+    let (hosted, number) = 'loaded: {
         for _ in 0..40 {
             let hosted = host.agent("observe", &id, json!({}), None).await.0.unwrap();
-            let found = hosted["fill"]["suggestions"]
-                .as_array()
-                .into_iter()
-                .flatten();
-            if let Some(found) = found.clone().find(|s| s["item"] == card.as_str()) {
-                break 'loaded (hosted.clone(), found.clone());
+            let fields = hosted["elements"].as_array().into_iter().flatten();
+            let framed = |e: &&Value| e["name"] == "Card number" && e["frame"].is_string();
+            if let Some(field) = fields.clone().find(framed) {
+                let number = json!([["number", [field["ref"]]]]);
+                break 'loaded (hosted.clone(), number);
             }
-            last = hosted;
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
-        let frames: Vec<&Value> = last["elements"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter(|e| e["role"] == "textbox")
-            .collect();
-        panic!(
-            "no card suggestion across the provider's frames: fill {:#} textboxes {frames:#?}",
-            last["fill"]
-        );
+        panic!("the provider's card number frame never loaded");
     };
-    let number = json!([["number", suggested["fields"]["number"]]]);
     let (framed, _) = fill(&card, &hosted, number.clone()).await;
     assert_eq!(framed.unwrap_err().code, "origin_mismatch");
     assert_eq!(judge.judged(), asked + 1);
