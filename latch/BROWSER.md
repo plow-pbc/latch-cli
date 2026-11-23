@@ -381,11 +381,13 @@ unless the device rule denies it. Opening a site (`open URL`, or `goto
 URL` or `tab new URL` on another site) and downloads run unjudged. Judged,
 each before anything of it reaches the page:
 
-- each plan (`do`): its steps as written with each step's values, the
-  page it starts on (URL and title), the sites it names and the vault
-  items it may fill (kind, title and saved sites). Every `do` is judged,
-  one of a single step too; only `act`'s one click, keypress or scroll is
-  not;
+- each plan (`do`) and each `act`: its steps as written with each
+  step's values, the page it starts on (URL and title), the sites it
+  names and the vault items it may fill (kind, title and saved sites).
+  Every click, typing, choice, keypress and fill is judged, one step on
+  its own too; only a plan that just scrolls or goes back is not. The
+  judge sees what was already allowed on the same cited message, so the
+  steps of one task go through as that task;
 - every vault fill: a `fill`, each fill a plan makes (a literal fill step
   or one a goal chose), and every `do --confirm` that releases an
   identity: the item's kind and title, the sites it is saved for, the
@@ -406,7 +408,7 @@ each before anything of it reaches the page:
   is judged with the click that sends it. A field that changes after it
   is judged sends nothing (`confirm_stale`).
 
-Other clicks, typing, `act`, page reads and screenshots are not judged:
+Scrolling, going back, page reads and screenshots are not judged:
 the risk decision, confirmations and the
 fill and pause checks above still hold. A refusal is exit 4,
 `gatekeeper_denied`, and nothing was sent; its `next` says the one thing

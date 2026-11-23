@@ -30,15 +30,14 @@ const NUMBER: &str = "4242424242424242";
 
 conformance!(
     a_refused_command_sends_nothing_to_the_page,
-    clicks_reads_and_opens_ask_the_judge_nothing,
+    reads_scrolls_and_opens_ask_the_judge_nothing,
     a_fill_inside_a_plan_is_judged_as_a_fill,
-    a_one_step_do_plan_is_judged_and_act_is_not,
+    every_click_is_judged_from_do_or_act,
     a_host_out_of_plow_credits_says_its_account_owner_must_add_them,
     goto_loads_any_web_site_unjudged_and_nothing_off_the_web,
     the_owners_devices_are_judged_as_the_owner_against_the_device_rule,
     a_local_address_is_refused_before_the_judge_or_an_engine,
     an_agents_confirmation_of_a_paused_send_is_judged_before_it_runs,
-    a_click_the_risk_check_lets_go_asks_the_judge_nothing,
 );
 
 /// The owner's thread every citation reads: their message `asked`, which
@@ -650,7 +649,7 @@ async fn a_refused_command_sends_nothing_to_the_page(engine: &str) {
     host.browsers.close_all().await;
 }
 
-async fn a_one_step_do_plan_is_judged_and_act_is_not(engine: &str) {
+async fn every_click_is_judged_from_do_or_act(engine: &str) {
     let (_dir, state, _area) = test_state(engine);
     let (site, hits) = serve_site();
     // No plan is covered.
@@ -677,23 +676,19 @@ async fn a_one_step_do_plan_is_judged_and_act_is_not(engine: &str) {
     assert_eq!(judge.last_action()["kind"], "browser_plan");
     assert_eq!(fetched(&hits).len(), loaded, "the link was never clicked");
 
-    // Saying `act` exempts only one action: two steps are still a plan.
+    // `act click eN`, and two steps under `act`, are judged too.
     let mut two = two_clicks(&link);
     two["act"] = json!(true);
     refused(&host.agent("do", &id, two, None).await, "not_covered");
-
-    // `act click eN` is left to the risk decision.
-    let asked = judge.judged();
-    let (clicked, audit) = host
+    let refusal = host
         .agent("do", &id, act(&format!("click {link}")), None)
         .await;
-    clicked.unwrap();
-    assert!(!audit.contains_key("gate"));
-    assert_eq!(judge.judged(), asked);
+    refused(&refusal, "not_covered");
+    assert_eq!(fetched(&hits).len(), loaded, "the link was never clicked");
     host.look("close", &id, json!({})).await;
 }
 
-async fn clicks_reads_and_opens_ask_the_judge_nothing(engine: &str) {
+async fn reads_scrolls_and_opens_ask_the_judge_nothing(engine: &str) {
     let (_dir, state, _area) = test_state(engine);
     let (site, _hits) = serve_site();
     let judge = Judge::new(|_| COVERED);
@@ -710,7 +705,6 @@ async fn clicks_reads_and_opens_ask_the_judge_nothing(engine: &str) {
     let id = page["session"].as_str().unwrap().to_string();
     assert_eq!(judge.judged(), 0, "opening a site is a read");
 
-    let link = find(&page, "link", "Download the report");
     for (command, args) in [
         ("observe", json!({})),
         ("text", json!({})),
@@ -719,7 +713,7 @@ async fn clicks_reads_and_opens_ask_the_judge_nothing(engine: &str) {
             "find",
             json!({"role": "link", "name": "Download the report"}),
         ),
-        ("do", act(&format!("click {link}"))),
+        ("do", act("scroll down")),
         ("downloads", json!({})),
         ("tab", json!({"action": "new"})),
         (
@@ -732,7 +726,7 @@ async fn clicks_reads_and_opens_ask_the_judge_nothing(engine: &str) {
         result.unwrap_or_else(|f| panic!("{command}: {f:?}"));
         assert!(!audit.contains_key("gate"), "{command} was judged");
     }
-    assert_eq!(judge.judged(), 0, "no click or read was judged");
+    assert_eq!(judge.judged(), 0, "no scroll or read was judged");
     host.browsers.close_all().await;
 }
 
@@ -1483,9 +1477,10 @@ async fn shows(host: &Host, id: &str) -> String {
 async fn an_agents_confirmation_of_a_paused_send_is_judged_before_it_runs(engine: &str) {
     let (_dir, state, _area) = test_state(engine);
     let (site, _) = serve_site();
-    // The site may open; nothing confirmed is covered.
+    // The site may open and the message be written and clicked; nothing
+    // confirmed is covered.
     let judge = Judge::new(|state| match state["proposed_action"]["kind"].as_str() {
-        Some("open_site") => COVERED,
+        Some("open_site" | "browser_plan") => COVERED,
         _ => NOT_COVERED,
     });
     let mut host = Host::start(&state, &site, &judge);
@@ -1670,32 +1665,6 @@ async fn an_agents_confirmation_of_a_paused_send_is_judged_before_it_runs(engine
         shows(&host, &id)
             .await
             .contains(&format!("sent: {message}"))
-    );
-    host.look("close", &id, json!({})).await;
-}
-
-/// A click the risk decision lets go is not judged: only a paused one
-/// that is confirmed is.
-async fn a_click_the_risk_check_lets_go_asks_the_judge_nothing(engine: &str) {
-    let (_dir, state, _area) = test_state(engine);
-    let (site, _) = serve_site();
-    let judge = Judge::new(|state| match state["proposed_action"]["kind"].as_str() {
-        Some("open_site") => COVERED,
-        _ => NOT_COVERED,
-    });
-    let host = Host::start(&state, &site, &judge);
-    let (id, _, read) = composed(&host, &site, engine, "On my way").await;
-    let asked = judge.judged();
-    let (clicked, audit) = host
-        .agent("do", &id, act(&format!("click {read}")), None)
-        .await;
-    clicked.unwrap();
-    assert_eq!(judge.judged(), asked);
-    assert!(!audit.contains_key("gate"));
-    assert!(
-        shows(&host, &id)
-            .await
-            .contains("marked read, trusted true")
     );
     host.look("close", &id, json!({})).await;
 }
