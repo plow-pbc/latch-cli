@@ -24,8 +24,8 @@ use super::plan::{CheckKind, Literal, Op, Plan, Step};
 use super::shown::Filled;
 use crate::failure::Failure;
 use crate::gate::{Allowed, Gate};
-use crate::vault::sites;
 use crate::vault::store::Backend;
+use crate::vault::{classify, sites};
 
 /// An action as the judge reads it.
 #[derive(Serialize, Clone, Debug)]
@@ -358,6 +358,7 @@ impl Checkout {
     /// The gate record of the session's open checkout letting the fill
     /// `action` of `item` through, and what it lets it into, if it does.
     pub(super) fn covering(
+        browsers: &Browsers,
         entry: &Entry,
         item: &str,
         action: &Action,
@@ -371,6 +372,12 @@ impl Checkout {
         else {
             return None;
         };
+        let slotted = |store: &mut crate::vault::store::OwnStore| {
+            Ok(store.item(item).is_some_and(|it| in_slots(&it.raw, fields)))
+        };
+        if shown.kind == "identity" && !browsers.vault.with(slotted).unwrap_or(false) {
+            return None;
+        }
         let open = entry.checkout.lock().expect("checkout lock");
         let checkout = open.as_ref()?;
         checkout
@@ -399,6 +406,13 @@ impl Checkout {
         };
         fits && site == self.site && at < self.until
     }
+}
+
+/// Whether every one of `fields` is the item's own populated fixed field:
+/// a custom field by an address's name may stand for anything (one linked
+/// to the SSN), so it is judged, never covered.
+fn in_slots(raw: &crate::vault::item::Raw, fields: &[String]) -> bool {
+    fields.iter().all(|f| classify::slot(raw, f).is_some())
 }
 
 /// A fill of `args` (its mapping resolved) on `site`.
@@ -683,6 +697,24 @@ mod tests {
             let shown = checkout.covers(item, kind, &fields, site, at);
             assert_eq!(shown, covered, "{item} {fields:?} {site}");
         }
+    }
+
+    /// A custom field named like an address but linked to the SSN reads
+    /// as the SSN; only the identity's own fixed fields count as address.
+    #[test]
+    fn only_an_identitys_own_fixed_fields_count_as_its_address() {
+        let raw = |identity: Value| -> crate::vault::item::Raw {
+            serde_json::from_value(json!({"type": 4, "name": "Home", "identity": identity,
+                "fields": [{"name": "city", "type": 3, "linkedId": 412}]}))
+            .unwrap()
+        };
+        let linked = raw(json!({"ssn": "078-05-1120"}));
+        assert_eq!(
+            classify::read(&linked, "city").as_deref(),
+            Some("078-05-1120")
+        );
+        assert!(!in_slots(&linked, &["city".into()]));
+        assert!(in_slots(&raw(json!({"city": "London"})), &["city".into()]));
     }
 
     use crate::browser::plan::short_step;

@@ -659,7 +659,9 @@ impl<'a> Run<'a> {
         let site = judged::site(self.browsers, self.entry).await?;
         let fill = judged::fill(self.browsers, args, site);
         let item = args["item"].as_str().unwrap_or_default();
-        if let Some((record, covered)) = judged::Checkout::covering(self.entry, item, &fill) {
+        if let Some((record, covered)) =
+            judged::Checkout::covering(self.browsers, self.entry, item, &fill)
+        {
             self.judgment = Some(record);
             self.checking = Some(covered);
             return Ok(());
