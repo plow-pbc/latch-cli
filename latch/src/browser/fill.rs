@@ -388,10 +388,12 @@ fn incomplete(meta: &Meta, lacks: &[&str], asked: &[&str]) -> Result<(), Failure
     Err(failure)
 }
 
+/// `within`: the only frame origins its values may go to (a checkout's).
 pub async fn run(
     browsers: &Browsers,
     entry: &Entry,
     args: &Value,
+    within: Option<&[String]>,
     audit: &mut Map<String, Value>,
 ) -> Result<Value, Failure> {
     let args = &resolve(browsers, entry, args).await?;
@@ -429,7 +431,7 @@ pub async fn run(
             return Err(failure);
         }
     };
-    let result = fill(browsers, &mut session, &item, &plan, args, audit).await;
+    let result = fill(browsers, &mut session, &item, &plan, args, within, audit).await;
     // A card or an identity secret whose values went toward the page: the
     // gatekeeper is shown the card's number by its last four digits from
     // now on, and the secret not at all.
@@ -606,6 +608,7 @@ async fn fill(
     item: &Item,
     plan: &Plan,
     args: &Value,
+    within: Option<&[String]>,
     audit: &mut Map<String, Value>,
 ) -> Result<Value, Failure> {
     let meta = item.meta();
@@ -623,7 +626,7 @@ async fn fill(
         Ok(outcomes) => outcomes,
         Err(failure) => return Err(resume_after(session, failure, audit).await),
     };
-    if let Err(failure) = release_and_set(browsers, session, item, &prepared, audit).await {
+    if let Err(failure) = release_and_set(browsers, session, item, &prepared, within, audit).await {
         return Err(stop(session, failure, audit).await);
     }
     let mut stages = 1;
@@ -882,7 +885,7 @@ async fn next_stage(
     });
     let prepared = step(session, prepare, audit).await?;
     let outcomes = checked(&meta, &prepared)?;
-    release_and_set(browsers, session, item, &prepared, audit).await?;
+    release_and_set(browsers, session, item, &prepared, None, audit).await?;
     audit.insert("pressed".into(), json!(submit.reference));
     let pressed = step(
         session,
@@ -1037,6 +1040,7 @@ async fn release_and_set(
     session: &mut Session,
     item: &Item,
     prepared: &Value,
+    within: Option<&[String]>,
     audit: &mut Map<String, Value>,
 ) -> Result<(), Failure> {
     let meta = item.meta();
@@ -1057,6 +1061,12 @@ async fn release_and_set(
                     Failure::new(code::origin_mismatch, format!("nothing was filled: {why}"));
                 failure.details = json!({"reason": why});
                 return Err(failure);
+            }
+            if within.is_some_and(|within| !within.iter().any(|o| o == origin)) {
+                return Err(Failure::new(
+                    code::origin_mismatch,
+                    "nothing was filled: a field is in a frame the checkout's card did not fill, so the checkout is closed; fill again to have it judged".into(),
+                ));
             }
             if meta.kind == "note" && target["page_secret"] == true {
                 return Err(Failure::new(

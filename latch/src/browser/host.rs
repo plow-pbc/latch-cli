@@ -717,24 +717,23 @@ pub(super) async fn fill(
     let args = super::fill::named(browsers, entry, args).await?;
     audit.insert("item".into(), args["item"].clone());
     let args = super::fill::resolve(browsers, entry, &args).await?;
+    let mut checking = None;
     if caller.gate.is_some() {
         let site = judged::site(browsers, entry).await?;
         let action = judged::fill(browsers, &args, site);
         let item = args["item"].as_str().unwrap_or_default();
-        match judged::Checkout::covering(browsers, entry, item, &action) {
-            Some(record) => {
-                audit.insert("gate".into(), record);
-            }
-            None => {
-                let opens = judged::Checkout::opened_by(item, &action);
-                judged::judge(caller.gate, action, &entry.filled(), None, audit).await?;
-                if let Some(checkout) = opens {
-                    checkout.open(entry);
-                }
-            }
+        if let Some((record, covered)) = judged::Checkout::covering(entry, item, &action) {
+            audit.insert("gate".into(), record);
+            checking = Some(covered);
+        } else {
+            checking = judged::Checkout::opened_by(item, &action);
+            judged::judge(caller.gate, action, &entry.filled(), None, audit).await?;
         }
     }
-    super::fill::run(browsers, entry, &args, audit).await
+    let within = judged::Checking::within(&checking);
+    let filled = super::fill::run(browsers, entry, &args, within, audit).await;
+    judged::Checking::settle(checking, entry, filled.is_ok(), audit);
+    filled
 }
 
 /// One command for `caller`, as `answer` runs it, the page in its answer

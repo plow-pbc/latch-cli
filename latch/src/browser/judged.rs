@@ -24,8 +24,8 @@ use super::plan::{CheckKind, Literal, Op, Plan, Step};
 use super::shown::Filled;
 use crate::failure::Failure;
 use crate::gate::{Allowed, Gate};
+use crate::vault::sites;
 use crate::vault::store::Backend;
-use crate::vault::{classify, sites};
 
 /// An action as the judge reads it.
 #[derive(Serialize, Clone, Debug)]
@@ -274,47 +274,94 @@ pub(super) fn item(browsers: &Browsers, id: &str) -> ItemShown {
 }
 
 /// What the judge is told a card fill opens if it is allowed.
-pub(super) const CHECKOUT_OPENS: &str = "If this card fill is allowed, the owner's saved addresses (their non-secret fields) and this card also fill on this site, in this session, for the next 10 minutes, with no judgment of their own: judge this as the checkout's card and its address.";
+pub(super) const CHECKOUT_OPENS: &str = "If this card fill is allowed, these fields of this card and the owner's saved name and address also fill on this site, in the same frames, in this session, for the next 10 minutes, with no judgment of their own: judge this as the checkout's card and its address.";
 
 /// How long an allowed card fill lets its checkout through.
 const CHECKOUT_FOR: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
-/// The checkout an allowed card fill opens in its session: the same card,
-/// and the owner's identity items (their addresses), fill on its site
-/// until `until` with no new judgment. One approval covers the checkout.
+/// The identity fields a checkout lets through: a name and an address.
+/// Anything else an identity holds is judged on its own.
+const ADDRESS: &str = "first name,middle name,last name,full name,address1,address2,address3,city,state,postal code,country";
+
+/// The checkout an allowed card fill opens in its session once it has
+/// filled: the same fields of the same card, and an identity's name and
+/// address, fill on its site and into the frames the card went to, until
+/// `until`, with no new judgment. One approval covers the checkout.
 pub(super) struct Checkout {
     card: String,
+    fields: Vec<String>,
     site: String,
+    origins: Vec<String>,
     until: std::time::Instant,
+}
+
+/// What a session's checkout does with one fill: lets it through, into
+/// these frame origins only, or opens with it once it has filled.
+pub(super) enum Checking {
+    Covered(Vec<String>),
+    Opens(Checkout),
+}
+
+impl Checking {
+    /// The frame origins a covered fill may go to.
+    pub(super) fn within(checking: &Option<Checking>) -> Option<&[String]> {
+        match checking {
+            Some(Checking::Covered(origins)) => Some(origins),
+            _ => None,
+        }
+    }
+
+    /// After the fill: a card's checkout opens on the frames its values
+    /// went to (`frame_origins` in its audit); a covered fill that did not
+    /// fill closes the checkout, so the next one is judged.
+    pub(super) fn settle(
+        checking: Option<Checking>,
+        entry: &Entry,
+        filled: bool,
+        audit: &Map<String, Value>,
+    ) {
+        let mut open = entry.checkout.lock().expect("checkout lock");
+        match checking {
+            Some(Checking::Opens(mut checkout)) if filled => {
+                checkout.origins =
+                    serde_json::from_value(audit["frame_origins"].clone()).unwrap_or_default();
+                checkout.until = std::time::Instant::now() + CHECKOUT_FOR;
+                *open = Some(checkout);
+            }
+            Some(Checking::Covered(_)) if !filled => *open = None,
+            _ => {}
+        }
+    }
 }
 
 impl Checkout {
     /// The checkout the fill `action` of vault item `item` opens once
-    /// allowed: a card's, on a site.
-    pub(super) fn opened_by(item: &str, action: &Action) -> Option<Checkout> {
+    /// allowed and filled: a card's, on a site.
+    pub(super) fn opened_by(item: &str, action: &Action) -> Option<Checking> {
         match action {
             Action::VaultFill {
                 site: Some(site),
                 item: shown,
+                fields,
                 ..
-            } if shown.kind == "card" => Some(Checkout {
+            } if shown.kind == "card" => Some(Checking::Opens(Checkout {
                 card: item.to_string(),
+                fields: fields.clone(),
                 site: site.clone(),
-                // Set when it opens, once the fill is allowed.
+                origins: vec![],
                 until: std::time::Instant::now(),
-            }),
+            })),
             _ => None,
         }
     }
 
     /// The gate record of the session's open checkout letting the fill
-    /// `action` of `item` through, if it does.
+    /// `action` of `item` through, and what it lets it into, if it does.
     pub(super) fn covering(
-        browsers: &Browsers,
         entry: &Entry,
         item: &str,
         action: &Action,
-    ) -> Option<Value> {
+    ) -> Option<(Value, Checking)> {
         let Action::VaultFill {
             site: Some(site),
             item: shown,
@@ -324,36 +371,33 @@ impl Checkout {
         else {
             return None;
         };
-        // An identity's secrets (an ID or passport number) are never an
-        // address: they are judged on their own.
-        let address = shown.kind == "identity"
-            && browsers
-                .vault
-                .with(|store| {
-                    Ok(store
-                        .item(item)
-                        .map(|it| fields.iter().all(|f| !classify::is_secret(&it.raw, f))))
-                })
-                .ok()
-                .flatten()
-                .unwrap_or(false);
         let open = entry.checkout.lock().expect("checkout lock");
         let checkout = open.as_ref()?;
         checkout
-            .covers(item, address, site, std::time::Instant::now())
-            .then(|| json!({"verdict": "allow", "checkout": checkout.card}))
+            .covers(item, &shown.kind, fields, site, std::time::Instant::now())
+            .then(|| {
+                let record = json!({"verdict": "allow", "checkout": checkout.card});
+                (record, Checking::Covered(checkout.origins.clone()))
+            })
     }
 
-    /// Whether it lets a fill of `item` (an address's, or not) on `site`
-    /// through `at`: its own card, or an address, on its site, while open.
-    fn covers(&self, item: &str, address: bool, site: &str, at: std::time::Instant) -> bool {
-        (item == self.card || address) && site == self.site && at < self.until
-    }
-
-    /// Makes this the session's open checkout, for the next ten minutes.
-    pub(super) fn open(mut self, entry: &Entry) {
-        self.until = std::time::Instant::now() + CHECKOUT_FOR;
-        *entry.checkout.lock().expect("checkout lock") = Some(self);
+    /// Whether it lets a fill of `fields` of `item` (of `kind`) on `site`
+    /// through `at`: fields of its card it was allowed, or an identity's
+    /// name and address, on its site, while it is open.
+    fn covers(
+        &self,
+        item: &str,
+        kind: &str,
+        fields: &[String],
+        site: &str,
+        at: std::time::Instant,
+    ) -> bool {
+        let fits = match kind {
+            "card" => item == self.card && fields.iter().all(|f| self.fields.contains(f)),
+            "identity" => fields.iter().all(|f| ADDRESS.split(',').any(|a| a == f)),
+            _ => false,
+        };
+        fits && site == self.site && at < self.until
     }
 }
 
@@ -602,27 +646,42 @@ mod tests {
     /// One allowed card fill lets its checkout through: that card again and
     /// the owner's addresses, on its site, for ten minutes; nothing else.
     #[test]
-    fn a_checkout_covers_its_card_and_addresses_on_its_site_for_ten_minutes() {
+    fn a_checkout_covers_its_card_fields_and_a_name_and_address_on_its_site_for_ten_minutes() {
         let now = std::time::Instant::now();
         let checkout = Checkout {
             card: "v7".into(),
+            fields: vec!["number".into(), "expiry".into()],
             site: "shop.example".into(),
+            origins: vec![],
             until: now + CHECKOUT_FOR,
         };
-        let later = now + CHECKOUT_FOR - std::time::Duration::from_secs(1);
-        // (item, an address's non-secret fields only, site, when, covered)
-        for (item, address, site, at, covered) in [
-            ("v7", false, "shop.example", now, true),
-            ("v3", true, "shop.example", later, true),
-            ("v8", false, "shop.example", now, false),
-            ("v3", true, "other.example", now, false),
-            ("v7", false, "shop.example", now + CHECKOUT_FOR, false),
+        let (later, gone) = (
+            now + CHECKOUT_FOR - std::time::Duration::from_secs(1),
+            now + CHECKOUT_FOR,
+        );
+        let (shop, other) = ("shop.example", "other.example");
+        // (item, kind, fields, site, when, covered)
+        for (item, kind, fields, site, at, covered) in [
+            ("v7", "card", "number", shop, now, true),
+            (
+                "v3",
+                "identity",
+                "first name,postal code",
+                shop,
+                later,
+                true,
+            ),
+            ("v7", "card", "number,code", shop, now, false),
+            ("v8", "card", "number", shop, now, false),
+            ("v3", "identity", "city,phone", shop, now, false),
+            ("v3", "identity", "ssn", shop, now, false),
+            ("v4", "login", "username", shop, now, false),
+            ("v3", "identity", "city", other, now, false),
+            ("v7", "card", "number", shop, gone, false),
         ] {
-            assert_eq!(
-                checkout.covers(item, address, site, at),
-                covered,
-                "{item} {site}"
-            );
+            let fields: Vec<String> = fields.split(',').map(str::to_string).collect();
+            let shown = checkout.covers(item, kind, &fields, site, at);
+            assert_eq!(shown, covered, "{item} {fields:?} {site}");
         }
     }
 

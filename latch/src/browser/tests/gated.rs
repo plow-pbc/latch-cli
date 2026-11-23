@@ -1518,120 +1518,117 @@ async fn a_confirmed_send_carries_on_its_allowed_plan(engine: &str) {
 }
 
 /// A checkout: the owner's card fill is judged and allowed once, and the
-/// shipping address on the same shop goes through on that approval, with
-/// no judgment of its own; the audit says which card's checkout it was.
+/// name and address on the same shop go through on that approval, with no
+/// judgment of their own, the audit naming the card. An identity's secret
+/// is judged, and so is the card into a frame its approved fill didn't use.
 async fn one_approved_card_fill_covers_its_checkouts_address(engine: &str) {
     let (_dir, state, _area) = test_state(engine);
-    let (site, _) = serve_site();
-    // The judge allows the card fill and nothing else that is filled.
+    let ((site, _), (provider, _)) = (serve_site(), serve_site());
+    let port = provider.rsplit(':').next().unwrap().to_string();
+    // The judge allows a card fill and nothing else that is filled.
     let judge = Judge::new(|state| match state["proposed_action"]["kind"].as_str() {
         Some("vault_fill") if state["proposed_action"]["item"]["kind"] == "card" => COVERED,
         Some("vault_fill") => NOT_COVERED,
         _ => COVERED,
     });
-    let host = Host::start(&state, &site, &judge);
-    let add = |kind: u8, title: &str, values: &[(&str, &str)]| {
-        let labels: Vec<(String, String)> = values
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect();
+    let mut browsers = Browsers::new(state.clone(), Vault::new(state.clone()), HEADLESS);
+    browsers.test = Some((
+        latch(),
+        vec![
+            (site.clone(), "https://shop.example".into()),
+            (
+                format!("http://localhost:{port}"),
+                "https://js.processor.example".into(),
+            ),
+        ],
+    ));
+    browsers.provider = Some(Arc::new(Calm));
+    let host = Host::with(&state, browsers, judge.clone(), Owner::asking(ASKED));
+    let add = |item| {
         host.browsers
             .vault
-            .with(|store| {
-                store.add(Item {
-                    id: String::new(),
-                    revision: 0,
-                    sites: vec![],
-                    other_top_sites: vec![],
-                    raw: Raw::from_labels(kind, title, &labels).unwrap(),
-                })
-            })
+            .with(|store| store.add(item))
             .unwrap()
             .item
     };
-    let card = add(
+    let card = add(super::fills::item(
         CARD,
         "Test Visa",
+        &[],
         &[
             ("number", NUMBER),
             ("expiry month", "4"),
             ("expiry year", "2031"),
             ("code", "319"),
         ],
-    );
-    let home = add(
+    ));
+    let home = add(super::fills::item(
         IDENTITY,
         "Home",
+        &[],
         &[
             ("first name", "Ada"),
             ("city", "London"),
             ("ssn", "078-05-1120"),
         ],
-    );
-    let (page, _) = host
-        .agent(
-            "open",
-            named(engine),
-            json!({"url": format!("{site}/checkout.html")}),
-            None,
-        )
-        .await;
-    let page = page.unwrap();
+    ));
+    let url = |page: &str| json!({"url": format!("{site}/{page}")});
+    let page = host
+        .agent("open", named(engine), url("checkout.html"), None)
+        .await
+        .0
+        .unwrap();
     let id = page["session"].as_str().unwrap().to_string();
-    let (paid, audit) = host
-        .agent(
-            "fill",
-            &id,
-            json!({"item": card, "snapshot": page["snapshot"], "fields": [
-                ["number", [find(&page, "textbox", "Card number")]],
-                ["expiry", [find(&page, "textbox", "Expiry")]],
-                ["cvv", [find(&page, "textbox", "CVV")]],
-            ]}),
-            None,
-        )
-        .await;
+    let fill = |item: &str, page: &Value, fields: Value| {
+        let args = json!({"item": item, "snapshot": page["snapshot"], "fields": fields});
+        host.agent("fill", &id, args, None)
+    };
+    let textbox = |page: &Value, name: &str| json!([find(page, "textbox", name)]);
+    let card_fields = json!([
+        ["number", textbox(&page, "Card number")],
+        ["expiry", textbox(&page, "Expiry")],
+        ["cvv", textbox(&page, "CVV")]
+    ]);
+    let (paid, audit) = fill(&card, &page, card_fields).await;
     paid.unwrap();
     assert_eq!(audit["gate"]["verdict"], "allow");
     let asked = judge.judged();
-    host.agent(
-        "goto",
-        &id,
-        json!({"url": format!("{site}/address.html")}),
-        None,
-    )
-    .await
-    .0
-    .unwrap();
+    host.agent("goto", &id, url("address.html"), None)
+        .await
+        .0
+        .unwrap();
     let address = host.agent("observe", &id, json!({}), None).await.0.unwrap();
-    let (shipped, audit) = host
-        .agent(
-            "fill",
-            &id,
-            json!({"item": home, "snapshot": address["snapshot"], "fields": [
-                ["first name", [find(&address, "textbox", "First name")]],
-                ["city", [find(&address, "textbox", "City")]],
-            ]}),
-            None,
-        )
-        .await;
+    let name_city = json!([
+        ["first name", textbox(&address, "First name")],
+        ["city", textbox(&address, "City")]
+    ]);
+    let (shipped, audit) = fill(&home, &address, name_city).await;
     shipped.unwrap();
     assert_eq!(audit["gate"], json!({"verdict": "allow", "checkout": card}));
     assert_eq!(judge.judged(), asked, "the address asked the judge nothing");
     let text = shows(&host, &id).await;
     assert!(text.contains("Ada") && text.contains("London"), "{text}");
     // An identity's secret is no address: judged on its own, and refused.
-    let secret = host
-        .agent(
-            "fill",
-            &id,
-            json!({"item": home, "snapshot": address["snapshot"], "fields": [
-                ["ssn", [find(&address, "textbox", "Postcode")]],
-            ]}),
-            None,
-        )
-        .await;
-    refused(&secret, "not_covered");
+    let ssn = json!([["ssn", textbox(&address, "Postcode")]]);
+    refused(&fill(&home, &address, ssn).await, "not_covered");
     assert_eq!(judge.judged(), asked + 1);
+    // The card's number into the provider's frame, which its approved fill
+    // never went to: refused with nothing filled, and the checkout closed,
+    // so the same fill again is judged.
+    let frames = url(&format!("card-elements.html?frame={port}"));
+    host.agent("goto", &id, frames, None).await.0.unwrap();
+    let hosted = host.agent("observe", &id, json!({}), None).await.0.unwrap();
+    let suggestions = hosted["fill"]["suggestions"].as_array().unwrap();
+    let suggested = suggestions
+        .iter()
+        .find(|s| s["item"] == card.as_str())
+        .unwrap();
+    let number = json!([["number", suggested["fields"]["number"]]]);
+    let (framed, _) = fill(&card, &hosted, number.clone()).await;
+    assert_eq!(framed.unwrap_err().code, "origin_mismatch");
+    assert_eq!(judge.judged(), asked + 1);
+    fill(&card, &hosted, number).await.0.unwrap();
+    assert_eq!(judge.judged(), asked + 2);
     host.look("close", &id, json!({})).await;
 }
 
