@@ -263,7 +263,7 @@ struct Why: View {
     var body: some View {
         Section("Why") {
             if let intent = gate.intentRef {
-                LabeledContent("Your message") { Text(intent).font(.caption.monospaced()).textSelection(.enabled) }
+                LabeledContent("Cited message") { Text(intent).font(.caption.monospaced()).textSelection(.enabled) }
             }
             if let later = gate.laterOwnerMessages, later > 0 {
                 LabeledContent("Your later messages", value: "\(later)")

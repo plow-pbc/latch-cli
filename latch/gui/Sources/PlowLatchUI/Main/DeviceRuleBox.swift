@@ -87,7 +87,5 @@ struct GatekeeperSheet: View {
         .fixedSize(horizontal: false, vertical: true)
         .padding(24)
         .frame(width: 480)
-        // Saved: answered, and the sheet goes.
-        .onChange(of: app.savedRule(host.name) != nil) { _, answered in if answered { app.close(.gatekeeper(host)) } }
     }
 }

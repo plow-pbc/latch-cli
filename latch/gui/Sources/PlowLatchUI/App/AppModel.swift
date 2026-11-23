@@ -112,7 +112,7 @@ final class AppModel {
     /// rules granted (a first run answers it while setting up). Answered,
     /// even blank, the device rule exists, and it's never asked again.
     func askGatekeeperIfUnanswered() async {
-        guard let host = hosts.first(where: \.isThisMac) else { return }
+        guard let host = hosts.first(where: \.isThisMac), savedRule(host.name) == nil else { return }
         await refreshRules(on: host)
         guard sheet == nil, case .success(let show)? = summaries[host.name]?.rules, show.deviceRule == nil else { return }
         sheet = .gatekeeper(host)
@@ -317,6 +317,8 @@ final class AppModel {
     func activated() async {
         await refreshAccount()
         await enter(route, refresh: true)
+        // Asked again until answered, if a read kept it from being asked.
+        await askGatekeeperIfUnanswered()
     }
 
     /// Marks screen entries (and a test build's timed hooks) for
@@ -987,6 +989,8 @@ final class AppModel {
             try await saveRules(draft?.text ?? savedRule(host)?.text ?? "", on: entry, revision: draft?.base ?? savedRule(host)?.revision)
             rulesDrafts[host] = nil
             rulesErrors[host] = nil
+            // Answered: the question goes, whether or not the read after it worked.
+            if answer { close(.gatekeeper(entry)) }
         } catch {
             rulesErrors[host] = .from(error)
         }

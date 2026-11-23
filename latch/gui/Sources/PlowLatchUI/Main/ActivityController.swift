@@ -56,7 +56,7 @@ final class ActivityController: NSViewController, NSTableViewDataSource, NSTable
     enum Column: String, CaseIterable {
         case time, status, request, intent, caller
 
-        var title: String { self == .intent ? "Your Message" : rawValue.capitalized }
+        var title: String { self == .intent ? "Cited Message" : rawValue.capitalized }
         var widths: (min: CGFloat, ideal: CGFloat, max: CGFloat) {
             switch self {
             case .time: (95, 100, 130)

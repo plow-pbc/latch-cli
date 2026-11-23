@@ -84,7 +84,7 @@ struct RulesTests {
         await app.saveRuleDraft("studio", answer: true)
         #expect(client.sets.map(\.text) == [""])
         #expect(app.savedRule("studio")?.text == "")
-        app.sheet = nil
+        #expect(app.sheet == nil)
         await app.askGatekeeperIfUnanswered()
         #expect(app.sheet == nil)
     }

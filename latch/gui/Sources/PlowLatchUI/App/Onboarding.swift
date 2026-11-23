@@ -355,7 +355,8 @@ final class Onboarding {
         defer { savingRules = false }
         do {
             try await client.rulesSet(draft, host: nil, revision: savedRules?.revision)
-            savedRules = try await client.rulesShow().deviceRule
+            // Saved: a read after that fails doesn't make it unsaved.
+            savedRules = try? await client.rulesShow().deviceRule
             rulesError = nil
             next()
         } catch {
