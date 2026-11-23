@@ -5956,6 +5956,9 @@ impl Logged {
 /// how long it took.
 fn answered_alike(output: &Output) -> (Option<i32>, Value) {
     let (code, mut answer) = answered(output);
+    if let Some(error) = answer.get_mut("error").and_then(Value::as_object_mut) {
+        error.remove("audit_id");
+    }
     if let Some(answer) = answer.as_object_mut() {
         answer.remove("audit_id");
         answer.remove("duration_ms");
@@ -8180,6 +8183,7 @@ fn a_local_socket_call_the_judge_forbids_does_not_run() {
     let target = share.join("must-not-exist");
     let source = dir.path().join("source.txt");
     fs::write(&source, "forbidden").unwrap();
+    let mut refused = Vec::new();
     for args in [
         vec!["exec", "--", "touch", target.to_str().unwrap()],
         vec![
@@ -8194,6 +8198,7 @@ fn a_local_socket_call_the_judge_forbids_does_not_run() {
         let error: Value = serde_json::from_slice(&output.stderr).unwrap();
         assert_eq!(error["error"]["code"], "gatekeeper_denied", "{error}");
         println!("forbidden local {}: {error}", args[0]);
+        refused.push(error["error"]["audit_id"].clone());
     }
     assert!(!target.exists());
     assert_eq!(plow.state.lock().unwrap().decisions.len(), 2);
@@ -8205,6 +8210,7 @@ fn a_local_socket_call_the_judge_forbids_does_not_run() {
     for record in records {
         assert_eq!(record["gate"]["caller"], "owner_on_host", "{record}");
         assert_eq!(record["decision"], "deny", "{record}");
+        assert!(refused.contains(&record["id"]), "{record} {refused:?}");
     }
 }
 
