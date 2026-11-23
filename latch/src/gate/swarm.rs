@@ -36,7 +36,8 @@ const CLOSED: [&str; 2] = ["✅", "❌"];
 /// Where the owner's Swarm account is kept, in the state folder.
 const OWNER_FILE: &str = "gatekeeper/swarm-owner.json";
 
-/// The `swarm` program: `$LATCH_SWARM`, else `swarm` on PATH.
+/// The `swarm` program: `$LATCH_SWARM`, else `swarm` on the owner's
+/// `PATH` (`worker::owner_path`).
 fn program() -> PathBuf {
     std::env::var_os("LATCH_SWARM").map_or_else(|| PathBuf::from("swarm"), PathBuf::from)
 }
@@ -116,7 +117,10 @@ enum Ran {
 /// Runs `swarm ARGS` and reads its JSON answer.
 async fn run(args: &[&str]) -> Result<Value, Ran> {
     let mut command = tokio::process::Command::new(program());
-    command.args(args).kill_on_drop(true);
+    command
+        .args(args)
+        .env("PATH", crate::worker::owner_path())
+        .kill_on_drop(true);
     let output = tokio::time::timeout(READ_WITHIN, command.output())
         .await
         .map_err(|_| Ran::Failed(format!("swarm took over {}s", READ_WITHIN.as_secs())))?
@@ -291,6 +295,7 @@ pub async fn sign_in(state: &StateDir, company: &str) -> Result<Value, Failure> 
     let mut command = tokio::process::Command::new(program());
     command
         .args(["signin", "--company", company])
+        .env("PATH", crate::worker::owner_path())
         .env("SWARM_ACCOUNT_TOKEN", token)
         .env("SWARM_PLOW_API", &config.api_url)
         .kill_on_drop(true);
@@ -571,5 +576,11 @@ mod tests {
         unsafe { std::env::set_var("LATCH_SWARM", dir.path().join("missing")) };
         let missing = reader.read(&intent, AGENT).await.unwrap_err();
         assert!(missing.contains("could not run swarm"), "{missing}");
+        // Named by neither, `swarm` is found on the owner's login PATH, as a
+        // host the Mac app started has it.
+        // SAFETY: as above.
+        unsafe { std::env::remove_var("LATCH_SWARM") };
+        crate::worker::LOGIN_PATH.set(dir.path().into()).unwrap();
+        assert!(reader.read(&intent, AGENT).await.unwrap().is_some());
     }
 }
