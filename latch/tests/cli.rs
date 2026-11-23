@@ -11314,8 +11314,13 @@ mod pinned {
         fs::create_dir(&share).unwrap();
         messages_home(&home);
         browser_and_messages_host(&host);
+        // Submitting the code acts, so it cites the owner's ask.
+        let swarm = cited_on(&host, "Sign in to the shop with the code it texts me");
         let mut command = serve_command(&host, &relay);
-        command.arg("--headless-browsers").env("HOME", &home);
+        command
+            .arg("--headless-browsers")
+            .env("HOME", &home)
+            .env("LATCH_SWARM", &swarm);
         let (serve, mut log, _) = serving_with(command);
         thread::spawn(move || std::io::copy(&mut log, &mut std::io::sink()));
         until_serving(&host, &serve);
@@ -11395,6 +11400,8 @@ mod pinned {
             "host",
             "--session",
             &session,
+            "--intent",
+            "!dm:test/$ask",
             "do",
             &typed,
             &submitted,
