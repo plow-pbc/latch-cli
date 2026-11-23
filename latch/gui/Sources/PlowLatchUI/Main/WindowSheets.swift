@@ -3,8 +3,8 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 /// What the main window shows over itself, one at a time: New Agent, a
-/// vault item's New Item or Edit, an export chosen and imported, the
-/// gatekeeper question, or a question before an action. The model keeps it; the window presents it.
+/// vault item's New Item or Edit, an export chosen and imported, or a
+/// question before an action. The model keeps it; the window presents it.
 enum MainSheet: Equatable {
     case newAgent(NewAgent)
     case vaultItem(VaultEditor)
@@ -12,8 +12,6 @@ enum MainSheet: Equatable {
     case choosingExport(HostEntry)
     case vaultImport(VaultImport)
     case confirm(Confirmation)
-    /// What this Mac's agents are always denied, asked once (`GatekeeperSheet`).
-    case gatekeeper(HostEntry)
 
     /// The same sheet: the same flow, whatever it holds by now.
     static func == (a: MainSheet, b: MainSheet) -> Bool {
@@ -23,7 +21,6 @@ enum MainSheet: Equatable {
         case let (.choosingExport(a), .choosingExport(b)): a.name == b.name
         case let (.vaultImport(a), .vaultImport(b)): a === b
         case let (.confirm(a), .confirm(b)): a == b
-        case let (.gatekeeper(a), .gatekeeper(b)): a.name == b.name
         default: false
         }
     }
@@ -127,7 +124,6 @@ struct AppKitSheets: SheetPresenting {
         case let .sheet(.vaultImport(importer)): present(ImportSheet(importer: importer), wanted, over: controller)
         case let .sheet(.choosingExport(host)): chooseExport(on: host, wanted, over: window)
         case let .sheet(.confirm(confirmation)): ask(confirmation, wanted, over: window)
-        case let .sheet(.gatekeeper(host)): present(GatekeeperSheet(host: host), wanted, over: controller)
         }
     }
 

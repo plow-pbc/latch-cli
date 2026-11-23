@@ -5,6 +5,7 @@ import Foundation
 extension LatchClient {
     func hostStatus(_ host: String) async throws -> LocalStatus { throw LatchError.unreachable("not scripted") }
     func rulesSet(_ text: String, host: String?, revision: String?) async throws { throw LatchError.unreachable("not scripted") }
+    func rulesTry(draft: String, action: String) async throws -> Bool { throw LatchError.unreachable("not scripted") }
     func agents(host: String?) async throws -> AgentsList { throw LatchError.unreachable("not scripted") }
     func vaultShow(_ item: String, host: String?) async throws -> VaultShow { throw LatchError.unreachable("not scripted") }
     func vaultAdd(_ draft: VaultDraft, host: String?) async throws -> VaultList.Item { throw LatchError.unreachable("not scripted") }

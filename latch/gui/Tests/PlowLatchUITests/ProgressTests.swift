@@ -124,17 +124,37 @@ struct GatekeeperTests {
         AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true).stage(.rules)
     }
 
-    /// Never answered, a blank box is an answer: Save writes it, nothing
+    /// Never answered, a blank box is an answer: Continue writes it, nothing
     /// denied, and the screen moves on.
     @Test func aBlankFirstAnswerIsSaved() async {
         let client = ScriptedClient { _ in nil }
         let flow = flow(client)
         await flow.loadRules()
-        #expect(flow.draftRules == "" && flow.primaryTitle == "Save")
+        #expect(flow.draftRules == "" && flow.primaryTitle == "Continue")
         flow.primary()
         await waitUntil { flow.step != .rules }
         #expect(client.saved == [""])
         #expect(flow.savedRules?.text == "")
+    }
+
+    /// The samples are judged by the gate against the draft once typing
+    /// pauses: a blank draft denies nothing and asks no one, a sample the
+    /// gate couldn't judge gets no mark, and signed out of Plow, with no
+    /// judge, none does.
+    @Test func theSamplesAreJudgedAgainstTheDraft() async {
+        let client = ScriptedClient { _ in nil }
+        let flow = flow(client)
+        flow.judgeDelay = .zero
+        await flow.loadRules()
+        #expect(flow.verdicts == [true, true, true, true, true] && flow.signedIn == true)
+        flow.draftRules = "Never post my tax return."
+        flow.draftChanged()
+        await waitUntil { client.tried.count == 5 && flow.verdicts == [true, true, nil, false, true] }
+        #expect(Set(client.tried) == ["Never post my tax return."])
+        client.signedOut = true
+        await flow.loadRules()
+        #expect(flow.signedIn == false && flow.verdicts == [nil, nil, nil, nil, nil])
+        #expect(client.tried.count == 5)
     }
 
     /// Answered already: the box holds the answer, and Continue writes
@@ -144,7 +164,7 @@ struct GatekeeperTests {
         client.savedText = "Never touch ~/Finance."
         let flow = flow(client)
         await flow.loadRules()
-        #expect(flow.draftRules == "Never touch ~/Finance." && flow.primaryTitle == "Continue" && flow.stepDone)
+        #expect(flow.draftRules == "Never touch ~/Finance." && flow.primaryTitle == "Continue")
         flow.primary()
         await waitUntil { flow.step != .rules }
         #expect(client.saved.isEmpty)
@@ -152,7 +172,6 @@ struct GatekeeperTests {
         let again = self.flow(client)
         await again.loadRules()
         again.draftRules = ""
-        #expect(again.primaryTitle == "Save")
         again.primary()
         await waitUntil { again.step != .rules }
         #expect(client.saved == [""])
@@ -190,19 +209,17 @@ struct GatekeeperTests {
         #expect(flow.savedRules?.text == "Never send email." && !flow.rulesChanged)
     }
 
-    /// An answer that couldn't be read can't be saved over; Skip still
-    /// goes on, and the main window asks later.
+    /// An answer that couldn't be read can't be saved over; Continue
+    /// still goes on, and it is answered later at the top of Activity.
     @Test func anUnreadAnswerCantBeSavedOver() async {
         let client = ScriptedClient { _ in nil }
         client.showFailure = LatchFailure(code: "state_busy", message: "the state folder is busy")
         let flow = flow(client)
         await flow.loadRules()
-        #expect(flow.rulesUnreadable && !flow.primaryEnabled)
+        #expect(flow.rulesUnreadable && flow.primaryTitle == "Continue")
         flow.draftRules = "Never send email."
         await flow.saveRules()
-        #expect(client.saved.isEmpty)
-        flow.skip()
-        #expect(flow.step != .rules)
+        #expect(client.saved.isEmpty && flow.step != .rules)
         client.showFailure = nil
         let again = self.flow(client)
         await again.loadRules()
@@ -280,26 +297,6 @@ struct GatekeeperTests {
         #expect(line.error.connectUrl == URL(string: "https://plow.co/connect/google"))
     }
 
-    @Test func setupRowsComeFromLatchNotFromScreensPassed() {
-        let app = AppModel(client: FakeLatchClient(), store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
-        app.stage(status: try? Fixtures.decode(Fixtures.serving))
-        // Every screen continued, but latch says nothing is on.
-        _ = app.stage(.done, progress: Progress(passed: [.rules: .continued, .access: .continued]))
-        app.stage(rulesSaved: false, setup: try? Fixtures.decode(Fixtures.setup(on: ["messages"])))
-        let states = Summary.rows(app: app, flow: nil).map(\.state)
-        #expect(states == ["Logged in", "Not answered", "Not set up", "Not set up", "Running"])
-        app.stage(rulesSaved: true, setup: try? Fixtures.decode(Fixtures.setup(on: ["google", "messages", "contacts"])))
-        #expect(Summary.rows(app: app, flow: nil).map(\.state) == ["Logged in", "Answered", "Connected", "On", "Running"])
-    }
-
-    @Test func aFailedStatusReadSaysSo() {
-        let app = AppModel(client: FakeLatchClient(), store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
-        app.stage(status: nil, error: .unreachable("Latch returned an unreadable response."))
-        app.stage(rulesSaved: nil, setup: nil)
-        let states = Summary.rows(app: app, flow: nil).map(\.state)
-        #expect(states == ["Couldn't check", "Couldn't check", "Couldn't check", "Couldn't check", "Couldn't check"])
-    }
-
     @Test func onlyMissingAccessIsAccessNeeded() {
         #expect(Onboarding.Check.needed("Waiting for access").isNeeded)
         #expect(!Onboarding.Check.failed(.unreachable("the Messages reader is missing")).isNeeded)
@@ -371,10 +368,23 @@ final class ScriptedClient: LatchClient, @unchecked Sendable {
     var host: String?
     /// How many times `setup --status` was read.
     private(set) var looked = 0
+    /// `setup --status` says this Mac isn't signed in to Plow.
+    var signedOut = false
     func setupStatus() async throws -> SetupStatus {
         looked += 1
         await held("look \(looked)")
-        return try Fixtures.decode(host.map { Fixtures.setup(on: connectorsOn, google: google, host: $0) } ?? Fixtures.setup(on: connectorsOn, google: google))
+        let setup = host.map { Fixtures.setup(on: connectorsOn, google: google, host: $0) } ?? Fixtures.setup(on: connectorsOn, google: google)
+        return try Fixtures.decode(signedOut ? setup.replacingOccurrences(of: #""state":"done","reason":"Logged in"#, with: #""state":"needed","reason":"Not logged in"#) : setup)
+    }
+    /// The drafts `rules try` judged, one for each sample, which are
+    /// judged at once.
+    private let drafts = Mutex<[String]>([])
+    var tried: [String] { drafts.withLock { $0 } }
+    /// A stand-in judge that can't judge a vault fill.
+    func rulesTry(draft: String, action: String) async throws -> Bool {
+        drafts.withLock { $0.append(draft) }
+        if action.contains("vault_fill") { throw LatchError.unreachable("no answer") }
+        return wordsDeny(draft: draft, action: action)
     }
     /// What `--check-access` says of Full Disk Access.
     var access: String?
@@ -555,15 +565,6 @@ struct ClosingTests {
         #expect(flow.progress.passed[.access] == nil)
     }
 
-    @Test func notSetUpIsOnlyLatchsAnswer() {
-        let app = AppModel(client: FakeLatchClient(), store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
-        app.stage(status: try? Fixtures.decode(Fixtures.stopped))
-        _ = app.stage(.done, progress: Progress(passed: [.access: .skipped, .rules: .skipped]))
-        app.stage(rulesSaved: true, setup: try? Fixtures.decode(Fixtures.setup(on: ["google"])))
-        // Skipped this time, but latch has an answer and Google, with no host running.
-        #expect(Summary.rows(app: app, flow: nil).map(\.state) == ["Logged in", "Answered", "Connected", "Not set up", "Not running"])
-    }
-
     /// Contacts & Messages refused for want of Full Disk Access, on a host
     /// this Mac runs in the background or in a terminal (`attached`), and
     /// checked once: both wait for access until `granted` says so.
@@ -678,12 +679,13 @@ struct ClosingTests {
     }
 
     /// Every screen's Back and Skip for now: Back goes to the screen
-    /// before, from Log in on; Skip for now is on Set your rules and Grant
-    /// access only, and goes to the screen after.
+    /// before, from Log in on; Skip for now is on Grant access only (the
+    /// gatekeeper question is answered, blank or not), and goes to the
+    /// screen after.
     @Test func backAndSkipOnEveryScreen() {
         let order: [Step] = [.welcome, .login, .privacy, .rules, .access, .start, .done]
         #expect(Step.allCases == order)
-        #expect(order.filter(\.skippable) == [.rules, .access])
+        #expect(order.filter(\.skippable) == [.access])
         let app = AppModel(client: ScriptedClient { _ in nil }, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
         for (index, step) in order.enumerated() {
             let back = app.stage(step)
@@ -731,8 +733,6 @@ struct ClosingTests {
         let disconnected = app.stage(.access, progress: Progress(rerun: true))
         await disconnected.checkGoogle()
         #expect(disconnected.google == .notConnected)
-        app.stage(rulesSaved: true, setup: try? await client.setupStatus())
-        #expect(Summary.rows(app: app, flow: nil).first { $0.title == "Google" }?.state == "Not set up")
     }
 
     @Test func aCheckStillAnsweringWhenGoogleIsSkippedTurnsNothingOn() async {

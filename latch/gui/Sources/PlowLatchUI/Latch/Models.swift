@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// `latch status --local`: what this Mac knows about its own latch.
@@ -166,6 +167,11 @@ nonisolated struct RulesShow: Decodable, Equatable {
     struct Rule: Decodable, Equatable {
         var text: String
         var revision: String
+
+        /// A text's revision as latch gives it: its sha256, as hex.
+        static func revision(of text: String) -> String {
+            SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
+        }
     }
     /// Agents the host refuses exec (`serve --deny-exec`).
     struct DenyExec: Decodable, Equatable {
@@ -174,6 +180,26 @@ nonisolated struct RulesShow: Decodable, Equatable {
     }
     var deviceRule: Rule?
     var denyExec: DenyExec?
+    /// The host runs a latch from before device rules: its answer has no
+    /// `device_rule` at all (a current one says null when never set).
+    var older = false
+}
+
+/// `latch rules try`: one verdict for each action, in order.
+nonisolated struct RulesTry: Decodable {
+    struct Verdict: Decodable { var denied: Bool }
+    var verdicts: [Verdict]
+}
+
+nonisolated extension RulesShow {
+    private enum Keys: String, CodingKey { case deviceRule, denyExec }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Keys.self)
+        deviceRule = try c.decodeIfPresent(Rule.self, forKey: .deviceRule)
+        denyExec = try c.decodeIfPresent(DenyExec.self, forKey: .denyExec)
+        older = !c.contains(.deviceRule)
+    }
 }
 
 /// `latch agents [--host NAME]`: the account's agents and, with a host,

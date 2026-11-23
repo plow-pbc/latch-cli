@@ -54,6 +54,7 @@ nonisolated struct FakeLatchClient: LatchClient {
         #"{"id": "\#(id)", "request": {"model": "typesafe/jev-1.14"}, "answer": null}"#
     }
     func rulesSet(_ text: String, host: String?, revision: String?) async throws {}
+    func rulesTry(draft: String, action: String) async throws -> Bool { wordsDeny(draft: draft, action: action) }
     func agents(host: String?) async throws -> AgentsList {
         switch host {
         case nil: try Fixtures.decode(Fixtures.agents)
@@ -350,9 +351,19 @@ package enum SnapshotRunner {
             }),
             ("02-login-name-taken", .login, Fixtures.loggedOut, Progress(), { $0.login = .nameTaken(existing: "studio", lastSeen: nil); $0.loginName = "studio-2" }),
             ("02-login-verified", .login, Fixtures.serving, Progress(), { $0.login = .verified(name: "studio") }),
-            ("03-privacy", .privacy, Fixtures.stopped, Progress(), { _ in }),
+            ("03-privacy", .privacy, Fixtures.stopped, Progress(), { await $0.checkSignedIn() }),
             // Never answered: the box is empty.
             ("04-rules-first-run", .rules, Fixtures.stopped, Progress(), { await $0.loadRules() }),
+            // An answer, judged live: the samples it denies are refused.
+            ("04-rules-live", .rules, Fixtures.stopped, Progress(), {
+                $0.draftRules = "Never post my tax documents. Never touch my passwords."
+                $0.stage(signedIn: true, verdicts: [true, true, false, false, false])
+            }),
+            // Signed out: no judge, so no marks.
+            ("04-rules-signed-out", .rules, Fixtures.stopped, Progress(), {
+                $0.draftRules = "Never post my tax documents."
+                $0.stage(signedIn: false, verdicts: [nil, nil, nil, nil, nil])
+            }),
             // Answered on this Mac: read into the box.
             ("04-rules-rerun-prefilled", .rules, Fixtures.stopped, Progress(), {
                 $0.savedRules = rules; $0.draftRules = rules.text
@@ -421,22 +432,9 @@ package enum SnapshotRunner {
                 $0.startError = LatchError.failed(LatchFailure(code: "serve_failed", message: "the host did not answer within 30 seconds (`latch logs` has its log)"))
             }),
             ("07-start-login-item-needs-approval", .start, Fixtures.serving, Progress(), { $0.startError = LoginItem.needsApproval }),
-            ("08-done-all-set", .done, Fixtures.serving, full, {
-                $0.app.stage(rulesSaved: true, setup: try! Fixtures.decode(Fixtures.setup(on: ["google", "messages", "contacts"])))
-            }),
+            ("08-done-all-set", .done, Fixtures.serving, full, { _ in }),
             ("08-done-text-agent", .done, Fixtures.serving, full, {
-                $0.app.stage(rulesSaved: true, setup: try! Fixtures.decode(Fixtures.setup(on: ["google", "messages", "contacts"])))
                 $0.app.stage(agents: try! Fixtures.decode(Fixtures.agents), standings: [:])
-            }),
-            ("08-done-google-skipped", .done, Fixtures.serving,
-             Progress(passed: full.passed.merging([.access: .skipped]) { $1 }), {
-                $0.app.stage(rulesSaved: true, setup: try! Fixtures.decode(Fixtures.setup(on: ["messages", "contacts"], google: Fixtures.googleNotConnected)))
-            }),
-            ("08-done-with-skips", .done, Fixtures.serving, skipped, {
-                $0.app.stage(rulesSaved: false, setup: try! Fixtures.decode(Fixtures.setup(on: [])))
-            }),
-            ("08-done-not-running", .done, Fixtures.stopped, full, {
-                $0.app.stage(rulesSaved: true, setup: try! Fixtures.decode(Fixtures.setup(on: ["google"])))
             }),
         ]
 
@@ -449,18 +447,17 @@ package enum SnapshotRunner {
                 try await render(OnboardingView(entranceTime: step == .welcome ? 10 : nil).environment(app),
                                  size: Brand.windowSize, dark: dark, file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
             }
-            let mains: [(String, String?, Progress, Bool?, [String]?)] = [
-                ("09-main-running", Fixtures.serving, full, true, ["google", "messages", "contacts"]),
-                ("09-main-stopped-skipped-update", Fixtures.stopped, skipped, false, nil),
-                ("09-main-logged-out", Fixtures.loggedOut, full, nil, nil),
-                ("09-main-status-failed", nil, full, nil, nil),
+            let mains: [(String, String?, Progress)] = [
+                ("09-main-running", Fixtures.serving, full),
+                ("09-main-stopped-skipped-update", Fixtures.stopped, skipped),
+                ("09-main-logged-out", Fixtures.loggedOut, full),
+                ("09-main-status-failed", nil, full),
             ]
-            for (name, status, progress, rulesSaved, on) in mains {
+            for (name, status, progress) in mains {
                 let app = AppModel(client: FakeLatchClient(), still: true)
                 app.stage(status: try status.map { try Fixtures.decode($0) },
                           error: status == nil ? .unreachable("Latch couldn't start.", detail: "The file “latch” doesn't exist.") : nil)
                 app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
-                app.stage(rulesSaved: rulesSaved, setup: try on.map { try Fixtures.decode(Fixtures.setup(on: $0)) })
                 _ = app.stage(.done, progress: progress)
                 try await renderWindow(app, size: mainSize, dark: dark,
                                  file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
@@ -772,8 +769,8 @@ package enum SnapshotRunner {
             }
         }
         // The device rule: Activity headed by studio's, an unsaved change
-        // to it, pi-kitchen's never answered, and the gatekeeper question
-        // an updating owner is asked once.
+        // to it, pi-kitchen's never answered, and sidecar on a latch from
+        // before device rules.
         for dark in [false, true] {
             let screens: [(String, String?, (AppModel) -> Void)] = [
                 ("16-device-rule-studio-activity", nil, { _ in }),
@@ -781,6 +778,9 @@ package enum SnapshotRunner {
                     app.typeRule("Never touch ~/Finance or my tax returns.\nNever send email outside the company.", on: "studio")
                 }),
                 ("16-device-rule-pi-kitchen-unanswered", "pi-kitchen", { _ in }),
+                ("16-device-rule-sidecar-older", "sidecar", { app in
+                    app.stage(summary: HostSummary(rules: .success(try! Fixtures.decode(#"{"agents":{},"host":"sidecar"}"#))), for: "sidecar")
+                }),
             ]
             for (name, chosen, stage) in screens {
                 let app = AppModel(client: FakeLatchClient(), still: true)
@@ -794,14 +794,6 @@ package enum SnapshotRunner {
                 _ = app.stage(.done, progress: full)
                 try await renderWindow(app, size: CGSize(width: 1180, height: 700), dark: dark,
                                        file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
-            }
-            let sheet = output.appending(path: "16-device-rule-gatekeeper-sheet-\(dark ? "dark" : "light").png")
-            if wanted(sheet) {
-                let app = AppModel(client: FakeLatchClient(), still: true)
-                app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
-                app.stage(summary: HostSummary(rules: .success(try Fixtures.decode(Fixtures.piRules))), for: "studio")
-                guard let studio = app.host else { throw LatchError.unreachable("no host to ask for") }
-                try await render(GatekeeperSheet(host: studio).environment(app), size: CGSize(width: 480, height: 380), dark: dark, file: sheet)
             }
         }
         // The Agents hub at 5 agents × 8 hosts, every one of its 40 rows,

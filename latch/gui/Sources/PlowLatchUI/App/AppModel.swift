@@ -68,28 +68,6 @@ final class AppModel {
 
     var progress: Progress { onboarding?.progress ?? store.load() }
 
-    /// What's set up, as latch says: whether the device rule was answered, and
-    /// each setup step (`setup --status`); nil where latch couldn't say.
-    private(set) var rulesSaved: Bool?
-    private(set) var setup: SetupStatus?
-
-    func refreshSetup() async {
-        rulesSaved = (try? await client.rulesShow()).map { $0.deviceRule != nil }
-        setup = try? await client.setupStatus()
-    }
-
-    /// Whether latch says a connector is set up: on, and for Google still
-    /// connected in Plow; nil before it has said.
-    func connectorOn(_ name: String) -> Bool? {
-        setup.map { $0.step(name)?.state == "done" }
-    }
-
-    /// For snapshots: what latch said is set up.
-    func stage(rulesSaved: Bool?, setup: SetupStatus?) {
-        self.rulesSaved = rulesSaved
-        self.setup = setup
-    }
-
     /// The account's hosts as `latch status` last said; it asks Plow, so it
     /// can fail where `status --local` doesn't.
     private(set) var account: AccountStatus?
@@ -105,17 +83,6 @@ final class AppModel {
         } catch {
             accountError = .from(error)
         }
-    }
-
-    /// The gatekeeper question, over the main window, while this Mac hosts
-    /// and its owner never answered it: on updating from a latch whose
-    /// rules granted (a first run answers it while setting up). Answered,
-    /// even blank, the device rule exists, and it's never asked again.
-    func askGatekeeperIfUnanswered() async {
-        guard let host = hosts.first(where: \.isThisMac), savedRule(host.name) == nil else { return }
-        await refreshRules(on: host)
-        guard sheet == nil, case .success(let show)? = summaries[host.name]?.rules, show.deviceRule == nil else { return }
-        sheet = .gatekeeper(host)
     }
 
     /// Settings opening: the account and its agents, each unless read in
@@ -317,8 +284,6 @@ final class AppModel {
     func activated() async {
         await refreshAccount()
         await enter(route, refresh: true)
-        // Asked again until answered, if a read kept it from being asked.
-        await askGatekeeperIfUnanswered()
     }
 
     /// Marks screen entries (and a test build's timed hooks) for
@@ -916,26 +881,13 @@ final class AppModel {
         summaries[host.name, default: HostSummary()].rules = rules
     }
 
-    /// Saves a host's device rule only if it's still what the person
-    /// started editing (`revision`, nil when there was none): latch refuses
-    /// a save over a rule changed elsewhere meanwhile. An empty text is
-    /// saved too: nothing is denied.
-    func saveRules(_ text: String, on host: HostEntry, revision: String?) async throws {
-        do {
-            try await client.rulesSet(text, host: host.isThisMac ? nil : host.name, revision: revision)
-        } catch let error as LatchError where error.code == "stale_revision" {
-            throw LatchError.unreachable(Self.changedElsewhere)
-        }
-        await refreshRules(on: host)
-    }
-
     /// A device rule being edited and not yet saved: the text, and the
-    /// revision the edit started from (nil when there was none). Each is
-    /// observed on its own, so typing redraws only its editor.
+    /// revision it was begun from or last saved at (nil when there was
+    /// none). Each is observed on its own, so typing redraws only its editor.
     @Observable
     final class RulesDraft {
         var text: String
-        let base: String?
+        var base: String?
 
         init(text: String, base: String?) {
             self.text = text
@@ -944,11 +896,16 @@ final class AppModel {
     }
 
     /// Unsaved device rules by host name, kept while the person goes to
-    /// another screen or host and back; a save or Revert ends one.
+    /// another screen or host and back; a save that catches up ends one.
     var rulesDrafts: [String: RulesDraft] = [:]
     /// Why a draft's last save failed.
     var rulesErrors: [String: LatchError] = [:]
+    /// Hosts whose rule was just saved, for a moment.
+    private(set) var rulesSaved: Set<String> = []
     private(set) var savingRules: Set<String> = []
+    /// Each host's save waiting for typing to pause.
+    private var ruleSaves: [String: Task<Void, Never>] = [:]
+    var ruleSaveDelay: Duration = .seconds(1)
 
     /// The device rule on a host, as it last said.
     func savedRule(_ host: String) -> RulesShow.Rule? {
@@ -957,8 +914,8 @@ final class AppModel {
     }
 
     /// A keystroke in a device rule's box: into its draft, begun from what's
-    /// saved if there's none. The draft object changes, not the map of
-    /// drafts, so only that box redraws.
+    /// saved if there's none, and saved once typing pauses. The draft
+    /// object changes, not the map of drafts, so only that box redraws.
     func typeRule(_ text: String, on host: String) {
         if let draft = rulesDrafts[host] {
             draft.text = text
@@ -966,43 +923,56 @@ final class AppModel {
             rulesDrafts[host] = .init(text: text, base: savedRule(host)?.revision)
             rulesErrors[host] = nil
         }
-    }
-
-    /// A draft differs from what's saved, or was begun from an older rule.
-    func ruleChanged(_ host: String) -> Bool {
-        guard let draft = rulesDrafts[host] else { return false }
-        let saved = savedRule(host)
-        return draft.text != (saved?.text ?? "") || draft.base != saved?.revision
-    }
-
-    /// Saves a draft over what it began from; it ends once saved, and stays
-    /// with why when not. With no draft, `answer` saves what's shown (the
-    /// gatekeeper question's Save, blank included).
-    func saveRuleDraft(_ host: String, answer: Bool = false) async {
-        guard !savingRules.contains(host), let entry = hosts.first(where: { $0.name == host }) else { return }
-        let draft = rulesDrafts[host]
-        guard answer || ruleChanged(host) else { return }
-        savingRules.insert(host)
-        defer { savingRules.remove(host) }
-        do {
-            try await saveRules(draft?.text ?? savedRule(host)?.text ?? "", on: entry, revision: draft == nil ? savedRule(host)?.revision : draft?.base)
-            rulesDrafts[host] = nil
-            rulesErrors[host] = nil
-            // Answered: the question goes, whether or not the read after it worked.
-            if answer { close(.gatekeeper(entry)) }
-        } catch {
-            rulesErrors[host] = .from(error)
+        rulesSaved.remove(host)
+        ruleSaves[host]?.cancel()
+        ruleSaves[host] = Task {
+            try? await Task.sleep(for: ruleSaveDelay)
+            guard !Task.isCancelled else { return }
+            // Its own task: typing on during the save doesn't stop it.
+            Task { await self.saveRuleDraft(host) }
         }
     }
 
-    /// Revert: the draft goes, and the saved rule is read again.
-    func revertRule(_ host: String) async {
-        rulesDrafts[host] = nil
-        rulesErrors[host] = nil
-        if let entry = hosts.first(where: { $0.name == host }) { await refreshRules(on: entry) }
+    /// Saves a draft over the revision it began from. A save takes the text
+    /// as it was; typing meanwhile is saved after it. A rule changed
+    /// elsewhere meanwhile isn't saved over: the newer one shows instead.
+    func saveRuleDraft(_ host: String) async {
+        ruleSaves[host]?.cancel()
+        guard !savingRules.contains(host), let draft = rulesDrafts[host],
+              let entry = hosts.first(where: { $0.name == host }) else { return }
+        let text = draft.text
+        let saved = savedRule(host)
+        guard text != (saved?.text ?? "") || draft.base != saved?.revision else {
+            rulesDrafts[host] = nil
+            return
+        }
+        savingRules.insert(host)
+        let result = await Self.result {
+            try await self.client.rulesSet(text, host: entry.isThisMac ? nil : host, revision: draft.base)
+        }
+        await refreshRules(on: entry)
+        savingRules.remove(host)
+        switch result {
+        case .success?:
+            rulesErrors[host] = nil
+            rulesSaved.insert(host)
+            Task {
+                try? await Task.sleep(for: .seconds(2))
+                rulesSaved.remove(host)
+            }
+            // The revision this save made, read back or not: typing since
+            // is saved over it alone.
+            draft.base = RulesShow.Rule.revision(of: text)
+            if draft.text == text { rulesDrafts[host] = nil } else { await saveRuleDraft(host) }
+        case let .failure(error)? where error.code == "stale_revision":
+            rulesDrafts[host] = nil
+            rulesErrors[host] = nil
+        case let .failure(error)?:
+            rulesErrors[host] = error
+        case nil:
+            break
+        }
     }
-
-    static let changedElsewhere = "This rule changed since you started editing. Revert to see the saved rule, then make your change again."
 
     /// For snapshots: as `latch agents` said.
     func stage(agents: AgentsList, standings: [String: Result<AgentsList, LatchError>]) {

@@ -133,6 +133,7 @@ latch browser open --host my-mac https://example.com
 | `latch rules edit` | Host | Change the device rule in $EDITOR; saved only if it did not change meanwhile. Owner only. |
 | `latch rules clear` | Host | Remove the device rule: nothing is always denied. Owner only. |
 | `latch rules show` | Host | The device rule with its revision, and the agent map. Owner only. |
+| `latch rules try` | Host | Whether a draft device rule would deny each ACTION_JSON, an action as the gatekeeper is shown it, if you asked for it on this Mac; nothing is saved or audited. Owner only.<br>Would a draft read from stdin deny saving a file into ~/Finance? `latch rules try --draft - '{"operation":"file_put","path":"~/Finance/receipt.pdf","size":48213,"file_name":"receipt.pdf"}'` |
 | `latch swarm signin` | Host | Sign this machine's host in to Swarm with your Plow login. Owner only.<br>Let this host read the messages your agents cite: `latch swarm signin --company hq` |
 
 ## Connectors

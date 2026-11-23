@@ -58,6 +58,15 @@ final class Onboarding {
     /// This Mac's device rule couldn't be read: nothing may be saved over
     /// it, unseen, until it is.
     private(set) var rulesUnreadable = false
+    /// Whether this Mac is signed in to Plow, which judging the sample
+    /// requests needs: nil until read, or when it couldn't be.
+    private(set) var signedIn: Bool?
+    /// Each sample request's verdict against the draft, true when let
+    /// through; nil while never judged or when it couldn't be. A check
+    /// under way keeps the last marks.
+    private(set) var verdicts = [Bool?](repeating: nil, count: SampleRequest.all.count)
+    private var judging: Task<Void, Never>?
+    var judgeDelay: Duration = .milliseconds(800)
     // Connect Google.
     var google: Google = .checking
     var googleAccounts = GoogleAccounts(accounts: [])
@@ -154,6 +163,8 @@ final class Onboarding {
 
     /// Stops what a screen started: leaving it, or closing the window.
     func stopWork() {
+        judging?.cancel()
+        judging = nil
         loginTask?.cancel()
         loginTask = nil
         googleTask?.cancel()
@@ -175,17 +186,17 @@ final class Onboarding {
         switch step {
         case .welcome: "Get started"
         case .login, .privacy: "Continue"
-        case .rules: savingRules ? "Saving…" : rulesChanged ? "Save" : "Continue"
+        case .rules: savingRules ? "Saving…" : "Continue"
         case .access: accessDone || accessFailed ? "Continue" : accessGranted ? "Turn on" : "Open System Settings"
         case .start: starting ? "Starting…" : runInBackground && app.status?.thisMachine.hosting.ready != true ? "Start Latch" : "Continue"
-        case .done: textAgent.map { "Text \($0.name)" } ?? "Open Latch"
+        case .done: textAgent.map { "Text \($0.name)" } ?? "Explore the app"
         }
     }
 
     var primaryEnabled: Bool {
         switch step {
         case .login: verified
-        case .rules: !savingRules && !rulesUnreadable
+        case .rules: !savingRules
         // Continue never skips: until Google is on too, Skip for now does that.
         case .access: accessDone || accessFailed ? google == .connected : !waitingForAccess
         case .start: !starting
@@ -242,8 +253,6 @@ final class Onboarding {
     /// A step already set up shows Continue alone, not Skip for now.
     var stepDone: Bool {
         switch step {
-        // Skipped, the question is asked again in the main window.
-        case .rules: savedRules != nil && !rulesChanged
         case .access: accessDone && google == .connected
         default: false
         }
@@ -336,6 +345,8 @@ final class Onboarding {
     /// edit: that keeps the revision it began from, so its save never
     /// replaces a rule changed meanwhile.
     func loadRules() async {
+        await checkSignedIn()
+        judge(after: .zero)
         do {
             let saved = try await client.rulesShow().deviceRule
             if draftRules == (savedRules?.text ?? "") {
@@ -350,11 +361,49 @@ final class Onboarding {
         }
     }
 
+    /// Reads whether this Mac is signed in to Plow, as `setup --status` says.
+    func checkSignedIn() async {
+        signedIn = try? await client.setupStatus().step("login").map { $0.state == "done" }
+    }
+
+    /// The box changed: the samples are judged against it once typing pauses.
+    func draftChanged() { judge(after: judgeDelay) }
+
+    /// Judges every sample against the draft with the real gate, each as
+    /// the owner's own request. A blank draft denies nothing, so it asks
+    /// no one; signed out, there's no judge, so no marks.
+    private func judge(after delay: Duration) {
+        judging?.cancel()
+        let draft = draftRules.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard signedIn == true else {
+            verdicts = verdicts.map { _ in nil }
+            return
+        }
+        guard !draft.isEmpty else {
+            verdicts = verdicts.map { _ in true }
+            return
+        }
+        judging = Task {
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled else { return }
+            await withTaskGroup(of: (Int, Bool?).self) { group in
+                for (index, sample) in SampleRequest.all.enumerated() {
+                    group.addTask { [client] in
+                        (index, try? await !client.rulesTry(draft: draft, action: sample.action))
+                    }
+                }
+                for await (index, allowed) in group where !Task.isCancelled {
+                    verdicts[index] = allowed
+                }
+            }
+        }
+    }
+
     /// Continue: saves the answer, blank included, unless it's the one
-    /// already saved.
+    /// already saved. One that couldn't be read isn't saved over: Continue
+    /// moves on, and it's answered later at the top of Activity.
     func saveRules() async {
-        guard !rulesUnreadable else { return }
-        guard rulesChanged else { return next() }
+        guard rulesChanged, !rulesUnreadable else { return next() }
         let draft = draftRules.trimmingCharacters(in: .whitespacesAndNewlines)
         savingRules = true
         defer { savingRules = false }
@@ -442,6 +491,12 @@ final class Onboarding {
     func stage(rulesUnreadable error: LatchError) {
         rulesError = error
         rulesUnreadable = true
+    }
+
+    /// For snapshots: the sign-in as read, and the samples' marks.
+    func stage(signedIn: Bool?, verdicts: [Bool?]) {
+        self.signedIn = signedIn
+        self.verdicts = verdicts
     }
 
     /// For snapshots: latch has given a sign-in link.

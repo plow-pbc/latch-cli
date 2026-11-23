@@ -24,6 +24,10 @@ nonisolated protocol LatchClient: Sendable {
     /// latch refuses with `stale_revision` and nothing changes. An empty
     /// text is saved too: nothing is denied, and the question is answered.
     func rulesSet(_ text: String, host: String?, revision: String?) async throws
+    /// `latch rules try --draft -`: whether `draft`, as this Mac's device
+    /// rule, would deny `action` (an action as the gatekeeper is shown it)
+    /// asked for by the owner. Judged here; nothing is saved or audited.
+    func rulesTry(draft: String, action: String) async throws -> Bool
     /// `latch agents [--host NAME]`.
     func agents(host: String?) async throws -> AgentsList
     /// `latch vault list`, on this Mac's host or, with `host`, another.
@@ -203,6 +207,12 @@ nonisolated struct LiveLatchClient: LatchClient {
 
     func rulesSet(_ text: String, host: String?, revision: String?) async throws {
         _ = try await run(["rules", "set", "--revision", revision ?? "none", "--file", "-"] + on(host), input: Data(text.utf8))
+    }
+
+    func rulesTry(draft: String, action: String) async throws -> Bool {
+        let tried = try decode(RulesTry.self, try await run(["rules", "try", "--draft", "-", action], input: Data(draft.utf8)))
+        guard let verdict = tried.verdicts.first else { throw LatchError.unreachable("Latch returned an unreadable response.") }
+        return verdict.denied
     }
 
     func agents(host: String?) async throws -> AgentsList {

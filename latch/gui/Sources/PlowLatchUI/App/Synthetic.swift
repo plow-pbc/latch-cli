@@ -270,6 +270,7 @@ nonisolated struct SyntheticLatchClient: LatchClient {
         }
     }
     func rulesSet(_ text: String, host: String?, revision: String?) async throws {}
+    func rulesTry(draft: String, action: String) async throws -> Bool { wordsDeny(draft: draft, action: action) }
     func vaultAdd(_ draft: VaultDraft, host: String?) async throws -> VaultList.Item { try await base.vaultAdd(draft, host: host) }
     func vaultEdit(_ item: String, revision: Int, _ draft: VaultDraft, host: String?) async throws -> VaultList.Item {
         try await base.vaultEdit(item, revision: revision, draft, host: host)
@@ -332,3 +333,10 @@ nonisolated struct SyntheticLatchClient: LatchClient {
     func removeAgent(_ uid: String) async throws {}
 }
 #endif
+
+/// A stand-in judge for the app's doubles: a draft denies an action that
+/// names one of its longer words.
+nonisolated func wordsDeny(draft: String, action: String) -> Bool {
+    let action = action.lowercased()
+    return draft.lowercased().split { !$0.isLetter }.contains { $0.count >= 4 && action.contains($0) }
+}
