@@ -531,18 +531,15 @@
   const bare = (text) => Array.from(text).filter((ch) => !SEPARATORS.has(ch)).join('');
   const keepsFormatted = (held, wanted) => held === wanted || (bare(wanted) !== '' && bare(held) === bare(wanted));
 
-  // A fill refused at its field: a stable reason code, and what it means.
-  const refusal = (reason, message) => ({ refused: { reason, message } });
-
   // The field a value goes into, checked again: its element, document and
   // origin, and (the page can make a field editable after the fill was
   // checked, e.g. from an earlier field's input handler) its kind.
   const fillable = (snap, index, origin, expected) => {
     const el = element(snap, index);
-    if (!el) return refusal('field_gone', 'the field is gone');
-    if (expected !== token) return refusal('document_replaced', 'the document was replaced');
-    if ((self.origin === 'null' ? 'opaque' : self.origin) !== origin) return refusal('origin_changed', 'the origin changed');
-    if (el.isContentEditable) return refusal('became_editable', 'the field became an editable region');
+    if (!el) return { refused: 'the field is gone' };
+    if (expected !== token) return { refused: 'the document was replaced' };
+    if ((self.origin === 'null' ? 'opaque' : self.origin) !== origin) return { refused: 'the origin changed' };
+    if (el.isContentEditable) return { refused: 'the field became an editable region' };
     return { el };
   };
 
@@ -551,7 +548,7 @@
   const fill = (snap, index, value, origin, expected, formatted) => {
     const { el, refused } = fillable(snap, index, origin, expected);
     if (refused) return { refused };
-    if (!setValue(el, value)) return refusal('no_option_matches', 'no option matches');
+    if (!setValue(el, value)) return { refused: 'no option matches' };
     if (value) filled.add(el); else filled.delete(el);
     return held(el, value, formatted);
   };
@@ -577,16 +574,16 @@
   // some do on each change, would take the keys in reverse.
   const typeKey = (snap, index, caret, expected) => {
     const el = element(snap, index);
-    if (!el || expected !== token) return refusal('field_gone', 'the field is gone');
+    if (!el || expected !== token) return { refused: 'the field is gone' };
     if (!focused(el)) el.focus();
-    if (!focused(el)) return refusal('lost_focus', 'the field lost the focus');
+    if (!focused(el)) return { refused: 'the field lost the focus' };
     return { caret: caretAt(el, caret) };
   };
   // A field that took none of the keys, or only the first ones, gets the
   // value in one step.
   const typeEnd = (snap, index, value, expected, formatted) => {
     const el = element(snap, index);
-    if (!el || expected !== token) return refusal('field_gone', 'the field is gone');
+    if (!el || expected !== token) return { refused: 'the field is gone' };
     const now = current(el);
     if (now !== value && value.startsWith(now)) setValue(el, value);
     return held(el, value, formatted);

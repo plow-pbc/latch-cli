@@ -447,7 +447,7 @@ impl<D: Driver> Core<D> {
                 value,
                 secret,
                 formatted,
-            } => self.set_value(&target, &value, secret, formatted, &mut audit),
+            } => self.set_value(&target, &value, secret, formatted),
             Call::FillSubmit { target } => self.fill_submit(&target),
             Call::FillCleanup => self.fill_cleanup(),
             Call::FillResume { shows } => self.fill_resume(shows, &mut audit),
