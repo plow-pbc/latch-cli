@@ -418,6 +418,16 @@ mod tests {
             }
             assert!(!of(&r).is_owner_dm, "{invited}");
         }
+        // Nor does a room someone once shared: `swarm read` lists who left
+        // or was banned too, and either is no 1:1 for the two left in it.
+        for past in ["leave", "ban"] {
+            let mut r = read(&[OWNER, AGENT], vec![]);
+            r["members"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({"user_id": "@bob:plow.co", "membership": past}));
+            assert!(!of(&r).is_owner_dm, "{past}");
+        }
         for (members, dm) in [
             (vec![OWNER, AGENT], true),
             (vec![OWNER, AGENT, "@bob:plow.co"], false),
