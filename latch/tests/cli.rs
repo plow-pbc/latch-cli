@@ -2868,7 +2868,18 @@ impl LivePlow {
                     .as_object()
                     .into_iter()
                     .flatten()
-                    .map(|(id, _)| {
+                    .map(|(id, question)| {
+                        // A choice (`why`) answers its first option.
+                        if let Some(options) = question["criteria"].as_object() {
+                            let first = options.keys().next().cloned().unwrap_or_default();
+                            let probabilities: serde_json::Map<String, Value> = options
+                                .keys()
+                                .map(|o| (o.clone(), json!(f64::from(u8::from(*o == first)))))
+                                .collect();
+                            let answer = json!({"type": "choice", "choice": first,
+                                                "probabilities": probabilities});
+                            return (id.clone(), answer);
+                        }
                         let yes = if id == "denied" { state.forbidden } else { true };
                         let p = if yes { 0.9 } else { 0.05 };
                         (id.clone(), json!({"type": "noul", "noul": p}))
