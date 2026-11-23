@@ -1617,12 +1617,22 @@ async fn one_approved_card_fill_covers_its_checkouts_address(engine: &str) {
     // so the same fill again is judged.
     let frames = url(&format!("card-elements.html?frame={port}"));
     host.agent("goto", &id, frames, None).await.0.unwrap();
-    let hosted = host.agent("observe", &id, json!({}), None).await.0.unwrap();
-    let suggestions = hosted["fill"]["suggestions"].as_array().unwrap();
-    let suggested = suggestions
-        .iter()
-        .find(|s| s["item"] == card.as_str())
-        .unwrap();
+    // The provider's frames load after the page: observe until latch
+    // suggests the card across them.
+    let (hosted, suggested) = 'loaded: {
+        for _ in 0..40 {
+            let hosted = host.agent("observe", &id, json!({}), None).await.0.unwrap();
+            let found = hosted["fill"]["suggestions"]
+                .as_array()
+                .into_iter()
+                .flatten();
+            if let Some(found) = found.clone().find(|s| s["item"] == card.as_str()) {
+                break 'loaded (hosted.clone(), found.clone());
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        panic!("no card suggestion across the provider's frames");
+    };
     let number = json!([["number", suggested["fields"]["number"]]]);
     let (framed, _) = fill(&card, &hosted, number.clone()).await;
     assert_eq!(framed.unwrap_err().code, "origin_mismatch");
