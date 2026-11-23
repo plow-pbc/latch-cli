@@ -1001,7 +1001,7 @@ pub enum RulesCommand {
         #[arg(long, value_name = "F")]
         draft: PathBuf,
         /// Also judge each as an agent's request citing this message of yours
-        #[arg(long, value_name = "TEXT")]
+        #[arg(long, value_name = "TEXT", allow_hyphen_values = true)]
         message: Option<String>,
         #[arg(value_name = "ACTION_JSON", required = true)]
         actions: Vec<String>,

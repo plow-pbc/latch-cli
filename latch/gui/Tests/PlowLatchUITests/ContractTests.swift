@@ -121,10 +121,11 @@ final class ContractTests {
     }
 
     /// Judging setup's samples is words latch takes, each sample an action
-    /// it reads: it gets as far as needing a login, not a usage error.
+    /// it reads and a message that may start like a flag: it gets as far
+    /// as needing a login, not a usage error.
     @Test func judgingTheSamplesIsALatchCommand() async throws {
         for sample in SampleRequest.all {
-            let refusal = await AppModel.result { try await client.rulesTry(draft: "Never post my taxes.", message: SampleRequest.message, action: sample.action) }
+            let refusal = await AppModel.result { try await client.rulesTry(draft: "Never post my taxes.", message: "- Order groceries", action: sample.action) }
             guard case let .failure(error) = refusal else {
                 Issue.record("`rules try` answered without a login: \(refusal)")
                 return
