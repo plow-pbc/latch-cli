@@ -979,8 +979,16 @@ final class AppModel {
         }
     }
 
-    /// Each gate record's kept call, by record id, as Activity read it.
+    /// What Rules has read of gate records: each one's kept call, by
+    /// record id, and the rule edit that would rule it the other way, by
+    /// record id and the rule's revision (`RulesScreen.swift`).
     var keptCalls: [String: KeptCall] = [:]
+    var suggestions: [String: RuleSuggestion] = [:]
+    /// The recent refusal the window opened on, until it's reviewed or
+    /// dismissed.
+    var denial: Denial?
+    /// A request Activity opened on its host's Rules, while Rules shows.
+    var rulesFocus: OnHost?
 
     /// For snapshots: as `latch agents` said.
     func stage(agents: AgentsList, standings: [String: Result<AgentsList, LatchError>]) {

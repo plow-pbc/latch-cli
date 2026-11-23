@@ -709,10 +709,13 @@ struct AccountActivityTests {
         #expect(await app.readKeptCall(unkept, on: studio) == nil)
     }
 
-    /// A refusal's inspector opens its host's Rules, where the rule is.
-    @Test func aRefusalOpensItsHostsRules() throws {
+    /// A refusal's suggestion opens its host's Rules with that request,
+    /// ready to apply there.
+    @Test func aRefusalOpensOnItsHostsRules() throws {
         let (app, _, kitchen) = try app()
-        app.showRules(on: kitchen)
+        let refused = try #require(app.activityRows.first { $0.host == kitchen && $0.record.outcome == "gatekeeper_denied" })
+        app.review(refused.record, on: kitchen)
         #expect(app.route == .host(.rules, kitchen))
+        #expect(app.rulesFocus == refused.selection)
     }
 }

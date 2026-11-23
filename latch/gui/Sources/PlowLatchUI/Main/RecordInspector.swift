@@ -3,8 +3,8 @@ import QuickLook
 import SwiftUI
 
 /// One audit record in full: who asked, on which host, what it could
-/// touch, why the gatekeeper allowed or refused it, and when each step
-/// happened.
+/// touch, why the gatekeeper allowed or refused it (and the rule edit that
+/// would rule it the other way), and when each step happened.
 struct RecordInspector: View {
     var record: AuditRecord
     var hostEntry: HostEntry
@@ -84,8 +84,11 @@ struct RecordInspector: View {
                 Why(gate: gate, cited: app.keptCalls[record.id]?.cited)
                 if record.outcome == "gatekeeper_denied" {
                     Section {
-                        Button("Open \(hostName)'s Rules") { app.showRules(on: hostEntry) }
-                            .help("Change what's always denied on \(hostName)")
+                        SuggestionBox(record: record, host: hostEntry, inRules: false)
+                        if case .rule? = app.suggestion(for: record, on: hostEntry) {} else {
+                            Button("Open \(hostName)'s Rules") { app.review(record, on: hostEntry) }
+                                .help("Change what's always denied on \(hostName)")
+                        }
                     }
                 }
                 if let kept = gate.keptRequest {
@@ -129,10 +132,12 @@ struct RecordInspector: View {
             shots = record.shots.isEmpty ? nil : RecordShots(client: app.client, host: host, record: record)
             await shots?.load()
         }
-        // The message it cited.
-        .task(id: record.id) {
+        // The message it cited, and for a refusal the edit that would let
+        // it through, under the rule now.
+        .task(id: "\(record.id)@\(app.savedRule(hostName)?.revision ?? "")") {
             guard !app.still else { return }
             await app.readKeptCall(record, on: hostEntry)
+            if record.outcome == "gatekeeper_denied" { await app.suggest(for: record, on: hostEntry) }
         }
         .quickLookPreview($preview)
         .onChange(of: preview) { closed, _ in closed.map(QuickLookFiles.shared.remove) }

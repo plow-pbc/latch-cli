@@ -33,6 +33,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     private let screens: ScreenController
     private let bar = ContentBar()
     private let barItem = NSSplitViewItemAccessoryViewController()
+    /// The recent refusal's banner, under the bar while there is one.
+    private let bannerItem = NSSplitViewItemAccessoryViewController()
     private let inspectorShows = WindowInspector.Shown()
     private let inspectorItem: NSSplitViewItem
     /// "Update" in the toolbar while there's a newer Latch:
@@ -78,6 +80,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         content.automaticallyAdjustsSafeAreaInsets = true
         barItem.view = bar
         content.addTopAlignedAccessoryViewController(barItem)
+        let banner = NSHostingView(rootView: DenialBanner().environment(app))
+        banner.sizingOptions = .intrinsicContentSize
+        bannerItem.view = banner
+        bannerItem.isHidden = true
+        content.addTopAlignedAccessoryViewController(bannerItem)
         inspectorItem = NSSplitViewItem(inspectorWithViewController: Self.hosting(WindowInspector(shown: inspectorShows), app))
         inspectorItem.minimumThickness = 260
         inspectorItem.maximumThickness = 360
@@ -156,7 +163,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             app.leaveMainIfLoggedOut()
             await app.followStatus()
         })
-        tasks.append(Task { [app] in await app.refreshAccount() })
+        tasks.append(Task { [app] in
+            await app.refreshAccount()
+            await app.noticeDenials()
+        })
         tasks.append(Task { [app] in await app.followVault() })
         // A newer Latch, looked for now and while the window stays open.
         tasks.append(Task { [app] in
@@ -242,6 +252,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         // The accessory only folds away; hidden, the bar's tabs and field
         // leave the key loop and what VoiceOver reads as well.
         if bar.isHidden == barred { bar.isHidden = !barred }
+        let denied = app.denial != nil
+        if bannerItem.isHidden == denied { Self.unanimated { bannerItem.isHidden = !denied } }
 
         // The inspector on the screens that have one, as each was left;
         // shown or hidden by a change of place at once, not slid.

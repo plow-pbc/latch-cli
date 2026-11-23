@@ -71,6 +71,9 @@ nonisolated struct AuditRecord: Decodable, Equatable, Identifiable {
         var action: String?
         var url: String?
         var origin: String?
+        /// A rules change's revision after it, and the text it saved.
+        var after: String?
+        var text: String?
         /// A browser judgment, kept beside what was judged (`judged`).
         var gate: Gate?
         /// A plan's actions, each with the screenshot the host kept after it.

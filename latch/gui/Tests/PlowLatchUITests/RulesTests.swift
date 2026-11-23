@@ -48,6 +48,13 @@ final class RulesClient: LatchClient, @unchecked Sendable {
     func statusFollow() -> AsyncThrowingStream<LocalStatus, Error> { AsyncThrowingStream { _ in } }
     func auditFollow(host: String?, after: String?, last: Int?) -> AsyncThrowingStream<AuditLine, Error> { AsyncThrowingStream { _ in } }
     func agents(host: String?) async throws -> AgentsList { try Fixtures.decode(host == nil ? Fixtures.agents : Fixtures.agentsStudio) }
+    func rulesTry(draft: String, action: String) async throws -> Bool { wordsDeny(draft: draft, action: action) }
+    func auditJudge(_ id: String, host: String?) async throws -> String {
+        try Fixtures.keptCalls[id] ?? { throw LatchError.failed(LatchFailure(code: "no_such_request", message: "no \(id)")) }()
+    }
+    func audit(host: String?, before: String?) async throws -> AuditPage {
+        try AuditPage.parse(Data((host == nil ? Fixtures.studioAudit : Fixtures.kitchenAudit).utf8))
+    }
     func perform(_ args: [String]) async throws {}
     func stop() async throws {}
 }
@@ -138,5 +145,96 @@ struct RulesTests {
         let last = changedElsewhere ? "Changed on the laptop." : "Never touch ~/Taxes or ~/Finance."
         #expect(client.sets.map(\.text) == ["Never touch ~/Taxes.", last])
         #expect(app.rulesDrafts["studio"] == nil && app.savedRule("studio")?.text == last)
+    }
+}
+
+/// Rules' last allowed and refused requests: the rule they were judged by,
+/// in words, and the edit the judge says would rule each the other way.
+@MainActor
+struct RulesCoachTests {
+    private func app(_ client: RulesClient) async throws -> (AppModel, HostEntry) {
+        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
+        app.stage(status: try Fixtures.decode(Fixtures.serving))
+        app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
+        app.place = .host(.rules)
+        await app.enter(.host(.rules, app.host))
+        let studio = try #require(app.host)
+        app.feed(for: studio).stage(Fixtures.studioAudit)
+        return (app, studio)
+    }
+
+    /// Each suggestion is one the judge rules the other way, and Apply saves
+    /// it; under the rule it saved, the request it came from has none.
+    @Test func eachSuggestionFlipsItsRulingAndApplySavesIt() async throws {
+        let client = RulesClient()
+        let (app, studio) = try await app(client)
+        let allowed = try #require(app.lastJudged(on: studio, refused: false))
+        let refused = try #require(app.lastJudged(on: studio, refused: true))
+        #expect(allowed.command == "latch exec cat Projects/latch-demo/README.md")
+        #expect(refused.command == "latch exec cat Finance/2026.csv" && refused.gate?.verdict == "denied_by_rule")
+        await app.suggest(for: allowed, on: studio)
+        await app.suggest(for: refused, on: studio)
+        let never = "Never touch ~/Finance or my tax returns. Never run `cat Projects/latch-demo/README.md`."
+        #expect(app.suggestion(for: allowed, on: studio) == .rule(never))
+        // One sentence, which "You may …" can't outweigh: the judge lets it
+        // through only with no rule.
+        #expect(app.suggestion(for: refused, on: studio) == .rule(""))
+        #expect(app.keptCalls[refused.id]?.cited == "what did we spend this year? it's in my Finance folder")
+
+        await app.applyRule(never, on: studio.name)
+        #expect(client.sets.map(\.text) == [never])
+        #expect(app.savedRule(studio.name)?.text == never)
+        await app.suggest(for: allowed, on: studio)
+        #expect(app.suggestion(for: allowed, on: studio) == .nothing)
+    }
+
+    /// A ruling a device rule can't flip, and one with no kept call to
+    /// judge again, get no rule.
+    @Test func whatNoRuleCanFlipGetsNone() async throws {
+        let (app, studio) = try await app(RulesClient())
+        let records = app.feed(for: studio).records
+        let notCovered = try #require(records.last { $0.gate?.verdict == "not_covered" })
+        let unkept = try #require(records.last { $0.decision == "allow" && $0.gate?.verdict == "allow" && $0.gate?.keptRequest == nil })
+        await app.suggest(for: notCovered, on: studio)
+        await app.suggest(for: unkept, on: studio)
+        #expect(app.suggestion(for: notCovered, on: studio) == .askInMessage)
+        #expect(app.suggestion(for: unkept, on: studio) == .nothing)
+    }
+
+    @Test(arguments: [
+        ("Never touch ~/Finance.", false, ["Never touch ~/Finance. Never run `ls`."]),
+        ("", false, ["Never run `ls`."]),
+        ("Never touch ~/Finance.", true, ["Never touch ~/Finance. You may run `ls`.", ""]),
+        ("Never touch ~/Finance.\nNever send email.", true,
+         ["Never send email.", "Never touch ~/Finance.", "Never touch ~/Finance.\nNever send email.\nYou may run `ls`."]),
+    ])
+    func theEditsTriedForAnAllowedOrRefusedRequest(rule: String, refused: Bool, expected: [String]) {
+        #expect(AppModel.candidates(rule: rule, summary: "run `ls`", refused: refused) == expected)
+    }
+
+    /// A judgment names its rule by revision: the rule now when it's at that
+    /// revision, else the text its save kept, else none.
+    @Test func aJudgmentsRuleIsQuotedByItsRevision() async throws {
+        let (app, studio) = try await app(RulesClient())
+        app.feed(for: studio).stage(#"""
+        {"cursor":"9f00","record":{"agent":null,"caller":"6b55a78f","caller_name":"studio","decision":"allow","details":{"args":{"after":"abc1230000000000ffff","before":null,"command":"set","text":"Never send email."}},"id":"9f00","op":"rules","outcome":"ok","time":"2026-10-23T04:50:00Z","command":"latch rules set"},"type":"record"}
+        """#)
+        #expect(app.ruleText("ea4ac6c6bd9184d7", on: studio) == "Never touch ~/Finance or my tax returns.")
+        #expect(app.ruleText("abc1230000000000", on: studio) == "Never send email.")
+        #expect(app.ruleText("0000000000000000", on: studio) == nil)
+    }
+
+    /// The window opens on the newest refusal of the last 15 minutes, on
+    /// any host; its banner opens that host's Rules.
+    @Test func aRecentRefusalOnAnyHostOpensItsRules() async throws {
+        let (app, _) = try await app(RulesClient())
+        let kitchen = try #require(try AuditPage.parse(Data(Fixtures.kitchenAudit.utf8)).records.last { $0.outcome == "gatekeeper_denied" })
+        await app.noticeDenials(now: kitchen.time.addingTimeInterval(14 * 60))
+        #expect(app.denial == Denial(host: "pi-kitchen", request: "latch exec rm recipes/old.txt"))
+        app.reviewDenial()
+        #expect(app.route == .host(.rules, app.hosts.first { $0.name == "pi-kitchen" }))
+        #expect(app.denial == nil)
+        await app.noticeDenials(now: kitchen.time.addingTimeInterval(16 * 60))
+        #expect(app.denial == nil)
     }
 }
