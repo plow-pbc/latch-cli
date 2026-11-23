@@ -559,7 +559,7 @@ struct StartView: View {
             // Starting the host can raise macOS's Local Network prompt: say so
             // before it appears, and what each answer means. It never gates.
             if flow.runInBackground, app.status?.thisMachine.hosting.ready != true {
-                Text("macOS may ask to let \(Text(AppName.shown).bold()) find devices on local networks. Allow it so your agents can connect directly and, when your rules let them, reach those devices. Without it, Latch still runs, but connections may be slower and tasks that need local devices may fail.")
+                Text("macOS may ask to let \(Text(AppName.shown).bold()) find devices on local networks. Allow it so your agents can connect directly and, when you ask them to, reach those devices. Without it, Latch still runs, but connections may be slower and tasks that need local devices may fail.")
                     .foregroundStyle(Brand.muted)
             }
             Spacer(minLength: 0)
@@ -619,7 +619,7 @@ struct DoneView: View {
 
 /// Done's and the main window's list of what onboarding set up.
 /// Done's and the main window's list of what's set up, all from latch: its
-/// status, its rules and its setup steps.
+/// status, its device rule and its setup steps.
 enum Summary {
     struct Row {
         var symbol: String
@@ -641,15 +641,15 @@ enum Summary {
         }
         let google = connector(["google"])
         let access = connector(["messages", "contacts"])
-        // Rules as latch last said: its rules show, or what was saved here.
-        let rules: (String, Bool) = switch app.rulesSaved ?? flow?.savedRules.map({ !$0.isEmpty }) {
-        case true?: ("Saved", true)
-        case false?: ("Not set up", false)
+        // The gatekeeper question as latch last said, or as answered here.
+        let rules: (String, Bool) = switch app.rulesSaved ?? flow.map({ $0.savedRules != nil }) {
+        case true?: ("Answered", true)
+        case false?: ("Not answered", false)
         case nil: ("Couldn't check", false)
         }
         return [
             Row(symbol: "checkmark", title: "Plow", state: failed ? "Couldn't check" : loggedIn ? "Logged in" : "Not logged in", set: loggedIn),
-            Row(symbol: "text.alignleft", title: "Your rules", state: rules.0, set: rules.1),
+            Row(symbol: "text.alignleft", title: "Always denied", state: rules.0, set: rules.1),
             Row(symbol: "g.circle", title: "Google", state: google.1 ? "Connected" : google.0, set: google.1),
             Row(symbol: "message", title: "Contacts & Messages", state: access.0, set: access.1),
             Row(symbol: "arrow.clockwise", title: "Latch", state: failed ? "Couldn't check" : serving ? "Running" : "Not running", set: serving),

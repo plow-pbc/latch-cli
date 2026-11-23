@@ -352,18 +352,17 @@ nonisolated final class LineBatches: Sendable {
 nonisolated extension AuditRecord {
     /// What became of it, in words.
     enum Status: Equatable {
-        /// `gatekeeper(saidNo:)`: the gatekeeper refused it, as you said
-        /// no, or as nothing covered it. `refused`: this host's settings
-        /// refused it. `stopped`: latch stopped it for another reason,
-        /// which says what happened.
-        case connected, allowed(String?), gatekeeper(saidNo: Bool), refused(String), stopped(String)
+        /// `gatekeeper`: the gatekeeper refused it, with its verdict (your
+        /// device rule denies it, your message doesn't ask for it, …).
+        /// `refused`: this host's settings refused it. `stopped`: latch
+        /// stopped it for another reason, which says what happened.
+        case connected, allowed(String?), gatekeeper(String), refused(String), stopped(String)
 
         var title: String {
             switch self {
             case .connected: "Connected"
             case let .allowed(note): note.map { "Allowed · \($0)" } ?? "Allowed"
-            case .gatekeeper(saidNo: true): "Refused by gatekeeper · you said no"
-            case .gatekeeper(saidNo: false): "Refused by gatekeeper · needed your OK"
+            case let .gatekeeper(verdict): "Refused · \(AuditRecord.Gate.words(verdict).lowercasedFirst)"
             case let .refused(why): "Refused · \(why)"
             case let .stopped(what): what
             }
@@ -373,9 +372,7 @@ nonisolated extension AuditRecord {
     var status: Status {
         if op == "connect", decision == "allow" { return .connected }
         if decision == "allow" { return .allowed(outcome == "ok" ? nil : outcome.replacingOccurrences(of: "_", with: " ")) }
-        if outcome == "gatekeeper_denied" || ["not_covered", "owner_said_no"].contains(gate?.verdict) {
-            return .gatekeeper(saidNo: gate?.verdict == "owner_said_no")
-        }
+        if outcome == "gatekeeper_denied" { return .gatekeeper(gate?.verdict ?? outcome) }
         switch outcome {
         case "exec_denied": return .refused("exec is off for this agent")
         case "not_enabled": return .refused("\(op.capitalized) is off")
@@ -402,4 +399,8 @@ nonisolated extension AuditRecord {
         if let caller, caller == hostKey { return ("You", isThisMac ? "on this Mac" : "on \(hostName)") }
         return ("You", callerName ?? caller.map { String($0.prefix(8)) } ?? "unknown")
     }
+}
+
+nonisolated private extension String {
+    var lowercasedFirst: String { prefix(1).lowercased() + dropFirst() }
 }

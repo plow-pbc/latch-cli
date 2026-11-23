@@ -11,9 +11,6 @@ nonisolated enum ErrorCopy {
     /// Where the error is said, for codes whose sentence depends on it.
     enum Place: Equatable, Sendable {
         case anywhere
-        /// Try a request, previewing a request kind on `connector` (the
-        /// request's own op) when it names one.
-        case tryRequest(connector: String? = nil)
         /// Removing one of the account's listed devices.
         case devices
     }
@@ -29,9 +26,6 @@ nonisolated enum ErrorCopy {
         }
         let name = host ?? "the host"
         let Name = host == thisMac ? "This Mac" : host ?? "The host"
-        if case let .tryRequest(op) = place, let said = trying(failure, connector: failure.plugin ?? op, host: host) {
-            return said
-        }
         if place == .devices, failure.code == "not_found" { return "That device isn't in your account any more." }
         return switch failure.code {
         case "host_unreachable": "Latch couldn't reach \(name), so nothing changed. Try again."
@@ -48,11 +42,9 @@ nonisolated enum ErrorCopy {
         case "plow_denied": "Plow didn't accept this Mac's login for that."
         case "gatekeeper_unavailable": "The Gatekeeper couldn't judge this. Try again in a moment."
         case "messages_not_installed": "Latch's Messages reader is unavailable. Install Latch again, then try again."
-        // Rules.
-        case "rules_too_long":
-            "These rules are too long to save. The rules for every agent and any one agent's own rules must fit within 8 KB together. Shorten them, then save again."
-        case "bad_rules": "Latch can't read the rules saved on \(name). Check Details."
-        case "not_previewable": "Only exec, file, google, messages and contacts requests can be tried here."
+        // The device rule.
+        case "rules_too_long": "This is too long to save: what agents are always denied must fit within 8 KB. Shorten it, then save again."
+        case "bad_rules": "Latch can't read what agents are always denied on \(name). Check Details."
         // Vault.
         case "bad_item": "This item wasn't saved because Latch can't use one of its values. Check Details."
         case "bad_values": "Latch couldn't read this item's fields. Nothing was saved."
@@ -80,21 +72,6 @@ nonisolated enum ErrorCopy {
         // Logging in and starting.
         case "not_configured": "Latch is missing information it needs to log in."
         case "nothing_to_start_again": "Latch has no saved start settings. Try starting Latch again."
-        default: nil
-        }
-    }
-
-    /// Try a request's own sentences: a request it can't try as typed, and
-    /// the host's refusals in its verdict.
-    private static func trying(_ failure: LatchFailure, connector: String?, host: String?) -> String? {
-        let name = host ?? "the host"
-        let which = connector.map { "The \(PluginCopy.title($0)) connector" } ?? "This connector"
-        return switch failure.code {
-        case "usage", "bad_request": "Latch can't try this request as typed. Details says what to change."
-        case "exec_denied": "This agent can't run programs on \(name)."
-        case "not_enabled" where host == thisMac: "\(which) is off on this Mac. Turn it on in Host Settings."
-        case "not_enabled": "\(which) is off on \(name). Turn it on there."
-        case "bad_path": "Latch can't use that path on \(name). Check Details."
         default: nil
         }
     }

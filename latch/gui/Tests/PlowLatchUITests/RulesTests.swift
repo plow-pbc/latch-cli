@@ -1,39 +1,34 @@
-import AppKit
 import Foundation
-import SwiftUI
-import Synchronization
 import Testing
 @testable import PlowLatchUI
 
-/// A host's rules as a test sets them; `rules set` replaces, `rules clear`
-/// (empty text) removes, and another device may change them meanwhile.
+/// A host's device rule as a test sets it; another device may change it
+/// meanwhile.
 final class RulesClient: LatchClient, @unchecked Sendable {
     let stateDir = "/s"
-    var show = try! Fixtures.decode(Fixtures.rulesStudio) as RulesShow
-    private(set) var sets: [(text: String, host: String?, agent: String?)] = []
-    private(set) var tries: [TryRequest] = []
+    var show = try! Fixtures.decode(Fixtures.studioRules) as RulesShow
+    private(set) var sets: [(text: String, host: String?)] = []
+    /// `rules show` fails once a rule was set.
+    var readFailsAfterSet = false
 
     func localStatus() async throws -> LocalStatus { try Fixtures.decode(Fixtures.serving) }
     func accountStatus() async throws -> AccountStatus { try Fixtures.decode(Fixtures.studioHosts) }
     func login(name: String?, replace: Bool) -> AsyncThrowingStream<LoginEvent, Error> { AsyncThrowingStream { $0.finish() } }
     func setupStatus() async throws -> SetupStatus { try Fixtures.decode(Fixtures.setup(on: [])) }
     func setupStatusCheckingAccess() async throws -> SetupStatus { try await setupStatus() }
-    func rulesShow(host: String?) async throws -> RulesShow { show }
-    func rulesSet(_ text: String) async throws {}
-    /// As `rules set|clear --revision R` does: refused with
-    /// `stale_revision` unless the rules are still at R (nil: none).
-    func rulesSet(_ text: String, host: String?, agent: String?, revision: String?) async throws {
-        let current = agent.map { show.agent($0)?.revision } ?? show.everyAgent?.revision
+    func rulesShow(host: String?) async throws -> RulesShow {
+        if readFailsAfterSet, !sets.isEmpty { throw LatchError.failed(LatchFailure(code: "state_busy", message: "busy")) }
+        return show
+    }
+    /// As `rules set --revision R` does: refused with `stale_revision`
+    /// unless the rule is still at R (nil: none); an empty text is saved.
+    func rulesSet(_ text: String, host: String?, revision: String?) async throws {
+        let current = show.deviceRule?.revision
         guard current == revision else {
-            throw LatchError.failed(LatchFailure(code: "stale_revision", message: "the rules changed; they are at \(current ?? "none")"))
+            throw LatchError.failed(LatchFailure(code: "stale_revision", message: "the rule changed; it is at \(current ?? "none")"))
         }
-        sets.append((text, host, agent))
-        if let agent {
-            show.agents = (show.agents ?? []).filter { $0.agentUid != agent }
-                + (text.isEmpty ? [] : [.init(agentName: nil, agentUid: agent, text: text, revision: "r\(sets.count)")])
-        } else {
-            show.everyAgent = text.isEmpty ? nil : .init(text: text, revision: "r\(sets.count)")
-        }
+        sets.append((text, host))
+        show.deviceRule = .init(text: text, revision: "r\(sets.count)")
     }
     func vaultList(host: String?) async throws -> VaultList { try Fixtures.decode(#"{"items":[]}"#) }
     func enable(_ plugin: String) async throws -> GoogleEnabled? { nil }
@@ -41,272 +36,90 @@ final class RulesClient: LatchClient, @unchecked Sendable {
     func audit(host: String?, before: String?) async throws -> AuditPage { AuditPage(records: [], hasOlder: false) }
     func auditFollow(host: String?, after: String?, last: Int?) -> AsyncThrowingStream<AuditLine, Error> { AsyncThrowingStream { _ in } }
     func agents(host: String?) async throws -> AgentsList { try Fixtures.decode(host == nil ? Fixtures.agents : Fixtures.agentsStudio) }
-    func rulesTry(_ request: TryRequest, host: String?, agent: String?, newAgent: Bool, draft: String?) async throws -> RulesTry {
-        tries.append(request)
-        return try Fixtures.decode(Fixtures.tries["allow-owner"]!)
-    }
     func perform(_ args: [String]) async throws {}
     func stop() async throws {}
 }
 
 @MainActor
 struct RulesTests {
-    private func app(_ client: RulesClient) throws -> (AppModel, HostEntry) {
-        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
-        app.stage(status: try Fixtures.decode(Fixtures.serving))
-        app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
-        return (app, try #require(app.host))
-    }
-
-    @Test func readsEachAgentsRulesAndWhoIsRefusedExec() throws {
-        let studio: RulesShow = try Fixtures.decode(Fixtures.rulesStudio)
-        let scout = try #require(studio.agents?.first)
-        #expect(scout.agentName == "scout" && scout.text?.contains("latch-demo") == true && scout.revision != nil)
-        #expect(studio.everyAgent?.revision != nil)
-        let kitchen: RulesShow = try Fixtures.decode(Fixtures.rulesKitchen)
-        let helper = try #require((try Fixtures.decode(Fixtures.agents) as AgentsList).agents.first { $0.name == "helper" })
-        #expect(kitchen.execBlocked(helper.uid))
-        #expect(!studio.execBlocked(helper.uid))
-    }
-
-    @Test func standingsMarkOwnRulesAndExecRefusedPerHost() async throws {
-        let (app, _) = try app(RulesClient())
-        app.stage(agents: try Fixtures.decode(Fixtures.agents), standings: [
-            "studio": .success(try Fixtures.decode(Fixtures.agentsStudio)),
-            "pi-kitchen": .success(try Fixtures.decode(Fixtures.agentsKitchen)),
-            "sidecar": .failure(.failed(LatchFailure(code: "host_offline", message: "offline"))),
-        ])
-        let scout = try #require(app.agents?.first { $0.name == "scout" })
-        let helper = try #require(app.agents?.first { $0.name == "helper" })
-        guard case let .success(studio)? = app.standings["studio"], case let .success(kitchen)? = app.standings["pi-kitchen"] else {
-            Issue.record("standings missing"); return
-        }
-        #expect(studio[scout.uid]?.ownRules == true)
-        #expect(kitchen[helper.uid]?.execBlocked == true)
-        #expect(kitchen[scout.uid]?.ownRules == false)
-    }
-
-    @Test func savingAnAgentsRulesLeavesEveryAgentsAlone() async throws {
-        let client = RulesClient()
-        let (app, host) = try app(client)
-        let scout = try #require(client.show.agents?.first)
-        let everyAgent = client.show.everyAgent
-        try await app.saveRules("scout may also run tests.", on: host, agent: scout.agentUid, revision: scout.revision)
-        #expect(client.sets.count == 1)
-        #expect(client.sets[0].agent == scout.agentUid && client.sets[0].host == nil)
-        #expect(client.show.everyAgent == everyAgent)
-        #expect(client.show.agent(scout.agentUid!)?.text == "scout may also run tests.")
-    }
-
-    // Rules changed on another device since editing began are never
-    // replaced: the save is refused and nothing is written.
-    @Test func aStaleSaveNeverReplacesNewerRules() async throws {
-        let client = RulesClient()
-        let (app, host) = try app(client)
-        let started = client.show.everyAgent?.revision
-        try await client.rulesSet("Changed on the laptop.", host: nil, agent: nil, revision: started)
-        await #expect(throws: LatchError.unreachable(AppModel.changedElsewhere)) {
-            try await app.saveRules("My edit.", on: host, agent: nil, revision: started)
-        }
-        #expect(client.sets.count == 1)
-        #expect(client.show.everyAgent?.text == "Changed on the laptop.")
-    }
-
-    // An agent with no rules of its own when editing began: if some were
-    // added meanwhile, the first save doesn't replace them.
-    @Test func aFirstSaveNeverReplacesRulesAddedMeanwhile() async throws {
-        let client = RulesClient()
-        let (app, host) = try app(client)
-        let helper = try #require((try Fixtures.decode(Fixtures.agents) as AgentsList).agents.first { $0.name == "helper" }).uid
-        try await client.rulesSet("Added on the laptop.", host: nil, agent: helper, revision: nil)
-        await #expect(throws: LatchError.unreachable(AppModel.changedElsewhere)) {
-            try await app.saveRules("My first rules.", on: host, agent: helper, revision: nil)
-        }
-        #expect(client.show.agent(helper)?.text == "Added on the laptop.")
-    }
-
-    @Test func requestsSplitAsAShellWould() {
-        #expect(ShellWords.split(#"exec --write ~/site -- npm run build"#) == ["exec", "--write", "~/site", "--", "npm", "run", "build"])
-        #expect(ShellWords.split(#"exec -- cat "My Notes/a b.txt" 'it''s'"#) == ["exec", "--", "cat", "My Notes/a b.txt", "its"])
-        #expect(ShellWords.split(#"exec -- echo a\ b"#) == ["exec", "--", "echo", "a b"])
-        #expect(ShellWords.split(#"exec -- echo "open"#) == nil)
-    }
-
-    /// Each of the Examples menu's items fills the request field with
-    /// words that split back to the example's request.
-    @Test func everyExampleFillsTheRequestWithItsWords() {
-        #expect(Trial.examples.map(\.title) == Onboarding.examples.map(\.title))
-        #expect(Trial.examples.count == 8)
-        let trial = Trial()
-        for example in Trial.examples {
-            trial.use(example)
-            #expect(trial.words == example.request.words, "\(example.title): \(trial.request)")
-        }
-        let awkward = ["", "it's", #"say "hi""#, #"back\slash"#, "two\nlines", "plain"]
-        #expect(ShellWords.split(ShellWords.join(awkward)) == awkward)
-    }
-
-    @Test func everyVerdictHasItsWords() throws {
-        var titles: [String: String] = [:]
-        for (name, json) in Fixtures.tries {
-            titles[name] = VerdictView(verdict: try Fixtures.decode(json)).title
-        }
-        #expect(titles["allow-owner"] == "Would be allowed")
-        #expect(titles["not-covered"] == "Needs your OK: would be refused")
-        #expect(titles["said-no"] == "You said no: would be refused")
-        #expect(titles["defaults"] == "Needs your OK: would be refused")
-        #expect(titles["host-refused"] == "The host refuses it: would be refused")
-        let refused: RulesTry = try Fixtures.decode(Fixtures.tries["host-refused"]!)
-        #expect(refused.refused?.code == "exec_denied")
-    }
-}
-
-@MainActor
-struct RulesScrollTests {
-    // Agents' Rules button asks for an agent before its host's rules have
-    // loaded; the scroll waits for the editor rather than firing at
-    // nothing, and the request stays until the editor takes it.
-    @Test func aPillScrollsOnceTheRulesHaveLoaded() async throws {
-        let client = RulesClient()
-        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
-        app.stage(status: try Fixtures.decode(Fixtures.serving))
-        app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
-        let host = try #require(app.host)
-        let scout = try #require(client.show.agents?.first?.agentUid)
-        app.openRules(host, agent: scout)
-        #expect(app.rulesScrollTarget(on: host) == nil)
-        await app.refreshRules(on: host)
-        #expect(app.rulesScrollTarget(on: host) == nil)
-        // The request waits for its editor however the reads go: nothing
-        // but the editor taking it, or its Rules going, ends it.
-        await app.refreshAgents()
-        #expect(app.rulesScrollTarget(on: host) == scout)
-        await app.refreshRules(on: host)
-        #expect(app.rulesScrollTarget(on: host) == scout)
-        #expect(app.takeRulesFocus(AgentTarget(host: host.name, agent: scout)))
-        #expect(app.rulesScrollTarget(on: host) == nil)
-    }
-
-    // In a real (offscreen) window too short to show it, Agents' Rules
-    // button for helper, who has no rules of its own on studio: its editor
-    // is scrolled into view, takes the request, begins an empty draft and
-    // has the keyboard focus.
-    @Test func anAskedForEditorBelowTheFoldIsRevealedAndFocused() async throws {
-        let client = RulesClient()
-        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
-        app.stage(status: try Fixtures.decode(Fixtures.serving))
-        app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
-        let host = try #require(app.host)
-        await app.refreshRules(on: host)
-        await app.refreshAgents()
-        let helper = try #require(app.agents?.first { $0.name == "helper" }?.uid)
-        let key = AppModel.RulesKey(host: host.name, agent: helper)
-        #expect(app.savedRules(key) == nil)
-        let window = Offscreen(contentRect: CGRect(x: -4000, y: -4000, width: 600, height: 260), styleMask: [.titled],
-                               backing: .buffered, defer: false)
-        window.contentView = NSHostingView(rootView: HostRulesView().environment(app))
-        // Setting its content can move the window onto a display: back.
-        window.setFrameOrigin(CGPoint(x: -4000, y: -4000))
-        window.makeKeyAndOrderFront(nil)
-        defer { window.orderOut(nil) }
-        #expect(!NSScreen.screens.contains { $0.frame.intersects(window.frame) })
-        await waitUntil { !textViews(in: window.contentView!).isEmpty }
-        app.openRules(host, agent: helper)
-        await waitUntil { app.rulesFocus == nil }
-        #expect(app.rulesDrafts[key]?.text == "")
-        await waitUntil { window.firstResponder is NSTextView }
-        let editor = try #require(window.firstResponder as? NSTextView)
-        // helper's: the only editor with no text (the rules for every
-        // agent and scout's own have theirs).
-        #expect(editor.string.isEmpty)
-        #expect(textViews(in: window.contentView!).filter { !$0.string.isEmpty }.count == 2)
-        #expect(!editor.visibleRect.isEmpty)
-    }
-
-    // Rules asked for on a host Plow counts offline (its Rules says so and
-    // shows no editor), then another host or screen: the request goes, so
-    // the agent's editor doesn't take the focus, or begin a draft, once
-    // that host is back.
-    @Test func leavingRulesInAnyStateDropsItsRequest() throws {
-        let app = AppModel(client: RulesClient(), store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
-        app.stage(status: try Fixtures.decode(Fixtures.serving))
-        app.stage(account: try Fixtures.decode(Fixtures.studioHosts.replacingOccurrences(
-            of: #""self":false,"online":true,"last_seen_at":"2026-10-22T22:06:30.037004Z""#,
-            with: #""self":false,"online":false,"last_seen_at":null"#)))
-        let kitchen = try #require(app.hosts.first { $0.name == "pi-kitchen" })
-        #expect(kitchen.online == false)
-        let helper = AgentTarget(host: "pi-kitchen", agent: "3971582e59baad83250141c8dcc95855")
-        app.openRules(kitchen, agent: helper.agent)
-        #expect(app.rulesFocus == helper)
-        app.showHost("studio")
-        #expect(app.rulesFocus == nil)
-        #expect(!app.takeRulesFocus(helper))
-        app.openRules(kitchen, agent: helper.agent)
-        app.place = .account(.agents)
-        #expect(app.rulesFocus == nil)
-        app.openRules(kitchen, agent: helper.agent)
-        app.place = .host(.vault)
-        #expect(app.rulesFocus == nil)
-    }
-}
-
-/// Rules being edited stay while the person goes elsewhere, and are saved
-/// only over what was there. (Save, ⌘S, is the focused editor's:
-/// `MainWindowTests`.)
-@MainActor
-struct RulesDraftTests {
     private func app(_ client: RulesClient) async throws -> AppModel {
         let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
         app.stage(status: try Fixtures.decode(Fixtures.serving))
         app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
-        app.place = .host(.rules)
-        await app.enter(.host(.rules, app.host))
+        app.place = .host(.activity)
+        await app.enter(.host(.activity, app.host))
         return app
+    }
+
+    // Unanswered when the question was asked: an answer given meanwhile
+    // on another device isn't replaced.
+    @Test func aFirstAnswerNeverReplacesOneGivenMeanwhile() async throws {
+        let client = RulesClient()
+        client.show.deviceRule = nil
+        let app = try await app(client)
+        app.typeRule("Never send email.", on: "studio")
+        try await client.rulesSet("Answered on the laptop.", host: nil, revision: nil)
+        // Activity read again: the draft still began from no rule.
+        await app.enter(app.route, refresh: true)
+        await app.saveRuleDraft("studio", answer: true)
+        #expect(client.sets.map(\.text) == ["Answered on the laptop."])
+        #expect(app.rulesErrors["studio"]?.message == AppModel.changedElsewhere)
+    }
+
+    // The gatekeeper question is asked while this Mac's rule was never
+    // set; a blank answer is saved, so it's never asked again.
+    @Test func aBlankAnswerIsSavedAndTheQuestionNeverAskedAgain() async throws {
+        let client = RulesClient()
+        client.show.deviceRule = nil
+        let app = try await app(client)
+        await app.askGatekeeperIfUnanswered()
+        let host = try #require(app.host)
+        #expect(app.sheet == .gatekeeper(host))
+        await app.saveRuleDraft("studio", answer: true)
+        #expect(client.sets.map(\.text) == [""])
+        #expect(app.savedRule("studio")?.text == "")
+        #expect(app.sheet == nil)
+        await app.askGatekeeperIfUnanswered()
+        #expect(app.sheet == nil)
+    }
+
+    // Saved, the question goes even when the read after the save fails.
+    @Test func anAnswerSavedClosesTheQuestionThoughTheReadAfterFails() async throws {
+        let client = RulesClient()
+        client.show.deviceRule = nil
+        let app = try await app(client)
+        await app.askGatekeeperIfUnanswered()
+        client.readFailsAfterSet = true
+        await app.saveRuleDraft("studio", answer: true)
+        #expect(client.sets.map(\.text) == [""])
+        #expect(app.sheet == nil && app.rulesErrors["studio"] == nil)
     }
 
     @Test func aDraftSurvivesGoingToAnotherScreenAndHostAndBack() async throws {
         let client = RulesClient()
         let app = try await app(client)
-        let key = AppModel.RulesKey(host: "studio", agent: nil)
-        let saved = try #require(app.savedRules(key))
-        app.rulesDrafts[key] = .init(text: saved.text + " Never touch ~/Taxes.", base: saved.revision)
-        for (screen, host) in [(HostScreen.home, "studio"), (.activity, "pi-kitchen"), (.rules, "pi-kitchen"), (.rules, "studio")] {
+        app.typeRule("Never touch ~/Taxes.", on: "studio")
+        for (screen, host) in [(HostScreen.home, "studio"), (.activity, "pi-kitchen"), (.vault, "pi-kitchen"), (.activity, "studio")] {
             app.place = .host(screen)
             app.chosenHost = host
             await app.enter(app.route)
         }
-        #expect(app.rulesDrafts[key]?.text.hasSuffix(" Never touch ~/Taxes.") == true)
-        #expect(app.rulesChanged(key))
+        #expect(app.rulesDrafts["studio"]?.text == "Never touch ~/Taxes.")
+        #expect(app.ruleChanged("studio"))
         #expect(client.sets.isEmpty)
     }
 
-    // Typing changes the draft being typed in, not the map of drafts nor
-    // another draft: only that editor redraws, and not the menu.
-    @Test func aKeystrokeTouchesOnlyItsOwnDraft() async throws {
-        let app = try await app(RulesClient())
-        let every = AppModel.RulesKey(host: "studio", agent: nil)
-        let scout = AppModel.RulesKey(host: "studio", agent: "ba3c0b3ad1eba7a9a1eb04b67c9db0dd")
-        app.typeRules("Agents may read ~/Projects.", at: every, from: app.savedRules(every))
-        app.typeRules("scout may run make test.", at: scout, from: app.savedRules(scout))
-        let other = try #require(app.rulesDrafts[scout])
-        let touched = Mutex<[String]>([])
-        withObservationTracking { _ = app.rulesDrafts; _ = app.summaries } onChange: { touched.withLock { $0.append("model") } }
-        withObservationTracking { _ = other.text } onChange: { touched.withLock { $0.append("scout's draft") } }
-        app.typeRules("Agents may read ~/Projects and ~/Docs.", at: every, from: app.savedRules(every))
-        #expect(touched.withLock { $0 }.isEmpty)
-        #expect(app.rulesDrafts[every]?.text == "Agents may read ~/Projects and ~/Docs.")
-    }
-
-    @Test func aDraftOverRulesChangedElsewhereStaysWithWhy() async throws {
+    @Test func aDraftOverARuleChangedElsewhereStaysWithWhy() async throws {
         let client = RulesClient()
         let app = try await app(client)
-        let key = AppModel.RulesKey(host: "studio", agent: nil)
-        app.rulesDrafts[key] = .init(text: "Agents may read ~/Projects.", base: "an older revision")
-        await app.saveRulesDraft(key)
-        #expect(client.sets.isEmpty)
-        #expect(app.rulesDrafts[key] != nil)
-        #expect(app.rulesErrors[key]?.message == AppModel.changedElsewhere)
-        await app.revertRules(key)
-        #expect(app.rulesDrafts[key] == nil && app.rulesErrors[key] == nil)
+        app.typeRule("Never touch ~/Taxes.", on: "studio")
+        try await client.rulesSet("Changed on the laptop.", host: nil, revision: client.show.deviceRule?.revision)
+        await app.saveRuleDraft("studio")
+        #expect(client.sets.map(\.text) == ["Changed on the laptop."])
+        #expect(app.rulesDrafts["studio"] != nil)
+        #expect(app.rulesErrors["studio"]?.message == AppModel.changedElsewhere)
+        await app.revertRule("studio")
+        #expect(app.rulesDrafts["studio"] == nil && app.rulesErrors["studio"] == nil)
+        #expect(app.savedRule("studio")?.text == "Changed on the laptop.")
     }
 }

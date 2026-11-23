@@ -81,8 +81,7 @@ struct PlowLatchApp: App {
 
         // The main window is AppKit's (`MainWindowController`), opened by
         // the app delegate at launch once set up. Its commands go along its
-        // responder chain: one Save, the rules editor with the keyboard
-        // focus; New Item and Import on the Vault; Find, the sidebar and
+        // responder chain: New Item and Import on the Vault; Find, the sidebar and
         // the inspector. And a shortcut for each host screen.
         .commands {
             WindowCommands(menu: .shared)

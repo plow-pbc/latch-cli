@@ -86,15 +86,6 @@ enum TestHooks {
             app.onboarding?.useAnotherName()
         }
         on("replace") { _ in app.onboarding?.replaceMachine() }
-        on("deck") { index in
-            guard let index = Int(index ?? ""), Onboarding.decks.indices.contains(index) else { return }
-            app.onboarding?.choose(Onboarding.decks[index])
-        }
-        // Rules › Try a request's Examples menu: the item at this index.
-        on("try-example") { index in
-            guard let index = Int(index ?? ""), Trial.examples.indices.contains(index) else { return }
-            app.trial.use(Trial.examples[index])
-        }
         on("start-at-login") { value in app.onboarding?.startAtLogin = value == "1" }
         on("set-up-again") { _ in app.setUpAgain() }
         // Moves the window off every display, where the window server still
@@ -130,15 +121,7 @@ enum TestHooks {
                   let host = app.hosts.first(where: { $0.name == parts[0] }) else { return app.activityAgent = nil }
             app.openActivity(host, agent: String(parts[1]))
         }
-        // Try a request: "AS|REQUEST", AS being new or an agent's uid.
-        on("try") { argument in
-            guard let argument, let bar = argument.firstIndex(of: "|"), let host = app.host else { return }
-            let who = String(argument[..<bar])
-            app.trial.caller = who == "new" ? .newAgent : .agent(who)
-            app.trial.request = String(argument[argument.index(after: bar)...])
-            Task { await app.trial.run(on: host, app: app) }
-        }
-        // Agents' buttons on a host's row, "HOST|UID": Rules, Activity;
+        // Agents' buttons on a host's row, "HOST|UID": Activity;
         // and Remove…, confirmed: "UID".
         func onAgentRow(_ command: String, _ act: @escaping @MainActor (HostEntry, String) -> Void) {
             on(command) { argument in
@@ -147,22 +130,18 @@ enum TestHooks {
                 act(host, String(parts[1]))
             }
         }
-        onAgentRow("agent-rules") { host, uid in app.openRules(host, agent: uid) }
         onAgentRow("agent-activity") { host, uid in app.openActivity(host, agent: uid) }
         on("agent-remove") { uid in
             guard let agent = app.agents?.first(where: { $0.uid == uid }) else { return }
             Task { await app.removeAgent(agent) }
         }
-        // Saves "UID|TEXT" (UID empty: every agent's) on the selected host
-        // as Save does, over the revision on screen.
-        on("save-rules") { argument in
-            guard let argument, let bar = argument.firstIndex(of: "|"), let host = app.host,
-                  case let .success(show)? = app.summaries[host.name]?.rules else { return }
-            let uid = argument[..<bar].isEmpty ? nil : String(argument[..<bar])
-            let revision = uid.map { show.agent($0)?.revision } ?? show.everyAgent?.revision
+        // Saves "TEXT" as the selected host's device rule, as Save does,
+        // over the revision on screen.
+        on("save-rules") { text in
+            guard let host = app.host, case let .success(show)? = app.summaries[host.name]?.rules else { return }
             Task {
                 do {
-                    try await app.saveRules(String(argument[argument.index(after: bar)...]), on: host, agent: uid, revision: revision)
+                    try await app.saveRules(text ?? "", on: host, revision: show.deviceRule?.revision)
                     print("save-rules: saved")
                 } catch {
                     print("save-rules: refused: \(LatchError.from(error).message)")
@@ -290,17 +269,7 @@ enum TestHooks {
                 "step": flow?.step.rawValue ?? "",
                 "primary": flow.map { "\($0.primaryTitle)\($0.primaryEnabled ? "" : " (disabled)")" } ?? "",
                 "login": flow.map { "\($0.login)" } ?? "",
-                "rules": flow?.savedRules ?? "",
-                "previews": (flow?.deck.examples ?? []).map { example in
-                    switch flow?.previews[example.id] {
-                    case let .verdict(answer)?: "\(example.title): \(answer.verdict)"
-                    case let .failed(error)?: "\(example.title): failed \(error.message)"
-                    case .checking?: "\(example.title): checking"
-                    case .noAnswer?: "\(example.title): no answer"
-                    default: "\(example.title): not checked"
-                    }
-                },
-                "reviewing": flow?.reviewing ?? false,
+                "rules": flow?.savedRules?.text ?? "",
                 "google": flow.map { "\($0.google)" } ?? "",
                 "messages": flow.map { "\($0.messages)" } ?? "",
                 "contacts": flow.map { "\($0.contacts)" } ?? "",

@@ -159,34 +159,21 @@ nonisolated struct LoginLine: Decodable {
     }
 }
 
-/// `latch rules show`: the rules for every agent on a host, and each
-/// agent's own rules there, each with the revision a save checks against.
+/// `latch rules show`: the host's device rule, what its agents are always
+/// denied, with the revision a save checks against; nil when it was never
+/// set (an empty text was set, and denies nothing).
 nonisolated struct RulesShow: Decodable, Equatable {
-    struct Text: Decodable, Equatable {
+    struct Rule: Decodable, Equatable {
         var text: String
-        var revision: String?
-    }
-    struct Agent: Decodable, Equatable {
-        var agentName: String?
-        var agentUid: String?
-        var text: String?
-        var revision: String?
+        var revision: String
     }
     /// Agents the host refuses exec (`serve --deny-exec`).
     struct DenyExec: Decodable, Equatable {
         var everyAgent: Bool?
         var agentUids: [String]?
     }
-    var everyAgent: Text?
-    var agents: [Agent]?
+    var deviceRule: Rule?
     var denyExec: DenyExec?
-
-    func agent(_ uid: String) -> Agent? { agents?.first { $0.agentUid == uid } }
-
-    /// Whether the host refuses this agent exec.
-    func execBlocked(_ uid: String) -> Bool {
-        denyExec?.everyAgent == true || denyExec?.agentUids?.contains(uid) == true
-    }
 }
 
 /// `latch agents [--host NAME]`: the account's agents and, with a host,
@@ -201,8 +188,9 @@ nonisolated struct AgentsList: Decodable, Equatable {
             var cardUrl: String?
         }
         struct Standing: Decodable, Equatable {
-            /// It has rules of its own on that host.
-            var ownRules: Bool?
+            /// Its Swarm account there, whose 1:1 rooms with you it may
+            /// cite; nil when unmapped, so every citation is refused.
+            var swarmId: String?
             /// The host refuses it exec (`serve --deny-exec`).
             var execBlocked: Bool?
         }
@@ -373,27 +361,6 @@ nonisolated struct ImportResult: Decodable, Equatable {
     var duplicates: Int
     /// Rows that couldn't be saved, and why; the rest were.
     var failed: [ImportPreview.Skipped]
-}
-
-/// `latch rules try`: the verdict a request would get now, without running it.
-nonisolated struct RulesTry: Decodable, Equatable {
-    /// `allow`, `not_covered`, `owner_said_no` or `host_refused`.
-    var verdict: String
-    /// Why the host refused it before asking the judge, for `host_refused`.
-    var refused: LatchFailure?
-    /// The gatekeeper's judgment, when it was asked.
-    var gate: AuditRecord.Gate?
-    /// What was tried: its kind (`exec`, `google`, …).
-    var request: Request?
-
-    struct Request: Decodable, Equatable {
-        var op: String
-    }
-
-    /// The connector the request is for, when it is one's.
-    var connector: String? {
-        request.map(\.op).flatMap { ["google", "messages", "contacts"].contains($0) ? $0 : nil }
-    }
 }
 
 /// `latch setup --status`: each setup step as the state folder says, with

@@ -23,10 +23,10 @@ struct HostsTests {
 
     @Test func pickingAHostChangesTheHostTierOnly() throws {
         let app = try app(status: Fixtures.serving, account: Fixtures.studioHosts)
-        app.place = .host(.rules)
+        app.place = .host(.vault)
         app.chosenHost = "pi-kitchen"
         #expect(app.host?.name == "pi-kitchen")
-        #expect(app.place == .host(.rules))
+        #expect(app.place == .host(.vault))
     }
 
     // A stopped Mac is this Mac's host whether Plow is unreachable (only
@@ -226,8 +226,7 @@ final class AccountClient: LatchClient, @unchecked Sendable {
     func login(name: String?, replace: Bool) -> AsyncThrowingStream<LoginEvent, Error> { AsyncThrowingStream { $0.finish() } }
     func setupStatus() async throws -> SetupStatus { try Fixtures.decode(Fixtures.setup(on: [])) }
     func setupStatusCheckingAccess() async throws -> SetupStatus { try await setupStatus() }
-    func rulesShow(host: String?) async throws -> RulesShow { try Fixtures.decode(Fixtures.rulesStudio) }
-    func rulesSet(_ text: String) async throws {}
+    func rulesShow(host: String?) async throws -> RulesShow { try Fixtures.decode(Fixtures.studioRules) }
     func vaultList(host: String?) async throws -> VaultList { try Fixtures.decode(#"{"items":[]}"#) }
     func enable(_ plugin: String) async throws -> GoogleEnabled? { nil }
     func statusFollow() -> AsyncThrowingStream<LocalStatus, Error> { AsyncThrowingStream { _ in } }

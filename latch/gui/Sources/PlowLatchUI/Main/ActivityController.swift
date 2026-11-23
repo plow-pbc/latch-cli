@@ -54,14 +54,15 @@ final class ActivityController: NSViewController, NSTableViewDataSource, NSTable
     }
 
     enum Column: String, CaseIterable {
-        case time, status, request, caller
+        case time, status, request, intent, caller
 
-        var title: String { rawValue.capitalized }
+        var title: String { self == .intent ? "Cited Message" : rawValue.capitalized }
         var widths: (min: CGFloat, ideal: CGFloat, max: CGFloat) {
             switch self {
             case .time: (95, 100, 130)
             case .status: (140, 180, 280)
             case .request: (160, 260, 10_000)
+            case .intent: (90, 150, 400)
             case .caller: (110, 140, 240)
             }
         }
@@ -237,6 +238,7 @@ final class ActivityController: NSViewController, NSTableViewDataSource, NSTable
         case .time: record.time.formatted(.dateTime.hour().minute().second())
         case .status: record.status.title
         case .request: record.command ?? "—"
+        case .intent: record.gate?.cited ?? ""
         case .caller:
             record.callerLabel(hostKey: app.key(of: host), hostName: host.name, isThisMac: host.isThisMac).who
         }
@@ -279,6 +281,9 @@ final class ActivityController: NSViewController, NSTableViewDataSource, NSTable
         case .request:
             cell.textField?.stringValue = record.command ?? "—"
             cell.toolTip = record.command ?? "A connection"
+        case .intent:
+            cell.textField?.stringValue = text(of: record, .intent, on: host)
+            cell.toolTip = record.gate?.cited.map { "Your message it cited: \($0)" }
         case .caller:
             let caller = record.callerLabel(hostKey: app.key(of: host), hostName: host.name, isThisMac: host.isThisMac)
             // One line, cut short at its end like the others.
@@ -296,10 +301,10 @@ final class ActivityController: NSViewController, NSTableViewDataSource, NSTable
         cell.identifier = .init(column.rawValue)
         let text = NSTextField(labelWithString: "")
         text.translatesAutoresizingMaskIntoConstraints = false
-        text.lineBreakMode = column == .request ? .byTruncatingMiddle : .byTruncatingTail
+        text.lineBreakMode = column == .request || column == .intent ? .byTruncatingMiddle : .byTruncatingTail
         text.maximumNumberOfLines = 1
         text.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        if column == .request { text.font = .monospacedSystemFont(ofSize: NSFont.systemFontSize, weight: .regular) }
+        if column == .request || column == .intent { text.font = .monospacedSystemFont(ofSize: NSFont.systemFontSize, weight: .regular) }
         if column == .time { text.textColor = .secondaryLabelColor }
         cell.addSubview(text)
         cell.textField = text
@@ -333,8 +338,8 @@ final class ActivityController: NSViewController, NSTableViewDataSource, NSTable
         switch status {
         case .connected: .secondaryLabelColor
         case .allowed: .systemGreen
-        case .gatekeeper(saidNo: false): .systemOrange
-        case .gatekeeper(saidNo: true), .refused: .systemRed
+        case .gatekeeper("not_covered"): .systemOrange
+        case .gatekeeper, .refused: .systemRed
         case .stopped: .systemYellow
         }
     }

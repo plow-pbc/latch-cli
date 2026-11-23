@@ -13,15 +13,16 @@ struct ActivityTests {
         let page = try AuditPage.parse(Data(Fixtures.studioAudit.utf8))
         #expect(page.records.count == 27)
         #expect(!page.hasOlder)
-        let gated = try #require(page.records.first { $0.gate?.p != nil })
-        #expect(gated.gate?.p?["NOT_COVERED"] != nil)
+        let cited = try #require(page.records.first { $0.gate?.cited != nil })
+        #expect(cited.gate?.cited == "!kD3vqPmXc:plow.co/$Yx9pQ2rLmT0aWbN4")
+        #expect(cited.gate?.p?["covered"] != nil)
     }
 
     @Test func eachOutcomeHasItsWords() throws {
         let all = try records(Fixtures.studioAudit) + records(Fixtures.kitchenAudit)
         let titles = Set(all.map(\.status.title))
         #expect(titles.isSuperset(of: [
-            "Connected", "Allowed", "Refused by gatekeeper · needed your OK", "Refused by gatekeeper · you said no",
+            "Connected", "Allowed", "Refused · not what you asked for", "Refused · your device rule denies it",
             "Refused · exec is off for this agent", "Refused · Google is off",
         ]))
     }
@@ -63,7 +64,7 @@ struct ActivityTests {
         feed.start()
         await waitUntil { feed.caughtUp }
         #expect(feed.caughtUp)
-        #expect(feed.records.contains { $0.gate?.source == "defaults" })
+        #expect(feed.records.contains { $0.gate?.verdict == "not_covered" })
         feed.stop()
     }
 
@@ -213,7 +214,6 @@ final class NeverServedClient: LatchClient, @unchecked Sendable {
     func setupStatus() async throws -> SetupStatus { try Fixtures.decode(Fixtures.setup(on: [])) }
     func setupStatusCheckingAccess() async throws -> SetupStatus { try await setupStatus() }
     func rulesShow(host: String?) async throws -> RulesShow { try Fixtures.decode(#"{"agents":[],"every_agent":null}"#) }
-    func rulesSet(_ text: String) async throws {}
     func vaultList(host: String?) async throws -> VaultList { try Fixtures.decode(#"{"items":[]}"#) }
     func enable(_ plugin: String) async throws -> GoogleEnabled? { nil }
     func statusFollow() -> AsyncThrowingStream<LocalStatus, Error> { AsyncThrowingStream { _ in } }
@@ -301,18 +301,17 @@ struct RecordShapeTests {
     // `browser/judged.rs` keeps a browser judgment in the args, as `gate`,
     // beside what was judged.
     @Test func aBrowserJudgmentIsRead() throws {
-        let refused = try record(#"{"agent":"a1","caller":"k","caller_name":"scout","decision":"deny","details":{"args":{"command":"open","origin":"https://shop.example","judged":{"kind":"open"},"gate":{"verdict":"owner_said_no","source":"chat_and_rules","p":{"COVERED":0.1,"FORBIDDEN":0.9,"NOT_COVERED":0.0}}},"gate":null,"started":null},"id":"b1","op":"browser","outcome":"gatekeeper_denied","time":"2026-10-23T05:27:23Z"}"#)
-        #expect(refused.status == .gatekeeper(saidNo: true))
-        #expect(refused.gate?.source == "chat_and_rules")
+        let refused = try record(#"{"agent":"a1","caller":"k","caller_name":"scout","decision":"deny","details":{"args":{"command":"open","origin":"https://shop.example","judged":{"kind":"open"},"gate":{"verdict":"denied_by_rule","cited":"!dm:plow.co/$e1","p":{"denied":0.9,"covered":0.8}}},"gate":null,"started":null},"id":"b1","op":"browser","outcome":"gatekeeper_denied","time":"2026-10-23T05:27:23Z"}"#)
+        #expect(refused.status == .gatekeeper("denied_by_rule"))
+        #expect(refused.gate?.cited == "!dm:plow.co/$e1")
         #expect(!RecordInspector.otherFields(of: refused).map(\.key).contains("gate"))
     }
 
     // A browser step on the host's own Mac: `serve.rs` marks the details'
     // gate `{"caller":"owner_on_host"}`; the judgment is still the args'.
     @Test func aLocalBrowserJudgmentIsReadPastTheHostMarker() throws {
-        let refused = try record(#"{"agent":null,"caller":"k","caller_name":"studio","decision":"deny","details":{"args":{"command":"open","judged":{"kind":"open"},"gate":{"verdict":"owner_said_no","source":"owner_request"}},"gate":{"caller":"owner_on_host"},"started":null},"id":"b2","op":"browser","outcome":"gatekeeper_denied","time":"2026-10-23T05:27:23Z"}"#)
-        #expect(refused.status == .gatekeeper(saidNo: true))
-        #expect(refused.gate?.source == "owner_request")
+        let refused = try record(#"{"agent":null,"caller":"k","caller_name":"studio","decision":"deny","details":{"args":{"command":"open","judged":{"kind":"open"},"gate":{"verdict":"denied_by_rule"}},"gate":{"caller":"owner_on_host"},"started":null},"id":"b2","op":"browser","outcome":"gatekeeper_denied","time":"2026-10-23T05:27:23Z"}"#)
+        #expect(refused.status == .gatekeeper("denied_by_rule"))
     }
 
     // latch denies more than the gatekeeper does: a stop of its own says
@@ -329,7 +328,7 @@ struct RecordShapeTests {
 
     @Test func onlyTheGatekeepersDenialsAreItsRefusals() throws {
         let notCovered = try record(#"{"agent":"a1","caller":"k","caller_name":"scout","decision":"deny","details":{"args":{"argv":["rm","x"]},"gate":{"verdict":"not_covered"},"started":null},"id":"g1","op":"exec","outcome":"gatekeeper_denied","time":"2026-10-23T05:27:23Z"}"#)
-        #expect(notCovered.status.title == "Refused by gatekeeper · needed your OK")
+        #expect(notCovered.status.title == "Refused · not what you asked for")
         let execOff = try record(#"{"agent":"a1","caller":"k","caller_name":"scout","decision":"deny","details":{"args":{"argv":["ls"]},"gate":null,"started":null},"id":"g2","op":"exec","outcome":"exec_denied","time":"2026-10-23T05:27:23Z"}"#)
         #expect(execOff.status.title == "Refused · exec is off for this agent")
     }
@@ -401,7 +400,6 @@ final class PagedClient: LatchClient, @unchecked Sendable {
     func setupStatus() async throws -> SetupStatus { try Fixtures.decode(Fixtures.setup(on: [])) }
     func setupStatusCheckingAccess() async throws -> SetupStatus { try await setupStatus() }
     func rulesShow(host: String?) async throws -> RulesShow { try Fixtures.decode(#"{"agents":[],"every_agent":null}"#) }
-    func rulesSet(_ text: String) async throws {}
     func vaultList(host: String?) async throws -> VaultList { try Fixtures.decode(#"{"items":[]}"#) }
     func enable(_ plugin: String) async throws -> GoogleEnabled? { nil }
     func statusFollow() -> AsyncThrowingStream<LocalStatus, Error> { AsyncThrowingStream { _ in } }
@@ -597,37 +595,24 @@ nonisolated final class HeldJudgeClient: LatchClient, @unchecked Sendable {
 
 @MainActor
 struct GatekeeperRequestTests {
-    /// The owner's call is kept as one; an agent's as its rules layer, then
-    /// its whole-chat and owner-only calls. Records from before have none.
-    @Test func aJudgedRecordNamesTheCallsItsHostKept() throws {
-        let decode = { (gate: String) in try LatchJSON.decoder.decode(AuditRecord.Gate.self, from: Data(gate.utf8)) }
-        #expect(try decode(#"{"verdict":"allow","kept_request":"g1"}"#).keptRequests == ["g1"])
-        let agent = #"{"layers":{"chat":{"kept_request":"g3"},"rules":{"kept_request":"g2"},"will":{"kept_request":"g4"}}}"#
-        #expect(try decode(agent).keptRequests == ["g2", "g3", "g4"])
-        #expect(try decode(#"{"verdict":"allow"}"#).keptRequests.isEmpty)
-    }
-
-    /// Each is read from the record's own host; an agent's three as one JSON list.
-    @Test func theRequestsReadAsOneJSONDocument() async throws {
+    /// The call is read from the record's own host, as latch prints it.
+    @Test func theRequestIsReadFromItsHost() async throws {
         let client = JudgeClient()
-        let one = try await RecordInspector.judged(["g1"], client: client, host: nil)
-        #expect(try JSONSerialization.jsonObject(with: Data(one.utf8)) as? [String: String] == ["id": "g1"])
-        let both = try await RecordInspector.judged(["g2", "g3", "g4"], client: client, host: "pi-kitchen")
-        let list = try #require(try JSONSerialization.jsonObject(with: Data(both.utf8)) as? [[String: String]])
-        #expect(list.map { $0["id"] } == ["g2", "g3", "g4"])
-        #expect(client.asked == ["g1 -", "g2 pi-kitchen", "g3 pi-kitchen", "g4 pi-kitchen"])
+        let kept = try LatchJSON.decoder.decode(AuditRecord.Gate.self, from: Data(#"{"verdict":"allow","kept_request":"g1"}"#.utf8)).keptRequest
+        #expect(await RecordInspector.read(try #require(kept), client: client, host: "pi-kitchen") == .success("{\n  \"id\": \"g1\"\n}"))
+        #expect(client.asked == ["g1 pi-kitchen"])
     }
 
     /// A read still going when its record is left gives nothing to show:
     /// neither its file nor its failure.
     @Test func aReadCancelledWithItsRecordPublishesNothing() async throws {
         let client = HeldJudgeClient()
-        let read = Task { await RecordInspector.read(["g1"], client: client, host: nil) }
+        let read = Task { await RecordInspector.read("g1", client: client, host: nil) }
         for await _ in client.asked { break }
         read.cancel()
         client.release.yield()
         #expect(await read.value == nil)
-        #expect(await RecordInspector.read(["g1"], client: JudgeClient(), host: nil) == .success("{\n  \"id\": \"g1\"\n}"))
+        #expect(await RecordInspector.read("g1", client: JudgeClient(), host: nil) == .success("{\n  \"id\": \"g1\"\n}"))
     }
 
     /// A screenshot's bytes go where every preview goes: the owner's own

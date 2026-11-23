@@ -70,12 +70,12 @@ struct RecordInspector: View {
                 }
             }
             if let gate = record.gate {
-                Why(gate: gate, caller: caller.who)
-                if !gate.keptRequests.isEmpty {
+                Why(gate: gate)
+                if let kept = gate.keptRequest {
                     Section {
-                        Button(gate.keptRequests.count == 1 ? "Gatekeeper request" : "Gatekeeper requests (\(gate.keptRequests.count))") {
+                        Button("Gatekeeper request") {
                             judging?.cancel()
-                            judging = Task { await openJudged(gate.keptRequests) }
+                            judging = Task { await openJudged(kept) }
                         }
                         if let judgeFailure { Text(judgeFailure).foregroundStyle(.secondary) }
                     }
@@ -119,8 +119,8 @@ struct RecordInspector: View {
     }
 
     /// What the gatekeeper sent and got back for this record, in Quick Look.
-    private func openJudged(_ ids: [String]) async {
-        switch await Self.read(ids, client: app.client, host: host) {
+    private func openJudged(_ id: String) async {
+        switch await Self.read(id, client: app.client, host: host) {
         case let .success(text)?:
             judgeFailure = nil
             preview = QuickLookFiles.shared.write(text, name: "Gatekeeper request.json")
@@ -133,18 +133,8 @@ struct RecordInspector: View {
 
     /// `judged`, or why not; nil once cancelled, as the record it was read
     /// for is no longer the one shown.
-    static func read(_ ids: [String], client: any LatchClient, host: String?) async -> Result<String, LatchError>? {
-        await AppModel.result { try await judged(ids, client: client, host: host) }
-    }
-
-    /// Each kept call, as latch prints it; an agent's three calls as one
-    /// JSON list.
-    static func judged(_ ids: [String], client: any LatchClient, host: String?) async throws -> String {
-        var calls: [String] = []
-        for id in ids {
-            calls.append(try await client.auditJudge(id, host: host).trimmingCharacters(in: .whitespacesAndNewlines))
-        }
-        return calls.count == 1 ? calls[0] : "[\n" + calls.joined(separator: ",\n") + "\n]"
+    static func read(_ id: String, client: any LatchClient, host: String?) async -> Result<String, LatchError>? {
+        await AppModel.result { try await client.auditJudge(id, host: host).trimmingCharacters(in: .whitespacesAndNewlines) }
     }
 
 
@@ -265,52 +255,36 @@ private struct ShotTile: View {
     }
 }
 
-/// The gatekeeper's judgment: what it read, which rules, how sure.
+/// The gatekeeper's judgment: the message of yours it was asked under,
+/// the verdict, and how sure.
 struct Why: View {
     var gate: AuditRecord.Gate
-    var caller: String
 
     var body: some View {
         Section("Why") {
-            if let source = gate.source {
-                LabeledContent("Read", value: Self.sources[source] ?? source)
+            if let intent = gate.cited {
+                LabeledContent("Cited message") { Text(intent).font(.caption.monospaced()).textSelection(.enabled) }
             }
-            if let rules = gate.rules {
-                LabeledContent("Rules used", value: [rules.host.map { _ in "For every agent" }, rules.agent.map { _ in "\(caller)'s own" }]
-                    .compactMap { $0 }.joined(separator: " + ").nonEmpty ?? "None")
+            if let later = gate.laterOwnerMessages, later > 0 {
+                LabeledContent("Your later messages", value: "\(later)")
             }
             if let verdict = gate.verdict {
-                LabeledContent("Verdict", value: Self.verdicts[verdict] ?? verdict)
+                LabeledContent("Verdict", value: AuditRecord.Gate.words(verdict))
             }
+            if gate.deviceRule != nil { LabeledContent("Also judged by", value: "Your device rule") }
             if let p = gate.p {
-                Likelihood(title: "Covered", value: p["covered"] ?? nil, tint: .green)
-                Likelihood(title: "Denied", value: p["denied"] ?? nil, tint: .red)
+                Likelihood(title: "Covered by your message", value: p["covered"] ?? nil, tint: .green)
+                Likelihood(title: "Denied by your device rule", value: p["denied"] ?? nil, tint: .red)
             }
-            if gate.model != nil || gate.latencyMs != nil || gate.cost != nil || gate.rule != nil {
+            if gate.model != nil || gate.latencyMs != nil || gate.cost != nil {
             DisclosureGroup("Details") {
                 if let model = gate.model { LabeledContent("Model") { Text(model).font(.caption.monospaced()) } }
                 if let latency = gate.latencyMs { LabeledContent("Took", value: "\(latency) ms") }
                 if let cost = gate.cost { LabeledContent("Cost", value: cost.formatted(.currency(code: "USD").precision(.significantDigits(2)))) }
-                if let rule = gate.rule { LabeledContent("Rule", value: rule) }
             }
             }
         }
     }
-
-    static let sources = [
-        "owner_request": "Your own request",
-        "saved_login_sites": "Saved login sites",
-        "defaults": "Defaults only (no rules, no chat)",
-        "rules": "Defaults and rules (no chat)",
-        "chat_and_rules": "Defaults, rules and your chat with the agent",
-        "chat": "Defaults and your chat with the agent",
-    ]
-    static let verdicts = [
-        "allow": "Allowed",
-        "not_covered": "Needed your OK",
-        "owner_said_no": "You said no",
-        "login_site_mismatch": "Login not saved for this site",
-    ]
 }
 
 struct Likelihood: View {
@@ -326,8 +300,4 @@ struct Likelihood: View {
             }
         }
     }
-}
-
-private extension String {
-    var nonEmpty: String? { isEmpty ? nil : self }
 }

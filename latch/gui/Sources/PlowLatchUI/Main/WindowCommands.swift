@@ -1,12 +1,10 @@
 import AppKit
 import SwiftUI
 
-/// What the screen showing answers from the menu bar, as it changes: Save
-/// for its focused rules editor, New Item and Import for a vault that can
-/// change; nil where it has nothing to run. The screen sets them; the
+/// What the screen showing answers from the menu bar, as it changes: New
+/// Item and Import for a vault that can change; nil where it has nothing to run. The screen sets them; the
 /// window's content column (`ScreenController`) runs them.
 @MainActor @Observable final class ScreenActions {
-    var save: (() -> Void)? { didSet { MenuBridge.shared.setNeedsRefresh() } }
     var newItem: (() -> Void)? { didSet { MenuBridge.shared.setNeedsRefresh() } }
     var importItems: (() -> Void)? { didSet { MenuBridge.shared.setNeedsRefresh() } }
 }
@@ -28,11 +26,10 @@ import SwiftUI
 
     static let newItem = #selector(ScreenController.newDocument(_:))
     static let importItems = #selector(ScreenController.importItems(_:))
-    static let save = #selector(ScreenController.saveDocument(_:))
     static let find = #selector(MainWindowController.findInScreen(_:))
     static let toggleSidebar = #selector(NSSplitViewController.toggleSidebar(_:))
     static let toggleInspector = #selector(NSSplitViewController.toggleInspector(_:))
-    private static let actions = [newItem, importItems, save, find, toggleSidebar, toggleInspector]
+    private static let actions = [newItem, importItems, find, toggleSidebar, toggleInspector]
 
     private(set) var states: [Selector: State] = [:]
     @ObservationIgnored private var updates: NSObjectProtocol?
@@ -111,9 +108,8 @@ struct WindowCommands: Commands {
         CommandGroup(replacing: .importExport) {
             item("Import…", MenuBridge.importItems)
         }
-        CommandGroup(replacing: .saveItem) {
-            item("Save", MenuBridge.save, "s")
-        }
+        // Nothing in the window is saved from the menu.
+        CommandGroup(replacing: .saveItem) {}
         CommandGroup(after: .textEditing) {
             item("Find…", MenuBridge.find, "f")
         }

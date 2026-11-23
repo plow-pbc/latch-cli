@@ -110,7 +110,7 @@ private struct HostSection: View {
 }
 
 /// Whether the host refuses agents exec (`serve --deny-exec`), as its
-/// rules say.
+/// `rules show` says.
 private struct ExecSection: View {
     var host: HostEntry
     @Environment(AppModel.self) private var app
@@ -126,7 +126,7 @@ private struct ExecSection: View {
     private func text(_ deny: RulesShow.DenyExec) -> String {
         if deny.everyAgent == true { return "No" }
         let uids = deny.agentUids ?? []
-        guard !uids.isEmpty else { return "Yes, judged by your rules" }
+        guard !uids.isEmpty else { return "Yes, judged by the gatekeeper" }
         let names = uids.map { uid in app.agents?.first { $0.uid == uid }?.name ?? "Agent \(uid.prefix(8))" }
         return "Yes, except \(names.joined(separator: ", "))"
     }
