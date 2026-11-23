@@ -475,8 +475,9 @@ async fn a_refused_command_sends_nothing_to_the_page(engine: &str) {
     let step = format!("click {link} (link \"Download the report\")");
     assert_eq!(shown["steps"], json!([{"step": step}, {"step": step}]));
     assert_eq!(shown["page"]["title"], "latch files test");
-    // The audit keeps the refused plan's steps as the judge saw them.
-    assert_eq!(plan.1["judged"], shown);
+    // The audit keeps the refused plan's steps, never the page's title.
+    assert_eq!(plan.1["judged"]["steps"], shown["steps"]);
+    assert_eq!(plan.1["judged"]["page"]["title"], Value::Null);
 
     // A refused eval runs nothing in the page.
     let eval = host
@@ -989,7 +990,8 @@ async fn a_fill_inside_a_plan_is_judged_as_a_fill(engine: &str) {
             audit["stop"],
             json!({"step": 1, "code": "gatekeeper_denied"})
         );
-        assert_eq!(audit["judged"]["may_fill"], json!([shown]), "{item:?}");
+        let kept = json!({"kind": "login", "sites": ["shop.example"]});
+        assert_eq!(audit["judged"]["may_fill"], json!([kept]), "{item:?}");
         let written = audit["judged"]["steps"][0]["step"].as_str().unwrap();
         assert!(
             written.starts_with(&format!("fill --item {login} ")),

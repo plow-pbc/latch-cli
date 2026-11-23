@@ -103,9 +103,8 @@ pub(super) struct FileShown {
 }
 
 /// Judges `action` for the caller's gate: no gate (a caller in the
-/// browser's own tests) is never judged. The audit keeps what was judged,
-/// whole, as `judged` (a plan's steps as written, like an exec's argv),
-/// and the judgment as `gate`.
+/// browser's own tests) is never judged. The audit keeps what was judged
+/// as `judged`, without titles or URL paths, and the judgment as `gate`.
 pub(super) async fn judge(
     gate: Option<Gate<'_>>,
     action: Action,
@@ -116,12 +115,32 @@ pub(super) async fn judge(
         return Ok(());
     };
     let action = shown(&action, filled);
-    audit.insert("judged".into(), action.clone());
+    audit.insert("judged".into(), audited(action.clone()));
     let judging = std::time::Instant::now();
     let judgment = gate.judge(&action).await;
     super::host::add_time(|phases| &mut phases.gate_ms, judging.elapsed());
     audit.insert("gate".into(), judgment.gate);
     judgment.verdict
+}
+
+/// `value` with every title dropped and every URL cut to its origin.
+fn audited(mut value: Value) -> Value {
+    match &mut value {
+        Value::Object(map) => {
+            map.remove("title");
+            for (key, item) in map.iter_mut() {
+                *item = match (key.as_str(), item.as_str()) {
+                    ("url", Some(url)) => json!(super::core::origin_and_path(url).0),
+                    _ => audited(item.take()),
+                };
+            }
+        }
+        Value::Array(items) => items
+            .iter_mut()
+            .for_each(|item| *item = audited(item.take())),
+        _ => {}
+    }
+    value
 }
 
 /// `action` as the judge is shown it: the card numbers filled in the
