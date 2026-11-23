@@ -158,6 +158,22 @@ struct GatekeeperTests {
         #expect(client.saved == [""])
     }
 
+    /// Read again on a return: an unedited box takes the newer answer; an
+    /// edit keeps the answer it began from, so its save can't replace it.
+    @Test func aReturnReadsANewerAnswerOnlyUnderAnUneditedBox() async {
+        let client = ScriptedClient { _ in nil }
+        client.savedText = "Never touch ~/Finance."
+        let flow = flow(client)
+        await flow.loadRules()
+        client.savedText = "Changed on the laptop."
+        await flow.loadRules()
+        #expect(flow.draftRules == "Changed on the laptop.")
+        flow.draftRules = "My edit."
+        client.savedText = "Changed again."
+        await flow.loadRules()
+        #expect(flow.draftRules == "My edit." && flow.savedRules?.text == "Changed on the laptop.")
+    }
+
     /// An answer that couldn't be read can't be saved over; Skip still
     /// goes on, and the main window asks later.
     @Test func anUnreadAnswerCantBeSavedOver() async {

@@ -914,7 +914,6 @@ final class AppModel {
     func refreshRules(on host: HostEntry) async {
         guard let rules = await Self.result({ try await self.client.rulesShow(host: host.isThisMac ? nil : host.name) }) else { return }
         summaries[host.name, default: HostSummary()].rules = rules
-        if host.isThisMac, case let .success(show) = rules { rulesSaved = show.deviceRule != nil }
     }
 
     /// Saves a host's device rule only if it's still what the person
@@ -986,7 +985,7 @@ final class AppModel {
         savingRules.insert(host)
         defer { savingRules.remove(host) }
         do {
-            try await saveRules(draft?.text ?? savedRule(host)?.text ?? "", on: entry, revision: draft?.base ?? savedRule(host)?.revision)
+            try await saveRules(draft?.text ?? savedRule(host)?.text ?? "", on: entry, revision: draft == nil ? savedRule(host)?.revision : draft?.base)
             rulesDrafts[host] = nil
             rulesErrors[host] = nil
             // Answered: the question goes, whether or not the read after it worked.

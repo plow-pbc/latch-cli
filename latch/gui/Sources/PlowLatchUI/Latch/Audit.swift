@@ -119,7 +119,7 @@ nonisolated struct AuditRecord: Decodable, Equatable, Identifiable {
             "not_covered": "Not what you asked for",
             "denied_by_rule": "Your device rule denies it",
             "intent_required": "Cited no message of yours",
-            "bad_intent": "Cited no message",
+            "bad_intent": "Invalid message reference",
             "intent_not_found": "Cited message not found",
             "intent_not_owner": "Cited message isn't yours",
             "not_owner_dm": "Cited outside its 1:1 room with you",

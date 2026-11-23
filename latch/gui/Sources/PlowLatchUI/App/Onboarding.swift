@@ -332,11 +332,16 @@ final class Onboarding {
 
     // MARK: The gatekeeper question
 
-    /// Reads this Mac's device rule into the box.
+    /// Reads this Mac's device rule into the box, unless the box holds an
+    /// edit: that keeps the revision it began from, so its save never
+    /// replaces a rule changed meanwhile.
     func loadRules() async {
         do {
-            savedRules = try await client.rulesShow().deviceRule
-            if draftRules.isEmpty { draftRules = savedRules?.text ?? "" }
+            let saved = try await client.rulesShow().deviceRule
+            if draftRules.isEmpty || draftRules == savedRules?.text {
+                savedRules = saved
+                draftRules = saved?.text ?? ""
+            }
             rulesError = nil
             rulesUnreadable = false
         } catch {

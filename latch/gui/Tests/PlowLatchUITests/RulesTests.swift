@@ -51,27 +51,16 @@ struct RulesTests {
         return app
     }
 
-    // A rule changed on another device since editing began is never
-    // replaced: the save is refused and nothing is written.
-    @Test func aStaleSaveNeverReplacesANewerRule() async throws {
-        let client = RulesClient()
-        let app = try await app(client)
-        let host = try #require(app.host)
-        let started = client.show.deviceRule?.revision
-        try await client.rulesSet("Changed on the laptop.", host: nil, revision: started)
-        await #expect(throws: LatchError.unreachable(AppModel.changedElsewhere)) {
-            try await app.saveRules("My edit.", on: host, revision: started)
-        }
-        #expect(client.sets.map(\.text) == ["Changed on the laptop."])
-    }
-
     // Unanswered when the question was asked: an answer given meanwhile
     // on another device isn't replaced.
     @Test func aFirstAnswerNeverReplacesOneGivenMeanwhile() async throws {
         let client = RulesClient()
         client.show.deviceRule = nil
         let app = try await app(client)
+        app.typeRule("Never send email.", on: "studio")
         try await client.rulesSet("Answered on the laptop.", host: nil, revision: nil)
+        // Activity read again: the draft still began from no rule.
+        await app.enter(app.route, refresh: true)
         await app.saveRuleDraft("studio", answer: true)
         #expect(client.sets.map(\.text) == ["Answered on the laptop."])
         #expect(app.rulesErrors["studio"]?.message == AppModel.changedElsewhere)
@@ -126,7 +115,7 @@ struct RulesTests {
         app.typeRule("Never touch ~/Taxes.", on: "studio")
         try await client.rulesSet("Changed on the laptop.", host: nil, revision: client.show.deviceRule?.revision)
         await app.saveRuleDraft("studio")
-        #expect(client.sets.count == 1)
+        #expect(client.sets.map(\.text) == ["Changed on the laptop."])
         #expect(app.rulesDrafts["studio"] != nil)
         #expect(app.rulesErrors["studio"]?.message == AppModel.changedElsewhere)
         await app.revertRule("studio")
