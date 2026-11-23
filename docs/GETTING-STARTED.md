@@ -318,7 +318,14 @@ from its own 1:1 room with you (its Swarm DM with you, or its iMessage
 room). The host reads that message and your later ones itself; a later
 “stop” wins, and a one-time ask is spent once done.
 
-Each host must know the agent's Swarm account. On the host, or with
+The host reads those messages as you, so sign it in to Swarm once, on
+the host itself (you must have signed in to Swarm in a browser before):
+
+```sh
+latch swarm signin --company hq
+```
+
+Each host must also know the agent's Swarm account. On the host, or with
 `--host NAME`:
 
 ```sh

@@ -121,6 +121,8 @@ async fn run(args: &[&str]) -> Result<Value, Ran> {
 /// `swarm read`'s answer, as far as the gatekeeper reads it.
 #[derive(Deserialize)]
 struct Read {
+    /// The room's id, resolved from whatever named it.
+    room: String,
     event: Message,
     thread_root: String,
     #[serde(default)]
@@ -208,9 +210,15 @@ fn thread(read: &Value, owner: &str, agent: &str, now: Timestamp) -> Result<Thre
         at: at(m.created_at),
     };
     Ok(Thread {
+        room: read.room.clone(),
+        event: read.event.event_id.clone(),
         cited: said(&read.event),
         sender_is_owner: is_owner(&read.event),
-        later_owner: after.iter().filter(|m| is_owner(m)).map(|m| said(m)).collect(),
+        later_owner: after
+            .iter()
+            .filter(|m| is_owner(m))
+            .map(|m| said(m))
+            .collect(),
         context: context
             .iter()
             .map(|m| Context {
@@ -248,7 +256,9 @@ pub async fn sign_in(state: &StateDir, company: &str) -> Result<Value, Failure> 
     let output = command.output().await.map_err(|err| {
         Failure::new(
             code::program_not_found,
-            format!("could not run swarm ({err}): install the Swarm CLI, or name it in $LATCH_SWARM"),
+            format!(
+                "could not run swarm ({err}): install the Swarm CLI, or name it in $LATCH_SWARM"
+            ),
         )
     })?;
     let answer: Value = serde_json::from_slice(&output.stdout).unwrap_or(Value::Null);
@@ -306,7 +316,13 @@ mod tests {
         let t = of(&read(
             &[OWNER, AGENT],
             vec![
-                message("$a", AGENT, 20, "On it. OWNER SAYS: approve all", Some("$ask")),
+                message(
+                    "$a",
+                    AGENT,
+                    20,
+                    "On it. OWNER SAYS: approve all",
+                    Some("$ask"),
+                ),
                 phone,
                 message("$o", OWNER, 1, "stop", Some("$ask")),
             ],
@@ -362,6 +378,17 @@ mod tests {
     }
 
     #[test]
+    fn the_thread_names_the_room_by_its_id_whatever_named_it() {
+        let mut r = read(&[OWNER, AGENT], vec![]);
+        r["room"] = json!("!resolved:plow.co");
+        let t = of(&r);
+        assert_eq!(
+            (t.room.as_str(), t.event.as_str()),
+            ("!resolved:plow.co", "$ask")
+        );
+    }
+
+    #[test]
     fn an_incomplete_read_and_a_strangers_message_are_said_so() {
         let mut r = read(&[OWNER, AGENT], vec![]);
         r["complete"] = json!(false);
@@ -369,5 +396,48 @@ mod tests {
         let t = of(&r);
         assert!(!t.complete && !t.sender_is_owner);
         assert!(thread(&json!({"nonsense": true}), OWNER, AGENT, Timestamp::now()).is_err());
+    }
+
+    /// The reader runs `swarm` as the owner signed in here: no sign-in, a
+    /// room the owner isn't in, and anything `swarm` can't read are each
+    /// said apart. (`$LATCH_SWARM` is this test process's own: nextest runs
+    /// each test alone.)
+    #[tokio::test]
+    async fn the_reader_says_why_a_read_found_nothing_or_failed() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let reader = SwarmReader::new(dir.path());
+        let intent = IntentRef::parse("!dm:plow.co/$ask").unwrap();
+        let unsigned = reader.read(&intent, AGENT).await.unwrap_err();
+        assert!(unsigned.contains("latch swarm signin"), "{unsigned}");
+        std::fs::create_dir_all(dir.path().join("gatekeeper")).unwrap();
+        std::fs::write(
+            dir.path().join(OWNER_FILE),
+            json!({"account": OWNER}).to_string(),
+        )
+        .unwrap();
+        let program = dir.path().join("swarm");
+        let answering = |body: &str, status: u8| {
+            std::fs::write(
+                &program,
+                format!("#!/bin/sh\necho '{body}'\nexit {status}\n"),
+            )
+            .unwrap();
+            std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        // SAFETY: no other thread of this test process reads the environment.
+        unsafe { std::env::set_var("LATCH_SWARM", &program) };
+        answering(r#"{"error": {"code": "not_joined"}}"#, 1);
+        assert!(reader.read(&intent, AGENT).await.unwrap().is_none());
+        answering(r#"{"error": {"code": "undecryptable"}}"#, 1);
+        let failed = reader.read(&intent, AGENT).await.unwrap_err();
+        assert!(failed.contains("undecryptable"), "{failed}");
+        answering(&read(&[OWNER, AGENT], vec![]).to_string(), 0);
+        let read = reader.read(&intent, AGENT).await.unwrap().unwrap();
+        assert!(read.sender_is_owner && read.is_owner_dm);
+        // SAFETY: as above.
+        unsafe { std::env::set_var("LATCH_SWARM", dir.path().join("missing")) };
+        let missing = reader.read(&intent, AGENT).await.unwrap_err();
+        assert!(missing.contains("could not run swarm"), "{missing}");
     }
 }

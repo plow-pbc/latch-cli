@@ -136,9 +136,11 @@ once done. A task you give on a site includes using its saved login there;
 it does not extend to buying, sending or changing things after sign-in. An
 agent quoting you cannot give permission.
 
-Each host must know the agent's Swarm account, set by you:
+The host reads your messages as you: sign it in to Swarm once (after
+signing in to Swarm in a browser), and tell it the agent's Swarm account:
 
 ```sh host
+latch swarm signin --company hq
 latch agents map my-agent @my-agent:plow.co
 ```
 

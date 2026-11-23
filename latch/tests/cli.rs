@@ -4070,6 +4070,380 @@ fn agents_are_listed_for_the_owner_with_their_standing_on_a_host() {
 /// credential goes only to a new private file, and removes an agent once
 /// told to; latch never resends a create whose answer was lost.
 #[test]
+fn an_agent_asks_for_a_login_by_phone_link_and_learns_only_its_state() {
+    let plow = LivePlow::start();
+    let (runtime, relay) = local_relay();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    // The host reads the agent's citations as its owner, through a stand-in
+    // `swarm`, and keeps a device rule, so the judge is asked about it.
+    let swarm = cited_on(&host, "Sign in to shop.example and order my usual");
+    fs::write(
+        host.join("gatekeeper/deny.txt"),
+        "Never share my passwords.",
+    )
+    .unwrap();
+    let agent_token = dir.path().join("agent.token");
+    fs::write(&agent_token, "agent-credential\n").unwrap();
+    let agent = dir.path().join("agent");
+    let agent_env = [("PLOW_TOKEN_FILE", agent_token.as_path())];
+    let login = latch(&agent, &["login", "--api-url", &plow.url], &agent_env);
+    assert_eq!(login.status.code(), Some(0), "{login:?}");
+    let mut serve = serve_command(&host, &relay);
+    serve.env("LATCH_PHONE_PAGE", "https://phone.example/latch");
+    serve.env("LATCH_SWARM", &swarm);
+    let (serve, mut log, _) = serving_with(serve);
+    until_serving(&host, &serve);
+
+    let secret = "made-up-pass-3e7d";
+    let mut printed = String::new();
+    let mut run = |args: &[&str]| {
+        let output = latch(&agent, args, &agent_env);
+        printed.push_str(&String::from_utf8_lossy(&output.stdout));
+        printed.push_str(&String::from_utf8_lossy(&output.stderr));
+        answered(&output)
+    };
+    let ask = |kind: &'static str, field: &'static str| {
+        [
+            "vault",
+            "--host",
+            "host",
+            "--intent",
+            "!dm:test/$ask",
+            "link",
+            "--kind",
+            kind,
+            "--title",
+            "Shop",
+            "--site",
+            "shop.example",
+            "--field",
+            field,
+        ]
+    };
+
+    // The agent opens a login link, citing the owner's message, judged like
+    // its other work.
+    let (code, opened) = run(&ask("login", "username=ada@shop.example"));
+    assert_eq!(code, Some(0), "{opened}");
+    let url = opened["url"].as_str().unwrap().to_string();
+    let link = opened["link"].as_str().unwrap().to_string();
+    // It opens the page the host names, which the agent cannot choose.
+    assert!(url.starts_with("https://phone.example/latch#h="), "{url}");
+    let elsewhere = [
+        &ask("login", "username=ada@shop.example")[..],
+        &["--page", "https://agent.example/"],
+    ]
+    .concat();
+    let (code, refused) = run(&elsewhere);
+    assert_eq!(
+        (code, &refused["error"]["code"]),
+        (Some(2), &json!("bad_arguments")),
+        "{refused}"
+    );
+    let judged = plow
+        .state
+        .lock()
+        .unwrap()
+        .decisions
+        .last()
+        .unwrap()
+        .to_string();
+    assert!(judged.contains("vault.link"), "{judged}");
+    assert!(
+        judged.contains("shop.example") && judged.contains("ada@shop.example"),
+        "{judged}"
+    );
+    let (code, state) = run(&["vault", "--host", "host", "link-state", &link]);
+    assert_eq!(
+        (code, &state["state"]),
+        (Some(0), &json!("pending")),
+        "{state}"
+    );
+
+    // Only a login, and never with a secret of its own.
+    let (code, refused) = run(&ask("note", "notes=hello"));
+    assert_eq!(
+        (code, &refused["error"]["code"]),
+        (Some(4), &json!("owner_only")),
+        "{refused}"
+    );
+    let password = format!("password={secret}");
+    let mut with_secret = ask("login", "username=ada@shop.example").to_vec();
+    with_secret[13] = &password;
+    // Run directly, not through `latch`, which prints its arguments, this
+    // made-up secret among them, if the call unexpectedly works.
+    let refused = latch_command(&agent, &with_secret, &agent_env)
+        .output()
+        .unwrap();
+    let (code, refused) = answered(&refused);
+    assert_eq!(
+        (code, &refused["error"]["code"]),
+        (Some(2), &json!("secret_in_argv")),
+        "{refused}"
+    );
+
+    // The agent's link carries no code: only the request's id.
+    assert!(
+        !url.contains("&c=") && url.contains(&format!("&l={link}")),
+        "{url}"
+    );
+    assert!(opened.get("code").is_none(), "{opened}");
+    // Without Plow vouching for the phone's key as the owner, for this
+    // request, the host shows nothing.
+    let phone = iroh::SecretKey::generate();
+    let page_key = phone.public().to_string();
+    let refused = phone_request(&runtime, &relay, &url, &phone, "page", json!({}));
+    assert_eq!(refused["error"]["code"], "phone_not_signed_in", "{refused}");
+    let grant = |request: &str| {
+        plow.state
+            .lock()
+            .unwrap()
+            .phone_grants
+            .push((page_key.clone(), request.to_string()));
+    };
+    grant("l00000000");
+    let refused = phone_request(&runtime, &relay, &url, &phone, "page", json!({}));
+    assert_eq!(refused["error"]["code"], "phone_not_signed_in", "{refused}");
+
+    // Signed in on the page, the owner types the password on the phone, once.
+    grant(&link);
+    let shown = phone_request(&runtime, &relay, &url, &phone, "page", json!({}));
+    assert_eq!(
+        shown["ok"]["request"]["sites"],
+        json!(["shop.example"]),
+        "{shown}"
+    );
+    // The owner corrects the website and title there; a site latch never
+    // fills on is refused, and the link stays open.
+    let edit = |sites: Value| json!({"title": "Shop (US)", "sites": sites, "values": {"password": secret}});
+    let refused = phone_request(
+        &runtime,
+        &relay,
+        &url,
+        &phone,
+        "submit",
+        edit(json!(["http://shop.example"])),
+    );
+    assert_eq!(refused["error"]["code"], "bad_item", "{refused}");
+    assert!(
+        refused["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("https://"),
+        "{refused}"
+    );
+    let saved = phone_request(
+        &runtime,
+        &relay,
+        &url,
+        &phone,
+        "submit",
+        edit(json!(["https://www.shop.example/login"])),
+    );
+    assert!(saved.get("ok").is_some(), "{saved}");
+    let again = phone_request(
+        &runtime,
+        &relay,
+        &url,
+        &phone,
+        "submit",
+        json!({"values": {"password": "x"}}),
+    );
+    assert!(again.to_string().contains("link_used"), "{again}");
+
+    // The agent learns it is saved, and the new item's id: no value.
+    let (code, state) = run(&["vault", "--host", "host", "link-state", &link]);
+    assert_eq!(code, Some(0), "{state}");
+    assert_eq!(
+        (&state["state"], &state["item"]),
+        (&json!("saved"), &json!("v1")),
+        "{state}"
+    );
+    let (code, listed) = run(&["vault", "--host", "host", "list"]);
+    assert_eq!(code, Some(0), "{listed}");
+    assert_eq!(
+        listed["items"],
+        json!([{"item": "v1", "kind": "login", "title": "Shop (US)", "sites": ["shop.example"]}]),
+        "{listed}"
+    );
+
+    // The owner's own vault takes no citation.
+    let local = latch(
+        &host,
+        &[
+            &["vault", "--intent", "!dm:test/$ask"][..],
+            &ask("login", "username=ada")[5..],
+        ]
+        .concat(),
+        &[],
+    );
+    let (code, refused) = answered(&local);
+    assert_eq!(
+        (code, &refused["error"]["code"]),
+        (Some(2), &json!("intent_not_supported")),
+        "{refused}"
+    );
+
+    // The owner's device rule can forbid it: refused, and nothing opened.
+    plow.state.lock().unwrap().forbidden = true;
+    let (code, refused) = run(&ask("login", "username=ada@shop.example"));
+    assert_eq!(code, Some(4), "{refused}");
+    assert_eq!(refused["error"]["code"], "gatekeeper_denied", "{refused}");
+    assert_eq!(refused["error"]["reason"], "denied_by_rule", "{refused}");
+    plow.state.lock().unwrap().forbidden = false;
+
+    // Audited with the login it asks for, never the secret.
+    let records = audit_records(&host);
+    let links: Vec<&Value> = records
+        .iter()
+        .filter(|r| r["op"] == "vault" && r["args"]["command"] == "link")
+        .collect();
+    let outcomes: Vec<(&Value, &Value)> = links
+        .iter()
+        .map(|r| (&r["outcome"], &r["gate"]["verdict"]))
+        .collect();
+    let (ok, allow, refused) = (json!("ok"), json!("allow"), json!("gatekeeper_denied"));
+    let (owner_only, no) = (json!("owner_only"), json!("denied_by_rule"));
+    assert_eq!(
+        outcomes,
+        [(&ok, &allow), (&owner_only, &Value::Null), (&refused, &no)],
+        "{links:?}"
+    );
+    assert_eq!(
+        links[0]["args"]["sites"],
+        json!(["shop.example"]),
+        "{:?}",
+        links[0]
+    );
+    assert_eq!(
+        links[0]["args"]["username"], "ada@shop.example",
+        "{:?}",
+        links[0]
+    );
+    // The save names what the owner changed: the title, not the site,
+    // which is the same site written another way.
+    let submit = records
+        .iter()
+        .find(|r| r["args"]["command"] == "submit" && r["outcome"] == "ok")
+        .unwrap();
+    assert_eq!(submit["args"]["edited"], json!(["title"]), "{submit}");
+    let audit = serde_json::to_string(&records).unwrap();
+    drop(serve);
+    let mut host_log = String::new();
+    log.read_to_string(&mut host_log).unwrap();
+    assert!(host_log.contains("vault"), "{host_log}");
+    let to_plow = {
+        let state = plow.state.lock().unwrap();
+        format!("{:?} {:?}", state.decisions, state.seen)
+    };
+    for (place, text) in [
+        ("agent output", &printed),
+        ("audit", &audit),
+        ("host log", &host_log),
+        ("requests to Plow", &to_plow),
+    ] {
+        assert!(!text.contains(secret), "the secret is in the {place}");
+    }
+}
+
+/// `latch swarm signin` hands `swarm` the owner's Plow login in its
+/// environment only, never on its command line or in the answer, saves the
+/// account it signed in as for the gatekeeper, and is the owner's alone.
+#[test]
+fn swarm_signin_passes_the_owners_login_only_in_the_environment() {
+    use std::os::unix::fs::PermissionsExt;
+    let plow = LivePlow::start();
+    let dir = test_dir();
+    let host = owner_host_on(&plow, dir.path());
+    let seen = dir.path().join("seen");
+    let swarm = dir.path().join("swarm");
+    fs::write(
+        &swarm,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" \"$SWARM_ACCOUNT_TOKEN\" \"$SWARM_PLOW_API\" > {}\n\
+             echo '{{\"account\": \"@owner:test\", \"device\": \"DEV1\", \"folder\": \"/x\"}}'\n",
+            seen.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&swarm, fs::Permissions::from_mode(0o755)).unwrap();
+    let env = [("LATCH_SWARM", swarm.as_path())];
+    let signed = latch(&host, &["swarm", "signin", "--company", "hq"], &env);
+    let (code, answer) = answered(&signed);
+    assert_eq!(code, Some(0), "{answer}");
+    assert_eq!(answer, json!({"account": "@owner:test", "device": "DEV1"}));
+    let seen = fs::read_to_string(&seen).unwrap();
+    assert_eq!(
+        seen.lines().collect::<Vec<_>>(),
+        ["signin --company hq", "owner-login", plow.url.as_str()]
+    );
+    let printed = format!("{:?}", signed);
+    assert!(!printed.contains("owner-login"), "{printed}");
+    let saved = fs::read_to_string(host.join("gatekeeper/swarm-owner.json")).unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&saved).unwrap()["account"],
+        "@owner:test"
+    );
+
+    // An agent's login can't sign a host in.
+    let agent_token = dir.path().join("agent.token");
+    fs::write(&agent_token, "agent-credential\n").unwrap();
+    let agent = dir.path().join("agent");
+    let agent_env = [("PLOW_TOKEN_FILE", agent_token.as_path())];
+    let login = latch(&agent, &["login", "--api-url", &plow.url], &agent_env);
+    assert_eq!(login.status.code(), Some(0), "{login:?}");
+    let refused = latch(
+        &agent,
+        &["swarm", "signin", "--company", "hq"],
+        &[env[0], agent_env[0]],
+    );
+    let (code, refused) = answered(&refused);
+    assert_eq!(
+        (code, &refused["error"]["code"]),
+        (Some(4), &json!("owner_only")),
+        "{refused}"
+    );
+}
+
+/// A stand-in `swarm` for `host`: every `swarm read` answers with the
+/// owner's message `asked` in the agent's own DM, and the host knows the
+/// owner's account and the agent's. Returns the program.
+fn cited_on(host: &Path, asked: &str) -> PathBuf {
+    let gatekeeper = host.join("gatekeeper");
+    fs::create_dir_all(&gatekeeper).unwrap();
+    fs::write(
+        gatekeeper.join("agents.json"),
+        json!({AGENT_UID: "@agent:test"}).to_string(),
+    )
+    .unwrap();
+    fs::write(
+        gatekeeper.join("swarm-owner.json"),
+        json!({"account": "@owner:test"}).to_string(),
+    )
+    .unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let read = json!({"room": "!dm:test",
+        "event": {"event_id": "$ask", "room": "!dm:test", "sender": "@owner:test",
+                  "created_at": now - 600, "text": asked, "thread_root": null},
+        "thread_root": "$ask", "root_reactions": [],
+        "members": [{"user_id": "@owner:test", "membership": "join"},
+                    {"user_id": "@agent:test", "membership": "join"}],
+        "direct": true, "messages": [], "undecryptable": 0, "complete": true});
+    let program = host.parent().unwrap().join("swarm");
+    fs::write(&program, format!("#!/bin/sh\ncat <<'EOF'\n{read}\nEOF\n")).unwrap();
+    fs::set_permissions(
+        &program,
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .unwrap();
+    program
+}
+
+#[test]
 fn agents_are_shown_created_and_removed_by_their_owner() {
     use std::os::unix::fs::PermissionsExt;
     let plow = LivePlow::start();
