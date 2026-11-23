@@ -1,24 +1,32 @@
 import SwiftUI
 
-/// Setup's gatekeeper screen, as two gates: an agent acts only on a message
-/// of yours (gate 1), and never past your Mac's rule (gate 2). The sample
-/// requests sort into lanes as the real gate rules on them. The rule is
-/// saved on Continue, blank included; the message is a demo, never saved.
+/// Setup's gatekeeper screen, as two gate lines: an agent acts only on a
+/// message of yours (gate 1, above), and never past your Mac's rule (gate
+/// 2, below). Each sample request crosses the lines as the real gate rules
+/// on it, stopping at the first that blocks it. The rule is saved on
+/// Continue, blank included; the message is an example, never saved.
 struct RulesView: View {
     @Bindable var flow: Onboarding
 
     var body: some View {
-        VStack(spacing: 14) {
+        VStack(spacing: 10) {
             Text("Meet the Plow Gatekeeper")
                 .font(.system(size: 30, weight: .semibold))
             Text("Your agents act only on a message of yours, and never past your Mac’s rule.")
                 .foregroundStyle(Brand.muted)
-            HStack(alignment: .top, spacing: 12) {
-                gate(1, "Did you ask? · example message") { messageField }
-                gate(2, "Your Mac’s rule") { ruleField.disabled(flow.rulesUnreadable) }
+            gate(1, "Did you ask? · example message") {
+                messageField.frame(maxWidth: .infinity, alignment: .trailing)
             }
-            .fixedSize(horizontal: false, vertical: true)
-            .padding(.top, 6)
+            .padding(.top, 4)
+            Text("Your agent acts only on what you asked").font(.caption).foregroundStyle(Brand.muted)
+            GateRows(verdicts: flow.verdicts)
+            Text("…and never past your Mac’s rule").font(.caption).foregroundStyle(Brand.muted)
+            gate(2, "Your Mac’s rule") {
+                ruleField.disabled(flow.rulesUnreadable)
+                Text("Blocks anything it names, even if a message asked. Leave it blank to deny nothing.")
+                    .font(.caption)
+                    .foregroundStyle(Brand.muted)
+            }
             if let error = flow.rulesError {
                 ErrorText(error: error, host: ErrorCopy.thisMac).foregroundStyle(Brand.clay).font(.callout)
             }
@@ -29,23 +37,18 @@ struct RulesView: View {
                 }
                 .font(.callout)
             }
-            Lanes(verdicts: flow.verdicts)
             if flow.signedIn == false {
                 HStack(spacing: 10) {
                     Text("Sign in to Plow to see the gatekeeper judge these.").foregroundStyle(Brand.muted)
                     Button("Sign In") { flow.show(.login) }
                 }
                 .font(.callout)
-            } else {
-                Text("Change your message or rule and watch the requests move.")
-                    .font(.callout)
-                    .foregroundStyle(Brand.muted)
             }
             Spacer(minLength: 0)
         }
         .multilineTextAlignment(.center)
         .padding(.horizontal, 32)
-        .padding(.top, 32)
+        .padding(.top, 28)
         .task { if !flow.app.still { await flow.loadRules() } }
         .onChange(of: flow.draftRules) { flow.draftChanged() }
         .onChange(of: flow.sampleMessage) { flow.draftChanged() }
@@ -65,7 +68,7 @@ struct RulesView: View {
             content()
         }
         .padding(10)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
         .background(Brand.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Brand.line))
         .multilineTextAlignment(.leading)
@@ -74,7 +77,9 @@ struct RulesView: View {
     private var messageField: some View {
         TextField("Example message", text: $flow.sampleMessage, axis: .vertical)
             .textFieldStyle(.plain)
-            .lineLimit(2...3)
+            .lineLimit(1...3)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: 380, alignment: .leading)
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
             .foregroundStyle(.white)
@@ -87,13 +92,13 @@ struct RulesView: View {
             .font(.system(size: 13))
             .scrollContentBackground(.hidden)
             .padding(6)
-            .frame(height: 54)
+            .frame(height: 40)
             .writingToolsBehavior(.disabled)
             .background(.background, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Brand.fieldBorder))
             .overlay(alignment: .topLeading) {
                 if flow.draftRules.isEmpty {
-                    Text("Nothing is denied. For example: Never post my tax return.")
+                    Text("Nothing is denied. For example: Never text anyone for me.")
                         .font(.system(size: 13))
                         .foregroundStyle(Brand.muted.opacity(0.7))
                         .padding(.horizontal, 11)
@@ -114,7 +119,7 @@ struct SampleRequest {
     var action: String
 
     /// The message the samples are first judged as citing.
-    static let message = "Order my usual groceries from Instacart for Thursday."
+    static let message = "Order my usual groceries from Instacart, and text Mary I’m running late."
 
     static let all = [
         SampleRequest(symbol: "key", text: "Sign in to Instacart",
@@ -130,66 +135,75 @@ struct SampleRequest {
     ]
 }
 
-/// The samples sorted by the gate's rulings: Goes ahead, Stopped at gate 1
-/// (not asked), Stopped at gate 2 (your rule). One without a ruling waits
-/// above the lanes, muted.
-private struct Lanes: View {
+/// The samples crossing the two gate lines: a mark at gate 1 (asked or
+/// not) and, for one asked, at gate 2 (your rule allows it or not). A row
+/// that gets through both reaches the Mac; one without a ruling is muted
+/// and unmarked.
+private struct GateRows: View {
     var verdicts: [Ruling?]
-
-    private static let lanes: [(lane: Ruling.Lane, title: String, detail: String)] = [
-        (.goesAhead, "Goes ahead", "Asked, and your rule allows it"),
-        (.notAsked, "Stopped at gate 1", "You didn’t ask"),
-        (.forbidden, "Stopped at gate 2", "Your rule forbids it"),
-    ]
+    private static let mark: CGFloat = 40
 
     var body: some View {
-        let samples = Array(zip(SampleRequest.all, verdicts))
-        VStack(spacing: 10) {
-            let unjudged = samples.filter { $0.1 == nil }.map(\.0)
-            if !unjudged.isEmpty {
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 3), spacing: 8) {
-                    ForEach(unjudged, id: \.text) { chip($0, tint: Brand.muted) }
+        HStack(spacing: 18) {
+            VStack(spacing: 8) {
+                ForEach(Array(zip(SampleRequest.all, verdicts).enumerated()), id: \.offset) { _, pair in
+                    row(pair.0, pair.1)
                 }
             }
-            HStack(alignment: .top, spacing: 10) {
-                ForEach(Self.lanes, id: \.title) { lane in
-                    let ahead = lane.lane == .goesAhead
-                    let tint = ahead ? Brand.volt : Brand.clay
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack(alignment: .top, spacing: 6) {
-                            Image(systemName: ahead ? "checkmark.circle" : "xmark.circle")
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(lane.title).font(.callout.weight(.semibold))
-                                Text(lane.detail).font(.caption).foregroundStyle(Brand.muted)
-                            }
-                        }
-                        .foregroundStyle(tint)
-                        ForEach(samples.filter { $0.1?.lane == lane.lane }.map(\.0), id: \.text) { chip($0, tint: tint) }
-                        Spacer(minLength: 0)
-                    }
-                    .padding(10)
-                    .frame(maxWidth: .infinity, minHeight: 210, alignment: .topLeading)
-                    .background(Brand.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Brand.line))
+            // The gate lines, through every row: gate 1, then gate 2.
+            .overlay(alignment: .trailing) {
+                HStack(spacing: Self.mark - 2) {
+                    line
+                    line
                 }
+                // Each just before its marks: a mark is what crossed it.
+                .padding(.trailing, Self.mark + 5)
+                .padding(.vertical, -14)
+                .allowsHitTesting(false)
             }
+            Image(systemName: "macmini")
+                .font(.system(size: 44, weight: .ultraLight))
+                .foregroundStyle(Brand.muted)
         }
         .multilineTextAlignment(.leading)
         .latchAnimation(.easeOut(duration: 0.25), value: verdicts)
         .accessibilityElement(children: .combine)
     }
 
-    private func chip(_ sample: SampleRequest, tint: Color) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: sample.symbol).frame(width: 14)
-            Text(sample.text).fixedSize(horizontal: false, vertical: true)
+    private var line: some View {
+        LinearGradient(colors: [Brand.volt.opacity(0.2), Brand.volt, Brand.volt.opacity(0.2)], startPoint: .top, endPoint: .bottom)
+            .frame(width: 2)
+            .shadow(color: Brand.volt.opacity(0.6), radius: 4)
+    }
+
+    private func row(_ sample: SampleRequest, _ ruling: Ruling?) -> some View {
+        let through = ruling?.lane == .goesAhead
+        let tint = ruling == nil ? Brand.muted : through ? Brand.volt : Brand.clay
+        return HStack(spacing: 10) {
+            Image(systemName: sample.symbol).frame(width: 16)
+            Text(sample.text).foregroundStyle(through ? Brand.text : Brand.muted)
             Spacer(minLength: 0)
+            mark(ruling.map { $0.covered })
+            // Gate 2 is reached only by what gate 1 lets through.
+            mark(ruling.flatMap { $0.covered ? !$0.denied : nil })
         }
-        .font(.system(size: 12))
-        .foregroundStyle(Brand.text)
-        .padding(.horizontal, 9)
-        .padding(.vertical, 7)
-        .background(.background, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(tint.opacity(0.5)))
+        .font(.system(size: 13))
+        .foregroundStyle(tint)
+        .padding(.leading, 12)
+        .padding(.trailing, 6)
+        .frame(height: 34)
+        .background(tint.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(tint.opacity(0.45)))
+    }
+
+    private func mark(_ passed: Bool?) -> some View {
+        ZStack {
+            if let passed {
+                Image(systemName: passed ? "checkmark" : "xmark")
+                    .fontWeight(.semibold)
+                    .foregroundStyle(passed ? Brand.volt : Brand.clay)
+            }
+        }
+        .frame(width: Self.mark)
     }
 }

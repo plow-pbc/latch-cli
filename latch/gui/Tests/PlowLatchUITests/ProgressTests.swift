@@ -147,10 +147,10 @@ struct GatekeeperTests {
         flow.judgeDelay = .zero
         let lanes = { flow.verdicts.map { $0?.lane } }
         await flow.loadRules()
-        await waitUntil { client.tried.count == 5 && lanes() == [nil, .goesAhead, .notAsked, .notAsked, .notAsked] }
+        await waitUntil { client.tried.count == 5 && lanes() == [nil, .goesAhead, .goesAhead, .notAsked, .notAsked] }
         flow.draftRules = "Never shop on Instacart."
         flow.draftChanged()
-        await waitUntil { client.tried.count == 10 && lanes() == [nil, .forbidden, .notAsked, .notAsked, .notAsked] }
+        await waitUntil { client.tried.count == 10 && lanes() == [nil, .forbidden, .goesAhead, .notAsked, .notAsked] }
         #expect(Set(client.tried.suffix(5)) == ["Never shop on Instacart."])
         flow.draftRules = ""
         flow.sampleMessage = ""
