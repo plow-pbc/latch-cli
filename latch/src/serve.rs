@@ -1388,10 +1388,14 @@ async fn serve_request(
                 None => timings,
             };
             let decision = decision(&done.response);
+            // A browser call is logged by its command; the rest stays in the sealed audit.
+            let shown = match op {
+                "browser" => json!({"command": done.audit_args["command"]}),
+                _ => crate::redact::shown(op, &done.audit_args),
+            };
             log(&format!(
-                "{op}: {caller}: {decision}: {} {}",
-                done.outcome,
-                crate::redact::shown(op, &done.audit_args)
+                "{op}: {caller}: {decision}: {} {shown}",
+                done.outcome
             ));
             let judged = judgment.map(|judgment| judgment.gate);
             let mut record = audit::record(

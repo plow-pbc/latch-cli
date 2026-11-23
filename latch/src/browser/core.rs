@@ -702,9 +702,8 @@ impl<D: Driver> Core<D> {
         self.needs("downloads", audit)?;
         audit.insert("download".into(), json!(id));
         let (download, path) = self.driver.download_file(id)?;
-        let (origin, path_only) = origin_and_path(&download.url);
+        let (origin, _) = origin_and_path(&download.url);
         audit.insert("download_origin".into(), json!(origin));
-        audit.insert("download_path".into(), json!(path_only));
         let bytes =
             fs::read(&path).map_err(|err| Failure::new(code::download_failed, err.to_string()))?;
         let result =
@@ -1196,9 +1195,8 @@ impl<D: Driver> Core<D> {
             .cloned()
             .ok_or_else(|| Failure::new(code::browser_gone, "the session has no tab".into()))?;
         audit.insert("tab".into(), json!(active.tab));
-        let (origin, path) = origin_and_path(&active.url);
+        let (origin, _) = origin_and_path(&active.url);
         audit.insert("origin".into(), json!(origin));
-        audit.insert("path".into(), json!(path));
         if !super::egress::shown(&active.url) {
             let failure = super::egress::not_shown(&active.url);
             self.driver.navigate("about:blank")?;
@@ -1720,7 +1718,7 @@ mod tests {
             assert_eq!(failure.details["capability"], capability);
             assert_eq!(
                 failure.details["audit"],
-                json!({"capability": capability, "tab": "t1", "origin": "https://shop.example", "path": "/cart"})
+                json!({"capability": capability, "tab": "t1", "origin": "https://shop.example"})
             );
         }
     }

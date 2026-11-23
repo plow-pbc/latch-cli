@@ -103,9 +103,9 @@ pub(super) struct FileShown {
 }
 
 /// Judges `action` for the caller's gate: no gate (a caller in the
-/// browser's own tests) is never judged. The audit keeps what was judged,
-/// whole, as `judged` (a plan's steps as written, like an exec's argv),
-/// and the judgment as `gate`.
+/// browser's own tests) is never judged. The audit keeps what was judged
+/// as `judged`, without titles, URL paths or a plan's steps and facts, and
+/// the judgment as `gate`.
 pub(super) async fn judge(
     gate: Option<Gate<'_>>,
     action: Action,
@@ -116,12 +116,36 @@ pub(super) async fn judge(
         return Ok(());
     };
     let action = shown(&action, filled);
-    audit.insert("judged".into(), action.clone());
+    audit.insert("judged".into(), audited(action.clone()));
     let judging = std::time::Instant::now();
     let judgment = gate.judge(&action).await;
     super::host::add_time(|phases| &mut phases.gate_ms, judging.elapsed());
     audit.insert("gate".into(), judgment.gate);
     judgment.verdict
+}
+
+/// The audit's copy of a judged action: no plan steps or facts, no
+/// titles, and its URLs cut to their origin.
+fn audited(mut value: Value) -> Value {
+    let action = value.as_object_mut().expect("an action is an object");
+    action.remove("steps");
+    action.remove("facts");
+    for (key, shown) in action.iter_mut() {
+        let titled = match key.as_str() {
+            "page" | "item" => std::slice::from_mut(shown),
+            "may_fill" => shown.as_array_mut().map_or(&mut [][..], Vec::as_mut_slice),
+            _ => continue,
+        };
+        for one in titled {
+            one.as_object_mut().map(|one| one.remove("title"));
+        }
+    }
+    for at in ["/url", "/page/url"] {
+        if let Some(url) = value.pointer_mut(at) {
+            *url = json!(super::core::origin_and_path(url.as_str().unwrap_or_default()).0);
+        }
+    }
+    value
 }
 
 /// `action` as the judge is shown it: the card numbers filled in the
@@ -447,6 +471,19 @@ pub(super) async fn download(
 mod tests {
     use super::*;
     use crate::browser::plan::short_step;
+
+    #[test]
+    fn the_audit_copy_keeps_no_titles_plan_words_or_url_paths() {
+        let judged = json!({"kind": "browser_plan",
+            "page": {"url": "https://shop.example/reset/s3cret?t=1", "title": "Reset"},
+            "steps": [{"step": "type e4 \"hunter2\""}], "facts": {"title": "Draft 2"},
+            "sites": ["shop.example"], "may_fill": [{"kind": "card", "title": "Visa Gold"}]});
+        assert_eq!(
+            audited(judged),
+            json!({"kind": "browser_plan", "page": {"url": "https://shop.example"},
+                "sites": ["shop.example"], "may_fill": [{"kind": "card"}]})
+        );
+    }
 
     #[test]
     fn a_plan_is_shown_as_written_with_the_sites_it_names() {
