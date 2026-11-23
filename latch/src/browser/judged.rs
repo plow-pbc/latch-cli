@@ -142,7 +142,7 @@ fn audited(mut value: Value) -> Value {
     }
     for at in ["/url", "/page/url"] {
         if let Some(url) = value.pointer_mut(at) {
-            *url = json!(super::core::origin_and_path(url.as_str().unwrap_or_default()).0);
+            *url = json!(super::core::audited(url.as_str().unwrap_or_default()));
         }
     }
     value
@@ -475,7 +475,7 @@ mod tests {
     #[test]
     fn the_audit_copy_keeps_no_titles_plan_words_or_url_paths() {
         let judged = json!({"kind": "browser_plan",
-            "page": {"url": "https://shop.example/reset/s3cret?t=1", "title": "Reset"},
+            "page": {"url": "https://who:pw@shop.example/reset/s3cret?t=1", "title": "Reset"},
             "steps": [{"step": "type e4 \"hunter2\""}], "facts": {"title": "Draft 2"},
             "sites": ["shop.example"], "may_fill": [{"kind": "card", "title": "Visa Gold"}]});
         assert_eq!(

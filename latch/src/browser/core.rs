@@ -702,8 +702,7 @@ impl<D: Driver> Core<D> {
         self.needs("downloads", audit)?;
         audit.insert("download".into(), json!(id));
         let (download, path) = self.driver.download_file(id)?;
-        let (origin, _) = origin_and_path(&download.url);
-        audit.insert("download_origin".into(), json!(origin));
+        audit.insert("download_origin".into(), json!(audited(&download.url)));
         let bytes =
             fs::read(&path).map_err(|err| Failure::new(code::download_failed, err.to_string()))?;
         let result =
@@ -1195,8 +1194,7 @@ impl<D: Driver> Core<D> {
             .cloned()
             .ok_or_else(|| Failure::new(code::browser_gone, "the session has no tab".into()))?;
         audit.insert("tab".into(), json!(active.tab));
-        let (origin, _) = origin_and_path(&active.url);
-        audit.insert("origin".into(), json!(origin));
+        audit.insert("origin".into(), json!(audited(&active.url)));
         if !super::egress::shown(&active.url) {
             let failure = super::egress::not_shown(&active.url);
             self.driver.navigate("about:blank")?;
@@ -1461,7 +1459,19 @@ fn scroll_delta(text: Option<&str>) -> Result<f64, Failure> {
     }
 }
 
-/// A URL's origin and path, for the audit: never its query or fragment.
+/// A URL as the audit names it: an http(s) one by scheme, host and port,
+/// any other by its scheme; never its userinfo, path, query or fragment.
+pub fn audited(url: &str) -> String {
+    match url::Url::parse(url) {
+        Ok(parsed) if matches!(parsed.scheme(), "http" | "https") => {
+            parsed.origin().ascii_serialization()
+        }
+        Ok(parsed) => format!("{}:", parsed.scheme()),
+        Err(_) => "unparseable".into(),
+    }
+}
+
+/// A URL's origin and path, never its query or fragment.
 pub fn origin_and_path(url: &str) -> (String, String) {
     let without = url.split(['?', '#']).next().unwrap_or_default();
     match without.split_once("://") {
