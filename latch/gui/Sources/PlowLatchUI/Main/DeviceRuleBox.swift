@@ -2,11 +2,12 @@ import SwiftUI
 
 /// A host's device rule: what its agents are always denied, whatever a
 /// message of yours says, in your words. It grants nothing; blank denies
-/// nothing. Edited in place and saved only over what was there when
-/// editing began.
+/// nothing. Edited in place and saved as typing pauses or the box is
+/// left, only over what was there when editing began.
 struct DeviceRuleBox: View {
     var host: HostEntry
     @Environment(AppModel.self) private var app
+    @FocusState private var focused: Bool
 
     var body: some View {
         switch app.summaries[host.name]?.rules {
@@ -27,7 +28,6 @@ struct DeviceRuleBox: View {
     private var editor: some View {
         let name = host.name
         let draft = app.rulesDrafts[name]
-        let saving = app.savingRules.contains(name)
         return VStack(alignment: .trailing, spacing: 6) {
             TextEditor(text: Binding { draft?.text ?? app.savedRule(name)?.text ?? "" } set: { app.typeRule($0, on: name) })
                 .font(.body)
@@ -47,21 +47,18 @@ struct DeviceRuleBox: View {
                             .allowsHitTesting(false)
                     }
                 }
-                // What's typed during a save couldn't be saved by it.
-                .disabled(saving)
+                .focused($focused)
+                .onChange(of: focused) { if !focused { Task { await app.saveRuleDraft(name) } } }
                 .accessibilityLabel("Always denied on \(host.name)")
             if let error = app.rulesErrors[name] {
                 Label { ErrorText(error: error, host: host.spoken) } icon: { Image(systemName: "exclamationmark.triangle") }
                     .foregroundStyle(.red)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            if draft != nil {
-                HStack {
-                    Button("Revert") { Task { await app.revertRule(name) } }.disabled(saving)
-                    Button(saving ? "Saving…" : "Save") { Task { await app.saveRuleDraft(name) } }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(saving || !app.ruleChanged(name))
-                }
+            if app.rulesSaved.contains(name) {
+                Label("Saved", systemImage: "checkmark")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
     }

@@ -135,17 +135,14 @@ enum TestHooks {
             guard let agent = app.agents?.first(where: { $0.uid == uid }) else { return }
             Task { await app.removeAgent(agent) }
         }
-        // Saves "TEXT" as the selected host's device rule, as Save does,
-        // over the revision on screen.
+        // Types "TEXT" as the selected host's device rule and saves it at
+        // once, as leaving the box does.
         on("save-rules") { text in
-            guard let host = app.host, case let .success(show)? = app.summaries[host.name]?.rules else { return }
+            guard let host = app.host?.name else { return }
+            app.typeRule(text ?? "", on: host)
             Task {
-                do {
-                    try await app.saveRules(text ?? "", on: host, revision: show.deviceRule?.revision)
-                    print("save-rules: saved")
-                } catch {
-                    print("save-rules: refused: \(LatchError.from(error).message)")
-                }
+                await app.saveRuleDraft(host)
+                print(app.rulesErrors[host].map { "save-rules: refused: \($0.message)" } ?? "save-rules: saved")
             }
         }
         // Vault, as a person clicks and types: search, select an item, open

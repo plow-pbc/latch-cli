@@ -8,6 +8,8 @@ final class RulesClient: LatchClient, @unchecked Sendable {
     let stateDir = "/s"
     var show = try! Fixtures.decode(Fixtures.studioRules) as RulesShow
     private(set) var sets: [(text: String, host: String?)] = []
+    /// Holds each save until opened.
+    var holdSet: Gate?
 
     func localStatus() async throws -> LocalStatus { try Fixtures.decode(Fixtures.serving) }
     func accountStatus() async throws -> AccountStatus { try Fixtures.decode(Fixtures.studioHosts) }
@@ -20,6 +22,7 @@ final class RulesClient: LatchClient, @unchecked Sendable {
     /// As `rules set --revision R` does: refused with `stale_revision`
     /// unless the rule is still at R (nil: none); an empty text is saved.
     func rulesSet(_ text: String, host: String?, revision: String?) async throws {
+        await holdSet?.wait()
         let current = show.deviceRule?.revision
         guard current == revision else {
             throw LatchError.failed(LatchFailure(code: "stale_revision", message: "the rule changed; it is at \(current ?? "none")"))
@@ -45,11 +48,12 @@ struct RulesTests {
         app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
         app.place = .host(.activity)
         await app.enter(.host(.activity, app.host))
+        app.ruleSaveDelay = .seconds(600)
         return app
     }
 
     // Unanswered when the question was asked: an answer given meanwhile
-    // on another device isn't replaced.
+    // on another device isn't replaced; it shows instead.
     @Test func aFirstAnswerNeverReplacesOneGivenMeanwhile() async throws {
         let client = RulesClient()
         client.show.deviceRule = nil
@@ -60,7 +64,8 @@ struct RulesTests {
         await app.enter(app.route, refresh: true)
         await app.saveRuleDraft("studio")
         #expect(client.sets.map(\.text) == ["Answered on the laptop."])
-        #expect(app.rulesErrors["studio"]?.message == AppModel.changedElsewhere)
+        #expect(app.rulesDrafts["studio"] == nil && app.rulesErrors["studio"] == nil)
+        #expect(app.savedRule("studio")?.text == "Answered on the laptop.")
     }
 
     // A latch from before device rules says nothing of one, where a
@@ -81,21 +86,24 @@ struct RulesTests {
             await app.enter(app.route)
         }
         #expect(app.rulesDrafts["studio"]?.text == "Never touch ~/Taxes.")
-        #expect(app.ruleChanged("studio"))
         #expect(client.sets.isEmpty)
     }
 
-    @Test func aDraftOverARuleChangedElsewhereStaysWithWhy() async throws {
+    /// Typing pauses and the rule saves itself; typing on during that save
+    /// is saved after it, over the revision it made.
+    @Test func aRuleSavesWhenTypingPausesAndTypingDuringASaveIsSavedAfter() async throws {
         let client = RulesClient()
         let app = try await app(client)
+        app.ruleSaveDelay = .zero
+        let held = Gate()
+        client.holdSet = held
         app.typeRule("Never touch ~/Taxes.", on: "studio")
-        try await client.rulesSet("Changed on the laptop.", host: nil, revision: client.show.deviceRule?.revision)
-        await app.saveRuleDraft("studio")
-        #expect(client.sets.map(\.text) == ["Changed on the laptop."])
-        #expect(app.rulesDrafts["studio"] != nil)
-        #expect(app.rulesErrors["studio"]?.message == AppModel.changedElsewhere)
-        await app.revertRule("studio")
-        #expect(app.rulesDrafts["studio"] == nil && app.rulesErrors["studio"] == nil)
-        #expect(app.savedRule("studio")?.text == "Changed on the laptop.")
+        await waitUntil { app.savingRules.contains("studio") }
+        app.typeRule("Never touch ~/Taxes or ~/Finance.", on: "studio")
+        held.open()
+        await waitUntil { app.rulesDrafts["studio"] == nil && !app.savingRules.contains("studio") }
+        #expect(client.sets.map(\.text) == ["Never touch ~/Taxes.", "Never touch ~/Taxes or ~/Finance."])
+        #expect(app.savedRule("studio")?.text == "Never touch ~/Taxes or ~/Finance.")
+        #expect(app.rulesSaved.contains("studio"))
     }
 }
