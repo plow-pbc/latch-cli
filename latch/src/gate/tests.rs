@@ -848,6 +848,38 @@ async fn a_confirmed_step_carries_on_its_allowed_plan_and_nothing_else_does() {
     }
 }
 
+/// On a standing ask that already holds the same plan from yesterday, a
+/// confirmation carries on today's: the judge is shown yesterday's as done.
+#[tokio::test]
+async fn a_confirmation_carries_on_the_newest_of_identical_plans() {
+    let thread = asked("Text Hoa good morning every morning");
+    let key = thread.key();
+    let host = host(Judge::new(|_| Some((0.0, 0.9))), Ok(Some(thread)));
+    let caller = Caller::Agent {
+        uid: AGENT,
+        intent: Some(CITED),
+    };
+    let plan = serde_json::value::to_raw_value(&send_mail()).unwrap();
+    let yesterday = Timestamp::from_second(now().as_second() - 24 * 60 * 60).unwrap();
+    host.keeper
+        .ledger
+        .hold(&key)
+        .await
+        .record(yesterday, plan.get())
+        .unwrap();
+    assert_eq!(
+        reason(&host.keeper.judge(caller, &plan, None).await),
+        "allow"
+    );
+    let allowed = Allowed {
+        intent: key,
+        action: plan.get().into(),
+    };
+    let carried = host.keeper.judge(caller, &plan, Some(&allowed)).await;
+    assert_eq!(carried.gate["already_done"], 1);
+    assert_eq!(host.judge.state()["already_done"][0]["when"], "1 days ago");
+}
+
 /// A refusal for not being covered says, in one line, what didn't match,
 /// and the audit keeps which; a judge whose reason contradicts its no
 /// leaves the refusal saying only that it isn't covered, and any reason

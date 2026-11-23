@@ -440,11 +440,13 @@ impl Gatekeeper {
             .map_err(|why| unavailable("ledger_unreadable", &why))?;
         // What this carries on (the plan whose step paused), allowed on this
         // same intent, is the same use of it, not an earlier one: the judge
-        // doesn't see it as done, and this is not recorded as another.
+        // doesn't see it as done, and this is not recorded as another. It is
+        // the newest entry like it: a standing ask may hold the same plan
+        // done before.
         let continued = continues
             .filter(|allowed| allowed.intent == key)
             .map(|allowed| ledger::kept(&allowed.action))
-            .and_then(|continued| done.iter().position(|d| d.action == continued));
+            .and_then(|continued| done.iter().rposition(|d| d.action == continued));
         if let Some(at) = continued {
             done.remove(at);
             gate["continues"] = json!(true);
