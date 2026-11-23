@@ -515,6 +515,56 @@ async fn a_suggestion_is_a_checked_edit_or_asking_in_the_message() {
     assert_eq!(host.judge.calls(), calls + 1);
 }
 
+/// A blank rule saved is still a rule `rules show` gives a revision: an
+/// edit of it says which.
+#[tokio::test]
+async fn an_edit_of_a_blank_saved_rule_names_its_revision() {
+    let host = host(Judge::new(by_words), Err("never read".into()));
+    host.deny("");
+    let stored = rules::Store::new(host.dir.path()).deny().unwrap();
+    let projects =
+        serde_json::value::to_raw_value(&json!({"operation": "exec", "argv": ["ls", "Projects"]}))
+            .unwrap();
+    let allowed = json!({"verdict": "allow", "p": {"denied": 0.0, "covered": 0.9}});
+    let suggested = host
+        .keeper
+        .suggestion(&allowed, Some("run `ls Projects`"), Some(&projects))
+        .await
+        .unwrap();
+    assert_eq!(
+        suggested,
+        json!({"suggestion": "rule", "rule": "Never run `ls Projects`.", "revision": stored.as_deref().map(rules::revision)})
+    );
+    assert!(stored.is_some(), "a blank rule is saved");
+}
+
+/// A plan the gatekeeper let through but whose fill it refused is turned
+/// by that fill's judgment: not covered, so asked for in the message.
+#[test]
+fn a_plans_refused_fill_is_its_judgment() {
+    let mut record = crate::audit::record(
+        "k",
+        Some(AGENT.into()),
+        "browser",
+        "deny",
+        "gatekeeper_denied",
+    );
+    record.args = json!({
+        "command": "do",
+        "gate": {"verdict": "allow", "kept_request": "plan"},
+        "step_records": [
+            {"step": 1, "op": "click"},
+            {"step": 2, "op": "fill", "gate": {"verdict": "not_covered", "kept_request": "fill", "p": {"covered": 0.1}}, "dispatch": "refused"},
+        ],
+    });
+    let judgment = suggest::judgment(&record);
+    assert_eq!(judgment["kept_request"], "fill");
+    assert_eq!(
+        suggest::answer(suggest::verdict(&judgment), None),
+        json!({"suggestion": "ask_in_message"})
+    );
+}
+
 #[test]
 fn the_edits_tried_follow_the_ruling() {
     for (rule, refused, edits) in [

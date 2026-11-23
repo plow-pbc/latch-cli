@@ -372,40 +372,25 @@ impl AuditLog {
 pub async fn run(state: &StateDir, action: AuditAction) -> Result<Value, Failure> {
     let path = state.path.join(FILE);
     match action {
-        AuditAction::Judge { request, raw, host } => match crate::remote::other_host(state, host)
-            .await?
-        {
-            Some(host) => {
-                let request = crate::wire::Request {
-                    op: "audit_judge".into(),
-                    args: json!({"request": request, "raw": raw}),
-                    intent: None,
-                };
-                let mut kept =
-                    crate::dial::call(state, &host, &request, crate::dial::ANSWER_WITHIN).await?;
-                // Printed as the host prints it, without its record of this read.
-                if let Some(kept) = kept.as_object_mut() {
-                    kept.remove("audit_id");
+        AuditAction::Judge { request, raw, host } => {
+            match crate::remote::other_host(state, host).await? {
+                Some(host) => {
+                    crate::remote::read(
+                        state,
+                        &host,
+                        "audit_judge",
+                        json!({"request": request, "raw": raw}),
+                    )
+                    .await
                 }
-                Ok(kept)
+                None => crate::gate::requests::read(&state.path, &request, raw),
             }
-            None => crate::gate::requests::read(&state.path, &request, raw),
-        },
+        }
         AuditAction::Suggest { record, host } => match crate::remote::other_host(state, host)
             .await?
         {
             Some(host) => {
-                let request = crate::wire::Request {
-                    op: "audit_suggest".into(),
-                    args: json!({"record": record}),
-                    intent: None,
-                };
-                let mut suggested =
-                    crate::dial::call(state, &host, &request, crate::dial::ANSWER_WITHIN).await?;
-                if let Some(suggested) = suggested.as_object_mut() {
-                    suggested.remove("audit_id");
-                }
-                Ok(suggested)
+                crate::remote::read(state, &host, "audit_suggest", json!({"record": record})).await
             }
             None => crate::gate::suggest::run(&state.path, &record).await,
         },

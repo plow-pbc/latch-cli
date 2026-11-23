@@ -156,7 +156,7 @@ nonisolated struct AuditRecord: Decodable, Equatable, Identifiable {
     var isOwnerRead: Bool {
         guard agent == nil else { return false }
         switch op {
-        case "status", "audit", "audit_shot", "audit_judge": return true
+        case "status", "audit", "audit_shot", "audit_judge", "audit_suggest": return true
         case "rules": return args?.command == "show"
         case "vault": return ["list", "show"].contains(args?.command)
         case "plugins": return args?.command == "list"

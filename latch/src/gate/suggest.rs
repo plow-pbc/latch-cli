@@ -28,12 +28,7 @@ pub async fn run(state_dir: &Path, id: &str) -> Result<Value, Failure> {
             format!("this host's audit has no record {id}"),
         )
     })?;
-    // A browser step's judgment is in its args.
-    let gate = record
-        .gate
-        .clone()
-        .filter(|gate| !gate["verdict"].is_null())
-        .unwrap_or_else(|| record.args["gate"].clone());
+    let gate = judgment(&record);
     // The action exactly as the judge was shown it, from the call the host
     // kept (7 days).
     let action = gate["kept_request"]
@@ -55,10 +50,30 @@ pub async fn run(state_dir: &Path, id: &str) -> Result<Value, Failure> {
         .await
 }
 
+/// The judgment that decided `record`: the step a plan's gatekeeper
+/// refused (a fill judged on its own) before the plan's own, a browser
+/// step's in its args, else the record's.
+pub(super) fn judgment(record: &crate::audit::Record) -> Value {
+    let refused_step = record.args["step_records"].as_array().and_then(|steps| {
+        steps
+            .iter()
+            .rev()
+            .find(|step| step["dispatch"] == "refused" && step["gate"].is_object())
+    });
+    if let Some(step) = refused_step {
+        return step["gate"].clone();
+    }
+    record
+        .gate
+        .clone()
+        .filter(|gate| !gate["verdict"].is_null())
+        .unwrap_or_else(|| record.args["gate"].clone())
+}
+
 /// How a judgment can be turned: `None` for a request the owner's message
 /// didn't cover (ask in it), `Some(None)` for one no rule edit turns, else
 /// `Some(Some(refused))`.
-fn verdict(gate: &Value) -> Option<Option<bool>> {
+pub(super) fn verdict(gate: &Value) -> Option<Option<bool>> {
     let uncovered = gate["p"]["covered"].as_f64().is_some_and(|p| p < YES_P);
     match gate["verdict"].as_str() {
         Some("not_covered") => None,
@@ -71,7 +86,10 @@ fn verdict(gate: &Value) -> Option<Option<bool>> {
 
 /// `suggestion`: `rule` (with `rule`, the edit, and `revision`, the rule
 /// it edits, null when none), `ask_in_message`, or null.
-fn answer(verdict: Option<Option<bool>>, rule: Option<(String, Option<String>)>) -> Value {
+pub(super) fn answer(
+    verdict: Option<Option<bool>>,
+    rule: Option<(String, Option<String>)>,
+) -> Value {
     match (verdict, rule) {
         (None, _) => json!({"suggestion": "ask_in_message"}),
         (_, Some((rule, revision))) => {
@@ -95,17 +113,18 @@ impl Gatekeeper {
         let (Some(Some(refused)), Some(summary), Some(action)) = (verdict, summary, action) else {
             return Ok(answer(verdict, None));
         };
-        let rule = self
+        let stored = self
             .store
             .deny()
-            .map_err(|why| Failure::new(code::read_failed, why))?
-            .unwrap_or_default();
+            .map_err(|why| Failure::new(code::read_failed, why))?;
+        // The revision `rules show` gives: a blank rule saved has one too.
+        let revision = stored.as_deref().map(rules::revision);
+        let rule = stored.unwrap_or_default();
         if self.preview(&rule, action).await? != refused {
             return Ok(answer(verdict, None));
         }
         for candidate in candidates(&rule, summary, refused) {
             if self.preview(&candidate, action).await? != refused {
-                let revision = Some(rules::revision(&rule)).filter(|_| !rule.trim().is_empty());
                 return Ok(answer(verdict, Some((candidate, revision))));
             }
         }

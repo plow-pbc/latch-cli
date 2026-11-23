@@ -273,7 +273,7 @@ struct OwnerReadTests {
 
     @Test func readsAreBackgroundAndActionsAreNot() throws {
         for (op, args) in [("rules", #"{"command":"show"}"#), ("vault", #"{"command":"list"}"#), ("vault", #"{"command":"show","item":"v1"}"#),
-                           ("plugins", #"{"command":"list"}"#), ("status", "{}"), ("audit", "{}"),
+                           ("plugins", #"{"command":"list"}"#), ("status", "{}"), ("audit", "{}"), ("audit_suggest", #"{"record":"r1"}"#),
                            // The owner's own rule changes wait behind the checkbox too.
                            ("rules", #"{"command":"set","scope":"every agent"}"#), ("rules", #"{"command":"map_agent"}"#)] {
             #expect(try record(op: op, args: args).isBackground, "\(op) \(args)")

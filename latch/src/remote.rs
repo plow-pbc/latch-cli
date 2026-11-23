@@ -36,15 +36,15 @@ fn request(op: &str, args: Value) -> Request {
     }
 }
 
-/// `host`'s `status --local`, as it prints it there: the id of the host's
-/// record of this read is left out, as a stream leaves it out.
-pub async fn status(state: &StateDir, host: &Peer) -> Result<Value, Failure> {
-    let request = request("status", serde_json::json!({}));
-    let mut status = dial::call(state, host, &request, ANSWER_WITHIN).await?;
-    if let Some(status) = status.as_object_mut() {
-        status.remove("audit_id");
+/// `host`'s answer to one read (`status`, `audit_judge`, `audit_suggest`),
+/// as it prints it there: the id of the host's record of this read is left
+/// out, as a stream leaves it out.
+pub async fn read(state: &StateDir, host: &Peer, op: &str, args: Value) -> Result<Value, Failure> {
+    let mut answer = dial::call(state, host, &request(op, args), ANSWER_WITHIN).await?;
+    if let Some(answer) = answer.as_object_mut() {
+        answer.remove("audit_id");
     }
-    Ok(status)
+    Ok(answer)
 }
 
 /// How many lines may wait for a slow reader of our stdout.
