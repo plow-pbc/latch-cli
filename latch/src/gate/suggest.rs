@@ -120,11 +120,11 @@ impl Gatekeeper {
         // The revision `rules show` gives: a blank rule saved has one too.
         let revision = stored.as_deref().map(rules::revision);
         let rule = stored.unwrap_or_default();
-        if self.preview(&rule, action).await? != refused {
+        if self.preview(&rule, None, action).await?.denied != refused {
             return Ok(answer(verdict, None));
         }
         for candidate in candidates(&rule, summary, refused) {
-            if self.preview(&candidate, action).await? != refused {
+            if self.preview(&candidate, None, action).await?.denied != refused {
                 return Ok(answer(verdict, Some((candidate, revision))));
             }
         }

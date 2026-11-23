@@ -61,10 +61,12 @@ final class Onboarding {
     /// Whether this Mac is signed in to Plow, which judging the sample
     /// requests needs: nil until read, or when it couldn't be.
     private(set) var signedIn: Bool?
-    /// Each sample request's verdict against the draft, true when let
-    /// through; nil while never judged or when it couldn't be. A check
-    /// under way keeps the last marks.
-    private(set) var verdicts = [Bool?](repeating: nil, count: SampleRequest.all.count)
+    /// The message the samples are judged as citing: a demo, never saved.
+    var sampleMessage = SampleRequest.message
+    /// Each sample request's ruling against the message and the draft; nil
+    /// while never judged or when it couldn't be. A check under way keeps
+    /// the last rulings.
+    private(set) var verdicts = [Ruling?](repeating: nil, count: SampleRequest.all.count)
     private var judging: Task<Void, Never>?
     var judgeDelay: Duration = .milliseconds(800)
     // Connect Google.
@@ -366,34 +368,32 @@ final class Onboarding {
         signedIn = try? await client.setupStatus().step("login").map { $0.state == "done" }
     }
 
-    /// The box changed: the samples are judged against it once typing pauses.
+    /// The message or the rule changed: the samples are judged again once
+    /// typing pauses.
     func draftChanged() { judge(after: judgeDelay) }
 
-    /// Judges every sample against the draft with the real gate, each as
-    /// the owner's own request. A blank draft denies nothing, so it asks
-    /// no one; signed out, there's no judge, so no marks.
+    /// Judges every sample with the real gate: as an agent's request citing
+    /// the message, against the draft rule. Signed out, there's no judge,
+    /// so no rulings.
     private func judge(after delay: Duration) {
         judging?.cancel()
         let draft = draftRules.trimmingCharacters(in: .whitespacesAndNewlines)
+        let message = sampleMessage
         guard signedIn == true else {
             verdicts = verdicts.map { _ in nil }
-            return
-        }
-        guard !draft.isEmpty else {
-            verdicts = verdicts.map { _ in true }
             return
         }
         judging = Task {
             try? await Task.sleep(for: delay)
             guard !Task.isCancelled else { return }
-            await withTaskGroup(of: (Int, Bool?).self) { group in
+            await withTaskGroup(of: (Int, Ruling?).self) { group in
                 for (index, sample) in SampleRequest.all.enumerated() {
                     group.addTask { [client] in
-                        (index, try? await !client.rulesTry(draft: draft, action: sample.action))
+                        (index, try? await client.rulesTry(draft: draft, message: message, action: sample.action))
                     }
                 }
-                for await (index, allowed) in group where !Task.isCancelled {
-                    verdicts[index] = allowed
+                for await (index, ruling) in group where !Task.isCancelled {
+                    verdicts[index] = ruling
                 }
             }
         }
@@ -494,7 +494,7 @@ final class Onboarding {
     }
 
     /// For snapshots: the sign-in as read, and the samples' marks.
-    func stage(signedIn: Bool?, verdicts: [Bool?]) {
+    func stage(signedIn: Bool?, verdicts: [Ruling?]) {
         self.signedIn = signedIn
         self.verdicts = verdicts
     }

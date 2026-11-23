@@ -137,24 +137,29 @@ struct GatekeeperTests {
         #expect(flow.savedRules?.text == "")
     }
 
-    /// The samples are judged by the gate against the draft once typing
-    /// pauses: a blank draft denies nothing and asks no one, a sample the
-    /// gate couldn't judge gets no mark, and signed out of Plow, with no
-    /// judge, none does.
-    @Test func theSamplesAreJudgedAgainstTheDraft() async {
+    /// The samples are judged by the gate as citing the message, against
+    /// the draft, once typing pauses, and sort into lanes, the rule winning.
+    /// A sample the gate couldn't judge gets no lane; a blank message asks
+    /// for nothing; signed out of Plow, with no judge, nothing is ruled.
+    @Test func theSamplesAreJudgedAgainstTheMessageAndTheDraft() async {
         let client = ScriptedClient { _ in nil }
         let flow = flow(client)
         flow.judgeDelay = .zero
+        let lanes = { flow.verdicts.map { $0?.lane } }
         await flow.loadRules()
-        #expect(flow.verdicts == [true, true, true, true, true] && flow.signedIn == true)
-        flow.draftRules = "Never post my tax return."
+        await waitUntil { client.tried.count == 5 && lanes() == [nil, .goesAhead, .goesAhead, .notAsked, .notAsked] }
+        flow.draftRules = "Never shop on Instacart."
         flow.draftChanged()
-        await waitUntil { client.tried.count == 5 && flow.verdicts == [true, true, nil, false, true] }
-        #expect(Set(client.tried) == ["Never post my tax return."])
+        await waitUntil { client.tried.count == 10 && lanes() == [nil, .forbidden, .goesAhead, .notAsked, .notAsked] }
+        #expect(Set(client.tried.suffix(5)) == ["Never shop on Instacart."])
+        flow.draftRules = ""
+        flow.sampleMessage = ""
+        flow.draftChanged()
+        await waitUntil { client.tried.count == 15 && lanes() == [nil, .notAsked, .notAsked, .notAsked, .notAsked] }
         client.signedOut = true
         await flow.loadRules()
         #expect(flow.signedIn == false && flow.verdicts == [nil, nil, nil, nil, nil])
-        #expect(client.tried.count == 5)
+        #expect(client.tried.count == 15)
     }
 
     /// Answered already: the box holds the answer, and Continue writes
@@ -381,10 +386,10 @@ final class ScriptedClient: LatchClient, @unchecked Sendable {
     private let drafts = Mutex<[String]>([])
     var tried: [String] { drafts.withLock { $0 } }
     /// A stand-in judge that can't judge a vault fill.
-    func rulesTry(draft: String, action: String) async throws -> Bool {
+    func rulesTry(draft: String, message: String?, action: String) async throws -> Ruling {
         drafts.withLock { $0.append(draft) }
         if action.contains("vault_fill") { throw LatchError.unreachable("no answer") }
-        return wordsDeny(draft: draft, action: action)
+        return wordsRuling(draft: draft, message: message, action: action)
     }
     /// What `--check-access` says of Full Disk Access.
     var access: String?

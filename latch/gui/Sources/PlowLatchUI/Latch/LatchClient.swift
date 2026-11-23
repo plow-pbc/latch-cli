@@ -24,10 +24,11 @@ nonisolated protocol LatchClient: Sendable {
     /// latch refuses with `stale_revision` and nothing changes. An empty
     /// text is saved too: nothing is denied, and the question is answered.
     func rulesSet(_ text: String, host: String?, revision: String?) async throws
-    /// `latch rules try --draft -`: whether `draft`, as this Mac's device
-    /// rule, would deny `action` (an action as the gatekeeper is shown it)
-    /// asked for by the owner. Judged here; nothing is saved or audited.
-    func rulesTry(draft: String, action: String) async throws -> Bool
+    /// `latch rules try --draft - [--message TEXT]`: how the gate would rule
+    /// on `action` (an action as the gatekeeper is shown it) with `draft` as
+    /// this Mac's device rule and, given `message`, as an agent's request
+    /// citing it. Judged here; nothing is saved or audited.
+    func rulesTry(draft: String, message: String?, action: String) async throws -> Ruling
     /// `latch audit suggest RECORD [--host NAME]`: the checked edit of a
     /// host's rule that would rule one of its judgments the other way.
     func auditSuggest(_ record: String, host: String?) async throws -> AuditSuggest
@@ -212,10 +213,11 @@ nonisolated struct LiveLatchClient: LatchClient {
         _ = try await run(["rules", "set", "--revision", revision ?? "none", "--file", "-"] + on(host), input: Data(text.utf8))
     }
 
-    func rulesTry(draft: String, action: String) async throws -> Bool {
-        let tried = try decode(RulesTry.self, try await run(["rules", "try", "--draft", "-", action], input: Data(draft.utf8)))
-        guard let verdict = tried.verdicts.first else { throw LatchError.unreachable("Latch returned an unreadable response.") }
-        return verdict.denied
+    func rulesTry(draft: String, message: String?, action: String) async throws -> Ruling {
+        let args = ["rules", "try", "--draft", "-"] + (message.map { ["--message", $0] } ?? []) + [action]
+        let tried = try decode(RulesTry.self, try await run(args, input: Data(draft.utf8)))
+        guard let ruling = tried.verdicts.first else { throw LatchError.unreachable("Latch returned an unreadable response.") }
+        return ruling
     }
 
     func auditSuggest(_ record: String, host: String?) async throws -> AuditSuggest {

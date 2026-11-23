@@ -54,7 +54,7 @@ nonisolated struct FakeLatchClient: LatchClient {
         Fixtures.keptCalls[id] ?? #"{"id": "\#(id)", "request": {"model": "typesafe/jev-1.14"}, "answer": null}"#
     }
     func rulesSet(_ text: String, host: String?, revision: String?) async throws {}
-    func rulesTry(draft: String, action: String) async throws -> Bool { wordsDeny(draft: draft, action: action) }
+    func rulesTry(draft: String, message: String?, action: String) async throws -> Ruling { wordsRuling(draft: draft, message: message, action: action) }
     /// What latch suggests for studio's records, as `audit suggest` checks
     /// them with the judge.
     func auditSuggest(_ record: String, host: String?) async throws -> AuditSuggest {
@@ -373,12 +373,13 @@ package enum SnapshotRunner {
             ("04-rules-first-run", .rules, Fixtures.stopped, Progress(), { await $0.loadRules() }),
             // An answer, judged live: the samples it denies are refused.
             ("04-rules-live", .rules, Fixtures.stopped, Progress(), {
-                $0.draftRules = "Never post my tax documents. Never touch my passwords."
-                $0.stage(signedIn: true, verdicts: [true, true, false, false, false])
+                $0.draftRules = "Never text anyone for me."
+                let ruled = { (denied: Bool, covered: Bool) in Ruling(denied: denied, covered: covered) }
+                $0.stage(signedIn: true, verdicts: [ruled(false, true), ruled(false, true), ruled(true, true), ruled(false, false), ruled(false, false)])
             }),
             // Signed out: no judge, so no marks.
             ("04-rules-signed-out", .rules, Fixtures.stopped, Progress(), {
-                $0.draftRules = "Never post my tax documents."
+                $0.draftRules = "Never text anyone for me."
                 $0.stage(signedIn: false, verdicts: [nil, nil, nil, nil, nil])
             }),
             // Answered on this Mac: read into the box.

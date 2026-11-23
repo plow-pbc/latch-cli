@@ -270,7 +270,7 @@ nonisolated struct SyntheticLatchClient: LatchClient {
         }
     }
     func rulesSet(_ text: String, host: String?, revision: String?) async throws {}
-    func rulesTry(draft: String, action: String) async throws -> Bool { wordsDeny(draft: draft, action: action) }
+    func rulesTry(draft: String, message: String?, action: String) async throws -> Ruling { wordsRuling(draft: draft, message: message, action: action) }
     func auditSuggest(_ record: String, host: String?) async throws -> AuditSuggest { try Fixtures.decode(#"{"suggestion":null}"#) }
     func vaultAdd(_ draft: VaultDraft, host: String?) async throws -> VaultList.Item { try await base.vaultAdd(draft, host: host) }
     func vaultEdit(_ item: String, revision: Int, _ draft: VaultDraft, host: String?) async throws -> VaultList.Item {
@@ -335,9 +335,10 @@ nonisolated struct SyntheticLatchClient: LatchClient {
 }
 #endif
 
-/// A stand-in judge for the app's doubles: a draft denies an action that
-/// names one of its longer words.
-nonisolated func wordsDeny(draft: String, action: String) -> Bool {
+/// A stand-in judge for the app's doubles: a draft denies, and a message
+/// asks for, an action that names one of its longer words.
+nonisolated func wordsRuling(draft: String, message: String?, action: String) -> Ruling {
     let action = action.lowercased()
-    return draft.lowercased().split { !$0.isLetter }.contains { $0.count >= 4 && action.contains($0) }
+    let names = { (text: String) in text.lowercased().split { !$0.isLetter }.contains { $0.count >= 4 && action.contains($0) } }
+    return Ruling(denied: names(draft), covered: message.map(names) ?? true)
 }
