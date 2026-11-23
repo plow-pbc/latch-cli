@@ -107,26 +107,6 @@ final class AppModel {
         }
     }
 
-    /// Setup's gatekeeper question, over the main window, while this Mac
-    /// hosts and its owner never answered it. Answered, even blank, the
-    /// device rule exists, and it's never asked again; put off, not until
-    /// the app opens again. A latch from before device rules can't answer
-    /// it, so it isn't asked there.
-    func askGatekeeperIfUnanswered() async {
-        guard !gatekeeperPutOff, let host = hosts.first(where: \.isThisMac), savedRule(host.name) == nil else { return }
-        await refreshRules(on: host)
-        guard sheet == nil, case .success(let show)? = summaries[host.name]?.rules, show.deviceRule == nil, !show.older else { return }
-        sheet = .gatekeeper(host)
-    }
-
-    private var gatekeeperPutOff = false
-
-    /// Not Now on the gatekeeper question: it goes, unanswered.
-    func putOffGatekeeper(_ host: HostEntry) {
-        gatekeeperPutOff = true
-        close(.gatekeeper(host))
-    }
-
     /// Settings opening: the account and its agents, each unless read in
     /// the last minute.
     func refreshAccountIfStale(now: Date = .now) async {
@@ -326,8 +306,6 @@ final class AppModel {
     func activated() async {
         await refreshAccount()
         await enter(route, refresh: true)
-        // Asked again until answered, if a read kept it from being asked.
-        await askGatekeeperIfUnanswered()
     }
 
     /// Marks screen entries (and a test build's timed hooks) for
@@ -985,20 +963,16 @@ final class AppModel {
     }
 
     /// Saves a draft over what it began from; it ends once saved, and stays
-    /// with why when not. With no draft, `answer` saves what's shown (the
-    /// gatekeeper question's Save, blank included).
-    func saveRuleDraft(_ host: String, answer: Bool = false) async {
-        guard !savingRules.contains(host), let entry = hosts.first(where: { $0.name == host }) else { return }
-        let draft = rulesDrafts[host]
-        guard answer || ruleChanged(host) else { return }
+    /// with why when not.
+    func saveRuleDraft(_ host: String) async {
+        guard !savingRules.contains(host), ruleChanged(host), let draft = rulesDrafts[host],
+              let entry = hosts.first(where: { $0.name == host }) else { return }
         savingRules.insert(host)
         defer { savingRules.remove(host) }
         do {
-            try await saveRules(draft?.text ?? savedRule(host)?.text ?? "", on: entry, revision: draft == nil ? savedRule(host)?.revision : draft?.base)
+            try await saveRules(draft.text, on: entry, revision: draft.base)
             rulesDrafts[host] = nil
             rulesErrors[host] = nil
-            // Answered: the question goes, whether or not the read after it worked.
-            if answer { close(.gatekeeper(entry)) }
         } catch {
             rulesErrors[host] = .from(error)
         }

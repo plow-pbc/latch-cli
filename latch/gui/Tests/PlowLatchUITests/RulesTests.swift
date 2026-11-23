@@ -8,8 +8,6 @@ final class RulesClient: LatchClient, @unchecked Sendable {
     let stateDir = "/s"
     var show = try! Fixtures.decode(Fixtures.studioRules) as RulesShow
     private(set) var sets: [(text: String, host: String?)] = []
-    /// `rules show` fails once a rule was set.
-    var readFailsAfterSet = false
 
     func localStatus() async throws -> LocalStatus { try Fixtures.decode(Fixtures.serving) }
     func accountStatus() async throws -> AccountStatus { try Fixtures.decode(Fixtures.studioHosts) }
@@ -17,8 +15,7 @@ final class RulesClient: LatchClient, @unchecked Sendable {
     func setupStatus() async throws -> SetupStatus { try Fixtures.decode(Fixtures.setup(on: [])) }
     func setupStatusCheckingAccess() async throws -> SetupStatus { try await setupStatus() }
     func rulesShow(host: String?) async throws -> RulesShow {
-        if readFailsAfterSet, !sets.isEmpty { throw LatchError.failed(LatchFailure(code: "state_busy", message: "busy")) }
-        return show
+        show
     }
     /// As `rules set --revision R` does: refused with `stale_revision`
     /// unless the rule is still at R (nil: none); an empty text is saved.
@@ -61,64 +58,17 @@ struct RulesTests {
         try await client.rulesSet("Answered on the laptop.", host: nil, revision: nil)
         // Activity read again: the draft still began from no rule.
         await app.enter(app.route, refresh: true)
-        await app.saveRuleDraft("studio", answer: true)
+        await app.saveRuleDraft("studio")
         #expect(client.sets.map(\.text) == ["Answered on the laptop."])
         #expect(app.rulesErrors["studio"]?.message == AppModel.changedElsewhere)
     }
 
-    // The gatekeeper question is asked while this Mac's rule was never
-    // set; a blank answer is saved, so it's never asked again.
-    @Test func aBlankAnswerIsSavedAndTheQuestionNeverAskedAgain() async throws {
-        let client = RulesClient()
-        client.show.deviceRule = nil
-        let app = try await app(client)
-        await app.askGatekeeperIfUnanswered()
-        let host = try #require(app.host)
-        #expect(app.sheet == .gatekeeper(host))
-        await app.saveRuleDraft("studio", answer: true)
-        #expect(client.sets.map(\.text) == [""])
-        #expect(app.savedRule("studio")?.text == "")
-        #expect(app.sheet == nil)
-        await app.askGatekeeperIfUnanswered()
-        #expect(app.sheet == nil)
-    }
-
-    // Saved, the question goes even when the read after the save fails.
-    @Test func anAnswerSavedClosesTheQuestionThoughTheReadAfterFails() async throws {
-        let client = RulesClient()
-        client.show.deviceRule = nil
-        let app = try await app(client)
-        await app.askGatekeeperIfUnanswered()
-        client.readFailsAfterSet = true
-        await app.saveRuleDraft("studio", answer: true)
-        #expect(client.sets.map(\.text) == [""])
-        #expect(app.sheet == nil && app.rulesErrors["studio"] == nil)
-    }
-
-    // A latch from before device rules says nothing of one: it can't
-    // answer the question, so the question isn't asked.
-    @Test func anOlderLatchIsNeverAskedTheQuestion() async throws {
-        let client = RulesClient()
-        client.show = try Fixtures.decode(#"{"agents":{},"rules":[],"host":"studio"}"#)
-        let app = try await app(client)
-        await app.askGatekeeperIfUnanswered()
-        #expect(app.sheet == nil)
-        guard case let .success(show)? = app.summaries["studio"]?.rules else { throw LatchError.unreachable("no rules read") }
-        let current: RulesShow = try Fixtures.decode(Fixtures.piRules)
-        #expect(show.older && !current.older)
-    }
-
-    // Not Now: the question goes unanswered, and isn't asked again on
-    // coming back to the app.
-    @Test func theQuestionPutOffIsNotAskedAgainOnComingBack() async throws {
-        let client = RulesClient()
-        client.show.deviceRule = nil
-        let app = try await app(client)
-        await app.askGatekeeperIfUnanswered()
-        let host = try #require(app.host)
-        app.putOffGatekeeper(host)
-        await app.activated()
-        #expect(app.sheet == nil && client.sets.isEmpty)
+    // A latch from before device rules says nothing of one, where a
+    // current latch says null when it was never set.
+    @Test func anOlderLatchIsToldFromOneNeverAnswered() throws {
+        let older: RulesShow = try Fixtures.decode(#"{"agents":{},"rules":[],"host":"studio"}"#)
+        let unanswered: RulesShow = try Fixtures.decode(Fixtures.piRules)
+        #expect(older.older && !unanswered.older && unanswered.deviceRule == nil)
     }
 
     @Test func aDraftSurvivesGoingToAnotherScreenAndHostAndBack() async throws {

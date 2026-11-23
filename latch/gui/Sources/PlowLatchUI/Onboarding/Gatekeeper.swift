@@ -1,14 +1,5 @@
 import SwiftUI
 
-/// The gatekeeper question's words, the same in setup and wherever else
-/// it's asked.
-enum GatekeeperCopy {
-    static let title = "Meet the Plow Gatekeeper"
-    static let lead = "Your agents act only on a message of yours they cite. The Plow Gatekeeper reads it on your Mac and lets through only what you asked for, so your agents get useful work done and nothing more."
-    static let question = "What should Plow Latch never allow on your Mac?"
-    static let blank = "Leave it blank to deny nothing. Change it any time at the top of Activity."
-}
-
 /// Setup's gatekeeper question: what agents must never do on this Mac,
 /// whatever a message says. Blank denies nothing; an answer, blank
 /// included, is saved, and never asked again.
@@ -17,17 +8,17 @@ struct RulesView: View {
 
     var body: some View {
         VStack(spacing: 18) {
-            Text(GatekeeperCopy.title)
+            Text("Meet the Plow Gatekeeper")
                 .font(.system(size: 34, weight: .semibold))
-            Text(GatekeeperCopy.lead)
+            Text("Your agents act only on a message of yours they cite. The Plow Gatekeeper reads it on your Mac and lets through only what you asked for, so your agents get useful work done and nothing more.")
                 .foregroundStyle(Brand.muted)
                 .frame(maxWidth: 440)
-            Text(GatekeeperCopy.question)
+            Text("What should Plow Latch never allow on your Mac?")
                 .font(.headline)
                 .padding(.top, 8)
             field
                 .disabled(flow.rulesUnreadable)
-            Text(GatekeeperCopy.blank)
+            Text("Leave it blank to deny nothing. Change it any time at the top of Activity.")
                 .font(.callout)
                 .foregroundStyle(Brand.muted)
             if let error = flow.rulesError {
@@ -69,6 +60,6 @@ struct RulesView: View {
                         .allowsHitTesting(false)
                 }
             }
-            .accessibilityLabel(GatekeeperCopy.question)
+            .accessibilityLabel("What should Plow Latch never allow on your Mac?")
     }
 }

@@ -350,7 +350,7 @@ final class Onboarding {
 
     /// Continue: saves the answer, blank included, unless it's the one
     /// already saved. One that couldn't be read isn't saved over: Continue
-    /// moves on, and the main window asks later.
+    /// moves on, and it's answered later at the top of Activity.
     func saveRules() async {
         guard rulesChanged, !rulesUnreadable else { return next() }
         let draft = draftRules.trimmingCharacters(in: .whitespacesAndNewlines)

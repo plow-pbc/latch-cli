@@ -3,11 +3,9 @@ import SwiftUI
 /// A host's device rule: what its agents are always denied, whatever a
 /// message of yours says, in your words. It grants nothing; blank denies
 /// nothing. Edited in place and saved only over what was there when
-/// editing began. `answering` is the gatekeeper question's: Save is always
-/// offered, so a blank answer is saved too, and Not Now takes Revert's place.
+/// editing began.
 struct DeviceRuleBox: View {
     var host: HostEntry
-    var answering = false
     @Environment(AppModel.self) private var app
 
     var body: some View {
@@ -33,8 +31,8 @@ struct DeviceRuleBox: View {
         return VStack(alignment: .trailing, spacing: 6) {
             TextEditor(text: Binding { draft?.text ?? app.savedRule(name)?.text ?? "" } set: { app.typeRule($0, on: name) })
                 .font(.body)
-                .frame(minHeight: answering ? 76 : 22, maxHeight: 120)
-                .fixedSize(horizontal: false, vertical: !answering)
+                .frame(minHeight: 22, maxHeight: 120)
+                .fixedSize(horizontal: false, vertical: true)
                 .scrollContentBackground(.hidden)
                 .padding(.horizontal, 6)
                 .padding(.vertical, 5)
@@ -57,41 +55,14 @@ struct DeviceRuleBox: View {
                     .foregroundStyle(.red)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            if answering || draft != nil {
+            if draft != nil {
                 HStack {
-                    // The question is never a trap: Not Now always closes it.
-                    if answering {
-                        Button("Not Now") { app.putOffGatekeeper(host) }.keyboardShortcut(.cancelAction)
-                    } else {
-                        Button("Revert") { Task { await app.revertRule(name) } }.disabled(saving)
-                    }
-                    Button(saving ? "Saving…" : "Save") { Task { await app.saveRuleDraft(name, answer: answering) } }
+                    Button("Revert") { Task { await app.revertRule(name) } }.disabled(saving)
+                    Button(saving ? "Saving…" : "Save") { Task { await app.saveRuleDraft(name) } }
                         .buttonStyle(.borderedProminent)
-                        .keyboardShortcut(answering ? .defaultAction : nil)
-                        .disabled(saving || !(answering || app.ruleChanged(name)))
+                        .disabled(saving || !app.ruleChanged(name))
                 }
             }
         }
-    }
-}
-
-/// Setup's gatekeeper question over the main window, for an owner of this
-/// Mac who never answered it.
-struct GatekeeperSheet: View {
-    var host: HostEntry
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(GatekeeperCopy.title).font(.title2.bold())
-            Text(GatekeeperCopy.lead)
-            Text(GatekeeperCopy.question).font(.headline)
-            Text(GatekeeperCopy.blank)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-            DeviceRuleBox(host: host, answering: true)
-        }
-        .fixedSize(horizontal: false, vertical: true)
-        .padding(24)
-        .frame(width: 480)
     }
 }

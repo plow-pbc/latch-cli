@@ -156,10 +156,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             app.leaveMainIfLoggedOut()
             await app.followStatus()
         })
-        tasks.append(Task { [app] in
-            await app.refreshAccount()
-            await app.askGatekeeperIfUnanswered()
-        })
+        tasks.append(Task { [app] in await app.refreshAccount() })
         tasks.append(Task { [app] in await app.followVault() })
         // A newer Latch, looked for now and while the window stays open.
         tasks.append(Task { [app] in

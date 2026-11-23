@@ -190,7 +190,7 @@ struct GatekeeperTests {
     }
 
     /// An answer that couldn't be read can't be saved over; Continue
-    /// still goes on, and the main window asks later.
+    /// still goes on, and it is answered later at the top of Activity.
     @Test func anUnreadAnswerCantBeSavedOver() async {
         let client = ScriptedClient { _ in nil }
         client.showFailure = LatchFailure(code: "state_busy", message: "the state folder is busy")

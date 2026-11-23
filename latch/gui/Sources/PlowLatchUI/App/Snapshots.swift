@@ -772,9 +772,8 @@ package enum SnapshotRunner {
             }
         }
         // The device rule: Activity headed by studio's, an unsaved change
-        // to it, pi-kitchen's never answered, sidecar on a latch from
-        // before device rules, and setup's gatekeeper question asked in
-        // the main window.
+        // to it, pi-kitchen's never answered, and sidecar on a latch from
+        // before device rules.
         for dark in [false, true] {
             let screens: [(String, String?, (AppModel) -> Void)] = [
                 ("16-device-rule-studio-activity", nil, { _ in }),
@@ -798,14 +797,6 @@ package enum SnapshotRunner {
                 _ = app.stage(.done, progress: full)
                 try await renderWindow(app, size: CGSize(width: 1180, height: 700), dark: dark,
                                        file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
-            }
-            let sheet = output.appending(path: "16-device-rule-gatekeeper-sheet-\(dark ? "dark" : "light").png")
-            if wanted(sheet) {
-                let app = AppModel(client: FakeLatchClient(), still: true)
-                app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
-                app.stage(summary: HostSummary(rules: .success(try Fixtures.decode(Fixtures.piRules))), for: "studio")
-                guard let studio = app.host else { throw LatchError.unreachable("no host to ask for") }
-                try await render(GatekeeperSheet(host: studio).environment(app), size: CGSize(width: 480, height: 400), dark: dark, file: sheet)
             }
         }
         // The Agents hub at 5 agents × 8 hosts, every one of its 40 rows,
