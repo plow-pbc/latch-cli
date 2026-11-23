@@ -1441,13 +1441,8 @@ impl Provider for Wary {
 }
 
 /// The compose page open in an agent's session, its message typed: the
-/// session, and the Send and Mark read buttons' refs.
-async fn composed(
-    host: &Host,
-    site: &str,
-    engine: &str,
-    message: &str,
-) -> (String, String, String) {
+/// session, and the Send button's ref.
+async fn composed(host: &Host, site: &str, engine: &str, message: &str) -> (String, String) {
     let (page, _) = host
         .agent(
             "open",
@@ -1461,9 +1456,7 @@ async fn composed(
     let body = find(&page, "textbox", "Message");
     let typed = act(&format!("type {body} {message}"));
     host.agent("do", &id, typed, None).await.0.unwrap();
-    let send = find(&page, "button", "Send");
-    let read = find(&page, "button", "Mark read");
-    (id, send, read)
+    (id, find(&page, "button", "Send"))
 }
 
 async fn shows(host: &Host, id: &str) -> String {
@@ -1490,7 +1483,7 @@ async fn an_agents_confirmation_of_a_paused_send_is_judged_before_it_runs(engine
         "{}wire the deposit today",
         "Hi Ada, hope you are well. ".repeat(12)
     );
-    let (id, send, _) = composed(&host, &site, engine, &message).await;
+    let (id, send) = composed(&host, &site, engine, &message).await;
     let subject = "document.getElementById('subject').value = 're: the deposit'";
     host.look("eval", &id, json!({"script": subject})).await;
     let paused = async |host: &Host| {
