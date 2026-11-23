@@ -2,15 +2,18 @@
 //! host's device rule and agent map. With another `--host` they go over
 //! latch's connection, as the `rules` operation; a failed call never falls
 //! back to a local file. Without it, or naming this peer, they act
-//! locally, audited in its log as the host would.
+//! locally, audited in its log as the host would. `rules try` judges on
+//! this machine only.
 
 use std::io::Read;
 use std::path::Path;
 use std::process::Command;
 
+use serde_json::value::RawValue;
 use serde_json::{Value, json};
 
-use super::owner;
+use super::swarm::SwarmReader;
+use super::{Gatekeeper, owner};
 use crate::audit::{self, AuditLog};
 use crate::cli::{RulesArgs, RulesCommand};
 use crate::dial::{self, ANSWER_WITHIN};
@@ -26,6 +29,7 @@ pub async fn run(state: &StateDir, args: RulesArgs) -> Result<Value, Failure> {
         | RulesCommand::Edit { scope }
         | RulesCommand::Clear { scope, .. }
         | RulesCommand::Show { scope } => scope,
+        RulesCommand::Try { draft, actions } => return preview(state, draft, actions).await,
     };
     // `--host default` read once: an edit's save goes where its show went.
     let target = Target {
@@ -83,7 +87,31 @@ pub async fn run(state: &StateDir, args: RulesArgs) -> Result<Value, Failure> {
             target.call(args).await
         }
         RulesCommand::Show { .. } => target.call(json!({"command": "show"})).await,
+        RulesCommand::Try { .. } => unreachable!("previewed above"),
     }
+}
+
+/// `latch rules try`: whether the draft denies each action, judged on
+/// this machine as the owner's own call.
+async fn preview(state: &StateDir, draft: &Path, actions: &[String]) -> Result<Value, Failure> {
+    let rule = read_file(draft)?;
+    let provider = Gatekeeper::provider_for_host(&state.path)
+        .map_err(|why| Failure::new(code::not_logged_in, why))?;
+    // The owner's judgment reads no thread.
+    let keeper = Gatekeeper::new(provider, Box::new(SwarmReader::new(&state.path)), &state.path);
+    let mut verdicts = Vec::new();
+    for action in actions {
+        let named = |mut failure: Failure| {
+            failure.message = format!("{action}: {}", failure.message);
+            failure
+        };
+        let raw = RawValue::from_string(action.clone()).map_err(|err| {
+            named(Failure::new(code::bad_arguments, format!("not a JSON action: {err}")))
+        })?;
+        let denied = keeper.preview(&rule, &raw).await.map_err(named)?;
+        verdicts.push(json!({"denied": denied}));
+    }
+    Ok(json!({"verdicts": verdicts}))
 }
 
 /// `latch agents map AGENT SWARM_ID`: maps an agent to its Swarm account

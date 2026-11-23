@@ -422,6 +422,39 @@ async fn reads_run_with_no_citation_no_rule_and_no_model() {
     assert_eq!(host.judge.calls(), 0);
 }
 
+/// A draft is judged as the owner's call against the draft, not the saved
+/// rule: a read and a blank draft ask no model, an unknown operation is
+/// refused.
+#[tokio::test]
+async fn a_draft_preview_asks_only_whether_the_draft_denies_it() {
+    let host = host(Judge::new(by_words), Err("never read".into()));
+    host.deny("Never touch ~/Finance.");
+    let read = json!({"operation": "file_get", "path": "~/Finance/taxes.pdf"});
+    let save = json!({"operation": "file_put", "path": "~/Finance/taxes.pdf"});
+    for (draft, action, denied) in [
+        ("  ", &save, false),
+        ("Never touch ~/Finance.", &read, false),
+        ("Never touch ~/Finance.", &save, true),
+        ("Never email anyone.", &save, false),
+    ] {
+        let action = serde_json::value::to_raw_value(action).unwrap();
+        assert_eq!(
+            host.keeper.preview(draft, &action).await.unwrap(),
+            denied,
+            "{draft} / {action}"
+        );
+    }
+    assert_eq!(host.judge.calls(), 2);
+    let state = host.judge.state();
+    assert_eq!(state["device_rule"], "Never email anyone.");
+    assert!(state["cited_message"].is_null());
+    let unknown = serde_json::value::to_raw_value(&json!({"operation": "teleport"})).unwrap();
+    let refused = host.keeper.preview("Never touch ~/Finance.", &unknown).await;
+    assert_eq!(refused.unwrap_err().details["reason"], "unknown_op");
+    assert_eq!(host.judge.calls(), 2);
+    assert!(host.threads.reads.lock().unwrap().is_empty());
+}
+
 #[test]
 fn every_operation_is_classified() {
     let class = |action: Value| classify(&action);

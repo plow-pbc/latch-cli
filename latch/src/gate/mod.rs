@@ -260,6 +260,29 @@ impl Gatekeeper {
         Judgment { verdict, gate }
     }
 
+    /// Whether `rule`, a draft device rule, denies the owner's `action`:
+    /// the owner's judgment against the draft instead of the saved rule,
+    /// recording nothing. A read and a blank draft ask no model.
+    pub async fn preview(&self, rule: &str, action: &RawValue) -> Result<bool, Failure> {
+        let shown: Value = serde_json::from_str(action.get()).expect("the action is JSON");
+        match classify(&shown) {
+            Class::Free => return Ok(false),
+            Class::Unknown => return Err(unknown_op()),
+            Class::Intent if rule.trim().is_empty() => return Ok(false),
+            Class::Intent => {}
+        }
+        let now = jiff::Zoned::now();
+        let clock = now.strftime("%a %Y-%m-%d %H:%M %Z").to_string();
+        let asked = Asked {
+            rule: Some(rule),
+            intent: None,
+        };
+        let p = self
+            .ask(&asked, now.timestamp(), &clock, action, &mut json!({}))
+            .await?;
+        Ok(verdict(p).is_err())
+    }
+
     async fn decide(
         &self,
         caller: Caller<'_>,
@@ -272,12 +295,7 @@ impl Gatekeeper {
         gate["class"] = json!(class.word());
         match class {
             Class::Free => return Ok(()),
-            Class::Unknown => {
-                return Err(denied(
-                    "unknown_op",
-                    "The gatekeeper does not know this operation, so it never runs.".into(),
-                ));
-            }
+            Class::Unknown => return Err(unknown_op()),
             Class::Intent => {}
         }
         let rule = self.store.deny().map_err(|why| {
@@ -522,6 +540,13 @@ fn verdict(p: P) -> Result<(), Failure> {
         ));
     }
     Ok(())
+}
+
+fn unknown_op() -> Failure {
+    denied(
+        "unknown_op",
+        "The gatekeeper does not know this operation, so it never runs.".into(),
+    )
 }
 
 fn denied(reason: &str, message: String) -> Failure {

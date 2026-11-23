@@ -1305,6 +1305,26 @@ const ENTRIES: &[Entry] = &[
         examples: &[ex("Show the device rule", &["rules", "show"])],
     },
     Entry {
+        id: "rules.try",
+        runs_on: |_| RunsOn::Local,
+        output: "`verdicts`: for each ACTION_JSON in order, `denied`: whether the draft device rule would deny it if the owner asked for it on this machine. A read is never denied and a blank draft denies nothing, with no model asked; an action latch doesn't know is unknown_op, naming it.",
+        effect: Repeatable(
+            "asks the decision model once for each action it judges, billed to your Plow balance like a real judgment; nothing runs, the draft is never saved, and nothing is audited",
+        ),
+        owner_only: true,
+        connector: None,
+        examples: &[ex(
+            "Would a draft read from stdin deny saving a file into ~/Finance?",
+            &[
+                "rules",
+                "try",
+                "--draft",
+                "-",
+                r#"{"operation":"file_put","path":"~/Finance/receipt.pdf","size":48213,"file_name":"receipt.pdf"}"#,
+            ],
+        )],
+    },
+    Entry {
         id: "plugins.enable",
         runs_on: |_| RunsOn::Local,
         output: "The connector's `state`, enabled, and what its setup found. A setup that fails leaves it needs_setup and says what to do. When some connected accounts need signing in again, `enable google` still succeeds and names them in `needs_sign_in`. When none works (google_needs_sign_in, with their `accounts`), it offers a sign-in link as below and waits until an account works: one of them signed in again, or another one connected. When no Google account is connected in Plow, `enable google` gets a single-use sign-in link from Plow, `sign_in_url` with its `expires_at` (a credential until used: latch never logs or audits it; `connect_url` is Plow's public Connections page). At a terminal it shows the link and a QR code and waits up to 5 minutes for an account Plow did not have, renewing the link if it expires unopened, then enables Google; otherwise it fails with google_not_connected carrying the link: sign in, then run it again. --add-account does the same with Google already connected: it enables Google, then offers a link to add another account; without a terminal or --events the answer is the enable result plus `sign_in_url`, which confirms the enable and the link, not that another account was added. --events (any connector): JSON lines `hello`, a `link` (`url`, `expires_at`) for each link, then one `result` or `error`, with the same wait. sign_in_timeout (exit 1): no new account was seen in time (or, for a sign-in again, still no account works), counting one last look at the deadline; the person may still be signing in or chose an account Plow already had. With --add-account, Google was enabled before the wait. Closing stdin (a pipe), Ctrl-C, SIGTERM or a gone stdout reader stops the wait: before the final enable is sent that is google_connect_cancelled (exit 1; with --add-account, Google was enabled before the wait), after it outcome_unknown (exit 5). Only a `result` confirms the enable. The enable after the wait is a fresh one, so a `plugins disable google` made during the wait does not hold.",

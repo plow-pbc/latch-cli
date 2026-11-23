@@ -993,6 +993,16 @@ pub enum RulesCommand {
         #[command(flatten)]
         scope: RulesScope,
     },
+    /// Whether a draft device rule would deny each ACTION_JSON, an action
+    /// as the gatekeeper is shown it, if you asked for it on this Mac;
+    /// nothing is saved or audited
+    Try {
+        /// The draft: the text of F (- reads stdin); a blank one denies nothing
+        #[arg(long, value_name = "F")]
+        draft: PathBuf,
+        #[arg(value_name = "ACTION_JSON", required = true)]
+        actions: Vec<String>,
+    },
 }
 
 #[derive(Args, Debug)]
