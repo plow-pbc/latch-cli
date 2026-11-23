@@ -449,7 +449,10 @@ async fn a_draft_preview_asks_only_whether_the_draft_denies_it() {
     assert_eq!(state["device_rule"], "Never email anyone.");
     assert!(state["cited_message"].is_null());
     let unknown = serde_json::value::to_raw_value(&json!({"operation": "teleport"})).unwrap();
-    let refused = host.keeper.preview("Never touch ~/Finance.", &unknown).await;
+    let refused = host
+        .keeper
+        .preview("Never touch ~/Finance.", &unknown)
+        .await;
     assert_eq!(refused.unwrap_err().details["reason"], "unknown_op");
     assert_eq!(host.judge.calls(), 2);
     assert!(host.threads.reads.lock().unwrap().is_empty());

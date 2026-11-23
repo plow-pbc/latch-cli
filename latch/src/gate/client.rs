@@ -95,20 +95,35 @@ pub async fn run(state: &StateDir, args: RulesArgs) -> Result<Value, Failure> {
 /// this machine as the owner's own call.
 async fn preview(state: &StateDir, draft: &Path, actions: &[String]) -> Result<Value, Failure> {
     let rule = read_file(draft)?;
+    let named = |action: &str, mut failure: Failure| {
+        failure.message = format!("{action}: {}", failure.message);
+        failure
+    };
+    let raws = actions
+        .iter()
+        .map(|action| {
+            RawValue::from_string(action.clone()).map_err(|err| {
+                named(
+                    action,
+                    Failure::new(code::bad_arguments, format!("not a JSON action: {err}")),
+                )
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let provider = Gatekeeper::provider_for_host(&state.path)
         .map_err(|why| Failure::new(code::not_logged_in, why))?;
     // The owner's judgment reads no thread.
-    let keeper = Gatekeeper::new(provider, Box::new(SwarmReader::new(&state.path)), &state.path);
+    let keeper = Gatekeeper::new(
+        provider,
+        Box::new(SwarmReader::new(&state.path)),
+        &state.path,
+    );
     let mut verdicts = Vec::new();
-    for action in actions {
-        let named = |mut failure: Failure| {
-            failure.message = format!("{action}: {}", failure.message);
-            failure
-        };
-        let raw = RawValue::from_string(action.clone()).map_err(|err| {
-            named(Failure::new(code::bad_arguments, format!("not a JSON action: {err}")))
-        })?;
-        let denied = keeper.preview(&rule, &raw).await.map_err(named)?;
+    for raw in &raws {
+        let denied = keeper
+            .preview(&rule, raw)
+            .await
+            .map_err(|failure| named(raw.get(), failure))?;
         verdicts.push(json!({"denied": denied}));
     }
     Ok(json!({"verdicts": verdicts}))
