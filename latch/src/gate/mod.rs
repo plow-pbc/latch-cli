@@ -652,24 +652,15 @@ impl Gatekeeper {
         if let Some(chat) = says.1 {
             layers["chat"]["says"] = json!(chat.word());
         }
-        // The probabilities behind the verdict: the layer that decided it,
-        // the rules layer first.
-        let decided_by = match says {
-            (Says::Veto, _) => "rules",
-            (_, Some(Says::Veto)) => match whole_will {
-                Some((Says::Veto, _)) => "chat",
-                _ => "will",
-            },
-            (Says::Allow, _) => "rules",
-            (_, Some(Says::Allow)) => "chat",
-            _ => "rules",
-        };
+        let decided_by = decided_by(says, chat_p);
         gate["decided_by"] = json!(decided_by);
         gate["p"] = layers[decided_by]["p"].clone();
         gate["layers"] = layers;
         let read = ChatRead {
             chat: gate["chat"].as_str().unwrap_or_default(),
             owner_messages: gate["owner_messages"].as_array().map_or(&[], Vec::as_slice),
+            unsure_stop: decided_by == "chat"
+                && chat_p.is_some_and(|(whole, _)| whole.forbidden < whole.not_covered),
         };
         agent_verdict(says.0, says.1.map(|chat| (chat, read)))
     }
@@ -847,6 +838,24 @@ impl Says {
     }
 }
 
+/// The layer whose probabilities are behind an agent's verdict, the rules
+/// layer first. In the chat: a plain veto, the whole chat's before the
+/// owner's-messages judge's, then the whole chat's unsure stop; or the
+/// owner's-messages judge when it alone held back the whole chat's allow.
+fn decided_by(says: (Says, Option<Says>), chat: Option<(P, P)>) -> &'static str {
+    let judges = chat.map(|(whole, will)| (whole.chat_says(), whole.says(), will.says()));
+    match (says, judges) {
+        ((Says::Veto, _), _) => "rules",
+        ((_, Some(Says::Veto)), Some((_, Says::Veto, _))) => "chat",
+        ((_, Some(Says::Veto)), Some((_, _, Says::Veto))) => "will",
+        ((_, Some(Says::Veto)), _) => "chat",
+        ((Says::Allow, _), _) => "rules",
+        ((_, Some(Says::Allow)), _) => "chat",
+        ((_, Some(Says::Neither)), Some((Says::Allow, _, will))) if will != Says::Allow => "will",
+        _ => "rules",
+    }
+}
+
 /// How the owner sees and changes the rules that judged their own call.
 const OWNER_RULES: &str = "See them with `latch rules show` and change them with `latch rules edit` (with `--host NAME` from another machine), then retry.";
 
@@ -856,7 +865,7 @@ fn rule(owner: bool) -> &'static str {
     if owner {
         "refused when forbidden >= within instructions"
     } else {
-        "refused when a layer forbids; else allowed when a layer is within instructions >= 0.50"
+        "refused when a layer forbids; else allowed when the rules layer, or both chat judges (the whole chat and the owner's messages), are within instructions >= 0.50"
     }
 }
 
@@ -874,10 +883,15 @@ fn owner_verdict(p: P) -> Result<(), Failure> {
 }
 
 /// The chat an agent's chat layer read, as the record names it: its id,
-/// and the owner's messages among those the judge was shown.
+/// and the owner's messages among those the judge was shown. `unsure_stop`
+/// marks the whole chat's veto at `CHAT_VETO_P`, with FORBIDDEN still
+/// below NOT_COVERED, deciding the verdict, so no judge vetoed plainly: an
+/// unsure stop, most often an action that differs from what the owner
+/// asked. The judge names no owner message behind it.
 struct ChatRead<'a> {
     chat: &'a str,
     owner_messages: &'a [Value],
+    unsure_stop: bool,
 }
 
 /// An agent's verdict from its layers: the rules layer, and the chat layer
@@ -887,6 +901,21 @@ struct ChatRead<'a> {
 /// owner's OK has to go: latch never asks the owner itself.
 fn agent_verdict(rules: Says, chat: Option<(Says, ChatRead)>) -> Result<(), Failure> {
     let says = [Some(rules), chat.as_ref().map(|(says, _)| *says)];
+    if let Some((Says::Veto, read)) = &chat
+        && rules != Says::Veto
+        && read.unsure_stop
+    {
+        let mut failure = denied(
+            "not_as_asked",
+            format!(
+                "The gatekeeper stopped this action as it is now without finding a plain no from the owner: most likely it differs from what the owner last asked in Plow chat {} (another item, card, amount, recipient or time), or they never asked for it. Read their latest messages there. If they asked for it differently, change the action to match exactly and retry; otherwise {NO_PROMPT} ask them there, saying exactly what you will do, and retry once they agree. Refused again, stop and tell them.",
+                read.chat
+            ),
+        );
+        failure.details["chat"] = json!(read.chat);
+        failure.details["owner_messages"] = json!(read.owner_messages);
+        return Err(failure);
+    }
     if says.contains(&Some(Says::Veto)) {
         return Err(denied(
             "owner_said_no",

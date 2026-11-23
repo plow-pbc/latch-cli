@@ -19,7 +19,7 @@
 //! is started and the vault is never opened. The site's own judgment and
 //! the host's checks on the fill are not previewed.
 //!
-//! A refusal is a verdict, not an error: `not_covered`, `owner_said_no`,
+//! A refusal is a verdict, not an error: `not_covered`, `not_as_asked`, `owner_said_no`,
 //! or `host_refused` for a refusal the host makes without asking the judge
 //! (`--deny-exec`, a connector that is off, a path it never lets a worker
 //! use). A preview runs nothing, so it is not audited and not shown on the

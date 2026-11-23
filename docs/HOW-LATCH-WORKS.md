@@ -139,7 +139,7 @@ login.
 |---|---|---|
 | What the gatekeeper reads | Your request, plus the host's rules. | The built-in policy and your rules, without chat. If there is a chat, two parallel judgments also read it: the whole conversation, and only your own messages with the message each answers. Both see the same rules. |
 | Allowed when | The rules don't forbid it. It's refused only when the gatekeeper finds "forbidden" at least as likely as "covered". | No judgment vetoes. The rules/defaults allow it, or both chat judgments allow it with an actual message from you in the window. Each allow needs at least 50% confidence. |
-| When refused | `gatekeeper_denied`, reason `owner_said_no` (exit 4). Change the rules to go ahead. | `gatekeeper_denied` (exit 4). `not_covered`: ask the owner in chat, saying exactly what you'll do, then retry. `owner_said_no`: don't retry unless the owner changes their mind. |
+| When refused | `gatekeeper_denied`, reason `owner_said_no` (exit 4). Change the rules to go ahead. | `gatekeeper_denied` (exit 4). `not_covered`: ask the owner in chat, saying exactly what you'll do, then retry. `not_as_asked`: the action differs from what the owner last asked; make it match, then retry. `owner_said_no`: don't retry unless the owner changes their mind. |
 
 - **Everyday work needs no request.** Agents may look things up in your
   calendar, email, messages, contacts, files and the web, including opening
