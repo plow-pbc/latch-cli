@@ -1,23 +1,35 @@
 import SwiftUI
 
-/// The gatekeeper question: what agents must never do on this Mac, whatever
-/// a message says. Blank denies nothing; an answer, blank included, is
-/// saved, and never asked again.
+/// The gatekeeper question's words, the same in setup and wherever else
+/// it's asked.
+enum GatekeeperCopy {
+    static let title = "Meet the Plow Gatekeeper"
+    static let lead = "Your agents act only on a message of yours they cite. The Plow Gatekeeper reads it on your Mac and lets through only what you asked for, so your agents get useful work done and nothing more."
+    static let question = "What should Plow Latch never allow on your Mac?"
+    static let blank = "Leave it blank to deny nothing. Change it any time at the top of Activity."
+}
+
+/// Setup's gatekeeper question: what agents must never do on this Mac,
+/// whatever a message says. Blank denies nothing; an answer, blank
+/// included, is saved, and never asked again.
 struct RulesView: View {
     @Bindable var flow: Onboarding
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 22) {
-            ScreenHeader(title: "Meet the Gatekeeper.",
-                         lead: "Your agents act only on a message of yours they cite. The gatekeeper reads that message on this Mac and lets through only what you asked for. An agent quoting you can't give permission.")
-            VStack(alignment: .leading, spacing: 10) {
-                Text("What should agents never do on this Mac, whatever a message says?")
-                    .font(.headline)
-                field
-                    .disabled(flow.rulesUnreadable)
-                Text("Leave it blank to deny nothing. Change it any time at the top of Activity.")
-                    .foregroundStyle(Brand.muted)
-            }
+        VStack(spacing: 18) {
+            Text(GatekeeperCopy.title)
+                .font(.system(size: 34, weight: .semibold))
+            Text(GatekeeperCopy.lead)
+                .foregroundStyle(Brand.muted)
+                .frame(maxWidth: 440)
+            Text(GatekeeperCopy.question)
+                .font(.headline)
+                .padding(.top, 8)
+            field
+                .disabled(flow.rulesUnreadable)
+            Text(GatekeeperCopy.blank)
+                .font(.callout)
+                .foregroundStyle(Brand.muted)
             if let error = flow.rulesError {
                 ErrorText(error: error, host: ErrorCopy.thisMac).foregroundStyle(Brand.clay).font(.callout)
             }
@@ -30,8 +42,9 @@ struct RulesView: View {
             }
             Spacer(minLength: 0)
         }
+        .multilineTextAlignment(.center)
         .padding(.horizontal, 48)
-        .padding(.top, 48)
+        .padding(.top, 56)
         .task { if !flow.app.still { await flow.loadRules() } }
     }
 
@@ -39,9 +52,10 @@ struct RulesView: View {
         TextEditor(text: $flow.draftRules)
             .font(.system(size: 13.5))
             .lineSpacing(3)
+            .multilineTextAlignment(.leading)
             .scrollContentBackground(.hidden)
             .padding(8)
-            .frame(height: 110)
+            .frame(height: 76)
             .writingToolsBehavior(.disabled)
             .background(Brand.surface, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(Brand.fieldBorder))
@@ -55,6 +69,6 @@ struct RulesView: View {
                         .allowsHitTesting(false)
                 }
             }
-            .accessibilityLabel("What agents must never do on this Mac")
+            .accessibilityLabel(GatekeeperCopy.question)
     }
 }

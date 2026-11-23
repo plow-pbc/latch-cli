@@ -6,7 +6,7 @@ enum Step: String, CaseIterable, Codable {
     case welcome, login, privacy, rules, access, start, done
 
     /// The screens a person may skip.
-    var skippable: Bool { [.rules, .access].contains(self) }
+    var skippable: Bool { self == .access }
 }
 
 /// How a person left a screen.

@@ -95,6 +95,32 @@ struct RulesTests {
         #expect(app.sheet == nil && app.rulesErrors["studio"] == nil)
     }
 
+    // A latch from before device rules says nothing of one: it can't
+    // answer the question, so the question isn't asked.
+    @Test func anOlderLatchIsNeverAskedTheQuestion() async throws {
+        let client = RulesClient()
+        client.show = try Fixtures.decode(#"{"agents":{},"rules":[],"host":"studio"}"#)
+        let app = try await app(client)
+        await app.askGatekeeperIfUnanswered()
+        #expect(app.sheet == nil)
+        guard case let .success(show)? = app.summaries["studio"]?.rules else { throw LatchError.unreachable("no rules read") }
+        let current: RulesShow = try Fixtures.decode(Fixtures.piRules)
+        #expect(show.older && !current.older)
+    }
+
+    // Not Now: the question goes unanswered, and isn't asked again on
+    // coming back to the app.
+    @Test func theQuestionPutOffIsNotAskedAgainOnComingBack() async throws {
+        let client = RulesClient()
+        client.show.deviceRule = nil
+        let app = try await app(client)
+        await app.askGatekeeperIfUnanswered()
+        let host = try #require(app.host)
+        app.putOffGatekeeper(host)
+        await app.activated()
+        #expect(app.sheet == nil && client.sets.isEmpty)
+    }
+
     @Test func aDraftSurvivesGoingToAnotherScreenAndHostAndBack() async throws {
         let client = RulesClient()
         let app = try await app(client)

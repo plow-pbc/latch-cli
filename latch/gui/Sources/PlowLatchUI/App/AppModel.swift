@@ -107,15 +107,24 @@ final class AppModel {
         }
     }
 
-    /// The gatekeeper question, over the main window, while this Mac hosts
-    /// and its owner never answered it: on updating from a latch whose
-    /// rules granted (a first run answers it while setting up). Answered,
-    /// even blank, the device rule exists, and it's never asked again.
+    /// Setup's gatekeeper question, over the main window, while this Mac
+    /// hosts and its owner never answered it. Answered, even blank, the
+    /// device rule exists, and it's never asked again; put off, not until
+    /// the app opens again. A latch from before device rules can't answer
+    /// it, so it isn't asked there.
     func askGatekeeperIfUnanswered() async {
-        guard let host = hosts.first(where: \.isThisMac), savedRule(host.name) == nil else { return }
+        guard !gatekeeperPutOff, let host = hosts.first(where: \.isThisMac), savedRule(host.name) == nil else { return }
         await refreshRules(on: host)
-        guard sheet == nil, case .success(let show)? = summaries[host.name]?.rules, show.deviceRule == nil else { return }
+        guard sheet == nil, case .success(let show)? = summaries[host.name]?.rules, show.deviceRule == nil, !show.older else { return }
         sheet = .gatekeeper(host)
+    }
+
+    private var gatekeeperPutOff = false
+
+    /// Not Now on the gatekeeper question: it goes, unanswered.
+    func putOffGatekeeper(_ host: HostEntry) {
+        gatekeeperPutOff = true
+        close(.gatekeeper(host))
     }
 
     /// Settings opening: the account and its agents, each unless read in

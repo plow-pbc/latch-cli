@@ -27,10 +27,10 @@ enum ActivityFilter: String, CaseIterable, Identifiable {
     }
 }
 
-/// Activity's heading, the host's device rule under it, then its scope bar:
-/// the outcome, the agent asked for (a click removes it) and Show
-/// Connections and Reads. Too narrow for one
-/// line, they stack, and the outcome's segments narrow to fit.
+/// Activity's heading: the gatekeeper band with the host's device rule,
+/// then its scope bar: the outcome, the agent asked for (a click removes
+/// it) and Show Connections and Reads. Too narrow for one line, they
+/// stack, and the outcome's segments narrow to fit.
 struct ActivityHeading: View {
     var shown: ActivityShown
     @Environment(AppModel.self) private var app
@@ -41,33 +41,52 @@ struct ActivityHeading: View {
             ForEach(ActivityFilter.allCases) { Text($0.rawValue).tag($0) }
         }
         .pickerStyle(.segmented)
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("Activity").font(.title2.bold())
-                Spacer()
-                Toggle("Show Connections and Reads", systemImage: "point.3.connected.trianglepath.dotted", isOn: $app.showConnections)
-                    .toggleStyle(.button)
-                    .labelStyle(.iconOnly)
-                    .help("Also show when callers connected, and your own reads (rules, vault, status, activity)")
-            }
+        let connections = Toggle("Show Connections and Reads", systemImage: "point.3.connected.trianglepath.dotted", isOn: $app.showConnections)
+            .toggleStyle(.button)
+            .labelStyle(.iconOnly)
+            .help("Also show when callers connected, and your own reads (rules, vault, status, activity)")
+        VStack(alignment: .leading, spacing: 0) {
             if let host = shown.host {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Always denied on \(host.name)").font(.headline)
-                    Text("Agents act only on a message of yours they cite. What you name here is refused whatever a message says.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                    DeviceRuleBox(host: host)
-                }
+                gatekeeper(host)
+                Divider()
             }
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 12) {
                     outcome.fixedSize()
                     agentFilter
+                    Spacer()
+                    connections
                 }
                 VStack(alignment: .leading, spacing: 8) {
-                    outcome
+                    HStack { outcome; connections }
                     agentFilter
                 }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+        }
+    }
+
+    /// The band heading Activity: the gatekeeper, and what it always
+    /// denies on this host, edited in place.
+    private func gatekeeper(_ host: HostEntry) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Image(systemName: "checkmark.shield")
+                    .foregroundStyle(.green)
+                    .frame(width: 26, height: 26)
+                    .background(.green.opacity(0.12), in: RoundedRectangle(cornerRadius: 7))
+                Text("Gatekeeper").font(.headline)
+                Text("Agents act only on a message of yours they cite.")
+                    .foregroundStyle(.secondary)
+            }
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                Text("ALWAYS DENIED")
+                    .font(.caption.monospaced())
+                    .kerning(1)
+                    .foregroundStyle(.secondary)
+                    .fixedSize()
+                DeviceRuleBox(host: host)
             }
         }
         .padding(.horizontal, 16)

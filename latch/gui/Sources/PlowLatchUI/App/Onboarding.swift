@@ -175,7 +175,7 @@ final class Onboarding {
         switch step {
         case .welcome: "Get started"
         case .login, .privacy: "Continue"
-        case .rules: savingRules ? "Saving…" : rulesChanged ? "Save" : "Continue"
+        case .rules: savingRules ? "Saving…" : "Continue"
         case .access: accessDone || accessFailed ? "Continue" : accessGranted ? "Turn on" : "Open System Settings"
         case .start: starting ? "Starting…" : runInBackground && app.status?.thisMachine.hosting.ready != true ? "Start Latch" : "Continue"
         case .done: textAgent.map { "Text \($0.name)" } ?? "Open Latch"
@@ -185,7 +185,7 @@ final class Onboarding {
     var primaryEnabled: Bool {
         switch step {
         case .login: verified
-        case .rules: !savingRules && !rulesUnreadable
+        case .rules: !savingRules
         // Continue never skips: until Google is on too, Skip for now does that.
         case .access: accessDone || accessFailed ? google == .connected : !waitingForAccess
         case .start: !starting
@@ -242,8 +242,6 @@ final class Onboarding {
     /// A step already set up shows Continue alone, not Skip for now.
     var stepDone: Bool {
         switch step {
-        // Skipped, the question is asked again in the main window.
-        case .rules: savedRules != nil && !rulesChanged
         case .access: accessDone && google == .connected
         default: false
         }
@@ -351,10 +349,10 @@ final class Onboarding {
     }
 
     /// Continue: saves the answer, blank included, unless it's the one
-    /// already saved.
+    /// already saved. One that couldn't be read isn't saved over: Continue
+    /// moves on, and the main window asks later.
     func saveRules() async {
-        guard !rulesUnreadable else { return }
-        guard rulesChanged else { return next() }
+        guard rulesChanged, !rulesUnreadable else { return next() }
         let draft = draftRules.trimmingCharacters(in: .whitespacesAndNewlines)
         savingRules = true
         defer { savingRules = false }

@@ -174,6 +174,20 @@ nonisolated struct RulesShow: Decodable, Equatable {
     }
     var deviceRule: Rule?
     var denyExec: DenyExec?
+    /// The host runs a latch from before device rules: its answer has no
+    /// `device_rule` at all (a current one says null when never set).
+    var older = false
+}
+
+nonisolated extension RulesShow {
+    private enum Keys: String, CodingKey { case deviceRule, denyExec }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Keys.self)
+        deviceRule = try c.decodeIfPresent(Rule.self, forKey: .deviceRule)
+        denyExec = try c.decodeIfPresent(DenyExec.self, forKey: .denyExec)
+        older = !c.contains(.deviceRule)
+    }
 }
 
 /// `latch agents [--host NAME]`: the account's agents and, with a host,

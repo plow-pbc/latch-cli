@@ -124,13 +124,13 @@ struct GatekeeperTests {
         AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true).stage(.rules)
     }
 
-    /// Never answered, a blank box is an answer: Save writes it, nothing
+    /// Never answered, a blank box is an answer: Continue writes it, nothing
     /// denied, and the screen moves on.
     @Test func aBlankFirstAnswerIsSaved() async {
         let client = ScriptedClient { _ in nil }
         let flow = flow(client)
         await flow.loadRules()
-        #expect(flow.draftRules == "" && flow.primaryTitle == "Save")
+        #expect(flow.draftRules == "" && flow.primaryTitle == "Continue")
         flow.primary()
         await waitUntil { flow.step != .rules }
         #expect(client.saved == [""])
@@ -144,7 +144,7 @@ struct GatekeeperTests {
         client.savedText = "Never touch ~/Finance."
         let flow = flow(client)
         await flow.loadRules()
-        #expect(flow.draftRules == "Never touch ~/Finance." && flow.primaryTitle == "Continue" && flow.stepDone)
+        #expect(flow.draftRules == "Never touch ~/Finance." && flow.primaryTitle == "Continue")
         flow.primary()
         await waitUntil { flow.step != .rules }
         #expect(client.saved.isEmpty)
@@ -152,7 +152,6 @@ struct GatekeeperTests {
         let again = self.flow(client)
         await again.loadRules()
         again.draftRules = ""
-        #expect(again.primaryTitle == "Save")
         again.primary()
         await waitUntil { again.step != .rules }
         #expect(client.saved == [""])
@@ -190,19 +189,17 @@ struct GatekeeperTests {
         #expect(flow.savedRules?.text == "Never send email." && !flow.rulesChanged)
     }
 
-    /// An answer that couldn't be read can't be saved over; Skip still
-    /// goes on, and the main window asks later.
+    /// An answer that couldn't be read can't be saved over; Continue
+    /// still goes on, and the main window asks later.
     @Test func anUnreadAnswerCantBeSavedOver() async {
         let client = ScriptedClient { _ in nil }
         client.showFailure = LatchFailure(code: "state_busy", message: "the state folder is busy")
         let flow = flow(client)
         await flow.loadRules()
-        #expect(flow.rulesUnreadable && !flow.primaryEnabled)
+        #expect(flow.rulesUnreadable && flow.primaryTitle == "Continue")
         flow.draftRules = "Never send email."
         await flow.saveRules()
-        #expect(client.saved.isEmpty)
-        flow.skip()
-        #expect(flow.step != .rules)
+        #expect(client.saved.isEmpty && flow.step != .rules)
         client.showFailure = nil
         let again = self.flow(client)
         await again.loadRules()
@@ -678,12 +675,13 @@ struct ClosingTests {
     }
 
     /// Every screen's Back and Skip for now: Back goes to the screen
-    /// before, from Log in on; Skip for now is on Set your rules and Grant
-    /// access only, and goes to the screen after.
+    /// before, from Log in on; Skip for now is on Grant access only (the
+    /// gatekeeper question is answered, blank or not), and goes to the
+    /// screen after.
     @Test func backAndSkipOnEveryScreen() {
         let order: [Step] = [.welcome, .login, .privacy, .rules, .access, .start, .done]
         #expect(Step.allCases == order)
-        #expect(order.filter(\.skippable) == [.rules, .access])
+        #expect(order.filter(\.skippable) == [.access])
         let app = AppModel(client: ScriptedClient { _ in nil }, store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
         for (index, step) in order.enumerated() {
             let back = app.stage(step)
