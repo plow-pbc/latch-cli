@@ -1077,7 +1077,7 @@ async fn owners_cannot_select_an_agents_plow_chat() {
         };
         let (exit, code, _) = refusal(&answer);
         assert_eq!(exit, Exit::Usage, "{answer:?}");
-        assert_eq!(code, "plow_chat_not_supported", "{answer:?}");
+        assert_eq!(code, "intent_not_supported", "{answer:?}");
     }
     assert_eq!(t.judged(), 0);
 }

@@ -32,7 +32,7 @@ fn request(op: &str, args: Value) -> Request {
     Request {
         op: op.to_string(),
         args,
-        chat: None,
+        intent: None,
     }
 }
 

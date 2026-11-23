@@ -227,28 +227,6 @@ pub(super) fn fill(browsers: &Browsers, args: &Value, site: Option<String>) -> A
     Action::VaultFill { site, item, fields }
 }
 
-/// A login fill as `rules try --fill-login` previews it: the item's kind
-/// and title as given, never looked up in the vault, on the site of `url`,
-/// as a login saved for that site.
-pub(crate) fn previewed_fill(
-    url: &str,
-    kind: &str,
-    title: &str,
-    fields: Vec<String>,
-) -> impl Serialize + use<> {
-    let site = sites::site_of(url);
-    Action::VaultFill {
-        item: ItemShown {
-            kind: kind.to_string(),
-            title: title.to_string(),
-            sites: site.iter().cloned().collect(),
-            other_top_sites: vec![],
-        },
-        site,
-        fields,
-    }
-}
-
 /// What the page's reading named each ref a plan's literal steps act on:
 /// its role and name, keyed by snapshot (none: the latest) and ref. A ref
 /// the session can't name, or a session that can't answer now, is left

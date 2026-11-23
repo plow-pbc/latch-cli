@@ -35,7 +35,7 @@ impl Exit {
                 "The host could not be reached, or could not judge the call. Its message says what fixes it: often a retry later. A browser plan may have run steps before it stopped: read its `steps` and `stop` and send only what is left."
             }
             Exit::Denied => {
-                "Refused; don't retry, except: gatekeeper_denied with reason not_covered (latch has no approval prompt: ask the owner in your Plow chat, naming exactly what you will do, and retry once they agree there; refused again, stop and tell them); not_as_asked (make the action match what the owner last asked in that chat and retry, or ask them as for not_covered); confirm_needed (if the task needs it, carry it out with `latch browser do --confirm C`); calendar_conflict (ask the owner; once they agree, resend with --confirm-conflict)."
+                "Refused; don't retry, except: gatekeeper_denied with reason intent_required (cite the owner's message you act on with --intent ROOM/EVENT); not_covered (latch has no approval prompt: ask the owner in your 1:1 room with them, naming exactly what you will do, and cite their answer; refused again, stop and tell them); confirm_needed (if the task needs it, carry it out with `latch browser do --confirm C`); calendar_conflict (ask the owner; once they agree, resend with --confirm-conflict)."
             }
             Exit::Unknown => {
                 "The connection was lost after the request was sent; check before resending."
@@ -311,6 +311,7 @@ codes! {
     host_upgraded: Failed,
     import_expired: Usage,
     install_failed: Failed,
+    intent_not_supported: Usage,
     interrupted: Unknown,
     invalid_request: Usage,
     io_error: Failed,
@@ -402,7 +403,6 @@ codes! {
     owner_only: Denied,
     phone_not_signed_in: Denied,
     plan_budget: Failed,
-    plow_chat_not_supported: Usage,
     plow_denied: Denied,
     plow_error: Failed,
     plow_rejected: Failed,
@@ -485,7 +485,6 @@ codes! {
     vault_failed: Failed,
     vault_version: Failed,
     watch_failed: Failed,
-    which_chat: Usage,
     which_handoff: Usage,
     which_item: Usage,
     workdir_outside_areas: Denied,

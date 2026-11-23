@@ -57,9 +57,9 @@ pub const MAX_FRAME: usize = 16 * 1024 * 1024;
 pub struct Request {
     pub op: String,
     pub args: Value,
-    /// The Plow chat an agent acts for, when its line has more than one.
+    /// The owner's message an agent acts on, `<room>/<event>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub chat: Option<String>,
+    pub intent: Option<String>,
 }
 
 /// The host's answer: `{"ok": ...}` or `{"error": {...}}`. Errors carry
@@ -198,7 +198,7 @@ mod tests {
         let request = Request {
             op: "exec".to_string(),
             args: serde_json::json!({"argv": ["uname", "-a"]}),
-            chat: None,
+            intent: None,
         };
         let mut buffer = Vec::new();
         write_frame(&mut buffer, &serde_json::to_vec(&request).unwrap())

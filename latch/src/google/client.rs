@@ -32,8 +32,8 @@ pub async fn run(state: &StateDir, args: GoogleArgs) -> Result<Value, Failure> {
     } = prepare(&args).await?;
     let host = crate::hosts::resolve(state, args.host.host).await?;
     let link = dial::connect(state, &host).await?;
-    let chat = args.host.plow_chat;
-    let result = exchange(&link.connection, chat, request, files, plan.as_ref()).await;
+    let intent = args.host.intent;
+    let result = exchange(&link.connection, intent, request, files, plan.as_ref()).await;
     link.close();
     result.map_err(dial::naming(&host))
 }
@@ -101,7 +101,7 @@ pub async fn prepare(args: &GoogleArgs) -> Result<Prepared, Failure> {
 /// the final answer.
 async fn exchange(
     connection: &crate::transport::Connection,
-    chat: Option<String>,
+    intent: Option<String>,
     request: Request,
     mut inputs: Vec<File>,
     plan: Option<&policy::Plan>,
@@ -109,7 +109,7 @@ async fn exchange(
     let request = wire::Request {
         op: "google".into(),
         args: serde_json::to_value(&request).expect("request serializes"),
-        chat,
+        intent,
     };
     let (mut send, mut recv) = dial::start(connection, &request).await?;
     let first = dial::answer(connection, &mut recv, ANSWER_WITHIN).await?;

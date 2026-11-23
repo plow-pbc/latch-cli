@@ -1,7 +1,20 @@
-//! The owner's rules for agents on this host: plain text in the owner's
-//! own words, one text for every agent and one per agent. The judge reads
-//! them as text; where they come from is a [`RulesSource`]'s business.
+//! The device rule and the agent map, kept in the host's state folder and
+//! changed only by the owner's own devices (`owner.rs`).
+//!
+//! The device rule is one plain text in the owner's words naming what is
+//! always denied on this host ("Never touch my tax returns"). It grants
+//! nothing: permission comes only from the owner's message an agent cites.
+//! No file denies nothing; a file that can't be read refuses every judged
+//! call. It is read at every judgment, so an edit applies at once.
+//!
+//! The agent map names each agent's Swarm account, by Plow agent uid: the
+//! gatekeeper accepts a citation only from that account's own 1:1 rooms
+//! with the owner. An unmapped agent is refused.
+//!
+//! Older latches kept grant-style rules in `rules/`. Nothing reads that
+//! folder; a host moves it aside when it starts (`archive_legacy`).
 
+use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::ErrorKind;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
@@ -12,367 +25,87 @@ use sha2::{Digest, Sha256};
 use crate::failure::{Failure, code};
 use crate::state::{to_hex, write_private};
 
-/// The owner's rules that apply to one agent.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Rules {
-    /// Rules for every agent on this host.
-    pub host: Option<String>,
-    /// Rules for this agent only.
-    pub agent: Option<String>,
-}
+/// The device rule's largest size.
+pub const MAX_RULE: u64 = 8 * 1024;
 
-impl Rules {
-    pub fn is_empty(&self) -> bool {
-        self.host.is_none() && self.agent.is_none()
-    }
-}
-
-/// Where the rules come from, read at every judgment so an edit applies at
-/// once. An error says why they could not be read, and the judgment fails.
-pub trait RulesSource: Send + Sync {
-    fn rules(&self, agent: &str) -> Result<Rules, String>;
-}
-
-/// The same rules whoever asks: a draft's, fixed for one preview.
-impl RulesSource for Rules {
-    fn rules(&self, _agent: &str) -> Result<Rules, String> {
-        Ok(self.clone())
-    }
-}
-
-/// Rules to start from, by the kind of assistant: what `latch setup` offers
-/// and `rules set --preset` saves. The Mac app's onboarding offers the same
-/// texts (`Onboarding.decks`).
-#[derive(clap::ValueEnum, Clone, Copy, PartialEq, Debug)]
-pub enum Preset {
-    ChiefOfStaff,
-    Developer,
-}
-
-impl Preset {
-    pub const ALL: [Preset; 2] = [Preset::ChiefOfStaff, Preset::Developer];
-
-    /// What naming a preset by its old name says: `family` and `work` were
-    /// renamed, and are refused rather than taken as the new ones.
-    pub const RENAMED: &str = "renamed: use chief-of-staff or developer";
-
-    /// Whether `word` is a preset's old name.
-    pub fn renamed(word: &str) -> bool {
-        matches!(word, "family" | "work")
-    }
-
-    /// `--preset`'s parser: a preset by its word, listed in help as clap
-    /// lists any, and an old name refused with [`Preset::RENAMED`].
-    pub fn parser() -> PresetParser {
-        PresetParser
-    }
-
-    pub fn word(self) -> &'static str {
-        match self {
-            Preset::ChiefOfStaff => "chief-of-staff",
-            Preset::Developer => "developer",
-        }
-    }
-
-    pub fn name(self) -> &'static str {
-        match self {
-            Preset::ChiefOfStaff => "Chief of Staff",
-            Preset::Developer => "Developer",
-        }
-    }
-
-    pub fn text(self) -> &'static str {
-        match self {
-            Preset::ChiefOfStaff => {
-                "Let my chief of staff read email, check my calendar and draft replies. Never let it email outside the company."
-            }
-            Preset::Developer => {
-                "Let my developer run tests, review changes and open pull requests. Never let it push directly to main."
-            }
-        }
-    }
-}
-
-#[derive(Clone)]
-pub struct PresetParser;
-
-impl clap::builder::TypedValueParser for PresetParser {
-    type Value = Preset;
-
-    fn parse_ref(
-        &self,
-        cmd: &clap::Command,
-        arg: Option<&clap::Arg>,
-        value: &std::ffi::OsStr,
-    ) -> Result<Preset, clap::Error> {
-        if let Some(word) = value.to_str()
-            && Preset::renamed(word)
-        {
-            let arg = arg.map_or("--preset".to_string(), |arg| arg.to_string());
-            return Err(clap::Error::raw(
-                clap::error::ErrorKind::InvalidValue,
-                format!("invalid value '{word}' for '{arg}': {}\n", Preset::RENAMED),
-            )
-            .with_cmd(cmd));
-        }
-        clap::builder::EnumValueParser::<Preset>::new().parse_ref(cmd, arg, value)
-    }
-
-    fn possible_values(
-        &self,
-    ) -> Option<Box<dyn Iterator<Item = clap::builder::PossibleValue> + '_>> {
-        use clap::ValueEnum;
-        Some(Box::new(
-            Preset::value_variants()
-                .iter()
-                .filter_map(ValueEnum::to_possible_value),
-        ))
-    }
-}
-
-/// The most the rules for one agent may come to: every agent's and its own.
-pub const MAX_RULES: u64 = 8 * 1024;
-
-/// The folder in the state directory that holds the rules files.
-pub const RULES_DIR: &str = "rules";
-/// The rules for every agent, in [`RULES_DIR`]. Each agent's own are in
-/// `<agent_uid>.txt` beside it.
-const HOST_FILE: &str = "host.txt";
-
-/// Rules kept as files in the host's state directory, read at every
-/// judgment: a missing file is no rules.
-pub struct RuleFiles {
-    dir: PathBuf,
-    state: PathBuf,
-}
-
-impl RuleFiles {
-    /// The rules folder in `state_dir`, checked once: every `.txt` file is
-    /// the host's or a Plow agent uid's, all stay inside protected state,
-    /// where a caller cannot rewrite them, and no agent's rules come to
-    /// more than [`MAX_RULES`].
-    pub fn new(state_dir: &Path) -> Result<RuleFiles, Failure> {
-        let refuse = |message: String| Failure::new(code::bad_rules, message);
-        let state = state_dir
-            .canonicalize()
-            .map_err(|err| refuse(err.to_string()))?;
-        let mut files = RuleFiles {
-            dir: state.join(RULES_DIR),
-            state,
-        };
-        files.dir = match files.protected(&files.dir) {
-            Ok(dir) => dir,
-            Err(err) if err.kind() == ErrorKind::NotFound && !files.dir.is_symlink() => {
-                return Ok(files);
-            }
-            Err(err) => return Err(refuse(err.to_string())),
-        };
-        let entries = fs::read_dir(&files.dir).map_err(|err| refuse(err.to_string()))?;
-        let mut host = 0;
-        let mut agents = Vec::new();
-        for entry in entries {
-            let path = entry
-                .map_err(|err| refuse(format!("cannot read {}: {err}", files.dir.display())))?
-                .path();
-            let name = path.file_name().unwrap_or_default().to_string_lossy();
-            // Only `.txt` files are rules; others here are not the gatekeeper's.
-            let Some(stem) = name.strip_suffix(".txt") else {
-                continue;
-            };
-            let agent = Some(stem).filter(|a| is_agent_uid(a));
-            if name != HOST_FILE && agent.is_none() {
-                return Err(refuse(format!(
-                    "{} is neither {HOST_FILE} nor <agent uid>.txt, with a Plow agent uid (32 lowercase hex characters)",
-                    path.display()
-                )));
-            }
-            let real = files
-                .protected(&path)
-                .map_err(|err| refuse(err.to_string()))?;
-            let size = real
-                .metadata()
-                .map_err(|err| refuse(format!("cannot read {}: {err}", path.display())))?
-                .len();
-            match agent {
-                Some(agent) => agents.push((agent.to_string(), size)),
-                None => host = size,
-            }
-        }
-        let largest = agents.iter().max_by_key(|(_, size)| *size);
-        if host + largest.map_or(0, |(_, size)| *size) > MAX_RULES {
-            let whose = largest.map_or("every agent".to_string(), |(agent, _)| {
-                format!("agent {agent}")
-            });
-            return Err(refuse(format!(
-                "the rules for {whose} come to more than {MAX_RULES} bytes"
-            )));
-        }
-        Ok(files)
-    }
-
-    fn protected(&self, path: &Path) -> std::io::Result<PathBuf> {
-        let real = path.canonicalize()?;
-        if !real.starts_with(&self.state) {
-            return Err(std::io::Error::other(format!(
-                "{} resolves outside protected state {}",
-                path.display(),
-                self.state.display()
-            )));
-        }
-        Ok(real)
-    }
-}
-
-impl RulesSource for RuleFiles {
-    fn rules(&self, agent: &str) -> Result<Rules, String> {
-        let read = |name: &str| {
-            let path = self.dir.join(name);
-            match self.protected(&path).and_then(fs::read_to_string) {
-                Ok(text) => Ok(Some(text)),
-                Err(err) if err.kind() == ErrorKind::NotFound && !path.is_symlink() => Ok(None),
-                Err(err) => Err(format!("{name}: {err}")),
-            }
-        };
-        Ok(Rules {
-            host: read(HOST_FILE)?,
-            agent: match is_agent_uid(agent) {
-                true => read(&format!("{agent}.txt"))?,
-                false => None,
-            },
-        })
-    }
-}
-
-/// Which of the owner's texts a command is about.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Scope {
-    /// The rules for every agent on this host.
-    Host,
-    /// The rules for the agent with this uid.
-    Agent(String),
-}
-
-impl Scope {
-    fn file(&self) -> String {
-        match self {
-            Scope::Host => HOST_FILE.to_string(),
-            Scope::Agent(uid) => format!("{uid}.txt"),
-        }
-    }
-}
+/// The folder the device rule and the agent map live in, in the state folder.
+const DIR: &str = "gatekeeper";
+const DENY_FILE: &str = "deny.txt";
+const AGENTS_FILE: &str = "agents.json";
+/// Where older latches kept their rules.
+const LEGACY_DIR: &str = "rules";
 
 /// A text's revision: its sha256, as hex.
 pub fn revision(text: &str) -> String {
     to_hex(&Sha256::digest(text.as_bytes()))
 }
 
-/// A change to one text, by revision: `None` is no text.
-pub struct Change {
-    pub before: Option<String>,
-    pub after: Option<String>,
+/// The device rule and agent map of one state folder.
+#[derive(Clone)]
+pub struct Store {
+    state: PathBuf,
 }
 
-/// The rules folder as the owner's commands change it: every change is
-/// made under one lock, and each file is replaced whole (a temporary file,
-/// then a rename), so a judgment reads the old text or the new, never part.
-pub struct RulesDir {
-    dir: PathBuf,
-}
-
-impl RulesDir {
-    pub fn new(state_dir: &Path) -> RulesDir {
-        RulesDir {
-            dir: state_dir.join(RULES_DIR),
+impl Store {
+    pub fn new(state_dir: &Path) -> Store {
+        Store {
+            state: state_dir.to_path_buf(),
         }
     }
 
-    pub fn text(&self, scope: &Scope) -> Result<Option<String>, Failure> {
-        self.read(&scope.file())
+    fn dir(&self) -> PathBuf {
+        self.state.join(DIR)
     }
 
-    /// The peer key stored for `uid` when its rules were set, if it had one.
-    pub fn peer(&self, uid: &str) -> Result<Option<String>, Failure> {
-        self.read(&format!("{uid}.peer"))
-    }
-
-    /// The uids that have rules of their own.
-    pub fn agents(&self) -> Result<Vec<String>, Failure> {
-        let entries = match fs::read_dir(&self.dir) {
-            Ok(entries) => entries,
-            Err(err) if err.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(err) => return Err(self.failure(&self.dir, err)),
+    /// The device rule: `None` when it was never set. An error says why it
+    /// could not be read, and refuses the judgment.
+    pub fn deny(&self) -> Result<Option<String>, String> {
+        let path = self.dir().join(DENY_FILE);
+        if path.is_symlink() {
+            return Err(format!("{} is a symlink", path.display()));
+        }
+        let bytes = match fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(err) if err.kind() == ErrorKind::NotFound => return Ok(None),
+            Err(err) => return Err(format!("{}: {err}", path.display())),
         };
-        let mut uids = Vec::new();
-        for entry in entries {
-            let name = entry
-                .map_err(|err| self.failure(&self.dir, err))?
-                .file_name();
-            let name = name.to_string_lossy();
-            if let Some(uid) = name.strip_suffix(".txt").filter(|uid| is_agent_uid(uid)) {
-                uids.push(uid.to_string());
-            }
+        if bytes.len() as u64 > MAX_RULE {
+            return Err(format!("{} is over {MAX_RULE} bytes", path.display()));
         }
-        uids.sort();
-        Ok(uids)
+        String::from_utf8(bytes)
+            .map(Some)
+            .map_err(|_| format!("{} is not UTF-8 text", path.display()))
     }
 
-    /// Replaces `scope`'s text with `text`. With `expected`, only if the
-    /// current text is still at that revision (`None`: there is none). An
-    /// agent's `peer`, its peer key now, is stored beside its text.
-    /// Refused, nothing changes.
-    pub fn set(
-        &self,
-        scope: &Scope,
-        text: &str,
-        expected: Option<Option<&str>>,
-        peer: Option<&str>,
-    ) -> Result<Change, Failure> {
-        if text.trim().is_empty() {
-            let message = "the rules are empty; to remove them, use `latch rules clear`";
-            return Err(Failure::new(code::empty_rules, message.into()));
-        }
-        let _lock = self.lock()?;
-        let before = self.current(scope, expected)?;
-        let others = match scope {
-            Scope::Host => {
-                let mut largest = 0;
-                for uid in self.agents()? {
-                    let text = self.text(&Scope::Agent(uid))?.unwrap_or_default();
-                    largest = largest.max(text.len());
-                }
-                largest
-            }
-            Scope::Agent(_) => self.text(&Scope::Host)?.map_or(0, |text| text.len()),
-        };
-        if (text.len() + others) as u64 > MAX_RULES {
+    /// Replaces the device rule with `text`; an empty text denies nothing
+    /// and still records that the owner answered. With `expected`, only if
+    /// the current rule is still at that revision (`None`: there is none).
+    pub fn set_deny(&self, text: &str, expected: Option<Option<&str>>) -> Result<Change, Failure> {
+        if text.len() as u64 > MAX_RULE {
             let message = format!(
-                "the rules for every agent and one agent's own may come to {MAX_RULES} bytes together; these would come to {}",
-                text.len() + others
+                "the device rule may be {MAX_RULE} bytes; this one is {}",
+                text.len()
             );
             return Err(Failure::new(code::rules_too_long, message));
         }
-        if let Scope::Agent(uid) = scope {
-            let peer_file = format!("{uid}.peer");
-            match peer {
-                Some(key) => self.replace(&peer_file, key)?,
-                None => self.remove(&peer_file)?,
-            }
-        }
-        self.replace(&scope.file(), text)?;
+        let _lock = self.lock()?;
+        let before = self.current(expected)?;
+        let path = self.dir().join(DENY_FILE);
+        write_private(&path, text.as_bytes()).map_err(|err| failure(&path, err))?;
         Ok(Change {
             before,
             after: Some(revision(text)),
         })
     }
 
-    /// Removes `scope`'s text, and an agent's stored peer key. With
-    /// `expected`, only if the text is still at that revision, as `set`.
-    pub fn clear(&self, scope: &Scope, expected: Option<Option<&str>>) -> Result<Change, Failure> {
+    /// Removes the device rule. With `expected`, as `set_deny`.
+    pub fn clear_deny(&self, expected: Option<Option<&str>>) -> Result<Change, Failure> {
         let _lock = self.lock()?;
-        let before = self.current(scope, expected)?;
-        self.remove(&scope.file())?;
-        if let Scope::Agent(uid) = scope {
-            self.remove(&format!("{uid}.peer"))?;
+        let before = self.current(expected)?;
+        let path = self.dir().join(DENY_FILE);
+        match fs::remove_file(&path) {
+            Err(err) if err.kind() != ErrorKind::NotFound => return Err(failure(&path, err)),
+            _ => {}
         }
         Ok(Change {
             before,
@@ -380,20 +113,20 @@ impl RulesDir {
         })
     }
 
-    /// `scope`'s revision now, under the lock: refused if it is not
-    /// `expected`, when there is one.
-    fn current(
-        &self,
-        scope: &Scope,
-        expected: Option<Option<&str>>,
-    ) -> Result<Option<String>, Failure> {
-        let before = self.text(scope)?.as_deref().map(revision);
+    /// The device rule's revision now, under the lock: refused if it is
+    /// not `expected`, when there is one.
+    fn current(&self, expected: Option<Option<&str>>) -> Result<Option<String>, Failure> {
+        let before = self
+            .deny()
+            .map_err(|why| Failure::new(code::rules_io, why))?
+            .as_deref()
+            .map(revision);
         if let Some(expected) = expected
             && expected != before.as_deref()
         {
             let mut refused = Failure::new(
                 code::stale_revision,
-                "the rules changed since they were read; nothing was changed, and the current text is kept".into(),
+                "the device rule changed since it was read; nothing was changed, and the current text is kept".into(),
             );
             refused.details = serde_json::json!({"revision": before});
             return Err(refused);
@@ -401,50 +134,82 @@ impl RulesDir {
         Ok(before)
     }
 
+    /// Every agent's Swarm account, by Plow agent uid.
+    pub fn agents(&self) -> Result<BTreeMap<String, String>, String> {
+        let path = self.dir().join(AGENTS_FILE);
+        match fs::read(&path) {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map_err(|err| format!("{}: {err}", path.display())),
+            Err(err) if err.kind() == ErrorKind::NotFound => Ok(BTreeMap::new()),
+            Err(err) => Err(format!("{}: {err}", path.display())),
+        }
+    }
+
+    /// Maps the agent `uid` to the Swarm account `swarm_id`, replacing any
+    /// account it had. Returns the account it had.
+    pub fn map_agent(&self, uid: &str, swarm_id: &str) -> Result<Option<String>, Failure> {
+        if !is_agent_uid(uid) {
+            let message = format!("{uid:?} is not a Plow agent uid (32 lowercase hex characters)");
+            return Err(Failure::new(code::bad_arguments, message));
+        }
+        if !is_swarm_id(swarm_id) {
+            let message =
+                format!("{swarm_id:?} is not a Swarm account id, like @name:server.example");
+            return Err(Failure::new(code::bad_arguments, message));
+        }
+        let _lock = self.lock()?;
+        let path = self.dir().join(AGENTS_FILE);
+        let mut agents = self.agents().map_err(|why| Failure::new(code::rules_io, why))?;
+        let before = agents.insert(uid.to_string(), swarm_id.to_string());
+        let json = serde_json::to_vec_pretty(&agents).expect("the agent map serializes");
+        write_private(&path, &json).map_err(|err| failure(&path, err))?;
+        Ok(before)
+    }
+
     fn lock(&self) -> Result<File, Failure> {
+        let dir = self.dir();
         fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
-            .create(&self.dir)
-            .map_err(|err| self.failure(&self.dir, err))?;
-        let path = self.dir.join(".lock");
+            .create(&dir)
+            .map_err(|err| failure(&dir, err))?;
+        let path = dir.join(".rule.lock");
         let file = fs::OpenOptions::new()
             .create(true)
             .truncate(false)
             .write(true)
             .mode(0o600)
             .open(&path)
-            .map_err(|err| self.failure(&path, err))?;
-        file.lock().map_err(|err| self.failure(&path, err))?;
+            .map_err(|err| failure(&path, err))?;
+        file.lock().map_err(|err| failure(&path, err))?;
         Ok(file)
     }
 
-    fn read(&self, name: &str) -> Result<Option<String>, Failure> {
-        let path = self.dir.join(name);
-        match fs::read_to_string(&path) {
-            Ok(text) => Ok(Some(text)),
-            Err(err) if err.kind() == ErrorKind::NotFound => Ok(None),
-            Err(err) => Err(self.failure(&path, err)),
-        }
+    /// Moves an older latch's `rules/` folder aside, to
+    /// `rules.archived-<unix seconds>`, so its grant-style texts are kept
+    /// but never mistaken for the device rule. Returns where it went and
+    /// how many files it held; `None` when there was none.
+    pub fn archive_legacy(&self, now_s: i64) -> std::io::Result<Option<(PathBuf, usize)>> {
+        let legacy = self.state.join(LEGACY_DIR);
+        let files = match fs::read_dir(&legacy) {
+            Ok(entries) => entries.count(),
+            Err(err) if err.kind() == ErrorKind::NotFound => return Ok(None),
+            Err(err) => return Err(err),
+        };
+        let archived = self.state.join(format!("{LEGACY_DIR}.archived-{now_s}"));
+        fs::rename(&legacy, &archived)?;
+        Ok(Some((archived, files)))
     }
+}
 
-    /// Writes `name` whole (see `state::write_private`).
-    fn replace(&self, name: &str, text: &str) -> Result<(), Failure> {
-        let path = self.dir.join(name);
-        write_private(&path, text.as_bytes()).map_err(|err| self.failure(&path, err))
-    }
+/// A change to the device rule, by revision: `None` is no rule.
+pub struct Change {
+    pub before: Option<String>,
+    pub after: Option<String>,
+}
 
-    fn remove(&self, name: &str) -> Result<(), Failure> {
-        let path = self.dir.join(name);
-        match fs::remove_file(&path) {
-            Err(err) if err.kind() != ErrorKind::NotFound => Err(self.failure(&path, err)),
-            _ => Ok(()),
-        }
-    }
-
-    fn failure(&self, path: &Path, err: std::io::Error) -> Failure {
-        Failure::new(code::rules_io, format!("{}: {err}", path.display()))
-    }
+fn failure(path: &Path, err: std::io::Error) -> Failure {
+    Failure::new(code::rules_io, format!("{}: {err}", path.display()))
 }
 
 /// Whether `id` has the shape of a Plow agent uid.
@@ -455,45 +220,67 @@ pub fn is_agent_uid(id: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
-#[cfg(test)]
-mod preset_tests {
-    use super::Preset;
+/// Whether `id` has the shape of a Swarm (Matrix) account id.
+fn is_swarm_id(id: &str) -> bool {
+    id.strip_prefix('@')
+        .and_then(|rest| rest.split_once(':'))
+        .is_some_and(|(name, server)| {
+            !name.is_empty() && !server.is_empty() && !id.chars().any(char::is_whitespace)
+        })
+}
 
-    /// The Mac app's onboarding offers each preset by the same name, with
-    /// the same text, in the same order.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
     #[test]
-    fn the_mac_app_offers_the_same_presets() {
-        let onboarding = include_str!("../../gui/Sources/PlowLatchUI/App/Onboarding.swift");
-        let mut from = 0;
-        for preset in Preset::ALL {
-            let deck = format!(
-                "Deck(name: \"{}\",\n                 rules: \"{}\",",
-                preset.name(),
-                preset.text()
-            );
-            let at = onboarding[from..]
-                .find(&deck)
-                .unwrap_or_else(|| panic!("Onboarding.swift has no deck {deck}"));
-            from += at + deck.len();
-        }
-        assert_eq!(onboarding.matches("Deck(name: ").count(), Preset::ALL.len());
+    fn no_rule_denies_nothing_an_empty_one_is_answered_and_a_bad_one_refuses() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path());
+        assert_eq!(store.deny().unwrap(), None);
+        store.set_deny("", None).unwrap();
+        assert_eq!(store.deny().unwrap().as_deref(), Some(""));
+        fs::write(dir.path().join(DIR).join(DENY_FILE), [0xff, 0xfe]).unwrap();
+        assert!(store.deny().unwrap_err().contains("not UTF-8"));
     }
 
-    /// Each preset is picked by its word; its old name is refused with
-    /// what it is called now.
     #[test]
-    fn a_preset_is_picked_by_its_word_and_an_old_name_is_refused() {
-        use clap::builder::TypedValueParser;
-        let cmd = clap::Command::new("latch");
-        let parse = |typed: &str| Preset::parser().parse_ref(&cmd, None, typed.as_ref());
-        for preset in Preset::ALL {
-            assert_eq!(parse(preset.word()).unwrap(), preset);
-        }
-        for old in ["family", "work"] {
-            let refused = parse(old).unwrap_err().to_string();
-            assert!(refused.contains(Preset::RENAMED), "{old}: {refused}");
-            assert!(refused.contains(&format!("'{old}'")), "{old}: {refused}");
-        }
-        assert!(!parse("bogus").unwrap_err().to_string().contains("renamed"));
+    fn an_edit_saves_only_over_the_text_it_started_from() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path());
+        store.set_deny("Never pay.", None).unwrap();
+        let stale = store.set_deny("x", Some(None)).err().unwrap();
+        assert_eq!(stale.code, "stale_revision");
+        let r = revision("Never pay.");
+        store.set_deny("Never pay twice.", Some(Some(&r))).unwrap();
+        assert_eq!(store.deny().unwrap().as_deref(), Some("Never pay twice."));
+    }
+
+    #[test]
+    fn the_old_rules_folder_is_moved_aside_never_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path());
+        assert!(store.archive_legacy(1).unwrap().is_none());
+        fs::create_dir(dir.path().join(LEGACY_DIR)).unwrap();
+        fs::write(dir.path().join(LEGACY_DIR).join("host.txt"), "Approve everything.").unwrap();
+        let (archived, files) = store.archive_legacy(7).unwrap().unwrap();
+        assert_eq!((archived.file_name().unwrap(), files), ("rules.archived-7".as_ref(), 1));
+        assert!(!dir.path().join(LEGACY_DIR).exists());
+        assert_eq!(store.deny().unwrap(), None);
+    }
+
+    #[test]
+    fn the_agent_map_takes_only_real_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path());
+        let uid = "0123456789abcdef0123456789abcdef";
+        assert!(store.map_agent("alder", "@a:s").is_err());
+        assert!(store.map_agent(uid, "alder").is_err());
+        assert_eq!(store.map_agent(uid, "@alder:plow.co").unwrap(), None);
+        assert_eq!(
+            store.map_agent(uid, "@alder2:plow.co").unwrap().as_deref(),
+            Some("@alder:plow.co")
+        );
+        assert_eq!(store.agents().unwrap()[uid], "@alder2:plow.co");
     }
 }

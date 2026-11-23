@@ -37,7 +37,6 @@ use crate::dashboard::{self, Dashboard};
 use crate::exec;
 use crate::failure::{Code, Failure, code};
 use crate::files;
-use crate::gate::rules::RuleFiles;
 use crate::gate::{self, Caller, Gate, Gatekeeper};
 use crate::heartbeat;
 use crate::lifecycle::{self, Phase};
@@ -85,35 +84,30 @@ struct Host {
     agent_names: Mutex<HashMap<String, String>>,
 }
 
-/// What a request's checks read of a host: a serving host's own, or this
-/// machine's, for a preview judged in the previewing process
-/// (`rules_try::preview_here`).
+/// What a request's checks read of a host.
 struct Checks<'a> {
-    name: &'a str,
-    plow: &'a Plow,
     workers: &'a WorkerSetup,
     gatekeeper: &'a Gatekeeper,
     deny_exec: &'a DenyExec,
     binary: &'a Binary,
-    /// `None` for a preview by the rules alone, whatever connectors are on.
-    plugins: Option<&'a crate::plugins::Plugins>,
+    plugins: &'a crate::plugins::Plugins,
 }
 
 impl<'a> Checks<'a> {
     /// The gate a caller's operations pass: the owner's own devices as
-    /// the owner, an agent in the chat it named. An agent Plow gives no uid
-    /// can't be judged, so nothing of it runs.
+    /// the owner, an agent with the owner's message it cites. An agent
+    /// Plow gives no uid can't be judged, so nothing of it runs.
     fn gate(
         &self,
         identity: &'a Identity,
         local: bool,
-        chat: Option<&'a str>,
+        intent: Option<&'a str>,
     ) -> Result<Gate<'a>, Failure> {
         if local || identity.kind == "device" {
-            if chat.is_some() {
+            if intent.is_some() {
                 return Err(Failure::new(
-                    code::plow_chat_not_supported,
-                    "--plow-chat and LATCH_PLOW_CHAT select an agent's Plow chat; omit them on owner calls".into(),
+                    code::intent_not_supported,
+                    "--intent cites the owner's message for an agent; omit it on owner calls".into(),
                 ));
             }
             return Ok(Gate {
@@ -123,12 +117,14 @@ impl<'a> Checks<'a> {
                 } else {
                     Caller::Owner
                 },
+                peer: &identity.key,
             });
         }
         match identity.agent_uid.as_deref() {
             Some(uid) => Ok(Gate {
                 keeper: self.gatekeeper,
-                caller: Caller::Agent { uid, chat },
+                caller: Caller::Agent { uid, intent },
+                peer: &identity.key,
             }),
             None => Err(Failure::new(
                 code::gatekeeper_unavailable,
@@ -477,7 +473,15 @@ async fn run_locked(
     state_dir: PathBuf,
 ) -> Result<(), Failure> {
     let workers = workers(state_dir)?;
-    let rules = RuleFiles::new(&state.path)?;
+    // An older latch's grant-style rules are never read: kept aside.
+    match crate::gate::rules::Store::new(&state.path).archive_legacy(jiff::Timestamp::now().as_second()) {
+        Ok(Some((archived, files))) => log(&format!(
+            "moved an older latch's rules ({files} files) to {}; nothing reads them",
+            archived.display()
+        )),
+        Ok(None) => {}
+        Err(err) => log(&format!("could not move the older rules folder aside: {err}")),
+    }
     workers.probe().await.map_err(|err| {
         let message = format!("latch cannot sandbox host operations here: {}", err.message);
         Failure::new(code::sandbox_unavailable, message)
@@ -506,7 +510,6 @@ async fn run_locked(
         key,
         workers,
         headless_browsers,
-        rules,
         deny_exec,
         lifetime,
     )
@@ -518,22 +521,23 @@ async fn run_host(
     key: HeldKey,
     workers: WorkerSetup,
     headless_browsers: bool,
-    rules: RuleFiles,
     deny_exec: DenyExec,
     lifetime: Lifetime,
 ) -> Result<(), Failure> {
     let config = state.require_login()?;
     let binary = Binary::at(&workers.program)?;
     let plow = Plow::new(&config.api_url, &credential::token(state)?)?;
+    let audit = AuditLog::open(state.path.join(crate::audit::FILE))?;
+    log(&format!("audit log verified: {} records", audit.len()));
+    let audit = Arc::new(Mutex::new(audit));
     let gatekeeper = Gatekeeper::new(
-        plow.clone(),
         Gatekeeper::provider_for_host(&state.path)
             .map_err(|why| Failure::new(code::not_logged_in, why))?,
-        Box::new(rules),
+        Box::new(crate::gate::thread::NoReader),
+        &state.path,
     )
-    .keeping_requests(&state.path);
-    let mut audit = AuditLog::open(state.path.join(crate::audit::FILE))?;
-    log(&format!("audit log verified: {} records", audit.len()));
+    .keeping_requests(&state.path)
+    .recording(audit.clone());
     let home = std::env::home_dir().unwrap_or_default();
     let plugins = crate::plugins::Plugins::load(state, &home)?;
     log(&format!("commands in this log: {}", crate::redact::NOTE));
@@ -577,6 +581,8 @@ async fn run_host(
     let own = endpoint.id().to_string();
     dashboard.restore(
         audit
+            .lock()
+            .expect("audit log lock")
             .take_recent()
             .iter()
             .filter_map(|record| dashboard::recorded(record, &own))
@@ -607,7 +613,7 @@ async fn run_host(
     browsers.show_on(dashboard.clone());
     let host = Arc::new(Host {
         plow,
-        audit: Arc::new(Mutex::new(audit)),
+        audit,
         workers,
         dashboard,
         lifetime,
@@ -1240,16 +1246,6 @@ async fn serve_request(
                 }
             }
         }
-        // A preview runs nothing, so it is neither audited nor on the board.
-        Ok(identity) if op == "rules_try" => {
-            let response = rules_try::run(&host.checks(), &identity, local, &request.args).await;
-            let outcome = match &response {
-                Response::Ok(answer) => answer["verdict"].as_str().unwrap_or_default(),
-                Response::Error { code, .. } => code,
-            };
-            log(&format!("{op}: {caller}: {outcome}"));
-            response
-        }
         Ok(identity) => {
             // On the board, running, from now until it is audited.
             let asked = request.args.clone();
@@ -1260,9 +1256,9 @@ async fn serve_request(
                 dashboard::session(op, &asked),
                 begun,
             );
-            let chat = request.chat.clone();
+            let intent = request.intent.clone();
             let checks = host.checks();
-            let gate = checks.gate(&identity, local, chat.as_deref());
+            let gate = checks.gate(&identity, local, intent.as_deref());
             let Checked {
                 gate,
                 prepared_exec,
@@ -1270,7 +1266,7 @@ async fn serve_request(
                 names,
                 judgment,
                 stop,
-            } = check(&checks, &identity, gate, chat.as_deref(), &mut request).await;
+            } = check(&checks, &identity, gate, intent.as_deref(), &mut request).await;
             let mut phases = None;
             let done = if let Some(stop) = stop {
                 stop.done()
@@ -1482,7 +1478,7 @@ fn with_permissions(mut response: Response, exec_permissions: Option<Value>) -> 
 /// resolved, the caller's gate, the host's own refusals (`--deny-exec`, a
 /// connector this host can't run or that is off, a replaced binary), an exec's paths checked, a
 /// messages read planned, then the gatekeeper's judgment. Nothing the
-/// request asks for runs here; `rules_try` stops after it.
+/// request asks for runs here.
 struct Checked<'a> {
     gate: Result<Gate<'a>, Failure>,
     prepared_exec: Option<exec::PreparedExec>,
@@ -1528,7 +1524,7 @@ async fn check<'a>(
     host: &Checks<'a>,
     identity: &Identity,
     gate: Result<Gate<'a>, Failure>,
-    chat: Option<&str>,
+    intent: Option<&str>,
     request: &mut Request,
 ) -> Checked<'a> {
     // A file's host path is resolved before anything is judged.
@@ -1557,8 +1553,7 @@ async fn check<'a>(
     let (running, not_enabled) = match crate::messages::host::supported_here(op) {
         Err(failure) => (None, Some(failure)),
         Ok(()) => match crate::plugins::Connector::of_op(op)
-            .zip(host.plugins)
-            .map(|(connector, plugins)| plugins.start(connector))
+            .map(|connector| host.plugins.start(connector))
         {
             Some(Ok(running)) => (Some(running), None),
             Some(Err(failure)) => (None, Some(failure)),
@@ -1570,8 +1565,7 @@ async fn check<'a>(
     let names = (op == "messages")
         .then(|| crate::plugins::Connector::of_op("contacts"))
         .flatten()
-        .zip(host.plugins)
-        .and_then(|(contacts, plugins)| plugins.start(contacts).ok());
+        .and_then(|contacts| host.plugins.start(contacts).ok());
     // A messages or contacts call is judged, and then run, as one
     // effective request: the reader's reading of the caller's words
     // and any cursor's filters. One the reader refuses is not judged.
@@ -1617,8 +1611,8 @@ async fn check<'a>(
         audit_args,
         outcome: failure.code,
     };
-    // A chat named where none can be is refused before anything else.
-    let stop = if chat.is_some()
+    // An intent cited where none can be is refused before anything else.
+    let stop = if intent.is_some()
         && let Err(failure) = &gate
     {
         Some(Stop::Refused(Done {
@@ -1862,13 +1856,11 @@ impl Host {
 
     fn checks(&self) -> Checks<'_> {
         Checks {
-            name: &self.name,
-            plow: &self.plow,
             workers: &self.workers,
             gatekeeper: &self.gatekeeper,
             deny_exec: &self.deny_exec,
             binary: &self.binary,
-            plugins: Some(&self.plugins),
+            plugins: &self.plugins,
         }
     }
 
@@ -2021,11 +2013,7 @@ mod proxy;
 mod reads;
 #[cfg(test)]
 mod reads_tests;
-mod rules_try;
 mod sync;
-pub(crate) use rules_try::{not_previewable, preview_here};
-#[cfg(test)]
-mod rules_try_tests;
 
 #[cfg(test)]
 mod tests {

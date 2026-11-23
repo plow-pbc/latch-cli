@@ -170,7 +170,7 @@ fn local_commands_refuse_unused_selectors_before_touching_local_state() {
     ] {
         for (flag, env, code) in [
             ("--host", "LATCH_HOST", "host_not_supported"),
-            ("--plow-chat", "LATCH_PLOW_CHAT", "plow_chat_not_supported"),
+            ("--plow-chat", "LATCH_PLOW_CHAT", "intent_not_supported"),
         ] {
             for from_env in [false, true] {
                 let dir = test_dir();
@@ -222,7 +222,7 @@ fn owner_calls_refuse_a_plow_chat() {
             assert_eq!(output.status.code(), Some(2), "{output:?}");
             assert!(output.stdout.is_empty(), "{output:?}");
             let error: Value = serde_json::from_slice(&output.stderr).unwrap();
-            assert_eq!(error["error"]["code"], "plow_chat_not_supported");
+            assert_eq!(error["error"]["code"], "intent_not_supported");
             assert!(
                 error["error"]["message"]
                     .as_str()
@@ -4274,7 +4274,7 @@ fn an_agent_asks_for_a_login_by_phone_link_and_learns_only_its_state() {
     let (code, refused) = answered(&local);
     assert_eq!(
         (code, &refused["error"]["code"]),
-        (Some(2), &json!("plow_chat_not_supported")),
+        (Some(2), &json!("intent_not_supported")),
         "{refused}"
     );
 

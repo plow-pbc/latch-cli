@@ -1,15 +1,16 @@
 //! `latch agents`: the account's agents, for their owner. Without a
 //! subcommand, the list as Plow gives it; with `--host`, each agent's
-//! standing on that host as its rules read says: whether it has rules of its
-//! own there, and whether the host refuses it `exec`. The standing comes from
-//! `rules show`, on this machine's state or from the host named, never from
-//! anywhere else.
+//! standing on that host as its `rules show` says: the Swarm account it is
+//! mapped to there, and whether the host refuses it `exec`. The standing
+//! comes from `rules show`, on this machine's state or from the host named,
+//! never from anywhere else. `map` maps an agent on a host (`gate::client`).
 //!
 //! `show`, `catalog`, `lines`, `new`, `move` and `remove` read and change
 //! the account through Plow, which runs and assigns everything: latch never
 //! waits for a cloud agent to start, never picks a line itself and never
 //! resends a change whose answer was lost.
 
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -68,7 +69,9 @@ pub struct LineShown {
 
 #[derive(Serialize)]
 pub struct Standing {
-    pub own_rules: bool,
+    /// The Swarm account the host's gatekeeper takes its citations from;
+    /// `null` when it has none there.
+    pub swarm_id: Option<String>,
     /// `null` when the host cannot tell (its saved flags are unreadable).
     pub exec_blocked: Option<bool>,
 }
@@ -103,6 +106,11 @@ async fn managed(
             let agent = resolve(plow, &agent).await?;
             json!({"agent": agent_shown(agent, None)})
         }
+        Some(AgentsAction::Map {
+            agent,
+            swarm_id,
+            host,
+        }) => crate::gate::client::map_agent(state, host, &agent, &swarm_id).await?,
         Some(AgentsAction::Catalog) => catalog(plow).await?,
         Some(AgentsAction::StartByText) => start_by_text(api_url).await?,
         Some(AgentsAction::Lines) => lines(plow).await?,
@@ -194,7 +202,7 @@ async fn rules_on(
     let request = Request {
         op: "rules".to_string(),
         args: show,
-        chat: None,
+        intent: None,
     };
     // Answering at all is what online means here: an offline host fails.
     let rules = dial::call(state, &host, &request, ANSWER_WITHIN).await?;
@@ -210,8 +218,8 @@ async fn rules_on(
 /// only the host's own `null` (it cannot tell) leaves `exec_blocked` unknown.
 #[derive(Debug, PartialEq)]
 struct HostRules {
-    /// The agents with rules of their own there.
-    own_rules: Vec<String>,
+    /// Each agent's Swarm account there, by uid.
+    mapped: BTreeMap<String, String>,
     deny_exec: Option<DenyExecRead>,
 }
 
@@ -223,13 +231,7 @@ struct DenyExecRead {
 
 #[derive(Deserialize)]
 struct RulesRead {
-    agents: Vec<AgentRulesRead>,
-}
-
-#[derive(Deserialize)]
-struct AgentRulesRead {
-    agent_uid: String,
-    text: Option<String>,
+    agents: BTreeMap<String, String>,
 }
 
 impl HostRules {
@@ -249,21 +251,15 @@ impl HostRules {
             }
         };
         let read: RulesRead = serde_json::from_value(rules).map_err(|_| unreadable("agents"))?;
-        let own_rules = read
-            .agents
-            .into_iter()
-            .filter(|agent| agent.text.is_some())
-            .map(|agent| agent.agent_uid)
-            .collect();
         Ok(HostRules {
-            own_rules,
+            mapped: read.agents,
             deny_exec,
         })
     }
 
     fn standing(&self, uid: &str) -> Standing {
         Standing {
-            own_rules: self.own_rules.iter().any(|own| own == uid),
+            swarm_id: self.mapped.get(uid).cloned(),
             exec_blocked: self.deny_exec.as_ref().map(|deny| {
                 deny.every_agent || deny.agent_uids.iter().any(|blocked| blocked == uid)
             }),
@@ -795,35 +791,35 @@ mod tests {
     }
 
     #[test]
-    fn standing_is_read_from_rules_and_deny_exec() {
+    fn standing_is_read_from_the_agent_map_and_deny_exec() {
         let rules = read(
-            json!({"agents": [{"agent_uid": UID, "text": "Only tests."}],
+            json!({"agents": {UID: "@ada:plow.co"},
             "deny_exec": {"every_agent": false, "agent_uids": [UID]}}),
         )
         .unwrap();
         let standing = rules.standing(UID);
         assert_eq!(
-            (standing.own_rules, standing.exec_blocked),
-            (true, Some(true))
+            (standing.swarm_id.as_deref(), standing.exec_blocked),
+            (Some("@ada:plow.co"), Some(true))
         );
         let other = rules.standing("fedcba9876543210fedcba9876543210");
-        assert_eq!((other.own_rules, other.exec_blocked), (false, Some(false)));
+        assert_eq!((other.swarm_id, other.exec_blocked), (None, Some(false)));
     }
 
     #[test]
     fn exec_blocked_is_unknown_only_when_the_host_says_so() {
-        let rules = read(json!({"agents": [], "deny_exec": null})).unwrap();
+        let rules = read(json!({"agents": {}, "deny_exec": null})).unwrap();
         assert_eq!(rules.standing(UID).exec_blocked, None);
     }
 
     #[test]
     fn a_missing_or_malformed_deny_exec_is_an_error_never_false() {
         for rules in [
-            json!({"agents": []}),
-            json!({"agents": [], "deny_exec": {}}),
-            json!({"agents": [], "deny_exec": {"every_agent": "yes", "agent_uids": []}}),
-            json!({"agents": [], "deny_exec": {"every_agent": false}}),
-            json!({"agents": [], "deny_exec": {"every_agent": false, "agent_uids": "all"}}),
+            json!({"agents": {}}),
+            json!({"agents": {}, "deny_exec": {}}),
+            json!({"agents": {}, "deny_exec": {"every_agent": "yes", "agent_uids": []}}),
+            json!({"agents": {}, "deny_exec": {"every_agent": false}}),
+            json!({"agents": {}, "deny_exec": {"every_agent": false, "agent_uids": "all"}}),
             json!({"deny_exec": {"every_agent": false, "agent_uids": []}}),
         ] {
             let error = read(rules.clone()).unwrap_err();

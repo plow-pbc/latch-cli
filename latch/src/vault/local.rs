@@ -96,7 +96,7 @@ pub(super) async fn link(state: &StateDir, args: Value) -> Result<Value, Failure
         &crate::wire::Request {
             op: "vault".into(),
             args,
-            chat: None,
+            intent: None,
         },
         crate::dial::ANSWER_WITHIN,
     )

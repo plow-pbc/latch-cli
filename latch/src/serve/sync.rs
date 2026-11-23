@@ -132,7 +132,7 @@ async fn exchange(host: &Host, peer: &Peer, connection: &Connection) -> Result<(
     let ask = |args: serde_json::Value| Request {
         op: "vault".into(),
         args,
-        chat: None,
+        intent: None,
     };
     let hosts = host.vault.with(|store| Ok(store.state().hosts.clone()))?;
     let first = ask(json!({"command": "sync", "state": null, "hosts": hosts}));
