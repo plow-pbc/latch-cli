@@ -11,7 +11,8 @@
 //! record says it speaks for them, on a message or a reaction alike. A
 //! room is the agent's own 1:1 with the owner when every member has joined
 //! (an invitation counts for nothing) and the only ones besides the agent
-//! are the owner and phone accounts that speak for them. An answer missing
+//! are the owner and phone accounts that speak for them; the iMessage
+//! bridge's notice account on the owner's server is no one. An answer missing
 //! any part the gatekeeper reads is refused, never read as empty.
 
 use std::path::{Path, PathBuf};
@@ -33,6 +34,10 @@ const ROOM_WINDOW_S: i64 = 24 * 60 * 60;
 const ROOM_WINDOW_MESSAGES: usize = 50;
 /// The reactions that close a thread, when the owner puts them on its root.
 const CLOSED: [&str; 2] = ["✅", "❌"];
+/// The iMessage bridge's notice account on the owner's server, in every
+/// iMessage room: `swarm read` doesn't say an account's kind, and this one
+/// speaks for no one, so it is no one else in the room.
+const BRIDGE: &str = "imessage";
 /// Where the owner's Swarm account is kept, in the state folder.
 const OWNER_FILE: &str = "gatekeeper/swarm-owner.json";
 
@@ -214,14 +219,21 @@ fn thread(
         .map(|(sender, _)| sender.as_str())
         .collect();
     let owners = |id: &str| id == owner || speaks_for_owner.contains(&id);
-    let others: Vec<&str> = read
+    let bridge = owner
+        .split_once(':')
+        .map(|(_, server)| format!("@{BRIDGE}:{server}"));
+    let members: Vec<&Member> = read
         .members
+        .iter()
+        .filter(|m| Some(&m.user_id) != bridge.as_ref())
+        .collect();
+    let others: Vec<&str> = members
         .iter()
         .map(|m| m.user_id.as_str())
         .filter(|id| *id != agent)
         .collect();
-    let is_owner_dm = read.members.iter().all(|m| m.membership == "join")
-        && read.members.iter().any(|m| m.user_id == agent)
+    let is_owner_dm = members.iter().all(|m| m.membership == "join")
+        && members.iter().any(|m| m.user_id == agent)
         && !others.is_empty()
         && others.iter().all(|id| owners(id));
     let closed = read
@@ -347,6 +359,7 @@ mod tests {
     const OWNER: &str = "@sam:plow.co";
     const PHONE: &str = "@phone-sam:plow.co";
     const AGENT: &str = "@scout:plow.co";
+    const BRIDGE_ACCOUNT: &str = "@imessage:plow.co";
 
     fn message(id: &str, sender: &str, mins_ago: i64, text: &str, root: Option<&str>) -> Value {
         json!({"event_id": id, "room": "!dm", "sender": sender, "text": text,
@@ -413,12 +426,28 @@ mod tests {
         ] {
             assert_eq!(of(&read(&members, vec![])).is_owner_dm, dm, "{members:?}");
         }
-        // An iMessage room: the agent and the owner's phone account.
-        let mut r = read(&[PHONE, AGENT], vec![]);
-        r["event"]["sender"] = json!(PHONE);
-        r["event"]["speaks_for"] = json!(OWNER);
-        let t = of(&r);
-        assert!(t.sender_is_owner && t.is_owner_dm);
+        // An iMessage room: the agent, the owner's phone account and the
+        // bridge's notice account, with the owner sometimes in it too. Anyone
+        // else in it, or a bridge account from another server, is no 1:1.
+        for (members, dm) in [
+            (vec![PHONE, AGENT], true),
+            (vec![PHONE, AGENT, BRIDGE_ACCOUNT], true),
+            (vec![OWNER, PHONE, AGENT, BRIDGE_ACCOUNT], true),
+            (vec![PHONE, AGENT, BRIDGE_ACCOUNT, "@bob:plow.co"], false),
+            (
+                vec![PHONE, AGENT, BRIDGE_ACCOUNT, "@other-agent:plow.co"],
+                false,
+            ),
+            (vec![PHONE, AGENT, "@imessage:evil.example"], false),
+            (vec![AGENT, BRIDGE_ACCOUNT], false),
+        ] {
+            let mut r = read(&members, vec![]);
+            r["event"]["sender"] = json!(PHONE);
+            r["event"]["speaks_for"] = json!(OWNER);
+            let t = of(&r);
+            assert!(t.sender_is_owner, "{members:?}");
+            assert_eq!(t.is_owner_dm, dm, "{members:?}");
+        }
     }
 
     #[test]
