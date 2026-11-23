@@ -539,6 +539,15 @@ async fn an_allowed_action_runs_only_once_its_gate_record_is_written() {
     let id = allowed.gate["gate_record"].as_str().unwrap().to_string();
     let text = std::fs::read_to_string(&log_path).unwrap();
     assert!(text.contains(&id), "the gate record is in the log");
+    // The owner's call with no device rule asks no judge, so it adds no
+    // record beside the call's own.
+    let owner = Gate {
+        caller: Caller::Owner,
+        ..gate
+    };
+    let allowed = owner.judge(&send_mail()).await;
+    assert!(allowed.verdict.is_ok() && allowed.gate.get("gate_record").is_none());
+    assert_eq!(std::fs::read_to_string(&log_path).unwrap(), text);
     // A log that can't be written refuses the action.
     std::fs::remove_file(&log_path).unwrap();
     std::fs::create_dir(&log_path).unwrap();

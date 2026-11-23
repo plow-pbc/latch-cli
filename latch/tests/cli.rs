@@ -3427,7 +3427,7 @@ fn status_asks_every_host_for_its_plugins_at_once_and_in_time() {
     let _serving = (serving(&host, &relay), serving(&pi, &relay));
     // One host that lets the call in and never answers, one of another
     // protocol, and one Plow lists offline.
-    let stalled = relay_runtime.block_on(silent(&relay, b"plow/latch/5"));
+    let stalled = relay_runtime.block_on(silent(&relay, b"plow/latch/4"));
     let older = relay_runtime.block_on(silent(&relay, b"plow/latch/4"));
     {
         let mut state = plow.state.lock().unwrap();
@@ -6177,10 +6177,10 @@ fn a_command_never_dials_around_a_host_that_holds_the_key() {
     assert!(refused("starting") < std::time::Duration::from_secs(3));
     // One not answering on its socket.
     let socket =
-        std::os::unix::net::UnixListener::bind(owners.studio.join("serve-v5.sock")).unwrap();
+        std::os::unix::net::UnixListener::bind(owners.studio.join("serve-v4.sock")).unwrap();
     refused("wedged");
     drop(socket);
-    fs::remove_file(owners.studio.join("serve-v5.sock")).unwrap();
+    fs::remove_file(owners.studio.join("serve-v4.sock")).unwrap();
     drop(key);
     // A host of an older latch, which holds `serve.lock` alone.
     let mut serve_lock = lock("serve.lock");
@@ -7134,7 +7134,7 @@ fn local_vault_edits_are_visible_to_serve_and_phone_links_stay_live() {
     fs::create_dir(&share).unwrap();
     let _serve = serving(&host, &relay);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while !host.join("serve-v5.sock").exists() {
+    while !host.join("serve-v4.sock").exists() {
         assert!(
             std::time::Instant::now() < deadline,
             "no local link receiver"
@@ -7471,7 +7471,7 @@ fn a_local_agent_cannot_manage_a_vault() {
 
 /// The Mac app can send the same operation frames without a second CLI path.
 fn local_operation(host: &Path, op: &str, args: Value) -> Value {
-    let mut socket = std::os::unix::net::UnixStream::connect(host.join("serve-v5.sock")).unwrap();
+    let mut socket = std::os::unix::net::UnixStream::connect(host.join("serve-v4.sock")).unwrap();
     socket
         .set_read_timeout(Some(std::time::Duration::from_secs(10)))
         .unwrap();
@@ -7500,7 +7500,7 @@ fn local_socket_judges_exec_files_google_and_allows_owner_commands() {
     plow.state.lock().unwrap().google = Some("google-token".into());
     let _serve = serving(&host, &relay);
     assert_eq!(
-        fs::metadata(host.join("serve-v5.sock"))
+        fs::metadata(host.join("serve-v4.sock"))
             .unwrap()
             .permissions()
             .mode()
@@ -10178,7 +10178,7 @@ fn stop_gives_up_on_a_host_that_never_answers() {
     let mut lock = fs::File::create(state.join("serve.lock")).unwrap();
     write!(lock, "latch serve (pid {}, latch)", std::process::id()).unwrap();
     lock.lock().unwrap();
-    let listener = std::os::unix::net::UnixListener::bind(state.join("serve-v5.sock")).unwrap();
+    let listener = std::os::unix::net::UnixListener::bind(state.join("serve-v4.sock")).unwrap();
     thread::spawn(move || {
         let mut held = Vec::new();
         for connection in listener.incoming() {
@@ -11703,7 +11703,7 @@ mod lifecycle {
     fn a_stale_socket_of_this_version_is_never_taken_for_its_host() {
         let (_dir, state, _) = owner_host();
         let (_old, _socket, said) = old_host(&state);
-        let current = state.join("serve-v5.sock");
+        let current = state.join("serve-v4.sock");
         // A socket no one listens on any more, then a plain file.
         drop(std::os::unix::net::UnixListener::bind(&current).unwrap());
         let serve = local_serve(&state);

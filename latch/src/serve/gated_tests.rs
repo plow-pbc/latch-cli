@@ -486,7 +486,11 @@ async fn an_agents_op_runs_only_on_a_cited_intent_and_every_call_is_judged() {
     let Response::Error { next, .. } = &answer else {
         unreachable!()
     };
-    assert!(next.as_deref().unwrap().contains("--intent"), "{next:?}");
+    let next = next.as_deref().unwrap();
+    assert!(
+        next.contains("update latch") && next.contains("--intent"),
+        "{next}"
+    );
     assert!(!t.area.join("made").exists());
     assert_eq!(t.judged(), 0);
 

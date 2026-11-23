@@ -152,13 +152,12 @@ pub struct Gate<'a> {
 
 impl Gate<'_> {
     /// Whether `action` may run, in the judge's words for it. An allowed
-    /// action that needed the owner's intent runs only once its gate
-    /// record is in the host's audit log, named in `gate` as
-    /// `gate_record`.
+    /// action the judge was asked about runs only once its gate record is
+    /// in the host's audit log, named in `gate` as `gate_record`.
     pub async fn judge(&self, action: &impl Serialize) -> Judgment {
         let action = serde_json::value::to_raw_value(action).expect("an action serializes");
         let mut judgment = self.keeper.judge(self.caller, &action).await;
-        if judgment.verdict.is_ok() && judgment.gate["class"] == "intent" {
+        if judgment.verdict.is_ok() && judgment.gate.get("prompt").is_some() {
             match self
                 .keeper
                 .gate_record(self.peer, self.caller, &judgment.gate)
@@ -548,7 +547,7 @@ const HOW_TO_CITE: &str = "find the owner's message that asked for this in your 
 /// teaches it how to get an action through, or that it can't.
 fn next_step(reason: &str) -> String {
     match reason {
-        "intent_required" => format!("Reads need no citation, but this does: {HOW_TO_CITE}."),
+        "intent_required" => format!("Reads need no citation, but this does. If your latch has no --intent, update latch first. Then {HOW_TO_CITE}."),
         "bad_intent" => format!("Pass exactly one <room>/<event_id>: {HOW_TO_CITE}."),
         "intent_not_found" => format!("Check the room and event id, then retry: {HOW_TO_CITE}."),
         "intent_not_owner" => format!("Cite a message the owner wrote, not yours or anyone else's. If they never asked for this, ask them in your 1:1 room, then {HOW_TO_CITE}."),
