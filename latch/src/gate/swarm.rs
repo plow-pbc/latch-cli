@@ -36,10 +36,18 @@ const CLOSED: [&str; 2] = ["✅", "❌"];
 /// Where the owner's Swarm account is kept, in the state folder.
 const OWNER_FILE: &str = "gatekeeper/swarm-owner.json";
 
-/// The `swarm` program: `$LATCH_SWARM`, else `swarm` on the owner's
-/// `PATH` (`worker::owner_path`).
-fn program() -> PathBuf {
-    std::env::var_os("LATCH_SWARM").map_or_else(|| PathBuf::from("swarm"), PathBuf::from)
+/// The `swarm` program (`$LATCH_SWARM`, else `swarm` on the owner's `PATH`,
+/// `worker::owner_path`), keeping the owner's device in the state folder,
+/// which no worker can read, even one started before the sign-in.
+fn swarm(state_dir: &Path) -> tokio::process::Command {
+    let program =
+        std::env::var_os("LATCH_SWARM").map_or_else(|| PathBuf::from("swarm"), PathBuf::from);
+    let mut command = tokio::process::Command::new(program);
+    command
+        .env("PATH", crate::worker::owner_path())
+        .env("SWARM_HOME", state_dir.join("swarm"))
+        .kill_on_drop(true);
+    command
 }
 
 /// The owner's Swarm account on this host, once `latch swarm signin` ran.
@@ -76,23 +84,29 @@ impl ThreadSource for SwarmReader {
             let owner = owner(&self.state_dir)?.ok_or(
                 "the owner hasn't signed this host in to Swarm: `latch swarm signin --company SLUG`",
             )?;
-            let answer = run(&[
-                "read",
-                &intent.room,
-                &intent.event,
-                "--after",
-                "--as",
-                &owner,
-            ])
+            let answer = run(
+                &self.state_dir,
+                &[
+                    "read",
+                    &intent.room,
+                    &intent.event,
+                    "--after",
+                    "--as",
+                    &owner,
+                ],
+            )
             .await;
             let answer = match answer {
                 // A reply in a thread: the thread from its root, for what it answers.
                 Ok(read) if read["event"]["event_id"] != read["thread_root"] => {
                     let root = read["thread_root"].as_str().unwrap_or_default();
                     let room = read["room"].as_str().unwrap_or_default();
-                    run(&["read", room, root, "--after", "--as", &owner])
-                        .await
-                        .map(|earlier| (read, Some(earlier)))
+                    run(
+                        &self.state_dir,
+                        &["read", room, root, "--after", "--as", &owner],
+                    )
+                    .await
+                    .map(|earlier| (read, Some(earlier)))
                 }
                 answer => answer.map(|read| (read, None)),
             };
@@ -115,12 +129,9 @@ enum Ran {
 }
 
 /// Runs `swarm ARGS` and reads its JSON answer.
-async fn run(args: &[&str]) -> Result<Value, Ran> {
-    let mut command = tokio::process::Command::new(program());
-    command
-        .args(args)
-        .env("PATH", crate::worker::owner_path())
-        .kill_on_drop(true);
+async fn run(state_dir: &Path, args: &[&str]) -> Result<Value, Ran> {
+    let mut command = swarm(state_dir);
+    command.args(args);
     let output = tokio::time::timeout(READ_WITHIN, command.output())
         .await
         .map_err(|_| Ran::Failed(format!("swarm took over {}s", READ_WITHIN.as_secs())))?
@@ -292,13 +303,11 @@ pub async fn sign_in(state: &StateDir, company: &str) -> Result<Value, Failure> 
     let config = state.require_login()?;
     super::owner::owner_only(&config.peer.kind, "Swarm sign-in")?;
     let token = crate::credential::token(state)?;
-    let mut command = tokio::process::Command::new(program());
+    let mut command = swarm(&state.path);
     command
         .args(["signin", "--company", company])
-        .env("PATH", crate::worker::owner_path())
         .env("SWARM_ACCOUNT_TOKEN", token)
-        .env("SWARM_PLOW_API", &config.api_url)
-        .kill_on_drop(true);
+        .env("SWARM_PLOW_API", &config.api_url);
     let output = command.output().await.map_err(|err| {
         Failure::new(
             code::program_not_found,
@@ -535,7 +544,8 @@ mod tests {
         }
     }
 
-    /// The reader runs `swarm` as the owner signed in here: no sign-in, a
+    /// The reader runs `swarm` as the owner signed in here, its device in
+    /// the state folder: no sign-in, a
     /// room the owner isn't in, and anything `swarm` can't read are each
     /// said apart. (`$LATCH_SWARM` is this test process's own: nextest runs
     /// each test alone.)
@@ -557,7 +567,10 @@ mod tests {
         let answering = |body: &str, status: u8| {
             std::fs::write(
                 &program,
-                format!("#!/bin/sh\necho '{body}'\nexit {status}\n"),
+                format!(
+                    "#!/bin/sh\n[ \"$SWARM_HOME\" = '{}' ] || exit 7\necho '{body}'\nexit {status}\n",
+                    dir.path().join("swarm").display()
+                ),
             )
             .unwrap();
             std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
