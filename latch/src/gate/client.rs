@@ -29,7 +29,11 @@ pub async fn run(state: &StateDir, args: RulesArgs) -> Result<Value, Failure> {
         | RulesCommand::Edit { scope }
         | RulesCommand::Clear { scope, .. }
         | RulesCommand::Show { scope } => scope,
-        RulesCommand::Try { draft, actions } => return preview(state, draft, actions).await,
+        RulesCommand::Try {
+            draft,
+            message,
+            actions,
+        } => return preview(state, draft, message.as_deref(), actions).await,
     };
     // `--host default` read once: an edit's save goes where its show went.
     let target = Target {
@@ -91,9 +95,15 @@ pub async fn run(state: &StateDir, args: RulesArgs) -> Result<Value, Failure> {
     }
 }
 
-/// `latch rules try`: whether the draft denies each action, judged on
-/// this machine as the owner's own call.
-async fn preview(state: &StateDir, draft: &Path, actions: &[String]) -> Result<Value, Failure> {
+/// `latch rules try`: whether the draft denies each action and, with
+/// `message`, whether that message of the owner's covers it, judged on
+/// this machine.
+async fn preview(
+    state: &StateDir,
+    draft: &Path,
+    message: Option<&str>,
+    actions: &[String],
+) -> Result<Value, Failure> {
     let rule = read_file(draft)?;
     // A failure names the action by its place, never its text, which may
     // hold a secret.
@@ -115,7 +125,7 @@ async fn preview(state: &StateDir, draft: &Path, actions: &[String]) -> Result<V
         .collect::<Result<Vec<_>, _>>()?;
     let provider = Gatekeeper::provider_for_host(&state.path)
         .map_err(|why| Failure::new(code::not_logged_in, why))?;
-    // The owner's judgment reads no thread.
+    // A preview reads no thread: the message, if any, is given.
     let keeper = Gatekeeper::new(
         provider,
         Box::new(SwarmReader::new(&state.path)),
@@ -123,11 +133,11 @@ async fn preview(state: &StateDir, draft: &Path, actions: &[String]) -> Result<V
     );
     let mut verdicts = Vec::new();
     for (index, raw) in raws.iter().enumerate() {
-        let denied = keeper
-            .preview(&rule, raw)
+        let ruled = keeper
+            .preview(&rule, message, raw)
             .await
             .map_err(|failure| named(index, failure))?;
-        verdicts.push(json!({"denied": denied}));
+        verdicts.push(json!({"denied": ruled.denied, "covered": ruled.covered}));
     }
     Ok(json!({"verdicts": verdicts}))
 }

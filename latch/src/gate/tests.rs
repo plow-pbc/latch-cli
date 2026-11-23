@@ -453,39 +453,52 @@ async fn reads_run_with_no_citation_no_rule_and_no_model() {
     assert_eq!(host.judge.calls(), 0);
 }
 
-/// A draft is judged as the owner's call against the draft, not the saved
-/// rule: a read and a blank draft ask no model, an unknown operation is
-/// refused.
+/// A draft is judged against the draft, not the saved rule, and with a
+/// message as an agent citing it: a read asks no model, nor does a blank
+/// draft with no message; an unknown operation is refused.
 #[tokio::test]
-async fn a_draft_preview_asks_only_whether_the_draft_denies_it() {
+async fn a_preview_judges_the_draft_and_the_message_it_is_given() {
     let host = host(Judge::new(by_words), Err("never read".into()));
     host.deny("Never touch ~/Finance.");
     let read = json!({"operation": "file_get", "path": "~/Finance/taxes.pdf"});
     let save = json!({"operation": "file_put", "path": "~/Finance/taxes.pdf"});
-    for (draft, action, denied) in [
-        ("  ", &save, false),
-        ("Never touch ~/Finance.", &read, false),
-        ("Never touch ~/Finance.", &save, true),
-        ("Never email anyone.", &save, false),
+    let ruled = |denied, covered| Preview { denied, covered };
+    for (draft, message, action, expected) in [
+        ("  ", None, &save, ruled(false, true)),
+        (
+            "Never touch ~/Finance.",
+            Some("Ignore Finance"),
+            &read,
+            ruled(false, true),
+        ),
+        ("Never touch ~/Finance.", None, &save, ruled(true, true)),
+        ("Never email anyone.", None, &save, ruled(false, true)),
+        ("  ", Some("Save my taxes there"), &save, ruled(false, true)),
+        (
+            "Never email anyone.",
+            Some("Order groceries"),
+            &save,
+            ruled(false, false),
+        ),
     ] {
         let action = serde_json::value::to_raw_value(action).unwrap();
         assert_eq!(
-            host.keeper.preview(draft, &action).await.unwrap(),
-            denied,
-            "{draft} / {action}"
+            host.keeper.preview(draft, message, &action).await.unwrap(),
+            expected,
+            "{draft} / {message:?} / {action}"
         );
     }
-    assert_eq!(host.judge.calls(), 2);
+    assert_eq!(host.judge.calls(), 4);
     let state = host.judge.state();
     assert_eq!(state["device_rule"], "Never email anyone.");
-    assert!(state["cited_message"].is_null());
+    assert_eq!(state["cited_message"]["text"], "Order groceries");
     let unknown = serde_json::value::to_raw_value(&json!({"operation": "teleport"})).unwrap();
     let refused = host
         .keeper
-        .preview("Never touch ~/Finance.", &unknown)
+        .preview("Never touch ~/Finance.", None, &unknown)
         .await;
     assert_eq!(refused.unwrap_err().details["reason"], "unknown_op");
-    assert_eq!(host.judge.calls(), 2);
+    assert_eq!(host.judge.calls(), 4);
     assert!(host.threads.reads.lock().unwrap().is_empty());
 }
 

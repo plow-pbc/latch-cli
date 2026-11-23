@@ -1307,22 +1307,36 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "rules.try",
         runs_on: |_| RunsOn::Local,
-        output: "`verdicts`: for each ACTION_JSON in order, `denied`: whether the draft device rule would deny it if the owner asked for it on this machine. A read is never denied and a blank draft denies nothing, with no model asked; an action latch doesn't know is unknown_op, naming it.",
+        output: "`verdicts`: for each ACTION_JSON in order, `denied`: whether the draft device rule would deny it, and `covered`: with --message, whether an agent citing that message of the owner's would be asking for it (always true without one). Without --message it is judged as the owner's own request on this machine. A read is never denied and always covered, and a blank draft with no message denies nothing, with no model asked; an action latch doesn't know is unknown_op, naming it.",
         effect: Repeatable(
             "asks the decision model once for each action it judges, billed to your Plow balance like a real judgment; nothing runs, the draft is never saved, and nothing is audited",
         ),
         owner_only: true,
         connector: None,
-        examples: &[ex(
-            "Would a draft read from stdin deny saving a file into ~/Finance?",
-            &[
-                "rules",
-                "try",
-                "--draft",
-                "-",
-                r#"{"operation":"file_put","path":"~/Finance/receipt.pdf","size":48213,"file_name":"receipt.pdf"}"#,
-            ],
-        )],
+        examples: &[
+            ex(
+                "Would a draft read from stdin deny saving a file into ~/Finance?",
+                &[
+                    "rules",
+                    "try",
+                    "--draft",
+                    "-",
+                    r#"{"operation":"file_put","path":"~/Finance/receipt.pdf","size":48213,"file_name":"receipt.pdf"}"#,
+                ],
+            ),
+            ex(
+                "Would an agent citing \"Save my receipts\" be asking to save that file, and would a blank rule let it?",
+                &[
+                    "rules",
+                    "try",
+                    "--draft",
+                    "/dev/null",
+                    "--message",
+                    "Save my receipts",
+                    r#"{"operation":"file_put","path":"~/Finance/receipt.pdf","size":48213,"file_name":"receipt.pdf"}"#,
+                ],
+            ),
+        ],
     },
     Entry {
         id: "plugins.enable",

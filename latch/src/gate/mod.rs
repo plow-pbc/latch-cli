@@ -292,27 +292,58 @@ impl Gatekeeper {
         Judgment { verdict, gate }
     }
 
-    /// Whether `rule`, a draft device rule, denies the owner's `action`:
-    /// the owner's judgment against the draft instead of the saved rule,
-    /// recording nothing. A read and a blank draft ask no model.
-    pub async fn preview(&self, rule: &str, action: &RawValue) -> Result<bool, Failure> {
+    /// What the gate would rule on `action` against `rule`, a draft device
+    /// rule, and, with `message`, as an agent's request citing that message
+    /// of the owner's: recording nothing. A read, and a blank draft with no
+    /// message, ask no model.
+    pub async fn preview(
+        &self,
+        rule: &str,
+        message: Option<&str>,
+        action: &RawValue,
+    ) -> Result<Preview, Failure> {
         let shown: Value = serde_json::from_str(action.get()).expect("the action is JSON");
+        let unasked = Preview {
+            denied: false,
+            covered: true,
+        };
         match classify(&shown) {
-            Class::Free => return Ok(false),
+            Class::Free => return Ok(unasked),
             Class::Unknown => return Err(unknown_op()),
-            Class::Intent if rule.trim().is_empty() => return Ok(false),
             Class::Intent => {}
         }
+        let rule = Some(rule).filter(|rule| !rule.trim().is_empty());
         let now = jiff::Zoned::now();
+        let thread = message.map(|text| Thread {
+            room: "!preview".into(),
+            event: "$preview".into(),
+            cited: thread::Said {
+                text: text.into(),
+                at: now.timestamp(),
+            },
+            sender_is_owner: true,
+            later_owner: vec![],
+            context: vec![],
+            is_owner_dm: true,
+            closed: false,
+            redacted: false,
+            complete: true,
+        });
+        if rule.is_none() && thread.is_none() {
+            return Ok(unasked);
+        }
         let clock = now.strftime("%a %Y-%m-%d %H:%M %Z").to_string();
         let asked = Asked {
-            rule: Some(rule),
-            intent: None,
+            rule,
+            intent: thread.as_ref().map(|thread| (thread, &[][..])),
         };
         let p = self
             .ask(&asked, now.timestamp(), &clock, action, &mut json!({}))
             .await?;
-        Ok(verdict(p).is_err())
+        Ok(Preview {
+            denied: p.denied.is_some_and(|p| p >= YES_P),
+            covered: verdict(P { denied: None, ..p }).is_ok(),
+        })
     }
 
     async fn decide(
@@ -562,6 +593,14 @@ fn cited_checks(thread: &Thread) -> Result<(), Failure> {
         ));
     }
     Ok(())
+}
+
+/// A previewed ruling: whether the rule denies it, and whether the cited
+/// message covers it (true when none was given).
+#[derive(Debug, PartialEq)]
+pub struct Preview {
+    pub denied: bool,
+    pub covered: bool,
 }
 
 /// The judge's answers: P(yes) to each question asked, and with `covered`

@@ -1000,6 +1000,9 @@ pub enum RulesCommand {
         /// The draft: the text of F (- reads stdin); a blank one denies nothing
         #[arg(long, value_name = "F")]
         draft: PathBuf,
+        /// Also judge each as an agent's request citing this message of yours
+        #[arg(long, value_name = "TEXT")]
+        message: Option<String>,
         #[arg(value_name = "ACTION_JSON", required = true)]
         actions: Vec<String>,
     },
