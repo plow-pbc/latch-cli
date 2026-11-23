@@ -1219,6 +1219,17 @@ impl<D: Driver> Core<D> {
             .ok_or_else(|| Failure::new(code::browser_gone, "the tab has no frame".into()))
     }
 
+    /// `expression`'s answer in `frame`, or `None` when the frame went away
+    /// since: pages drop frames all the time, and one being replaced holds
+    /// nothing yet.
+    fn in_frame(&mut self, frame: &Frame, expression: &str) -> Result<Option<Value>, Failure> {
+        match self.driver.run(frame, expression) {
+            Ok(found) => Ok(Some(found)),
+            Err(failure) if failure.code == "stale_snapshot" => Ok(None),
+            Err(failure) => Err(failure),
+        }
+    }
+
     /// Reads the active tab into a new snapshot: every frame, or only the
     /// element `scope` and what is inside it.
     fn read(&mut self, scope: Option<(String, usize)>) -> Result<Reading, Failure> {

@@ -435,17 +435,11 @@ impl<D: Driver> Core<D> {
             }
             Condition::Text { text } => {
                 let main = self.main_frame()?;
-                let page = match self
-                    .driver
-                    .run(&main, &format!("__latch.text({TEXT_CHARS})"))
-                {
-                    Ok(page) => page,
-                    // A page being replaced holds no text yet; the next poll
-                    // reads the one that replaces it.
-                    Err(failure) if failure.code == "stale_snapshot" => {
-                        return Ok((false, false, None));
-                    }
-                    Err(failure) => return Err(failure),
+                // A page being replaced holds no text yet; the next poll
+                // reads the one that replaces it.
+                let Some(page) = self.in_frame(&main, &format!("__latch.text({TEXT_CHARS})"))?
+                else {
+                    return Ok((false, false, None));
                 };
                 Ok((
                     page["text"]
