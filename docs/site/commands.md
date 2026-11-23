@@ -159,4 +159,5 @@ latch browser open --host my-mac https://example.com
 | `latch audit verify` | Host | Check every record's place in the chain, without the key. |
 | `latch audit rotate-key` | Host | Seal new records under a new key. |
 | `latch audit judge` | Host | Show what the gatekeeper asked Plow for one judgment, and the answer. Owner only.<br>See what the gatekeeper was asked and answered: `latch --pretty audit judge REQUEST` |
+| `latch audit suggest` | Host | Suggest the device-rule edit that would rule one judgment the other way. Owner only.<br>What rule would have let a refused request through? `latch audit suggest RECORD` |
 | `latch audit shot` | Host | Save a browser screenshot an audit record names. Owner only.<br>Save the screenshot after a plan's first action: `latch audit shot ID 1 --output step-1.png` |

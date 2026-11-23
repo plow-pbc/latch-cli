@@ -48,7 +48,11 @@ final class RulesClient: LatchClient, @unchecked Sendable {
     func statusFollow() -> AsyncThrowingStream<LocalStatus, Error> { AsyncThrowingStream { _ in } }
     func auditFollow(host: String?, after: String?, last: Int?) -> AsyncThrowingStream<AuditLine, Error> { AsyncThrowingStream { _ in } }
     func agents(host: String?) async throws -> AgentsList { try Fixtures.decode(host == nil ? Fixtures.agents : Fixtures.agentsStudio) }
-    func rulesTry(draft: String, action: String) async throws -> Bool { wordsDeny(draft: draft, action: action) }
+    /// `audit suggest`'s answer for a record, as the test scripts it.
+    var suggested: (String) throws -> String = { _ in #"{"suggestion":null}"# }
+    func auditSuggest(_ record: String, host: String?) async throws -> AuditSuggest {
+        try Fixtures.decode(try suggested(record))
+    }
     func auditJudge(_ id: String, host: String?) async throws -> String {
         try Fixtures.keptCalls[id] ?? { throw LatchError.failed(LatchFailure(code: "no_such_request", message: "no \(id)")) }()
     }
@@ -163,53 +167,38 @@ struct RulesCoachTests {
         return (app, studio)
     }
 
-    /// Each suggestion is one the judge rules the other way, and Apply saves
-    /// it; under the rule it saved, the request it came from has none.
-    @Test func eachSuggestionFlipsItsRulingAndApplySavesIt() async throws {
+    /// Rules presents latch's checked edit, and Apply saves it; an edit of
+    /// a rule that has changed since isn't offered.
+    @Test func latchsSuggestionIsShownAndApplySavesIt() async throws {
         let client = RulesClient()
         let (app, studio) = try await app(client)
         let allowed = try #require(app.lastJudged(on: studio, refused: false))
-        let refused = try #require(app.lastJudged(on: studio, refused: true))
         #expect(allowed.command == "latch exec cat Projects/latch-demo/README.md")
-        #expect(refused.command == "latch exec cat Finance/2026.csv" && refused.gate?.verdict == "denied_by_rule")
-        await app.suggest(for: allowed, on: studio)
-        await app.suggest(for: refused, on: studio)
         let never = "Never touch ~/Finance or my tax returns. Never run `cat Projects/latch-demo/README.md`."
+        let revision = try #require(app.savedRule(studio.name)?.revision)
+        client.suggested = { record in
+            #expect(record == allowed.id)
+            return #"{"suggestion":"rule","rule":"\#(never)","revision":"\#(revision)"}"#
+        }
+        await app.suggest(for: allowed, on: studio)
         #expect(app.suggestion(for: allowed, on: studio) == .rule(never))
-        // One sentence, which "You may …" can't outweigh: the judge lets it
-        // through only with no rule.
-        #expect(app.suggestion(for: refused, on: studio) == .rule(""))
-        #expect(app.keptCalls[refused.id]?.cited == "what did we spend this year? it's in my Finance folder")
-
         await app.applyRule(never, on: studio.name)
         #expect(client.sets.map(\.text) == [never])
-        #expect(app.savedRule(studio.name)?.text == never)
         await app.suggest(for: allowed, on: studio)
         #expect(app.suggestion(for: allowed, on: studio) == .nothing)
     }
 
-    /// A ruling a device rule can't flip, and one with no kept call to
-    /// judge again, get no rule.
-    @Test func whatNoRuleCanFlipGetsNone() async throws {
-        let (app, studio) = try await app(RulesClient())
-        let records = app.feed(for: studio).records
-        let notCovered = try #require(records.last { $0.gate?.verdict == "not_covered" })
-        let unkept = try #require(records.last { $0.decision == "allow" && $0.gate?.verdict == "allow" && $0.gate?.keptRequest == nil })
+    /// A check that failed is asked again the next time, not kept as none.
+    @Test func aFailedCheckIsAskedAgain() async throws {
+        let client = RulesClient()
+        let (app, studio) = try await app(client)
+        let notCovered = try #require(app.feed(for: studio).records.last { $0.gate?.verdict == "not_covered" })
+        client.suggested = { _ in throw LatchError.failed(LatchFailure(code: "plow_unreachable", message: "no Plow")) }
         await app.suggest(for: notCovered, on: studio)
-        await app.suggest(for: unkept, on: studio)
+        #expect(app.suggestion(for: notCovered, on: studio) == .nothing)
+        client.suggested = { _ in #"{"suggestion":"ask_in_message"}"# }
+        await app.suggest(for: notCovered, on: studio)
         #expect(app.suggestion(for: notCovered, on: studio) == .askInMessage)
-        #expect(app.suggestion(for: unkept, on: studio) == .nothing)
-    }
-
-    @Test(arguments: [
-        ("Never touch ~/Finance.", false, ["Never touch ~/Finance. Never run `ls`."]),
-        ("", false, ["Never run `ls`."]),
-        ("Never touch ~/Finance.", true, ["Never touch ~/Finance. You may run `ls`.", ""]),
-        ("Never touch ~/Finance.\nNever send email.", true,
-         ["Never send email.", "Never touch ~/Finance.", "Never touch ~/Finance.\nNever send email.\nYou may run `ls`."]),
-    ])
-    func theEditsTriedForAnAllowedOrRefusedRequest(rule: String, refused: Bool, expected: [String]) {
-        #expect(AppModel.candidates(rule: rule, summary: "run `ls`", refused: refused) == expected)
     }
 
     /// A judgment names its rule by revision: the rule now when it's at that

@@ -274,6 +274,7 @@ final class AppModel {
             if refresh || connections == nil { await refreshConnections() }
             if refresh || !Self.held(devices) { await refreshDevices() }
         case let .host(.rules, host):
+            // Its feed is the window's (`activityFeeds`), under the device rule.
             guard let host, host.isThisMac || host.online != false else { return }
             if refresh || !Self.held(summaries[host.name]?.rules) { await refreshRules(on: host) }
         case .account(.activity):
@@ -1002,11 +1003,11 @@ final class AppModel {
     private var feeds: [String: ActivityFeed] = [:]
 
     /// The feeds the screen showing shows, which the window runs: the
-    /// selected host's on Home, every reachable host's on Activity.
+    /// selected host's on Home and Rules, every reachable host's on Activity.
     var activityFeeds: [ActivityFeed] {
         switch route {
         case .account(.activity): reachableHosts.map(feed(for:))
-        case let .host(.home, host?) where host.isThisMac || host.online != false: [feed(for: host)]
+        case let .host(screen, host?) where [.home, .rules].contains(screen) && (host.isThisMac || host.online != false): [feed(for: host)]
         default: []
         }
     }

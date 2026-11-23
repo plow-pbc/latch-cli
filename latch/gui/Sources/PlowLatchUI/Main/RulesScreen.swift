@@ -81,6 +81,7 @@ private struct LastJudged: View {
                 details(record)
                     .task(id: "\(record.id)@\(app.savedRule(host.name)?.revision ?? "")") {
                         guard !app.still else { return }
+                        await app.readKeptCall(record, on: host)
                         await app.suggest(for: record, on: host)
                     }
             } else {
@@ -175,17 +176,14 @@ struct SuggestionBox: View {
 }
 
 /// What a gate record's kept call (`latch audit judge`) says: the text of
-/// the message it cited, and the action as the judge was shown it.
+/// the message it cited.
 nonisolated struct KeptCall: Equatable {
     var cited: String?
-    var action: String?
 
     init(_ json: String) {
         let call = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any]
         let state = (call?["request"] as? [String: Any])?["state"] as? [String: Any]
         cited = (state?["cited_message"] as? [String: Any])?["text"] as? String
-        action = state?["proposed_action"].flatMap { try? JSONSerialization.data(withJSONObject: $0, options: .sortedKeys) }
-            .map { String(decoding: $0, as: UTF8.self) }
     }
 }
 
@@ -194,6 +192,25 @@ nonisolated struct KeptCall: Equatable {
 /// none.
 enum RuleSuggestion: Equatable {
     case rule(String), askInMessage, nothing
+}
+
+/// `latch audit suggest`: the suggestion, and the revision of the rule an
+/// edit is of (nil for none).
+nonisolated struct AuditSuggest: Decodable {
+    var suggestion: RuleSuggestion
+    var revision: String?
+
+    private enum Keys: String, CodingKey { case suggestion, rule, revision }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Keys.self)
+        revision = try c.decodeIfPresent(String.self, forKey: .revision)
+        suggestion = switch try c.decodeIfPresent(String.self, forKey: .suggestion) {
+        case "rule"?: .rule(try c.decode(String.self, forKey: .rule))
+        case "ask_in_message"?: .askInMessage
+        default: .nothing
+        }
+    }
 }
 
 extension AppModel {
@@ -232,53 +249,20 @@ extension AppModel {
         suggestions["\(record.id)@\(savedRule(host.name)?.revision ?? "")"]
     }
 
-    /// Checks, once for each rule, which edit of the host's rule would rule
-    /// `record` the other way, judged on this Mac (`rules try`): offered
-    /// only while the rule now still rules as it did, and only an edit
-    /// that flips it. A device rule only denies, so a request your message
-    /// didn't cover can't be let through by one.
+    /// Asks latch which edit of the host's rule would rule `record` the
+    /// other way (`latch audit suggest`, which checks it with the judge),
+    /// each time it's asked: a failed check is tried again on the next
+    /// visit. An edit of a rule that has changed since isn't offered.
     func suggest(for record: AuditRecord, on host: HostEntry) async {
         if !Self.held(summaries[host.name]?.rules) { await refreshRules(on: host) }
-        let rule = savedRule(host.name)
-        let key = "\(record.id)@\(rule?.revision ?? "")"
-        guard suggestions[key] == nil else { return }
-        let found = await suggestion(for: record, on: host, rule: rule?.text ?? "")
-        guard !Task.isCancelled else { return }
-        suggestions[key] = found
-    }
-
-    private func suggestion(for record: AuditRecord, on host: HostEntry, rule: String) async -> RuleSuggestion {
-        let refused = record.isRefused
-        if record.gate?.verdict == "not_covered" { return .askInMessage }
-        guard !refused || record.gate?.verdict == "denied_by_rule", let summary = record.actionSummary,
-              let action = await readKeptCall(record, on: host)?.action else { return .nothing }
-        do {
-            guard try await client.rulesTry(draft: rule, action: action) == refused else { return .nothing }
-            for candidate in Self.candidates(rule: rule, summary: summary, refused: refused)
-            where try await client.rulesTry(draft: candidate, action: action) != refused {
-                return .rule(candidate)
-            }
-        } catch {}
-        return .nothing
-    }
-
-    /// The edits to try, in order: for an allowed request, the rule and
-    /// "Never …"; for a refused one, the rule without each of its first
-    /// three sentences, then the rule and "You may …", then no rule when
-    /// it's one sentence.
-    nonisolated static func candidates(rule: String, summary: String, refused: Bool) -> [String] {
-        let rule = rule.trimmingCharacters(in: .whitespacesAndNewlines)
-        let gap = rule.contains("\n") ? "\n" : " "
-        func adding(_ sentence: String) -> String { rule.isEmpty ? sentence : rule + gap + sentence }
-        guard refused else { return [adding("Never \(summary).")] }
-        var sentences: [String] = []
-        rule.enumerateSubstrings(in: rule.startIndex..., options: .bySentences) { sentence, _, _, _ in
-            if let sentence { sentences.append(sentence.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        let revision = savedRule(host.name)?.revision
+        let asked = await Self.result { try await self.client.auditSuggest(record.id, host: host.isThisMac ? nil : host.name) }
+        guard let asked else { return }
+        let found: RuleSuggestion = switch asked {
+        case let .success(answer) where answer.revision == revision || answer.suggestion == .askInMessage: answer.suggestion
+        default: .nothing
         }
-        let narrowed = sentences.count < 2 ? [] : sentences.indices.prefix(3).map { cut in
-            sentences.enumerated().filter { $0.offset != cut }.map(\.element).joined(separator: gap)
-        }
-        return narrowed + [adding("You may \(summary).")] + (sentences.count == 1 ? [""] : [])
+        suggestions["\(record.id)@\(revision ?? "")"] = found
     }
 
     /// A suggested rule, into the host's box and saved as typing would be.
@@ -353,12 +337,5 @@ struct DenialBanner: View {
             .contentShape(Rectangle())
             .onTapGesture { app.reviewDenial() }
         }
-    }
-}
-
-nonisolated extension AuditRecord {
-    /// The request in a few words, for a rule to name.
-    var actionSummary: String? {
-        request.map { op == "exec" ? "run `\($0)`" : "use `\($0)`" }
     }
 }

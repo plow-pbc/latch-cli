@@ -1352,6 +1352,16 @@ pub enum AuditAction {
         #[arg(long)]
         host: Option<String>,
     },
+    /// Suggest the device-rule edit that would rule one judgment the other way
+    ///
+    /// Checked with the gatekeeper before it is offered
+    Suggest {
+        /// The record's id (a record line's `cursor`)
+        record: String,
+        /// Another serving machine of the owner's whose record it is (owner devices only) [default: this machine's host]
+        #[arg(long)]
+        host: Option<String>,
+    },
     /// Save a browser screenshot an audit record names
     ///
     /// Saved to --output: an action's number in a plan, or `final`

@@ -55,6 +55,11 @@ nonisolated struct FakeLatchClient: LatchClient {
     }
     func rulesSet(_ text: String, host: String?, revision: String?) async throws {}
     func rulesTry(draft: String, action: String) async throws -> Bool { wordsDeny(draft: draft, action: action) }
+    /// What latch suggests for studio's records, as `audit suggest` checks
+    /// them with the judge.
+    func auditSuggest(_ record: String, host: String?) async throws -> AuditSuggest {
+        try Fixtures.decode(Fixtures.suggestions.first { record.hasPrefix($0.key) }?.value ?? #"{"suggestion":null}"#)
+    }
     func agents(host: String?) async throws -> AgentsList {
         switch host {
         case nil: try Fixtures.decode(Fixtures.agents)
@@ -181,6 +186,12 @@ nonisolated enum Fixtures {
     static let keptCalls = [
         "g43d47feb6f0de89c18a243f8": #"{"id":"g43d47feb6f0de89c18a243f8","layer":"owner","request":{"state":{"cited_message":{"when":"0 min ago","text":"show me the latch demo's readme"},"proposed_action":{"operation":"exec","argv":["cat","Projects/latch-demo/README.md"],"working_folder":"/Users/me","writes":[],"network":false,"secret_env":[]}}},"answer":null}"#,
         "g0cb70261a6f2d3e48b9c1d05": #"{"id":"g0cb70261a6f2d3e48b9c1d05","layer":"owner","request":{"state":{"cited_message":{"when":"0 min ago","text":"what did we spend this year? it's in my Finance folder"},"proposed_action":{"operation":"exec","argv":["cat","Finance/2026.csv"],"working_folder":"/Users/me","writes":[],"network":false,"secret_env":[]}}},"answer":null}"#,
+    ]
+    /// `latch audit suggest` of scout's last allowed and refused requests on
+    /// studio, by record id, under studio's rule.
+    static let suggestions = [
+        "5e49f9": #"{"suggestion":"rule","rule":"Never touch ~/Finance or my tax returns. Never run `cat Projects/latch-demo/README.md`.","revision":"ea4ac6c6bd9184d7479f8312f4ebca18db1804f21bba03212ac8f0dc80f35c7c"}"#,
+        "0cb702": #"{"suggestion":"rule","rule":"Never touch my tax returns.","revision":"ea4ac6c6bd9184d7479f8312f4ebca18db1804f21bba03212ac8f0dc80f35c7c"}"#,
     ]
     static let studioRules = #"{"agents":{"ba3c0b3ad1eba7a9a1eb04b67c9db0dd":"@scout:plow.co"},"deny_exec":{"agent_uids":[],"every_agent":false},"device_rule":{"revision":"ea4ac6c6bd9184d7479f8312f4ebca18db1804f21bba03212ac8f0dc80f35c7c","text":"Never touch ~/Finance or my tax returns."},"host":"studio"}"#
     static let studioVault = #"{"audit_id":"bcaf28dedfe777a60303c3ccd802a8a2380237b6f02988bc33dabb307431e0a6","items":[{"fields":[{"alias":false,"custom":false,"hidden":false,"label":"username"},{"alias":false,"custom":false,"hidden":true,"label":"password"}],"item":"v1","kind":"login","revision":1,"sites":["shop.example"],"title":"Shop (test)","totp":false,"username":"ada"},{"fields":[{"alias":false,"custom":false,"hidden":false,"label":"username"},{"alias":false,"custom":false,"hidden":true,"label":"password"}],"item":"v2","kind":"login","other_top_sites":["grocer-login.example"],"revision":1,"sites":["grocer.example"],"title":"Grocer (test)","totp":false,"username":"ada@example.com"},{"fields":[],"item":"v3","kind":"note","revision":1,"sites":[],"title":"Building notes (test)","totp":false},{"fields":[{"alias":false,"custom":false,"hidden":true,"label":"number"},{"alias":false,"custom":false,"hidden":true,"label":"code"},{"alias":false,"custom":false,"hidden":false,"label":"cardholder name"}],"item":"v4","kind":"card","revision":1,"sites":["shop.example"],"title":"Visa (test)","totp":false}]}"#
@@ -778,18 +789,12 @@ package enum SnapshotRunner {
             }
         }
         // Rules: studio's, its last allowed and refused each with the edit
-        // that would flip it (a one-sentence rule, then a two-sentence one,
-        // narrowed), an unsaved change to it, pi-kitchen's never answered,
+        // that would flip it, an unsaved change to it, pi-kitchen's never answered,
         // sidecar on a latch from before device rules, and the banner of a
         // recent refusal over Home.
         for dark in [false, true] {
             let screens: [(String, String?, (AppModel) -> Void)] = [
                 ("16-device-rule-studio-rules", nil, { _ in }),
-                ("16-device-rule-studio-rules-narrowed", nil, { app in
-                    app.stage(summary: HostSummary(rules: .success(try! Fixtures.decode(
-                        #"{"agents":{},"device_rule":{"revision":"ea4ac6c6bd9184d7479f8312f4ebca18db1804f21bba03212ac8f0dc80f35c7c","text":"Never touch ~/Finance or my tax returns.\nNever send email outside the company."},"host":"studio"}"#))),
-                              for: "studio")
-                }),
                 ("16-device-rule-denial-banner", nil, { app in
                     app.place = .host(.home)
                     app.denial = Denial(host: "studio", request: "latch exec cat Finance/2026.csv")

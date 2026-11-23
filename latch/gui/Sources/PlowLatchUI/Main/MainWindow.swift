@@ -275,7 +275,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
                 entering?.cancel()
                 entering = Task { [app] in await app.enter(route) }
             }
-            // Home and Activity share the hosts' feeds: going between
+            // Home, Rules and Activity share the hosts' feeds: going between
             // them keeps each running.
             let feeds = app.activityFeeds
             if feeds.map(ObjectIdentifier.init) != following.map(ObjectIdentifier.init) {

@@ -177,7 +177,7 @@ pub fn gated(op: &str, args: &Value) -> Option<Gated> {
         // rest are the owner's own settings and records, refused to an
         // agent by their own checks.
         "browser" | "rules" | "plugins" | "status" | "audit" | "audit_shot" | "audit_judge"
-        | "vault" => return None,
+        | "audit_suggest" | "vault" => return None,
         // An operation this list does not name is judged, and refused.
         _ => (none, json!({"operation": op})),
     };

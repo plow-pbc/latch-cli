@@ -464,6 +464,89 @@ async fn a_draft_preview_asks_only_whether_the_draft_denies_it() {
     assert!(host.threads.reads.lock().unwrap().is_empty());
 }
 
+/// A suggestion is an edit of the rule the judge says turns the ruling,
+/// offered only while the rule now rules as it did; what the owner's
+/// message didn't cover is asked for in it, never relaxed by a rule.
+#[tokio::test]
+async fn a_suggestion_is_a_checked_edit_or_asking_in_the_message() {
+    let host = host(Judge::new(by_words), Err("never read".into()));
+    let rule = "Never touch Finance.\nNever email anyone.";
+    host.deny(rule);
+    let raw = |action: Value| serde_json::value::to_raw_value(&action).unwrap();
+    let finance = raw(json!({"operation": "exec", "argv": ["cat", "Finance/2026.csv"]}));
+    let projects = raw(json!({"operation": "exec", "argv": ["ls", "Projects"]}));
+    let gate = |verdict: &str, covered: f64| json!({"verdict": verdict, "p": {"denied": 0.5, "covered": covered}});
+    let suggest = |gate: Value, summary: &'static str, action: Box<RawValue>| {
+        let keeper = &host.keeper;
+        async move {
+            keeper
+                .suggestion(&gate, Some(summary), Some(&action))
+                .await
+                .unwrap()
+        }
+    };
+    let revision = rules::revision(rule);
+    assert_eq!(
+        suggest(
+            gate("denied_by_rule", 0.9),
+            "run `cat Finance/2026.csv`",
+            finance.clone()
+        )
+        .await,
+        json!({"suggestion": "rule", "rule": "Never email anyone.", "revision": revision})
+    );
+    assert_eq!(
+        suggest(gate("allow", 0.9), "run `ls Projects`", projects.clone()).await,
+        json!({"suggestion": "rule", "rule": format!("{rule}\nNever run `ls Projects`."), "revision": revision})
+    );
+    // Denied, and not covered either: no rule lets it through.
+    let calls = host.judge.calls();
+    for uncovered in [gate("denied_by_rule", 0.2), gate("not_covered", 0.2)] {
+        assert_eq!(
+            suggest(uncovered, "run `cat Finance/2026.csv`", finance.clone()).await,
+            json!({"suggestion": "ask_in_message"})
+        );
+    }
+    // Allowed then, denied by the rule now: nothing to turn.
+    assert_eq!(
+        suggest(gate("allow", 0.9), "run `cat Finance/2026.csv`", finance).await,
+        json!({"suggestion": null})
+    );
+    assert_eq!(host.judge.calls(), calls + 1);
+}
+
+#[test]
+fn the_edits_tried_follow_the_ruling() {
+    for (rule, refused, edits) in [
+        (
+            "Never touch ~/Finance.",
+            false,
+            vec!["Never touch ~/Finance. Never run `ls`."],
+        ),
+        ("", false, vec!["Never run `ls`."]),
+        (
+            "Never touch ~/Finance.",
+            true,
+            vec!["Never touch ~/Finance. You may run `ls`.", ""],
+        ),
+        (
+            "Never touch ~/Finance.\nNever send email.",
+            true,
+            vec![
+                "Never send email.",
+                "Never touch ~/Finance.",
+                "Never touch ~/Finance.\nNever send email.\nYou may run `ls`.",
+            ],
+        ),
+    ] {
+        assert_eq!(
+            suggest::candidates(rule, "run `ls`", refused),
+            edits,
+            "{rule}"
+        );
+    }
+}
+
 #[test]
 fn every_operation_is_classified() {
     let class = |action: Value| classify(&action);

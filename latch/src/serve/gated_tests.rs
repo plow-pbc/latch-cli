@@ -1417,6 +1417,10 @@ async fn the_owners_rules_commands_work_over_the_connection_and_never_for_an_age
     );
     let text = serde_json::to_string(&audit).unwrap();
     assert!(!text.contains("Anything goes"), "{text}");
+    // serve.log names each command, never a saved rule's text.
+    let log = crate::log::captured().join("\n");
+    assert!(log.contains("rules:"), "{log}");
+    assert!(!log.contains("Never send email"), "{log}");
 }
 
 /// One request over a phone link's connection, as the phone page sends it.
