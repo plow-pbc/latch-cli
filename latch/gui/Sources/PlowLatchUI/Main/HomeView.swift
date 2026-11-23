@@ -221,7 +221,7 @@ nonisolated struct HomeActivity {
         for record in records.reversed() {
             let earlier = record.time < day.start
             guard !earlier || recent.count < 5 else { break }
-            guard !record.isBackground else { continue }
+            guard record.isRequest() else { continue }
             if recent.count < 5 { recent.append(record) }
             guard !earlier, record.time < day.end else { continue }
             today += 1

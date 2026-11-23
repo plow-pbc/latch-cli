@@ -240,6 +240,27 @@ struct ActivityTableTests {
         #expect(shown.map { $0.split(separator: " ").last.map(String.init) } == ["6", "5", "4", "3", "1"], "\(shown)")
     }
 
+    /// An unnamed agent's row says its name once Plow's list of agents
+    /// arrives, though the rows themselves don't change.
+    @Test func callersAreNamedWhenTheAgentsArrive() async throws {
+        let client = HostLog(records: 0)
+        let app = try app(client)
+        let (controller, window, feed) = open(app)
+        defer { close(window, feed) }
+        window.setContentSize(CGSize(width: 900, height: 600))
+        await waitUntil { feed.caughtUp }
+        let text = #"{"type":"record","cursor":"\#(HostLog.id(1))","record":{"id":"\#(HostLog.id(1))","time":"\#(HostLog.time(1).formatted(.iso8601))","agent":"\#(HostLog.scout)","caller":"c1","caller_name":null,"decision":"allow","outcome":"ok","details":null,"op":"exec","command":"latch exec ls"}}"#
+        feed.apply([try LatchJSON.decoder.decode(AuditLine.self, from: Data(text.utf8))])
+        await waitUntil { controller.rows.count == 1 }
+        controller.view.layoutSubtreeIfNeeded()
+        let caller = controller.table.column(withIdentifier: .init("caller"))
+        func shown() -> String { (controller.table.view(atColumn: caller, row: 0, makeIfNecessary: false) as? NSTableCellView)?.textField?.stringValue ?? "" }
+        #expect(shown().hasPrefix("Agent "))
+        app.stage(agents: try Fixtures.decode(Fixtures.agents), standings: [:])
+        await waitUntil { shown().hasPrefix("scout") }
+        #expect(shown().hasPrefix("scout"), "\(shown())")
+    }
+
     @Test func aNarrowerFilterKeepsTheSelectedRecordAndItsInspector() async throws {
         let client = HostLog(records: 600)
         let app = try app(client)

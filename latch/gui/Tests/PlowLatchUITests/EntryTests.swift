@@ -186,12 +186,10 @@ struct EntryTests {
         #expect(reachable.allSatisfy { app.standings[$0.name] != nil })
     }
 
-    @Test func homeRulesAndActivityShareTheirHostsFeedsAndOtherScreensHaveNone() throws {
+    @Test func homeAndActivityShareTheirHostsFeedsAndOtherScreensHaveNone() throws {
         let app = try app(CountingClient())
         app.place = .host(.home)
         let home = try #require(app.activityFeeds.first)
-        app.place = .host(.rules)
-        #expect(app.activityFeeds.map(ObjectIdentifier.init) == [ObjectIdentifier(home)])
         app.place = .host(.vault)
         #expect(app.activityFeeds.isEmpty)
         // Activity follows every host it can reach, the one picked among them.

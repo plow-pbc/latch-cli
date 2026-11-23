@@ -169,6 +169,12 @@ nonisolated struct AuditRecord: Decodable, Equatable, Identifiable {
             || (op == "plugins" && args?.command == "list" && outcome == "ok")
     }
 
+    /// A request Activity and Home list: never a judgment's own record (its
+    /// request's carries it), and a background one only when asked.
+    func isRequest(showingBackground: Bool = false) -> Bool {
+        op != "gate" && (showingBackground || !isBackground)
+    }
+
     /// The request as Activity lists it: latch's words, without `latch exec`
     /// before a command line or `latch` before anything else.
     var request: String? {

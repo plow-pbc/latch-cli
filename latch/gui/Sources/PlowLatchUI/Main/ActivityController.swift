@@ -19,6 +19,8 @@ final class ActivityController: NSViewController, NSTableViewDataSource, NSTable
     private(set) var rows: [ActivityRow] = []
     /// Records whose cited message is being read for its row.
     private var citing: Set<String> = []
+    /// The agents' names the Caller cells were drawn with.
+    private var named: [String]?
     /// Selecting rows to match the model, not a person's choice.
     private var selecting = false
     private var scheduled = false
@@ -211,6 +213,15 @@ final class ActivityController: NSViewController, NSTableViewDataSource, NSTable
             if table.selectedRow != row { select(row) }
         } else if table.selectedRow >= 0 {
             select(nil)
+        }
+        // Agents' names arrived or changed: the rows are the same, their
+        // Caller cells aren't.
+        let names = app.agents?.map { "\($0.uid) \($0.name ?? "")" }
+        if names != named {
+            named = names
+            if let column = table.tableColumns.firstIndex(where: { $0.identifier.rawValue == Column.caller.rawValue }), !rows.isEmpty {
+                table.reloadData(forRowIndexes: IndexSet(rows.indices), columnIndexes: [column])
+            }
         }
         if preview != nil { previewSelected() }
     }

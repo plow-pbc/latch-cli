@@ -669,6 +669,21 @@ struct AccountActivityTests {
         #expect(Set(app.activityRows.map(\.record.id)).intersection(hidden) == Set(hidden.dropFirst()))
     }
 
+    /// Home's recent requests are Activity's: each opens selected in the
+    /// inspector, never a judgment's own record that Activity doesn't list.
+    @Test func everyRecentRequestFromHomeOpensInActivity() throws {
+        let (app, studio, _) = try app()
+        app.feed(for: studio).stage(#"""
+        {"cursor":"g2","record":{"agent":"a74f38668570a45ddc4b762ba0465d74","caller":"c","caller_name":"scout","decision":"allow","details":{"gate":{"verdict":"allow"}},"id":"g2","op":"gate","outcome":"judged","time":"2026-10-23T05:01:00Z","command":null},"type":"record"}
+        """#)
+        let recent = HomeActivity(app.feed(for: studio).records, today: DateInterval(start: .distantPast, end: .distantFuture)).recent
+        #expect(recent.count == 5 && !recent.contains { $0.op == "gate" })
+        for record in recent {
+            app.openRecord(record, on: studio)
+            #expect(app.inspectedRecord?.record == record, "\(record.id)")
+        }
+    }
+
     /// A request without latch's prefix; an agent by its name in Plow when
     /// its record has none.
     @Test func rowsReadAsPeopleSayThem() throws {
