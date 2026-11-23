@@ -90,8 +90,8 @@ nonisolated struct AuditRecord: Decodable, Equatable, Identifiable {
         var verdict: String?
         /// What it read: `owner_request`, `defaults`, `rules`, `chat`, `chat_and_rules`.
         var source: String?
-        /// `COVERED`, `NOT_COVERED`, `FORBIDDEN`, each 0…1.
-        var p: [String: Double]?
+        /// `covered` and `denied`, each 0…1, or null when not asked.
+        var p: [String: Double?]?
         var rules: Rules?
         var ownerMessages: [String]?
         var model: String?
