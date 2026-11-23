@@ -226,12 +226,12 @@ impl Host {
     async fn agent(&self, intent: Option<&str>, action: Value) -> Judgment {
         let action = serde_json::value::to_raw_value(&action).unwrap();
         let caller = Caller::Agent { uid: AGENT, intent };
-        self.keeper.judge(caller, &action).await
+        self.keeper.judge(caller, &action, None).await
     }
 
     async fn owner(&self, action: Value) -> Judgment {
         let action = serde_json::value::to_raw_value(&action).unwrap();
-        self.keeper.judge(Caller::Owner, &action).await
+        self.keeper.judge(Caller::Owner, &action, None).await
     }
 }
 
@@ -413,7 +413,7 @@ async fn an_unmapped_agent_and_an_unknown_operation_are_refused() {
         intent: Some(CITED),
     };
     assert_eq!(
-        reason(&host.keeper.judge(stranger, &action).await),
+        reason(&host.keeper.judge(stranger, &action, None).await),
         "agent_unmapped"
     );
     for unknown in [
@@ -793,6 +793,58 @@ async fn a_one_time_intent_is_spent_once_even_by_concurrent_calls() {
     }
 }
 
+/// A paused step of an allowed plan carries that plan on: its judgment
+/// isn't shown the plan as an earlier use of a one-time ask, and it isn't
+/// recorded as another. Anything else on the spent ask is still shown it.
+#[tokio::test]
+async fn a_confirmed_step_carries_on_its_allowed_plan_and_nothing_else_does() {
+    let host = host(
+        Judge::new(once),
+        Ok(Some(asked("Send Hoa a text: any time after 2pm"))),
+    );
+    let caller = Caller::Agent {
+        uid: AGENT,
+        intent: Some(CITED),
+    };
+    let raw = |action: Value| serde_json::value::to_raw_value(&action).unwrap();
+    let plan = raw(
+        json!({"kind": "browser_plan", "page": {"url": "https://voice.google.com"},
+        "steps": [{"step": "type e55 (textbox \"Text message\") \"Any time after 2pm works\""},
+                  {"step": "click e58 (button \"Send message\")"}]}),
+    );
+    let confirmed = raw(
+        json!({"kind": "confirmed_step", "page": {"url": "https://voice.google.com"},
+        "action": "click button \"Send message\"",
+        "fields": ["textbox \"Text message\": \"Any time after 2pm works\""]}),
+    );
+    assert_eq!(
+        reason(&host.keeper.judge(caller, &plan, None).await),
+        "allow"
+    );
+    // The plan's Send, paused and confirmed: allowed, and not recorded again.
+    let carried = host
+        .keeper
+        .judge(caller, &confirmed, Some(plan.get()))
+        .await;
+    assert_eq!(reason(&carried), "allow");
+    assert_eq!(carried.gate["continues"], true);
+    assert_eq!(carried.gate["already_done"], 0);
+    // A second, different send on the spent ask is refused; so is the same
+    // step said to carry on anything the ledger doesn't hold.
+    let other = raw(
+        json!({"kind": "browser_plan", "page": {"url": "https://voice.google.com"},
+        "steps": [{"step": "type e55 (textbox \"Text message\") \"See you at 3\""},
+                  {"step": "click e58 (button \"Send message\")"}]}),
+    );
+    let refused = host.keeper.judge(caller, &other, None).await;
+    assert_eq!(reason(&refused), "not_covered");
+    assert_eq!(refused.gate["already_done"], 1);
+    for continues in [None, Some(other.get())] {
+        let judged = host.keeper.judge(caller, &confirmed, continues).await;
+        assert_eq!(reason(&judged), "not_covered", "{continues:?}");
+    }
+}
+
 /// A refusal for not being covered says, in one line, what didn't match,
 /// and the audit keeps which; a judge whose reason contradicts its no
 /// leaves the refusal saying only that it isn't covered, and any reason
@@ -1000,7 +1052,7 @@ async fn live_intent_judgments() {
             uid: AGENT,
             intent: Some(CITED),
         };
-        let judgment = keeper.judge(caller, &action).await;
+        let judgment = keeper.judge(caller, &action, None).await;
         println!("{name}: {}", judgment.gate);
         assert_eq!(
             judgment.verdict.is_ok(),

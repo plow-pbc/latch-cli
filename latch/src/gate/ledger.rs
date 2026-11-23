@@ -26,6 +26,15 @@ use crate::state::to_hex;
 /// The most of one action the ledger keeps, for the judge to read back.
 const KEPT_ACTION: usize = 2 * 1024;
 
+/// As much of `action` as the ledger keeps.
+pub fn kept(action: &str) -> &str {
+    let mut cut = action.len().min(KEPT_ACTION);
+    while !action.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    &action[..cut]
+}
+
 /// One allowed action.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Done {
@@ -92,13 +101,9 @@ impl Held {
             .mode(0o700)
             .create(dir)
             .map_err(failed)?;
-        let mut cut = action.len().min(KEPT_ACTION);
-        while !action.is_char_boundary(cut) {
-            cut -= 1;
-        }
         let done = Done {
             at,
-            action: action[..cut].to_string(),
+            action: kept(action).to_string(),
         };
         let mut line = serde_json::to_string(&done).expect("a ledger entry serializes");
         line.push('\n');
