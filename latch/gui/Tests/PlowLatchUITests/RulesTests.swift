@@ -120,39 +120,24 @@ struct RulesTests {
         #expect(app.rulesSaved.contains("studio"))
     }
 
-    /// A save whose read-back fails still saves the typing behind it.
-    @Test func typingBehindASaveIsSavedWhenTheReadBackFails() async throws {
+    /// The typing behind a save is saved over the revision that save made,
+    /// read back or not; a rule saved elsewhere meanwhile is refused as
+    /// stale, and it shows instead.
+    @Test(arguments: [false, true])
+    func typingBehindASaveRespectsItsRevision(changedElsewhere: Bool) async throws {
         let client = RulesClient()
         let app = try await app(client)
         let held = Gate()
         client.holdSet = held
-        app.typeRule("Never touch ~/Taxes.", on: "studio")
-        let saving = Task { await app.saveRuleDraft("studio") }
-        await waitUntil { app.savingRules.contains("studio") }
-        app.typeRule("Never touch ~/Taxes or ~/Finance.", on: "studio")
-        client.failNextShow = true
-        held.open()
-        await saving.value
-        #expect(client.sets.map(\.text) == ["Never touch ~/Taxes.", "Never touch ~/Taxes or ~/Finance."])
-        #expect(app.rulesDrafts["studio"] == nil)
-    }
-
-    /// A rule saved elsewhere just after a save isn't saved over by the
-    /// typing that waited behind it: the newer rule shows.
-    @Test func typingBehindASaveNeverOverwritesARuleSavedElsewhereMeanwhile() async throws {
-        let client = RulesClient()
-        let app = try await app(client)
-        let held = Gate()
-        client.holdSet = held
-        client.thenElsewhere = "Changed on the laptop."
+        if changedElsewhere { client.thenElsewhere = "Changed on the laptop." } else { client.failNextShow = true }
         app.typeRule("Never touch ~/Taxes.", on: "studio")
         let saving = Task { await app.saveRuleDraft("studio") }
         await waitUntil { app.savingRules.contains("studio") }
         app.typeRule("Never touch ~/Taxes or ~/Finance.", on: "studio")
         held.open()
         await saving.value
-        #expect(client.sets.map(\.text) == ["Never touch ~/Taxes.", "Changed on the laptop."])
-        #expect(app.rulesDrafts["studio"] == nil)
-        #expect(app.savedRule("studio")?.text == "Changed on the laptop.")
+        let last = changedElsewhere ? "Changed on the laptop." : "Never touch ~/Taxes or ~/Finance."
+        #expect(client.sets.map(\.text) == ["Never touch ~/Taxes.", last])
+        #expect(app.rulesDrafts["studio"] == nil && app.savedRule("studio")?.text == last)
     }
 }
