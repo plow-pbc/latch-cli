@@ -238,11 +238,11 @@ fn thread(
     let read = parse(read)?;
     let earlier = earlier.map(parse).transpose()?;
     // What latch's own device sent is no one's word: anyone who can read
-    // its token could have sent it.
+    // its token could have sent it. An owner's message counts only from a
+    // device decryption names, and not that one.
     let own_device = |device: &Option<String>| device.as_deref() == Some(read.device_id.as_str());
-    let is_owner = |m: &Message| {
-        (m.sender == owner || m.speaks_for.as_deref() == Some(owner)) && !own_device(&m.device_id)
-    };
+    let as_owner = |m: &Message| m.sender == owner || m.speaks_for.as_deref() == Some(owner);
+    let is_owner = |m: &Message| as_owner(m) && m.device_id.is_some() && !own_device(&m.device_id);
     let at = |s: i64| Timestamp::from_second(s).unwrap_or(Timestamp::UNIX_EPOCH);
     let speaks_for_owner: Vec<&str> = std::iter::once((&read.event.sender, &read.event.speaks_for))
         .chain(read.messages.iter().map(|m| (&m.sender, &m.speaks_for)))
@@ -277,9 +277,9 @@ fn thread(
     });
     // A redaction of someone else's message or reaction (the owner's "stop",
     // or their ✅) took back what they said, and leaves nothing to read.
-    let redacted = std::iter::once(&read)
-        .chain(&earlier)
-        .flat_map(|r| &r.redactions)
+    let redacted = read
+        .redactions
+        .iter()
         .any(|r| r.redacts_sender.as_deref() != Some(r.sender.as_str()));
     // What follows the cited message: its thread, and for a message in no
     // thread, the room's unthreaded messages too, so a "stop" said outside
@@ -345,7 +345,9 @@ fn thread(
         is_owner_dm,
         closed,
         redacted,
-        complete: read.complete,
+        // A later message as the owner from no device decryption names
+        // can't be weighed either way.
+        complete: read.complete && !after.iter().any(|m| as_owner(m) && m.device_id.is_none()),
     })
 }
 
@@ -407,7 +409,7 @@ mod tests {
     const LATCH_DEVICE: &str = "LATCHREADER";
 
     fn message(id: &str, sender: &str, mins_ago: i64, text: &str, root: Option<&str>) -> Value {
-        json!({"event_id": id, "room": "!dm", "sender": sender, "text": text,
+        json!({"event_id": id, "room": "!dm", "sender": sender, "text": text, "device_id": "PHONE",
                "created_at": Timestamp::now().as_second() - mins_ago * 60, "thread_root": root})
     }
 
@@ -471,6 +473,14 @@ mod tests {
         assert_eq!(later, ["and cc me"]);
         r["event"] = forged(r["event"].clone());
         assert!(!of(&r).sender_is_owner);
+        // From no device decryption names, it can't be the owner's: cited,
+        // it isn't theirs; later, the read can't be weighed.
+        r["event"]["device_id"] = Value::Null;
+        assert!(!of(&r).sender_is_owner);
+        r["event"]["device_id"] = json!("PHONE");
+        r["messages"][1]["device_id"] = Value::Null;
+        assert!(!of(&r).complete);
+        r["messages"][1]["device_id"] = json!("PHONE");
         // From the owner's own devices, all of it counts.
         r["event"]["device_id"] = json!("PHONE");
         r["root_reactions"][0]["device_id"] = json!("PHONE");
@@ -478,8 +488,9 @@ mod tests {
     }
 
     /// Removing another's message or reaction after the cited one (the
-    /// owner's "stop", or their ✅ on the root a cited reply is in) leaves
-    /// nothing to read; anyone taking back their own counts for nothing.
+    /// owner's "stop", or their ✅) leaves nothing to read; anyone taking
+    /// back their own counts for nothing. One before a cited reply, in its
+    /// thread, is behind the owner's newer word.
     #[test]
     fn a_later_redaction_of_someone_elses_event_spoils_the_citation() {
         let redaction = |sender: &str, of: Option<&str>| json!([{"event_id": "$x", "sender": sender, "redacts": "$r", "redacts_sender": of}]);
@@ -492,11 +503,10 @@ mod tests {
             let mut r = read(&[OWNER, AGENT], vec![]);
             r["redactions"] = redactions.clone();
             assert_eq!(of(&r).redacted, spoiled, "{redactions}");
-            // In the read from the root of a cited reply, too.
             let mut cited = read(&[OWNER, AGENT], vec![]);
             cited["event"] = message("$re", OWNER, 1, "yes", Some("$ask"));
             let earlier = thread(&cited, Some(&r), OWNER, AGENT, Timestamp::now()).unwrap();
-            assert_eq!(earlier.redacted, spoiled, "{redactions}");
+            assert!(!earlier.redacted, "{redactions}");
         }
     }
 
