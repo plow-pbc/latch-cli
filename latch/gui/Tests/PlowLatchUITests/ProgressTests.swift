@@ -176,6 +176,20 @@ struct GatekeeperTests {
         }
     }
 
+    /// Saved, then a failed read: a return reads the answer and its revision.
+    @Test func aReturnAfterASaveWhoseReadFailedReadsTheAnswer() async {
+        let client = ScriptedClient { _ in nil }
+        client.savedText = "Never touch ~/Finance."
+        let flow = flow(client)
+        await flow.loadRules()
+        flow.draftRules = "Never send email."
+        client.failShowAfterSave = true
+        await flow.saveRules()
+        client.failShowAfterSave = false
+        await flow.loadRules()
+        #expect(flow.savedRules?.text == "Never send email." && !flow.rulesChanged)
+    }
+
     /// An answer that couldn't be read can't be saved over; Skip still
     /// goes on, and the main window asks later.
     @Test func anUnreadAnswerCantBeSavedOver() async {
@@ -371,8 +385,11 @@ final class ScriptedClient: LatchClient, @unchecked Sendable {
     var savedText: String?
     /// `rules show` fails with this.
     var showFailure: LatchFailure?
+    /// `rules show` fails while set, once a rule was saved.
+    var failShowAfterSave = false
     func rulesShow(host: String?) async throws -> RulesShow {
         if let showFailure { throw LatchError.failed(showFailure) }
+        if failShowAfterSave, !saved.isEmpty { throw LatchError.failed(LatchFailure(code: "state_busy", message: "busy")) }
         let rule = try savedText.map { String(decoding: try JSONEncoder().encode(["text": $0, "revision": "r1"]), as: UTF8.self) } ?? "null"
         return try Fixtures.decode(#"{"agents":{},"device_rule":\#(rule)}"#)
     }

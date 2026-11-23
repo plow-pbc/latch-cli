@@ -362,6 +362,7 @@ final class Onboarding {
             try await client.rulesSet(draft, host: nil, revision: savedRules?.revision)
             // Saved: a read after that fails doesn't make it unsaved.
             savedRules = try? await client.rulesShow().deviceRule
+            draftRules = savedRules?.text ?? ""
             rulesError = nil
             next()
         } catch {
