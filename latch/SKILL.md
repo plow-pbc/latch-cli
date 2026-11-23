@@ -256,8 +256,8 @@ Owner calls and local modes (such as `browser setup`) refuse `--intent`.
 Exit 4 is a refusal; its `next` says the one thing to do:
 
 - `gatekeeper_denied` with reason `intent_required`, `bad_intent`,
-  `intent_not_found`, `intent_not_owner`, `not_owner_dm` or
-  `thread_closed`: the citation is missing or wrong. Cite the owner's own
+  `intent_not_found`, `intent_not_owner`, `not_owner_dm`, `thread_closed`
+  or `thread_redacted`: the citation is missing or wrong. Cite the owner's own
   message from your 1:1 room with them, as above.
 - `gatekeeper_denied` with reason `not_covered`: the owner's message, as
   they left it, does not ask for this. Ask them in your 1:1 room, naming

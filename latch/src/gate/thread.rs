@@ -65,6 +65,9 @@ pub struct Thread {
     pub is_owner_dm: bool,
     /// Whether the owner closed the thread (✅ or ❌ on its root).
     pub closed: bool,
+    /// Whether someone redacted another's message or reaction after the
+    /// cited message (or the root it replies in).
+    pub redacted: bool,
     /// Whether every owner message after the cited one was read.
     pub complete: bool,
 }

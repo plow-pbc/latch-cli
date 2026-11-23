@@ -150,9 +150,10 @@ Code refuses before any model is asked (`gatekeeper_denied`, exit 4):
 |---|---|
 | `intent_required`, `bad_intent` | No citation, or not one `ROOM/EVENT`. |
 | `agent_unmapped` | The host maps the agent to no Swarm account (`latch agents map`). |
-| `intent_not_found`, `intent_not_owner` | No such message, or not yours. |
+| `intent_not_found`, `intent_not_owner` | No such message, or not yours: one sent from the host's own Swarm device is never yours. |
 | `not_owner_dm` | Not the agent's own 1:1 room with you. |
 | `thread_closed` | You closed the thread with ✅ or ❌. |
+| `thread_redacted` | After it, someone removed another's message or reaction (yours, say), or one was removed as you. |
 
 If your messages can't be read, or not all of them, the answer is
 `thread_unreadable` or `history_incomplete` (exit 3).

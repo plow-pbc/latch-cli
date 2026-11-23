@@ -509,6 +509,12 @@ fn cited_checks(thread: &Thread) -> Result<(), Failure> {
             "The owner closed that thread, so what it asked for has ended.".into(),
         ));
     }
+    if thread.redacted {
+        return Err(denied(
+            "thread_redacted",
+            "A message or reaction after the cited one was removed, so what the owner said there can't be read.".into(),
+        ));
+    }
     if !thread.complete {
         return Err(unavailable(
             "history_incomplete",
@@ -578,6 +584,7 @@ fn next_step(reason: &str) -> String {
         "intent_not_found" => format!("Check the room and event id, then retry: {HOW_TO_CITE}."),
         "intent_not_owner" => format!("Cite a message the owner wrote, not yours or anyone else's. If they never asked for this, ask them in your 1:1 room, then {HOW_TO_CITE}."),
         "not_owner_dm" => format!("Only the owner's messages in your own 1:1 room with them count. If they asked elsewhere, ask them there, then {HOW_TO_CITE}."),
+        "thread_redacted" => format!("Someone removed a message or reaction in that conversation. Ask the owner again in a new message, then {HOW_TO_CITE}."),
         "thread_closed" => format!("The owner closed that thread. If there is more to do, ask them in a new message, then {HOW_TO_CITE}."),
         "agent_unmapped" => "Tell the owner this host must map you to your Swarm account: `latch agents map <your name> <your Swarm id>`, run by them on the host. You can't do it yourself.".into(),
         "not_covered" => "Ask the owner in your 1:1 room, saying exactly what you will do (what, to whom, how much), and cite their answer with --intent. latch has no approval prompt: never ask them to approve one. Refused again, stop and tell them.".into(),

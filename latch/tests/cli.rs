@@ -4419,10 +4419,11 @@ fn cited_on(host: &Path, asked: &str) -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    let read = json!({"room": "!dm:test",
+    let read = json!({"room": "!dm:test", "device_id": "LATCHREADER",
         "event": {"event_id": "$ask", "room": "!dm:test", "sender": "@owner:test",
-                  "created_at": now - 600, "text": asked, "thread_root": null},
-        "thread_root": "$ask", "root_reactions": [],
+                  "created_at": now - 600, "text": asked, "thread_root": null,
+                  "device_id": "OWNERPHONE"},
+        "thread_root": "$ask", "root_reactions": [], "redactions": [],
         "members": [{"user_id": "@owner:test", "membership": "join"},
                     {"user_id": "@agent:test", "membership": "join"}],
         "direct": true, "messages": [], "undecryptable": 0, "complete": true});

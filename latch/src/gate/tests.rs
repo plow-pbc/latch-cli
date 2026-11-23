@@ -143,6 +143,7 @@ fn asked(text: &str) -> Thread {
         context: vec![],
         is_owner_dm: true,
         closed: false,
+        redacted: false,
         complete: true,
     }
 }
@@ -352,6 +353,11 @@ async fn a_bad_citation_is_refused_in_code_before_any_model_is_asked() {
             thread(|t| t.is_owner_dm = false),
         ),
         ("thread_closed", Some(CITED), thread(|t| t.closed = true)),
+        (
+            "thread_redacted",
+            Some(CITED),
+            thread(|t| t.redacted = true),
+        ),
         (
             "history_incomplete",
             Some(CITED),
@@ -666,6 +672,7 @@ fn every_refusal_teaches_its_next_step() {
         "intent_not_found",
         "intent_not_owner",
         "not_owner_dm",
+        "thread_redacted",
         "thread_closed",
     ] {
         let said = next(citing);
