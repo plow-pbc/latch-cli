@@ -238,11 +238,14 @@ fn thread(
     let read = parse(read)?;
     let earlier = earlier.map(parse).transpose()?;
     // What latch's own device sent is no one's word: anyone who can read
-    // its token could have sent it. An owner's message counts only from a
-    // device decryption names, and not that one.
+    // its token could have sent it. A message as the owner's account counts
+    // only from a device decryption names, and not that one; their phone
+    // account's, whose token latch never holds, comes through the iMessage
+    // bridge from a device the reader can't name.
     let own_device = |device: &Option<String>| device.as_deref() == Some(read.device_id.as_str());
+    let unnamed = |m: &Message| m.sender == owner && m.device_id.is_none();
     let as_owner = |m: &Message| m.sender == owner || m.speaks_for.as_deref() == Some(owner);
-    let is_owner = |m: &Message| as_owner(m) && m.device_id.is_some() && !own_device(&m.device_id);
+    let is_owner = |m: &Message| as_owner(m) && !unnamed(m) && !own_device(&m.device_id);
     let at = |s: i64| Timestamp::from_second(s).unwrap_or(Timestamp::UNIX_EPOCH);
     let speaks_for_owner: Vec<&str> = std::iter::once((&read.event.sender, &read.event.speaks_for))
         .chain(read.messages.iter().map(|m| (&m.sender, &m.speaks_for)))
@@ -348,7 +351,7 @@ fn thread(
         redacted,
         // A later message as the owner from no device decryption names
         // can't be weighed either way.
-        complete: read.complete && !after.iter().any(|m| as_owner(m) && m.device_id.is_none()),
+        complete: read.complete && !after.iter().any(|m| unnamed(m)),
     })
 }
 
@@ -482,6 +485,19 @@ mod tests {
         r["messages"][1]["device_id"] = Value::Null;
         assert!(!of(&r).complete);
         r["messages"][1]["device_id"] = json!("PHONE");
+        // Their phone account's texts come through the iMessage bridge from
+        // a device the reader can't name: they count, cited or later.
+        let texted = |mut event: Value| {
+            event["sender"] = json!(PHONE);
+            event["speaks_for"] = json!(OWNER);
+            event["device_id"] = Value::Null;
+            event
+        };
+        let mut phone = r.clone();
+        phone["event"] = texted(phone["event"].clone());
+        phone["messages"][1] = texted(phone["messages"][1].clone());
+        let t = of(&phone);
+        assert!(t.sender_is_owner && t.complete && t.later_owner.len() == 1);
         // From the owner's own devices, all of it counts.
         r["event"]["device_id"] = json!("PHONE");
         r["root_reactions"][0]["device_id"] = json!("PHONE");
