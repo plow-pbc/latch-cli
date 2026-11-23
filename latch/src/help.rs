@@ -90,7 +90,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         id: "login",
         runs_on: |_| RunsOn::Local,
-        output: "This machine or agent as `peer` (name, key, kind), and whether its key was created now; when this state folder was logged in already and nothing changed, `already_logged_in` says as whom; when an agent peer key changes agent uid, `policy_warning` inventories local deny-exec and rule entries for other agents with exact re-apply commands; policy is never copied; with --events, the verified JSON line carries the same warning.",
+        output: "This machine or agent as `peer` (name, key, kind), and whether its key was created now; when this state folder was logged in already and nothing changed, `already_logged_in` says as whom; with --events, JSON lines (hello, code, waiting, verified, expired, error) instead.",
         effect: Repeatable(
             "creates this machine's or agent's key if missing and registers it with Plow",
         ),
@@ -257,46 +257,6 @@ const ENTRIES: &[Entry] = &[
                 ],
             ),
         ],
-    },
-    Entry {
-        id: "agents.adopt",
-        runs_on: |_| RunsOn::Local,
-        output: "`agent` (as `agents show` gives it), `credential_file` (the absolute path of its private environment file), `api_url`, `credential_id` and `expires_at`. The credential secret is only in the file, never the output.",
-        effect: Once(
-            "mints a separately expiring Latch credential for an existing agent and writes its secret and lifecycle metadata to a new private environment file; the agent logs in with a fresh state folder and peer key",
-        ),
-        owner_only: true,
-        connector: None,
-        examples: &[ex(
-            "Use Latch as an agent you already text",
-            &[
-                "agents",
-                "adopt",
-                "Maple",
-                "--credential-file",
-                "maple-latch.env",
-            ],
-        )],
-    },
-    Entry {
-        id: "agents.revoke",
-        runs_on: |_| RunsOn::Local,
-        output: "`agent`, `status` (`revoked`), `credential_id` and `credential_file`. The environment file remains as the record of what was revoked.",
-        effect: Once(
-            "revokes only the adopted Latch credential named in the environment file; the agent and its other credentials remain active",
-        ),
-        owner_only: true,
-        connector: None,
-        examples: &[ex(
-            "Revoke an adopted agent's Latch credential",
-            &[
-                "agents",
-                "revoke",
-                "Maple",
-                "--credential-file",
-                "maple-latch.env",
-            ],
-        )],
     },
     Entry {
         id: "agents.card",

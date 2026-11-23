@@ -222,10 +222,6 @@ async fn check_sentences(sentences: &[(usize, String)], model: &mut Model) -> Re
 /// Never a failure's details, which can hold sentences.
 fn stopped_at(step: usize, failure: &Failure, model: &Model) -> Value {
     let mut stop = json!({"step": step, "code": failure.code});
-    // A refused fill's field and reason code: never a value.
-    if let Some(refused) = failure.details.get("fill_refused") {
-        stop["fill_refused"] = refused.clone();
-    }
     if let Some(reason) = model_failed(failure, model) {
         stop["model_failed"] = json!(reason);
     }
@@ -659,9 +655,7 @@ impl<'a> Run<'a> {
         let judging = Instant::now();
         let judgment = gate.judge(&action).await;
         super::host::add_time(|phases| &mut phases.gate_ms, judging.elapsed());
-        let mut record = judgment.gate;
-        let allowed = judgment.verdict.is_ok();
-        (self.entry.attempts).judged(&action, &mut record, allowed, Instant::now());
+        let record = judgment.gate;
         match judgment.verdict {
             Ok(()) => {
                 self.judgment = Some(record);
@@ -1555,20 +1549,6 @@ pub async fn wait(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A plan's stop at a refused fill says which field and why, as the
-    /// worker named them, and nothing else of the failure's details.
-    #[test]
-    fn a_stop_at_a_refused_fill_names_its_field_and_reason() {
-        let mut failure = Failure::new(code::fill_refused, "nothing was filled".into());
-        let why = json!({"field": "state", "reason": "no_option_matches"});
-        failure.details = json!({"fill_refused": why, "page": {"lines": ["Arizona"]}});
-        let model = Model::off("no model");
-        assert_eq!(
-            stopped_at(2, &failure, &model),
-            json!({"step": 2, "code": "fill_refused", "fill_refused": why})
-        );
-    }
 
     #[test]
     fn request_ids_are_the_clients_own() {

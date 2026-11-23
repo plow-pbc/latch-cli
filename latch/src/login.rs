@@ -16,7 +16,6 @@ use crate::cli::{self, BUILD_API_URL, LoginArgs};
 use crate::credential;
 use crate::devices;
 use crate::failure::{Failure, code};
-use crate::gate::rules::RulesDir;
 use crate::heartbeat;
 use crate::plow::{self, Peer, Plow, Registration};
 use crate::state::{Config, StateDir};
@@ -43,8 +42,6 @@ pub struct LoginOutput {
     /// This state folder was logged in already, and nothing was changed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub already_logged_in: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub policy_warning: Option<String>,
 }
 
 /// Where this login's credential comes from.
@@ -61,7 +58,6 @@ enum Source {
 
 pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failure> {
     let saved = state.load_config()?;
-    let saved_agent_uid = state.load_agent_uid()?;
     // A plain `latch login` where one is saved changes nothing: an option
     // asks for a change (a token, a name, a Plow, by text), and --again for
     // a login anew.
@@ -73,7 +69,6 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
     if let Some(config) = &saved
         && plain
         && !args.again
-        && (config.peer.kind != "agent" || saved_agent_uid.is_some())
     {
         let message = format!(
             "already logged in as {} on this computer; `latch login --again` logs in anew",
@@ -84,7 +79,6 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
             key_created: false,
             by_text: false,
             already_logged_in: Some(message),
-            policy_warning: None,
         });
     }
     let saved_url = match &saved {
@@ -175,33 +169,20 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
         let me = if owner {
             None
         } else {
-            Some(plow.agent_me().await?)
+            plow.agent_me().await.ok()
         };
-        let policy_warning = match &me {
-            Some(me) => policy_inventory_warning(
-                state,
-                saved_agent_uid.as_deref(),
-                &me.uid,
-                saved
-                    .as_ref()
-                    .filter(|config| config.peer.kind == "device")
-                    .map(|config| config.peer.name.as_str()),
-            )?,
-            None => None,
-        };
-        if let Some(warning) = &policy_warning {
-            eprintln!("{warning}");
-        }
         let registration = Registration {
             name: registration.name.or(me.as_ref().map(|me| me.name.clone())),
             ..registration
         };
-        let authenticated_agent_uid = me.as_ref().map(|me| me.uid.clone());
         let peer = match plow.register(&registration).await {
             // Two agents may share a name: unless one was asked for, try once
             // more as the name plus the start of this agent's uid.
             Err(failure) if failure.code == "conflict" && !owner && !named => {
-                let me = me.expect("agent identity was fetched before registration");
+                let me = match me {
+                    Some(me) => me,
+                    None => plow.agent_me().await.map_err(|_| failure)?,
+                };
                 let name = registration.name.as_deref().unwrap_or(&me.name);
                 let suffixed = Registration {
                     name: Some(format!("{name}-{}", &me.uid[..6.min(me.uid.len())])),
@@ -235,61 +216,15 @@ pub async fn run(state: &StateDir, args: LoginArgs) -> Result<LoginOutput, Failu
             api_url,
             peer: peer.clone(),
         })?;
-        state.save_agent_uid(authenticated_agent_uid.as_deref())?;
         Ok(LoginOutput {
             peer,
             key_created,
             by_text: texted,
             already_logged_in: None,
-            policy_warning,
         })
     }
     .await;
     registered.map_err(|failure| if texted { failure.told() } else { failure })
-}
-
-fn policy_inventory_warning(
-    state: &StateDir,
-    old_uid: Option<&str>,
-    new_uid: &str,
-    host_name: Option<&str>,
-) -> Result<Option<String>, Failure> {
-    let (denied, _) = crate::managed::saved_denials(&state.path)?;
-    let denied: Vec<String> = denied.into_iter().filter(|uid| uid != new_uid).collect();
-    let rules: Vec<String> = RulesDir::new(&state.path)
-        .agents()?
-        .into_iter()
-        .filter(|uid| uid != new_uid)
-        .collect();
-    if denied.is_empty() && rules.is_empty() {
-        return Ok(None);
-    }
-    let mut warning = match old_uid.filter(|old_uid| *old_uid != new_uid) {
-        Some(old_uid) => format!(
-            "This state was agent {old_uid}; it is logging in as agent {new_uid}. Restrictions are NOT carried or copied. Review these local entries and re-apply only their restrictions by hand:"
-        ),
-        None => format!(
-            "Local restrictions name agents other than {new_uid}. Restrictions are NOT carried or copied. Review these entries and re-apply only their restrictions by hand:"
-        ),
-    };
-    let state_path = state.path.display();
-    let actor = host_name
-        .map(|name| format!("On host {name}, as"))
-        .unwrap_or_else(|| "As".into());
-    warning.push_str(&format!(
-        "\n{actor} the owner, re-apply these from state folder {state_path} to agent {new_uid}:"
-    ));
-    for uid in denied {
-        warning.push_str(&format!("\nstate folder {state_path}: deny-exec: {uid}"));
-    }
-    for uid in rules {
-        warning.push_str(&format!(
-            "\nstate folder {state_path}: rules file: {}",
-            state.path.join(format!("rules/{uid}.txt")).display()
-        ));
-    }
-    warning.push_str("\nSee https://plow.co/latch/docs/commands.html#rules.");
-    Ok(Some(warning))
 }
 
 /// Logs an agent in on its first command that needs Plow or a host, as

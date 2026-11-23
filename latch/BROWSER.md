@@ -335,12 +335,9 @@ An engine without a command's optional feature (`eval`, `upload`,
 `downloads`; CfT has all three) refuses it with `unsupported_capability`
 before anything is dispatched.
 
-The host audits each call: command, session, engine, tab, the page's
-origin, snapshot, target ref and role, the outcome, and the client's
-parent process id. Wherever the audit names a URL it keeps only
-`scheme://host[:port]` for http and https, the scheme alone for any
-other URL, and `unparseable` when it cannot be parsed: never a
-userinfo, path, query or fragment. A plan
+The host audits each call: command, session, engine, tab, origin
+(never the path or query), snapshot, target ref and role, the outcome,
+and the client's parent process id. A plan
 (`do`, or `act`) records its request id, its
 step count and how many are goals, its status and stop (step and code),
 each step's kind and outcome, and per action the step and action number,
@@ -362,11 +359,11 @@ It prints, per plan, its actions, model calls, the model's total time and
 its cost (an estimate: calls × Plow's stated $0.0001 a call), and over all plans
 the plan share, confirmations and how they were answered, what followed
 each stop, escapes to `eval`, turns, and stops by code.
-What the gatekeeper judged is kept as `judged`: its kind, the sites it
-names, a fill's fields and item kind (never a value or title), and a URL
-by its origin, never a plan's steps or facts. The dashboard and `latch
-audit` show it with credential-looking values hidden; `serve.log` names a
-browser call by its command only. Otherwise never page text, field values
+What the gatekeeper judged is kept as `judged`: its kind, sites, a
+fill's item kind and fields (never a value), and any URL by its origin;
+never titles or a plan's steps and facts. `serve.log` names a browser
+call by its command only; the dashboard and `latch audit` show `judged`
+with credential-looking values hidden. Otherwise never page text, field values
 or typed text: `type` records the text's length and sha256. `eval` records its script verbatim up to 4 KiB, its
 size and sha256, and workaround tags (other frames, shadow roots,
 synthetic events, setting field values, patching `fetch`/XHR, cookies or
@@ -419,17 +416,7 @@ with `--plow-chat C` or `LATCH_PLOW_CHAT`. Owner calls and local modes
 (`setup`, `handoff done`, `do --dry-run`) refuse this selector instead of
 ignoring it. The call's audit record holds the
 judgment as `gate` (verdict, probabilities, model, cost, latency, the
-message ids read, `owner_newest_s`, the newest owner message's age in
-seconds, and `forwarded`, both `unknown` when nothing trusted says), never
-chat text. In a session, `gate.context` adds a random id for the purchase
-judged (the owner's newest message read, the site and the item, kept in
-host memory only), how many judgments of it the session made in the last
-hour, and the seconds since its last allowed one: numbers only, `unknown`
-with no owner message or site. None of it is judged: it is recorded after
-the verdict. What was judged is kept as `judged`, by kind, sites, fields
-and item kinds, a URL by its origin: no path, query, title or plan text.
-These stay in the sealed audit: `serve.log` names a browser call by its
-command only. `just gated-shopping HOST_STATE OUT`
+message ids read), never chat text. `just gated-shopping HOST_STATE OUT`
 measures a shopping task's judgments on the decision model.
 
 ## Plans, literal steps and confirmations

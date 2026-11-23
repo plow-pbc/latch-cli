@@ -956,7 +956,7 @@ impl Cft {
             if Instant::now() >= deadline {
                 return Err(Failure::new(
                     code::timeout,
-                    format!("{} did not finish loading", super::core::audited(url)),
+                    format!("{url} did not finish loading"),
                 ));
             }
         }

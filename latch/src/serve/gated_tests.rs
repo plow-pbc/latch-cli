@@ -831,25 +831,6 @@ fn kept(t: &TestHost, text: &str) -> bool {
             .any(|line| line.contains(text))
 }
 
-/// A URL's userinfo and path reach neither the sealed audit nor the host
-/// log, whatever its scheme, though the judge sees the whole URL.
-#[tokio::test]
-async fn a_judged_urls_userinfo_and_path_are_never_kept() {
-    let t = start(a_chat(covered_after_a_yes)).await;
-    let agent = t.caller("agent").await;
-    for url in [
-        "https://who-sentinel:pw-sentinel@example.com:8443/path-sentinel?q=1#f",
-        "blob:https://who-sentinel:pw-sentinel@example.com/path-sentinel",
-    ] {
-        let open = json!({"command": "open", "url": url});
-        let (answer, _) = t.call(&agent, "browser", open).await;
-        assert!(matches!(answer, Response::Error { .. }), "{answer:?}");
-    }
-    assert!(!kept(&t, "sentinel"), "{}", t.audit_text());
-    let judged = &t.audit()[0]["args"]["judged"];
-    assert_eq!(judged["url"], "https://example.com:8443", "{judged}");
-}
-
 #[tokio::test]
 async fn a_program_cannot_turn_its_stderr_into_a_worker_error_or_audit_content() {
     let t = start(a_chat(always_covered)).await;

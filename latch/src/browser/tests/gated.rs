@@ -475,13 +475,10 @@ async fn a_refused_command_sends_nothing_to_the_page(engine: &str) {
     let step = format!("click {link} (link \"Download the report\")");
     assert_eq!(shown["steps"], json!([{"step": step}, {"step": step}]));
     assert_eq!(shown["page"]["title"], "latch files test");
-    // The audit keeps what kind of plan it was and where, by origin: not
-    // its steps or the page's path and title.
-    let origin = crate::browser::core::audited(shown["page"]["url"].as_str().unwrap());
-    assert_eq!(
-        plan.1["judged"],
-        json!({"kind": "browser_plan", "page": {"url": origin}})
-    );
+    // The audit keeps neither the refused plan's steps nor the page's title.
+    assert_eq!(plan.1["judged"]["kind"], "browser_plan");
+    assert_eq!(plan.1["judged"]["steps"], Value::Null);
+    assert_eq!(plan.1["judged"]["page"]["title"], Value::Null);
 
     // A refused eval runs nothing in the page.
     let eval = host
@@ -994,21 +991,16 @@ async fn a_fill_inside_a_plan_is_judged_as_a_fill(engine: &str) {
             audit["stop"],
             json!({"step": 1, "code": "gatekeeper_denied"})
         );
-        assert_eq!(
-            audit["judged"]["may_fill"],
-            json!([{"kind": "login", "sites": ["shop.example"]}]),
-            "{item:?}"
-        );
-        assert!(audit["judged"].get("steps").is_none(), "{item:?}");
-        let judged_plan = judge
-            .shown
-            .lock()
-            .unwrap()
+        let kept = json!({"kind": "login", "sites": ["shop.example"]});
+        assert_eq!(audit["judged"]["may_fill"], json!([kept]), "{item:?}");
+        assert_eq!(audit["judged"]["steps"], Value::Null);
+        let plans = judge.shown.lock().unwrap().clone();
+        let judged_plan = plans
             .iter()
-            .map(|state| state["proposed_action"].clone())
-            .rfind(|action| action["kind"] == "browser_plan")
+            .rfind(|s| s["proposed_action"]["kind"] == "browser_plan");
+        let written = judged_plan.unwrap()["proposed_action"]["steps"][0]["step"]
+            .as_str()
             .unwrap();
-        let written = judged_plan["steps"][0]["step"].as_str().unwrap();
         assert!(
             written.starts_with(&format!("fill --item {login} ")),
             "{written}"
