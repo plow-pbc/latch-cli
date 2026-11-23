@@ -172,6 +172,8 @@ pub(super) struct Entry {
     handing: std::sync::atomic::AtomicBool,
     /// The sites the gatekeeper let this session go to.
     judged_sites: std::sync::Mutex<HashSet<String>>,
+    /// The checkout an allowed card fill opened (`judged::Checkout`).
+    pub(super) checkout: std::sync::Mutex<Option<judged::Checkout>>,
     /// The card numbers and identity secrets filled in this session: what
     /// the gatekeeper is shown masked.
     pub(super) masks: std::sync::Mutex<Vec<super::shown::Filled>>,
@@ -441,6 +443,7 @@ impl Browsers {
             confirmations: Default::default(),
             handing: Default::default(),
             judged_sites: Default::default(),
+            checkout: Default::default(),
             masks: Default::default(),
             profile: std::sync::Mutex::new(Some(in_use)),
         });
@@ -716,14 +719,20 @@ pub(super) async fn fill(
     let args = super::fill::resolve(browsers, entry, &args).await?;
     if caller.gate.is_some() {
         let site = judged::site(browsers, entry).await?;
-        judged::judge(
-            caller.gate,
-            judged::fill(browsers, &args, site),
-            &entry.filled(),
-            None,
-            audit,
-        )
-        .await?;
+        let action = judged::fill(browsers, &args, site);
+        let item = args["item"].as_str().unwrap_or_default();
+        match judged::Checkout::covering(entry, item, &action) {
+            Some(record) => {
+                audit.insert("gate".into(), record);
+            }
+            None => {
+                let opens = judged::Checkout::opened_by(item, &action);
+                judged::judge(caller.gate, action, &entry.filled(), None, audit).await?;
+                if let Some(checkout) = opens {
+                    checkout.open(entry);
+                }
+            }
+        }
     }
     super::fill::run(browsers, entry, &args, audit).await
 }

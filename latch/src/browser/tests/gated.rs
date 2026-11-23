@@ -21,7 +21,7 @@ use crate::gate::thread::{IntentRef, Reading, Said, Thread, ThreadSource};
 use crate::gate::{Gate, Gatekeeper, fake};
 use crate::model::{Answer, Asked, CallFailed, CallMeta, Kind, Provider, Question};
 use crate::vault::host::Vault;
-use crate::vault::item::{CARD, Item, LOGIN, Raw};
+use crate::vault::item::{CARD, IDENTITY, Item, LOGIN, Raw};
 use crate::vault::store::Backend;
 
 const AGENT: &str = fake::AGENT;
@@ -39,6 +39,7 @@ conformance!(
     a_local_address_is_refused_before_the_judge_or_an_engine,
     an_agents_confirmation_of_a_paused_send_is_judged_before_it_runs,
     a_confirmed_send_carries_on_its_allowed_plan,
+    one_approved_card_fill_covers_its_checkouts_address,
 );
 
 /// The owner's thread every citation reads: their message `asked`, which
@@ -1512,6 +1513,107 @@ async fn a_confirmed_send_carries_on_its_allowed_plan(engine: &str) {
         .agent("do", &id, act(&format!("click {send}")), None)
         .await;
     assert_eq!(again.unwrap_err().code, "gatekeeper_denied");
+    host.look("close", &id, json!({})).await;
+}
+
+/// A checkout: the owner's card fill is judged and allowed once, and the
+/// shipping address on the same shop goes through on that approval, with
+/// no judgment of its own; the audit says which card's checkout it was.
+async fn one_approved_card_fill_covers_its_checkouts_address(engine: &str) {
+    let (_dir, state, _area) = test_state(engine);
+    let (site, _) = serve_site();
+    // The judge allows the card fill and nothing else that is filled.
+    let judge = Judge::new(|state| match state["proposed_action"]["kind"].as_str() {
+        Some("vault_fill") if state["proposed_action"]["item"]["kind"] == "card" => COVERED,
+        Some("vault_fill") => NOT_COVERED,
+        _ => COVERED,
+    });
+    let host = Host::start(&state, &site, &judge);
+    let add = |kind: u8, title: &str, values: &[(&str, &str)]| {
+        let labels: Vec<(String, String)> = values
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        host.browsers
+            .vault
+            .with(|store| {
+                store.add(Item {
+                    id: String::new(),
+                    revision: 0,
+                    sites: vec![],
+                    other_top_sites: vec![],
+                    raw: Raw::from_labels(kind, title, &labels).unwrap(),
+                })
+            })
+            .unwrap()
+            .item
+    };
+    let card = add(
+        CARD,
+        "Test Visa",
+        &[
+            ("number", NUMBER),
+            ("expiry month", "4"),
+            ("expiry year", "2031"),
+            ("code", "319"),
+        ],
+    );
+    let home = add(
+        IDENTITY,
+        "Home",
+        &[("first name", "Ada"), ("city", "London")],
+    );
+    let (page, _) = host
+        .agent(
+            "open",
+            named(engine),
+            json!({"url": format!("{site}/checkout.html")}),
+            None,
+        )
+        .await;
+    let page = page.unwrap();
+    let id = page["session"].as_str().unwrap().to_string();
+    let (paid, audit) = host
+        .agent(
+            "fill",
+            &id,
+            json!({"item": card, "snapshot": page["snapshot"], "fields": [
+                ["number", [find(&page, "textbox", "Card number")]],
+                ["expiry", [find(&page, "textbox", "Expiry")]],
+                ["cvv", [find(&page, "textbox", "CVV")]],
+            ]}),
+            None,
+        )
+        .await;
+    paid.unwrap();
+    assert_eq!(audit["gate"]["verdict"], "allow");
+    let asked = judge.judged();
+    host.agent(
+        "goto",
+        &id,
+        json!({"url": format!("{site}/address.html")}),
+        None,
+    )
+    .await
+    .0
+    .unwrap();
+    let address = host.agent("observe", &id, json!({}), None).await.0.unwrap();
+    let (shipped, audit) = host
+        .agent(
+            "fill",
+            &id,
+            json!({"item": home, "snapshot": address["snapshot"], "fields": [
+                ["first name", [find(&address, "textbox", "First name")]],
+                ["city", [find(&address, "textbox", "City")]],
+            ]}),
+            None,
+        )
+        .await;
+    shipped.unwrap();
+    assert_eq!(audit["gate"], json!({"verdict": "allow", "checkout": card}));
+    assert_eq!(judge.judged(), asked, "the address asked the judge nothing");
+    let text = shows(&host, &id).await;
+    assert!(text.contains("Ada") && text.contains("London"), "{text}");
     host.look("close", &id, json!({})).await;
 }
 

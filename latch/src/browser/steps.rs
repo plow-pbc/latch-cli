@@ -654,16 +654,23 @@ impl<'a> Run<'a> {
             return Ok(());
         };
         let site = judged::site(self.browsers, self.entry).await?;
-        let action = judged::shown(
-            &judged::fill(self.browsers, args, site),
-            &self.entry.filled(),
-        );
+        let fill = judged::fill(self.browsers, args, site);
+        let item = args["item"].as_str().unwrap_or_default();
+        if let Some(record) = judged::Checkout::covering(self.entry, item, &fill) {
+            self.judgment = Some(record);
+            return Ok(());
+        }
+        let opens = judged::Checkout::opened_by(item, &fill);
+        let action = judged::shown(&fill, &self.entry.filled());
         let judging = Instant::now();
         let judgment = gate.judge(&action).await;
         super::host::add_time(|phases| &mut phases.gate_ms, judging.elapsed());
         let record = judgment.gate;
         match judgment.verdict {
             Ok(()) => {
+                if let Some(checkout) = opens {
+                    checkout.open(self.entry);
+                }
                 self.judgment = Some(record);
                 Ok(())
             }

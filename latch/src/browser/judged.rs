@@ -270,6 +270,66 @@ pub(super) fn item(browsers: &Browsers, id: &str) -> ItemShown {
     }
 }
 
+/// How long an allowed card fill lets its checkout through.
+const CHECKOUT_FOR: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// The checkout an allowed card fill opens in its session: the same card,
+/// and the owner's identity items (their addresses), fill on its site
+/// until `until` with no new judgment. One approval covers the checkout.
+pub(super) struct Checkout {
+    card: String,
+    site: String,
+    until: std::time::Instant,
+}
+
+impl Checkout {
+    /// The checkout the fill `action` of vault item `item` opens once
+    /// allowed: a card's, on a site.
+    pub(super) fn opened_by(item: &str, action: &Action) -> Option<Checkout> {
+        match action {
+            Action::VaultFill {
+                site: Some(site),
+                item: shown,
+                ..
+            } if shown.kind == "card" => Some(Checkout {
+                card: item.to_string(),
+                site: site.clone(),
+                until: std::time::Instant::now() + CHECKOUT_FOR,
+            }),
+            _ => None,
+        }
+    }
+
+    /// The gate record of the session's open checkout letting the fill
+    /// `action` of `item` through, if it does.
+    pub(super) fn covering(entry: &Entry, item: &str, action: &Action) -> Option<Value> {
+        let Action::VaultFill {
+            site: Some(site),
+            item: shown,
+            ..
+        } = action
+        else {
+            return None;
+        };
+        let open = entry.checkout.lock().expect("checkout lock");
+        let checkout = open.as_ref()?;
+        checkout
+            .covers(item, &shown.kind, site, std::time::Instant::now())
+            .then(|| json!({"verdict": "allow", "checkout": checkout.card}))
+    }
+
+    /// Whether it lets a fill of `item`, of `kind`, on `site` through `at`:
+    /// its own card, or an identity item, on its site, while it is open.
+    fn covers(&self, item: &str, kind: &str, site: &str, at: std::time::Instant) -> bool {
+        (item == self.card || kind == "identity") && site == self.site && at < self.until
+    }
+
+    /// Makes this the session's open checkout.
+    pub(super) fn open(self, entry: &Entry) {
+        *entry.checkout.lock().expect("checkout lock") = Some(self);
+    }
+}
+
 /// A fill of `args` (its mapping resolved) on `site`.
 pub(super) fn fill(browsers: &Browsers, args: &Value, site: Option<String>) -> Action {
     let item = item(browsers, args["item"].as_str().unwrap_or_default());
@@ -503,6 +563,33 @@ pub(super) async fn download(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One allowed card fill lets its checkout through: that card again and
+    /// the owner's addresses, on its site, for ten minutes; nothing else.
+    #[test]
+    fn a_checkout_covers_its_card_and_addresses_on_its_site_for_ten_minutes() {
+        let now = std::time::Instant::now();
+        let checkout = Checkout {
+            card: "v7".into(),
+            site: "shop.example".into(),
+            until: now + CHECKOUT_FOR,
+        };
+        let later = now + CHECKOUT_FOR - std::time::Duration::from_secs(1);
+        for (item, kind, site, at, covered) in [
+            ("v7", "card", "shop.example", now, true),
+            ("v3", "identity", "shop.example", later, true),
+            ("v8", "card", "shop.example", now, false),
+            ("v4", "login", "shop.example", now, false),
+            ("v3", "identity", "other.example", now, false),
+            ("v7", "card", "shop.example", now + CHECKOUT_FOR, false),
+        ] {
+            assert_eq!(
+                checkout.covers(item, kind, site, at),
+                covered,
+                "{item} {kind} {site}"
+            );
+        }
+    }
     use crate::browser::plan::short_step;
 
     #[test]
