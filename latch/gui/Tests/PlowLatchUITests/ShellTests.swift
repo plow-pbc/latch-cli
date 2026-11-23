@@ -19,9 +19,9 @@ struct ShellTests {
     @Test func pickingAHostKeepsTheScreenEvenAfterAnAccountPage() throws {
         let app = try app()
         #expect(app.inspecting == HostScreen.inspected)
-        app.place = .host(.rules)
+        app.place = .host(.settings)
         app.showHost("pi-kitchen")
-        #expect(app.route == .host(.rules, try host(app, "pi-kitchen")))
+        #expect(app.route == .host(.settings, try host(app, "pi-kitchen")))
         app.place = .host(.vault)
         app.place = .account(.agents)
         #expect(app.route == .account(.agents))
@@ -39,7 +39,7 @@ struct ShellTests {
         #expect(app.route == .host(.home, try host(app, "studio")))
     }
 
-    @Test(arguments: [Place.account(.agents), .account(.connections), .host(.home), .host(.activity), .host(.rules), .host(.vault),
+    @Test(arguments: [Place.account(.agents), .account(.connections), .host(.home), .host(.activity), .host(.vault),
                       .host(.settings)])
     func aPlaceIsKeptAsTextAndComesBack(_ place: Place) {
         #expect(Place(rawValue: place.rawValue) == place)

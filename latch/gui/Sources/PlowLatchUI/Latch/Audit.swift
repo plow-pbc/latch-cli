@@ -86,38 +86,48 @@ nonisolated struct AuditRecord: Decodable, Equatable, Identifiable {
 
     /// The gatekeeper's judgment, when it was asked.
     struct Gate: Decodable, Equatable {
-        /// `allow`, `not_covered`, `owner_said_no`.
+        /// `allow`, or why not: `not_covered`, `denied_by_rule`,
+        /// `intent_required`, `thread_closed`, …
         var verdict: String?
-        /// What it read: `owner_request`, `defaults`, `rules`, `chat`, `chat_and_rules`.
-        var source: String?
-        /// `covered` and `denied`, each 0…1, or null when not asked.
+        /// `free` (a read, judged by no one) or `intent`.
+        var `class`: String?
+        /// The owner's message an agent cited, `swarm:<room>/<event>`.
+        var intent: String?
+        /// The device rule's revision it was judged by, when there was one.
+        var deviceRule: String?
+        /// The owner's messages after the cited one, read with it.
+        var laterOwnerMessages: Int?
+        /// `denied` and `covered`, each 0…1, or null when not asked.
         var p: [String: Double?]?
-        var rules: Rules?
-        var ownerMessages: [String]?
         var model: String?
         var latencyMs: Int?
         var cost: Double?
-        var rule: String?
-        /// The owner's call as the host kept it (`latch audit judge`).
+        /// The call as the host kept it (`latch audit judge`).
         var keptRequest: String?
-        /// An agent's layers, `rules`, `chat` and `will`, each kept on its own.
-        var layers: [String: Layer]?
 
-        struct Rules: Decodable, Equatable {
-            /// Revisions of the rules for every agent and the agent's own.
-            var host: String?
-            var agent: String?
+        /// The cited message, as an agent passes it: `<room>/<event>`.
+        var intentRef: String? { intent.map { $0.hasPrefix("swarm:") ? String($0.dropFirst(6)) : $0 } }
+
+        /// A verdict in words: latch's own code's words for one the app
+        /// doesn't know.
+        static func words(_ verdict: String) -> String {
+            verdicts[verdict] ?? AuditRecord.happened(verdict)
         }
 
-        struct Layer: Decodable, Equatable {
-            var keptRequest: String?
-        }
-
-        /// Each call the host kept of this judgment: the owner's one, or an
-        /// agent's rules, whole-chat and owner-only calls.
-        var keptRequests: [String] {
-            [keptRequest, layers?["rules"]?.keptRequest, layers?["chat"]?.keptRequest, layers?["will"]?.keptRequest].compactMap { $0 }
-        }
+        static let verdicts = [
+            "allow": "Allowed",
+            "not_covered": "Not what you asked for",
+            "denied_by_rule": "Your device rule denies it",
+            "intent_required": "Cited no message of yours",
+            "bad_intent": "Cited no message",
+            "intent_not_found": "Cited message not found",
+            "intent_not_owner": "Cited message isn't yours",
+            "not_owner_dm": "Cited outside its 1:1 room with you",
+            "thread_closed": "Its thread is closed",
+            "agent_unmapped": "No Swarm account mapped for it here",
+            "unknown_op": "Unknown operation",
+            "login_site_mismatch": "Login not saved for this site",
+        ]
     }
 
     var args: Args? { details?.args }

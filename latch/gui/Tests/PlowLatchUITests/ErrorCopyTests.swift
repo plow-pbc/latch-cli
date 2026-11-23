@@ -9,16 +9,13 @@ nonisolated struct ErrorCopyTests {
                         "serve_required", "other_version", "not_logged_in", "plow_unreachable", "plow_error",
                         "plow_denied", "gatekeeper_unavailable", "messages_not_installed",
                         // The person's own input, and things removed elsewhere.
-                        "rules_too_long", "bad_rules", "not_previewable", "bad_item", "bad_values", "stdin_too_big",
+                        "rules_too_long", "bad_rules", "bad_item", "bad_values", "stdin_too_big",
                         "no_such_item", "bad_import", "file_too_large", "local_file", "bad_pick", "import_expired",
                         "bad_name", "line_taken", "no_such_line", "unknown_cloud_kind", "credential_file_exists",
                         "credential_file_unwritable", "invalid_request", "no_such_agent", "unknown_host", "own_machine",
                         "not_configured", "nothing_to_start_again"]
-    /// Try a request's own codes, and the device list's.
-    static let placed: [(String, ErrorCopy.Place)] = [
-        ("usage", .tryRequest()), ("bad_request", .tryRequest()), ("exec_denied", .tryRequest()),
-        ("not_enabled", .tryRequest(connector: "messages")), ("bad_path", .tryRequest()), ("not_found", .devices),
-    ]
+    /// The device list's own codes.
+    static let placed: [(String, ErrorCopy.Place)] = [("not_found", .devices)]
     static let banned = ["`", "latch ", "--", "http", "pid", "serve", "/Users", "~/"]
 
     private static func failed(_ code: String) -> LatchError {
@@ -83,20 +80,7 @@ nonisolated struct ErrorCopyTests {
     }
 
     @Test func thisMacIsCalledThisMac() {
-        #expect(ErrorCopy.sentence(Self.failed("bad_rules"), host: ErrorCopy.thisMac) == "Latch can't read the rules saved on this Mac. Check Details.")
+        #expect(ErrorCopy.sentence(Self.failed("bad_rules"), host: ErrorCopy.thisMac) == "Latch can't read what agents are always denied on this Mac. Check Details.")
         #expect(ErrorCopy.sentence(Self.failed("host_outdated"), host: ErrorCopy.thisMac)?.hasPrefix("This Mac's Latch") == true)
-    }
-
-    @Test func aConnectorThatIsOffIsNamedWhereItIs() {
-        let off = LatchError.failed(LatchFailure(code: "not_enabled", message: "messages is not enabled on this host"))
-        #expect(ErrorCopy.sentence(off, host: ErrorCopy.thisMac, place: .tryRequest(connector: "messages")) ==
-            "The Messages connector is off on this Mac. Turn it on in Host Settings.")
-        #expect(ErrorCopy.sentence(off, host: "pi-kitchen", place: .tryRequest(connector: "google")) ==
-            "The Google connector is off on pi-kitchen. Turn it on there.")
-        #expect(ErrorCopy.sentence(off, host: "pi-kitchen", place: .tryRequest()) == "This connector is off on pi-kitchen. Turn it on there.")
-        // latch's own `plugin` detail names it when it gives one.
-        let named = LatchError.failed(LatchFailure(code: "not_enabled", message: "", plugin: "contacts"))
-        #expect(ErrorCopy.first(ErrorCopy.said(named, host: ErrorCopy.thisMac, place: .tryRequest())) ==
-            "The Contacts connector is off on this Mac.")
     }
 }

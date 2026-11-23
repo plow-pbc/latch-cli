@@ -156,7 +156,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             app.leaveMainIfLoggedOut()
             await app.followStatus()
         })
-        tasks.append(Task { [app] in await app.refreshAccount() })
+        tasks.append(Task { [app] in
+            await app.refreshAccount()
+            await app.askGatekeeperIfUnanswered()
+        })
         tasks.append(Task { [app] in await app.followVault() })
         // A newer Latch, looked for now and while the window stays open.
         tasks.append(Task { [app] in
@@ -457,14 +460,12 @@ final class ScreenController: NSViewController, NSUserInterfaceValidations {
 
     @objc func newDocument(_ sender: Any?) { shown?.actions.newItem?() }
     @objc func importItems(_ sender: Any?) { shown?.actions.importItems?() }
-    @objc func saveDocument(_ sender: Any?) { shown?.actions.save?() }
 
     func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
         let actions = shown?.actions
         switch item.action {
         case #selector(newDocument(_:)): return actions?.newItem != nil
         case #selector(importItems(_:)): return actions?.importItems != nil
-        case #selector(saveDocument(_:)): return actions?.save != nil
         default: return true
         }
     }
@@ -475,7 +476,6 @@ final class ScreenController: NSViewController, NSUserInterfaceValidations {
         case .account(.connections): ConnectionsView()
         case .host(.home): HomeView()
         case .host(.activity): EmptyView()
-        case .host(.rules): HostRulesView()
         case .host(.vault): VaultView()
         case .host(.settings): HostSettingsView()
         }

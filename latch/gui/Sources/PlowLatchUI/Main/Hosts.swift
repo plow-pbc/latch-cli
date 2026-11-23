@@ -23,7 +23,7 @@ enum AccountPage: String, CaseIterable, Identifiable {
 
 /// A host's screens, each shown for one host.
 enum HostScreen: String, CaseIterable, Identifiable {
-    case home, activity, rules, vault, settings
+    case home, activity, vault, settings
 
     var id: String { rawValue }
     /// The screens with an inspector.
@@ -33,7 +33,6 @@ enum HostScreen: String, CaseIterable, Identifiable {
         switch self {
         case .home: "Home"
         case .activity: "Activity"
-        case .rules: "Rules"
         case .vault: "Vault"
         case .settings: "Host Settings"
         }
@@ -75,7 +74,7 @@ enum Route: Equatable {
     }
 }
 
-/// An agent on a host, as a link to its rules or activity there names it.
+/// An agent on a host, as a link to its activity there names it.
 struct AgentTarget: Equatable {
     var host: String
     var agent: String
@@ -207,7 +206,7 @@ struct PlowNotice: Equatable {
     }
 }
 
-/// What a host said of itself, its rules and its vault, each read on its
+/// What a host said of itself, its device rule and its vault, each read on its
 /// own: one can fail while the others answer; nil until it has answered.
 struct HostSummary: Equatable {
     /// Another host's own `status --local`, its plugins among it.

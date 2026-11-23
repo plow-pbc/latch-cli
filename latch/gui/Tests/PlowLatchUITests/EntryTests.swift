@@ -78,7 +78,7 @@ struct EntryTests {
         return app
     }
 
-    @Test(arguments: [Place.host(.home), .host(.settings), .host(.rules), .host(.vault), .account(.agents), .account(.connections),
+    @Test(arguments: [Place.host(.home), .host(.settings), .host(.vault), .account(.agents), .account(.connections),
                       .host(.activity)])
     func comingBackToALoadedScreenStartsNoLatch(_ place: Place) async throws {
         let client = CountingClient()
@@ -192,7 +192,7 @@ struct EntryTests {
         let home = try #require(app.activityFeed)
         app.place = .host(.activity)
         #expect(app.activityFeed === home)
-        app.place = .host(.rules)
+        app.place = .host(.vault)
         #expect(app.activityFeed == nil)
         app.place = .host(.activity)
         app.chosenHost = "pi-kitchen"
@@ -273,7 +273,7 @@ struct FeedGraceTests {
 /// Back in front, the app reads again the screen showing, whichever it is.
 @MainActor
 struct ActivationTests {
-    @Test(arguments: [HostScreen.rules, .vault, .home])
+    @Test(arguments: [HostScreen.activity, .vault, .home])
     func comingToTheFrontReadsTheVisibleScreenAgain(_ section: HostScreen) async throws {
         let client = CountingClient()
         let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
@@ -304,19 +304,5 @@ struct ActivationTests {
         gate.open()
         await entering.value
         #expect(reachable.allSatisfy { AppModel.held(app.standings[$0.name]) })
-    }
-
-    // Rules names the agents but doesn't show their standing on each host:
-    // neither showing it nor coming back to the front asks each host.
-    @Test func rulesReadsTheAgentListAndNoHostsStanding() async throws {
-        let client = CountingClient()
-        let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
-        app.stage(status: try Fixtures.decode(Fixtures.serving))
-        app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
-        app.place = .host(.rules)
-        await app.enter(.host(.rules, app.host))
-        await app.activated()
-        #expect(client.calls.sorted() == ["agents", "agents", "rules show", "rules show"])
-        #expect(!client.calls.contains("agents --host"))
     }
 }

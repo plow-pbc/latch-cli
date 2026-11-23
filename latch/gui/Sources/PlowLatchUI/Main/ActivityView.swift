@@ -27,8 +27,9 @@ enum ActivityFilter: String, CaseIterable, Identifiable {
     }
 }
 
-/// Activity's heading, then its scope bar: the outcome, the agent asked for
-/// (a click removes it) and Show Connections and Reads. Too narrow for one
+/// Activity's heading, the host's device rule under it, then its scope bar:
+/// the outcome, the agent asked for (a click removes it) and Show
+/// Connections and Reads. Too narrow for one
 /// line, they stack, and the outcome's segments narrow to fit.
 struct ActivityHeading: View {
     var shown: ActivityShown
@@ -48,6 +49,15 @@ struct ActivityHeading: View {
                     .toggleStyle(.button)
                     .labelStyle(.iconOnly)
                     .help("Also show when callers connected, and your own reads (rules, vault, status, activity)")
+            }
+            if let host = shown.host {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Always denied on \(host.name)").font(.headline)
+                    Text("Agents act only on a message of yours they cite. What you name here is refused whatever a message says.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    DeviceRuleBox(host: host)
+                }
             }
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 12) {
@@ -189,8 +199,8 @@ struct StatusLabel: View {
         switch status {
         case .connected: .secondary
         case .allowed: .green
-        case .gatekeeper(saidNo: false): .orange
-        case .gatekeeper(saidNo: true), .refused: .red
+        case .gatekeeper("not_covered"): .orange
+        case .gatekeeper, .refused: .red
         case .stopped: .yellow
         }
     }

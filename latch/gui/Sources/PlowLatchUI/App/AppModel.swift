@@ -68,13 +68,13 @@ final class AppModel {
 
     var progress: Progress { onboarding?.progress ?? store.load() }
 
-    /// What's set up, as latch says: whether shared rules are saved, and
+    /// What's set up, as latch says: whether the device rule was answered, and
     /// each setup step (`setup --status`); nil where latch couldn't say.
     private(set) var rulesSaved: Bool?
     private(set) var setup: SetupStatus?
 
     func refreshSetup() async {
-        rulesSaved = (try? await client.rulesShow()).map { $0.everyAgent != nil }
+        rulesSaved = (try? await client.rulesShow()).map { $0.deviceRule != nil }
         setup = try? await client.setupStatus()
     }
 
@@ -107,6 +107,17 @@ final class AppModel {
         }
     }
 
+    /// The gatekeeper question, over the main window, while this Mac hosts
+    /// and its owner never answered it: on updating from a latch whose
+    /// rules granted (a first run answers it while setting up). Answered,
+    /// even blank, the device rule exists, and it's never asked again.
+    func askGatekeeperIfUnanswered() async {
+        guard let host = hosts.first(where: \.isThisMac) else { return }
+        await refreshRules(on: host)
+        guard sheet == nil, case .success(let show)? = summaries[host.name]?.rules, show.deviceRule == nil else { return }
+        sheet = .gatekeeper(host)
+    }
+
     /// Settings opening: the account and its agents, each unless read in
     /// the last minute.
     func refreshAccountIfStale(now: Date = .now) async {
@@ -128,16 +139,13 @@ final class AppModel {
             case let .account(page): self.page = page
             case let .host(screen): (page, self.screen) = (nil, screen)
             }
-            dropRulesFocusLeft()
         }
     }
     private var page: AccountPage?
     private(set) var screen: HostScreen = .home
     /// The host the workspace shows, as the sidebar picked it; nil until
     /// one is picked.
-    var chosenHost: String? {
-        didSet { dropRulesFocusLeft() }
-    }
+    var chosenHost: String?
 
     /// What the main window shows over itself, until it's answered or
     /// closed; nil for nothing.
@@ -276,14 +284,6 @@ final class AppModel {
             async let summary: Void = readSummary(of: host, vault: false, refresh: refresh)
             async let status: Void = readHostStatus(of: host, refresh: refresh)
             _ = await (summary, status)
-        case let .host(.rules, host):
-            guard let host, host.isThisMac || host.online != false else { return }
-            // Its editors name the agents; their standing on each host isn't
-            // shown here.
-            let list = refresh || agents == nil, read = refresh || !Self.held(summaries[host.name]?.rules)
-            async let agentList = list ? refreshAgentList() : true
-            async let rules: Void = read ? refreshRules(on: host) : ()
-            _ = await (agentList, rules)
         case let .host(.vault, host):
             guard let host, host.isThisMac || host.online != false else { return }
             if refresh || !Self.held(summaries[host.name]?.vault) { await refreshVault(on: host) }
@@ -302,9 +302,11 @@ final class AppModel {
         case .account(.connections):
             if refresh || connections == nil { await refreshConnections() }
             if refresh || !Self.held(devices) { await refreshDevices() }
-        case .host(.activity, _):
-            // Its feed is the window's (`activityFeed`).
-            break
+        case let .host(.activity, host):
+            // Its feed is the window's (`activityFeed`); its device rule
+            // heads it.
+            guard let host, host.isThisMac || host.online != false else { return }
+            if refresh || !Self.held(summaries[host.name]?.rules) { await refreshRules(on: host) }
         }
     }
 
@@ -906,78 +908,29 @@ final class AppModel {
         if case let .failure(error) = removed { agentRemoveError = error } else { agentRemoveError = nil }
     }
 
-    /// The agent whose rules the Rules screen brings into view and focuses,
-    /// on the one host it was asked for, until its editor takes it or that
-    /// host's Rules goes.
-    private(set) var rulesFocus: AgentTarget?
-
-    /// An agent's rules on a host: that host's Rules, its editor brought
-    /// into view.
-    func openRules(_ host: HostEntry, agent uid: String) {
-        chosenHost = host.name
-        place = .host(.rules)
-        rulesFocus = AgentTarget(host: host.name, agent: uid)
-    }
-
-    /// An agent's editor on a host's Rules: the request is its, so it's
-    /// done; true only for the request it matches, so a request for another
-    /// host or agent is left for that one.
-    func takeRulesFocus(_ target: AgentTarget) -> Bool {
-        guard rulesFocus == target else { return false }
-        rulesFocus = nil
-        return true
-    }
-
-    /// The window left the Rules a request was for, before its editor
-    /// took it, whatever that Rules showed (offline, unavailable, loading):
-    /// the request goes, so it can't take the focus, or begin a draft, when
-    /// that Rules is next shown.
-    private func dropRulesFocusLeft() {
-        guard let focus = rulesFocus, place != .host(.rules) || host?.name != focus.host else { return }
-        rulesFocus = nil
-    }
-
-    /// The agent's rules to scroll to on a host's Rules screen: the one
-    /// asked for on that host, once its editor exists (the host's rules
-    /// read and the agent listed); nil until then.
-    func rulesScrollTarget(on host: HostEntry) -> String? {
-        guard let focus = rulesFocus, focus.host == host.name, case .success? = summaries[host.name]?.rules,
-              agents?.contains(where: { $0.uid == focus.agent }) == true else { return nil }
-        return focus.agent
-    }
-    /// Rules' Try a request.
-    let trial = Trial()
-
-    /// Reads a host's rules again (the Rules screen, after a save).
+    /// Reads a host's device rule again (Activity, after a save).
     func refreshRules(on host: HostEntry) async {
         guard let rules = await Self.result({ try await self.client.rulesShow(host: host.isThisMac ? nil : host.name) }) else { return }
         summaries[host.name, default: HostSummary()].rules = rules
+        if host.isThisMac, case let .success(show) = rules { rulesSaved = show.deviceRule != nil }
     }
 
-    /// Saves rules on a host, for every agent or one agent's own, only if
-    /// they're still what the person started editing (`revision`, nil when
-    /// there were none): latch refuses a save over rules changed elsewhere
-    /// meanwhile. Empty text clears them.
-    func saveRules(_ text: String, on host: HostEntry, agent: String?, revision: String?) async throws {
+    /// Saves a host's device rule only if it's still what the person
+    /// started editing (`revision`, nil when there was none): latch refuses
+    /// a save over a rule changed elsewhere meanwhile. An empty text is
+    /// saved too: nothing is denied.
+    func saveRules(_ text: String, on host: HostEntry, revision: String?) async throws {
         do {
-            try await client.rulesSet(text, host: host.isThisMac ? nil : host.name, agent: agent, revision: revision)
+            try await client.rulesSet(text, host: host.isThisMac ? nil : host.name, revision: revision)
         } catch let error as LatchError where error.code == "stale_revision" {
             throw LatchError.unreachable(Self.changedElsewhere)
         }
         await refreshRules(on: host)
-        await refreshStanding(on: host)
     }
 
-    /// A rules editor's place: a host's rules for every agent (`agent`
-    /// nil), or one agent's own there.
-    struct RulesKey: Hashable {
-        var host: String
-        var agent: String?
-    }
-
-    /// Rules being edited and not yet saved: the text, and the revision the
-    /// edit started from (nil when there were none). Each is observed on
-    /// its own, so typing redraws only its editor.
+    /// A device rule being edited and not yet saved: the text, and the
+    /// revision the edit started from (nil when there was none). Each is
+    /// observed on its own, so typing redraws only its editor.
     @Observable
     final class RulesDraft {
         var text: String
@@ -989,69 +942,64 @@ final class AppModel {
         }
     }
 
-    /// Unsaved rules, kept while the person goes to another screen or host
-    /// and back; a save or Revert ends one.
-    var rulesDrafts: [RulesKey: RulesDraft] = [:]
+    /// Unsaved device rules by host name, kept while the person goes to
+    /// another screen or host and back; a save or Revert ends one.
+    var rulesDrafts: [String: RulesDraft] = [:]
     /// Why a draft's last save failed.
-    var rulesErrors: [RulesKey: LatchError] = [:]
-    private(set) var savingRules: Set<RulesKey> = []
+    var rulesErrors: [String: LatchError] = [:]
+    private(set) var savingRules: Set<String> = []
 
-    /// A keystroke in a rules editor: into its draft, begun from `saved` if
-    /// there's none. The draft object changes, not the map of drafts, so
-    /// only that editor redraws.
-    func typeRules(_ text: String, at key: RulesKey, from saved: RulesShow.Text?) {
-        if let draft = rulesDrafts[key] {
+    /// The device rule on a host, as it last said.
+    func savedRule(_ host: String) -> RulesShow.Rule? {
+        guard case let .success(show)? = summaries[host]?.rules else { return nil }
+        return show.deviceRule
+    }
+
+    /// A keystroke in a device rule's box: into its draft, begun from what's
+    /// saved if there's none. The draft object changes, not the map of
+    /// drafts, so only that box redraws.
+    func typeRule(_ text: String, on host: String) {
+        if let draft = rulesDrafts[host] {
             draft.text = text
         } else {
-            rulesDrafts[key] = .init(text: text, base: saved?.revision)
-            rulesErrors[key] = nil
+            rulesDrafts[host] = .init(text: text, base: savedRule(host)?.revision)
+            rulesErrors[host] = nil
         }
     }
 
-    /// The rules saved at a draft's place, as the host last said.
-    func savedRules(_ key: RulesKey) -> RulesShow.Text? {
-        guard case let .success(show)? = summaries[key.host]?.rules else { return nil }
-        guard let agent = key.agent else { return show.everyAgent }
-        return show.agent(agent).map { RulesShow.Text(text: $0.text ?? "", revision: $0.revision) }
-    }
-
-    /// A draft differs from what's saved, or was begun from older rules.
-    func rulesChanged(_ key: RulesKey) -> Bool {
-        guard let draft = rulesDrafts[key] else { return false }
-        let saved = savedRules(key)
+    /// A draft differs from what's saved, or was begun from an older rule.
+    func ruleChanged(_ host: String) -> Bool {
+        guard let draft = rulesDrafts[host] else { return false }
+        let saved = savedRule(host)
         return draft.text != (saved?.text ?? "") || draft.base != saved?.revision
     }
 
-    func canSaveRules(_ key: RulesKey) -> Bool { rulesChanged(key) && !savingRules.contains(key) }
-
     /// Saves a draft over what it began from; it ends once saved, and stays
-    /// with why when not.
-    func saveRulesDraft(_ key: RulesKey) async {
-        guard canSaveRules(key), let draft = rulesDrafts[key], let host = hosts.first(where: { $0.name == key.host }) else { return }
-        savingRules.insert(key)
-        defer { savingRules.remove(key) }
+    /// with why when not. With no draft, `answer` saves what's shown (the
+    /// gatekeeper question's Save, blank included).
+    func saveRuleDraft(_ host: String, answer: Bool = false) async {
+        guard !savingRules.contains(host), let entry = hosts.first(where: { $0.name == host }) else { return }
+        let draft = rulesDrafts[host]
+        guard answer || ruleChanged(host) else { return }
+        savingRules.insert(host)
+        defer { savingRules.remove(host) }
         do {
-            try await saveRules(draft.text, on: host, agent: key.agent, revision: draft.base)
-            rulesDrafts[key] = nil
-            rulesErrors[key] = nil
+            try await saveRules(draft?.text ?? savedRule(host)?.text ?? "", on: entry, revision: draft?.base ?? savedRule(host)?.revision)
+            rulesDrafts[host] = nil
+            rulesErrors[host] = nil
         } catch {
-            rulesErrors[key] = .from(error)
+            rulesErrors[host] = .from(error)
         }
     }
 
-    /// Revert: the draft goes, and the saved rules are read again.
-    func revertRules(_ key: RulesKey) async {
-        rulesDrafts[key] = nil
-        rulesErrors[key] = nil
-        if let host = hosts.first(where: { $0.name == key.host }) { await refreshRules(on: host) }
+    /// Revert: the draft goes, and the saved rule is read again.
+    func revertRule(_ host: String) async {
+        rulesDrafts[host] = nil
+        rulesErrors[host] = nil
+        if let entry = hosts.first(where: { $0.name == host }) { await refreshRules(on: entry) }
     }
 
-    static let changedElsewhere = "These rules changed since you started editing. Revert to see the saved rules, then make your change again."
-
-    /// `latch rules try` on a host.
-    func tryRequest(_ request: [String], on host: HostEntry, agent: String?, newAgent: Bool, draft: String?) async throws -> RulesTry {
-        try await client.rulesTry(.words(request), host: host.isThisMac ? nil : host.name, agent: agent, newAgent: newAgent, draft: draft)
-    }
+    static let changedElsewhere = "This rule changed since you started editing. Revert to see the saved rule, then make your change again."
 
     /// For snapshots: as `latch agents` said.
     func stage(agents: AgentsList, standings: [String: Result<AgentsList, LatchError>]) {

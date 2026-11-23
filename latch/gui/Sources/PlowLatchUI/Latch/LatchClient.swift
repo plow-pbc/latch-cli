@@ -14,24 +14,18 @@ nonisolated protocol LatchClient: Sendable {
     func login(name: String?, replace: Bool) -> AsyncThrowingStream<LoginEvent, Error>
     /// `latch rules show`, on this Mac's host or, with `host`, another.
     func rulesShow(host: String?) async throws -> RulesShow
-    /// `latch rules set --file -`, the text on stdin.
-    func rulesSet(_ text: String) async throws
     /// `latch setup --status`: what's set up, read from the state folder.
     func setupStatus() async throws -> SetupStatus
     /// The same, with `--check-access`: whether Plow Latch has Full Disk
     /// Access, which takes a moment.
     func setupStatusCheckingAccess() async throws -> SetupStatus
-    /// `latch rules set --file -` (or `rules clear` for no text) on a host,
-    /// for every agent or, with `agent` (a uid), that agent's own, only if
-    /// they are still at `revision` (nil: there were none); otherwise latch
-    /// refuses with `stale_revision` and nothing changes.
-    func rulesSet(_ text: String, host: String?, agent: String?, revision: String?) async throws
+    /// `latch rules set --file -`: a host's device rule, the text on stdin,
+    /// only if it is still at `revision` (nil: there was none); otherwise
+    /// latch refuses with `stale_revision` and nothing changes. An empty
+    /// text is saved too: nothing is denied, and the question is answered.
+    func rulesSet(_ text: String, host: String?, revision: String?) async throws
     /// `latch agents [--host NAME]`.
     func agents(host: String?) async throws -> AgentsList
-    /// `latch rules try`: the verdict `request` (as an agent would send it)
-    /// would get on a host now, as `agent` (a uid), a new agent, or you;
-    /// `draft` judges against unsaved rules for every agent.
-    func rulesTry(_ request: TryRequest, host: String?, agent: String?, newAgent: Bool, draft: String?) async throws -> RulesTry
     /// `latch vault list`, on this Mac's host or, with `host`, another.
     func vaultList(host: String?) async throws -> VaultList
     /// `latch vault show ITEM`: its non-secret values.
@@ -107,28 +101,6 @@ nonisolated protocol LatchClient: Sendable {
 
 extension LatchClient {
     func rulesShow() async throws -> RulesShow { try await rulesShow(host: nil) }
-}
-
-/// What `latch rules try` is asked to judge: a request as an agent sends
-/// it, or a browser fill of a saved login, which has no such words.
-nonisolated enum TryRequest: Equatable, Sendable {
-    /// The words after `--`, e.g. `google -- gmail search is:unread`.
-    case words([String])
-    /// `--fill-login TITLE --url URL`: filling that saved login into the
-    /// site, judged only; nothing is opened or filled.
-    case fillLogin(title: String, url: String)
-
-    var arguments: [String] {
-        switch self {
-        case let .words(words): ["--"] + words
-        case let .fillLogin(title, url): ["--fill-login", title, "--url", url]
-        }
-    }
-
-    /// The words, for a request that has them.
-    var words: [String]? {
-        if case let .words(words) = self { words } else { nil }
-    }
 }
 
 /// The bundle's own latch, by absolute path, always with `--state-dir`.
@@ -221,10 +193,6 @@ nonisolated struct LiveLatchClient: LatchClient {
         try decode(RulesShow.self, try await run(["rules", "show"] + on(host)))
     }
 
-    func rulesSet(_ text: String) async throws {
-        _ = try await run(["rules", "set", "--file", "-"], input: Data(text.utf8))
-    }
-
     func setupStatus() async throws -> SetupStatus {
         try decode(SetupStatus.self, try await run(["setup", "--status"]))
     }
@@ -233,29 +201,13 @@ nonisolated struct LiveLatchClient: LatchClient {
         try decode(SetupStatus.self, try await run(["setup", "--status", "--check-access"]))
     }
 
-    func rulesSet(_ text: String, host: String?, agent: String?, revision: String?) async throws {
-        let whose = on(host) + (agent.map { ["--agent", $0] } ?? [])
-        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            // No rules to clear when there were none.
-            guard let revision else { return }
-            _ = try await run(["rules", "clear", "--revision", revision] + whose)
-        } else {
-            _ = try await run(["rules", "set", "--revision", revision ?? "none", "--file", "-"] + whose, input: Data(text.utf8))
-        }
+    func rulesSet(_ text: String, host: String?, revision: String?) async throws {
+        _ = try await run(["rules", "set", "--revision", revision ?? "none", "--file", "-"] + on(host), input: Data(text.utf8))
     }
 
     func agents(host: String?) async throws -> AgentsList {
         try decode(AgentsList.self, try await run(["agents"] + on(host)))
     }
-
-    func rulesTry(_ request: TryRequest, host: String?, agent: String?, newAgent: Bool, draft: String?) async throws -> RulesTry {
-        var arguments = ["rules", "try"] + on(host)
-        if let agent { arguments += ["--agent", agent] }
-        if newAgent { arguments.append("--new-agent") }
-        if draft != nil { arguments += ["--draft", "-"] }
-        return try decode(RulesTry.self, try await run(arguments + request.arguments, input: draft.map { Data($0.utf8) }))
-    }
-
 
     func vaultList(host: String?) async throws -> VaultList {
         try decode(VaultList.self, try await run(["vault", "list", "--all"] + on(host)))

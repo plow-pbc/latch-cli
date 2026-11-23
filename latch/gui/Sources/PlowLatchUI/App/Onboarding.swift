@@ -1,7 +1,6 @@
 import AppKit
 import Observation
 import ServiceManagement
-import Synchronization
 
 /// The onboarding flow: which screen shows, each screen's state, and what
 /// it asks latch. Views only draw it and call its intents.
@@ -45,112 +44,20 @@ final class Onboarding {
         case failed(String)
     }
 
-    enum Preview: Equatable {
-        case notChecked
-        case checking
-        case verdict(RulesTry)
-        case failed(LatchError)
-        /// latch gave no answer before `checkDeadline`.
-        case noAnswer
-    }
-
-    /// An example request on the rules screen: what a person reads, its
-    /// symbol, what it does in a plain sentence, and what `latch rules try`
-    /// is asked.
-    nonisolated struct Example: Identifiable, Equatable, Sendable {
-        var title: String
-        var symbol: String
-        var detail: String
-        var request: TryRequest
-        var id: String { title }
-    }
-
-    /// A default: the rules it fills in, and the requests it is tried on.
-    nonisolated struct Deck: Identifiable, Equatable, Sendable {
-        var name: String
-        var rules: String
-        var examples: [Example]
-        var id: String { name }
-    }
-
-    /// Every default's examples, in order.
-    nonisolated static var examples: [Example] { decks.flatMap(\.examples) }
-
-    /// The defaults, their calendar request for the two days from today.
-    nonisolated static var decks: [Deck] { decks(from: .now) }
-
-    nonisolated static func decks(from today: Date) -> [Deck] {
-        let day = Date.ISO8601FormatStyle(timeZone: .current).year().month().day()
-        let from = today.formatted(day)
-        let to = Calendar.current.date(byAdding: .day, value: 2, to: today)!.formatted(day)
-        return [
-            Deck(name: "Chief of Staff",
-                 rules: "Let my chief of staff read email, check my calendar and draft replies. Never let it email outside the company.",
-                 examples: [
-                     Example(title: "Search inbox for the kickoff thread", symbol: "envelope",
-                             detail: "Retrieving a thread contacts no recipients.",
-                             request: .words(["google", "--", "gmail", "search", "subject:Kickoff newer_than:7d", "--max", "20"])),
-                     Example(title: "List events for the next two days", symbol: "calendar",
-                             detail: "Listing events creates no commitments.",
-                             request: .words(["google", "--", "calendar", "events", "primary", "--from", from, "--to", to])),
-                     Example(title: "Save the launch follow-up as a draft", symbol: "pencil",
-                             detail: "A saved message reaches nobody until sent.",
-                             request: .words(["google", "--", "gmail", "drafts", "create", "--to", "teammate@studio.example",
-                                              "--subject", "Re: Launch timing", "--body", "Could you share an updated estimate?"])),
-                     Example(title: "Reply-all to the launch update thread", symbol: "envelope",
-                             detail: "The CC list includes an external recipient.",
-                             request: .words(["google", "--", "gmail", "send", "--reply-all", "--to", "launch@studio.example",
-                                              "--cc", "partner@vendor.example", "--subject", "Re: Launch update"])),
-                 ]),
-            Deck(name: "Developer",
-                 rules: "Let my developer run tests, review changes and open pull requests. Never let it push directly to main.",
-                 examples: [
-                     Example(title: "Run inbox.test.js with Jest", symbol: "pencil",
-                             detail: "Jest exercises local code without deploying it.",
-                             request: .words(["exec", "--", "npm", "test", "--", "--runInBand", "inbox.test.js"])),
-                     Example(title: "Show the diff for PR 73", symbol: "arrow.triangle.branch",
-                             detail: "Inspecting the diff leaves code untouched.",
-                             request: .words(["exec", "--network", "--", "gh", "pr", "diff", "73"])),
-                     Example(title: "Create a PR for retry-count rollback", symbol: "pencil",
-                             detail: "A proposal leaves deployed code untouched.",
-                             request: .words(["exec", "--network", "--", "gh", "pr", "create", "--base", "main", "--head", "rollback/retry-count",
-                                              "--title", "Restore retry count", "--body", "Proposes reverting the retry-count change."])),
-                     Example(title: "Push release/candidate to origin", symbol: "square.and.arrow.up",
-                             detail: "The destination is main, despite the branch name.",
-                             request: .words(["exec", "--network", "--", "git", "push", "--force", "origin", "release/candidate:refs/heads/main"])),
-                 ]),
-        ]
-    }
-
     private(set) var step: Step
     private(set) var progress: Progress
     var login: Login = .starting
     /// "Use another name": what the person typed.
     var loginName = ""
-    // Set your rules.
-    var savedRules: String?
+    // The gatekeeper question.
+    /// This Mac's device rule, as saved: nil when never answered.
+    var savedRules: RulesShow.Rule?
     var draftRules = ""
     var rulesError: LatchError?
     var savingRules = false
-    /// This Mac's rules couldn't be read: nothing may be saved over them,
-    /// unseen, until they are. Skip for now still moves on.
+    /// This Mac's device rule couldn't be read: nothing may be saved over
+    /// it, unseen, until it is.
     private(set) var rulesUnreadable = false
-    /// The requests the rules are tried on: the first default's until the
-    /// person picks one.
-    var deck = Onboarding.decks[0]
-    var previews: [String: Preview] = [:]
-    /// While latch is judging the examples (the beam scans).
-    var reviewing = false
-    /// How long an example waits for latch before it says it got no answer.
-    var checkDeadline: Duration = .seconds(15)
-    /// The draft the examples were last judged on, and which review is the
-    /// current one: an answer from an older one is dropped.
-    private var reviewed: String?
-    private var review = 0
-    /// The Mac lights up briefly when a request is allowed through.
-    var macLit = false
-    /// Which examples show their request and verdict.
-    var openExamples: Set<String> = []
     // Connect Google.
     var google: Google = .checking
     var googleAccounts = GoogleAccounts(accounts: [])
@@ -186,7 +93,6 @@ final class Onboarding {
 
     let app: AppModel
     private var loginTask: Task<Void, Never>?
-    private(set) var reviewTask: Task<Void, Never>?
     private(set) var accessTask: Task<Void, Never>?
     /// The Full Disk Access helper, while it floats.
     private var grantGuide: (any GrantGuide)?
@@ -250,13 +156,6 @@ final class Onboarding {
     func stopWork() {
         loginTask?.cancel()
         loginTask = nil
-        reviewTask?.cancel()
-        reviewTask = nil
-        reviewing = false
-        // A review stopped part way is not judged: its rows are unchecked
-        // again, and the same text is judged afresh.
-        for (id, preview) in previews where preview == .checking { previews[id] = .notChecked }
-        reviewed = nil
         googleTask?.cancel()
         googleTask = nil
         googleCheck?.cancel()
@@ -276,7 +175,7 @@ final class Onboarding {
         switch step {
         case .welcome: "Get started"
         case .login, .privacy: "Continue"
-        case .rules: savingRules ? "Saving…" : rulesChanged ? "Save rules" : "Continue"
+        case .rules: savingRules ? "Saving…" : rulesChanged ? "Save" : "Continue"
         case .access: accessDone || accessFailed ? "Continue" : accessGranted ? "Turn on" : "Open System Settings"
         case .start: starting ? "Starting…" : runInBackground && app.status?.thisMachine.hosting.ready != true ? "Start Latch" : "Continue"
         case .done: textAgent.map { "Text \($0.name)" } ?? "Open Latch"
@@ -343,8 +242,8 @@ final class Onboarding {
     /// A step already set up shows Continue alone, not Skip for now.
     var stepDone: Bool {
         switch step {
-        // Rules that couldn't be read again leave Skip for now the way on.
-        case .rules: !(savedRules ?? "").isEmpty && !rulesChanged && !rulesUnreadable
+        // Skipped, the question is asked again in the main window.
+        case .rules: savedRules != nil && !rulesChanged
         case .access: accessDone && google == .connected
         default: false
         }
@@ -366,25 +265,11 @@ final class Onboarding {
         [messages, contacts].contains { if case .failed = $0 { true } else { false } }
     }
 
-    /// Whether Continue on the rules screen saves: the box holds rules
-    /// other than the saved ones.
-    /// The rules Continue leaves in place: the box's, or, while it's empty,
-    /// the saved ones it keeps.
-    var previewedRules: String {
-        let draft = draftRules.trimmingCharacters(in: .whitespacesAndNewlines)
-        return draft.isEmpty ? savedRules?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "" : draft
-    }
-
-    /// Whose rules the box holds, when this Mac already has some: those, or
-    /// a change Save rules would put in their place.
-    var rulesNote: String? {
-        guard let saved = savedRules?.trimmingCharacters(in: .whitespacesAndNewlines), !saved.isEmpty else { return nil }
-        return rulesChanged ? "Save rules replaces your current rules on this Mac." : "These are your current rules on this Mac."
-    }
-
+    /// Whether Continue saves: the question was never answered (a blank
+    /// answer is saved too), or the box holds another answer.
     var rulesChanged: Bool {
-        let draft = draftRules.trimmingCharacters(in: .whitespacesAndNewlines)
-        return !draft.isEmpty && draft != savedRules?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let saved = savedRules else { return true }
+        return draftRules.trimmingCharacters(in: .whitespacesAndNewlines) != saved.text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     // MARK: Log in to Plow
@@ -445,114 +330,23 @@ final class Onboarding {
         }
     }
 
-    // MARK: Set your rules
+    // MARK: The gatekeeper question
 
-    /// Reads the saved shared rules into the box, or on a first run the
-    /// first default's, so it is never empty on arrival; then reviews the
-    /// examples, the default's whose text the box holds, else the last shown.
+    /// Reads this Mac's device rule into the box.
     func loadRules() async {
         do {
-            let saved = try await client.rulesShow().everyAgent?.text
-            savedRules = saved
-            if draftRules.isEmpty { draftRules = (saved ?? "").isEmpty ? Self.decks[0].rules : saved ?? "" }
-            let draft = draftRules.trimmingCharacters(in: .whitespacesAndNewlines)
-            if let match = Self.decks.first(where: { $0.rules == draft }) { deck = match }
+            savedRules = try await client.rulesShow().deviceRule
+            if draftRules.isEmpty { draftRules = savedRules?.text ?? "" }
             rulesError = nil
             rulesUnreadable = false
         } catch {
             rulesError = .from(error)
             rulesUnreadable = true
         }
-        startReview()
     }
 
-    /// "Use a default": its rules in the box, its requests in the deck,
-    /// judged at once.
-    func choose(_ deck: Deck) {
-        self.deck = deck
-        openExamples = []
-        draftRules = deck.rules
-        startReview()
-    }
-
-    /// The box changed: the examples show Checking… at once and are judged
-    /// a second (`reviewDelay`) after the person stops typing.
-    func draftChanged() {
-        guard previewedRules != reviewed else { return }
-        startReview(after: reviewDelay)
-    }
-
-    var reviewDelay: Duration = .seconds(1)
-
-    /// Judges each example against the draft as a new agent would be judged
-    /// (`rules try --new-agent --draft`), all at once, each verdict shown
-    /// as it comes, or no answer after `checkDeadline`. Nothing is saved.
-    /// A newer review drops older answers.
-    private func startReview(after delay: Duration = .zero) {
-        let draft = previewedRules
-        reviewed = draft
-        review += 1
-        let current = review
-        let examples = deck.examples
-        let deadline = checkDeadline
-        for example in examples { previews[example.id] = .checking }
-        reviewing = true
-        macLit = false
-        reviewTask?.cancel()
-        reviewTask = Task {
-            try? await Task.sleep(for: delay)
-            guard !Task.isCancelled else { return }
-            await withTaskGroup(of: (String, Preview).self) { group in
-                for example in examples {
-                    group.addTask { [client] in
-                        (example.id, await Self.judge(example, draft: draft, client: client, within: deadline))
-                    }
-                }
-                for await (id, preview) in group where current == review && !Task.isCancelled {
-                    previews[id] = preview
-                }
-            }
-            guard current == review, !Task.isCancelled else { return }
-            reviewing = false
-            // An allowed request reaches the Mac: it lights up briefly.
-            guard examples.contains(where: { if case let .verdict(answer)? = previews[$0.id] { answer.verdict == "allow" } else { false } })
-            else { return }
-            try? await Task.sleep(for: .milliseconds(420))
-            guard current == review, !Task.isCancelled else { return }
-            macLit = true
-            try? await Task.sleep(for: .milliseconds(260))
-            macLit = false
-        }
-    }
-
-    /// One example's verdict, or `.noAnswer` once `deadline` passes first.
-    /// The row never waits on a latch past it: that latch is stopped, and
-    /// whatever it says after is dropped.
-    private nonisolated static func judge(_ example: Example, draft: String, client: any LatchClient, within deadline: Duration) async -> Preview {
-        let first = FirstAnswer()
-        let asking = Task {
-            do {
-                first.give(.verdict(try await client.rulesTry(example.request, host: nil, agent: nil, newAgent: true, draft: draft)))
-            } catch {
-                first.give(.failed(.from(error)))
-            }
-        }
-        let timer = Task {
-            try? await Task.sleep(for: deadline)
-            first.give(.noAnswer)
-        }
-        let preview = await withTaskCancellationHandler {
-            await first.value()
-        } onCancel: {
-            first.give(.noAnswer)
-        }
-        asking.cancel()
-        timer.cancel()
-        return preview
-    }
-
-    /// Continue: saves the rules only if the person changed them. An empty
-    /// box never clears rules that are saved.
+    /// Continue: saves the answer, blank included, unless it's the one
+    /// already saved.
     func saveRules() async {
         guard !rulesUnreadable else { return }
         guard rulesChanged else { return next() }
@@ -560,8 +354,8 @@ final class Onboarding {
         savingRules = true
         defer { savingRules = false }
         do {
-            try await client.rulesSet(draft)
-            savedRules = draft
+            try await client.rulesSet(draft, host: nil, revision: savedRules?.revision)
+            savedRules = try await client.rulesShow().deviceRule
             rulesError = nil
             next()
         } catch {
@@ -909,34 +703,5 @@ enum LoginItem {
 
     static func openSettings() {
         SMAppService.openSystemSettingsLoginItems()
-    }
-}
-
-/// The first answer given; any given after it is dropped.
-nonisolated private final class FirstAnswer: Sendable {
-    private struct State {
-        var answer: Onboarding.Preview?
-        var waiting: CheckedContinuation<Onboarding.Preview, Never>?
-    }
-    private let state = Mutex(State())
-
-    func give(_ answer: Onboarding.Preview) {
-        let waiting = state.withLock { state -> CheckedContinuation<Onboarding.Preview, Never>? in
-            guard case .none = state.answer else { return nil }
-            state.answer = answer
-            defer { state.waiting = nil }
-            return state.waiting
-        }
-        waiting?.resume(returning: answer)
-    }
-
-    func value() async -> Onboarding.Preview {
-        await withCheckedContinuation { continuation in
-            let answer = state.withLock { state in
-                if case .none = state.answer { state.waiting = continuation }
-                return state.answer
-            }
-            if let answer { continuation.resume(returning: answer) }
-        }
     }
 }

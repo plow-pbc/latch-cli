@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import PlowLatchUI
 
-/// Where the main window goes: an agent's rules or activity on exactly the
+/// Where the main window goes: an agent's activity on exactly the
 /// host asked for, account pages on no host, and reads only for the route
 /// that asked.
 @MainActor
@@ -14,23 +14,9 @@ struct TargetTests {
         app.stage(status: try Fixtures.decode(Fixtures.serving))
         app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
         app.stage(agents: try Fixtures.decode(Fixtures.agents), standings: [:])
-        app.stage(summary: HostSummary(rules: .success(try Fixtures.decode(Fixtures.rulesStudio))), for: "studio")
-        app.stage(summary: HostSummary(rules: .success(try Fixtures.decode(Fixtures.rulesKitchen))), for: "pi-kitchen")
+        app.stage(summary: HostSummary(rules: .success(try Fixtures.decode(Fixtures.studioRules))), for: "studio")
+        app.stage(summary: HostSummary(rules: .success(try Fixtures.decode(Fixtures.piRules))), for: "pi-kitchen")
         return app
-    }
-
-    @Test func rulesOpensOnTheHostAndAgentAskedForAndNowhereElse() throws {
-        let app = try app()
-        app.place = .account(.agents)
-        let kitchen = try #require(app.hosts.first { $0.name == "pi-kitchen" })
-        app.openRules(kitchen, agent: helper)
-        #expect(app.route == .host(.rules, kitchen))
-        #expect(app.rulesFocus == AgentTarget(host: "pi-kitchen", agent: helper))
-        #expect(app.rulesScrollTarget(on: kitchen) == helper)
-        // Another host picked before the editor came into view: the request
-        // is pi-kitchen's, and never lands on studio's editors.
-        app.chosenHost = "studio"
-        #expect(app.rulesScrollTarget(on: try #require(app.host)) == nil)
     }
 
     @Test func activityOpensOnTheHostAndAgentAskedForWithEveryOutcomeAndNoSearch() throws {
