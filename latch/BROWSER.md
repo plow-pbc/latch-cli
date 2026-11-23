@@ -336,14 +336,14 @@ An engine without a command's optional feature (`eval`, `upload`,
 before anything is dispatched.
 
 The host audits each call: command, session, engine, tab, origin
-and path (never the query), snapshot, target ref and role, the outcome,
+(never the path or query), snapshot, target ref and role, the outcome,
 and the client's parent process id. A plan
 (`do`, or `act`) records its request id, its
 step count and how many are goals, its status and stop (step and code),
 each step's kind and outcome, and per action the step and action number,
 operation, ref and role, how it was chosen (`ref`, or `model` with the
 operation's and target's `p`, and what was left out to fit), the risk
-`p`, the confirmation id when one was used, the origin and path, the
+`p`, the confirmation id when one was used, the origin, the
 dispatch (`sent`, `refused`, `unknown`) and its screenshot's size and
 sha256. Each decision-model call records its purpose, provider, model,
 the provider's request id, latency and the kinds of data sent, never
@@ -359,10 +359,11 @@ It prints, per plan, its actions, model calls, the model's total time and
 its cost (an estimate: calls × Plow's stated $0.0001 a call), and over all plans
 the plan share, confirmations and how they were answered, what followed
 each stop, escapes to `eval`, turns, and stops by code.
-What the gatekeeper judged is kept whole, as `judged`, like an exec's
-argv: a plan's steps as written with their values, a site, a fill's item
-and fields (never a value). `serve.log`, the dashboard and `latch audit` show it with
-credential-looking values hidden. Otherwise never page text, field values
+What the gatekeeper judged is kept as `judged`: its kind, sites, a
+fill's item kind and fields (never a value), and any URL by its origin;
+never titles or a plan's steps and facts. `serve.log` names a browser
+call by its command only; the dashboard and `latch audit` show `judged`
+with credential-looking values hidden. Otherwise never page text, field values
 or typed text: `type` records the text's length and sha256. `eval` records its script verbatim up to 4 KiB, its
 size and sha256, and workaround tags (other frames, shadow roots,
 synthetic events, setting field values, patching `fetch`/XHR, cookies or

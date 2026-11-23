@@ -124,24 +124,26 @@ pub(super) async fn judge(
     judgment.verdict
 }
 
-/// `value` without titles or a plan's own words, every URL cut to its origin.
+/// The audit's copy of a judged action: no plan steps or facts, no
+/// titles, and its URLs cut to their origin.
 fn audited(mut value: Value) -> Value {
-    match &mut value {
-        Value::Object(map) => {
-            for key in ["title", "steps", "facts"] {
-                map.remove(key);
-            }
-            for (key, item) in map.iter_mut() {
-                *item = match (key.as_str(), item.as_str()) {
-                    ("url", Some(url)) => json!(super::core::origin_and_path(url).0),
-                    _ => audited(item.take()),
-                };
-            }
+    let action = value.as_object_mut().expect("an action is an object");
+    action.remove("steps");
+    action.remove("facts");
+    for (key, shown) in action.iter_mut() {
+        let titled = match key.as_str() {
+            "page" | "item" => std::slice::from_mut(shown),
+            "may_fill" => shown.as_array_mut().map_or(&mut [][..], Vec::as_mut_slice),
+            _ => continue,
+        };
+        for one in titled {
+            one.as_object_mut().map(|one| one.remove("title"));
         }
-        Value::Array(items) => items
-            .iter_mut()
-            .for_each(|item| *item = audited(item.take())),
-        _ => {}
+    }
+    for at in ["/url", "/page/url"] {
+        if let Some(url) = value.pointer_mut(at) {
+            *url = json!(super::core::origin_and_path(url.as_str().unwrap_or_default()).0);
+        }
     }
     value
 }
@@ -469,6 +471,19 @@ pub(super) async fn download(
 mod tests {
     use super::*;
     use crate::browser::plan::short_step;
+
+    #[test]
+    fn the_audit_copy_keeps_no_titles_plan_words_or_url_paths() {
+        let judged = json!({"kind": "browser_plan",
+            "page": {"url": "https://shop.example/reset/s3cret?t=1", "title": "Reset"},
+            "steps": [{"step": "type e4 \"hunter2\""}], "facts": {"title": "Draft 2"},
+            "sites": ["shop.example"], "may_fill": [{"kind": "card", "title": "Visa Gold"}]});
+        assert_eq!(
+            audited(judged),
+            json!({"kind": "browser_plan", "page": {"url": "https://shop.example"},
+                "sites": ["shop.example"], "may_fill": [{"kind": "card"}]})
+        );
+    }
 
     #[test]
     fn a_plan_is_shown_as_written_with_the_sites_it_names() {
