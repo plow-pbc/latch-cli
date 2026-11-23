@@ -4,7 +4,9 @@
 //! gives the message with its server-verified sender, the reactions on its
 //! thread's root, the room's members, and every message after it. A cited
 //! reply in a thread is read from the thread's root too, so the judge sees
-//! what it answers ("yes" to the agent's question), as context only.
+//! what it answers ("yes" to the agent's question), as context only; a
+//! cited message in no thread, as in a text chat, is read with the few
+//! messages just before it in the room, for the same reason.
 //!
 //! The owner is the account `swarm signin` signed in, saved in the state
 //! folder; a phone account counts as the owner when the server's identity
@@ -34,6 +36,9 @@ const READ_WITHIN: Duration = Duration::from_secs(30);
 /// context, and how many.
 const ROOM_WINDOW_S: i64 = 24 * 60 * 60;
 const ROOM_WINDOW_MESSAGES: usize = 50;
+/// How far back before a cited message in no thread the messages it may be
+/// answering are read as context (`swarm read` gives the last three).
+const BEFORE_WINDOW_S: i64 = 10 * 60;
 /// The reactions that close a thread, when the owner puts them on its root.
 const CLOSED: [&str; 2] = ["✅", "❌"];
 /// The iMessage bridge's notice account on the owner's server, in every
@@ -186,6 +191,10 @@ struct Read {
     thread_root: String,
     root_reactions: Vec<Reaction>,
     members: Vec<Member>,
+    /// The few messages just before the event; a `swarm` that predates it
+    /// gives none.
+    #[serde(default)]
+    before: Vec<Message>,
     messages: Vec<Message>,
     redactions: Vec<Redaction>,
     complete: bool,
@@ -307,9 +316,11 @@ fn thread(
         context.drain(..context.len() - ROOM_WINDOW_MESSAGES);
     }
     // Before a cited reply: the thread's root and its replies up to the
-    // cited one, the owner's among them, all context.
-    let before: Vec<&Message> = earlier.as_ref().map_or(vec![], |earlier| {
-        std::iter::once(&earlier.event)
+    // cited one. Before a cited message in no thread: the room's last few
+    // messages within the window, what a "yes please" may answer. All of
+    // it, the owner's included, is context.
+    let before: Vec<&Message> = match &earlier {
+        Some(earlier) => std::iter::once(&earlier.event)
             .chain(
                 earlier
                     .messages
@@ -317,8 +328,25 @@ fn thread(
                     .filter(|m| m.thread_root.as_deref() == Some(&read.thread_root)),
             )
             .take_while(|m| m.event_id != read.event.event_id)
-            .collect()
-    });
+            .collect(),
+        None if !in_thread => read
+            .before
+            .iter()
+            .filter(|m| read.event.created_at - m.created_at <= BEFORE_WINDOW_S)
+            .collect(),
+        None => vec![],
+    };
+    let role = |m: &Message, before: bool| {
+        let who = match (m.sender == agent, is_owner(m)) {
+            (true, _) => "THIS AGENT".into(),
+            (_, true) => "THE OWNER".into(),
+            _ => format!("SOMEONE ELSE ({})", m.sender),
+        };
+        match before {
+            true => format!("{who}, BEFORE THE CITED MESSAGE"),
+            false => who,
+        }
+    };
     let said = |m: &Message| Said {
         text: m.text.clone(),
         at: at(m.created_at),
@@ -335,13 +363,10 @@ fn thread(
             .collect(),
         context: before
             .iter()
-            .chain(&context)
-            .map(|m| Context {
-                role: match (m.sender == agent, is_owner(m)) {
-                    (true, _) => "THIS AGENT".into(),
-                    (_, true) => "THE OWNER, BEFORE THE CITED MESSAGE".into(),
-                    _ => format!("SOMEONE ELSE ({})", m.sender),
-                },
+            .map(|m| (*m, true))
+            .chain(context.iter().map(|m| (*m, false)))
+            .map(|(m, before)| Context {
+                role: role(m, before),
                 text: m.text.clone(),
                 at: at(m.created_at),
             })
@@ -663,10 +688,57 @@ mod tests {
                     "THE OWNER, BEFORE THE CITED MESSAGE",
                     "Send Bob the invoice"
                 ),
-                ("THIS AGENT", "Pay Bob $40 for the invoice?"),
+                (
+                    "THIS AGENT, BEFORE THE CITED MESSAGE",
+                    "Pay Bob $40 for the invoice?"
+                ),
             ]
         );
         assert!(t.later_owner.is_empty());
+    }
+
+    /// A texted "yes please" in no thread is read with the agent's proposal
+    /// just before it, as context; older talk in the room isn't.
+    #[test]
+    fn a_cited_message_in_no_thread_is_judged_with_the_last_few_before_it() {
+        let mut r = read(
+            &[PHONE, AGENT],
+            vec![message("$on", AGENT, 0, "On it: ordering now.", None)],
+        );
+        r["event"] = message("$yes", PHONE, 1, "Yes please order the pizza", None);
+        r["event"]["speaks_for"] = json!(OWNER);
+        r["event"]["device_id"] = Value::Null;
+        r["thread_root"] = json!("$yes");
+        r["before"] = json!([
+            message("$old", AGENT, 16, "Never mind the pizza.", None),
+            message(
+                "$offer",
+                AGENT,
+                6,
+                "Reply here and I'll order 1 large pepperoni + 1 large veggie to Room 3M.",
+                None
+            ),
+        ]);
+        let t = of(&r);
+        assert!(t.sender_is_owner && t.is_owner_dm && t.complete);
+        let shown: Vec<(&str, &str)> = t
+            .context
+            .iter()
+            .map(|c| (c.role.as_str(), c.text.as_str()))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                (
+                    "THIS AGENT, BEFORE THE CITED MESSAGE",
+                    "Reply here and I'll order 1 large pepperoni + 1 large veggie to Room 3M."
+                ),
+                ("THIS AGENT", "On it: ordering now."),
+            ]
+        );
+        // A `swarm` that predates `before` reads as nothing before it.
+        r.as_object_mut().unwrap().remove("before");
+        assert_eq!(of(&r).context.len(), 1);
     }
 
     #[test]
