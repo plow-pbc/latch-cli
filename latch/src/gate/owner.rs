@@ -50,26 +50,7 @@ pub async fn changing(
         Ok(()) => match command {
             "show" => show(state_dir, &store, host),
             "set" | "edit" | "clear" | "clear_at_revision" => {
-                let expected = matches!(command, "edit" | "clear_at_revision")
-                    .then(|| args["revision"].as_str());
-                let text = match command {
-                    "set" | "edit" => args["text"].as_str().ok_or_else(|| {
-                        Failure::new(
-                            code::bad_arguments,
-                            "the device rule's text is missing".into(),
-                        )
-                    }),
-                    _ => Ok(""),
-                };
-                text.and_then(|text| {
-                    let held = store.snapshot_deny()?;
-                    let change = match command {
-                        "set" | "edit" => store.set_deny(text, expected),
-                        _ => store.clear_deny(expected),
-                    }?;
-                    snapshot = Some(held);
-                    Ok(changed(host, &change, &mut audit))
-                })
+                change_rule(&store, host, command, args, &mut audit, &mut snapshot).await
             }
             "map_agent" => map_agent(&store, plow, host, args, &mut audit, &mut snapshot).await,
             _ => Err(Failure::new(
@@ -132,6 +113,48 @@ fn changed(host: &str, change: &Change, audit: &mut Map<String, Value>) -> Value
     })
 }
 
+/// Sets, edits or clears the device rule, as `command` says.
+async fn change_rule(
+    store: &Store,
+    host: &str,
+    command: &str,
+    args: &Value,
+    audit: &mut Map<String, Value>,
+    snapshot: &mut Option<Snapshot>,
+) -> Result<Value, Failure> {
+    let expected =
+        matches!(command, "edit" | "clear_at_revision").then(|| args["revision"].as_str());
+    let text = match command {
+        "set" | "edit" => args["text"].as_str().ok_or_else(|| {
+            Failure::new(
+                code::bad_arguments,
+                "the device rule's text is missing".into(),
+            )
+        })?,
+        _ => "",
+    };
+    let held = held(store, Store::snapshot_deny).await?;
+    let change = match command {
+        "set" | "edit" => store.set_deny(text, expected),
+        _ => store.clear_deny(expected),
+    }?;
+    *snapshot = Some(held);
+    Ok(changed(host, &change, audit))
+}
+
+/// A snapshot `take` makes, its lock waited for off the async runtime: a
+/// change holding it over its audit never waits on a thread this one
+/// blocks.
+async fn held(
+    store: &Store,
+    take: fn(&Store) -> Result<Snapshot, Failure>,
+) -> Result<Snapshot, Failure> {
+    let store = store.clone();
+    tokio::task::spawn_blocking(move || take(&store))
+        .await
+        .expect("waiting for the lock does not panic")
+}
+
 /// Maps the agent `agent` names (its name or its uid) to the Swarm
 /// account `swarm_id`.
 async fn map_agent(
@@ -149,7 +172,7 @@ async fn map_agent(
     // Plow is asked before the map is locked: a slow answer holds up no
     // other change.
     let agent = crate::agents::resolve(plow, agent).await?;
-    let held = store.snapshot_agents()?;
+    let held = held(store, Store::snapshot_agents).await?;
     let before = store.map_agent(&agent.uid, swarm_id)?;
     *snapshot = Some(held);
     audit.insert("agent_uid".into(), json!(agent.uid));
@@ -342,6 +365,39 @@ mod tests {
         let (_, nothing) =
             changing(json!({"command": "edit", "text": "x", "revision": "stale"})).await;
         assert!(nothing.is_none());
+    }
+
+    /// On a host with one runtime thread, a change waiting for another's
+    /// lock never blocks the thread the other needs to finish its audit.
+    #[test]
+    fn a_change_waiting_for_another_holds_up_nothing() {
+        let host = Host::new();
+        let (dir, plow) = (host.dir.path().to_path_buf(), host.plow.clone());
+        let (finished, done) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(async move {
+                let set = |text: &str| json!({"command": "set", "text": text});
+                let (_, held) = changing(&dir, &plow, "studio", "device", &set("one")).await;
+                let second = tokio::spawn(async move {
+                    changing(&dir, &plow, "studio", "device", &set("two")).await;
+                });
+                // The first, still holding the lock, awaits as an audit would.
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                drop(held);
+                second.await.unwrap();
+            });
+            finished.send(()).unwrap();
+        });
+        done.recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the waiting change held up the runtime's only thread");
+        assert_eq!(
+            Store::new(host.dir.path()).deny().unwrap().as_deref(),
+            Some("two")
+        );
     }
 
     #[tokio::test]

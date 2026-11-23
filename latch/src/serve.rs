@@ -1419,7 +1419,11 @@ async fn serve_request(
                 started.elapsed(),
             );
             let response = match appended {
-                Ok(audit_id) => with_audit_id(done.response, audit_id),
+                Ok(audit_id) => {
+                    // An audited rules change frees the store for the next.
+                    drop(unaudited);
+                    with_audit_id(done.response, audit_id)
+                }
                 Err(message) => {
                     // A rules change the log doesn't hold is put back.
                     crate::gate::owner::undo(unaudited);
