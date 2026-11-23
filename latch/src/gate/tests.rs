@@ -817,20 +817,22 @@ async fn a_confirmed_step_carries_on_its_allowed_plan_and_nothing_else_does() {
         "action": "click button \"Send message\"",
         "fields": ["textbox \"Text message\": \"Any time after 2pm works\""]}),
     );
-    assert_eq!(
-        reason(&host.keeper.judge(caller, &plan, None).await),
-        "allow"
-    );
+    let first = host.keeper.judge(caller, &plan, None).await;
+    assert_eq!(reason(&first), "allow");
+    let on = |intent: &str, action: &RawValue| Allowed {
+        intent: intent.into(),
+        action: action.get().into(),
+    };
+    let key = first.gate["intent"].as_str().unwrap();
+    let allowed = on(key, &plan);
     // The plan's Send, paused and confirmed: allowed, and not recorded again.
-    let carried = host
-        .keeper
-        .judge(caller, &confirmed, Some(plan.get()))
-        .await;
+    let carried = host.keeper.judge(caller, &confirmed, Some(&allowed)).await;
     assert_eq!(reason(&carried), "allow");
     assert_eq!(carried.gate["continues"], true);
     assert_eq!(carried.gate["already_done"], 0);
     // A second, different send on the spent ask is refused; so is the same
-    // step said to carry on anything the ledger doesn't hold.
+    // step said to carry on anything the ledger doesn't hold, or that plan
+    // as allowed on another ask.
     let other = raw(
         json!({"kind": "browser_plan", "page": {"url": "https://voice.google.com"},
         "steps": [{"step": "type e55 (textbox \"Text message\") \"See you at 3\""},
@@ -839,7 +841,8 @@ async fn a_confirmed_step_carries_on_its_allowed_plan_and_nothing_else_does() {
     let refused = host.keeper.judge(caller, &other, None).await;
     assert_eq!(reason(&refused), "not_covered");
     assert_eq!(refused.gate["already_done"], 1);
-    for continues in [None, Some(other.get())] {
+    let elsewhere = on("swarm:!other:plow.co/$ask", &plan);
+    for continues in [None, Some(&on(key, &other)), Some(&elsewhere)] {
         let judged = host.keeper.judge(caller, &confirmed, continues).await;
         assert_eq!(reason(&judged), "not_covered", "{continues:?}");
     }

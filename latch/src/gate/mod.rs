@@ -174,6 +174,14 @@ impl Caller<'_> {
     }
 }
 
+/// An action this host allowed on an intent (its ledger key, `Thread::key`),
+/// as the ledger keeps it: what a later action can carry on.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Allowed {
+    pub intent: String,
+    pub action: String,
+}
+
 /// One caller's gate, for the operations of one request.
 #[derive(Clone, Copy)]
 pub struct Gate<'a> {
@@ -193,12 +201,12 @@ impl Gate<'_> {
 
     /// As `judge`, for an action that carries on `continues`, an action
     /// this host allowed earlier (a paused step of an allowed plan): on the
-    /// same intent that one is no earlier use of it, and this is not
-    /// recorded as another.
+    /// intent it was allowed on, that one is no earlier use of it, and this
+    /// is not recorded as another.
     pub async fn judge_continuing(
         &self,
         action: &impl Serialize,
-        continues: Option<&str>,
+        continues: Option<&Allowed>,
     ) -> Judgment {
         let action = serde_json::value::to_raw_value(action).expect("an action serializes");
         let mut judgment = self.keeper.judge(self.caller, &action, continues).await;
@@ -297,7 +305,7 @@ impl Gatekeeper {
         &self,
         caller: Caller<'_>,
         action: &RawValue,
-        continues: Option<&str>,
+        continues: Option<&Allowed>,
     ) -> Judgment {
         let started = Instant::now();
         let mut gate = json!({"caller": caller.kind()});
@@ -337,7 +345,7 @@ impl Gatekeeper {
         &self,
         caller: Caller<'_>,
         action: &RawValue,
-        continues: Option<&str>,
+        continues: Option<&Allowed>,
         gate: &mut Value,
     ) -> Result<(), Failure> {
         let shown: Value = serde_json::from_str(action.get()).expect("the action is JSON");
@@ -430,11 +438,12 @@ impl Gatekeeper {
         let mut done = held
             .done()
             .map_err(|why| unavailable("ledger_unreadable", &why))?;
-        // What this carries on (the plan whose step paused) is the same use
-        // of the intent, not an earlier one: the judge doesn't see it as
-        // done, and this is not recorded as another.
+        // What this carries on (the plan whose step paused), allowed on this
+        // same intent, is the same use of it, not an earlier one: the judge
+        // doesn't see it as done, and this is not recorded as another.
         let continued = continues
-            .map(ledger::kept)
+            .filter(|allowed| allowed.intent == key)
+            .map(|allowed| ledger::kept(&allowed.action))
             .and_then(|continued| done.iter().position(|d| d.action == continued));
         if let Some(at) = continued {
             done.remove(at);

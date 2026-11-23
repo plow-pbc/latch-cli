@@ -43,7 +43,7 @@ use super::model::{self, CHECKABLE_P, RISKY_P};
 use super::plan::{Check, CheckKind, Literal, Op, Plan, Step};
 use super::session::Session;
 use crate::failure::{Code, Exit, Failure, code};
-use crate::gate::{Caller, Gate};
+use crate::gate::{Allowed, Caller, Gate};
 use crate::model::Model;
 use crate::state::to_hex;
 
@@ -73,7 +73,7 @@ pub struct Confirmation {
     used: bool,
     /// The plan the gate allowed in the run that paused this step, as it
     /// allowed it: carrying the step out carries that plan on.
-    continues: Option<String>,
+    continues: Option<Allowed>,
 }
 
 enum Confirms {
@@ -260,7 +260,7 @@ pub async fn run(
     entry: &Entry,
     session: &str,
     caller: &str,
-    gate: Option<(Gate<'_>, Option<String>)>,
+    gate: Option<(Gate<'_>, Option<Allowed>)>,
     args: &Value,
     audit: &mut Map<String, Value>,
 ) -> Result<Value, Failure> {
@@ -639,7 +639,7 @@ struct Run<'a> {
     /// The gatekeeper's judgment of the fill being made, for its record.
     judgment: Option<Value>,
     /// This run's plan as the gate allowed it.
-    allowed: Option<String>,
+    allowed: Option<Allowed>,
 }
 
 fn stopped(code: Code, message: String) -> Failure {
@@ -913,7 +913,7 @@ impl Run<'_> {
         // nothing.
         let guard = match gate {
             Some(gate) => {
-                self.judge_confirmed(gate, n, id, &literal, &reviewed, continues.as_deref())
+                self.judge_confirmed(gate, n, id, &literal, &reviewed, continues.as_ref())
                     .await?;
                 (fingerprint(&reviewed, true), enter, true)
             }
@@ -942,7 +942,7 @@ impl Run<'_> {
         id: &str,
         literal: &Literal,
         reviewed: &Value,
-        continues: Option<&str>,
+        continues: Option<&Allowed>,
     ) -> Result<(), Failure> {
         let enter = presses_enter(literal);
         let typing = literal.op == Op::Type;

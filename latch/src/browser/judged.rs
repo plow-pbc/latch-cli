@@ -23,7 +23,7 @@ use super::host::{Browsers, Entry};
 use super::plan::{CheckKind, Literal, Op, Plan, Step};
 use super::shown::Filled;
 use crate::failure::Failure;
-use crate::gate::Gate;
+use crate::gate::{Allowed, Gate};
 use crate::vault::sites;
 use crate::vault::store::Backend;
 
@@ -120,15 +120,15 @@ pub(super) struct FileShown {
 /// browser's own tests) is never judged. The audit keeps what was judged
 /// as `judged`, without titles, URL paths or a plan's steps and facts, and
 /// the judgment as `gate`.
-/// Returns the action as the gate allowed it (what an intent's ledger
-/// keeps), for what `continues` it later: none when there is no gate.
+/// Returns the action as the gate allowed it on an intent, for what
+/// `continues` it later: none with no gate, or no intent.
 pub(super) async fn judge(
     gate: Option<Gate<'_>>,
     action: Action,
     filled: &[Filled],
-    continues: Option<&str>,
+    continues: Option<&Allowed>,
     audit: &mut Map<String, Value>,
-) -> Result<Option<String>, Failure> {
+) -> Result<Option<Allowed>, Failure> {
     let Some(gate) = gate else {
         return Ok(None);
     };
@@ -137,11 +137,13 @@ pub(super) async fn judge(
     let judging = std::time::Instant::now();
     let judgment = gate.judge_continuing(&action, continues).await;
     super::host::add_time(|phases| &mut phases.gate_ms, judging.elapsed());
+    let intent = judgment.gate["intent"].as_str().map(str::to_string);
     audit.insert("gate".into(), judgment.gate);
     judgment.verdict?;
-    Ok(Some(
-        serde_json::to_string(&action).expect("an action serializes"),
-    ))
+    Ok(intent.map(|intent| Allowed {
+        intent,
+        action: serde_json::to_string(&action).expect("an action serializes"),
+    }))
 }
 
 /// The audit's copy of a judged action: no plan steps or facts, no
