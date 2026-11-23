@@ -114,9 +114,9 @@ final class HostLog: LatchClient, @unchecked Sendable {
 struct ActivityTableTests {
     private func app(_ client: HostLog) throws -> AppModel {
         let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/s"))
+        // This Mac alone: Plow's list unread, so only its own feed is listed.
         app.stage(status: try Fixtures.decode(Fixtures.serving))
-        app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
-        app.place = .host(.activity)
+        app.place = .account(.activity)
         return app
     }
 
@@ -130,7 +130,7 @@ struct ActivityTableTests {
         window.contentViewController = controller
         window.setFrameOrigin(CGPoint(x: -4000, y: -4000))
         window.orderFrontRegardless()
-        let feed = app.activityFeed!
+        let feed = app.activityFeeds[0]
         feed.firstRetry = .milliseconds(10)
         feed.start()
         return (controller, window, feed)
@@ -157,7 +157,7 @@ struct ActivityTableTests {
         #expect(feed.records.map(\.id) == (1500..<2000).map(HostLog.id))
         #expect(controller.shown.since == HostLog.time(1500))
         #expect(controller.table.numberOfRows == expected(feed.records, { _ in true }).count)
-        #expect(controller.rows.first?.id == HostLog.id(1999))
+        #expect(controller.rows.first?.record.id == HostLog.id(1999))
     }
 
     @Test func outcomeAgentAndSearchFilterTheRows() async throws {
@@ -179,8 +179,8 @@ struct ActivityTableTests {
         for (name, set, keep) in cases {
             set()
             let want = expected(feed.records, keep)
-            await waitUntil { controller.rows.map(\.id) == want }
-            #expect(controller.rows.map(\.id) == want, "\(name)")
+            await waitUntil { controller.rows.map(\.record.id) == want }
+            #expect(controller.rows.map(\.record.id) == want, "\(name)")
             #expect(controller.table.numberOfRows == want.count, "\(name)")
             #expect(!want.isEmpty, "\(name)")
         }
@@ -199,16 +199,16 @@ struct ActivityTableTests {
         let studio = try #require(app.host)
         let picked = try #require(controller.rows.dropFirst(10).first)
         controller.table.selectRowIndexes([10], byExtendingSelection: false)
-        #expect(app.selectedRecord == OnHost(host: studio.name, id: picked.id))
+        #expect(app.selectedRecord == picked.selection)
         client.add(600)
         await waitUntil { feed.records.count == 1100 && controller.shown.records == 1100 }
         // Nothing went: the opening page and every arrival.
         #expect(feed.records.map(\.id) == (100..<1200).map(HostLog.id))
-        #expect(controller.rows.first?.id == expected(feed.records, { _ in true }).first)
+        #expect(controller.rows.first?.record.id == expected(feed.records, { _ in true }).first)
         let row = try #require(controller.rows.firstIndex { $0.id == picked.id })
         #expect(controller.table.selectedRow == row)
-        #expect(app.selectedRecord == OnHost(host: studio.name, id: picked.id))
-        #expect(app.inspectedRecord(on: studio)?.id == picked.id)
+        #expect(app.selectedRecord == picked.selection)
+        #expect(app.inspectedRecord?.record.id == picked.record.id)
     }
 
     @Test func aSearchChangedAsRecordsArriveRedrawsEveryRow() async throws {
@@ -225,12 +225,12 @@ struct ActivityTableTests {
         }
         app.activitySearch = "keep"
         feed.apply([line(1, "keep show"), line(2, "keep"), line(3, "show"), line(4, "keep show")])
-        await waitUntil { controller.rows.map(\.id) == [4, 2, 1].map(HostLog.id) }
+        await waitUntil { controller.rows.map(\.record.id) == [4, 2, 1].map(HostLog.id) }
         controller.view.layoutSubtreeIfNeeded()
         // At once: two arrive on top, and the search keeps 4 and 1 but swaps 2 for 3.
         feed.apply([line(5, "show"), line(6, "show")])
         app.activitySearch = "show"
-        await waitUntil { controller.rows.map(\.id) == [6, 5, 4, 3, 1].map(HostLog.id) }
+        await waitUntil { controller.rows.map(\.record.id) == [6, 5, 4, 3, 1].map(HostLog.id) }
         controller.view.layoutSubtreeIfNeeded()
         // The cells on screen, not ones made afresh for the question.
         let request = controller.table.column(withIdentifier: .init("request"))
@@ -238,6 +238,27 @@ struct ActivityTableTests {
             (controller.table.view(atColumn: request, row: row, makeIfNecessary: false) as? NSTableCellView)?.textField?.stringValue ?? ""
         }
         #expect(shown.map { $0.split(separator: " ").last.map(String.init) } == ["6", "5", "4", "3", "1"], "\(shown)")
+    }
+
+    /// An unnamed agent's row says its name once Plow's list of agents
+    /// arrives, though the rows themselves don't change.
+    @Test func callersAreNamedWhenTheAgentsArrive() async throws {
+        let client = HostLog(records: 0)
+        let app = try app(client)
+        let (controller, window, feed) = open(app)
+        defer { close(window, feed) }
+        window.setContentSize(CGSize(width: 900, height: 600))
+        await waitUntil { feed.caughtUp }
+        let text = #"{"type":"record","cursor":"\#(HostLog.id(1))","record":{"id":"\#(HostLog.id(1))","time":"\#(HostLog.time(1).formatted(.iso8601))","agent":"\#(HostLog.scout)","caller":"c1","caller_name":null,"decision":"allow","outcome":"ok","details":null,"op":"exec","command":"latch exec ls"}}"#
+        feed.apply([try LatchJSON.decoder.decode(AuditLine.self, from: Data(text.utf8))])
+        await waitUntil { controller.rows.count == 1 }
+        controller.view.layoutSubtreeIfNeeded()
+        let caller = controller.table.column(withIdentifier: .init("caller"))
+        func shown() -> String { (controller.table.view(atColumn: caller, row: 0, makeIfNecessary: false) as? NSTableCellView)?.textField?.stringValue ?? "" }
+        #expect(shown().hasPrefix("Agent "))
+        app.stage(agents: try Fixtures.decode(Fixtures.agents), standings: [:])
+        await waitUntil { shown().hasPrefix("scout") }
+        #expect(shown().hasPrefix("scout"), "\(shown())")
     }
 
     @Test func aNarrowerFilterKeepsTheSelectedRecordAndItsInspector() async throws {
@@ -249,14 +270,14 @@ struct ActivityTableTests {
         await waitUntil { feed.caughtUp && controller.shown.records == 500 }
         let studio = try #require(app.host)
         // A refused record far enough down that its row is past the end of the refused rows.
-        let row = try #require(controller.rows.indices.last { controller.rows[$0].decision != "allow" })
+        let row = try #require(controller.rows.indices.last { controller.rows[$0].record.decision != "allow" })
         let picked = controller.rows[row]
         controller.table.selectRowIndexes([row], byExtendingSelection: false)
         app.activityFilter = .refused
-        await waitUntil { controller.rows.allSatisfy { $0.decision != "allow" } }
+        await waitUntil { controller.rows.allSatisfy { $0.record.decision != "allow" } }
         #expect(controller.rows.count <= row)
-        #expect(app.selectedRecord == OnHost(host: studio.name, id: picked.id))
-        #expect(app.inspectedRecord(on: studio)?.id == picked.id)
+        #expect(app.selectedRecord == picked.selection)
+        #expect(app.inspectedRecord?.record.id == picked.record.id)
         #expect(controller.table.selectedRow == controller.rows.firstIndex { $0.id == picked.id })
     }
 
@@ -326,14 +347,14 @@ struct ActivityTableTests {
             let (controller, window, feed) = open(app, autosaveName: name)
             await waitUntil { feed.caughtUp && controller.shown.records == 500 }
             controller.table.sortDescriptors = [NSSortDescriptor(key: "caller", ascending: true)]
-            #expect(controller.rows.first?.callerName == "helper")
+            #expect(controller.rows.first?.record.callerName == "helper")
             close(window, feed)
         }
         let (again, window, feed) = open(app, autosaveName: name)
         defer { close(window, feed) }
         #expect(again.table.sortDescriptors.first?.key == "caller")
         #expect(again.table.sortDescriptors.first?.ascending == true)
-        await waitUntil { again.rows.first?.callerName == "helper" }
+        await waitUntil { again.rows.first?.record.callerName == "helper" }
     }
 
     @Test func quickLooksFileIsTheOwnersAndGoesWithIt() async throws {
@@ -352,7 +373,7 @@ struct ActivityTableTests {
         let first = try #require(controller.preview)
         #expect(mode(first) == 0o600)
         #expect(mode(dir) == 0o700)
-        #expect(try String(contentsOf: first, encoding: .utf8).hasPrefix(controller.rows[0].command ?? "A connection"))
+        #expect(try String(contentsOf: first, encoding: .utf8).hasPrefix(controller.rows[0].record.command ?? "A connection"))
         // Moving to another request: its file, the last one's gone.
         controller.table.selectRowIndexes([1], byExtendingSelection: false)
         await waitUntil { controller.preview != nil && controller.preview != first }
@@ -394,7 +415,7 @@ struct ActivityTableTests {
         let cell = try #require(controller.table.view(atColumn: status, row: 0, makeIfNecessary: true))
         let read = NSAccessibility.unignoredChildren(from: cell.accessibilityChildren() ?? []).compactMap { $0 as? NSAccessibilityProtocol }
         #expect(read.map { $0.accessibilityRole() } == [.staticText])
-        #expect(read.map { $0.accessibilityValue() as? String } == [controller.rows[0].status.title])
+        #expect(read.map { $0.accessibilityValue() as? String } == [controller.rows[0].record.status.title])
     }
 }
 

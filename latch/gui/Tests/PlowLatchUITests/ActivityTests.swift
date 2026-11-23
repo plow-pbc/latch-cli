@@ -273,10 +273,12 @@ struct OwnerReadTests {
 
     @Test func readsAreBackgroundAndActionsAreNot() throws {
         for (op, args) in [("rules", #"{"command":"show"}"#), ("vault", #"{"command":"list"}"#), ("vault", #"{"command":"show","item":"v1"}"#),
-                           ("plugins", #"{"command":"list"}"#), ("status", "{}"), ("audit", "{}")] {
+                           ("plugins", #"{"command":"list"}"#), ("status", "{}"), ("audit", "{}"),
+                           // The owner's own rule changes wait behind the checkbox too.
+                           ("rules", #"{"command":"set","scope":"every agent"}"#), ("rules", #"{"command":"map_agent"}"#)] {
             #expect(try record(op: op, args: args).isBackground, "\(op) \(args)")
         }
-        for (op, args) in [("rules", #"{"command":"set","scope":"every agent"}"#), ("vault", #"{"command":"add"}"#),
+        for (op, args) in [("vault", #"{"command":"add"}"#),
                            ("plugins", #"{"command":"enable","name":"google"}"#), ("exec", #"{"argv":["ls"]}"#)] {
             #expect(try !record(op: op, args: args).isBackground, "\(op) \(args)")
         }
@@ -626,5 +628,91 @@ struct GatekeeperRequestTests {
         #expect((try FileManager.default.attributesOfItem(atPath: file.path))[.posixPermissions] as? Int == 0o600)
         previews.removeAll()
         #expect(!FileManager.default.fileExists(atPath: dir.path))
+    }
+}
+
+/// Activity is the account's: every reachable host's requests, one row a
+/// request, each on its host, read as people say them.
+@MainActor
+struct AccountActivityTests {
+    private func app() throws -> (AppModel, studio: HostEntry, kitchen: HostEntry) {
+        let app = AppModel(client: FakeLatchClient(), still: true)
+        app.stage(status: try Fixtures.decode(Fixtures.serving))
+        app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
+        app.place = .account(.activity)
+        let studio = try #require(app.hosts.first { $0.name == "studio" }), kitchen = try #require(app.hosts.first { $0.name == "pi-kitchen" })
+        app.feed(for: studio).stage(Fixtures.studioAudit)
+        app.feed(for: kitchen).stage(Fixtures.kitchenAudit)
+        return (app, studio, kitchen)
+    }
+
+    @Test func everyHostsRequestsAreListedNewestFirstEachOnItsHost() throws {
+        let (app, _, _) = try app()
+        let rows = app.activityRows
+        #expect(rows.map(\.record.time) == rows.map(\.record.time).sorted(by: >))
+        #expect(Set(rows.map(\.host.name)) == ["studio", "pi-kitchen"])
+        #expect(rows.first?.host.name == "pi-kitchen" && rows.first?.record.request == "ls recipes")
+    }
+
+    /// A judgment's own record never has a row of its own (its request's
+    /// carries it); the owner's rule changes and a host that couldn't reach
+    /// Plow wait behind Show Connections and Reads.
+    @Test func oneRowARequestWithTheOwnersOwnBehindTheCheckbox() throws {
+        let (app, studio, _) = try app()
+        app.feed(for: studio).stage(#"""
+        {"cursor":"g1","record":{"agent":"a74f38668570a45ddc4b762ba0465d74","caller":"c","caller_name":"scout","decision":"allow","details":{"gate":{"verdict":"allow"}},"id":"g1","op":"gate","outcome":"judged","time":"2026-10-23T04:58:18Z","command":null},"type":"record"}
+        {"cursor":"p1","record":{"agent":null,"caller":"zz","caller_name":null,"decision":"deny","details":null,"id":"p1","op":"connect","outcome":"plow_unreachable","time":"2026-10-23T04:59:00Z","command":null},"type":"record"}
+        """#)
+        let hidden = ["g1", "p1", "c30c5f19c96e7339175054f21735bff913330ad55e3a59820062ea3031e5ce86"]
+        #expect(!app.activityRows.contains { hidden.contains($0.record.id) })
+        app.showConnections = true
+        #expect(Set(app.activityRows.map(\.record.id)).intersection(hidden) == Set(hidden.dropFirst()))
+    }
+
+    /// Home's recent requests are Activity's: each opens selected in the
+    /// inspector, never a judgment's own record that Activity doesn't list.
+    @Test func everyRecentRequestFromHomeOpensInActivity() throws {
+        let (app, studio, _) = try app()
+        app.feed(for: studio).stage(#"""
+        {"cursor":"g2","record":{"agent":"a74f38668570a45ddc4b762ba0465d74","caller":"c","caller_name":"scout","decision":"allow","details":{"gate":{"verdict":"allow"}},"id":"g2","op":"gate","outcome":"judged","time":"2026-10-23T05:01:00Z","command":null},"type":"record"}
+        """#)
+        let recent = HomeActivity(app.feed(for: studio).records, today: DateInterval(start: .distantPast, end: .distantFuture)).recent
+        #expect(recent.count == 5 && !recent.contains { $0.op == "gate" })
+        for record in recent {
+            app.openRecord(record, on: studio)
+            #expect(app.inspectedRecord?.record == record, "\(record.id)")
+        }
+    }
+
+    /// A request without latch's prefix; an agent by its name in Plow when
+    /// its record has none.
+    @Test func rowsReadAsPeopleSayThem() throws {
+        let (app, studio, _) = try app()
+        let records = app.feed(for: studio).records
+        #expect(records.compactMap(\.request).contains("cat Finance/2026.csv"))
+        #expect(records.compactMap(\.request).contains("rules set"))
+        let unnamed = try #require(records.last { $0.agent == "a74f38668570a45ddc4b762ba0465d74" && $0.callerName == nil })
+        #expect(app.caller(of: unnamed, on: studio).who == "Agent a74f3866")
+        app.stage(agents: try Fixtures.decode(Fixtures.agents.replacingOccurrences(of: "ba3c0b3ad1eba7a9a1eb04b67c9db0dd", with: "a74f38668570a45ddc4b762ba0465d74")),
+                  standings: [:])
+        #expect(app.caller(of: unnamed, on: studio).who == "scout")
+    }
+
+    /// A row's cited message is its text, from the record's kept call;
+    /// one with no kept call has none, never its id.
+    @Test func aCitedMessageIsItsText() async throws {
+        let (app, studio, _) = try app()
+        let records = app.feed(for: studio).records
+        let refused = try #require(records.last { $0.gate?.keptRequest == "g0cb70261a6f2d3e48b9c1d05" })
+        let unkept = try #require(records.last { $0.gate?.cited != nil && $0.gate?.keptRequest == nil })
+        #expect(await app.readKeptCall(refused, on: studio)?.cited == "what did we spend this year? it's in my Finance folder")
+        #expect(await app.readKeptCall(unkept, on: studio) == nil)
+    }
+
+    /// A refusal's inspector opens its host's Rules, where the rule is.
+    @Test func aRefusalOpensItsHostsRules() throws {
+        let (app, _, kitchen) = try app()
+        app.showRules(on: kitchen)
+        #expect(app.route == .host(.rules, kitchen))
     }
 }

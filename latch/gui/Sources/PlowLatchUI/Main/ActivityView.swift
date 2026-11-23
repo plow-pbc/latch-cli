@@ -1,5 +1,14 @@
 import SwiftUI
 
+/// A record on its host, as Activity lists it.
+struct ActivityRow: Equatable, Identifiable {
+    var record: AuditRecord
+    var host: HostEntry
+
+    var id: String { "\(host.name)/\(record.id)" }
+    var selection: OnHost { OnHost(host: host.name, id: record.id) }
+}
+
 /// Activity's outcome filter.
 enum ActivityFilter: String, CaseIterable, Identifiable {
     case all = "All", allowed = "Allowed", refused = "Refused"
@@ -10,15 +19,21 @@ enum ActivityFilter: String, CaseIterable, Identifiable {
 /// table's controller when it reloads (once a batch at most), not read from
 /// the feed by each: reading it, they redrew for every record.
 @Observable final class ActivityShown {
-    /// The host showing, if its activity can be shown.
-    var host: HostEntry?
+    /// The hosts whose activity is shown: every reachable one.
+    var hosts: [HostEntry] = []
     /// Rows matching the filters, and records loaded.
     var rows = 0
     var records = 0
     var caughtUp = false
-    var error: LatchError?
-    /// The oldest record loaded, while older ones are on the host.
+    /// Why a host's activity can't be read just now.
+    var error: Failure?
+    /// From when the records loaded go back, while older ones are on a host.
     var since: Date?
+
+    struct Failure {
+        var host: HostEntry
+        var error: LatchError
+    }
     /// The agent asked for, by the name on its records.
     var agentName: String?
 
@@ -27,10 +42,9 @@ enum ActivityFilter: String, CaseIterable, Identifiable {
     }
 }
 
-/// Activity's heading: the gatekeeper band with the host's device rule,
-/// then its scope bar: the outcome, the agent asked for (a click removes
-/// it) and Show Connections and Reads. Too narrow for one line, they
-/// stack, and the outcome's segments narrow to fit.
+/// Activity's scope bar: the outcome, the agent asked for (a click
+/// removes it) and Show Connections and Reads. Too narrow for one line,
+/// they stack, and the outcome's segments narrow to fit.
 struct ActivityHeading: View {
     var shown: ActivityShown
     @Environment(AppModel.self) private var app
@@ -44,64 +58,29 @@ struct ActivityHeading: View {
         let connections = Toggle("Show connections and reads", isOn: $app.showConnections)
             .toggleStyle(.checkbox)
             .help("Also show when callers connected, and your own reads (rules, vault, status, activity)")
-        VStack(alignment: .leading, spacing: 0) {
-            if let host = shown.host {
-                gatekeeper(host)
-                Divider()
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 12) {
+                outcome.fixedSize()
+                agentFilter
+                Spacer()
+                connections
             }
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 12) {
-                    outcome.fixedSize()
-                    agentFilter
-                    Spacer()
-                    connections
-                }
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack { outcome; connections }
-                    agentFilter
-                }
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-        }
-    }
-
-    /// The band heading Activity: the gatekeeper, and what it always
-    /// denies on this host, edited in place.
-    private func gatekeeper(_ host: HostEntry) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 10) {
-                Image(systemName: "checkmark.shield")
-                    .foregroundStyle(.green)
-                    .frame(width: 26, height: 26)
-                    .background(.green.opacity(0.12), in: RoundedRectangle(cornerRadius: 7))
-                Text("Gatekeeper").font(.headline)
-                Text("Agents act only on a message of yours they cite.")
-                    .foregroundStyle(.secondary)
-            }
-            // The label sits level with the box's first line: a text
-            // editor has no baseline to align to.
-            HStack(alignment: .top, spacing: 12) {
-                Text("ALWAYS DENIED")
-                    .font(.caption.monospaced())
-                    .kerning(1)
-                    .foregroundStyle(.secondary)
-                    .fixedSize()
-                    .frame(height: 30)
-                DeviceRuleBox(host: host)
+            VStack(alignment: .leading, spacing: 8) {
+                HStack { outcome; connections }
+                agentFilter
             }
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 12)
+        .padding(.vertical, 10)
     }
 
     @ViewBuilder private var agentFilter: some View {
-        if let host = shown.host, let uid = app.activityAgent(on: host) {
-            let name = app.agents?.first(where: { $0.uid == uid })?.name ?? shown.agentName ?? "Unnamed agent"
+        if let target = app.activityAgent {
+            let name = app.agents?.first(where: { $0.uid == target.agent })?.name ?? shown.agentName ?? "Unnamed agent"
             Button {
                 app.activityAgent = nil
             } label: {
-                Label("Agent: \(name)", systemImage: "xmark.circle.fill")
+                Label("Agent: \(name) on \(target.host)", systemImage: "xmark.circle.fill")
             }
             .buttonStyle(.bordered)
             .help("Show every agent's requests")
@@ -110,35 +89,28 @@ struct ActivityHeading: View {
     }
 }
 
-/// Where Activity has no rows to list, why: no host, offline, couldn't
-/// read, reading, nothing yet, nothing matching.
+/// Where Activity has no rows to list, why: no host, couldn't read,
+/// reading, nothing yet, nothing matching.
 struct ActivityStates: View {
     var shown: ActivityShown
-    @Environment(AppModel.self) private var app
 
     var body: some View {
         Group {
-            if let host = app.host {
-                if !host.isThisMac, host.online == false {
-                    ContentUnavailableView {
-                        Label("\(host.name) is offline", systemImage: "wifi.slash")
-                    } description: {
-                        Text("Its activity is kept on \(host.name). Start Latch there to see it.")
-                    }
-                } else if shown.records == 0, let error = shown.error {
-                    Unavailable(error: error, host: host)
+            if !shown.hosts.isEmpty {
+                if shown.records == 0, let failure = shown.error {
+                    Unavailable(error: failure.error, host: failure.host)
                 } else if shown.records == 0, !shown.caughtUp {
-                    ProgressView("Reading \(host.isThisMac ? "this Mac's" : "\(host.name)'s") activity…")
+                    ProgressView("Reading your hosts' activity…")
                 } else if shown.records == 0 {
                     ContentUnavailableView("No activity yet", systemImage: "tray",
-                                           description: Text("Every request to \(host.name), allowed or refused, shows up here."))
+                                           description: Text("Every request to your hosts, allowed or refused, shows up here."))
                 } else {
                     ContentUnavailableView("No matching requests in the loaded history", systemImage: "line.3.horizontal.decrease.circle",
                                            description: Text("Try another filter."))
                 }
             } else {
-                ContentUnavailableView("No host", systemImage: "waveform.path.ecg",
-                                       description: Text("Activity is kept on each host. Pick one in the sidebar."))
+                ContentUnavailableView("No host", systemImage: "list.bullet.rectangle",
+                                       description: Text("Activity is kept on each host your agents call. None can be reached now."))
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -152,14 +124,15 @@ struct ActivityFooter: View {
     var shown: ActivityShown
 
     var body: some View {
-        if let host = shown.host {
+        if !shown.hosts.isEmpty {
             HStack {
                 if let since = shown.since {
                     Text("Showing since \(since.formatted(date: .abbreviated, time: .shortened))").foregroundStyle(.secondary)
                 }
                 Spacer()
-                if let error = shown.error {
-                    Label(ErrorCopy.short(error, host: host.spoken), systemImage: "exclamationmark.triangle").foregroundStyle(.secondary).lineLimit(1)
+                if let failure = shown.error {
+                    Label(ErrorCopy.short(failure.error, host: failure.host.spoken), systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.secondary).lineLimit(1)
                 } else {
                     let rows = shown.rows, records = shown.records
                     Text("\(rows) \(rows == 1 ? "match" : "matches") · \(records) \(records == 1 ? "record" : "records") loaded\(shown.caughtUp ? "" : " · reading…")")

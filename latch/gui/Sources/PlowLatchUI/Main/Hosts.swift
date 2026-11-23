@@ -2,7 +2,7 @@ import Foundation
 
 /// The account's own pages: no host owns them.
 enum AccountPage: String, CaseIterable, Identifiable {
-    case agents, connections
+    case agents, connections, activity
 
     var id: String { rawValue }
 
@@ -10,6 +10,7 @@ enum AccountPage: String, CaseIterable, Identifiable {
         switch self {
         case .agents: "Agents"
         case .connections: "Connections"
+        case .activity: "Activity"
         }
     }
 
@@ -17,22 +18,21 @@ enum AccountPage: String, CaseIterable, Identifiable {
         switch self {
         case .agents: "person.2"
         case .connections: "link"
+        case .activity: "list.bullet.rectangle"
         }
     }
 }
 
 /// A host's screens, each shown for one host.
 enum HostScreen: String, CaseIterable, Identifiable {
-    case home, activity, vault, settings
+    case home, rules, vault, settings
 
     var id: String { rawValue }
-    /// The screens with an inspector.
-    static let inspected: Set<HostScreen> = [.activity, .vault]
 
     var title: String {
         switch self {
         case .home: "Home"
-        case .activity: "Activity"
+        case .rules: "Rules"
         case .vault: "Vault"
         case .settings: "Host Settings"
         }
@@ -58,6 +58,9 @@ enum Place: Hashable, RawRepresentable {
         case let .host(screen): screen.rawValue
         }
     }
+
+    /// The places with an inspector.
+    static let inspected: Set<Place> = [.account(.activity), .host(.vault)]
 }
 
 /// What the main window shows: an account page, with no host, or a host's

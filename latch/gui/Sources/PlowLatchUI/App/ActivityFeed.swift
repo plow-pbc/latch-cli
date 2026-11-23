@@ -198,7 +198,7 @@ final class ActivityFeed {
     /// Recent, which offers the rest a page at a time).
     func loadOlder(until requests: Int, pages: Int) async {
         for _ in 0..<pages {
-            guard hasOlder, error == nil, records.filter({ !$0.isBackground }).count < requests, !Task.isCancelled else { return }
+            guard hasOlder, error == nil, records.filter({ $0.isRequest() }).count < requests, !Task.isCancelled else { return }
             let held = records.count
             await loadOlder()
             if records.count == held { return }

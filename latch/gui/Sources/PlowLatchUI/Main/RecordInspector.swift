@@ -2,15 +2,22 @@ import AppKit
 import QuickLook
 import SwiftUI
 
-/// One audit record in full: who asked, what it could touch, why the
-/// gatekeeper allowed or refused it, and what ran.
+/// One audit record in full: who asked, on which host, what it could
+/// touch, why the gatekeeper allowed or refused it, and when each step
+/// happened.
 struct RecordInspector: View {
     var record: AuditRecord
-    var caller: (who: String, kind: String)
-    var hostName: String
-    /// nil for this Mac's own host, else the host `--host` names.
-    var host: String?
+    var hostEntry: HostEntry
     @Environment(AppModel.self) private var app
+
+    init(record: AuditRecord, host: HostEntry) {
+        self.record = record
+        hostEntry = host
+    }
+
+    private var hostName: String { hostEntry.name }
+    /// nil for this Mac's own host, else the host `--host` names.
+    private var host: String? { hostEntry.isThisMac ? nil : hostEntry.name }
     /// A browser plan's screenshots, for the record shown.
     @State private var shots: RecordShots?
     /// The screenshot or gatekeeper request open in Quick Look.
@@ -24,7 +31,7 @@ struct RecordInspector: View {
         Form {
             Section {
                 StatusLabel(status: record.status)
-                if let command = record.command {
+                if let command = record.request {
                     Text(command)
                         .font(.body.monospaced())
                         .textSelection(.enabled)
@@ -32,10 +39,14 @@ struct RecordInspector: View {
                 }
             }
             Section("Request") {
+                let caller = app.caller(of: record, on: hostEntry)
                 LabeledContent("Caller", value: "\(caller.who) · \(caller.kind)")
-                LabeledContent("Time", value: record.time.formatted(date: .abbreviated, time: .standard))
+                LabeledContent("Host", value: hostName)
                 LabeledContent("Operation", value: record.op)
                 LabeledContent("Outcome") { Text(record.outcome).font(.body.monospaced()) }
+                if record.gate != nil || record.isRefused {
+                    LabeledContent("Decided by", value: record.gate == nil ? "\(hostName)'s settings" : "The gatekeeper")
+                }
             }
             if let shots, shots.record == record.id {
                 ShotsSection(shots: shots, hostName: hostName) { open($0) }
@@ -70,7 +81,13 @@ struct RecordInspector: View {
                 }
             }
             if let gate = record.gate {
-                Why(gate: gate)
+                Why(gate: gate, cited: app.keptCalls[record.id]?.cited)
+                if record.outcome == "gatekeeper_denied" {
+                    Section {
+                        Button("Open \(hostName)'s Rules") { app.showRules(on: hostEntry) }
+                            .help("Change what's always denied on \(hostName)")
+                    }
+                }
                 if let kept = gate.keptRequest {
                     Section {
                         Button("Gatekeeper request") {
@@ -80,6 +97,15 @@ struct RecordInspector: View {
                         if let judgeFailure { Text(judgeFailure).foregroundStyle(.secondary) }
                     }
                 }
+            }
+            Section("Timeline") {
+                if let judged = record.gate?.gateRecord.flatMap({ id in app.feed(for: hostEntry).records.last { $0.id == id } }) {
+                    LabeledContent("Judged", value: judged.time.formatted(date: .omitted, time: .standard))
+                }
+                if let started = record.details?.started {
+                    LabeledContent("Started", value: started.formatted(date: .omitted, time: .standard))
+                }
+                LabeledContent(record.isRefused ? "Refused" : "Done", value: record.time.formatted(date: .abbreviated, time: .standard))
             }
             if let args = record.args, args.exitCode != nil || args.durationMs != nil {
                 Section("Ran") {
@@ -102,6 +128,11 @@ struct RecordInspector: View {
             judgeFailure = nil
             shots = record.shots.isEmpty ? nil : RecordShots(client: app.client, host: host, record: record)
             await shots?.load()
+        }
+        // The message it cited.
+        .task(id: record.id) {
+            guard !app.still else { return }
+            await app.readKeptCall(record, on: hostEntry)
         }
         .quickLookPreview($preview)
         .onChange(of: preview) { closed, _ in closed.map(QuickLookFiles.shared.remove) }
@@ -259,11 +290,13 @@ private struct ShotTile: View {
 /// the verdict, and how sure.
 struct Why: View {
     var gate: AuditRecord.Gate
+    /// The cited message's text, once its kept call is read.
+    var cited: String?
 
     var body: some View {
         Section("Why") {
-            if let intent = gate.cited {
-                LabeledContent("Cited message") { Text(intent).font(.caption.monospaced()).textSelection(.enabled) }
+            if let cited {
+                LabeledContent("Cited message") { Text(cited).textSelection(.enabled) }
             }
             if let later = gate.laterOwnerMessages, later > 0 {
                 LabeledContent("Your later messages", value: "\(later)")

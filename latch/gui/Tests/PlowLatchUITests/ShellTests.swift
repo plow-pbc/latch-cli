@@ -18,7 +18,7 @@ struct ShellTests {
 
     @Test func pickingAHostKeepsTheScreenEvenAfterAnAccountPage() throws {
         let app = try app()
-        #expect(app.inspecting == HostScreen.inspected)
+        #expect(app.inspecting == Place.inspected)
         app.place = .host(.settings)
         app.showHost("pi-kitchen")
         #expect(app.route == .host(.settings, try host(app, "pi-kitchen")))
@@ -39,7 +39,7 @@ struct ShellTests {
         #expect(app.route == .host(.home, try host(app, "studio")))
     }
 
-    @Test(arguments: [Place.account(.agents), .account(.connections), .host(.home), .host(.activity), .host(.vault),
+    @Test(arguments: [Place.account(.agents), .account(.connections), .host(.home), .host(.rules), .account(.activity), .host(.vault),
                       .host(.settings)])
     func aPlaceIsKeptAsTextAndComesBack(_ place: Place) {
         #expect(Place(rawValue: place.rawValue) == place)
@@ -66,10 +66,12 @@ struct ShellTests {
         app.feed(for: kitchen).stage(Fixtures.studioAudit)
         let record = try #require(app.feed(for: studio).records.last { !$0.isBackground })
         app.selectedRecord = OnHost(host: "studio", id: record.id)
-        #expect(app.inspectedRecord(on: studio) == record)
-        #expect(app.inspectedRecord(on: kitchen) == nil)
+        #expect(app.inspectedRecord == ActivityRow(record: record, host: studio))
+        app.selectedRecord = OnHost(host: kitchen.name, id: record.id)
+        #expect(app.inspectedRecord?.host == kitchen)
+        app.selectedRecord = OnHost(host: "studio", id: record.id)
         app.activityFilter = record.isRefused ? .allowed : .refused
-        #expect(app.inspectedRecord(on: studio) == nil)
+        #expect(app.inspectedRecord == nil)
     }
 
     @Test func theInspectorShowsAVaultItemOnlyOnItsHostAndWhileListed() throws {

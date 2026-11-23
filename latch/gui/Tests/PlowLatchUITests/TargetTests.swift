@@ -26,7 +26,7 @@ struct TargetTests {
         app.activitySearch = "Finance"
         let kitchen = try #require(app.hosts.first { $0.name == "pi-kitchen" })
         app.openActivity(kitchen, agent: scout)
-        #expect(app.route == .host(.activity, kitchen))
+        #expect(app.route == .account(.activity))
         #expect(app.activityAgent(on: kitchen) == scout)
         #expect(app.activityFilter == .all && app.activitySearch.isEmpty)
         #expect(app.activityAgent(on: try #require(app.hosts.first { $0.name == "studio" })) == nil)
@@ -38,7 +38,8 @@ struct TargetTests {
         app.chosenHost = "pi-kitchen"
         app.place = .account(page)
         #expect(app.route == .account(page))
-        #expect(app.activityFeed == nil)
+        // Activity's feeds are every host's, not the one picked.
+        #expect(app.activityFeeds.count == (page == .activity ? app.reachableHosts.count : 0))
     }
 
     // Agents asks each host it can for its standing: hosts Plow lists
@@ -146,11 +147,11 @@ struct ActivityScopeTests {
         let records = app.feed(for: studio).records
         let allowed = try #require(records.last { $0.agent == scout && $0.decision == "allow" && !$0.isBackground })
         app.selectedRecord = OnHost(host: "studio", id: allowed.id)
-        #expect(app.inspectedRecord(on: studio) == allowed)
+        #expect(app.inspectedRecord?.record == allowed)
         app.activityFilter = .refused
-        #expect(app.inspectedRecord(on: studio) == nil)
+        #expect(app.inspectedRecord?.record == nil)
         app.activityFilter = .all
-        #expect(app.inspectedRecord(on: studio) == allowed)
+        #expect(app.inspectedRecord?.record == allowed)
     }
 
     // Home's recent request opens in Activity even where a filter left
@@ -163,19 +164,19 @@ struct ActivityScopeTests {
         app.openActivity(studio, agent: scout)
         app.activityFilter = .refused
         app.activitySearch = "Finance"
-        app.inspecting.remove(.activity)
+        app.inspecting.remove(.account(.activity))
         app.place = .host(.home)
         app.openRecord(other, on: studio)
-        #expect(app.route == .host(.activity, studio))
-        #expect(app.inspectedRecord(on: studio) == other)
-        #expect(app.inspecting.contains(.activity))
+        #expect(app.route == .account(.activity))
+        #expect(app.inspectedRecord?.record == other)
+        #expect(app.inspecting.contains(.account(.activity)))
 
         let refused = try #require(records.last { $0.agent == scout && $0.isRefused && $0.command?.contains("Finance") == true })
         app.openActivity(studio, agent: scout)
         app.activityFilter = .refused
         app.openRecord(refused, on: studio)
         #expect(app.activityFilter == .refused && app.activityAgent(on: studio) == scout)
-        #expect(app.inspectedRecord(on: studio) == refused)
+        #expect(app.inspectedRecord?.record == refused)
     }
 
     // Home's Requests and Refused: all of the host's Activity, or what was
@@ -195,7 +196,7 @@ struct ActivityScopeTests {
         app.showConnections = true
         app.place = .host(.home)
         app.openActivity(studio, showing: .refused)
-        #expect(app.route == .host(.activity, studio))
+        #expect(app.route == .account(.activity))
         let refused = records.filter { !$0.isBackground && $0.isRefused }
         #expect(!refused.isEmpty)
         #expect(app.activityRows(records, on: studio).count == refused.count)
@@ -213,8 +214,8 @@ struct ActivityScopeTests {
         }
         let app = AppModel(client: client, store: ProgressStore(memory: .init(), stateDir: "/s"), still: true)
         app.stage(status: try Fixtures.decode(Fixtures.serving))
-        app.place = .host(.activity)
-        let feed = try #require(app.activityFeed)
+        app.place = .account(.activity)
+        let feed = try #require(app.activityFeeds.first)
         feed.start()
         await waitUntil { feed.caughtUp }
         let studio = try #require(app.host)
@@ -223,7 +224,7 @@ struct ActivityScopeTests {
         app.activitySearch = "ls"
         app.showConnections = true
         app.activityAgent = nil
-        #expect(app.activityFeed === feed)
+        #expect(app.activityFeeds.first === feed)
         #expect(client.follows == 1)
         feed.end()
     }

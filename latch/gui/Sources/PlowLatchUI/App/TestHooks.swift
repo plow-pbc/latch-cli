@@ -107,9 +107,10 @@ enum TestHooks {
         on("section") { name in if let place = name.flatMap(Place.init(rawValue:)) { app.place = place } }
         // Activity's selection and filter, as a click sets them.
         on("inspector") { value in
-            guard case let .host(screen) = app.place, HostScreen.inspected.contains(screen) else { return }
-            if value == "1" { app.inspecting.insert(screen) } else { app.inspecting.remove(screen) }
+            guard Place.inspected.contains(app.place) else { return }
+            if value == "1" { app.inspecting.insert(app.place) } else { app.inspecting.remove(app.place) }
         }
+        // A record on the selected host, as a click selects it.
         on("record") { id in app.selectedRecord = app.host.flatMap { host in id.map { OnHost(host: host.name, id: $0) } } }
         on("filter") { name in if let filter = name.flatMap(ActivityFilter.init(rawValue:)) { app.activityFilter = filter } }
         on("connections") { value in app.showConnections = value == "1" }
