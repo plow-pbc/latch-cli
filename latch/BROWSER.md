@@ -374,13 +374,13 @@ and command.
 ## The gatekeeper
 
 Every caller's browser commands pass the host's gatekeeper. An agent's
-are judged like its other calls: on the built-in defaults, the owner's
-rules on the host and the owner's Plow chat with that agent. The owner's
-own devices are allowed unless the host's rules forbid it. Judged,
+are judged like its other calls: on the owner's message it cites with
+`--intent ROOM/EVENT`, as the owner's later messages leave it, and the
+host's device rule. The owner's own devices cite nothing and are allowed
+unless the device rule denies it. Opening a site (`open URL`, or `goto
+URL` or `tab new URL` on another site) and downloads run unjudged. Judged,
 each before anything of it reaches the page:
 
-- opening a site this session has not been judged for: `open URL`, or
-  `goto URL` or `tab new URL` on another site;
 - each plan (`do`): its steps as written with each step's values, the
   page it starts on (URL and title), the sites it names and the vault
   items it may fill (kind, title and saved sites). Every `do` is judged,
@@ -391,32 +391,28 @@ each before anything of it reaches the page:
   identity: the item's kind and title, the sites it is saved for, the
   fields and the page's site, never a value. The judge is told that the
   agent never receives the values and that a login fills only on its own
-  sites. A sign-in still needs the owner's OK, from a rule or the chat,
-  where asking for something to be done on a site covers signing in
-  there; with it, a sign-in on the login's own site isn't read as sharing the
-  password, while a login on any other site is. A refused fill in a plan
-  stops the plan at that step, the reason in its `stop`;
-- every `eval`, judged on its whole script: ordinary page work (closing a
-  pop-up, scrolling, clicking, reading visible text) is everyday, while a
-  script that reads form fields, listens to input, keyboard or form
-  events, or sends page data off the page needs the owner's explicit OK;
-- every upload and download (the file's name and size).
+  sites. A sign-in still needs the owner's message, where asking for
+  something to be done on a site covers signing in there; a login fill on
+  any other site is refused by code (`login_site_mismatch`). A refused
+  fill in a plan stops the plan at that step, the reason in its `stop`;
+- every `eval`, judged on its whole script: a script that reads form
+  fields, listens to input, keyboard or form events, or sends page data
+  off the page needs the owner's explicit OK;
+- every upload (the file's name and size).
 
 Clicks, typing, `act`, page reads, screenshots and the `--confirm` of an
 ordinary click are not judged: the risk decision, confirmations and the
 fill and pause checks above still hold. A refusal is exit 4,
-`gatekeeper_denied`, and nothing was sent: with reason `not_covered`, ask
-the owner in chat, saying exactly what you will do, then retry; with
-`not_as_asked`, make the action match what the owner last asked and retry;
-with `owner_said_no`, don't. A gatekeeper that can't judge (the chat or the
-model unreachable) is exit 3, `gatekeeper_unavailable`, and nothing runs;
-its message says what fixes it (below, under the decision model).
-An agent whose line has more than one chat names the one it acts for
-with `--plow-chat C` or `LATCH_PLOW_CHAT`. Owner calls and local modes
-(`setup`, `handoff done`, `do --dry-run`) refuse this selector instead of
-ignoring it. The call's audit record holds the
+`gatekeeper_denied`, and nothing was sent; its `next` says the one thing
+to do. With reason `not_covered`, ask the owner in your 1:1 room, saying
+exactly what you will do, and cite their answer; with `denied_by_rule`,
+don't. A gatekeeper that can't judge (the owner's messages or the model
+unreachable) is exit 3, `gatekeeper_unavailable`, and nothing runs; its
+message says what fixes it (below, under the decision model). Owner calls
+and local modes (`setup`, `handoff done`, `do --dry-run`) refuse
+`--intent` instead of ignoring it. The call's audit record holds the
 judgment as `gate` (verdict, probabilities, model, cost, latency, the
-message ids read), never chat text. `just gated-shopping HOST_STATE OUT`
+intent cited), never message text. `just gated-shopping HOST_STATE OUT`
 measures a shopping task's judgments on the decision model.
 
 ## Plans, literal steps and confirmations

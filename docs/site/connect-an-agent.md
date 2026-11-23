@@ -1,8 +1,8 @@
 # Connect an agent
 
 Every agent needs its own Plow credential. Your hosts recognize the agent by
-it, and judge each of its requests as that agent's: against your rules, and
-what you told it in your Plow chat.
+it, and judge each of its requests as that agent's: against the message of
+yours it cites, and the host's device rule.
 
 > Never copy your own `~/.latch` folder, or its token, to an agent. A host
 > would take the agent's requests for yours.
@@ -127,27 +127,24 @@ it.
 
 ## What an agent may do
 
-By default, agents may look things up, open web pages, work on your files,
-run project builds and tests, and install packages the project already
-lists. Sending, inviting, deleting other files and changing accounts or
-shared systems need your permission. Buying, reading secrets or sharing
-private data must be named explicitly in your rules or your own Plow chat.
-A task you give on a site includes using its saved login there; it does not
-extend to buying, sending or changing things after sign-in.
+Agents may look things up, open web pages, download files and write Gmail
+drafts without asking. Everything else runs only on a message of yours the
+agent cites with `--intent ROOM/EVENT`, from its own 1:1 room with you (its
+Swarm DM with you, or its iMessage room). The host reads that message and
+your later ones itself: a later “stop” wins, and a one-time ask is spent
+once done. A task you give on a site includes using its saved login there;
+it does not extend to buying, sending or changing things after sign-in. An
+agent quoting you cannot give permission.
 
-A permission adds to these defaults. A rule that grants one task leaves
-other everyday work allowed; a restriction still holds. “Never” stays
-absolute. “Unless I ask in chat” lets you approve the action yourself, in
-your own messages. An agent quoting you cannot give permission.
+Each host must know the agent's Swarm account, set by you:
 
-For example:
+```sh
+latch agents map my-agent @my-agent:plow.co --host my-mac
+```
 
-- “Do not read or search this Mac's Messages.”
-- “Agents may email the people in my contacts.”
-- “Never buy anything unless I ask in chat.”
-
-Each host keeps its own rules: see
-[How Latch works](how-latch-works.md#the-gatekeeper-and-rules).
+Each host also keeps a device rule: what agents are always denied there,
+whatever a message says (“Never touch my tax returns”). See
+[How Latch works](how-latch-works.md#the-gatekeeper-and-the-device-rule).
 
 ## Built for agents
 
@@ -168,5 +165,5 @@ latch exec --host my-mac -- ls -la
 | 1 | Failed. | Read the error. |
 | 2 | The command is wrong, or it names no host. | Fix the command. |
 | 3 | The host couldn't be reached, or couldn't judge the request. | Retry later. A browser plan may have run some steps: read its `steps`. |
-| 4 | Refused. | Don't retry. For `not_covered`, ask the owner in your Plow chat, then retry. For `not_as_asked`, make the action match what the owner last asked, then retry. |
+| 4 | Refused. | Do what the refusal's `next` says. For `not_covered`, ask the owner in your 1:1 room, then cite their answer. Otherwise don't retry. |
 | 5 | Sent, but no answer came back. | Check what happened before you send it again. |

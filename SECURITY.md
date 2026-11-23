@@ -25,21 +25,24 @@ model up.
   host asks Plow who a key is when the caller connects, and again before
   every operation. A name is only a label. If Plow says no, or can't be
   reached, the call is refused.
-- **Work that acts is judged first.** Programs, file copies, Google,
-  Messages, Contacts and the browser's risky steps go to the host's
-  gatekeeper before they run. The gatekeeper is a model. It reads the
-  request, the owner's rules and, for an agent, the owner's messages in
-  their Plow chat with that agent.
+- **Work that acts is judged first.** Reads run unjudged; an unknown
+  operation is refused. Programs, file copies in, Google writes and the
+  browser's risky steps go to the host's gatekeeper before they run. An
+  agent must cite the owner's message it acts on, from its own 1:1 room
+  with the owner; the host reads that message and the owner's later ones
+  itself, and code refuses a missing or foreign citation before any model.
+  The judge, a model, asks whether the message covers the action and
+  whether the host's deny-only device rule denies it.
 - **It fails closed.** If the gatekeeper can't judge, nothing runs.
 - **Settings are the owner's alone.** Only the owner's own machines can read
-  or change a host's rules, change its vault, or turn its connectors on and
+  or change a host's device rule or agent map, change its vault, or turn its connectors on and
   off. Agents are refused.
 - **An agent can list the vault, but never read its secrets.** `vault list`
-  shows an agent each item's id, title and saved sites, and the gatekeeper
-  judges that request like the agent's other work. No username or secret
+  shows an agent each item's id, title and saved sites, unjudged. No
+  username or secret
   value reaches the agent.
 - **The gatekeeper is not a guarantee.** It is a model, and models make
-  mistakes. Rules are judged, not enforced. `latch serve --deny-exec` is
+  mistakes. The device rule is judged, not enforced. `latch serve --deny-exec` is
   enforced in code: no agent runs a program on that host.
 
 ### 2. The work runs confined
@@ -60,9 +63,10 @@ Message bodies, contact names, web pages and file contents can carry a
 stranger's words. Latch treats them as data, never as instructions or
 permission:
 
-- Only the owner's rules, the built-in policy and the chat messages Plow
-  marks as the owner's count as permission.
-- Nothing an agent reads can change a rule, a sandbox policy or how a
+- Only the owner's own message an agent cites, as the owner's later
+  messages leave it, counts as permission. Text the owner quotes or
+  forwards from someone else does not.
+- Nothing an agent reads can change the device rule, a sandbox policy or how a
   browser starts.
 
 ## Known limits
@@ -72,7 +76,7 @@ are welcome.
 
 - **The host trusts its own OS user.** Anything running as the host's OS
   user can use the host's local socket and act as the owner, including
-  changing its rules and vault. Run a host only where you trust everything
+  changing its device rule and vault. Run a host only where you trust everything
   that runs as that user.
 - **An owner's login placed where an agent runs is judged as the owner.**
   The host can't tell. Give each agent a login of its own.

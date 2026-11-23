@@ -20,7 +20,7 @@ test-list:
 test-plan *args:
     @python3 scripts/test.py --dry-run "$@"
 
-# Asks the real decision model through Plow (not tests): checks, replay OUT, scenario.
+# Asks the real decision model through Plow (not tests): checks or scenario.
 gatekeeper *args:
     @just --justfile latch/justfile gatekeeper {{args}}
 
