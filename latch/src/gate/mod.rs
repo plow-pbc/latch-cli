@@ -294,8 +294,8 @@ impl Gatekeeper {
 
     /// What the gate would rule on `action` against `rule`, a draft device
     /// rule, and, with `message`, as an agent's request citing that message
-    /// of the owner's: recording nothing. A read, and a blank draft with no
-    /// message, ask no model.
+    /// of the owner's: recording nothing. A blank message asks for nothing.
+    /// A read, and a blank draft with no message to judge, ask no model.
     pub async fn preview(
         &self,
         rule: &str,
@@ -314,7 +314,8 @@ impl Gatekeeper {
         }
         let rule = Some(rule).filter(|rule| !rule.trim().is_empty());
         let now = jiff::Zoned::now();
-        let thread = message.map(|text| Thread {
+        let blank = message.is_some_and(|text| text.trim().is_empty());
+        let thread = message.filter(|_| !blank).map(|text| Thread {
             room: "!preview".into(),
             event: "$preview".into(),
             cited: thread::Said {
@@ -330,7 +331,10 @@ impl Gatekeeper {
             complete: true,
         });
         if rule.is_none() && thread.is_none() {
-            return Ok(unasked);
+            return Ok(Preview {
+                denied: false,
+                covered: !blank,
+            });
         }
         let clock = now.strftime("%a %Y-%m-%d %H:%M %Z").to_string();
         let asked = Asked {
@@ -342,7 +346,7 @@ impl Gatekeeper {
             .await?;
         Ok(Preview {
             denied: p.denied.is_some_and(|p| p >= YES_P),
-            covered: verdict(P { denied: None, ..p }).is_ok(),
+            covered: !blank && verdict(P { denied: None, ..p }).is_ok(),
         })
     }
 

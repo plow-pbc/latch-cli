@@ -454,8 +454,9 @@ async fn reads_run_with_no_citation_no_rule_and_no_model() {
 }
 
 /// A draft is judged against the draft, not the saved rule, and with a
-/// message as an agent citing it: a read asks no model, nor does a blank
-/// draft with no message; an unknown operation is refused.
+/// message as an agent citing it: a blank message asks for nothing; a read
+/// asks no model, nor does a blank draft with no message to judge; an
+/// unknown operation is refused.
 #[tokio::test]
 async fn a_preview_judges_the_draft_and_the_message_it_is_given() {
     let host = host(Judge::new(by_words), Err("never read".into()));
@@ -474,6 +475,13 @@ async fn a_preview_judges_the_draft_and_the_message_it_is_given() {
         ("Never touch ~/Finance.", None, &save, ruled(true, true)),
         ("Never email anyone.", None, &save, ruled(false, true)),
         ("  ", Some("Save my taxes there"), &save, ruled(false, true)),
+        ("  ", Some(" "), &save, ruled(false, false)),
+        (
+            "Never touch ~/Finance.",
+            Some(""),
+            &save,
+            ruled(true, false),
+        ),
         (
             "Never email anyone.",
             Some("Order groceries"),
@@ -488,7 +496,7 @@ async fn a_preview_judges_the_draft_and_the_message_it_is_given() {
             "{draft} / {message:?} / {action}"
         );
     }
-    assert_eq!(host.judge.calls(), 4);
+    assert_eq!(host.judge.calls(), 5);
     let state = host.judge.state();
     assert_eq!(state["device_rule"], "Never email anyone.");
     assert_eq!(state["cited_message"]["text"], "Order groceries");
@@ -498,7 +506,7 @@ async fn a_preview_judges_the_draft_and_the_message_it_is_given() {
         .preview("Never touch ~/Finance.", None, &unknown)
         .await;
     assert_eq!(refused.unwrap_err().details["reason"], "unknown_op");
-    assert_eq!(host.judge.calls(), 4);
+    assert_eq!(host.judge.calls(), 5);
     assert!(host.threads.reads.lock().unwrap().is_empty());
 }
 

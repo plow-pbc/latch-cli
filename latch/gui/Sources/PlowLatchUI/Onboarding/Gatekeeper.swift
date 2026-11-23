@@ -14,7 +14,7 @@ struct RulesView: View {
             Text("Your agents act only on a message of yours, and never past your Mac’s rule.")
                 .foregroundStyle(Brand.muted)
             HStack(alignment: .top, spacing: 12) {
-                gate(1, "Did you ask? · your message") { messageField }
+                gate(1, "Did you ask? · example message") { messageField }
                 gate(2, "Your Mac’s rule") { ruleField.disabled(flow.rulesUnreadable) }
             }
             .fixedSize(horizontal: false, vertical: true)
@@ -72,14 +72,14 @@ struct RulesView: View {
     }
 
     private var messageField: some View {
-        TextField("A message of yours", text: $flow.sampleMessage, axis: .vertical)
+        TextField("Example message", text: $flow.sampleMessage, axis: .vertical)
             .textFieldStyle(.plain)
             .lineLimit(2...3)
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
             .foregroundStyle(.white)
             .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .accessibilityLabel("A message of yours an agent cites")
+            .accessibilityLabel("Example message an agent cites")
     }
 
     private var ruleField: some View {

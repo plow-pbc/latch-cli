@@ -373,19 +373,14 @@ final class Onboarding {
     func draftChanged() { judge(after: judgeDelay) }
 
     /// Judges every sample with the real gate: as an agent's request citing
-    /// the message, against the draft rule. A blank message asks for
-    /// nothing, and with a blank rule too no one need be asked; signed out,
-    /// there's no judge, so no rulings.
+    /// the message, against the draft rule. Signed out, there's no judge,
+    /// so no rulings.
     private func judge(after delay: Duration) {
         judging?.cancel()
         let draft = draftRules.trimmingCharacters(in: .whitespacesAndNewlines)
-        let message = sampleMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+        let message = sampleMessage
         guard signedIn == true else {
             verdicts = verdicts.map { _ in nil }
-            return
-        }
-        guard !draft.isEmpty || !message.isEmpty else {
-            verdicts = verdicts.map { _ in Ruling(denied: false, covered: false) }
             return
         }
         judging = Task {
@@ -394,8 +389,7 @@ final class Onboarding {
             await withTaskGroup(of: (Int, Ruling?).self) { group in
                 for (index, sample) in SampleRequest.all.enumerated() {
                     group.addTask { [client] in
-                        let ruling = try? await client.rulesTry(draft: draft, message: message.isEmpty ? nil : message, action: sample.action)
-                        return (index, ruling.map { message.isEmpty ? Ruling(denied: $0.denied, covered: false) : $0 })
+                        (index, try? await client.rulesTry(draft: draft, message: message, action: sample.action))
                     }
                 }
                 for await (index, ruling) in group where !Task.isCancelled {

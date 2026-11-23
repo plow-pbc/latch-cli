@@ -139,8 +139,8 @@ struct GatekeeperTests {
 
     /// The samples are judged by the gate as citing the message, against
     /// the draft, once typing pauses, and sort into lanes, the rule winning.
-    /// A sample the gate couldn't judge gets no lane; a blank message and
-    /// rule ask no one; signed out of Plow, with no judge, nothing is ruled.
+    /// A sample the gate couldn't judge gets no lane; a blank message asks
+    /// for nothing; signed out of Plow, with no judge, nothing is ruled.
     @Test func theSamplesAreJudgedAgainstTheMessageAndTheDraft() async {
         let client = ScriptedClient { _ in nil }
         let flow = flow(client)
@@ -155,11 +155,11 @@ struct GatekeeperTests {
         flow.draftRules = ""
         flow.sampleMessage = ""
         flow.draftChanged()
-        #expect(lanes() == Array(repeating: .notAsked, count: 5) && client.tried.count == 10)
+        await waitUntil { client.tried.count == 15 && lanes() == [nil, .notAsked, .notAsked, .notAsked, .notAsked] }
         client.signedOut = true
         await flow.loadRules()
         #expect(flow.signedIn == false && flow.verdicts == [nil, nil, nil, nil, nil])
-        #expect(client.tried.count == 10)
+        #expect(client.tried.count == 15)
     }
 
     /// Answered already: the box holds the answer, and Continue writes
