@@ -1512,6 +1512,7 @@ async fn a_confirmed_send_carries_on_its_allowed_plan(engine: &str) {
         .agent("do", &id, act(&format!("click {send}")), None)
         .await;
     assert_eq!(again.unwrap_err().code, "gatekeeper_denied");
+    host.look("close", &id, json!({})).await;
 }
 
 async fn shows(host: &Host, id: &str) -> String {
