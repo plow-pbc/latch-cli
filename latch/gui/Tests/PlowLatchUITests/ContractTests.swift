@@ -124,7 +124,7 @@ final class ContractTests {
     /// it reads: it gets as far as needing a login, not a usage error.
     @Test func judgingTheSamplesIsALatchCommand() async throws {
         for sample in SampleRequest.all {
-            let refusal = await AppModel.result { try await client.rulesTry(draft: "Never post my taxes.", action: sample.action) }
+            let refusal = await AppModel.result { try await client.rulesTry(draft: "Never post my taxes.", message: SampleRequest.message, action: sample.action) }
             guard case let .failure(error) = refusal else {
                 Issue.record("`rules try` answered without a login: \(refusal)")
                 return

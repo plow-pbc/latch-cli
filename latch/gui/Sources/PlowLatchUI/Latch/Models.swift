@@ -185,10 +185,18 @@ nonisolated struct RulesShow: Decodable, Equatable {
     var older = false
 }
 
-/// `latch rules try`: one verdict for each action, in order.
+/// `latch rules try`: one ruling for each action, in order.
 nonisolated struct RulesTry: Decodable {
-    struct Verdict: Decodable { var denied: Bool }
-    var verdicts: [Verdict]
+    var verdicts: [Ruling]
+}
+
+/// What the gate rules on a request: whether the rule denies it, and
+/// whether the message it cites asks for it. The rule always wins.
+nonisolated struct Ruling: Decodable, Equatable, Sendable {
+    enum Lane { case goesAhead, notAsked, forbidden }
+    var denied: Bool
+    var covered: Bool
+    var lane: Lane { denied ? .forbidden : covered ? .goesAhead : .notAsked }
 }
 
 nonisolated extension RulesShow {
