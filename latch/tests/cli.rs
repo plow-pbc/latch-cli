@@ -3428,7 +3428,7 @@ fn status_asks_every_host_for_its_plugins_at_once_and_in_time() {
     // One host that lets the call in and never answers, one of another
     // protocol, and one Plow lists offline.
     let stalled = relay_runtime.block_on(silent(&relay, b"plow/latch/4"));
-    let older = relay_runtime.block_on(silent(&relay, b"plow/latch/4"));
+    let older = relay_runtime.block_on(silent(&relay, b"plow/latch/3"));
     {
         let mut state = plow.state.lock().unwrap();
         for (endpoint, name) in [(&stalled, "stalled"), (&older, "older")] {
@@ -5077,7 +5077,7 @@ fn local_status_says_login_serving_and_how_the_host_ended_without_asking_plow() 
     assert!(!never.exists(), "status --local made the state folder");
     assert_eq!(before["login"], Value::Null);
     assert_eq!(before["this_machine"]["name"], Value::Null);
-    assert_eq!(before["protocol"], 5);
+    assert_eq!(before["protocol"], 4);
     assert_eq!(
         before["this_machine"]["hosting"],
         json!({"running": false, "ready": false, "configuring": false, "managed": false, "attached": false,
@@ -5813,7 +5813,7 @@ fn a_call_through_this_machines_host_answers_and_is_recorded_as_a_direct_one() {
     };
 
     // No host serves on studio: its commands dial directly.
-    assert!(!owners.studio.join(format!("serve-v{}.sock", 5)).exists());
+    assert!(!owners.studio.join(format!("serve-v{}.sock", 4)).exists());
     let direct = run_all(&owners.studio);
     let direct_follow = followed(&owners.studio, "one");
     // A follow's record is written as the host sees it end, after the
@@ -10701,7 +10701,8 @@ mod pinned {
             ("goto", goto_wall, &["action_ms"]),
             // A script's page settles after it, as an action's does.
             ("eval", eval_wall, &["gate_ms", "action_ms", "settle_ms"]),
-            ("do", do_wall, &["gate_ms", "action_ms", "settle_ms"]),
+            // A plan that only scrolls is not judged.
+            ("do", do_wall, &["action_ms", "settle_ms"]),
         ];
         assert_eq!(records.len(), expected.len(), "{records:#?}");
         for (record, (command, wall, present)) in records.iter().zip(expected) {
