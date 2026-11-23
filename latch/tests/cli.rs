@@ -206,6 +206,16 @@ fn owner_calls_refuse_an_intent() {
         &["browser", "sessions"],
         &["google", "--", "gmail", "search", "invoice"],
         &["vault", "list"],
+        &[
+            "vault",
+            "link",
+            "--kind",
+            "login",
+            "--title",
+            "Shop",
+            "--site",
+            "shop.example",
+        ],
     ] {
         let mut argv = args.to_vec();
         argv.splice(1..1, ["--intent", "!dm:test/$asked"]);
@@ -4266,23 +4276,6 @@ fn an_agent_asks_for_a_login_by_phone_link_and_learns_only_its_state() {
         listed["items"],
         json!([{"item": "v1", "kind": "login", "title": "Shop (US)", "sites": ["shop.example"]}]),
         "{listed}"
-    );
-
-    // The owner's own vault takes no citation.
-    let local = latch(
-        &host,
-        &[
-            &["vault", "--intent", "!dm:test/$ask"][..],
-            &ask("login", "username=ada")[5..],
-        ]
-        .concat(),
-        &[],
-    );
-    let (code, refused) = answered(&local);
-    assert_eq!(
-        (code, &refused["error"]["code"]),
-        (Some(2), &json!("intent_not_supported")),
-        "{refused}"
     );
 
     // The owner's device rule can forbid it: refused, and nothing opened.

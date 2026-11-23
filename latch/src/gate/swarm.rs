@@ -2,7 +2,9 @@
 //! CLI signed in as the owner on this machine (`latch swarm signin`): latch
 //! carries no Matrix code. `swarm read <room> <event> --after --as <owner>`
 //! gives the message with its server-verified sender, the reactions on its
-//! thread's root, the room's members, and every message after it.
+//! thread's root, the room's members, and every message after it. A cited
+//! reply in a thread is read from the thread's root too, so the judge sees
+//! what it answers ("yes" to the agent's question), as context only.
 //!
 //! The owner is the account `swarm signin` signed in, saved in the state
 //! folder; a phone account counts as the owner when the server's identity
@@ -82,8 +84,21 @@ impl ThreadSource for SwarmReader {
                 &owner,
             ])
             .await;
+            let answer = match answer {
+                // A reply in a thread: the thread from its root, for what it answers.
+                Ok(read) if read["event"]["event_id"] != read["thread_root"] => {
+                    let root = read["thread_root"].as_str().unwrap_or_default();
+                    let room = read["room"].as_str().unwrap_or_default();
+                    run(&["read", room, root, "--after", "--as", &owner])
+                        .await
+                        .map(|earlier| (read, Some(earlier)))
+                }
+                answer => answer.map(|read| (read, None)),
+            };
             match answer {
-                Ok(read) => thread(&read, &owner, agent, Timestamp::now()).map(Some),
+                Ok((read, earlier)) => {
+                    thread(&read, earlier.as_ref(), &owner, agent, Timestamp::now()).map(Some)
+                }
                 Err(Ran::Refused(code)) if code == "not_found" || code == "not_joined" => Ok(None),
                 Err(Ran::Refused(code)) => Err(format!("swarm read refused it: {code}")),
                 Err(Ran::Failed(why)) => Err(why),
@@ -156,10 +171,21 @@ struct Member {
     membership: String,
 }
 
-/// The thread a read shows, for the agent whose account is `agent`.
-fn thread(read: &Value, owner: &str, agent: &str, now: Timestamp) -> Result<Thread, String> {
-    let read: Read = serde_json::from_value(read.clone())
-        .map_err(|err| format!("swarm read gave an answer latch can't read: {err}"))?;
+/// The thread a read shows, for the agent whose account is `agent`, and
+/// for a cited reply in a thread, `earlier`: the read from its root.
+fn thread(
+    read: &Value,
+    earlier: Option<&Value>,
+    owner: &str,
+    agent: &str,
+    now: Timestamp,
+) -> Result<Thread, String> {
+    let parse = |read: &Value| {
+        serde_json::from_value::<Read>(read.clone())
+            .map_err(|err| format!("swarm read gave an answer latch can't read: {err}"))
+    };
+    let read = parse(read)?;
+    let earlier = earlier.map(parse).transpose()?;
     let is_owner = |m: &Message| m.sender == owner || m.speaks_for.as_deref() == Some(owner);
     let at = |s: i64| Timestamp::from_second(s).unwrap_or(Timestamp::UNIX_EPOCH);
     let speaks_for_owner: Vec<&str> = std::iter::once((&read.event.sender, &read.event.speaks_for))
@@ -187,30 +213,40 @@ fn thread(read: &Value, owner: &str, agent: &str, now: Timestamp) -> Result<Thre
         .root_reactions
         .iter()
         .any(|r| CLOSED.contains(&r.key.as_str()) && owners(&r.sender));
-    // What follows the cited message: its thread, or for a message in no
-    // thread, the room's unthreaded messages. Every owner message counts;
-    // others' are context, kept to the last day and the newest 50.
-    let threaded = read.event.event_id != read.thread_root
-        || read
-            .messages
-            .iter()
-            .any(|m| m.thread_root.as_deref() == Some(&read.thread_root));
+    // What follows the cited message: its thread, and for a message in no
+    // thread, the room's unthreaded messages too, so a "stop" said outside
+    // its replies still counts. Every owner message counts; others' are
+    // context, in the room kept to the last day and the newest 50.
+    let in_thread = read.event.event_id != read.thread_root;
     let after: Vec<&Message> = read
         .messages
         .iter()
-        .filter(|m| match threaded {
-            true => m.thread_root.as_deref() == Some(&read.thread_root),
-            false => m.thread_root.is_none(),
+        .filter(|m| match m.thread_root.as_deref() {
+            Some(root) => root == read.thread_root,
+            None => !in_thread,
         })
         .collect();
     let mut context: Vec<&Message> = after
         .iter()
         .copied()
-        .filter(|m| !is_owner(m) && (threaded || now.as_second() - m.created_at <= ROOM_WINDOW_S))
+        .filter(|m| !is_owner(m) && (in_thread || now.as_second() - m.created_at <= ROOM_WINDOW_S))
         .collect();
-    if !threaded && context.len() > ROOM_WINDOW_MESSAGES {
+    if !in_thread && context.len() > ROOM_WINDOW_MESSAGES {
         context.drain(..context.len() - ROOM_WINDOW_MESSAGES);
     }
+    // Before a cited reply: the thread's root and its replies up to the
+    // cited one, the owner's among them, all context.
+    let before: Vec<&Message> = earlier.as_ref().map_or(vec![], |earlier| {
+        std::iter::once(&earlier.event)
+            .chain(
+                earlier
+                    .messages
+                    .iter()
+                    .filter(|m| m.thread_root.as_deref() == Some(&read.thread_root)),
+            )
+            .take_while(|m| m.event_id != read.event.event_id)
+            .collect()
+    });
     let said = |m: &Message| Said {
         text: m.text.clone(),
         at: at(m.created_at),
@@ -225,12 +261,14 @@ fn thread(read: &Value, owner: &str, agent: &str, now: Timestamp) -> Result<Thre
             .filter(|m| is_owner(m))
             .map(|m| said(m))
             .collect(),
-        context: context
+        context: before
             .iter()
+            .chain(&context)
             .map(|m| Context {
-                role: match m.sender == agent {
-                    true => "THIS AGENT".into(),
-                    false => format!("SOMEONE ELSE ({})", m.sender),
+                role: match (m.sender == agent, is_owner(m)) {
+                    (true, _) => "THIS AGENT".into(),
+                    (_, true) => "THE OWNER, BEFORE THE CITED MESSAGE".into(),
+                    _ => format!("SOMEONE ELSE ({})", m.sender),
                 },
                 text: m.text.clone(),
                 at: at(m.created_at),
@@ -248,10 +286,7 @@ fn thread(read: &Value, owner: &str, agent: &str, now: Timestamp) -> Result<Thre
 /// environment, never on its command line or in the answer.
 pub async fn sign_in(state: &StateDir, company: &str) -> Result<Value, Failure> {
     let config = state.require_login()?;
-    if config.peer.kind != "device" {
-        let message = "only the owner's own login signs a host in to Swarm".to_string();
-        return Err(Failure::new(code::owner_only, message));
-    }
+    super::owner::owner_only(&config.peer.kind, "Swarm sign-in")?;
     let token = crate::credential::token(state)?;
     let mut command = tokio::process::Command::new(program());
     command
@@ -312,7 +347,7 @@ mod tests {
     }
 
     fn of(read: &Value) -> Thread {
-        thread(read, OWNER, AGENT, Timestamp::now()).unwrap()
+        thread(read, None, OWNER, AGENT, Timestamp::now()).unwrap()
     }
 
     #[test]
@@ -404,6 +439,58 @@ mod tests {
     }
 
     #[test]
+    fn a_stop_outside_the_cited_messages_replies_still_counts() {
+        let t = of(&read(
+            &[OWNER, AGENT],
+            vec![
+                message("$a", AGENT, 20, "On it", Some("$ask")),
+                message("$s", OWNER, 5, "actually stop", None),
+            ],
+        ));
+        let later: Vec<&str> = t.later_owner.iter().map(|m| m.text.as_str()).collect();
+        assert_eq!(later, ["actually stop"]);
+    }
+
+    /// A cited "yes" in a thread is read with what it answers, as context.
+    #[test]
+    fn a_cited_reply_is_judged_with_the_thread_before_it() {
+        let root = read(
+            &[OWNER, AGENT],
+            vec![
+                message(
+                    "$q",
+                    AGENT,
+                    20,
+                    "Pay Bob $40 for the invoice?",
+                    Some("$ask"),
+                ),
+                message("$yes", OWNER, 10, "yes", Some("$ask")),
+                message("$elsewhere", AGENT, 15, "another room's talk", None),
+            ],
+        );
+        let mut cited = read(&[OWNER, AGENT], vec![]);
+        cited["event"] = message("$yes", OWNER, 10, "yes", Some("$ask"));
+        let t = thread(&cited, Some(&root), OWNER, AGENT, Timestamp::now()).unwrap();
+        assert_eq!(t.cited.text, "yes");
+        let shown: Vec<(&str, &str)> = t
+            .context
+            .iter()
+            .map(|c| (c.role.as_str(), c.text.as_str()))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                (
+                    "THE OWNER, BEFORE THE CITED MESSAGE",
+                    "Send Bob the invoice"
+                ),
+                ("THIS AGENT", "Pay Bob $40 for the invoice?"),
+            ]
+        );
+        assert!(t.later_owner.is_empty());
+    }
+
+    #[test]
     fn the_thread_names_the_room_by_its_id_whatever_named_it() {
         let mut r = read(&[OWNER, AGENT], vec![]);
         r["room"] = json!("!resolved:plow.co");
@@ -421,14 +508,23 @@ mod tests {
         r["event"]["sender"] = json!("@bob:plow.co");
         let t = of(&r);
         assert!(!t.complete && !t.sender_is_owner);
-        assert!(thread(&json!({"nonsense": true}), OWNER, AGENT, Timestamp::now()).is_err());
+        assert!(
+            thread(
+                &json!({"nonsense": true}),
+                None,
+                OWNER,
+                AGENT,
+                Timestamp::now()
+            )
+            .is_err()
+        );
         // A part the gatekeeper reads that is missing is refused, never read
         // as empty.
         for part in ["root_reactions", "members", "messages", "complete"] {
             let mut r = read(&[OWNER, AGENT], vec![]);
             r.as_object_mut().unwrap().remove(part);
             assert!(
-                thread(&r, OWNER, AGENT, Timestamp::now()).is_err(),
+                thread(&r, None, OWNER, AGENT, Timestamp::now()).is_err(),
                 "{part}"
             );
         }
