@@ -239,6 +239,8 @@ pub struct Reader(pub Result<Option<crate::gate::thread::Thread>, String>);
 impl Reader {
     pub fn asked(text: &str) -> Reader {
         Reader(Ok(Some(crate::gate::thread::Thread {
+            room: "!dm:test".into(),
+            event: "$asked".into(),
             cited: crate::gate::thread::Said {
                 text: text.into(),
                 at: Timestamp::now() - SignedDuration::from_mins(30),

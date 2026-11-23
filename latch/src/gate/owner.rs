@@ -12,7 +12,7 @@ use std::path::Path;
 
 use serde_json::{Map, Value, json};
 
-use super::rules::{Change, Store, is_agent_uid, revision};
+use super::rules::{Change, Snapshot, Store, is_agent_uid, revision};
 use crate::failure::{Failure, code};
 use crate::plow::{NamedAgent, Peer, Plow};
 use crate::serve::Done;
@@ -24,10 +24,31 @@ pub const WARNING: &str = "The device rule only denies: an agent acts only on th
 /// `state_dir`, for the host named `host`. `kind` is the caller's kind as
 /// Plow says.
 pub async fn run(state_dir: &Path, plow: &Plow, host: &str, kind: &str, args: &Value) -> Done {
+    changing(state_dir, plow, host, kind, args).await.0
+}
+
+/// `run`, and for a change it made, the file as it was: the caller audits
+/// the change and, if the audit can't be written, puts the file back.
+pub async fn changing(
+    state_dir: &Path,
+    plow: &Plow,
+    host: &str,
+    kind: &str,
+    args: &Value,
+) -> (Done, Option<Snapshot>) {
     let command = args["command"].as_str().unwrap_or_default();
     let mut audit = Map::new();
     audit.insert("command".into(), json!(command));
     let store = Store::new(state_dir);
+    let snapshot = match command {
+        "set" | "edit" | "clear" | "clear_at_revision" => Some(store.snapshot_deny()),
+        "map_agent" => Some(store.snapshot_agents()),
+        _ => None,
+    };
+    let snapshot = match snapshot.transpose() {
+        Ok(snapshot) => snapshot,
+        Err(failure) => return (crate::vault::host::done(Err(failure), audit), None),
+    };
     let result = match owner_only(kind, "the device rule") {
         Err(failure) => Err(failure),
         Ok(()) if !args["from"].is_null() => Err(Failure::new(
@@ -61,7 +82,21 @@ pub async fn run(state_dir: &Path, plow: &Plow, host: &str, kind: &str, args: &V
             )),
         },
     };
-    crate::vault::host::done(result, audit)
+    let changed = result.is_ok();
+    let done = crate::vault::host::done(result, audit);
+    (done, snapshot.filter(|_| changed))
+}
+
+/// Puts back a change whose audit record couldn't be written; a failure
+/// to put it back is logged, never silent.
+pub fn undo(snapshot: Option<Snapshot>) {
+    if let Some(snapshot) = snapshot
+        && let Err(err) = snapshot.restore()
+    {
+        crate::log::log(&format!(
+            "rules: an unaudited change could not be put back: {err}"
+        ));
+    }
 }
 
 /// Only the owner's own devices may use `what` (the device rule, a host's
@@ -382,6 +417,43 @@ mod tests {
         let cleared = host.owner(json!({"command": "clear"})).await.unwrap();
         assert_eq!(cleared["cleared"], true);
         assert_eq!(Store::new(host.dir.path()).deny().unwrap(), None);
+    }
+
+    /// A change whose audit record can't be written is put back: the rule
+    /// and the agent map are as they were, and a refused change has
+    /// nothing to put back.
+    #[tokio::test]
+    async fn an_unaudited_change_is_put_back() {
+        let host = Host::new();
+        host.owner(json!({"command": "set", "text": "Never pay."}))
+            .await
+            .unwrap();
+        let changing = |args: Value| {
+            let dir = host.dir.path().to_path_buf();
+            let plow = host.plow.clone();
+            async move { changing(&dir, &plow, "studio", "device", &args).await }
+        };
+        let store = Store::new(host.dir.path());
+        for (args, kept) in [
+            (
+                json!({"command": "set", "text": "Anything goes."}),
+                Some("Never pay."),
+            ),
+            (json!({"command": "clear"}), Some("Never pay.")),
+        ] {
+            let (done, snapshot) = changing(args.clone()).await;
+            assert!(matches!(done.response, Response::Ok(_)), "{args}");
+            undo(snapshot);
+            assert_eq!(store.deny().unwrap().as_deref(), kept, "{args}");
+        }
+        let (_, snapshot) =
+            changing(json!({"command": "map_agent", "agent": "Ada", "swarm_id": "@ada:plow.co"}))
+                .await;
+        undo(snapshot);
+        assert!(store.agents().unwrap().is_empty());
+        let (_, nothing) =
+            changing(json!({"command": "edit", "text": "x", "revision": "stale"})).await;
+        assert!(nothing.is_none());
     }
 
     #[tokio::test]

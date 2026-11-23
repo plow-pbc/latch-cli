@@ -1265,6 +1265,7 @@ async fn serve_request(
                 stop,
             } = check(&checks, &identity, gate, intent.as_deref(), &mut request).await;
             let mut phases = None;
+            let mut unaudited = None;
             let done = if let Some(stop) = stop {
                 stop.done()
             } else {
@@ -1298,14 +1299,16 @@ async fn serve_request(
                         .await
                     }
                     "rules" => {
-                        crate::gate::owner::run(
+                        let (done, snapshot) = crate::gate::owner::changing(
                             &host.workers.state_dir,
                             &host.plow,
                             &host.name,
                             &identity.kind,
                             &request.args,
                         )
-                        .await
+                        .await;
+                        unaudited = snapshot;
+                        done
                     }
                     "messages" | "contacts" => {
                         crate::messages::host::run(
@@ -1417,7 +1420,11 @@ async fn serve_request(
             );
             let response = match appended {
                 Ok(audit_id) => with_audit_id(done.response, audit_id),
-                Err(message) => failed(code::audit_failed, message),
+                Err(message) => {
+                    // A rules change the log doesn't hold is put back.
+                    crate::gate::owner::undo(unaudited);
+                    failed(code::audit_failed, message)
+                }
             };
             // Answered before the board's name for the caller, which may ask Plow.
             let response = with_permissions(response, exec_permissions);

@@ -125,7 +125,7 @@ impl Target<'_> {
         let plow = Plow::from_state(self.state)?;
         // A log that can't be written to stops the command before it changes anything.
         let mut log = AuditLog::open(self.state.path.join(crate::audit::FILE))?;
-        let done = owner::run(
+        let (done, snapshot) = owner::changing(
             &self.state.path,
             &plow,
             &config.peer.name,
@@ -137,7 +137,8 @@ impl Target<'_> {
         let mut record = audit::record(&config.peer.key, None, "rules", decision, &done.outcome);
         record.caller_name = Some(config.peer.name.clone());
         record.args = done.audit_args;
-        let audit_id = log.append(record)?;
+        // A change the log doesn't hold is put back.
+        let audit_id = log.append(record).inspect_err(|_| owner::undo(snapshot))?;
         crate::serve::with_audit_id(done.response, audit_id).into_result()
     }
 }

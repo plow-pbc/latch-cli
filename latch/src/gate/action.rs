@@ -245,7 +245,9 @@ pub fn classify(action: &Value) -> Class {
     if let Some(kind) = action["kind"].as_str() {
         return match kind {
             "open_site" | "download_file" => Class::Free,
-            "browser_plan" | "vault_fill" | "run_script" | "upload_file" => Class::Intent,
+            "browser_plan" | "vault_fill" | "run_script" | "upload_file" | "confirmed_step" => {
+                Class::Intent
+            }
             _ => Class::Unknown,
         };
     }
@@ -268,7 +270,15 @@ pub fn classify(action: &Value) -> Class {
                 _ => Class::Intent,
             }
         }
-        op if op.starts_with("messages.") || op.starts_with("contacts.") => Class::Free,
+        // The connectors' reads, named one by one: an action added later is
+        // unknown until it is classified here.
+        "messages.search"
+        | "messages.thread"
+        | "messages.chats"
+        | "messages.unreplied"
+        | "messages.attachment"
+        | "contacts.search"
+        | "contacts.lookup" => Class::Free,
         _ => Class::Unknown,
     }
 }

@@ -27,11 +27,6 @@ impl IntentRef {
             }
         })
     }
-
-    /// The ledger's key for every action taken on this intent.
-    pub fn key(&self) -> String {
-        format!("swarm:{}/{}", self.room, self.event)
-    }
 }
 
 /// One message as the judge reads it.
@@ -53,6 +48,10 @@ pub struct Context {
 /// The cited message and what followed it.
 #[derive(Clone, Debug)]
 pub struct Thread {
+    /// The cited message's room and event ids as the reader resolved them:
+    /// the room's id, never an alias.
+    pub room: String,
+    pub event: String,
     /// The cited message, and whether the server says the owner (or a
     /// phone account that speaks for the owner) sent it.
     pub cited: Said,
@@ -68,6 +67,13 @@ pub struct Thread {
     pub closed: bool,
     /// Whether every owner message after the cited one was read.
     pub complete: bool,
+}
+
+impl Thread {
+    /// The ledger's key for every action taken on this intent.
+    pub fn key(&self) -> String {
+        format!("swarm:{}/{}", self.room, self.event)
+    }
 }
 
 /// A read's outcome: the thread, `None` when there is no such message in
@@ -101,7 +107,6 @@ mod tests {
             (r.room.as_str(), r.event.as_str()),
             ("!abc:plow.co", "$ev1")
         );
-        assert_eq!(r.key(), "swarm:!abc:plow.co/$ev1");
         for bad in ["", "room", "/ev", "room/", "room/e v"] {
             assert_eq!(IntentRef::parse(bad), None, "{bad:?}");
         }

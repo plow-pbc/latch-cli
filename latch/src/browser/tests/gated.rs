@@ -101,6 +101,11 @@ impl Judge {
         self.shown.lock().unwrap().len()
     }
 
+    /// Answers by `answers` from now on.
+    fn answer(&self, answers: impl Fn(&Value) -> [f64; 3] + Send + Sync + 'static) {
+        *self.answers.lock().unwrap() = Box::new(answers);
+    }
+
     fn last_action(&self) -> Value {
         self.shown.lock().unwrap().last().unwrap()["proposed_action"].clone()
     }
@@ -1478,13 +1483,12 @@ async fn shows(host: &Host, id: &str) -> String {
 async fn an_agents_confirmation_of_a_paused_send_is_judged_before_it_runs(engine: &str) {
     let (_dir, state, _area) = test_state(engine);
     let (site, _) = serve_site();
-    let chat = vec![message("m1", true, "have a look at my test site", 10)];
     // The site may open; nothing confirmed is covered.
     let judge = Judge::new(|state| match state["proposed_action"]["kind"].as_str() {
         Some("open_site") => COVERED,
         _ => NOT_COVERED,
     });
-    let mut host = Host::start(&state, &site, &judge, chat.clone());
+    let mut host = Host::start(&state, &site, &judge);
     host.browsers.provider = Some(Arc::new(Wary));
     // Longer than a page read shows of a field: the judge reads it whole.
     let message = format!(
@@ -1675,12 +1679,11 @@ async fn an_agents_confirmation_of_a_paused_send_is_judged_before_it_runs(engine
 async fn a_click_the_risk_check_lets_go_asks_the_judge_nothing(engine: &str) {
     let (_dir, state, _area) = test_state(engine);
     let (site, _) = serve_site();
-    let chat = vec![message("m1", true, "have a look at my test site", 10)];
     let judge = Judge::new(|state| match state["proposed_action"]["kind"].as_str() {
         Some("open_site") => COVERED,
         _ => NOT_COVERED,
     });
-    let host = Host::start(&state, &site, &judge, chat.clone());
+    let host = Host::start(&state, &site, &judge);
     let (id, _, read) = composed(&host, &site, engine, "On my way").await;
     let asked = judge.judged();
     let (clicked, audit) = host

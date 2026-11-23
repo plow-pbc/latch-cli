@@ -319,8 +319,7 @@ impl Gatekeeper {
                 format!("{cited:?} is not a <room>/<event> reference to the owner's message"),
             ));
         };
-        let key = intent.key();
-        gate["intent"] = json!(key);
+        gate["cited"] = json!(format!("{}/{}", intent.room, intent.event));
         let agents = self.store.agents().map_err(|why| {
             unavailable(
                 "agent_map_unreadable",
@@ -353,6 +352,10 @@ impl Gatekeeper {
                 )
             })?;
         cited_checks(&thread)?;
+        // The ledger's key is the message as the reader resolved it, so an
+        // alias of the room counts as the room.
+        let key = thread.key();
+        gate["intent"] = json!(key);
         gate["later_owner_messages"] = json!(thread.later_owner.len());
         let held = self.ledger.hold(&key).await;
         let done = held

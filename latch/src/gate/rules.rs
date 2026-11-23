@@ -134,6 +134,18 @@ impl Store {
         Ok(before)
     }
 
+    /// The device rule's file as it is now.
+    pub fn snapshot_deny(&self) -> Result<Snapshot, Failure> {
+        let path = self.dir().join(DENY_FILE);
+        Snapshot::of(path.clone()).map_err(|err| failure(&path, err))
+    }
+
+    /// The agent map's file as it is now.
+    pub fn snapshot_agents(&self) -> Result<Snapshot, Failure> {
+        let path = self.dir().join(AGENTS_FILE);
+        Snapshot::of(path.clone()).map_err(|err| failure(&path, err))
+    }
+
     /// Every agent's Swarm account, by Plow agent uid.
     pub fn agents(&self) -> Result<BTreeMap<String, String>, String> {
         let path = self.dir().join(AGENTS_FILE);
@@ -202,6 +214,35 @@ impl Store {
         let archived = self.state.join(format!("{LEGACY_DIR}.archived-{now_s}"));
         fs::rename(&legacy, &archived)?;
         Ok(Some((archived, files)))
+    }
+}
+
+/// A file as it was before a change, to put back if the change can't be
+/// audited: a change the audit log doesn't hold must not stand.
+pub struct Snapshot {
+    path: PathBuf,
+    before: Option<Vec<u8>>,
+}
+
+impl Snapshot {
+    fn of(path: PathBuf) -> std::io::Result<Snapshot> {
+        let before = match fs::read(&path) {
+            Ok(bytes) => Some(bytes),
+            Err(err) if err.kind() == ErrorKind::NotFound => None,
+            Err(err) => return Err(err),
+        };
+        Ok(Snapshot { path, before })
+    }
+
+    /// Puts the file back as it was.
+    pub fn restore(self) -> std::io::Result<()> {
+        match self.before {
+            Some(bytes) => write_private(&self.path, &bytes),
+            None => match fs::remove_file(&self.path) {
+                Err(err) if err.kind() != ErrorKind::NotFound => Err(err),
+                _ => Ok(()),
+            },
+        }
     }
 }
 
