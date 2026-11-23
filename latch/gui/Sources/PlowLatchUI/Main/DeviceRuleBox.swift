@@ -31,19 +31,19 @@ struct DeviceRuleBox: View {
         return VStack(alignment: .trailing, spacing: 6) {
             TextEditor(text: Binding { draft?.text ?? app.savedRule(name)?.text ?? "" } set: { app.typeRule($0, on: name) })
                 .font(.body)
-                .frame(minHeight: 22, maxHeight: 120)
+                .frame(minHeight: 18, maxHeight: 120)
                 .fixedSize(horizontal: false, vertical: true)
                 .scrollContentBackground(.hidden)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 5)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
                 .background(.background, in: RoundedRectangle(cornerRadius: 8))
                 .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.separator))
                 .overlay(alignment: .topLeading) {
                     if (draft?.text ?? app.savedRule(name)?.text ?? "").isEmpty {
                         Text("Nothing is denied. For example: Never touch my tax returns.")
                             .foregroundStyle(.tertiary)
-                            .padding(.horizontal, 11)
-                            .padding(.vertical, 5)
+                            .padding(.horizontal, 13)
+                            .padding(.vertical, 6)
                             .allowsHitTesting(false)
                     }
                 }

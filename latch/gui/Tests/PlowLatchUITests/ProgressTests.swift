@@ -277,26 +277,6 @@ struct GatekeeperTests {
         #expect(line.error.connectUrl == URL(string: "https://plow.co/connect/google"))
     }
 
-    @Test func setupRowsComeFromLatchNotFromScreensPassed() {
-        let app = AppModel(client: FakeLatchClient(), store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
-        app.stage(status: try? Fixtures.decode(Fixtures.serving))
-        // Every screen continued, but latch says nothing is on.
-        _ = app.stage(.done, progress: Progress(passed: [.rules: .continued, .access: .continued]))
-        app.stage(rulesSaved: false, setup: try? Fixtures.decode(Fixtures.setup(on: ["messages"])))
-        let states = Summary.rows(app: app, flow: nil).map(\.state)
-        #expect(states == ["Logged in", "Not answered", "Not set up", "Not set up", "Running"])
-        app.stage(rulesSaved: true, setup: try? Fixtures.decode(Fixtures.setup(on: ["google", "messages", "contacts"])))
-        #expect(Summary.rows(app: app, flow: nil).map(\.state) == ["Logged in", "Answered", "Connected", "On", "Running"])
-    }
-
-    @Test func aFailedStatusReadSaysSo() {
-        let app = AppModel(client: FakeLatchClient(), store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
-        app.stage(status: nil, error: .unreachable("Latch returned an unreadable response."))
-        app.stage(rulesSaved: nil, setup: nil)
-        let states = Summary.rows(app: app, flow: nil).map(\.state)
-        #expect(states == ["Couldn't check", "Couldn't check", "Couldn't check", "Couldn't check", "Couldn't check"])
-    }
-
     @Test func onlyMissingAccessIsAccessNeeded() {
         #expect(Onboarding.Check.needed("Waiting for access").isNeeded)
         #expect(!Onboarding.Check.failed(.unreachable("the Messages reader is missing")).isNeeded)
@@ -552,15 +532,6 @@ struct ClosingTests {
         #expect(flow.progress.passed[.access] == nil)
     }
 
-    @Test func notSetUpIsOnlyLatchsAnswer() {
-        let app = AppModel(client: FakeLatchClient(), store: ProgressStore(memory: .init(), stateDir: "/Users/me/.latch"), still: true)
-        app.stage(status: try? Fixtures.decode(Fixtures.stopped))
-        _ = app.stage(.done, progress: Progress(passed: [.access: .skipped, .rules: .skipped]))
-        app.stage(rulesSaved: true, setup: try? Fixtures.decode(Fixtures.setup(on: ["google"])))
-        // Skipped this time, but latch has an answer and Google, with no host running.
-        #expect(Summary.rows(app: app, flow: nil).map(\.state) == ["Logged in", "Answered", "Connected", "Not set up", "Not running"])
-    }
-
     /// Contacts & Messages refused for want of Full Disk Access, on a host
     /// this Mac runs in the background or in a terminal (`attached`), and
     /// checked once: both wait for access until `granted` says so.
@@ -729,8 +700,6 @@ struct ClosingTests {
         let disconnected = app.stage(.access, progress: Progress(rerun: true))
         await disconnected.checkGoogle()
         #expect(disconnected.google == .notConnected)
-        app.stage(rulesSaved: true, setup: try? await client.setupStatus())
-        #expect(Summary.rows(app: app, flow: nil).first { $0.title == "Google" }?.state == "Not set up")
     }
 
     @Test func aCheckStillAnsweringWhenGoogleIsSkippedTurnsNothingOn() async {

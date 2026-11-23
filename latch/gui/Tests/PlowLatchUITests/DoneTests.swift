@@ -31,13 +31,13 @@ struct DoneTests {
     }
 
     @Test(arguments: [[String](), ["provisioning"], ["no line"]])
-    func noAgentToTextLeavesOpenLatch(cases: [String]) throws {
+    func noAgentToTextLeavesExploreTheApp(cases: [String]) throws {
         let agents = cases.map { $0 == "provisioning"
             ? agent("new", number: "+15550000004", status: "provisioning", created: "2026-10-23T06:00:00")
             : agent("own", number: nil, created: "2026-10-23T06:00:00") }
         let (flow, opened) = try done(agents)
         #expect(flow.textAgent == nil)
-        #expect(flow.primaryTitle == "Open Latch")
+        #expect(flow.primaryTitle == "Explore the app")
         flow.primary()
         #expect(opened().isEmpty)
         #expect(flow.progress.finished)

@@ -68,28 +68,6 @@ final class AppModel {
 
     var progress: Progress { onboarding?.progress ?? store.load() }
 
-    /// What's set up, as latch says: whether the device rule was answered, and
-    /// each setup step (`setup --status`); nil where latch couldn't say.
-    private(set) var rulesSaved: Bool?
-    private(set) var setup: SetupStatus?
-
-    func refreshSetup() async {
-        rulesSaved = (try? await client.rulesShow()).map { $0.deviceRule != nil }
-        setup = try? await client.setupStatus()
-    }
-
-    /// Whether latch says a connector is set up: on, and for Google still
-    /// connected in Plow; nil before it has said.
-    func connectorOn(_ name: String) -> Bool? {
-        setup.map { $0.step(name)?.state == "done" }
-    }
-
-    /// For snapshots: what latch said is set up.
-    func stage(rulesSaved: Bool?, setup: SetupStatus?) {
-        self.rulesSaved = rulesSaved
-        self.setup = setup
-    }
-
     /// The account's hosts as `latch status` last said; it asks Plow, so it
     /// can fail where `status --local` doesn't.
     private(set) var account: AccountStatus?

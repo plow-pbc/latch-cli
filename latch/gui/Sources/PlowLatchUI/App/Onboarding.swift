@@ -178,7 +178,7 @@ final class Onboarding {
         case .rules: savingRules ? "Saving…" : "Continue"
         case .access: accessDone || accessFailed ? "Continue" : accessGranted ? "Turn on" : "Open System Settings"
         case .start: starting ? "Starting…" : runInBackground && app.status?.thisMachine.hosting.ready != true ? "Start Latch" : "Continue"
-        case .done: textAgent.map { "Text \($0.name)" } ?? "Open Latch"
+        case .done: textAgent.map { "Text \($0.name)" } ?? "Explore the app"
         }
     }
 

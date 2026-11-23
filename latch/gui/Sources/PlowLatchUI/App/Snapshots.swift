@@ -421,22 +421,9 @@ package enum SnapshotRunner {
                 $0.startError = LatchError.failed(LatchFailure(code: "serve_failed", message: "the host did not answer within 30 seconds (`latch logs` has its log)"))
             }),
             ("07-start-login-item-needs-approval", .start, Fixtures.serving, Progress(), { $0.startError = LoginItem.needsApproval }),
-            ("08-done-all-set", .done, Fixtures.serving, full, {
-                $0.app.stage(rulesSaved: true, setup: try! Fixtures.decode(Fixtures.setup(on: ["google", "messages", "contacts"])))
-            }),
+            ("08-done-all-set", .done, Fixtures.serving, full, { _ in }),
             ("08-done-text-agent", .done, Fixtures.serving, full, {
-                $0.app.stage(rulesSaved: true, setup: try! Fixtures.decode(Fixtures.setup(on: ["google", "messages", "contacts"])))
                 $0.app.stage(agents: try! Fixtures.decode(Fixtures.agents), standings: [:])
-            }),
-            ("08-done-google-skipped", .done, Fixtures.serving,
-             Progress(passed: full.passed.merging([.access: .skipped]) { $1 }), {
-                $0.app.stage(rulesSaved: true, setup: try! Fixtures.decode(Fixtures.setup(on: ["messages", "contacts"], google: Fixtures.googleNotConnected)))
-            }),
-            ("08-done-with-skips", .done, Fixtures.serving, skipped, {
-                $0.app.stage(rulesSaved: false, setup: try! Fixtures.decode(Fixtures.setup(on: [])))
-            }),
-            ("08-done-not-running", .done, Fixtures.stopped, full, {
-                $0.app.stage(rulesSaved: true, setup: try! Fixtures.decode(Fixtures.setup(on: ["google"])))
             }),
         ]
 
@@ -449,18 +436,17 @@ package enum SnapshotRunner {
                 try await render(OnboardingView(entranceTime: step == .welcome ? 10 : nil).environment(app),
                                  size: Brand.windowSize, dark: dark, file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))
             }
-            let mains: [(String, String?, Progress, Bool?, [String]?)] = [
-                ("09-main-running", Fixtures.serving, full, true, ["google", "messages", "contacts"]),
-                ("09-main-stopped-skipped-update", Fixtures.stopped, skipped, false, nil),
-                ("09-main-logged-out", Fixtures.loggedOut, full, nil, nil),
-                ("09-main-status-failed", nil, full, nil, nil),
+            let mains: [(String, String?, Progress)] = [
+                ("09-main-running", Fixtures.serving, full),
+                ("09-main-stopped-skipped-update", Fixtures.stopped, skipped),
+                ("09-main-logged-out", Fixtures.loggedOut, full),
+                ("09-main-status-failed", nil, full),
             ]
-            for (name, status, progress, rulesSaved, on) in mains {
+            for (name, status, progress) in mains {
                 let app = AppModel(client: FakeLatchClient(), still: true)
                 app.stage(status: try status.map { try Fixtures.decode($0) },
                           error: status == nil ? .unreachable("Latch couldn't start.", detail: "The file “latch” doesn't exist.") : nil)
                 app.stage(account: try Fixtures.decode(Fixtures.studioHosts))
-                app.stage(rulesSaved: rulesSaved, setup: try on.map { try Fixtures.decode(Fixtures.setup(on: $0)) })
                 _ = app.stage(.done, progress: progress)
                 try await renderWindow(app, size: mainSize, dark: dark,
                                  file: output.appending(path: "\(name)-\(dark ? "dark" : "light").png"))

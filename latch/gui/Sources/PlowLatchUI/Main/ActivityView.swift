@@ -41,9 +41,8 @@ struct ActivityHeading: View {
             ForEach(ActivityFilter.allCases) { Text($0.rawValue).tag($0) }
         }
         .pickerStyle(.segmented)
-        let connections = Toggle("Show Connections and Reads", systemImage: "point.3.connected.trianglepath.dotted", isOn: $app.showConnections)
-            .toggleStyle(.button)
-            .labelStyle(.iconOnly)
+        let connections = Toggle("Show connections and reads", isOn: $app.showConnections)
+            .toggleStyle(.checkbox)
             .help("Also show when callers connected, and your own reads (rules, vault, status, activity)")
         VStack(alignment: .leading, spacing: 0) {
             if let host = shown.host {
@@ -80,12 +79,15 @@ struct ActivityHeading: View {
                 Text("Agents act only on a message of yours they cite.")
                     .foregroundStyle(.secondary)
             }
-            HStack(alignment: .firstTextBaseline, spacing: 12) {
+            // The label sits level with the box's first line: a text
+            // editor has no baseline to align to.
+            HStack(alignment: .top, spacing: 12) {
                 Text("ALWAYS DENIED")
                     .font(.caption.monospaced())
                     .kerning(1)
                     .foregroundStyle(.secondary)
                     .fixedSize()
+                    .frame(height: 30)
                 DeviceRuleBox(host: host)
             }
         }

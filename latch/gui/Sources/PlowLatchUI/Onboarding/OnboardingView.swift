@@ -17,7 +17,7 @@ struct OnboardingView: View {
                         .transition(.opacity.combined(with: .offset(y: 6)))
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .latchAnimation(Brand.stepChange, value: flow.step)
-                    if flow.step != .welcome {
+                    if ![.welcome, .done].contains(flow.step) {
                         OnboardingFooter(flow: flow)
                     }
                 }
@@ -77,26 +77,6 @@ struct Panel<Content: View>: View {
     }
 }
 
-/// A row in a panel: an icon, a title, and a state on the right.
-struct PanelRow: View {
-    var symbol: String
-    var title: String
-    var state: String
-    var stateColor: Color = Brand.muted
-
-    var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: symbol).frame(width: 20).foregroundStyle(Brand.muted).accessibilityHidden(true)
-            Text(title)
-            Spacer()
-            Text(state).font(.callout).foregroundStyle(stateColor)
-        }
-        .padding(.horizontal, 14)
-        .frame(minHeight: 44)
-        .accessibilityElement(children: .combine)
-    }
-}
-
 /// Back or Skip for now, the progress dots, and the step's primary action.
 struct OnboardingFooter: View {
     static let height: CGFloat = 72
@@ -118,10 +98,6 @@ struct OnboardingFooter: View {
 
     @ViewBuilder private var leading: some View {
         HStack(spacing: 18) {
-            // Texting an agent is Done's main button; opening Latch goes here.
-            if flow.step == .done, flow.textAgent != nil {
-                Button("Open Latch") { flow.finish() }
-            }
             if [.login, .privacy, .rules, .access, .start].contains(flow.step) {
                 Button("Back") { flow.back() }
                     .buttonStyle(.plain)
@@ -148,7 +124,6 @@ struct OnboardingFooter: View {
                     .frame(width: 6, height: 6)
             }
         }
-        .opacity(flow.step == .done ? 0 : 1)
         .accessibilityElement()
         .accessibilityLabel("Step \(min(current + 1, steps.count)) of \(steps.count)")
     }

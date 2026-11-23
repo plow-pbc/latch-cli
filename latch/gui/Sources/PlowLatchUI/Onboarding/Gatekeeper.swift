@@ -18,7 +18,7 @@ struct RulesView: View {
                 .padding(.top, 8)
             field
                 .disabled(flow.rulesUnreadable)
-            Text("Leave it blank to deny nothing. Change it any time at the top of Activity.")
+            Text("Leave it blank to deny nothing.")
                 .font(.callout)
                 .foregroundStyle(Brand.muted)
             if let error = flow.rulesError {

@@ -36,8 +36,8 @@ struct WelcomeView: View {
                 .padding(.top, 70)
             Spacer(minLength: 0)
             VStack(spacing: 2) {
-                Text("Put your agent to work.")
-                Text("Keep control.").foregroundStyle(Brand.volt)
+                Text("Keep your passwords.")
+                Text("Lose the busywork.").foregroundStyle(Brand.volt)
             }
             .font(.system(.largeTitle, weight: .semibold))
             .multilineTextAlignment(.center)
@@ -45,13 +45,6 @@ struct WelcomeView: View {
             .accessibilityAddTraits(.isHeader)
             .opacity(frame.tagline)
             .offset(y: frame.taglineOffset)
-            Text("Your agent can do everyday work on this Mac. Anything riskier needs your OK.")
-                .font(Brand.lead)
-                .foregroundStyle(Brand.muted)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 80)
-                .padding(.top, 14)
-                .opacity(frame.tagline)
             Spacer(minLength: 0)
             HStack {
                 Spacer()
@@ -587,73 +580,39 @@ struct DoneView: View {
     @Environment(AppModel.self) private var app
 
     var body: some View {
-        VStack(spacing: 20) {
-            Image(systemName: "checkmark")
-                .font(.system(size: 34, weight: .semibold))
-                .foregroundStyle(Brand.volt)
-                .frame(width: 76, height: 76)
-                .background(Brand.surface, in: Circle())
-                .accessibilityHidden(true)
-                .padding(.top, 56)
+        VStack(spacing: 28) {
             Text("You're all set").font(Brand.headline).accessibilityAddTraits(.isHeader)
-            Panel {
-                ForEach(Array(Summary.rows(app: app, flow: flow).enumerated()), id: \.offset) { index, row in
-                    if index > 0 { Rectangle().fill(Brand.line).frame(height: 1) }
-                    PanelRow(symbol: row.symbol, title: row.title, state: row.state, stateColor: row.set ? Brand.volt : Brand.muted)
+            VStack(spacing: 12) {
+                if let agent = flow.textAgent {
+                    Button("Text \(agent.name)") { flow.primary() }
+                        .buttonStyle(DoneButtonStyle(primary: true))
+                        .keyboardShortcut(.defaultAction)
                 }
+                Button("Explore the app") { flow.finish() }
+                    .buttonStyle(DoneButtonStyle(primary: false))
             }
-            Text(app.status?.thisMachine.hosting.ready == true ? "Your agents can now use this Mac." : "You can review or change your setup in Latch.")
-                .foregroundStyle(Brand.muted)
-                .multilineTextAlignment(.center)
-            Spacer(minLength: 0)
+            .frame(width: 340)
         }
-        .padding(.horizontal, 56)
-        .task {
-            guard !app.still else { return }
-            await app.refreshStatus()
-            await app.refreshSetup()
-            await app.refreshAgentList()
-        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .task { if !app.still { await app.refreshAgentList() } }
     }
 }
 
-/// Done's and the main window's list of what onboarding set up.
-/// Done's and the main window's list of what's set up, all from latch: its
-/// status, its device rule and its setup steps.
-enum Summary {
-    struct Row {
-        var symbol: String
-        var title: String
-        var state: String
-        var set: Bool
-    }
+/// Done's two buttons, as the old app's: full width, the first volt, the
+/// other outlined.
+private struct DoneButtonStyle: ButtonStyle {
+    var primary: Bool
 
-    static func rows(app: AppModel, flow: Onboarding?) -> [Row] {
-        let failed = app.status == nil && app.statusError != nil
-        let loggedIn = app.status?.login != nil
-        let serving = app.status?.thisMachine.hosting.ready == true
-        // A skip says nothing about what latch has: "Not set up" is only
-        // ever latch's answer.
-        func connector(_ names: [String]) -> (String, Bool) {
-            guard app.setup != nil else { return ("Couldn't check", false) }
-            let on = names.allSatisfy { app.connectorOn($0) == true }
-            return (on ? "On" : "Not set up", on)
-        }
-        let google = connector(["google"])
-        let access = connector(["messages", "contacts"])
-        // The gatekeeper question as latch last said, or as answered here.
-        let rules: (String, Bool) = switch app.rulesSaved ?? flow.map({ $0.savedRules != nil }) {
-        case true?: ("Answered", true)
-        case false?: ("Not answered", false)
-        case nil: ("Couldn't check", false)
-        }
-        return [
-            Row(symbol: "checkmark", title: "Plow", state: failed ? "Couldn't check" : loggedIn ? "Logged in" : "Not logged in", set: loggedIn),
-            Row(symbol: "text.alignleft", title: "Always denied", state: rules.0, set: rules.1),
-            Row(symbol: "g.circle", title: "Google", state: google.1 ? "Connected" : google.0, set: google.1),
-            Row(symbol: "message", title: "Contacts & Messages", state: access.0, set: access.1),
-            Row(symbol: "arrow.clockwise", title: "Latch", state: failed ? "Couldn't check" : serving ? "Running" : "Not running", set: serving),
-        ]
+    func makeBody(configuration: Configuration) -> some View {
+        let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
+        configuration.label
+            .font(.body.weight(.semibold))
+            .foregroundStyle(primary ? Brand.onVolt : Brand.text)
+            .frame(maxWidth: .infinity, minHeight: 44)
+            .background(primary ? Brand.voltFill : .clear, in: shape)
+            .overlay(shape.strokeBorder(primary ? .clear : Brand.fieldBorder))
+            .contentShape(shape)
+            .brightness(configuration.isPressed ? -0.06 : 0)
     }
 }
 
