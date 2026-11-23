@@ -466,12 +466,32 @@
     };
   };
 
+  // A US state or territory by its USPS code or its name.
+  const STATES = new Map('AL Alabama|AK Alaska|AS American Samoa|AZ Arizona|AR Arkansas|CA California|CO Colorado|CT Connecticut|DE Delaware|DC District of Columbia|FL Florida|GA Georgia|GU Guam|HI Hawaii|ID Idaho|IL Illinois|IN Indiana|IA Iowa|KS Kansas|KY Kentucky|LA Louisiana|ME Maine|MD Maryland|MA Massachusetts|MI Michigan|MN Minnesota|MS Mississippi|MO Missouri|MT Montana|NE Nebraska|NV Nevada|NH New Hampshire|NJ New Jersey|NM New Mexico|NY New York|NC North Carolina|ND North Dakota|MP Northern Mariana Islands|OH Ohio|OK Oklahoma|OR Oregon|PA Pennsylvania|PR Puerto Rico|RI Rhode Island|SC South Carolina|SD South Dakota|TN Tennessee|TX Texas|UT Utah|VT Vermont|VI Virgin Islands|VA Virginia|WA Washington|WV West Virginia|WI Wisconsin|WY Wyoming'
+    .split('|').flatMap((pair) => [[pair.slice(0, 2).toLowerCase(), pair.slice(3)], [pair.slice(3).toLowerCase(), pair.slice(3)]]));
+  const stateOf = (text) => STATES.get(text.trim().toLowerCase());
+  // The state an option is: its value and its text both name it.
+  const optionState = (o) => {
+    const state = stateOf(o.label);
+    return state && stateOf(o.value) === state ? state : undefined;
+  };
+  // On a list of states alone (blank placeholders aside), a state's name
+  // picks the option of its code and its code the option of its name: the
+  // one option that is that state, or none.
+  const stateMatch = (options, want) => {
+    const state = stateOf(want);
+    if (!state || !options.every((o) => !o.value || optionState(o))) return undefined;
+    const named = options.filter((o) => optionState(o) === state);
+    return { option: named.length === 1 ? named[0] : undefined };
+  };
+
   const setValue = (el, value) => {
     if (el.localName === 'select') {
       const want = String(value).trim().toLowerCase();
       const number = /^\d+$/.test(want) ? Number(want) : null;
       const options = [...el.options];
-      const match = options.find((o) => o.value.toLowerCase() === want || o.label.toLowerCase() === want)
+      const byState = stateMatch(options, want);
+      const match = byState ? byState.option : options.find((o) => o.value.toLowerCase() === want || o.label.toLowerCase() === want)
         || (number !== null && options.find((o) => /^\d+$/.test(o.value.trim()) && Number(o.value) === number))
         || (number !== null && options.find((o) => /^\d+$/.test(o.label.trim()) && Number(o.label) === number));
       if (!match) return false;
