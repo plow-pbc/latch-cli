@@ -161,9 +161,9 @@ async fn show(
                     "this agent no longer exists in Plow (re-provisioned or deleted): set its rules again with --agent its new name, and clear these with --agent its old uid"
                 );
             } else if text.is_some() {
-                match (dir.peer(&uid)?, account.peer_key(&uid)) {
-                    (None, _) => shown["note"] = json!("no latch registered when set"),
-                    (Some(then), Some(now)) if then != now => {
+                match dir.peer(&uid)? {
+                    None => shown["note"] = json!("no latch registered when set"),
+                    Some(then) if !account.has_peer(&uid, &then) => {
                         shown["moved"] = json!(true);
                         shown["note"] =
                             json!("this agent's latch has moved machines since its rules were set");
@@ -291,10 +291,14 @@ impl Account {
         Some(agent.name.clone())
     }
 
-    /// The key of the latch the agent calls from now, if it has one.
+    /// A key of a latch the agent calls from now, if it has one.
     fn peer_key(&self, uid: &str) -> Option<String> {
         let (key, _) = self.agent_of.iter().find(|(_, agent)| *agent == uid)?;
         Some(key.clone())
+    }
+
+    fn has_peer(&self, uid: &str, key: &str) -> bool {
+        self.agent_of.get(key).is_some_and(|agent| agent == uid)
     }
 }
 
@@ -691,6 +695,18 @@ mod tests {
             .push(("3".repeat(32), "Cy".into()));
         host.owner(set(Some("Cy"), "Read only.")).await.unwrap();
 
+        // A separately adopted credential registers another peer key for the
+        // same agent; the key saved with its rules is still live.
+        host.world.lock().unwrap().peers.push((
+            "b".repeat(64),
+            "agent".into(),
+            "ada-adopted".into(),
+            Some(ADA.into()),
+        ));
+        let account = Account::read(&host.plow).await.unwrap();
+        assert!(account.has_peer(ADA, ADA_KEY));
+        assert!(account.has_peer(ADA, &"b".repeat(64)));
+
         let shown = host.owner(json!({"command": "show"})).await.unwrap();
         assert_eq!(shown["warning"], WARNING);
         assert_eq!(
@@ -716,8 +732,8 @@ mod tests {
 
         {
             let mut world = host.world.lock().unwrap();
-            // Ada's latch registers a new key on another machine; Cy is deleted.
-            world.peers[0].0 = "b".repeat(64);
+            // Ada's original latch goes away; Cy is deleted.
+            world.peers.remove(0);
             world.agents.retain(|(_, name)| name != "Cy");
         }
         let shown = host.owner(json!({"command": "show"})).await.unwrap();
