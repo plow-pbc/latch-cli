@@ -1807,16 +1807,25 @@ pub(crate) fn decision(response: &Response) -> &'static str {
     }
 }
 
-/// Adds the audit record's hash to a successful result as `audit_id`, so
-/// the agent can point at exactly what the host recorded.
-pub(crate) fn with_audit_id(response: Response, audit_id: String) -> Response {
-    match response {
-        Response::Ok(Value::Object(mut result)) => {
+/// Adds the audit record's hash to a result, or to a failure's details, as
+/// `audit_id`, so the agent can point at exactly what the host recorded,
+/// a refusal's judgment included.
+pub(crate) fn with_audit_id(mut response: Response, audit_id: String) -> Response {
+    match &mut response {
+        Response::Ok(Value::Object(result)) => {
             result.insert("audit_id".to_string(), Value::String(audit_id));
-            Response::Ok(Value::Object(result))
         }
-        other => other,
+        Response::Error { details, .. } => {
+            if details.is_null() {
+                *details = json!({});
+            }
+            if let Some(details) = details.as_object_mut() {
+                details.insert("audit_id".to_string(), Value::String(audit_id));
+            }
+        }
+        Response::Ok(_) => {}
     }
+    response
 }
 
 fn failed(code: Code, message: String) -> Response {
@@ -2172,7 +2181,7 @@ mod tests {
     }
 
     #[test]
-    fn successful_results_carry_their_audit_id() {
+    fn results_and_refusals_carry_their_audit_id() {
         let ok = Response::Ok(serde_json::json!({"path": "/tmp/a"}));
         let Response::Ok(result) = with_audit_id(ok, "abc".to_string()) else {
             panic!("still ok");
@@ -2180,14 +2189,21 @@ mod tests {
         assert_eq!(result["audit_id"], "abc");
         assert_eq!(result["path"], "/tmp/a");
 
-        let failure = with_audit_id(failed(code::not_found, "y".to_string()), "abc".to_string());
-        assert!(matches!(
-            failure,
-            Response::Error {
-                exit: crate::failure::Exit::Failed,
-                details: Value::Null,
-                ..
-            }
-        ));
+        let mut refusal = Failure::new(code::gatekeeper_denied, "no".to_string());
+        refusal.details = serde_json::json!({"reason": "not_covered"});
+        let without_details = failed(code::not_found, "y".to_string());
+        for (response, reason) in [
+            (Response::error(&refusal), "not_covered"),
+            (without_details, ""),
+        ] {
+            let failure = with_audit_id(response, "abc".to_string())
+                .into_result()
+                .unwrap_err();
+            assert_eq!(failure.details["audit_id"], "abc");
+            assert_eq!(
+                failure.details["reason"].as_str().unwrap_or_default(),
+                reason
+            );
+        }
     }
 }
