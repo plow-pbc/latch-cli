@@ -130,13 +130,13 @@ asks through Plow, on the host's own Plow login.
 | Call | Class |
 |---|---|
 | `file get`, `messages`, `contacts`, an agent's `vault list`, Google read commands and Gmail drafts (`drafts create`, `reply`, `update`), a browser opening a site or downloading a file | **Free:** runs unjudged. |
-| `exec`, `file put`, other Google commands, an agent's `vault link`, a browser `do` plan with steps, a fill, a script or an upload | **Intent:** needs your message. |
+| `exec`, `file put`, other Google commands, an agent's `vault link`, a browser `do` or `act` that clicks, types, chooses, presses or fills, a fill, a script or an upload | **Intent:** needs your message. |
 | An operation the host doesn't know | Refused: `unknown_op`. |
 | `vault`, `rules`, `agents`, `plugins` (yours) | Never judged. |
 
-Reading a page, screenshots and a single `act` step aren't judged; an
-agent's `do --confirm` of a click or Enter the risk check paused is, as
-intent work, before it runs. Separately, the browser's own risk
+Reading a page, screenshots and a plan that only scrolls or goes back
+aren't judged; an agent's `do --confirm` of a click or Enter the risk
+check paused is, as intent work, before it runs. Separately, the browser's own risk
 check stops a click or Enter it judges consequential (paying, sending,
 deleting) until the caller confirms it with `browser do --confirm`.
 
