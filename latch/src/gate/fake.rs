@@ -65,9 +65,21 @@ impl World {
                 .as_object()
                 .into_iter()
                 .flatten()
-                .map(|(id, _)| {
+                .map(|(id, question)| {
                     let p = if id == "denied" { f } else { c };
-                    (id.clone(), json!({"type": "noul", "noul": p}))
+                    // A choice (`why`) answers its first option.
+                    let answer = match question["criteria"].as_object() {
+                        Some(options) => {
+                            let first = options.keys().next().cloned().unwrap_or_default();
+                            let probabilities: serde_json::Map<String, Value> = options
+                                .keys()
+                                .map(|o| (o.clone(), json!(f64::from(u8::from(*o == first)))))
+                                .collect();
+                            json!({"type": "choice", "choice": first, "probabilities": probabilities})
+                        }
+                        None => json!({"type": "noul", "noul": p}),
+                    };
+                    (id.clone(), answer)
                 })
                 .collect();
             return (

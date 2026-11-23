@@ -19,7 +19,7 @@ use crate::browser::host::{Browsers, Caller};
 use crate::failure::{Exit, Failure};
 use crate::gate::thread::{IntentRef, Reading, Said, Thread, ThreadSource};
 use crate::gate::{Gate, Gatekeeper, fake};
-use crate::model::{Answer, Asked, CallFailed, CallMeta, Provider, Question};
+use crate::model::{Answer, Asked, CallFailed, CallMeta, Kind, Provider, Question};
 use crate::vault::host::Vault;
 use crate::vault::item::{CARD, Item, LOGIN, Raw};
 use crate::vault::store::Backend;
@@ -138,7 +138,18 @@ impl Provider for Judge {
                 .iter()
                 .map(|q| {
                     let p = if q.id == "denied" { f } else { c };
-                    (q.id.clone(), Answer::Yes(p))
+                    // A choice (the gatekeeper's `why`) answers its first option.
+                    let answer = match &q.kind {
+                        Kind::Choose(options) => Answer::Chose {
+                            choice: options[0].0.clone(),
+                            probabilities: (options.iter())
+                                .enumerate()
+                                .map(|(i, (o, _))| (o.clone(), f64::from(u8::from(i == 0))))
+                                .collect(),
+                        },
+                        Kind::YesNo => Answer::Yes(p),
+                    };
+                    (q.id.clone(), answer)
                 })
                 .collect();
             let meta = CallMeta {
