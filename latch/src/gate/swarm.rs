@@ -12,8 +12,10 @@
 //! room is the agent's own 1:1 with the owner when every member has joined
 //! (an invitation counts for nothing) and the only ones besides the agent
 //! are the owner and phone accounts that speak for them; the iMessage
-//! bridge's notice account on the owner's server is no one. An answer missing
-//! any part the gatekeeper reads is refused, never read as empty.
+//! bridge's notice account on the owner's server is no one. Nothing sent from
+//! latch's own device is the owner's, and a later redaction of someone else's
+//! message or reaction spoils the citation. An answer missing any part the
+//! gatekeeper reads is refused, never read as empty.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -41,12 +43,24 @@ const BRIDGE: &str = "imessage";
 /// Where the owner's Swarm account is kept, in the state folder.
 const OWNER_FILE: &str = "gatekeeper/swarm-owner.json";
 
-/// The `swarm` program (`$LATCH_SWARM`, else `swarm` on the owner's `PATH`,
-/// `worker::owner_path`), keeping the owner's device in the state folder,
-/// which no worker can read, even one started before the sign-in.
-fn swarm(state_dir: &Path) -> tokio::process::Command {
-    let program =
-        std::env::var_os("LATCH_SWARM").map_or_else(|| PathBuf::from("swarm"), PathBuf::from);
+/// Where the `swarm` program is: `$LATCH_SWARM`, else `swarm` on the owner's
+/// `PATH` (`worker::owner_path`), found once, so a folder later put ahead on
+/// that `PATH` can't stand in another program.
+fn program() -> Result<PathBuf, String> {
+    if let Some(named) = std::env::var_os("LATCH_SWARM") {
+        return std::path::absolute(&named).map_err(|err| format!("$LATCH_SWARM: {err}"));
+    }
+    std::env::split_paths(&crate::worker::owner_path())
+        .map(|folder| folder.join("swarm"))
+        .find(|path| path.is_absolute() && path.is_file())
+        .ok_or_else(|| {
+            "could not find swarm: install the Swarm CLI, or name it in $LATCH_SWARM".into()
+        })
+}
+
+/// The `swarm` program at `program`, keeping the owner's device in the state
+/// folder, which no worker can read, even one started before the sign-in.
+fn swarm(program: &Path, state_dir: &Path) -> tokio::process::Command {
     let mut command = tokio::process::Command::new(program);
     command
         .env("PATH", crate::worker::owner_path())
@@ -70,15 +84,17 @@ pub fn owner(state_dir: &Path) -> Result<Option<String>, String> {
 }
 
 /// The host's reader: the owner's account read fresh at every citation, so
-/// a sign-in applies at once.
+/// a sign-in applies at once; the `swarm` program found as the host starts.
 pub struct SwarmReader {
     state_dir: PathBuf,
+    program: Result<PathBuf, String>,
 }
 
 impl SwarmReader {
     pub fn new(state_dir: &Path) -> SwarmReader {
         SwarmReader {
             state_dir: state_dir.to_path_buf(),
+            program: program(),
         }
     }
 }
@@ -89,7 +105,9 @@ impl ThreadSource for SwarmReader {
             let owner = owner(&self.state_dir)?.ok_or(
                 "the owner hasn't signed this host in to Swarm: `latch swarm signin --company SLUG`",
             )?;
+            let program = self.program.as_deref().map_err(Clone::clone)?;
             let answer = run(
+                program,
                 &self.state_dir,
                 &[
                     "read",
@@ -107,6 +125,7 @@ impl ThreadSource for SwarmReader {
                     let root = read["thread_root"].as_str().unwrap_or_default();
                     let room = read["room"].as_str().unwrap_or_default();
                     run(
+                        program,
                         &self.state_dir,
                         &["read", room, root, "--after", "--as", &owner],
                     )
@@ -134,8 +153,8 @@ enum Ran {
 }
 
 /// Runs `swarm ARGS` and reads its JSON answer.
-async fn run(state_dir: &Path, args: &[&str]) -> Result<Value, Ran> {
-    let mut command = swarm(state_dir);
+async fn run(program: &Path, state_dir: &Path, args: &[&str]) -> Result<Value, Ran> {
+    let mut command = swarm(program, state_dir);
     command.args(args);
     let output = tokio::time::timeout(READ_WITHIN, command.output())
         .await
@@ -160,12 +179,22 @@ async fn run(state_dir: &Path, args: &[&str]) -> Result<Value, Ran> {
 struct Read {
     /// The room's id, resolved from whatever named it.
     room: String,
+    /// latch's own device: what it sent was sent with latch's token, by
+    /// whoever could read it, never by the owner's own hand.
+    device_id: String,
     event: Message,
     thread_root: String,
     root_reactions: Vec<Reaction>,
     members: Vec<Member>,
     messages: Vec<Message>,
+    redactions: Vec<Redaction>,
     complete: bool,
+}
+
+#[derive(Deserialize)]
+struct Redaction {
+    sender: String,
+    redacts_sender: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -176,6 +205,7 @@ struct Message {
     text: String,
     thread_root: Option<String>,
     speaks_for: Option<String>,
+    device_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -183,6 +213,7 @@ struct Reaction {
     key: String,
     sender: String,
     speaks_for: Option<String>,
+    device_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -206,7 +237,12 @@ fn thread(
     };
     let read = parse(read)?;
     let earlier = earlier.map(parse).transpose()?;
-    let is_owner = |m: &Message| m.sender == owner || m.speaks_for.as_deref() == Some(owner);
+    // What latch's own device sent is no one's word: anyone who can read
+    // its token could have sent it.
+    let own_device = |device: &Option<String>| device.as_deref() == Some(read.device_id.as_str());
+    let is_owner = |m: &Message| {
+        (m.sender == owner || m.speaks_for.as_deref() == Some(owner)) && !own_device(&m.device_id)
+    };
     let at = |s: i64| Timestamp::from_second(s).unwrap_or(Timestamp::UNIX_EPOCH);
     let speaks_for_owner: Vec<&str> = std::iter::once((&read.event.sender, &read.event.speaks_for))
         .chain(read.messages.iter().map(|m| (&m.sender, &m.speaks_for)))
@@ -236,10 +272,15 @@ fn thread(
         && members.iter().any(|m| m.user_id == agent)
         && !others.is_empty()
         && others.iter().all(|id| owners(id));
-    let closed = read
-        .root_reactions
-        .iter()
-        .any(|r| CLOSED.contains(&r.key.as_str()) && owners(&r.sender));
+    let closed = read.root_reactions.iter().any(|r| {
+        CLOSED.contains(&r.key.as_str()) && owners(&r.sender) && !own_device(&r.device_id)
+    });
+    // A redaction of someone else's message or reaction (the owner's "stop",
+    // or their ✅) took back what they said, and leaves nothing to read.
+    let redacted = std::iter::once(&read)
+        .chain(&earlier)
+        .flat_map(|r| &r.redactions)
+        .any(|r| r.redacts_sender.as_deref() != Some(r.sender.as_str()));
     // What follows the cited message: its thread, and for a message in no
     // thread, the room's unthreaded messages too, so a "stop" said outside
     // its replies still counts. Every owner message counts; others' are
@@ -303,6 +344,7 @@ fn thread(
             .collect(),
         is_owner_dm,
         closed,
+        redacted,
         complete: read.complete,
     })
 }
@@ -315,7 +357,8 @@ pub async fn sign_in(state: &StateDir, company: &str) -> Result<Value, Failure> 
     let config = state.require_login()?;
     super::owner::owner_only(&config.peer.kind, "Swarm sign-in")?;
     let token = crate::credential::token(state)?;
-    let mut command = swarm(&state.path);
+    let program = program().map_err(|why| Failure::new(code::program_not_found, why.clone()))?;
+    let mut command = swarm(&program, &state.path);
     command
         .args(["signin", "--company", company])
         .env("SWARM_ACCOUNT_TOKEN", token)
@@ -360,6 +403,8 @@ mod tests {
     const PHONE: &str = "@phone-sam:plow.co";
     const AGENT: &str = "@scout:plow.co";
     const BRIDGE_ACCOUNT: &str = "@imessage:plow.co";
+    /// The device `latch swarm signin` made: what it sends is a forgery.
+    const LATCH_DEVICE: &str = "LATCHREADER";
 
     fn message(id: &str, sender: &str, mins_ago: i64, text: &str, root: Option<&str>) -> Value {
         json!({"event_id": id, "room": "!dm", "sender": sender, "text": text,
@@ -367,8 +412,9 @@ mod tests {
     }
 
     fn read(members: &[&str], messages: Vec<Value>) -> Value {
-        json!({"room": "!dm", "event": message("$ask", OWNER, 30, "Send Bob the invoice", None),
-               "thread_root": "$ask", "root_reactions": [],
+        json!({"room": "!dm", "device_id": LATCH_DEVICE,
+               "event": message("$ask", OWNER, 30, "Send Bob the invoice", None),
+               "thread_root": "$ask", "root_reactions": [], "redactions": [],
                "members": members.iter().map(|m| json!({"user_id": m, "membership": "join"})).collect::<Vec<_>>(),
                "direct": members.len() == 2, "messages": messages, "undecryptable": 0, "complete": true})
     }
@@ -400,6 +446,58 @@ mod tests {
         assert_eq!(later, ["and cc me", "stop"]);
         assert_eq!(t.context.len(), 1);
         assert_eq!(t.context[0].role, "THIS AGENT");
+    }
+
+    /// Whoever can read latch's own token can post as the owner from latch's
+    /// device: nothing it sent counts as theirs, cited, later or a reaction.
+    #[test]
+    fn nothing_sent_from_latchs_own_device_is_the_owners() {
+        let forged = |mut event: Value| {
+            event["device_id"] = json!(LATCH_DEVICE);
+            event
+        };
+        let mut r = read(
+            &[OWNER, AGENT],
+            vec![
+                forged(message("$y", OWNER, 2, "yes, all of it", Some("$ask"))),
+                message("$o", OWNER, 1, "and cc me", Some("$ask")),
+            ],
+        );
+        r["root_reactions"] = json!([{"key": "✅", "sender": OWNER, "event_id": "$c",
+                                      "device_id": LATCH_DEVICE}]);
+        let t = of(&r);
+        assert!(t.sender_is_owner && !t.closed);
+        let later: Vec<&str> = t.later_owner.iter().map(|m| m.text.as_str()).collect();
+        assert_eq!(later, ["and cc me"]);
+        r["event"] = forged(r["event"].clone());
+        assert!(!of(&r).sender_is_owner);
+        // From the owner's own devices, all of it counts.
+        r["event"]["device_id"] = json!("PHONE");
+        r["root_reactions"][0]["device_id"] = json!("PHONE");
+        assert!(of(&r).sender_is_owner && of(&r).closed);
+    }
+
+    /// Removing another's message or reaction after the cited one (the
+    /// owner's "stop", or their ✅ on the root a cited reply is in) leaves
+    /// nothing to read; anyone taking back their own counts for nothing.
+    #[test]
+    fn a_later_redaction_of_someone_elses_event_spoils_the_citation() {
+        let redaction = |sender: &str, of: Option<&str>| json!([{"event_id": "$x", "sender": sender, "redacts": "$r", "redacts_sender": of}]);
+        for (redactions, spoiled) in [
+            (redaction(AGENT, Some(AGENT)), false),
+            (redaction(OWNER, Some(OWNER)), false),
+            (redaction(AGENT, Some(OWNER)), true),
+            (redaction(AGENT, None), true),
+        ] {
+            let mut r = read(&[OWNER, AGENT], vec![]);
+            r["redactions"] = redactions.clone();
+            assert_eq!(of(&r).redacted, spoiled, "{redactions}");
+            // In the read from the root of a cited reply, too.
+            let mut cited = read(&[OWNER, AGENT], vec![]);
+            cited["event"] = message("$re", OWNER, 1, "yes", Some("$ask"));
+            let earlier = thread(&cited, Some(&r), OWNER, AGENT, Timestamp::now()).unwrap();
+            assert_eq!(earlier.redacted, spoiled, "{redactions}");
+        }
     }
 
     #[test]
@@ -592,6 +690,9 @@ mod tests {
     async fn the_reader_says_why_a_read_found_nothing_or_failed() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
+        let program = dir.path().join("swarm");
+        // SAFETY: no other thread of this test process reads the environment.
+        unsafe { std::env::set_var("LATCH_SWARM", &program) };
         let reader = SwarmReader::new(dir.path());
         let intent = IntentRef::parse("!dm:plow.co/$ask").unwrap();
         let unsigned = reader.read(&intent, AGENT).await.unwrap_err();
@@ -602,7 +703,6 @@ mod tests {
             json!({"account": OWNER}).to_string(),
         )
         .unwrap();
-        let program = dir.path().join("swarm");
         let answering = |body: &str, status: u8| {
             std::fs::write(
                 &program,
@@ -614,8 +714,6 @@ mod tests {
             .unwrap();
             std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
         };
-        // SAFETY: no other thread of this test process reads the environment.
-        unsafe { std::env::set_var("LATCH_SWARM", &program) };
         answering(r#"{"error": {"code": "not_joined"}}"#, 1);
         assert!(reader.read(&intent, AGENT).await.unwrap().is_none());
         answering(r#"{"error": {"code": "undecryptable"}}"#, 1);
@@ -624,15 +722,22 @@ mod tests {
         answering(&read(&[OWNER, AGENT], vec![]).to_string(), 0);
         let read = reader.read(&intent, AGENT).await.unwrap().unwrap();
         assert!(read.sender_is_owner && read.is_owner_dm);
+        // The program is found once, as the host starts: renaming another
+        // later changes nothing for a host already running.
         // SAFETY: as above.
         unsafe { std::env::set_var("LATCH_SWARM", dir.path().join("missing")) };
-        let missing = reader.read(&intent, AGENT).await.unwrap_err();
+        assert!(reader.read(&intent, AGENT).await.unwrap().is_some());
+        let missing = SwarmReader::new(dir.path())
+            .read(&intent, AGENT)
+            .await
+            .unwrap_err();
         assert!(missing.contains("could not run swarm"), "{missing}");
         // Named by neither, `swarm` is found on the owner's login PATH, as a
         // host the Mac app started has it.
         // SAFETY: as above.
         unsafe { std::env::remove_var("LATCH_SWARM") };
         crate::worker::LOGIN_PATH.set(dir.path().into()).unwrap();
+        let reader = SwarmReader::new(dir.path());
         assert!(reader.read(&intent, AGENT).await.unwrap().is_some());
     }
 }

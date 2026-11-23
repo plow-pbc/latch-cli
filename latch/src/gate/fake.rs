@@ -250,6 +250,7 @@ impl Reader {
             context: vec![],
             is_owner_dm: true,
             closed: false,
+            redacted: false,
             complete: true,
         })))
     }
