@@ -38,16 +38,18 @@ pub struct Done {
     pub continued: bool,
 }
 
-/// A line of the ledger: an allowed action, or the mark that the one
-/// `continued` names was carried on.
+/// A line of the ledger: the mark that the action `continued` names was
+/// carried on, or an allowed action. A mark has an `action` too, so a latch
+/// from before marks reads it as one more done, not as a broken ledger.
 #[derive(Serialize, Deserialize)]
 #[serde(untagged)]
 enum Line {
-    Done(Done),
     Continued {
         at: jiff::Timestamp,
+        action: String,
         continued: String,
     },
+    Done(Done),
 }
 
 pub struct Ledger {
@@ -133,6 +135,7 @@ impl Held {
     pub fn continued(&self, at: jiff::Timestamp, id: &str) -> Result<(), String> {
         self.append(&Line::Continued {
             at,
+            action: format!("a confirmed step of {id}, above"),
             continued: id.to_string(),
         })
     }
@@ -154,5 +157,40 @@ impl Held {
             .open(&self.path)
             .and_then(|mut file| file.write_all(line.as_bytes()))
             .map_err(failed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A latch from before ids and marks reads every line this one writes,
+    /// a mark as one more done; this one reads that latch's lines.
+    #[tokio::test]
+    async fn a_ledger_reads_across_latches_before_and_after_marks() {
+        #[derive(Deserialize)]
+        struct Before {
+            at: jiff::Timestamp,
+            action: String,
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let held = Ledger::new(dir.path()).hold("swarm:!dm/$ask").await;
+        let old = r#"{"at":"2026-11-22T00:00:00Z","action":"{\"kind\":\"old\"}"}"#;
+        std::fs::create_dir_all(held.path.parent().unwrap()).unwrap();
+        std::fs::write(&held.path, format!("{old}\n")).unwrap();
+        let id = held.record(jiff::Timestamp::now(), "{}").unwrap();
+        held.continued(jiff::Timestamp::now(), &id).unwrap();
+        let text = std::fs::read_to_string(&held.path).unwrap();
+        for line in text.lines() {
+            let before: Before = serde_json::from_str(line).unwrap();
+            assert!(before.at <= jiff::Timestamp::now() && !before.action.is_empty());
+        }
+        let done = held.done().unwrap();
+        assert_eq!(done.len(), 2);
+        assert_eq!((done[0].id.as_deref(), done[0].continued), (None, false));
+        assert_eq!(
+            (done[1].id.as_deref(), done[1].continued),
+            (Some(&*id), true)
+        );
     }
 }
